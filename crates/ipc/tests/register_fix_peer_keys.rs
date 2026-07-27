@@ -41,29 +41,46 @@ fn si(s: &Scope) -> ScopeInput {
 
 /// A keyserver pubkeys response for PEER_DID with real-length keys.
 fn peer_pubkeys_response() -> PubkeysResponse {
+    let id = generate_identity("osl_peer_route".to_owned());
+    let x = STANDARD.encode(id.x25519_public.as_bytes());
+    let ed = STANDARD.encode(id.ed25519_public.as_bytes());
+    let mlkem = STANDARD.encode(id.mlkem_public_bytes);
+    let ratchet = id
+        .ratchet_initial_pub
+        .map(|key| STANDARD.encode(key.as_bytes()));
+    let msg = keystore::client::reg_msg(
+        &id.user_id,
+        &x,
+        &ed,
+        &mlkem,
+        ratchet.as_deref(),
+    );
+    let sig = crypto::ed25519::sign(&id.ed25519_secret, &msg);
     PubkeysResponse {
-        user_id: PEER_DID.to_string(),
-        ik_x25519_pub: STANDARD.encode([0x11u8; 32]),
-        ik_ed25519_pub: STANDARD.encode([0x22u8; 32]),
-        ik_mlkem768_pub: STANDARD.encode([0x33u8; 1184]),
+        // `Identity` zeroizes on drop, so fields are cloned, not moved out.
+        user_id: id.user_id.clone(),
+        ik_x25519_pub: x,
+        ik_ed25519_pub: ed,
+        ik_mlkem768_pub: mlkem,
         registered_at: "2026-05-16T00:00:00Z".to_string(),
         last_rotated_at: None,
-        ik_ratchet_initial_pub: Some(STANDARD.encode([0x44u8; 32])),
+        ik_ratchet_initial_pub: ratchet,
         // Signed capability advertisement (keyserver migration 0026).
         // A peer with no advertisement, which is the fail-closed
         // default: `verify_peer_capabilities` reads this as
         // `PeerCapabilities::Absent`.
         rn_capabilities: None,
-        registration_sig: None,
+        registration_sig: Some(STANDARD.encode(sig.as_bytes())),
     }
 }
 
 #[test]
-fn whitelisting_a_peer_seeds_osl_user_id() {
+fn whitelisting_a_peer_does_not_treat_the_discord_id_as_an_osl_identity() {
     let state = fresh_state();
     // No keyserver installed → the whitelist-time fetch is
     // best-effort and fails silently; the whitelist op must still
-    // succeed AND seed osl_user_id (== the snowflake in V2).
+    // A Discord observation may enable local policy, but cannot name
+    // a keyserver identity.
     cmd_osl_set_whitelist(
         &state,
         PEER_DID.to_string(),
@@ -74,11 +91,7 @@ fn whitelisting_a_peer_seeds_osl_user_id() {
 
     let pm = state.peer_map.lock().unwrap();
     let pe = pm.get(PEER_DID).expect("peer entry created");
-    assert_eq!(
-        pe.osl_user_id.as_deref(),
-        Some(PEER_DID),
-        "whitelisting must seed osl_user_id with the peer snowflake"
-    );
+    assert!(pe.osl_user_id.is_none());
     assert!(
         pe.outgoing_whitelists
             .iter()
@@ -191,23 +204,33 @@ fn populate_sets_osl_user_id_and_ratchet_and_no_false_tofu_alert() {
     )
     .unwrap();
 
-    populate_peer_from_fetch_response(&state, PEER_DID, &peer_pubkeys_response())
+    let response = peer_pubkeys_response();
+    populate_peer_from_fetch_response(&state, PEER_DID, &response)
         .expect("populate ok");
 
     let pm = state.peer_map.lock().unwrap();
     let pe = pm.get(PEER_DID).unwrap();
-    assert_eq!(pe.osl_user_id.as_deref(), Some(PEER_DID));
+    assert_eq!(pe.osl_user_id.as_deref(), Some(response.user_id.as_str()));
     assert!(pe.pubkey.is_some(), "x25519 populated");
     assert!(pe.ik_mlkem768_pub.is_some(), "ML-KEM populated");
     assert_eq!(
         pe.ik_ratchet_initial_pub.as_deref(),
-        Some(STANDARD.encode([0x44u8; 32]).as_str()),
+        response.ik_ratchet_initial_pub.as_deref(),
         "ratchet bootstrap pub populated (enables v=4 DM)"
     );
     assert_eq!(
         pe.tofu_ed25519_pub.as_deref(),
-        Some(STANDARD.encode([0x22u8; 32]).as_str()),
+        Some(response.ik_ed25519_pub.as_str()),
         "TOFU baseline recorded on first populate"
+    );
+    assert_eq!(
+        pe.tofu_key_bundle.as_ref(),
+        Some(&ipc::tofu::KeyBundle {
+            ed25519_pub: response.ik_ed25519_pub.clone(),
+            x25519_pub: response.ik_x25519_pub.clone(),
+            mlkem768_pub: response.ik_mlkem768_pub.clone(),
+            ratchet_initial_pub: response.ik_ratchet_initial_pub.clone(),
+        })
     );
     drop(pm);
     // FIRST populate of a previously-keyless peer must NOT raise a
@@ -216,6 +239,25 @@ fn populate_sets_osl_user_id_and_ratchet_and_no_false_tofu_alert() {
         state.key_change_alerts.lock().unwrap().is_empty(),
         "no false TOFU 'key changed' alert on initial populate"
     );
+}
+
+#[test]
+fn keyserver_cannot_replace_encryption_keys_under_an_unchanged_identity() {
+    let state = fresh_state();
+    let response = peer_pubkeys_response();
+    populate_peer_from_fetch_response(&state, PEER_DID, &response).unwrap();
+    let before = state.peer_map.lock().unwrap().get(PEER_DID).unwrap().clone();
+
+    let mut substituted = response;
+    substituted.ik_x25519_pub = STANDARD.encode([0xafu8; 32]);
+    let err =
+        populate_peer_from_fetch_response(&state, PEER_DID, &substituted).unwrap_err();
+    assert_eq!(err, "OSL: keyserver bundle proof invalid");
+
+    let after = state.peer_map.lock().unwrap().get(PEER_DID).unwrap().clone();
+    assert_eq!(after.pubkey, before.pubkey);
+    assert_eq!(after.ik_mlkem768_pub, before.ik_mlkem768_pub);
+    assert_eq!(after.tofu_key_bundle, before.tofu_key_bundle);
 }
 
 // NOTE: a 5th test (`receive_defaults_to_snowflake_instead_of_unknown_sender`)

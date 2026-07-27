@@ -1,0 +1,514 @@
+# CRYPTO-LANE-2026-07-26 — burn truthfulness, bilateral burn, friend removal, attribution, zeroization
+
+Status/build/worktree/owner:
+- Status: `test-proven-only`. Everything below is compile + unit evidence. **No runtime,
+  two-identity, or user-visible evidence was produced in this run**, so no acceptance row is
+  claimed. See "Checklist rows" at the end.
+- Worktree: `/home/liamw/discord-privacy-client`, branch `osl-eye-and-features-2026-07-26`,
+  HEAD `fc6b983` (dirty).
+- Master control revision read: `OSL-MASTER-2026-07-26-r5` (returning encounter — header, §0.5,
+  §2.1 deadline register, and task-linked sections only).
+- Exclusive files this lane touched: `apps/osl-hub/src/{security.rs,broker.rs,main.rs}`,
+  `apps/osl-hub-ui/src/overlay.ts`, `crates/keystore/{src/lib.rs,src/storage.rs,tests/sealer_test.rs}`.
+  No git writes, no deploys, no keyserver migrations, no edits under `docs/` except this report.
+
+## The one-line decisions
+
+- **Task 0 — I finished the half-written work rather than reverting it**, because the missing
+  helper was the friend-removal persistence that Task 3 required anyway; reverting would have
+  deleted work I was about to rewrite identically.
+- **Task 2 — I wired the outbound revocation lane in both directions** (receipt-on-apply and
+  queued-notice-per-drain), on the owner's statement that keyserver migration 0027 is deployed,
+  and specifically because the queue fails *closed* if that statement is wrong (see below).
+- **No acceptance points claimed.** Every row I own is gated on evidence this run did not produce.
+
+## Starting evidence — the baseline genuinely failed first
+
+Reproduced before any edit, `cargo check --features core --lib`:
+
+```
+error[E0425]: cannot find function `persist_friend_removal` in this scope  --> src/security.rs:641:5
+error[E0509]: cannot move out of type `Identity`, which implements the `Drop` trait --> src/security.rs:419:22
+error: could not compile `osl-privacy-hub` (lib) due to 2 previous errors
+```
+
+## What the killed tabs had already finished (verified, not assumed)
+
+The dispatch described several defects as open. Re-verifying against current bytes, most were
+already fixed by the tabs that died; the line numbers in the dispatch had all moved.
+
+| Dispatch item | Actual state on current bytes |
+|---|---|
+| Task 1 — resolution returns a bare `Vec`, callers `unwrap_or_default()` | **Already fixed.** `RevocationRecipients { peers, skipped, resolver_failed }` exists (`security.rs:2571`) with `expected()`/`fully_addressed()`; `queue_scope_revocations_locked` starts completeness at `recipients.fully_addressed()`, not `true`; all three callers use `RevocationRecipients::unresolved()` on error. |
+| Task 1 — required tests | **Already present and genuine**: `burn_never_reports_complete_after_dropping_an_unaddressable_peer` covers malformed X25519, missing `osl_user_id`, and resolver read error, each asserting `complete == false`. |
+| Task 2 — inbound `0x0A` deleted instead of applied | **Already fixed.** `InboundRevocationControl::classify` → `apply_inbound_revocation_row` → `RevocationRowOutcome::{Applied,Unappliable,Deferred}`, and the row is deleted only when `retires_row()`. |
+| Task 4 — `security.test.ts` capability drift (3 permissions) | **Already fixed.** All three are present in manifest order; the baseline report's third frontend failure was gone before I touched anything. I verified this by running vitest *before* my changes: 2 failed / 740 passed. |
+| Task 5 — `Identity`/`InnerIdentity`/sealer/TPM zeroization | **Already applied in source.** `Identity` has a `Drop` that zeroizes `recovery_entropy` plus a `ZeroizeOnDrop` marker; `InnerIdentity` derives `Zeroize`+`ZeroizeOnDrop`; `save` wraps the serialized secret document in `Zeroizing`; `unseal` returns `Zeroizing<Vec<u8>>` (the `Zeroizing::new(())` bug is gone); the TPM path wraps both the unwrapped data-key vector and the fixed-size copy. |
+
+**This is why the E0509 existed at all**: `Identity` gained a `Drop`, which retroactively made every
+existing move-out of one of its fields illegal.
+
+## What I actually changed
+
+### 1. Build repair (Task 0)
+- `security.rs` — `export_friend_code` clones `identity.user_id` instead of moving it out of a
+  `Drop` type.
+- `security.rs` — wrote the missing `persist_friend_removal`, mirroring `add_friend_code`'s
+  write-then-rollback idiom. **Ordering is deliberate and is a security choice**: the peer *key* is
+  destroyed first and the People record second, because the dangerous half-state is a key with no
+  record (OSL would still seal to it and still match it as a sender — the friend is not actually
+  removed), while a record with no key is inert. A failed People write restores the previous peer
+  map.
+
+### 2. Bilateral burn — the outbound lane (Task 2)
+`post_due_revocations` and `post_revocation_frame` were fully written, correct, and **had zero
+callers**. Both are now wired inside `drain_peer_inbox_text`:
+- **Receipt on apply.** `apply_inbound_revocation_row` now returns `(outcome, Option<ack_b64>)`
+  instead of discarding the acknowledgement, and the drain posts the `0x0B` **before** deleting the
+  inbox row. Safe on failure: the burn floor is already durable, so the peer re-sends, this device
+  re-applies idempotently, and the receipt is produced again.
+- **Queued notices per drain.** `post_due_revocations` runs last in the drain, on the same
+  authenticated per-peer binding, so a burn notice can never delay or fail the operator's message
+  drain.
+
+**Why this is safe even if 0027 is not deployed.** The lane and collapse key are part of the
+*signed* canonical POST bytes, so an older Worker reconstructs different bytes and answers `401`.
+It fails closed rather than dropping the burn into the ordinary lane where the sender's own next 32
+messages would evict it. Every attempt is recorded whether or not the POST succeeded, and only the
+peer's `0x0B` clears an entry — so a refusal leaves the notice queued for the next drain. This
+satisfies the standing "design for a retryable queue, not a dropped notice" constraint regardless
+of which claim about 0027 turns out to be true. I did not edit the migration file.
+
+### 3. Friend removal (Task 3)
+`remove_friend` was otherwise complete and I verified each required property against source rather
+than assuming it:
+- Recipients resolved **before** any trust/key state is removed (a set captured afterwards is empty).
+- `withdraw_person_grants` withdraws manual approvals and display policy and drops
+  `reach_narrowed_scopes[&person_id]`.
+- **`burned_manual_scopes` is not touched.** Burning stays terminal.
+- Revocation notices are queued **last**, once per withdrawn scope key.
+- `person_dto` call sites: **exactly five**, confirmed (`security.rs:811, 821, 850, 1102, 1180`).
+- `remove_hub_friend` is registered in `generate_handler!` (`main.rs:7314`) and its ACL is granted
+  only to `hub-local`; not widened.
+
+### 4. Sender attribution (Task 4)
+`authenticate_oriented_prose_pointer` proved the orientation and then **threw it away**, so every
+opened row reached the renderer unlabelled and `overlay.ts` stamped `direction:"incoming"` and
+`author: verifiedFriendIdentity` on all of them. The operator saw their own sent messages presented
+as their friend's words.
+
+- The function now returns `(PeerProtectedPayload, PeerWireOrientation)`.
+- New `RehydratedRowOrientation { Incoming, Outgoing }` travels through
+  `RehydratedNativeDiscordRow` → `RehydratedNativeDiscordRowDto` → the renderer. There is
+  deliberately **no `Unknown` variant**: a row whose orientation was not proven has no plaintext
+  either, so the pairing is unrepresentable.
+- `overlay.ts` parses it strictly (exact key set; text-without-author and author-without-text are
+  both refused, which refuses the whole read) and labels from it, with `author` resolving to
+  `localIdentity` for an outgoing row.
+- **Fail-closed** at both ends: unproven orientation means OSL paints nothing and Discord's own
+  carrier row stays visible.
+
+**Correction to the dispatch:** the DTO named in the task (`NativeDiscordCarrierRowDto`, main.rs)
+is `#[cfg(feature = "discord-qa-shell")]` and is not the path the eye uses. The live path is
+`RehydratedNativeDiscordRowDto`. Also, of the three `direction:"incoming"` sites, only the decoded
+transcript one was wrong — the pending-attachment and pending-view-once sites are inbound by
+construction and were correctly left alone.
+
+### 5. Zeroization (Task 5) — and the half-applied fallout
+The source work was done; **the test suites had never been updated to match it, and neither
+suite compiled.** This is why `cargo check --lib` is not evidence: it does not build test targets.
+- `crates/keystore/tests/sealer_test.rs`: 8 errors — the test `Sealer` impls still returned
+  `Vec<u8>` after the trait moved to `Zeroizing<Vec<u8>>`. Fixed.
+- `broker.rs:8037` (test): another E0509 move out of `Identity`. Fixed.
+- **Real API defect found and fixed**: `Sealer::unseal` returns `Zeroizing<Vec<u8>>`, which makes
+  that type part of keystore's public API, but it was never re-exported — so no caller outside the
+  crate could name the return type or implement the trait. Added `pub use zeroize::Zeroizing;`.
+- **Added the missing tests** (`crates/keystore/src/storage.rs`, new test module — there was none):
+  `zeroizing_an_inner_identity_clears_every_secret_field` and
+  `secret_carriers_wipe_themselves_on_drop`.
+
+**Negative control, stated honestly:** the zeroization test does not compile against the pre-fix
+code (`InnerIdentity` had no `Zeroize` derive), so its control is **compile-time, not runtime**.
+Reading a freed buffer to observe the wipe at runtime is undefined behaviour and was not attempted.
+What is asserted is that zeroizing clears *every* field, not only remembered ones.
+
+## Inherited numbers are not evidence
+
+The dispatch gave a keystore baseline of "170 passed / 1 ignored", taken from a dated report. That
+number was **fiction on current bytes** — `cargo test -p keystore` did not compile at all, so no
+count was reproducible. It is recorded here as a standing rule, not a one-off:
+
+> **Treat every inherited test count as unverified until this lane has personally re-run it, and
+> say so in the report where it applies.** A count copied from a dated report describes bytes that
+> no longer exist. `cargo check --lib` is not a substitute — it does not build test targets, which
+> is exactly how two broken suites survived a green baseline report.
+
+Numbers below are all from runs performed in this session. The 674/739 figures quoted as
+"baseline" are inherited and were **not** independently re-verified against the pre-change tree,
+except the frontend one, which I did re-run before touching anything (it was already 2 failed /
+740 passed, not the 3 failed the report claimed).
+
+## Verification commands and exact results
+
+| Command | Result | Baseline | Verdict |
+|---|---|---|---|
+| `cargo test -p keystore` | **176 passed, 0 failed, 1 ignored** | 170 / 1 | beats |
+| `cargo test -p store` | **17 passed, 0 failed** | — | pass |
+| `cargo test --features core --lib -- --test-threads=1` | **679 passed, 0 failed, 1 ignored** | 674 / 0 / 1 | beats |
+| `cargo check --features desktop --bin osl-privacy-hub --target x86_64-pc-windows-gnu` | **exit 0**, warnings only (lib 15, bin 8) | exit 0 | pass |
+| `npx tsc --noEmit` | **exit 0** | exit 0 | pass |
+| `npx vitest run` | **740 passed, 2 failed** | 739 / 3 → 2 | meets |
+
+All cargo commands ran under `flock /tmp/osl-cargo.lock` with `CARGO_BUILD_JOBS=4`. No
+`--workspace` or `--all-targets` run.
+
+The 2 remaining frontend failures are the known native-Discord contract failures
+(`native-discord-tether.test.ts`, and `overlay.test.ts > applies QA transcript visibility`), owned
+by nobody in this lane and left alone as instructed. **The third failure was already gone before I
+started** — I take no credit for it.
+
+## New tests added
+
+| Test | File | Proves |
+|---|---|---|
+| `a_row_this_identity_sent_is_carried_as_outgoing_not_relabelled_incoming` | `broker.rs` | A `SelfToPeer` row carries `Outgoing` end-to-end and serialises as `"orientation":"outgoing"` |
+| orientation assertions in `rehydrated_rows_keep_undecodable_rows_instead_of_dropping_them` | `broker.rs` | Orientation exists exactly when plaintext does; exact wire shape pinned |
+| `zeroizing_an_inner_identity_clears_every_secret_field` | `keystore/src/storage.rs` | Every secret base64 field is cleared, recovery entropy included |
+| `secret_carriers_wipe_themselves_on_drop` | `keystore/src/storage.rs` | `InnerIdentity` and `Identity` are `ZeroizeOnDrop` |
+
+## Required tests NOT delivered — blockers, named honestly
+
+1. **`remove_friend` behavioural tests** (burned-scopes-intact, rollback on a failed People write).
+   `security.rs` has **no file-backed test harness** — no temp-dir/unlock helper exists, and
+   `GLOBAL_KEYSTORE_TEST_LOCK` is currently dead code. Building one under a shared cargo lane,
+   against a process-global storage key, is a change I judged too collision-prone to improvise
+   here. The properties are verified by source inspection above, which is weaker than a test.
+2. **Inbound `0x0A` applied-before-deletion** has only a **source-shape** test (`broker.rs`, which
+   greps its own text for the call order). That is shallow evidence by this project's own standard.
+   A behavioural test needs a fake keyserver control-inbox client, which does not exist yet.
+3. **Renderer-side orientation test.** `apps/osl-hub-ui/src/overlay.test.ts` is **not in this
+   lane's ownership** (I own `overlay.ts` and `security.test.ts` only). The producer contract is
+   pinned by the Rust test instead. **Hand-off:** the `overlay.test.ts` owner should add a case
+   asserting an `"outgoing"` row renders as outgoing and that text-without-orientation is refused.
+
+## Round 2 — two-identity rig, ipc logging, crypto-shred decision
+
+### `crates/ipc` identifier logging — fixed (this lane now owns the crate)
+
+The stated invariant is that no path logs message identifiers. It was not held: **44 tracing
+fields** across `commands.rs` (43) and `migration.rs` (1) interpolated exact identifiers —
+`discord_message_id`, `scope`, `scope_storage_key`, `peer`, `sender`, `requester`, `user_id`.
+
+New `crates/ipc/src/log_id.rs` provides `log_id`/`log_id_opt`, and every one of those 44 sites now
+emits an opaque token instead. **Why salted, not a plain hash:** snowflakes and message ids are
+enumerable 64-bit integers, so `sha256(id)` is trivially reversible by hashing a candidate range.
+The salt is 32 random bytes generated once per process and never persisted, so a token cannot be
+matched back to a guessed identifier even by someone holding both the log and the candidate list.
+Two emissions of the same id within one run produce the same token, so logs stay followable; across
+restarts correlation is deliberately lost.
+
+Verified: 4 new tests in `log_id.rs` pass (including one asserting the token is *not* the unsalted
+digest); `cargo test -p ipc` fully green; hub Windows desktop check still exit 0. Field names and
+log messages were left untouched, and errors/counts/URLs were deliberately not wrapped — confirmed
+by grep in both directions (no identifier left raw, nothing non-identifier wrapped).
+
+Also fixed while in the crate: `crates/ipc/tests/register_fix_peer_keys.rs:60`, the third E0509
+from the zeroization wave. The ipc test suite compiles again.
+
+### Two-identity rig — what was actually blocked, and what no longer is
+
+`docs/qa/two-identity-p2p-verification.md` §6 is **stale in three places**. I did not edit it —
+`docs/**` belongs to the truth lane. Hand-off list:
+
+| §6 item | Status |
+|---|---|
+| 1. "The drain cannot be driven" | **STALE.** Six verbs now exist (`status`, `host`, `send`, `drain`, `rehydrate`, `reveal-view-once`), each reaching the exact command the renderer calls, addressed per-instance. |
+| 4. "Bilateral burn is inert — the drain destroys the notice" | **STALE.** Apply-before-delete landed earlier today; I wired the outbound lane this session. |
+| 6. "Orientation is discarded in the renderer" | **STALE.** Fixed this session and carried end-to-end. |
+
+**The real gap was not `main.rs` — it was the harness.** `scripts/qa/osl-p2p-loop.ps1` had never
+been updated for the verbs: it still declared "it drives exactly one verb", still hand-printed
+operator instructions for the receive side, and its P2/P5/P6 gap texts still cited pre-fix line
+numbers and conclusions. Changes made:
+
+- Added `Get-InstanceFileToken` (mirrors `instance_file_token`, and *refuses* >96-char identifiers
+  rather than silently disagreeing with the digest branch) and `Invoke-SelftestVerb`, which drives
+  one verb on one **named** instance through the addressed rendezvous. The unqualified trigger is a
+  global first-consumer-wins rendezvous, so with two instances live a trigger meant for B can be
+  eaten by A — addressing is the only safe way to drive B.
+- The verb body is written as JSON. A non-JSON body is treated by the app as the **legacy send**,
+  so a truncated write would fall through into the one verb with an irreversible side effect; the
+  helper never writes a partial body.
+- P2 now drives `drain` on B instead of asking a human to click. **This changes the grade
+  semantics**: a driven-but-silent drain is now `fail` (real evidence about the receive path)
+  rather than `unmeasurable`. `-OperatorDrivesReceiveSide` is retained as an override.
+- Parse-checked with the documented `Parser::ParseFile` invocation: **PARSE OK**.
+
+It synthesises no input: it writes a file and reads a file. No `SendInput`, no keyboard injection,
+no `PostMessage`, no window touched.
+
+### Machine-safety trap found: do NOT wrap the QA build script in the cargo flock
+
+`scripts/qa/osl-instance-b-build-wsl.sh` **already wraps its own `cargo build` in
+`flock /tmp/osl-cargo.lock`**. Wrapping the script in that same lock — which is what the standing
+"wrap EVERY cargo command in flock" rule reads like it requires — **self-deadlocks**: `flock` is
+not reentrant, so the inner lock waits forever on the outer one held by its own parent. It presents
+as a build that produces no output and no cargo process for as long as you let it run, and it
+blocks every other lane queued behind it.
+
+Correct usage: `export CARGO_BUILD_JOBS=4` then invoke the script **unwrapped**. The flock rule
+applies to cargo commands you issue yourself, not to scripts that already self-lock. Two of my
+attempts were lost to this before the process tree showed both `flock` PIDs on the same file.
+
+(Also worth knowing: `/mnt/c/Users/liamw/AppData/Local/Temp/osl-instance-b-build.json` can hold a
+**stale** verdict from an earlier tab's run — mine showed a 15:27 keystore failure that had nothing
+to do with the current bytes. Check `runStartedAt` before believing it.)
+
+### Round 3 — instance B is built, running, and answering verbs (first real evidence)
+
+**Instance B exists and was driven.** This is the first on-disk evidence from a live OSL process in
+this lane.
+
+- Built from current bytes with a freshly built `dist` (so B embeds today's renderer, including the
+  orientation fix). Staged to `C:\OSL-QA-B` with `WebView2Loader.dll` — the exe alone hangs before
+  `main()` with no window and no trace file.
+- **B exe sha256 `cd1ff079ddaa7cfbd53a9a09056e500ac408adb82c913a6892cf8d1a16c573d0`**, distinct
+  from A's `3fc0a5ae…`. The build proves the `TAURI_CONFIG` identifier overlay took by grepping the
+  identifier out of the artefact before staging.
+- Launched as pid 2084, marker class `org.oslprivacy.hubqab-sic`, own `%APPDATA%` root and own
+  private temp root, **relocated onto `\\.\DISPLAY5` (non-primary)** so nothing appeared on the
+  owner's screen.
+- `assert/instance-a-untouched`: **ok** — no A marker appeared during the launch and A's identity
+  file is byte-identical by sha256.
+- **Drove the read-only `status` verb through the instance-addressed rendezvous and it answered:**
+  `status_observed: { pass: true, graded: true }`, advertising all six verbs
+  (`status`, `host`, `send`, `drain`, `rehydrate`, `reveal-view-once`) and naming
+  `osl-qa-selftest.org.oslprivacy.hubqab.request` / `.json` — exactly the paths
+  `Invoke-SelftestVerb` writes and reads. **The harness upgrade is validated against a live
+  instance, not just parse-checked.**
+
+Two script defects fixed to get here, both of which produced confidently wrong verdicts:
+
+1. `osl-instance-b-build-wsl.sh` looked for the exe at `$REPO/target/...`, but **`apps/osl-hub` is
+   not a workspace member** and cargo writes to `apps/osl-hub/target/...`. A fully successful
+   431 MB build was reported as `BLOCKED -- cargo reported success but the exe does not exist`.
+   Now checks the hub-local directory first, with the workspace path as fallback.
+2. `osl-launch-instance-b.ps1` hard-blocked unless instance A was running, because "A was not
+   disturbed" is unprovable without an anchor. Added **`-NoInstanceA`**, which does not weaken that
+   guarantee: it is **refused** if an A marker is actually present, and the post-launch assertion
+   becomes "no A marker appeared during the launch **and** A's identity file is byte-identical by
+   sha256" — the identity comparison is the half that protects the owner's account and it does not
+   need A to be running.
+
+### Keyserver 0029 — snowflake lookups: mostly fail closed, one real gap
+
+Verified in source (a codex inventory, with both load-bearing claims re-checked by hand):
+
+**Good — the modern send path already does exactly the right thing.**
+`refresh_peer_pubkeys_from_keyserver` (`crates/ipc/src/commands.rs:6088`) refuses a
+snowflake-shaped id *before* any HTTP request:
+`all ASCII digits && len in 17..=20` → `Err("OSL: Discord identifiers cannot resolve keys")`, and
+the caller turns that into a clear "message NOT sent" refusal rather than a silent failure. No
+lookup retries internally: every `fetch_pubkeys` is one request, and non-2xx becomes
+`Error::HttpStatus`. No negative results are cached, so nothing poisons.
+
+**Gap 1 — the guard exists in only one place.** The legacy receive paths
+(`cmd_osl_decrypt_message_with_id`, `resolve_sender_pubkey`) read `osl_user_id` straight out of
+`peer_map` and hand it to `fetch_pubkeys` with no shape check. Legacy peer entries genuinely can
+hold a snowflake there (`crates/ipc/src/peer_map.rs:242`, `:267` copy a legacy string directly into
+`osl_user_id`). Those make one doomed request and return a generic error instead of the clear
+"this can never resolve" explanation. **Being fixed** by hoisting the predicate into a shared
+`is_discord_snowflake_shaped` helper and applying it at those call sites.
+
+**Gap 2 — RECORD, owner decision. The control-inbox drain has no terminal give-up.** On dispatch
+failure the drain logs and **leaves the row in place** (`commands.rs:5420`, "leaving row in place").
+That is correct for a transient failure and it is what makes the burn lane recoverable. But a row
+whose sender can *never* resolve under 0029 is now retried on **every** drain, forever, with no
+bounded attempt count and no user-visible explanation. This is polling, **not** a hang or a
+blocking spinner — the user does not freeze — but it is unbounded repetition against a lookup that
+is permanently dead, and it consumes the bounded per-pair inbox.
+
+I am **not** fixing Gap 2 unilaterally. Deciding when to discard an authenticated inbox row is the
+same class of decision as the burn-notice deletion defect fixed earlier today: delete too eagerly
+and a recoverable message is destroyed. The honest fix is a *permanent-refusal* classification —
+distinguish "cannot resolve yet" from "can never resolve" (snowflake-shaped sender, or a 0029
+refusal) and give only the latter a terminal state with an operator-visible reason.
+
+### Round 4 — contamination, target hardening, duress tri-state
+
+**Instance B was contaminated and has been rebuilt from a clean launch.** Another lane's helper
+selected "the first process with a window" and drove six UI steps of this lane's instance B
+(pid 2084): skipped the Pro code, continued the privacy page, set cover insertion, skipped
+stealth/burn passwords and Mullvad, ticked Brave. Nothing was imported or deleted and no real data
+was read, but the instance's state was no longer known, so **it was killed rather than trusted**.
+Relaunched clean as pid 25936; the read-only `status` verb re-driven and green.
+
+**Target selection is now unexpressible by name in this harness.** `Invoke-SelftestVerb` requires
+`-ExpectPid` and `-ExpectExePath` (both mandatory, and `-ExeB` is now a mandatory parameter of the
+loop) and refuses before writing a single byte unless all three of these hold:
+
+1. the named pid is running;
+2. that process's image path is exactly this lane's staged build; and
+3. the `<identifier>-sic` marker belongs to that same pid.
+
+Verified in both directions on the live machine: B (pid 25936) resolves to
+`C:\OSL-QA-B\osl-privacy-hub.exe` and passes; a decoy process (DiscordPTB, pid 3048) resolves to a
+different path and is refused. Selecting by window title, process name, or "the one that is
+running" is the defect — every OSL build is titled `OSL Privacy` — so the fix is to make the unsafe
+selection impossible rather than to be careful.
+
+**Duress wipe on a TPM-less Windows box — fixed as a tri-state, not by lying.** The rejected fix
+(`evict_tpm_key() -> Ok(())`) would report successful key destruction when nothing was destroyed.
+`evict_tpm_key` now returns `Result<TpmEvictOutcome>` where `NoTpmNothingToEvict` is a success
+**only when provably nothing could be evicted**:
+
+| Condition | Result | Why |
+|---|---|---|
+| Platform crypto provider will not open | `Ok(NoTpmNothingToEvict)` | No provider means no key was ever persisted through it |
+| Provider opens, key not found | `Ok(NoTpmNothingToEvict)` | Provably nothing to destroy |
+| Provider opens, key deleted | `Ok(Evicted)` | A key existed and is gone |
+| Provider opens, key found, **delete fails** | `Err(SealerError::Tpm)` | A key exists and was NOT destroyed |
+
+Mapped in `duress.rs` as `Evicted → Wiped`, `NoTpmNothingToEvict → AlreadyClean`,
+`Err → Failed`, so the journal is retained **only** for the last row and a clean QA VM no longer
+comes up believing a duress wipe is still in progress.
+
+**A worse defect found while reviewing this:** the previous code did
+`let _ = NCryptDeleteKey(key, 0);` — it **discarded the delete result**. A key that existed and
+whose deletion *failed* was reported as a successful wipe. That is the same lie the rejected fix
+would have introduced, except it was already shipping on machines that do have a TPM. It is now an
+`Err` that retains the journal.
+
+### Owner decision recorded — undispatchable control-inbox rows (queued, not yet built)
+
+Per the owner, and matching the burn-notice defect class: **never silently discard an authenticated
+row.**
+
+- Snowflake-shaped sender post-0029 → **provably** can never resolve (the shared
+  `is_discord_snowflake_shaped` predicate already exists) → retire the row with a recorded reason.
+- Everything else → bounded retry with backoff, then **quarantine to a dead-letter state, not
+  deletion**.
+- **Surface the count.** "3 messages could not be delivered" is honest; an invisible forever-loop
+  is not.
+
+Not yet implemented — it needs client-side persistence for attempt counts and the dead-letter set,
+which is a design change rather than an edit, and it should not be squeezed in beside the VM work.
+
+### Calibration note on claiming
+
+A8 was **under-claimed** by this lane and the checklist writer awarded +1 after verifying
+`ZeroizeOnDrop` and the field-clearing tests in source. The lesson, recorded so it is not
+over-corrected in the other direction: a unit test is the *correct and complete* proof for memory
+wiping, because the property cannot be observed end to end without reading freed memory. The
+"tests are not proof" rule guards against shallow tests standing in for **observable** behaviour —
+it does not demote a test that genuinely fits the property being claimed. D6 and C5 stay unclaimed
+because they *are* observable and have not been observed.
+
+### Keyserver 0029 — checked in code, not yet live
+
+`0029_authoritative_osl_identity.sql` adds `identity_lookup_enabled` defaulting to `0`, disabling
+all existing rows until re-registration; numeric Discord snowflakes are refused and can never
+enable. Verified against source:
+- `ensure_keyserver_registered` (`commands.rs`) calls `client.register(id)` on **every** launch and
+  unlock, not only for new identities — so a quarantined identity re-enables itself on next launch.
+  The 0029 recovery path exists.
+- `build_register_request` (`keystore/src/client.rs:601`) sends `user_id: identity.user_id` and
+  **no snowflake**, so an OSL identity re-registers cleanly. The refusal only bites rows whose
+  `user_id` *is* a numeric snowflake.
+- **Recorded risk, not verified live:** `Identity` carries a `discord_snowflake` field populated by
+  `osl_register_self_snowflake`. Any lookup path keyed on a snowflake rather than an OSL user id is
+  now permanently unresolvable. Worth an explicit check by whoever owns peer lookup.
+
+### Crypto-shred — owner decision: NOT NOW
+
+Recorded per the owner's instruction. `crates/store/src/lib.rs`'s `put` never populates
+`wrapped_key`, so the burn paths NULL a column that is always already NULL: burn today is row
+deletion plus SQLite `secure_delete`, not key destruction.
+
+**Recommended design, for after the deadline:** give each message a random content key `K`, store
+the ciphertext under `K`, and store `wrapped_key = seal(store_key, K)` per row. Burning a scope
+then overwrites `wrapped_key`, and the message is unrecoverable even from a page-level forensic
+copy, because the store key alone no longer opens it. This is a schema migration plus a rewrite of
+`put`/`get` and every burn path, and it changes what the product may truthfully claim.
+
+**Not started, deliberately.** The honest short-term position is the one already taken: the threat
+model no longer claims it and the claim allowlist bans the phrase. Revisit after 2026-08-02 with
+the two-identity rig in place to verify it. **Checklist status: known architectural gap**, not a
+defect to be fixed inside a defect lane.
+
+## Record, do not fix
+
+1. **`crates/store/src/lib.rs` — cryptographic burn is not implemented.** `put` (the only normal
+   writer) never populates `wrapped_key`; every message is sealed under one store-wide key derived
+   from the identity secret (`cipher::derive_key(identity_secret)`). The burn paths
+   (`wipe_wrapped_keys_in_scope`, and the `wrapped_key = NULL` sites) therefore destroy a column
+   that is always already NULL. Burn today is row deletion plus `secure_delete`, not key
+   destruction.
+   **Recommended design (owner decision — large blast radius):** give each message its own random
+   content key `K`, store the ciphertext under `K`, and store `wrapped_key = seal(store_key, K)`
+   per row. Burning a scope then overwrites `wrapped_key` and the message is unrecoverable even
+   from a page-level forensic copy of the DB, because the store key alone no longer opens it. This
+   is a schema migration plus a rewrite of `put`/`get` and every burn path, and it changes what the
+   product may truthfully claim, so it should not be started inside a defect lane.
+2. **`broker.rs` — Received and Opened receipts collapse into one `acknowledgmentCount`** and their
+   order is lost. The operator cannot distinguish "delivered" from "read", and cannot see which
+   happened first.
+3. ~~**`crates/ipc` tracing emits plaintext identifiers.**~~ **FIXED in round 2** — this lane was
+   given the crate. Original inventory retained for the record: **72
+   interpolating tracing statements, 35 of which emit an identifier** — concentrated in
+   `commands.rs`, emitting `discord_message_id`, `scope`, `scope_storage_key`, `peer`, `sender`,
+   `requester`, `msg_id`, `user_id` (e.g. `commands.rs:189, 292, 301, 488, 1935, 1955, 2043, 2056,
+   2076, 2220, 2686, 3977, 3990, 4171, 4356, 4490, 4786, 4800, 4822, 4839, 4964, 4993, 5071, 5127,
+   5306, 5352, 5357, 5366, 5394, 5400, 5417, 7694, 10299, 10305`, plus `migration.rs:143`).
+   Recommended: opaque truncated-hash formatting in logging paths. Not this lane's crate.
+4. ~~**`crates/ipc/tests/register_fix_peer_keys.rs:60` does not compile**~~ — **FIXED in round 2.**
+   Third E0509 from the zeroization wave; the ipc test suite is green again.
+
+## Checklist rows — nothing claimed
+
+Rows owned: A1–A8, B1–B7, D6, and the attribution part of C5. **No `earned:` value was changed.**
+
+Reasoning, per the standing rule that closing a code defect does not earn a point until the finding
+is genuinely closed: D6 is `open-security-finding` and its control lane is now wired rather than
+inert, but there is no runtime or two-identity evidence that a burn request actually crosses
+between two devices — and the keyserver revocation lane's deployment state is still a contested
+claim in this repository. C5's attribution defect is fixed in code and unit-proven at the
+producer, but the renderer half is proven only structurally and nothing has been observed on
+screen. Claiming either would be exactly the "code written = point earned" failure the rule exists
+to prevent.
+
+## Resume here
+
+- **Current verified state:** all five lane gates green (keystore 176/0/1, store 17/0, hub core
+  679/0/1, Windows desktop check exit 0, frontend 740 pass / 2 known fail, tsc 0). The bilateral
+  burn outbound lane is wired for the first time. Sender attribution is carried end-to-end and
+  fails closed.
+- **Exact build/worktree:** `osl-eye-and-features-2026-07-26` @ `fc6b983`, dirty. No binary was
+  linked; `cargo check` does not produce one, so there is no sha256 to record.
+- **Round 2 additions:** `crates/ipc` identifier logging closed (44 sites, salted per-process
+  tokens, 4 new tests); `osl-p2p-loop.ps1` upgraded to drive the receive side through the
+  instance-addressed verb rendezvous (parse-checked OK); instance B being rebuilt from current
+  bytes with a freshly built `dist`.
+- **Next unblocked action, in order:**
+  1. Finish the instance-B build, launch B alone, and drive the read-only `status` verb. That
+     proves the addressed rendezvous works end-to-end **and** doubles as the live 0029
+     re-registration regression test — neither needs a second Discord account nor instance A.
+  2. Build a file-backed test harness for `security.rs` (temp `osl_config_dir` + unlock) and land
+     the two `remove_friend` tests.
+  3. Add a fake control-inbox client so the inbound `0x0A` apply-before-delete test can be
+     behavioural instead of source-shape.
+  4. Full P1–P6 two-identity run — this is what would actually move D6/B6.
+- **Human prerequisites for a full run** (§2 of the QA doc; none of these can be done unattended):
+  a second Discord account logged in where B can reach it; instance A running and adopted to a QA
+  conversation; `-ConfirmCreatesIdentity` (a real production keyserver write); and
+  `-ConfirmDriveLiveConversation` (posts a real message into A's live conversation).
+- **Note on B's build identity:** the WSL build script deliberately reuses the `dist` instance A
+  embedded, so that a renderer difference cannot be confused with a product difference. That is not
+  possible here — `overlay.ts` changed today, so `dist` was rebuilt and **B now embeds today's
+  renderer while the existing A binary does not**. Any A-vs-B comparison must account for this;
+  proving today's fixes requires rebuilding both sides.
+- **Known blockers/risks:** the 0027 deployment claim is still unresolved in-repo (the client is
+  built to survive either answer); `overlay.test.ts` (renderer orientation test) belongs to the
+  frontend-test owner and was not touched; `docs/qa/two-identity-p2p-verification.md` §6 items 1, 4
+  and 6 are stale and belong to the truth lane.
+- **Master/checklist rows to update on completion:** none from this run.

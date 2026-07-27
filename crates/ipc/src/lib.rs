@@ -44,6 +44,7 @@ pub mod control_messages;
 pub mod decoy_mp4;
 pub mod fresh_start;
 pub mod license_lifecycle;
+pub mod log_id;
 pub mod main_password;
 pub mod membership;
 pub mod migration;

@@ -65,6 +65,15 @@ const NATIVE_OVERLAY_ATTACHMENT_DOMAIN: &str =
     "osl-privacy/native-discord-overlay/attachment-notice/v1";
 const MAX_STREAMED_ATTACHMENT_BYTES: u64 = ipc::cipher_store_client::MAX_SEALED_ATTACHMENT_BYTES;
 const MAX_NATIVE_OVERLAY_OPEN_BATCH: usize = 64;
+/// A sealed revocation frame carries only commitments and counters, so it is far
+/// smaller than a message. The bound matches the other control decoders rather
+/// than being tuned, because the point is to refuse an absurd frame, not to
+/// predict a legitimate one.
+const MAX_REVOCATION_BUNDLE_BYTES: usize = 16 * 1024;
+/// Notices posted per drain. Bounded so a large queue cannot stall the drain the
+/// operator is waiting on; whatever is left is posted by the next drain, and the
+/// entries are durable in the meantime.
+const MAX_REVOCATION_POSTS_PER_DRAIN: usize = 8;
 const MAX_PEER_LIFETIME_SECONDS: i64 = 7 * 24 * 60 * 60;
 const MAX_PEER_CLOCK_SKEW_SECONDS: i64 = 5 * 60;
 const LOCAL_PROTECTED_MESSAGE_TYPE: u8 = 0x80;
@@ -1571,8 +1580,46 @@ pub struct PreparedNativeDiscordOverlayText {
 pub struct RehydratedNativeDiscordRow {
     pub flagtext: String,
     pub plaintext: Option<String>,
+    /// Which end of the conversation wrote this row, `Some` exactly when
+    /// `plaintext` is `Some`. See [`RehydratedRowOrientation`].
+    pub orientation: Option<RehydratedRowOrientation>,
     #[serde(skip)]
     pub bounds: Option<[i32; 4]>,
+}
+
+/// Who wrote one rehydrated row, as **proven** by the signature on its wire.
+///
+/// This is not a display hint and it is not derived from where the row sits or
+/// from whose conversation is open. The decode leg already had to pick exactly
+/// one orientation to decrypt under -- `authenticate_oriented_prose_pointer`
+/// tries each accepted orientation's signature and stops at the one that
+/// verifies -- and this type is that verdict, carried instead of discarded.
+///
+/// Discarding it is what made every opened row render as the friend's words:
+/// the renderer had nothing to label with, so it labelled everything `incoming`
+/// and attributed it to the verified friend. An operator's own sent message
+/// shown as something their friend said is a wrong-attribution defect, which is
+/// the same class as the audit's receive-misattribution finding.
+///
+/// There is deliberately no `Unknown` variant. A row whose orientation was not
+/// proven has no `plaintext` either, so it is not rendered at all and Discord's
+/// own row shows through -- the fail-closed answer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RehydratedRowOrientation {
+    /// The verified peer wrote it.
+    Incoming,
+    /// This identity wrote it.
+    Outgoing,
+}
+
+impl From<PeerWireOrientation> for RehydratedRowOrientation {
+    fn from(orientation: PeerWireOrientation) -> Self {
+        match orientation {
+            PeerWireOrientation::PeerToSelf => Self::Incoming,
+            PeerWireOrientation::SelfToPeer => Self::Outgoing,
+        }
+    }
 }
 
 /// Fixed labels for the decode leg of one transcript rehydration.
@@ -1588,6 +1635,22 @@ pub struct RehydratedNativeDiscordRow {
 /// could not tell "this conversation has no protected rows" apart from "the
 /// pointer resolved and the cipher store refused it".
 pub const REHYDRATE_DECODE_ROWS: &str = "rehydrate_decode_rows";
+/// Candidate covers the decode leg actually asked about, summed over every row.
+///
+/// One row is one Discord message, but a row's accessible subtree spells that
+/// message across several nodes -- author, timestamp, badges, the body, and the
+/// body again inside each ancestor that contains it. Concatenating them and
+/// decoding the concatenation cannot work: `decode_token` arithmetic-decodes the
+/// whole word sequence, so one extra or duplicated word destroys the payload.
+/// Each node is therefore asked on its own and the first that authenticates
+/// wins, which the 12-byte HMAC makes safe -- a wrong candidate cannot forge a
+/// token, so N candidates carry exactly the security properties of one.
+///
+/// Read this NEXT TO `rehydrate_decode_pointer_absent`. Absent with a healthy
+/// candidate count is "these rows carry no OSL pointer". Absent with a candidate
+/// count of zero is "the decoder was never shown the body", which is a bug in
+/// the reader and not a fact about the conversation.
+pub const REHYDRATE_DECODE_CANDIDATES: &str = "rehydrate_decode_candidates";
 pub const REHYDRATE_DECODE_DISPLAY_OFF: &str = "rehydrate_decode_display_off";
 pub const REHYDRATE_DECODE_BUDGET_EXHAUSTED: &str = "rehydrate_decode_budget_exhausted";
 /// The cover carried no prose token for this scope at all: ordinary chat, or one
@@ -1623,6 +1686,9 @@ pub const REHYDRATE_DECODE_PLAINTEXT: &str = "rehydrate_decode_plaintext";
 pub struct RehydrateDecodeCounts {
     /// Rows the accessibility reader handed the decode leg.
     pub rows: usize,
+    /// See `REHYDRATE_DECODE_CANDIDATES`. Not a terminal tally: it counts
+    /// questions asked, not rows, and one row asks between zero and a handful.
+    pub candidates: usize,
     /// Rows not attempted because this conversation's eye is closed.
     pub display_off: usize,
     /// Rows not attempted because the shared decode budget was already spent.
@@ -1710,8 +1776,9 @@ pub fn rehydrate_native_discord_overlay_history(
         // and nothing else. The rectangle DOES travel -- it is the only thing
         // that can put decrypted text over the row it belongs to, and dropping it
         // here alongside the locator is why nothing downstream could.
-        rows.into_iter().map(|row| (row.line, row.bounds)),
-        |flagtext| {
+        rows.into_iter()
+            .map(|row| (row.line, row.decode_candidates, row.bounds)),
+        |candidates| {
             counts.rows += 1;
             if !decrypt_display_enabled {
                 counts.display_off += 1;
@@ -1721,44 +1788,105 @@ pub fn rehydrate_native_discord_overlay_history(
                 counts.budget_exhausted += 1;
                 return None;
             }
-            let payload = match authenticate_oriented_prose_pointer(
-                core,
-                broker,
-                &context_token,
-                &manual.person_id,
-                flagtext,
-                // BOTH directions, each proven in full and separately.
-                // A transcript the operator cannot read their own half
-                // of is not a transcript: with decrypted display on,
-                // their sent messages must render as their words, not as
-                // the cover sentences the friend's messages are not
-                // rendered as either. The inbound proof is untouched --
-                // this adds a second, equally strict one for the wires
-                // this identity itself signed and addressed to itself as
-                // well as to the peer.
-                &[
-                    PeerWireOrientation::PeerToSelf,
-                    PeerWireOrientation::SelfToPeer,
-                ],
-            ) {
-                Ok(payload) => payload,
-                // Classified, not discarded. The verdict itself is unchanged --
-                // every one of these still paints nothing -- but "ordinary chat"
-                // and "the cipher store is unreachable" are different facts about
-                // this conversation and used to leave the same trace: none.
-                Err(failure) => {
-                    match failure {
-                        PeerProsePointerError::Pointer(PeerProsePointerFailure::NotAToken) => {
-                            counts.pointer_absent += 1
-                        }
-                        PeerProsePointerError::Pointer(
+            // ONE row, SEVERAL candidate covers, tried in order, first that
+            // authenticates wins.
+            //
+            // A row's accessible subtree spells its message across several nodes
+            // and repeats it inside every ancestor that contains it, and the
+            // concatenation of all of them is what used to be handed to the
+            // decoder. `decode_token` arithmetic-decodes the whole word sequence
+            // and then requires the parsed words to equal the canonical encoder
+            // output exactly, so one extra or duplicated word means the payload
+            // never reconstructs and the HMAC never verifies -- which is the
+            // whole of "9 rows read, 9 pointer_absent, 0 blob_gone".
+            //
+            // Asking each node separately is safe BECAUSE the 12-byte pointer is
+            // HMAC-authenticated: a wrong candidate cannot forge a token, so N
+            // candidates have exactly the security properties of one. No proof is
+            // relaxed -- each candidate runs the identical, complete
+            // `authenticate_oriented_prose_pointer`.
+            //
+            // Cost does not multiply either. `prose_token_recv_classified` does
+            // the local stego match FIRST and only fetches once a token has
+            // authenticated, so a wrong candidate costs arithmetic and no
+            // network. The 2,000 ms budget still bounds the whole leg and is
+            // re-asked before every candidate, so a slow store cannot turn a
+            // wider search into a longer stall.
+            let mut recovered = None;
+            let mut refusal = None;
+            for candidate in candidates {
+                if Instant::now() >= decode_deadline {
+                    break;
+                }
+                counts.candidates += 1;
+                match authenticate_oriented_prose_pointer(
+                    core,
+                    broker,
+                    &context_token,
+                    &manual.person_id,
+                    candidate,
+                    // BOTH directions, each proven in full and separately.
+                    // A transcript the operator cannot read their own half
+                    // of is not a transcript: with decrypted display on,
+                    // their sent messages must render as their words, not as
+                    // the cover sentences the friend's messages are not
+                    // rendered as either. The inbound proof is untouched --
+                    // this adds a second, equally strict one for the wires
+                    // this identity itself signed and addressed to itself as
+                    // well as to the peer.
+                    &[
+                        PeerWireOrientation::PeerToSelf,
+                        PeerWireOrientation::SelfToPeer,
+                    ],
+                ) {
+                    Ok(authenticated) => {
+                        recovered = Some(authenticated);
+                        break;
+                    }
+                    // "This was never a token" is the ONLY verdict a wrong
+                    // candidate can reach, because it is decided by the local
+                    // HMAC before any fetch. It is therefore the only one worth
+                    // trying the next node past. Every other verdict means a
+                    // token really did authenticate out of THIS candidate, so
+                    // the row's answer is already known and a further node could
+                    // only find the same message a second time.
+                    Err(PeerProsePointerError::Pointer(PeerProsePointerFailure::NotAToken)) => {
+                        continue;
+                    }
+                    // Candidate-independent (the peer, the scope approval, the
+                    // key store) or already past the HMAC. Either way, asking
+                    // again with different words cannot change it.
+                    Err(failure) => {
+                        refusal = Some(failure);
+                        break;
+                    }
+                }
+            }
+            let (payload, orientation) = match recovered {
+                Some(authenticated) => authenticated,
+                None => {
+                    // Classified, not discarded. The verdict itself is unchanged --
+                    // every one of these still paints nothing -- but "ordinary chat"
+                    // and "the cipher store is unreachable" are different facts about
+                    // this conversation and used to leave the same trace: none.
+                    match refusal {
+                        // Every candidate this row offered said the same thing,
+                        // or it offered none at all. THIS is the label that must
+                        // be read beside `rehydrate_decode_candidates`.
+                        None
+                        | Some(PeerProsePointerError::Pointer(
+                            PeerProsePointerFailure::NotAToken,
+                        )) => counts.pointer_absent += 1,
+                        Some(PeerProsePointerError::Pointer(
                             PeerProsePointerFailure::PointerBlobGone,
-                        ) => counts.pointer_blob_gone += 1,
-                        PeerProsePointerError::Pointer(PeerProsePointerFailure::Transport) => {
-                            counts.store_unreachable += 1
+                        )) => counts.pointer_blob_gone += 1,
+                        Some(PeerProsePointerError::Pointer(
+                            PeerProsePointerFailure::Transport,
+                        )) => counts.store_unreachable += 1,
+                        Some(PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected)) => {
+                            counts.refused += 1
                         }
-                        PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected)
-                        | PeerProsePointerError::Local(_) => counts.refused += 1,
+                        Some(PeerProsePointerError::Local(_)) => counts.refused += 1,
                     }
                     return None;
                 }
@@ -1770,7 +1898,9 @@ pub fn rehydrate_native_discord_overlay_history(
                 return None;
             }
             counts.plaintext += 1;
-            Some(payload.plaintext)
+            // The orientation that actually verified this wire's signature, not
+            // an assumption about which side of the conversation is being read.
+            Some((payload.plaintext, RehydratedRowOrientation::from(orientation)))
         },
     );
     Ok(RehydratedNativeDiscordTranscript { rows, counts })
@@ -1782,16 +1912,29 @@ pub fn rehydrate_native_discord_overlay_history(
 /// in order. A row whose pointer did not decode keeps its place carrying `None`
 /// instead of vanishing, because a dropped row is a hole behind an opaque
 /// capture shield exactly where the operator's history should be.
+/// The flagtext and the decode candidates are deliberately separate arguments.
+/// The flagtext is the row as a human sees it -- every descendant name run
+/// together -- and it is the only honest label for the row, so it is what comes
+/// back out. The candidates are each descendant name on its own, and they are
+/// the only thing a decoder can use. Handing the display string to the decoder
+/// is precisely the defect this signature exists to make unrepresentable.
 fn rehydrated_rows(
-    rows: impl IntoIterator<Item = (String, Option<[i32; 4]>)>,
-    mut decoded: impl FnMut(&str) -> Option<String>,
+    rows: impl IntoIterator<Item = (String, Vec<String>, Option<[i32; 4]>)>,
+    mut decoded: impl FnMut(&[String]) -> Option<(String, RehydratedRowOrientation)>,
 ) -> Vec<RehydratedNativeDiscordRow> {
     rows.into_iter()
-        .map(|(flagtext, bounds)| {
-            let plaintext = decoded(&flagtext);
+        .map(|(flagtext, candidates, bounds)| {
+            // Text and orientation are produced and carried as one answer, so
+            // there is no representable row that has decrypted text and no
+            // proven author.
+            let (plaintext, orientation) = match decoded(&candidates) {
+                Some((plaintext, orientation)) => (Some(plaintext), Some(orientation)),
+                None => (None, None),
+            };
             RehydratedNativeDiscordRow {
                 flagtext,
                 plaintext,
+                orientation,
                 bounds,
             }
         })
@@ -1863,6 +2006,10 @@ fn authenticate_peer_prose_pointer_classified(
         cover_text,
         &[PeerWireOrientation::PeerToSelf],
     )
+    // Exactly one orientation was accepted, so the proven one carries no
+    // information here and is dropped rather than plumbed to callers that have
+    // always known this path is inbound.
+    .map(|(payload, _)| payload)
 }
 
 fn authenticate_peer_prose_pointer(
@@ -1897,7 +2044,7 @@ fn authenticate_oriented_prose_pointer(
     sender_person_id: &str,
     cover_text: &str,
     accepted: &[PeerWireOrientation],
-) -> Result<PeerProtectedPayload, PeerProsePointerError> {
+) -> Result<(PeerProtectedPayload, PeerWireOrientation), PeerProsePointerError> {
     if cover_text.is_empty() || cover_text.len() > MAX_PROSE_COVER_BYTES {
         return Err(PeerProsePointerFailure::Rejected.into());
     }
@@ -1936,9 +2083,8 @@ fn authenticate_oriented_prose_pointer(
         .ok_or(PeerProsePointerFailure::Rejected)?;
     let context = broker.context_for(context_token)?;
     let payload =
-        decrypt_direct_manual_v3(core, &recovered.wire).map_err(|_| {
-            PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected)
-        })?;
+        decrypt_direct_manual_v3(core, &verified, orientation.wire_sender(), &recovered.wire)
+            .map_err(|_| PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected))?;
     let now = ipc::main_password::now_unix_secs_pub();
     match orientation {
         // Inbound still goes through its own named entry point, so the strict
@@ -1956,7 +2102,11 @@ fn authenticate_oriented_prose_pointer(
         ),
     }
     .map_err(|_| PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected))?;
-    Ok(payload)
+    // The orientation travels with the payload. It is the only proof of
+    // authorship this path will ever have -- it was decided by which identity's
+    // signature verified the wire, above -- and a caller that needs to say who
+    // wrote a row must not have to guess it back.
+    Ok((payload, orientation))
 }
 
 /// A committed protected message plus the public carrier text that points at
@@ -2089,14 +2239,17 @@ fn prepare_peer_inbox_text(
     let context = broker.context_for(context_token)?;
     let now = ipc::main_password::now_unix_secs_pub();
     let ttl_seconds = security::scope_security(manual.scope.clone())?.ttl_seconds;
-    let expires_at = now
-        .checked_add(i64::from(ttl_seconds))
-        .ok_or_else(|| { qa_encrypt_refusal_site("expires_at_overflow"); "OSL could not deliver the protected message".to_owned() })?;
+    let expires_at = now.checked_add(i64::from(ttl_seconds)).ok_or_else(|| {
+        qa_encrypt_refusal_site("expires_at_overflow");
+        "OSL could not deliver the protected message".to_owned()
+    })?;
     let history_plaintext =
         (context.service_id == "osl-chat" && !view_once).then(|| plaintext.clone());
     let chunks = split_native_overlay_text(&plaintext)?;
-    let chunk_count = u16::try_from(chunks.len())
-        .map_err(|_| { qa_encrypt_refusal_site("chunk_count_overflow"); "OSL could not deliver the protected message".to_owned() })?;
+    let chunk_count = u16::try_from(chunks.len()).map_err(|_| {
+        qa_encrypt_refusal_site("chunk_count_overflow");
+        "OSL could not deliver the protected message".to_owned()
+    })?;
     let logical_message_id = random_peer_message_id();
     let whole_sha256 = sha256_hex(plaintext.as_bytes());
     #[cfg(feature = "discord-qa-shell")]
@@ -2222,8 +2375,10 @@ fn prepare_peer_inbox_text(
     let mut carrier_flagtext = None::<String>;
     let single_chunk = chunk_count == 1;
     for (index, chunk_plaintext) in chunks.into_iter().enumerate() {
-        let chunk_index = u16::try_from(index)
-            .map_err(|_| { qa_encrypt_refusal_site("chunk_index_overflow"); "OSL could not deliver the protected message".to_owned() })?;
+        let chunk_index = u16::try_from(index).map_err(|_| {
+            qa_encrypt_refusal_site("chunk_index_overflow");
+            "OSL could not deliver the protected message".to_owned()
+        })?;
         let meta = NativeTextChunkMeta {
             logical_message_id: logical_message_id.clone(),
             chunk_index,
@@ -2274,8 +2429,10 @@ fn prepare_peer_inbox_text(
             message_id: physical_message_id,
             cover_pointer: prepared.cover_text,
         };
-        let encoded = serde_json::to_vec(&notice)
-            .map_err(|_| { qa_encrypt_refusal_site("notice_encode_failed"); "OSL could not deliver the protected message".to_owned() })?;
+        let encoded = serde_json::to_vec(&notice).map_err(|_| {
+            qa_encrypt_refusal_site("notice_encode_failed");
+            "OSL could not deliver the protected message".to_owned()
+        })?;
         let wire = encrypt_direct_manual_v3_payload(
             core,
             &verified,
@@ -2289,7 +2446,10 @@ fn prepare_peer_inbox_text(
             ManualWireSender::SelfIdentity,
             ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
         )
-        .map_err(|_| { qa_encrypt_refusal_site("verify_manual_v3_type_failed"); "OSL could not deliver the protected message".to_owned() })?;
+        .map_err(|_| {
+            qa_encrypt_refusal_site("verify_manual_v3_type_failed");
+            "OSL could not deliver the protected message".to_owned()
+        })?;
         let bundle = decode_overlay_relay_wire(&wire)?;
         #[cfg(feature = "discord-qa-shell")]
         record_fixed_discord_qa_broker_stage(is_fixed_discord_qa_probe, "encrypt", "ready", None)?;
@@ -2484,6 +2644,15 @@ fn drain_peer_inbox_text(
     let context = broker.context_for(context_token)?;
     let display = security::scope_security(manual.scope.clone())?;
     let allow_messages = display.decrypt_display_enabled;
+    // The conversation this drain is bound to, named the way the burn ledger
+    // names it. `scope_security` above has already refused an unconvertible
+    // scope, so this cannot fail for a drain that got this far.
+    let burn_scope: ipc::scope::Scope = manual
+        .scope
+        .clone()
+        .try_into()
+        .map_err(|_| "OSL could not receive protected messages".to_owned())?;
+    let burn_storage_key = burn_scope.storage_key();
     let scope_id = native_overlay_relay_scope_id(&context.conversation_id)
         .map_err(|_| "OSL could not receive protected messages".to_owned())?;
     let verified = security::require_manual_peer_scope_approved(
@@ -2530,6 +2699,58 @@ fn drain_peer_inbox_text(
         if item.sender_id != manual.peer_osl_user_id || item.scope_id != scope_id {
             continue;
         }
+        // Bilateral-revocation frames: the peer's own burn request (`0x0A`) and
+        // the receipt for one of ours (`0x0B`).
+        //
+        // These used to be deleted here unread. That is strictly worse than
+        // ignoring them: the row had already passed this drain's sender/scope
+        // routing guard, so OSL destroyed a burn request it could have honoured
+        // and left the peer's copy of the conversation standing while its own
+        // ledger recorded nothing. Both types now go through the same verified
+        // apply path the local burn commands use.
+        //
+        // The row is retired only once the burn floor is durable on disk, or the
+        // row is proven un-appliable. A row this device merely cannot process
+        // right now -- locked, unavailable storage -- stays in the inbox and is
+        // counted as deferred, because the bounded per-pair inbox is not worth
+        // more than the burn. Attachment rows still belong to the attachment
+        // drain, and unknown framing is left untouched rather than guessed about.
+        if let Some(control) = InboundRevocationControl::classify(&bundle) {
+            let (outcome, ack_b64) = apply_inbound_revocation_row(
+                core,
+                security_state,
+                &verified,
+                &burn_storage_key,
+                control,
+                &bundle,
+            );
+            if outcome.retires_row() {
+                // Receipt first, then retire the row. The burn floor is already
+                // durable, so this ordering costs nothing on failure: the peer
+                // re-sends the notice, this device re-applies it idempotently,
+                // and the receipt is produced again. Deleting first and posting
+                // after would be the same order the audit found on the apply
+                // path itself.
+                if let Some(ack_b64) = ack_b64 {
+                    let _ = post_revocation_frame(
+                        core,
+                        &client,
+                        &identity,
+                        &verified,
+                        &manual.peer_osl_user_id,
+                        &scope_id,
+                        InboundRevocationControl::Ack,
+                        &ack_b64,
+                        None,
+                        None,
+                    );
+                }
+                let _ = client.delete_control_inbox(&identity, &item.id);
+            } else {
+                deferred_rows = deferred_rows.saturating_add(1);
+            }
+            continue;
+        }
         if ipc::wire_v2::is_native_overlay_ack_bundle(&bundle) {
             if acknowledgments.len() >= MAX_NATIVE_OVERLAY_OPEN_BATCH {
                 continue;
@@ -2548,6 +2769,8 @@ fn drain_peer_inbox_text(
             }
             let Ok(plaintext) = decrypt_direct_manual_v3_payload(
                 core,
+                &verified,
+                ManualWireSender::Peer,
                 &wire,
                 ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_ACK,
             ) else {
@@ -2607,6 +2830,8 @@ fn drain_peer_inbox_text(
         }
         let Ok(plaintext) = decrypt_direct_manual_v3_payload(
             core,
+            &verified,
+            ManualWireSender::Peer,
             &wire,
             ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
         ) else {
@@ -2711,8 +2936,7 @@ fn drain_peer_inbox_text(
                 // having to guess.
                 Some(_) => {
                     if entry.alternates.len() < MAX_NATIVE_OVERLAY_CHUNK_ALTERNATES {
-                        reassembly_bytes =
-                            reassembly_bytes.saturating_add(payload.plaintext.len());
+                        reassembly_bytes = reassembly_bytes.saturating_add(payload.plaintext.len());
                         entry.alternates.push((chunk_index, payload.plaintext));
                     }
                     entry.quarantined_inbox_ids.push(item.id);
@@ -2776,13 +3000,32 @@ fn drain_peer_inbox_text(
         } else if reveal_view_once.is_some() {
             continue;
         }
-        let already_consumed = security::peer_message_was_consumed(
+        let Ok(already_consumed) = security::peer_message_was_consumed(
             security_state,
             manual.scope.clone(),
             &payload.message_id,
             now,
-        )
-        .unwrap_or(false);
+        ) else {
+            continue;
+        };
+        // First-party chat history is the durable copy the operator owns. It
+        // must commit before either the replay slot is burned or the remote
+        // inbox row is retired. Re-persisting an already-consumed redelivery is
+        // intentional and idempotent: it repairs rows consumed by older builds
+        // before their best-effort history write failed.
+        if context.service_id == "osl-chat"
+            && !payload.view_once
+            && ipc::commands::cmd_osl_persist_inbound(
+                &core.osl,
+                context.conversation_id.clone(),
+                payload.message_id.clone(),
+                manual.peer_osl_user_id.clone(),
+                payload.plaintext.clone(),
+            )
+            .is_err()
+        {
+            continue;
+        }
         if already_consumed {
             if send_native_overlay_acknowledgment(
                 core,
@@ -2829,15 +3072,6 @@ fn drain_peer_inbox_text(
         .is_ok()
         {
             let _ = client.delete_control_inbox(&identity, &item.id);
-        }
-        if context.service_id == "osl-chat" && !payload.view_once {
-            let _ = ipc::commands::cmd_osl_persist_inbound(
-                &core.osl,
-                context.conversation_id.clone(),
-                payload.message_id.clone(),
-                manual.peer_osl_user_id.clone(),
-                payload.plaintext.clone(),
-            );
         }
         messages.push(OpenedNativeOverlayText {
             // The correlation handle. Both halves are already authenticated
@@ -2919,28 +3153,42 @@ fn drain_peer_inbox_text(
         } else if reveal_view_once.is_some() {
             continue;
         }
-        let already_consumed = security::peer_message_was_consumed(
+        let Ok(already_consumed) = security::peer_message_was_consumed(
             security_state,
             manual.scope.clone(),
             &logical_message_id,
             ipc::main_password::now_unix_secs_pub(),
-        )
-        .unwrap_or(false);
+        ) else {
+            continue;
+        };
+        let mut logical = group.template;
+        logical.message_id = logical_message_id;
+        logical.plaintext = plaintext;
+        if context.service_id == "osl-chat"
+            && !logical.view_once
+            && ipc::commands::cmd_osl_persist_inbound(
+                &core.osl,
+                context.conversation_id.clone(),
+                logical.message_id.clone(),
+                manual.peer_osl_user_id.clone(),
+                logical.plaintext.clone(),
+            )
+            .is_err()
+        {
+            continue;
+        }
         if !already_consumed
             && security::consume_peer_message(
                 security_state,
                 manual.scope.clone(),
-                &logical_message_id,
-                group.template.expires_at,
+                &logical.message_id,
+                logical.expires_at,
                 ipc::main_password::now_unix_secs_pub(),
             )
             .is_err()
         {
             continue;
         }
-        let mut logical = group.template;
-        logical.message_id = logical_message_id;
-        logical.plaintext = plaintext;
         if send_native_overlay_acknowledgment(
             core,
             &verified,
@@ -2964,15 +3212,6 @@ fn drain_peer_inbox_text(
             }
         }
         if !already_consumed {
-            if context.service_id == "osl-chat" && !logical.view_once {
-                let _ = ipc::commands::cmd_osl_persist_inbound(
-                    &core.osl,
-                    context.conversation_id.clone(),
-                    logical.message_id.clone(),
-                    manual.peer_osl_user_id.clone(),
-                    logical.plaintext.clone(),
-                );
-            }
             messages.push(OpenedNativeOverlayText {
                 message_id: logical.message_id,
                 cover_pointer: single_carrier_cover,
@@ -2984,6 +3223,24 @@ fn drain_peer_inbox_text(
             });
         }
     }
+    // Outbound half of the bilateral burn, posted on the same authenticated
+    // binding this drain already proved. Deliberately last: a burn notice must
+    // never delay or fail the operator's message drain, and the queue is the
+    // durable record -- an entry leaves it only on the peer's `0x0B`, so a
+    // Worker that refuses the revocation lane leaves the notice queued for the
+    // next drain instead of losing it. The count is not surfaced here because a
+    // POST is only an attempt; `hub_revocation_status` reports the honest
+    // pending/acknowledged split for a conversation.
+    let _posted = post_due_revocations(
+        core,
+        security_state,
+        &client,
+        &identity,
+        &verified,
+        &manual.peer_osl_user_id,
+        &scope_id,
+        ipc::main_password::now_unix_secs_pub(),
+    );
     let fetched = u32::try_from(messages.len().saturating_add(pending_view_once.len()))
         .unwrap_or(MAX_NATIVE_OVERLAY_OPEN_BATCH as u32);
     Ok(OpenedNativeOverlayTextBatch {
@@ -3395,9 +3652,13 @@ fn native_overlay_attachment_plans(
         {
             return None;
         }
-        let Ok(mut plaintext) =
-            decrypt_direct_manual_v3_payload(core, &wire, ipc::wire_v2::MSG_TYPE_ATTACHMENT)
-        else {
+        let Ok(mut plaintext) = decrypt_direct_manual_v3_payload(
+            core,
+            &verified,
+            ManualWireSender::Peer,
+            &wire,
+            ipc::wire_v2::MSG_TYPE_ATTACHMENT,
+        ) else {
             return None;
         };
         let parsed = serde_json::from_slice::<NativeOverlayAttachmentNotice>(&plaintext);
@@ -3410,13 +3671,14 @@ fn native_overlay_attachment_plans(
         {
             return None;
         }
-        let consumed = security::peer_message_was_consumed(
+        let Ok(consumed) = security::peer_message_was_consumed(
             security_state,
             manual.scope.clone(),
             &notice.attachment_id,
             now,
-        )
-        .unwrap_or(false);
+        ) else {
+            return None;
+        };
         if consumed {
             let _ = client.delete_control_inbox(&identity, &item.id);
             return None;
@@ -3918,9 +4180,13 @@ fn apply_native_overlay_acknowledgment_record(
 
 fn decrypt_direct_manual_v3(
     core: &HubCoreState,
+    peer: &ManualPeerBinding,
+    sender: ManualWireSender,
     wire: &str,
 ) -> Result<PeerProtectedPayload, String> {
-    let plaintext = decrypt_direct_manual_v3_payload(core, wire, ipc::wire_v2::MSG_TYPE_CONTENT)?;
+    let plaintext =
+        decrypt_direct_manual_v3_payload(core, peer, sender, wire, ipc::wire_v2::MSG_TYPE_CONTENT)
+            .map_err(str::to_owned)?;
     if plaintext.starts_with(PEER_PROTECTED_CHUNK_PREFIX) {
         decode_peer_protected_chunk(&plaintext)
     } else {
@@ -4069,24 +4335,32 @@ fn read_bounded_utf8(input: &[u8], offset: &mut usize, maximum: usize) -> Result
 
 fn decrypt_direct_manual_v3_payload(
     core: &HubCoreState,
+    peer: &ManualPeerBinding,
+    sender: ManualWireSender,
     wire: &str,
     expected_message_type: u8,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, &'static str> {
+    const AUTHENTICATED_SENDER_REFUSED: &str = "OSL: v3 authenticated sender refused";
     let identity = core
         .osl
         .identity
         .lock()
-        .map_err(|_| "OSL identity state is unavailable".to_owned())?
+        .map_err(|_| AUTHENTICATED_SENDER_REFUSED)?
         .clone()
-        .ok_or_else(|| "OSL identity is not loaded".to_owned())?;
-    let opened = ipc::wire_v2::decrypt_v3(
+        .ok_or(AUTHENTICATED_SENDER_REFUSED)?;
+    let expected_sender = match sender {
+        ManualWireSender::SelfIdentity => identity.x25519_public,
+        ManualWireSender::Peer => crypto::x25519::PublicKey::from_bytes(peer.peer_x25519_public),
+    };
+    let opened = ipc::wire_v2::decrypt_v3_for_sender(
         wire,
         &identity.x25519_secret,
         &identity.mlkem_decapsulation_key(),
+        &expected_sender,
     )
-    .map_err(|_| "This encrypted message could not be opened".to_owned())?;
+    .map_err(|_| AUTHENTICATED_SENDER_REFUSED)?;
     if opened.msg_type != expected_message_type {
-        return Err("This encrypted message could not be opened".to_owned());
+        return Err(AUTHENTICATED_SENDER_REFUSED);
     }
     Ok(opened.plaintext)
 }
@@ -4518,6 +4792,277 @@ fn verify_manual_v3(
     verify_manual_v3_type(core, peer, wire, sender, ipc::wire_v2::MSG_TYPE_CONTENT)
 }
 
+/// The two bilateral-burn control frames this drain accepts from a peer.
+///
+/// Classification is by the wire's own version/type bytes and nothing else, so
+/// it cannot widen: every other framing answers `None` and is left for the drain
+/// that owns it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InboundRevocationControl {
+    /// `0x0A`. The peer is asking us to burn a conversation they can prove they
+    /// share with us.
+    Notice,
+    /// `0x0B`. The peer is confirming they honoured a burn we requested.
+    Ack,
+}
+
+impl InboundRevocationControl {
+    fn classify(bundle: &[u8]) -> Option<Self> {
+        if ipc::wire_v2::is_revocation_bundle(bundle) {
+            Some(Self::Notice)
+        } else if ipc::wire_v2::is_revocation_ack_bundle(bundle) {
+            Some(Self::Ack)
+        } else {
+            None
+        }
+    }
+
+    fn message_type(self) -> u8 {
+        match self {
+            Self::Notice => ipc::wire_v2::MSG_TYPE_REVOCATION,
+            Self::Ack => ipc::wire_v2::MSG_TYPE_REVOCATION_ACK,
+        }
+    }
+}
+
+/// What handing one inbound control row to the verified revocation path did.
+///
+/// The distinction that matters is the third one. Deleting a row OSL could not
+/// apply *yet* silently discards a peer's burn request; keeping a row OSL can
+/// never apply fills a bounded per-pair inbox with garbage. They are separated
+/// here so neither failure can be reached by accident.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RevocationRowOutcome {
+    /// The burn floor (or the acknowledgement) is durably recorded.
+    Applied,
+    /// This device can never apply this row: it did not authenticate as the type
+    /// it claims, or its body is malformed. Nothing is lost by retiring it.
+    Unappliable,
+    /// A transient local condition -- locked account, unavailable storage, a
+    /// ledger that could not be replaced. The row stays for a later drain.
+    Deferred,
+}
+
+impl RevocationRowOutcome {
+    /// True only when the row may be deleted from the control inbox.
+    fn retires_row(self) -> bool {
+        !matches!(self, Self::Deferred)
+    }
+}
+
+/// Authenticate one inbound `0x0A`/`0x0B` and apply it.
+///
+/// `storage_key` is the conversation this drain is bound to, and it is the only
+/// candidate offered to the commitment match: the caller has already refused
+/// every row whose sender or scope label belongs to another conversation, so a
+/// wider candidate list would be describing conversations this row was never
+/// about.
+///
+/// The order is fixed and is the inbound order used everywhere else on this
+/// surface: prove the sender, then decrypt, then parse, then apply. Nothing is
+/// applied on the strength of the framing bytes that classified it.
+fn apply_inbound_revocation_row(
+    core: &HubCoreState,
+    security_state: &HubSecurityState,
+    verified: &ManualPeerBinding,
+    storage_key: &str,
+    control: InboundRevocationControl,
+    bundle: &[u8],
+) -> (RevocationRowOutcome, Option<String>) {
+    let wire = format!("DPC0::{}", STANDARD.encode(bundle));
+    let message_type = control.message_type();
+    if verify_manual_v3_type(core, verified, &wire, ManualWireSender::Peer, message_type).is_err() {
+        return (RevocationRowOutcome::Unappliable, None);
+    }
+    let Ok(plaintext) = decrypt_direct_manual_v3_payload(
+        core,
+        verified,
+        ManualWireSender::Peer,
+        &wire,
+        message_type,
+    ) else {
+        return (RevocationRowOutcome::Unappliable, None);
+    };
+    let body_b64 = STANDARD.encode(&plaintext);
+    match control {
+        InboundRevocationControl::Notice => {
+            // Parsed here as well as inside the apply path, so "this body is not
+            // a burn notice" is distinguishable from "this device could not
+            // record the burn". The first retires the row; the second must not.
+            if ipc::control_messages::deserialize_revocation_notice(&plaintext).is_err() {
+                return (RevocationRowOutcome::Unappliable, None);
+            }
+            let candidates = [storage_key.to_owned()];
+            // The durable half -- this device's own burn floor, which is what
+            // stops the peer's already-fetched content from being readable here
+            // -- is committed before this returns. The receipt is handed back to
+            // the caller rather than posted here, because posting needs the
+            // keyserver client and the caller owns it. A receipt that fails to
+            // post is not lost: the peer's own outbox keeps the notice queued
+            // until it is acknowledged, and re-applying a notice already in
+            // force is idempotent and produces the same receipt again.
+            match security::apply_peer_revocation(
+                core,
+                security_state,
+                &verified.peer_x25519_public,
+                &candidates,
+                &body_b64,
+                ipc::main_password::now_unix_secs_pub(),
+            ) {
+                Ok(applied) => (RevocationRowOutcome::Applied, Some(applied.ack_b64)),
+                Err(_) => (RevocationRowOutcome::Deferred, None),
+            }
+        }
+        InboundRevocationControl::Ack => {
+            if ipc::control_messages::deserialize_revocation_ack(&plaintext).is_err() {
+                return (RevocationRowOutcome::Unappliable, None);
+            }
+            // `Ok(false)` is a real answer, not a failure: the ack refused the
+            // burn, or named an entry this device does not have queued. Either
+            // way the row has been fully considered and nothing is owed to it.
+            // A receipt is never itself receipted.
+            match security::record_revocation_ack(security_state, &body_b64) {
+                Ok(_) => (RevocationRowOutcome::Applied, None),
+                Err(_) => (RevocationRowOutcome::Deferred, None),
+            }
+        }
+    }
+}
+
+/// Bundle bytes for one revocation frame this device just sealed.
+///
+/// The predicate is chosen from the frame we asked for rather than tried in
+/// turn. A seal that came back as the other type is a construction bug, and
+/// accepting it here would post a burn *request* where a *receipt* was intended.
+fn decode_revocation_wire(
+    wire: &str,
+    control: InboundRevocationControl,
+) -> Result<Vec<u8>, String> {
+    const ERROR: &str = "OSL could not deliver the burn notice";
+    let body = wire.strip_prefix("DPC0::").ok_or_else(|| ERROR.to_owned())?;
+    let bundle = STANDARD.decode(body).map_err(|_| ERROR.to_owned())?;
+    let framed = match control {
+        InboundRevocationControl::Notice => ipc::wire_v2::is_revocation_bundle(&bundle),
+        InboundRevocationControl::Ack => ipc::wire_v2::is_revocation_ack_bundle(&bundle),
+    };
+    if !framed || bundle.len() > MAX_REVOCATION_BUNDLE_BYTES {
+        return Err(ERROR.to_owned());
+    }
+    Ok(bundle)
+}
+
+/// Seal one revocation frame for this peer and POST it.
+///
+/// `lane` is `Some((kind, collapse_key))` for a burn notice and `None` for a
+/// receipt: the collapse key is a `(scope, epoch)` MAC that only a notice has,
+/// and the ordinary lane is correct for a receipt because the peer's own outbox
+/// retries until it is acknowledged, so a receipt is never the only copy of
+/// anything.
+fn post_revocation_frame(
+    core: &HubCoreState,
+    client: &keystore::KeyServerClient,
+    identity: &keystore::Identity,
+    verified: &ManualPeerBinding,
+    peer_osl_user_id: &str,
+    scope_id: &str,
+    control: InboundRevocationControl,
+    body_b64: &str,
+    lane: Option<&str>,
+    collapse_key_hex: Option<&str>,
+) -> Result<(), String> {
+    const ERROR: &str = "OSL could not deliver the burn notice";
+    let payload = STANDARD.decode(body_b64).map_err(|_| ERROR.to_owned())?;
+    let message_type = control.message_type();
+    let wire = encrypt_direct_manual_v3_payload(core, verified, message_type, &payload)?;
+    // Prove the frame we are about to send authenticates as ours and as the type
+    // it claims, the same readback the relay and ack paths do. A frame that
+    // cannot be verified locally would be dropped by the peer anyway, and
+    // posting it would burn an outbox attempt on a message that can never apply.
+    verify_manual_v3_type(
+        core,
+        verified,
+        &wire,
+        ManualWireSender::SelfIdentity,
+        message_type,
+    )
+    .map_err(|_| ERROR.to_owned())?;
+    let bundle = decode_revocation_wire(&wire, control)?;
+    client
+        .post_control_inbox_lane(
+            identity,
+            peer_osl_user_id,
+            scope_id,
+            &bundle,
+            lane,
+            collapse_key_hex,
+        )
+        .map(|_| ())
+        .map_err(|_| ERROR.to_owned())
+}
+
+/// Outbound half of the bilateral burn: post the notices this device has queued
+/// for one peer, on the keyserver's non-evictable revocation lane.
+///
+/// Returns how many notices the server accepted.
+///
+/// **Why this is safe to run against a keyserver whose revocation lane may not be
+/// deployed.** The lane and the collapse key are part of the *signed* canonical
+/// POST bytes (`crates/keystore/src/control_inbox.rs`), so a Worker too old to
+/// know about lanes reconstructs the pre-lane bytes and answers `401`. It fails
+/// closed rather than accepting a burn into the ordinary lane, where the sender's
+/// own next 32 messages would silently evict it. Every attempt is recorded
+/// whether or not the POST succeeded, and only the peer's `0x0B` ever clears an
+/// entry, so a refusal leaves the notice queued for a later drain instead of
+/// losing it. Losing it is the single outcome this whole lane exists to prevent.
+fn post_due_revocations(
+    core: &HubCoreState,
+    security_state: &HubSecurityState,
+    client: &keystore::KeyServerClient,
+    identity: &keystore::Identity,
+    verified: &ManualPeerBinding,
+    peer_osl_user_id: &str,
+    scope_id: &str,
+    now: i64,
+) -> u32 {
+    // A locked or unavailable outbox is a transient local condition. It is not
+    // an error the operator's drain should fail on: the notices stay queued.
+    let Ok(due) = security::due_revocations(security_state, now) else {
+        return 0;
+    };
+    let mut posted = 0u32;
+    for entry in due.iter().take(MAX_REVOCATION_POSTS_PER_DRAIN) {
+        // This drain holds exactly one peer's authenticated binding, so it may
+        // only seal to that peer. Another peer's queued notice is not skipped
+        // forever -- it is posted by that peer's own drain, under that peer's
+        // binding.
+        if entry.recipient_osl_user_id != peer_osl_user_id {
+            continue;
+        }
+        let sent = post_revocation_frame(
+            core,
+            client,
+            identity,
+            verified,
+            peer_osl_user_id,
+            scope_id,
+            InboundRevocationControl::Notice,
+            &entry.notice_b64,
+            Some(keystore::control_inbox::CONTROL_INBOX_KIND_REVOCATION),
+            Some(entry.collapse_key_hex.as_str()),
+        )
+        .is_ok();
+        if sent {
+            posted = posted.saturating_add(1);
+        }
+        // Recorded on success AND on refusal. A successful POST is still only an
+        // attempt -- the burn is acknowledged by the peer's `0x0B`, never by our
+        // own send -- and recording a refusal is what advances the backoff so a
+        // dead lane cannot turn every drain into a hot retry loop.
+        let _ = security::record_revocation_attempt(security_state, &entry.burn_id_hex, now);
+    }
+    posted
+}
+
 fn verify_manual_v3_type(
     core: &HubCoreState,
     peer: &ManualPeerBinding,
@@ -4893,9 +5438,14 @@ pub fn open_peer_attachment(
         ipc::wire_v2::MSG_TYPE_ATTACHMENT,
     )
     .map_err(|_| OPEN_ERROR.to_owned())?;
-    let mut payload_bytes =
-        decrypt_direct_manual_v3_payload(core, &envelope_wire, ipc::wire_v2::MSG_TYPE_ATTACHMENT)
-            .map_err(|_| OPEN_ERROR.to_owned())?;
+    let mut payload_bytes = decrypt_direct_manual_v3_payload(
+        core,
+        &verified,
+        ManualWireSender::Peer,
+        &envelope_wire,
+        ipc::wire_v2::MSG_TYPE_ATTACHMENT,
+    )
+    .map_err(|_| OPEN_ERROR.to_owned())?;
     let mut payload: PeerAttachmentPayload =
         serde_json::from_slice(&payload_bytes).map_err(|_| OPEN_ERROR.to_owned())?;
     payload_bytes.fill(0);
@@ -5599,6 +6149,266 @@ mod tests {
     use crate::service_host::owner_profile_namespace;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// An inbound `0x0A` is the peer's burn request. It used to be recognised
+    /// here and then deleted from the control inbox unread, which authenticated
+    /// a burn and destroyed it. Classification must name it, and only the two
+    /// allocated types, so the drain can hand it to the apply path.
+    #[test]
+    fn inbound_revocation_frames_are_classified_by_their_own_wire_bytes() {
+        const V3: u8 = 0x03;
+        assert_eq!(
+            InboundRevocationControl::classify(&[V3, ipc::wire_v2::MSG_TYPE_REVOCATION]),
+            Some(InboundRevocationControl::Notice)
+        );
+        assert_eq!(
+            InboundRevocationControl::classify(&[V3, ipc::wire_v2::MSG_TYPE_REVOCATION_ACK]),
+            Some(InboundRevocationControl::Ack)
+        );
+        assert_eq!(
+            InboundRevocationControl::Notice.message_type(),
+            ipc::wire_v2::MSG_TYPE_REVOCATION
+        );
+        assert_eq!(
+            InboundRevocationControl::Ack.message_type(),
+            ipc::wire_v2::MSG_TYPE_REVOCATION_ACK
+        );
+
+        // Every other framing belongs to another drain and must not be claimed.
+        for other in [
+            ipc::wire_v2::MSG_TYPE_CONTENT,
+            ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
+            ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_ACK,
+        ] {
+            assert_eq!(InboundRevocationControl::classify(&[V3, other]), None);
+        }
+        // A v2 row carrying the same type byte is not a v3 revocation.
+        assert_eq!(
+            InboundRevocationControl::classify(&[0x02, ipc::wire_v2::MSG_TYPE_REVOCATION]),
+            None
+        );
+        assert_eq!(InboundRevocationControl::classify(&[]), None);
+        assert_eq!(
+            InboundRevocationControl::classify(&[ipc::wire_v2::MSG_TYPE_REVOCATION]),
+            None
+        );
+    }
+
+    /// The row is the peer's only copy of the request. It may be deleted after a
+    /// durable apply, or when it can never be applied — never merely because
+    /// this device is momentarily unable to record it.
+    #[test]
+    fn a_revocation_row_is_retired_only_once_it_is_applied_or_proven_unappliable() {
+        assert!(RevocationRowOutcome::Applied.retires_row());
+        assert!(RevocationRowOutcome::Unappliable.retires_row());
+        assert!(!RevocationRowOutcome::Deferred.retires_row());
+    }
+
+    /// Audit: bilateral burn was inert because `apply_peer_revocation` and
+    /// `record_revocation_ack` had zero callers outside `security.rs`, and the
+    /// drain deleted every `0x0A`/`0x0B` instead. This pins the call path itself,
+    /// which no runtime rig can currently exercise: the outbound revocation lane
+    /// depends on keyserver migration 0027, so no peer can send us a `0x0A` yet.
+    ///
+    /// Supportive evidence only — it proves the wiring exists, not that a real
+    /// burn was honoured. The two-identity proof stays blocked until that lane
+    /// lands (`docs/qa/two-identity-p2p-verification.md` §6.4).
+    #[test]
+    fn the_text_drain_applies_inbound_revocations_instead_of_deleting_them() {
+        let source = include_str!("broker.rs");
+        let drain = source
+            .split_once("fn drain_peer_inbox_text")
+            .expect("drain present")
+            .1;
+        let arm = drain
+            .split_once("InboundRevocationControl::classify")
+            .expect("the drain classifies revocation frames")
+            .1;
+        let (arm, _) = arm.split_once("if ipc::wire_v2::is_native_overlay_ack_bundle").unwrap();
+        assert!(
+            arm.contains("apply_inbound_revocation_row"),
+            "a classified revocation row must reach the apply path"
+        );
+        let apply = source
+            .split_once("fn apply_inbound_revocation_row")
+            .expect("apply path present")
+            .1;
+        for required in [
+            "verify_manual_v3_type",
+            "security::apply_peer_revocation",
+            "security::record_revocation_ack",
+        ] {
+            assert!(
+                apply.contains(required),
+                "the apply path must still call {required}"
+            );
+        }
+        // The delete is downstream of the outcome, never unconditional.
+        let delete = arm
+            .find("delete_control_inbox")
+            .expect("the row is still retired when it may be");
+        let retires = arm
+            .find("retires_row")
+            .expect("retirement is decided by the outcome");
+        assert!(
+            retires < delete,
+            "a revocation row must not be deleted before its outcome is known"
+        );
+    }
+
+    fn literal_renderer_invokes(source: &str) -> std::collections::BTreeSet<String> {
+        let mut commands = std::collections::BTreeSet::new();
+        let bytes = source.as_bytes();
+        let mut cursor = 0usize;
+        while let Some(relative) = source[cursor..].find("invoke") {
+            let mut at = cursor + relative + "invoke".len();
+            if bytes.get(at) == Some(&b'<') {
+                let Some(end) = source[at + 1..].find('>') else {
+                    break;
+                };
+                at = at + 1 + end + 1;
+            }
+            while bytes.get(at).is_some_and(u8::is_ascii_whitespace) {
+                at += 1;
+            }
+            if bytes.get(at) != Some(&b'(') {
+                cursor = at;
+                continue;
+            }
+            at += 1;
+            while bytes.get(at).is_some_and(u8::is_ascii_whitespace) {
+                at += 1;
+            }
+            let Some(quote @ (b'"' | b'\'')) = bytes.get(at).copied() else {
+                cursor = at;
+                continue;
+            };
+            at += 1;
+            let start = at;
+            while bytes.get(at).is_some_and(|byte| *byte != quote) {
+                at += 1;
+            }
+            let Some(command) = source.get(start..at) else {
+                break;
+            };
+            assert!(
+                !command.is_empty()
+                    && command.bytes().all(|byte| {
+                        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'
+                    }),
+                "renderer command names must be fixed snake_case"
+            );
+            commands.insert(command.to_owned());
+            cursor = at.saturating_add(1);
+        }
+        commands
+    }
+
+    fn imported_module_invokes(
+        renderer: &str,
+        module: &str,
+        module_name: &str,
+    ) -> std::collections::BTreeSet<String> {
+        let marker = format!("from \"{module_name}\";");
+        let import_end = renderer
+            .find(&marker)
+            .unwrap_or_else(|| panic!("main renderer imports {module_name}"));
+        let import_start = renderer[..import_end]
+            .rfind("import {")
+            .expect("module import has a named import list");
+        let imported = &renderer[import_start + "import {".len()..import_end];
+        let mut commands = std::collections::BTreeSet::new();
+        for raw_name in imported.split(',') {
+            let name = raw_name.trim();
+            if name.is_empty() || name.starts_with("type ") {
+                continue;
+            }
+            let start = [
+                format!("export async function {name}"),
+                format!("export function {name}"),
+            ]
+            .into_iter()
+            .find_map(|needle| module.find(&needle));
+            let Some(start) = start else {
+                continue;
+            };
+            let end = module[start + 1..]
+                .find("\nexport ")
+                .map(|relative| start + 1 + relative)
+                .unwrap_or(module.len());
+            commands.extend(literal_renderer_invokes(&module[start..end]));
+        }
+        commands
+    }
+
+    #[test]
+    fn every_command_the_main_renderer_invokes_is_declared_and_granted() {
+        let renderer = include_str!("../../osl-hub-ui/src/main.ts");
+        let adapters = include_str!("../../osl-hub-ui/src/adapters.ts");
+        let mut commands = literal_renderer_invokes(renderer);
+        commands.extend(imported_module_invokes(renderer, adapters, "./adapters"));
+        commands.extend(imported_module_invokes(
+            renderer,
+            include_str!("../../osl-hub-ui/src/native-overlay-adapter.ts"),
+            "./native-overlay-adapter",
+        ));
+        for source in [
+            include_str!("../../osl-hub-ui/src/preferences.ts"),
+            include_str!("../../osl-hub-ui/src/services.ts"),
+            include_str!("../../osl-hub-ui/src/core.ts"),
+            include_str!("../../osl-hub-ui/src/updates.ts"),
+            include_str!("../../osl-hub-ui/src/mass-cleanup.ts"),
+            include_str!("../../osl-hub-ui/src/discord-headless-qa-adapter.ts"),
+        ] {
+            commands.extend(literal_renderer_invokes(source));
+        }
+        // These are the only indirect invokes: core.ts chooses from these
+        // fixed strings after receiving a bounded local role.
+        commands.extend(
+            [
+                "get_core_readiness",
+                "set_hub_stealth_password",
+                "set_hub_burn_password",
+                "remove_hub_stealth_password",
+                "remove_hub_burn_password",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        );
+        assert!(
+            commands.contains("remove_hub_friend"),
+            "the scanner must include imported adapter commands, not main.ts alone"
+        );
+
+        let permissions = include_str!("../permissions/hub.toml");
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/hub.json"))
+                .expect("Hub capability is valid JSON");
+        let granted = capability["permissions"]
+            .as_array()
+            .expect("Hub capability has a permissions array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+
+        for command in commands {
+            let identifier = format!("allow-{}", command.replace('_', "-"));
+            let identifier_line = format!("identifier = \"{identifier}\"");
+            let command_line = format!("commands.allow = [\"{command}\"]");
+            let block = permissions
+                .split("[[permission]]")
+                .find(|block| block.lines().any(|line| line.trim() == identifier_line))
+                .unwrap_or_else(|| panic!("renderer command {command} is not declared"));
+            assert!(
+                block.lines().any(|line| line.trim() == command_line),
+                "{identifier} does not allow exactly {command}"
+            );
+            assert!(
+                granted.contains(identifier.as_str()),
+                "renderer command {command} is declared but not granted to hub-local"
+            );
+        }
+    }
+
     fn context(account_id: &str, conversation_id: &str) -> HubConversationContext {
         HubConversationContext {
             service_id: "instagram".to_owned(),
@@ -5739,9 +6549,9 @@ mod tests {
             Some("plain cover prose")
         );
         assert!(native_overlay_cover_handle("").is_none());
-        assert!(native_overlay_cover_handle(&"c".repeat(
-            MAX_NATIVE_OVERLAY_COVER_HANDLE_BYTES + 1
-        ))
+        assert!(native_overlay_cover_handle(
+            &"c".repeat(MAX_NATIVE_OVERLAY_COVER_HANDLE_BYTES + 1)
+        )
         .is_none());
         assert!(native_overlay_cover_handle("two\nlines").is_none());
         assert!(native_overlay_cover_handle("del\u{7f}").is_none());
@@ -6318,7 +7128,14 @@ mod tests {
             participant_osl_ids: vec!["hub-person-alice".to_owned()],
             self_osl_id: bob.user_id.clone(),
         };
-        let opened = decrypt_direct_manual_v3(&core, &wire).unwrap();
+        let alice_binding = ManualPeerBinding {
+            person_id: "hub-person-alice".to_owned(),
+            peer_osl_user_id: alice.user_id.clone(),
+            peer_x25519_public: *alice.x25519_public.as_bytes(),
+            peer_mlkem768_public: alice.mlkem_public_bytes,
+        };
+        let opened =
+            decrypt_direct_manual_v3(&core, &alice_binding, ManualWireSender::Peer, &wire).unwrap();
         validate_peer_protected_payload(&opened, &bob_manual, &bob_context, 1_700_000_001).unwrap();
         assert_eq!(opened.plaintext, "private chat");
         assert!(opened.require_capture_protection);
@@ -6374,9 +7191,8 @@ mod tests {
     #[test]
     fn unresolvable_peer_prose_separates_refusal_from_store_outage() {
         use ipc::prose_token::{ProseTokenMiss, ProseTokenRecv};
-        let absent =
-            peer_prose_token_outcome(Ok(ProseTokenRecv::Missed(ProseTokenMiss::NoToken)))
-                .unwrap_err();
+        let absent = peer_prose_token_outcome(Ok(ProseTokenRecv::Missed(ProseTokenMiss::NoToken)))
+            .unwrap_err();
         // The split this test now also pins: a pointer that decoded and whose
         // blob the store answered 404 for is its OWN outcome. Fused with `absent`
         // it made "this conversation has no protected rows" and "every blob has
@@ -6388,11 +7204,9 @@ mod tests {
         let malformed =
             peer_prose_token_outcome(Err(ipc::prose_token::ProseTokenError::NotDpc0Wire))
                 .unwrap_err();
-        let outage = peer_prose_token_outcome(Err(
-            ipc::prose_token::ProseTokenError::CipherStore(
-                ipc::cipher_store_client::CipherStoreError::RateLimited,
-            ),
-        ))
+        let outage = peer_prose_token_outcome(Err(ipc::prose_token::ProseTokenError::CipherStore(
+            ipc::cipher_store_client::CipherStoreError::RateLimited,
+        )))
         .unwrap_err();
 
         assert_eq!(absent, PeerProsePointerFailure::NotAToken);
@@ -6423,7 +7237,8 @@ mod tests {
 
         // A local precondition keeps its own sentence and is never retryable:
         // "approval is gone" must not be mistaken for "try again".
-        let local = PeerProsePointerError::Local("OSL Privacy account storage is unavailable".to_owned());
+        let local =
+            PeerProsePointerError::Local("OSL Privacy account storage is unavailable".to_owned());
         assert!(!local.retryable());
         assert_eq!(
             local.into_user_message(),
@@ -6631,7 +7446,22 @@ mod tests {
             participant_osl_ids: vec!["hub-person-alice".to_owned()],
             self_osl_id: bob.user_id.clone(),
         };
-        let opened = decrypt_direct_manual_v3(&core, &wire).unwrap();
+        // Bob is a valid recipient, but the helper refuses before releasing
+        // plaintext when the expected pin does not name Alice, the
+        // authenticated in-band sender.
+        let refused = decrypt_direct_manual_v3(&core, &binding, ManualWireSender::Peer, &wire);
+        assert_eq!(
+            refused.err().as_deref(),
+            Some("OSL: v3 authenticated sender refused")
+        );
+        let alice_binding = ManualPeerBinding {
+            person_id: "hub-person-alice".to_owned(),
+            peer_osl_user_id: alice.user_id.clone(),
+            peer_x25519_public: *alice.x25519_public.as_bytes(),
+            peer_mlkem768_public: alice.mlkem_public_bytes,
+        };
+        let opened =
+            decrypt_direct_manual_v3(&core, &alice_binding, ManualWireSender::Peer, &wire).unwrap();
         validate_peer_protected_payload(&opened, &bob_manual, &bob_context, 1_700_000_001).unwrap();
         assert_eq!(opened.plaintext, "private hello");
         assert!(opened.view_once);
@@ -6646,12 +7476,6 @@ mod tests {
             manual_dm_channel_binding("discord", &bob.user_id, &alice.user_id).unwrap()
         );
 
-        let alice_binding = ManualPeerBinding {
-            person_id: "hub-person-alice".to_owned(),
-            peer_osl_user_id: alice.user_id.clone(),
-            peer_x25519_public: *alice.x25519_public.as_bytes(),
-            peer_mlkem768_public: alice.mlkem_public_bytes,
-        };
         let reply = prepare_direct_manual_v3(
             &core,
             &alice_binding,
@@ -6676,7 +7500,8 @@ mod tests {
         )
         .unwrap();
         *core.osl.identity.lock().unwrap() = Some(alice.clone());
-        let opened_reply = decrypt_direct_manual_v3(&core, &reply).unwrap();
+        let opened_reply =
+            decrypt_direct_manual_v3(&core, &binding, ManualWireSender::Peer, &reply).unwrap();
         validate_peer_protected_payload(
             &opened_reply,
             &alice_manual,
@@ -6765,6 +7590,8 @@ mod tests {
         .is_err());
         let opened_bytes = decrypt_direct_manual_v3_payload(
             &core,
+            &binding,
+            ManualWireSender::Peer,
             &attachment_wire,
             ipc::wire_v2::MSG_TYPE_ATTACHMENT,
         )
@@ -6836,6 +7663,8 @@ mod tests {
         let tampered_wire = String::from_utf8(tampered_wire).unwrap();
         assert!(decrypt_direct_manual_v3_payload(
             &core,
+            &binding,
+            ManualWireSender::Peer,
             &tampered_wire,
             ipc::wire_v2::MSG_TYPE_ATTACHMENT,
         )
@@ -6922,7 +7751,14 @@ mod tests {
             .unwrap();
         assert!(cipher.len() <= 64 * 1024);
         *core.osl.identity.lock().unwrap() = Some(bob);
-        let decoded = decrypt_direct_manual_v3(&core, &wire).unwrap();
+        let alice_binding = ManualPeerBinding {
+            person_id: "hub-person-alice".to_owned(),
+            peer_osl_user_id: alice.user_id.clone(),
+            peer_x25519_public: *alice.x25519_public.as_bytes(),
+            peer_mlkem768_public: alice.mlkem_public_bytes,
+        };
+        let decoded =
+            decrypt_direct_manual_v3(&core, &alice_binding, ManualWireSender::Peer, &wire).unwrap();
         assert_eq!(decoded.plaintext, chunk_plaintext);
         assert_eq!(
             decoded.logical_message_id.as_deref(),
@@ -7172,6 +8008,8 @@ mod tests {
         .unwrap();
         let opened = decrypt_direct_manual_v3_payload(
             &core,
+            &alice_binding,
+            ManualWireSender::Peer,
             &wire,
             ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
         )
@@ -7196,7 +8034,9 @@ mod tests {
             conversation_id: channel,
             space_id: None,
             participant_osl_ids: vec![manual.person_id.clone()],
-            self_osl_id: bob.user_id,
+            // `Identity` zeroizes on drop, so its fields are borrowed-and-cloned
+            // rather than moved out of.
+            self_osl_id: bob.user_id.clone(),
         };
         validate_native_overlay_relay_notice(&opened, &manual, &context, 1_700_000_001).unwrap();
         verify_manual_v3_type(
@@ -7209,6 +8049,8 @@ mod tests {
         .unwrap();
         let opened_ack = decrypt_direct_manual_v3_payload(
             &core,
+            &alice_binding,
+            ManualWireSender::Peer,
             &acknowledgment_wire,
             ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_ACK,
         )
@@ -7419,35 +8261,79 @@ mod tests {
         let rows = rehydrated_rows(
             [
                 // An ordinary, never-protected Discord message. No pointer at all.
-                ("see you at six".to_owned(), Some([12, 40, 700, 62])),
-                // A protected row whose cover really does resolve.
                 (
-                    "ok i will weekend again with you".to_owned(),
+                    "Deckard 3:14 PM see you at six".to_owned(),
+                    vec!["see you at six".to_owned()],
+                    Some([12, 40, 700, 62]),
+                ),
+                // A protected row whose cover really does resolve -- and whose
+                // display line is the concatenation that CANNOT decode: author,
+                // timestamp, the body, and the body again from the ancestor that
+                // contains it. Only the standalone candidate resolves, which is
+                // the entire defect this signature fixes.
+                (
+                    "Deckard 3:15 PM ok i will weekend again with you \
+ok i will weekend again with you"
+                        .to_owned(),
+                    vec![
+                        "ok i will weekend again with you".to_owned(),
+                        "Deckard 3:15 PM ok i will weekend again with you \
+ok i will weekend again with you"
+                            .to_owned(),
+                    ],
                     Some([12, 64, 700, 86]),
                 ),
                 // A protected row whose blob is gone: burned, expired, or never ours.
                 // Its rectangle could not be read either, which must not drop it.
-                ("the quiet harbour waits for morning".to_owned(), None),
+                (
+                    "the quiet harbour waits for morning".to_owned(),
+                    vec!["the quiet harbour waits for morning".to_owned()],
+                    None,
+                ),
             ],
-            |flagtext| {
-                (flagtext == "ok i will weekend again with you")
-                    .then(|| "dinner is at the usual place".to_owned())
+            // The decoder sees candidates, never the display line, and takes the
+            // FIRST that authenticates.
+            |candidates: &[String]| {
+                candidates
+                    .iter()
+                    .any(|candidate| candidate == "ok i will weekend again with you")
+                    .then(|| {
+                        (
+                            "dinner is at the usual place".to_owned(),
+                            RehydratedRowOrientation::Incoming,
+                        )
+                    })
             },
         );
         // Every row in, exactly one row out, in order. Nothing dropped, nothing
         // approximated, nothing invented.
         assert_eq!(rows.len(), 3);
+        // The DISPLAY line comes back untouched, concatenation and all: it is
+        // what is on screen, so it is the only honest label for the row.
         assert_eq!(
-            rows.iter().map(|row| row.flagtext.as_str()).collect::<Vec<_>>(),
+            rows.iter()
+                .map(|row| row.flagtext.as_str())
+                .collect::<Vec<_>>(),
             vec![
-                "see you at six",
-                "ok i will weekend again with you",
+                "Deckard 3:14 PM see you at six",
+                "Deckard 3:15 PM ok i will weekend again with you \
+ok i will weekend again with you",
                 "the quiet harbour waits for morning",
             ]
         );
         assert_eq!(rows[0].plaintext, None);
-        assert_eq!(rows[1].plaintext.as_deref(), Some("dinner is at the usual place"));
+        assert_eq!(
+            rows[1].plaintext.as_deref(),
+            Some("dinner is at the usual place")
+        );
         assert_eq!(rows[2].plaintext, None);
+
+        // Authorship travels with the text and only with the text. A row that
+        // did not decode carries no orientation, so the renderer has nothing to
+        // attribute and leaves Discord's own row alone.
+        assert_eq!(rows[0].orientation, None);
+        assert_eq!(rows[1].orientation, Some(RehydratedRowOrientation::Incoming));
+        assert_eq!(rows[2].orientation, None);
 
         // Each row keeps the rectangle it was read with, in order, so the row
         // that decoded can actually be painted over. A row whose rectangle could
@@ -7457,17 +8343,74 @@ mod tests {
         assert_eq!(rows[1].bounds, Some([12, 64, 700, 86]));
         assert_eq!(rows[2].bounds, None);
 
-        // Both keys are always present, so an undecodable row is an honest
-        // "cover unknown" rather than a differently shaped record. The rectangle
-        // is NOT one of them: raw screen coordinates never leave in this struct,
-        // so this serialisation is byte-for-byte what it was before geometry
-        // started travelling with the row.
+        // All three keys are always present, so an undecodable row is an honest
+        // "cover unknown, author unknown" rather than a differently shaped
+        // record. The rectangle is NOT one of them: raw screen coordinates never
+        // leave in this struct. `orientation` is pinned here because the
+        // renderer's parser requires the exact key set and refuses the whole
+        // read otherwise -- a silently renamed or dropped key would blank the
+        // eye rather than mislabel it, and this assertion is what catches it
+        // here instead of on screen.
         let wire = serde_json::to_string(&rows).expect("rehydrated rows serialise");
         assert_eq!(
             wire,
-            "[{\"flagtext\":\"see you at six\",\"plaintext\":null},\
-{\"flagtext\":\"ok i will weekend again with you\",\"plaintext\":\"dinner is at the usual place\"},\
-{\"flagtext\":\"the quiet harbour waits for morning\",\"plaintext\":null}]"
+            "[{\"flagtext\":\"Deckard 3:14 PM see you at six\",\"plaintext\":null,\
+\"orientation\":null},\
+{\"flagtext\":\"Deckard 3:15 PM ok i will weekend again with you ok i will weekend again with you\",\
+\"plaintext\":\"dinner is at the usual place\",\"orientation\":\"incoming\"},\
+{\"flagtext\":\"the quiet harbour waits for morning\",\"plaintext\":null,\
+\"orientation\":null}]"
+        );
+    }
+
+    /// A message the OPERATOR sent, opened by the eye, must render as theirs.
+    ///
+    /// The eye authenticates both orientations (`burn_scope`'s decode leg passes
+    /// `PeerToSelf` and `SelfToPeer`), and before this the proven verdict was
+    /// dropped on the floor: every opened row reached the renderer with no
+    /// author, so it stamped `incoming` and attributed all of them to the
+    /// verified friend. The operator saw their own sent messages presented as
+    /// their friend's words -- a wrong-attribution defect of the same class as
+    /// the audit's receive-misattribution finding, on the display surface.
+    #[test]
+    fn a_row_this_identity_sent_is_carried_as_outgoing_not_relabelled_incoming() {
+        // `SelfToPeer` is the orientation the wire's own signature proved.
+        assert_eq!(
+            RehydratedRowOrientation::from(PeerWireOrientation::SelfToPeer),
+            RehydratedRowOrientation::Outgoing
+        );
+        assert_eq!(
+            RehydratedRowOrientation::from(PeerWireOrientation::PeerToSelf),
+            RehydratedRowOrientation::Incoming
+        );
+
+        let rows = rehydrated_rows(
+            [(
+                "You 3:16 PM the harbour lights are on".to_owned(),
+                vec!["the harbour lights are on".to_owned()],
+                Some([12, 88, 700, 110]),
+            )],
+            |_: &[String]| {
+                Some((
+                    "i am bringing the car round".to_owned(),
+                    RehydratedRowOrientation::from(PeerWireOrientation::SelfToPeer),
+                ))
+            },
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].plaintext.as_deref(), Some("i am bringing the car round"));
+        assert_eq!(
+            rows[0].orientation,
+            Some(RehydratedRowOrientation::Outgoing),
+            "the operator's own sent row must not be attributed to the friend"
+        );
+
+        // And it reaches the renderer as `outgoing`, which is the exact string
+        // the parser accepts and the transcript labels from.
+        let wire = serde_json::to_string(&rows).expect("rehydrated rows serialise");
+        assert!(
+            wire.contains("\"orientation\":\"outgoing\""),
+            "proven authorship must survive serialisation: {wire}"
         );
     }
 
@@ -7490,10 +8433,11 @@ mod tests {
         let start = source
             .find("pub fn rehydrate_native_discord_overlay_history(")
             .expect("the rehydrate entry point exists");
-        let body = &source[start..start
-            + source[start..]
-                .find("\n}\n")
-                .expect("the rehydrate entry point is terminated")];
+        let body = &source[start
+            ..start
+                + source[start..]
+                    .find("\n}\n")
+                    .expect("the rehydrate entry point is terminated")];
         assert!(body.contains(
             "let decode_deadline = Instant::now() + Duration::from_millis(REHYDRATE_DECODE_BUDGET_MS);"
         ));
@@ -7517,7 +8461,34 @@ mod tests {
         assert!(body.contains("counts.budget_exhausted += 1;"));
         // Still one row out per row in: the budget may only turn a plaintext into
         // `None`, never remove a row from the transcript.
-        assert!(body.contains("rows.into_iter().map(|row| (row.line, row.bounds))"));
+        assert!(body.contains(
+            "rows.into_iter()\n            .map(|row| (row.line, row.decode_candidates, row.bounds))"
+        ));
+        // The decode leg is handed CANDIDATES, and the wall-clock budget is
+        // re-asked before each one -- so widening the search per row cannot
+        // widen the leg's bound. A candidate loop that only checked the deadline
+        // once per row would multiply the worst case by the candidate count.
+        let loop_start = body
+            .find("for candidate in candidates {")
+            .expect("each candidate cover is tried on its own");
+        assert!(
+            decrypt > loop_start,
+            "the decrypt runs inside the candidate loop"
+        );
+        let per_candidate_gate = body[loop_start..]
+            .find("if Instant::now() >= decode_deadline {")
+            .expect("the budget is re-asked before every candidate");
+        assert!(
+            loop_start + per_candidate_gate < decrypt,
+            "the per-candidate budget gate runs before the decrypt it guards"
+        );
+        // The FIRST candidate that authenticates wins, and no further candidate
+        // is asked once one has. What is captured is the whole authenticated
+        // answer -- payload AND the orientation that proved it -- because a row
+        // whose author was proven and then dropped is the misattribution defect
+        // this leg feeds the renderer with.
+        assert!(body.contains("recovered = Some(authenticated);"));
+        assert!(body.contains("let (payload, orientation) = match recovered {"));
     }
 
     /// A display feature that paints nothing must say why, and every reason must
@@ -7532,6 +8503,7 @@ mod tests {
     fn every_undecodable_rehydrated_row_is_counted_under_exactly_one_fixed_label() {
         let labels = [
             REHYDRATE_DECODE_ROWS,
+            REHYDRATE_DECODE_CANDIDATES,
             REHYDRATE_DECODE_DISPLAY_OFF,
             REHYDRATE_DECODE_BUDGET_EXHAUSTED,
             REHYDRATE_DECODE_POINTER_ABSENT,
@@ -7559,10 +8531,11 @@ mod tests {
         let start = source
             .find("pub fn rehydrate_native_discord_overlay_history(")
             .expect("the rehydrate entry point exists");
-        let body = &source[start..start
-            + source[start..]
-                .find("\n}\n")
-                .expect("the rehydrate entry point is terminated")];
+        let body = &source[start
+            ..start
+                + source[start..]
+                    .find("\n}\n")
+                    .expect("the rehydrate entry point is terminated")];
         // Every row that goes in is tallied, before any early return can skip it.
         let rows_counted = body
             .find("counts.rows += 1;")
@@ -7580,18 +8553,48 @@ mod tests {
             let at = body
                 .find(terminal)
                 .unwrap_or_else(|| panic!("{terminal} is a terminal verdict of the decode leg"));
-            assert!(rows_counted < at, "{terminal} must be tallied after the row is");
+            assert!(
+                rows_counted < at,
+                "{terminal} must be tallied after the row is"
+            );
         }
+        // Not a terminal verdict -- it counts QUESTIONS ASKED, one per candidate
+        // cover -- and it is what makes `pointer_absent` readable. Absent with a
+        // healthy candidate count is "no OSL pointer in these rows"; absent with
+        // zero candidates is "the decoder was never shown the body", which is a
+        // reader bug wearing the same label. That ambiguity is the whole reason
+        // the 2026-07-26 live run could not tell the two apart.
+        let candidates_counted = body
+            .find("counts.candidates += 1;")
+            .expect("every candidate cover asked about is counted");
+        assert!(
+            rows_counted < candidates_counted,
+            "candidates are counted inside the row that offered them"
+        );
         // Each pointer failure keeps its OWN counter, and the counter belongs to
         // the arm that matched. Fusing any two of them back together -- which is
         // exactly what the single "undecodable" tally used to do -- is what this
         // pairing exists to prevent. Checked by position rather than by an exact
         // line, so rustfmt cannot silently satisfy it.
+        //
+        // Each pattern pins the TERMINAL match -- the one that runs after every
+        // candidate has been tried. The candidate loop's own `NotAToken` arm is
+        // `NotAToken))`, tallies nothing, and means only "ask the next node"; a
+        // row is not absent until every node has said so.
         for (variant, counter) in [
-            ("PeerProsePointerFailure::NotAToken)", "counts.pointer_absent += 1"),
-            ("PeerProsePointerFailure::PointerBlobGone,", "counts.pointer_blob_gone += 1"),
-            ("PeerProsePointerFailure::Transport)", "counts.store_unreachable += 1"),
-            ("PeerProsePointerFailure::Rejected)", "counts.refused += 1"),
+            (
+                "PeerProsePointerFailure::NotAToken,",
+                "counts.pointer_absent += 1",
+            ),
+            (
+                "PeerProsePointerFailure::PointerBlobGone,",
+                "counts.pointer_blob_gone += 1",
+            ),
+            (
+                "PeerProsePointerFailure::Transport,",
+                "counts.store_unreachable += 1",
+            ),
+            ("PeerProsePointerFailure::Rejected", "counts.refused += 1"),
         ] {
             let arm = body
                 .find(variant)
@@ -7719,7 +8722,9 @@ mod tests {
         // own outbound wire, so her keys open it. No plaintext was stored to
         // make this work.
         verify_manual_v3(&core, &binding, &wire, ManualWireSender::SelfIdentity).unwrap();
-        let opened = decrypt_direct_manual_v3(&core, &wire).unwrap();
+        let opened =
+            decrypt_direct_manual_v3(&core, &binding, ManualWireSender::SelfIdentity, &wire)
+                .unwrap();
         validate_oriented_peer_protected_payload(
             &opened,
             &alice_manual,
@@ -7783,13 +8788,7 @@ mod tests {
             peer_x25519_public: *alice.x25519_public.as_bytes(),
             peer_mlkem768_public: alice.mlkem_public_bytes,
         };
-        verify_manual_v3(
-            &core,
-            &alice_binding_for_bob,
-            &wire,
-            ManualWireSender::Peer,
-        )
-        .unwrap();
+        verify_manual_v3(&core, &alice_binding_for_bob, &wire, ManualWireSender::Peer).unwrap();
         assert!(verify_manual_v3(
             &core,
             &alice_binding_for_bob,
@@ -7797,7 +8796,9 @@ mod tests {
             ManualWireSender::SelfIdentity
         )
         .is_err());
-        let inbound = decrypt_direct_manual_v3(&core, &wire).unwrap();
+        let inbound =
+            decrypt_direct_manual_v3(&core, &alice_binding_for_bob, ManualWireSender::Peer, &wire)
+                .unwrap();
         validate_peer_protected_payload(&inbound, &bob_manual, &bob_context, 1_700_000_001)
             .unwrap();
         assert_eq!(

@@ -54,8 +54,8 @@ macro_rules! osl_trace {
 // =====================================================================
 
 /// 7d-FIX3b: ensure peer_map has a well-formed self-entry keyed
-/// by the user's Discord snowflake, matching the loaded identity's
-/// `user_id` and X25519 public key with `is_self = true`.
+/// by the user's Discord snowflake, carrying the separate OSL routing
+/// id and X25519 public key with `is_self = true`.
 ///
 /// Called from bootstrap.rs after `load_peer_map`, and from
 /// `cmd_osl_register_self_snowflake` after identity gets a new
@@ -187,7 +187,7 @@ pub fn cmd_osl_reset_v4_session(state: &AppState, discord_id: String) -> Result<
     };
     if changed {
         tracing::warn!(
-            discord_id = %discord_id,
+            discord_id = %crate::log_id::log_id(&discord_id),
             "OSL: v=4 session reset (operator) — dropped ratchet_state; \
              next v=4 will re-handshake"
         );
@@ -290,7 +290,7 @@ pub fn cmd_osl_reset_v5_sender_key(
                 wire,
             }),
             Err(e) => tracing::warn!(
-                peer = %peer,
+                peer = %crate::log_id::log_id(peer),
                 error = %e,
                 "OSL: v=5 reset — could not build SESSION_RESET notice \
                  (peer will recover on first failed decrypt instead)"
@@ -299,7 +299,7 @@ pub fn cmd_osl_reset_v5_sender_key(
     }
 
     tracing::warn!(
-        scope = %scope_key,
+        scope = %crate::log_id::log_id(&scope_key),
         v5_cleared = v5_cleared,
         peers_reset = peers_reset.len(),
         notices = notices.len(),
@@ -486,7 +486,7 @@ pub fn cmd_osl_recover_peer_identity(state: &AppState, discord_id: String) -> Re
     if changed {
         persist_peer_map_now(state);
         tracing::warn!(
-            peer = %discord_id,
+            peer = %crate::log_id::log_id(&discord_id),
             "OSL: stale-identity recovery — re-fetched peer bundle from \
              keyserver; a CHANGED identity is now a pending TOFU alert \
              (loud, one-tap accept), NOT auto-trusted"
@@ -517,7 +517,7 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
     snowflake: String,
     dir: &std::path::Path,
 ) -> Result<(), String> {
-    osl_trace!("[F0-FIX3-TRACE] cmd_osl_register_self_snowflake entered (snowflake={snowflake})");
+    osl_trace!("[F0-FIX3-TRACE] cmd_osl_register_self_snowflake entered");
     if !snowflake.chars().all(|c| c.is_ascii_digit()) || !(17..=20).contains(&snowflake.len()) {
         return Err(format!(
             "OSL: register_self_snowflake: invalid format \
@@ -534,11 +534,12 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
     // `keyserver.json`, so bootstrap never auto-creates the identity,
     // and `cmd_osl_set_main_password` doesn't either (it has no
     // user_id to seed with). The first moment we DO have a stable
-    // user identifier is when boot.js extracts the Discord snowflake
-    // from the React runtime and calls THIS command.
+    // carrier account is when boot.js extracts the Discord snowflake
+    // from the React runtime and calls THIS command. The OSL routing
+    // id is independently generated from the key material.
     //
-    // If `state.identity` is None at entry, generate a fresh identity
-    // with the snowflake as `user_id`, stamp `discord_snowflake`,
+    // If `state.identity` is None at entry, generate a fresh native
+    // identity, stamp `discord_snowflake`,
     // persist to disk via the configured sealer (TPM / Keyring /
     // NoOp — identity at-rest protection lives in the sealer layer,
     // not the file_storage_key envelope), then fall through to the
@@ -554,7 +555,7 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
         // reconciliation deliberately relies on bootstrap's
         // open_message_store quarantine self-heal — do NOT add a
         // wipe here without flagging it as a separate proposal.
-        let identity = keystore::generate_identity(snowflake.clone());
+        let identity = keystore::generate_native_identity();
         let mut snapshot = keystore::Identity::from_bytes(
             identity.user_id.clone(),
             *identity.x25519_secret.as_bytes(),
@@ -596,7 +597,6 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
         }
 
         *state.identity.lock().expect("identity mutex poisoned") = Some(snapshot);
-        eprintln!("[OSL][f0-fix2] generated + saved fresh identity (user_id={snowflake})");
         // Finding 3b companion: this is a non-burn local identity
         // regen. Any ratchet_state in peer_map was derived from the
         // OLD local identity's SessionContext and is now
@@ -624,9 +624,9 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
         AlreadySet,
     }
     let step = {
-        let mut guard = state.identity.lock().expect("identity mutex poisoned");
+        let guard = state.identity.lock().expect("identity mutex poisoned");
         let id = guard
-            .as_mut()
+            .as_ref()
             .ok_or_else(|| "OSL: register_self_snowflake: identity not loaded".to_string())?;
         // Determine what snowflake the stored identity is "bound to":
         //   - Prefer `discord_snowflake` (post-9-F0-FIX2 field).
@@ -657,20 +657,19 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
             return Err(format!(
                 "OSL: register_self_snowflake: snowflake mismatch with identity bound to {bound_to}"
             ));
-        } else if id.discord_snowflake.is_some() {
+        } else if id.discord_snowflake.is_some()
+            && !(id.user_id.chars().all(|c| c.is_ascii_digit())
+                && (17..=20).contains(&id.user_id.len()))
+        {
             Step::AlreadySet
         } else {
-            id.discord_snowflake = Some(snowflake.clone());
-            let mut snapshot = keystore::Identity::from_bytes(
-                id.user_id.clone(),
-                *id.x25519_secret.as_bytes(),
-                *id.x25519_public.as_bytes(),
-                *id.ed25519_secret.as_bytes(),
-                *id.ed25519_public.as_bytes(),
-                *id.mlkem_secret_bytes(),
-                id.mlkem_public_bytes,
-            );
+            let mut snapshot = id.clone();
             snapshot.discord_snowflake = Some(snowflake.clone());
+            if snapshot.user_id.chars().all(|c| c.is_ascii_digit())
+                && (17..=20).contains(&snapshot.user_id.len())
+            {
+                snapshot.user_id = keystore::native_user_id(&snapshot);
+            }
             Step::Save(Box::new(snapshot))
         }
     };
@@ -694,17 +693,11 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
     let path = dir.join("identity.json");
     let sealer = keystore::select_best_sealer();
     if let Err(e) = keystore::save_identity(&path, &to_save, sealer.as_ref()) {
-        // Roll back the in-memory change so callers can retry
-        // without lying about the durable state.
-        let mut guard = state.identity.lock().expect("identity mutex poisoned");
-        if let Some(id) = guard.as_mut() {
-            id.discord_snowflake = None;
-        }
         return Err(format!(
             "OSL: register_self_snowflake: save_identity failed: {e}"
         ));
     }
-    eprintln!("[OSL][bootstrap] self snowflake registered: {snowflake}");
+    *state.identity.lock().expect("identity mutex poisoned") = Some(to_save);
     // REGISTER-FIX: snowflake just attached to a pre-existing
     // identity and persisted — register against the keyserver now
     // rather than waiting for the next relaunch. Idempotent, non-fatal.
@@ -718,9 +711,9 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
 
 fn run_verify(state: &AppState) -> Result<(), String> {
     match verify_and_persist_peer_map_self_entry(state) {
-        Ok((snowflake, repaired)) => {
+        Ok((_snowflake, repaired)) => {
             if repaired {
-                eprintln!("[OSL][bootstrap] self-entry repaired for snowflake={snowflake}");
+                eprintln!("[OSL][bootstrap] self-entry repaired");
             } else {
                 eprintln!("[OSL][bootstrap] self-entry verified");
             }
@@ -1847,6 +1840,9 @@ pub fn cmd_osl_decrypt_message_with_id(
     let sender_pub = if let Some(cached) = state.sender_pubkey_cache.get(&osl_user_id) {
         cached
     } else {
+        if is_discord_snowflake_shaped(&osl_user_id) {
+            return Err("OSL: Discord identifiers cannot resolve keys".to_string());
+        }
         let ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
         let client = ks_guard
             .as_ref()
@@ -1940,7 +1936,7 @@ fn persist_decrypted(
         .expect("message_store mutex poisoned");
     let Some(store) = guard.as_ref() else {
         tracing::debug!(
-            discord_message_id = %discord_message_id,
+            discord_message_id = %crate::log_id::log_id(&discord_message_id),
             "OSL: message_store disabled; skipping persistence"
         );
         return;
@@ -1960,7 +1956,7 @@ fn persist_decrypted(
     };
     if let Err(e) = store.put(&msg) {
         tracing::warn!(
-            discord_message_id = %discord_message_id,
+            discord_message_id = %crate::log_id::log_id(&discord_message_id),
             error = %e,
             "OSL: message_store.put failed; decrypt UX unaffected"
         );
@@ -2048,7 +2044,7 @@ pub fn cmd_osl_persist_outbound(
             Some(id) => id.user_id.clone(),
             None => {
                 tracing::debug!(
-                    discord_message_id = %discord_message_id,
+                    discord_message_id = %crate::log_id::log_id(&discord_message_id),
                     "OSL: persist_outbound: identity not loaded; skipping"
                 );
                 return Ok(());
@@ -2061,7 +2057,7 @@ pub fn cmd_osl_persist_outbound(
         .expect("message_store mutex poisoned");
     let Some(store) = guard.as_ref() else {
         tracing::debug!(
-            discord_message_id = %discord_message_id,
+            discord_message_id = %crate::log_id::log_id(&discord_message_id),
             "OSL: persist_outbound: message_store disabled; skipping"
         );
         return Ok(());
@@ -2081,7 +2077,7 @@ pub fn cmd_osl_persist_outbound(
     };
     if let Err(e) = store.put(&msg) {
         tracing::warn!(
-            discord_message_id = %discord_message_id,
+            discord_message_id = %crate::log_id::log_id(&discord_message_id),
             error = %e,
             "OSL: persist_outbound: store.put failed (non-fatal)"
         );
@@ -2225,7 +2221,7 @@ pub fn cmd_osl_attachment_cache_put(
         .map_err(|e| format!("OSL: attachment_cache_put base64: {e}"))?;
     if bytes.len() > OSL_ATTACHMENT_CACHE_MAX_BYTES {
         tracing::debug!(
-            msg_id = %discord_message_id,
+            msg_id = %crate::log_id::log_id(&discord_message_id),
             len = bytes.len(),
             "OSL: attachment_cache_put: over size cap; skipping"
         );
@@ -2678,7 +2674,8 @@ pub fn cmd_osl_encrypt_message_v2(
                 .decode(body)
                 .map_err(|e| format!("OSL: Mode 1 wrap: base64 decode of wire body failed: {e}"))?;
 
-            let salt = scope_for_mode.storage_key().into_bytes();
+            let scope_storage_key = scope_for_mode.storage_key();
+            let salt = scope_storage_key.clone().into_bytes();
             let cipher = stego::ConversationCipher::from_salt(&salt);
             let session_id = crypto::random::random_u32();
 
@@ -2693,7 +2690,7 @@ pub fn cmd_osl_encrypt_message_v2(
             tracing::info!(
                 chunks = messages.len(),
                 session_id = session_id,
-                scope = %scope_for_mode.storage_key(),
+                scope = %crate::log_id::log_id(&scope_storage_key),
                 "OSL: mode1 send"
             );
 
@@ -3982,7 +3979,7 @@ pub fn cmd_osl_open_attachment_v2(
             let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
             if crate::whitelist::is_burned_in_scope(&pm, &scope, &sender_discord_id) {
                 tracing::info!(
-                    sender = %sender_discord_id,
+                    sender = %crate::log_id::log_id(&sender_discord_id),
                     "[OSL] attachment open blocked: scope burned by sender"
                 );
                 return Err(format!(
@@ -3995,7 +3992,7 @@ pub fn cmd_osl_open_attachment_v2(
         if let Some(msg_id) = discord_message_id.as_deref() {
             if is_message_in_burn_kill_list(state, &scope, msg_id) {
                 tracing::info!(
-                    msg_id = %msg_id,
+                    msg_id = %crate::log_id::log_id(msg_id),
                     "[OSL] attachment open blocked: in_burn_kill_list"
                 );
                 return Err(format!(
@@ -4175,8 +4172,9 @@ pub fn cmd_osl_send_burn_marker(
                 }
             }
             Err(e) => {
+                let scope_storage_key = scope.storage_key();
                 tracing::debug!(
-                    scope = %scope.storage_key(),
+                    scope = %crate::log_id::log_id(&scope_storage_key),
                     error = %e,
                     "OSL: burn_marker v3 union failed; using legacy \
                      recipients_for_scope result only"
@@ -4360,7 +4358,7 @@ pub fn cmd_osl_decrypt_message_v2(
     // path inadvertently reviving old burned ciphertexts.
     if let (Some(scope), Some(msg_id)) = (scope_opt.as_ref(), discord_message_id.as_deref()) {
         if is_message_in_burn_kill_list(state, scope, msg_id) {
-            tracing::info!(msg_id = %msg_id, "[OSL] decrypt blocked: in_burn_kill_list");
+            tracing::info!(msg_id = %crate::log_id::log_id(msg_id), "[OSL] decrypt blocked: in_burn_kill_list");
             return Err(format!(
                 "OSL: decrypt blocked: msg={msg_id} reason=in_burn_kill_list"
             ));
@@ -4385,9 +4383,11 @@ pub fn cmd_osl_decrypt_message_v2(
                 .map_err(|e| format!("OSL: {e}"))?
         }
         Some(crate::wire_v2::WIRE_VERSION_V3) => {
-            // v=3 path — PQ-hybrid wrap. Sender ik pubkey is in the
-            // wire global header, so no peer_map lookup needed for
-            // the decrypt itself.
+            // v=3 path — PQ-hybrid wrap. The wire carries the sender
+            // key, but attribution is permitted only when that key is
+            // the locally pinned key for the claimed peer.
+            let expected_sender =
+                resolve_pinned_sender_pubkey(state, &sender_discord_id).map_err(str::to_owned)?;
             let id_guard = state.identity.lock().expect("identity mutex poisoned");
             let identity = id_guard
                 .as_ref()
@@ -4396,8 +4396,13 @@ pub fn cmd_osl_decrypt_message_v2(
             let our_mlkem_sk = identity.mlkem_decapsulation_key();
             drop(id_guard);
             tracing::debug!(wire_version = "v3", "v=3 decode dispatched");
-            crate::wire_v2::decrypt_v3(&content, &our_sk, &our_mlkem_sk)
-                .map_err(|e| format!("OSL: {e}"))?
+            crate::wire_v2::decrypt_v3_for_sender(
+                &content,
+                &our_sk,
+                &our_mlkem_sk,
+                &expected_sender,
+            )
+            .map_err(|_| "OSL: v3 authenticated sender refused".to_string())?
         }
         Some(crate::wire_v2::WIRE_VERSION_V4) => {
             // Phase 9-A2: v=4 ratcheted single-recipient decode.
@@ -4489,7 +4494,7 @@ pub fn cmd_osl_decrypt_message_v2(
         0x02 | 0x03 => {
             tracing::info!(
                 msg_type = recovered.msg_type,
-                sender = %sender_discord_id,
+                sender = %crate::log_id::log_id(&sender_discord_id),
                 "OSL: legacy handshake message ignored (C1 removed the invitation flow)"
             );
             Ok(OSL_RESULT_LEGACY_HANDSHAKE_IGNORED.to_string())
@@ -4784,7 +4789,7 @@ fn apply_skdm_request_recv(
             now,
         ) {
             tracing::warn!(
-                requester = %requester_discord_id,
+                requester = %crate::log_id::log_id(requester_discord_id),
                 reason = "recovery_guard_rejected",
                 requested_at = req.requested_at,
                 now = now,
@@ -4798,8 +4803,8 @@ fn apply_skdm_request_recv(
         Some(s) => s,
         None => {
             tracing::warn!(
-                requester = %requester_discord_id,
-                scope_storage_key = %req.scope_storage_key,
+                requester = %crate::log_id::log_id(requester_discord_id),
+                scope_storage_key = %crate::log_id::log_id(&req.scope_storage_key),
                 reason = "invalid_scope",
                 "OSL: SKDM_REQUEST IGNORED — scope_storage_key didn't parse"
             );
@@ -4820,8 +4825,8 @@ fn apply_skdm_request_recv(
             .expect("sender_key_state mutex poisoned");
         let Some(disk) = g.states.get(&scope_key) else {
             tracing::warn!(
-                requester = %requester_discord_id,
-                scope = %scope_key,
+                requester = %crate::log_id::log_id(requester_discord_id),
+                scope = %crate::log_id::log_id(&scope_key),
                 reason = "no_sender_key_state",
                 known_scopes = g.states.len(),
                 "OSL: SKDM_REQUEST IGNORED — no sender_key_state for scope \
@@ -4837,8 +4842,8 @@ fn apply_skdm_request_recv(
             Some(c) => (c.current_chain_id(), c.rotation_root_bytes()),
             None => {
                 tracing::warn!(
-                    requester = %requester_discord_id,
-                    scope = %scope_key,
+                    requester = %crate::log_id::log_id(requester_discord_id),
+                    scope = %crate::log_id::log_id(&scope_key),
                     reason = "no_sender_chain",
                     "OSL: SKDM_REQUEST IGNORED — sender_key_state exists \
                      but has no sender_chain (we never bootstrapped one)"
@@ -4962,8 +4967,8 @@ fn apply_skdm_request_recv(
         None => match direct_recipient_owned.as_ref() {
             Some(r) => {
                 tracing::info!(
-                    requester = %requester_discord_id,
-                    scope = %scope_key,
+                    requester = %crate::log_id::log_id(requester_discord_id),
+                    scope = %crate::log_id::log_id(&scope_key),
                     "OSL: SKDM_REQUEST: requester not in channel_members \
                      (gateway cache cold); falling back to direct peer_map \
                      RecipientV3 lookup so the request doesn't IGNORE-loop"
@@ -4991,8 +4996,8 @@ fn apply_skdm_request_recv(
         &rotation_root,
     )?;
     tracing::info!(
-        requester = %requester_discord_id,
-        scope = %scope_key,
+        requester = %crate::log_id::log_id(requester_discord_id),
+        scope = %crate::log_id::log_id(&scope_key),
         "OSL: SKDM_REQUEST honored — re-emitting v=3-bundled SKDM"
     );
     Ok(format!("{OSL_RESULT_SKDM_REREQUEST_PREFIX}{wire}"))
@@ -5069,7 +5074,7 @@ fn apply_session_reset_recv(
     if changed {
         persist_peer_map_now(state);
         tracing::warn!(
-            peer = %sender_discord_id,
+            peer = %crate::log_id::log_id(sender_discord_id),
             corroborated = corroborated,
             "OSL: SESSION_RESET honored — dropped v=4 ratchet; next v=4 \
              re-handshakes (corroborated=false means a one-directional \
@@ -5125,8 +5130,8 @@ fn apply_skdm_recv(
     }
     persist_sender_key_state_now(state);
     tracing::info!(
-        sender = %sender_discord_id,
-        scope = %scope_key,
+        sender = %crate::log_id::log_id(sender_discord_id),
+        scope = %crate::log_id::log_id(&scope_key),
         chain_id = payload.chain_id,
         "[OSL] SKDM applied: receiver chain installed/rotated"
     );
@@ -5162,22 +5167,21 @@ pub fn cmd_osl_control_inbox_post(
         .decode(body)
         .map_err(|e| format!("OSL: control_inbox_post: base64 decode: {e}"))?;
 
-    // CRITICAL addressing fix: the inbox is keyed by the recipient's
-    // OSL user_id (that's what their drain GETs by — get_control_inbox
-    // uses identity.user_id). boot.js hands us the recipient's DISCORD
-    // ID. Those are EQUAL for identities registered with their
-    // snowflake, but NOT for identities whose user_id is an older /
-    // pseudonymous value — and then the row lands in a mailbox the
-    // recipient never reads, so SKDMs / session-resets silently never
-    // arrive (the "desync that won't heal" + one-directional decrypt
-    // failures). Map Discord ID -> osl_user_id via peer_map; fall back
-    // to the Discord ID when there's no mapping (snowflake-as-user_id).
+    // The inbox is keyed by the recipient's verified OSL routing id.
+    // The caller supplies a carrier-local Discord id, so the peer map
+    // must already contain the friend-code/TOFU binding. Never fall
+    // back to the snowflake: it is not a keyserver identity.
     let recipient_osl_id = {
         let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
         pm.get(&recipient_id)
             .and_then(|e| e.osl_user_id.clone())
-            .unwrap_or_else(|| recipient_id.clone())
+            .ok_or_else(|| "OSL: recipient has no verified OSL identity".to_string())?
     };
+    if recipient_osl_id.chars().all(|c| c.is_ascii_digit())
+        && (17..=20).contains(&recipient_osl_id.len())
+    {
+        return Err("OSL: Discord identifiers cannot address the keyserver".to_string());
+    }
 
     // IMPORTANT: clone the identity + keyserver client out from under
     // the AppState mutexes, then DROP the guards BEFORE the network
@@ -5196,48 +5200,9 @@ pub fn cmd_osl_control_inbox_post(
             .ok_or_else(|| "OSL: key-server not initialised".to_string())?
             .clone()
     };
-    let resp = client
+    client
         .post_control_inbox(&identity, &recipient_osl_id, &scope_id, &bundle)
-        .map_err(|e| format!("OSL: control_inbox_post: {e}"))?;
-    tracing::info!(
-        recipient_discord = %recipient_id,
-        recipient_osl = %recipient_osl_id,
-        scope = %scope_id,
-        bundle_len = bundle.len(),
-        inbox_id = %resp.id,
-        "[OSL] control_inbox POST ok"
-    );
-    eprintln!(
-        "[OSL][inbox] POST recipient_discord={recipient_id} recipient_osl={recipient_osl_id} \
-         scope={scope_id} (mailbox the peer drains MUST equal recipient_osl)"
-    );
-    // ROBUST ADDRESSING: the recipient DRAINS by identity.user_id. In
-    // the current model user_id == the Discord snowflake, so the inbox
-    // is keyed by the snowflake. peer_map.osl_user_id is supposed to
-    // equal that, but if it's stale/wrong the row lands in a mailbox
-    // the recipient never reads (the "applied=0 forever / SKDM never
-    // arrives" bug, while DMs still work because they key off the
-    // pubkey). Belt-and-suspenders: if the mapped osl_user_id differs
-    // from the raw snowflake, ALSO post to the snowflake so it reaches
-    // the mailbox the recipient actually drains. apply_skdm_recv is
-    // idempotent, so a duplicate is harmless; the unread copy just ages
-    // out. Both posts share one bundle/scope.
-    if recipient_osl_id != recipient_id {
-        match client.post_control_inbox(&identity, &recipient_id, &scope_id, &bundle) {
-            Ok(r2) => {
-                eprintln!(
-                    "[OSL][inbox] POST (snowflake fallback) recipient={recipient_id} \
-                     inbox_id={} — osl_user_id differed, posted to both",
-                    r2.id
-                );
-            }
-            Err(e) => tracing::warn!(
-                recipient = %recipient_id,
-                error = %e,
-                "[OSL] control_inbox snowflake-fallback POST failed (primary already sent)"
-            ),
-        }
-    }
+        .map_err(|_| "OSL: control inbox delivery refused".to_string())?;
     Ok(())
 }
 
@@ -5345,8 +5310,8 @@ pub fn cmd_osl_control_inbox_drain(
             Ok(sentinel) => {
                 tracing::info!(
                     inbox_id = %item.id,
-                    sender = %item.sender_id,
-                    scope = %item.scope_id,
+                    sender = %crate::log_id::log_id(&item.sender_id),
+                    scope = %crate::log_id::log_id(&item.scope_id),
                     sentinel = %sentinel,
                     "[OSL] control_inbox item applied"
                 );
@@ -5390,12 +5355,12 @@ pub fn cmd_osl_control_inbox_drain(
                                         &ping_bundle,
                                     ) {
                                         Ok(_) => tracing::info!(
-                                            peer = %item.sender_id,
+                                            peer = %crate::log_id::log_id(&item.sender_id),
                                             "[OSL] resync: bootstrap ping posted after \
                                              SESSION_RESET"
                                         ),
                                         Err(e) => tracing::warn!(
-                                            peer = %item.sender_id,
+                                            peer = %crate::log_id::log_id(&item.sender_id),
                                             error = %e,
                                             "[OSL] resync: bootstrap ping POST failed"
                                         ),
@@ -5404,7 +5369,7 @@ pub fn cmd_osl_control_inbox_drain(
                             }
                         }
                         Err(e) => tracing::warn!(
-                            peer = %item.sender_id,
+                            peer = %crate::log_id::log_id(&item.sender_id),
                             error = %e,
                             "[OSL] resync: bootstrap ping build failed (falling back \
                              to next-message bootstrap)"
@@ -5432,13 +5397,13 @@ pub fn cmd_osl_control_inbox_drain(
                                     &resp_bundle,
                                 ) {
                                     Ok(_) => tracing::info!(
-                                        requester = %item.sender_id,
-                                        scope = %item.scope_id,
+                                        requester = %crate::log_id::log_id(&item.sender_id),
+                                        scope = %crate::log_id::log_id(&item.scope_id),
                                         "[OSL] SKDM_REQUEST honored via inbox — \
                                          sender key posted back to requester"
                                     ),
                                     Err(e) => tracing::warn!(
-                                        requester = %item.sender_id,
+                                        requester = %crate::log_id::log_id(&item.sender_id),
                                         error = %e,
                                         "[OSL] SKDM response post-back failed"
                                     ),
@@ -5456,8 +5421,8 @@ pub fn cmd_osl_control_inbox_drain(
             Err(e) => {
                 tracing::warn!(
                     inbox_id = %item.id,
-                    sender = %item.sender_id,
-                    scope = %item.scope_id,
+                    sender = %crate::log_id::log_id(&item.sender_id),
+                    scope = %crate::log_id::log_id(&item.scope_id),
                     error = %e,
                     "[OSL] control_inbox item dispatch failed (leaving row in place)"
                 );
@@ -5627,6 +5592,9 @@ fn resolve_sender_pubkey(
     if let Some(cached) = state.sender_pubkey_cache.get(&osl_user_id) {
         return Ok(cached);
     }
+    if is_discord_snowflake_shaped(&osl_user_id) {
+        return Err("OSL: Discord identifiers cannot resolve keys".to_string());
+    }
     let ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
     let client = ks_guard
         .as_ref()
@@ -5651,21 +5619,66 @@ fn resolve_sender_pubkey(
     Ok(pub_key)
 }
 
-/// Phase 9-A1b: populate peer's X25519 and ML-KEM pubkeys from a
-/// keyserver `FetchPubkeysResponse`. Pure function — separated
-/// from the HTTP fetch so tests can drive it without standing up
-/// a mock keyserver. Returns true if the ML-KEM pubkey was
-/// newly added (entry previously had None and the response had
-/// a non-empty value).
+/// Resolve only the sender key already attached to the claimed peer.
+///
+/// v3 authenticates the in-band sender key, so falling back to a fresh
+/// keyserver response would merely compare one attacker-controlled key
+/// with another. Attribution requires a local peer-map pin.
+fn resolve_pinned_sender_pubkey(
+    state: &AppState,
+    sender_discord_id: &str,
+) -> Result<crypto::x25519::PublicKey, &'static str> {
+    let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+    lookup_peer_pubkey(&pm, sender_discord_id).map_err(|_| "OSL: v3 sender identity is not pinned")
+}
+
+/// Populate a peer from a signed keyserver bundle. The response proof
+/// and complete key shapes are checked before any live key is changed.
+/// Separated from HTTP so tests can exercise the mutation boundary.
+fn fetched_key_bundle(resp: &keystore::client::PubkeysResponse) -> crate::tofu::KeyBundle {
+    crate::tofu::KeyBundle {
+        ed25519_pub: resp.ik_ed25519_pub.clone(),
+        x25519_pub: resp.ik_x25519_pub.clone(),
+        mlkem768_pub: resp.ik_mlkem768_pub.clone(),
+        ratchet_initial_pub: resp.ik_ratchet_initial_pub.clone(),
+    }
+}
+
+fn trusted_key_bundle(entry: &crate::peer_map::PeerEntry) -> Option<crate::tofu::KeyBundle> {
+    entry.tofu_key_bundle.clone().or_else(|| {
+        Some(crate::tofu::KeyBundle {
+            ed25519_pub: entry.tofu_ed25519_pub.clone()?,
+            x25519_pub: entry.pubkey.clone()?,
+            mlkem768_pub: entry.ik_mlkem768_pub.clone()?,
+            ratchet_initial_pub: entry.ik_ratchet_initial_pub.clone(),
+        })
+    })
+}
+
 pub fn populate_peer_from_fetch_response(
     state: &AppState,
     discord_id: &str,
     resp: &keystore::client::PubkeysResponse,
 ) -> Result<bool, String> {
-    if resp.ik_x25519_pub.is_empty() {
-        return Err(format!(
-            "OSL: keyserver response for {discord_id} missing ik_x25519_pub"
-        ));
+    if !keystore::client::verify_peer_bundle(resp) {
+        return Err("OSL: keyserver bundle proof invalid".to_string());
+    }
+    let expected_user_id = {
+        let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        pm.get(discord_id)
+            .and_then(|entry| entry.osl_user_id.clone())
+    };
+    if expected_user_id
+        .as_deref()
+        .is_some_and(|expected| expected != resp.user_id)
+    {
+        return Err("OSL: keyserver bundle identity mismatch".to_string());
+    }
+    if resp.ik_x25519_pub.is_empty()
+        || resp.ik_ed25519_pub.is_empty()
+        || resp.ik_mlkem768_pub.is_empty()
+    {
+        return Err("OSL: keyserver bundle incomplete".to_string());
     }
     // Validate decode shape early so we error before mutating peer_map.
     let x_vec = STANDARD
@@ -5691,10 +5704,11 @@ pub fn populate_peer_from_fetch_response(
     // alert path raise the blocking accept banner. Once the user
     // accepts via `cmd_osl_accept_key_change`, the next fetch
     // reclassifies as `Unchanged` and the live keys flow through.
+    let fetched_bundle = fetched_key_bundle(resp);
     let tofu_outcome_peek = {
         let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
-        let baseline = pm.get(discord_id).and_then(|e| e.tofu_ed25519_pub.clone());
-        crate::tofu::classify(baseline.as_deref(), &resp.ik_ed25519_pub)
+        let baseline = pm.get(discord_id).and_then(trusted_key_bundle);
+        crate::tofu::classify(baseline.as_ref(), &fetched_bundle)
     };
     let live_writable = !matches!(tofu_outcome_peek, crate::tofu::TofuOutcome::Changed { .. });
     let mut mlkem_added = false;
@@ -5715,69 +5729,50 @@ pub fn populate_peer_from_fetch_response(
         if live_writable {
             entry.pubkey = Some(resp.ik_x25519_pub.clone());
             entry.ik_mlkem768_pub = Some(resp.ik_mlkem768_pub.clone());
-            if let Some(ratchet) = resp.ik_ratchet_initial_pub.clone() {
-                entry.ik_ratchet_initial_pub = Some(ratchet);
-            }
+            entry.ik_ratchet_initial_pub = resp.ik_ratchet_initial_pub.clone();
             mlkem_added = !had_mlkem;
         }
         entry
             .discord_id
             .get_or_insert_with(|| discord_id.to_string());
-        // REGISTER-FIX: leave a fully-consistent entry. osl_user_id
-        // (== the keyserver user_id == the Discord snowflake in V2)
-        // was never written here, which is why a keyless entry could
-        // never self-heal and v=4 DM sends never became eligible.
-        // Safe to set even on Changed — it's an identifier, not a key.
+        // Preserve the service-neutral routing identifier returned by
+        // the signed record. Discord snowflakes never enter this field.
         entry
             .osl_user_id
-            .get_or_insert_with(|| discord_id.to_string());
+            .get_or_insert_with(|| resp.user_id.clone());
     } else {
         // X25519 only; same gating.
         let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
         let entry = pm_guard.entry(discord_id.to_string()).or_default();
         if live_writable {
             entry.pubkey = Some(resp.ik_x25519_pub.clone());
-            if let Some(ratchet) = resp.ik_ratchet_initial_pub.clone() {
-                entry.ik_ratchet_initial_pub = Some(ratchet);
-            }
+            entry.ik_ratchet_initial_pub = resp.ik_ratchet_initial_pub.clone();
         }
         entry
             .discord_id
             .get_or_insert_with(|| discord_id.to_string());
         entry
             .osl_user_id
-            .get_or_insert_with(|| discord_id.to_string());
+            .get_or_insert_with(|| resp.user_id.clone());
     }
 
     if !live_writable {
         tracing::warn!(
-            discord_id = %discord_id,
-            "OSL: TOFU peek: peer Ed25519 changed but NOT yet accepted; \
-             refusing to overwrite live X25519/ML-KEM/ratchet bootstrap \
-             keys so outbound sends cannot silently encrypt to the new \
-             (possibly attacker) key. The pending key-change alert will \
-             surface; on accept, the next fetch reclassifies as \
-             Unchanged and the live keys flow through."
+            "OSL: peer bundle changed but was not accepted; refusing \
+             to replace live encryption keys"
         );
     }
 
-    // REGISTER-FIX (TOFU): compare the peer's Ed25519 identity key
-    // against the trusted first-seen baseline. NEVER blocks this
-    // function — it records the baseline (first use) or raises a
-    // blocking, user-visible KeyChangeAlert (NOT warn-swallowed) on
-    // a change. On Changed we additionally drop the ratchet exactly
-    // once (see fn-doc on `tofu_change_is_newly_observed`).
-    tofu_observe_peer(state, discord_id, &resp.ik_ed25519_pub);
+    // Compare the complete bundle with the trusted baseline. A change
+    // raises the blocking alert without replacing live keys.
+    tofu_observe_peer(state, discord_id, &fetched_bundle)?;
 
     Ok(mlkem_added)
 }
 
-/// REGISTER-FIX (TOFU): apply [`crate::tofu::classify`] to a peer's
-/// freshly-fetched Ed25519 pub. On first use, record + persist the
-/// baseline. On a change, raise a `KeyChangeAlert` (held until the
-/// user accepts/declines) and clear it again once the key matches.
-/// Pure decision logic lives in `crate::tofu`; this is the AppState
-/// + peer_map + persistence wiring.
+/// Apply [`crate::tofu::classify`] to a freshly fetched complete
+/// bundle. Pure decision logic lives in `crate::tofu`; this is the
+/// AppState, alert and persistence wiring.
 ///
 /// On a TOFU `Changed`, the peer's `ratchet_state` must be dropped
 /// EXACTLY ONCE — on first detection of a given new key. This fn
@@ -5790,21 +5785,34 @@ pub fn populate_peer_from_fetch_response(
 ///   session is invalid; drop)
 ///
 /// Pure so it is unit-tested without an `AppState`.
-fn tofu_change_is_newly_observed(pending_alert_new_key: Option<&str>, fetched: &str) -> bool {
-    match pending_alert_new_key {
-        Some(k) => k != fetched,
+fn tofu_change_is_newly_observed(
+    pending: Option<&crate::tofu::KeyBundle>,
+    fetched: &crate::tofu::KeyBundle,
+) -> bool {
+    match pending {
+        Some(bundle) => bundle != fetched,
         None => true,
     }
 }
 
 #[cfg(test)]
 mod tofu_change_idempotency_tests {
-    use super::tofu_change_is_newly_observed as f;
+    use super::{is_discord_snowflake_shaped, tofu_change_is_newly_observed as f};
+    use crate::tofu::KeyBundle;
+
+    fn bundle(x: &str) -> KeyBundle {
+        KeyBundle {
+            ed25519_pub: "ed".to_owned(),
+            x25519_pub: x.to_owned(),
+            mlkem768_pub: "mlkem".to_owned(),
+            ratchet_initial_pub: None,
+        }
+    }
 
     #[test]
     fn first_detection_no_pending_alert_is_newly_observed() {
         // No alert yet → first detection → drop ratchet once.
-        assert!(f(None, "NEWKEY"));
+        assert!(f(None, &bundle("new")));
     }
 
     #[test]
@@ -5812,44 +5820,74 @@ mod tofu_change_idempotency_tests {
         // The exact scenario that bricked DMs: every v=4 send
         // re-fetches and re-observes the SAME changed key. Must NOT
         // be treated as new (so the ratchet is not nuked every send).
-        assert!(!f(Some("NEWKEY"), "NEWKEY"));
+        let pending = bundle("new");
+        assert!(!f(Some(&pending), &pending));
     }
 
     #[test]
     fn key_changed_again_is_newly_observed() {
         // Pending alert was for KEY_A but the peer rotated AGAIN to
         // KEY_B → the bootstrapped session is invalid → drop again.
-        assert!(f(Some("KEY_A"), "KEY_B"));
+        assert!(f(Some(&bundle("a")), &bundle("b")));
     }
 
     #[test]
     fn repeated_calls_drop_exactly_once() {
         // Simulate the per-send refresh loop: first call drops, all
         // subsequent identical calls do not.
-        let fetched = "ROTATED";
-        let mut pending: Option<String> = None;
+        let fetched = bundle("rotated");
+        let mut pending: Option<KeyBundle> = None;
         let mut drops = 0;
         for _ in 0..50 {
-            if f(pending.as_deref(), fetched) {
+            if f(pending.as_ref(), &fetched) {
                 drops += 1;
-                pending = Some(fetched.to_string()); // alert now raised
+                pending = Some(fetched.clone()); // alert now raised
             }
         }
         assert_eq!(drops, 1, "ratchet must be dropped exactly once");
     }
+
+    #[test]
+    fn discord_snowflake_shaped_true_for_17_through_20_digits() {
+        assert!(is_discord_snowflake_shaped("12345678901234567"));
+        assert!(is_discord_snowflake_shaped("123456789012345678"));
+        assert!(is_discord_snowflake_shaped("1234567890123456789"));
+        assert!(is_discord_snowflake_shaped("12345678901234567890"));
+    }
+
+    #[test]
+    fn discord_snowflake_shaped_false_for_16_and_21_digits() {
+        assert!(!is_discord_snowflake_shaped("1234567890123456"));
+        assert!(!is_discord_snowflake_shaped("123456789012345678901"));
+    }
+
+    #[test]
+    fn discord_snowflake_shaped_false_for_non_numeric_osl_user_ids() {
+        assert!(!is_discord_snowflake_shaped("osl-user-id"));
+        assert!(!is_discord_snowflake_shaped("alice"));
+    }
+
+    #[test]
+    fn discord_snowflake_shaped_false_for_empty_string() {
+        assert!(!is_discord_snowflake_shaped(""));
+    }
 }
 
-fn tofu_observe_peer(state: &AppState, discord_id: &str, fetched_ed25519_b64: &str) {
+fn tofu_observe_peer(
+    state: &AppState,
+    discord_id: &str,
+    fetched: &crate::tofu::KeyBundle,
+) -> Result<(), String> {
     use crate::tofu::{classify, safety_number, TofuOutcome};
 
     let (outcome, osl_user_id) = {
         let mut pm = state.peer_map.lock().expect("peer_map mutex poisoned");
         let entry = pm.entry(discord_id.to_string()).or_default();
-        let outcome = classify(entry.tofu_ed25519_pub.as_deref(), fetched_ed25519_b64);
+        let baseline = trusted_key_bundle(entry);
+        let outcome = classify(baseline.as_ref(), fetched);
         if matches!(outcome, TofuOutcome::FirstUse) {
-            // Trust-on-FIRST-use: record the baseline. A change is
-            // only ever adopted later by an explicit user accept.
-            entry.tofu_ed25519_pub = Some(fetched_ed25519_b64.to_string());
+            entry.tofu_ed25519_pub = Some(fetched.ed25519_pub.clone());
+            entry.tofu_key_bundle = Some(fetched.clone());
         }
         (outcome, entry.osl_user_id.clone())
     };
@@ -5903,21 +5941,18 @@ fn tofu_observe_peer(state: &AppState, discord_id: &str, fetched_ed25519_b64: &s
                     .key_change_alerts
                     .lock()
                     .expect("key_change_alerts mutex poisoned");
-                g.get(discord_id).map(|a| a.new_ed25519_pub.clone())
+                g.get(discord_id).map(|a| a.pending_bundle.clone())
             };
-            let newly_observed =
-                tofu_change_is_newly_observed(pending_same.as_deref(), fetched_ed25519_b64);
+            let newly_observed = tofu_change_is_newly_observed(pending_same.as_ref(), fetched);
             if !newly_observed {
                 // Same change we already alerted on — do NOT re-nuke
                 // a (possibly freshly re-bootstrapped) ratchet, do
                 // not reset the alert's first_observed. Idempotent.
                 tracing::debug!(
-                    discord_id = %discord_id,
-                    "OSL: TOFU — peer key change re-observed (alert \
-                     already pending); ratchet left intact so the \
-                     session can establish pending user accept"
+                    "OSL: peer bundle change re-observed; existing \
+                     blocking alert retained"
                 );
-                return;
+                return Ok(());
             }
             {
                 let mut pm = state.peer_map.lock().expect("peer_map mutex poisoned");
@@ -5929,17 +5964,13 @@ fn tofu_observe_peer(state: &AppState, discord_id: &str, fetched_ed25519_b64: &s
             let alert = crate::state::KeyChangeAlert {
                 discord_id: discord_id.to_string(),
                 osl_user_id,
-                old_ed25519_pub: old,
-                new_ed25519_pub: fetched_ed25519_b64.to_string(),
-                new_safety_number: safety_number(fetched_ed25519_b64),
+                old_ed25519_pub: old.ed25519_pub,
+                new_ed25519_pub: fetched.ed25519_pub.clone(),
+                new_safety_number: safety_number(fetched).map_err(str::to_owned)?,
                 first_observed: keystore::iso_8601_from_unix_seconds(now_unix_secs().max(0) as u64),
+                pending_bundle: fetched.clone(),
             };
-            tracing::error!(
-                discord_id = %discord_id,
-                "OSL: TOFU — peer Ed25519 identity key CHANGED; raising \
-                 blocking key-change alert (NOT swallowed). Messaging \
-                 continues; user must verify + accept or decline."
-            );
+            tracing::error!("OSL: peer bundle changed; raising blocking key-change alert");
             state
                 .key_change_alerts
                 .lock()
@@ -5947,6 +5978,7 @@ fn tofu_observe_peer(state: &AppState, discord_id: &str, fetched_ed25519_b64: &s
                 .insert(discord_id.to_string(), alert);
         }
     }
+    Ok(())
 }
 
 // =====================================================================
@@ -5985,20 +6017,24 @@ pub fn cmd_osl_list_key_change_alerts(
 /// trusted TOFU baseline, persist, and clear the alert. (User did
 /// the out-of-band safety-number check, or accepts the risk.)
 pub fn cmd_osl_accept_key_change(state: &AppState, discord_id: String) -> Result<(), String> {
-    let new_key = {
+    let new_bundle = {
         let g = state
             .key_change_alerts
             .lock()
             .expect("key_change_alerts mutex poisoned");
         match g.get(&discord_id) {
-            Some(a) => a.new_ed25519_pub.clone(),
-            None => return Err(format!("OSL: no pending key-change for {discord_id}")),
+            Some(a) => a.pending_bundle.clone(),
+            None => return Err("OSL: no pending key-change".to_string()),
         }
     };
     {
         let mut pm = state.peer_map.lock().expect("peer_map mutex poisoned");
         let entry = pm.entry(discord_id.clone()).or_default();
-        entry.tofu_ed25519_pub = Some(new_key);
+        entry.tofu_ed25519_pub = Some(new_bundle.ed25519_pub.clone());
+        entry.pubkey = Some(new_bundle.x25519_pub.clone());
+        entry.ik_mlkem768_pub = Some(new_bundle.mlkem768_pub.clone());
+        entry.ik_ratchet_initial_pub = new_bundle.ratchet_initial_pub.clone();
+        entry.tofu_key_bundle = Some(new_bundle);
         // v=4 desync fix (defensive): an accepted key change is an
         // identity rotation — any ratchet_state was derived from the
         // pre-rotation SessionContext and is undecryptable. Drop it
@@ -6013,10 +6049,7 @@ pub fn cmd_osl_accept_key_change(state: &AppState, discord_id: String) -> Result
         .lock()
         .expect("key_change_alerts mutex poisoned")
         .remove(&discord_id);
-    tracing::warn!(
-        discord_id = %discord_id,
-        "OSL: TOFU — user ACCEPTED peer key change; baseline updated"
-    );
+    tracing::warn!("OSL: user accepted peer bundle change; baseline updated");
     Ok(())
 }
 
@@ -6031,40 +6064,44 @@ pub fn cmd_osl_decline_key_change(state: &AppState, discord_id: String) -> Resul
         .remove(&discord_id)
         .is_some();
     if !removed {
-        return Err(format!("OSL: no pending key-change for {discord_id}"));
+        return Err("OSL: no pending key-change".to_string());
     }
-    tracing::warn!(
-        discord_id = %discord_id,
-        "OSL: TOFU — user DECLINED peer key change; old baseline kept \
-         (alert re-raises on next fetch while the key differs)"
-    );
+    tracing::warn!("OSL: user declined peer bundle change; old baseline kept");
     Ok(())
 }
 
-/// Safety number for a peer's CURRENT trusted Ed25519 baseline
-/// (peer_map `tofu_ed25519_pub`). For out-of-band verification in
-/// the whitelist/peer UI. Errors if the peer has no recorded key.
+/// Safety number for a peer's complete trusted key bundle.
 pub fn cmd_osl_peer_safety_number(state: &AppState, discord_id: String) -> Result<String, String> {
     let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
     let entry = pm
         .get(&discord_id)
-        .ok_or_else(|| format!("OSL: unknown peer {discord_id}"))?;
-    let key = entry
-        .tofu_ed25519_pub
-        .as_deref()
-        .ok_or_else(|| format!("OSL: no trusted key for {discord_id} yet"))?;
-    Ok(crate::tofu::safety_number(key))
+        .ok_or_else(|| "OSL: unknown peer".to_string())?;
+    let bundle = trusted_key_bundle(entry)
+        .ok_or_else(|| "OSL: peer has no trusted key bundle".to_string())?;
+    crate::tofu::safety_number(&bundle).map_err(str::to_owned)
 }
 
-/// Safety number for OUR OWN Ed25519 identity pub, so the user can
-/// read it out to a peer for mutual out-of-band verification.
+/// Safety number for our complete public-key bundle.
 pub fn cmd_osl_self_safety_number(state: &AppState) -> Result<String, String> {
     let g = state.identity.lock().expect("identity mutex poisoned");
     let id = g
         .as_ref()
         .ok_or_else(|| "OSL: identity not loaded".to_string())?;
-    let b64 = STANDARD.encode(id.ed25519_public.as_bytes());
-    Ok(crate::tofu::safety_number(&b64))
+    let bundle = crate::tofu::KeyBundle {
+        ed25519_pub: STANDARD.encode(id.ed25519_public.as_bytes()),
+        x25519_pub: STANDARD.encode(id.x25519_public.as_bytes()),
+        mlkem768_pub: STANDARD.encode(id.mlkem_public_bytes),
+        ratchet_initial_pub: id
+            .ratchet_initial_pub
+            .map(|key| STANDARD.encode(key.as_bytes())),
+    };
+    crate::tofu::safety_number(&bundle).map_err(str::to_owned)
+}
+
+/// True when this string is shaped like a Discord snowflake and therefore can
+/// never resolve as a keyserver identity (migration 0029 refuses them).
+pub(crate) fn is_discord_snowflake_shaped(value: &str) -> bool {
+    value.chars().all(|c| c.is_ascii_digit()) && (17..=20).contains(&value.len())
 }
 
 /// Phase 9-A1b: keyserver-refresh helper. Looks up the peer's
@@ -6079,17 +6116,15 @@ pub fn cmd_osl_self_safety_number(state: &AppState) -> Result<String, String> {
 ///   the keyserver returned no ML-KEM,
 /// - `Err(msg)` if the keyserver request itself errored.
 fn refresh_peer_pubkeys_from_keyserver(state: &AppState, discord_id: &str) -> Result<bool, String> {
-    // REGISTER-FIX: in V2 a peer's osl_user_id IS their Discord
-    // snowflake (the keyserver is keyed by snowflake). A wiped /
-    // re-whitelisted entry has osl_user_id=None — default to the
-    // snowflake so a keyless entry self-heals instead of failing
-    // forever (the old `return Ok(false)` here was the dead end).
     let osl_user_id = {
         let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
         pm.get(discord_id)
             .and_then(|e| e.osl_user_id.clone())
-            .unwrap_or_else(|| discord_id.to_string())
+            .ok_or_else(|| "OSL: peer has no verified OSL identity".to_string())?
     };
+    if is_discord_snowflake_shaped(&osl_user_id) {
+        return Err("OSL: Discord identifiers cannot resolve keys".to_string());
+    }
     let resp = {
         let ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
         let client = ks_guard
@@ -6097,15 +6132,9 @@ fn refresh_peer_pubkeys_from_keyserver(state: &AppState, discord_id: &str) -> Re
             .ok_or_else(|| "OSL: key-server not initialised".to_string())?;
         client
             .fetch_pubkeys(&osl_user_id)
-            .map_err(|e| format!("OSL: keyserver fetch_pubkeys({osl_user_id}): {e}"))?
+            .map_err(|_| "OSL: peer key fetch refused".to_string())?
     };
     let added = populate_peer_from_fetch_response(state, discord_id, &resp)?;
-    tracing::info!(
-        discord_id = %discord_id,
-        osl_user_id = %osl_user_id,
-        ml_kem_added = added,
-        "OSL: keyserver pubkey refresh"
-    );
     Ok(added)
 }
 
@@ -6642,14 +6671,6 @@ pub fn cmd_osl_set_whitelist(
             },
         };
         pe.outgoing_whitelists.push(new_entry);
-        // REGISTER-FIX: seed osl_user_id (== the peer's Discord
-        // snowflake == their keyserver user_id in V2) so the
-        // keyserver fetch below — and every later send/receive —
-        // can resolve this peer. Without this, a whitelisted peer
-        // stayed permanently keyless (encrypt-to-self-only on send,
-        // UnknownSender on receive).
-        pe.osl_user_id
-            .get_or_insert_with(|| peer_discord_id.clone());
         // Also evict any prior burned-scope entry for the same
         // scope shape — re-whitelisting after a burn is allowed
         // and the §3.5 semantics say "fresh keys → new messages
@@ -6675,28 +6696,6 @@ pub fn cmd_osl_set_whitelist(
     // `maybe_encrypt` when a main password is set.
     persist_peer_map_now(state);
     persist_whitelist_state_now(state);
-
-    // REGISTER-FIX: pull the peer's real keys (x25519 + ML-KEM
-    // [+ ratchet]) from the keyserver NOW so whitelisting yields a
-    // key-complete entry — the user shouldn't have to send/receive
-    // first to trigger a lazy fetch. Best-effort: if the keyserver
-    // is unreachable / not yet installed at this moment, the
-    // entry's seeded osl_user_id lets the send-path's
-    // PeerMissingKeys → refresh retry self-heal later. A failure
-    // here must NOT fail the whitelist op.
-    match refresh_peer_pubkeys_from_keyserver(state, &peer_discord_id) {
-        Ok(_) => {
-            persist_peer_map_now(state);
-        }
-        Err(e) => {
-            tracing::info!(
-                peer = %peer_discord_id,
-                error = %e,
-                "OSL: whitelist-time keyserver key fetch deferred \
-                 (will self-heal on next send/receive)"
-            );
-        }
-    }
 
     // 7d-FIX1 decision-B: re-whitelisting a scope removes it from
     // the global burned-scopes ledger so the receive observer
@@ -6747,10 +6746,6 @@ pub fn cmd_osl_bulk_set_whitelist(
             if pe.discord_id.is_none() {
                 pe.discord_id = Some(did.clone());
             }
-            // REGISTER-FIX: seed osl_user_id (== snowflake in V2) so
-            // the post-loop keyserver refresh + later send/receive
-            // can resolve each bulk-whitelisted peer.
-            pe.osl_user_id.get_or_insert_with(|| did.clone());
             let already = pe
                 .outgoing_whitelists
                 .iter()
@@ -6798,20 +6793,6 @@ pub fn cmd_osl_bulk_set_whitelist(
     persist_peer_map_now(state);
     persist_whitelist_state_now(state);
 
-    // REGISTER-FIX: best-effort keyserver key fetch for every
-    // bulk-whitelisted peer so the entries are key-complete (same
-    // rationale as cmd_osl_set_whitelist). Per-peer failures are
-    // non-fatal — the seeded osl_user_id lets the send-path
-    // PeerMissingKeys → refresh retry self-heal later.
-    let mut any_fetched = false;
-    for did in &member_dids {
-        if refresh_peer_pubkeys_from_keyserver(state, did).is_ok() {
-            any_fetched = true;
-        }
-    }
-    if any_fetched {
-        persist_peer_map_now(state);
-    }
     Ok(affected)
 }
 
@@ -7750,7 +7731,7 @@ pub fn ensure_keyserver_registered(state: &AppState, base_url: &str, client_toke
         let clear_success = |resp: &keystore::RegisterResponse| {
             state.set_cloud_registration_state(crate::state::CloudRegistrationState::Registered);
             tracing::info!(
-                user_id = %resp.user_id,
+                user_id = %crate::log_id::log_id(&resp.user_id),
                 initial = resp.registered_at.is_some(),
                 status = resp.status.as_deref().unwrap_or(
                     if resp.registered_at.is_some() { "registered" } else { "ok" }
@@ -7847,18 +7828,11 @@ pub fn ensure_keyserver_registered(state: &AppState, base_url: &str, client_toke
             }
         } else {
             match client.register(id) {
-                Ok(resp) => {
+                Ok(_) => {
                     state.set_cloud_registration_state(
                         crate::state::CloudRegistrationState::Registered,
                     );
-                    tracing::info!(
-                        user_id = %resp.user_id,
-                        initial = resp.registered_at.is_some(),
-                        status = resp.status.as_deref().unwrap_or(
-                            if resp.registered_at.is_some() { "registered" } else { "ok" }
-                        ),
-                        "OSL: ensure_keyserver_registered: registered with key-server"
-                    );
+                    tracing::info!("OSL: identity registered with key-server");
                     // B: a successful register (registered / noop, no 403)
                     // is authoritative proof there is NO key conflict.
                     // Clear any stale 403 alert so a successfully-
@@ -8288,14 +8262,14 @@ pub fn cmd_osl_recover_identity_from_phrase_with_dir(
             })?
     };
 
-    let mut recovered = keystore::identity_from_entropy(entropy, snowflake.clone());
+    let mut recovered = keystore::native_identity_from_entropy(entropy);
     recovered.discord_snowflake = Some(snowflake.clone());
 
     // A legacy identity can have recovery_entropy added later without its
     // original random keys becoming phrase-derived.  Do not let such a
     // phrase silently replace that identity.  A locally matching key is the
-    // normal seed-restore case; otherwise require the authoritative
-    // keyserver row to match the phrase-derived Ed25519 key before touching
+    // normal seed-restore case; otherwise require the signed keyserver
+    // row to match the phrase-derived Ed25519 key before touching
     // disk.  In particular, a network failure is not permission to replace
     // conflicting local evidence.
     let local_ed_matches = {
@@ -8315,7 +8289,7 @@ pub fn cmd_osl_recover_identity_from_phrase_with_dir(
              after the keyserver connects."
                 .to_string()
         })?;
-        match client.fetch_pubkeys(&snowflake) {
+        match client.fetch_pubkeys(&recovered.user_id) {
             Ok(row) => {
                 let recovered_ed = STANDARD.encode(recovered.ed25519_public.as_bytes());
                 if row.ik_ed25519_pub != recovered_ed {
@@ -9895,21 +9869,6 @@ pub fn cmd_osl_bulk_set_dm_whitelist(
             if pe.discord_id.is_none() {
                 pe.discord_id = Some(did.clone());
             }
-            // Probe-2 Rust Bug 4: previously this path left
-            // `osl_user_id`/`pubkey`/`ik_mlkem768_pub`/
-            // `ik_ratchet_initial_pub` all None — every freshly
-            // bulk-whitelisted peer hit `PeerMissingKeys` on the
-            // first send. The v=3 path's refresh-on-error retry
-            // sometimes rescued it (only because
-            // `refresh_peer_pubkeys_from_keyserver` defaults
-            // `osl_user_id` to the snowflake), but if keyserver
-            // was unreachable at first send the entire bulk set
-            // was dead. Seed `osl_user_id` synchronously here so
-            // the resolver has a complete identifier; the keyserver
-            // refresh after the locks drop populates the rest.
-            if pe.osl_user_id.is_none() {
-                pe.osl_user_id = Some(did.clone());
-            }
             let already = pe
                 .outgoing_whitelists
                 .iter()
@@ -9930,20 +9889,6 @@ pub fn cmd_osl_bulk_set_dm_whitelist(
     }
     persist_peer_map_now(state);
     persist_whitelist_state_now(state);
-    // Probe-2 Rust Bug 4: best-effort proactive keyserver refresh so
-    // the first send to each peer has X25519 / ML-KEM / ratchet pubs
-    // already populated. Failures are logged + swallowed — the v=3
-    // send-side refresh-on-error path is still the safety net.
-    for did in &member_dids {
-        if let Err(e) = refresh_peer_pubkeys_from_keyserver(state, did) {
-            tracing::debug!(
-                discord_id = %did,
-                error = %e,
-                "OSL: bulk_set_dm_whitelist: proactive keyserver refresh \
-                 failed (non-fatal; first send will retry)"
-            );
-        }
-    }
     Ok(affected)
 }
 
@@ -10391,13 +10336,13 @@ pub fn cmd_osl_burn_engage(state: &AppState) -> Result<(), String> {
                 match client.unregister_signed(&user_id, &sig_b64, timestamp_ms) {
                     Ok(()) => {
                         tracing::info!(
-                            user_id = %user_id,
+                            user_id = %crate::log_id::log_id(&user_id),
                             "OSL: burn_engage: keyserver unregister succeeded"
                         );
                     }
                     Err(e) => {
                         tracing::warn!(
-                            user_id = %user_id,
+                            user_id = %crate::log_id::log_id(&user_id),
                             error = %e,
                             "OSL: burn_engage: keyserver unregister failed; \
                              local wipe still proceeds. If re-registration \

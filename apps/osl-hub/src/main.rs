@@ -53,7 +53,7 @@ use osl_privacy_hub::scrub_index::{
 };
 use osl_privacy_hub::security::{
     self, AddFriendResult, FriendCodeExport, HubScopeBurnResult, HubSecurityState, PersonDto,
-    ScopeSecurityDto,
+    RemoveFriendResult, ScopeSecurityDto,
 };
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
 use osl_privacy_hub::service_host::{self, ActiveServiceHost, ServiceHostState};
@@ -66,7 +66,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Mutex,
 };
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 use tauri_plugin_updater::UpdaterExt;
 
 /// Diagnostics-only startup breadcrumb trace. TEMPORARY: added to bracket the
@@ -121,6 +121,27 @@ fn active_osl_capture_protection() -> runtime::ScreenshotProtection {
 #[cfg(not(feature = "discord-qa-shell"))]
 fn active_osl_capture_protection() -> runtime::ScreenshotProtection {
     runtime::ScreenshotProtection::On
+}
+
+const MAIN_WINDOW_CAPTURE_REFUSED_EVENT: &str = "hub-main-capture-protection-refused";
+
+fn protect_main_window_or_hide(window: &tauri::WebviewWindow) -> bool {
+    if screenshot::apply_to_window(window, active_osl_capture_protection()).is_ok() {
+        return true;
+    }
+    let _ = window.hide();
+    let _ = window.emit(MAIN_WINDOW_CAPTURE_REFUSED_EVENT, ());
+    false
+}
+
+fn protect_main_webview_or_hide(webview: &tauri::Webview) -> bool {
+    if screenshot::apply_to_webview(webview, active_osl_capture_protection()).is_ok() {
+        return true;
+    }
+    let window = webview.window();
+    let _ = window.hide();
+    let _ = window.emit(MAIN_WINDOW_CAPTURE_REFUSED_EVENT, ());
+    false
 }
 
 #[cfg(feature = "discord-qa-shell")]
@@ -306,7 +327,10 @@ mod overlay_open_timing_tests {
                 continue;
             }
             let millis = value.strip_suffix("ms").expect("ms suffix");
-            assert!(!millis.is_empty() && millis.chars().all(|c| c.is_ascii_digit()), "{value}");
+            assert!(
+                !millis.is_empty() && millis.chars().all(|c| c.is_ascii_digit()),
+                "{value}"
+            );
         }
     }
 }
@@ -375,7 +399,9 @@ fn qa_atomic_send_receipt(
     outcome: &'static str,
     error: Option<&str>,
     error_detail: Option<&'static str>,
-    carrier_diagnostics: Option<osl_privacy_hub::discord_qa_inbound_receipt::PostCarrierDiagnostics>,
+    carrier_diagnostics: Option<
+        osl_privacy_hub::discord_qa_inbound_receipt::PostCarrierDiagnostics,
+    >,
 ) {
     let _ = osl_privacy_hub::discord_qa_inbound_receipt::record_headless_send_phase_detailed(
         QA_ATOMIC_SEND_MARKER,
@@ -454,8 +480,14 @@ fn set_hub_screenshot_protection(app: tauri::AppHandle, enabled: bool) -> Result
     } else {
         runtime::ScreenshotProtection::Off
     };
-    screenshot::apply_to_window(&window, protection)
-        .map_err(|_| "Windows capture resistance could not be changed".to_owned())
+    if screenshot::apply_to_window(&window, protection).is_ok() {
+        return Ok(());
+    }
+    if enabled {
+        let _ = window.hide();
+        let _ = window.emit(MAIN_WINDOW_CAPTURE_REFUSED_EVENT, ());
+    }
+    Err("Windows capture resistance could not be changed".to_owned())
 }
 
 #[tauri::command]
@@ -1815,10 +1847,7 @@ fn protected_overlay_frame(app: &tauri::AppHandle) -> Option<ProtectedOverlayFra
 /// Screen coordinates never leave this function -- only the offset from the
 /// overlay window's own origin does, which is exactly what the renderer can use
 /// and reveals nothing about where anything is on the operator's desktop.
-fn overlay_relative_row_rect(
-    frame: &ProtectedOverlayFrame,
-    bounds: [i32; 4],
-) -> Option<[f64; 4]> {
+fn overlay_relative_row_rect(frame: &ProtectedOverlayFrame, bounds: [i32; 4]) -> Option<[f64; 4]> {
     let [screen_left, screen_top, screen_right, screen_bottom] = bounds;
     let left = screen_left.checked_sub(frame.origin_x)?;
     let top = screen_top.checked_sub(frame.origin_y)?;
@@ -2248,7 +2277,14 @@ async fn send_native_discord_qa_atomic_text(
             Ok(owner) => owner,
             Err(error) => {
                 qa_discord_send_stage("send_refused_owner");
-                qa_atomic_send_receipt(&registration, "permission", "error", Some(&error), None, None);
+                qa_atomic_send_receipt(
+                    &registration,
+                    "permission",
+                    "error",
+                    Some(&error),
+                    None,
+                    None,
+                );
                 return Err(error);
             }
         };
@@ -2423,12 +2459,13 @@ async fn send_native_discord_qa_atomic_text(
             // conjunct of the post-send confirmation check failed:
             // `context_unchanged && carrier.status == Sent && carrier.placed
             // && carrier.enter_sent`.
-            let carrier_diagnostics = osl_privacy_hub::discord_qa_inbound_receipt::PostCarrierDiagnostics {
-                carrier_status: discord_carrier_status_label(carrier.status),
-                carrier_placed: carrier.placed,
-                carrier_enter_sent: carrier.enter_sent,
-                overlay_context_unchanged: context_unchanged,
-            };
+            let carrier_diagnostics =
+                osl_privacy_hub::discord_qa_inbound_receipt::PostCarrierDiagnostics {
+                    carrier_status: discord_carrier_status_label(carrier.status),
+                    carrier_placed: carrier.placed,
+                    carrier_enter_sent: carrier.enter_sent,
+                    overlay_context_unchanged: context_unchanged,
+                };
             qa_atomic_send_receipt(
                 &registration,
                 "post",
@@ -2856,6 +2893,56 @@ fn qa_discord_rehydrate_stage(stage: &'static str, count: Option<usize>) {
     }
 }
 
+/// The two rectangles `overlay_relative_row_rect` compares, and nothing else.
+///
+/// Placement refusal is a pure geometry question -- is this row inside OSL's
+/// window -- but the answer was a bare `None`, so "the frame is too small" and
+/// "the row is somewhere else entirely" were the same observation. Geometry
+/// only: no row text, no candidate, no locator ever reaches this file.
+#[cfg(feature = "discord-qa-shell")]
+fn qa_discord_rehydrate_geometry(frame: Option<&ProtectedOverlayFrame>, row: Option<[i32; 4]>) {
+    use std::io::Write as _;
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(std::env::temp_dir().join("osl-discord-qa-rehydrate.txt"))
+    else {
+        return;
+    };
+    match (frame, row) {
+        (Some(frame), Some([left, top, right, bottom])) => {
+            let _ = writeln!(
+                file,
+                "rehydrate_place_geometry frame_x={} frame_y={} frame_w={} frame_h={} \
+                 row_l={} row_t={} row_r={} row_b={} rel_l={} rel_t={} rel_r={} rel_b={}",
+                frame.origin_x,
+                frame.origin_y,
+                frame.width,
+                frame.height,
+                left,
+                top,
+                right,
+                bottom,
+                left - frame.origin_x,
+                top - frame.origin_y,
+                right - frame.origin_x,
+                bottom - frame.origin_y,
+            );
+        }
+        _ => {
+            let _ = writeln!(
+                file,
+                "rehydrate_place_geometry frame={} row={}",
+                frame.is_some(),
+                row.is_some()
+            );
+        }
+    }
+}
+
+#[cfg(not(feature = "discord-qa-shell"))]
+fn qa_discord_rehydrate_geometry(_frame: Option<&ProtectedOverlayFrame>, _row: Option<[i32; 4]>) {}
+
 #[cfg(not(feature = "discord-qa-shell"))]
 fn qa_discord_rehydrate_stage(stage: &'static str, count: Option<usize>) {
     let _ = (stage, count);
@@ -2900,6 +2987,10 @@ fn qa_named_rehydrate_refusal<T>(
 struct RehydratedNativeDiscordRowDto {
     flagtext: String,
     plaintext: Option<String>,
+    /// Who wrote this row, proven by the signature the decode leg verified.
+    /// `Some` exactly when `plaintext` is `Some`; the renderer refuses to paint
+    /// a row that has text without it rather than guessing an author.
+    orientation: Option<broker::RehydratedRowOrientation>,
     row: Option<NativeDiscordRowRectDto>,
 }
 
@@ -3054,6 +3145,13 @@ async fn rehydrate_native_discord_overlay_history(
         // refused it" actually happened.
         for (stage, count) in [
             (broker::REHYDRATE_DECODE_ROWS, counts.rows),
+            // Immediately after the row count and before every verdict, because
+            // it is what makes the verdicts readable: `pointer_absent` with a
+            // healthy candidate count means "no OSL pointer in these rows", and
+            // `pointer_absent` with zero candidates means the decoder was never
+            // shown the body at all. Those were one indistinguishable number on
+            // the 2026-07-26 live run.
+            (broker::REHYDRATE_DECODE_CANDIDATES, counts.candidates),
             (broker::REHYDRATE_DECODE_DISPLAY_OFF, counts.display_off),
             (
                 broker::REHYDRATE_DECODE_BUDGET_EXHAUSTED,
@@ -3092,21 +3190,34 @@ async fn rehydrate_native_discord_overlay_history(
             // symptom is identical to "nothing decoded".
             qa_discord_rehydrate_stage(native_discord_overlay::REHYDRATE_FRAME_ABSENT, None);
         }
+        // One decoded row is enough to answer the placement question: every row
+        // is measured against the same frame, so a frame that refuses one
+        // refuses all of them for the same reason.
+        qa_discord_rehydrate_geometry(
+            frame.as_ref(),
+            rehydrated
+                .iter()
+                .find(|row| row.plaintext.is_some())
+                .and_then(|row| row.bounds),
+        );
         let rows: Vec<RehydratedNativeDiscordRowDto> = rehydrated
             .into_iter()
             .map(|row| RehydratedNativeDiscordRowDto {
                 flagtext: row.flagtext,
                 plaintext: row.plaintext,
+                orientation: row.orientation,
                 row: frame
                     .as_ref()
                     .zip(row.bounds)
                     .and_then(|(frame, bounds)| overlay_relative_row_rect(frame, bounds))
-                    .map(|[left_px, top_px, width_px, height_px]| NativeDiscordRowRectDto {
-                        left_px,
-                        top_px,
-                        width_px,
-                        height_px,
-                    }),
+                    .map(
+                        |[left_px, top_px, width_px, height_px]| NativeDiscordRowRectDto {
+                            left_px,
+                            top_px,
+                            width_px,
+                            height_px,
+                        },
+                    ),
             })
             .collect();
         // The last two counts before the wire, and the pair that separates
@@ -4187,6 +4298,17 @@ async fn verify_hub_friend_safety_number(
 }
 
 #[tauri::command]
+async fn remove_hub_friend(
+    core: State<'_, HubCoreState>,
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    person_id: String,
+) -> Result<RemoveFriendResult, String> {
+    let _session = session.transition.lock().await;
+    security::remove_friend(&core, &security_state, person_id)
+}
+
+#[tauri::command]
 async fn list_hub_people(
     core: State<'_, HubCoreState>,
     session: State<'_, HubAccountSessionState>,
@@ -4858,26 +4980,85 @@ async fn burn_active_hub_context(
 /// here selects a conversation, opens a context, engages the lock, or types
 /// into anything OSL does not already own. Every wait is bounded, and every
 /// missing precondition is a written verdict rather than a hang.
+///
+/// VERBS: the rendezvous used to drive exactly one thing -- the send -- which
+/// meant a two-identity rig could *observe* the receiving instance but never
+/// *drive* it, so drain, reveal, rehydrate and the eye were only ever provable
+/// if a human happened to click at the right moment. It now drives six verbs,
+/// named in the trigger file body:
+///
+/// | verb | drives | mutates |
+/// |---|---|---|
+/// | `status` | nothing | no |
+/// | `host` | `host_native_app_window` | yes |
+/// | `send` | `send_native_discord_qa_atomic_text` | yes |
+/// | `drain` | `open_native_discord_overlay_text` | yes |
+/// | `rehydrate` | `rehydrate_native_discord_overlay_history` | yes |
+/// | `reveal-view-once` | a drain, then `reveal_native_discord_overlay_view_once` | yes |
+///
+/// Every one of those is the *exact* entry point the protected renderer already
+/// calls, reached the same way [`drive_probe_send`] reaches the send command.
+/// None of them is a QA-only path into the broker: a parallel implementation is
+/// how this surface produced QA/production divergences before.
+///
+/// ADDRESSING: see [`spawn_trigger_watcher`]. The unqualified trigger is a
+/// global rendezvous whose first consumer wins it, which two instances race
+/// for, so each instance additionally polls a trigger addressed to its own
+/// bundle identifier and answers it into an equally addressed verdict.
 #[cfg(feature = "discord-qa-shell")]
 mod qa_selftest {
     use super::*;
+    use osl_privacy_hub::qa_selftest_request::{
+        instance_file_token, not_ready_refusal, parse_request, readiness_criterion_is_graded,
+        DrainReport, HostAction, HostReport, ParsedRequest, RehydrateReport, RevealReport,
+        RevealTarget, SelftestRequest, Verb,
+    };
+    use osl_privacy_hub::native_window_host::NativeWindowHostStatus;
     use std::collections::BTreeMap;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     /// The one and only string this driver will ever send.
     const PROBE_PLAINTEXT: &str = "OSL Discord QA probe";
     const TRIGGER_FILE: &str = "osl-qa-selftest.request";
     const VERDICT_FILE: &str = "osl-qa-selftest.json";
-    /// Written first, then renamed onto [`VERDICT_FILE`], so a harness never
+    /// Written first, then renamed onto the verdict path, so a harness never
     /// reads a half-written verdict.
-    const VERDICT_PARTIAL_FILE: &str = "osl-qa-selftest.json.partial";
+    const VERDICT_PARTIAL_SUFFIX: &str = ".partial";
+    /// The `{token}` in each of these is [`instance_file_token`] of this
+    /// process's Tauri bundle identifier -- the same identifier the two-identity
+    /// harness already reads off the single-instance marker window class, and
+    /// the only thing that tells two OSL builds apart.
+    const ADDRESSED_TRIGGER_FORMAT: &str = "osl-qa-selftest.{token}.request";
+    const ADDRESSED_VERDICT_FORMAT: &str = "osl-qa-selftest.{token}.json";
+    const ADDRESSED_DECLINE_FORMAT: &str = "osl-qa-selftest.{token}.declined.json";
     /// The append-only breadcrumb trail `qa_discord_send_stage` writes.
     const SEND_STAGE_TRAIL_FILE: &str = "osl-discord-qa-send-stage.txt";
-    /// Mirrors `osl_privacy_hub::discord_qa_inbound_receipt::SEND_STAGE_RECEIPT_FILE`,
-    /// which is `pub(crate)` to the library and so cannot be named from this
-    /// binary crate. If that constant ever changes, change this with it.
+    /// Mirrors `osl_privacy_hub::discord_qa_inbound_receipt::SEND_STAGE_RECEIPT_FILE`
+    /// and its three siblings, which are `pub(crate)` to the library and so
+    /// cannot be named from this binary crate. If those constants ever change,
+    /// change these with them.
     const SEND_STAGE_RECEIPT_FILE: &str = "discord-qa-send-stage-receipt.json";
+    const INBOUND_RECEIPT_FILE: &str = "discord-qa-inbound-receipt.json";
+    const INBOUND_POLL_RECEIPT_FILE: &str = "discord-qa-inbound-poll-receipt.json";
+    const OUTBOUND_RECEIPT_FILE: &str = "discord-qa-outbound-receipt.json";
+
+    /// The scope this driver names when it asks for a rehydration.
+    ///
+    /// The authority for *what* is read is always OSL's own native binding; the
+    /// renderer's `scope` only widens the edge the same-scope floor is keyed on.
+    /// A fixed private value therefore reads the real conversation while sharing
+    /// no floor with the renderer's own edges, so driving this verb can neither
+    /// be starved by the renderer nor starve it. Two of these back to back
+    /// inside `REHYDRATE_MIN_INTERVAL_MS` are refused by the floor, which is
+    /// reported as `read: false` with the remaining `retryAfterMs` -- a rate
+    /// limit, never an empty conversation.
+    const REHYDRATE_SCOPE: &str = "osl-qa-selftest";
+
+    /// The largest trigger body this driver will read. A request is a handful of
+    /// fixed labels; anything larger is not one, and reading it unbounded would
+    /// hand an arbitrary file the ability to stall the watcher.
+    const MAX_REQUEST_BYTES: u64 = 8 * 1024;
 
     const POLL_INTERVAL: Duration = Duration::from_millis(500);
     /// How long one triggered run will wait for an adopted Discord window, an
@@ -4888,6 +5069,10 @@ mod qa_selftest {
     /// before reporting `send-timeout`. The command keeps running; the
     /// in-flight latch below stops a second probe from overlapping it.
     const SEND_TIMEOUT: Duration = Duration::from_secs(45);
+    /// Hosting enumerates native windows and runs its host operation on a
+    /// blocking worker. Dedicated Discord may additionally use the production
+    /// command's bounded install wait, so this has its own honest ceiling.
+    const HOST_TIMEOUT: Duration = Duration::from_secs(240);
     /// The outer bound on one whole invocation, enforced by the watcher thread
     /// against the run thread.
     ///
@@ -4899,7 +5084,36 @@ mod qa_selftest {
     /// exists to make impossible. Comfortably larger than the two bounded
     /// waits it contains, so it only ever fires on a genuine stall.
     const RUN_TIMEOUT: Duration = Duration::from_secs(150);
+    /// How long one drive of a receive-side verb will wait before reporting
+    /// `verb-timeout`. A drain that has to resolve cover pointers pays a
+    /// cipher-store fetch per row and the store allows each one 15 seconds, so
+    /// this is deliberately larger than [`SEND_TIMEOUT`].
+    const VERB_TIMEOUT: Duration = Duration::from_secs(60);
+    /// Head-room between the bounded waits one verb contains and the outer
+    /// bound the watcher enforces against the run thread, so the outer bound
+    /// only ever fires on a genuine stall rather than on a verb that used its
+    /// whole budget legitimately.
+    const RUN_TIMEOUT_SLACK: Duration = Duration::from_secs(45);
     const ZORDER_WALK_LIMIT: usize = 128;
+
+    /// The outer bound the watcher enforces on one whole invocation, per verb.
+    ///
+    /// One number cannot cover all six: `reveal-view-once` drives *two* bounded
+    /// legs after the readiness wait, and `status` drives none at all. A single
+    /// 150-second bound would report a legitimately slow reveal as `stalled`,
+    /// which is the one verdict that must only ever mean "OSL wedged".
+    fn run_timeout(verb: Verb) -> Duration {
+        match verb {
+            Verb::Status => Duration::from_secs(30),
+            Verb::Host => READINESS_TIMEOUT + HOST_TIMEOUT + RUN_TIMEOUT_SLACK,
+            Verb::Send => RUN_TIMEOUT,
+            Verb::Drain | Verb::Rehydrate => READINESS_TIMEOUT + VERB_TIMEOUT + RUN_TIMEOUT_SLACK,
+            // A drain to list, then a reveal to open.
+            Verb::RevealViewOnce => {
+                READINESS_TIMEOUT + VERB_TIMEOUT + VERB_TIMEOUT + RUN_TIMEOUT_SLACK
+            }
+        }
+    }
 
     /// Every breadcrumb a healthy atomic send appends, in the order
     /// `send_native_discord_qa_atomic_text` appends them. Each failure site in
@@ -4923,16 +5137,52 @@ mod qa_selftest {
     /// itself. A run that times out leaves this latched, so the next trigger is
     /// answered `busy` instead of overlapping a second probe onto the first.
     static SEND_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+    /// The same latch for the receive-side verbs. A drain, a rehydration or a
+    /// reveal that outlives its run must not be overlapped by a second one: two
+    /// concurrent drains of one inbox would each see half a batch, and two
+    /// concurrent reveals of one message would make "it opened exactly once"
+    /// unprovable by construction.
+    static DRIVE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
     /// Set for the whole lifetime of one run thread, cleared by that thread. A
     /// stalled run leaves it latched, which is deliberate: the watcher stays
     /// responsive and answers every later trigger `busy` instead of stacking a
     /// second run on top of a wedged one.
     static RUN_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
+    /// The id of the message this process last opened through
+    /// `reveal-view-once`, held in memory for the lifetime of the process and
+    /// **never written anywhere**.
+    ///
+    /// It exists for one claim: a view-once message opens exactly once. Proving
+    /// the second attempt is refused needs the *same* id twice, and after the
+    /// first reveal that id is no longer in any pending list the harness could
+    /// read. Handing the id out in the verdict would put a routing handle for a
+    /// live conversation on disk, so it stays here and the harness names it as
+    /// `"target": "last"` instead.
+    static LAST_REVEALED_MESSAGE_ID: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+    /// The body of the last legacy trigger this instance declined because it
+    /// was addressed to a different one, hashed. Only a change writes a new
+    /// decline record, so declining does not turn into two file writes a second
+    /// for as long as the other instance takes to collect its trigger.
+    static DECLINED_REQUEST_FINGERPRINT: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct Criterion {
         pass: bool,
+        /// Whether `pass` above counts toward the verdict's own `pass`.
+        ///
+        /// Every criterion is *reported* for every verb, because an observation
+        /// is worth having either way; but only some of them are a claim the
+        /// verb makes. A drain says nothing about whether the composer is
+        /// stacked above Discord -- that decides where the operator's
+        /// keystrokes go, and a drain sends no keystrokes -- so grading it
+        /// would make a healthy drain unable to pass. Ungraded criteria were
+        /// the alternative to dropping the field, and dropping it would have
+        /// made the verdict quieter rather than more honest.
+        graded: bool,
         detail: Option<String>,
     }
 
@@ -4948,22 +5198,65 @@ mod qa_selftest {
     struct Verdict {
         schema_version: u8,
         observed_at_unix_ms: u128,
-        trigger: &'static str,
-        probe: &'static str,
-        /// `completed` -- the send command returned, verdict is about it.
+        /// The exact trigger file this verdict answers -- the unqualified
+        /// rendezvous or this instance's addressed one. Never inferred.
+        trigger: String,
+        /// This process's Tauri bundle identifier. Every verdict says who wrote
+        /// it, so a verdict read out of a shared `%TEMP%` is never anonymous.
+        instance: String,
+        /// Which verb was driven: `status`, `host`, `send`, `drain`,
+        /// `rehydrate` or `reveal-view-once`. `none` when the request was
+        /// refused before a verb could be chosen.
+        verb: &'static str,
+        /// `legacy` -- an empty or free-text trigger body, meaning `send`.
+        /// `json` -- a request object. `none` -- the body was never read.
+        request_format: &'static str,
+        /// `accepted`, or the fixed label of the refusal. Never free text and
+        /// never a fragment of the request, so a malformed request cannot write
+        /// its own bytes into this file.
+        request_status: &'static str,
+        /// The one fixed plaintext the `send` verb transmits, and `null` for
+        /// every other verb -- none of which sends anything at all.
+        probe: Option<&'static str>,
+        /// `completed` -- the verb was driven and returned; verdict is about it.
         /// `not-ready` -- a precondition never arrived inside its bound.
         /// `busy` -- a previous invocation had not finished.
+        /// `refused` -- the request or the verb's own precondition was refused
+        ///   by name; see `requestStatus` and `refusal`.
         /// `send-timeout` -- the send command did not return inside its bound.
+        /// `verb-timeout` -- a receive-side verb did not return inside its bound.
         /// `stalled` -- the run itself did not finish inside its bound.
         /// Only `completed` can ever carry `pass: true`.
         outcome: &'static str,
-        /// Whether every precondition was satisfied before the send was driven.
+        /// Whether every precondition **this verb requires** was satisfied
+        /// before it was driven. Not every verb requires the same set.
         ready: bool,
-        /// True only when `outcome == "completed"` and every criterion and
-        /// stage below passed.
+        /// True only when `outcome == "completed"` and every *graded* criterion
+        /// -- and, for `send`, every stage -- passed.
         pass: bool,
+        /// The fixed label naming why this invocation refused, when it did.
+        /// A refusal is always named here; a silent no-op is never an answer.
+        refusal: Option<&'static str>,
         criteria: BTreeMap<&'static str, Criterion>,
+        /// Only the `send` verb makes a claim about send stages. Every other
+        /// verb reports an empty list rather than eleven false ones, because
+        /// eleven false stages read as eleven failures.
         send_stages: Vec<StageCriterion>,
+        /// What one drive of the inbound drain observed. Counts only.
+        drain: Option<DrainReport>,
+        /// What one native-window adoption command and its after-sweep observed.
+        host: Option<HostReport>,
+        /// What one drive of the transcript read/decode pass observed.
+        rehydrate: Option<RehydrateReport>,
+        /// What one drive of the two-phase view-once reveal observed.
+        reveal: Option<RevealReport>,
+        /// Observable state that no verb had to change to establish. Present
+        /// for the `status` verb only.
+        status: Option<StatusReport>,
+        /// OSL's own refusal string when a receive-side verb returned `Err`. It
+        /// is an OSL diagnostic in the same sense `sendError` is: a fixed
+        /// backend sentence, never draft, carrier or conversation text.
+        verb_error: Option<String>,
         carrier_status: Option<String>,
         error_class: Option<String>,
         error_detail: Option<String>,
@@ -4982,6 +5275,86 @@ mod qa_selftest {
         /// whether the operator's keystrokes reach OSL or Discord.
         composer_zorder_after_send: &'static str,
         composer_visible_after_send: Option<bool>,
+    }
+
+    /// What the `status` verb answers: the observable surface of this instance,
+    /// established without driving anything.
+    ///
+    /// Everything here is a boolean, a byte count or a path this module itself
+    /// chose. It reads no receipt *content* -- only whether each file is
+    /// there -- so nothing a receipt contains can reach this file through it.
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct StatusReport {
+        send_in_flight: bool,
+        drive_in_flight: bool,
+        run_in_flight: bool,
+        /// The current length of the append-only send-stage trail. A harness
+        /// baselines this and grades only what was appended after, which is how
+        /// it tells "this instance sent nothing" from "this instance sent
+        /// something before the run started" -- the structural half of **P6**.
+        send_stage_trail_bytes: u64,
+        send_stage_receipt_present: bool,
+        inbound_receipt_present: bool,
+        inbound_poll_receipt_present: bool,
+        outbound_receipt_present: bool,
+        /// Whether the carrier layout a `send` would use is the calibrated one.
+        /// Reading it costs nothing and changes nothing.
+        carrier_layout_source: &'static str,
+        /// Where to address a request to *this* instance, and where its answer
+        /// will appear. Emitted so a harness never has to reconstruct the
+        /// naming rule from the identifier itself.
+        addressed_trigger_file: String,
+        addressed_verdict_file: String,
+        legacy_trigger_file: &'static str,
+        /// The verb vocabulary this build understands, so a harness can refuse
+        /// to grade a build that predates the verb it means to drive instead of
+        /// silently getting a legacy send.
+        verbs: [&'static str; 6],
+    }
+
+    /// Everything about one invocation that is not the original send path.
+    ///
+    /// Collected into one value rather than added as eight more parameters to
+    /// [`build_verdict`], which already takes eight.
+    struct VerbOutcome {
+        verb: &'static str,
+        instance: String,
+        trigger_file: String,
+        request_format: &'static str,
+        request_status: &'static str,
+        refusal: Option<&'static str>,
+        verb_error: Option<String>,
+        drain: Option<DrainReport>,
+        host: Option<HostReport>,
+        rehydrate: Option<RehydrateReport>,
+        reveal: Option<RevealReport>,
+        status: Option<StatusReport>,
+    }
+
+    impl VerbOutcome {
+        fn new(verb: &'static str, instance: &str, trigger_file: &str) -> Self {
+            Self {
+                verb,
+                instance: instance.to_owned(),
+                trigger_file: trigger_file.to_owned(),
+                request_format: "none",
+                request_status: "accepted",
+                refusal: None,
+                verb_error: None,
+                drain: None,
+                host: None,
+                rehydrate: None,
+                reveal: None,
+                status: None,
+            }
+        }
+
+        fn refused(mut self, refusal: &'static str) -> Self {
+            self.request_status = refusal;
+            self.refusal = Some(refusal);
+            self
+        }
     }
 
     /// One read-only sweep of everything the verdict has to state about the
@@ -5033,6 +5406,40 @@ mod qa_selftest {
                 && self.composer_exists
                 && self.composer_visible
                 && self.overlay_context_ok
+        }
+
+        /// Readiness is per-verb, and deliberately not one set.
+        ///
+        /// `send` needs everything [`Self::ready`] needs, because it hands the
+        /// operator's own composer to Discord and a keystroke that lands in the
+        /// wrong window is plaintext in a real conversation.
+        ///
+        /// The receive-side verbs need an unlocked identity, an adopted Discord
+        /// window, the overlay window to exist -- it is the caller identity all
+        /// three commands check -- and a valid overlay context, which is what
+        /// binds the drain to one conversation. They do **not** need the lock
+        /// engaged or the composer on screen: `lockEngaged` is whether what the
+        /// operator types is being encrypted, and none of these verbs types
+        /// anything. Requiring it would have made a receiving instance
+        /// undrainable for the entirely correct reason that nobody was writing
+        /// on it.
+        ///
+        /// `status` requires nothing. Refusing to report the world because the
+        /// world is not ready is the one thing a status verb must never do.
+        fn ready_for(&self, verb: Verb) -> bool {
+            match verb {
+                Verb::Status => true,
+                // Hosting exists to establish adoption and overlay context, so
+                // requiring either before the command would make it inert.
+                Verb::Host => self.owner.is_some(),
+                Verb::Send => self.ready(),
+                Verb::Drain | Verb::Rehydrate | Verb::RevealViewOnce => {
+                    self.owner.is_some()
+                        && self.discord_adopted
+                        && self.composer_exists
+                        && self.overlay_context_ok
+                }
+            }
         }
     }
 
@@ -5214,7 +5621,9 @@ mod qa_selftest {
         let Ok(bytes) = std::fs::read(temp_path(SEND_STAGE_TRAIL_FILE)) else {
             return Vec::new();
         };
-        let start = usize::try_from(offset).unwrap_or(usize::MAX).min(bytes.len());
+        let start = usize::try_from(offset)
+            .unwrap_or(usize::MAX)
+            .min(bytes.len());
         String::from_utf8_lossy(&bytes[start..])
             .lines()
             .map(|line| line.trim().to_owned())
@@ -5259,16 +5668,45 @@ mod qa_selftest {
         receipt?.get(key)?.as_str().map(str::to_owned)
     }
 
+    /// Insert a criterion that counts toward the verdict's `pass`.
     fn insert(
         criteria: &mut BTreeMap<&'static str, Criterion>,
         id: &'static str,
         pass: bool,
         detail: Option<String>,
     ) {
-        criteria.insert(id, Criterion { pass, detail });
+        criteria.insert(
+            id,
+            Criterion {
+                pass,
+                graded: true,
+                detail,
+            },
+        );
     }
 
+    /// Insert a criterion that is reported but makes no claim for this verb.
+    /// See [`Criterion::graded`].
+    fn insert_graded(
+        criteria: &mut BTreeMap<&'static str, Criterion>,
+        id: &'static str,
+        graded: bool,
+        pass: bool,
+        detail: Option<String>,
+    ) {
+        criteria.insert(
+            id,
+            Criterion {
+                pass,
+                graded,
+                detail,
+            },
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn build_verdict(
+        verb: Verb,
         outcome: &'static str,
         observation: &Observation,
         carrier_layout_source: &'static str,
@@ -5277,6 +5715,7 @@ mod qa_selftest {
         stages_in_order: bool,
         busy_detail: Option<&'static str>,
         after_send: Option<&Observation>,
+        outcome_detail: VerbOutcome,
     ) -> Verdict {
         // Only this run's receipt may be quoted. The send-stage receipt file is
         // shared with the manual QA paths and survives restarts, so reading it
@@ -5285,40 +5724,54 @@ mod qa_selftest {
         let receipt = send.is_some().then(send_stage_receipt).flatten();
         let receipt = receipt.as_ref();
         let mut criteria = BTreeMap::new();
-        insert(
+        // Every readiness observation is reported for every verb; which of them
+        // this verb is actually claiming is `readiness_criterion_is_graded`.
+        let mut readiness = |criteria: &mut BTreeMap<&'static str, Criterion>,
+                             id: &'static str,
+                             pass: bool,
+                             detail: Option<String>| {
+            insert_graded(
+                criteria,
+                id,
+                readiness_criterion_is_graded(verb, id),
+                pass,
+                detail,
+            );
+        };
+        readiness(
             &mut criteria,
             "identity_unlocked",
             observation.owner.is_some(),
             observation.identity_detail.clone(),
         );
-        insert(
+        readiness(
             &mut criteria,
             "discord_window_adopted",
             observation.discord_adopted && observation.discord_window.is_some(),
             observation.discord_detail.clone(),
         );
-        insert(
+        readiness(
             &mut criteria,
             "protection_engaged",
             observation.protection_engaged,
             (!observation.protection_engaged)
                 .then(|| "Protected Discord encryption is switched off".to_owned()),
         );
-        insert(
+        readiness(
             &mut criteria,
             "composer_window_exists",
             observation.composer_exists,
             (!observation.composer_exists)
                 .then(|| "The protected composer window does not exist".to_owned()),
         );
-        insert(
+        readiness(
             &mut criteria,
             "composer_window_visible",
             observation.composer_visible,
             (!observation.composer_visible)
                 .then(|| "The protected composer window is not on screen".to_owned()),
         );
-        insert(
+        readiness(
             &mut criteria,
             "composer_above_discord",
             observation.composer_above_discord == Some(true),
@@ -5328,7 +5781,7 @@ mod qa_selftest {
                 None => Some("unknown".to_owned()),
             },
         );
-        insert(
+        readiness(
             &mut criteria,
             "overlay_context_valid",
             observation.overlay_context_ok,
@@ -5356,53 +5809,82 @@ mod qa_selftest {
         });
         let send_completed = carrier_status_sent && carrier_placed && enter_injected;
         let stages_reached = send_stages.iter().all(|stage| stage.pass);
+        let is_send = verb == Verb::Send;
 
-        insert(
-            &mut criteria,
-            "send_stages_reached_in_order",
-            stages_reached && stages_in_order,
-            (!stages_reached || !stages_in_order).then(|| {
-                if stages_reached {
-                    "Every stage was reached but not in order".to_owned()
-                } else {
-                    "At least one send stage was never reached".to_owned()
-                }
-            }),
-        );
-        insert(&mut criteria, "carrier_placed", carrier_placed, None);
-        insert(&mut criteria, "enter_injected", enter_injected, None);
-        insert(&mut criteria, "send_completed", send_completed, None);
-        insert(&mut criteria, "osl_inbox_committed", inbox_committed, None);
-        insert(&mut criteria, "carrier_status_sent", carrier_status_sent, None);
+        // Send criteria belong to the send verb alone. Reporting them for a
+        // drain would report six failures that nothing failed at.
+        if is_send {
+            insert(
+                &mut criteria,
+                "send_stages_reached_in_order",
+                stages_reached && stages_in_order,
+                (!stages_reached || !stages_in_order).then(|| {
+                    if stages_reached {
+                        "Every stage was reached but not in order".to_owned()
+                    } else {
+                        "At least one send stage was never reached".to_owned()
+                    }
+                }),
+            );
+            insert(&mut criteria, "carrier_placed", carrier_placed, None);
+            insert(&mut criteria, "enter_injected", enter_injected, None);
+            insert(&mut criteria, "send_completed", send_completed, None);
+            insert(&mut criteria, "osl_inbox_committed", inbox_committed, None);
+            insert(
+                &mut criteria,
+                "carrier_status_sent",
+                carrier_status_sent,
+                None,
+            );
+        }
 
         let carrier_status = carrier
             .map(|carrier| discord_carrier_status_label(carrier.status).to_owned())
             .or_else(|| receipt_string(receipt, "carrierStatus"));
         let error_class = receipt_string(receipt, "errorClass");
         let error_detail = receipt_string(receipt, "errorDetail");
-        insert(
-            &mut criteria,
-            "no_receipt_error_class",
-            send.is_some() && error_class.is_none(),
-            error_class
-                .clone()
-                .or_else(|| send.is_none().then(|| "No send was driven".to_owned())),
-        );
+        if is_send {
+            insert(
+                &mut criteria,
+                "no_receipt_error_class",
+                send.is_some() && error_class.is_none(),
+                error_class
+                    .clone()
+                    .or_else(|| send.is_none().then(|| "No send was driven".to_owned())),
+            );
+        }
+
+        insert_verb_criteria(&mut criteria, verb, &outcome_detail);
 
         let pass = outcome == "completed"
-            && stages_reached
-            && stages_in_order
-            && criteria.values().all(|criterion| criterion.pass);
+            && (!is_send || (stages_reached && stages_in_order))
+            && criteria
+                .values()
+                .all(|criterion| !criterion.graded || criterion.pass);
         Verdict {
-            schema_version: 1,
+            // Bumped from 1: `trigger` is now the file that was actually
+            // consumed rather than a fixed name, `probe` is nullable, every
+            // criterion carries `graded`, and the verb reports are new.
+            schema_version: 2,
             observed_at_unix_ms: now_unix_ms(),
-            trigger: TRIGGER_FILE,
-            probe: PROBE_PLAINTEXT,
+            trigger: outcome_detail.trigger_file,
+            instance: outcome_detail.instance,
+            verb: outcome_detail.verb,
+            request_format: outcome_detail.request_format,
+            request_status: outcome_detail.request_status,
+            probe: is_send.then_some(PROBE_PLAINTEXT),
             outcome,
-            ready: observation.ready(),
+            ready: observation.ready_for(verb),
             pass,
+            refusal: outcome_detail.refusal,
             criteria,
-            send_stages,
+            send_stages: if is_send { send_stages } else { Vec::new() },
+            drain: outcome_detail.drain,
+            host: outcome_detail.host,
+            rehydrate: outcome_detail.rehydrate,
+            reveal: outcome_detail.reveal,
+            status: outcome_detail.status,
+            verb_error: outcome_detail.verb_error,
             carrier_status,
             error_class,
             error_detail,
@@ -5420,13 +5902,166 @@ mod qa_selftest {
         }
     }
 
-    fn write_verdict(verdict: &Verdict) {
+    /// The criteria one receive-side verb makes a claim about.
+    ///
+    /// Each is a claim the verb is *for*, so a verb that was never driven -- a
+    /// refusal, a `not-ready`, a timeout -- reports all of its own criteria
+    /// false and cannot pass. That is the fail-closed half: an invocation that
+    /// did nothing must never read as an invocation that succeeded.
+    fn insert_verb_criteria(
+        criteria: &mut BTreeMap<&'static str, Criterion>,
+        verb: Verb,
+        outcome: &VerbOutcome,
+    ) {
+        match verb {
+            Verb::Send => {}
+            Verb::Status => {
+                insert(
+                    criteria,
+                    "status_observed",
+                    outcome.status.is_some(),
+                    outcome
+                        .status
+                        .is_none()
+                        .then(|| "The read-only sweep did not complete".to_owned()),
+                );
+            }
+            Verb::Host => {
+                let host = outcome.host.as_ref();
+                insert(
+                    criteria,
+                    "host_adopted_the_window",
+                    host.is_some_and(|host| host.adopted),
+                    host.filter(|host| !host.adopted)
+                        .map(|_| "The production host command did not adopt a window".to_owned())
+                        .or_else(|| outcome.verb_error.clone()),
+                );
+            }
+            Verb::Drain => {
+                let drain = outcome.drain.as_ref();
+                insert(
+                    criteria,
+                    "drain_returned",
+                    drain.is_some(),
+                    outcome.verb_error.clone(),
+                );
+                // A drain that opened nothing is a perfectly healthy drain, so
+                // `openedCount` is reported and not graded. What IS graded is
+                // that nothing was left behind for lack of a working store: a
+                // non-zero `deferredRows` is the batch saying "incomplete".
+                insert(
+                    criteria,
+                    "drain_left_no_deferred_rows",
+                    drain.is_some_and(|drain| drain.deferred_rows == 0),
+                    drain
+                        .filter(|drain| drain.deferred_rows > 0)
+                        .map(|drain| format!("{} row(s) deferred", drain.deferred_rows)),
+                );
+                // Every opened message must have authenticated against the exact
+                // conversation OSL is bound to. One that did not is the defect
+                // this whole surface exists to catch.
+                insert(
+                    criteria,
+                    "drain_every_message_context_verified",
+                    drain.is_some_and(|drain| drain.context_verified_count == drain.opened_count),
+                    drain
+                        .filter(|drain| drain.context_verified_count != drain.opened_count)
+                        .map(|drain| {
+                            format!(
+                                "{} of {} opened message(s) verified their context",
+                                drain.context_verified_count, drain.opened_count
+                            )
+                        }),
+                );
+            }
+            Verb::Rehydrate => {
+                let rehydrate = outcome.rehydrate.as_ref();
+                insert(
+                    criteria,
+                    "rehydrate_returned",
+                    rehydrate.is_some(),
+                    outcome.verb_error.clone(),
+                );
+                // `read: false` is the same-scope floor refusing, which is a
+                // rate limit and a rerun -- never a claim about the transcript.
+                insert(
+                    criteria,
+                    "rehydrate_read_the_transcript",
+                    rehydrate.is_some_and(|rehydrate| rehydrate.read),
+                    rehydrate
+                        .filter(|rehydrate| !rehydrate.read)
+                        .map(|rehydrate| {
+                            format!(
+                                "The same-scope floor refused this read; {}ms remain",
+                                rehydrate.retry_after_ms
+                            )
+                        }),
+                );
+            }
+            Verb::RevealViewOnce => {
+                let reveal = outcome.reveal.as_ref();
+                insert(
+                    criteria,
+                    "reveal_phase_one_listed",
+                    reveal.is_some_and(|reveal| reveal.phase_one_driven),
+                    outcome.verb_error.clone(),
+                );
+                insert(
+                    criteria,
+                    "reveal_target_selected",
+                    reveal.is_some_and(|reveal| reveal.selected),
+                    reveal.filter(|reveal| !reveal.selected).map(|reveal| {
+                        format!(
+                            "No view-once message answered target \"{}\"; {} were pending",
+                            reveal.target, reveal.phase_one_pending_count
+                        )
+                    }),
+                );
+                insert(
+                    criteria,
+                    "reveal_phase_two_driven",
+                    reveal.is_some_and(|reveal| reveal.phase_two_driven),
+                    None,
+                );
+                // Deliberately NOT graded. Both answers are correct depending
+                // on which attempt this is: the first reveal must open, the
+                // second must refuse. Grading either way would make one of the
+                // two claims this verb exists to prove impossible to state.
+                insert_graded(
+                    criteria,
+                    "reveal_opened_the_message",
+                    false,
+                    reveal.is_some_and(|reveal| reveal.revealed),
+                    reveal.map(|reveal| {
+                        if reveal.revealed {
+                            "opened".to_owned()
+                        } else if reveal.refused {
+                            "refused".to_owned()
+                        } else {
+                            "not-attempted".to_owned()
+                        }
+                    }),
+                );
+                insert_graded(
+                    criteria,
+                    "reveal_consumed_the_view_once",
+                    false,
+                    reveal.is_some_and(|reveal| reveal.view_once_consumed),
+                    None,
+                );
+            }
+        }
+    }
+
+    fn write_verdict(verdict: &Verdict, path: &Path) {
         let Ok(encoded) = serde_json::to_vec_pretty(verdict) else {
             return;
         };
-        let partial = temp_path(VERDICT_PARTIAL_FILE);
+        let mut partial = path.as_os_str().to_owned();
+        partial.push(VERDICT_PARTIAL_SUFFIX);
+        let partial = PathBuf::from(partial);
         if std::fs::write(&partial, &encoded).is_ok() {
-            let _ = std::fs::rename(&partial, temp_path(VERDICT_FILE));
+            let _ = std::fs::rename(&partial, path);
         }
     }
 
@@ -5456,19 +6091,190 @@ mod qa_selftest {
         .await
     }
 
-    fn run_once(app: &tauri::AppHandle) -> Verdict {
+    /// Drive native-window adoption through the exact command the protected
+    /// renderer calls. The pure request decision has only a borrow-only action,
+    /// and the final argument is deliberately the literal `None` that can never
+    /// authorize quitting the operator's app.
+    async fn drive_host(
+        app: tauri::AppHandle,
+        action: HostAction,
+    ) -> Result<NativeWindowHostResult, String> {
+        let HostAction::BorrowOnly {
+            app_id,
+            session_mode,
+        } = action;
+        let core = app.state::<HubCoreState>();
+        let session = app.state::<HubAccountSessionState>();
+        host_native_app_window(app.clone(), core, session, app_id, session_mode, None).await
+    }
+
+    /// Drive the inbound drain through the exact command the protected
+    /// renderer calls, as the exact window the renderer would be. This is not a
+    /// QA-only route into the broker: the caller check, the session-transition
+    /// lock, the overlay-context check on both sides of the drain and the two
+    /// receipts are all the production ones, because they are the same code.
+    async fn drive_drain(app: tauri::AppHandle) -> Result<OpenedNativeOverlayTextBatch, String> {
+        let composer_window = app
+            .get_webview_window(native_discord_overlay::OVERLAY_LABEL)
+            .ok_or_else(|| "The protected composer window is unavailable".to_owned())?;
+        let session = app.state::<HubAccountSessionState>();
+        open_native_discord_overlay_text(app.clone(), composer_window, session).await
+    }
+
+    /// Drive one transcript read/decode pass, likewise through the renderer's
+    /// own command. See [`REHYDRATE_SCOPE`] for why the scope is a fixed
+    /// private value rather than OSL's native binding.
+    async fn drive_rehydrate(
+        app: tauri::AppHandle,
+    ) -> Result<RehydratedNativeDiscordTranscriptDto, String> {
+        let composer_window = app
+            .get_webview_window(native_discord_overlay::OVERLAY_LABEL)
+            .ok_or_else(|| "The protected composer window is unavailable".to_owned())?;
+        let session = app.state::<HubAccountSessionState>();
+        rehydrate_native_discord_overlay_history(
+            app.clone(),
+            composer_window,
+            session,
+            REHYDRATE_SCOPE.to_owned(),
+        )
+        .await
+    }
+
+    /// Drive phase two of the view-once reveal, again through the renderer's
+    /// own command.
+    ///
+    /// `message_id` came either from phase one's pending list or from the
+    /// request, and it goes straight to the broker, which applies the real
+    /// predicate. It is never written to any file.
+    async fn drive_reveal(
+        app: tauri::AppHandle,
+        message_id: String,
+    ) -> Result<broker::OpenedNativeOverlayText, String> {
+        let composer_window = app
+            .get_webview_window(native_discord_overlay::OVERLAY_LABEL)
+            .ok_or_else(|| "The protected composer window is unavailable".to_owned())?;
+        let session = app.state::<HubAccountSessionState>();
+        reveal_native_discord_overlay_view_once(app.clone(), composer_window, session, message_id)
+            .await
+    }
+
+    /// Run one bounded drive on the async runtime and answer within `timeout`,
+    /// never longer.
+    ///
+    /// [`DRIVE_IN_FLIGHT`] is latched for the whole lifetime of the spawned
+    /// future and cleared by the future itself, so a drive that outlives its
+    /// bound leaves the latch set and the next trigger is answered `busy`
+    /// rather than overlapping a second drain onto the first.
+    fn drive_bounded_for<T, F>(future: F, timeout: Duration) -> Option<Result<T, String>>
+    where
+        T: Send + 'static,
+        F: std::future::Future<Output = Result<T, String>> + Send + 'static,
+    {
+        DRIVE_IN_FLIGHT.store(true, Ordering::SeqCst);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        tauri::async_runtime::spawn(async move {
+            let result = future.await;
+            DRIVE_IN_FLIGHT.store(false, Ordering::SeqCst);
+            let _ = sender.send(result);
+        });
+        receiver.recv_timeout(timeout).ok()
+    }
+
+    fn drive_bounded<T, F>(future: F) -> Option<Result<T, String>>
+    where
+        T: Send + 'static,
+        F: std::future::Future<Output = Result<T, String>> + Send + 'static,
+    {
+        drive_bounded_for(future, VERB_TIMEOUT)
+    }
+
+    fn receipt_exists(name: &str) -> bool {
+        keystore::osl_base_dir()
+            .map(|base| base.join(name).is_file())
+            .unwrap_or(false)
+    }
+
+    /// The read-only sweep. Every field is read; none is established.
+    fn status_report(app: &tauri::AppHandle, instance: &str) -> StatusReport {
+        let (_, carrier_layout_source) = carrier_layout(app);
+        StatusReport {
+            send_in_flight: SEND_IN_FLIGHT.load(Ordering::SeqCst),
+            drive_in_flight: DRIVE_IN_FLIGHT.load(Ordering::SeqCst),
+            run_in_flight: RUN_IN_FLIGHT.load(Ordering::SeqCst),
+            send_stage_trail_bytes: stage_trail_len(),
+            send_stage_receipt_present: receipt_exists(SEND_STAGE_RECEIPT_FILE),
+            inbound_receipt_present: receipt_exists(INBOUND_RECEIPT_FILE),
+            inbound_poll_receipt_present: receipt_exists(INBOUND_POLL_RECEIPT_FILE),
+            outbound_receipt_present: receipt_exists(OUTBOUND_RECEIPT_FILE),
+            carrier_layout_source,
+            addressed_trigger_file: addressed_name(ADDRESSED_TRIGGER_FORMAT, instance),
+            addressed_verdict_file: addressed_name(ADDRESSED_VERDICT_FORMAT, instance),
+            legacy_trigger_file: TRIGGER_FILE,
+            verbs: [
+                Verb::Status.label(),
+                Verb::Host.label(),
+                Verb::Send.label(),
+                Verb::Drain.label(),
+                Verb::Rehydrate.label(),
+                Verb::RevealViewOnce.label(),
+            ],
+        }
+    }
+
+    /// Which message `reveal-view-once` will attempt, or `None` if this
+    /// instance cannot name one. `None` is a refusal, never a no-op.
+    fn reveal_target_message_id(
+        request: &SelftestRequest,
+        batch: Option<&OpenedNativeOverlayTextBatch>,
+    ) -> Option<String> {
+        match request.reveal_target {
+            RevealTarget::PendingIndex => batch?
+                .pending_view_once
+                .get(request.pending_index)
+                .map(|pending| pending.message_id.clone()),
+            RevealTarget::MessageId => request.message_id.clone(),
+            RevealTarget::Last => LAST_REVEALED_MESSAGE_ID
+                .lock()
+                .ok()
+                .and_then(|last| last.clone()),
+        }
+    }
+
+    fn run_once(
+        app: &tauri::AppHandle,
+        request: &SelftestRequest,
+        instance: &str,
+        trigger_file: &str,
+    ) -> Verdict {
+        let verb = request.verb;
+        let mut outcome_detail = VerbOutcome::new(verb.label(), instance, trigger_file);
+        outcome_detail.request_format = request.format;
+
         // Bounded readiness wait. The operator establishes the adopted Discord
         // window and the engaged lock by hand; this waits for them and then
         // reports, rather than firing into an unready app or blocking forever.
+        // `status` waits for nothing: refusing to describe an unready app is the
+        // one thing a status verb must never do.
         let deadline = Instant::now() + READINESS_TIMEOUT;
         let mut observation = observe(app);
-        while !observation.ready() && Instant::now() < deadline {
+        while !observation.ready_for(verb) && !verb.is_read_only() && Instant::now() < deadline {
             std::thread::sleep(POLL_INTERVAL);
             observation = observe(app);
         }
-        if !observation.ready() {
+        if !observation.ready_for(verb) {
+            outcome_detail.refusal = Some(not_ready_refusal(verb));
+            if let Some(host) = request.host {
+                outcome_detail.host = Some(HostReport::after(
+                    host.action(),
+                    false,
+                    observation.discord_adopted && observation.discord_window.is_some(),
+                    observation.overlay_context_ok,
+                    observation.protection_engaged,
+                ));
+            }
             let (stages, in_order) = stage_criteria(&[]);
             return build_verdict(
+                verb,
                 "not-ready",
                 &observation,
                 "none",
@@ -5477,7 +6283,12 @@ mod qa_selftest {
                 in_order,
                 None,
                 None,
+                outcome_detail,
             );
+        }
+
+        if verb != Verb::Send {
+            return run_receive_side_verb(app, request, observation, outcome_detail);
         }
 
         let (layout, layout_source) = carrier_layout(app);
@@ -5506,6 +6317,7 @@ mod qa_selftest {
         let after_send = observe(app);
         let (stages, in_order) = stage_criteria(&stage_trail_since(trail_offset));
         build_verdict(
+            Verb::Send,
             outcome,
             &observation,
             layout_source,
@@ -5514,15 +6326,206 @@ mod qa_selftest {
             in_order,
             None,
             Some(&after_send),
+            outcome_detail,
+        )
+    }
+
+    /// The host and receive-side verbs, plus the read-only sweep.
+    ///
+    /// Every one of them either produces a report or names a refusal. There is
+    /// no path through this function that returns a verdict claiming a verb was
+    /// driven when it was not.
+    fn run_receive_side_verb(
+        app: &tauri::AppHandle,
+        request: &SelftestRequest,
+        observation: Observation,
+        mut outcome_detail: VerbOutcome,
+    ) -> Verdict {
+        let verb = request.verb;
+        let mut outcome: &'static str = "completed";
+        let host_action = request.host.map(|host| host.action());
+        let mut host_adopted = false;
+
+        match verb {
+            Verb::Send => unreachable!("the send verb is driven by run_once"),
+            Verb::Status => {
+                outcome_detail.status = Some(status_report(app, &outcome_detail.instance));
+            }
+            Verb::Host => {
+                let action = host_action.expect("accepted host requests resolve host inputs");
+                match drive_bounded_for(drive_host(app.clone(), action), HOST_TIMEOUT) {
+                    Some(Ok(result)) => {
+                        host_adopted = matches!(
+                            result.status,
+                            NativeWindowHostStatus::Hosted
+                                | NativeWindowHostStatus::Resized
+                                | NativeWindowHostStatus::Focused
+                        );
+                    }
+                    Some(Err(error)) => {
+                        outcome = "refused";
+                        outcome_detail.verb_error = Some(error);
+                        outcome_detail.refusal = Some("host-refused");
+                    }
+                    None => {
+                        outcome = "verb-timeout";
+                        outcome_detail.refusal = Some("host-timeout");
+                    }
+                }
+            }
+            Verb::Drain => match drive_bounded(drive_drain(app.clone())) {
+                Some(Ok(batch)) => outcome_detail.drain = Some(DrainReport::from_batch(&batch)),
+                Some(Err(error)) => {
+                    outcome = "refused";
+                    outcome_detail.verb_error = Some(error);
+                    outcome_detail.refusal = Some("drain-refused");
+                }
+                None => {
+                    outcome = "verb-timeout";
+                    outcome_detail.refusal = Some("drain-timeout");
+                }
+            },
+            Verb::Rehydrate => match drive_bounded(drive_rehydrate(app.clone())) {
+                Some(Ok(transcript)) => {
+                    // The rows are projected to two booleans each *here*, so no
+                    // decrypted row text is ever in scope where a report is
+                    // built. `RehydrateReport::tally` cannot be handed a row.
+                    let rows: Vec<(bool, bool)> = transcript
+                        .rows
+                        .iter()
+                        .map(|row| (row.plaintext.is_some(), row.row.is_some()))
+                        .collect();
+                    outcome_detail.rehydrate = Some(RehydrateReport::tally(
+                        transcript.read,
+                        transcript.retry_after_ms,
+                        &rows,
+                    ));
+                }
+                Some(Err(error)) => {
+                    outcome = "refused";
+                    outcome_detail.verb_error = Some(error);
+                    outcome_detail.refusal = Some("rehydrate-refused");
+                    outcome_detail.rehydrate = Some(RehydrateReport::refused());
+                }
+                None => {
+                    outcome = "verb-timeout";
+                    outcome_detail.refusal = Some("rehydrate-timeout");
+                }
+            },
+            Verb::RevealViewOnce => {
+                let mut report =
+                    RevealReport::not_driven(request.reveal_target, request.pending_index);
+                // PHASE ONE. The drain that *lists* a view-once message without
+                // opening it. This is the same command the renderer runs, and
+                // its `pendingViewOnce` entries are exactly what the operator
+                // sees as an unopened view-once row.
+                let batch = match drive_bounded(drive_drain(app.clone())) {
+                    Some(Ok(batch)) => {
+                        report.phase_one_driven = true;
+                        report.phase_one_pending_count = batch.pending_view_once.len();
+                        report.phase_one_opened_count = batch.messages.len();
+                        outcome_detail.drain = Some(DrainReport::from_batch(&batch));
+                        Some(batch)
+                    }
+                    Some(Err(error)) => {
+                        outcome = "refused";
+                        outcome_detail.verb_error = Some(error);
+                        outcome_detail.refusal = Some("reveal-phase-one-refused");
+                        None
+                    }
+                    None => {
+                        outcome = "verb-timeout";
+                        outcome_detail.refusal = Some("reveal-phase-one-timeout");
+                        None
+                    }
+                };
+
+                if outcome == "completed" {
+                    match reveal_target_message_id(request, batch.as_ref()) {
+                        Some(message_id) => {
+                            report.selected = true;
+                            // PHASE TWO. Opening it, exactly once.
+                            match drive_bounded(drive_reveal(app.clone(), message_id.clone())) {
+                                Some(Ok(message)) => {
+                                    report.record_phase_two(Ok(&message));
+                                    if let Ok(mut last) = LAST_REVEALED_MESSAGE_ID.lock() {
+                                        *last = Some(message_id);
+                                    }
+                                }
+                                Some(Err(error)) => {
+                                    // A refusal here is a first-class answer,
+                                    // not a failure of the run: on a second
+                                    // attempt against an already-consumed
+                                    // message it is the *expected* one. The
+                                    // verb completed either way; what happened
+                                    // is in `reveal.refused`.
+                                    report.record_phase_two(Err(()));
+                                    outcome_detail.verb_error = Some(error);
+                                }
+                                None => {
+                                    outcome = "verb-timeout";
+                                    outcome_detail.refusal = Some("reveal-phase-two-timeout");
+                                }
+                            }
+                        }
+                        None => {
+                            // Nothing matched the target. Named, never silent.
+                            outcome = "refused";
+                            outcome_detail.refusal = Some(match request.reveal_target {
+                                RevealTarget::PendingIndex => "reveal-pending-index-out-of-range",
+                                RevealTarget::MessageId => "reveal-message-id-missing",
+                                RevealTarget::Last => "reveal-no-previous-message",
+                            });
+                        }
+                    }
+                }
+                outcome_detail.reveal = Some(report);
+            }
+        }
+
+        let (stages, in_order) = stage_criteria(&[]);
+        // The second sweep is reported for the same reason it is on the send
+        // path: state that changed while the verb ran is visible without
+        // failing a healthy run.
+        let after = observe(app);
+        if let Some(action) = host_action {
+            outcome_detail.host = Some(HostReport::after(
+                action,
+                host_adopted,
+                after.discord_adopted && after.discord_window.is_some(),
+                after.overlay_context_ok,
+                after.protection_engaged,
+            ));
+        }
+        build_verdict(
+            verb,
+            outcome,
+            &observation,
+            "none",
+            None,
+            stages,
+            in_order,
+            None,
+            Some(&after),
+            outcome_detail,
         )
     }
 
     /// Report a verdict for a trigger that could not be run at all, without
-    /// touching any OSL state. Used when a previous run or send is still in
-    /// flight, and when a run stalls past [`RUN_TIMEOUT`].
-    fn refused_verdict(outcome: &'static str, reason: &'static str) -> Verdict {
+    /// touching any OSL state. Used when a previous run or drive is still in
+    /// flight, when a request is refused before a verb could be chosen, and
+    /// when a run stalls past its bound.
+    fn refused_verdict(
+        outcome: &'static str,
+        reason: &'static str,
+        outcome_detail: VerbOutcome,
+    ) -> Verdict {
         let (stages, in_order) = stage_criteria(&[]);
         build_verdict(
+            // A refusal makes no verb's claims. `Send` is the strictest set and
+            // every one of its criteria is false here, so the verdict cannot
+            // pass -- which is the whole point of failing closed.
+            Verb::Send,
             outcome,
             &Observation::unknown(reason),
             "none",
@@ -5531,44 +6534,231 @@ mod qa_selftest {
             in_order,
             Some(reason),
             None,
+            outcome_detail,
         )
     }
 
-    /// Poll `%TEMP%\osl-qa-selftest.request` and run one scenario per file.
+    /// `osl-qa-selftest.{token}.…` for this instance's bundle identifier.
+    fn addressed_name(format: &str, instance: &str) -> String {
+        format.replace("{token}", &instance_file_token(instance))
+    }
+
+    /// Read one trigger body, bounded. A trigger that cannot be read at all is
+    /// `None`, which the caller treats as "not there this tick" -- never as an
+    /// empty body, because an empty body means *send*.
+    fn read_trigger(path: &Path) -> Option<String> {
+        let metadata = std::fs::metadata(path).ok()?;
+        if !metadata.is_file() || metadata.len() > MAX_REQUEST_BYTES {
+            return None;
+        }
+        let bytes = std::fs::read(path).ok()?;
+        Some(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    fn fingerprint(body: &str) -> u64 {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        body.hash(&mut hasher);
+        // Zero is "nothing declined yet", so never let a real body claim it.
+        hasher.finish() | 1
+    }
+
+    /// Say, in writing, that this instance saw a trigger meant for another one
+    /// and deliberately left it alone.
+    ///
+    /// Deleting it would be the racy behaviour this addressing exists to
+    /// remove, and saying nothing would be a silent no-op. The record goes to
+    /// this instance's own decline path so it cannot clobber the verdict the
+    /// addressed instance is about to write, and it is written once per
+    /// distinct body rather than twice a second for as long as the other
+    /// instance takes to collect its trigger.
+    fn record_decline(instance: &str, declared: &str, body: &str) {
+        let previous = fingerprint(body);
+        if DECLINED_REQUEST_FINGERPRINT.swap(previous, Ordering::SeqCst) == previous {
+            return;
+        }
+        let record = serde_json::json!({
+            "schemaVersion": 1,
+            "observedAtUnixMs": now_unix_ms(),
+            "instance": instance,
+            "declaredInstance": declared,
+            "trigger": TRIGGER_FILE,
+            "requestStatus": "declined-wrong-instance",
+            "action": "left-for-its-owner",
+        });
+        let Ok(encoded) = serde_json::to_vec_pretty(&record) else {
+            return;
+        };
+        let path = temp_path(&addressed_name(ADDRESSED_DECLINE_FORMAT, instance));
+        let mut partial = path.as_os_str().to_owned();
+        partial.push(VERDICT_PARTIAL_SUFFIX);
+        let partial = PathBuf::from(partial);
+        if std::fs::write(&partial, &encoded).is_ok() {
+            let _ = std::fs::rename(&partial, &path);
+        }
+    }
+
+    /// Poll for a trigger and run one scenario per file.
+    ///
+    /// TWO TRIGGER PATHS, AND WHY.
+    ///
+    /// `%TEMP%\osl-qa-selftest.request` is a **global rendezvous whose first
+    /// consumer wins it**. With one instance that is fine and it is what the
+    /// existing harness writes. With two it is a race: a trigger meant for the
+    /// receiving instance can be eaten by the sending one, and nothing in the
+    /// resulting verdict says which instance answered.
+    ///
+    /// So this watcher also polls
+    /// `%TEMP%\osl-qa-selftest.{identifier}.request` and answers it into
+    /// `%TEMP%\osl-qa-selftest.{identifier}.json`. **Scoping the path is the
+    /// primary fix** rather than declaring the instance in the body, for one
+    /// reason: two instances then never poll the same path, so the race is gone
+    /// *by construction* instead of being resolved after the fact. A
+    /// body-declared instance cannot achieve that on its own -- whichever
+    /// instance reads the shared file first has to decide, and if it deletes a
+    /// trigger addressed elsewhere the intended instance never sees it at all.
+    ///
+    /// The declaration is still honoured, as the **second** layer: any request
+    /// body may carry `"instance"`, and a body whose declaration does not match
+    /// this process refuses. On the addressed path that is a written verdict --
+    /// the file named this instance, so answering it is this instance's job and
+    /// a body that contradicts the file name is a harness bug worth naming. On
+    /// the shared path the trigger is **left where it is** for its owner and
+    /// the decline is recorded separately, because consuming it is the exact
+    /// failure being prevented. Together: the path makes the race impossible
+    /// and the declaration proves it, so a rig that forgot to give the second
+    /// instance its own `%TEMP%` is caught rather than silently mismeasured.
     ///
     /// The trigger is consumed (deleted) before the run starts, so a crash
     /// mid-run cannot re-fire it and a harness can tell "picked up" from "not
-    /// picked up". The previous verdict is removed at the same moment, so a
-    /// harness waiting for `%TEMP%\osl-qa-selftest.json` to reappear can never
-    /// read a stale one.
+    /// picked up". The verdict for that same path is removed at the same
+    /// moment, so a harness waiting for it to reappear can never read a stale
+    /// one.
     ///
     /// The scenario runs on its own thread and this one supervises it, so a
     /// run that wedges inside a UI-thread round trip still produces a verdict
     /// and still leaves the watcher able to answer the next trigger.
     pub(crate) fn spawn_trigger_watcher(app: tauri::AppHandle) {
+        // Read once, on the watcher thread, from the same config the
+        // single-instance marker window class is built from -- the only thing
+        // that tells two OSL builds apart.
+        let instance = app.config().identifier.clone();
+        let addressed_trigger = temp_path(&addressed_name(ADDRESSED_TRIGGER_FORMAT, &instance));
+        let addressed_verdict = temp_path(&addressed_name(ADDRESSED_VERDICT_FORMAT, &instance));
+        let legacy_trigger = temp_path(TRIGGER_FILE);
+        let legacy_verdict = temp_path(VERDICT_FILE);
         let _ = std::thread::Builder::new()
             .name("osl-qa-selftest".to_owned())
             .spawn(move || loop {
                 std::thread::sleep(POLL_INTERVAL);
-                let trigger = temp_path(TRIGGER_FILE);
-                if !trigger.is_file() || std::fs::remove_file(&trigger).is_err() {
+
+                // The addressed path first: it is unambiguous, so a harness
+                // that uses it is never made to wait behind the shared one.
+                let picked = if let Some(body) = read_trigger(&addressed_trigger) {
+                    if std::fs::remove_file(&addressed_trigger).is_err() {
+                        continue;
+                    }
+                    Some((body, addressed_trigger.clone(), addressed_verdict.clone()))
+                } else if let Some(body) = read_trigger(&legacy_trigger) {
+                    // Decide BEFORE consuming. A trigger declared for another
+                    // instance must survive this tick.
+                    let declared = match parse_request(&body) {
+                        ParsedRequest::Accepted(request) => request.instance,
+                        // An unparseable body declares nothing, so it is this
+                        // instance's to consume and to refuse by name below.
+                        ParsedRequest::Refused(_) => None,
+                    };
+                    match declared {
+                        Some(declared) if declared != instance => {
+                            record_decline(&instance, &declared, &body);
+                            continue;
+                        }
+                        _ => {
+                            if std::fs::remove_file(&legacy_trigger).is_err() {
+                                continue;
+                            }
+                            Some((body, legacy_trigger.clone(), legacy_verdict.clone()))
+                        }
+                    }
+                } else {
+                    None
+                };
+                let Some((body, trigger_path, verdict_path)) = picked else {
+                    continue;
+                };
+                let trigger_name = trigger_path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| TRIGGER_FILE.to_owned());
+                let _ = std::fs::remove_file(&verdict_path);
+
+                let outcome_detail = || VerbOutcome::new("none", &instance, &trigger_name);
+                let request = match parse_request(&body) {
+                    ParsedRequest::Accepted(request) => request,
+                    ParsedRequest::Refused(refusal) => {
+                        // Fail closed and say so. An unreadable request is
+                        // never quietly downgraded to the one verb with an
+                        // irreversible side effect.
+                        write_verdict(
+                            &refused_verdict(
+                                "refused",
+                                "The self-test request could not be understood",
+                                outcome_detail().refused(refusal),
+                            ),
+                            &verdict_path,
+                        );
+                        continue;
+                    }
+                };
+                // The addressed path already named this instance; a body that
+                // contradicts it is a harness bug, and answering it anyway
+                // would attribute one instance's measurement to the other.
+                if !osl_privacy_hub::qa_selftest_request::request_is_for_me(
+                    request.instance.as_deref(),
+                    &instance,
+                ) {
+                    let mut detail =
+                        VerbOutcome::new(request.verb.label(), &instance, &trigger_name)
+                            .refused("declined-wrong-instance");
+                    detail.request_format = request.format;
+                    write_verdict(
+                        &refused_verdict(
+                            "refused",
+                            "This self-test request was addressed to another instance",
+                            detail,
+                        ),
+                        &verdict_path,
+                    );
                     continue;
                 }
-                let _ = std::fs::remove_file(temp_path(VERDICT_FILE));
-                if RUN_IN_FLIGHT.load(Ordering::SeqCst) || SEND_IN_FLIGHT.load(Ordering::SeqCst) {
-                    write_verdict(&refused_verdict(
-                        "busy",
-                        "A previous self-test invocation has not finished",
-                    ));
+
+                let mut busy_detail =
+                    VerbOutcome::new(request.verb.label(), &instance, &trigger_name);
+                busy_detail.request_format = request.format;
+                if RUN_IN_FLIGHT.load(Ordering::SeqCst)
+                    || SEND_IN_FLIGHT.load(Ordering::SeqCst)
+                    || DRIVE_IN_FLIGHT.load(Ordering::SeqCst)
+                {
+                    write_verdict(
+                        &refused_verdict(
+                            "busy",
+                            "A previous self-test invocation has not finished",
+                            busy_detail,
+                        ),
+                        &verdict_path,
+                    );
                     continue;
                 }
                 RUN_IN_FLIGHT.store(true, Ordering::SeqCst);
                 let (sender, receiver) = std::sync::mpsc::channel();
                 let run_app = app.clone();
+                let run_request = request.clone();
+                let run_instance = instance.clone();
+                let run_trigger = trigger_name.clone();
                 if std::thread::Builder::new()
                     .name("osl-qa-selftest-run".to_owned())
                     .spawn(move || {
-                        let verdict = run_once(&run_app);
+                        let verdict = run_once(&run_app, &run_request, &run_instance, &run_trigger);
                         RUN_IN_FLIGHT.store(false, Ordering::SeqCst);
                         // Dropped on the floor when this run already stalled
                         // past its budget: the stalled verdict is the record.
@@ -5577,18 +6767,26 @@ mod qa_selftest {
                     .is_err()
                 {
                     RUN_IN_FLIGHT.store(false, Ordering::SeqCst);
-                    write_verdict(&refused_verdict(
-                        "busy",
-                        "The self-test run thread could not be started",
-                    ));
+                    write_verdict(
+                        &refused_verdict(
+                            "busy",
+                            "The self-test run thread could not be started",
+                            busy_detail,
+                        ),
+                        &verdict_path,
+                    );
                     continue;
                 }
-                match receiver.recv_timeout(RUN_TIMEOUT) {
-                    Ok(verdict) => write_verdict(&verdict),
-                    Err(_) => write_verdict(&refused_verdict(
-                        "stalled",
-                        "The self-test run did not finish inside its bound",
-                    )),
+                match receiver.recv_timeout(run_timeout(request.verb)) {
+                    Ok(verdict) => write_verdict(&verdict, &verdict_path),
+                    Err(_) => write_verdict(
+                        &refused_verdict(
+                            "stalled",
+                            "The self-test run did not finish inside its bound",
+                            busy_detail,
+                        ),
+                        &verdict_path,
+                    ),
                 }
             });
     }
@@ -5695,9 +6893,8 @@ fn spawn_lifecycle_tick(app: tauri::AppHandle, local_data_dir: std::path::PathBu
                 }
                 passes = passes.wrapping_add(1);
 
-                app.state::<LifecycleTickState>().wait_for_next_pass(
-                    osl_privacy_hub::message_expiry::LIFECYCLE_TICK_INTERVAL,
-                );
+                app.state::<LifecycleTickState>()
+                    .wait_for_next_pass(osl_privacy_hub::message_expiry::LIFECYCLE_TICK_INTERVAL);
             }
         });
 }
@@ -5719,7 +6916,10 @@ fn main() {
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _, _| {
         startup_breadcrumb("single_instance_callback_fired"); // STARTUP-TRACE
         let restored = app.get_webview_window("main").is_some_and(|window| {
-            main_window_is_live(&window) && window.unminimize().is_ok() && window.show().is_ok()
+            main_window_is_live(&window)
+                && protect_main_window_or_hide(&window)
+                && window.unminimize().is_ok()
+                && window.show().is_ok()
         });
         if restored {
             if let Some(window) = app.get_webview_window("main") {
@@ -5741,379 +6941,398 @@ fn main() {
         startup_breadcrumb("page_load_fired"); // STARTUP-TRACE
         #[cfg(windows)]
         {
-                let _ = window_border::suppress_accent_border(webview);
-                // Protect OSL-owned pixels before the renderer can paint any
-                // account or recovery UI. Foreign native app windows remain
-                // outside this boundary and are never claimed as protected.
+            let _ = window_border::suppress_accent_border(webview);
+            // The main window stays hidden from setup through page load. It is
+            // revealed only after exact capture-affinity readback succeeds on
+            // this HWND. Foreign native app windows remain outside this
+            // boundary and are never claimed as protected.
+            if webview.label() == "main" {
+                if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                    let _ = webview.window().hide();
+                }
+                let protected = protect_main_webview_or_hide(webview);
+                if protected && matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                    let _ = webview.window().show();
+                }
+            } else {
                 let _ = screenshot::apply_to_webview(webview, active_osl_capture_protection());
             }
-            // This hook fires twice for every load, once on PageLoadEvent::Started
-            // and once on PageLoadEvent::Finished. Pre-warming on both spawned two
-            // concurrent builders for the same window labels, and Tauri only
-            // registers a label after the native window exists, so both passed
-            // their "does it exist yet" check and each created a real HWND titled
-            // "OSL private composer". Pre-warm once, after the load completes.
-            if webview.label() == "main"
-                && matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
-            {
-                // Build the protected composer pair once, hidden, off the first
-                // paint. Creating a WebView is what made the lock toggle slow;
-                // with the pair retained the toggle is only a show()/hide().
-                // It is idempotent and never activates a protection session.
-                let prewarm_app = webview.window().app_handle().clone();
-                tauri::async_runtime::spawn_blocking(move || {
-                    let _ = native_discord_overlay::prewarm(&prewarm_app);
-                });
-            }
+        }
+        // This hook fires twice for every load, once on PageLoadEvent::Started
+        // and once on PageLoadEvent::Finished. Pre-warming on both spawned two
+        // concurrent builders for the same window labels, and Tauri only
+        // registers a label after the native window exists, so both passed
+        // their "does it exist yet" check and each created a real HWND titled
+        // "OSL private composer". Pre-warm once, after the load completes.
+        if webview.label() == "main"
+            && matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
+        {
+            // Build the protected composer pair once, hidden, off the first
+            // paint. Creating a WebView is what made the lock toggle slow;
+            // with the pair retained the toggle is only a show()/hide().
+            // It is idempotent and never activates a protection session.
+            let prewarm_app = webview.window().app_handle().clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let _ = native_discord_overlay::prewarm(&prewarm_app);
+            });
+        }
     });
     let builder = builder.on_window_event(|window, event| {
-            if window.label() != "main" {
+        if window.label() != "main" {
+            return;
+        }
+        #[cfg(windows)]
+        if matches!(event, tauri::WindowEvent::Focused(true)) {
+            if let Some(webview) = window.app_handle().get_webview_window("main") {
+                protect_main_window_or_hide(&webview);
+            }
+        }
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let app = window.app_handle().clone();
+            if !app.state::<MainWindowLifecycleState>().begin_close() {
                 return;
             }
-            #[cfg(windows)]
-            if matches!(event, tauri::WindowEvent::Focused(true)) {
-                if let Some(webview) = window.app_handle().get_webview_window("main") {
-                    let _ = screenshot::apply_to_window(&webview, active_osl_capture_protection());
-                }
-            }
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let app = window.app_handle().clone();
-                if !app.state::<MainWindowLifecycleState>().begin_close() {
-                    return;
-                }
-                let _ = window.hide();
-                // Arm the bounded exit before waiting on any native-host lock.
-                // A concurrent launch may legitimately hold that lock while it
-                // discovers and adopts its exact window. Close must never block
-                // Tauri's window-event thread behind that operation.
-                let watchdog_app = app.clone();
-                std::thread::spawn(move || {
-                    // Native discovery/adoption is bounded to eleven seconds.
-                    // Leave enough time for its exact window restoration while
-                    // retaining an unconditional upper bound on shutdown.
-                    std::thread::sleep(std::time::Duration::from_secs(15));
-                    watchdog_app.exit(0);
-                });
-                native_discord_overlay::clear_and_hide(&app);
-                tauri::async_runtime::spawn(async move {
-                    let native_cleanup_app = app.clone();
-                    let _ = tauri::async_runtime::spawn_blocking(move || {
-                        // Covers the window close button, the taskbar
-                        // context-menu Close and Alt+F4 -- Windows turns all
-                        // three into the same `WM_CLOSE`, which Tauri surfaces
-                        // here. Programmatic exits are caught by the
-                        // `ExitRequested` handler instead. Already off the
-                        // event-loop thread, so this runs unbounded-by-caller
-                        // and relies on its own internal budgets.
-                        release_harnessed_windows_for_exit(&native_cleanup_app, false);
-                        let _ = native_cleanup_app
-                            .state::<MullvadWindowHostState>()
-                            .restore();
-                        let _ = native_cleanup_app
-                            .state::<BrowserCompanionState>()
-                            .terminate();
-                    })
-                    .await;
-                    let host = app.state::<ServiceHostState>();
-                    let _ = service_host::desktop::shutdown(&app, &host).await;
-                    app.exit(0);
-                });
-            }
+            let _ = window.hide();
+            // Arm the bounded exit before waiting on any native-host lock.
+            // A concurrent launch may legitimately hold that lock while it
+            // discovers and adopts its exact window. Close must never block
+            // Tauri's window-event thread behind that operation.
+            let watchdog_app = app.clone();
+            std::thread::spawn(move || {
+                // Native discovery/adoption is bounded to eleven seconds.
+                // Leave enough time for its exact window restoration while
+                // retaining an unconditional upper bound on shutdown.
+                std::thread::sleep(std::time::Duration::from_secs(15));
+                watchdog_app.exit(0);
+            });
+            native_discord_overlay::clear_and_hide(&app);
+            tauri::async_runtime::spawn(async move {
+                let native_cleanup_app = app.clone();
+                let _ = tauri::async_runtime::spawn_blocking(move || {
+                    // Covers the window close button, the taskbar
+                    // context-menu Close and Alt+F4 -- Windows turns all
+                    // three into the same `WM_CLOSE`, which Tauri surfaces
+                    // here. Programmatic exits are caught by the
+                    // `ExitRequested` handler instead. Already off the
+                    // event-loop thread, so this runs unbounded-by-caller
+                    // and relies on its own internal budgets.
+                    release_harnessed_windows_for_exit(&native_cleanup_app, false);
+                    let _ = native_cleanup_app
+                        .state::<MullvadWindowHostState>()
+                        .restore();
+                    let _ = native_cleanup_app
+                        .state::<BrowserCompanionState>()
+                        .terminate();
+                })
+                .await;
+                let host = app.state::<ServiceHostState>();
+                let _ = service_host::desktop::shutdown(&app, &host).await;
+                app.exit(0);
+            });
+        }
     });
     startup_breadcrumb("setup_before"); // STARTUP-TRACE
     let builder = builder.setup(|app| {
-            startup_breadcrumb("setup_enter"); // STARTUP-TRACE
-            let config_dir = app
-                .path()
-                .app_config_dir()
-                .map_err(|error| format!("could not resolve app config directory: {error}"))?;
-            startup_breadcrumb("setup_step_01_config_dir_resolved"); // STARTUP-TRACE
-            #[cfg(feature = "discord-qa-shell")]
-            let config_dir = if config_dir
-                .join("osl-core")
-                .join("password_marker.json")
-                .is_file()
-            {
-                // Never open or weaken a consumer password-protected profile.
-                // Existing disposable VM QA profiles have no password marker,
-                // so they retain their paired identity and receipts.
-                config_dir.join("discord-qa-shell-v1")
-            } else {
-                config_dir
-            };
-            #[cfg(feature = "discord-qa-shell")]
-            startup_breadcrumb("setup_step_02_qa_config_dir_remapped"); // STARTUP-TRACE
-            // The app owns a separate OSL identity namespace. Never inherit
-            // the original Discord client's `%APPDATA%/osl` login merely
-            // because both applications run on the same Windows account.
-            keystore::set_active_account_dir(None);
-            startup_breadcrumb("setup_step_03_keystore_active_account_dir_cleared"); // STARTUP-TRACE
-            let osl_core_dir = config_dir.join("osl-core");
-            keystore::set_base_dir_override(Some(osl_core_dir.clone()));
-            startup_breadcrumb("setup_step_04_keystore_base_dir_overridden"); // STARTUP-TRACE
-            #[cfg(feature = "discord-qa-shell")]
-            osl_privacy_hub::discord_qa_identity::install_device_bound_storage_key(&osl_core_dir)?;
-            #[cfg(feature = "discord-qa-shell")]
-            startup_breadcrumb("setup_step_05_qa_device_bound_storage_key_installed"); // STARTUP-TRACE
-            let local_data_dir = app
-                .path()
-                .app_local_data_dir()
-                .map_err(|error| format!("could not resolve app local-data directory: {error}"))?;
-            startup_breadcrumb("setup_step_06_local_data_dir_resolved"); // STARTUP-TRACE
-            #[cfg(feature = "discord-qa-shell")]
-            let local_data_dir = local_data_dir.join("discord-qa-shell-v1");
-            #[cfg(feature = "discord-qa-shell")]
-            startup_breadcrumb("setup_step_07_qa_local_data_dir_remapped"); // STARTUP-TRACE
-            startup_breadcrumb("setup_step_08_scavenge_staging_before"); // STARTUP-TRACE
-            peer_attachment_io::scavenge_staging_on_startup(&local_data_dir)?;
-            startup_breadcrumb("setup_step_09_scavenge_staging_after"); // STARTUP-TRACE
-            // Resume an already-committed gate burn before any identity can be
-            // selected or decrypted. The recovery record contains no paths or
-            // secrets; it only authorizes the same fixed-root idempotent purge.
-            startup_breadcrumb("setup_step_10_resume_gate_burn_before"); // STARTUP-TRACE
-            cleanup::resume_interrupted_gate_burn(&config_dir, &local_data_dir)?;
-            startup_breadcrumb("setup_step_11_resume_gate_burn_after"); // STARTUP-TRACE
-            startup_breadcrumb("setup_step_12_select_active_identity_before"); // STARTUP-TRACE
-            identity_registry::select_active_identity_before_bootstrap()?;
-            startup_breadcrumb("setup_step_13_select_active_identity_after"); // STARTUP-TRACE
-            app.manage(PreviewState::load(
-                config_dir.join("preview-preferences.json"),
-            ));
-            startup_breadcrumb("setup_step_14_preview_state_managed"); // STARTUP-TRACE
-            app.manage(ServiceRegistryState::load(
-                config_dir.join("service-registry.json"),
-            ));
-            startup_breadcrumb("setup_step_15_service_registry_state_managed"); // STARTUP-TRACE
-            app.manage(ServiceScopeIndexState::load(
-                config_dir.join("service-scope-index.json"),
-            ));
-            startup_breadcrumb("setup_step_16_service_scope_index_state_managed"); // STARTUP-TRACE
-            startup_breadcrumb("setup_step_17_hub_core_bootstrap_before"); // STARTUP-TRACE
-            let core = HubCoreState::bootstrap_from_disk();
-            startup_breadcrumb("setup_step_18_hub_core_bootstrap_after"); // STARTUP-TRACE
-            #[cfg(feature = "discord-qa-shell")]
-            startup_breadcrumb("setup_step_19_qa_disposable_identity_before"); // STARTUP-TRACE
-            #[cfg(feature = "discord-qa-shell")]
-            osl_privacy_hub::discord_qa_identity::ensure_disposable_identity(&core)?;
-            #[cfg(feature = "discord-qa-shell")]
-            startup_breadcrumb("setup_step_20_qa_disposable_identity_after"); // STARTUP-TRACE
-            let security_state = HubSecurityState::default();
-            startup_breadcrumb("setup_step_21_security_state_created"); // STARTUP-TRACE
-            #[cfg(feature = "discord-qa-shell")]
-            startup_breadcrumb("setup_step_22_qa_pairing_before"); // STARTUP-TRACE
-            #[cfg(feature = "discord-qa-shell")]
-            osl_privacy_hub::discord_qa_identity::publish_and_consume_pairing(
-                &osl_core_dir,
-                &core,
-                &security_state,
-            )?;
-            #[cfg(feature = "discord-qa-shell")]
-            startup_breadcrumb("setup_step_23_qa_pairing_after"); // STARTUP-TRACE
-            app.manage(core);
-            startup_breadcrumb("setup_step_24_core_state_managed"); // STARTUP-TRACE
-            app.manage(HubBrokerState::default());
-            startup_breadcrumb("setup_step_25_broker_state_managed"); // STARTUP-TRACE
-            app.manage(security_state);
-            startup_breadcrumb("setup_step_26_security_state_managed"); // STARTUP-TRACE
-            app.manage(HubIdentityRegistryState::default());
-            startup_breadcrumb("setup_step_27_identity_registry_state_managed"); // STARTUP-TRACE
-            app.manage(ServiceHostState::default());
-            startup_breadcrumb("setup_step_28_service_host_state_managed"); // STARTUP-TRACE
-            app.manage(NativeWindowHostState::default());
-            startup_breadcrumb("setup_step_29_native_window_host_state_managed"); // STARTUP-TRACE
-            app.manage(NativeDiscordComposerState::default());
-            startup_breadcrumb("setup_step_30_native_discord_composer_state_managed"); // STARTUP-TRACE
-            app.manage(LocalCoverState::default());
-            startup_breadcrumb("setup_step_31_local_cover_state_managed"); // STARTUP-TRACE
-            app.manage(OverlaySessionState::default());
-            startup_breadcrumb("setup_step_32_overlay_session_state_managed"); // STARTUP-TRACE
-            app.manage(native_surface_capture::NativeSurfaceCaptureState::default());
-            startup_breadcrumb("setup_step_33_native_surface_capture_state_managed"); // STARTUP-TRACE
-            app.manage(MullvadWindowHostState::default());
-            startup_breadcrumb("setup_step_34_mullvad_window_host_state_managed"); // STARTUP-TRACE
-            app.manage(BrowserCompanionState::default());
-            startup_breadcrumb("setup_step_35_browser_companion_state_managed"); // STARTUP-TRACE
-            app.manage(HubAccountSessionState::default());
-            startup_breadcrumb("setup_step_36_hub_account_session_state_managed"); // STARTUP-TRACE
-            app.manage(MainWindowLifecycleState::default());
-            startup_breadcrumb("setup_step_37_main_window_lifecycle_state_managed"); // STARTUP-TRACE
-            app.manage(HubUpdaterState::default());
-            startup_breadcrumb("setup_step_38_hub_updater_state_managed"); // STARTUP-TRACE
-            app.manage(HubNotificationState::default());
-            startup_breadcrumb("setup_step_39_hub_notification_state_managed"); // STARTUP-TRACE
-            app.manage(ScrubIndexState::default());
-            startup_breadcrumb("setup_step_40_scrub_index_state_managed"); // STARTUP-TRACE
-            let registration_app = app.handle().clone();
-            startup_breadcrumb("setup_step_41_register_after_bootstrap_spawn_before"); // STARTUP-TRACE
-            tauri::async_runtime::spawn_blocking(move || {
-                registration_app
-                    .state::<HubCoreState>()
-                    .register_after_local_bootstrap();
-            });
-            startup_breadcrumb("setup_step_42_register_after_bootstrap_spawn_after"); // STARTUP-TRACE
-            // A failed browser-profile deletion can leave a large tombstone.
-            // Retrying it synchronously here would hold the first paint behind
-            // an unbounded recursive filesystem walk. Tombstones are already
-            // detached from every live account name, so retry them off the UI
-            // startup path and keep failures pending for the next launch.
-            let cleanup_app = app.handle().clone();
-            startup_breadcrumb("setup_step_43_scavenge_tombstones_spawn_before"); // STARTUP-TRACE
-            tauri::async_runtime::spawn_blocking(move || {
-                let _ = service_host::desktop::scavenge_profile_tombstones_on_startup(&cleanup_app);
-            });
-            startup_breadcrumb("setup_step_44_scavenge_tombstones_spawn_after"); // STARTUP-TRACE
-            // The one scheduler in this app. It prunes the expiry and receipt
-            // ledgers, clears abandoned decrypted staging files, shreds the local
-            // plaintext cache of whatever expired, and — every
-            // `DELETION_DRAIN_EVERY_N_PASSES` passes — retries the remote
-            // ciphertext OSL promised to delete but could not.
-            //
-            // Everything it touches except the staging directory is sealed with
-            // the file storage key, so its passes are no-ops until the password
-            // gate opens; the unlock nudges it so the first real pass is prompt.
-            // This is also why `scavenge_staging_on_startup` above cannot be the
-            // home for any of it: no key exists yet at that point.
-            app.manage(LifecycleTickState::default());
-            spawn_lifecycle_tick(app.handle().clone(), local_data_dir.clone());
-            startup_breadcrumb("setup_step_45_lifecycle_tick_spawned"); // STARTUP-TRACE
-            // Last, so every state the driver reads is already managed. It only
-            // ever polls a trigger file; it starts no scenario on its own.
-            #[cfg(feature = "discord-qa-shell")]
-            qa_selftest::spawn_trigger_watcher(app.handle().clone());
-            #[cfg(feature = "discord-qa-shell")]
-            startup_breadcrumb("setup_step_46_qa_selftest_watcher_spawned"); // STARTUP-TRACE
-            startup_breadcrumb("setup_done"); // STARTUP-TRACE
-            Ok(())
+        startup_breadcrumb("setup_enter"); // STARTUP-TRACE
+        let main_window = app
+            .get_webview_window("main")
+            .ok_or_else(|| "OSL main window is unavailable".to_owned())?;
+        main_window
+            .hide()
+            .map_err(|_| "OSL main window could not start hidden".to_owned())?;
+        let config_dir = app
+            .path()
+            .app_config_dir()
+            .map_err(|error| format!("could not resolve app config directory: {error}"))?;
+        startup_breadcrumb("setup_step_01_config_dir_resolved"); // STARTUP-TRACE
+        #[cfg(feature = "discord-qa-shell")]
+        let config_dir = if config_dir
+            .join("osl-core")
+            .join("password_marker.json")
+            .is_file()
+        {
+            // Never open or weaken a consumer password-protected profile.
+            // Existing disposable VM QA profiles have no password marker,
+            // so they retain their paired identity and receipts.
+            config_dir.join("discord-qa-shell-v1")
+        } else {
+            config_dir
+        };
+        #[cfg(feature = "discord-qa-shell")]
+        startup_breadcrumb("setup_step_02_qa_config_dir_remapped"); // STARTUP-TRACE
+                                                                    // The app owns a separate OSL identity namespace. Never inherit
+                                                                    // the original Discord client's `%APPDATA%/osl` login merely
+                                                                    // because both applications run on the same Windows account.
+        keystore::set_active_account_dir(None);
+        startup_breadcrumb("setup_step_03_keystore_active_account_dir_cleared"); // STARTUP-TRACE
+        let osl_core_dir = config_dir.join("osl-core");
+        keystore::set_base_dir_override(Some(osl_core_dir.clone()));
+        startup_breadcrumb("setup_step_04_keystore_base_dir_overridden"); // STARTUP-TRACE
+        #[cfg(feature = "discord-qa-shell")]
+        osl_privacy_hub::discord_qa_identity::install_device_bound_storage_key(&osl_core_dir)?;
+        #[cfg(feature = "discord-qa-shell")]
+        startup_breadcrumb("setup_step_05_qa_device_bound_storage_key_installed"); // STARTUP-TRACE
+        let local_data_dir = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|error| format!("could not resolve app local-data directory: {error}"))?;
+        startup_breadcrumb("setup_step_06_local_data_dir_resolved"); // STARTUP-TRACE
+        #[cfg(feature = "discord-qa-shell")]
+        let local_data_dir = local_data_dir.join("discord-qa-shell-v1");
+        #[cfg(feature = "discord-qa-shell")]
+        startup_breadcrumb("setup_step_07_qa_local_data_dir_remapped"); // STARTUP-TRACE
+        startup_breadcrumb("setup_step_08_scavenge_staging_before"); // STARTUP-TRACE
+        peer_attachment_io::scavenge_staging_on_startup(&local_data_dir)?;
+        peer_attachment_io::scavenge_layout_decoys_on_startup(&local_data_dir)?;
+        startup_breadcrumb("setup_step_09_scavenge_staging_after"); // STARTUP-TRACE
+                                                                    // Resume an already-committed gate burn before any identity can be
+                                                                    // selected or decrypted. The recovery record contains no paths or
+                                                                    // secrets; it only authorizes the same fixed-root idempotent purge.
+        startup_breadcrumb("setup_step_10_resume_gate_burn_before"); // STARTUP-TRACE
+        cleanup::resume_interrupted_gate_burn(&config_dir, &local_data_dir)?;
+        startup_breadcrumb("setup_step_11_resume_gate_burn_after"); // STARTUP-TRACE
+        startup_breadcrumb("setup_step_12_select_active_identity_before"); // STARTUP-TRACE
+        identity_registry::select_active_identity_before_bootstrap()?;
+        startup_breadcrumb("setup_step_13_select_active_identity_after"); // STARTUP-TRACE
+        app.manage(PreviewState::load(
+            config_dir.join("preview-preferences.json"),
+        ));
+        startup_breadcrumb("setup_step_14_preview_state_managed"); // STARTUP-TRACE
+        app.manage(ServiceRegistryState::load(
+            config_dir.join("service-registry.json"),
+        ));
+        startup_breadcrumb("setup_step_15_service_registry_state_managed"); // STARTUP-TRACE
+        app.manage(ServiceScopeIndexState::load(
+            config_dir.join("service-scope-index.json"),
+        ));
+        startup_breadcrumb("setup_step_16_service_scope_index_state_managed"); // STARTUP-TRACE
+        startup_breadcrumb("setup_step_17_hub_core_bootstrap_before"); // STARTUP-TRACE
+        let core = HubCoreState::bootstrap_from_disk();
+        startup_breadcrumb("setup_step_18_hub_core_bootstrap_after"); // STARTUP-TRACE
+        #[cfg(feature = "discord-qa-shell")]
+        startup_breadcrumb("setup_step_19_qa_disposable_identity_before"); // STARTUP-TRACE
+        #[cfg(feature = "discord-qa-shell")]
+        osl_privacy_hub::discord_qa_identity::ensure_disposable_identity(&core)?;
+        #[cfg(feature = "discord-qa-shell")]
+        startup_breadcrumb("setup_step_20_qa_disposable_identity_after"); // STARTUP-TRACE
+        let security_state = HubSecurityState::default();
+        startup_breadcrumb("setup_step_21_security_state_created"); // STARTUP-TRACE
+        #[cfg(feature = "discord-qa-shell")]
+        startup_breadcrumb("setup_step_22_qa_pairing_before"); // STARTUP-TRACE
+        #[cfg(feature = "discord-qa-shell")]
+        osl_privacy_hub::discord_qa_identity::publish_and_consume_pairing(
+            &osl_core_dir,
+            &core,
+            &security_state,
+        )?;
+        #[cfg(feature = "discord-qa-shell")]
+        startup_breadcrumb("setup_step_23_qa_pairing_after"); // STARTUP-TRACE
+        app.manage(core);
+        startup_breadcrumb("setup_step_24_core_state_managed"); // STARTUP-TRACE
+        app.manage(HubBrokerState::default());
+        startup_breadcrumb("setup_step_25_broker_state_managed"); // STARTUP-TRACE
+        app.manage(security_state);
+        startup_breadcrumb("setup_step_26_security_state_managed"); // STARTUP-TRACE
+        app.manage(HubIdentityRegistryState::default());
+        startup_breadcrumb("setup_step_27_identity_registry_state_managed"); // STARTUP-TRACE
+        app.manage(ServiceHostState::default());
+        startup_breadcrumb("setup_step_28_service_host_state_managed"); // STARTUP-TRACE
+        app.manage(NativeWindowHostState::default());
+        startup_breadcrumb("setup_step_29_native_window_host_state_managed"); // STARTUP-TRACE
+        app.manage(NativeDiscordComposerState::default());
+        startup_breadcrumb("setup_step_30_native_discord_composer_state_managed"); // STARTUP-TRACE
+        app.manage(LocalCoverState::default());
+        startup_breadcrumb("setup_step_31_local_cover_state_managed"); // STARTUP-TRACE
+        app.manage(OverlaySessionState::default());
+        startup_breadcrumb("setup_step_32_overlay_session_state_managed"); // STARTUP-TRACE
+        app.manage(native_surface_capture::NativeSurfaceCaptureState::default());
+        startup_breadcrumb("setup_step_33_native_surface_capture_state_managed"); // STARTUP-TRACE
+        app.manage(MullvadWindowHostState::default());
+        startup_breadcrumb("setup_step_34_mullvad_window_host_state_managed"); // STARTUP-TRACE
+        app.manage(BrowserCompanionState::default());
+        startup_breadcrumb("setup_step_35_browser_companion_state_managed"); // STARTUP-TRACE
+        app.manage(HubAccountSessionState::default());
+        startup_breadcrumb("setup_step_36_hub_account_session_state_managed"); // STARTUP-TRACE
+        app.manage(MainWindowLifecycleState::default());
+        startup_breadcrumb("setup_step_37_main_window_lifecycle_state_managed"); // STARTUP-TRACE
+        app.manage(HubUpdaterState::default());
+        startup_breadcrumb("setup_step_38_hub_updater_state_managed"); // STARTUP-TRACE
+        app.manage(HubNotificationState::default());
+        startup_breadcrumb("setup_step_39_hub_notification_state_managed"); // STARTUP-TRACE
+        app.manage(ScrubIndexState::default());
+        startup_breadcrumb("setup_step_40_scrub_index_state_managed"); // STARTUP-TRACE
+        let registration_app = app.handle().clone();
+        startup_breadcrumb("setup_step_41_register_after_bootstrap_spawn_before"); // STARTUP-TRACE
+        tauri::async_runtime::spawn_blocking(move || {
+            registration_app
+                .state::<HubCoreState>()
+                .register_after_local_bootstrap();
+        });
+        startup_breadcrumb("setup_step_42_register_after_bootstrap_spawn_after"); // STARTUP-TRACE
+                                                                                  // A failed browser-profile deletion can leave a large tombstone.
+                                                                                  // Retrying it synchronously here would hold the first paint behind
+                                                                                  // an unbounded recursive filesystem walk. Tombstones are already
+                                                                                  // detached from every live account name, so retry them off the UI
+                                                                                  // startup path and keep failures pending for the next launch.
+        let cleanup_app = app.handle().clone();
+        startup_breadcrumb("setup_step_43_scavenge_tombstones_spawn_before"); // STARTUP-TRACE
+        tauri::async_runtime::spawn_blocking(move || {
+            let _ = service_host::desktop::scavenge_profile_tombstones_on_startup(&cleanup_app);
+        });
+        startup_breadcrumb("setup_step_44_scavenge_tombstones_spawn_after"); // STARTUP-TRACE
+                                                                             // The one scheduler in this app. It prunes the expiry and receipt
+                                                                             // ledgers, clears abandoned decrypted staging files, shreds the local
+                                                                             // plaintext cache of whatever expired, and — every
+                                                                             // `DELETION_DRAIN_EVERY_N_PASSES` passes — retries the remote
+                                                                             // ciphertext OSL promised to delete but could not.
+                                                                             //
+                                                                             // Everything it touches except the staging directory is sealed with
+                                                                             // the file storage key, so its passes are no-ops until the password
+                                                                             // gate opens; the unlock nudges it so the first real pass is prompt.
+                                                                             // This is also why `scavenge_staging_on_startup` above cannot be the
+                                                                             // home for any of it: no key exists yet at that point.
+        app.manage(LifecycleTickState::default());
+        spawn_lifecycle_tick(app.handle().clone(), local_data_dir.clone());
+        startup_breadcrumb("setup_step_45_lifecycle_tick_spawned"); // STARTUP-TRACE
+                                                                    // Last, so every state the driver reads is already managed. It only
+                                                                    // ever polls a trigger file; it starts no scenario on its own.
+        #[cfg(feature = "discord-qa-shell")]
+        qa_selftest::spawn_trigger_watcher(app.handle().clone());
+        #[cfg(feature = "discord-qa-shell")]
+        startup_breadcrumb("setup_step_46_qa_selftest_watcher_spawned"); // STARTUP-TRACE
+        startup_breadcrumb("setup_done"); // STARTUP-TRACE
+        Ok(())
     });
     let builder = builder.invoke_handler(tauri::generate_handler![
-            get_onboarding_preferences,
-            list_hub_app_notifications,
-            set_hub_notifications_enabled,
-            set_hub_screenshot_protection,
-            save_onboarding_preferences,
-            scan_local_privacy,
-            initialize_scrub_index,
-            append_scrub_index_chunk,
-            get_scrub_index_status,
-            pause_scrub_index,
-            resume_scrub_index,
-            cancel_scrub_index,
-            list_linked_services,
-            get_core_readiness,
-            list_core_features,
-            get_hub_license_state,
-            get_mass_cleanup_capabilities,
-            discover_mass_cleanup_targets,
-            execute_mass_cleanup_batch,
-            validate_hub_activation_code,
-            clear_hub_activation_code,
-            unlock_hub_password_gate,
-            create_hub_osl_identity,
-            import_hub_osl_identity_phrase,
-            setup_hub_main_password,
-            get_hub_password_role_status,
-            set_hub_stealth_password,
-            remove_hub_stealth_password,
-            set_hub_burn_password,
-            remove_hub_burn_password,
-            check_hub_for_updates,
-            install_hub_update,
-            open_hub_releases_page,
-            list_native_apps,
-            install_native_app,
-            get_mullvad_status,
-            install_mullvad,
-            open_mullvad,
-            list_browser_imports,
-            open_browser_import,
-            get_firefox_status,
-            install_firefox,
-            begin_browser_account_import,
-            begin_protected_browser_import,
-            finish_protected_browser_import,
-            launch_firefox_service,
-            get_default_browser_companion_status,
-            host_default_browser_companion,
-            resize_default_browser_companion,
-            focus_default_browser_companion,
-            detach_default_browser_companion,
-            host_native_app_window,
-            native_app_takeover_requires_consent,
-            resize_native_app_window,
-            focus_native_app_window,
-            detach_native_app_window,
-            set_native_discord_protected_overlay_open,
-            get_native_discord_overlay_state,
-            prepare_native_discord_overlay_text,
-            #[cfg(feature = "discord-qa-shell")]
+        get_onboarding_preferences,
+        list_hub_app_notifications,
+        set_hub_notifications_enabled,
+        set_hub_screenshot_protection,
+        save_onboarding_preferences,
+        scan_local_privacy,
+        initialize_scrub_index,
+        append_scrub_index_chunk,
+        get_scrub_index_status,
+        pause_scrub_index,
+        resume_scrub_index,
+        cancel_scrub_index,
+        list_linked_services,
+        get_core_readiness,
+        list_core_features,
+        get_hub_license_state,
+        get_mass_cleanup_capabilities,
+        discover_mass_cleanup_targets,
+        execute_mass_cleanup_batch,
+        validate_hub_activation_code,
+        clear_hub_activation_code,
+        unlock_hub_password_gate,
+        create_hub_osl_identity,
+        import_hub_osl_identity_phrase,
+        setup_hub_main_password,
+        get_hub_password_role_status,
+        set_hub_stealth_password,
+        remove_hub_stealth_password,
+        set_hub_burn_password,
+        remove_hub_burn_password,
+        check_hub_for_updates,
+        install_hub_update,
+        open_hub_releases_page,
+        list_native_apps,
+        install_native_app,
+        get_mullvad_status,
+        install_mullvad,
+        open_mullvad,
+        list_browser_imports,
+        open_browser_import,
+        get_firefox_status,
+        install_firefox,
+        begin_browser_account_import,
+        begin_protected_browser_import,
+        finish_protected_browser_import,
+        launch_firefox_service,
+        get_default_browser_companion_status,
+        host_default_browser_companion,
+        resize_default_browser_companion,
+        focus_default_browser_companion,
+        detach_default_browser_companion,
+        host_native_app_window,
+        native_app_takeover_requires_consent,
+        resize_native_app_window,
+        focus_native_app_window,
+        detach_native_app_window,
+        set_native_discord_protected_overlay_open,
+        get_native_discord_overlay_state,
+        prepare_native_discord_overlay_text,
+        #[cfg(feature = "discord-qa-shell")]
             send_native_discord_qa_atomic_text,
-            #[cfg(feature = "discord-qa-shell")]
-            record_native_discord_qa_send_stage,
-            #[cfg(feature = "discord-qa-shell")]
+        #[cfg(feature = "discord-qa-shell")]
+        record_native_discord_qa_send_stage,
+        #[cfg(feature = "discord-qa-shell")]
             send_native_discord_qa_probe,
-            #[cfg(feature = "discord-qa-shell")]
-            run_native_discord_headless_qa,
-            #[cfg(feature = "discord-qa-shell")]
-            poll_native_discord_headless_qa,
-            prepare_osl_chat_text,
-            send_native_discord_overlay_carrier,
-            open_native_discord_overlay_text,
-            rehydrate_native_discord_overlay_history,
-            reveal_native_discord_overlay_view_once,
-            open_osl_chat_text,
-            list_osl_chat_history,
-            select_osl_chat_attachment,
-            list_osl_chat_attachments,
-            open_osl_chat_attachment,
-            select_native_discord_overlay_attachment,
-            list_native_discord_overlay_attachments,
-            open_native_discord_overlay_attachment,
-            burn_native_discord_overlay_chat,
-            set_native_discord_overlay_security,
-            set_native_discord_covertext_enabled,
-            host_mullvad_window,
-            resize_mullvad_window,
-            focus_mullvad_window,
-            restore_mullvad_window,
-            create_service_account,
-            open_service_host,
-            close_service_host,
-            set_local_protected_sheet_open,
-            remove_service_account,
-            activate_local_loopback_context,
-            activate_manual_peer_context,
-            activate_native_manual_peer_context,
-            activate_osl_chat_context,
-            close_osl_chat_context,
-            prepare_encrypted_text,
-            decrypt_hub_capsule,
-            prepare_peer_prose_text,
-            open_peer_prose_text,
-            prepare_local_protected_text_with_policy,
-            decrypt_local_protected_capsule,
-            prepare_hub_attachment,
-            open_hub_attachment,
-            export_hub_friend_code,
-            copy_hub_friend_invite,
-            add_hub_friend,
-            verify_hub_friend_safety_number,
-            list_hub_people,
-            set_hub_friend_nickname,
-            set_active_hub_friend_permission,
+        #[cfg(feature = "discord-qa-shell")]
+        run_native_discord_headless_qa,
+        #[cfg(feature = "discord-qa-shell")]
+        poll_native_discord_headless_qa,
+        prepare_osl_chat_text,
+        send_native_discord_overlay_carrier,
+        open_native_discord_overlay_text,
+        rehydrate_native_discord_overlay_history,
+        reveal_native_discord_overlay_view_once,
+        open_osl_chat_text,
+        list_osl_chat_history,
+        select_osl_chat_attachment,
+        list_osl_chat_attachments,
+        open_osl_chat_attachment,
+        select_native_discord_overlay_attachment,
+        list_native_discord_overlay_attachments,
+        open_native_discord_overlay_attachment,
+        burn_native_discord_overlay_chat,
+        set_native_discord_overlay_security,
+        set_native_discord_covertext_enabled,
+        host_mullvad_window,
+        resize_mullvad_window,
+        focus_mullvad_window,
+        restore_mullvad_window,
+        create_service_account,
+        open_service_host,
+        close_service_host,
+        set_local_protected_sheet_open,
+        remove_service_account,
+        activate_local_loopback_context,
+        activate_manual_peer_context,
+        activate_native_manual_peer_context,
+        activate_osl_chat_context,
+        close_osl_chat_context,
+        prepare_encrypted_text,
+        decrypt_hub_capsule,
+        prepare_peer_prose_text,
+        open_peer_prose_text,
+        prepare_local_protected_text_with_policy,
+        decrypt_local_protected_capsule,
+        prepare_hub_attachment,
+        open_hub_attachment,
+        export_hub_friend_code,
+        copy_hub_friend_invite,
+        add_hub_friend,
+        verify_hub_friend_safety_number,
+        remove_hub_friend,
+        list_hub_people,
+        set_hub_friend_nickname,
+        set_active_hub_friend_permission,
             set_active_hub_friend_reach,
             revoke_active_hub_friend_scope,
-            get_active_hub_context_security,
-            set_active_hub_context_security,
-            list_hub_identities,
-            create_hub_identity_slot,
-            recover_hub_identity_slot,
-            switch_hub_identity,
-            burn_active_hub_identity,
-            execute_hub_full_cleanup,
-            get_hub_service_burn_readiness,
-            burn_hub_service_account,
-            burn_active_hub_context
+        get_active_hub_context_security,
+        set_active_hub_context_security,
+        list_hub_identities,
+        create_hub_identity_slot,
+        recover_hub_identity_slot,
+        switch_hub_identity,
+        burn_active_hub_identity,
+        execute_hub_full_cleanup,
+        get_hub_service_burn_readiness,
+        burn_hub_service_account,
+        burn_active_hub_context
     ]);
     startup_breadcrumb("run_before"); // STARTUP-TRACE
     let app = builder
@@ -6128,10 +7347,7 @@ fn main() {
         // once the close handler has already released the window, so the
         // ordinary path pays nothing here.
         if let tauri::RunEvent::ExitRequested { code, .. } = event {
-            release_harnessed_windows_bounded(
-                app_handle,
-                code == Some(tauri::RESTART_EXIT_CODE),
-            );
+            release_harnessed_windows_bounded(app_handle, code == Some(tauri::RESTART_EXIT_CODE));
         }
     });
 }

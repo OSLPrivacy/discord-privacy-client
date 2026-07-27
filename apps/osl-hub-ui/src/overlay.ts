@@ -464,6 +464,16 @@ interface DecodedDiscordRowRect {
 interface RehydratedDiscordRow {
   flagtext: string;
   plaintext: string | null;
+  /**
+   * Which end of the conversation wrote this row, as PROVEN by the backend --
+   * it is the orientation whose signature verified the wire, not a guess from
+   * position or from whose conversation is open.
+   *
+   * Non-null exactly when `plaintext` is non-null. The renderer never invents
+   * it: a row with text and no proven author is a malformed response, and the
+   * whole read is refused so Discord's own rows stay visible.
+   */
+  orientation: "incoming" | "outgoing" | null;
   row: DecodedDiscordRowRect | null;
 }
 
@@ -509,14 +519,25 @@ function parseDecodedDiscordRowRect(value: unknown): DecodedDiscordRowRect | nul
 }
 
 function parseRehydratedDiscordRow(value: unknown): RehydratedDiscordRow | null {
-  if (!exactKeys(value, ["flagtext", "plaintext", "row"])) return null;
+  if (!exactKeys(value, ["flagtext", "plaintext", "orientation", "row"])) return null;
   const record = value as Record<string, unknown>;
   if (typeof record.flagtext !== "string" || utf8Length(record.flagtext) > MAX_ROW_FLAGTEXT_BYTES) return null;
   if (record.plaintext !== null
     && (typeof record.plaintext !== "string" || utf8Length(record.plaintext) > MAX_PROTECTED_DRAFT_BYTES)) return null;
+  // Authorship is accepted only as one of the two proven answers, and only
+  // together with the text it describes. Text with no proven author would have
+  // to be attributed by guessing, and an author with no text describes nothing
+  // -- both are refused here rather than reconciled downstream.
+  if (record.orientation !== null && record.orientation !== "incoming" && record.orientation !== "outgoing") return null;
+  if ((record.plaintext === null) !== (record.orientation === null)) return null;
   const row = record.row === null ? null : parseDecodedDiscordRowRect(record.row);
   if (record.row !== null && row === null) return null;
-  return { flagtext: record.flagtext, plaintext: record.plaintext as string | null, row };
+  return {
+    flagtext: record.flagtext,
+    plaintext: record.plaintext as string | null,
+    orientation: record.orientation as "incoming" | "outgoing" | null,
+    row,
+  };
 }
 
 function parseRehydratedDiscordTranscript(value: unknown): RehydratedDiscordTranscript | null {
@@ -678,6 +699,11 @@ function applyDecodedTranscript(rows: readonly RehydratedDiscordRow[]): void {
   for (const row of rows) {
     // Undecodable, or unplaceable. Either way OSL owns no pixel over it.
     if (row.plaintext === null || row.row === null) continue;
+    // And authorship must have been PROVEN. The parser already refuses a row
+    // that has text without it, so this is the second half of the same
+    // fail-closed rule rather than a new one: OSL leaves the carrier visible
+    // rather than painting text it cannot name the author of.
+    if (row.orientation === null) continue;
     // Positional keys, so a row that is still the nth decodable row keeps its
     // DOM node across reads instead of being destroyed and rebuilt on a scroll.
     const key = `decoded-${index}`;
@@ -686,8 +712,11 @@ function applyDecodedTranscript(rows: readonly RehydratedDiscordRow[]): void {
     decodedRows.push({
       key,
       kind: "text",
-      direction: "incoming",
-      author: verifiedFriendIdentity,
+      // From the backend's proof, never from the surface. Stamping every
+      // opened row `incoming` showed the operator their OWN sent messages
+      // attributed to their friend.
+      direction: row.orientation,
+      author: row.orientation === "outgoing" ? localIdentity : verifiedFriendIdentity,
       timestamp: transcriptTimestamp(),
       plaintext: row.plaintext,
       // Born in whichever mode the eye is already in, so a read that lands with
@@ -785,6 +814,16 @@ let rehydrateBusy = false;
 // At most one replacement may be armed for an edge the backend's floor refused.
 // Cleared by any real edge and by a completed read, so this can never chain.
 let rehydrateReplacementArmed = false;
+// An edge that arrived while a read was already in flight.
+//
+// THE defect that stopped the eye ever painting: growing the overlay window over
+// the rows is itself what makes those rows placeable, and the guard emits its
+// `rows-moved` edge on the tick it grows -- which lands *during* the very read
+// that cached the rectangles it grew from. `runTranscriptRehydrate` returned at
+// `rehydrateBusy` and nothing re-armed, so the one edge that closes the loop was
+// the one edge guaranteed to be dropped, and placement sat at zero for the whole
+// session while decode, growth and shipping all worked.
+let rehydratePending = false;
 // The conversation the renderer believes it is showing. It only ever widens the
 // backend's own binding, so switching the displayed surface counts as a change
 // even when the native binding has not moved.
@@ -794,6 +833,7 @@ function cancelTranscriptRehydrate(): void {
   if (rehydrateTimer !== undefined) window.clearTimeout(rehydrateTimer);
   rehydrateTimer = undefined;
   rehydrateReplacementArmed = false;
+  rehydratePending = false;
 }
 
 /**
@@ -804,6 +844,9 @@ function cancelTranscriptRehydrate(): void {
  */
 function scheduleTranscriptRehydrate(): void {
   rehydrateReplacementArmed = false;
+  // A scheduled read serves whatever was outstanding, so the latch is spent
+  // here and never survives into a later read as a phantom extra one.
+  rehydratePending = false;
   if (!overlayReady || !decryptDisplayEnabled) return;
   if (rehydrateTimer !== undefined) window.clearTimeout(rehydrateTimer);
   rehydrateTimer = window.setTimeout(() => {
@@ -813,7 +856,15 @@ function scheduleTranscriptRehydrate(): void {
 }
 
 async function runTranscriptRehydrate(): Promise<void> {
-  if (rehydrateBusy || !overlayReady || !decryptDisplayEnabled || !rehydrateScope) return;
+  if (!overlayReady || !decryptDisplayEnabled || !rehydrateScope) return;
+  // Remembered, not dropped. The in-flight read was measured against geometry
+  // from before this edge, so its answer cannot serve it; the edge is replayed
+  // the moment that read finishes. Exactly one bit, so an edge storm still
+  // costs exactly one extra read.
+  if (rehydrateBusy) {
+    rehydratePending = true;
+    return;
+  }
   rehydrateBusy = true;
   // `rehydrateBusy` is the eye's only concurrency guard, and it was unbounded: an
   // invoke that never settles leaves it latched true and every subsequent edge --
@@ -867,7 +918,18 @@ async function runTranscriptRehydrate(): Promise<void> {
     applyDecodedTranscript(result.rows);
   } finally {
     window.clearTimeout(watchdog);
-    if (!abandoned) rehydrateBusy = false;
+    if (!abandoned) {
+      rehydrateBusy = false;
+      // Replay an edge that arrived mid-read -- but only when nothing is already
+      // scheduled. A live `rehydrateTimer` is either the floor's replacement,
+      // which must keep the backend's own `retryAfterMs`, or a newer edge's
+      // coalesced read; both are a guaranteed read and neither may be restarted
+      // at this function's shorter delay, which is what could chain.
+      if (rehydratePending) {
+        rehydratePending = false;
+        if (rehydrateTimer === undefined) scheduleTranscriptRehydrate();
+      }
+    }
   }
 }
 
