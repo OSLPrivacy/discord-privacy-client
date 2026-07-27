@@ -108,6 +108,38 @@ deployment. It closes master §2 P0-3 and §10 critical class 3.
 | **Evidence** | Master §6 product contract; no server-side plaintext path in `crates/ipc` |
 | **Required alongside** | If the page also mentions Pro cloud carrier generation or cloud AutoScrub, it must say those send selected data to a server and are not end-to-end private (master §7.1, §7.6). |
 
+### A9 · OSL refuses to send unless the exact carrier is in the composer
+
+| | |
+|---|---|
+| **Permitted wording** | "Before pressing Send, OSL checks that the composer contains exactly the complete encrypted carrier, in the window it means to send to. If that check fails it withholds Send and keeps your draft." |
+| **Status** | `implemented-unwired` → **`Planned`** badge (source is real; no named release build proves it end to end) |
+| **Evidence** | `apps/osl-hub/src/native_discord_adapter.rs:16333` calls `await_exact_carrier_in_composer(target, process_is_trusted, scope_binding, &expected, carrier, &focused, …)` — the expected carrier, the focus state and a trusted-process check all gate the send. The overlay clears the draft only after the adapter marks the carrier sent. |
+| **Required alongside** | "This proves what was in the composer immediately before Send. It does not prove the service accepted the message afterwards — see C3, where the uncertain outcome is currently shown as failure." |
+
+**Added 2026-07-27** from an adversarial audit that looked for claims OSL had *earned but never made*.
+This one is worth having: it is the honest counterweight to C3, and it is the kind of guarantee a
+cautious user actually wants — the product refuses to act rather than acting on an assumption.
+
+### A10 · A served key bundle is verified against the peer, not trusted from the server
+
+| | |
+|---|---|
+| **Permitted wording** | "Before accepting a key bundle handed to it by the key server, OSL verifies the peer's own signature over that bundle." |
+| **Status** | `implemented-unwired` → **`Planned`** badge |
+| **Evidence** | `crates/keystore/src/client.rs:213`, whose own comment states the principle exactly: *"the keyserver is a carrier for the bundle, not its integrity authority."* |
+| **Required alongside** | **Do not read this as identity binding.** It stops the key server altering keys *inside* a bundle. It does **not** stop a substituted bundle under a different identity key, because the safety number binds only Ed25519 (THREAT_MODEL, MITM row) — full-bundle identity binding is still open (master §2 P0-1). Claiming this closes key substitution would be the exact overclaim this file exists to prevent. |
+
+### Candidates NOT added — cited evidence did not check out
+
+Two further suggestions were rejected on verification, recorded so nobody re-derives them:
+
+- **Encrypted attachment cache.** Cited `crates/store/src/lib.rs:489` as sealing attachment metadata
+  and body separately; that line is burn-ordering logic, not sealing. **Unverified — no row.**
+- **Encrypted local message metadata / blind indexes.** Plausible and likely true after schema v4, but
+  it belongs to the store lane's current work and needs its own verification against the v4 migration
+  before it earns a row. **Unknown, which is a better answer than a guess.**
+
 ---
 
 ## B · Claims eligible only with an explicit "not yet" framing

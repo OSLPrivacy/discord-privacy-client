@@ -797,3 +797,67 @@ redemption change". Promotion is now done; redemption is not. Half a condition i
 
 **The in-app gate earns nothing either.** It closes a gap this lane opened itself, and the H/J rows
 already cover claim tooling.
+
+---
+
+## 16 · Audit sections B and C, and two claims OSL had earned but never made
+
+### 16.1 The B and C verdicts, applied
+
+B1–B6 were all citation drift. The four that mattered were all the same failure: a **design
+intention written in the present tense** — the identical mistake as the burn documents and the
+AutoScrub exception.
+
+- **B9 Scrub guided deletion — weaker than recorded.** Not merely blocked on discovery: the Discord
+  guided-deletion backend is unwired on its *input* half (`native_discord_adapter.rs:6662`) and holds
+  every candidate without opening, selecting, confirming or verifying. "The user confirms every
+  deletion on the service's own page" was phrased as behaviour; it is a design rule.
+- **B10 AutoScrub — downgraded** `implemented-unwired` → `designed-only`. Disabled UI scaffolding,
+  no execution backend; the app itself says "Unavailable in this build" (`main.ts:3139`).
+- **C2 the eye — "paints" removed.** `placedRowCount` is computed at `main.rs:3223` by filtering rows
+  that have both plaintext and geometry, **before the renderer paints**. Geometry computed is not
+  pixels drawn, and that gap is exactly the difference between a measurement and a screenshot.
+
+### 16.2 C3 is a safety finding, not a claim limit
+
+The tri-state contract requires an ambiguous Enter to read as *uncertain*. Verified in source, and
+worse than reported: **the renderer does not model "uncertain" at all** — a search for it in
+`apps/osl-hub-ui/src/overlay.ts` returns nothing.
+
+An ambiguous outcome is reported failure-shaped (`overlay.ts:1603`, "Discord did not receive this
+message") and the draft is deliberately preserved so the user can retry. The code comment concedes
+the send command "can return `Ok(...)` even when Discord never got it".
+
+So the exact case the contract calls uncertain is presented as failure **and** the user is invited to
+resend — delivering a private message twice if the service did accept the first. Master §7.3 and the
+standing "`delivery_uncertain` is never auto-retried" rule are violated **in behaviour**, not merely
+in documentation. `overlay.ts` is not this lane's file; raised to the hub lane as an incident scoped
+to `c3`.
+
+### 16.3 Two claims added — the audit also found OSL underselling itself
+
+Same verification standard applied in the positive direction.
+
+- **A9 · pre-send carrier verification.** `native_discord_adapter.rs:16333` gates Send on
+  `await_exact_carrier_in_composer(...)` with the expected carrier, focus state and a trusted-process
+  check; the draft is cleared only after the carrier is marked sent. This is the honest counterweight
+  to C3 — the product refuses to act rather than acting on an assumption.
+- **A10 · served bundles are verified against the peer.** `crates/keystore/src/client.rs:213`, whose
+  own comment states it exactly: *"the keyserver is a carrier for the bundle, not its integrity
+  authority."* Carries an explicit limitation that it is **not** identity binding — it stops the
+  server altering keys inside a bundle, not a substituted bundle under a different identity key,
+  which is still open as master §2 P0-1.
+
+**Two candidates were rejected on verification** and recorded so nobody re-derives them: the
+encrypted-attachment-cache claim cited a line that is burn-ordering logic, not sealing; and the
+encrypted-metadata/blind-index claim is plausible but belongs to the store lane's in-flight v4 work
+and needs its own verification first. Unknown is the better answer.
+
+## Acceptance rows this earns — none
+
+Correcting overclaims earns nothing, and adding A9/A10 documents capabilities that already existed
+rather than building anything. **H1 remains 3/4**: its held point requires promotion *and* the
+keyserver redemption change; only promotion is done.
+
+Recorded for other lanes rather than claimed here: the C3 resend hazard (hub/overlay lane) and the
+`core_bridge.rs` latent capability labels (whoever owns that file).
