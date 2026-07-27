@@ -85,9 +85,10 @@ id = "a65e8cc90cdc4cffa83b01fe12c6e47a"
 binding = "ATTACHMENTS"
 bucket_name = "osl-cipher-attachments-prod"
 
-# Scheduled cron for the TTL sweep. Runs every 5 minutes -- deletes
-# rows where expires_at < unixepoch(). The cron handler logs ONLY
-# an aggregate "swept N rows" count, never individual IDs.
+# Scheduled cron for the TTL sweep. Runs every 5 minutes. The handler emits
+# only fixed, identifier-free completion markers (never row counts or IDs);
+# the D2 proof helper observes one marker through an ephemeral exact-message
+# tail and obtains stale-reservation counts from its fixed aggregate query.
 [triggers]
 crons = ["*/5 * * * *"]
 

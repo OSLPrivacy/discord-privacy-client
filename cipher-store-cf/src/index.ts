@@ -82,6 +82,13 @@ export default {
     }
     try {
       await sweepExpiredAttachments(env);
+      // Fixed, identifier-free witness for the read-only D2 promotion helper.
+      // It deliberately carries no count: the helper obtains before/after
+      // counts from one hard-coded aggregate D1 query and server-filters this
+      // marker to distinguish a natural Cron Trigger from a guessed time
+      // window. Observability remains disabled; this is visible only to an
+      // operator who opens an ephemeral, exact-message real-time tail.
+      console.log("[attachment-sweep-cycle] complete");
     } catch {
       console.error("[attachment-sweep] failed");
     }

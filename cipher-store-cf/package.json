@@ -6,7 +6,10 @@
   "description": "OSL short-TTL E2E-ciphertext store on Cloudflare Workers + D1, with no application-level identity binding.",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && vitest run --config vitest.node.config.ts",
+    "test:worker": "vitest run",
+    "test:promotion-proof": "vitest run --config vitest.node.config.ts",
+    "d2:promotion-proof": "node scripts/d2-promotion-proof.ts",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "db:migrate:local": "wrangler d1 migrations apply osl-cipher-store-prod --local",
