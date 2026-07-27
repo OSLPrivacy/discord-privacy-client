@@ -29,6 +29,7 @@ reviewed committed scripts as root-owned, mode `0555` files:
 /opt/osl-vmqa/bin/vmqa_build_evidence.py
 /opt/osl-vmqa/bin/vmqa_f1_provisioning_preflight.py
 /opt/osl-vmqa/bin/vmqa-f1-windows-provisioning-preflight.ps1
+/opt/osl-vmqa/bin/vmqa-run.sh
 ```
 
 The administrator must create `/var/lib/osl-qa` as root-owned mode `0755`,
@@ -117,6 +118,43 @@ Immediately before returning, staging reopens and rehashes that complete
 destination snapshot and requires exact equality with the receipt. It
 contains no key bytes.
 
+## Offline provisioning plan manifest
+
+`vmqa_f1_provisioning_plan.py` converts a closed JSON plan input into a
+deterministic machine-readable manifest. It does not inspect or modify the
+host, guest, Azure, key, build, or staging store. It emits canonical JSON on
+standard output only; it has no output-path or mutation option:
+
+```bash
+python3 scripts/vmqa/vmqa_f1_provisioning_plan.py plan \
+  --input /absolute/path/to/non-secret-plan-input.json
+
+python3 scripts/vmqa/vmqa_f1_provisioning_plan.py verify \
+  --manifest /absolute/path/to/retained-plan.json
+```
+
+The `execute` operation always refuses. A valid result says
+`offline-plan-only`, `planned`, `writesPerformed: 0`, and
+`executionPermitted: false`; it never says that an account, tool, key, build,
+ACL, VM, or witness is ready, installed, verified, or executed.
+
+The manifest contains exactly seven ordered state-transition descriptions,
+not an executable checklist. It binds the accepted `2279be3` predecessor
+contract snapshot, exact `1f745c85` release commit/tree, fixed account and
+installation paths, reviewed program hashes, one canonical independent hash
+for each fixed-root tool, the derived tool inventory hash, non-secret key
+presence metadata and key ID, the sealed release hashes and derived staging
+path, every planned SYSTEM-only guest ACL entry, and the exact tokenized
+runtime argv. The runtime transition requires the separate
+`separate-live-f1-runtime` authorization and cannot be invoked by the
+generator or either validator.
+
+The checked-in `f1-provisioning-plan-safe-input.json` contains synthetic
+hashes solely for deterministic refusal fixtures. Because every output is
+plan-only, neither that fixture nor a caller-authored production input is
+provisioning evidence. Actual independent hashes and presence metadata remain
+external human inputs until the host and guest preflights validate real state.
+
 ## Remaining live step
 
 The fixed Windows preflight also takes no arguments. It must be copied from the
@@ -141,7 +179,7 @@ The remaining human actions are therefore:
 1. Create the dedicated non-root, non-login producer account and exact
    host directories without granting it a general shell or arbitrary-command
    sudo rule.
-2. Install the four reviewed programs at the fixed root-owned `0555` paths.
+2. Install the five reviewed programs at the fixed root-owned `0555` paths.
 3. Install a complete usable root-owned toolchain beneath
    `/opt/osl-vmqa/toolchain`, independently measure every resolved tool, and
    land a separate reviewed pin update replacing the current Liam-owned paths.
