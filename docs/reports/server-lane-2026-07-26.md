@@ -870,6 +870,41 @@ transition those tests exist to prove. Real D1 under pool-workers makes an
 interrupted-batch test possible for the first time, so it is sequenced after
 step 2 rather than written against a shim that cannot express it.
 
+## Vacuous assertions in the keyserver suite — found, NOT yet fixed
+
+The keyserver's 381 tests had never been swept for the pattern that produced six
+false greens across the project today: a check that reports success without
+having done the thing. Full inventory:
+`docs/reports/keyserver-vacuous-assertions-2026-07-26.md`. Six high-severity
+entries. The ones I judge worth fixing first, and why:
+
+1. **`test/integration/prekey-bundle.test.ts:464`** — the clearest instance in
+   the package. A uniqueness assertion over the extracted prekeys passes
+   vacuously on an *empty* extraction, so a total failure to pop one-time
+   prekeys leaves the test green. Same shape as the R2 double.
+2. **`test/integration/identity-cas.test.ts:25`** — a compare-and-swap test
+   containing only a refusal, with no accepted CAS in the same setup. An
+   implementation that is *always* a no-op passes it. CAS is what prevents an
+   attacker rotating another identity's key, so this one is ranked higher here
+   than in the inventory.
+3. **`test/integration/prekey-bundle.test.ts:429`** — asserts the stale-request
+   refusal but never the no-consume property its own name claims. A stale
+   request that silently burns a one-time prekey would pass.
+4. **`test/integration/control-inbox.test.ts:113`** and
+   **`prekey-bundle.test.ts:175`** — replay-receipt tests that never prove the
+   row existed before it was deleted, so "enqueue never happened" and "enqueue
+   then correctly consumed" are indistinguishable.
+
+The fix in every case is the same and is cheap: assert something non-empty on
+the positive path *first*, so the negative path cannot pass vacuously. None of
+these indicate a product defect — they indicate the tests could not have told us
+if there were one, which is a different and quieter problem.
+
+**Status: recorded, not fixed.** Deliberately not dispatched — the fleet was at
+load 45 on 10 cores with 46 concurrent Codex processes when this landed, and the
+concurrency cap had just been reduced. Queued behind the load gate rather than
+added to it.
+
 ## Remaining server-side audit items, checked
 
 - **Does the keyserver have the same KV limiter race?** No — verified, not
