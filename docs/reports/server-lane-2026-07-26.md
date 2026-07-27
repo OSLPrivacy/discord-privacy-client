@@ -2381,3 +2381,196 @@ the production control-inbox backlog, receipt emptiness, and the D1-visible
 attachment state. Actual client dead-letter count, authenticated delivery,
 prekey/wrapped-key success, the incomplete attachment's origin, and all R2
 orphan/missing-object questions remain `unknown`.
+
+---
+
+## Migration 0030 deploy-readiness and security audit
+
+Timestamp: `2026-07-26T22:44:44-07:00`.
+
+Scope was local source and local Miniflare D1 only. No Cloudflare API, remote
+D1, registration, migration, or deployment command was run. The trace began at
+committed `2bae4ede29930ee66ec9ca9cf0154fd776e4ce89`; before reporting, the
+relevant paths were compared through committed
+`aca9dae54dd8496b0af780bbe9f7ee96920f0454` and were byte-unchanged. This
+section contains no `verified-live` claim.
+
+### Exact path trace
+
+The complete tracked-source search was:
+
+```sh
+git grep -n -E 'identity_scheme|ik_root_ed25519_pub' HEAD -- \
+  keyserver-cf cipher-store-cf crates/keystore crates/ipc apps/osl-hub
+git grep -n -F 'osl1_' HEAD -- \
+  keyserver-cf cipher-store-cf crates/keystore crates/ipc apps/osl-hub
+```
+
+On the audited committed source, `identity_scheme` and
+`ik_root_ed25519_pub` occurred only in migration 0030. No Worker or client
+request/response type read or wrote either field. The current client
+registration body has no such member
+(`crates/keystore/src/client.rs:63-87`), and its pubkeys response has no such
+member (`crates/keystore/src/client.rs:338-370`). Therefore scheme 1 remains
+`implemented-unwired`: 0030 reserves durable shape; it does not implement a
+derived-identity protocol.
+
+The active boundary is instead the reserved identifier:
+
+- `keyserver-cf/src/lib/validation.ts:9,29-32` defines exactly
+  `^osl1_[a-z2-7]{32}$`.
+- `keyserver-cf/src/endpoints/register.ts:111-123` rejects that namespace with
+  400 before any D1 read or write.
+- Existing Worker inserts and rotations enumerate only legacy columns
+  (`keyserver-cf/src/lib/db.ts:103-128,138-170`); they neither depend on nor
+  alter the two 0030 columns.
+- The corrected migration fixes every durable row at exactly
+  `(identity_scheme = 0, ik_root_ed25519_pub = NULL)` until a later reviewed
+  proof-verification migration deliberately replaces the guards
+  (`keyserver-cf/migrations/0030_reserve_derived_identity_namespace.sql:18-40`).
+
+### Defects proved failing-first
+
+The original committed migration was applied to a real local Miniflare D1
+created from the exact 0001, 0026, and 0029 SQL. The positive compatibility
+control passed, while both security controls failed:
+
+```text
+RUN v4.1.10
+✓ preserves a legacy row and old-worker explicit writes as scheme 0
+× refuses a flag-only promotion to scheme 1
+  promise resolved ... changes:1, rows_written:1 instead of rejecting
+× refuses storing a root on a scheme-0 row
+  promise resolved ... changes:1, rows_written:1 instead of rejecting
+Test Files 1 failed
+Tests 2 failed | 1 passed
+```
+
+This is `runtime-proven`, not an inferred schema concern. A direct D1 update
+could promote a row merely by flipping the flag, and an independent update
+could attach unverified root bytes to scheme 0.
+
+A second deploy-readiness defect was source-proved: the original migration
+said to migrate first, but an old Worker has no reserved-namespace refusal.
+Migration-first is SQL-compatible because omitted fields take the new
+defaults, yet it leaves a window in which an attacker can register a future
+`osl1_...` identifier as scheme 0. The migration cannot reserve an identifier
+namespace by itself.
+
+The fix adds insert and update triggers that refuse every non-preparatory
+state and corrects the rollout comment to make the Worker refusal the first
+security boundary. It does not claim or enable root proof verification.
+
+### Non-vacuous runtime and mutation evidence
+
+Permanent cross-boundary coverage is
+`keyserver-cf/scripts/migration-0030.test.ts`. It uses Wrangler's SQL splitter
+and a real Miniflare D1, calls the actual `handleRegister`, and independently
+proves:
+
+1. an existing row survives migration as scheme 0/null;
+2. old-Worker-style explicit insert and update remain valid after migration;
+3. the current Worker on a pre-0030 schema returns 400 for the reserved
+   namespace, even with attacker-supplied scheme/root fields, and inserts zero
+   rows;
+4. that same pre-0030 Worker still returns 201 for ordinary signed scheme-0
+   registration;
+5. current signed scheme-0 registration returns 201 then 200 after migration
+   and remains scheme 0/null even if unknown request flags are supplied;
+6. direct flag-only update, root-only update, and scheme-1 insert all abort.
+
+Candidate result:
+
+```text
+$ PATH=/home/liamw/.nvm/versions/node/v24.14.0/bin:$PATH \
+  ./node_modules/.bin/vitest run --config vitest.node.config.ts \
+  scripts/migration-0030.test.ts --reporter=verbose
+Test Files  1 passed (1)
+Tests  6 passed (6)
+```
+
+Four isolated mutations then killed the intended assertions:
+
+```text
+reserved Worker check disabled:
+  expected 201 to be 400
+  Tests 1 failed | 5 skipped
+
+update trigger disabled:
+  flag-only promotion ... resolved ... changes:1, rows_written:1
+  unverified root ... resolved ... changes:1, rows_written:1
+  Tests 2 failed | 4 skipped
+
+insert trigger disabled:
+  direct scheme-1 insert ... resolved ... changes:1, rows_written:1
+  Tests 1 failed | 5 skipped
+
+identity_scheme default changed from 0 to 1:
+  migrated legacy row was scheme 1, not scheme 0
+  ordinary registration aborted at the guard
+  Tests 2 failed | 4 skipped
+```
+
+The baseline was rerun in the same disposable archived tree before mutation:
+six of six passed. These are `runtime-proven` negative controls: neither the
+positive compatibility path nor any refusal path can pass solely because the
+harness failed to exercise D1 or the Worker.
+
+Focused Worker and type gates:
+
+```text
+$ PATH=/home/liamw/.nvm/versions/node/v24.14.0/bin:$PATH \
+  ./node_modules/.bin/vitest run \
+  test/integration/register.test.ts test/integration/pubkeys.test.ts \
+  --reporter=dot
+Test Files  2 passed (2)
+Tests  22 passed (22)
+
+$ PATH=/home/liamw/.nvm/versions/node/v24.14.0/bin:$PATH npm run typecheck
+> tsc --noEmit
+```
+
+### Compatibility, failure, and rollback verdict
+
+| Claim | Tier | Exact bound |
+|---|---|---|
+| Migration-first is backward-compatible for existing scheme-0 rows and old explicit SQL | `runtime-proven` | Existing row, post-migration old-style insert, and old-style update all retain scheme 0/null |
+| Migration-first is safe as a deployment order | `test-proven-only` refusal | It is **not** safe: disabling the Worker check registers the reserved ID with 201 on the pre-0030 shape, and the same SQL remains accepted after migration by default |
+| Worker-first behavior before 0030 | `runtime-proven` | Reserved ID returns 400 and creates zero rows; ordinary signed registration returns 201 |
+| A request flag or missing root proof can reach scheme 1 | `runtime-proven` refusal | Unknown request fields remain scheme 0/null; direct flag-only/root-only writes and direct scheme-1 insert abort |
+| Existing scheme-0 registration is stable after 0030 | `runtime-proven` | First signed request returns 201, replay returns 200, stored aggregate is exactly scheme 0/null |
+| Scheme-1 registration/root proof exists | `implemented-unwired` | No Worker/client field, canonical proof, verifier, or scheme-1 response exists |
+| Exact deployed 0030 state | `unknown` | This task intentionally made no live probe; the preceding read-only snapshot reported 0030 pending |
+
+D1 migration rollback is not an application rollback. The additive columns and
+triggers have no reverse migration and must not be manually removed. After
+0030, rolling back to any Worker that retains the exact reserved-namespace 400
+is compatible. Rolling back to a Worker predating that refusal is
+security-forbidden because it reopens namespace squatting while D1 silently
+defaults the new row to scheme 0/null. Recovery from a bad 0030 rollout is
+therefore forward-only: keep or restore a refusal-capable Worker, diagnose,
+then ship a new numbered corrective migration. A later scheme-1 launch must
+ship a reviewed canonical root proof and verifier plus a forward migration
+that deliberately replaces these guards; flipping a flag is not an upgrade
+path.
+
+### Exact safe deployment order
+
+1. Build and release the Worker that contains the exact
+   `isReservedDerivedId` refusal.
+2. Verify that exact artifact/version through the release lane, including a
+   harmless reserved-ID refusal probe if that lane authorizes it. Do not
+   register any identity.
+3. Apply `0030_reserve_derived_identity_namespace.sql`.
+4. Run schema-only/read-only health checks for both new columns and both guard
+   triggers.
+5. Keep the refusal-capable Worker deployed. Do not enable scheme 1; it remains
+   preparatory and unwired.
+
+## Acceptance rows this earns
+
+No checklist edit and no B5 point are claimed. This earns
+`runtime-proven` deploy-readiness for the scheme-0 compatibility and
+fail-closed preparatory D1 boundary, plus `test-proven-only` exact safe
+rollout/rollback evidence. Derived identities remain `implemented-unwired`;
+production migration state remains `unknown` in this task.
