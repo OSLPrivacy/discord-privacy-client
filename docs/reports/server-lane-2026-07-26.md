@@ -1218,6 +1218,34 @@ Title unchanged, `expect(` 61 → 67, additive only.
 
 This was the last entry on the vacuous-assertion inventory rated worth fixing.
 
+## The link-grant replay race: real, but currently unreachable — verified
+
+I have asserted "bounded because the lane is dark" several times tonight without
+re-checking it. Checked now, and it holds on **three independent gates**, not one:
+
+| gate | mechanism |
+|---|---|
+| cipher-store secret | `LINK_GRANT_PUBKEY_B64` unset ⇒ creation refused 503 *before any D1 access* (`cipher-store-cf/src/lib/link-grant.ts:73`) |
+| cipher-store route | the `[[routes]]` block is commented out in `cipher-store-cf/wrangler.toml` |
+| keyserver flag | `env.LINK_GRANT_ENABLED !== "true"` ⇒ issuance refused (`keyserver-cf/src/index.ts:321`) |
+
+**The defect itself is real.** `link-grant.ts:164-172` enforces single use by
+reading a KV key and then writing it. KV is eventually consistent and permits one
+write per second per key, so two concurrent presentations of the *same* grant
+both observe null and both mint a link. It is the same shape as the audit's
+non-atomic rate limiter, except the protected thing is a single-use credential,
+so the consequence is grant replay rather than over-admission.
+
+**Severity, stated precisely:** unreachable in the deployed configuration, and
+therefore not a live defect today. The fix in flight — claiming the `jti` by
+INSERT success against a primary key, with no read first — is **preparatory
+hardening**, not a production repair. That is a weaker claim than the attachment
+defects and should not be reported alongside them.
+
+What makes it worth doing now rather than later: all three gates are single
+edits. Whoever opens one is unlikely to be the person who knows the consumption
+path is racy, and the fix costs nothing while the lane is dark.
+
 ## Acceptance rows this earns
 
 Truth judges and applies these; I have not touched the checklist. An event was
