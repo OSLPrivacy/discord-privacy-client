@@ -205,7 +205,17 @@ blob. For message rows, the metadata AAD is the row's own `mid_bi`.
 For attachment rows, the metadata AAD is the row's own `ck_bi`.
 
 That means an offline editor who moves a metadata blob between rows,
-or edits one in place, gets an AEAD tag failure on read. A separate
+or edits one in place, gets an AEAD tag failure on read.
+
+**The selector columns are not covered by that AEAD.** `chan_bi` and
+`sender_bi` are separate columns and no tag binds them, so sealing the
+metadata does not by itself stop someone with write access from
+*retargeting* a row — surfacing a message in a conversation it was
+never part of, or rewriting `sender_bi` so a sender-scoped burn skips
+it. They still cannot read it. The read path therefore re-derives both
+selectors from the unsealed metadata and rejects the row on mismatch,
+which needs no format change because the plaintext identifiers and the
+index key are both in hand after unsealing. A separate
 authenticator would be redundant because the sealed blob already
 authenticates the metadata it hides.
 

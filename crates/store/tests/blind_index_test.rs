@@ -905,3 +905,73 @@ fn burn_stays_terminal_after_blinding() {
         "the blind-index migration re-opened the burn resurrection hole"
     );
 }
+
+/// Rewriting a row's `chan_bi` must not move the message into another
+/// conversation.
+///
+/// Sealing the metadata with `mid_bi` as AAD authenticates the blob and the
+/// message id, but no AEAD covers `chan_bi` or `sender_bi` — they are separate
+/// selector columns. Someone who can write the file cannot read a message, but
+/// without this check they could retarget one: surface it in a conversation it
+/// was never part of, or rewrite `sender_bi` so a sender-scoped burn skips it.
+///
+/// The attacker does not need to compute a blind index: they can copy one from
+/// any row already in the channel they are aiming at, which is exactly what
+/// this test does.
+#[test]
+fn retargeting_a_rows_channel_selector_is_rejected() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("messages.sqlite");
+    let store = open_a(tmp.path());
+
+    store
+        .put(&sample(
+            "secret",
+            "private",
+            "s1",
+            "alice",
+            "private business",
+            1,
+        ))
+        .unwrap();
+    store
+        .put(&sample("decoy", "public", "s2", "bob", "public chatter", 2))
+        .unwrap();
+
+    // Positive path: each message starts in its own channel.
+    assert_eq!(store.list_by_channel("private", 10).unwrap().len(), 1);
+    assert_eq!(store.list_by_channel("public", 10).unwrap().len(), 1);
+    drop(store);
+
+    // Steal the public channel's selector and staple it onto the private row.
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let public_chan: Vec<u8> = conn
+            .query_row(
+                "SELECT chan_bi FROM messages ORDER BY seq DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let n = conn
+            .execute(
+                "UPDATE messages SET chan_bi = ?1 WHERE seq = 1",
+                rusqlite::params![public_chan],
+            )
+            .unwrap();
+        assert_eq!(
+            n, 1,
+            "positive path: the tamper must have hit exactly one row"
+        );
+    }
+
+    let store = open_a(tmp.path());
+    match store.list_by_channel("public", 10) {
+        Err(_) => {}
+        Ok(rows) => assert!(
+            rows.iter().all(|m| m.discord_message_id != "secret"),
+            "a row retargeted on disk was served as belonging to the \
+             attacker's channel"
+        ),
+    }
+}

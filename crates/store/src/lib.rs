@@ -118,7 +118,7 @@ pub struct MessageStore {
 }
 
 /// Columns a `get` fetches: `(meta_nonce, meta_ct, ciphertext, nonce, burned)`.
-type MessageRow = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, i64);
+type MessageRow = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, i64, Vec<u8>, Vec<u8>);
 
 /// Columns an attachment fetch returns: `(meta_nonce, meta_ct, ciphertext, nonce)`.
 type AttachmentRow = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>);
@@ -313,10 +313,20 @@ impl MessageStore {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let row_opt: Option<MessageRow> = conn
             .query_row(
-                "SELECT meta_nonce, meta_ct, ciphertext, nonce, burned \
+                "SELECT meta_nonce, meta_ct, ciphertext, nonce, burned, chan_bi, sender_bi \
                  FROM messages WHERE mid_bi = ?1 AND burned = 0",
                 params![mid_bi],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                    ))
+                },
             )
             .optional()?;
         let Some(row) = row_opt else { return Ok(None) };
@@ -339,7 +349,7 @@ impl MessageStore {
         let chan_bi = self.bi(cipher::BI_CHANNEL_ID, channel_id)?;
         let conn = self.conn.lock().expect("store mutex poisoned");
         let mut stmt = conn.prepare(
-            "SELECT mid_bi, meta_nonce, meta_ct, ciphertext, nonce, burned \
+            "SELECT mid_bi, meta_nonce, meta_ct, ciphertext, nonce, burned, chan_bi, sender_bi \
              FROM messages \
              WHERE chan_bi = ?1 AND burned = 0 \
              ORDER BY seq DESC \
@@ -353,12 +363,17 @@ impl MessageStore {
                 r.get::<_, Vec<u8>>(3)?,
                 r.get::<_, Vec<u8>>(4)?,
                 r.get::<_, i64>(5)?,
+                r.get::<_, Vec<u8>>(6)?,
+                r.get::<_, Vec<u8>>(7)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (mid_bi, meta_nonce, meta_ct, ct, nonce, burned) = row?;
-            out.push(self.materialize(&mid_bi, (meta_nonce, meta_ct, ct, nonce, burned))?);
+            let (mid_bi, meta_nonce, meta_ct, ct, nonce, burned, chan_bi, sender_bi) = row?;
+            out.push(self.materialize(
+                &mid_bi,
+                (meta_nonce, meta_ct, ct, nonce, burned, chan_bi, sender_bi),
+            )?);
         }
         Ok(out)
     }
@@ -721,9 +736,41 @@ impl MessageStore {
     /// between rows, or edits one, produces a tag failure rather than a
     /// forged attribution.
     fn materialize(&self, mid_bi: &[u8], row: MessageRow) -> Result<StoredMessage, StoreError> {
-        let (meta_nonce, meta_ct, ct, nonce, burned_flag) = row;
+        let (meta_nonce, meta_ct, ct, nonce, burned_flag, chan_bi, sender_bi) = row;
         let meta_bytes = cipher::unseal(&self.key, mid_bi, &meta_nonce, &meta_ct)?;
         let meta = cipher::decode_message_meta(&meta_bytes)?;
+
+        // Re-derive the selector columns and check them against what is on
+        // disk.
+        //
+        // Sealing the metadata with `mid_bi` as AAD authenticates the blob and
+        // the message id, but it authenticates NOTHING ELSE: `chan_bi` and
+        // `sender_bi` are separate columns that no AEAD covers. Without this
+        // check, someone who can write the file can retarget a row — move a
+        // message into another conversation's view by rewriting `chan_bi`, or
+        // make a sender-scoped burn silently skip a row by rewriting
+        // `sender_bi`. They cannot read it, but they can misfile it and they
+        // can defeat a burn.
+        //
+        // No format change is needed to close this: after unsealing we hold
+        // both the plaintext identifiers and the index key, so the honest
+        // values are recomputable and a mismatch is proof of tampering.
+        let expect_chan = self.bi(cipher::BI_CHANNEL_ID, &meta.channel_id)?;
+        if expect_chan != chan_bi {
+            return Err(StoreError::Corrupted(
+                "row channel selector does not match its sealed metadata — \
+                 the row was retargeted on disk"
+                    .to_string(),
+            ));
+        }
+        let expect_sender = self.bi(cipher::BI_SENDER_ID, &meta.sender_discord_id)?;
+        if expect_sender != sender_bi {
+            return Err(StoreError::Corrupted(
+                "row sender selector does not match its sealed metadata — \
+                 the row was retargeted on disk"
+                    .to_string(),
+            ));
+        }
         let pt = cipher::unseal(&self.key, meta.discord_message_id.as_bytes(), &nonce, &ct)?;
         let plaintext = String::from_utf8(pt).map_err(|_| {
             StoreError::Corrupted("decoded plaintext is not valid UTF-8".to_string())
