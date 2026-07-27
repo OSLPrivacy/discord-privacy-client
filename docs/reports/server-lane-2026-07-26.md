@@ -1191,33 +1191,54 @@ verify. `lib/payment-alert-outbox.ts:152` already shows the bounded pattern.
 
 ## Acceptance rows this earns
 
-Truth lane applies these; I have not edited the checklist.
+Truth judges and applies these; I have not touched the checklist. An event was
+submitted to scope `d2` only, because that is the one row I can map my work to
+with confidence — inventing a scope would put points somewhere they do not
+belong.
 
-| Claim | Evidence | Status |
-|---|---|---|
-| Audit HIGH "empty multipart reservations exhaust attachment capacity" is fixed in source, with a test that exhausts the quota with bodyless sessions and failed before the fix | `cipher-store-cf/test/attachment-session-budget.test.ts`, 4 tests, real SQLite + real migrations; baseline failures quoted above | `test-proven-only` |
-| Audit MEDIUM "non-atomic rate limiting" is fixed for all mutation routes, with a concurrent test that beat the old limiter | `cipher-store-cf/test/rate-limit-atomic.test.ts`, 6 tests; 700-way race admits exactly 600 | `test-proven-only` |
-| Generic blob storage has a database-level aggregate quota | same file, 2 tests | `test-proven-only` |
-| Audit MEDIUM "cross-sender control-inbox eviction" is fixed; a victim's row survives the documented attack and the attacker receives explicit backpressure | `keyserver-cf/test/integration/control-inbox-cross-sender.test.ts`, 3 tests against real D1; baseline reproduced the eviction | `test-proven-only` |
-| Public pubkeys lookup no longer publishes rotation timing, and registration timing is coarsened | `keyserver-cf/test/integration/pubkeys.test.ts` | `test-proven-only` |
-| Migration 0002's security-relevant documentation contradiction is corrected against source | `cipher-store-cf/migrations/0002_fetch_token.sql` | `verified-source` |
-| Ordered deploy sequence and rollback exist for both workers | `cipher-store-cf/DEPLOY.md §7b`, `keyserver-cf/DEPLOY.md §11b` | `test-proven-only` |
-| Both workers typecheck clean and exceed their baselines | 87/87 and 381/381 + 3/3, quoted above | `verified-local` |
-| Both HIGH cipher-store fixes behave correctly on a real Workers runtime, proved by an executable probe rather than by unit tests | `cipher-store-cf/scripts/post-deploy-probe.mjs`, 3/3 PASS against `wrangler dev --local` with all six migrations applied; Probe C admitted 6+18=24 exactly | `runtime-proven` (local) |
-| A pre-existing defect that broke **every** attachment upload on the real runtime was found and fixed | workerd `TypeError: Provided readable stream must have a known length`; call sites proved byte-identical to `git HEAD` before fixing; probes A and B now pass | `runtime-proven` (local) |
-| The reserve added by the control-inbox fix is enforced atomically, not check-then-act | admission cap carried inside the conditional `INSERT ... SELECT`; 39/381 green | `test-proven-only` |
-| The keyserver does **not** share the cipher-store limiter defect | `keyserver-cf/src/lib/rate-limit.ts` uses the native binding; verified by reading the implementation | `verified-source` |
-| Executable post-deploy probes exist for both workers, distinguishing decisive checks from regression guards | `scripts/post-deploy-probe.mjs` in each worker; wired into both DEPLOY.md sections | `runtime-proven` (cipher-store, local) / `test-proven-only` (keyserver) |
+**D2 · Encrypted attachment transport.** Three defects closed on this row.
+Attachment upload was failing for every user on every attempt for the entire
+committed life of the feature (the body was piped through a `TransformStream`;
+R2 requires a known length). Expired attachment storage stopped being reclaimed
+entirely once ~100 attachments expired together, which would have filled the
+shared quota permanently with no attacker involved. And a caller could reserve
+the whole shared attachment space with a handful of empty requests and hold it
+for a week. Status: `runtime-proven` against a real local workerd by this lane;
+the production confirmation for the upload fix came from the owner, not from
+here, and I have not independently probed production.
 
-Not claimed: nothing here is `verified-live`. No deploy has happened. "Runtime-proven"
-above means a real workerd on this machine, not production.
+**Not claimed, and why.** The two HIGH audit findings, the control-inbox
+cross-sender fix, the pubkeys minimisation and the identifier-namespace
+reservation do not map to a checklist row I can identify. They are described in
+full above with file:line; if truth can place them, the evidence is there, but I
+am not asserting a row for them.
 
----
+**Explicitly not earned.** Nothing here is `verified-live` by this lane. Every
+number quoted in this report is from vitest-pool-workers against real D1 —
+gate stated beside the count, per the lesson that `741 passed` means nothing
+alone. The keyserver privacy-sweep bound is precautionary, not a proven-defect
+fix: its test passes against the unbounded code too, and I say so above rather
+than reporting it alongside the sweeps that were demonstrably broken.
 
-## Five plain lines
+### Final verification state
 
-1. Two real security holes in the OSL servers are now fixed — one let anyone switch off file attachments for everybody for a week using sixteen empty requests, and the other meant our request limits could be quietly exceeded. I also stopped one user from silently deleting another user's undelivered messages, and stopped the public key-lookup page from telling strangers when someone signed up or last changed their keys.
-2. Separately, I found that **sending any file attachment has been failing outright** on the real server software. It is an old bug, not something these changes caused, and I fixed it — but it means attachments were broken before today regardless of this work.
-3. I wrote a script for each server that actually tests the fixes after they go out, instead of assuming a successful deploy means a working fix. Run against a real local copy of the server, all three checks pass, and one of them landed on the exact expected number, which is how the attachment bug surfaced in the first place.
-4. Nothing is live yet — deploying is your call. For the attachments server the database change and the server update must go out together in that order, and note it will apply **two** pending database changes, not one; for the other server it is a single ordinary update with an ordinary undo.
-5. One more serious problem — a hostile person in a group chat can delete protected messages for everyone — is written up in full here but has to be fixed in the app code, not the servers, so another lane owns it.
+```
+cipher-store-cf   vitest-pool-workers, real D1/R2/KV   11 files /  93 tests   tsc clean
+keyserver-cf      vitest-pool-workers, real D1         40 files / 389 tests   tsc clean
+```
+
+### Still open, all with mechanism and file:line above
+
+1. Six unbounded scheduled cleanups in `keyserver-cf` outside `lib/db.ts`
+   (billing/commerce paths), deliberately not touched.
+2. The link-grant KV single-use replay race — **must be fixed before
+   `LINK_GRANT_ENABLED` is ever flipped**, not after.
+3. Read-bucket rate limits are not a ceiling during a burst (KV allows one write
+   per second per key); the header claiming otherwise is corrected, the
+   behaviour is unchanged and fail-open by design.
+4. `meta.changes` exact 0/1 semantics are an undocumented dependency under three
+   admission decisions — recorded as **unknown**, being measured now.
+5. Migration `0028` is committed but its link-grant worker code is not, so HEAD
+   has the schema without the logic. Harmless only while the lane is dark.
+6. Local branch is ahead of `origin` and unpushed; it carries other lanes' work,
+   so pushing is not mine to do.
