@@ -114,6 +114,12 @@ pub struct StoredMessage {
 /// `SECURITY.md` § "Search".
 pub struct MessageStore {
     conn: Mutex<Connection>,
+    /// Canonical path bound to the live `main` SQLite connection at open.
+    ///
+    /// This is retained so evidence callers can enumerate the Store-owned
+    /// database/WAL/SHM trio without substituting a second connection or a
+    /// filename-prefix scan.
+    storage_path: PathBuf,
     key: aead::Key,
 
     /// Separate HKDF derivation used only for blind indexes, never for
@@ -569,6 +575,7 @@ impl MessageStore {
         let path = app_data_dir.join("messages.sqlite");
         let conn = factory(&path)?;
         verify_connection_binding(&conn, &path)?;
+        let storage_path = path.canonicalize()?;
         // This format refusal is key-independent and must run before even the
         // persistent journal-mode pragma. A refused legacy profile is left
         // byte-for-byte unchanged, not merely logically un-migrated.
@@ -612,10 +619,40 @@ impl MessageStore {
         }
         Ok(MessageStore {
             conn: Mutex::new(conn),
+            storage_path,
             key,
             index_key,
             anchor,
         })
+    }
+
+    /// Return the exact files attributable to this Store's live SQLite
+    /// connection: the main database and its WAL/SHM sidecars.
+    ///
+    /// The method rechecks the connection binding before deriving sidecar
+    /// names. It intentionally does not scan a directory, and it does not
+    /// claim anything about backups, staging files, or data outside this
+    /// Store-owned root.
+    pub fn live_storage_artifacts(&self) -> Result<[PathBuf; 3], StoreError> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        verify_connection_binding(&conn, &self.storage_path)?;
+        let root = self.storage_path.parent().ok_or_else(|| {
+            StoreError::StorageBinding("bound store path has no parent directory".to_string())
+        })?;
+        let artifacts = [
+            self.storage_path.clone(),
+            root.join("messages.sqlite-wal"),
+            root.join("messages.sqlite-shm"),
+        ];
+        for artifact in &artifacts {
+            if !artifact.is_file() {
+                return Err(StoreError::StorageBinding(format!(
+                    "live Store artifact is absent: {}",
+                    artifact.display()
+                )));
+            }
+        }
+        Ok(artifacts)
     }
 
     fn commit(&self, tx: rusqlite::Transaction<'_>) -> Result<(), StoreError> {
