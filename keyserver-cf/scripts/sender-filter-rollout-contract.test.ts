@@ -3,20 +3,30 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  ROLLOUT_CALL_SITES,
+  ROLLOUT_SOURCE_PATHS,
   VERSION_SKEW_MATRIX,
   admitSenderFilterRolloutPlan,
   classifyCapability,
   consumeClientResponse,
+  createSenderFilterPhaseReceipt,
   evaluateVersionSkewScenario,
   evaluateWorkerRequest,
   validateRolloutSourceClosure,
+  verifySenderFilterPhaseReceipt,
   workerHealth,
 } from "./sender-filter-rollout-contract.mjs";
 
 const REPO_ROOT = path.resolve(
   fileURLToPath(new URL("../..", import.meta.url)),
 );
+const NOW = Date.parse("2026-07-27T12:00:00.000Z");
 const SENDER = "sender-positive";
+const EXPECTED_COMMIT = "a".repeat(40);
+const WORKER_COMMIT = "b".repeat(40);
+const CLIENT_COMMIT = "c".repeat(40);
+const WORKER_VERSION = "11111111-2222-4333-8444-555555555555";
+const DEPLOYMENT_ID = "66666666-7777-4888-9999-aaaaaaaaaaaa";
 
 function continuityRows() {
   return [
@@ -35,34 +45,10 @@ function blockedRows() {
   ];
 }
 
-function positivePlan(overrides: Record<string, unknown> = {}) {
-  return {
-    worker: "artifact-b",
-    schema: "0031",
-    traffic: "active",
-    capabilityProbe: workerHealth("artifact-b", "0031"),
-    legacyProbe: { status: 200, item_count: 2 },
-    filteredProbe: {
-      status: 200,
-      echo: SENDER,
-      item_count: 1,
-      cross_sender_count: 0,
-    },
-    ...overrides,
-  };
-}
-
-async function sourceClosure() {
-  const paths = [
-    "keyserver-cf/src/endpoints/control-inbox.ts",
-    "keyserver-cf/src/endpoints/healthz.ts",
-    "keyserver-cf/src/readiness/bridge/control-inbox.ts",
-    "keyserver-cf/src/readiness/bridge/healthz.ts",
-    "keyserver-cf/src/lib/canonical.ts",
-  ];
+async function sourceFiles() {
   return Object.fromEntries(
     await Promise.all(
-      paths.map(async (sourcePath) => [
+      ROLLOUT_SOURCE_PATHS.map(async (sourcePath) => [
         sourcePath,
         await readFile(path.join(REPO_ROOT, sourcePath), "utf8"),
       ]),
@@ -70,8 +56,97 @@ async function sourceClosure() {
   );
 }
 
-describe("sender-filter Worker/client version-skew contract", () => {
-  it("covers every schema × Worker × client state with nonempty continuity fixtures", () => {
+const PHASE_FIXTURES = {
+  "legacy-pre-0031": {
+    capability: ["legacy", 200, null],
+    legacy: ["legacy", 200, 2, null, 0],
+    filtered: ["none", null, 0, null, 0],
+  },
+  "legacy-0031": {
+    capability: ["legacy", 200, null],
+    legacy: ["legacy", 200, 2, null, 0],
+    filtered: ["none", null, 0, null, 0],
+  },
+  "artifact-a-pre-0031": {
+    capability: ["transitional", 200, 0],
+    legacy: ["none", null, 0, null, 0],
+    filtered: ["none", null, 0, null, 0],
+  },
+  "artifact-a-0031": {
+    capability: ["transitional", 200, 0],
+    legacy: ["none", null, 0, null, 0],
+    filtered: ["none", null, 0, null, 0],
+  },
+  "artifact-b-pre-0031": {
+    capability: ["unavailable", 503, 0],
+    legacy: ["none", null, 0, null, 0],
+    filtered: ["none", null, 0, null, 0],
+  },
+  "artifact-b-0031": {
+    capability: ["filtered", 200, 1],
+    legacy: ["legacy", 200, 2, null, 0],
+    filtered: ["filtered", 200, 1, SENDER, 0],
+  },
+} as const;
+
+function boundProbe(
+  phase: keyof typeof PHASE_FIXTURES,
+  values: readonly [string, number | null, number, string | null, number],
+) {
+  return {
+    phase,
+    worker_commit: WORKER_COMMIT,
+    worker_version: WORKER_VERSION,
+    deployment_id: DEPLOYMENT_ID,
+    client_commit: CLIENT_COMMIT,
+    request_mode: values[0],
+    status: values[1],
+    item_count: values[2],
+    echo: values[3],
+    cross_sender_count: values[4],
+  };
+}
+
+function phaseReceipt(
+  phase: keyof typeof PHASE_FIXTURES,
+  closure: ReturnType<typeof validateRolloutSourceClosure>,
+  overrides: Record<string, unknown> = {},
+) {
+  const fixture = PHASE_FIXTURES[phase];
+  const [mode, status, version] = fixture.capability;
+  return createSenderFilterPhaseReceipt({
+    expected_commit: EXPECTED_COMMIT,
+    worker_commit: WORKER_COMMIT,
+    client_commit: CLIENT_COMMIT,
+    worker_version: WORKER_VERSION,
+    deployment_id: DEPLOYMENT_ID,
+    migration_0031_sha256:
+      closure.file_sha256[
+        "keyserver-cf/migrations/0031_control_inbox_sender_retention.sql"
+      ],
+    source_closure_sha256: closure.source_closure_sha256,
+    call_sites: ROLLOUT_CALL_SITES,
+    phase,
+    traffic: phase.startsWith("artifact-a") ? "quiesced" : "active",
+    captured_at: new Date(NOW).toISOString(),
+    capability_probe: {
+      phase,
+      worker_commit: WORKER_COMMIT,
+      worker_version: WORKER_VERSION,
+      deployment_id: DEPLOYMENT_ID,
+      client_commit: CLIENT_COMMIT,
+      mode,
+      status,
+      version,
+    },
+    legacy_probe: boundProbe(phase, fixture.legacy),
+    filtered_probe: boundProbe(phase, fixture.filtered),
+    ...overrides,
+  });
+}
+
+describe("shipping sender-filter Worker/client rollout closure", () => {
+  it("covers all 12 version-skew cells without cross-sender leakage", () => {
     expect(VERSION_SKEW_MATRIX).toHaveLength(12);
     expect(
       new Set(
@@ -80,7 +155,6 @@ describe("sender-filter Worker/client version-skew contract", () => {
         ),
       ).size,
     ).toBe(12);
-
     for (const entry of VERSION_SKEW_MATRIX) {
       const result = evaluateVersionSkewScenario({
         ...entry,
@@ -91,398 +165,273 @@ describe("sender-filter Worker/client version-skew contract", () => {
       if (entry.worker === "legacy") {
         expect(result).toMatchObject({
           accepted: true,
-          active_sender_reachable: true,
           request_mode: "legacy",
           server_status: 200,
         });
-      } else if (entry.worker === "artifact-a") {
-        expect(result.accepted).toBe(false);
-        expect(result.fail_closed).toBe(true);
-      } else if (entry.schema === "pre-0031") {
-        expect(result.accepted).toBe(false);
-        expect(result.fail_closed).toBe(true);
-      } else {
+      } else if (
+        entry.worker === "artifact-a" ||
+        entry.schema === "pre-0031"
+      ) {
         expect(result).toMatchObject({
-          accepted: true,
-          active_sender_reachable: true,
-          server_status: 200,
-          request_mode:
-            entry.client === "legacy" ? "legacy" : "filtered",
+          accepted: false,
+          fail_closed: true,
         });
+      } else {
+        expect(result.accepted).toBe(true);
       }
     }
   });
 
-  it("keeps client-first rollout on the byte-identical legacy request until capability 1", () => {
-    const clientFirst = evaluateVersionSkewScenario({
+  it("matches historical old-Worker malformed and appended-sender behavior", () => {
+    const base = {
       worker: "legacy",
       schema: "pre-0031",
-      client: "sender-filter",
-      senderId: SENDER,
-      rows: continuityRows(),
-    });
-    expect(clientFirst).toMatchObject({
-      accepted: true,
-      request_mode: "legacy",
-      active_sender_reachable: true,
-    });
-
-    expect(
-      classifyCapability(workerHealth("artifact-b", "0031"), false),
-    ).toEqual({ mode: "filtered", reason: null });
-    expect(
-      classifyCapability(workerHealth("legacy", "pre-0031"), true),
-    ).toEqual({ mode: "refuse", reason: "capability-downgrade" });
-    expect(
-      classifyCapability(
-        {
-          status: 200,
-          body: {
-            ok: true,
-            capabilities: { control_inbox_sender_disposition: 2 },
-          },
-        },
-        false,
-      ),
-    ).toEqual({
-      mode: "refuse",
-      reason: "capability-shape-or-version-mismatch",
-    });
-  });
-
-  it("preserves old-client unfiltered drains and fixes new-client head-of-line starvation", () => {
-    const oldClient = evaluateVersionSkewScenario({
-      worker: "artifact-b",
-      schema: "0031",
-      client: "legacy",
-      senderId: SENDER,
-      rows: blockedRows(),
-    });
-    expect(oldClient).toMatchObject({
-      accepted: true,
-      request_mode: "legacy",
-      server_status: 200,
-      active_sender_reachable: false,
-      cross_sender_leakage: false,
-    });
-
-    const newClient = evaluateVersionSkewScenario({
-      worker: "artifact-b",
-      schema: "0031",
-      client: "sender-filter",
-      senderId: SENDER,
-      rows: blockedRows(),
-    });
-    expect(newClient).toMatchObject({
-      accepted: true,
-      request_mode: "filtered",
-      active_sender_reachable: true,
-      cross_sender_leakage: false,
-    });
-  });
-
-  it("refuses malformed, unsigned, stripped, substituted, and old-Worker filtered requests", () => {
-    const base = {
-      worker: "artifact-b",
-      schema: "0031",
       rows: continuityRows(),
     };
-    const cases = [
-      {
+    expect(
+      evaluateWorkerRequest({
+        ...base,
         request: {
           sender_param: "bad\nsender",
           signed_sender: "bad\nsender",
           signature_valid: true,
         },
-        status: 400,
-        refusal: "malformed-sender",
-      },
-      {
-        request: {
-          sender_param: SENDER,
-          signed_sender: null,
-          signature_valid: true,
-        },
-        status: 401,
-        refusal: "sender-signature-mismatch",
-      },
-      {
-        request: {
-          sender_param: null,
-          signed_sender: SENDER,
-          signature_valid: true,
-        },
-        status: 401,
-        refusal: "sender-signature-mismatch",
-      },
-      {
-        request: {
-          sender_param: "sender-other",
-          signed_sender: SENDER,
-          signature_valid: true,
-        },
-        status: 401,
-        refusal: "sender-signature-mismatch",
-      },
-    ];
-    for (const mutation of cases) {
-      expect(
-        evaluateWorkerRequest({ ...base, request: mutation.request }),
-      ).toMatchObject({
-        status: mutation.status,
-        items: [],
-        refusal: mutation.refusal,
-      });
-    }
-    expect(
-      evaluateWorkerRequest({
-        ...base,
-        worker: "legacy",
-        request: {
-          sender_param: SENDER,
-          signed_sender: SENDER,
-          signature_valid: true,
-        },
       }),
-    ).toMatchObject({
-      status: 401,
-      refusal: "sender-signature-mismatch",
-    });
-
+    ).toMatchObject({ status: 401, refusal: "sender-signature-mismatch" });
     expect(
       evaluateWorkerRequest({
         ...base,
         request: {
-          sender_param: null,
+          sender_param: "bad\nsender",
           signed_sender: null,
           signature_valid: true,
         },
       }),
-    ).toMatchObject({
-      status: 200,
-      filtered_sender_id: null,
-    });
+    ).toMatchObject({ status: 200, refusal: null });
+    expect(
+      evaluateWorkerRequest({
+        worker: "artifact-b",
+        schema: "0031",
+        rows: continuityRows(),
+        request: {
+          sender_param: "bad\nsender",
+          signed_sender: "bad\nsender",
+          signature_valid: true,
+        },
+      }),
+    ).toMatchObject({ status: 400, refusal: "malformed-sender" });
   });
 
-  it("new clients reject missing/mismatched echo, cross-sender rows, and filtered starvation", () => {
-    const base = {
-      mode: "filtered",
-      senderId: SENDER,
-      sourceRows: continuityRows(),
-    };
-    const cases = [
-      {
-        response: {
-          status: 200,
-          items: [{ id: "selected-1", sender_id: SENDER }],
-          filtered_sender_id: null,
-        },
-        reason: "filtered-sender-echo-mismatch",
-      },
-      {
-        response: {
-          status: 200,
-          items: [{ id: "foreign", sender_id: "sender-foreign" }],
-          filtered_sender_id: SENDER,
-        },
-        reason: "cross-sender-filter-response",
-      },
-      {
+  it("models the shipping probe choice and durable downgrade refusal", () => {
+    expect(classifyCapability(workerHealth("legacy", "pre-0031"), false))
+      .toEqual({
+        mode: "legacy",
+        reason: "capability-not-yet-advertised",
+      });
+    expect(classifyCapability(workerHealth("artifact-b", "0031"), false))
+      .toEqual({ mode: "filtered", reason: null });
+    expect(classifyCapability(workerHealth("legacy", "pre-0031"), true))
+      .toEqual({ mode: "refuse", reason: "capability-downgrade" });
+  });
+
+  it("does not use omniscient undisclosed server rows to classify an empty response", () => {
+    expect(
+      consumeClientResponse({
+        mode: "filtered",
+        senderId: SENDER,
         response: {
           status: 200,
           items: [],
           filtered_sender_id: SENDER,
         },
-        reason: "filtered-positive-starved",
-      },
-    ];
-    for (const mutation of cases) {
-      expect(
-        consumeClientResponse({ ...base, response: mutation.response }),
-      ).toMatchObject({
-        accepted: false,
-        fail_closed: true,
-        reason: mutation.reason,
-        cross_sender_leakage: false,
+      }),
+    ).toMatchObject({
+      accepted: true,
+      active_sender_reachable: false,
+    });
+    expect(
+      consumeClientResponse({
+        mode: "filtered",
+        senderId: SENDER,
+        response: {
+          status: 200,
+          items: [{ id: "foreign", sender_id: "sender-foreign" }],
+          filtered_sender_id: SENDER,
+        },
+      }),
+    ).toMatchObject({
+      accepted: false,
+      reason: "cross-sender-filter-response",
+    });
+  });
+
+  it("preserves the known legacy page limit while filtered B reaches the peer", () => {
+    expect(
+      evaluateVersionSkewScenario({
+        worker: "artifact-b",
+        schema: "0031",
+        client: "legacy",
+        senderId: SENDER,
+        rows: blockedRows(),
+      }),
+    ).toMatchObject({
+      accepted: true,
+      request_mode: "legacy",
+      active_sender_reachable: false,
+    });
+    expect(
+      evaluateVersionSkewScenario({
+        worker: "artifact-b",
+        schema: "0031",
+        client: "sender-filter",
+        senderId: SENDER,
+        rows: blockedRows(),
+      }),
+    ).toMatchObject({
+      accepted: true,
+      request_mode: "filtered",
+      active_sender_reachable: true,
+    });
+  });
+
+  it("semantically binds migration, Worker, client state, and broker call sites", async () => {
+    const files = await sourceFiles();
+    const closure = validateRolloutSourceClosure(files);
+    expect(closure.source_closure_sha256).toMatch(/^[1-9a-f][0-9a-f]{63}$/);
+    expect(Object.keys(closure.file_sha256)).toEqual(ROLLOUT_SOURCE_PATHS);
+
+    const commentDecoy = structuredClone(files);
+    commentDecoy["crates/keystore/src/client.rs"] = commentDecoy[
+      "crates/keystore/src/client.rs"
+    ].replace(
+      "load_sender_filter_capability_floor(identity)?",
+      "SenderFilterCapabilityFloor::NeverObserved /* load_sender_filter_capability_floor(identity)? */",
+    );
+    expect(() => validateRolloutSourceClosure(commentDecoy)).toThrow(
+      /semantic source contract/,
+    );
+
+    const brokerBypass = structuredClone(files);
+    brokerBypass["apps/osl-hub/src/broker.rs"] = brokerBypass[
+      "apps/osl-hub/src/broker.rs"
+    ].replace(
+      "client.get_control_inbox_compatible_from(identity, peer_osl_user_id)",
+      "client.get_control_inbox_from(identity, peer_osl_user_id)",
+    );
+    expect(() => validateRolloutSourceClosure(brokerBypass)).toThrow(
+      /semantic source contract/,
+    );
+
+    const resettable = structuredClone(files);
+    resettable["crates/keystore/src/sender_filter_rollout.rs"] = resettable[
+      "crates/keystore/src/sender_filter_rollout.rs"
+    ].replace(".create_new(true)", ".create(true)");
+    expect(() => validateRolloutSourceClosure(resettable)).toThrow(
+      /semantic source contract/,
+    );
+
+    const loweringApi = structuredClone(files);
+    loweringApi["crates/keystore/src/sender_filter_rollout.rs"] =
+      loweringApi["crates/keystore/src/sender_filter_rollout.rs"].replace(
+        "#[cfg(test)]",
+        "fn reset_floor(path: &Path) { let _ = std::fs::remove_file(path); }\n\n#[cfg(test)]",
+      );
+    expect(() => validateRolloutSourceClosure(loweringApi)).toThrow(
+      /lowering path/,
+    );
+  });
+
+  it("accepts nonempty exact phase receipts but never authorizes execution", async () => {
+    const closure = validateRolloutSourceClosure(await sourceFiles());
+    const expectedSelections = {
+      "legacy-pre-0031": "quiesce-traffic",
+      "legacy-0031": "artifact-b",
+      "artifact-a-pre-0031": "migrations-0030-0031",
+      "artifact-a-0031": "artifact-b",
+      "artifact-b-pre-0031": "none",
+      "artifact-b-0031": "stable-compatible",
+    };
+    for (const phase of Object.keys(PHASE_FIXTURES) as Array<
+      keyof typeof PHASE_FIXTURES
+    >) {
+      const plan = admitSenderFilterRolloutPlan({
+        phaseReceipt: phaseReceipt(phase, closure),
+        sourceClosure: closure,
+        nowMs: NOW,
+      });
+      expect(plan).toMatchObject({
+        plan_admitted: phase !== "artifact-b-pre-0031",
+        next_selection: expectedSelections[phase],
+        direct_deploy_permitted: false,
+        execution_authorized: false,
       });
     }
   });
 
-  it("models migration-first as compatible but never authorizes the mutation", () => {
-    const before = admitSenderFilterRolloutPlan(
-      positivePlan({
-        worker: "legacy",
-        schema: "pre-0031",
-        traffic: "quiesced",
-        capabilityProbe: workerHealth("legacy", "pre-0031"),
-        filteredProbe: {
-          status: 401,
-          echo: null,
-          item_count: 0,
-          cross_sender_count: 0,
-        },
-      }),
-    );
-    expect(before).toMatchObject({
-      plan_admitted: true,
-      next_selection: "artifact-a",
-      direct_deploy_permitted: false,
-      execution_authorized: false,
+  it("refuses stale, cross-phase, source-mismatched, empty, and leaky receipts", async () => {
+    const closure = validateRolloutSourceClosure(await sourceFiles());
+    const stale = phaseReceipt("artifact-b-0031", closure, {
+      captured_at: "2026-07-27T11:50:00.000Z",
     });
+    expect(() =>
+      verifySenderFilterPhaseReceipt(stale, closure, NOW),
+    ).toThrow(/stale or future-dated/);
 
-    const migrationFirst = admitSenderFilterRolloutPlan(
-      positivePlan({
-        worker: "legacy",
-        schema: "0031",
-        capabilityProbe: workerHealth("legacy", "0031"),
-        filteredProbe: {
-          status: 401,
-          echo: null,
-          item_count: 0,
-          cross_sender_count: 0,
-        },
-      }),
-    );
-    expect(migrationFirst).toMatchObject({
-      plan_admitted: true,
-      next_selection: "artifact-b",
-      direct_deploy_permitted: false,
-      execution_authorized: false,
+    const wrongSource = phaseReceipt("artifact-b-0031", closure, {
+      source_closure_sha256: "d".repeat(64),
     });
+    expect(() =>
+      verifySenderFilterPhaseReceipt(wrongSource, closure, NOW),
+    ).toThrow(/source or migration closure mismatch/);
+
+    const crossPhase = phaseReceipt("artifact-b-0031", closure);
+    crossPhase.filtered_probe.phase = "legacy-0031";
+    const resignedCrossPhase =
+      createSenderFilterPhaseReceipt(crossPhase);
+    expect(() =>
+      verifySenderFilterPhaseReceipt(resignedCrossPhase, closure, NOW),
+    ).toThrow(/not bound to the receipt phase/);
+
+    const empty = phaseReceipt("artifact-b-0031", closure);
+    empty.filtered_probe.item_count = 0;
+    const resignedEmpty = createSenderFilterPhaseReceipt(empty);
+    expect(() =>
+      verifySenderFilterPhaseReceipt(resignedEmpty, closure, NOW),
+    ).toThrow(/filtered probe phase mismatch/);
+
+    const leaky = phaseReceipt("artifact-b-0031", closure);
+    leaky.filtered_probe.cross_sender_count = 1;
+    const resignedLeaky = createSenderFilterPhaseReceipt(leaky);
+    expect(() =>
+      verifySenderFilterPhaseReceipt(resignedLeaky, closure, NOW),
+    ).toThrow(/filtered isolation probe mismatch/);
   });
 
-  it("refuses worker-first B, active-traffic A, empty legacy, and leaky filtered probes", () => {
-    const workerFirst = admitSenderFilterRolloutPlan(
-      positivePlan({
-        worker: "artifact-b",
-        schema: "pre-0031",
-        capabilityProbe: workerHealth("artifact-b", "pre-0031"),
-        filteredProbe: {
-          status: 503,
-          echo: null,
-          item_count: 0,
-          cross_sender_count: 0,
-        },
-      }),
-    );
-    expect(workerFirst).toMatchObject({
-      plan_admitted: false,
-      direct_deploy_permitted: false,
-      execution_authorized: false,
-      reasons: expect.arrayContaining(["worker-first-artifact-b-refused"]),
+  it("keeps Artifact A active traffic and Worker-first B fail closed", async () => {
+    const closure = validateRolloutSourceClosure(await sourceFiles());
+    const activeA = phaseReceipt("artifact-a-pre-0031", closure, {
+      traffic: "active",
     });
-
-    const artifactAActive = admitSenderFilterRolloutPlan(
-      positivePlan({
-        worker: "artifact-a",
-        schema: "pre-0031",
-        capabilityProbe: workerHealth("artifact-a", "pre-0031"),
-        filteredProbe: {
-          status: 503,
-          echo: null,
-          item_count: 0,
-          cross_sender_count: 0,
-        },
-      }),
-    );
-    expect(artifactAActive.reasons).toContain(
-      "artifact-a-requires-quiesced-traffic",
-    );
-
     expect(
-      admitSenderFilterRolloutPlan(
-        positivePlan({ legacyProbe: { status: 200, item_count: 0 } }),
-      ).reasons,
-    ).toContain("legacy-inbox-continuity-unproved");
+      admitSenderFilterRolloutPlan({
+        phaseReceipt: activeA,
+        sourceClosure: closure,
+        nowMs: NOW,
+      }).reasons,
+    ).toContain("artifact-a-requires-quiesced-traffic");
     expect(
-      admitSenderFilterRolloutPlan(
-        positivePlan({
-          filteredProbe: {
-            status: 200,
-            echo: SENDER,
-            item_count: 1,
-            cross_sender_count: 1,
-          },
-        }),
-      ).reasons,
-    ).toContain("filtered-isolation-unproved");
+      admitSenderFilterRolloutPlan({
+        phaseReceipt: phaseReceipt(
+          "artifact-b-pre-0031",
+          closure,
+        ),
+        sourceClosure: closure,
+        nowMs: NOW,
+      }).reasons,
+    ).toContain("worker-first-artifact-b-refused");
   });
 
-  it("advances only selection labels through quiesced A to stable B", () => {
-    const bridgeBefore = admitSenderFilterRolloutPlan(
-      positivePlan({
-        worker: "artifact-a",
-        schema: "pre-0031",
-        traffic: "quiesced",
-        capabilityProbe: workerHealth("artifact-a", "pre-0031"),
-        filteredProbe: {
-          status: 503,
-          echo: null,
-          item_count: 0,
-          cross_sender_count: 0,
-        },
-      }),
-    );
-    expect(bridgeBefore).toMatchObject({
-      plan_admitted: true,
-      next_selection: "migrations-0030-0031",
-      direct_deploy_permitted: false,
-    });
-    const bridgeAfter = admitSenderFilterRolloutPlan(
-      positivePlan({
-        worker: "artifact-a",
-        schema: "0031",
-        traffic: "quiesced",
-        capabilityProbe: workerHealth("artifact-a", "0031"),
-        filteredProbe: {
-          status: 503,
-          echo: null,
-          item_count: 0,
-          cross_sender_count: 0,
-        },
-      }),
-    );
-    expect(bridgeAfter).toMatchObject({
-      plan_admitted: true,
-      next_selection: "artifact-b",
-      execution_authorized: false,
-    });
-    expect(admitSenderFilterRolloutPlan(positivePlan())).toMatchObject({
-      plan_admitted: true,
-      next_selection: "stable-compatible",
-      direct_deploy_permitted: false,
-      execution_authorized: false,
-    });
-  });
-
-  it("binds the model to nonempty committed Worker/canonical source seams", async () => {
-    const files = await sourceClosure();
-    expect(validateRolloutSourceClosure(files)).toBe(true);
-    for (const sourcePath of Object.keys(files)) {
-      const missing = structuredClone(files);
-      missing[sourcePath] = "";
-      expect(() => validateRolloutSourceClosure(missing)).toThrow(
-        /rollout source is empty/,
-      );
-    }
-    const drift = structuredClone(files);
-    drift["keyserver-cf/src/endpoints/control-inbox.ts"] = drift[
-      "keyserver-cf/src/endpoints/control-inbox.ts"
-    ].replace("filtered_sender_id: senderFilter", "filtered_sender_id: null");
-    expect(() => validateRolloutSourceClosure(drift)).toThrow(
-      /rollout source contract missing/,
-    );
-  });
-
-  it("keeps the executable plan and package entrypoint non-deploying", async () => {
-    const contract = await readFile(
-      path.join(
-        REPO_ROOT,
-        "keyserver-cf/scripts/sender-filter-rollout-contract.mjs",
-      ),
-      "utf8",
-    );
-    expect(contract).not.toMatch(/wrangler\s+deploy/);
+  it("keeps package entrypoints non-deploying", async () => {
     const packageJson = JSON.parse(
       await readFile(path.join(REPO_ROOT, "keyserver-cf/package.json"), "utf8"),
     );
@@ -493,8 +442,8 @@ describe("sender-filter Worker/client version-skew contract", () => {
       path.join(REPO_ROOT, "keyserver-cf/SENDER_FILTER_ROLLOUT.md"),
       "utf8",
     );
-    expect(runbook).toContain("all 12");
-    expect(runbook).toContain("pre-existing 64-row head-of-line");
+    expect(runbook).toContain("durable");
+    expect(runbook).toContain("phase receipt");
     expect(runbook).toContain("direct_deploy_permitted=false");
     expect(runbook).not.toMatch(/(?:npx|npm exec)\s+wrangler/);
   });

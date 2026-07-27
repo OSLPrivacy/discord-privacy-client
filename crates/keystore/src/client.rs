@@ -30,6 +30,12 @@ use crate::prekeys::{
     sign_replenish_batch, OpkEntry, PrekeyState, ReplenishOpk, ReplenishSpk, SpkEntry,
 };
 use crate::signed_get::{sign_prekey_bundle_get, sign_wrapped_key_get};
+use crate::sender_filter_rollout::{
+    load_sender_filter_capability_floor,
+    record_sender_filter_capability_floor,
+    SenderFilterCapabilityFloor,
+    SENDER_FILTER_CAPABILITY_VERSION,
+};
 use crate::unregister::sign_unregister;
 use crate::wrapped_key::{sign_wrapped_key_post, WrappedKeyUpload};
 use crate::{Error, Result};
@@ -1153,6 +1159,111 @@ impl KeyServerClient {
         Ok(parsed.items)
     }
 
+    /// Shipping Worker/client rollout boundary for one active peer.
+    ///
+    /// This method, rather than the broker, owns both the live capability
+    /// observation and the durable downgrade floor:
+    ///
+    /// - A legacy Worker with the exact legacy health response receives the
+    ///   byte-identical unfiltered signed GET. Rows are narrowed locally before
+    ///   the broker sees them, preserving legacy availability without exposing
+    ///   another sender's rows to the active conversation.
+    /// - Artifact B capability version 1 raises the write-once per-account
+    ///   floor before the first filtered GET.
+    /// - Artifact A, pre-0031 Artifact B, malformed capability evidence, or a
+    ///   capability disappearance after the floor was raised all fail closed.
+    pub fn get_control_inbox_compatible_from(
+        &self,
+        identity: &Identity,
+        sender_id: &str,
+    ) -> Result<FilteredControlInbox> {
+        if !valid_control_inbox_sender_id(&identity.user_id) {
+            return Err(Error::Transport(
+                "control-inbox recipient identity is invalid".into(),
+            ));
+        }
+        if !valid_control_inbox_sender_id(sender_id) {
+            return Err(Error::Transport(
+                "control-inbox sender filter is invalid".into(),
+            ));
+        }
+        let floor = load_sender_filter_capability_floor(identity)?;
+        match (self.probe_control_inbox_sender_filter_capability()?, floor) {
+            (
+                ControlInboxSenderFilterCapability::Version1,
+                SenderFilterCapabilityFloor::NeverObserved,
+            ) => {
+                record_sender_filter_capability_floor(
+                    identity,
+                    unix_timestamp_ms(),
+                )?;
+                self.get_control_inbox_from(identity, sender_id)
+            }
+            (
+                ControlInboxSenderFilterCapability::Version1,
+                SenderFilterCapabilityFloor::Version1,
+            ) => self.get_control_inbox_from(identity, sender_id),
+            (
+                ControlInboxSenderFilterCapability::Legacy,
+                SenderFilterCapabilityFloor::NeverObserved,
+            ) => {
+                let items = self
+                    .get_control_inbox(identity)?
+                    .into_iter()
+                    .filter(|item| item.sender_id == sender_id)
+                    .collect::<Vec<_>>();
+                Ok(FilteredControlInbox {
+                    delivery: ControlInboxDeliveryDisposition {
+                        live: items.len() as u64,
+                        retryable: 0,
+                        quarantined: 0,
+                        retired: 0,
+                    },
+                    items,
+                })
+            }
+            (
+                ControlInboxSenderFilterCapability::Legacy,
+                SenderFilterCapabilityFloor::Version1,
+            ) => Err(Error::Transport(
+                "control-inbox sender-filter capability downgrade refused"
+                    .into(),
+            )),
+        }
+    }
+
+    fn probe_control_inbox_sender_filter_capability(
+        &self,
+    ) -> Result<ControlInboxSenderFilterCapability> {
+        let response = self.send_request("GET", "/v1/healthz", None)?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&response.body).map_err(|_| {
+                Error::Transport(
+                    "control-inbox capability response is not exact JSON".into(),
+                )
+            })?;
+        if response.status == 200 && value == serde_json::json!({ "ok": true })
+        {
+            return Ok(ControlInboxSenderFilterCapability::Legacy);
+        }
+        if response.status == 200
+            && value
+                == serde_json::json!({
+                    "ok": true,
+                    "capabilities": {
+                        "control_inbox_sender_disposition":
+                            SENDER_FILTER_CAPABILITY_VERSION
+                    }
+                })
+        {
+            return Ok(ControlInboxSenderFilterCapability::Version1);
+        }
+        Err(Error::Transport(
+            "control-inbox sender-filter capability is unavailable, malformed, or transitional"
+                .into(),
+        ))
+    }
+
     /// Drain only the rows one specific peer sent.
     ///
     /// # Why a caller should prefer this to [`Self::get_control_inbox`]
@@ -1366,6 +1477,12 @@ impl KeyServerClient {
 struct HttpResponse {
     status: u16,
     body: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ControlInboxSenderFilterCapability {
+    Legacy,
+    Version1,
 }
 
 fn check_2xx(resp: &HttpResponse) -> Result<()> {

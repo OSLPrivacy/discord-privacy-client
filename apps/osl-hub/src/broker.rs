@@ -2641,7 +2641,7 @@ fn fetch_peer_control_inbox(
     client: &keystore::KeyServerClient,
     peer_osl_user_id: &str,
 ) -> keystore::Result<keystore::client::FilteredControlInbox> {
-    client.get_control_inbox_from(identity, peer_osl_user_id)
+    client.get_control_inbox_compatible_from(identity, peer_osl_user_id)
 }
 
 fn control_inbox_delivery_facts(
@@ -6911,20 +6911,26 @@ mod tests {
         // Constructed in fragments so this source-introspection test cannot
         // satisfy itself merely by containing its own expected call text. Pin
         // all three links: each production drain calls the shared boundary,
-        // and only that boundary calls the signed filtered client method.
+        // and only that boundary calls the shipping compatibility method that
+        // owns both the live capability probe and durable downgrade floor.
         let shared_call =
             ["fetch_peer_control_", "inbox(&identity, &client, &manual.peer_osl_user_id)"]
                 .concat();
+        let compatible = [
+            ".get_control_inbox_compatible",
+            "_from(identity, peer_osl_user_id)",
+        ]
+        .concat();
         let filtered = [".get_control_inbox", "_from(identity, peer_osl_user_id)"].concat();
         let unfiltered = [".get_control_", "inbox(&identity)"].concat();
 
         assert!(
-            fetch.contains(&filtered),
-            "the shared receive boundary must use the signed sender filter"
+            fetch.contains(&compatible),
+            "the shared receive boundary must use the capability-aware sender filter"
         );
         assert!(
-            !fetch.contains(&unfiltered),
-            "the shared receive boundary must not fall back to an unfiltered inbox page"
+            !fetch.contains(&filtered) && !fetch.contains(&unfiltered),
+            "the broker must not bypass the client-owned rollout boundary"
         );
         for (name, drain) in [("text", text), ("attachment", attachments)] {
             assert!(
@@ -7039,9 +7045,39 @@ mod tests {
         );
     }
 
+    fn assert_health_request(request: &str) {
+        assert_eq!(
+            request.lines().next(),
+            Some("GET /v1/healthz HTTP/1.1"),
+            "the shipping receive boundary probes the exact health route first",
+        );
+    }
+
+    fn install_sender_filter_test_account(label: &str) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("test clock is after epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "osl-broker-sender-filter-{label}-{}-{nonce}",
+            std::process::id(),
+        ));
+        std::fs::create_dir_all(&directory)
+            .expect("create isolated sender-filter account");
+        keystore::set_active_account_dir(Some(directory.clone()));
+        directory
+    }
+
+    fn remove_sender_filter_test_account(directory: &std::path::Path) {
+        keystore::set_active_account_dir(None);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
     #[test]
     fn production_receive_boundary_drains_exact_sender_text_and_attachment_without_touching_other_sender(
     ) {
+        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let account_dir = install_sender_filter_test_account("filtered");
         let identity = keystore::generate_identity("recipient".to_owned());
         let sender_a = "peer-a";
         let sender_b = "peer-b";
@@ -7062,6 +7098,12 @@ mod tests {
         );
         let (base_url, requests, server) = spawn_control_inbox_test_server(vec![
             serde_json::json!({
+                "ok": true,
+                "capabilities": {
+                    "control_inbox_sender_disposition": 1,
+                },
+            }),
+            serde_json::json!({
                 "items": [a_text, a_attachment],
                 "filtered_sender_id": sender_a,
                 "filtered_sender_delivery": {
@@ -7069,6 +7111,12 @@ mod tests {
                     "retryable": 0,
                     "quarantined": 0,
                     "retired": 0,
+                },
+            }),
+            serde_json::json!({
+                "ok": true,
+                "capabilities": {
+                    "control_inbox_sender_disposition": 1,
                 },
             }),
             serde_json::json!({
@@ -7123,19 +7171,28 @@ mod tests {
         assert_eq!(b_rows.len(), 1, "B's row remains untouched by A's fetch");
         assert_eq!(b_rows[0].sender_id, sender_b);
 
+        assert_health_request(
+            &requests.recv().expect("capture A capability request"),
+        );
         assert_filtered_request(
             &requests.recv().expect("capture A's production request"),
             sender_a,
+        );
+        assert_health_request(
+            &requests.recv().expect("capture B capability request"),
         );
         assert_filtered_request(
             &requests.recv().expect("capture B's production request"),
             sender_b,
         );
         server.join().expect("control-inbox test server exits");
+        remove_sender_filter_test_account(&account_dir);
     }
 
     #[test]
     fn production_receive_boundary_refuses_every_unconfirmed_or_widened_sender_page() {
+        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let account_dir = install_sender_filter_test_account("refusals");
         let identity = keystore::generate_identity("recipient".to_owned());
         let sender_a = "peer-a";
         let sender_b = "peer-b";
@@ -7203,7 +7260,15 @@ mod tests {
         ];
 
         for (label, response, expected_error) in cases {
-            let (base_url, requests, server) = spawn_control_inbox_test_server(vec![response]);
+            let (base_url, requests, server) = spawn_control_inbox_test_server(vec![
+                serde_json::json!({
+                    "ok": true,
+                    "capabilities": {
+                        "control_inbox_sender_disposition": 1,
+                    },
+                }),
+                response,
+            ]);
             let client = keystore::KeyServerClient::new(&base_url).expect("build test client");
             let error = fetch_peer_control_inbox(&identity, &client, sender_a)
                 .expect_err("an unconfirmed or widened page must be refused");
@@ -7211,12 +7276,108 @@ mod tests {
                 error.to_string().contains(expected_error),
                 "{label} must fail through its specific closed-path verdict"
             );
+            assert_health_request(
+                &requests.recv().expect("capture capability request"),
+            );
             assert_filtered_request(
                 &requests.recv().expect("capture refused production request"),
                 sender_a,
             );
             server.join().expect("control-inbox test server exits");
         }
+        remove_sender_filter_test_account(&account_dir);
+    }
+
+    #[test]
+    fn shipping_receive_boundary_preserves_legacy_worker_then_refuses_downgrade_after_capability() {
+        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let account_dir = install_sender_filter_test_account("legacy-downgrade");
+        let identity = keystore::generate_identity("recipient".to_owned());
+        let sender_a = "peer-a";
+        let sender_b = "peer-b";
+
+        let (legacy_url, legacy_requests, legacy_server) =
+            spawn_control_inbox_test_server(vec![
+                serde_json::json!({ "ok": true }),
+                serde_json::json!({
+                    "items": [
+                        control_inbox_test_row(
+                            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                            sender_a,
+                            ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
+                        ),
+                        control_inbox_test_row(
+                            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                            sender_b,
+                            ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
+                        ),
+                    ],
+                }),
+            ]);
+        let legacy_client =
+            keystore::KeyServerClient::new(&legacy_url).expect("legacy client");
+        let legacy_page =
+            fetch_peer_control_inbox(&identity, &legacy_client, sender_a)
+                .expect("legacy Worker remains available before capability");
+        assert_eq!(legacy_page.items.len(), 1);
+        assert_eq!(legacy_page.items[0].sender_id, sender_a);
+        assert_health_request(
+            &legacy_requests.recv().expect("capture legacy health"),
+        );
+        let legacy_get = legacy_requests.recv().expect("capture legacy GET");
+        let legacy_line = legacy_get.lines().next().expect("legacy request line");
+        assert!(legacy_line.starts_with("GET /v1/control-inbox/"));
+        assert!(!legacy_line.contains("&sender="));
+        legacy_server.join().expect("legacy server exits");
+
+        let (final_url, final_requests, final_server) =
+            spawn_control_inbox_test_server(vec![
+                serde_json::json!({
+                    "ok": true,
+                    "capabilities": {
+                        "control_inbox_sender_disposition": 1,
+                    },
+                }),
+                serde_json::json!({
+                    "items": [],
+                    "filtered_sender_id": sender_a,
+                    "filtered_sender_delivery": {
+                        "live": 0,
+                        "retryable": 0,
+                        "quarantined": 0,
+                        "retired": 0,
+                    },
+                }),
+            ]);
+        let final_client =
+            keystore::KeyServerClient::new(&final_url).expect("final client");
+        fetch_peer_control_inbox(&identity, &final_client, sender_a)
+            .expect("final Worker raises the durable capability floor");
+        assert_health_request(
+            &final_requests.recv().expect("capture final health"),
+        );
+        assert_filtered_request(
+            &final_requests.recv().expect("capture final filtered GET"),
+            sender_a,
+        );
+        final_server.join().expect("final server exits");
+
+        let (rolled_back_url, rollback_requests, rollback_server) =
+            spawn_control_inbox_test_server(vec![serde_json::json!({ "ok": true })]);
+        let restarted_client = keystore::KeyServerClient::new(&rolled_back_url)
+            .expect("fresh client after restart");
+        let error =
+            fetch_peer_control_inbox(&identity, &restarted_client, sender_a)
+                .expect_err("a fresh client must retain the downgrade floor");
+        assert!(
+            error.to_string().contains("capability downgrade refused"),
+            "rollback is refused by durable client state"
+        );
+        assert_health_request(
+            &rollback_requests.recv().expect("capture rollback health"),
+        );
+        rollback_server.join().expect("rollback server exits");
+        remove_sender_filter_test_account(&account_dir);
     }
 
     #[test]

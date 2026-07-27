@@ -29,6 +29,7 @@ pub mod pending_rotation;
 pub mod prekeys;
 pub mod recipients;
 pub mod sealer;
+mod sender_filter_rollout;
 pub mod signed_get;
 pub mod storage;
 pub mod unregister;
