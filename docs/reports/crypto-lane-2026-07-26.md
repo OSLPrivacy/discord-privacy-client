@@ -1054,6 +1054,87 @@ report makes no broader claim about the still-dirty IPC/keystore work.
 No live process, provider, Discord conversation, runtime rig, or second identity was used. This
 does not earn a runtime, verified-live, or two-identity claim.
 
+## Round 9 — signed per-sender Hub receive boundary
+
+Source commit:
+`c0279dc9434d138234d435935fbb2779095e408e`.
+No identity was opened or created, no provider or cloud state was changed, and no live request
+was sent.
+
+The gap identified by keyserver commit `c0ea9f0` still existed before this change: both the text
+and attachment receive drains called the unfiltered `get_control_inbox`. They now call
+`get_control_inbox_from` with the active manual peer's OSL identity
+(`broker.rs:2665-2668,3614-3617`). Existing sender, scope, envelope-authentication, and deletion
+guards remain downstream, so filtering narrows which page can arrive without widening what can
+be trusted or retired.
+
+The keystore client now refuses an empty, over-256-byte, C0, or C1 sender filter before network
+I/O (`crates/keystore/src/client.rs:1191-1200,1398-1406`). It already required the server's exact
+`filtered_sender_id` echo; it now additionally refuses the entire response if any row names a
+different sender (`:1213-1239`). There is no unfiltered retry or fallback.
+
+### Exact committed focused evidence
+
+`git archive c0279dc` was extracted to a disposable directory. Only those committed bytes
+produced:
+
+- `osl-cargo test -p keystore --test client_test filtered_control_inbox --
+  --nocapture --test-threads=1`: 2 passed, 0 failed, 27 filtered out. The positive test drains
+  rows for `peer-a` and `peer-b` independently and verifies that each query's sender value is
+  covered by the recipient's Ed25519 signature (`client_test.rs:842-874`). The refusal test
+  covers empty, control-character, over-bound, and cross-sender row values (`:876-896`).
+- `osl-cargo test -p keystore --test client_test
+  unfiltered_or_wrong_filter_echo_cannot_fall_back_to_a_wider_page -- --exact --nocapture
+  --test-threads=1`: 1 passed, 0 failed, 28 filtered out. Its negative page contains 64 foreign
+  rows followed by the active sender's row; missing or wrong filter echo refuses the complete
+  answer (`client_test.rs:898-925`).
+- `osl-cargo test --features core --lib
+  broker::tests::text_and_attachment_drains_are_bound_to_the_active_peer_sender -- --exact
+  --test-threads=1`: 1 passed, 0 failed, 664 filtered out.
+- The same exact-archive `core` command for
+  `broker::tests::the_text_drain_applies_inbound_revocations_instead_of_deleting_them`: 1
+  passed, and for
+  `broker::tests::inbound_revocation_drain_retirement_follows_runtime_apply_outcome`: 1 passed.
+
+A separate disposable mutation reverted both receive drains to `get_control_inbox(&identity)`.
+The focused broker gate failed with
+`text receive drain must request the active peer's signed sender filter`. This demonstrates that
+the gate cannot pass after an unfiltered fallback.
+
+### Revocation source-gate repair
+
+The stale assertion no longer searches the classified arm for a literal
+`delete_control_inbox`. It now pins the real three-link seam:
+
+1. the classified arm constructs and passes `KeyserverRevocationControlInboxClient`;
+2. `drain_inbound_revocation_row` calls `delete_row` only after `apply_row` and
+   `outcome.retires_row()`;
+3. the production client's `delete_row` implementation calls `delete_control_inbox`
+   (`broker.rs:6409-6458`).
+
+The named source gate and adjacent behavioral ordering test each also passed in the shared
+worktree under exact features `core,discord-qa-shell` (1 passed, 0 failed, 743 filtered out).
+Those two runs are not evidence for exact `c0279dc`, because the worktree contains a later
+out-of-scope receipt change.
+
+The exact `c0279dc` archive under `core,discord-qa-shell` is `blocked` before broker tests:
+`discord_qa_inbound_receipt.rs:431` does not cover
+`keystore::Error::PeerBundleProofInvalid` (`E0004`). That file is outside this lane and was not
+edited. The same exact archive passes all named `core` gates above.
+
+### Status and B5 adjudication
+
+Status is `test-proven-only` for the Hub-to-keystore production call boundary. The deployed
+Worker's signed sender filter remains separately `verified-live` only to the extent recorded by
+the keyserver lane; this lane did not repeat a live authenticated drain. Cross-sender behavior
+is not `runtime-proven`, and the two-identity path remains `blocked`.
+
+This closes the specific client boundary that the `c0ea9f0` audit named as the smallest next B5
+delta. It is therefore a candidate for B5 `1/4 -> 2/4` if truth treats production-call wiring
+plus exact mutation-sensitive tests, combined with the separately verified-live deployed
+server filter, as one partial row point. This lane does not award the point: prekeys and wrapped
+keys remain outside this change, and no authenticated live or two-identity receive occurred.
+
 ## Acceptance rows this earns
 
-None.
+B5 `1/4 -> 2/4` candidate for truth adjudication; not self-awarded.
