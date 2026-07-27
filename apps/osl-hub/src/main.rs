@@ -95,6 +95,39 @@ fn startup_breadcrumb(label: &str) {
     }
 }
 
+#[cfg(feature = "discord-qa-shell")]
+const B6_PREFLIGHT_ONLY_ARG: &str = "--b6-preflight-only";
+#[cfg(feature = "discord-qa-shell")]
+const B6_PREFLIGHT_RECEIPT_FILE: &str = "osl-discord-qa-b6-preflight.v2.json";
+
+#[cfg(feature = "discord-qa-shell")]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiscordQaB6StartupReceipt<'a> {
+    schema_version: u8,
+    b6_preflight: &'a broker::DiscordQaB6Preflight,
+}
+
+/// The first QA-shell action. Apart from retaining this public preflight
+/// receipt, it performs no write, loads no identity and contacts no server.
+#[cfg(feature = "discord-qa-shell")]
+fn discord_qa_b6_startup_gate() -> Result<bool, String> {
+    let preflight = broker::discord_qa_b6_startup_preflight();
+    let startup_allowed = preflight.startup_allowed;
+    let receipt = DiscordQaB6StartupReceipt {
+        schema_version: 2,
+        b6_preflight: &preflight,
+    };
+    let encoded = serde_json::to_vec_pretty(&receipt)
+        .map_err(|_| "B6 startup preflight receipt could not be encoded".to_owned())?;
+    std::fs::write(
+        std::env::temp_dir().join(B6_PREFLIGHT_RECEIPT_FILE),
+        encoded,
+    )
+    .map_err(|_| "B6 startup preflight receipt could not be retained".to_owned())?;
+    Ok(startup_allowed)
+}
+
 #[cfg(windows)]
 mod window_border;
 
@@ -6979,6 +7012,27 @@ fn spawn_lifecycle_tick(app: tauri::AppHandle, local_data_dir: std::path::PathBu
 }
 
 fn main() {
+    #[cfg(feature = "discord-qa-shell")]
+    {
+        // This is deliberately before the guardian, breadcrumbs, plugins,
+        // profile resolution and setup. A blocked build therefore cannot
+        // create an identity, register, touch a ledger, or contact a server.
+        let preflight_only =
+            std::env::args_os().any(|arg| arg == std::ffi::OsStr::new(B6_PREFLIGHT_ONLY_ARG));
+        match discord_qa_b6_startup_gate() {
+            Ok(true) if preflight_only => return,
+            Ok(true) => {}
+            Ok(false) => {
+                eprintln!("B6 startup refused: retained preflight is not startup-allowed");
+                std::process::exit(78);
+            }
+            Err(error) => {
+                eprintln!("B6 startup refused: {error}");
+                std::process::exit(78);
+            }
+        }
+    }
+
     startup_breadcrumb("main_enter"); // STARTUP-TRACE
     startup_breadcrumb("guardian_check_before"); // STARTUP-TRACE
     if osl_privacy_hub::native_window_host::run_borrowed_window_guardian_if_requested() {
@@ -7163,7 +7217,6 @@ fn main() {
         startup_breadcrumb("setup_step_07_qa_local_data_dir_remapped"); // STARTUP-TRACE
         startup_breadcrumb("setup_step_08_scavenge_staging_before"); // STARTUP-TRACE
         peer_attachment_io::scavenge_staging_on_startup(&local_data_dir)?;
-        peer_attachment_io::scavenge_layout_decoys_on_startup(&local_data_dir)?;
         startup_breadcrumb("setup_step_09_scavenge_staging_after"); // STARTUP-TRACE
                                                                     // Resume an already-committed gate burn before any identity can be
                                                                     // selected or decrypted. The recovery record contains no paths or
@@ -7430,4 +7483,58 @@ fn main() {
             release_harnessed_windows_bounded(app_handle, code == Some(tauri::RESTART_EXIT_CODE));
         }
     });
+}
+
+#[cfg(all(test, feature = "discord-qa-shell"))]
+mod b6_startup_gate_tests {
+    #[test]
+    fn b6_gate_is_textually_before_every_qa_startup_side_effect() {
+        let source = include_str!("main.rs");
+        let main_start = source.find("fn main()").expect("main must exist");
+        let source = &source[main_start..];
+        let gate = source
+            .find("match discord_qa_b6_startup_gate()")
+            .expect("QA startup must enforce the B6 preflight");
+        let first_breadcrumb = source
+            .find("startup_breadcrumb(\"main_enter\")")
+            .expect("startup breadcrumb must remain");
+        let identity = source
+            .find("ensure_disposable_identity(&core)")
+            .expect("QA identity bootstrap must remain");
+        let registration = source
+            .find("publish_and_consume_pairing(")
+            .expect("QA registration/pairing must remain");
+        assert!(gate < first_breadcrumb);
+        assert!(gate < identity);
+        assert!(gate < registration);
+        assert!(
+            source[..first_breadcrumb].contains("std::process::exit(78)"),
+            "a rejected or unwritable preflight must terminate before startup"
+        );
+    }
+
+    #[test]
+    fn b6_controllers_read_the_retained_preflight_before_consent_or_drive() {
+        let launcher = include_str!("../../../scripts/qa/osl-launch-instance-b.ps1");
+        let launcher_read = launcher
+            .find("$b6 = $b6Receipt.b6Preflight")
+            .expect("instance launcher must read b6Preflight");
+        let launcher_consent = launcher
+            .find("if (-not $ConfirmCreatesIdentity)")
+            .expect("identity consent gate must remain");
+        assert!(launcher_read < launcher_consent);
+
+        let controller = include_str!("../../../scripts/qa/osl-p2p-loop.ps1");
+        let controller_read = controller
+            .find("$b6A = Read-B6StartupReceipt")
+            .expect("two-identity controller must read both B6 receipts");
+        let controller_consent = controller
+            .find("# G0 consent")
+            .expect("live-drive consent gate must remain");
+        assert!(controller_read < controller_consent);
+        assert!(
+            controller.contains("'negativeCrossPeerIsolation'"),
+            "the retained receipt gate must bind the eighth starvation fact"
+        );
+    }
 }

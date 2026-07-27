@@ -113,9 +113,9 @@ param(
     # with different -BundleB values cannot collide either.
     [string]$TempRootB = '',
 
-    # A `discord-qa-shell` build creates a disposable OSL identity and blocks on
-    # keyserver registration during startup. The keyserver is live production.
-    # The operator must say so out loud.
+    # This consent is considered only after the executable's own B6 preflight
+    # has returned startupAllowed=true without creating an identity or making a
+    # network request.
     [switch]$ConfirmCreatesIdentity,
 
     # Put B on the non-primary display so it never lands on the owner's screen.
@@ -224,16 +224,7 @@ try {
 
 Say '=== OSL second-instance launcher ===' 'Cyan'
 
-# --- 1. consent ------------------------------------------------------------
-if (-not $ConfirmCreatesIdentity) {
-    Add-Step 'gate/consent' 'failed' 'Consent switch absent.'
-    Write-Result 'blocked' `
-        'A discord-qa-shell build creates a disposable OSL identity on startup (apps/osl-hub/src/main.rs:5905 -> discord_qa_identity.rs:247) and then BLOCKS for up to 30s waiting for that identity to be REGISTERED on the keyserver (discord_qa_identity.rs:30,134). The keyserver is live production. This script will not do that on its own initiative.' `
-        'Re-run with -ConfirmCreatesIdentity once you have decided that a second real identity may be created and registered.'
-}
-Add-Step 'gate/consent' 'ok' '-ConfirmCreatesIdentity was given; a second identity may be created and registered.'
-
-# --- 2. the two identifiers must actually differ ---------------------------
+# --- 1. the two identifiers must actually differ ---------------------------
 if ($BundleB -eq $BundleA) {
     Add-Step 'gate/distinct-identifier' 'failed' ('BundleB and BundleA are both "{0}".' -f $BundleA)
     Write-Result 'blocked' `
@@ -242,7 +233,7 @@ if ($BundleB -eq $BundleA) {
 }
 Add-Step 'gate/distinct-identifier' 'ok' ('A = "{0}", B = "{1}" -- distinct.' -f $BundleA, $BundleB)
 
-# --- 3. the exe ------------------------------------------------------------
+# --- 2. the exe ------------------------------------------------------------
 if (-not (Test-Path -LiteralPath $ExeB)) {
     Add-Step 'gate/exe-exists' 'failed' ('Not found: {0}' -f $ExeB)
     Write-Result 'blocked' ('The instance-B executable does not exist: {0}' -f $ExeB) `
@@ -263,7 +254,84 @@ if (-not $loaderPresent) {
 Add-Step 'gate/exe-exists' 'ok' ('{0} ({1} bytes, sha256 {2}, written {3}); WebView2Loader.dll present.' -f
     $ExeB, $exeStamp.sizeBytes, $exeStamp.sha256.Substring(0, [Math]::Min(16, $exeStamp.sha256.Length)), $exeStamp.written)
 
-# --- 4. snapshot the desktop BEFORE the launch -----------------------------
+# --- 3. private temp root and executable-owned B6 preflight -----------------
+# The exact executable is run in preflight-only mode before consent, profile
+# resolution, identity creation, registration, or ordinary startup. Its first
+# action retains b6Preflight and exits. The controller reads and validates that
+# object; a missing field, stale receipt, hash mismatch, blocker, or nonzero
+# result refuses the launch.
+$tempA = $env:TEMP
+if (-not $TempRootB) { $TempRootB = Join-Path $env:LOCALAPPDATA ('Temp\osl-qa-b-' + ($BundleB -replace '[^A-Za-z0-9\.\-]', '_')) }
+try {
+    if (-not (Test-Path -LiteralPath $TempRootB)) { [void](New-Item -ItemType Directory -Path $TempRootB -Force -ErrorAction Stop) }
+} catch {
+    Add-Step 'temp-isolation' 'failed' $_.Exception.Message
+    Write-Result 'blocked' ('Could not create instance B''s private temp root {0}: {1}' -f $TempRootB, $_.Exception.Message) 'Pick a writable -TempRootB and re-run.'
+}
+if ($TempRootB -eq $tempA) {
+    Add-Step 'temp-isolation' 'failed' 'B''s temp root equals A''s.'
+    Write-Result 'blocked' `
+        ('Instance B''s temp root is the same directory as instance A''s ({0}). The two QA processes would share unqualified receipts and triggers, so their evidence could not be attributed.' -f $tempA) `
+        'Pass a distinct -TempRootB.'
+}
+Add-Step 'temp-isolation' 'ok' ('B''s temp root is {0}; A keeps {1}.' -f $TempRootB, $tempA)
+
+$b6ReceiptPath = Join-Path $TempRootB 'osl-discord-qa-b6-preflight.v2.json'
+$b6StartedAt = Get-Date
+$b6Proc = $null
+$savedTmp = $env:TMP
+$savedTemp = $env:TEMP
+try {
+    $env:TMP = $TempRootB
+    $env:TEMP = $TempRootB
+    try {
+        $b6Proc = Start-Process -FilePath $ExeB -ArgumentList @('--b6-preflight-only') -Wait -PassThru -ErrorAction Stop
+    } catch {
+        Add-Step 'gate/b6-preflight' 'failed' $_.Exception.Message
+        Write-Result 'blocked' ('The exact executable could not run its side-effect-free B6 preflight: {0}' -f $_.Exception.Message) 'Rebuild the exact desktop QA-shell binary and retry.'
+    }
+} finally {
+    $env:TMP = $savedTmp
+    $env:TEMP = $savedTemp
+}
+
+$b6Receipt = $null
+try {
+    $b6ReceiptItem = Get-Item -LiteralPath $b6ReceiptPath -ErrorAction Stop
+    if ($b6ReceiptItem.LastWriteTime -lt $b6StartedAt.AddSeconds(-1)) {
+        throw ('receipt predates this preflight ({0:o})' -f $b6ReceiptItem.LastWriteTime)
+    }
+    $b6Receipt = Get-Content -LiteralPath $b6ReceiptPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+} catch {
+    Add-Step 'gate/b6-preflight' 'failed' $_.Exception.Message
+    Write-Result 'blocked' ('No fresh, readable B6 preflight receipt was retained at {0}: {1}' -f $b6ReceiptPath, $_.Exception.Message) 'Use the exact desktop,discord-qa-shell build; do not substitute a helper or stale receipt.'
+}
+$b6 = $b6Receipt.b6Preflight
+$b6SchemaOk = ($b6Receipt.schemaVersion -eq 2 -and $b6.schemaVersion -eq 2)
+$b6HashOk = ($b6.binarySha256 -and ([string]$b6.binarySha256).ToLowerInvariant() -eq ([string]$exeStamp.sha256).ToLowerInvariant())
+$b6ProvenanceOk = ($b6.sourceCommit -and $b6.serverDeploymentIdentity)
+$b6Blockers = @($b6.startupBlockers)
+$b6Allowed = ($b6SchemaOk -and $b6HashOk -and $b6ProvenanceOk -and $b6.startupAllowed -eq $true -and $b6Blockers.Count -eq 0 -and $b6Proc.ExitCode -eq 0)
+if (-not $b6Allowed) {
+    Add-Step 'gate/b6-preflight' 'failed' ('startupAllowed={0}; exit={1}; schema={2}; binaryHash={3}; provenance={4}; blockers=[{5}]' -f
+        $b6.startupAllowed, $b6Proc.ExitCode, $b6SchemaOk, $b6HashOk, $b6ProvenanceOk, ($b6Blockers -join ','))
+    Write-Result 'blocked' `
+        'The executable-owned b6Preflight refused startup before identity creation, registration, network, or profile mutation. The current product has no configured dedicated QA deployment and no production persisted-ratchet relay, so this is the expected safe result.' `
+        'Configure a dedicated, independently identified QA deployment and close every startup blocker; never point this controller at production.' `
+        @{ b6PreflightReceipt = $b6ReceiptPath; b6Preflight = $b6 }
+}
+Add-Step 'gate/b6-preflight' 'ok' ('Exact binary hash, source commit, server deployment identity, and empty startupBlockers are bound in {0}.' -f $b6ReceiptPath)
+
+# --- 4. explicit consent after the no-side-effect preflight -----------------
+if (-not $ConfirmCreatesIdentity) {
+    Add-Step 'gate/consent' 'failed' 'Consent switch absent.'
+    Write-Result 'blocked' `
+        'The B6 preflight passed, but ordinary QA startup would now create and register a disposable identity. This controller will not cross that boundary without explicit consent.' `
+        'Re-run with -ConfirmCreatesIdentity only inside the dedicated QA environment named by b6Preflight.'
+}
+Add-Step 'gate/consent' 'ok' '-ConfirmCreatesIdentity was given after the B6 preflight passed.'
+
+# --- 5. snapshot the desktop BEFORE the launch -----------------------------
 $preWins    = Get-P2PWindows
 $preBundles = Get-P2PBundleMap
 $preOslHwnds = @($preWins | Where-Object { $_.Title -eq $MainTitle } | ForEach-Object { [int64]$_.Hwnd })
@@ -315,7 +383,7 @@ if ($bAlready.Count -gt 0) {
 }
 Add-Step 'gate/instance-b-absent' 'ok' ('No "{0}-sic" marker present, so nothing is already answering to B.' -f $BundleB)
 
-# --- 5. profile roots ------------------------------------------------------
+# --- 6. profile roots ------------------------------------------------------
 # Verified, not assumed: Tauri derives app_data_dir from the identifier, so the
 # roots SHOULD differ, and this asserts it on disk.
 $rootA = Join-Path $env:APPDATA $BundleA
@@ -328,27 +396,7 @@ foreach ($p in @($identityA, $identityAqa)) {
 }
 Add-Step 'profile-roots' 'ok' ('A -> {0}   B -> {1}. APPDATA is deliberately NOT overridden: Tauri resolves app_data_dir through SHGetKnownFolderPath while crates/keystore/src/recipients.rs:191 reads the APPDATA env var, so overriding it moves one and not the other.' -f $rootA, $rootB)
 
-# --- 5b. B's private temp root ---------------------------------------------
-# $JsonOut was already resolved against the REAL %TEMP% above, before this
-# point, so redirecting the environment here cannot move this script's own
-# output. That ordering is load-bearing.
-$tempA = $env:TEMP
-if (-not $TempRootB) { $TempRootB = Join-Path $env:LOCALAPPDATA ('Temp\osl-qa-b-' + ($BundleB -replace '[^A-Za-z0-9\.\-]', '_')) }
-try {
-    if (-not (Test-Path -LiteralPath $TempRootB)) { [void](New-Item -ItemType Directory -Path $TempRootB -Force -ErrorAction Stop) }
-} catch {
-    Add-Step 'temp-isolation' 'failed' $_.Exception.Message
-    Write-Result 'blocked' ('Could not create instance B''s private temp root {0}: {1}' -f $TempRootB, $_.Exception.Message) 'Pick a writable -TempRootB and re-run.'
-}
-if ($TempRootB -eq $tempA) {
-    Add-Step 'temp-isolation' 'failed' 'B''s temp root equals A''s.'
-    Write-Result 'blocked' `
-        ('Instance B''s temp root is the same directory as instance A''s ({0}). Both instances write osl-startup-trace.txt, osl-discord-qa-send-stage.txt, osl-discord-qa-overlay-stage.txt, osl-discord-qa-composer-zorder.txt and ten more under FIXED, UNQUALIFIED names in std::env::temp_dir(). Sharing them means the append trails interleave with no way to attribute a line to an instance, the overwrite files clobber each other, and the self-test request file becomes a race that only one instance can win (apps/osl-hub/src/main.rs:5560). Nothing measured off those files would mean anything.' -f $tempA) `
-        'Pass a distinct -TempRootB.'
-}
-Add-Step 'temp-isolation' 'ok' ('B''s temp root is {0}; A keeps {1}. TMP and TEMP are both set for the child, because std::env::temp_dir() consults TMP first. The P2P harness must read B''s artefacts from B''s root and A''s from A''s.' -f $TempRootB, $tempA)
-
-# --- 6. launch -------------------------------------------------------------
+# --- 7. launch -------------------------------------------------------------
 # Start-Process on Windows PowerShell 5.1 has no -Environment parameter, so the
 # child's environment is inherited from this process at spawn time. The two
 # variables are set, the process is started, and they are restored immediately

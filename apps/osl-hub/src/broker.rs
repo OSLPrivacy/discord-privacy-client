@@ -5947,50 +5947,72 @@ fn native_discord_qa_receipt_context(context: &HubConversationContext) -> bool {
     context.service_id == "discord" && context.account_id.starts_with("native-discord-")
 }
 
+/// Runtime facts that a retained B6 receipt must prove independently.
+///
+/// A startup preflight deliberately leaves every fact false. A later controlled
+/// two-process runner may populate them only from production-boundary evidence;
+/// neither a caller assertion nor a permissive relay fake is evidence.
+#[cfg(any(feature = "discord-qa-shell", test))]
+#[derive(Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscordQaB6RuntimeFacts {
+    pub distinct_identity_and_keystore_roots: bool,
+    pub bidirectional_ciphertext_and_plaintext: bool,
+    pub offline_enqueue_and_delivery: bool,
+    pub persisted_ratchet_restart: bool,
+    pub exactly_once_drain: bool,
+    pub independent_peer_attribution: bool,
+    pub negative_cross_peer_isolation: bool,
+}
+
 /// Read-only B6 prerequisite receipt for the disposable QA shell.
 ///
-/// This is intentionally a preflight, not a proof. In particular, it cannot
-/// award B6 or turn the current direct-manual-v3 relay into a persisted ratchet.
-/// Its purpose is to stop a controller before it creates identities or contacts
-/// a server when the shipping crypto path cannot satisfy the requested runtime.
+/// `startup_allowed` is the pre-side-effect gate. `ready` is stronger: it
+/// remains false until the controlled runtime has proved all eight independent
+/// B6 facts. The current build cannot satisfy either result.
 #[cfg(any(feature = "discord-qa-shell", test))]
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscordQaB6Preflight {
     pub schema_version: u8,
+    pub startup_allowed: bool,
     pub ready: bool,
+    pub startup_blockers: Vec<&'static str>,
     pub blockers: Vec<&'static str>,
     pub ratchet_wire_in_enabled: bool,
     pub broker_relay_transport: &'static str,
     pub keyserver_origin: &'static str,
-    pub identity_public_fingerprint_sha256: Option<String>,
+    pub source_commit: Option<String>,
+    pub binary_sha256: Option<String>,
+    pub server_deployment_identity: Option<String>,
+    pub identity_public_fingerprints_sha256: Vec<String>,
+    pub identity_keystore_root_fingerprints_sha256: Vec<String>,
+    pub runtime: DiscordQaB6RuntimeFacts,
+}
+
+#[cfg(any(feature = "discord-qa-shell", test))]
+#[derive(Clone)]
+struct B6PreflightInputs {
+    ratchet_wire_in_enabled: bool,
+    broker_relay_uses_persisted_ratchet: bool,
+    keyserver_origin: &'static str,
+    source_commit: Option<String>,
+    binary_sha256: Option<String>,
+    server_deployment_identity: Option<String>,
+    identity_public_fingerprints_sha256: Vec<String>,
+    identity_keystore_root_fingerprints_sha256: Vec<String>,
+    runtime: DiscordQaB6RuntimeFacts,
 }
 
 #[cfg(any(feature = "discord-qa-shell", test))]
 fn b6_keyserver_origin(base_url: &str) -> &'static str {
     if base_url == ipc::commands::DEFAULT_KEYSERVER_BASE_URL {
-        return "production";
-    }
-    let Ok(parsed) = url::Url::parse(base_url) else {
-        return "untrusted";
-    };
-    let loopback = matches!(parsed.scheme(), "http" | "https")
-        && parsed.username().is_empty()
-        && parsed.password().is_none()
-        && parsed.query().is_none()
-        && parsed.fragment().is_none()
-        && parsed
-            .host_str()
-            .and_then(|host| {
-                host.trim_start_matches('[')
-                    .trim_end_matches(']')
-                    .parse::<std::net::IpAddr>()
-                    .ok()
-            })
-            .is_some_and(|ip| ip.is_loopback());
-    if loopback {
-        "loopback"
+        "production"
     } else {
+        // A numeric loopback URL used to count as sufficient. It is not a
+        // deployment identity and can be any permissive local fake, so only an
+        // explicitly compiled, independently identified QA deployment may ever
+        // produce "dedicated_qa". No such deployment is configured today.
         "untrusted"
     }
 }
@@ -6013,41 +6035,119 @@ fn b6_identity_public_fingerprint(identity: &keystore::Identity) -> String {
 }
 
 #[cfg(any(feature = "discord-qa-shell", test))]
-fn b6_preflight_for(
-    ratchet_wire_in_enabled: bool,
-    broker_relay_uses_persisted_ratchet: bool,
-    keyserver_origin: &'static str,
-    identity_public_fingerprint_sha256: Option<String>,
-) -> DiscordQaB6Preflight {
-    let mut blockers = Vec::new();
-    if !ratchet_wire_in_enabled {
-        blockers.push("rn_wire_in_disabled");
+fn b6_preflight_for(inputs: B6PreflightInputs) -> DiscordQaB6Preflight {
+    let mut startup_blockers = Vec::new();
+    if !inputs.ratchet_wire_in_enabled {
+        startup_blockers.push("rn_wire_in_disabled");
     }
-    if !broker_relay_uses_persisted_ratchet {
-        blockers.push("broker_relay_uses_direct_manual_v3");
+    if !inputs.broker_relay_uses_persisted_ratchet {
+        startup_blockers.push("broker_relay_uses_direct_manual_v3");
     }
-    if keyserver_origin != "loopback" {
-        blockers.push(match keyserver_origin {
+    if inputs.keyserver_origin != "dedicated_qa" {
+        startup_blockers.push(match inputs.keyserver_origin {
             "production" => "dedicated_qa_keyserver_not_configured",
             _ => "keyserver_origin_untrusted",
         });
     }
-    if identity_public_fingerprint_sha256.is_none() {
-        blockers.push("identity_unavailable");
+    if inputs.source_commit.is_none() {
+        startup_blockers.push("source_commit_unbound");
     }
+    if inputs.binary_sha256.is_none() {
+        startup_blockers.push("binary_sha256_unbound");
+    }
+    if inputs.server_deployment_identity.is_none() {
+        startup_blockers.push("server_deployment_identity_unbound");
+    }
+
+    let mut blockers = startup_blockers.clone();
+    let distinct_identities = inputs.runtime.distinct_identity_and_keystore_roots
+        && inputs.identity_public_fingerprints_sha256.len() == 2
+        && inputs.identity_public_fingerprints_sha256[0]
+            != inputs.identity_public_fingerprints_sha256[1]
+        && inputs.identity_keystore_root_fingerprints_sha256.len() == 2
+        && inputs.identity_keystore_root_fingerprints_sha256[0]
+            != inputs.identity_keystore_root_fingerprints_sha256[1];
+    if !distinct_identities {
+        blockers.push("distinct_identity_and_keystore_roots_unproven");
+    }
+    if !inputs.runtime.bidirectional_ciphertext_and_plaintext {
+        blockers.push("bidirectional_ciphertext_and_plaintext_unproven");
+    }
+    if !inputs.runtime.offline_enqueue_and_delivery {
+        blockers.push("offline_enqueue_and_delivery_unproven");
+    }
+    if !inputs.runtime.persisted_ratchet_restart {
+        blockers.push("persisted_ratchet_restart_unproven");
+    }
+    if !inputs.runtime.exactly_once_drain {
+        blockers.push("exactly_once_drain_unproven");
+    }
+    if !inputs.runtime.independent_peer_attribution {
+        blockers.push("independent_peer_attribution_unproven");
+    }
+    if !inputs.runtime.negative_cross_peer_isolation {
+        blockers.push("negative_cross_peer_isolation_unproven");
+    }
+
     DiscordQaB6Preflight {
-        schema_version: 1,
+        schema_version: 2,
+        startup_allowed: startup_blockers.is_empty(),
         ready: blockers.is_empty(),
+        startup_blockers,
         blockers,
-        ratchet_wire_in_enabled,
-        broker_relay_transport: if broker_relay_uses_persisted_ratchet {
+        ratchet_wire_in_enabled: inputs.ratchet_wire_in_enabled,
+        broker_relay_transport: if inputs.broker_relay_uses_persisted_ratchet {
             "persisted_rn"
         } else {
             "direct_manual_v3"
         },
-        keyserver_origin,
-        identity_public_fingerprint_sha256,
+        keyserver_origin: inputs.keyserver_origin,
+        source_commit: inputs.source_commit,
+        binary_sha256: inputs.binary_sha256,
+        server_deployment_identity: inputs.server_deployment_identity,
+        identity_public_fingerprints_sha256: inputs.identity_public_fingerprints_sha256,
+        identity_keystore_root_fingerprints_sha256: inputs
+            .identity_keystore_root_fingerprints_sha256,
+        runtime: inputs.runtime,
     }
+}
+
+#[cfg(feature = "discord-qa-shell")]
+fn b6_current_executable_sha256() -> Option<String> {
+    use std::io::Read as _;
+
+    let executable = std::env::current_exe().ok()?;
+    let mut file = std::fs::File::open(executable).ok()?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).ok()?;
+        if read == 0 {
+            break;
+        }
+        hash.update(&buffer[..read]);
+    }
+    Some(sha256_hex(&hash.finalize()))
+}
+
+/// Evaluate the startup gate without loading or creating an identity and
+/// without contacting any server.
+#[cfg(feature = "discord-qa-shell")]
+pub fn discord_qa_b6_startup_preflight() -> DiscordQaB6Preflight {
+    b6_preflight_for(B6PreflightInputs {
+        ratchet_wire_in_enabled: ipc::wire_rn::RN_WIRE_IN_ENABLED,
+        broker_relay_uses_persisted_ratchet: B6_BROKER_RELAY_USES_PERSISTED_RATCHET,
+        // Do not inspect an owner profile merely to decide whether a disposable
+        // QA process may start. No dedicated QA deployment is compiled in, so
+        // the only honest pre-profile value is the shipping production origin.
+        keyserver_origin: b6_keyserver_origin(ipc::commands::DEFAULT_KEYSERVER_BASE_URL),
+        source_commit: option_env!("OSL_SOURCE_COMMIT").map(str::to_owned),
+        binary_sha256: b6_current_executable_sha256(),
+        server_deployment_identity: None,
+        identity_public_fingerprints_sha256: Vec::new(),
+        identity_keystore_root_fingerprints_sha256: Vec::new(),
+        runtime: DiscordQaB6RuntimeFacts::default(),
+    })
 }
 
 /// Inspect only current in-memory/public configuration. No identity is created,
@@ -6063,12 +6163,19 @@ pub fn discord_qa_b6_preflight(core: &HubCoreState) -> DiscordQaB6Preflight {
     let base_url = keystore::osl_config_dir()
         .map(|dir| ipc::commands::resolve_keyserver_base_url(&dir))
         .unwrap_or_default();
-    b6_preflight_for(
-        ipc::wire_rn::RN_WIRE_IN_ENABLED,
-        B6_BROKER_RELAY_USES_PERSISTED_RATCHET,
-        b6_keyserver_origin(&base_url),
-        identity_public_fingerprint_sha256,
-    )
+    b6_preflight_for(B6PreflightInputs {
+        ratchet_wire_in_enabled: ipc::wire_rn::RN_WIRE_IN_ENABLED,
+        broker_relay_uses_persisted_ratchet: B6_BROKER_RELAY_USES_PERSISTED_RATCHET,
+        keyserver_origin: b6_keyserver_origin(&base_url),
+        source_commit: option_env!("OSL_SOURCE_COMMIT").map(str::to_owned),
+        binary_sha256: b6_current_executable_sha256(),
+        server_deployment_identity: None,
+        identity_public_fingerprints_sha256: identity_public_fingerprint_sha256
+            .into_iter()
+            .collect(),
+        identity_keystore_root_fingerprints_sha256: Vec::new(),
+        runtime: DiscordQaB6RuntimeFacts::default(),
+    })
 }
 
 fn local_protected_identity_for_receipt(
@@ -6383,58 +6490,132 @@ mod tests {
 
     #[test]
     fn b6_preflight_names_every_current_runtime_blocker_without_network_or_state_mutation() {
-        let receipt = b6_preflight_for(
-            ipc::wire_rn::RN_WIRE_IN_ENABLED,
-            B6_BROKER_RELAY_USES_PERSISTED_RATCHET,
-            "production",
-            Some("11".repeat(32)),
-        );
+        let receipt = b6_preflight_for(B6PreflightInputs {
+            ratchet_wire_in_enabled: ipc::wire_rn::RN_WIRE_IN_ENABLED,
+            broker_relay_uses_persisted_ratchet: B6_BROKER_RELAY_USES_PERSISTED_RATCHET,
+            keyserver_origin: "production",
+            source_commit: None,
+            binary_sha256: Some("11".repeat(32)),
+            server_deployment_identity: None,
+            identity_public_fingerprints_sha256: Vec::new(),
+            identity_keystore_root_fingerprints_sha256: Vec::new(),
+            runtime: DiscordQaB6RuntimeFacts::default(),
+        });
+        assert!(!receipt.startup_allowed);
         assert!(!receipt.ready);
         assert!(!receipt.ratchet_wire_in_enabled);
         assert_eq!(receipt.broker_relay_transport, "direct_manual_v3");
         assert_eq!(receipt.keyserver_origin, "production");
         assert_eq!(
-            receipt.blockers,
+            receipt.startup_blockers,
             [
                 "rn_wire_in_disabled",
                 "broker_relay_uses_direct_manual_v3",
                 "dedicated_qa_keyserver_not_configured",
+                "source_commit_unbound",
+                "server_deployment_identity_unbound",
             ]
         );
+        assert_eq!(receipt.blockers.len(), 12);
     }
 
     #[test]
     fn b6_preflight_requires_each_independent_prerequisite() {
-        let fingerprint = || Some("22".repeat(32));
-        let ready = b6_preflight_for(true, true, "loopback", fingerprint());
+        let complete = B6PreflightInputs {
+            ratchet_wire_in_enabled: true,
+            broker_relay_uses_persisted_ratchet: true,
+            keyserver_origin: "dedicated_qa",
+            source_commit: Some("a".repeat(40)),
+            binary_sha256: Some("11".repeat(32)),
+            server_deployment_identity: Some("qa-deployment-1".to_owned()),
+            identity_public_fingerprints_sha256: vec!["22".repeat(32), "33".repeat(32)],
+            identity_keystore_root_fingerprints_sha256: vec!["44".repeat(32), "55".repeat(32)],
+            runtime: DiscordQaB6RuntimeFacts {
+                distinct_identity_and_keystore_roots: true,
+                bidirectional_ciphertext_and_plaintext: true,
+                offline_enqueue_and_delivery: true,
+                persisted_ratchet_restart: true,
+                exactly_once_drain: true,
+                independent_peer_attribution: true,
+                negative_cross_peer_isolation: true,
+            },
+        };
+        let ready = b6_preflight_for(complete.clone());
+        assert!(ready.startup_allowed);
         assert!(ready.ready);
         assert!(ready.blockers.is_empty());
         assert_eq!(ready.broker_relay_transport, "persisted_rn");
 
-        let mutations = [
-            b6_preflight_for(false, true, "loopback", fingerprint()),
-            b6_preflight_for(true, false, "loopback", fingerprint()),
-            b6_preflight_for(true, true, "production", fingerprint()),
-            b6_preflight_for(true, true, "untrusted", fingerprint()),
-            b6_preflight_for(true, true, "loopback", None),
+        let mut distinct = complete.clone();
+        distinct.runtime.distinct_identity_and_keystore_roots = false;
+        let mut deployment = complete.clone();
+        deployment.server_deployment_identity = None;
+        let mut bidirectional = complete.clone();
+        bidirectional.runtime.bidirectional_ciphertext_and_plaintext = false;
+        let mut offline = complete.clone();
+        offline.runtime.offline_enqueue_and_delivery = false;
+        let mut restart = complete.clone();
+        restart.runtime.persisted_ratchet_restart = false;
+        let mut exactly_once = complete.clone();
+        exactly_once.runtime.exactly_once_drain = false;
+        let mut attribution = complete.clone();
+        attribution.runtime.independent_peer_attribution = false;
+        let mut isolation = complete;
+        isolation.runtime.negative_cross_peer_isolation = false;
+
+        let starvation_probes = [
+            (
+                b6_preflight_for(distinct),
+                "distinct_identity_and_keystore_roots_unproven",
+            ),
+            (
+                b6_preflight_for(deployment),
+                "server_deployment_identity_unbound",
+            ),
+            (
+                b6_preflight_for(bidirectional),
+                "bidirectional_ciphertext_and_plaintext_unproven",
+            ),
+            (
+                b6_preflight_for(offline),
+                "offline_enqueue_and_delivery_unproven",
+            ),
+            (
+                b6_preflight_for(restart),
+                "persisted_ratchet_restart_unproven",
+            ),
+            (
+                b6_preflight_for(exactly_once),
+                "exactly_once_drain_unproven",
+            ),
+            (
+                b6_preflight_for(attribution),
+                "independent_peer_attribution_unproven",
+            ),
+            (
+                b6_preflight_for(isolation),
+                "negative_cross_peer_isolation_unproven",
+            ),
         ];
-        for receipt in mutations {
-            assert!(
-                !receipt.ready && receipt.blockers.len() == 1,
-                "one missing B6 prerequisite must independently fail closed"
+        for (receipt, expected_blocker) in starvation_probes {
+            assert!(!receipt.ready);
+            assert_eq!(
+                receipt.blockers,
+                [expected_blocker],
+                "each of the eight B6 starvation cases must independently fail closed"
             );
         }
     }
 
     #[test]
-    fn b6_preflight_accepts_only_numeric_loopback_and_fingerprints_public_identity_material() {
+    fn b6_preflight_rejects_unidentified_servers_and_fingerprints_public_identity_material() {
         assert_eq!(
             b6_keyserver_origin(ipc::commands::DEFAULT_KEYSERVER_BASE_URL),
             "production"
         );
-        assert_eq!(b6_keyserver_origin("http://127.0.0.1:8787"), "loopback");
-        assert_eq!(b6_keyserver_origin("https://[::1]:8787"), "loopback");
         for value in [
+            "http://127.0.0.1:8787",
+            "https://[::1]:8787",
             "http://localhost:8787",
             "https://qa.example.test",
             "http://127.0.0.1:8787?redirect=production",

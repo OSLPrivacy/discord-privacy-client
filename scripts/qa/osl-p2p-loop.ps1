@@ -519,6 +519,66 @@ Say ('run started {0}' -f $script:RunStartIso) 'DarkGray'
 # H4 -- THE PRECONDITION GATE. Runs BEFORE any step. Each check is bounded.
 # ===========================================================================
 
+# G-1 executable-owned B6 preflight receipts -----------------------------
+# Read these before consent and before any trigger is written. They are emitted
+# by each exact QA-shell executable before profile resolution, identity
+# creation, registration, plugins, or networking. A stale/legacy shell that
+# exposes b6Preflight only through its later status verb cannot pass this gate.
+function Read-B6StartupReceipt {
+    param([Parameter(Mandatory)][string]$TempRoot, [Parameter(Mandatory)][string]$Side)
+    $path = Join-Path $TempRoot 'osl-discord-qa-b6-preflight.v2.json'
+    try {
+        $receipt = Get-Content -LiteralPath $path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        return [pscustomobject]@{ Ok = $false; Detail = ('{0}: no readable startup receipt at {1}: {2}' -f $Side, $path, $_.Exception.Message); Path = $path; Receipt = $null }
+    }
+    $b6 = $receipt.b6Preflight
+    $runtimeNames = @($b6.runtime.PSObject.Properties.Name)
+    $requiredRuntime = @(
+        'distinctIdentityAndKeystoreRoots',
+        'bidirectionalCiphertextAndPlaintext',
+        'offlineEnqueueAndDelivery',
+        'persistedRatchetRestart',
+        'exactlyOnceDrain',
+        'independentPeerAttribution',
+        'negativeCrossPeerIsolation'
+    )
+    $runtimeComplete = (@($requiredRuntime | Where-Object { $runtimeNames -notcontains $_ }).Count -eq 0)
+    $startupBlockers = @($b6.startupBlockers)
+    $ok = (
+        $receipt.schemaVersion -eq 2 -and
+        $b6.schemaVersion -eq 2 -and
+        $b6.startupAllowed -eq $true -and
+        $startupBlockers.Count -eq 0 -and
+        $b6.sourceCommit -and
+        $b6.binarySha256 -and
+        $b6.serverDeploymentIdentity -and
+        $runtimeComplete -and
+        $null -ne $b6.identityPublicFingerprintsSha256 -and
+        $null -ne $b6.identityKeystoreRootFingerprintsSha256
+    )
+    [pscustomobject]@{
+        Ok = $ok
+        Detail = ('{0}: startupAllowed={1}; schema={2}/{3}; sourceCommit={4}; binarySha256={5}; deployment={6}; startupBlockers=[{7}]; allEightFactsRepresented={8}' -f
+            $Side, $b6.startupAllowed, $receipt.schemaVersion, $b6.schemaVersion,
+            $(if ($b6.sourceCommit) { $b6.sourceCommit } else { '<absent>' }),
+            $(if ($b6.binarySha256) { $b6.binarySha256 } else { '<absent>' }),
+            $(if ($b6.serverDeploymentIdentity) { $b6.serverDeploymentIdentity } else { '<absent>' }),
+            ($startupBlockers -join ','), $runtimeComplete)
+        Path = $path
+        Receipt = $receipt
+    }
+}
+
+$b6A = Read-B6StartupReceipt -TempRoot $TempRootA -Side 'A'
+$b6B = Read-B6StartupReceipt -TempRoot $TempRootB -Side 'B'
+$b6PairOk = ($b6A.Ok -and $b6B.Ok)
+if (-not (Add-Gate 'b6-preflight' 'Both exact QA shells passed pre-side-effect B6 startup preflight' $b6PairOk ($b6A.Detail + ' | ' + $b6B.Detail))) {
+    Write-Blocked 'b6-preflight' `
+        ('The controller read b6Preflight from both retained startup receipts and at least one refused or omitted a required binding. A status-only field is insufficient because status is available only after identity creation and registration. {0} | {1}' -f $b6A.Detail, $b6B.Detail) `
+        'Use two exact desktop,discord-qa-shell binaries built from a bound source commit and configured only for the independently identified dedicated QA deployment. Do not use the owner profile or production.'
+}
+
 # G0 consent -------------------------------------------------------------
 if (-not (Add-Gate 'consent' 'The operator has authorised a real send' $ConfirmDriveLiveConversation.IsPresent `
     $(if ($ConfirmDriveLiveConversation) { 'Authorised.' } else { 'Not authorised.' }))) {
