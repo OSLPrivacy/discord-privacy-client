@@ -48,6 +48,55 @@ Resolved external blocker: keyserver migration 0027 is deployed; B5 remains part
 client-side prekey/wrapped-key production path is not established.
 ```
 
+**2026-07-27 exact newly-landed-set acceptance audit (+0).**
+
+- F1 stays **4/6**. Exact product `7bbf2e9e966634e7d434ec230b75a7f666db0003`
+  (tree `0998d54e2d52de9b42150dd9838a352736ade255`) and manual bundle
+  `4458341f1d4e567351117a9a03e4a1a8aa055492`
+  (tree `ed32ee52939c171bb3659980ec5472bd2e0ce939`) are `test-proven-only`.
+  They deliberately contain no Windows execution. The row literally requires the exact-build live
+  picker → grant IPC → nonempty import → revoke IPC → restart persisted reread receipt, so the
+  runtime boundary remains `blocked`.
+- A7 stays **0/5**. Exact Store anchor
+  `8bfe4385b07ec8e18733663ab12d994dadfe61c0`
+  (tree `9b3e6c8d4ea16a8f44311920e835f41630ae48b8`) adds tested coherent-rollback
+  detection, but it is `implemented-unwired`: the only `open_anchored` callers are its tests and
+  the provider is an in-memory double. The nearest receipt is a production caller using a
+  platform-backed monotonic provider, with restart proof that stale coherent SQLite state refuses
+  and the exact one-generation crash ambiguity retries safely.
+- D6 stays **0/4**. Exact IPC `b25f6e80e06ea85efac1c2e12133c9556ff66f4c`
+  (tree `452dbd4bfab2318f422d31fd9400427053a61694`) is `test-proven-only`: it
+  durably records local destructive-control disposition before inbox deletion and retains failures
+  for retry. The row still needs pending migration 0031 plus a two-authenticated-identity runtime
+  receipt showing forced Store/peer-map persistence failure retains the row, then retry applies the
+  same burn and the peer observes the correct scoped result.
+- B3/B6 gain no point from exact Hub
+  `e6a8e0aeda4da756cb25d6e6cf23ac114dbdbc76`
+  (tree `d9234b7fd973bc95ccd60b1ae19076e4539b2cf5`). It wires the shipping v3
+  sequence admission calls in production source and is `test-proven-only`; B3's literal boundary
+  is ratchet persistence/replay/reorder/skipped-key/crash recovery, while B6 requires the controlled
+  two-identity handshake/send/receive/offline-queue/restart/drain/attribution receipt.
+- F2/F3/F10 stay **3/5, 3/5, 1/3**. The Scrub chain
+  `ddc8782a3fb67339fa3a891f78c291a270d99b95` →
+  `f13dbad4ead9a758970403bb6c472b3b82a71ff5` →
+  `d5b6881302223f2ced89ea9a1d1c2f41510ea197` →
+  `aade1014c9c0998f2e3749e2a1f74404539f06c8`
+  is `test-proven-only`. The final successor closes the independently found Discord invalid-date
+  and shared unbounded-deflate defects, but Meta still accepts impossible calendar dates through
+  `Date.parse` normalization. WhatsApp honestly remains scan-only with no provider-authoritative
+  account-wide inventory or owner binding. No exact product/VM import-review/status receipt exists,
+  so no literal row boundary is crossed.
+- Product claim gate `3e139540568e7078073fa6ea433bee9de1906eed`
+  (tree `633a2a9967631bcfe3ef675e96a06b9661d970ad`) and website claim gate
+  `2ab6b298fe6711c49b4c09010e39fbf29437b689`
+  (tree `02a88e6e9100b8224f5f2fcf5688304d59f71ed0`) remain
+  `test-proven-only` pending independent exact-object acceptance. They are frozen and the checklist
+  writer does not self-score them. A8 and H8 are already full; a string gate cannot earn A6, and H1
+  still requires production promotion plus the keyserver redemption boundary.
+
+No named object crosses a new literal acceptance boundary. The authoritative result remains
+**100 / 303**.
+
 **2026-07-26 recheck — why the number went down.** Three earned points were withdrawn after
 source verification, and three points of scope were added; both are shown rather than netted
 away, per master §16.3.
