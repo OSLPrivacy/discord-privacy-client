@@ -62,6 +62,7 @@
       "remoteClientsRejected": true,
       "aclExactUser": true
     },
+    "filesystemAuthorityAttestation": null,
     "receiptUtf8B64": ""
   },
   "validReceipt": {
@@ -182,7 +183,7 @@
     "runtimeReceiptAccepted": false,
     "fullC4Success": false,
     "pointDelta": 0,
-    "receiptSha256": "b1fa7a3c54337719dbfd3aa789d48fe20dfd4bf6349adb5dfeeb88d23b953882"
+    "receiptFrameSha256": "b1fa7a3c54337719dbfd3aa789d48fe20dfd4bf6349adb5dfeeb88d23b953882"
   },
   "invalidMutations": [
     {
@@ -377,6 +378,102 @@
     {
       "name": "noncanonical_receipt_json",
       "operation": "append_receipt_newline"
+    },
+    {
+      "name": "now_before_issue",
+      "target": "request",
+      "path": "/nowUnixMs",
+      "value": 1799999999999
+    },
+    {
+      "name": "now_exactly_at_expiry",
+      "target": "request",
+      "path": "/nowUnixMs",
+      "value": 1800000060000
+    },
+    {
+      "name": "receipt_emitted_after_now",
+      "target": "receipt",
+      "path": "/emittedAtUnixMs",
+      "value": 1800000002001,
+      "resealReceipt": true
+    },
+    {
+      "name": "monotonic_duration_exceeds_wall_elapsed",
+      "target": "receipt",
+      "path": "/monotonicStagesMs/receiptEmitted",
+      "value": 1501,
+      "resealReceipt": true
+    },
+    {
+      "name": "monotonic_stage_order_reversed",
+      "target": "receipt",
+      "path": "/monotonicStagesMs/sendInjected",
+      "value": 200,
+      "resealReceipt": true
+    },
+    {
+      "name": "zero_receipt_challenge",
+      "target": "receipt",
+      "path": "/challenge",
+      "value": "0000000000000000000000000000000000000000000000000000000000000000",
+      "resealReceipt": true
+    },
+    {
+      "name": "integral_float_rejected",
+      "target": "request",
+      "path": "/nowUnixMs",
+      "value": 1800000002000.0
+    },
+    {
+      "name": "missing_required_request_field",
+      "operation": "delete_field",
+      "target": "request",
+      "path": "/pipeClient"
+    },
+    {
+      "name": "missing_required_receipt_field",
+      "operation": "delete_field",
+      "target": "receipt",
+      "path": "/postSend"
+    },
+    {
+      "name": "synthetic_filesystem_authority_forbidden",
+      "target": "request",
+      "path": "/filesystemAuthorityAttestation",
+      "value": {
+        "schema": "osl.c4.filesystem-authority-attestation",
+        "version": 3,
+        "authoritySource": "native_windows_owner",
+        "challenge": "1111111111111111111111111111111111111111111111111111111111111111",
+        "checkedAtUnixMs": 1800000002000,
+        "ledgerRoot": "C:\\ProgramData\\OSL\\C4\\ledger",
+        "ledgerRecordPath": "C:\\ProgramData\\OSL\\C4\\ledger\\02d449a31fbb267c8f352e9968a79e3e5fc95c1bbeaa502fd6454ebde5a4bedc.json",
+        "rootIdentity": {
+          "volumeSerialNumber": 7,
+          "fileIndex": 99
+        },
+        "daclSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "ownerSidSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      }
+    },
+    {
+      "name": "request_pipe_boolean_integer",
+      "target": "request",
+      "path": "/pipeProtections/firstInstance",
+      "value": 1
+    },
+    {
+      "name": "reserved_windows_path_component",
+      "target": "request",
+      "path": "/expectedEmitter/executablePath",
+      "value": "C:\\CON\\osl-privacy-hub.exe"
+    },
+    {
+      "name": "non_ascii_windows_path",
+      "target": "request",
+      "path": "/expectedEmitter/executablePath",
+      "value": "C:\\Tést\\osl-privacy-hub.exe"
     }
   ]
 }

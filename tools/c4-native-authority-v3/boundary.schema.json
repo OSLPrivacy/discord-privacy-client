@@ -14,38 +14,61 @@
     "ensureAscii": false,
     "allowNaN": false,
     "duplicateKeys": "reject",
-    "insignificantWhitespace": "none"
+    "insignificantWhitespace": "none",
+    "boundaryStringAlphabet": "printable ASCII only; opaque carrier UTF-8 is Base64",
+    "stringNormalization": "none",
+    "escapeRule": "double quote and reverse solidus escaped; no optional escapes",
+    "unicodeSurrogates": "reject",
+    "numbers": "base-10 integers only; no exponent, fraction, leading plus or negative zero"
   },
   "x-c4-digests": {
-    "receiptDigestSha256": {
+    "receiptObjectDigestSha256": {
       "algorithm": "SHA-256",
       "domainSeparatorUtf8": "OSL/C4/native-placement-receipt/v3",
       "domainTerminatorHex": "00",
+      "inputKind": "canonical-json-object-minus-field",
+      "omitField": "receiptDigestSha256",
       "input": "canonical-json(receipt excluding receiptDigestSha256)"
     },
     "targetBindingSha256": {
       "algorithm": "SHA-256",
       "domainSeparatorUtf8": "OSL/C4/native-target-binding/v3",
       "domainTerminatorHex": "00",
+      "inputKind": "canonical-json-object-minus-field",
+      "omitField": "bindingSha256",
       "input": "canonical-json(target excluding bindingSha256)"
     },
     "ledgerRecordDigestSha256": {
       "algorithm": "SHA-256",
-      "domainSeparatorUtf8": "OSL/C4/challenge-ledger/v1",
+      "domainSeparatorUtf8": "OSL/C4/challenge-ledger/v2",
       "domainTerminatorHex": "00",
+      "inputKind": "canonical-json-object-minus-field",
+      "omitField": "recordDigestSha256",
       "input": "canonical-json(ledger record excluding recordDigestSha256)"
     },
     "pipeBindingSha256": {
       "algorithm": "SHA-256",
       "domainSeparatorUtf8": "OSL/C4/pipe-client-binding/v1",
       "domainTerminatorHex": "00",
+      "inputKind": "canonical-json-object",
+      "omitField": null,
       "input": "canonical-json(pipe client process binding)"
     },
     "challengeSha256": {
       "algorithm": "SHA-256",
       "domainSeparatorUtf8": "",
       "domainTerminatorHex": "",
+      "inputKind": "raw-lowercase-hex-decoded-bytes",
+      "omitField": null,
       "input": "32 raw challenge bytes decoded from lowercase hexadecimal"
+    },
+    "receiptFrameSha256": {
+      "algorithm": "SHA-256",
+      "domainSeparatorUtf8": "",
+      "domainTerminatorHex": "",
+      "inputKind": "canonical-receipt-frame-bytes",
+      "omitField": null,
+      "input": "exact canonical UTF-8 receipt frame bytes"
     }
   },
   "x-c4-semanticRules": [
@@ -60,16 +83,48 @@
     "single-enter-never-retry",
     "post-readback-empty-row-plus-one",
     "monotonic-stages-ordered",
+    "monotonic-duration-within-wall-clock-elapsed",
     "challenge-fresh-and-matched",
     "emitter-expected-and-pipe-client-equal",
     "target-expected-equal",
+    "windows-paths-lexically-canonical",
     "runtime-pipe-protections-all-true",
+    "runtime-filesystem-authority-native-verifier",
+    "runtime-filesystem-authority-after-receipt",
+    "runtime-request-root-and-record-path-exact",
     "synthetic-never-runtime-or-full-c4",
     "runtime-receipt-never-full-c4",
     "point-delta-always-zero",
     "ledger-state-field-coherence",
-    "ledger-record-digest"
+    "ledger-record-digest",
+    "ledger-record-filename-matches-challenge-hash",
+    "ledger-root-stable-no-links",
+    "ledger-recovery-before-work",
+    "ledger-clock-monotonic",
+    "ledger-watermark-durable-root-wide"
   ],
+  "x-c4-ledgerTransitions": {
+    "recoveryRequiredBeforeWork": true,
+    "expiryBoundary": "nowUnixMs >= expiresAtUnixMs",
+    "clockScope": "all records under the stable ledger root, across verifier instances",
+    "watermarkEncoding": "exactly eight bytes, unsigned big-endian, maximum 2^63-1",
+    "updatedAtOrdering": "nondecreasing across every committed transition",
+    "allowed": {
+      "issued": [
+        "connected",
+        "expired",
+        "abandoned"
+      ],
+      "connected": [
+        "consumed",
+        "expired",
+        "abandoned"
+      ],
+      "consumed": [],
+      "expired": [],
+      "abandoned": []
+    }
+  },
   "$ref": "#/$defs/verificationRequest",
   "$defs": {
     "sha256": {
@@ -100,7 +155,34 @@
       "type": "string",
       "minLength": 7,
       "maxLength": 1024,
-      "pattern": "^[A-Za-z]:\\\\(?:[^\\\\/:*?\\\"<>|\\u0000]+\\\\)*[^\\\\/:*?\\\"<>|\\u0000]+\\.exe$"
+      "pattern": "^[A-Za-z]:\\\\(?:[^\\\\/:*?\\\"<>|\\u0000]+\\\\)*[^\\\\/:*?\\\"<>|\\u0000]+\\.exe$",
+      "allOf": [
+        {
+          "pattern": "^[ -~]+$"
+        }
+      ]
+    },
+    "windowsDirectoryPath": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z]:\\\\(?:[^\\\\/:*?\\\"<>|\\u0000]+\\\\)*[^\\\\/:*?\\\"<>|\\u0000]+$",
+      "allOf": [
+        {
+          "pattern": "^[ -~]+$"
+        }
+      ]
+    },
+    "windowsLedgerRecordPath": {
+      "type": "string",
+      "minLength": 71,
+      "maxLength": 1100,
+      "pattern": "^[A-Za-z]:\\\\(?:[^\\\\/:*?\\\"<>|\\u0000]+\\\\)*[0-9a-f]{64}\\.json$",
+      "allOf": [
+        {
+          "pattern": "^[ -~]+$"
+        }
+      ]
     },
     "fileIdentity": {
       "type": "object",
@@ -238,6 +320,74 @@
         },
         "expiresAtUnixMs": {
           "$ref": "#/$defs/positiveInteger"
+        }
+      }
+    },
+    "filesystemRootIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "volumeSerialNumber",
+        "fileIndex"
+      ],
+      "properties": {
+        "volumeSerialNumber": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "fileIndex": {
+          "$ref": "#/$defs/positiveInteger"
+        }
+      }
+    },
+    "filesystemAuthorityAttestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Caller-carried attestation data. This object is not authority until a separately trusted native Windows FilesystemAuthorityVerifier proves the root identity and DACL.",
+      "required": [
+        "schema",
+        "version",
+        "authoritySource",
+        "challenge",
+        "checkedAtUnixMs",
+        "ledgerRoot",
+        "ledgerRecordPath",
+        "rootIdentity",
+        "daclSha256",
+        "ownerSidSha256"
+      ],
+      "properties": {
+        "schema": {
+          "const": "osl.c4.filesystem-authority-attestation"
+        },
+        "version": {
+          "const": 3
+        },
+        "authoritySource": {
+          "const": "native_windows_owner"
+        },
+        "challenge": {
+          "$ref": "#/$defs/sha256",
+          "not": {
+            "const": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        },
+        "checkedAtUnixMs": {
+          "$ref": "#/$defs/nonNegativeInteger"
+        },
+        "ledgerRoot": {
+          "$ref": "#/$defs/windowsDirectoryPath"
+        },
+        "ledgerRecordPath": {
+          "$ref": "#/$defs/windowsLedgerRecordPath"
+        },
+        "rootIdentity": {
+          "$ref": "#/$defs/filesystemRootIdentity"
+        },
+        "daclSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "ownerSidSha256": {
+          "$ref": "#/$defs/sha256"
         }
       }
     },
@@ -620,6 +770,7 @@
         "pipeClient",
         "expectedTarget",
         "pipeProtections",
+        "filesystemAuthorityAttestation",
         "receiptUtf8B64"
       ],
       "properties": {
@@ -652,6 +803,16 @@
         },
         "pipeProtections": {
           "$ref": "#/$defs/pipeProtections"
+        },
+        "filesystemAuthorityAttestation": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/filesystemAuthorityAttestation"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "receiptUtf8B64": {
           "type": "string",
@@ -686,6 +847,28 @@
                     "const": true
                   }
                 }
+              },
+              "filesystemAuthorityAttestation": {
+                "$ref": "#/$defs/filesystemAuthorityAttestation"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "source": {
+                "const": "synthetic"
+              }
+            },
+            "required": [
+              "source"
+            ]
+          },
+          "then": {
+            "properties": {
+              "filesystemAuthorityAttestation": {
+                "type": "null"
               }
             }
           }
@@ -704,7 +887,7 @@
         "runtimeReceiptAccepted",
         "fullC4Success",
         "pointDelta",
-        "receiptSha256"
+        "receiptFrameSha256"
       ],
       "properties": {
         "schema": {
@@ -737,7 +920,7 @@
         "pointDelta": {
           "const": 0
         },
-        "receiptSha256": {
+        "receiptFrameSha256": {
           "$ref": "#/$defs/sha256"
         }
       },
@@ -780,13 +963,13 @@
         "issuedAtUnixMs",
         "expiresAtUnixMs",
         "pipeBindingSha256",
-        "receiptDigestSha256",
+        "receiptFrameSha256",
         "updatedAtUnixMs",
         "recordDigestSha256"
       ],
       "properties": {
         "version": {
-          "const": 1
+          "const": 2
         },
         "challengeSha256": {
           "$ref": "#/$defs/sha256"
@@ -816,7 +999,7 @@
             }
           ]
         },
-        "receiptDigestSha256": {
+        "receiptFrameSha256": {
           "oneOf": [
             {
               "$ref": "#/$defs/sha256"
@@ -850,7 +1033,7 @@
               "pipeBindingSha256": {
                 "type": "null"
               },
-              "receiptDigestSha256": {
+              "receiptFrameSha256": {
                 "type": "null"
               }
             }
@@ -872,7 +1055,7 @@
               "pipeBindingSha256": {
                 "$ref": "#/$defs/sha256"
               },
-              "receiptDigestSha256": {
+              "receiptFrameSha256": {
                 "type": "null"
               }
             }
@@ -894,7 +1077,7 @@
               "pipeBindingSha256": {
                 "$ref": "#/$defs/sha256"
               },
-              "receiptDigestSha256": {
+              "receiptFrameSha256": {
                 "$ref": "#/$defs/sha256"
               }
             }
@@ -916,7 +1099,7 @@
           },
           "then": {
             "properties": {
-              "receiptDigestSha256": {
+              "receiptFrameSha256": {
                 "type": "null"
               }
             }

@@ -25,6 +25,14 @@ MAX_RECEIPT_BYTES = 64 * 1024
 MAX_CARRIER_BYTES = 8 * 1024
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 WINDOWS_EXE_RE = re.compile(r"^[A-Za-z]:\\(?:[^\\/:*?\"<>|\x00]+\\)*[^\\/:*?\"<>|\x00]+\.exe$")
+WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
 
 
 class SchemaError(ValueError):
@@ -51,7 +59,7 @@ def _object_without_digest(receipt: dict[str, Any]) -> dict[str, Any]:
     return body
 
 
-def receipt_digest(receipt: dict[str, Any]) -> str:
+def receipt_object_digest(receipt: dict[str, Any]) -> str:
     return sha256_hex(
         b"OSL/C4/native-placement-receipt/v3\x00"
         + canonical_json(_object_without_digest(receipt))
@@ -68,7 +76,7 @@ def target_binding_digest(target: dict[str, Any]) -> str:
 
 def seal_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
     sealed = copy.deepcopy(receipt)
-    sealed["receiptDigestSha256"] = receipt_digest(sealed)
+    sealed["receiptDigestSha256"] = receipt_object_digest(sealed)
     return sealed
 
 
@@ -102,7 +110,11 @@ def parse_receipt(encoded: bytes) -> dict[str, Any]:
         raise SchemaError("receipt is not valid bounded JSON") from error
     if type(value) is not dict:
         raise SchemaError("receipt root must be an object")
-    if canonical_json(value) != encoded:
+    try:
+        canonical = canonical_json(value)
+    except (UnicodeEncodeError, ValueError) as error:
+        raise SchemaError("receipt cannot be canonically encoded") from error
+    if canonical != encoded:
         raise SchemaError("receipt is not canonical JSON")
     validate_receipt(value)
     return value
@@ -157,12 +169,20 @@ def _sha256(value: Any, label: str) -> str:
 
 def _windows_executable(value: Any, label: str) -> str:
     path = _string(value, label, maximum=1024)
+    parts = path[3:].split("\\")
     if (
-        WINDOWS_EXE_RE.fullmatch(path) is None
+        not path.isascii()
+        or not path.isprintable()
+        or WINDOWS_EXE_RE.fullmatch(path) is None
         or "/" in path
-        or "\\.\\" in path
-        or "\\..\\" in path
-        or path.endswith("\\.")
+        or "\\\\" in path
+        or any(
+            not part
+            or part in {".", ".."}
+            or part.endswith((".", " "))
+            or part.split(".", 1)[0].upper() in WINDOWS_RESERVED_NAMES
+            for part in parts
+        )
     ):
         raise SchemaError(f"{label} is not a canonical local executable path")
     return path
@@ -335,7 +355,9 @@ def validate_receipt(receipt: dict[str, Any]) -> None:
     if root["version"] != SCHEMA_VERSION or type(root["version"]) is not int:
         raise SchemaError("version is invalid")
     _exact_string(root["evidenceKind"], EVIDENCE_KIND, "evidenceKind")
-    _sha256(root["challenge"], "challenge")
+    challenge = _sha256(root["challenge"], "challenge")
+    if challenge == "0" * 64:
+        raise SchemaError("zero challenge is forbidden")
     _integer(root["emittedAtUnixMs"], "emittedAtUnixMs", minimum=1)
 
     stages = _exact_keys(
@@ -516,6 +538,6 @@ def validate_receipt(receipt: dict[str, Any]) -> None:
     claimed_digest = _sha256(
         root["receiptDigestSha256"], "receiptDigestSha256"
     )
-    calculated_digest = receipt_digest(root)
+    calculated_digest = receipt_object_digest(root)
     if not hmac.compare_digest(claimed_digest, calculated_digest):
         raise SchemaError("receipt integrity digest does not match")

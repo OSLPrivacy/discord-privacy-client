@@ -4,7 +4,7 @@ import base64
 import copy
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import sys
 import tempfile
 import threading
@@ -34,6 +34,7 @@ from ledger import (
     LedgerError,
     OneShotLedger,
     _seal_record,
+    pipe_binding_digest,
 )
 from schema import (
     EXACT_SHIPPING_FEATURES,
@@ -207,6 +208,82 @@ def context(receipt: dict, *, source: str = "synthetic") -> VerificationContext:
     )
 
 
+def recovered_ledger(directory: str, now: int = NOW) -> OneShotLedger:
+    ledger = OneShotLedger(directory)
+    ledger.recover_incomplete(now)
+    return ledger
+
+
+def runtime_context(receipt: dict) -> VerificationContext:
+    root = r"C:\ProgramData\OSL\C4\ledger"
+    record_name = hashlib.sha256(bytes.fromhex(CHALLENGE)).hexdigest() + ".json"
+    base = context(receipt, source="runtime_named_pipe")
+    return VerificationContext(
+        **{
+            **base.__dict__,
+            "filesystem_authority_attestation": {
+                "schema": "osl.c4.filesystem-authority-attestation",
+                "version": 3,
+                "authoritySource": "native_windows_owner",
+                "challenge": CHALLENGE,
+                "checkedAtUnixMs": NOW + 1_600,
+                "ledgerRoot": root,
+                "ledgerRecordPath": root + "\\" + record_name,
+                "rootIdentity": {
+                    "volumeSerialNumber": 7,
+                    "fileIndex": 99,
+                },
+                "daclSha256": "d" * 64,
+                "ownerSidSha256": "e" * 64,
+            },
+        }
+    )
+
+
+class FakeRuntimeLedger:
+    def __init__(self, receipt: dict):
+        self.root = PureWindowsPath(r"C:\ProgramData\OSL\C4\ledger")
+        self.recovery_complete = True
+        self.record = {
+            "state": "connected",
+            "issuedAtUnixMs": NOW,
+            "expiresAtUnixMs": NOW + 60_000,
+            "updatedAtUnixMs": NOW + 1,
+            "pipeBindingSha256": pipe_binding_digest(receipt["emitter"]),
+        }
+        self.consume_calls = 0
+
+    def record_path(self, challenge: str) -> PureWindowsPath:
+        digest = hashlib.sha256(bytes.fromhex(challenge)).hexdigest()
+        return self.root / f"{digest}.json"
+
+    def read(self, challenge: str) -> dict:
+        return copy.deepcopy(self.record)
+
+    def consume(
+        self,
+        challenge: str,
+        pipe_client_binding: dict,
+        receipt_frame_sha256: str,
+        now_ms: int,
+    ) -> None:
+        if self.record["state"] != "connected":
+            raise LedgerError("challenge is not connected or was already consumed")
+        self.consume_calls += 1
+        self.record["state"] = "consumed"
+        self.record["receiptFrameSha256"] = receipt_frame_sha256
+
+
+class FakeFilesystemAuthorityVerifier:
+    def __init__(self, result: object = True):
+        self.result = result
+        self.calls = 0
+
+    def verify_filesystem_authority(self, **kwargs: object) -> object:
+        self.calls += 1
+        return self.result
+
+
 def reseal(receipt: dict) -> dict:
     receipt["receiptDigestSha256"] = ""
     return seal_receipt(receipt)
@@ -371,12 +448,125 @@ class NativeAuthorityV3Tests(unittest.TestCase):
             ledger = OneShotLedger(directory)
             with self.assertRaises(VerificationError):
                 verify_receipt(encode(receipt), context(receipt), ledger=ledger)
+        with self.assertRaises(VerificationError):
+            verify_receipt(
+                encode(receipt),
+                context(receipt),
+                filesystem_authority_verifier=FakeFilesystemAuthorityVerifier(),
+            )
+
+    def test_runtime_acceptance_binds_exact_paths_and_refuses_replay_first(self) -> None:
+        receipt = make_receipt()
+        ledger = FakeRuntimeLedger(receipt)
+        authority = FakeFilesystemAuthorityVerifier()
+        ctx = runtime_context(receipt)
+
+        verdict = verify_receipt(
+            encode(receipt),
+            ctx,
+            ledger=ledger,
+            filesystem_authority_verifier=authority,
+        )
+        self.assertTrue(verdict.runtime_receipt_accepted)
+        self.assertFalse(verdict.full_c4_success)
+        self.assertEqual(verdict.point_delta, 0)
+        self.assertEqual(verdict.receipt_frame_sha256, sha256_hex(encode(receipt)))
+        self.assertEqual(authority.calls, 1)
+        self.assertEqual(ledger.consume_calls, 1)
+
+        with self.assertRaises(VerificationError):
+            verify_receipt(
+                encode(receipt),
+                ctx,
+                ledger=ledger,
+                filesystem_authority_verifier=authority,
+            )
+        self.assertEqual(authority.calls, 1)
+        self.assertEqual(ledger.consume_calls, 1)
+
+    def test_runtime_authority_and_request_path_refusals_do_not_consume(self) -> None:
+        receipt = make_receipt()
+        base = runtime_context(receipt)
+        mutations = {
+            "wrong-root": {
+                "ledgerRoot": r"C:\ProgramData\OSL\C4\other",
+            },
+            "wrong-record": {
+                "ledgerRecordPath": (
+                    "C:\\ProgramData\\OSL\\C4\\ledger\\"
+                    + "f" * 64
+                    + ".json"
+                ),
+            },
+            "authority-before-receipt": {
+                "checkedAtUnixMs": NOW + 1_499,
+            },
+        }
+        for name, changes in mutations.items():
+            with self.subTest(refusal=name):
+                ledger = FakeRuntimeLedger(receipt)
+                authority = FakeFilesystemAuthorityVerifier()
+                attestation = copy.deepcopy(
+                    base.filesystem_authority_attestation
+                )
+                attestation.update(changes)
+                ctx = VerificationContext(
+                    **{
+                        **base.__dict__,
+                        "filesystem_authority_attestation": attestation,
+                    }
+                )
+                with self.assertRaises(VerificationError):
+                    verify_receipt(
+                        encode(receipt),
+                        ctx,
+                        ledger=ledger,
+                        filesystem_authority_verifier=authority,
+                    )
+                self.assertEqual(ledger.consume_calls, 0)
+
+        for result in (False, 1, None):
+            with self.subTest(native_result=result):
+                ledger = FakeRuntimeLedger(receipt)
+                with self.assertRaises(VerificationError):
+                    verify_receipt(
+                        encode(receipt),
+                        base,
+                        ledger=ledger,
+                        filesystem_authority_verifier=(
+                            FakeFilesystemAuthorityVerifier(result)
+                        ),
+                    )
+                self.assertEqual(ledger.consume_calls, 0)
+
+    def test_runtime_request_window_and_pipe_binding_refuse_before_native_authority(
+        self,
+    ) -> None:
+        receipt = make_receipt()
+        ctx = runtime_context(receipt)
+        for mutation in ("window", "pipe"):
+            with self.subTest(mutation=mutation):
+                ledger = FakeRuntimeLedger(receipt)
+                if mutation == "window":
+                    ledger.record["expiresAtUnixMs"] += 1
+                else:
+                    ledger.record["pipeBindingSha256"] = "f" * 64
+                authority = FakeFilesystemAuthorityVerifier()
+                with self.assertRaises(VerificationError):
+                    verify_receipt(
+                        encode(receipt),
+                        ctx,
+                        ledger=ledger,
+                        filesystem_authority_verifier=authority,
+                    )
+                self.assertEqual(authority.calls, 0)
+                self.assertEqual(ledger.consume_calls, 0)
 
 
 class CrossLanguageConformanceTests(unittest.TestCase):
     def test_machine_readable_fixture_accepts_only_parser_crypto_positive(self) -> None:
         result = run_fixture()
-        self.assertEqual(result["invalidMutationsRejected"], 29)
+        self.assertEqual(result["invalidMutationsRejected"], 42)
         self.assertTrue(result["syntheticParserCryptoValid"])
         self.assertFalse(result["runtimeReceiptAccepted"])
         self.assertFalse(result["fullC4Success"])
@@ -396,6 +586,14 @@ class CrossLanguageConformanceTests(unittest.TestCase):
                 "boolean_as_integer_coercion",
                 "duplicate_receipt_json_key",
                 "noncanonical_receipt_json",
+                "integral_float_rejected",
+                "missing_required_request_field",
+                "missing_required_receipt_field",
+                "monotonic_stage_order_reversed",
+                "monotonic_duration_exceeds_wall_elapsed",
+                "synthetic_filesystem_authority_forbidden",
+                "reserved_windows_path_component",
+                "non_ascii_windows_path",
             }.issubset(names)
         )
         valid = materialize_case(fixture, None, boundary=boundary)
@@ -410,6 +608,7 @@ class CrossLanguageConformanceTests(unittest.TestCase):
         boundary = load_boundary()
         fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
         base = materialize_case(fixture, None, boundary=boundary)
+        validate_request(base, boundary=boundary)
 
         def object_paths(
             value: object,
@@ -479,11 +678,11 @@ class CrossLanguageConformanceTests(unittest.TestCase):
         )
         self.assertEqual(
             hashlib.sha256(BOUNDARY_PATH.read_bytes()).hexdigest(),
-            "2108b6da08ddb303af05a7951930f1a442c9b42548f5bc46eb20143ead9d8302",
+            "6fdacb12edba0d84bce02c9a62635820877efb93256ce594d69e27ede2c8318a",
         )
         self.assertEqual(
             hashlib.sha256(FIXTURE_PATH.read_bytes()).hexdigest(),
-            "811af3378798f91cdd08adb6889fe764272821c4da8e319bfbc5de70fcc6aa5c",
+            "3fa64d9bc3402040594109c991cb3ae4331349e63470ddce59a027bf6b1ba3e8",
         )
 
     def test_result_authority_booleans_and_unknown_fields_are_closed(self) -> None:
@@ -513,13 +712,111 @@ class CrossLanguageConformanceTests(unittest.TestCase):
         with self.assertRaises(ConformanceError):
             validate_document("verificationResult", invalid, boundary=boundary)
 
+    def test_runtime_attestation_schema_and_request_path_mutations_fail_closed(
+        self,
+    ) -> None:
+        boundary = load_boundary()
+        fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        request = materialize_case(fixture, None, boundary=boundary)
+        root = r"C:\ProgramData\OSL\C4\ledger"
+        record_name = hashlib.sha256(bytes.fromhex(CHALLENGE)).hexdigest() + ".json"
+        request["source"] = "runtime_named_pipe"
+        request["filesystemAuthorityAttestation"] = {
+            "schema": "osl.c4.filesystem-authority-attestation",
+            "version": 3,
+            "authoritySource": "native_windows_owner",
+            "challenge": CHALLENGE,
+            "checkedAtUnixMs": NOW + 1_600,
+            "ledgerRoot": root,
+            "ledgerRecordPath": root + "\\" + record_name,
+            "rootIdentity": {
+                "volumeSerialNumber": 7,
+                "fileIndex": 99,
+            },
+            "daclSha256": "d" * 64,
+            "ownerSidSha256": "e" * 64,
+        }
+        validate_request(request, boundary=boundary)
+
+        def mutate_unknown(value: dict) -> None:
+            value["filesystemAuthorityAttestation"]["callerAuthority"] = True
+
+        def mutate_challenge(value: dict) -> None:
+            value["filesystemAuthorityAttestation"]["challenge"] = OTHER_CHALLENGE
+
+        def mutate_time(value: dict) -> None:
+            value["filesystemAuthorityAttestation"]["checkedAtUnixMs"] = NOW + 1_499
+
+        def mutate_path(value: dict) -> None:
+            value["filesystemAuthorityAttestation"]["ledgerRecordPath"] = (
+                root + "\\" + "f" * 64 + ".json"
+            )
+
+        def mutate_pipe(value: dict) -> None:
+            value["pipeProtections"]["aclExactUser"] = False
+
+        def mutate_reserved_root(value: dict) -> None:
+            reserved_root = r"C:\CON\ledger"
+            value["filesystemAuthorityAttestation"]["ledgerRoot"] = reserved_root
+            value["filesystemAuthorityAttestation"]["ledgerRecordPath"] = (
+                reserved_root + "\\" + record_name
+            )
+
+        def mutate_root_identity(value: dict) -> None:
+            value["filesystemAuthorityAttestation"]["rootIdentity"][
+                "callerIdentity"
+            ] = 1
+
+        for name, mutation in {
+            "unknown-field": mutate_unknown,
+            "wrong-challenge": mutate_challenge,
+            "pre-receipt-time": mutate_time,
+            "wrong-request-path": mutate_path,
+            "missing-pipe-protection": mutate_pipe,
+            "reserved-root": mutate_reserved_root,
+            "unknown-root-identity-field": mutate_root_identity,
+        }.items():
+            with self.subTest(mutation=name):
+                invalid = copy.deepcopy(request)
+                mutation(invalid)
+                with self.assertRaises(ConformanceError):
+                    validate_request(invalid, boundary=boundary)
+
+    def test_surrogate_and_fractional_schema_values_refuse_before_validation(
+        self,
+    ) -> None:
+        boundary = load_boundary()
+        fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        request = materialize_case(fixture, None, boundary=boundary)
+        for name, field, value in (
+            ("surrogate", "executablePath", "C:\\Bad\ud800\\hub.exe"),
+            ("fraction", "pid", 4242.5),
+        ):
+            with self.subTest(mutation=name):
+                invalid = copy.deepcopy(request)
+                invalid["expectedEmitter"][field] = value
+                with self.assertRaises(ConformanceError):
+                    validate_request(invalid, boundary=boundary)
+
 
 class OneShotLedgerTests(unittest.TestCase):
+    def test_recovery_is_mandatory_before_any_work(self) -> None:
+        receipt = make_receipt()
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OneShotLedger(directory)
+            with self.assertRaises(LedgerError):
+                ledger.issue(CHALLENGE, NOW)
+            with self.assertRaises(LedgerError):
+                ledger.read(CHALLENGE)
+            self.assertEqual(ledger.recover_incomplete(NOW), 0)
+            ledger.issue(CHALLENGE, NOW)
+            ledger.connect(CHALLENGE, receipt["emitter"], NOW + 1)
+
     def test_issue_connect_consume_is_atomic_and_replay_is_rejected(self) -> None:
         receipt = make_receipt()
         pipe = receipt["emitter"]
         with tempfile.TemporaryDirectory() as directory:
-            ledger = OneShotLedger(directory)
+            ledger = recovered_ledger(directory)
             ledger.issue(CHALLENGE, NOW)
             ledger.connect(CHALLENGE, pipe, NOW + 1)
             ledger.consume(CHALLENGE, pipe, "e" * 64, NOW + 2)
@@ -528,13 +825,17 @@ class OneShotLedgerTests(unittest.TestCase):
                 ledger.consume(CHALLENGE, pipe, "e" * 64, NOW + 3)
             with self.assertRaises(LedgerError):
                 ledger.issue(CHALLENGE, NOW + 4)
+            restarted = OneShotLedger(directory)
+            self.assertEqual(restarted.recover_incomplete(NOW + 4), 0)
+            with self.assertRaises(LedgerError):
+                restarted.consume(CHALLENGE, pipe, "e" * 64, NOW + 5)
 
     def test_only_one_concurrent_connection_can_claim_a_challenge(self) -> None:
         receipt = make_receipt()
         pipe = receipt["emitter"]
         outcomes: list[str] = []
         with tempfile.TemporaryDirectory() as directory:
-            ledger = OneShotLedger(directory)
+            ledger = recovered_ledger(directory)
             ledger.issue(CHALLENGE, NOW)
 
             def connect() -> None:
@@ -555,7 +856,7 @@ class OneShotLedgerTests(unittest.TestCase):
     def test_expired_challenge_is_terminal(self) -> None:
         receipt = make_receipt()
         with tempfile.TemporaryDirectory() as directory:
-            ledger = OneShotLedger(directory)
+            ledger = recovered_ledger(directory)
             ledger.issue(CHALLENGE, NOW, ttl_ms=10)
             with self.assertRaises(LedgerError):
                 ledger.connect(CHALLENGE, receipt["emitter"], NOW + 11)
@@ -564,7 +865,7 @@ class OneShotLedgerTests(unittest.TestCase):
     def test_crash_recovery_abandons_nonterminal_challenges(self) -> None:
         receipt = make_receipt()
         with tempfile.TemporaryDirectory() as directory:
-            ledger = OneShotLedger(directory)
+            ledger = recovered_ledger(directory)
             ledger.issue(CHALLENGE, NOW)
             ledger.connect(CHALLENGE, receipt["emitter"], NOW + 1)
             restarted = OneShotLedger(directory)
@@ -577,7 +878,7 @@ class OneShotLedgerTests(unittest.TestCase):
         for mutation in ("unknown-field", "unknown-state", "bad-integrity"):
             with self.subTest(mutation=mutation):
                 with tempfile.TemporaryDirectory() as directory:
-                    ledger = OneShotLedger(directory)
+                    ledger = recovered_ledger(directory)
                     ledger.issue(CHALLENGE, NOW)
                     path = next(Path(directory).glob("*.json"))
                     record = json.loads(path.read_text(encoding="utf-8"))
@@ -595,7 +896,7 @@ class OneShotLedgerTests(unittest.TestCase):
         receipt = make_receipt()
         pipe = receipt["emitter"]
         with tempfile.TemporaryDirectory() as directory:
-            ledger = OneShotLedger(directory)
+            ledger = recovered_ledger(directory)
             ledger.issue(CHALLENGE, NOW)
             validate_ledger_record(ledger.read(CHALLENGE))
             ledger.connect(CHALLENGE, pipe, NOW + 1)
@@ -604,22 +905,23 @@ class OneShotLedgerTests(unittest.TestCase):
             validate_ledger_record(ledger.read(CHALLENGE))
 
         with tempfile.TemporaryDirectory() as directory:
-            ledger = OneShotLedger(directory)
+            ledger = recovered_ledger(directory)
             ledger.issue(CHALLENGE, NOW, ttl_ms=10)
             with self.assertRaises(LedgerError):
                 ledger.connect(CHALLENGE, pipe, NOW + 11)
             validate_ledger_record(ledger.read(CHALLENGE))
 
         with tempfile.TemporaryDirectory() as directory:
-            ledger = OneShotLedger(directory)
+            ledger = recovered_ledger(directory)
             ledger.issue(CHALLENGE, NOW)
-            ledger.recover_incomplete(NOW + 1)
-            validate_ledger_record(ledger.read(CHALLENGE))
+            restarted = OneShotLedger(directory)
+            self.assertEqual(restarted.recover_incomplete(NOW + 1), 1)
+            validate_ledger_record(restarted.read(CHALLENGE))
 
     def test_ledger_state_fields_and_binding_types_are_strict(self) -> None:
         receipt = make_receipt()
         with tempfile.TemporaryDirectory() as directory:
-            ledger = OneShotLedger(directory)
+            ledger = recovered_ledger(directory)
             ledger.issue(CHALLENGE, NOW)
             bad_binding = copy.deepcopy(receipt["emitter"])
             bad_binding["pid"] = str(bad_binding["pid"])
@@ -627,7 +929,7 @@ class OneShotLedgerTests(unittest.TestCase):
                 ledger.connect(CHALLENGE, bad_binding, NOW + 1)
 
         with tempfile.TemporaryDirectory() as directory:
-            ledger = OneShotLedger(directory)
+            ledger = recovered_ledger(directory)
             ledger.issue(CHALLENGE, NOW)
             record = ledger.read(CHALLENGE)
             record["state"] = "connected"
@@ -640,6 +942,110 @@ class OneShotLedgerTests(unittest.TestCase):
                 ledger.read(CHALLENGE)
             with self.assertRaises(ConformanceError):
                 validate_ledger_record(record)
+
+    def test_ledger_wide_watermark_survives_instances_and_empty_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            first = OneShotLedger(directory)
+            second = OneShotLedger(directory)
+            self.assertEqual(first.recover_incomplete(NOW + 200), 0)
+            with self.assertRaises(LedgerError):
+                second.recover_incomplete(NOW + 150)
+            self.assertEqual(second.recover_incomplete(NOW + 200), 0)
+            watermark = Path(directory) / ".ledger.watermark"
+            self.assertEqual(
+                int.from_bytes(watermark.read_bytes(), "big"),
+                NOW + 200,
+            )
+
+    def test_malformed_or_linked_watermark_refuses_recovery(self) -> None:
+        for mutation in ("truncated", "out-of-range", "hardlink"):
+            with self.subTest(mutation=mutation):
+                with tempfile.TemporaryDirectory() as directory:
+                    ledger = recovered_ledger(directory)
+                    watermark = Path(directory) / ".ledger.watermark"
+                    if mutation == "truncated":
+                        watermark.write_bytes(b"\x00" * 7)
+                    elif mutation == "out-of-range":
+                        watermark.write_bytes((1 << 63).to_bytes(8, "big"))
+                    else:
+                        alias = Path(directory) / "watermark-alias"
+                        alias.hardlink_to(watermark)
+                    restarted = OneShotLedger(directory)
+                    with self.assertRaises(LedgerError):
+                        restarted.recover_incomplete(NOW + 1)
+
+    def test_backdated_transitions_and_exact_expiry_refuse(self) -> None:
+        receipt = make_receipt()
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = recovered_ledger(directory)
+            ledger.issue(CHALLENGE, NOW, ttl_ms=10)
+            with self.assertRaises(LedgerError):
+                ledger.connect(CHALLENGE, receipt["emitter"], NOW - 1)
+            ledger.connect(CHALLENGE, receipt["emitter"], NOW + 1)
+            with self.assertRaises(LedgerError):
+                ledger.consume(CHALLENGE, receipt["emitter"], "e" * 64, NOW)
+
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = recovered_ledger(directory)
+            ledger.issue(CHALLENGE, NOW, ttl_ms=10)
+            with self.assertRaises(LedgerError):
+                ledger.connect(CHALLENGE, receipt["emitter"], NOW + 10)
+            self.assertEqual(ledger.read(CHALLENGE)["state"], "expired")
+
+    def test_nonexpired_records_at_exact_expiry_refuse_even_if_resealed(self) -> None:
+        receipt = make_receipt()
+        for state in ("connected", "consumed"):
+            with self.subTest(state=state):
+                with tempfile.TemporaryDirectory() as directory:
+                    ledger = recovered_ledger(directory)
+                    ledger.issue(CHALLENGE, NOW, ttl_ms=10)
+                    ledger.connect(CHALLENGE, receipt["emitter"], NOW + 1)
+                    if state == "consumed":
+                        ledger.consume(
+                            CHALLENGE,
+                            receipt["emitter"],
+                            "e" * 64,
+                            NOW + 2,
+                        )
+                    path = next(Path(directory).glob("*.json"))
+                    record = ledger.read(CHALLENGE)
+                    record["updatedAtUnixMs"] = record["expiresAtUnixMs"]
+                    record = _seal_record(record)
+                    path.write_bytes(canonical_json(record) + b"\n")
+                    with self.assertRaises(LedgerError):
+                        ledger.read(CHALLENGE)
+                    with self.assertRaises(ConformanceError):
+                        validate_ledger_record(record)
+
+    def test_record_filename_is_bound_to_declared_challenge_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = recovered_ledger(directory)
+            ledger.issue(CHALLENGE, NOW)
+            path = next(Path(directory).glob("*.json"))
+            path.rename(Path(directory) / ("f" * 64 + ".json"))
+            restarted = OneShotLedger(directory)
+            with self.assertRaises(LedgerError):
+                restarted.recover_incomplete(NOW + 1)
+
+    def test_root_links_and_record_hardlinks_refuse(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            real_root = Path(directory) / "real"
+            real_root.mkdir(mode=0o700)
+            linked_root = Path(directory) / "linked"
+            linked_root.symlink_to(real_root, target_is_directory=True)
+            with self.assertRaises(LedgerError):
+                OneShotLedger(linked_root)
+
+        if not hasattr(Path, "hardlink_to"):
+            self.skipTest("hard links are unavailable")
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = recovered_ledger(directory)
+            ledger.issue(CHALLENGE, NOW)
+            path = next(Path(directory).glob("*.json"))
+            alias = Path(directory) / ("f" * 64 + ".json")
+            alias.hardlink_to(path)
+            with self.assertRaises(LedgerError):
+                ledger.read(CHALLENGE)
 
 
 if __name__ == "__main__":

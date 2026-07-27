@@ -23,7 +23,7 @@ from typing import Any
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError as JsonSchemaDefinitionError
 
-from schema import MAX_RECEIPT_BYTES, canonical_json
+from schema import MAX_RECEIPT_BYTES, WINDOWS_RESERVED_NAMES, canonical_json
 from verify import VerificationContext, VerificationError, verify_receipt
 
 
@@ -43,16 +43,34 @@ SEMANTIC_RULES = (
     "single-enter-never-retry",
     "post-readback-empty-row-plus-one",
     "monotonic-stages-ordered",
+    "monotonic-duration-within-wall-clock-elapsed",
     "challenge-fresh-and-matched",
     "emitter-expected-and-pipe-client-equal",
     "target-expected-equal",
+    "windows-paths-lexically-canonical",
     "runtime-pipe-protections-all-true",
+    "runtime-filesystem-authority-native-verifier",
+    "runtime-filesystem-authority-after-receipt",
+    "runtime-request-root-and-record-path-exact",
     "synthetic-never-runtime-or-full-c4",
     "runtime-receipt-never-full-c4",
     "point-delta-always-zero",
     "ledger-state-field-coherence",
     "ledger-record-digest",
+    "ledger-record-filename-matches-challenge-hash",
+    "ledger-root-stable-no-links",
+    "ledger-recovery-before-work",
+    "ledger-clock-monotonic",
+    "ledger-watermark-durable-root-wide",
 )
+DIGEST_NAMES = {
+    "receiptObjectDigestSha256",
+    "targetBindingSha256",
+    "ledgerRecordDigestSha256",
+    "pipeBindingSha256",
+    "challengeSha256",
+    "receiptFrameSha256",
+}
 
 
 class ConformanceError(ValueError):
@@ -87,12 +105,15 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 def load_boundary() -> dict[str, Any]:
     boundary = _load_json(BOUNDARY_PATH)
+    _reject_ambiguous_scalars(boundary)
     try:
         Draft202012Validator.check_schema(boundary)
     except JsonSchemaDefinitionError as error:
         raise ConformanceError("boundary JSON Schema is invalid") from error
     if tuple(boundary.get("x-c4-semanticRules", ())) != SEMANTIC_RULES:
         raise ConformanceError("declared semantic rule set drifted")
+    if set(boundary.get("x-c4-digests", {})) != DIGEST_NAMES:
+        raise ConformanceError("declared digest names drifted")
     return boundary
 
 
@@ -109,6 +130,7 @@ def _subschema(boundary: dict[str, Any], name: str) -> dict[str, Any]:
 def _schema_validate(
     boundary: dict[str, Any], name: str, instance: Any
 ) -> None:
+    _reject_ambiguous_scalars(instance)
     errors = sorted(
         Draft202012Validator(_subschema(boundary, name)).iter_errors(instance),
         key=lambda error: tuple(str(item) for item in error.absolute_path),
@@ -117,6 +139,20 @@ def _schema_validate(
         first = errors[0]
         path = "/".join(str(item) for item in first.absolute_path) or "<root>"
         raise ConformanceError(f"{name} schema rejected {path}: {first.message}")
+
+
+def _reject_ambiguous_scalars(value: Any) -> None:
+    if type(value) is float:
+        raise ConformanceError("floating-point JSON numbers are forbidden")
+    if type(value) is str and any(0xD800 <= ord(character) <= 0xDFFF for character in value):
+        raise ConformanceError("Unicode surrogate code points are forbidden")
+    if type(value) is dict:
+        for key, item in value.items():
+            _reject_ambiguous_scalars(key)
+            _reject_ambiguous_scalars(item)
+    elif type(value) is list:
+        for item in value:
+            _reject_ambiguous_scalars(item)
 
 
 def validate_document(
@@ -138,15 +174,21 @@ def _digest(
     boundary: dict[str, Any],
     digest_name: str,
     value: dict[str, Any],
-    omitted_field: str,
 ) -> str:
     definition = boundary["x-c4-digests"][digest_name]
-    if definition["algorithm"] != "SHA-256":
+    if (
+        definition["algorithm"] != "SHA-256"
+        or definition["inputKind"] != "canonical-json-object-minus-field"
+        or type(definition["omitField"]) is not str
+    ):
         raise ConformanceError(f"{digest_name} algorithm drifted")
     domain = definition["domainSeparatorUtf8"].encode("utf-8")
     terminator = bytes.fromhex(definition["domainTerminatorHex"])
     body = copy.deepcopy(value)
-    body.pop(omitted_field, None)
+    omitted = definition["omitField"]
+    if omitted not in body:
+        raise ConformanceError(f"{digest_name} omitted field is absent")
+    body.pop(omitted)
     return _sha256(domain + terminator + canonical_json(body))
 
 
@@ -184,7 +226,11 @@ def _parse_receipt_frame(
         raise ConformanceError("receipt frame is not strict JSON") from error
     if type(receipt) is not dict:
         raise ConformanceError("receipt frame root must be an object")
-    if raw != canonical_json(receipt):
+    try:
+        canonical = canonical_json(receipt)
+    except (UnicodeEncodeError, ValueError) as error:
+        raise ConformanceError("receipt frame cannot be canonically encoded") from error
+    if raw != canonical:
         raise ConformanceError("receipt frame is not canonical JSON")
     _schema_validate(boundary, "nativeReceipt", receipt)
     return raw, receipt
@@ -193,10 +239,41 @@ def _parse_receipt_frame(
 def _path_normalized_process(value: dict[str, Any]) -> dict[str, Any]:
     normalized = copy.deepcopy(value)
     path = normalized["executablePath"]
-    if "\\.\\" in path or "\\..\\" in path or path.endswith("\\."):
+    parts = path[3:].split("\\")
+    if (
+        not path.isascii()
+        or not path.isprintable()
+        or "/" in path
+        or "\\\\" in path
+        or any(
+            not part
+            or part in {".", ".."}
+            or part.endswith((".", " "))
+            or part.split(".", 1)[0].upper() in WINDOWS_RESERVED_NAMES
+            for part in parts
+        )
+    ):
         raise ConformanceError("executable path is not canonical")
     normalized["executablePath"] = path.casefold()
     return normalized
+
+
+def _require_canonical_windows_path(value: str, label: str) -> None:
+    parts = value[3:].split("\\")
+    if (
+        not value.isascii()
+        or not value.isprintable()
+        or "/" in value
+        or "\\\\" in value
+        or any(
+            not part
+            or part in {".", ".."}
+            or part.endswith((".", " "))
+            or part.split(".", 1)[0].upper() in WINDOWS_RESERVED_NAMES
+            for part in parts
+        )
+    ):
+        raise ConformanceError(f"{label} is not lexically canonical")
 
 
 def _process_equal(left: dict[str, Any], right: dict[str, Any]) -> bool:
@@ -227,13 +304,15 @@ def _require_equal(left: Any, right: Any, label: str) -> None:
 def _validate_receipt_semantics(
     boundary: dict[str, Any], receipt: dict[str, Any]
 ) -> None:
-    receipt_digest = _digest(
+    receipt_object_digest = _digest(
         boundary,
-        "receiptDigestSha256",
+        "receiptObjectDigestSha256",
         receipt,
-        "receiptDigestSha256",
     )
-    if not hmac.compare_digest(receipt["receiptDigestSha256"], receipt_digest):
+    if not hmac.compare_digest(
+        receipt["receiptDigestSha256"],
+        receipt_object_digest,
+    ):
         raise ConformanceError("receipt digest mismatch")
 
     target = receipt["target"]
@@ -241,7 +320,6 @@ def _validate_receipt_semantics(
         boundary,
         "targetBindingSha256",
         target,
-        "bindingSha256",
     )
     if not hmac.compare_digest(target["bindingSha256"], target_digest):
         raise ConformanceError("target binding digest mismatch")
@@ -371,13 +449,18 @@ def validate_request(
     now = request["nowUnixMs"]
     if not issued < expires <= issued + 60_000:
         raise ConformanceError("challenge lifetime is invalid")
-    if now > expires:
+    if now < issued:
+        raise ConformanceError("challenge was issued in the future")
+    if now >= expires:
         raise ConformanceError("challenge is stale")
     _require_equal(receipt["challenge"], challenge["challenge"], "challenge")
-    if not issued <= receipt["emittedAtUnixMs"] <= expires:
+    if not issued <= receipt["emittedAtUnixMs"] <= now:
         raise ConformanceError("receipt emission is outside challenge lifetime")
-    if receipt["monotonicStagesMs"]["receiptEmitted"] > expires - issued:
-        raise ConformanceError("receipt monotonic duration exceeds challenge lifetime")
+    if (
+        receipt["monotonicStagesMs"]["receiptEmitted"]
+        > receipt["emittedAtUnixMs"] - issued
+    ):
+        raise ConformanceError("receipt monotonic duration exceeds elapsed wall time")
 
     if not _process_equal(receipt["emitter"], request["expectedEmitter"]):
         raise ConformanceError("receipt emitter differs from expected emitter")
@@ -391,6 +474,35 @@ def validate_request(
         request["pipeProtections"].values()
     ):
         raise ConformanceError("runtime pipe protections are incomplete")
+    attestation = request["filesystemAuthorityAttestation"]
+    if request["source"] == "synthetic":
+        if attestation is not None:
+            raise ConformanceError("synthetic request carries filesystem authority")
+    else:
+        _require_canonical_windows_path(
+            attestation["ledgerRoot"],
+            "filesystem attestation root",
+        )
+        _require_canonical_windows_path(
+            attestation["ledgerRecordPath"],
+            "filesystem attestation record path",
+        )
+        _require_equal(
+            attestation["challenge"],
+            challenge["challenge"],
+            "filesystem attestation challenge",
+        )
+        if not receipt["emittedAtUnixMs"] <= attestation["checkedAtUnixMs"] <= now:
+            raise ConformanceError("filesystem attestation time is invalid")
+        challenge_hash = _sha256(bytes.fromhex(challenge["challenge"]))
+        expected_record_path = (
+            attestation["ledgerRoot"] + "\\" + challenge_hash + ".json"
+        )
+        _require_equal(
+            attestation["ledgerRecordPath"],
+            expected_record_path,
+            "filesystem attestation request path",
+        )
     return raw, receipt
 
 
@@ -409,6 +521,9 @@ def request_context(request: dict[str, Any]) -> VerificationContext:
         pipe_first_instance=protections["firstInstance"],
         pipe_remote_clients_rejected=protections["remoteClientsRejected"],
         pipe_acl_exact_user=protections["aclExactUser"],
+        filesystem_authority_attestation=copy.deepcopy(
+            request["filesystemAuthorityAttestation"]
+        ),
     )
 
 
@@ -438,7 +553,7 @@ def verify_synthetic_request(
         "runtimeReceiptAccepted": verdict.runtime_receipt_accepted,
         "fullC4Success": verdict.full_c4_success,
         "pointDelta": verdict.point_delta,
-        "receiptSha256": verdict.receipt_sha256,
+        "receiptFrameSha256": verdict.receipt_frame_sha256,
     }
     _schema_validate(active_boundary, "verificationResult", result)
     if (
@@ -466,15 +581,17 @@ def validate_ledger_record(
     ):
         raise ConformanceError("ledger timestamps are incoherent")
     if record["state"] == "expired":
-        if record["updatedAtUnixMs"] <= record["expiresAtUnixMs"]:
+        if record["updatedAtUnixMs"] < record["expiresAtUnixMs"]:
             raise ConformanceError("expired ledger timestamp is incoherent")
-    elif record["updatedAtUnixMs"] > record["expiresAtUnixMs"]:
+    elif record["state"] == "issued":
+        if record["updatedAtUnixMs"] != record["issuedAtUnixMs"]:
+            raise ConformanceError("issued ledger timestamp is incoherent")
+    elif record["updatedAtUnixMs"] >= record["expiresAtUnixMs"]:
         raise ConformanceError("non-expired ledger timestamp is incoherent")
     expected = _digest(
         active_boundary,
         "ledgerRecordDigestSha256",
         record,
-        "recordDigestSha256",
     )
     if not hmac.compare_digest(record["recordDigestSha256"], expected):
         raise ConformanceError("ledger record digest mismatch")
@@ -497,10 +614,25 @@ def _json_pointer_set(document: dict[str, Any], pointer: str, value: Any) -> Non
     target[parts[-1]] = copy.deepcopy(value)
 
 
+def _json_pointer_delete(document: dict[str, Any], pointer: str) -> None:
+    if not pointer.startswith("/"):
+        raise ConformanceError("mutation path is not an absolute JSON Pointer")
+    parts = [
+        part.replace("~1", "/").replace("~0", "~")
+        for part in pointer[1:].split("/")
+    ]
+    target: Any = document
+    for part in parts[:-1]:
+        if type(target) is not dict or part not in target:
+            raise ConformanceError(f"mutation path does not exist: {pointer}")
+        target = target[part]
+    if type(target) is not dict or parts[-1] not in target:
+        raise ConformanceError(f"mutation path does not exist: {pointer}")
+    del target[parts[-1]]
+
+
 def _seal_target(boundary: dict[str, Any], target: dict[str, Any]) -> None:
-    target["bindingSha256"] = _digest(
-        boundary, "targetBindingSha256", target, "bindingSha256"
-    )
+    target["bindingSha256"] = _digest(boundary, "targetBindingSha256", target)
 
 
 def _repeat_target_binding(receipt: dict[str, Any]) -> None:
@@ -519,7 +651,9 @@ def _repeat_target_binding(receipt: dict[str, Any]) -> None:
 
 def _seal_receipt(boundary: dict[str, Any], receipt: dict[str, Any]) -> None:
     receipt["receiptDigestSha256"] = _digest(
-        boundary, "receiptDigestSha256", receipt, "receiptDigestSha256"
+        boundary,
+        "receiptObjectDigestSha256",
+        receipt,
     )
 
 
@@ -532,10 +666,13 @@ def materialize_case(
     request = copy.deepcopy(fixture["validRequest"])
     receipt = copy.deepcopy(fixture["validReceipt"])
     operation = case.get("operation") if case is not None else None
-    if case is not None and operation is None:
+    if case is not None and operation in (None, "delete_field"):
         target_name = case["target"]
         target = request if target_name == "request" else receipt
-        _json_pointer_set(target, case["path"], case["value"])
+        if operation == "delete_field":
+            _json_pointer_delete(target, case["path"])
+        else:
+            _json_pointer_set(target, case["path"], case["value"])
         if case.get("rebindTarget"):
             _seal_target(boundary, receipt["target"])
             _repeat_target_binding(receipt)
@@ -546,7 +683,7 @@ def materialize_case(
         raw = raw[:-1] + b',"version":3}'
     elif operation == "append_receipt_newline":
         raw += b"\n"
-    elif operation is not None:
+    elif operation not in (None, "delete_field"):
         raise ConformanceError(f"unknown fixture operation: {operation}")
     request["receiptUtf8B64"] = base64.b64encode(raw).decode("ascii")
     return request
@@ -599,6 +736,7 @@ def run_fixture(
                 "resealReceipt",
             },
             {"name", "operation"},
+            {"name", "operation", "target", "path"},
         ):
             raise ConformanceError("mutation fields are not exact")
         name = case["name"]
