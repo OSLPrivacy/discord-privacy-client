@@ -18,14 +18,17 @@ UI_DIR="$REPO_ROOT/apps/osl-hub-ui"
 DIST_DIR="$UI_DIR/dist"
 SELFTEST_STEPS="$SCRIPT_DIR/steps/selftest.json"
 PNG_FACTS="$SCRIPT_DIR/png-facts.py"
+VMQA_CONTRACT="$SCRIPT_DIR/vmqa-contract.py"
 usage() { cat >&2 <<'USAGE'
 vmqa-run.sh - host-side VM QA driver
   build
-  stamp
+  stamp --source-repo <path> --exe <path> --loader <path> --dist <dir>
   push [--exe <path>] [--loader <path>]
-  run [--vm <vm>] [--identifier <id>] --steps <steps.json> [--run-id <id>] [--timeout <sec>]
+  run [--vm <vm>] [--identifier <id>] --steps <steps.json> --build-identity <json>
+      [--run-id <id>] [--timeout <sec>]
   agent-alive [--vm <vm>]
-  selftest [--vm <vm>] [--identifier <id>] [--timeout <sec>] [--exe-sha <sha256>]
+  selftest [--vm <vm>] [--identifier <id>] [--timeout <sec>]
+      --exe <path> --build-identity <json>
 USAGE
 }
 
@@ -51,12 +54,12 @@ git_branch() { git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || pr
 git_head() { git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || printf 'unknown\n'; }
 dirty_fingerprint() { git -C "$REPO_ROOT" status --porcelain | sha256sum | awk '{print $1}'; }
 resolve_default_exe() {
-  local debug_path="$HUB_DIR/target/$TARGET/debug/$BIN_NAME.exe"
-  [ -f "$debug_path" ] || {
+  local release_path="$HUB_DIR/target/$TARGET/release/$BIN_NAME.exe"
+  [ -f "$release_path" ] || {
     echo "exe not found; run '$0 build' first or pass --exe" >&2
     return 66
   }
-  printf '%s\n' "$debug_path"
+  printf '%s\n' "$release_path"
 }
 
 resolve_loader() {
@@ -94,6 +97,7 @@ cmd_build() {
 
   osl-cargo build \
     --manifest-path "$HUB_DIR/Cargo.toml" \
+    --release \
     --features desktop \
     --bin "$BIN_NAME" \
     --target "$TARGET" \
@@ -108,7 +112,7 @@ cmd_build() {
   else
     exe=""
   fi
-  fallback="$HUB_DIR/target/$TARGET/debug/$BIN_NAME.exe"
+  fallback="$HUB_DIR/target/$TARGET/release/$BIN_NAME.exe"
   [ -n "$exe" ] || exe="$fallback"
   [ -f "$exe" ] || { echo "build finished but exe was not found: $exe" >&2; return 1; }
 
@@ -120,18 +124,68 @@ cmd_build() {
 
 cmd_stamp() {
   need_cmd jq
-  local exe
-  exe="$(resolve_default_exe)"
+  need_cmd python3
+  local source_repo="" exe="" loader="" dist="" profile="release"
+  local commit tree dirty clean rustc_version cargo_version node_version npm_version osl_cargo
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --source-repo) [ $# -ge 2 ] || die_usage "--source-repo needs a path"; source_repo="$2"; shift 2 ;;
+      --exe) [ $# -ge 2 ] || die_usage "--exe needs a path"; exe="$2"; shift 2 ;;
+      --loader) [ $# -ge 2 ] || die_usage "--loader needs a path"; loader="$2"; shift 2 ;;
+      --dist) [ $# -ge 2 ] || die_usage "--dist needs a path"; dist="$2"; shift 2 ;;
+      *) die_usage "unknown stamp argument: $1" ;;
+    esac
+  done
+  [ "$(git -C "$source_repo" rev-parse --is-inside-work-tree 2>/dev/null || true)" = "true" ] \
+    || { echo "source repo is not a Git worktree: $source_repo" >&2; return 66; }
+  [ -f "$exe" ] || { echo "executable is missing: $exe" >&2; return 66; }
+  [ -f "$loader" ] || { echo "loader is missing: $loader" >&2; return 66; }
+  [ -d "$dist" ] || { echo "dist is missing: $dist" >&2; return 66; }
+  dirty="$(git -C "$source_repo" status --porcelain=v1 --untracked-files=all -z | sha256sum | awk '{print $1}')"
+  clean=false
+  [ "$dirty" = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ] && clean=true
+  [ "$clean" = true ] || { echo "REFUSED: build identity requires a clean tracked and untracked source worktree" >&2; return 9; }
+  commit="$(git -C "$source_repo" rev-parse HEAD)"
+  tree="$(git -C "$source_repo" rev-parse HEAD^{tree})"
+  rustc_version="$(rustc -Vv | tr '\n' ';' | sed 's/;*$//')"
+  cargo_version="$(cargo -V)"
+  node_version="$(node -v)"
+  npm_version="$(npm -v)"
+  osl_cargo="$(command -v osl-cargo)"
+  [ -f "$osl_cargo" ] || { echo "osl-cargo executable is unavailable" >&2; return 69; }
   jq -n \
-    --arg exePath "$exe" \
+    --arg commit "$commit" \
+    --arg tree "$tree" \
+    --arg dirtyFingerprint "$dirty" \
     --arg exeSha256 "$(sha_file "$exe")" \
-    --arg distSha256 "$(dist_sha "$DIST_DIR")" \
-    --arg gitBranch "$(git_branch)" \
-    --arg gitHead "$(git_head)" \
-    --arg dirtyFingerprint "$(dirty_fingerprint)" \
-    --arg utc "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{schemaVersion:1, exePath:$exePath, exeSha256:$exeSha256, distSha256:$distSha256,
-      gitBranch:$gitBranch, gitHead:$gitHead, dirtyFingerprint:$dirtyFingerprint, utc:$utc}'
+    --argjson exeSizeBytes "$(stat -c %s "$exe")" \
+    --arg loaderSha256 "$(sha_file "$loader")" \
+    --argjson loaderSizeBytes "$(stat -c %s "$loader")" \
+    --arg distSha256 "$(dist_sha "$dist")" \
+    --arg profile "$profile" \
+    --arg rustc "$rustc_version" \
+    --arg cargo "$cargo_version" \
+    --arg node "$node_version" \
+    --arg npm "$npm_version" \
+    --arg oslCargoSha256 "$(sha_file "$osl_cargo")" \
+    '{
+      schemaVersion:2,
+      source:{commit:$commit,tree:$tree,clean:true,dirtyFingerprint:$dirtyFingerprint},
+      ui:{distSha256:$distSha256},
+      build:{
+        target:"x86_64-pc-windows-gnu",features:["desktop"],profile:$profile,
+        commands:[
+          ["npm","run","build"],
+          ["osl-cargo","build","--release","--features","desktop","--bin","osl-privacy-hub",
+           "--target","x86_64-pc-windows-gnu"]
+        ],
+        toolchain:{rustc:$rustc,cargo:$cargo,node:$node,npm:$npm,oslCargoSha256:$oslCargoSha256}
+      },
+      artifacts:{
+        executable:{name:"osl-privacy-hub.exe",sha256:$exeSha256,sizeBytes:$exeSizeBytes},
+        loader:{name:"WebView2Loader.dll",sha256:$loaderSha256,sizeBytes:$loaderSizeBytes}
+      }
+    }'
 }
 
 cmd_push() {
@@ -153,36 +207,45 @@ cmd_push() {
 overall_exit() { case "$1" in pass) return 0 ;; fail) return 1 ;; unmeasurable) return 2 ;; blocked) return 3 ;; timeout) return 4 ;; *) return 3 ;; esac; }
 
 write_request() {
-  local run_id="$1" identifier="$2" run_start="$3" steps_file="$4" out="$5"
+  local run_id="$1" identifier="$2" run_start="$3" steps_file="$4" identity_file="$5" out="$6"
   need_cmd jq
   [ -f "$steps_file" ] || { echo "steps file not found: $steps_file" >&2; return 66; }
-  jq -e --arg runId "$run_id" --arg identifier "$identifier" --arg runStartUtc "$run_start" '
+  [ -f "$identity_file" ] || { echo "build identity not found: $identity_file" >&2; return 66; }
+  local identity_sha
+  identity_sha="$(sha_file "$identity_file")"
+  jq -e --arg runId "$run_id" --arg identifier "$identifier" --arg runStartUtc "$run_start" \
+    --arg buildIdentitySha256 "$identity_sha" --slurpfile identity "$identity_file" '
     if type != "array" then error("steps file must be a JSON array") else
       . as $steps
       | ([.[] | select(.verb == "stage" or .verb == "launch") | .args.exeSha256 // empty] | unique) as $exeShas
       | if ($exeShas | length) != 1 or ($exeShas[0] | test("^[0-9a-f]{64}$") | not)
         then error("request needs exactly one lowercase sha256 shared by stage/launch")
-        else {schemaVersion:1, runId:$runId, identifier:$identifier, runStartUtc:$runStartUtc,
-              exeSha256:$exeShas[0], steps:$steps}
+        else {schemaVersion:2, runId:$runId, identifier:$identifier, runStartUtc:$runStartUtc,
+              exeSha256:$exeShas[0], buildIdentitySha256:$buildIdentitySha256,
+              buildIdentity:$identity[0], steps:$steps}
         end
     end
   ' "$steps_file" >"$out"
 }
 
 cmd_run() {
-  local vm="$DEFAULT_VM" identifier="$DEFAULT_IDENTIFIER" steps="" run_id="" timeout="$DEFAULT_TIMEOUT"
+  local vm="$DEFAULT_VM" identifier="$DEFAULT_IDENTIFIER" steps="" build_identity="" run_id="" timeout="$DEFAULT_TIMEOUT"
   local run_start request_tmp verdict_tmp report_dir wait_rc overall remote_prefix exit_rc
   while [ $# -gt 0 ]; do
     case "$1" in
       --vm) [ $# -ge 2 ] || die_usage "--vm needs a value"; vm="$2"; shift 2 ;;
       --identifier) [ $# -ge 2 ] || die_usage "--identifier needs a value"; identifier="$2"; shift 2 ;;
       --steps) [ $# -ge 2 ] || die_usage "--steps needs a path"; steps="$2"; shift 2 ;;
+      --build-identity) [ $# -ge 2 ] || die_usage "--build-identity needs a path"; build_identity="$2"; shift 2 ;;
       --run-id) [ $# -ge 2 ] || die_usage "--run-id needs a value"; run_id="$2"; shift 2 ;;
       --timeout) [ $# -ge 2 ] || die_usage "--timeout needs seconds"; timeout="$2"; shift 2 ;;
       *) die_usage "unknown run argument: $1" ;;
     esac
   done
   [ -n "$steps" ] || die_usage "run requires --steps"
+  [ -n "$build_identity" ] || die_usage "run requires --build-identity"
+  [ -f "$VMQA_CONTRACT" ] || { echo "strict VMQA contract validator is missing" >&2; return 9; }
+  python3 "$VMQA_CONTRACT" validate-build --build-identity "$build_identity" || return 9
   [[ "$timeout" =~ ^[0-9]+$ ]] || die_usage "--timeout must be an integer"
   [ -n "$run_id" ] || run_id="$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"
   run_start="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -190,7 +253,7 @@ cmd_run() {
   request_tmp="$(mktemp)"; verdict_tmp="$(mktemp)"
 
   "$SHARE" init-run "$vm" "$run_id" >/dev/null
-  write_request "$run_id" "$identifier" "$run_start" "$steps" "$request_tmp"
+  write_request "$run_id" "$identifier" "$run_start" "$steps" "$build_identity" "$request_tmp"
   "$SHARE" put-atomic "$request_tmp" "$remote_prefix/request.json"
 
   set +e
@@ -234,11 +297,20 @@ cmd_run() {
     rm -f -- "$request_tmp" "$verdict_tmp"
     return 3
   fi
+  if ! python3 "$VMQA_CONTRACT" verify-run \
+      --request "$request_tmp" \
+      --verdict "$verdict_tmp" \
+      --build-identity "$build_identity"; then
+    echo "REFUSING VERDICT: strict V2 request/verdict/build contract failed" >&2
+    rm -f -- "$request_tmp" "$verdict_tmp"
+    return 9
+  fi
 
   report_dir="$REPO_ROOT/docs/reports/vmqa/$run_id"
   mkdir -p -- "$report_dir"
   jq . "$verdict_tmp" | tee "$report_dir/verdict.json"
   cp -- "$request_tmp" "$report_dir/request.json"
+  cp -- "$build_identity" "$report_dir/build-identity.json"
   # Retain the exact screenshot bytes named by the verdict. A path and claimed digest in JSON are
   # not evidence until the host downloads those bytes and independently revalidates the digest.
   local artifact_rel artifact_dst
@@ -267,13 +339,14 @@ cmd_run() {
 }
 
 fetch_run_verdict() {
-  local vm="$1" identifier="$2" steps="$3" timeout="$4" run_id="$5"
+  local vm="$1" identifier="$2" steps="$3" build_identity="$4" timeout="$5" run_id="$6"
   local rc
   # cmd_run restores errexit before returning the verdict's product status. Calling it as a bare
   # command under `set +e` is therefore not sufficient: a blocked return (3) can terminate this
   # function before it emits the saved verdict path, and selftest then grades an empty filename as
   # a vacuous control. An if-condition is an errexit-safe status boundary in Bash.
-  if cmd_run --vm "$vm" --identifier "$identifier" --steps "$steps" --timeout "$timeout" --run-id "$run_id" >/dev/null; then
+  if cmd_run --vm "$vm" --identifier "$identifier" --steps "$steps" \
+      --build-identity "$build_identity" --timeout "$timeout" --run-id "$run_id" >/dev/null; then
     rc=0
   else
     rc=$?
@@ -385,6 +458,7 @@ grade_selftest() {
   local pos_file="$1" neg_file="$2" pos_rc="$3" neg_rc="$4"
   local expected_agent_sha="${5:-}" expected_win32_sha="${6:-}" expected_exe_sha="${7:-}"
   local expected_surface_class="${8:-}"
+  local expected_build_identity="${9:-}" expected_exe_path="${10:-}"
   local pos neg markers neg_markers colors launch_neg shot_neg neg_steps neg_ping result
   local launch_pid neg_launch_pid surface_pid surface_width surface_height foreground_pre foreground_post
   local raw_surface_width raw_surface_height bounds_source surface_class post_surface_class
@@ -404,6 +478,17 @@ grade_selftest() {
   local artifact_file artifact_actual_sha artifact_size artifact_signature artifact_ok=false
   local png_json png_width png_height png_colors png_bit_depth png_color_type png_stride
   local structured_surface_ok
+  if [ -z "$expected_build_identity" ] || [ -z "$expected_exe_path" ] \
+     || ! python3 "$VMQA_CONTRACT" verify-pair \
+          --positive-request "$(dirname -- "$pos_file")/request.json" \
+          --positive-verdict "$pos_file" \
+          --negative-request "$(dirname -- "$neg_file")/request.json" \
+          --negative-verdict "$neg_file" \
+          --build-identity "$expected_build_identity" \
+          --exe "$expected_exe_path"; then
+    echo "SELFTEST INVALID: strict V2 retained request/verdict/build contract failed" >&2
+    return 9
+  fi
   pos="$(overall_or_rc "$pos_file" "$pos_rc")"
   neg="$(overall_or_rc "$neg_file" "$neg_rc")"
   markers="$(metric_from_step "$pos_file" ping markerWindowsTotal)"
@@ -668,31 +753,33 @@ grade_selftest() {
 cmd_selftest() {
   local vm="$DEFAULT_VM" identifier="$DEFAULT_IDENTIFIER" timeout="$DEFAULT_TIMEOUT"
   local pos_id neg_id pos_file neg_file pos_rc neg_rc pos neg markers neg_markers colors launch_neg shot_neg result
-  local exe_sha="" steps_file="$SELFTEST_STEPS" neg_steps neg_ping heartbeat_file
+  local exe="" exe_sha="" build_identity="" steps_file="$SELFTEST_STEPS" neg_steps neg_ping heartbeat_file
   local expected_agent_sha expected_win32_sha live_agent_sha live_win32_sha
   while [ $# -gt 0 ]; do
     case "$1" in
       --vm) [ $# -ge 2 ] || die_usage "--vm needs a value"; vm="$2"; shift 2 ;;
       --identifier) [ $# -ge 2 ] || die_usage "--identifier needs a value"; identifier="$2"; shift 2 ;;
       --timeout) [ $# -ge 2 ] || die_usage "--timeout needs seconds"; timeout="$2"; shift 2 ;;
-      --exe-sha) [ $# -ge 2 ] || die_usage "--exe-sha needs a sha256"; exe_sha="$2"; shift 2 ;;
+      --exe) [ $# -ge 2 ] || die_usage "--exe needs a path"; exe="$2"; shift 2 ;;
+      --build-identity) [ $# -ge 2 ] || die_usage "--build-identity needs a path"; build_identity="$2"; shift 2 ;;
       *) die_usage "unknown selftest argument: $1" ;;
     esac
   done
   [[ "$timeout" =~ ^[0-9]+$ ]] || die_usage "--timeout must be an integer"
-  [ -n "$exe_sha" ] || die_usage "selftest requires --exe-sha so the request cannot attach to an existing marker"
+  [ -f "$exe" ] || die_usage "selftest requires --exe pointing to retained executable bytes"
+  [ -f "$build_identity" ] || die_usage "selftest requires --build-identity"
+  exe_sha="$(sha_file "$exe")"
+  python3 "$VMQA_CONTRACT" validate-build --build-identity "$build_identity" --exe "$exe" \
+    || { echo "selftest build identity is not independently bound to executable bytes" >&2; return 9; }
   # Inject the staged build's sha into the step file. The `launch` verb addresses the binary by
   # content hash, which changes per build, so it cannot be baked into a checked-in step file.
   # Both halves derive from the SAME generated file, so they still differ only in the identifier -
   # generating one per half would let them drift, which is the property the single file protects.
-  if [ -n "$exe_sha" ]; then
-    need_cmd jq
-    [[ "$exe_sha" =~ ^[0-9a-f]{64}$ ]] || die_usage "--exe-sha must be a 64-char lowercase sha256"
-    steps_file="$(mktemp)"
-    jq --arg sha "$exe_sha" \
-      '[{id:"S0",verb:"stage",args:{exeSha256:$sha}}] + [.[] | if .verb=="launch" then (.args.exeSha256=$sha) else . end]' \
-      "$SELFTEST_STEPS" >"$steps_file"
-  fi
+  need_cmd jq
+  steps_file="$(mktemp)"
+  jq --arg sha "$exe_sha" \
+    '[{id:"S0",verb:"stage",args:{exeSha256:$sha}}] + [.[] | if .verb=="launch" then (.args.exeSha256=$sha) else . end]' \
+    "$SELFTEST_STEPS" >"$steps_file"
   need_cmd python3
   # Expected identity comes from the host files under review, never from the
   # agent's own heartbeat. The heartbeat is only a live comparison target.
@@ -722,12 +809,12 @@ cmd_selftest() {
   pos_id="$(date -u +%Y%m%dT%H%M%SZ)-pos-$RANDOM"
   neg_id="$(date -u +%Y%m%dT%H%M%SZ)-neg-$RANDOM"
   set +e
-  pos_file="$(fetch_run_verdict "$vm" "$identifier" "$steps_file" "$timeout" "$pos_id")"; pos_rc=$?
-  neg_file="$(fetch_run_verdict "$vm" "$NEGATIVE_IDENTIFIER" "$steps_file" "$timeout" "$neg_id")"; neg_rc=$?
+  pos_file="$(fetch_run_verdict "$vm" "$identifier" "$steps_file" "$build_identity" "$timeout" "$pos_id")"; pos_rc=$?
+  neg_file="$(fetch_run_verdict "$vm" "$NEGATIVE_IDENTIFIER" "$steps_file" "$build_identity" "$timeout" "$neg_id")"; neg_rc=$?
   set -e
   grade_selftest "$pos_file" "$neg_file" "$pos_rc" "$neg_rc" \
     "$expected_agent_sha" "$expected_win32_sha" "$exe_sha" \
-    "$EXPECTED_SELFTEST_SURFACE_CLASS"
+    "$EXPECTED_SELFTEST_SURFACE_CLASS" "$build_identity" "$exe"
 }
 
 
@@ -737,7 +824,7 @@ main() {
   shift
   case "$cmd" in
     build) [ $# -eq 0 ] || die_usage "build takes no arguments"; cmd_build ;;
-    stamp) [ $# -eq 0 ] || die_usage "stamp takes no arguments"; cmd_stamp ;;
+    stamp) cmd_stamp "$@" ;;
     push) cmd_push "$@" ;;
     run) cmd_run "$@" ;;
     agent-alive) cmd_agent_alive "$@" ;;

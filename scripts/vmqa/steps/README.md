@@ -1,7 +1,11 @@
 # Step files
 
 A step file is a JSON array of `{ id, verb, args }`. `vmqa-run.sh run --steps <file>` wraps it in a
-request envelope (`schemaVersion`, `runId`, `identifier`, `runStartUtc`) and drops it on the share.
+strict V2 request envelope (`schemaVersion`, `runId`, `identifier`, `runStartUtc`, executable
+SHA-256, build-identity SHA-256, the closed build identity, and `steps`) and drops it on the share.
+Unknown fields and every schema version other than 2 are refused. `run` and `selftest` require a
+retained `build-identity.json`; `selftest` also requires the executable path so the host measures
+the bytes independently instead of trusting a caller-provided digest.
 
 ## Why there is only one self-test step file
 

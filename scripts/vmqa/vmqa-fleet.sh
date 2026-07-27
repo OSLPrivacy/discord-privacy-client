@@ -122,6 +122,124 @@ cmd_leak_check() {
   return 7
 }
 
+cmd_cleanup_receipt() {
+  local vm="${1:-}" run_id="${2:-}" exe_sha="${3:-}" identity_sha="${4:-}" out_dir="${5:-}"
+  local rg subscription_id subscription_sha captured raw_instance raw_census
+  local instance_sha census_sha running_count
+  [ $# -eq 5 ] || {
+    echo "cleanup-receipt needs <vm> <run-id> <exe-sha256> <build-identity-sha256> <out-dir>" >&2
+    return 64
+  }
+  fleet_rg "$vm" >/dev/null || { echo "unknown vm: $vm" >&2; return 64; }
+  [[ "$run_id" =~ ^[A-Za-z0-9._-]{1,96}$ ]] || { echo "unsafe run id: $run_id" >&2; return 64; }
+  [[ "$exe_sha" =~ ^[0-9a-f]{64}$ ]] || { echo "invalid executable sha256" >&2; return 64; }
+  [[ "$identity_sha" =~ ^[0-9a-f]{64}$ ]] || { echo "invalid build identity sha256" >&2; return 64; }
+  command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; return 69; }
+  command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; return 69; }
+  [ -f "$out_dir/build-identity.json" ] || {
+    echo "build identity is missing from report directory: $out_dir/build-identity.json" >&2
+    return 66
+  }
+  [ "$(sha256sum "$out_dir/build-identity.json" | awk '{print $1}')" = "$identity_sha" ] || {
+    echo "build identity sha256 does not match retained report bytes" >&2
+    return 9
+  }
+  python3 "$(dirname -- "${BASH_SOURCE[0]}")/vmqa-contract.py" \
+    validate-build --build-identity "$out_dir/build-identity.json" || return 9
+  rg="$(fleet_rg "$vm")"
+  subscription_id="$(az account show --query id -o tsv)"
+  [ -n "$subscription_id" ] || { echo "Azure subscription identity is unavailable" >&2; return 5; }
+  subscription_sha="$(printf '%s' "$subscription_id" | sha256sum | awk '{print $1}')"
+  captured="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  raw_instance="$(mktemp)"
+  raw_census="$(mktemp)"
+  if ! az vm get-instance-view -g "$rg" -n "$vm" -o json >"$raw_instance"; then
+    rm -f -- "$raw_instance" "$raw_census"
+    return 5
+  fi
+  if ! az vm list -d -o json >"$raw_census"; then
+    rm -f -- "$raw_instance" "$raw_census"
+    return 5
+  fi
+  mkdir -p -- "$out_dir"
+  jq --arg captured "$captured" --arg subscription "$subscription_sha" '
+    {
+      schemaVersion:2,
+      capturedUtc:$captured,
+      subscriptionIdSha256:$subscription,
+      vm:{
+        id:.id,
+        name:.name,
+        resourceGroup:.resourceGroup,
+        location:.location,
+        powerState:(
+          [.instanceView.statuses[]?
+           | select((.code // "") | startswith("PowerState/"))
+           | .displayStatus] | first // "unknown"
+        ),
+        agentStatus:(.instanceView.vmAgent.statuses[0].displayStatus // "unknown"),
+        provisioningState:(
+          [.instanceView.statuses[]?
+           | select((.code // "") | startswith("ProvisioningState/"))
+           | .displayStatus] | first // "unknown"
+        )
+      }
+    }
+  ' "$raw_instance" >"$out_dir/azure-instance-view.json"
+  jq --arg captured "$captured" --arg subscription "$subscription_sha" '
+    {
+      schemaVersion:2,
+      capturedUtc:$captured,
+      subscriptionIdSha256:$subscription,
+      vms:(
+        [.[] | {
+          id:.id,
+          name:.name,
+          resourceGroup:.resourceGroup,
+          powerState:(.powerState // "unknown")
+        }] | sort_by(.id)
+      )
+    }
+  ' "$raw_census" >"$out_dir/azure-subscription-census.json"
+  rm -f -- "$raw_instance" "$raw_census"
+  instance_sha="$(sha256sum "$out_dir/azure-instance-view.json" | awk '{print $1}')"
+  census_sha="$(sha256sum "$out_dir/azure-subscription-census.json" | awk '{print $1}')"
+  running_count="$(jq '[.vms[] | select(.powerState=="VM running")] | length' \
+    "$out_dir/azure-subscription-census.json")"
+  jq -n \
+    --arg runId "$run_id" \
+    --arg exe "$exe_sha" \
+    --arg identity "$identity_sha" \
+    --arg vm "$vm" \
+    --arg rg "$rg" \
+    --arg instanceSha "$instance_sha" \
+    --arg censusSha "$census_sha" \
+    --argjson runningCount "$running_count" \
+    --arg captured "$captured" '
+      {
+        schemaVersion:2,
+        runId:$runId,
+        exeSha256:$exe,
+        buildIdentitySha256:$identity,
+        targetVm:$vm,
+        targetResourceGroup:$rg,
+        instanceViewFile:"azure-instance-view.json",
+        instanceViewSha256:$instanceSha,
+        censusFile:"azure-subscription-census.json",
+        censusSha256:$censusSha,
+        deallocated:true,
+        runningCount:$runningCount,
+        capturedUtc:$captured
+      }
+    ' >"$out_dir/azure-cleanup-receipt.json"
+  if ! python3 "$(dirname -- "${BASH_SOURCE[0]}")/vmqa-contract.py" \
+      verify-cleanup --directory "$out_dir"; then
+    echo "REFUSED: Azure cleanup JSON did not prove deallocation and zero subscription leaks" >&2
+    return 9
+  fi
+  printf 'cleanup receipt: %s\n' "$out_dir/azure-cleanup-receipt.json"
+}
+
 cmd_stop_all() {
   [ "${1:-}" = "--yes" ] || { echo "stop-all requires --yes" >&2; return 64; }
   local vm any=0
@@ -218,6 +336,8 @@ vmqa-fleet.sh — VM lifecycle, snapshots and leak prevention
   start  <vm|pair>                 waits for running AND guest agent Ready
   stop   <vm|pair>                 deallocate (not 'stop' — stop still bills compute)
   leak-check                       subscription-wide; exit 7 if anything is running
+  cleanup-receipt <vm> <run-id> <exe-sha> <build-identity-sha> <out-dir>
+                                   retain hash-bound instance/deallocation/census JSON
   stop-all --yes                   deallocate every fleet VM currently running
 
   snapshot  <vm> <WARM-…|COLD-…>   requires deallocated; pins --location to the disk's own region
@@ -235,6 +355,7 @@ case "${1:-}" in
   start)      shift; cmd_start "$@" ;;
   stop)       shift; cmd_stop "$@" ;;
   leak-check) shift; cmd_leak_check ;;
+  cleanup-receipt) shift; cmd_cleanup_receipt "$@" ;;
   stop-all)   shift; cmd_stop_all "$@" ;;
   snapshot)   shift; cmd_snapshot "$@" ;;
   snapshots)  shift; cmd_snapshots "$@" ;;

@@ -150,16 +150,28 @@ Target is under three minutes per iteration once setup is snapshotted.
    **two** embeds (`webview/dist` as well), so a Cargo build before the frontend build ships a stale
    UI that looks like a code bug. Then cross-compile:
    `cargo build --features desktop --bin osl-privacy-hub --target x86_64-pc-windows-gnu`.
-2. **Host** — stamp `sha256` of the exe and the dist, plus branch, HEAD and dirty fingerprint.
-   Upload `osl-privacy-hub.exe` and `WebView2Loader.dll` under `builds/<sha256>/` only if the hash
-   moved.
-3. **Host** — write `runs/<vm>/<runId>/request.json` naming the run id and the verbs
+2. **Host** — create a strict V2 build identity from a clean checkout. It binds the full commit and
+   tree, an empty tracked/untracked status digest, UI dist digest, Windows target, exact
+   `["desktop"]` feature set, release profile, build argv, Rust/Cargo/Node/npm and `osl-cargo`
+   identity, and independently measured executable/loader sizes and SHA-256. A bare executable
+   digest is not a build identity and is not accepted by `selftest`.
+3. **Host** — upload `osl-privacy-hub.exe` and `WebView2Loader.dll` under
+   `builds/<sha256>/` only if the hash moved. Write `runs/<vm>/<runId>/request.json` naming the run id
+   and the verbs
    (`status` / `send` / `drain` / `rehydrate` / `reveal-view-once`), then write
    `request.json.ready` containing its sha256.
-4. **VM agent** — stages the exe **next to `WebView2Loader.dll`**, launches, drives the verbs, writes
+4. **VM agent** — rejects every request schema other than V2 and any unknown top-level, step, args,
+   or build-identity field. It stages the exe **next to `WebView2Loader.dll`**, launches, drives the verbs, writes
    `verdict.json`, `verdict.json.ready` and screenshots under the run's blob prefix.
-5. **Host** — polls for the verdict, grades every artifact against run start, pulls the evidence into
+5. **Host** — rejects every verdict schema other than V2 and every unknown nested field before
+   grading. It retains the exact request and build-identity bytes, measures the local executable
+   bytes independently, grades every artifact against run start, and pulls the evidence into
    `docs/reports/`.
+6. **Host cleanup** — deallocate the VM, then retain `azure-instance-view.json`,
+   `azure-subscription-census.json`, and `azure-cleanup-receipt.json` beside the run. The receipt
+   binds both JSON SHA-256 values to the run, executable, build identity, target VM/resource group,
+   deallocated state, and subscription-wide running count zero. Validate with
+   `python3 scripts/vmqa/vmqa-contract.py verify-cleanup --directory <run-report-dir>`.
 
 ## Traps that have already cost time
 
@@ -204,6 +216,15 @@ Target is under three minutes per iteration once setup is snapshotted.
   `S0:stage,S1:launch,S2:ping,S3:shot,S4:kill` with statuses
   `pass,blocked,pass,blocked,pass` and a structured marker count of exactly one; anything shorter,
   prose-only, or incompletely cleaned is an invalid control.
+- **Closed schemas are part of the measurement.** `schemaVersion: 999`, an unknown field at any
+  graded level, a stale embedded commit/tree/dist/toolchain identity, or a coherently substituted
+  executable digest is harness-invalid. The independent executable bytes and retained
+  `build-identity.json` are the trust roots; matching caller-authored digests are not.
+- **Console cleanup text is not retained evidence.** After deallocation, use
+  `vmqa-fleet.sh cleanup-receipt <vm> <run-id> <exe-sha> <build-identity-sha> <report-dir>`.
+  This reads Azure instance view and the subscription census, writes closed-schema JSON, hashes
+  both into the cleanup receipt, and refuses unless the target is `VM deallocated` and no
+  subscription VM is `VM running`.
 
 ## Input injection: where it is banned and where it is required
 

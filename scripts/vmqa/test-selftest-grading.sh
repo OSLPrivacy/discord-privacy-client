@@ -43,9 +43,47 @@ pass_count=0; fail_count=0
 
 AGENT_SHA='1111111111111111111111111111111111111111111111111111111111111111'
 WIN32_SHA='2222222222222222222222222222222222222222222222222222222222222222'
-EXE_SHA='3333333333333333333333333333333333333333333333333333333333333333'
 SURFACE_CLASS='Tauri Window'
 FIXTURE_PNG="$TMP/fixture.png"
+FIXTURE_EXE="$TMP/osl-privacy-hub.exe"
+BUILD_IDENTITY="$TMP/build-identity.json"
+printf 'independent executable fixture bytes\n' >"$FIXTURE_EXE"
+EXE_SHA="$(sha256sum "$FIXTURE_EXE" | awk '{print $1}')"
+EXE_SIZE="$(stat -c %s "$FIXTURE_EXE")"
+jq -n \
+  --arg exe "$EXE_SHA" \
+  --argjson exeSize "$EXE_SIZE" \
+  '{
+    schemaVersion:2,
+    source:{
+      commit:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      tree:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      clean:true,
+      dirtyFingerprint:"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    ui:{distSha256:"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
+    build:{
+      target:"x86_64-pc-windows-gnu",features:["desktop"],profile:"release",
+      commands:[
+        ["npm","run","build"],
+        ["osl-cargo","build","--release","--features","desktop","--bin",
+         "osl-privacy-hub","--target","x86_64-pc-windows-gnu"]
+      ],
+      toolchain:{
+        rustc:"rustc fixture",cargo:"cargo fixture",node:"node fixture",npm:"npm fixture",
+        oslCargoSha256:"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      }
+    },
+    artifacts:{
+      executable:{name:"osl-privacy-hub.exe",sha256:$exe,sizeBytes:$exeSize},
+      loader:{
+        name:"WebView2Loader.dll",
+        sha256:"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        sizeBytes:1
+      }
+    }
+  }' >"$BUILD_IDENTITY"
+BUILD_IDENTITY_SHA="$(sha256sum "$BUILD_IDENTITY" | awk '{print $1}')"
 
 make_fixture_png() {
   local path="$1" width="$2" height="$3" mode="${4:-gradient}"
@@ -76,19 +114,38 @@ PNG_JSON="$(python3 "$SCRIPT_DIR/png-facts.py" "$FIXTURE_PNG")"
 PNG_COLORS="$(printf '%s' "$PNG_JSON" | jq -r '.distinctColors')"
 
 mkjson() {
-  local dir="$TMP/$1"
+  local dir="$TMP/$1" request_sha
   mkdir -p -- "$dir/artifacts"
   printf '%s\n' "$2" | jq \
-    --arg agent "$AGENT_SHA" --arg win32 "$WIN32_SHA" --arg exe "$EXE_SHA" --arg png "$PNG_SHA" '
-      .agentSha //= $agent
+    --arg agent "$AGENT_SHA" --arg win32 "$WIN32_SHA" --arg exe "$EXE_SHA" \
+    --arg identitySha "$BUILD_IDENTITY_SHA" --arg png "$PNG_SHA" '
+      .schemaVersion = 2
+      | .requestSha256 = ""
+      | .requestExeSha256 = $exe
+      | .buildIdentitySha256 = $identitySha
+      | .vmName //= "fixture-vm"
+      | .agentSha //= $agent
       | .win32Sha //= $win32
-      | .requestExeSha256 //= $exe
+      | .runStartUtc //= "2026-07-27T00:00:00Z"
+      | .agentStartedUtc //= "2026-07-27T00:00:01Z"
+      | .finishedUtc //= "2026-07-27T00:00:02Z"
+      | .diffKey //= ""
+      | if .overall == "blocked" then .diagnosis //= "fixture blocked" else del(.diagnosis) end
       | .steps |= map(
-          if .verb == "launch" then
+          .detail //= ""
+          | .artifacts //= []
+          | .facts //= {}
+          | if has("markerWindowsTotal") then
+              .facts.markerWindowsTotal = .markerWindowsTotal | del(.markerWindowsTotal)
+            else . end
+          | if has("distinctColors") then
+              .facts.captureDistinctColors = .distinctColors | del(.distinctColors)
+            else . end
+          | if .verb == "launch" then
             .facts = ((.facts // {}) | .exeSha256 //= $exe)
           elif .verb == "shot" then
             .facts = ((.facts // {}) | .pngSha256 //= $png | .artifactPath //= "artifacts/selftest.png")
-            | .artifacts //= ["artifacts/selftest.png"]
+            | .artifacts = (if (.artifacts | length) == 0 then ["artifacts/selftest.png"] else .artifacts end)
           elif .verb == "kill" and .status == "pass" then
             .facts = ((.facts // {})
               | .cleanupPid //= 101
@@ -100,15 +157,47 @@ mkjson() {
           else . end
         )
     ' >"$dir/verdict.json"
-  jq -n --arg exe "$EXE_SHA" '{exeSha256:$exe}' >"$dir/request.json"
+  jq -n --arg runId "$(printf '%s\n' "$2" | jq -r '.runId')" \
+    --arg exe "$EXE_SHA" --arg identitySha "$BUILD_IDENTITY_SHA" \
+    --slurpfile identity "$BUILD_IDENTITY" '
+      {
+        schemaVersion:2,runId:$runId,identifier:"fixture.subject",
+        runStartUtc:"2026-07-27T00:00:00Z",exeSha256:$exe,
+        buildIdentitySha256:$identitySha,buildIdentity:$identity[0],
+        steps:[
+          {id:"S0",verb:"stage",args:{exeSha256:$exe}},
+          {id:"S1",verb:"launch",args:{exeSha256:$exe,timeoutSeconds:45}},
+          {id:"S2",verb:"ping",args:{}},
+          {id:"S3",verb:"shot",args:{name:"selftest",expectedSurfaceClass:"Tauri Window"}},
+          {id:"S4",verb:"kill",args:{}}
+        ]
+      }' >"$dir/request.json"
+  request_sha="$(sha256sum "$dir/request.json" | awk '{print $1}')"
+  jq --arg requestSha "$request_sha" '.requestSha256=$requestSha' \
+    "$dir/verdict.json" >"$dir/verdict.json.tmp"
+  mv -- "$dir/verdict.json.tmp" "$dir/verdict.json"
   cp -- "$FIXTURE_PNG" "$dir/artifacts/selftest.png"
   printf '%s' "$dir/verdict.json"
 }
 
 mutate_json() {
-  local name="$1" source_json="$2" filter="$3" mutated
-  mutated="$(printf '%s\n' "$source_json" | jq "$filter")"
-  mkjson "$name" "$mutated"
+  local name="$1" source_json="$2" filter="$3" verdict
+  verdict="$(mkjson "$name" "$source_json")"
+  jq "$filter" "$verdict" >"$verdict.tmp"
+  mv -- "$verdict.tmp" "$verdict"
+  printf '%s' "$verdict"
+}
+
+mutate_request_bound() {
+  local name="$1" source_json="$2" filter="$3" verdict dir request_sha
+  verdict="$(mkjson "$name" "$source_json")"
+  dir="$(dirname -- "$verdict")"
+  jq "$filter" "$dir/request.json" >"$dir/request.json.tmp"
+  mv -- "$dir/request.json.tmp" "$dir/request.json"
+  request_sha="$(sha256sum "$dir/request.json" | awk '{print $1}')"
+  jq --arg sha "$request_sha" '.requestSha256=$sha' "$verdict" >"$verdict.tmp"
+  mv -- "$verdict.tmp" "$verdict"
+  printf '%s' "$verdict"
 }
 
 # A fully healthy positive half: launched, apparatus proven non-empty, real pixels, and exact
@@ -143,14 +232,16 @@ GOOD_NEG='{"runId":"n","requestSha256":"bb","overall":"blocked","steps":[
   {"id":"S4","verb":"kill","status":"pass","facts":{"cleanupPid":202,"cleanupOutcome":"stopped"}}]}'
 
 check() {
-  local name="$1" want="$2" posf="$3" negf="$4" posrc="${5:-0}" negrc="${6:-3}" got
-  grade_selftest "$posf" "$negf" "$posrc" "$negrc" \
-    "$AGENT_SHA" "$WIN32_SHA" "$EXE_SHA" "$SURFACE_CLASS" >/dev/null 2>&1
+  local name="$1" want="$2" posf="$3" negf="$4" posrc="${5:-0}" negrc="${6:-3}" got out
+  out="$(grade_selftest "$posf" "$negf" "$posrc" "$negrc" \
+    "$AGENT_SHA" "$WIN32_SHA" "$EXE_SHA" "$SURFACE_CLASS" \
+    "$BUILD_IDENTITY" "$FIXTURE_EXE" 2>&1)"
   got=$?
   if [ "$got" -eq "$want" ]; then
     printf '  ok    %-46s exit=%s\n' "$name" "$got"; pass_count=$((pass_count+1))
   else
     printf '  FAIL  %-46s exit=%s want=%s\n' "$name" "$got" "$want"; fail_count=$((fail_count+1))
+    printf '        %s\n' "$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-1600)"
   fi
 }
 
@@ -162,7 +253,8 @@ check() {
 check_msg() {
   local name="$1" want="$2" pattern="$3" posf="$4" negf="$5" out got
   out="$(grade_selftest "$posf" "$negf" 0 3 \
-    "$AGENT_SHA" "$WIN32_SHA" "$EXE_SHA" "$SURFACE_CLASS" 2>&1)"
+    "$AGENT_SHA" "$WIN32_SHA" "$EXE_SHA" "$SURFACE_CLASS" \
+    "$BUILD_IDENTITY" "$FIXTURE_EXE" 2>&1)"
   got=$?
   if [ "$got" -eq "$want" ] && printf '%s' "$out" | grep -qi -- "$pattern"; then
     printf '  ok    %-46s exit=%s +msg\n' "$name" "$got"; pass_count=$((pass_count+1))
@@ -185,7 +277,7 @@ check_fetch_preserves_blocked_verdict() {
     # the saved verdict path, or selftest grades an empty filename as a vacuous control.
     cmd_run() { set -e; return 3; }
     set +e
-    fetch_run_verdict vm identifier steps 1 fetch-blocked
+    fetch_run_verdict vm identifier steps "$BUILD_IDENTITY" 1 fetch-blocked
   )"
   rc=$?
   set +e
@@ -234,6 +326,65 @@ check_host_computed_script_hashes
 # The only green. If this stops passing, the gate rejects everything and is useless.
 check "healthy pair grades PASS" 0 \
   "$(mkjson good_pos "$GOOD_POS")" "$(mkjson good_neg "$GOOD_NEG")"
+
+check "verdict schemaVersion 999 -> INVALID" 9 \
+  "$(mutate_json pos_v999 "$GOOD_POS" '.schemaVersion=999')" \
+  "$(mkjson neg_for_v999 "$GOOD_NEG")"
+check "unknown verdict field -> INVALID" 9 \
+  "$(mutate_json pos_unknown_field "$GOOD_POS" '.unknownField=true')" \
+  "$(mkjson neg_for_unknown_field "$GOOD_NEG")"
+check "request schemaVersion 999 -> INVALID" 9 \
+  "$(mutate_request_bound pos_request_v999 "$GOOD_POS" '.schemaVersion=999')" \
+  "$(mkjson neg_for_request_v999 "$GOOD_NEG")"
+check "unknown nested request field -> INVALID" 9 \
+  "$(mutate_request_bound pos_request_unknown "$GOOD_POS" '.steps[0].args.unknownField=true')" \
+  "$(mkjson neg_for_request_unknown "$GOOD_NEG")"
+check "stale embedded build identity -> INVALID" 9 \
+  "$(mutate_request_bound pos_stale_build "$GOOD_POS" \
+      '.buildIdentity.source.commit="ffffffffffffffffffffffffffffffffffffffff"')" \
+  "$(mkjson neg_for_stale_build "$GOOD_NEG")"
+
+# All caller-controlled executable digests are coherently substituted, including
+# request, verdict, launch, cleanup, and build identity. Independent executable
+# bytes remain unchanged; the strict contract must reject before ordinary grading.
+SUB_EXE_SHA='ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'
+SUB_BUILD_IDENTITY="$TMP/substituted-build-identity.json"
+jq --arg sha "$SUB_EXE_SHA" '.artifacts.executable.sha256=$sha' \
+  "$BUILD_IDENTITY" >"$SUB_BUILD_IDENTITY"
+sub_pos="$(mkjson substituted_pos "$GOOD_POS")"
+sub_neg="$(mkjson substituted_neg "$GOOD_NEG")"
+sub_identity_sha="$(sha256sum "$SUB_BUILD_IDENTITY" | awk '{print $1}')"
+for verdict in "$sub_pos" "$sub_neg"; do
+  dir="$(dirname -- "$verdict")"
+  jq --arg sha "$SUB_EXE_SHA" --arg identitySha "$sub_identity_sha" \
+    --slurpfile identity "$SUB_BUILD_IDENTITY" '
+      .exeSha256=$sha
+      | .buildIdentitySha256=$identitySha
+      | .buildIdentity=$identity[0]
+      | (.steps[] | select(.verb=="stage" or .verb=="launch").args.exeSha256)=$sha
+    ' "$dir/request.json" >"$dir/request.json.tmp"
+  mv -- "$dir/request.json.tmp" "$dir/request.json"
+  request_sha="$(sha256sum "$dir/request.json" | awk '{print $1}')"
+  jq --arg sha "$SUB_EXE_SHA" --arg identitySha "$sub_identity_sha" --arg requestSha "$request_sha" '
+    .requestSha256=$requestSha
+    | .requestExeSha256=$sha
+    | .buildIdentitySha256=$identitySha
+    | (.steps[] | select(.verb=="launch").facts.exeSha256)=$sha
+    | (.steps[] | select(.verb=="kill" and .status=="pass").facts.cleanupExeSha256)=$sha
+  ' "$verdict" >"$verdict.tmp"
+  mv -- "$verdict.tmp" "$verdict"
+done
+grade_selftest "$sub_pos" "$sub_neg" 0 3 \
+  "$AGENT_SHA" "$WIN32_SHA" "$SUB_EXE_SHA" "$SURFACE_CLASS" \
+  "$SUB_BUILD_IDENTITY" "$FIXTURE_EXE" >/dev/null 2>&1
+sub_rc=$?
+if [ "$sub_rc" -eq 9 ]; then
+  printf '  ok    %-46s exit=%s\n' "coherent digest substitution -> INVALID" "$sub_rc"
+  pass_count=$((pass_count+1))
+else
+  printf '  FAIL  %-46s exit=%s want=9\n' "coherent digest substitution -> INVALID" "$sub_rc"
+  fail_count=$((fail_count+1))
+fi
 
 # A negative control that agreed with the positive one proves the harness confirms whatever it
 # finds. That is worse than a failure and must be distinguishable from one.
@@ -342,7 +493,7 @@ bad_request_pos="$(mkjson pos_bad_request_exe "$GOOD_POS")"
 jq '.exeSha256="dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"' \
   "$(dirname -- "$bad_request_pos")/request.json" >"$(dirname -- "$bad_request_pos")/request.json.tmp"
 mv -- "$(dirname -- "$bad_request_pos")/request.json.tmp" "$(dirname -- "$bad_request_pos")/request.json"
-check "request exeSha256 mismatch -> not PASS" 1 \
+check "request exeSha256 mismatch -> INVALID" 9 \
   "$bad_request_pos" "$(mkjson neg_for_bad_request "$GOOD_NEG")"
 
 # Every serialized class/rectangle field is a graded field. These mutations change

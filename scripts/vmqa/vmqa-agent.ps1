@@ -474,6 +474,112 @@ function Get-PropertyValue {
     return $Default
 }
 
+function Assert-ExactJsonProperties {
+    param(
+        [Parameter(Mandatory)]$Object,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Names,
+        [Parameter(Mandatory)][string]$Context
+    )
+    if ($null -eq $Object) {
+        throw "VMQA_SCHEMA_NOT_OBJECT: $Context"
+    }
+    $actual = @($Object.PSObject.Properties.Name)
+    $unknown = @($actual | Where-Object { $_ -notin $Names })
+    $missing = @($Names | Where-Object { $_ -notin $actual })
+    if ($unknown.Count -gt 0 -or $missing.Count -gt 0) {
+        throw ("VMQA_SCHEMA_FIELDS_NOT_EXACT: {0} missing=[{1}] unknown=[{2}]" -f `
+            $Context, [string]::Join(',', $missing), [string]::Join(',', $unknown))
+    }
+}
+
+function Assert-StrictBuildIdentity {
+    param(
+        [Parameter(Mandatory)]$Identity,
+        [Parameter(Mandatory)][string]$ExpectedExeSha256
+    )
+    Assert-ExactJsonProperties -Object $Identity `
+        -Names @('schemaVersion','source','ui','build','artifacts') -Context 'buildIdentity'
+    if ([int]$Identity.schemaVersion -ne 2) {
+        throw "VMQA_UNSUPPORTED_BUILD_IDENTITY_SCHEMA: $($Identity.schemaVersion)"
+    }
+    Assert-ExactJsonProperties -Object $Identity.source `
+        -Names @('commit','tree','clean','dirtyFingerprint') -Context 'buildIdentity.source'
+    Assert-ExactJsonProperties -Object $Identity.ui `
+        -Names @('distSha256') -Context 'buildIdentity.ui'
+    Assert-ExactJsonProperties -Object $Identity.build `
+        -Names @('target','features','profile','commands','toolchain') -Context 'buildIdentity.build'
+    Assert-ExactJsonProperties -Object $Identity.build.toolchain `
+        -Names @('rustc','cargo','node','npm','oslCargoSha256') -Context 'buildIdentity.build.toolchain'
+    Assert-ExactJsonProperties -Object $Identity.artifacts `
+        -Names @('executable','loader') -Context 'buildIdentity.artifacts'
+    Assert-ExactJsonProperties -Object $Identity.artifacts.executable `
+        -Names @('name','sha256','sizeBytes') -Context 'buildIdentity.artifacts.executable'
+    Assert-ExactJsonProperties -Object $Identity.artifacts.loader `
+        -Names @('name','sha256','sizeBytes') -Context 'buildIdentity.artifacts.loader'
+    $features = @($Identity.build.features)
+    $commands = @($Identity.build.commands)
+    $command0 = if ($commands.Count -ge 1) {
+        [string]::Join([char]31, @($commands[0] | ForEach-Object { [string]$_ }))
+    } else { '' }
+    $command1 = if ($commands.Count -ge 2) {
+        [string]::Join([char]31, @($commands[1] | ForEach-Object { [string]$_ }))
+    } else { '' }
+    $expectedCommand0 = [string]::Join([char]31, @('npm','run','build'))
+    $expectedCommand1 = [string]::Join([char]31, @(
+        'osl-cargo','build','--release','--features','desktop','--bin',
+        'osl-privacy-hub','--target','x86_64-pc-windows-gnu'
+    ))
+    if ([string]$Identity.source.commit -cnotmatch '^[0-9a-f]{40}$' -or
+        [string]$Identity.source.tree -cnotmatch '^[0-9a-f]{40}$' -or
+        $Identity.source.clean -ne $true -or
+        [string]$Identity.source.dirtyFingerprint -cne 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' -or
+        [string]$Identity.ui.distSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        [string]$Identity.build.target -cne 'x86_64-pc-windows-gnu' -or
+        $features.Count -ne 1 -or
+        [string]$features[0] -cne 'desktop' -or
+        [string]$Identity.build.profile -cne 'release' -or
+        $commands.Count -ne 2 -or
+        $command0 -cne $expectedCommand0 -or
+        $command1 -cne $expectedCommand1 -or
+        [string]$Identity.build.toolchain.rustc -eq '' -or
+        [string]$Identity.build.toolchain.cargo -eq '' -or
+        [string]$Identity.build.toolchain.node -eq '' -or
+        [string]$Identity.build.toolchain.npm -eq '' -or
+        [string]$Identity.build.toolchain.oslCargoSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        [string]$Identity.artifacts.executable.name -cne 'osl-privacy-hub.exe' -or
+        [string]$Identity.artifacts.executable.sha256 -cne $ExpectedExeSha256 -or
+        [int64]$Identity.artifacts.executable.sizeBytes -le 0 -or
+        [string]$Identity.artifacts.loader.name -cne 'WebView2Loader.dll' -or
+        [string]$Identity.artifacts.loader.sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        [int64]$Identity.artifacts.loader.sizeBytes -le 0) {
+        throw 'VMQA_INVALID_BUILD_IDENTITY'
+    }
+}
+
+function Assert-StrictRequestSteps {
+    param([Parameter(Mandatory)][object[]]$Steps)
+    if ($Steps.Count -le 0) {
+        throw 'VMQA_REQUEST_STEPS_EMPTY'
+    }
+    foreach ($step in $Steps) {
+        Assert-ExactJsonProperties -Object $step -Names @('id','verb','args') -Context 'step'
+        $verb = ([string]$step.verb).ToLowerInvariant()
+        $allowedArgs = switch ($verb) {
+            'stage' { @('exeSha256') }
+            'launch' { @('exeSha256','timeoutSeconds') }
+            'ping' { @() }
+            'shot' { @('name','expectedSurfaceClass') }
+            'click' { @('winX','winY','settleMs') }
+            'type' { @('text','settleMs') }
+            'key' { @('key','settleMs') }
+            'wait' { @('ms') }
+            'kill' { @() }
+            default { throw "VMQA_UNSUPPORTED_VERB: $verb" }
+        }
+        Assert-ExactJsonProperties -Object $step.args -Names $allowedArgs -Context "step.$verb.args"
+    }
+}
+
 function New-StepResult {
     param(
         [Parameter(Mandatory)][string]$Id,
@@ -658,6 +764,8 @@ function ConvertTo-RectFact {
 function Copy-And-VerifyBuild {
     param(
         [Parameter(Mandatory)][string]$ExeSha256,
+        [Parameter(Mandatory)][string]$LoaderSha256,
+        [Parameter(Mandatory)][int64]$ExeSizeBytes,
         # Carry the real step id in. Passing -Id '' to New-StepResult fails to bind, because that
         # parameter is Mandatory and Mandatory rejects an empty string - so `stage` threw before it
         # could report anything, and the caller's later $result['id'] = $stepId never ran.
@@ -683,8 +791,14 @@ function Copy-And-VerifyBuild {
 
     $destExeHash = Get-Sha256 -Path $destExe
     $destDllHash = Get-Sha256 -Path $destDll
-    if ($destExeHash -cne $sha) {
-        return New-StepResult -Id $StepId -Verb 'stage' -Status 'fail' -Detail "staged exe sha mismatch expected=$sha actual=$destExeHash"
+    $destExeSize = (Get-Item -LiteralPath $destExe).Length
+    if ($destExeHash -cne $sha -or $destExeSize -ne $ExeSizeBytes) {
+        return New-StepResult -Id $StepId -Verb 'stage' -Status 'fail' `
+            -Detail "staged exe identity mismatch expectedSha=$sha actualSha=$destExeHash expectedSize=$ExeSizeBytes actualSize=$destExeSize"
+    }
+    if ($destDllHash -cne $LoaderSha256) {
+        return New-StepResult -Id $StepId -Verb 'stage' -Status 'fail' `
+            -Detail "staged loader sha mismatch expected=$LoaderSha256 actual=$destDllHash"
     }
     $stoppedDetail = if ($stoppedPids.Count -gt 0) { $stoppedPids -join ',' } else { 'none' }
     return New-StepResult -Id $StepId -Verb 'stage' -Status 'pass' -Detail "staged=$destDir exeSha=$destExeHash webview2Sha=$destDllHash stoppedPriorPids=$stoppedDetail"
@@ -779,7 +893,10 @@ function Invoke-Step {
         }
         'stage' {
             $exeSha = [string](Get-PropertyValue -Object $stepArgs -Name 'exeSha256' -Required)
-            return Copy-And-VerifyBuild -ExeSha256 $exeSha -StepId $stepId
+            $loaderSha = [string]$Request.buildIdentity.artifacts.loader.sha256
+            $exeSize = [int64]$Request.buildIdentity.artifacts.executable.sizeBytes
+            return Copy-And-VerifyBuild -ExeSha256 $exeSha -LoaderSha256 $loaderSha `
+                -ExeSizeBytes $exeSize -StepId $stepId
         }
         'launch' {
             $exeSha = ([string](Get-PropertyValue -Object $stepArgs -Name 'exeSha256' -Required)).ToLowerInvariant()
@@ -1126,7 +1243,7 @@ function New-BlockedVerdict {
         [string]$RunStartUtc = ''
     )
     return [ordered]@{
-        schemaVersion = 1
+        schemaVersion = 2
         runId = $RunId
         vmName = $VmName
         agentSha = Get-AgentSha
@@ -1171,8 +1288,11 @@ function Process-RunDirectory {
 
     try {
         $request = $requestText | ConvertFrom-Json
+        Assert-ExactJsonProperties -Object $request `
+            -Names @('schemaVersion','runId','identifier','runStartUtc','exeSha256',`
+                'buildIdentitySha256','buildIdentity','steps') -Context 'request'
         $schemaVersion = [int](Get-PropertyValue -Object $request -Name 'schemaVersion' -Required)
-        if ($schemaVersion -ne 1) {
+        if ($schemaVersion -ne 2) {
             throw "VMQA_UNSUPPORTED_REQUEST_SCHEMA: $schemaVersion"
         }
         $runId = [string](Get-PropertyValue -Object $request -Name 'runId' -Required)
@@ -1183,7 +1303,14 @@ function Process-RunDirectory {
         if ($requestExeSha256 -notmatch '^[0-9a-f]{64}$') {
             throw 'VMQA_BAD_REQUEST_EXE_SHA256'
         }
+        $buildIdentitySha256 = ([string](Get-PropertyValue -Object $request -Name 'buildIdentitySha256' -Required)).ToLowerInvariant()
+        if ($buildIdentitySha256 -notmatch '^[0-9a-f]{64}$') {
+            throw 'VMQA_BAD_BUILD_IDENTITY_SHA256'
+        }
+        $buildIdentity = Get-PropertyValue -Object $request -Name 'buildIdentity' -Required
+        Assert-StrictBuildIdentity -Identity $buildIdentity -ExpectedExeSha256 $requestExeSha256
         $steps = @(Get-PropertyValue -Object $request -Name 'steps' -Required)
+        Assert-StrictRequestSteps -Steps $steps
     } catch {
         $blocked = New-BlockedVerdict -RunId $runIdFromPrefix -VmName $VmName -Diagnosis ('invalid-request: ' + $_.Exception.Message) -RequestSha256 $actualSha
         Write-Verdict -RunBlobPrefix $RunBlobPrefix -Verdict $blocked
@@ -1211,7 +1338,7 @@ function Process-RunDirectory {
         return $true
     }
     $claim = [ordered]@{
-        schemaVersion = 1
+        schemaVersion = 2
         runId = $runIdFromPrefix
         vmName = $VmName
         agentSha = Get-AgentSha
@@ -1254,6 +1381,7 @@ function Process-RunDirectory {
         # the .ready sentinel, so binding it costs nothing and closes the reuse case completely.
         requestSha256 = $actualSha
         requestExeSha256 = $requestExeSha256
+        buildIdentitySha256 = $buildIdentitySha256
         vmName = $VmName
         agentSha = Get-AgentSha
         win32Sha = Get-Win32Sha
