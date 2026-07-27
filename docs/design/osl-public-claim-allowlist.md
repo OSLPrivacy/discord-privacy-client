@@ -209,7 +209,7 @@ Update this file in the same task as any change to security truth or feature sta
 any page currently using the old wording — a row that no longer earns its badge is a
 live incorrect claim on the site, not a documentation backlog item.
 
-### Known enforcement gap — in-app copy is UNGUARDED (recorded 2026-07-26)
+### In-app copy gate — CLOSED 2026-07-26 (was the gap recorded earlier the same day)
 
 Section D says it governs "Website, in-app copy, README, store listing, social posts, screenshots,
 alt text". Only **one** of those is mechanically enforced. `scripts/check-claims.mjs` runs against
@@ -218,10 +218,25 @@ the website repository; **nothing checks the strings a user actually reads insid
 likewise unguarded, as tonight demonstrated: it carried an inverted burn claim on the repository's
 front page while THREAT_MODEL already said those words were unearned.
 
-So the strongest claim surface a user touches is the least guarded one. **Queued, deliberately not
-started at load 41:** a §D sweep of in-app copy, then a gate that runs the same forbidden-phrase and
-badge rules over the app strings and README, not just the site. Until that exists, treat in-app copy
-as manually reviewed — which is to say, not reviewed.
+**Now closed.** `scripts/check-app-claims.mjs` in the app repository scans every string and template
+literal under `apps/osl-hub-ui/src/**` plus `README.md`, and is wired into the `TypeScript Test`
+workflow so it cannot rot. First clean run: **28 banned phrases parsed, 7,345 strings scanned,
+0 violations.**
+
+It **parses section D of this file directly** rather than keeping its own list. That is the point:
+add a row to §D and the app gate tightens automatically, with no second list to drift. It carries
+non-empty floors (>=8 phrases, >=300 strings, README non-empty) so it cannot pass by measuring
+nothing, proven by starving it.
+
+Two precision rules were required to make it usable, both learned from its first run:
+
+- **Negation awareness.** README legitimately says burn is *not* cryptographic erasure; a gate that
+  flags an honest denial is worse than no gate, because it gets switched off.
+- **Context gating for ordinary English.** Section D bans "audited"/"reviewed" as *security* claims,
+  but the first run flagged "Selected apps reviewed" and "Every batch is reviewed and confirmed" —
+  the user reviewing a batch. Those single words now fire only near security context (osl,
+  encryption, protocol, independently, third-party). Multi-word section D phrases stay absolute:
+  "cryptographic burn" is never innocent.
 
 **The crawler now exists.** `scripts/check-claims.mjs` in the website repository asserts that no
 page contains a section D phrase, that no bare price appears outside the pricing manifest, that
