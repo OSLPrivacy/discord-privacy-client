@@ -2378,3 +2378,48 @@ disabled. `README.md` remains outside this lane's `docs/**` and
 - Stateless-v3 reachability audit: +0 source/test only.
 - README ratchet/sender-key correction: +0 pending authorized owner edit.
 - Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — README ownership blocker rechecked
+
+The root repository advanced through `e64fe5f` and `dae12da` (the latter says
+it stops claiming peer Burn is live), but the current `README.md:42-48` still
+states that direct messages ride a Double Ratchet with forward secrecy and
+that groups/server channels use sender keys. The immutable stateless-v3 audit
+`0d55834` contradicts those present-tense claims for shipping behavior.
+
+This remains blocked by the explicit lane boundary: root `README.md` is not in
+the truth lane's authorized `docs/**` or `oslprivacy-web` paths. No edit was
+made and no runtime claim is inferred.
+
+## Acceptance rows this earns
+
+- README ratchet/sender-key mismatch: +0 pending authorized owner correction.
+- Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — unwired BurnAlert and sender-key design qualification
+
+Crypto reachability audit at `66412233d10bf257566861c02d1a3b46ca40c3b8`
+confirmed `BurnAlertPayload`, signing, and verification are definitions/tests
+only; no production caller reaches them, and the broker's 0x0A path returns
+`EnforcementUnavailable` without apply/ACK/delete. The in-scope design docs
+therefore needed an availability boundary. Commit
+`2e5b53c08ee162a9db3878a31883c238f4fafdd4`, tree
+`f63ae9241268dd004adbb9fa8a0b80a87b625dad`, qualifies:
+
+- `docs/design/group-messaging.md` blob
+  `057bd7c16c9b4d6fda619566c0806c8f757118ca` now labels sender keys planned
+  and not wired;
+- `docs/design/sender-keys.md` blob
+  `8d0471318988d7f43419cd97838e7f0268103b26` removes the present-tense
+  “v1 alpha ships” claim and states the client does not enable sender keys; and
+- `docs/design/key-server-api.md` blob
+  `b91143c97fb2f06ca26024150176e95b96814594` labels burn-alert upload,
+  verification, and rendering design-only/unwired.
+
+`git diff --check` passed. No runtime, release, browser, build, or deployment
+evidence was claimed.
+
+## Acceptance rows this earns
+
+- BurnAlert/sender-key design qualification +0.
+- Checklist remains untouched; authority remains **100 / 303**.
