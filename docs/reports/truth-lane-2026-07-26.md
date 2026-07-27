@@ -1987,3 +1987,60 @@ deployed page or runtime was checked.
 - Discord-ingestion successor +0 by independent REJECT.
 - No checklist row or section changed.
 - Authoritative arithmetic remains **100 / 303**.
+
+## 2026-07-27 — newest immutable verdicts and FAQ claim correction
+
+The following exact objects were reconciled without scoring:
+
+- D2 `3a12760ed526e3170d467a370df70fb7786e4877`, tree
+  `ad10fe3b0f41fb59f59484e56948f8bcadfdd5c7`: **REJECT +0** solely because
+  unconditional wrong-size multipart abort is not mutation-bound. Reverting to
+  `!completedObject` and disabling the abort branch both false-green; only
+  abort-failure ordering is enforced.
+- Visible-row receipt `8ac72658b3790c69d0704f14a0f7f3c10d316099`, tree
+  `78c74b937bc8bdd71c8be8496cacae63c048f43e`: **ACCEPT source/test +0**.
+  Live Windows/Discord execution and two-identity runtime proof are absent.
+- Sender-filter `a7d7a750bef22d9d15bb79ad8c55d38a9ce63e25`, tree
+  `16caf509e43e2b00ac2007e9b8e8ca04f2490477`: **ACCEPT source/test,
+  REJECT verified-live/shipping, +0**. The production producer registry and
+  verifier store remain unprovisioned.
+- Discord/WhatsApp F1 successor `42c74051e5223a5e03e868439dfe9599e4089926`,
+  tree `efd83a8ac4d5767203ead19abab5cb3f7355952c`: **REJECT +0**. Declared
+  media digest/size, account identity, self-authorship, replay generation, and
+  a raw nonempty positive remain unbound; no score follows its byte-swap fix.
+- VM receipt `ff117dd12422444b0e41aa45e20dd2c3397226d3`, tree
+  `45142200f7deed12ea1424c4e1a17793bc851a17`: **REJECT +0** for runtime
+  authority. Its archived 9/9 suite proves only receipt-supplied simulation;
+  no independently produced live operator receipt exists.
+- D2 correction successor `f54fac1970661bc7bc808abfcc94aba3069852bf`, tree
+  `235d649134270c2d1db1398085a86cbd55b9e744`, adds the missing semantic
+  requirement and committed false-green mutations, but has no independent
+  acceptance verdict yet. It is held at +0 pending that audit.
+
+The next highest-impact reachable website mismatch was the FAQ pricing answer:
+`docs/faq.html` said Free “includes ... Free Scrub” while the canonical
+registry and status page mark Scrub discovery Planned and unavailable in the
+shipping app. Website commit `6d251d5621a1836a97d54990148513c933178fea`,
+tree `c6d44ad1ef69d98efc9de33106732f0bacafef3a`, parent
+`417910e60ea40cff102acd3ad63ec5076c1f6de2`, corrects that paragraph to bind
+Free Scrub to the Planned badge and state it is not available yet.
+
+Exact changed blob:
+
+- `docs/faq.html`: `da2d7226532695fefe5cd11d15633909fac3feb9`.
+
+The `osl-heavy` semantic self-test passed 420/420 fixtures and the public scan
+passed 16/16 files; `git diff --check` passed. No browser, build, install,
+deploy, push, or runtime test ran.
+
+## Acceptance rows this earns
+
+- D2 +0; remains rejected pending a corrected independently accepted successor.
+- D2 `f54fac1` +0 pending independent exact-object acceptance.
+- Visible-row +0; source/test acceptance does not prove runtime.
+- Sender-filter +0; live provisioning is absent.
+- Discord/WhatsApp F1 +0; exact successor remains rejected.
+- VM runtime +0; exact receipt remains rejected for live authority.
+- FAQ Free Scrub wording correction +0; no implementation or runtime behavior
+  was awarded.
+- Checklist remains untouched; authority remains **100 / 303**.
