@@ -333,13 +333,20 @@ fn anchored_provider_is_store_domain_separated_and_stale_concurrent_writer_fails
     a.put(&message("a", "first writer")).unwrap();
     let error = b.put(&message("b", "stale writer")).unwrap_err();
     assert!(
-        matches!(error, StoreError::Anchor(message) if message.contains("stale compare-and-advance"))
+        matches!(error, StoreError::Anchor(message) if message.contains("stale local anchor generation")),
+        "the stale writer must be refused before it can commit a conflicting local generation"
     );
     drop(a);
     drop(b);
-    let error = match MessageStore::open_anchored(tmp.path(), SECRET_A, concurrent_anchor) {
-        Ok(_) => panic!("concurrent generation conflict was accepted"),
-        Err(error) => error,
-    };
-    assert!(matches!(error, StoreError::Anchor(message) if message.contains("disagree")));
+    let recovered = open(tmp.path(), concurrent_anchor);
+    assert_eq!(
+        recovered.get("a").unwrap(),
+        Some(message("a", "first writer")),
+        "the winning writer must remain readable after a stale writer is refused"
+    );
+    assert_eq!(
+        recovered.get("b").unwrap(),
+        None,
+        "the stale writer must leave no locally committed message behind"
+    );
 }

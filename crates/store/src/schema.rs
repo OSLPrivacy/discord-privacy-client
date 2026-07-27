@@ -311,7 +311,18 @@ pub(crate) fn migrate(
 /// decide whether an existing provider record must be reconciled before a
 /// migration is allowed to mutate state.
 pub(crate) fn inspect_schema_version(conn: &Connection) -> Result<Option<u32>, StoreError> {
+    if !table_exists(conn, "_meta")? {
+        return Ok(None);
+    }
     read_meta_u32(conn, "schema_version")
+}
+
+/// Whether the existing file has a metadata table.  Anchored open uses this
+/// read-only probe before it is permitted to create `_meta`: an absent table
+/// must be distinguishable from an enrolled database whose anchor record was
+/// removed or replayed.
+pub(crate) fn has_meta_table(conn: &Connection) -> Result<bool, StoreError> {
+    table_exists(conn, "_meta")
 }
 
 /// Additive columns from the v2/v3 era. Some very old files predate them, and

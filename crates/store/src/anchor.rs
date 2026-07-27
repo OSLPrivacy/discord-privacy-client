@@ -258,6 +258,16 @@ impl AnchorBinding {
 
     pub(crate) fn commit(&self, tx: Transaction<'_>) -> Result<(), StoreError> {
         let mut current = self.current.lock().expect("anchor mutex poisoned");
+        // The caller may have spent time preparing a transaction while a
+        // second opener advanced this store.  Compare the durable local
+        // record *inside this transaction* before writing the successor, so
+        // the loser rolls its mutation back instead of creating a second
+        // locally committed state that can only fail at the provider later.
+        if raw_record(&tx)? != Some(current.clone()) {
+            return Err(StoreError::Anchor(
+                "stale local anchor generation; refusing concurrent mutation".to_string(),
+            ));
+        }
         let next = AnchorRecord {
             generation: current
                 .generation
@@ -279,6 +289,27 @@ impl AnchorBinding {
 }
 
 fn record(conn: &Connection, digest_key: &[u8; 32]) -> Result<Option<AnchorRecord>, StoreError> {
+    let raw = raw_record(conn)?;
+    let Some(record) = raw else {
+        return Ok(None);
+    };
+    let expected = digest(conn, digest_key)?;
+    if record.digest != expected {
+        return Err(StoreError::Anchor(
+            "database anchor digest does not bind current state".to_string(),
+        ));
+    }
+    Ok(Some(record))
+}
+
+/// Read the local record without checking its digest against the caller's
+/// transaction.  `commit` needs this while its transaction already contains
+/// a proposed state change, for which the prior record intentionally does not
+/// bind the in-flight database yet.
+fn raw_record(conn: &Connection) -> Result<Option<AnchorRecord>, StoreError> {
+    if !schema::has_meta_table(conn)? {
+        return Ok(None);
+    }
     let generation: Option<Vec<u8>> = conn
         .query_row(
             "SELECT value FROM _meta WHERE key = ?1",
@@ -302,12 +333,6 @@ fn record(conn: &Connection, digest_key: &[u8; 32]) -> Result<Option<AnchorRecor
             let stored_digest: [u8; 32] = digest_bytes
                 .try_into()
                 .map_err(|_| StoreError::Anchor("anchor digest has invalid length".to_string()))?;
-            let expected = digest(conn, digest_key)?;
-            if stored_digest != expected {
-                return Err(StoreError::Anchor(
-                    "database anchor digest does not bind current state".to_string(),
-                ));
-            }
             Ok(Some(AnchorRecord {
                 generation: u64::from_le_bytes(generation),
                 digest: stored_digest,
@@ -474,7 +499,11 @@ mod tests {
     use super::*;
     use crate::{MessageStore, StoredMessage};
     use std::collections::BTreeMap;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Barrier, Mutex,
+    };
+    use std::thread;
     use tempfile::TempDir;
 
     const SECRET: &[u8; 32] = &[0xa5; 32];
@@ -543,6 +572,67 @@ mod tests {
         }
     }
 
+    /// A provider that makes a pre-mutation anchor reconciliation observable.
+    /// If open changes a persistent SQLite setting before it calls `load`, the
+    /// v7 fixture's byte snapshot below changes before this deliberate refusal.
+    struct RejectingLoadProvider;
+
+    impl MonotonicAnchor for RejectingLoadProvider {
+        fn load(&self, _store_id: [u8; 32]) -> Result<Option<AnchorRecord>, StoreError> {
+            Err(StoreError::Anchor("test provider rejected preflight load".to_string()))
+        }
+
+        fn compare_and_advance(
+            &self,
+            _store_id: [u8; 32],
+            _expected: Option<AnchorRecord>,
+            _next: AnchorRecord,
+        ) -> Result<(), StoreError> {
+            panic!("preflight refusal must occur before any provider CAS")
+        }
+    }
+
+    /// Forces the first two openers to finish provider reconciliation from the
+    /// same v7 generation before either may start a journal transition.
+    struct RacingProvider {
+        records: Mutex<BTreeMap<[u8; 32], AnchorRecord>>,
+        first_loads: AtomicUsize,
+        barrier: Barrier,
+    }
+
+    impl RacingProvider {
+        fn from_records(records: BTreeMap<[u8; 32], AnchorRecord>) -> Self {
+            Self {
+                records: Mutex::new(records),
+                first_loads: AtomicUsize::new(0),
+                barrier: Barrier::new(2),
+            }
+        }
+    }
+
+    impl MonotonicAnchor for RacingProvider {
+        fn load(&self, store_id: [u8; 32]) -> Result<Option<AnchorRecord>, StoreError> {
+            if self.first_loads.fetch_add(1, Ordering::SeqCst) < 2 {
+                self.barrier.wait();
+            }
+            Ok(self.records.lock().unwrap().get(&store_id).cloned())
+        }
+
+        fn compare_and_advance(
+            &self,
+            store_id: [u8; 32],
+            expected: Option<AnchorRecord>,
+            next: AnchorRecord,
+        ) -> Result<(), StoreError> {
+            let mut records = self.records.lock().unwrap();
+            if records.get(&store_id).cloned() != expected {
+                return Err(StoreError::Anchor("test stale compare-and-advance".to_string()));
+            }
+            records.insert(store_id, next);
+            Ok(())
+        }
+    }
+
     fn message() -> StoredMessage {
         StoredMessage {
             discord_message_id: "journal-message".to_string(),
@@ -596,6 +686,112 @@ mod tests {
         tx.commit().unwrap();
         provider.records.lock().unwrap().insert(store_id, record);
         tmp
+    }
+
+    fn store_artifacts(dir: &std::path::Path) -> Vec<(String, Vec<u8>)> {
+        let mut artifacts = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().starts_with("messages.sqlite"))
+                    .unwrap_or(false)
+            })
+            .map(|path| {
+                (
+                    path.file_name().unwrap().to_string_lossy().into_owned(),
+                    std::fs::read(path).unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        artifacts.sort_by(|left, right| left.0.cmp(&right.0));
+        artifacts
+    }
+
+    #[test]
+    fn anchored_v7_reconciles_before_any_persistent_open_mutation() {
+        let _serial = TEST_MIGRATION_SERIAL.lock().unwrap();
+        let provider = Arc::new(Provider::new());
+        let tmp = anchored_v7(provider);
+        {
+            let conn = Connection::open(tmp.path().join("messages.sqlite")).unwrap();
+            conn.pragma_update(None, "journal_mode", "DELETE").unwrap();
+            conn.pragma_update(None, "secure_delete", "OFF").unwrap();
+        }
+        let before = store_artifacts(tmp.path());
+        assert!(!before.is_empty(), "nonempty v7 fixture must exist before refusal");
+
+        let error = match MessageStore::open_anchored(
+            tmp.path(),
+            SECRET,
+            Arc::new(RejectingLoadProvider),
+        ) {
+            Ok(_) => panic!("provider load refusal must stop anchored v7 open"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, StoreError::Anchor(ref message) if message.contains("rejected preflight load")),
+            "wrong error before anchor reconciliation: {error}"
+        );
+        assert_eq!(
+            store_artifacts(tmp.path()),
+            before,
+            "anchored v7 open mutated SQLite before the old anchor reconciled"
+        );
+    }
+
+    #[test]
+    fn provider_state_without_a_local_database_refuses_before_creation() {
+        let provider = Arc::new(Provider::new());
+        let tmp = TempDir::new().unwrap();
+        let (store_id, _) = cipher::derive_anchor_material(SECRET).unwrap();
+        provider.records.lock().unwrap().insert(
+            store_id,
+            AnchorRecord {
+                generation: 1,
+                digest: [7u8; 32],
+            },
+        );
+        let error = match MessageStore::open_anchored(tmp.path(), SECRET, provider) {
+            Ok(_) => panic!("remote anchor state must refuse a fresh local database"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, StoreError::Anchor(ref message) if message.contains("local database is absent")),
+            "wrong missing-local refusal: {error}"
+        );
+        assert!(
+            !tmp.path().join("messages.sqlite").exists(),
+            "a provider-backed replay refusal must not create SQLite first"
+        );
+    }
+
+    #[test]
+    fn genuinely_concurrent_v7_open_has_one_authority_winner_and_refuses_loser() {
+        let _serial = TEST_MIGRATION_SERIAL.lock().unwrap();
+        let bootstrap = Arc::new(Provider::new());
+        let tmp = anchored_v7(bootstrap.clone());
+        let provider = Arc::new(RacingProvider::from_records(
+            bootstrap.records.lock().unwrap().clone(),
+        ));
+        let path_a = tmp.path().to_path_buf();
+        let path_b = tmp.path().to_path_buf();
+        let provider_a = provider.clone();
+        let provider_b = provider.clone();
+        let a = thread::spawn(move || MessageStore::open_anchored(&path_a, SECRET, provider_a));
+        let b = thread::spawn(move || MessageStore::open_anchored(&path_b, SECRET, provider_b));
+        let outcomes = [a.join().unwrap(), b.join().unwrap()];
+        let winners = outcomes.iter().filter(|outcome| outcome.is_ok()).count();
+        let losers = outcomes.iter().filter(|outcome| outcome.is_err()).count();
+        assert_eq!(winners, 1, "exactly one concurrently reconciled opener may win");
+        assert_eq!(losers, 1, "the stale concurrent opener must fail closed");
+        let loser = outcomes.into_iter().find_map(Result::err).unwrap();
+        assert!(
+            matches!(loser, StoreError::Anchor(ref message) if message.contains("stale")),
+            "concurrent loser returned the wrong error: {loser}"
+        );
+        let reopened = MessageStore::open_anchored(tmp.path(), SECRET, provider).unwrap();
+        assert_eq!(reopened.get("journal-message").unwrap(), Some(message()));
     }
 
     fn assert_v8(dir: &std::path::Path, provider: Arc<Provider>, context: &str) {

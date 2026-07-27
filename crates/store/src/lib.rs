@@ -550,6 +550,21 @@ impl MessageStore {
         identity_secret: &[u8; 32],
         provider: Arc<dyn MonotonicAnchor>,
     ) -> Result<Self, StoreError> {
+        // A provider record with no local database is a rollback/replacement
+        // signal, not permission to create a fresh SQLite file and discover
+        // the disagreement afterwards.  This is deliberately separate from
+        // unanchored first enrollment: only a provider-absent store may be
+        // created here.
+        let prospective_path = app_data_dir.join("messages.sqlite");
+        if !prospective_path.exists() {
+            let (store_id, _) = cipher::derive_anchor_material(identity_secret)?;
+            if provider.load(store_id)?.is_some() {
+                return Err(StoreError::Anchor(
+                    "provider has anchor state but local database is absent; refusing creation"
+                        .to_string(),
+                ));
+            }
+        }
         Self::open_with_connection_factory(app_data_dir, identity_secret, Some(provider), |path| {
             Ok(Connection::open(path)?)
         })
@@ -580,6 +595,29 @@ impl MessageStore {
         // persistent journal-mode pragma. A refused legacy profile is left
         // byte-for-byte unchanged, not merely logically un-migrated.
         schema::refuse_ambiguous_legacy_wrappers(&conn)?;
+
+        // This probe and anchor reconciliation are read-only.  In particular,
+        // do not create `_meta`, switch journal mode, or set a persistent
+        // pragma before an existing anchored v7/v8 generation has proved it
+        // is still the provider's current state.
+        let inspected_version = schema::inspect_schema_version(&conn)?;
+        let existing_anchor = match provider.as_ref() {
+            Some(provider) => anchor::AnchorBinding::reconcile_existing(
+                &conn,
+                identity_secret,
+                provider.clone(),
+            )?,
+            None => None,
+        };
+        if existing_anchor.is_some()
+            && !matches!(inspected_version, Some(7) | Some(8))
+        {
+            return Err(StoreError::Anchor(
+                "anchored migration before v7 is not journal-supported; refusing mutation"
+                    .to_string(),
+            ));
+        }
+
         conn.pragma_update(None, "journal_mode", "WAL")?;
         // Probe-4 fix: WAL's default synchronous=NORMAL is fast but
         // loses uncheckpointed writes on a hard kill (force-close,
@@ -597,80 +635,57 @@ impl MessageStore {
         let key = cipher::derive_key(identity_secret)?;
         let index_key = cipher::derive_index_key(identity_secret)?;
         schema::check_canary(&conn, &key)?;
-        let inspected_version = schema::inspect_schema_version(&conn)?;
         let anchor = match provider {
             None => {
                 schema::migrate(&conn, &key, &index_key)?;
                 None
             }
-            Some(provider) => match inspected_version {
+            Some(provider) => match (inspected_version, existing_anchor) {
                 // An enrolled v7 profile must be reconciled before the
                 // migration removes any anchored metadata. An absent local and
                 // provider record is deliberately the distinct unanchored
                 // compatibility path: it migrates first, then enrolls v8.
-                Some(7) => match anchor::AnchorBinding::reconcile_existing(
-                    &conn,
-                    identity_secret,
-                    provider.clone(),
-                )? {
-                    Some(binding) => {
-                        binding.migrate_v7_to_v8(&conn)?;
-                        Some(binding)
-                    }
-                    None => {
-                        schema::migrate(&conn, &key, &index_key)?;
-                        Some(anchor::AnchorBinding::enroll_or_reconcile(
-                            &conn,
-                            identity_secret,
-                            provider,
-                        )?)
-                    }
-                },
-                // A current enrolled profile is reconciled before ordinary
-                // open does any idempotent schema maintenance. Its digest has
+                (Some(7), Some(binding)) => {
+                    binding.migrate_v7_to_v8(&conn)?;
+                    Some(binding)
+                }
+                (Some(7), None) => {
+                    schema::migrate(&conn, &key, &index_key)?;
+                    Some(anchor::AnchorBinding::enroll_or_reconcile(
+                        &conn,
+                        identity_secret,
+                        provider,
+                    )?)
+                }
+                // A current enrolled profile was reconciled before ordinary
+                // open did any idempotent schema maintenance. Its digest has
                 // already bound the exact existing state.
-                Some(8) => match anchor::AnchorBinding::reconcile_existing(
-                    &conn,
-                    identity_secret,
-                    provider.clone(),
-                )? {
-                    Some(binding) => {
-                        if anchor::AnchorBinding::migration_pending(&conn)? {
-                            binding.migrate_v7_to_v8(&conn)?;
-                        }
-                        Some(binding)
+                (Some(8), Some(binding)) => {
+                    if anchor::AnchorBinding::migration_pending(&conn)? {
+                        binding.migrate_v7_to_v8(&conn)?;
                     }
-                    None => {
-                        schema::migrate(&conn, &key, &index_key)?;
-                        Some(anchor::AnchorBinding::enroll_or_reconcile(
-                            &conn,
-                            identity_secret,
-                            provider,
-                        )?)
-                    }
-                },
-                // Older anchored states do not yet have transaction-owned
-                // journal hooks. Refuse an existing record rather than apply
-                // an unverified rewrite; absent records retain ordinary
-                // compatibility migration and only enroll at the target.
-                _ => match anchor::AnchorBinding::reconcile_existing(
-                    &conn,
-                    identity_secret,
-                    provider.clone(),
-                )? {
-                    Some(_) => return Err(StoreError::Anchor(
-                        "anchored migration before v7 is not journal-supported; refusing mutation"
-                            .to_string(),
-                    )),
-                    None => {
-                        schema::migrate(&conn, &key, &index_key)?;
-                        Some(anchor::AnchorBinding::enroll_or_reconcile(
-                            &conn,
-                            identity_secret,
-                            provider,
-                        )?)
-                    }
-                },
+                    Some(binding)
+                }
+                (Some(8), None) => {
+                    schema::migrate(&conn, &key, &index_key)?;
+                    Some(anchor::AnchorBinding::enroll_or_reconcile(
+                        &conn,
+                        identity_secret,
+                        provider,
+                    )?)
+                }
+                // The pre-mutation guard above returns for an existing
+                // pre-v7 anchor.  An absent local/provider record remains the
+                // explicitly distinct unanchored compatibility path.
+                (_, None) => {
+                    schema::migrate(&conn, &key, &index_key)?;
+                    Some(anchor::AnchorBinding::enroll_or_reconcile(
+                        &conn,
+                        identity_secret,
+                        provider,
+                    )?)
+                }
+                (_, Some(_)) => unreachable!("pre-mutation anchor guard returned"),
             },
         };
         validate_all_attachment_manifests(&conn, &key, &index_key)?;
