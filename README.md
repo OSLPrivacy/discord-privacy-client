@@ -75,26 +75,35 @@ covers every channel you are in.
 
 ### Burn
 
-Burn is local cryptographic erasure. It destroys keys, not messages. There are
-two kinds and they are different.
+Burn deletes OSL's own copies. It is **not** cryptographic erasure and it does not
+destroy keys — what that means in practice is spelled out below. There are two
+kinds and they are different.
 
-Scope burn destroys your keys for one conversation. Your decryption capability
-for that conversation, its key mappings and its local cache are gone, so the
-messages become unreadable to you. A signed burn notice is also sent to the other
-members as a *request* that their clients drop the same keys; a member whose
-client honours it loses their copy too, and OSL cannot make that happen or prove
-that it did. Use this when you no longer trust the people in one channel with your
-past messages. Everything else you have is untouched.
+Scope burn shreds OSL's local copies for one conversation. The stored ciphertext
+and nonce are overwritten in place, the rows are marked burned so a later sync
+cannot write them back, cached attachments go with them, and OSL's server-side
+state for that scope is deleted. A signed burn notice is also sent to the other
+members as a *request* that their clients do the same; a member whose client
+honours it loses their copy too, and OSL cannot make that happen or prove that it
+did. Use this when you no longer trust the people in one channel with your past
+messages. Everything else you have is untouched.
 
-Account burn destroys everything on your machine. Every key, every conversation,
-every saved message. It generates a fresh identity so you can start over. Use
-this as a panic button. It cannot be undone.
+Account burn shreds everything on your machine — every conversation and every
+saved message — and generates a fresh identity so you can start over. Use this as
+a panic button. It cannot be undone.
 
-What burn does not do: it does not delete anything from Discord. The carrier
-messages stay in the channel, Discord's own copies stay on Discord's servers, and
-nothing burn does touches provider retention, exports, backups, screenshots or
-anything anyone copied earlier. It cannot reach a recipient who already read the
-plaintext or a client that ignores the notice. See
+**What burn does not do.** It does not destroy anyone's ability to decrypt. OSL
+seals each message to the recipient's long-term keys, so the carrier that Discord
+still holds stays readable to anyone who has that key material, and burning your
+copy does not change that. It does not delete anything from Discord: the carrier
+messages stay in the channel and Discord's own copies stay on Discord's servers.
+It does not touch provider retention, exports, backups or screenshots, it cannot
+reach a recipient who already read the plaintext, and it cannot reach a client
+that ignores the notice.
+
+Burn cleans up. It does not un-send. Making burn genuinely cryptographic would
+require sealing every message under a per-message key that lives off your device,
+which is designed but deliberately not built. See
 [`docs/design/burn-contract.md`](docs/design/burn-contract.md).
 
 ### Deleting messages from Discord

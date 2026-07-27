@@ -158,8 +158,20 @@ capability.** State this plainly wherever burn is described.
   it to `NULL` (`crates/store/src/lib.rs:298`, `:342`, `:350`, `:560`) — but it
   was already `NULL`. Nothing in the tree writes it non-null.
 - What burn does achieve locally is real and worth stating: it zeroblobs the
-  stored `ciphertext`/`nonce` and marks the row burned, so the **local cached
-  plaintext** of those messages is gone.
+  stored `ciphertext`/`nonce`, marks the row burned, and drops the message's
+  cached attachments, so the **local cached plaintext** of those messages is
+  gone. **This sentence was not true until 2026-07-26 and is worth recording
+  rather than quietly fixing.** The receive observer re-decrypts a channel's
+  history on re-entry and re-`put`s the same ids, so a single channel re-entry
+  after a burn wrote the sealed body back to disk and cleared the flag; and
+  `mark_burned` short-circuited on `burned = 1`, so rows written by earlier
+  builds were flagged but never actually shredded. Both are fixed — `put` now
+  carries `WHERE messages.burned = 0` and refuses to write a live body under a
+  burned flag, and `mark_burned` shreds unconditionally while stamping
+  `burned_at` only when unset, so re-burning cannot make an old destruction look
+  recent. Evidence, both directions: re-introducing the early return made the
+  test fail with `sealed body survives on disk (29 non-zero bytes)`. See
+  `docs/reports/store-lane-2026-07-26.md`.
 - What it does **not** achieve: the ciphertext Discord holds on its CDN remains
   decryptable by anyone who still has the recipient key material — which,
   because v3 wraps to long-term recipient keys, is any holder of that

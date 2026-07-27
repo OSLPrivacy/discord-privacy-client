@@ -5,7 +5,7 @@
 > An agent should be able to start or resume work by reading this file and then following the
 > linked subsystem document for its task. Do not reconstruct product intent from old chats.
 >
-> **Control revision:** `OSL-MASTER-2026-07-26-r8`. A model/account reads this document completely
+> **Control revision:** `OSL-MASTER-2026-07-26-r9`. A model/account reads this document completely
 > the first time only. On later work it checks this revision and its saved memory card, then reads
 > only changed sections and the linked subsystem/report. Every semantic edit must increment the
 > revision and add a one-line delta to section 0.5.
@@ -81,6 +81,19 @@ Capture a fact once and link to it elsewhere.
 
 ### 0.5 Revision digest
 
+- `r9` — burn language corrected across the repository, which had been stating two positions at
+  once: `THREAT_MODEL.md` said the words were unearned while 26 older statements still claimed
+  cryptographic erasure. **`README.md` — the public front page — is the important one**: it said
+  "Burn is local cryptographic erasure. It destroys keys, not messages", which is exactly inverted,
+  since `wrapped_key` is never populated so there is no key to destroy. Corrected to what burn does:
+  local shredding plus server-side deletion plus a cooperative peer request, with no destruction of
+  the only decryption capability. `burn-contract.md`, `osl-hub-feature-parity.md` and §8.4 here also
+  corrected; the per-message wrapped-key design docs are **labelled unbuilt rather than rewritten**,
+  because that model is deliberately deferred. Two phrases added to allowlist §D — "destroys keys,
+  not messages" and "permanent ciphertext" — and to the website crawler, so neither can creep back
+  through a copy edit. `THREAT_MODEL.md` local-destruction claim now records that it was **false
+  until 2026-07-26** (re-`put` resurrection and a `mark_burned` short-circuit, both fixed by the
+  store lane with a both-directions control).
 - `r8` — keyserver escalation **closed**. Migration `0027` is deployed and there is now a named
   Worker version, which is the exact condition the §9 row and the coordination trap were blocked on:
   keyserver `3f92f0f5`, cipher-store `0a17547d`, `0029` applied. The `NOT DEPLOYED` header in the
@@ -592,7 +605,8 @@ commit in every preview/deploy report. Never copy changes between these states b
 ### 8.4 Product explanations and comparison pages
 
 - [ ] Define PWS/Privacy Warning System once. PWS acts before disclosure; Burn acts after disclosure.
-- [ ] Add a Burn explanation and animation that separates local cryptographic erasure, authenticated
+- [ ] Add a Burn explanation and animation that separates local state deletion (real, and not
+      cryptographic erasure), authenticated
       cooperative peer request, host-platform deletion attempt, and unpreventable copies/screenshots.
 - [ ] Add a versioned support matrix with connector, protected send, protected receive, attachments,
       Scrub, verification date, provider-policy risk, and status.
