@@ -682,6 +682,34 @@ check found both of tonight's other defects; it is now three for three in this l
 structurally unearnable until the engine has a caller.** Truth should judge and apply; this lane has
 deliberately not edited the checklist.
 
+## In flight at end of session — a systematic unreachable-subsystem sweep
+
+The "zero callers" check found something real **three times tonight**, each time by accident:
+
+| Subsystem | Where | What it appeared to promise |
+|---|---|---|
+| `post_due_revocations` | `broker.rs` | The outbound burn lane. Fully written, never called. |
+| `admit_peer_content_seq`, `peer_scope_commitment`, `next_peer_send_seq` | `security.rs:2435/2416/2387` | Burn enforcement. A recorded floor that nothing consults. |
+| Entire `DuressEngine` surface | `keystore/src/duress.rs`, re-exported at `lib.rs:50` | A duress wipe that cannot be triggered. |
+
+Three for three is a pattern, not a coincidence: **these subsystems pass their unit tests precisely
+because nothing exercises them in anger.** It is the same family as a double that cannot fail — the
+code is correct in isolation and inert in practice — and in two of the three cases something
+downstream was claiming the behaviour worked.
+
+A read-only sweep for the rest is running; its output lands at
+`scratchpad/codex-deadcode.log` in this session's scratch directory. It covers
+`crates/keystore/src/**`, `crates/ipc/src/**` (excluding `wire_rn.rs`, the ratchet lane's) and
+`apps/osl-hub/src/**`, discounting `#[cfg(test)]` callers, doc mentions and bare re-exports, and
+excluding anything reachable through `generate_handler!`.
+
+**It has NOT been reviewed.** Treat it as an unverified draft: a false positive here sends someone
+to re-open correct code, which this lane already did once tonight over the keystore tracing
+dependency. Whoever picks it up should re-grep each hit before acting on it.
+
+**Why it is worth finishing:** every entry is a candidate for a checklist row or a user-facing claim
+that asserts something inert. That is exactly the shape of both defects confirmed above.
+
 ## Resume here
 
 - **Current verified state:** all five lane gates green (keystore 176/0/1, store 17/0, hub core
