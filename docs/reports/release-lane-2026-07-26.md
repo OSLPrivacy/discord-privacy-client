@@ -408,6 +408,52 @@ name-based selection so it is unexpressible rather than discouraged. The same fa
 a harness that guesses its subject, or a default-deny assertion that passes because it read nothing
 — is why every case must assert non-empty on the positive path before it may report a pass.
 
+## Reproducible build — run for the first time, and the answer is no
+
+`reproducible-build.yml` was not merely untested. It ran **twice, on 2026-05-09 and 2026-05-10,
+against legacy `v0.0.5`/`v0.0.6` tags, and failed both times** — then went invisible for 2.5 months
+because it only fires on `v*` tags that stopped being cut. Both historical failures are the *same*
+`proc macro panicked` / `frontendDist "../webview/dist" doesn't exist` defect found today. That
+defect has been latent since May.
+
+I dispatched the corrected workflow manually (run 30230442447), the first execution since May:
+
+| Job | Result |
+|---|---|
+| frontend dist is reproducible | **success** — confirms the local finding on a clean runner |
+| hub binary build 1 / build 2 | **success, both** — the shipped binary now compiles in this workflow for the first time |
+| **hub binary is reproducible** | **FAILURE — the two builds differ** |
+| hub deterministic profile exists | failure, **by design** — reports the missing profile rather than passing quietly |
+| legacy binary | failure — same `webview/dist` defect; **my miss**, I fixed that in `rust-test.yml` and not here. Now fixed. |
+
+**The headline is a first-ever measurement: `osl-privacy-hub.exe` is NOT byte-reproducible.** Two
+identical builds at the same commit produced different hashes (build 1
+`bb8f8c461f66d681…`). This is expected given `apps/osl-hub` has no
+`[profile.release-deterministic]`, but it was previously an assumption in either direction and is
+now a measured fact. "Reproducible release" cannot be claimed, and the deterministic profile is now
+a demonstrated need rather than a theoretical one.
+
+## Fail-open shells on Windows — six of them, three mine
+
+`windows-latest` defaults to PowerShell, which does **not** stop on a non-zero native exit. Six
+multi-line `run:` steps in Windows jobs had no `shell:` override, so an early command could fail and
+the step would still pass on the last command's status.
+
+The worst was **the updater supply-chain audit immediately before signing**: `audit_hub_release.py`
+could exit non-zero and the step would still go green as long as the following unittest passed.
+Three of the six were mine from earlier today, where a failed `npm ci` would not have stopped
+`npm run build`. All six now use `shell: bash`.
+
+Same family as everything else tonight: a check that reports success without having done the thing.
+
+## Rollback could have destroyed the update feed
+
+`gh release upload hub-latest latest.json --clobber` **deletes the existing asset before uploading**.
+A failed upload would leave `hub-latest` with no manifest at all, stripping every installed client of
+its update feed — during the emergency that is the only time rollback runs. It now restores the
+previously downloaded manifest on failure, then re-downloads the feed and asserts it actually serves
+the target version, rather than treating a zero exit as proof the asset landed.
+
 ## Release tooling built by Codex, reviewed here
 
 Two scripts I specified and reviewed rather than typed. Both are dry-run/stub-driven and cannot

@@ -169,9 +169,25 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: webview/package-lock.json
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: '1.88.0'
+      # src-tauri/tauri.conf.json points frontendDist at ../webview/dist, which
+      # is an uncommitted build output, so generate_context!() panics at compile
+      # time without it. This is why this job failed on 2026-05-09 and
+      # 2026-05-10 and then went unnoticed for 2.5 months: the workflow only
+      # fired on `v*` tags that stopped being cut.
+      - name: Build the embedded webview frontend first
+        working-directory: webview
+        shell: bash
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
       - name: Build deterministic
         run: cargo build --profile release-deterministic
       - name: Hash artifact
