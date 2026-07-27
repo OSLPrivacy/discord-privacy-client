@@ -305,7 +305,7 @@ async function productionProbe(
     (_, probeIndex) => (probeIndex + 1).toString(16).repeat(32),
   );
   const probeBase = {
-    format: D2_PROBE_FORMAT,
+    format: D2_PROBE_FORMAT as typeof D2_PROBE_FORMAT,
     environment: "production" as const,
     probe_id: probeIds[index]!,
     kind,
