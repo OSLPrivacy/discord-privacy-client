@@ -23,11 +23,11 @@ export const D2_SIGNED_STATEMENT_FORMAT =
 export const D2_PROBE_FORMAT =
   "osl.cipher-store.d2-migration-0010-production-probe.v1";
 export const D2_RELEASE_COMMIT =
-  "3938a73caaed7cd5453fb3595d0270cf74ade998";
+  "5a2bad492dec2d90094d2c4a797124366d7dea32";
 export const D2_RELEASE_TREE =
-  "37083f2616e7e7f8245e2c0efa2740edfdd85fd2";
+  "18149f3dbb14bae687cea33a56f624171958c8cd";
 export const D2_RELEASE_SOURCE_SHA256 =
-  "1031d2fe50caafb726c64518c1d5b70bddcaa2375472a2b0af4881c977bc3e00";
+  "7888abf28374e3c4097addac8653422205d2ced15ed1892e37fc2de1f1024abd";
 export const D2_MIGRATION_0010_SHA256 =
   "a545f989172c32c8f5f5c78754b4eda2f045778643cbb86c9eb81f22be2f6636";
 export const D2_DATABASE_ID = "be3d31f1-f6b4-4d6e-8ede-74514950b9e2";

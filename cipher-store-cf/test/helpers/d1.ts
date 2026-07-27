@@ -116,21 +116,84 @@ function knownLengthBody(value: unknown): Uint8Array {
 /// length, and `onlyIf: { etagDoesNotMatch: "*" }` behaves as a real
 /// precondition rather than being ignored.
 export function memoryR2() {
-  const objects = new Map<string, Uint8Array>();
-  const uploads = new Map<string, { key: string; aborted: boolean; parts: Map<number, Uint8Array> }>();
+  type StoredObject = {
+    bytes: Uint8Array;
+    etag: string;
+    version: string;
+    sha256: ArrayBuffer | null;
+  };
+  type StoredPart = {
+    bytes: Uint8Array;
+    etag: string;
+  };
+
+  const objects = new Map<string, StoredObject>();
+  const uploads = new Map<string, {
+    key: string;
+    aborted: boolean;
+    parts: Map<number, StoredPart>;
+  }>();
   let uploadSeq = 0;
+  let objectSeq = 0;
+
+  const noSuchUpload = () => {
+    const cause = new Error("The specified multipart upload does not exist.");
+    cause.name = "NoSuchUpload";
+    return cause;
+  };
+
+  const copiedBuffer = (value: ArrayBuffer | ArrayBufferView): ArrayBuffer => {
+    const bytes = ArrayBuffer.isView(value)
+      ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
+      : new Uint8Array(value);
+    return bytes.slice().buffer;
+  };
+
+  const metadata = (key: string, stored: StoredObject): R2Object => ({
+    key,
+    version: stored.version,
+    size: stored.bytes.byteLength,
+    etag: stored.etag,
+    httpEtag: `"${stored.etag}"`,
+    checksums: {
+      md5: null,
+      sha1: null,
+      sha256: stored.sha256,
+      sha384: null,
+      sha512: null,
+      toJSON() {
+        return {};
+      },
+    },
+    uploaded: new Date(0),
+    storageClass: "Standard",
+    writeHttpMetadata() {},
+    httpMetadata: {},
+    customMetadata: {},
+    range: undefined,
+  } as unknown as R2Object);
 
   const resume = (key: string, uploadId: string) => ({
     uploadId,
     key,
     async uploadPart(partNumber: number, body: unknown) {
+      const upload = uploads.get(uploadId);
+      if (!upload || upload.key !== key) throw noSuchUpload();
       const bytes = knownLengthBody(body);
-      uploads.get(uploadId)?.parts.set(partNumber, bytes);
-      return { partNumber, etag: `etag-${uploadId}-${partNumber}` };
+      const etag = `etag-${uploadId}-${partNumber}-${bytes.byteLength}`;
+      upload.parts.set(partNumber, { bytes: bytes.slice(), etag });
+      return { partNumber, etag };
     },
     async complete(parts: Array<{ partNumber: number; etag: string }>) {
-      const upload = uploads.get(uploadId)!;
-      const ordered = parts.map((part) => upload.parts.get(part.partNumber) ?? new Uint8Array());
+      const upload = uploads.get(uploadId);
+      if (!upload || upload.key !== key) throw noSuchUpload();
+      const ordered = parts.map((part) => {
+        const storedPart = upload.parts.get(part.partNumber);
+        if (!storedPart || storedPart.etag !== part.etag) {
+          throw new Error("multipart completion part receipt mismatch");
+        }
+        return storedPart.bytes;
+      });
       const total = ordered.reduce((sum, chunk) => sum + chunk.byteLength, 0);
       const joined = new Uint8Array(total);
       let offset = 0;
@@ -138,13 +201,21 @@ export function memoryR2() {
         joined.set(chunk, offset);
         offset += chunk.byteLength;
       }
-      objects.set(key, joined);
+      const sequence = ++objectSeq;
+      const stored = {
+        bytes: joined,
+        etag: `etag-object-${sequence}-${joined.byteLength}`,
+        version: `version-${sequence}`,
+        sha256: null,
+      };
+      objects.set(key, stored);
       uploads.delete(uploadId);
-      return { key, size: joined.byteLength } as R2Object;
+      return metadata(key, stored);
     },
     async abort() {
       const upload = uploads.get(uploadId);
-      if (upload) upload.aborted = true;
+      if (!upload || upload.key !== key) throw noSuchUpload();
+      upload.aborted = true;
       uploads.delete(uploadId);
     },
   });
@@ -159,23 +230,46 @@ export function memoryR2() {
     async put(
       key: string,
       value: unknown,
-      options?: { onlyIf?: { etagDoesNotMatch?: string } },
+      options?: {
+        onlyIf?: { etagDoesNotMatch?: string };
+        sha256?: ArrayBuffer | ArrayBufferView;
+      },
     ) {
       const bytes = knownLengthBody(value);
       // A real conditional put returns null when the precondition fails; the
       // caller treats that as an id collision rather than a success.
       if (options?.onlyIf?.etagDoesNotMatch === "*" && objects.has(key)) return null;
-      objects.set(key, bytes);
-      return { key, size: bytes.byteLength } as R2Object;
+      const sequence = ++objectSeq;
+      const stored = {
+        bytes: bytes.slice(),
+        etag: `etag-object-${sequence}-${bytes.byteLength}`,
+        version: `version-${sequence}`,
+        sha256: options?.sha256 ? copiedBuffer(options.sha256) : null,
+      };
+      objects.set(key, stored);
+      return metadata(key, stored);
     },
-    async get(key: string) {
-      const bytes = objects.get(key);
-      if (!bytes) return null;
-      return { key, size: bytes.byteLength, body: new Response(bytes).body! } as R2ObjectBody;
+    async get(key: string, options?: { onlyIf?: { etagMatches?: string } }) {
+      const stored = objects.get(key);
+      if (!stored) return null;
+      const head = metadata(key, stored);
+      if (options?.onlyIf?.etagMatches !== undefined
+          && options.onlyIf.etagMatches !== stored.etag) {
+        return head;
+      }
+      return {
+        ...head,
+        body: new Response(stored.bytes).body!,
+        bodyUsed: false,
+        arrayBuffer: async () => stored.bytes.slice().buffer,
+        text: async () => new TextDecoder().decode(stored.bytes),
+        json: async <T>() => JSON.parse(new TextDecoder().decode(stored.bytes)) as T,
+        blob: async () => new Blob([stored.bytes]),
+      } as R2ObjectBody;
     },
     async head(key: string) {
-      const bytes = objects.get(key);
-      return bytes ? ({ key, size: bytes.byteLength } as R2Object) : null;
+      const stored = objects.get(key);
+      return stored ? metadata(key, stored) : null;
     },
     async delete(key: string | string[]) {
       for (const item of Array.isArray(key) ? key : [key]) objects.delete(item);
