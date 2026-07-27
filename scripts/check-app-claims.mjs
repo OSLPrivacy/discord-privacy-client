@@ -1154,6 +1154,10 @@ function semanticAttachmentClaimSpans(text) {
     /\b(?:an?\s+|the\s+)?(?:harmless|benign|safe|sanitized)\s+(?:double|lookalike)\s+(?:in\s+lieu\s+of|instead\s+of|rather\s+than)\s+(?:the\s+)?(?:genuine|actual|real|original|source)\s+(?:attachments?|uploads?|files?)\b/gi,
     /\bdiscord\s+cannot\s+make\s+sense\s+of\s+(?:the\s+)?(?:genuine|actual|real|original|source)\s+(?:attachments?|uploads?|files?)\b/gi,
     /\bdiscord\s+sees\s+only\s+gibberish\b/gi,
+    /\b(?:discord|the\s+(?:service|platform)|the\s+downstream\s+(?:service|platform))(?:'s)?\s+(?:content[-\s]+analysis\s+(?:machinery|system|pipeline)|analysis\s+(?:machinery|system|pipeline))\s+(?:gets?|receives?|has)\s+no\s+(?:useful|meaningful)\s+(?:view|visibility|information)\b/gi,
+    /\b(?:discord|the\s+(?:service|platform))\s+(?:gets?|receives?|sees?)\s+(?:an?\s+)?(?:benign|harmless|sanitized)\s+(?:twin|double|lookalike)\b[^\n]{0,120}\b(?:source|original|real|actual)\s+(?:attachments?|uploads?|files?)\s+never\s+(?:leaves?|reaches?|arrives?)\b/gi,
+    /\b(?:the\s+)?(?:attachments?|uploads?|files?)(?:'s)?\s+(?:substance|contents?|meaning)\s+(?:is|are|remains?|becomes?)\s+(?:unintelligible|indecipherable|invisible)\s+to\s+(?:discord|the\s+(?:service|platform))\b/gi,
+    /\b(?:osl\s+)?skirts?\s+discord(?:'s)?\s+(?:attachment\s+|file\s+|upload\s+)?audit\b/gi,
   ]) {
     recordPattern(pattern);
   }
@@ -1166,17 +1170,19 @@ function semanticAtRestClaimSpans(text) {
   const universalScope =
     /(?<!\bat\s)\ball\b|\b(?:each|every|everything|entire|entirety|whole|complete|totality|no|none|nothing|never|zero)\b|100\s*%/i;
   const stateObject =
-    /\b(?:state|data|information|records?|storage|metadata|preferences?|settings?|profile|history|files?|content|cache|database|items?|things?|secrets?)\b/i;
+    /\b(?:state|data|information|records?|storage|metadata|preferences?|settings?|profile|history|files?|content|cache|database|items?|things?|secrets?|artifacts?|residue|material)\b/i;
   const broadCategory =
-    /\b(?:private|local)\s+(?:conversation\s+)?(?:state|data|information|records?|storage|metadata|preferences?|settings?|profile|history)\b/i;
+    /\b(?:private|local|sensitive|confidential)\s+(?:conversation\s+)?(?:state|data|information|records?|storage|metadata|preferences?|settings?|profile|history|artifacts?|residue|material)\b/i;
   const protection =
     /\b(?:encrypt(?:s|ed|ing)?|decrypt(?:s|ed|ing)?|encipher(?:s|ed|ing)?|unencrypted|ciphertext|cleartext|plain[-\s]*text|sealed?|protect(?:s|ed|ing)?|secur(?:e|es|ed|ing)?|gated|guards?|locked|unlocks?|inaccessible|unreadable|opaque|passphrase|password|in\s+the\s+clear)\b/i;
   const localContext =
     /\bat[-\s]+rest\b|\bon[-\s]+disk\b|\bfilesystem\b|\blocal(?:ly)?\b|\bon[-\s]+device\b|\bon\s+(?:this|your|the)\s+(?:device|computer|machine)\b|\bwhole[-\s]+profile\b|\b(?:persist(?:s|ed|ing)?|retain(?:s|ed|ing)?|saved?|stored?)\b/i;
   const destructive =
     /\b(?:delete|deletes|deleted|deleting|remove|removes|removed|removing|uninstall|clear|clears|cleared|clearing)\b/i;
+  const residueAbsence =
+    /\b(?:(?:osl\s+)?leaves?\s+(?:behind\s+)?(?:no|zero)\s+(?:readable\s+)?(?:private|confidential|sensitive)?\s*(?:residue|artifacts?|data|material)|nothing\s+(?:private|confidential|sensitive)\s+survives?\s+(?:on[-\s]+disk|at[-\s]+rest|locally|on\s+(?:the|your|this)\s+(?:device|computer|machine)))\b/i;
   const attachedLimitation =
-    /\b(?:planned|unavailable|unknown|unproved|unproven|not\s+yet\s+(?:available|implemented|proved)|not\s+established|does\s+not\s+(?:cover|protect|encrypt|secure|mean|imply)\s+(?:all|each|every)|not\s+(?:all|each|every|everything|the\s+(?:entire|whole|complete))|may\s+remain\s+plaintext|plaintext\s+(?:fallback|writes?)|without\s+(?:an?\s+)?(?:installed\s+)?storage\s+key|remov(?:e|es|ed|ing)\b.{0,80}\b(?:restores?|causes?)\s+plaintext\s+writes?)\b/i;
+    /\b(?:planned|unavailable|unknown|unproved|unproven|not\s+yet\s+(?:available|implemented|proved)|not\s+established|does\s+not\s+(?:claim|cover|protect|encrypt|secure|mean|imply)(?:\s+that)?\s+(?:all|each|every|nothing)|not\s+(?:all|each|every|everything|the\s+(?:entire|whole|complete))|may\s+remain\s+plaintext|plaintext\s+(?:fallback|writes?)|without\s+(?:an?\s+)?(?:installed\s+)?storage\s+key|remov(?:e|es|ed|ing)\b.{0,80}\b(?:restores?|causes?)\s+plaintext\s+writes?)\b/i;
 
   for (const block of text.matchAll(/[^\n]+/g)) {
     const blockText = block[0];
@@ -1186,14 +1192,15 @@ function semanticAtRestClaimSpans(text) {
         text: match[0].trim(),
       }))
       .filter(({ text: sentence }) => sentence);
-    const scope = sentences.find(({ text: sentence }) => (
-      !attachedLimitation.test(sentence)
-      && !destructive.test(sentence)
-      && protection.test(sentence)
-      && localContext.test(sentence)
-      && (broadCategory.test(sentence)
-        || (universalScope.test(sentence) && stateObject.test(sentence)))
-    ));
+    const scope = sentences.find(({ text: sentence }) => {
+      const broadProtectedState = protection.test(sentence)
+        && localContext.test(sentence)
+        && (broadCategory.test(sentence)
+          || (universalScope.test(sentence) && stateObject.test(sentence)));
+      return !attachedLimitation.test(sentence)
+        && !destructive.test(sentence)
+        && (residueAbsence.test(sentence) || broadProtectedState);
+    });
     if (!scope) {
       continue;
     }
@@ -1211,13 +1218,13 @@ function semanticScrubClaimSpans(text) {
   const attachedLimitation =
     /\b(?:planned|coming\s+soon|unavailable|not\s+(?:available|implemented|wired|supported|proved|proven|qualified)|not\s+yet\s+(?:available|implemented|wired|supported|proved|proven|qualified)|implemented[-\s]+unwired|test[-\s]+proven(?:[-\s]+only)?|unwired|unproved|unproven|unknown|view[-\s]+only|manual(?:ly|\s+only)?|requires?\s+(?:your\s+)?(?:review|confirmation)|does\s+not|cannot|never|may\s+(?:omit|exclude|miss)|can\s+be\s+incomplete|future|intended|design)\b/i;
   const completeHistory =
-    /(?:\b(?:complete|full|entire|whole|all)\b.{0,45}\b(?:history|content|messages?|posts?|records?|account\s+data|exports?)\b|\b(?:history|content|messages?|posts?|records?|account\s+data|exports?)\b.{0,45}\b(?:complete|full|entire|whole|all)\b)/i;
+    /(?:\b(?:complete|full|entire|whole|all|fully\s+reconciled)\b.{0,45}\b(?:history|content|messages?|posts?|records?|account\s+data|exports?|downloads?)\b|\b(?:history|content|messages?|posts?|records?|account\s+data|exports?|downloads?)\b.{0,45}\b(?:complete|full|entire|whole|all|fully\s+reconciled|nothing\s+(?:is\s+)?omitted)\b|\bnothing\s+(?:is\s+)?omitted\b.{0,45}\b(?:scrub|exports?|downloads?|history|content)\b)/i;
   const awayOperation =
-    /(?:\b(?:works?|runs?|scans?|cleans?|deletes?|removes?)\b.{0,55}\b(?:while\s+you.{0,8}\baway|while\s+the\s+user\s+is\s+away|while\s+away|unattended|in\s+the\s+background|without\s+(?:you|the\s+user))\b|\b(?:while\s+you.{0,8}\baway|while\s+the\s+user\s+is\s+away|while\s+away|unattended|in\s+the\s+background|without\s+(?:you|the\s+user))\b.{0,55}\b(?:works?|runs?|scans?|cleans?|deletes?|removes?)\b)/i;
+    /(?:\b(?:works?|runs?|scans?|cleans?|delet(?:e|es|ed|ing)|remov(?:e|es|ed|ing))\b.{0,55}\b(?:while\s+you.{0,8}\baway|while\s+the\s+user\s+is\s+away|while\s+away|unattended|in\s+the\s+background|without\s+(?:you|the\s+user))\b|\b(?:while\s+you.{0,8}\baway|while\s+the\s+user\s+is\s+away|while\s+away|unattended|in\s+the\s+background|without\s+(?:you|the\s+user))\b.{0,55}\b(?:works?|runs?|scans?|cleans?|delet(?:e|es|ed|ing)|remov(?:e|es|ed|ing))\b)/i;
   const automaticDeletion =
     /(?:\b(?:automatically|autonomously|on\s+its\s+own|without\s+(?:your\s+)?(?:review|confirmation|approval))\b.{0,45}\b(?:deletes?|removes?|cleans?|erases?)\b|\b(?:deletes?|removes?|cleans?|erases?)\b.{0,45}\b(?:automatically|autonomously|on\s+its\s+own|without\s+(?:your\s+)?(?:review|confirmation|approval))\b)/i;
   const providerSupport =
-    /\b(?:supports?|works?\s+with|handles?|imports?\s+from|covers?|available\s+(?:for|across|on)|compatible\s+with)\b/i;
+    /\b(?:supports?|works?\s+with|handles?|imports?\s+from|covers?|available\s+(?:for|across|on)|compatible\s+with|(?:natively\s+)?understands?)\b/i;
   const fiveProviderWording =
     /\b(?:five|5)[-\s]+(?:providers?|services?|platforms?|apps?|connectors?)\b/i;
   const providerPatterns = [
@@ -1226,6 +1233,7 @@ function semanticScrubClaimSpans(text) {
     /\bwhats\s*app\b/i,
     /\b(?:google|gmail)\b/i,
     /\b(?:twitter|x\/twitter|x)\b/i,
+    /\b(?:microsoft|outlook)\b/i,
   ];
 
   for (const sentenceMatch of text.matchAll(/[^.!?;\n]+[.!?;]?/g)) {
@@ -2203,6 +2211,76 @@ async function runSelfTest() {
     {
       name: "passes non-Scrub provider list",
       text: "The roadmap names Discord, Meta, WhatsApp, Google, and X.",
+      shouldFlag: false,
+    },
+    {
+      name: "catches every-sensitive-artifact sealing claim",
+      text: "Every sensitive artifact retained by OSL is sealed cryptographically.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches no-readable-private-residue claim",
+      text: "OSL leaves no readable private residue.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches nothing-confidential-survives claim",
+      text: "Nothing confidential survives on disk.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches content-analysis-no-view claim",
+      text: "Discord's content-analysis machinery gets no useful view of the attachment.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches benign-twin source-never-leaves claim",
+      text: "The service receives a benign twin; the source attachment never leaves your device.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches unintelligible-substance claim",
+      text: "The attachment's substance is unintelligible to Discord.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches generalized skirts-audit claim",
+      text: "Skirts Discord's attachment audit.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches keeps-deleting-while-away claim",
+      text: "AutoScrub keeps deleting old posts while you're away.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches fully-reconciled-download claim",
+      text: "Scrub downloads are fully reconciled and nothing is omitted.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches five-provider native-understanding claim",
+      text: "Scrub natively understands exports from Discord, Meta, WhatsApp, Google, and Microsoft.",
+      shouldFlag: true,
+    },
+    {
+      name: "passes limited residue statement",
+      text: "OSL does not claim that nothing confidential survives on disk; some local records may remain plaintext.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes planned benign-twin wording",
+      text: "A benign twin replacing the source attachment remains Planned and unproved.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes limited Scrub downloads wording",
+      text: "Scrub downloads may omit records and are not yet qualified as complete.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes planned Microsoft provider wording",
+      text: "Discord, Meta, WhatsApp, Google, and Microsoft are Planned targets for Scrub.",
       shouldFlag: false,
     },
   ];
