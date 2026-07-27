@@ -597,13 +597,83 @@ impl MessageStore {
         let key = cipher::derive_key(identity_secret)?;
         let index_key = cipher::derive_index_key(identity_secret)?;
         schema::check_canary(&conn, &key)?;
-        schema::migrate(&conn, &key, &index_key)?;
+        let inspected_version = schema::inspect_schema_version(&conn)?;
+        let anchor = match provider {
+            None => {
+                schema::migrate(&conn, &key, &index_key)?;
+                None
+            }
+            Some(provider) => match inspected_version {
+                // An enrolled v7 profile must be reconciled before the
+                // migration removes any anchored metadata. An absent local and
+                // provider record is deliberately the distinct unanchored
+                // compatibility path: it migrates first, then enrolls v8.
+                Some(7) => match anchor::AnchorBinding::reconcile_existing(
+                    &conn,
+                    identity_secret,
+                    provider.clone(),
+                )? {
+                    Some(binding) => {
+                        binding.migrate_v7_to_v8(&conn)?;
+                        Some(binding)
+                    }
+                    None => {
+                        schema::migrate(&conn, &key, &index_key)?;
+                        Some(anchor::AnchorBinding::enroll_or_reconcile(
+                            &conn,
+                            identity_secret,
+                            provider,
+                        )?)
+                    }
+                },
+                // A current enrolled profile is reconciled before ordinary
+                // open does any idempotent schema maintenance. Its digest has
+                // already bound the exact existing state.
+                Some(8) => match anchor::AnchorBinding::reconcile_existing(
+                    &conn,
+                    identity_secret,
+                    provider.clone(),
+                )? {
+                    Some(binding) => {
+                        if anchor::AnchorBinding::migration_pending(&conn)? {
+                            binding.migrate_v7_to_v8(&conn)?;
+                        }
+                        Some(binding)
+                    }
+                    None => {
+                        schema::migrate(&conn, &key, &index_key)?;
+                        Some(anchor::AnchorBinding::enroll_or_reconcile(
+                            &conn,
+                            identity_secret,
+                            provider,
+                        )?)
+                    }
+                },
+                // Older anchored states do not yet have transaction-owned
+                // journal hooks. Refuse an existing record rather than apply
+                // an unverified rewrite; absent records retain ordinary
+                // compatibility migration and only enroll at the target.
+                _ => match anchor::AnchorBinding::reconcile_existing(
+                    &conn,
+                    identity_secret,
+                    provider.clone(),
+                )? {
+                    Some(_) => return Err(StoreError::Anchor(
+                        "anchored migration before v7 is not journal-supported; refusing mutation"
+                            .to_string(),
+                    )),
+                    None => {
+                        schema::migrate(&conn, &key, &index_key)?;
+                        Some(anchor::AnchorBinding::enroll_or_reconcile(
+                            &conn,
+                            identity_secret,
+                            provider,
+                        )?)
+                    }
+                },
+            },
+        };
         validate_all_attachment_manifests(&conn, &key, &index_key)?;
-        let anchor = provider
-            .map(|provider| {
-                anchor::AnchorBinding::enroll_or_reconcile(&conn, identity_secret, provider)
-            })
-            .transpose()?;
         if schema::shred_checkpoint_pending(&conn)? {
             checkpoint_after_shred(&conn)?;
             if let Some(anchor) = &anchor {

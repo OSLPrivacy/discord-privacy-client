@@ -545,9 +545,14 @@ fn nonempty_bodies_roundtrip_after_restart_without_reversible_at_rest_leaks() {
             .unwrap(),
         Some((mime.to_string(), attachment.to_vec()))
     );
-    assert_eq!(store.get(&second.discord_message_id).unwrap(), Some(second.clone()));
     assert_eq!(
-        store.get_attachment(&second.discord_message_id, filename).unwrap(),
+        store.get(&second.discord_message_id).unwrap(),
+        Some(second.clone())
+    );
+    assert_eq!(
+        store
+            .get_attachment(&second.discord_message_id, filename)
+            .unwrap(),
         Some((
             "application/a6-test-second".to_string(),
             second_attachment.to_vec()
@@ -580,7 +585,9 @@ fn nonempty_bodies_roundtrip_after_restart_without_reversible_at_rest_leaks() {
         Some(second.clone())
     );
     assert_eq!(
-        reopened.get_attachment(&second.discord_message_id, filename).unwrap(),
+        reopened
+            .get_attachment(&second.discord_message_id, filename)
+            .unwrap(),
         Some((
             "application/a6-test-second".to_string(),
             second_attachment.to_vec()
@@ -673,7 +680,13 @@ fn store_persistence_surface_inventory_is_closed() {
     let filesystem_sites = sources
         .iter()
         .flat_map(|(name, source)| {
-            source
+            // This is a production persistence-surface inventory. Test-only
+            // crash/replay fixtures may copy a SQLite file, but they do not
+            // create a Store runtime persistence path.
+            let production_source = source
+                .split_once("\n#[cfg(test)]")
+                .map_or(*source, |(production, _)| production);
+            production_source
                 .lines()
                 .filter(|line| line.contains("std::fs::"))
                 .map(|text| (*name, text.trim().to_owned()))
@@ -709,9 +722,12 @@ fn store_persistence_surface_inventory_is_closed() {
         "VACUUM INTO",
     ];
     for (name, source) in sources {
+        let production_source = source
+            .split_once("\n#[cfg(test)]")
+            .map_or(source, |(production, _)| production);
         for api in writable_file_apis {
             assert!(
-                !source.contains(api),
+                !production_source.contains(api),
                 "{name} added persistence through {api}; inventory and prove that surface"
             );
         }

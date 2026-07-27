@@ -33,7 +33,7 @@
 use crate::cipher::{self, AttachmentMeta, MessageMeta};
 use crate::StoreError;
 use crypto::aead;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, Transaction};
 
 /// Current schema version. Bumped on every backward-incompatible
 /// change; migrations between versions are dispatched in
@@ -304,6 +304,14 @@ pub(crate) fn migrate(
     migrate_v6_to_v7(conn, key)?;
     migrate_v7_to_v8(conn)?;
     Ok(())
+}
+
+/// Read the stamped schema version without creating tables, indexes, recovery
+/// markers, or otherwise changing the database. Anchored open uses this to
+/// decide whether an existing provider record must be reconciled before a
+/// migration is allowed to mutate state.
+pub(crate) fn inspect_schema_version(conn: &Connection) -> Result<Option<u32>, StoreError> {
+    read_meta_u32(conn, "schema_version")
 }
 
 /// Additive columns from the v2/v3 era. Some very old files predate them, and
@@ -1157,23 +1165,52 @@ CREATE TABLE attachment_manifests (
 /// committed `vacuum_pending` marker makes removal of the old column bytes
 /// retryable across a crash between COMMIT and VACUUM.
 fn migrate_v7_to_v8(conn: &Connection) -> Result<(), StoreError> {
-    conn.execute_batch("BEGIN IMMEDIATE;")?;
-    let result = (|| -> Result<(), StoreError> {
-        conn.execute_batch(
-            "ALTER TABLE messages DROP COLUMN burned_at;
-             ALTER TABLE attachments DROP COLUMN burned_at;",
-        )?;
-        write_meta_u32(conn, "schema_version", SCHEMA_VERSION)?;
-        write_meta_blob(conn, VACUUM_PENDING_KEY, &[1])?;
-        conn.execute_batch("COMMIT;")?;
-        Ok(())
-    })();
-    if let Err(error) = result {
-        let _ = conn.execute_batch("ROLLBACK;");
-        return Err(error);
-    }
+    let tx = conn.unchecked_transaction()?;
+    apply_v7_to_v8_tx(&tx)?;
+    tx.commit()?;
     conn.execute_batch(SCHEMA_CURRENT)?;
     run_pending_vacuum(conn)?;
+    Ok(())
+}
+
+/// Apply the semantic v7→v8 step inside a caller-owned transaction.
+///
+/// The anchored migration coordinator uses this to make the schema version,
+/// post-VACUUM marker, migration journal phase, and external-anchor local
+/// record one atomic SQLite state before it compares-and-advances the provider.
+pub(crate) fn apply_v7_to_v8_tx(tx: &Transaction<'_>) -> Result<(), StoreError> {
+    tx.execute_batch(
+        "ALTER TABLE messages DROP COLUMN burned_at;
+         ALTER TABLE attachments DROP COLUMN burned_at;",
+    )?;
+    tx.execute(
+        "INSERT INTO _meta(key, value) VALUES ('schema_version', ?1) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![SCHEMA_VERSION.to_le_bytes().to_vec()],
+    )?;
+    tx.execute(
+        "INSERT INTO _meta(key, value) VALUES (?1, ?2) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![VACUUM_PENDING_KEY, vec![1u8]],
+    )?;
+    Ok(())
+}
+
+/// Add the current-schema indexes and manifest table within an existing
+/// migration transaction. This is deliberately separate from the ordinary
+/// idempotent migration path so an anchored step cannot publish a digest for a
+/// table shape that changes afterwards.
+pub(crate) fn install_current_schema_tx(tx: &Transaction<'_>) -> Result<(), StoreError> {
+    tx.execute_batch(SCHEMA_CURRENT)?;
+    tx.execute_batch(SCHEMA_ATTACHMENT_MANIFESTS)?;
+    Ok(())
+}
+
+pub(crate) fn clear_vacuum_pending_tx(tx: &Transaction<'_>) -> Result<(), StoreError> {
+    tx.execute(
+        "DELETE FROM _meta WHERE key = ?1",
+        params![VACUUM_PENDING_KEY],
+    )?;
     Ok(())
 }
 
