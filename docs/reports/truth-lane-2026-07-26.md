@@ -2248,3 +2248,23 @@ deployment, or release evidence was produced.
 
 - Remaining public capability claim audit +0; no mismatch found.
 - Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — threat-model scope qualification
+
+`docs/threat-model.html` used an unqualified present-tense claim that OSL
+protects “the content of your messages” and that a connected service receives
+ciphertext. That wording could be read to include the explicitly unsupported
+group/channel and non-qualified connector paths. Website commit
+`46c1789398a2cefbdd872a1c39991e2ff4e487cc`, tree
+`ec0088097aec5f967ec3e4e0b7a502d69a2a21a5`, parent `185319c60897879a3833dd51552badca380f7862`,
+qualifies the claims to supported direct messages, states unsupported paths are
+not covered, and preserves the metadata caveat. Exact file blob:
+`docs/threat-model.html` → `b706b649a17a62fcaaf05cd43f2a16a7443816a9`.
+
+`git diff --check` passed. No browser, build, install, runtime, deployment, or
+release evidence was produced.
+
+## Acceptance rows this earns
+
+- Threat-model scope qualification +0.
+- Checklist remains untouched; authority remains **100 / 303**.
