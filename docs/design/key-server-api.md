@@ -88,8 +88,9 @@ calling `fetch_pubkeys`.
 
 This isolation is not free — it adds first-contact friction
 (peers must exchange UUIDs, not just Discord usernames) and a
-new client-side state file. v1 ships the simpler model
-deliberately, with the upgrade path documented here.
+new client-side state file. The current design targets the simpler model
+deliberately, with the upgrade path documented here; this text does not claim
+that the v1 behavior is enabled in a shipping client.
 
 TLS terminates at Cloudflare and the Rust client trusts the standard
 public-CA chain; certificate pinning remains deferred. Discord OAuth
