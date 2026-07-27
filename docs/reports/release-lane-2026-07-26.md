@@ -424,6 +424,13 @@ It is an **operator** step run before approving `hub-vm-qa`, not a CI step, beca
 promotion would put an Azure credential into GitHub Actions — an owner decision, not a release-lane
 one.
 
+The guard now also enforces **lineage separation**: it requires `lineage=release-cold` and refuses
+warm-iteration and untagged snapshots outright, so scrub's
+`OSL-Independent-Client-1-WARM-iteration-20260726` cannot be used for a release attestation even by
+accident. Self-test is now **9 passed, 0 failed**. Note that warm image sits on
+`OSL-Independent-Client-1`, one of the two VMs nominated for this gate — the cold image must be a
+separate snapshot, not a relabelling of that one.
+
 **The cold lineage itself is not created, and I did not fabricate one.** Creating it is not a
 snapshot command: every VM disk currently carries whatever state its lane left on it, and
 snapshotting a warm disk and labelling it "clean" is precisely the failure this guard exists to

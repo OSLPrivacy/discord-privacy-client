@@ -62,6 +62,47 @@ az vm list -d --query "[?powerState=='VM running'].name" -o tsv   # leak check, 
 
 **Deallocate when finished.** A `D2s_v3` left running is the only way this costs real money.
 
+### Creating the cold lineage — it must be *provably* cold
+
+Two lineages share this subscription and must never be confused. Scrub's first snapshot,
+`OSL-Independent-Client-1-WARM-iteration-20260726`, is tagged `lineage=warm-iteration` with a
+purpose string saying it is not a release-gate image. Follow that model exactly:
+
+| | Warm (scrub) | Cold (this gate) |
+|---|---|---|
+| tag | `lineage=warm-iteration` | `lineage=release-cold` |
+| name | `<vm>-WARM-iteration-<date>` | `<vm>-COLD-releasegate-<date>` |
+| contents | Discord signed in, OSL identity present | Windows + WebView2 runtime only |
+
+`verify-snapshot-lineage.sh` **requires `lineage=release-cold`** and refuses anything else,
+including an untagged snapshot — absence of evidence is not a clean restore. A warm image therefore
+cannot be used for a release attestation even by mistake.
+
+**Pin the region.** Azure policy rejects a snapshot that inherits a default region instead of the
+disk's; scrub hit this on the first attempt:
+
+```bash
+az snapshot create -g OSL-TWO-CLIENT-LAB -n OSL-Azure-Client-1-COLD-releasegate-20260726 \
+  --source <disk-id> --incremental true --location northcentralus \
+  --tags lineage=release-cold owner=release-lane \
+        purpose="Release-gate cold image, no OSL identity or service login"
+```
+
+**The part that actually matters.** Scrub's warm snapshot was taken from a *deallocated* disk, so
+its contents are unverified. That is fine for an iteration base. **It is not fine here.** A cold
+lineage whose cleanliness was never checked cannot back a `cleanRestore: true` attestation — "we
+did not look" is precisely the fabrication the verifier cannot detect. So the cold image must be
+created by a path that *proves* it is cold, one of:
+
+1. **Fresh provision** from a clean Windows Marketplace image, WebView2 runtime added, never logged
+   into any service, snapshotted before OSL is ever installed. Strongest, and the default choice.
+2. **Verified wipe**, if reusing an existing VM: start it, prove absence *while it is running* —
+   no `%APPDATA%` OSL identity directory, no Discord profile, no prior updater state — record that
+   output as the evidence artefact, then deallocate and snapshot.
+
+Either way the emptiness evidence is recorded and referenced from the attestation. A snapshot of a
+deallocated disk nobody inspected is not a cold image; it is an assumption with a tag on it.
+
 ### Clean snapshots are NOT the QA snapshots
 
 `azure-vm-qa-workflow.md` rule 2 snapshots a **warm** machine — Discord installed and signed in,

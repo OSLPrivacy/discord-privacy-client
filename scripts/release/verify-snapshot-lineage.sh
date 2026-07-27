@@ -37,10 +37,23 @@ verify() {
     printf '%s' "$id" | grep -Eq "$RESOURCE_ID_RE" \
       || die "goldenSnapshotId is not a full Azure snapshot resource ID: '$id'"
 
-    local created
-    created="$(az snapshot show --ids "$id" --query timeCreated -o tsv 2>/dev/null)" \
+    local row created lineage
+    row="$(az snapshot show --ids "$id" --query "[timeCreated, tags.lineage]" -o tsv 2>/dev/null)" \
       || die "goldenSnapshotId does not resolve to a snapshot in Azure: '$id'"
+    created="$(printf '%s' "$row" | cut -f1)"
+    lineage="$(printf '%s' "$row" | cut -f2)"
     [ -n "$created" ] || die "snapshot resolved but reported no creation time: '$id'"
+
+    # Two lineages share this subscription and must never be confused. The
+    # warm iteration images have Discord signed in and an OSL identity already
+    # created, which is exactly what this gate forbids. Requiring the tag
+    # positively means an untagged snapshot is refused too: absence of
+    # evidence is not a clean restore.
+    case "$lineage" in
+      release-cold) ;;
+      "" | None) die "snapshot '$id' has no lineage tag; a release-gate snapshot must be tagged lineage=release-cold" ;;
+      *) die "snapshot '$id' is tagged lineage=$lineage, not release-cold; warm iteration images are disqualifying for this gate" ;;
+    esac
 
     # A snapshot created AFTER the QA run cannot be what the run restored from.
     # Compare as UTC ISO-8601, which sorts lexicographically once normalised.
@@ -50,7 +63,7 @@ verify() {
     if [[ "$created_norm" > "$completed_norm" ]]; then
       die "snapshot '$id' was created $created_norm, AFTER the QA run completed $completed_norm"
     fi
-    echo "  ok  $id (created $created_norm)"
+    echo "  ok  $id (lineage=$lineage, created $created_norm)"
   done
 
   echo "OK: both golden snapshots exist in Azure and pre-date the QA run"
@@ -74,8 +87,10 @@ while [ $# -gt 0 ]; do
   shift
 done
 case "$ids" in
-  *"/snapshots/real-"*) echo "2026-07-01T00:00:00+00:00"; exit 0 ;;
-  *"/snapshots/late-"*) echo "2026-12-31T00:00:00+00:00"; exit 0 ;;
+  *"/snapshots/real-"*) printf '2026-07-01T00:00:00+00:00\trelease-cold\n'; exit 0 ;;
+  *"/snapshots/late-"*) printf '2026-12-31T00:00:00+00:00\trelease-cold\n'; exit 0 ;;
+  *"/snapshots/warm-"*) printf '2026-07-01T00:00:00+00:00\twarm-iteration\n'; exit 0 ;;
+  *"/snapshots/untagged-"*) printf '2026-07-01T00:00:00+00:00\t\n'; exit 0 ;;
   *) exit 1 ;;
 esac
 STUB
@@ -122,6 +137,15 @@ json.dump({"completedAtUtc":"2026-07-26T23:00:00Z",
 
   mk "$work/late.json" "$(rid real-a)" "$(rid late-b)"
   check fail "snapshot created after the QA run completed" "$work/late.json"
+
+  mk "$work/warm.json" "$(rid real-a)" "$(rid warm-b)"
+  check fail "a warm-iteration snapshot used as a release-gate image" "$work/warm.json"
+
+  mk "$work/warmboth.json" "$(rid warm-a)" "$(rid warm-b)"
+  check fail "both snapshots are warm-iteration images" "$work/warmboth.json"
+
+  mk "$work/untagged.json" "$(rid real-a)" "$(rid untagged-b)"
+  check fail "snapshot carries no lineage tag at all" "$work/untagged.json"
 
   echo
   echo "snapshot lineage proof: $pass passed, $fail failed"
