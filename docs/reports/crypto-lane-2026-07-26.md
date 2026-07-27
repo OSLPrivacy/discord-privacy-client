@@ -749,6 +749,41 @@ reviewed, so re-grep anything before acting on it, but it is calibrated rather t
 `BurnAlertPayload` being inert also means any "burn alert is signed and verified" statement is
 currently a claim about unreachable code — the same shape as A7's duress engine.
 
+### The full result, captured here because the scratch path is session-scoped
+
+**17 subsystems with zero production callers.** Each column-3 entry is what someone would wrongly
+believe if they assumed the code ran — which is the reason this table exists. None is reachable
+from `generate_handler!` or `main`.
+
+| Symbol | Where | What it would be claiming if it ran |
+|---|---|---|
+| `osl_notes::{list,upsert,…}` | `osl_notes.rs:112,:169` | Notes/documents/searches/revisions encrypted at rest and exposed via `list_osl_notes`/`save_osl_note`. **UI command strings exist; no backend command is registered.** |
+| `osl_assets::{list,begin,append,finish,read_chunk}` | `osl_assets.rs:62,:87,:153,:200,:224` | Chunked, encrypted, hashed, quota-bound asset vault linked to notes |
+| `osl_lan::{host,join,sync_host,sync_guest,stop}` + `osl_collab::{create_invitation,seal_frame,open_frame}` | `osl_lan.rs:108…`, `osl_collab.rs:53,:106,:130` | Local-only encrypted LAN rooms, invitations, frame AEAD, no cloud relay |
+| `decode_office_asset` | `osl_formats.rs:103` | Office files locally decoded into encrypted editable notes |
+| `osl_plugins::{inspect,run}` | `osl_plugins.rs:45,:58` | Encrypted `.oslmod` plugins run in a deny-by-default, fuel-limited WASM sandbox |
+| `DuressEngine` / `DuressHandlers` / `WipeStep` | `keystore/duress.rs:242,:154,:70` | A duress password triggers a resumable wipe of identity, prekeys, TPM/keyring material, caches |
+| `BurnAlertPayload` / `sign_burn_alert` / `verify_burn_alert` | `keystore/burn_alert.rs:34,:75,:83` | Recipients get authenticated burn-alert messages proving the sender authored them |
+| `KeyServerClient::burn` / `BurnScope` | `keystore/client.rs:919`, `burn.rs:35` | A local burn also deletes keyserver wrapped keys |
+| `PrekeyState` / `replenish_prekeys` / `fetch_prekey_bundle` | `keystore/prekeys.rs:101`, `client.rs:831,:758` | Signed SPK/OPK replenishment and one-time prekey fetch are live production flows |
+| `WrappedKeyUpload` / `post_wrapped_key` / `fetch_wrapped_key` | `keystore/wrapped_key.rs:15`, `client.rs:805,:782` | Message keys are uploaded to and fetched from the wrapped-key service |
+| `next_peer_send_seq` / `peer_scope_commitment` / `admit_peer_content_seq` | `security.rs:2387,:2416,:2435` | Every protected message carries a sequence, and content below a burn floor is refused before rendering |
+| `plan_local_burn` / `plan_remote_friend_burn` / `apply_remote_consent_revocation` / `BurnReplayJournal::accept` | `burn_contract.rs:150,:271,:206,:388` | Burns require signed confirmations, Pro gating, revocable consent, replay journals |
+| `OfflineControlQueue` / `ReceivedControlJournal` | `control_contract.rs:127,:189` | Burn/expire/receipt controls queued, retried, deduped, replay-protected offline |
+| `TimedMessageState::{new,record_open,evaluate}` | `control_contract.rs:291,:315,:339` | First-open timers and absolute expiry drive key destruction |
+| `opened_receipt_status` | `control_contract.rs:420` | Opened receipts are Pro-gated, consent-bound and revocable |
+| `ComposerOverlayGuard` / `DecryptionOverlayGuard` / `VisiblePlaintextCache` | `external_overlay.rs:155,:241,:366,:484` | Overlays fail closed on verified context/geometry/focus; visible plaintext bounded and zeroized |
+| `NativeAttachmentJobRegistry` / `NativeAttachmentSecrets` | `native_attachment_jobs.rs:173,:83` | Attachments staged through authenticated job state; secrets never serialize or clone |
+
+**Read this as a list of candidate false claims, not a list of defects.** Unreachable code harms
+nobody by existing; it harms when a checklist row, a threat model or a UI string describes it as
+behaviour. Several of these describe exactly the properties this product sells — LAN-only
+collaboration, a sandboxed plugin system, expiry that destroys keys, overlays that fail closed.
+
+**Four were verified by hand** (`post_wrapped_key`, `fetch_wrapped_key`, `BurnAlertPayload`, and
+the `osl_notes`/`osl_lan`/`osl_assets` wiring). **The other thirteen are Codex's counts and are
+unverified** — re-grep before acting on any of them.
+
 **Why it is worth finishing:** every entry is a candidate for a checklist row or a user-facing claim
 that asserts something inert. That is exactly the shape of both defects confirmed above.
 
