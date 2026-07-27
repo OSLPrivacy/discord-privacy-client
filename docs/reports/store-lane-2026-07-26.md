@@ -466,21 +466,34 @@ flock /tmp/osl-cargo.lock -c "cargo check -p store --target x86_64-pc-windows-gn
 the failure mode that hid `qa_selftest_request` from the workspace runs does not exist here. All
 17 pre-existing tests still pass; none were modified.
 
-**The mandatory hub check did not pass, and not because of this lane:**
+**The mandatory hub check now PASSES.** It was blocked for most of this lane's work by a
+`crates/keystore` defect (`tracing` used but not declared). The crypto lane has since added
+`tracing = { workspace = true }` at `crates/keystore/Cargo.toml:57`, and the gate was re-run:
 
 ```
-flock /tmp/osl-cargo.lock -c "cd apps/osl-hub && cargo check --features desktop \
-  --bin osl-privacy-hub --target x86_64-pc-windows-gnu"
+osl-cargo -C apps/osl-hub check --features desktop --bin osl-privacy-hub \
+  --target x86_64-pc-windows-gnu
+  → Finished `dev` profile in 10.28s
+```
+
+Only pre-existing dead-code warnings remain, all in other lanes' files
+(`native_attachment_transport.rs`, `native_discord_overlay.rs`). **This is the proof that schema
+v4 does not break the crypto lane's build**, and it is the check this lane owed from round 1.
+
+Note the tool change: Rust commands now run through `osl-cargo`, which takes the build lock
+itself. Do **not** wrap it in `flock` — `flock` is not reentrant and the nested acquisition hangs
+silently with no process visible in `ps`.
+
+Historical record of the blockage:
+
+```
   → error[E0433]: unresolved module `tracing` — crates/keystore/src/sealer.rs:569, :592
 ```
 
-Attributed rather than assumed. `crates/keystore` does not depend on `store`, and
-`cargo check -p keystore --target x86_64-pc-windows-gnu` fails identically on its own. The
-compile aborts in keystore before reaching hub code, so **I cannot yet prove the hub builds with
-these changes** — I can only prove the store compiles for that target, that the public API is
-byte-identical, and that the blocker is upstream of me. Re-run the hub check once keystore is
-fixed. I did not fix keystore: it is not my crate, and quietly editing another lane's file is how
-two lanes end up in the same rebase.
+It was attributed rather than assumed at the time: `crates/keystore` does not depend on `store`,
+and `cargo check -p keystore` failed identically on its own. I did not fix it — not my crate, and
+quietly editing another lane's file is how two lanes end up in the same rebase. Routing it and
+waiting was the right call, and it is now resolved by its owner.
 
 ## Acceptance rows this earns
 
@@ -503,7 +516,7 @@ its evidence:
 | Older binaries refuse an upgraded database cleanly | version-pin assertion | Earned |
 | A v1 profile migrates all the way to v4 and stays writable | true v1 fixture, no v2 columns, no attachments table | Earned (coverage, not a fix) |
 | Orphaned attachments are purged at migration | failing-first, with a negative control on linked rows | Earned |
-| **Hub builds with these changes** | **not established — blocked by keystore** | **Not earned** |
+| Hub builds with these changes | `osl-cargo -C apps/osl-hub check --features desktop …` → Finished | Earned |
 | **Burn is cryptographic / revokes recipient access** | **false; unchanged by this work** | **Not earned** |
 | **`messages.sqlite` hides the social graph** | **labels yes, shape no — see "What is still visible"** | **Partially earned; do not state unqualified** |
 | **Operator scripts still work** | **false; two `scripts/*.ps1` are broken by design** | **Not earned** |
@@ -517,9 +530,9 @@ shipping Windows target. Schema is v4.
 
 **Next, in order:**
 
-1. **Blocked, not mine:** re-run the hub gate once the crypto lane adds `tracing` to
-   `crates/keystore/Cargo.toml`. Command is in Verification above. Until then no lane can prove a
-   hub build.
+1. **Done:** the hub gate passes as of the crypto lane's `tracing` fix. Re-run it after any
+   further change to this crate — it is the only proof that a shared-crate edit has not broken
+   the hub, and a crate that compiles alone is not evidence.
 2. **Decided — retired:** the two `scripts/*.ps1` diagnostics. They only worked because of the
    defect v4 closes. Their owner may want a deprecation header on the files themselves.
 3. **Awaiting decision (defect 3):** per-message `wrapped_key`. Needs keyserver lifecycle work
