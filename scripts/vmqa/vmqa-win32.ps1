@@ -195,7 +195,13 @@ function Resolve-VmqaSubject {
         [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$RunNonce
     )
 
-    $all   = Get-VmqaMarkerWindows
+    # Re-wrap in @(). A PowerShell function that returns an EMPTY array hands back $null, and
+    # under StrictMode $null.Count throws — so the zero-marker case, which is precisely the
+    # "apparatus not proven" signal this resolver exists to report, crashed instead of reporting
+    # itself. The crash then surfaced as 'blocked' through the generic catch, silently converting
+    # "I could not measure" into "the harness positively denied it". Those are different facts and
+    # collapsing them is the exact defect this file was written to prevent.
+    $all   = @(Get-VmqaMarkerWindows)
     $total = $all.Count
     $want  = "$Identifier-sic"
     $mine  = @($all | Where-Object { $_.ClassName -ceq $want })

@@ -222,7 +222,21 @@ fetch_run_verdict() {
   cmd_run --vm "$vm" --identifier "$identifier" --steps "$steps" --timeout "$timeout" --run-id "$run_id" >/dev/null
   rc=$?
   set -e
-  printf '%s\n' "$REPO_ROOT/docs/reports/vmqa/$run_id/verdict.json"
+  local verdict="$REPO_ROOT/docs/reports/vmqa/$run_id/verdict.json"
+  # The verdict must name the run we asked for. Blob names are reused across reruns of the same
+  # id, and a verdict left by an earlier attempt would otherwise be graded as this run's result -
+  # the freshness rule applied one level up from the artifacts.
+  if [ -f "$verdict" ] && command -v jq >/dev/null 2>&1; then
+    local got
+    got="$(jq -r '.runId // empty' "$verdict" 2>/dev/null || true)"
+    if [ "$got" != "$run_id" ]; then
+      echo "verdict runId mismatch: asked for '$run_id', file says '${got:-none}'; refusing to grade it" >&2
+      rm -f -- "$verdict"
+      printf '%s\n' "$verdict"
+      return 3
+    fi
+  fi
+  printf '%s\n' "$verdict"
   return "$rc"
 }
 
@@ -269,6 +283,14 @@ cmd_agent_alive() {
   printf 'ageSeconds=%s\n' "$age"
   # A heartbeat from session 0 is worthless here because nothing renders there.
   if [ "$age" -gt 60 ] || [ "$interactive" != "true" ]; then
+    return 3
+  fi
+  # Bound the age from BELOW as well. The Windows agent stamps its own clock; if that clock runs
+  # ahead of this host, a stopped agent's stale heartbeat has a NEGATIVE age and would read as
+  # fresh indefinitely, until host time caught up. A heartbeat from the future is not evidence of
+  # liveness, it is evidence of skew.
+  if [ "$age" -lt -120 ]; then
+    echo "heartbeat is ${age}s in the future; clock skew makes liveness unmeasurable" >&2
     return 3
   fi
 }

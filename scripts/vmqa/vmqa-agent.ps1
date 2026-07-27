@@ -656,6 +656,17 @@ function Invoke-Step {
             if ([string]::IsNullOrWhiteSpace($safeName)) {
                 throw 'VMQA_BAD_SHOT_NAME'
             }
+            # Resolve the subject BEFORE capturing, even though the capture is full-desktop.
+            # Without this, `shot` passed on a global distinct-colour count that the wallpaper and
+            # taskbar satisfy on their own, so it went green with the application absent, black,
+            # covered or minimised — and the self-test leans on distinctColors as proof that the
+            # apparatus measured something. A colour count nobody has tied to the subject is not
+            # evidence about the subject.
+            $shotSubject = Resolve-StepSubject -Identifier $identifier -RunNonce $RunNonce
+            if (-not $shotSubject['ok']) {
+                return New-StepResult -Id $stepId -Verb $verb -Status $shotSubject['status'] -Detail ("no subject to photograph: " + $shotSubject['detail'])
+            }
+            $shotRect = Get-VmqaWindowRect -Subject $shotSubject['subject']
             $artifactDir = Join-Path (Join-Path $AgentRoot 'artifacts') $RunId
             $artifactPath = Join-Path $artifactDir ($safeName + '.png')
             $shot = Invoke-FullDesktopShot -OutPath $artifactPath
@@ -665,7 +676,11 @@ function Invoke-Step {
                 return New-StepResult -Id $stepId -Verb $verb -Status 'unmeasurable' -Detail $fresh['detail'] -Artifacts @($artifactRel)
             }
             Put-BlobFile -Name "$RunBlobPrefix/$artifactRel" -Path $artifactPath
-            $detail = 'path={0}; width={1}; height={2}; distinctColors={3}' -f $artifactRel, $shot['width'], $shot['height'], $shot['distinctColors']
+            # Report the subject alongside the pixels, so a reader can tell WHICH window this
+            # frame is evidence about rather than inferring it from the filename.
+            $detail = 'path={0}; width={1}; height={2}; distinctColors={3}; subjectPid={4}; subjectRect={5},{6} {7}x{8}' -f `
+                $artifactRel, $shot['width'], $shot['height'], $shot['distinctColors'], `
+                $shotSubject['subject'].Pid, $shotRect.Left, $shotRect.Top, $shotRect.Width, $shotRect.Height
             if ([int]$shot['distinctColors'] -lt 16) {
                 return New-StepResult -Id $stepId -Verb $verb -Status 'unmeasurable' -Detail $detail -Artifacts @($artifactRel)
             }
