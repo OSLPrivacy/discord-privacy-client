@@ -174,12 +174,33 @@ fn roundtrip_put_get_returns_same_plaintext() {
         "hello phase 5b",
         1_700_000_000,
     );
+    let other = sample(
+        "1502771310428819579",
+        "1502771310428820000",
+        "900000000000000004",
+        "mira",
+        "not the first body",
+        1_700_000_005,
+    );
+    // A single-row fixture cannot detect a lookup that ignores its key.
     store.put(&msg).unwrap();
+    store.put(&other).unwrap();
     let out = store
         .get("1502771310428819569")
         .unwrap()
         .expect("row should be present");
     assert_eq!(out, msg);
+    assert_eq!(out.discord_message_id, "1502771310428819569");
+    assert_eq!(out.sender_discord_id, "900000000000000003");
+    assert_eq!(out.plaintext, "hello phase 5b");
+    let other_out = store
+        .get("1502771310428819579")
+        .unwrap()
+        .expect("second row should be present");
+    assert_eq!(other_out, other);
+    assert_eq!(other_out.discord_message_id, "1502771310428819579");
+    assert_eq!(other_out.sender_discord_id, "900000000000000004");
+    assert_eq!(other_out.plaintext, "not the first body");
 }
 
 #[test]
@@ -198,9 +219,22 @@ fn roundtrip_unicode_and_long_plaintext() {
         &plaintext,
         1_700_000_001,
     );
+    let ascii = sample(
+        "1502771310428819571",
+        "1502771310428819561",
+        "900000000000000004",
+        "mira",
+        "ordinary ascii body",
+        1_700_000_002,
+    );
+    // A single-row fixture cannot detect a lookup that ignores its key.
     store.put(&msg).unwrap();
+    store.put(&ascii).unwrap();
     let out = store.get("1502771310428819570").unwrap().unwrap();
     assert_eq!(out.plaintext, plaintext);
+    assert_eq!(out.plaintext.as_bytes(), plaintext.as_bytes());
+    let ascii_out = store.get("1502771310428819571").unwrap().unwrap();
+    assert_eq!(ascii_out.plaintext, "ordinary ascii body");
 }
 
 // ---- list_by_channel ----
@@ -262,13 +296,21 @@ fn list_by_channel_returns_desc_by_decrypted_at_respects_limit() {
 fn mark_burned_makes_get_return_none() {
     let tmp = TempDir::new().unwrap();
     let store = open_a(tmp.path());
-    store
-        .put(&sample("vanish", "ch", "s", "alice", "to be burned", 1))
-        .unwrap();
+    let msg = sample("vanish", "ch", "s", "alice", "to be burned", 1);
+    let survivor = sample(
+        "survives",
+        "other-ch",
+        "other-s",
+        "bob",
+        "still readable",
+        2,
+    );
+    // A single-row fixture cannot detect a lookup that ignores its key.
+    store.put(&msg).unwrap();
     assert!(store.get("vanish").unwrap().is_some());
     let db_path = tmp.path().join("messages.sqlite");
-    // Schema v4 stores no plaintext identifier, so the row cannot be named in
-    // SQL. This database holds exactly one row, which is enough.
+    // Schema v4 stores no plaintext identifier, so capture this blob before
+    // adding the second row that proves key discrimination.
     let before: (Vec<u8>, Vec<u8>) = {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         conn.query_row("SELECT ciphertext, nonce FROM messages", [], |row| {
@@ -276,12 +318,23 @@ fn mark_burned_makes_get_return_none() {
         })
         .unwrap()
     };
+    store.put(&survivor).unwrap();
+    let live_before = store
+        .get("survives")
+        .unwrap()
+        .expect("second row should be readable before burn");
+    assert_eq!(live_before, survivor);
     store.mark_burned("vanish").unwrap();
     assert!(store.get("vanish").unwrap().is_none());
+    let live_after = store
+        .get("survives")
+        .unwrap()
+        .expect("burn must not touch unrelated row");
+    assert_eq!(live_after, survivor);
     let after: (Vec<u8>, Vec<u8>, Option<Vec<u8>>, i64) = {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         conn.query_row(
-            "SELECT ciphertext, nonce, wrapped_key, burned FROM messages",
+            "SELECT ciphertext, nonce, wrapped_key, burned FROM messages WHERE burned = 1",
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
@@ -293,6 +346,24 @@ fn mark_burned_makes_get_return_none() {
     assert!(after.1.iter().all(|byte| *byte == 0));
     assert!(after.2.is_none());
     assert_eq!(after.3, 1);
+    let (live_bodies, zeroed_bodies): (usize, usize) = {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let mut stmt = conn.prepare("SELECT ciphertext FROM messages").unwrap();
+        let rows = stmt.query_map([], |row| row.get::<_, Vec<u8>>(0)).unwrap();
+        let mut live = 0;
+        let mut zeroed = 0;
+        for row in rows {
+            let ct = row.unwrap();
+            if ct.iter().all(|byte| *byte == 0) {
+                zeroed += 1;
+            } else {
+                live += 1;
+            }
+        }
+        (live, zeroed)
+    };
+    assert_eq!(live_bodies, 1);
+    assert_eq!(zeroed_bodies, 1);
     let wal = db_path.with_extension("sqlite-wal");
     assert!(
         !wal.exists() || std::fs::metadata(wal).unwrap().len() == 0,
@@ -528,6 +599,8 @@ fn attachment_put_get_roundtrip() {
     let tmp = TempDir::new().unwrap();
     let store = open_a(tmp.path());
     let bytes: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect();
+    let other_bytes = b"plain text attachment bytes".to_vec();
+    // A single-row fixture cannot detect a lookup that ignores its key.
     store
         .put_attachment(
             "1502771310428819569",
@@ -539,12 +612,33 @@ fn attachment_put_get_roundtrip() {
             None,
         )
         .unwrap();
+    store
+        .put_attachment(
+            "1502771310428819570",
+            "a1b2c3d4.bin",
+            "text/plain",
+            &other_bytes,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
     let out = store
         .get_attachment("1502771310428819569", "a1b2c3d4.bin")
         .unwrap()
         .expect("attachment should be present");
     assert_eq!(out.0, "image/png");
     assert_eq!(out.1, bytes);
+    let other_out = store
+        .get_attachment("1502771310428819570", "a1b2c3d4.bin")
+        .unwrap()
+        .expect("second attachment should be present");
+    assert_eq!(other_out.0, "text/plain");
+    assert_eq!(other_out.1, other_bytes);
+    assert!(store
+        .get_attachment("1502771310428819571", "a1b2c3d4.bin")
+        .unwrap()
+        .is_none());
 }
 
 #[test]
@@ -584,16 +678,34 @@ fn attachment_get_miss_is_none() {
 fn attachment_survives_reopen() {
     let tmp = TempDir::new().unwrap();
     let bytes = b"decrypted image bytes".to_vec();
+    let other_bytes = b"reopened text bytes".to_vec();
     {
         let store = open_a(tmp.path());
+        // A single-row fixture cannot detect a lookup that ignores its key.
         store
             .put_attachment("msg1", "f.bin", "image/jpeg", &bytes, None, None, None)
+            .unwrap();
+        store
+            .put_attachment(
+                "msg2",
+                "f.bin",
+                "text/plain",
+                &other_bytes,
+                None,
+                None,
+                None,
+            )
             .unwrap();
     }
     // Reopen with the same secret: the row + its seal must survive.
     let store = open_a(tmp.path());
     let out = store.get_attachment("msg1", "f.bin").unwrap().unwrap();
+    assert_eq!(out.0, "image/jpeg");
     assert_eq!(out.1, bytes);
+    let other_out = store.get_attachment("msg2", "f.bin").unwrap().unwrap();
+    assert_eq!(other_out.0, "text/plain");
+    assert_eq!(other_out.1, other_bytes);
+    assert!(store.get_attachment("msg3", "f.bin").unwrap().is_none());
 }
 
 #[test]
@@ -718,6 +830,9 @@ fn shred_expired_messages_destroys_named_rows_and_their_attachments() {
     store
         .put(&sample("still-live", "ch", "s", "alice", "kept", 3))
         .unwrap();
+    let still_live_2 = sample("still-live-2", "other-ch", "s2", "bob", "also kept", 4);
+    // A single surviving row cannot detect a lookup that ignores its key.
+    store.put(&still_live_2).unwrap();
     store
         .put_attachment(
             "expired-1",
@@ -747,12 +862,17 @@ fn shred_expired_messages_destroys_named_rows_and_their_attachments() {
         store.get("still-live").unwrap().is_some(),
         "a sweep must never touch a row it did not name"
     );
+    let live_two = store
+        .get("still-live-2")
+        .unwrap()
+        .expect("a sweep must not touch a second unnamed row");
+    assert_eq!(live_two, still_live_2);
 
     let db_path = tmp.path().join("messages.sqlite");
     // Schema v4 stores no plaintext identifier, so the shredded rows cannot be
     // named in SQL. Assert over the whole table instead, which is a stronger
-    // claim than naming one row: of the three messages, exactly the two expired
-    // ones must be burned with a zeroed body, and exactly one must still hold a
+    // claim than naming one row: of the four messages, exactly the two expired
+    // ones must be burned with a zeroed body, and exactly two must still hold
     // live body.
     let (burned_zeroed, live_bodies, any_wrapped_key): (usize, usize, bool) = {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
@@ -790,7 +910,10 @@ fn shred_expired_messages_destroys_named_rows_and_their_attachments() {
         burned_zeroed, 2,
         "both expired rows must be burned and zeroed"
     );
-    assert_eq!(live_bodies, 1, "the unexpired row must keep its live body");
+    assert_eq!(
+        live_bodies, 2,
+        "the unexpired rows must keep their live bodies"
+    );
     assert!(!any_wrapped_key, "a shred must null wrapped_key");
     let wal = db_path.with_extension("sqlite-wal");
     assert!(
