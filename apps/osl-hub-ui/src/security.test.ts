@@ -1039,4 +1039,138 @@ describe("bundled preview security boundary", () => {
       ),
     ).toBe(false);
   });
+
+  it("keeps sequence burn-floor enforcement classified as implemented-unwired", () => {
+    const security = readRelative("../../osl-hub/src/security.rs");
+    const broker = readRelative("../../osl-hub/src/broker.rs");
+    const main = readRelative("../../osl-hub/src/main.rs");
+    const commands = readRelative("../../../crates/ipc/src/commands.rs");
+    const state = readRelative("../../../crates/ipc/src/state.rs");
+    const wire = readRelative("../../../crates/ipc/src/wire_v2.rs");
+    const productionRust = [
+      readProductionRustTree("../../osl-hub/src/"),
+      readProductionRustTree("../../../crates/ipc/src/"),
+    ].join("\n");
+    const sequenceSymbols = [
+      "next_peer_send_seq",
+      "peer_scope_commitment",
+      "admit_peer_content_seq",
+    ] as const;
+    const productionSequenceReferenceCount = (
+      source: string,
+      symbol: (typeof sequenceSymbols)[number],
+    ): number =>
+      rustProductionPrefix(source).match(
+        new RegExp(`\\b${symbol}\\b`, "gu"),
+      )?.length ?? 0;
+
+    // Positive implementation controls: all three prototype functions must
+    // remain, so removing the subsystem cannot satisfy zero integration.
+    for (const symbol of sequenceSymbols) {
+      expect(security).toContain(`pub fn ${symbol}(`);
+      expect(productionSequenceReferenceCount(productionRust, symbol)).toBe(1);
+    }
+    expect(security).toContain("counters\n        .next_send_seq(&commitment)");
+    expect(security).toContain(
+      "ipc::revocation::accept_content(&ledger, &commitment, send_seq)",
+    );
+    expect(security).toContain(
+      "ipc::revocation::record_content_accepted(&mut ledger, &commitment, send_seq)",
+    );
+
+    // Positive controls for the separate reachable product path: registered
+    // prepare -> broker -> IPC -> stateless v3, with no OPK.
+    const messagingFacts = classifyMessagingProductionPath(
+      main,
+      broker,
+      commands,
+      state,
+      productionRust,
+    );
+    expect(messagingFacts.registeredPrepareCommand).toBe(true);
+    expect(messagingFacts.mainCallsBroker).toBe(true);
+    expect(messagingFacts.brokerCallsIpc).toBe(true);
+    expect(messagingFacts.statelessV3Fallback).toBe(true);
+    expect(wire).toContain("recipient_ik plays both ik and spk");
+    expect(wire).toContain("None,\n            &recip.mlkem_pub,");
+
+    // The reachable inbound notice path must retain and refuse rather than
+    // claim that an unenforced floor was applied.
+    expect(broker).toContain(
+      "(RevocationRowOutcome::EnforcementUnavailable, None)",
+    );
+    expect(broker).toContain(
+      "production content envelope and decrypt path call none of them",
+    );
+
+    const assertUnwiredSequenceTruth = (source: string): void => {
+      expect(source).toContain(
+        "Implemented-unwired allocator for an authenticated per-peer",
+      );
+      expect(source).toContain(
+        "Current production send paths do neither",
+      );
+      expect(source).toContain(
+        "Implemented-unwired opaque commitment helper",
+      );
+      expect(source).toContain(
+        "current production envelopes do not carry either value",
+      );
+      expect(source).toContain(
+        "Implemented-unwired admission helper for a peer burn floor",
+      );
+      expect(source).toContain(
+        "Current production decrypt paths do not call it",
+      );
+    };
+    assertUnwiredSequenceTruth(security);
+
+    for (const [symbol, syntheticReference] of [
+      [
+        "next_peer_send_seq",
+        "security::next_peer_send_seq(core, security, peer, scope)?;",
+      ],
+      [
+        "peer_scope_commitment",
+        "use crate::security::peer_scope_commitment as scope_for_wire;",
+      ],
+      [
+        "admit_peer_content_seq",
+        "let admit = security::admit_peer_content_seq;",
+      ],
+    ] as const) {
+      expect(
+        productionSequenceReferenceCount(
+          `${productionRust}\n${syntheticReference}`,
+          symbol,
+        ),
+      ).toBe(2);
+    }
+
+    expect(() =>
+      assertUnwiredSequenceTruth(
+        security.replace(
+          "Implemented-unwired allocator for an authenticated per-peer",
+          "Allocator for each authenticated per-peer",
+        ),
+      ),
+    ).toThrow();
+    expect(security).not.toContain(
+      "which the broker puts on\n/// the wire next to `send_seq`",
+    );
+
+    const commentAndTestOnly = [
+      "// security::next_peer_send_seq(core, security, peer, scope)?;",
+      "/* peer_scope_commitment(core, peer, scope)?; */",
+      "#[cfg(test)]",
+      "mod tests {",
+      "  fn fixture() { admit_peer_content_seq(core, security, peer, scope, 1); }",
+      "}",
+    ].join("\n");
+    for (const symbol of sequenceSymbols) {
+      expect(
+        productionSequenceReferenceCount(commentAndTestOnly, symbol),
+      ).toBe(0);
+    }
+  });
 });

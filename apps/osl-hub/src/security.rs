@@ -2376,13 +2376,13 @@ fn load_revocation_counters(
     Ok(counters)
 }
 
-/// Allocate the next authenticated `send_seq` for one conversation with one peer.
+/// Implemented-unwired allocator for an authenticated per-peer `send_seq`.
 ///
-/// The broker must call this once per outgoing protected message and carry the
-/// result **inside** the `encrypt_v3` envelope, alongside the scope commitment.
-/// Without it the receiver has nothing to compare against a burn floor and
-/// bilateral burn degrades to "trust the notice", which is exactly what the
-/// legacy client did.
+/// A future sequence-bearing broker path would need to call this once per
+/// outgoing protected message and authenticate the result inside its envelope,
+/// alongside the scope commitment. Current production send paths do neither.
+/// Without that integration the receiver has nothing to compare against a burn
+/// floor.
 pub fn next_peer_send_seq(
     core: &HubCoreState,
     security: &HubSecurityState,
@@ -2410,8 +2410,10 @@ pub fn next_peer_send_seq(
     Ok(seq)
 }
 
-/// The opaque commitment for one (peer, conversation), which the broker puts on
-/// the wire next to `send_seq`.
+/// Implemented-unwired opaque commitment helper for one (peer, conversation).
+///
+/// The intended sequence-bearing broker would authenticate this on the wire
+/// next to `send_seq`; current production envelopes do not carry either value.
 pub fn peer_scope_commitment(
     core: &HubCoreState,
     peer_x25519_public: &[u8; X25519_PUBLIC_BYTES],
@@ -2424,8 +2426,10 @@ pub fn peer_scope_commitment(
     Ok(STANDARD.encode(ipc::revocation::scope_commitment(&commit_key, storage_key)))
 }
 
-/// Gate one inbound protected message against the peer's burn floor, then record
-/// it. **Call before any plaintext is returned to a renderer.**
+/// Implemented-unwired admission helper for a peer burn floor.
+///
+/// An integrated content path must call this before returning plaintext to a
+/// renderer. Current production decrypt paths do not call it.
 ///
 /// Fails closed three ways: a burnt sequence is refused, a sequence we cannot
 /// evaluate is refused, and a ledger we cannot read is refused. The error string
