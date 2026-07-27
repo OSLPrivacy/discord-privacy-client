@@ -119,7 +119,8 @@ export function localProtectedSheetMarkup(model: LocalProtectedSheetModel, sendM
   const write = `<form id="local-protect-form" class="local-protected-form">
       <label for="local-protected-draft">Message</label>
       <textarea id="local-protected-draft" maxlength="1000" rows="5" autocomplete="off" spellcheck="true" placeholder="Write privately">${escapeHtml(model.draft)}</textarea>
-      <div class="local-protected-options"><label><span>Delete key after</span><select id="local-protected-ttl">${ttlOptions}</select></label><label class="local-view-once"><span>View once</span><input id="local-protected-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""}/></label></div>
+      <div class="local-protected-options"><label><span>Opening authorization expires after</span><select id="local-protected-ttl">${ttlOptions}</select></label><label class="local-view-once"><span>View once</span><input id="local-protected-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""}/></label></div>
+      <small class="local-authorization-truth">After expiry, OSL refuses to open this text on this device.</small>
       <button class="local-primary" type="submit" ${model.busy ? "disabled" : ""}>${model.busy ? "Encrypting…" : primaryLabel}</button>
       <small class="local-send-truth">${escapeHtml(sendTruth)}</small>
     </form>

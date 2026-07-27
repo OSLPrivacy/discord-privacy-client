@@ -4235,7 +4235,7 @@ async function openLocalProtectedCapsule(event: SubmitEvent): Promise<void> {
     return;
   }
   localProtectedSheet.openedPlaintext = opened.plaintext;
-  localProtectedSheet.status = opened.viewOnceConsumed ? "Opened once. Its local key was removed." : "Opened on this device.";
+  localProtectedSheet.status = opened.viewOnceConsumed ? "Opened once. Local authorization was consumed." : "Opened on this device.";
   render();
 }
 

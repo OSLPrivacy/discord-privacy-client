@@ -31,6 +31,9 @@ describe("local protected side sheet", () => {
     });
     expect(markup.match(/<option /gu)).toHaveLength(4);
     expect(markup).toContain('<option value="3600" selected>1 hour</option>');
+    expect(markup).toContain("Opening authorization expires after");
+    expect(markup).toContain("After expiry, OSL refuses to open this text on this device.");
+    expect(markup).not.toContain("Delete key after");
     expect(markup).not.toContain('value="0"');
     expect(markup).not.toContain("No timer");
   });
