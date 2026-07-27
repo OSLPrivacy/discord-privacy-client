@@ -661,10 +661,9 @@ fn attachment_wrong_secret_cannot_unseal() {
     match store_b.get_attachment("msg1", "f.bin") {
         Err(StoreError::Corrupted(_)) | Ok(None) => {}
         Err(e) => panic!("transplanted attachment failed with unexpected error: {e:?}"),
-        Ok(Some((_, got))) => panic!(
-            "wrong secret returned transplanted attachment bytes: {:?}",
-            got
-        ),
+        Ok(Some((_, got))) => {
+            panic!("wrong secret returned transplanted attachment bytes: {got:?}")
+        }
     }
 }
 
