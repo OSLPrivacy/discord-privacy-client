@@ -7,6 +7,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run && vitest run --config vitest.node.config.ts",
+    "test:scheme1-mutants": "node scripts/scheme1-contract-mutants.mjs",
     "test:watch": "vitest",
     "dev": "wrangler dev",
     "deploy": "node scripts/refuse-unadmitted-production-action.mjs deploy",

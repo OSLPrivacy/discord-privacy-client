@@ -38,7 +38,14 @@ export const CANONICAL_ROLLOUT_SOURCE_PATHS = Object.freeze([
   "keyserver-cf/migrations/0033_canonical_identity_rollout_authority.sql",
   "keyserver-cf/migrations/0034_scheme1_prekey_owner_proofs.sql",
   "keyserver-cf/src/index.ts",
+  "keyserver-cf/src/endpoints/register.ts",
+  "keyserver-cf/src/endpoints/canonical-identity.ts",
+  "keyserver-cf/src/endpoints/pubkeys.ts",
+  "keyserver-cf/src/endpoints/prekey-bundle.ts",
   "keyserver-cf/src/endpoints/sender-filter-rollout-root.ts",
+  "keyserver-cf/src/lib/identity-authority.ts",
+  "keyserver-cf/src/lib/prekey-owner-proof.ts",
+  "keyserver-cf/src/lib/db.ts",
   "keyserver-cf/scripts/provision-sender-filter-rollout-genesis.mjs",
 ]);
 

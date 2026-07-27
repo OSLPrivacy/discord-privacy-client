@@ -9,6 +9,7 @@ import { verifyEd25519 } from "../lib/crypto.js";
 import {
   getPrekeyBundleSpk,
   getScheme1PrekeyContext,
+  getScheme1ReplenishReceipt,
   getSignedIdentity,
   getUserForVerify,
   OpkIdConflict,
@@ -20,13 +21,18 @@ import {
 } from "../lib/db.js";
 import {
   canonicalReplenishV2Bytes,
+  OPK_LIFECYCLE_VERSION,
+  OPK_OWNER_PROOF_VERSION,
   parseOpkOwnerProof,
+  SCHEME1_PREKEY_PROTOCOL_VERSION,
+  scheme1ReplenishResponse,
   validateScheme1OwnerProofBatch,
   type ReplenishOpkV2,
   type ReplenishSpkV2,
   type Scheme1IdentityAuthority,
 } from "../lib/prekey-owner-proof.js";
 import {
+  CANONICAL_IDENTITY_BUNDLE_VERSION,
   decodeCanonicalBase64,
   decodeCanonicalEd25519SignatureBytes,
 } from "../lib/identity-authority.js";
@@ -152,12 +158,16 @@ export async function handlePrekeyBundleReplenish(
   const rl = await checkRateLimit(env, callerIp(request), 10, "prekey-replenish");
   if (!rl.ok) return tooMany(rl.retryAfter);
 
-  let b: Record<string, unknown>;
+  let parsed: unknown;
   try {
-    b = (await request.json()) as Record<string, unknown>;
+    parsed = await request.json();
   } catch {
     return badRequest("malformed JSON body");
   }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return badRequest("replenish body must be an object");
+  }
+  const b = parsed as Record<string, unknown>;
   if (!isProtocolId(b.user_id)) return badRequest("user_id must be a bounded identifier");
   if (
     !Number.isSafeInteger(b.timestamp_ms) ||
@@ -196,6 +206,7 @@ export async function handlePrekeyBundleReplenish(
       {
         user_id: signedIdentity.user_id,
         identity_scheme: 1,
+        identity_bundle_version: 1,
         identity_revision: signedIdentity.identity_revision,
         ik_root_ed25519_pub: signedIdentity.ik_root_ed25519_pub,
         ik_x25519_pub: signedIdentity.ik_x25519_pub,
@@ -369,6 +380,53 @@ function parseScheme1Spk(value: unknown): ReplenishSpkV2 | null {
   };
 }
 
+function scheme1LifecycleMatches(args: {
+  context: Awaited<ReturnType<typeof getScheme1PrekeyContext>>;
+  identity: Scheme1IdentityAuthority;
+  spk: ReplenishSpkV2;
+  identity_commitment_b64: string;
+  lifecycle_generation: number;
+  batch_commitment_b64: string;
+}): boolean {
+  const context = args.context;
+  return context !== null &&
+    context.proof_version === OPK_OWNER_PROOF_VERSION &&
+    context.identity_bundle_version === CANONICAL_IDENTITY_BUNDLE_VERSION &&
+    context.lifecycle_version === OPK_LIFECYCLE_VERSION &&
+    context.user_id === args.identity.user_id &&
+    context.ik_root_ed25519_pub === args.identity.ik_root_ed25519_pub &&
+    context.ik_ed25519_pub === args.identity.ik_ed25519_pub &&
+    context.identity_revision === args.identity.identity_revision &&
+    context.identity_bundle_commitment_b64 ===
+      args.identity_commitment_b64 &&
+    context.rn_capabilities === args.identity.rn_capabilities &&
+    context.spk_pub_b64 === args.spk.pub_b64 &&
+    context.spk_signature_b64 === args.spk.signature_b64 &&
+    context.spk_rotated_at === args.spk.rotated_at &&
+    context.highest_generation === args.lifecycle_generation &&
+    context.batch_commitment_b64 === args.batch_commitment_b64;
+}
+
+function scheme1ReceiptMatches(args: {
+  receipt: Awaited<ReturnType<typeof getScheme1ReplenishReceipt>>;
+  identity: Scheme1IdentityAuthority;
+  identity_commitment_b64: string;
+  lifecycle_generation: number;
+  batch_commitment_b64: string;
+  opks_added: number;
+}): boolean {
+  const receipt = args.receipt;
+  return receipt !== null &&
+    receipt.identity_scheme === 1 &&
+    receipt.protocol_version === SCHEME1_PREKEY_PROTOCOL_VERSION &&
+    receipt.identity_revision === args.identity.identity_revision &&
+    receipt.identity_bundle_commitment_b64 ===
+      args.identity_commitment_b64 &&
+    receipt.lifecycle_generation === args.lifecycle_generation &&
+    receipt.batch_commitment_b64 === args.batch_commitment_b64 &&
+    receipt.opks_added === args.opks_added;
+}
+
 async function handleScheme1PrekeyReplenish(
   body: Record<string, unknown>,
   env: Env,
@@ -454,16 +512,6 @@ async function handleScheme1PrekeyReplenish(
   ) {
     return badRequest("OPK owner proof is bound to a different SPK");
   }
-  if (!currentContext && firstProof.lifecycle_generation !== 1) {
-    return conflict("scheme-1 lifecycle genesis generation must be 1");
-  }
-  if (
-    currentContext &&
-    firstProof.lifecycle_generation !== currentContext.highest_generation + 1
-  ) {
-    return conflict("scheme-1 prekey lifecycle CAS is stale");
-  }
-
   let proofState;
   let message: Uint8Array;
   let currentEd25519: Uint8Array;
@@ -513,6 +561,35 @@ async function handleScheme1PrekeyReplenish(
     return unauthorized("spk signature verification failed");
   }
 
+  const requestDigest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", message),
+  );
+  const stableResponse = scheme1ReplenishResponse({
+    user_id: identity.user_id,
+    lifecycle_generation: proofState.lifecycle_generation,
+    batch_commitment_b64: proofState.batch_commitment_b64,
+    opks_added: opks.length,
+  });
+  const receipt = await getScheme1ReplenishReceipt(
+    env.DB,
+    identity.user_id,
+    identity.ik_ed25519_pub,
+    requestDigest,
+  );
+  if (receipt) {
+    if (!scheme1ReceiptMatches({
+      receipt,
+      identity,
+      identity_commitment_b64: proofState.identity_bundle_commitment_b64,
+      lifecycle_generation: proofState.lifecycle_generation,
+      batch_commitment_b64: proofState.batch_commitment_b64,
+      opks_added: opks.length,
+    })) {
+      return conflict("scheme-1 replenish replay receipt context mismatch");
+    }
+    return json(stableResponse);
+  }
+
   const identityChanged = currentContext !== null && (
     currentContext.identity_revision !== identity.identity_revision ||
     currentContext.ik_ed25519_pub !== identity.ik_ed25519_pub ||
@@ -538,9 +615,30 @@ async function handleScheme1PrekeyReplenish(
     return conflict("SPK rotation must be newer than the current bundle");
   }
 
-  const requestDigest = new Uint8Array(
-    await crypto.subtle.digest("SHA-256", message),
-  );
+  if (!currentContext && firstProof.lifecycle_generation !== 1) {
+    return conflict("scheme-1 lifecycle genesis generation must be 1");
+  }
+  if (currentContext) {
+    if (scheme1LifecycleMatches({
+      context: currentContext,
+      identity,
+      spk: resolvedSpk,
+      identity_commitment_b64: proofState.identity_bundle_commitment_b64,
+      lifecycle_generation: proofState.lifecycle_generation,
+      batch_commitment_b64: proofState.batch_commitment_b64,
+    })) {
+      // A fresh, valid request for the exact already-committed generation and
+      // batch is an authenticated lifecycle readback, not a CAS failure.
+      return json(stableResponse);
+    }
+    if (
+      firstProof.lifecycle_generation !==
+        currentContext.highest_generation + 1
+    ) {
+      return conflict("scheme-1 prekey lifecycle CAS is stale");
+    }
+  }
+
   try {
     const result = await upsertScheme1PrekeyBundleAuthenticated(
       env.DB,
@@ -571,9 +669,39 @@ async function handleScheme1PrekeyReplenish(
       return unauthorized("identity changed during replenish authorization");
     }
     if (result === "replay") {
-      return conflict("signed replenish request already used");
+      const replayReceipt = await getScheme1ReplenishReceipt(
+        env.DB,
+        identity.user_id,
+        identity.ik_ed25519_pub,
+        requestDigest,
+      );
+      if (scheme1ReceiptMatches({
+        receipt: replayReceipt,
+        identity,
+        identity_commitment_b64: proofState.identity_bundle_commitment_b64,
+        lifecycle_generation: proofState.lifecycle_generation,
+        batch_commitment_b64: proofState.batch_commitment_b64,
+        opks_added: opks.length,
+      })) {
+        return json(stableResponse);
+      }
+      return conflict("scheme-1 replenish replay receipt context mismatch");
     }
     if (result === "stale_lifecycle") {
+      const committed = await getScheme1PrekeyContext(
+        env.DB,
+        identity.user_id,
+      );
+      if (scheme1LifecycleMatches({
+        context: committed,
+        identity,
+        spk: resolvedSpk,
+        identity_commitment_b64: proofState.identity_bundle_commitment_b64,
+        lifecycle_generation: proofState.lifecycle_generation,
+        batch_commitment_b64: proofState.batch_commitment_b64,
+      })) {
+        return json(stableResponse);
+      }
       return conflict("scheme-1 prekey lifecycle CAS is stale");
     }
   } catch (error) {
@@ -583,11 +711,5 @@ async function handleScheme1PrekeyReplenish(
     if (error instanceof OpkPoolQuotaExceeded) return tooMany(60);
     throw error;
   }
-  return json({
-    user_id: identity.user_id,
-    protocol_version: 2,
-    lifecycle_generation: proofState.lifecycle_generation,
-    batch_commitment_b64: proofState.batch_commitment_b64,
-    opks_added: opks.length,
-  });
+  return json(stableResponse);
 }

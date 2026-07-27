@@ -84,6 +84,7 @@ async function identityFixture(revision = 1) {
   const bundle: CanonicalIdentityBundle = {
     user_id: await deriveCanonicalOslIdentityId(rootB64),
     identity_scheme: 1,
+    identity_bundle_version: 1,
     identity_revision: revision,
     ik_root_ed25519_pub: rootB64,
     ik_x25519_pub: base64(crypto.getRandomValues(new Uint8Array(32))),

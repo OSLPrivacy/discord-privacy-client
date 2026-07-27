@@ -1,9 +1,10 @@
 import {
+  CANONICAL_IDENTITY_BUNDLE_VERSION,
   decodeCanonicalBase64,
   decodeCanonicalEd25519SignatureBytes,
+  canonicalIdentityBundleBytes,
   type CanonicalIdentityBundle,
 } from "./identity-authority.js";
-import { buildRegMsg } from "./signed-request.js";
 import { verifyEd25519 } from "./crypto.js";
 
 export const REPLENISH_V2_DOMAIN =
@@ -14,7 +15,7 @@ export const OPK_OWNER_PROOF_DOMAIN =
   "discord-privacy-client/opk-owner-proof/v1";
 export const OPK_OWNER_PROOF_VERSION = 1;
 export const OPK_LIFECYCLE_VERSION = 2;
-export const IDENTITY_BLOB_VERSION = 3;
+export const SCHEME1_PREKEY_PROTOCOL_VERSION = 2;
 
 /**
  * Normative, hashable scheme-1 prekey contract descriptor. The field order is
@@ -27,11 +28,13 @@ export const SCHEME1_PREKEY_CONTRACT_DESCRIPTOR = [
   `proof_domain=${OPK_OWNER_PROOF_DOMAIN}`,
   `proof_version=${OPK_OWNER_PROOF_VERSION}`,
   `lifecycle_version=${OPK_LIFECYCLE_VERSION}`,
-  `identity_blob_version=${IDENTITY_BLOB_VERSION}`,
-  "identity_commitment=sha256(OSL-REGISTER-v1\\n||user_id||\\n||x25519_b64||\\n||ed25519_b64||\\n||mlkem768_b64||\\n||ratchet_b64_or_empty||\\n||rn_capabilities_decimal)",
+  `identity_bundle_version=${CANONICAL_IDENTITY_BUNDLE_VERSION}`,
+  "identity_commitment=sha256(LP(OSL-FULL-IDENTITY-BUNDLE-v1\\0)||LP(user_id)||u32(identity_scheme)||u32(identity_bundle_version)||LP(identity_revision_decimal)||LP(root_ed25519_32)||LP(x25519_32)||LP(current_ed25519_32)||LP(mlkem768_1184)||LP(ratchet_0_or_32)||u32(rn_capabilities))",
   "batch=LP(domain)||u32(version)||LP(owner)||identity_commitment_32||LP(spk_pub_b64)||LP(spk_sig_b64)||LP(spk_rotated_at)||u64(generation)||u32(count)||sorted(u32(opk_id)||opk_pub_32)",
-  "proof=LP(domain)||u32(version)||LP(owner)||identity_commitment_32||u32(identity_blob_version)||u8(caps_present)||u32(caps_if_present)||u32(lifecycle_version)||LP(spk_pub_b64)||LP(spk_sig_b64)||LP(spk_rotated_at)||u64(generation)||u32(batch_size)||batch_commitment_32||u32(opk_id)||LP(opk_pub_b64)",
+  "proof=LP(domain)||u32(version)||LP(owner)||identity_commitment_32||u32(identity_bundle_version)||u8(caps_present)||u32(caps_if_present)||u32(lifecycle_version)||LP(spk_pub_b64)||LP(spk_sig_b64)||LP(spk_rotated_at)||u64(generation)||u32(batch_size)||batch_commitment_32||u32(opk_id)||LP(opk_pub_b64)",
   "replenish=LP(domain)||LP(user_id)||LP(timestamp_decimal)||LP(request_id)||u8(spk_present)||optional(LP(spk_pub_b64)||LP(spk_sig_b64)||LP(spk_rotated_at))||u32(count)||request_order(u32(opk_id)||LP(opk_pub_b64)||u32(proof_len)||proof||proof_signature_64)",
+  "replenish_response={result:scheme1_replenish_committed,identity_scheme:1,identity_bundle_version:1,protocol_version:2,lifecycle_version:2,user_id,lifecycle_generation,batch_commitment_b64,opks_added}",
+  "fetch_response=scheme1 requires identity_scheme,identity_bundle_version,protocol_version,lifecycle_version,lifecycle_generation,batch_commitment_b64,root/current bundle proofs and per-OPK owner proof",
 ].join("\n");
 
 const encoder = new TextEncoder();
@@ -109,7 +112,7 @@ export interface OpkOwnerProof {
   version: number;
   owner_user_id: string;
   identity_bundle_commitment_b64: string;
-  identity_blob_version: number;
+  identity_bundle_version: number;
   rn_capabilities: number;
   lifecycle_version: number;
   spk_pub_b64: string;
@@ -185,7 +188,7 @@ export function parseOpkOwnerProof(value: unknown): OpkOwnerProof {
       "version",
       "owner_user_id",
       "identity_bundle_commitment_b64",
-      "identity_blob_version",
+      "identity_bundle_version",
       "rn_capabilities",
       "lifecycle_version",
       "spk_pub_b64",
@@ -202,7 +205,7 @@ export function parseOpkOwnerProof(value: unknown): OpkOwnerProof {
   );
   if (
     proof.version !== OPK_OWNER_PROOF_VERSION ||
-    proof.identity_blob_version !== IDENTITY_BLOB_VERSION ||
+    proof.identity_bundle_version !== CANONICAL_IDENTITY_BUNDLE_VERSION ||
     proof.lifecycle_version !== OPK_LIFECYCLE_VERSION
   ) {
     throw new Error("OPK owner proof version is unsupported");
@@ -224,7 +227,7 @@ export function parseOpkOwnerProof(value: unknown): OpkOwnerProof {
       proof.identity_bundle_commitment_b64,
       "owner proof identity commitment",
     ),
-    identity_blob_version: IDENTITY_BLOB_VERSION,
+    identity_bundle_version: CANONICAL_IDENTITY_BUNDLE_VERSION,
     rn_capabilities: capabilities,
     lifecycle_version: OPK_LIFECYCLE_VERSION,
     spk_pub_b64: requiredText(proof.spk_pub_b64, "owner proof SPK"),
@@ -254,14 +257,7 @@ export function parseOpkOwnerProof(value: unknown): OpkOwnerProof {
 export function canonicalIdentityBundleCommitmentBytes(
   identity: Scheme1IdentityAuthority,
 ): Uint8Array {
-  return buildRegMsg({
-    user_id: identity.user_id,
-    ik_x25519_pub: identity.ik_x25519_pub,
-    ik_ed25519_pub: identity.ik_ed25519_pub,
-    ik_mlkem768_pub: identity.ik_mlkem768_pub,
-    ik_ratchet_initial_pub: identity.ik_ratchet_initial_pub,
-    rn_capabilities: identity.rn_capabilities,
-  });
+  return canonicalIdentityBundleBytes(identity);
 }
 
 export async function identityBundleCommitmentB64(
@@ -343,7 +339,7 @@ export function canonicalOpkOwnerProofBytes(
     u32be(proof.version),
     lpText(proof.owner_user_id),
     identityCommitment,
-    u32be(proof.identity_blob_version),
+    u32be(proof.identity_bundle_version),
     u8(1),
     u32be(proof.rn_capabilities),
     u32be(proof.lifecycle_version),
@@ -356,6 +352,56 @@ export function canonicalOpkOwnerProofBytes(
     u32be(proof.opk_id),
     lpText(proof.opk_pub_b64),
   ]);
+}
+
+export interface Scheme1ReplenishResponse {
+  result: "scheme1_replenish_committed";
+  identity_scheme: 1;
+  identity_bundle_version: 1;
+  protocol_version: 2;
+  lifecycle_version: 2;
+  user_id: string;
+  lifecycle_generation: number;
+  batch_commitment_b64: string;
+  opks_added: number;
+}
+
+/**
+ * The same canonical result is returned for the original commit, an exact
+ * request replay, and an authenticated same-generation/same-batch readback.
+ * Callers therefore never need to guess whether a lost response committed.
+ */
+export function scheme1ReplenishResponse(args: {
+  user_id: string;
+  lifecycle_generation: number;
+  batch_commitment_b64: string;
+  opks_added: number;
+}): Scheme1ReplenishResponse {
+  if (
+    args.user_id.length === 0 ||
+    !Number.isSafeInteger(args.lifecycle_generation) ||
+    args.lifecycle_generation <= 0 ||
+    !Number.isSafeInteger(args.opks_added) ||
+    args.opks_added <= 0
+  ) {
+    throw new Error("scheme-1 replenish response context is invalid");
+  }
+  decodeCanonicalBase64(
+    args.batch_commitment_b64,
+    32,
+    "scheme-1 replenish response batch commitment",
+  );
+  return {
+    result: "scheme1_replenish_committed",
+    identity_scheme: 1,
+    identity_bundle_version: CANONICAL_IDENTITY_BUNDLE_VERSION,
+    protocol_version: SCHEME1_PREKEY_PROTOCOL_VERSION,
+    lifecycle_version: OPK_LIFECYCLE_VERSION,
+    user_id: args.user_id,
+    lifecycle_generation: args.lifecycle_generation,
+    batch_commitment_b64: args.batch_commitment_b64,
+    opks_added: args.opks_added,
+  };
 }
 
 export function canonicalReplenishV2Bytes(args: {
@@ -499,6 +545,7 @@ export async function validateScheme1OwnerProofBatch(args: {
       proof.signature_b64,
       "owner proof signature",
     );
+    // SCHEME1_OWNER_SIGNATURE_MUTATION_BEGIN
     if (
       !(await verifyEd25519(
         currentKey,
@@ -508,6 +555,7 @@ export async function validateScheme1OwnerProofBatch(args: {
     ) {
       throw new Error("OPK owner proof signature is invalid");
     }
+    // SCHEME1_OWNER_SIGNATURE_MUTATION_END
   }
   return {
     identity_bundle_commitment_b64: expectedIdentity,

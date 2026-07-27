@@ -6,6 +6,17 @@
 /// so the SELECT-then-DELETE remains transactional (D1's `prepare/run`
 /// cycles are NOT transactional across calls; only `batch()` is).
 
+import {
+  CANONICAL_IDENTITY_BUNDLE_VERSION,
+} from "./identity-authority.js";
+import {
+  OPK_LIFECYCLE_VERSION,
+  OPK_OWNER_PROOF_VERSION,
+  SCHEME1_PREKEY_PROTOCOL_VERSION,
+  parseOpkOwnerProof,
+  type OpkOwnerProof,
+} from "./prekey-owner-proof.js";
+
 export interface UserRow {
   user_id: string;
   ik_x25519_pub: string;
@@ -1121,6 +1132,9 @@ export interface Scheme1PrekeyContext {
   identity_revision: number;
   identity_bundle_commitment_b64: string;
   rn_capabilities: number;
+  proof_version: number;
+  identity_bundle_version: number;
+  lifecycle_version: number;
   spk_pub_b64: string;
   spk_signature_b64: string;
   spk_rotated_at: string;
@@ -1135,11 +1149,43 @@ export async function getScheme1PrekeyContext(
   return await db.prepare(
     `SELECT user_id, ik_root_ed25519_pub, ik_ed25519_pub,
             identity_revision, identity_bundle_commitment_b64,
-            rn_capabilities, spk_pub_b64, spk_signature_b64,
+            rn_capabilities, proof_version, identity_bundle_version,
+            lifecycle_version, spk_pub_b64, spk_signature_b64,
             spk_rotated_at, highest_generation, batch_commitment_b64
        FROM prekey_lifecycle_authority
       WHERE user_id = ?`,
   ).bind(userId).first<Scheme1PrekeyContext>();
+}
+
+export interface Scheme1ReplenishReceipt {
+  identity_scheme: 1;
+  protocol_version: 2;
+  identity_revision: number;
+  identity_bundle_commitment_b64: string;
+  lifecycle_generation: number;
+  batch_commitment_b64: string;
+  opks_added: number;
+}
+
+export async function getScheme1ReplenishReceipt(
+  db: D1Database,
+  userId: string,
+  signerEd25519Pub: string,
+  requestDigest: Uint8Array,
+): Promise<Scheme1ReplenishReceipt | null> {
+  return await db.prepare(
+    `SELECT identity_scheme, protocol_version, identity_revision,
+            identity_bundle_commitment_b64, lifecycle_generation,
+            batch_commitment_b64, opks_added
+       FROM prekey_replenish_receipts
+      WHERE user_id = ?
+        AND signer_ed25519_pub = ?
+        AND request_digest = ?`,
+  ).bind(
+    userId,
+    signerEd25519Pub,
+    requestDigest,
+  ).first<Scheme1ReplenishReceipt>();
 }
 
 export async function getPrekeyBundleSpk(
@@ -1202,8 +1248,11 @@ export async function upsertScheme1PrekeyBundleAuthenticated(
       .bind(nowSeconds),
     db.prepare(
       `INSERT INTO prekey_replenish_receipts
-         (user_id, signer_ed25519_pub, request_digest, expires_at)
-       SELECT ?1, ?2, ?3, ?4
+         (user_id, signer_ed25519_pub, request_digest, expires_at,
+          identity_scheme, protocol_version, identity_revision,
+          identity_bundle_commitment_b64, lifecycle_generation,
+          batch_commitment_b64, opks_added)
+       SELECT ?1, ?2, ?3, ?4, 1, ?9, ?5, ?13, ?10, ?11, ?12
         WHERE EXISTS (
           SELECT 1 FROM users
            WHERE user_id = ?1
@@ -1224,22 +1273,34 @@ export async function upsertScheme1PrekeyBundleAuthenticated(
       authority.ik_root_ed25519_pub,
       authority.identity_bundle_proof_sig,
       authority.rn_capabilities,
+      SCHEME1_PREKEY_PROTOCOL_VERSION,
+      authority.lifecycle_generation,
+      authority.batch_commitment_b64,
+      opks.length,
+      authority.identity_bundle_commitment_b64,
     ),
     db.prepare(
       `INSERT INTO prekey_lifecycle_authority (
          user_id, ik_root_ed25519_pub, ik_ed25519_pub, identity_revision,
          identity_bundle_commitment_b64, rn_capabilities, proof_version,
-         identity_blob_version, lifecycle_version, spk_pub_b64,
+         identity_bundle_version, lifecycle_version, spk_pub_b64,
          spk_signature_b64, spk_rotated_at, highest_generation,
          batch_commitment_b64, updated_at_ms
        )
-       SELECT ?1, ?5, ?2, ?6, ?7, ?8, 1, 3, 2, ?9, ?10, ?11, ?12, ?13, ?14
+       SELECT ?1, ?5, ?2, ?6, ?7, ?8, ?15, ?16, ?17, ?9, ?10, ?11, ?12, ?13, ?14
         WHERE EXISTS (
           SELECT 1 FROM prekey_replenish_receipts
            WHERE user_id = ?1
              AND signer_ed25519_pub = ?2
              AND request_digest = ?3
              AND expires_at = ?4
+             AND identity_scheme = 1
+             AND protocol_version = ?19
+             AND identity_revision = ?6
+             AND identity_bundle_commitment_b64 = ?7
+             AND lifecycle_generation = ?12
+             AND batch_commitment_b64 = ?13
+             AND opks_added = ?18
         )
        ON CONFLICT(user_id) DO UPDATE SET
          ik_ed25519_pub = excluded.ik_ed25519_pub,
@@ -1248,7 +1309,7 @@ export async function upsertScheme1PrekeyBundleAuthenticated(
            excluded.identity_bundle_commitment_b64,
          rn_capabilities = excluded.rn_capabilities,
          proof_version = excluded.proof_version,
-         identity_blob_version = excluded.identity_blob_version,
+         identity_bundle_version = excluded.identity_bundle_version,
          lifecycle_version = excluded.lifecycle_version,
          spk_pub_b64 = excluded.spk_pub_b64,
          spk_signature_b64 = excluded.spk_signature_b64,
@@ -1271,6 +1332,11 @@ export async function upsertScheme1PrekeyBundleAuthenticated(
       authority.lifecycle_generation,
       authority.batch_commitment_b64,
       nowMs,
+      OPK_OWNER_PROOF_VERSION,
+      CANONICAL_IDENTITY_BUNDLE_VERSION,
+      OPK_LIFECYCLE_VERSION,
+      opks.length,
+      SCHEME1_PREKEY_PROTOCOL_VERSION,
     ),
   ];
   if (replacePool) {
@@ -1586,16 +1652,21 @@ export interface PrekeyBundleResponse {
   registration_sig?: string;
   rn_capabilities?: number;
   identity_scheme?: number;
+  identity_bundle_version?: number;
+  protocol_version?: number;
   identity_revision?: number;
   ik_root_ed25519_pub?: string;
   identity_bundle_proof_sig?: string;
+  lifecycle_version?: number;
+  lifecycle_generation?: number;
+  batch_commitment_b64?: string;
   spk_pub: string;
   spk_signature: string;
   spk_rotated_at: string;
   opk: {
     id: number;
     pub_b64: string;
-    owner_proof?: Record<string, unknown>;
+    owner_proof?: OpkOwnerProof;
   } | null;
   remaining_opk_count: number;
 }
@@ -1684,6 +1755,10 @@ export async function popPrekeyBundleAuthenticated(
       scheme1Context.ik_ed25519_pub !== userRow.ik_ed25519_pub ||
       scheme1Context.identity_revision !== userRow.identity_revision ||
       scheme1Context.rn_capabilities !== userRow.rn_capabilities ||
+      scheme1Context.proof_version !== OPK_OWNER_PROOF_VERSION ||
+      scheme1Context.identity_bundle_version !==
+        CANONICAL_IDENTITY_BUNDLE_VERSION ||
+      scheme1Context.lifecycle_version !== OPK_LIFECYCLE_VERSION ||
       scheme1Context.spk_pub_b64 !== spkRow.spk_pub ||
       scheme1Context.spk_signature_b64 !== spkRow.spk_signature ||
       scheme1Context.spk_rotated_at !== spkRow.spk_rotated_at
@@ -1795,7 +1870,8 @@ export async function popPrekeyBundleAuthenticated(
               )
             )
           )
-        RETURNING opk_id, opk_pub, owner_proof_json, lifecycle_generation`,
+        RETURNING opk_id, opk_pub, owner_proof_json, lifecycle_generation,
+                  batch_commitment_b64`,
     )
     .bind(
       requesterId,
@@ -1817,6 +1893,7 @@ export async function popPrekeyBundleAuthenticated(
     opk_pub?: string;
     owner_proof_json?: string | null;
     lifecycle_generation?: number;
+    batch_commitment_b64?: string | null;
     c?: number;
   }>[];
   try {
@@ -1844,6 +1921,7 @@ export async function popPrekeyBundleAuthenticated(
     opk_pub: string;
     owner_proof_json: string | null;
     lifecycle_generation: number;
+    batch_commitment_b64: string | null;
   } | undefined;
   const remaining = ((countRes?.results?.[0] as { c: number } | undefined)?.c) ?? 0;
   let consumedOpk: PrekeyBundleResponse["opk"] = null;
@@ -1852,19 +1930,32 @@ export async function popPrekeyBundleAuthenticated(
       if (!popped.owner_proof_json || popped.lifecycle_generation < 1) {
         return { status: "invalid_scheme1_state" };
       }
-      let ownerProof: unknown;
+      let ownerProof;
       try {
-        ownerProof = JSON.parse(popped.owner_proof_json);
+        ownerProof = parseOpkOwnerProof(JSON.parse(popped.owner_proof_json));
       } catch {
         return { status: "invalid_scheme1_state" };
       }
-      if (!ownerProof || typeof ownerProof !== "object" || Array.isArray(ownerProof)) {
+      if (
+        !popped.batch_commitment_b64 ||
+        ownerProof.owner_user_id !== userRow.user_id ||
+        ownerProof.identity_bundle_commitment_b64 !==
+          scheme1Context!.identity_bundle_commitment_b64 ||
+        ownerProof.rn_capabilities !== userRow.rn_capabilities ||
+        ownerProof.lifecycle_generation !== popped.lifecycle_generation ||
+        ownerProof.batch_commitment_b64 !== popped.batch_commitment_b64 ||
+        ownerProof.opk_id !== popped.opk_id ||
+        ownerProof.opk_pub_b64 !== popped.opk_pub ||
+        ownerProof.spk_pub_b64 !== spkRow.spk_pub ||
+        ownerProof.spk_signature_b64 !== spkRow.spk_signature ||
+        ownerProof.spk_rotated_at !== spkRow.spk_rotated_at
+      ) {
         return { status: "invalid_scheme1_state" };
       }
       consumedOpk = {
         id: popped.opk_id,
         pub_b64: popped.opk_pub,
-        owner_proof: ownerProof as Record<string, unknown>,
+        owner_proof: ownerProof,
       };
     } else {
       consumedOpk = { id: popped.opk_id, pub_b64: popped.opk_pub };
@@ -1887,9 +1978,16 @@ export async function popPrekeyBundleAuthenticated(
     bundle.registration_sig = userRow.ik_x25519_signature;
     bundle.rn_capabilities = userRow.rn_capabilities;
     bundle.identity_scheme = 1;
+    bundle.identity_bundle_version = CANONICAL_IDENTITY_BUNDLE_VERSION;
+    bundle.protocol_version = SCHEME1_PREKEY_PROTOCOL_VERSION;
     bundle.identity_revision = userRow.identity_revision;
     bundle.ik_root_ed25519_pub = userRow.ik_root_ed25519_pub!;
     bundle.identity_bundle_proof_sig = userRow.identity_bundle_proof_sig!;
+    bundle.lifecycle_version = OPK_LIFECYCLE_VERSION;
+    bundle.lifecycle_generation = popped?.lifecycle_generation ??
+      scheme1Context!.highest_generation;
+    bundle.batch_commitment_b64 = popped?.batch_commitment_b64 ??
+      scheme1Context!.batch_commitment_b64;
   }
   return {
     status: "ok",

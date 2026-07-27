@@ -32,6 +32,7 @@ async function identityBody(
   const bundle: CanonicalIdentityBundle = {
     user_id: await deriveCanonicalOslIdentityId(root.publicKeyB64),
     identity_scheme: 1,
+    identity_bundle_version: 1,
     identity_revision: revision,
     ik_root_ed25519_pub: root.publicKeyB64,
     ik_x25519_pub: STUB_X25519_PUB_B64,
@@ -93,6 +94,7 @@ describe("canonical identity and rollout authority in the shipping Worker", () =
     expect(await published.json()).toMatchObject({
       user_id: userId,
       identity_scheme: 1,
+      identity_bundle_version: 1,
       identity_revision: 1,
       ik_root_ed25519_pub: root.publicKeyB64,
       ik_x25519_pub: STUB_X25519_PUB_B64,

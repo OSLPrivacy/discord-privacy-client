@@ -25,6 +25,7 @@ import {
   base64Encode,
   generateEd25519Pair,
   registerTestUser,
+  signedRegisterBody,
   signEd25519,
   STUB_MLKEM_PUB_B64,
   STUB_RATCHET_PUB_B64,
@@ -136,6 +137,7 @@ async function createScheme1Identity(): Promise<{
   const bundle: CanonicalIdentityBundle = {
     user_id: await deriveCanonicalOslIdentityId(root.publicKeyB64),
     identity_scheme: 1,
+    identity_bundle_version: 1,
     identity_revision: 1,
     ik_root_ed25519_pub: root.publicKeyB64,
     ik_x25519_pub: STUB_X25519_PUB_B64,
@@ -212,7 +214,7 @@ async function makeProofBatch(args: {
       version: 1,
       owner_user_id: args.identity.user_id,
       identity_bundle_commitment_b64: identityCommitment,
-      identity_blob_version: 3,
+      identity_bundle_version: 1,
       rn_capabilities: args.identity.rn_capabilities,
       lifecycle_version: 2,
       spk_pub_b64: args.spk.pub_b64,
@@ -269,9 +271,9 @@ async function post(body: Record<string, unknown>): Promise<Response> {
   });
 }
 
-async function signedGet(
+async function signedGetUrl(
   recipientId: string,
-): Promise<Response> {
+): Promise<string> {
   const requesterId = `scheme1-requester-${requestSequence++}`;
   const requester = await registerTestUser(SELF, requesterId);
   const timestamp = Date.now();
@@ -286,16 +288,112 @@ async function signedGet(
     ts: String(timestamp),
     sig: await signEd25519(requester.signingKey, canonical),
   });
-  return await SELF.fetch(
-    `http://test/v1/prekey-bundle/${encodeURIComponent(recipientId)}?${query}`,
-  );
+  return `http://test/v1/prekey-bundle/${
+    encodeURIComponent(recipientId)
+  }?${query}`;
 }
 
 describe("scheme-1 prekey owner proofs through the shipping Worker and D1", () => {
   it("pins the exact cross-language scheme-1 contract descriptor", async () => {
     expect(await scheme1PrekeyContractSha256()).toBe(
-      "2febeb312152c66a3c79aae75b0ac3d0cd6d4c77b4b779de49123b0c9b839048",
+      "8041c9c14f841935c6b42e74829e39747e6b8915bf4c929c80ff1d3e189dffaa",
     );
+  });
+
+  it("keeps legacy registration tagless and refuses stripped or ambiguous scheme-1 registration", async () => {
+    const legacyPair = await generateEd25519Pair();
+    const legacyBody = await signedRegisterBody(
+      `tagless-legacy-${requestSequence++}`,
+      legacyPair,
+    );
+    const taggedLegacy = { ...legacyBody, identity_scheme: 0 };
+    const refusedLegacyTag = await SELF.fetch("http://test/v1/register", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-forwarded-for": `192.0.2.${registerIp++}`,
+      },
+      body: JSON.stringify(taggedLegacy),
+    });
+    expect(refusedLegacyTag.status).toBe(400);
+    const taglessControl = await SELF.fetch("http://test/v1/register", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-forwarded-for": `192.0.2.${registerIp++}`,
+      },
+      body: JSON.stringify(legacyBody),
+    });
+    expect(taglessControl.status).toBe(201);
+
+    const root = await generateEd25519Pair();
+    const current = await generateEd25519Pair();
+    const bundle: CanonicalIdentityBundle = {
+      user_id: await deriveCanonicalOslIdentityId(root.publicKeyB64),
+      identity_scheme: 1,
+      identity_bundle_version: 1,
+      identity_revision: 1,
+      ik_root_ed25519_pub: root.publicKeyB64,
+      ik_x25519_pub: STUB_X25519_PUB_B64,
+      ik_ed25519_pub: current.publicKeyB64,
+      ik_mlkem768_pub: STUB_MLKEM_PUB_B64,
+      ik_ratchet_initial_pub: STUB_RATCHET_PUB_B64,
+      rn_capabilities: 1,
+    };
+    const canonical = canonicalIdentityBundleBytes(bundle);
+    const canonicalBody: Record<string, unknown> = {
+      ...bundle,
+      identity_bundle_proof_sig: await signEd25519(
+        root.signingKey,
+        canonical,
+      ),
+      registration_sig: await signEd25519(
+        current.signingKey,
+        canonical,
+      ),
+    };
+    for (const mutate of [
+      (body: Record<string, unknown>) => delete body.identity_scheme,
+      (body: Record<string, unknown>) =>
+        delete body.identity_bundle_proof_sig,
+      (body: Record<string, unknown>) => {
+        body.ik_root_ed25519_pub = (
+          body.ik_root_ed25519_pub as string
+        ).replace(/=+$/u, "");
+        return true;
+      },
+      (body: Record<string, unknown>) => {
+        body.identity_bundle_proof_sig = nonCanonicalEd25519Signature(
+          body.identity_bundle_proof_sig as string,
+        );
+        return true;
+      },
+      (body: Record<string, unknown>) => {
+        body.registration_sig = nonCanonicalEd25519Signature(
+          body.registration_sig as string,
+        );
+        return true;
+      },
+      (body: Record<string, unknown>) => {
+        body.unbound_extension = "downgrade";
+        return true;
+      },
+    ]) {
+      const body = { ...canonicalBody };
+      mutate(body);
+      const response = await SELF.fetch("http://test/v1/register", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-forwarded-for": `192.0.2.${registerIp++}`,
+        },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(400);
+    }
+    expect(await testDb.prepare(
+      "SELECT COUNT(*) AS count FROM users WHERE user_id = ?",
+    ).bind(bundle.user_id).first()).toEqual({ count: 0 });
   });
 
   it("persists and atomically returns registration/capability/root evidence with the exact OPK proof", async () => {
@@ -315,9 +413,13 @@ describe("scheme-1 prekey owner proofs through the shipping Worker and D1", () =
       opks,
     });
     const accepted = await post(body);
-    expect(accepted.status).toBe(200);
+    expect(accepted.status, await accepted.clone().text()).toBe(200);
     expect(await accepted.json()).toMatchObject({
+      result: "scheme1_replenish_committed",
+      identity_scheme: 1,
+      identity_bundle_version: 1,
       protocol_version: 2,
+      lifecycle_version: 2,
       lifecycle_generation: 1,
       opks_added: 2,
     });
@@ -333,12 +435,19 @@ describe("scheme-1 prekey owner proofs through the shipping Worker and D1", () =
       batch_commitment_b64: opks[0]!.owner_proof.batch_commitment_b64,
     });
 
-    const response = await signedGet(owner.identity.user_id);
+    const signedUrl = await signedGetUrl(owner.identity.user_id);
+    const response = await SELF.fetch(signedUrl);
     expect(response.status).toBe(200);
     const bundle = await response.json() as Record<string, any>;
     expect(bundle).toMatchObject({
       user_id: owner.identity.user_id,
       identity_scheme: 1,
+      identity_bundle_version: 1,
+      protocol_version: 2,
+      lifecycle_version: 2,
+      lifecycle_generation: 1,
+      batch_commitment_b64:
+        opks[1]!.owner_proof.batch_commitment_b64,
       identity_revision: 1,
       ik_root_ed25519_pub: owner.identity.ik_root_ed25519_pub,
       identity_bundle_proof_sig:
@@ -354,6 +463,14 @@ describe("scheme-1 prekey owner proofs through the shipping Worker and D1", () =
       pub_b64: opks[1]!.pub_b64,
       owner_proof: opks[1]!.owner_proof,
     });
+    const responseReplay = await SELF.fetch(signedUrl);
+    expect(responseReplay.status).toBe(409);
+    expect(await responseReplay.json()).toEqual({
+      error: "signed prekey request already consumed",
+    });
+    expect(await testDb.prepare(
+      "SELECT COUNT(*) AS count FROM opk_pool WHERE user_id = ?",
+    ).bind(owner.identity.user_id).first()).toEqual({ count: 1 });
   });
 
   it("refuses proof omission and a proofless v1 downgrade for a scheme-1 owner", async () => {
@@ -391,6 +508,16 @@ describe("scheme-1 prekey owner proofs through the shipping Worker and D1", () =
       ),
     };
     expect((await post(downgraded)).status).toBe(400);
+    await expect(testDb.prepare(
+      `INSERT INTO prekey_replenish_receipts
+         (user_id, signer_ed25519_pub, request_digest, expires_at)
+       VALUES (?, ?, ?, ?)`,
+    ).bind(
+      owner.identity.user_id,
+      owner.identity.ik_ed25519_pub,
+      new Uint8Array(32).fill(0x7d),
+      Math.floor(Date.now() / 1000) + 60,
+    ).run()).rejects.toThrow(/scheme context is invalid/);
     await expect(testDb.prepare(
       `INSERT INTO opk_pool (user_id, opk_id, opk_pub)
        VALUES (?, 99, ?)`,
@@ -448,6 +575,16 @@ describe("scheme-1 prekey owner proofs through the shipping Worker and D1", () =
           ),
         },
       }],
+      [{
+        ...batch[0]!,
+        owner_proof: {
+          ...batch[0]!.owner_proof,
+          // Canonically encoded 64-byte signature, but not a valid signature
+          // for this proof. A mutation that bypasses Ed25519 verification
+          // reaches D1 and is caught by this case.
+          signature_b64: base64Encode(new Uint8Array(64)),
+        },
+      }],
       [
         { ...batch[0]!, pub_b64: batch[1]!.pub_b64 },
         { ...batch[1]!, pub_b64: batch[0]!.pub_b64 },
@@ -466,12 +603,22 @@ describe("scheme-1 prekey owner proofs through the shipping Worker and D1", () =
       });
       expect((await post(body)).status).toBe(400);
     }
+    const nonCanonicalOuter = await replenishBody({
+      identity: owner.identity,
+      signingKey: owner.currentSigningKey,
+      spk,
+      opks: batch,
+    });
+    nonCanonicalOuter.batch_signature_b64 = nonCanonicalEd25519Signature(
+      nonCanonicalOuter.batch_signature_b64 as string,
+    );
+    expect((await post(nonCanonicalOuter)).status).toBe(400);
     expect(await testDb.prepare(
       "SELECT COUNT(*) AS count FROM opk_pool WHERE user_id = ?",
     ).bind(owner.identity.user_id).first()).toEqual({ count: 0 });
   });
 
-  it("retains the monotonic lifecycle floor across replay, alternate receipts and deletion attempts", async () => {
+  it("returns the stable result for exact and same-batch retries while retaining the monotonic floor", async () => {
     const owner = await createScheme1Identity();
     const spk = await makeSpk(owner.currentSigningKey, 0x56);
     const first = await makeProofBatch({
@@ -487,8 +634,32 @@ describe("scheme-1 prekey owner proofs through the shipping Worker and D1", () =
       spk,
       opks: first,
     });
-    expect((await post(firstBody)).status).toBe(200);
-    expect((await post(firstBody)).status).toBe(409);
+    const firstResponse = await post(firstBody);
+    expect(
+      firstResponse.status,
+      await firstResponse.clone().text(),
+    ).toBe(200);
+    const firstResult = await firstResponse.text();
+    expect(await testDb.prepare(
+      `SELECT identity_scheme, protocol_version, identity_revision,
+              identity_bundle_commitment_b64, lifecycle_generation,
+              batch_commitment_b64, opks_added
+         FROM prekey_replenish_receipts
+        WHERE user_id = ?`,
+    ).bind(owner.identity.user_id).first()).toEqual({
+      identity_scheme: 1,
+      protocol_version: 2,
+      identity_revision: 1,
+      identity_bundle_commitment_b64:
+        first[0]!.owner_proof.identity_bundle_commitment_b64,
+      lifecycle_generation: 1,
+      batch_commitment_b64:
+        first[0]!.owner_proof.batch_commitment_b64,
+      opks_added: 1,
+    });
+    const exactReplay = await post(firstBody);
+    expect(exactReplay.status).toBe(200);
+    expect(await exactReplay.text()).toBe(firstResult);
 
     const alternateReceipt = await replenishBody({
       identity: owner.identity,
@@ -496,7 +667,23 @@ describe("scheme-1 prekey owner proofs through the shipping Worker and D1", () =
       spk: null,
       opks: first,
     });
-    expect((await post(alternateReceipt)).status).toBe(409);
+    const authenticatedReadback = await post(alternateReceipt);
+    expect(authenticatedReadback.status).toBe(200);
+    expect(await authenticatedReadback.text()).toBe(firstResult);
+
+    const differentSameGeneration = await makeProofBatch({
+      identity: owner.identity,
+      signingKey: owner.currentSigningKey,
+      spk,
+      generation: 1,
+      entries: [{ id: 77, fill: 0x7a }],
+    });
+    expect((await post(await replenishBody({
+      identity: owner.identity,
+      signingKey: owner.currentSigningKey,
+      spk: null,
+      opks: differentSameGeneration,
+    }))).status).toBe(409);
     await expect(testDb.prepare(
       "DELETE FROM prekey_lifecycle_authority WHERE user_id = ?",
     ).bind(owner.identity.user_id).run()).rejects.toThrow(
@@ -517,6 +704,16 @@ describe("scheme-1 prekey owner proofs through the shipping Worker and D1", () =
       opks: second,
     }));
     expect(secondResponse.status).toBe(200);
+    const originalResponseReplay = await post(firstBody);
+    expect(originalResponseReplay.status).toBe(200);
+    expect(await originalResponseReplay.text()).toBe(firstResult);
+    const lowerGenerationFreshRequest = await replenishBody({
+      identity: owner.identity,
+      signingKey: owner.currentSigningKey,
+      spk: null,
+      opks: first,
+    });
+    expect((await post(lowerGenerationFreshRequest)).status).toBe(409);
     expect(await testDb.prepare(
       `SELECT highest_generation FROM prekey_lifecycle_authority
         WHERE user_id = ?`,

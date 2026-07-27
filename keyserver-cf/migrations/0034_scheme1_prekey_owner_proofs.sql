@@ -14,6 +14,26 @@ ALTER TABLE opk_pool
 ALTER TABLE opk_pool
   ADD COLUMN batch_commitment_b64 TEXT;
 
+-- Scheme 0 continues to insert the original four-column receipt shape and
+-- receives these defaults. Scheme 1 records enough authenticated context to
+-- return the original stable result after an ambiguous/lost response.
+ALTER TABLE prekey_replenish_receipts
+  ADD COLUMN identity_scheme INTEGER NOT NULL DEFAULT 0
+    CHECK (identity_scheme IN (0, 1));
+ALTER TABLE prekey_replenish_receipts
+  ADD COLUMN protocol_version INTEGER NOT NULL DEFAULT 1
+    CHECK (protocol_version IN (1, 2));
+ALTER TABLE prekey_replenish_receipts
+  ADD COLUMN identity_revision INTEGER;
+ALTER TABLE prekey_replenish_receipts
+  ADD COLUMN identity_bundle_commitment_b64 TEXT;
+ALTER TABLE prekey_replenish_receipts
+  ADD COLUMN lifecycle_generation INTEGER;
+ALTER TABLE prekey_replenish_receipts
+  ADD COLUMN batch_commitment_b64 TEXT;
+ALTER TABLE prekey_replenish_receipts
+  ADD COLUMN opks_added INTEGER;
+
 CREATE TABLE prekey_lifecycle_authority (
   user_id TEXT PRIMARY KEY,
   ik_root_ed25519_pub TEXT NOT NULL,
@@ -24,7 +44,9 @@ CREATE TABLE prekey_lifecycle_authority (
   rn_capabilities INTEGER NOT NULL
     CHECK (rn_capabilities BETWEEN 0 AND 65535),
   proof_version INTEGER NOT NULL CHECK (proof_version = 1),
-  identity_blob_version INTEGER NOT NULL CHECK (identity_blob_version = 3),
+  -- Public signed-bundle protocol version. This is unrelated to the Rust
+  -- keystore's private on-disk IDENTITY_BLOB_VERSION.
+  identity_bundle_version INTEGER NOT NULL CHECK (identity_bundle_version = 1),
   lifecycle_version INTEGER NOT NULL CHECK (lifecycle_version = 2),
   spk_pub_b64 TEXT NOT NULL CHECK (length(spk_pub_b64) = 44),
   spk_signature_b64 TEXT NOT NULL CHECK (length(spk_signature_b64) = 88),
@@ -95,6 +117,45 @@ BEGIN
   SELECT RAISE(ABORT, 'scheme-1 prekey lifecycle authority cannot be reset');
 END;
 
+CREATE TRIGGER prekey_replenish_receipt_scheme_guard
+BEFORE INSERT ON prekey_replenish_receipts
+WHEN NOT (
+  (
+    NEW.identity_scheme = 0
+    AND NEW.protocol_version = 1
+    AND NEW.identity_revision IS NULL
+    AND NEW.identity_bundle_commitment_b64 IS NULL
+    AND NEW.lifecycle_generation IS NULL
+    AND NEW.batch_commitment_b64 IS NULL
+    AND NEW.opks_added IS NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM users
+       WHERE user_id = NEW.user_id
+         AND identity_scheme = 1
+    )
+  )
+  OR (
+    NEW.identity_scheme = 1
+    AND NEW.protocol_version = 2
+    AND NEW.identity_revision >= 1
+    AND length(NEW.identity_bundle_commitment_b64) = 44
+    AND NEW.lifecycle_generation >= 1
+    AND length(NEW.batch_commitment_b64) = 44
+    AND NEW.opks_added BETWEEN 1 AND 100
+    AND EXISTS (
+      SELECT 1 FROM users
+       WHERE user_id = NEW.user_id
+         AND identity_scheme = 1
+         AND identity_revision = NEW.identity_revision
+         AND ik_ed25519_pub = NEW.signer_ed25519_pub
+         AND identity_lookup_enabled = 1
+    )
+  )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'prekey replenish receipt scheme context is invalid');
+END;
+
 CREATE TRIGGER opk_pool_scheme1_proof_guard
 BEFORE INSERT ON opk_pool
 WHEN EXISTS (
@@ -108,7 +169,7 @@ AND COALESCE(NOT (
   AND length(NEW.batch_commitment_b64) = 44
   AND CAST(json_extract(NEW.owner_proof_json, '$.version') AS INTEGER) = 1
   AND json_extract(NEW.owner_proof_json, '$.owner_user_id') = NEW.user_id
-  AND CAST(json_extract(NEW.owner_proof_json, '$.identity_blob_version') AS INTEGER) = 3
+  AND CAST(json_extract(NEW.owner_proof_json, '$.identity_bundle_version') AS INTEGER) = 1
   AND CAST(json_extract(NEW.owner_proof_json, '$.lifecycle_version') AS INTEGER) = 2
   AND CAST(json_extract(NEW.owner_proof_json, '$.lifecycle_generation') AS INTEGER)
       = NEW.lifecycle_generation

@@ -80,6 +80,7 @@ async function readCanonicalIdentity(
   return await db.prepare(
     `SELECT user_id,
             identity_scheme,
+            1 AS identity_bundle_version,
             identity_revision,
             ik_root_ed25519_pub,
             ik_x25519_pub,

@@ -95,6 +95,15 @@ permission to deploy: the repository's production migration and deploy scripts
 remain refusal gates until the independent release authority admits the exact
 release.
 
+**Current hard stop:** migrations 0033/0034 are undeployed and ineligible for
+deployment. Do not begin this sequence until an independently frozen shipping
+Rust client object has admitted the exact
+`test/fixtures/scheme1-contract-vectors.json` bytes and
+`SCHEME1_PREKEY_CONTRACT_DESCRIPTOR` digest, rejects the stripped/downgrade
+vectors, and persists peer scheme/generation/batch pins across restart. Server
+tests, a clean release, or operator intent cannot substitute for that exact
+client admission.
+
 1. Freeze and record the full Worker commit, repository tree, and
    `keyserver-cf` tree. The checkout must still have that commit at `HEAD`.
 2. Confirm `wrangler.toml` names Worker `oslprivacy-keyserver` and binds

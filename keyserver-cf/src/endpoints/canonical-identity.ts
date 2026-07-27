@@ -1,5 +1,6 @@
 import type { Env } from "../env.js";
 import {
+  CANONICAL_IDENTITY_BUNDLE_VERSION,
   CANONICAL_IDENTITY_SCHEME,
   type CanonicalIdentityBundle,
   validateCanonicalIdentityBundle,
@@ -7,17 +8,46 @@ import {
 } from "../lib/identity-authority.js";
 import { badRequest, conflict, forbidden, json } from "../lib/http.js";
 
-interface StoredCanonicalIdentity extends CanonicalIdentityBundle {
+interface StoredCanonicalIdentity
+  extends Omit<CanonicalIdentityBundle, "identity_bundle_version"> {
   identity_bundle_proof_sig: string;
   registration_sig: string;
   registered_at: string;
   identity_lookup_enabled: number;
 }
 
+const CANONICAL_REGISTER_FIELDS = [
+  "identity_scheme",
+  "identity_bundle_version",
+  "identity_revision",
+  "user_id",
+  "ik_root_ed25519_pub",
+  "ik_x25519_pub",
+  "ik_ed25519_pub",
+  "ik_mlkem768_pub",
+  "ik_ratchet_initial_pub",
+  "rn_capabilities",
+  "identity_bundle_proof_sig",
+  "registration_sig",
+] as const;
+
+function hasExactFields(
+  body: Record<string, unknown>,
+  includeRotationProof: boolean,
+): boolean {
+  const expected = includeRotationProof
+    ? [...CANONICAL_REGISTER_FIELDS, "rotation_prev_sig"].sort()
+    : [...CANONICAL_REGISTER_FIELDS].sort();
+  const actual = Object.keys(body).sort();
+  return actual.length === expected.length &&
+    actual.every((field, index) => field === expected[index]);
+}
+
 function parseBundle(body: Record<string, unknown>): CanonicalIdentityBundle {
   return {
     user_id: body.user_id as string,
     identity_scheme: body.identity_scheme as 1,
+    identity_bundle_version: body.identity_bundle_version as 1,
     identity_revision: body.identity_revision as number,
     ik_root_ed25519_pub: body.ik_root_ed25519_pub as string,
     ik_x25519_pub: body.ik_x25519_pub as string,
@@ -91,6 +121,10 @@ export async function handleCanonicalIdentityRegister(
   if (body.identity_scheme !== CANONICAL_IDENTITY_SCHEME) {
     return badRequest("canonical identity_scheme must be 1");
   }
+  const hasRotationProof = "rotation_prev_sig" in body;
+  if (!hasExactFields(body, hasRotationProof)) {
+    return badRequest("canonical identity registration fields are noncanonical");
+  }
   const rootProof = body.identity_bundle_proof_sig;
   const registrationProof = body.registration_sig;
   if (
@@ -117,6 +151,9 @@ export async function handleCanonicalIdentityRegister(
   const stored = await readStored(env.DB, bundle.user_id);
   const now = new Date().toISOString();
   if (!stored) {
+    if (hasRotationProof) {
+      return badRequest("canonical identity genesis cannot carry a rotation proof");
+    }
     if (bundle.identity_revision !== 1) {
       return conflict("canonical identity genesis revision must be 1");
     }
@@ -160,6 +197,7 @@ export async function handleCanonicalIdentityRegister(
       {
         user_id: bundle.user_id,
         identity_scheme: 1,
+        identity_bundle_version: CANONICAL_IDENTITY_BUNDLE_VERSION,
         identity_revision: 1,
         identity_bundle_sha256: validated.bundle_sha256,
         registered_at: now,
@@ -178,6 +216,9 @@ export async function handleCanonicalIdentityRegister(
     bundle.identity_revision === stored.identity_revision &&
     sameBundle(stored, bundle, rootProof, registrationProof)
   ) {
+    if (hasRotationProof) {
+      return badRequest("canonical identity no-op cannot carry a rotation proof");
+    }
     if (stored.identity_lookup_enabled !== 1) {
       await env.DB.prepare(
         `UPDATE users
@@ -195,6 +236,7 @@ export async function handleCanonicalIdentityRegister(
     return json({
       user_id: bundle.user_id,
       identity_scheme: 1,
+      identity_bundle_version: CANONICAL_IDENTITY_BUNDLE_VERSION,
       identity_revision: stored.identity_revision,
       status: "noop",
     });
@@ -253,6 +295,7 @@ export async function handleCanonicalIdentityRegister(
   return json({
     user_id: bundle.user_id,
     identity_scheme: 1,
+    identity_bundle_version: CANONICAL_IDENTITY_BUNDLE_VERSION,
     identity_revision: bundle.identity_revision,
     identity_bundle_sha256: validated.bundle_sha256,
     status: "rotated",

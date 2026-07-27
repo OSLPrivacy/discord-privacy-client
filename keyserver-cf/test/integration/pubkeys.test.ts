@@ -54,6 +54,9 @@ describe("GET /v1/pubkeys/:user_id", () => {
     expect(j.ik_ratchet_initial_pub).toBe(STUB_RATCHET_PUB_B64);
     expect(typeof j.registered_at).toBe("string");
     expect(typeof j.registration_sig).toBe("string");
+    expect(j.identity_scheme).toBeUndefined();
+    expect(j.identity_bundle_version).toBeUndefined();
+    expect(j.protocol_version).toBeUndefined();
     // The historical database column name remains private.
     expect(j.ik_x25519_signature).toBeUndefined();
   });

@@ -7,6 +7,14 @@ const ROLLOUT_GENESIS_DOMAIN = "OSL-SENDER-FILTER-ROLLOUT-GENESIS-v1\u0000";
 const ROLLOUT_ADVANCE_DOMAIN = "OSL-SENDER-FILTER-ROLLOUT-ADVANCE-v1\u0000";
 
 export const CANONICAL_IDENTITY_SCHEME = 1;
+/**
+ * Version of the signed, public `OSL-FULL-IDENTITY-BUNDLE` protocol object.
+ *
+ * This is deliberately not the Rust keystore's `IDENTITY_BLOB_VERSION`.
+ * That Rust constant versions a sealed, private on-disk serialization and is
+ * neither sent to nor interpreted by the keyserver.
+ */
+export const CANONICAL_IDENTITY_BUNDLE_VERSION = 1;
 export const CANONICAL_IDENTITY_PREFIX = "osl1_";
 export const CANONICAL_IDENTITY_ID_LENGTH = 57;
 export const CANONICAL_IDENTITY_FRESHNESS_MS = 5 * 60 * 1000;
@@ -164,6 +172,7 @@ function requireSha256(value: unknown, label: string): string {
 export interface CanonicalIdentityBundle {
   user_id: string;
   identity_scheme: 1;
+  identity_bundle_version: 1;
   identity_revision: number;
   ik_root_ed25519_pub: string;
   ik_x25519_pub: string;
@@ -228,6 +237,11 @@ export function canonicalIdentityBundleBytes(
   if (value.identity_scheme !== CANONICAL_IDENTITY_SCHEME) {
     throw new Error("identity scheme must be canonical scheme 1");
   }
+  if (
+    value.identity_bundle_version !== CANONICAL_IDENTITY_BUNDLE_VERSION
+  ) {
+    throw new Error("identity bundle version must be canonical version 1");
+  }
   requirePositiveSafeInteger(value.identity_revision, "identity revision");
   if (
     !Number.isSafeInteger(value.rn_capabilities) ||
@@ -240,6 +254,7 @@ export function canonicalIdentityBundleBytes(
     lpText(BUNDLE_DOMAIN),
     lpText(value.user_id),
     u32be(value.identity_scheme),
+    u32be(value.identity_bundle_version),
     lpText(String(value.identity_revision)),
     lp(root),
     lp(x25519),

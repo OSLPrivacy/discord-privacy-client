@@ -1,5 +1,6 @@
 import type { Env } from "../env.js";
 import { getSignedIdentity } from "../lib/db.js";
+import { CANONICAL_IDENTITY_BUNDLE_VERSION } from "../lib/identity-authority.js";
 import { badRequest, json, notFound } from "../lib/http.js";
 import { isDiscordSnowflake } from "../lib/validation.js";
 
@@ -52,6 +53,7 @@ export async function handlePubkeys(env: Env, userId: string): Promise<Response>
   body.registration_sig = row.ik_x25519_signature;
   if (row.identity_scheme === 1) {
     body.identity_scheme = 1;
+    body.identity_bundle_version = CANONICAL_IDENTITY_BUNDLE_VERSION;
     body.identity_revision = row.identity_revision;
     body.ik_root_ed25519_pub = row.ik_root_ed25519_pub;
     body.identity_bundle_proof_sig = row.identity_bundle_proof_sig;

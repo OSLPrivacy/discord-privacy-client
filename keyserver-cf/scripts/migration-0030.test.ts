@@ -5,8 +5,17 @@ import { afterEach, describe, expect, it } from "vitest";
 import { handleRegister } from "../src/endpoints/register.js";
 import type { Env } from "../src/env.js";
 import {
+  canonicalIdentityBundleBytes,
+  deriveCanonicalOslIdentityId,
+  type CanonicalIdentityBundle,
+} from "../src/lib/identity-authority.js";
+import {
   generateEd25519Pair,
+  signEd25519,
   signedRegisterBody,
+  STUB_MLKEM_PUB_B64,
+  STUB_RATCHET_PUB_B64,
+  STUB_X25519_PUB_B64,
 } from "../test/integration/helpers.js";
 
 const miniflareInstances = new Set<Miniflare>();
@@ -124,28 +133,49 @@ describe("migration 0030 preparatory derived-identity namespace", () => {
 
   it("worker-first refuses the reserved namespace on a pre-0030 schema", async () => {
     const db = await pre0030Db();
-    const pair = await generateEd25519Pair();
-    const derivedId = `osl1_${"a".repeat(32)}`;
-    const body = await signedRegisterBody(derivedId, pair);
+    const root = await generateEd25519Pair();
+    const current = await generateEd25519Pair();
+    const bundle: CanonicalIdentityBundle = {
+      user_id: await deriveCanonicalOslIdentityId(root.publicKeyB64),
+      identity_scheme: 1,
+      identity_bundle_version: 1,
+      identity_revision: 1,
+      ik_root_ed25519_pub: root.publicKeyB64,
+      ik_x25519_pub: STUB_X25519_PUB_B64,
+      ik_ed25519_pub: current.publicKeyB64,
+      ik_mlkem768_pub: STUB_MLKEM_PUB_B64,
+      ik_ratchet_initial_pub: STUB_RATCHET_PUB_B64,
+      rn_capabilities: 1,
+    };
+    const canonical = canonicalIdentityBundleBytes(bundle);
+    const body = {
+      ...bundle,
+      identity_bundle_proof_sig: await signEd25519(
+        root.signingKey,
+        canonical,
+      ),
+      registration_sig: await signEd25519(
+        current.signingKey,
+        canonical,
+      ),
+    };
 
-    // Attacker-supplied fields are not a root proof and cannot turn the
-    // preparatory refusal into scheme-1 registration.
-    body.identity_scheme = 1;
-    body.ik_root_ed25519_pub = pair.publicKeyB64;
-    const refused = await register(db, body);
-    expect(refused.status).toBe(400);
-    expect(await refused.json()).toEqual({
-      error: "canonical identity proofs are required",
-    });
+    // This is a fully valid scheme-1 object. It must reach the missing schema
+    // dependency rather than passing because an earlier parser rejected a
+    // malformed pseudo-scheme-1 request.
+    await expect(register(db, body)).rejects.toThrow(/identity_scheme/i);
     const count = await db
       .prepare("SELECT COUNT(*) AS count FROM users WHERE user_id = ?")
-      .bind(derivedId)
+      .bind(bundle.user_id)
       .first<{ count: number }>();
     expect(count?.count).toBe(0);
 
     // The same Worker has no dependency on the not-yet-present columns for
     // ordinary scheme-0 registration.
-    const ordinary = await signedRegisterBody("ordinary-before-0030", pair);
+    const ordinary = await signedRegisterBody(
+      "ordinary-before-0030",
+      current,
+    );
     expect((await register(db, ordinary)).status).toBe(201);
   });
 

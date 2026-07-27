@@ -91,20 +91,30 @@ export async function handleRegister(request: Request, env: Env): Promise<Respon
   const rlIp = await checkRateLimit(env, callerIp(request), REGISTER_IP_MAX, "register-ip");
   if (!rlIp.ok) return tooMany(rlIp.retryAfter);
 
-  let body: Record<string, unknown>;
+  let parsed: unknown;
   try {
-    body = (await request.json()) as Record<string, unknown>;
+    parsed = await request.json();
   } catch {
     return badRequest("malformed JSON body");
   }
-  if (
-    body &&
-    typeof body === "object" &&
-    !Array.isArray(body) &&
-    body.identity_scheme === 1
-  ) {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return badRequest("registration body must be an object");
+  }
+  const body = parsed as Record<string, unknown>;
+  // SCHEME1_LEGACY_CLASSIFIER_MUTATION_BEGIN
+  if ("identity_scheme" in body) {
+    // Scheme 0 is the historical, tagless wire shape. Once a caller supplies
+    // a scheme discriminator it is part of the security boundary: only the
+    // exact scheme-1 value is accepted, never reclassified through the legacy
+    // parser where the discriminator would not be covered by REG_MSG.
+    if (body.identity_scheme !== 1) {
+      return badRequest(
+        "identity_scheme is unsupported; legacy scheme 0 must omit the field",
+      );
+    }
     return await handleCanonicalIdentityRegister(body, env);
   }
+  // SCHEME1_LEGACY_CLASSIFIER_MUTATION_END
 
   // --- presence ---
   const required = [
