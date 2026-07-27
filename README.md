@@ -82,11 +82,11 @@ kinds and they are different.
 Scope burn shreds OSL's local copies for one conversation. The stored ciphertext
 and nonce are overwritten in place, the rows are marked burned so a later sync
 cannot write them back, cached attachments go with them, and OSL's server-side
-state for that scope is deleted. A signed burn notice is also sent to the other
-members as a *request* that their clients do the same; a member whose client
-honours it loses their copy too, and OSL cannot make that happen or prove that it
-did. Use this when you no longer trust the people in one channel with your past
-messages. Everything else you have is untouched.
+state for that scope is deleted. A peer-notification path is implemented, but it
+has not been proved end to end and is not available as a working peer action
+today. Do not rely on Burn to remove another member's copy. Use scope burn when
+you no longer trust the people in one channel with your past messages.
+Everything else you have is untouched.
 
 Account burn shreds everything on your machine — every conversation and every
 saved message — and generates a fresh identity so you can start over. Use this as
