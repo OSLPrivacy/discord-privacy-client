@@ -304,8 +304,10 @@ function productionTypeScriptSource(source: string): string {
 
 function isTestSpecFixturePath(path: string): boolean {
   const normalized = path.replaceAll("\\", "/");
-  return /(?:^|\/)(?:__)?(?:tests?|specs?|fixtures?)(?:__)?(?:\/|$)/iu.test(normalized)
-    || /(?:^|[._-])(?:test|spec|fixture)s?(?:[._-]|$)/iu.test(
+  return /(?:^|\/)(?:__)?(?:tests?|testdata|specs?|fixtures?)(?:__)?(?:\/|$)/iu.test(
+    normalized,
+  )
+    || /(?:^|[._-])(?:tests?|testdata|specs?|fixtures?)(?:[._-]|$)/iu.test(
       normalized.split("/").at(-1) ?? "",
     );
 }
@@ -364,72 +366,25 @@ function externalOverlayNames(source: string, prototypeTypes: readonly string[])
   return names;
 }
 
-function invokeNames(source: string): Set<string> {
-  const names = new Set<string>();
-  for (const import_ of source.matchAll(
-    /\bimport\s*\{([^}]+)\}\s*from\s*["']@tauri-apps\/api\/core["']/gu,
-  )) {
-    for (const binding of import_[1].split(",")) {
-      const invoke = binding.trim().match(
-        /^invoke(?:\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*))?$/u,
-      );
-      if (invoke) names.add(invoke[1] ?? "invoke");
-    }
-  }
-  for (const import_ of source.matchAll(
-    /\bimport\s+\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s+["']@tauri-apps\/api\/core["']/gu,
-  )) names.add(`${import_[1]}.invoke`);
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const alias of source.matchAll(
-      /\b(?:export\s+)?(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*(?:\.invoke)?)\s*;/gu,
-    )) {
-      if (names.has(alias[2]) && !names.has(alias[1])) {
-        names.add(alias[1]);
-        changed = true;
-      }
-    }
-    for (const destructured of source.matchAll(
-      /\b(?:const|let)\s*\{\s*invoke(?:\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*))?\s*\}\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*;/gu,
-    )) {
-      const localName = destructured[1] ?? "invoke";
-      if (names.has(`${destructured[2]}.invoke`) && !names.has(localName)) {
-        names.add(localName);
-        changed = true;
-      }
-    }
-  }
-  return names;
-}
-
 type Invocation = { start: number; end: number };
-
-function commandInvocations(source: string, command: string): Invocation[] {
-  const commandName = escapeRegExp(command);
-  const literal = `(?:"${commandName}"|'${commandName}'|\`${commandName}\`)`;
-  const invocations: Invocation[] = [];
-  for (const name of invokeNames(source)) {
-    const call = new RegExp(
-      `\\b${escapeRegExp(name)}\\s*(?:<[^;()]*>\\s*)?\\(\\s*${literal}`,
-      "gu",
-    );
-    for (const match of source.matchAll(call)) {
-      if (match.index !== undefined) {
-        invocations.push({ start: match.index, end: match.index + match[0].length });
-      }
-    }
-  }
-  return invocations;
-}
 
 type CallableRange = {
   localName: string;
   start: number;
   bodyStart: number;
   end: number;
+  parameters: Set<string>;
   exportedAs: Set<string>;
 };
+
+function parameterNames(parameters: string): Set<string> {
+  const names = new Set<string>();
+  for (const parameter of parameters.split(",")) {
+    const name = parameter.trim().match(/^([A-Za-z_$][A-Za-z0-9_$]*)\b/u)?.[1];
+    if (name) names.add(name);
+  }
+  return names;
+}
 
 function callableRanges(source: string): CallableRange[] {
   const ranges: CallableRange[] = [];
@@ -438,14 +393,17 @@ function callableRanges(source: string): CallableRange[] {
   )) {
     const start = function_.index;
     if (start === undefined) continue;
-    const openBrace = source.indexOf("{", start + function_[0].length);
+    const openParen = source.indexOf("(", start);
+    const closeParen = matchingDelimiter(source, openParen, "(", ")");
+    const openBrace = source.indexOf("{", closeParen + 1);
     const closeBrace = matchingDelimiter(source, openBrace, "{", "}");
-    if (openBrace < 0 || closeBrace < 0) continue;
+    if (openParen < 0 || closeParen < 0 || openBrace < 0 || closeBrace < 0) continue;
     ranges.push({
       localName: function_[2],
       start,
       bodyStart: openBrace + 1,
       end: closeBrace + 1,
+      parameters: parameterNames(source.slice(openParen + 1, closeParen)),
       exportedAs: new Set(function_[1] ? [function_[2]] : []),
     });
   }
@@ -454,6 +412,24 @@ function callableRanges(source: string): CallableRange[] {
   )) {
     const start = constant.index;
     if (start === undefined) continue;
+    const header = constant[0];
+    const arrowParameters = header.match(
+      /=\s*(?:async\s*)?(\([^;{}]*\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*=>$/u,
+    )?.[1];
+    let parameters = new Set<string>();
+    if (arrowParameters) {
+      parameters = parameterNames(
+        arrowParameters.startsWith("(")
+          ? arrowParameters.slice(1, -1)
+          : arrowParameters,
+      );
+    } else if (/\bfunction\b/u.test(header)) {
+      const openParen = source.indexOf("(", start + header.length);
+      const closeParen = matchingDelimiter(source, openParen, "(", ")");
+      if (openParen >= 0 && closeParen >= 0) {
+        parameters = parameterNames(source.slice(openParen + 1, closeParen));
+      }
+    }
     let braces = 0;
     let parens = 0;
     let end = source.length;
@@ -472,6 +448,7 @@ function callableRanges(source: string): CallableRange[] {
       start,
       bodyStart: start + constant[0].length,
       end,
+      parameters,
       exportedAs: new Set(constant[1] ? [constant[2]] : []),
     });
   }
@@ -486,6 +463,192 @@ function callableRanges(source: string): CallableRange[] {
     }
   }
   return ranges;
+}
+
+type InvokeAuthority = "invoke" | "namespace";
+type BindingEvent = {
+  name: string;
+  position: number;
+  scope: CallableRange | undefined;
+  kind: "import" | "declaration" | "assignment" | "parameter";
+  authority?: InvokeAuthority;
+  rhs?: string;
+};
+
+function sameScope(
+  left: CallableRange | undefined,
+  right: CallableRange | undefined,
+): boolean {
+  return left === right;
+}
+
+function enclosingScopes(
+  ranges: readonly CallableRange[],
+  position: number,
+): Array<CallableRange | undefined> {
+  return [
+    ...ranges
+      .filter((range) => position >= range.bodyStart && position < range.end)
+      .sort((left, right) => (left.end - left.start) - (right.end - right.start)),
+    undefined,
+  ];
+}
+
+function simpleReference(expression: string): string | undefined {
+  return expression.trim().match(
+    /^([A-Za-z_$][A-Za-z0-9_$]*(?:\.invoke)?)$/u,
+  )?.[1];
+}
+
+function bindingEvents(
+  source: string,
+  ranges: readonly CallableRange[],
+): BindingEvent[] {
+  const events: BindingEvent[] = [];
+  for (const import_ of source.matchAll(
+    /\bimport\s*\{([^}]+)\}\s*from\s*["']@tauri-apps\/api\/core["']/gu,
+  )) {
+    for (const binding of import_[1].split(",")) {
+      const invoke = binding.trim().match(
+        /^invoke(?:\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*))?$/u,
+      );
+      if (!invoke || import_.index === undefined) continue;
+      events.push({
+        name: invoke[1] ?? "invoke",
+        position: import_.index,
+        scope: undefined,
+        kind: "import",
+        authority: "invoke",
+      });
+    }
+  }
+  for (const import_ of source.matchAll(
+    /\bimport\s+\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s+["']@tauri-apps\/api\/core["']/gu,
+  )) {
+    if (import_.index === undefined) continue;
+    events.push({
+      name: import_[1],
+      position: import_.index,
+      scope: undefined,
+      kind: "import",
+      authority: "namespace",
+    });
+  }
+  for (const range of ranges) {
+    for (const name of range.parameters) {
+      events.push({
+        name,
+        position: range.bodyStart,
+        scope: range,
+        kind: "parameter",
+      });
+    }
+    events.push({
+      name: range.localName,
+      position: range.start,
+      scope: containingCallable(
+        ranges.filter((candidate) => candidate !== range),
+        range.start,
+      ),
+      kind: "declaration",
+    });
+  }
+  for (const declaration of source.matchAll(
+    /\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=;\n]+)?(?:=\s*([^;\n]+))?\s*;/gu,
+  )) {
+    if (declaration.index === undefined) continue;
+    events.push({
+      name: declaration[1],
+      position: declaration.index,
+      scope: containingCallable(ranges, declaration.index),
+      kind: "declaration",
+      rhs: declaration[2] === undefined ? undefined : simpleReference(declaration[2]),
+    });
+  }
+  for (const destructured of source.matchAll(
+    /\b(?:const|let|var)\s*\{\s*invoke(?:\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*))?\s*\}\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*;/gu,
+  )) {
+    if (destructured.index === undefined) continue;
+    events.push({
+      name: destructured[1] ?? "invoke",
+      position: destructured.index,
+      scope: containingCallable(ranges, destructured.index),
+      kind: "declaration",
+      rhs: `${destructured[2]}.invoke`,
+    });
+  }
+  for (const assignment of source.matchAll(
+    /(?:^|[;{}\n])\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([^=;>\n][^;\n]*);/gu,
+  )) {
+    if (assignment.index === undefined) continue;
+    const position = assignment.index + assignment[0].indexOf(assignment[1]);
+    events.push({
+      name: assignment[1],
+      position,
+      scope: containingCallable(ranges, position),
+      kind: "assignment",
+      rhs: simpleReference(assignment[2]),
+    });
+  }
+  return events;
+}
+
+function authorityAt(
+  reference: string,
+  position: number,
+  ranges: readonly CallableRange[],
+  events: readonly BindingEvent[],
+  resolving = new Set<string>(),
+): InvokeAuthority | undefined {
+  const dotted = reference.match(
+    /^([A-Za-z_$][A-Za-z0-9_$]*)\.invoke$/u,
+  );
+  if (dotted) {
+    return authorityAt(dotted[1], position, ranges, events, resolving) === "namespace"
+      ? "invoke"
+      : undefined;
+  }
+  const scopeKey = `${reference}@${position}`;
+  if (resolving.has(scopeKey)) return undefined;
+  const nextResolving = new Set(resolving).add(scopeKey);
+  for (const scope of enclosingScopes(ranges, position)) {
+    const bindings = events.filter((event) =>
+      event.name === reference && sameScope(event.scope, scope)
+    );
+    if (bindings.length === 0) continue;
+    const declarations = bindings.filter(({ kind }) => kind !== "assignment");
+    const prior = bindings
+      .filter((event) => event.position <= position)
+      .sort((left, right) => right.position - left.position)[0];
+    if (!prior) {
+      // A lexical declaration shadows outer authority throughout its scope,
+      // including its temporal-dead-zone prefix.
+      if (declarations.length > 0) return undefined;
+      continue;
+    }
+    if (prior.authority) return prior.authority;
+    if (!prior.rhs) return undefined;
+    return authorityAt(prior.rhs, prior.position, ranges, events, nextResolving);
+  }
+  return undefined;
+}
+
+function commandInvocations(source: string, command: string): Invocation[] {
+  const ranges = callableRanges(source);
+  const events = bindingEvents(source, ranges);
+  const commandName = escapeRegExp(command);
+  const literal = `(?:"${commandName}"|'${commandName}'|\`${commandName}\`)`;
+  const call = new RegExp(
+    `\\b([A-Za-z_$][A-Za-z0-9_$]*(?:\\.invoke)?)\\s*(?:<[^;()]*>\\s*)?\\(\\s*${literal}`,
+    "gu",
+  );
+  return [...source.matchAll(call)].flatMap((match) => {
+    if (
+      match.index === undefined
+      || authorityAt(match[1], match.index, ranges, events) !== "invoke"
+    ) return [];
+    return [{ start: match.index, end: match.index + match[0].length }];
+  });
 }
 
 function invokingWrappers(source: string, command: string): CallableRange[] {
@@ -504,6 +667,26 @@ function containingCallable(
     .sort((left, right) => (left.end - left.start) - (right.end - right.start))[0];
 }
 
+function registeredCallbackPositions(source: string, name: string): number[] {
+  const callback = escapeRegExp(name);
+  const registrations = [
+    new RegExp(
+      `\\baddEventListener\\s*\\(\\s*[^,;\\n]+,\\s*${callback}\\b`,
+      "gu",
+    ),
+    new RegExp(
+      `\\b(?:setTimeout|setInterval|requestAnimationFrame|queueMicrotask)\\s*\\(\\s*${callback}\\b`,
+      "gu",
+    ),
+    new RegExp(`\\.(?:then|catch|finally)\\s*\\(\\s*${callback}\\b`, "gu"),
+  ];
+  return registrations.flatMap((registration) =>
+    [...source.matchAll(registration)].flatMap(({ index }) =>
+      index === undefined ? [] : [index]
+    )
+  );
+}
+
 function reachableCallables(
   source: string,
   ranges: readonly CallableRange[],
@@ -516,6 +699,15 @@ function reachableCallables(
       const position = match.index;
       if (position === undefined) continue;
       if (position >= target.start && position < target.bodyStart) continue;
+      const caller = containingCallable(ranges, position);
+      if (!caller) roots.add(target);
+      else if (caller !== target) {
+        const callees = edges.get(caller) ?? new Set<CallableRange>();
+        callees.add(target);
+        edges.set(caller, callees);
+      }
+    }
+    for (const position of registeredCallbackPositions(source, target.localName)) {
       const caller = containingCallable(ranges, position);
       if (!caller) roots.add(target);
       else if (caller !== target) {
@@ -552,7 +744,10 @@ function hasReachableNamedCall(source: string, name: string): boolean {
   const ranges = callableRanges(source);
   const reachable = reachableCallables(source, ranges);
   const call = new RegExp(`\\b${escapeRegExp(name)}\\s*\\(`, "gu");
-  return [...source.matchAll(call)].some(({ index }) => {
+  const callPositions = [...source.matchAll(call)].flatMap(({ index }) =>
+    index === undefined ? [] : [index]
+  );
+  return [...callPositions, ...registeredCallbackPositions(source, name)].some((index) => {
     if (index === undefined) return false;
     if (ranges.some((range) => index >= range.start && index < range.bodyStart)) return false;
     return positionIsReachable(ranges, reachable, index);
@@ -1161,8 +1356,10 @@ describe("generic external overlay production reachability", () => {
       "/synthetic/main.spec.ts",
       "/synthetic/main.test.ts",
       "/synthetic/main.fixture.ts",
+      "/synthetic/main.testdata.ts",
       "/synthetic/spec/main.ts",
       "/synthetic/tests/main.ts",
+      "/synthetic/testdata/main.ts",
       "/synthetic/fixtures/main.ts",
     ]) {
       const result = completeSyntheticPath([{ path, source: testOnlySource }]);
@@ -1173,8 +1370,10 @@ describe("generic external overlay production reachability", () => {
       "/synthetic/main.spec.rs",
       "/synthetic/main.test.rs",
       "/synthetic/main.fixture.rs",
+      "/synthetic/main.testdata.rs",
       "/synthetic/spec/main.rs",
       "/synthetic/tests/main.rs",
+      "/synthetic/testdata/main.rs",
       "/synthetic/fixtures/main.rs",
     ]) {
       const result = completeSyntheticPath(
@@ -1192,6 +1391,162 @@ describe("generic external overlay production reachability", () => {
     }]);
     expect(unimported.uiInvokePresent).toBe(false);
     expect(unimported.productionReachable).toBe(false);
+  });
+
+  it("tracks lexical invoke authority through shadows and reassignment", () => {
+    const trustedCall = [
+      'import { invoke as importedInvoke } from "@tauri-apps/api/core";',
+      "const fake = (_command: string) => Promise.resolve();",
+      "let callNative = importedInvoke;",
+      "function open() {",
+      '  callNative("open_external_overlay");',
+      "}",
+      "open();",
+    ].join("\n");
+    const trusted = completeSyntheticPath([{
+      path: "/synthetic/main.ts",
+      source: trustedCall,
+    }]);
+    expect(trusted.uiInvokePresent).toBe(true);
+    expect(trusted.uiDirectCall).toBe(true);
+    expect(trusted.productionReachable).toBe(true);
+
+    for (const source of [
+      [
+        'import { invoke } from "@tauri-apps/api/core";',
+        "const fake = (_command: string) => Promise.resolve();",
+        "function open(invoke: (command: string) => unknown) {",
+        '  invoke("open_external_overlay");',
+        "}",
+        "open(fake);",
+      ].join("\n"),
+      [
+        'import { invoke } from "@tauri-apps/api/core";',
+        "const fake = (_command: string) => Promise.resolve();",
+        "function open() {",
+        "  const invoke = fake;",
+        '  invoke("open_external_overlay");',
+        "}",
+        "open();",
+      ].join("\n"),
+      [
+        'import { invoke } from "@tauri-apps/api/core";',
+        "function open() {",
+        "  let invoke;",
+        '  invoke("open_external_overlay");',
+        "}",
+        "open();",
+      ].join("\n"),
+      trustedCall.replace(
+        "function open() {",
+        "callNative = fake;\nfunction open() {",
+      ),
+    ]) {
+      const rejected = completeSyntheticPath([{
+        path: "/synthetic/main.ts",
+        source,
+      }]);
+      expect(rejected.uiInvokePresent).toBe(false);
+      expect(rejected.uiDirectCall).toBe(false);
+      expect(rejected.productionReachable).toBe(false);
+    }
+
+    const callBeforeReassignment = trustedCall.replace(
+      "open();",
+      "open();\ncallNative = fake;",
+    );
+    expect(
+      completeSyntheticPath([{
+        path: "/synthetic/main.ts",
+        source: callBeforeReassignment,
+      }]).productionReachable,
+    ).toBe(true);
+    expect(
+      completeSyntheticPath([{
+        path: "/synthetic/main.ts",
+        source: trustedCall.replace('callNative("open_external_overlay");', ""),
+      }]).productionReachable,
+    ).toBe(false);
+  });
+
+  it("treats recognized production callback registrations as call-graph edges", () => {
+    const registrations = [
+      'button.addEventListener("click", open);',
+      "setTimeout(open, 0);",
+      "setInterval(open, 1000);",
+      "requestAnimationFrame(open);",
+      "queueMicrotask(open);",
+      "Promise.resolve().then(open);",
+    ];
+    for (const registration of registrations) {
+      const source = [
+        'import { invoke } from "@tauri-apps/api/core";',
+        "function open() {",
+        '  invoke("open_external_overlay");',
+        "}",
+        registration,
+      ].join("\n");
+      const positive = completeSyntheticPath([{
+        path: "/synthetic/main.ts",
+        source,
+      }]);
+      expect(positive.uiDirectCall, `registration missed: ${registration}`).toBe(true);
+      expect(positive.productionReachable).toBe(true);
+
+      const removed = completeSyntheticPath([{
+        path: "/synthetic/main.ts",
+        source: source.replace(registration, ""),
+      }]);
+      expect(removed.uiDirectCall, `removal did not fail: ${registration}`).toBe(false);
+      expect(removed.productionReachable).toBe(false);
+
+      const dead = completeSyntheticPath([{
+        path: "/synthetic/main.ts",
+        source: source.replace(registration, `function neverCalled() { ${registration} }`),
+      }]);
+      expect(dead.uiDirectCall, `dead registration escaped: ${registration}`).toBe(false);
+      expect(dead.productionReachable).toBe(false);
+    }
+  });
+
+  it("recognizes aliased imported wrappers registered as callbacks", () => {
+    const adapter = [
+      'import { invoke } from "@tauri-apps/api/core";',
+      "export function openExternalOverlay() {",
+      '  return invoke("open_external_overlay");',
+      "}",
+    ].join("\n");
+    for (const registration of [
+      'button.addEventListener("click", launchOverlay);',
+      "setTimeout(launchOverlay, 0);",
+      "queueMicrotask(launchOverlay);",
+      "Promise.resolve().then(launchOverlay);",
+    ]) {
+      const main = [
+        'import { openExternalOverlay as launchOverlay } from "./external-overlay-adapter";',
+        registration,
+      ].join("\n");
+      const positive = completeSyntheticPath([
+        { path: "/synthetic/external-overlay-adapter.ts", source: adapter },
+        { path: "/synthetic/main.ts", source: main },
+      ]);
+      expect(positive.uiAdapterImported).toBe(true);
+      expect(positive.uiCall, `wrapper registration missed: ${registration}`).toBe(true);
+      expect(positive.productionReachable).toBe(true);
+
+      for (const mutation of [
+        main.replace(registration, ""),
+        main.replace(registration, `function neverCalled() { ${registration} }`),
+      ]) {
+        const rejected = completeSyntheticPath([
+          { path: "/synthetic/external-overlay-adapter.ts", source: adapter },
+          { path: "/synthetic/main.ts", source: mutation },
+        ]);
+        expect(rejected.uiAdapterImported).toBe(true);
+        expect(rejected.uiCall).toBe(false);
+        expect(rejected.productionReachable).toBe(false);
+      }
+    }
   });
 
   it("requires direct and wrapper containers to be reachable from an entry", () => {
