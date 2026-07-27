@@ -271,7 +271,24 @@ def heartbeat_age_seconds(value: str, now: dt.datetime | None = None) -> int:
     return int((now - stamp.astimezone(dt.timezone.utc)).total_seconds())
 
 
-def validate_operator(receipt_path: Path, bundle_path: Path) -> dict[str, Any]:
+def heartbeat_matches_retained(
+    raw: bytes, heartbeat: dict[str, Any], retained: dict[str, Any]
+) -> bool:
+    return (
+        sha256_bytes(raw) == retained["receiptSha256"]
+        and len(raw) == retained["sizeBytes"]
+        and heartbeat["sessionId"] == retained["sessionId"]
+        and heartbeat["isInteractiveSession"] == retained["interactive"]
+        and heartbeat["agentSha256"] == retained["agentSha256"]
+        and heartbeat["win32Sha256"] == retained["win32Sha256"]
+    )
+
+
+def validate_operator(
+    receipt_path: Path,
+    bundle_path: Path,
+    post_reset_heartbeat_path: Path,
+) -> dict[str, Any]:
     receipt_raw = read_regular(
         receipt_path, "fast-cycle receipt", cycle.MAX_JSON_BYTES
     )
@@ -311,22 +328,31 @@ def validate_operator(receipt_path: Path, bundle_path: Path) -> dict[str, Any]:
     ):
         raise OperatorError("exact staged executable hash or size differs")
 
+    retained = receipt["agentAliveAfter"]
+    historic_raw = read_regular(
+        post_reset_heartbeat_path,
+        "retained post-reset heartbeat",
+        cycle.MAX_JSON_BYTES,
+    )
+    historic = parse_heartbeat(historic_raw)
+    if not heartbeat_matches_retained(historic_raw, historic, retained):
+        raise OperatorError("retained post-reset heartbeat bytes differ")
+
     verify_azure_account()
-    heartbeat_raw = fetch_live_heartbeat()
-    heartbeat = parse_heartbeat(heartbeat_raw)
-    age = heartbeat_age_seconds(heartbeat["utc"])
+    current_raw = fetch_live_heartbeat()
+    current = parse_heartbeat(current_raw)
+    age = heartbeat_age_seconds(current["utc"])
     if age < -120 or age > 60:
         raise OperatorError(f"live agent heartbeat age is outside bounds: {age}")
-    retained = receipt["agentAliveAfter"]
     if (
-        sha256_bytes(heartbeat_raw) != retained["receiptSha256"]
-        or len(heartbeat_raw) != retained["sizeBytes"]
-        or heartbeat["sessionId"] != retained["sessionId"]
-        or heartbeat["isInteractiveSession"] != retained["interactive"]
-        or heartbeat["agentSha256"] != retained["agentSha256"]
-        or heartbeat["win32Sha256"] != retained["win32Sha256"]
+        current["sessionId"] != retained["sessionId"]
+        or current["isInteractiveSession"] != retained["interactive"]
+        or current["agentSha256"] != retained["agentSha256"]
+        or current["win32Sha256"] != retained["win32Sha256"]
     ):
-        raise OperatorError("live heartbeat differs from retained post-reset receipt")
+        raise OperatorError(
+            "fresh live heartbeat identity differs from post-reset receipt"
+        )
 
     return {
         "schemaVersion": 1,
@@ -337,7 +363,8 @@ def validate_operator(receipt_path: Path, bundle_path: Path) -> dict[str, Any]:
         "sourceTree": admission["sourceTree"],
         "executableSha256": admission["executableSha256"],
         "receiptSha256": admission["receiptSha256"],
-        "heartbeatSha256": sha256_bytes(heartbeat_raw),
+        "postResetHeartbeatSha256": sha256_bytes(historic_raw),
+        "currentHeartbeatSha256": sha256_bytes(current_raw),
         "attemptTwoPositiveReceiptSha256": admission[
             "attemptTwoPositiveReceiptSha256"
         ],
@@ -353,9 +380,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--receipt", required=True, type=Path)
     parser.add_argument("--bundle", required=True, type=Path)
+    parser.add_argument(
+        "--post-reset-heartbeat", required=True, type=Path
+    )
     try:
         args = parser.parse_args()
-        result = validate_operator(args.receipt, args.bundle)
+        result = validate_operator(
+            args.receipt, args.bundle, args.post_reset_heartbeat
+        )
     except (OperatorError, cycle.ReceiptError, OSError) as exc:
         print(f"VMQA FAST CYCLE NOT READY: {exc}", file=sys.stderr)
         return 9

@@ -90,11 +90,18 @@ class FastCycleOperatorTests(unittest.TestCase):
         self.heartbeat = (
             json.dumps(heartbeat, separators=(",", ":")) + "\n"
         ).encode("utf-8")
+        current = dict(heartbeat)
+        current["utc"] = "2026-07-27T18:00:55.0000000Z"
+        self.current_heartbeat = (
+            json.dumps(current, separators=(",", ":")) + "\n"
+        ).encode("utf-8")
         self.receipt["agentAliveAfter"]["receiptSha256"] = digest(
             self.heartbeat
         )
         self.receipt["agentAliveAfter"]["sizeBytes"] = len(self.heartbeat)
         self.receipt_path = self.root / "receipt.json"
+        self.heartbeat_path = self.root / "post-reset-heartbeat.json"
+        self.heartbeat_path.write_bytes(self.heartbeat)
         self.write_receipt()
 
     def tearDown(self) -> None:
@@ -117,7 +124,9 @@ class FastCycleOperatorTests(unittest.TestCase):
             mock.patch.object(operator, "run_bundle_validators") as validators,
             mock.patch.object(operator, "verify_azure_account") as account,
             mock.patch.object(
-                operator, "fetch_live_heartbeat", return_value=self.heartbeat
+                operator,
+                "fetch_live_heartbeat",
+                return_value=self.current_heartbeat,
             ),
             mock.patch.object(
                 operator,
@@ -126,7 +135,7 @@ class FastCycleOperatorTests(unittest.TestCase):
             ),
         ):
             result = operator.validate_operator(
-                self.receipt_path, self.bundle
+                self.receipt_path, self.bundle, self.heartbeat_path
             )
         validators.assert_called_once_with(self.bundle)
         account.assert_called_once_with()
@@ -151,6 +160,11 @@ class FastCycleOperatorTests(unittest.TestCase):
             self.receipt["agentAliveBefore"]["receiptSha256"],
             self.receipt["agentAliveAfter"]["receiptSha256"],
         )
+        self.assertNotEqual(self.heartbeat, self.current_heartbeat)
+        self.assertNotEqual(
+            result["postResetHeartbeatSha256"],
+            result["currentHeartbeatSha256"],
+        )
 
     def test_wrong_authorized_subscription_is_refused(self):
         wrong = "11111111-2222-3333-4444-555555555555"
@@ -169,7 +183,9 @@ class FastCycleOperatorTests(unittest.TestCase):
         with self.pin_receipt(), self.assertRaisesRegex(
             operator.OperatorError, "exact authorized live target"
         ):
-            operator.validate_operator(self.receipt_path, self.bundle)
+            operator.validate_operator(
+                self.receipt_path, self.bundle, self.heartbeat_path
+            )
 
     def test_exact_staged_executable_substitution_is_refused(self):
         (self.bundle / "outputs/osl-privacy-hub.exe").write_bytes(
@@ -182,26 +198,46 @@ class FastCycleOperatorTests(unittest.TestCase):
                 operator.OperatorError, "staged executable"
             ),
         ):
-            operator.validate_operator(self.receipt_path, self.bundle)
+            operator.validate_operator(
+                self.receipt_path, self.bundle, self.heartbeat_path
+            )
 
-    def test_live_heartbeat_must_equal_retained_post_reset_bytes(self):
+    def test_retained_post_reset_heartbeat_bytes_must_match(self):
+        self.heartbeat_path.write_bytes(self.heartbeat + b" ")
+        with (
+            self.pin_receipt(),
+            mock.patch.object(operator, "run_bundle_validators"),
+            self.assertRaisesRegex(
+                operator.OperatorError, "post-reset heartbeat bytes differ"
+            ),
+        ):
+            operator.validate_operator(
+                self.receipt_path, self.bundle, self.heartbeat_path
+            )
+
+    def test_fresh_heartbeat_identity_substitution_is_refused(self):
+        current = json.loads(self.current_heartbeat)
+        current["agentSha256"] = digest(b"substituted-agent")
+        changed = (
+            json.dumps(current, separators=(",", ":")) + "\n"
+        ).encode("utf-8")
         with (
             self.pin_receipt(),
             mock.patch.object(operator, "run_bundle_validators"),
             mock.patch.object(operator, "verify_azure_account"),
             mock.patch.object(
-                operator,
-                "fetch_live_heartbeat",
-                return_value=self.heartbeat + b" ",
+                operator, "fetch_live_heartbeat", return_value=changed
             ),
             mock.patch.object(
                 operator, "heartbeat_age_seconds", return_value=5
             ),
             self.assertRaisesRegex(
-                operator.OperatorError, "heartbeat.*post-reset"
+                operator.OperatorError, "fresh live heartbeat identity"
             ),
         ):
-            operator.validate_operator(self.receipt_path, self.bundle)
+            operator.validate_operator(
+                self.receipt_path, self.bundle, self.heartbeat_path
+            )
 
     def test_stale_live_heartbeat_is_refused(self):
         with (
@@ -211,7 +247,7 @@ class FastCycleOperatorTests(unittest.TestCase):
             mock.patch.object(
                 operator,
                 "fetch_live_heartbeat",
-                return_value=self.heartbeat,
+                return_value=self.current_heartbeat,
             ),
             mock.patch.object(
                 operator, "heartbeat_age_seconds", return_value=61
@@ -220,7 +256,9 @@ class FastCycleOperatorTests(unittest.TestCase):
                 operator.OperatorError, "age is outside bounds"
             ),
         ):
-            operator.validate_operator(self.receipt_path, self.bundle)
+            operator.validate_operator(
+                self.receipt_path, self.bundle, self.heartbeat_path
+            )
 
     def test_standard_command_refuses_simulation_before_external_use(self):
         simulation = fixtures.fixture()
@@ -236,6 +274,8 @@ class FastCycleOperatorTests(unittest.TestCase):
                 str(receipt),
                 "--bundle",
                 str(missing_bundle),
+                "--post-reset-heartbeat",
+                str(receipt),
             ],
             check=False,
             stdout=subprocess.PIPE,
