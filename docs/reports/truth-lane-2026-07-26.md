@@ -2305,3 +2305,24 @@ release evidence was produced.
 
 - Privacy collection wording correction +0.
 - Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — ratchet/sender-key claim blocker
+
+The crypto handoff identifies an unqualified shipping claim in the repository
+root `README.md:44-48,170`: it says direct messages ride a Double Ratchet with
+forward secrecy and that groups/server channels use sender keys. The immutable
+source audit instead found production dispatch forced to stateless v3 and
+sender keys disabled. This is a real public-claim mismatch, but `README.md` is
+outside the truth lane's authorized `docs/**` and `oslprivacy-web` paths; no
+edit was made. The exact owner mechanism is the lane boundary, not a test
+failure. The handoff should go to the README/crypto documentation owner.
+
+The in-scope public website/docs copies already mark ratcheting and sender-key
+paths Planned or switched off, so no independent in-scope correction was
+justified in this pass. No browser, build, install, runtime, deployment, or
+release evidence was produced.
+
+## Acceptance rows this earns
+
+- Ratchet/sender-key mismatch: +0 pending authorized README owner correction.
+- Checklist remains untouched; authority remains **100 / 303**.
