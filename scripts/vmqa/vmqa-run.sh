@@ -332,38 +332,16 @@ cmd_agent_alive() {
   fi
 }
 
-cmd_selftest() {
-  local vm="$DEFAULT_VM" identifier="$DEFAULT_IDENTIFIER" timeout="$DEFAULT_TIMEOUT"
-  local pos_id neg_id pos_file neg_file pos_rc neg_rc pos neg markers neg_markers colors launch_neg shot_neg result
-  local exe_sha="" steps_file="$SELFTEST_STEPS" neg_steps neg_ping
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --vm) [ $# -ge 2 ] || die_usage "--vm needs a value"; vm="$2"; shift 2 ;;
-      --identifier) [ $# -ge 2 ] || die_usage "--identifier needs a value"; identifier="$2"; shift 2 ;;
-      --timeout) [ $# -ge 2 ] || die_usage "--timeout needs seconds"; timeout="$2"; shift 2 ;;
-      --exe-sha) [ $# -ge 2 ] || die_usage "--exe-sha needs a sha256"; exe_sha="$2"; shift 2 ;;
-      *) die_usage "unknown selftest argument: $1" ;;
-    esac
-  done
-  [[ "$timeout" =~ ^[0-9]+$ ]] || die_usage "--timeout must be an integer"
-  # Inject the staged build's sha into the step file. The `launch` verb addresses the binary by
-  # content hash, which changes per build, so it cannot be baked into a checked-in step file.
-  # Both halves derive from the SAME generated file, so they still differ only in the identifier -
-  # generating one per half would let them drift, which is the property the single file protects.
-  if [ -n "$exe_sha" ]; then
-    need_cmd jq
-    [[ "$exe_sha" =~ ^[0-9a-f]{64}$ ]] || die_usage "--exe-sha must be a 64-char lowercase sha256"
-    steps_file="$(mktemp)"
-    jq --arg sha "$exe_sha" \
-      '[{id:"S0",verb:"stage",args:{exeSha256:$sha}}] + [.[] | if .verb=="launch" then (.args.exeSha256=$sha) else . end]' \
-      "$SELFTEST_STEPS" >"$steps_file"
-  fi
-  pos_id="$(date -u +%Y%m%dT%H%M%SZ)-pos-$RANDOM"
-  neg_id="$(date -u +%Y%m%dT%H%M%SZ)-neg-$RANDOM"
-  set +e
-  pos_file="$(fetch_run_verdict "$vm" "$identifier" "$steps_file" "$timeout" "$pos_id")"; pos_rc=$?
-  neg_file="$(fetch_run_verdict "$vm" "$NEGATIVE_IDENTIFIER" "$steps_file" "$timeout" "$neg_id")"; neg_rc=$?
-  set -e
+grade_selftest() {
+  # The acceptance decision, as a pure function of two verdict files and their exit codes.
+  #
+  # Extracted so it can be driven directly by scripts/vmqa/test-selftest-grading.sh with synthetic
+  # verdicts. Every guard here was previously proven only by ad-hoc one-liners typed once; a test
+  # that re-implemented this logic would be a double re-asserting what its author believed, which
+  # is the failure mode this whole lane exists to avoid. The test drives THIS code or it proves
+  # nothing.
+  local pos_file="$1" neg_file="$2" pos_rc="$3" neg_rc="$4"
+  local pos neg markers neg_markers colors launch_neg shot_neg neg_steps neg_ping result
   pos="$(overall_or_rc "$pos_file" "$pos_rc")"
   neg="$(overall_or_rc "$neg_file" "$neg_rc")"
   markers="$(metric_from_step "$pos_file" ping markerWindowsTotal)"
@@ -419,6 +397,42 @@ cmd_selftest() {
   return 1
 }
 
+cmd_selftest() {
+  local vm="$DEFAULT_VM" identifier="$DEFAULT_IDENTIFIER" timeout="$DEFAULT_TIMEOUT"
+  local pos_id neg_id pos_file neg_file pos_rc neg_rc pos neg markers neg_markers colors launch_neg shot_neg result
+  local exe_sha="" steps_file="$SELFTEST_STEPS" neg_steps neg_ping
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --vm) [ $# -ge 2 ] || die_usage "--vm needs a value"; vm="$2"; shift 2 ;;
+      --identifier) [ $# -ge 2 ] || die_usage "--identifier needs a value"; identifier="$2"; shift 2 ;;
+      --timeout) [ $# -ge 2 ] || die_usage "--timeout needs seconds"; timeout="$2"; shift 2 ;;
+      --exe-sha) [ $# -ge 2 ] || die_usage "--exe-sha needs a sha256"; exe_sha="$2"; shift 2 ;;
+      *) die_usage "unknown selftest argument: $1" ;;
+    esac
+  done
+  [[ "$timeout" =~ ^[0-9]+$ ]] || die_usage "--timeout must be an integer"
+  # Inject the staged build's sha into the step file. The `launch` verb addresses the binary by
+  # content hash, which changes per build, so it cannot be baked into a checked-in step file.
+  # Both halves derive from the SAME generated file, so they still differ only in the identifier -
+  # generating one per half would let them drift, which is the property the single file protects.
+  if [ -n "$exe_sha" ]; then
+    need_cmd jq
+    [[ "$exe_sha" =~ ^[0-9a-f]{64}$ ]] || die_usage "--exe-sha must be a 64-char lowercase sha256"
+    steps_file="$(mktemp)"
+    jq --arg sha "$exe_sha" \
+      '[{id:"S0",verb:"stage",args:{exeSha256:$sha}}] + [.[] | if .verb=="launch" then (.args.exeSha256=$sha) else . end]' \
+      "$SELFTEST_STEPS" >"$steps_file"
+  fi
+  pos_id="$(date -u +%Y%m%dT%H%M%SZ)-pos-$RANDOM"
+  neg_id="$(date -u +%Y%m%dT%H%M%SZ)-neg-$RANDOM"
+  set +e
+  pos_file="$(fetch_run_verdict "$vm" "$identifier" "$steps_file" "$timeout" "$pos_id")"; pos_rc=$?
+  neg_file="$(fetch_run_verdict "$vm" "$NEGATIVE_IDENTIFIER" "$steps_file" "$timeout" "$neg_id")"; neg_rc=$?
+  set -e
+  grade_selftest "$pos_file" "$neg_file" "$pos_rc" "$neg_rc"
+}
+
+
 main() {
   local cmd="${1:-}"
   [ -n "$cmd" ] || die_usage "missing subcommand"
@@ -434,4 +448,9 @@ main() {
   esac
 }
 
-main "$@"
+# Only dispatch when executed, not when sourced. scripts/vmqa/test-selftest-grading.sh sources this
+# file to drive grade_selftest directly; without this guard sourcing would run main, hit
+# die_usage and exit 64, and the test would appear to "pass" having tested nothing.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi
