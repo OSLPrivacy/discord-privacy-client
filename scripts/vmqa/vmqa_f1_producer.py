@@ -332,22 +332,39 @@ def read_witness_key(path: Path, producer_uid: int) -> tuple[bytes, str]:
     return key, sha256_bytes(key)
 
 
-def descriptor_snapshot(
-    path: Path,
+def snapshot_stat_identity(value: os.stat_result) -> tuple[int, ...]:
+    """Fields which must remain stable throughout one terminal snapshot."""
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_uid,
+        value.st_gid,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def open_snapshot_descriptor(
+    name: str | Path,
     *,
-    reported_path: Path,
+    parent_fd: int | None,
     owner_uid: int,
     directory: bool,
     label: str,
-) -> dict[str, Any]:
+) -> tuple[int, os.stat_result]:
     flags = os.O_RDONLY
     if directory:
         flags |= getattr(os, "O_DIRECTORY", 0)
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
-        before = os.lstat(path)
-        descriptor = os.open(path, flags)
+        before = os.stat(
+            name, dir_fd=parent_fd, follow_symlinks=False
+        )
+        descriptor = os.open(name, flags, dir_fd=parent_fd)
     except OSError as exc:
         raise ProducerError(f"{label} is missing or unsafe") from exc
     try:
@@ -359,43 +376,46 @@ def descriptor_snapshot(
             or not expected_type(opened.st_mode)
             or before.st_uid != owner_uid
             or opened.st_uid != owner_uid
-            or (before.st_dev, before.st_ino)
-            != (opened.st_dev, opened.st_ino)
+            or snapshot_stat_identity(before)
+            != snapshot_stat_identity(opened)
         ):
             raise ProducerError(f"{label} descriptor identity is unsafe")
-        record: dict[str, Any] = {
-            "path": reported_path.as_posix(),
-            "type": "directory" if directory else "file",
-            "device": opened.st_dev,
-            "inode": opened.st_ino,
-            "mode": stat.S_IMODE(opened.st_mode),
-            "linkCount": opened.st_nlink,
-        }
-        if not directory:
-            digest = hashlib.sha256()
-            size = 0
-            while True:
-                block = os.read(descriptor, 1024 * 1024)
-                if not block:
-                    break
-                digest.update(block)
-                size += len(block)
-            if size != opened.st_size:
-                raise ProducerError(f"{label} size changed while hashing")
-            record.update(
-                {"sizeBytes": size, "sha256": digest.hexdigest()}
-            )
-        after = os.lstat(path)
-        if (
-            (after.st_dev, after.st_ino)
-            != (opened.st_dev, opened.st_ino)
-            or after.st_mode != opened.st_mode
-            or after.st_nlink != opened.st_nlink
-        ):
-            raise ProducerError(f"{label} changed during terminal snapshot")
-        return record
-    finally:
+        return descriptor, opened
+    except BaseException:
         os.close(descriptor)
+        raise
+
+
+def snapshot_record(
+    descriptor: int,
+    opened: os.stat_result,
+    *,
+    reported_path: Path,
+    directory: bool,
+    label: str,
+) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "path": reported_path.as_posix(),
+        "type": "directory" if directory else "file",
+        "device": opened.st_dev,
+        "inode": opened.st_ino,
+        "mode": stat.S_IMODE(opened.st_mode),
+        "linkCount": opened.st_nlink,
+    }
+    if not directory:
+        digest = hashlib.sha256()
+        size = 0
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        while True:
+            block = os.read(descriptor, 1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+            size += len(block)
+        if size != opened.st_size:
+            raise ProducerError(f"{label} size changed while hashing")
+        record.update({"sizeBytes": size, "sha256": digest.hexdigest()})
+    return record
 
 
 def terminal_destination_snapshot(
@@ -404,36 +424,107 @@ def terminal_destination_snapshot(
     reported_root: Path,
     producer_uid: int,
 ) -> dict[str, Any]:
-    paths = {
-        "stageDirectory": (Path("."), True),
-        "bundleDirectory": (Path("bundle"), True),
-        "identity": (Path("bundle/build-identity.json"), False),
-        "executable": (
-            Path("bundle") / build_evidence.FINAL_EXE,
-            False,
-        ),
-        "loader": (
-            Path("bundle") / build_evidence.FINAL_LOADER,
-            False,
-        ),
-        "producerSeal": (Path("producer-seal.json"), False),
+    # Open the root once, resolve every descendant with openat(), and retain
+    # the complete descriptor tree until every file has been hashed and every
+    # name (including the root path) has been terminally revalidated.
+    descriptors: dict[str, int] = {}
+    opened: dict[str, os.stat_result] = {}
+    bindings: dict[str, tuple[int | None, str | Path]] = {}
+    directory_flags = {
+        "stageDirectory": True,
+        "bundleDirectory": True,
+        "outputsDirectory": True,
+        "identity": False,
+        "executable": False,
+        "loader": False,
+        "producerSeal": False,
     }
-    snapshot: dict[str, Any] = {}
-    for name, (relative, directory) in paths.items():
-        actual = actual_root if relative == Path(".") else actual_root / relative
-        reported = (
-            reported_root
-            if relative == Path(".")
-            else reported_root / relative
-        )
-        snapshot[name] = descriptor_snapshot(
-            actual,
-            reported_path=reported,
+    reported_paths = {
+        "stageDirectory": reported_root,
+        "bundleDirectory": reported_root / "bundle",
+        "outputsDirectory": reported_root / "bundle" / "outputs",
+        "identity": reported_root / "bundle" / "build-identity.json",
+        "executable": reported_root / "bundle" / build_evidence.FINAL_EXE,
+        "loader": reported_root / "bundle" / build_evidence.FINAL_LOADER,
+        "producerSeal": reported_root / "producer-seal.json",
+    }
+    try:
+        root_fd, root_stat = open_snapshot_descriptor(
+            actual_root,
+            parent_fd=None,
             owner_uid=producer_uid,
-            directory=directory,
-            label=f"terminal {name}",
+            directory=True,
+            label="terminal stageDirectory",
         )
-    return snapshot
+        descriptors["stageDirectory"] = root_fd
+        opened["stageDirectory"] = root_stat
+        bindings["stageDirectory"] = (None, actual_root)
+
+        child_specs = (
+            ("bundleDirectory", "stageDirectory", "bundle"),
+            ("outputsDirectory", "bundleDirectory", "outputs"),
+            ("identity", "bundleDirectory", "build-identity.json"),
+            (
+                "executable",
+                "outputsDirectory",
+                Path(build_evidence.FINAL_EXE).name,
+            ),
+            (
+                "loader",
+                "outputsDirectory",
+                Path(build_evidence.FINAL_LOADER).name,
+            ),
+            ("producerSeal", "stageDirectory", "producer-seal.json"),
+        )
+        for name, parent_name, basename in child_specs:
+            descriptor, value = open_snapshot_descriptor(
+                basename,
+                parent_fd=descriptors[parent_name],
+                owner_uid=producer_uid,
+                directory=directory_flags[name],
+                label=f"terminal {name}",
+            )
+            descriptors[name] = descriptor
+            opened[name] = value
+            bindings[name] = (descriptors[parent_name], basename)
+
+        snapshot = {
+            name: snapshot_record(
+                descriptors[name],
+                opened[name],
+                reported_path=reported_paths[name],
+                directory=directory_flags[name],
+                label=f"terminal {name}",
+            )
+            for name in directory_flags
+        }
+
+        # These checks occur only after the last file hash. The descriptor
+        # tree stays live, so every pathname is checked against the same open
+        # root and the root pathname itself is checked last.
+        for name in reversed(tuple(directory_flags)):
+            after_fd = os.fstat(descriptors[name])
+            parent_fd, basename = bindings[name]
+            after_name = os.stat(
+                basename, dir_fd=parent_fd, follow_symlinks=False
+            )
+            if (
+                snapshot_stat_identity(after_fd)
+                != snapshot_stat_identity(opened[name])
+                or snapshot_stat_identity(after_name)
+                != snapshot_stat_identity(opened[name])
+            ):
+                raise ProducerError(
+                    f"terminal {name} changed during descriptor-rooted snapshot"
+                )
+        return snapshot
+    except OSError as exc:
+        raise ProducerError(
+            "terminal destination changed during descriptor-rooted snapshot"
+        ) from exc
+    finally:
+        for descriptor in reversed(tuple(descriptors.values())):
+            os.close(descriptor)
 
 
 def validate_terminal_snapshot(
@@ -461,7 +552,11 @@ def validate_terminal_snapshot(
             raise ProducerError(
                 f"terminal {name} size differs from admitted bytes"
             )
-    for name in ("stageDirectory", "bundleDirectory"):
+    for name in (
+        "stageDirectory",
+        "bundleDirectory",
+        "outputsDirectory",
+    ):
         value = snapshot.get(name)
         if (
             not isinstance(value, dict)
@@ -540,6 +635,23 @@ def permitted_admission_transition(
     if admitted.seal_generation <= state["generation"]:
         raise ProducerError(
             "seal replay refused: generation is not newer than admitted state"
+        )
+    if state["generation"] == 0:
+        if (
+            admitted.seal_generation != 1
+            or admitted.previous_seal_sha256 != build_evidence.EMPTY_SHA256
+            or admitted.seal_transition != "initial"
+        ):
+            raise ProducerError(
+                "initial F1 admission must be the producer-seal genesis"
+            )
+    elif (
+        admitted.seal_generation != state["generation"] + 1
+        or admitted.previous_seal_sha256 != state["sealSha256"]
+        or admitted.seal_transition != "successor"
+    ):
+        raise ProducerError(
+            "candidate seal is not the direct successor of admitted state"
         )
     return {
         "kind": (

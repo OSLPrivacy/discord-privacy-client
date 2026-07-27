@@ -214,6 +214,125 @@ class F1ProducerTests(unittest.TestCase):
         self.assertTrue(mutated)
         self.assertFalse(destination.exists())
 
+    def test_terminal_snapshot_retains_root_through_all_file_hashes(
+        self,
+    ) -> None:
+        stage_root = self.root / "descriptor-stage"
+        shutil.copytree(self.fixture_bundle, stage_root / "bundle")
+        shutil.copy2(self.fixture_seal, stage_root / "producer-seal.json")
+        (stage_root / "producer-seal.json").chmod(0o400)
+        root_descriptor: int | None = None
+        closed: set[int] = set()
+        file_reads = 0
+        original_open = producer_module.os.open
+        original_close = producer_module.os.close
+        original_read = producer_module.os.read
+
+        def observe_open(
+            path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+            flags: int,
+            mode: int = 0o777,
+            *,
+            dir_fd: int | None = None,
+        ) -> int:
+            nonlocal root_descriptor
+            descriptor = original_open(
+                path, flags, mode, dir_fd=dir_fd
+            )
+            if Path(path) == stage_root and dir_fd is None:
+                root_descriptor = descriptor
+            return descriptor
+
+        def observe_close(descriptor: int) -> None:
+            closed.add(descriptor)
+            original_close(descriptor)
+
+        def observe_read(descriptor: int, size: int) -> bytes:
+            nonlocal file_reads
+            file_reads += 1
+            self.assertIsNotNone(root_descriptor)
+            self.assertNotIn(root_descriptor, closed)
+            return original_read(descriptor, size)
+
+        with mock.patch.object(
+            producer_module.os, "open", side_effect=observe_open
+        ), mock.patch.object(
+            producer_module.os, "close", side_effect=observe_close
+        ), mock.patch.object(
+            producer_module.os, "read", side_effect=observe_read
+        ):
+            snapshot = producer_module.terminal_destination_snapshot(
+                stage_root,
+                reported_root=stage_root,
+                producer_uid=self.identity.uid,
+            )
+        self.assertGreater(file_reads, 0)
+        self.assertIsNotNone(root_descriptor)
+        self.assertIn(root_descriptor, closed)
+        self.assertEqual(
+            snapshot["stageDirectory"]["inode"],
+            stage_root.stat().st_ino,
+        )
+
+    def test_terminal_snapshot_refuses_earlier_file_changed_during_later_hash(
+        self,
+    ) -> None:
+        stage_root = self.root / "changing-stage"
+        shutil.copytree(self.fixture_bundle, stage_root / "bundle")
+        shutil.copy2(self.fixture_seal, stage_root / "producer-seal.json")
+        (stage_root / "producer-seal.json").chmod(0o400)
+        identity_path = stage_root / "bundle" / "build-identity.json"
+        executable_name = Path(
+            producer_module.build_evidence.FINAL_EXE
+        ).name
+        executable_descriptor: int | None = None
+        mutated = False
+        original_open = producer_module.os.open
+        original_read = producer_module.os.read
+
+        def observe_open(
+            path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+            flags: int,
+            mode: int = 0o777,
+            *,
+            dir_fd: int | None = None,
+        ) -> int:
+            nonlocal executable_descriptor
+            descriptor = original_open(
+                path, flags, mode, dir_fd=dir_fd
+            )
+            if Path(path).name == executable_name:
+                executable_descriptor = descriptor
+            return descriptor
+
+        def mutate_during_later_read(
+            descriptor: int, size: int
+        ) -> bytes:
+            nonlocal mutated
+            if descriptor == executable_descriptor and not mutated:
+                with identity_path.open("ab") as handle:
+                    handle.write(b"changed after identity hash\n")
+                mutated = True
+            return original_read(descriptor, size)
+
+        with mock.patch.object(
+            producer_module.os, "open", side_effect=observe_open
+        ), mock.patch.object(
+            producer_module.os,
+            "read",
+            side_effect=mutate_during_later_read,
+        ):
+            with self.assertRaisesRegex(
+                producer_module.ProducerError,
+                "terminal identity changed",
+            ):
+                producer_module.terminal_destination_snapshot(
+                    stage_root,
+                    reported_root=stage_root,
+                    producer_uid=self.identity.uid,
+                )
+        self.assertTrue(mutated)
+
     def test_old_seal_replay_refuses_after_newer_generation(self) -> None:
         identity_sha = producer_module.sha256_file(
             self.fixture_bundle / "build-identity.json"
@@ -231,6 +350,14 @@ class F1ProducerTests(unittest.TestCase):
         )
         successor_seal.chmod(0o444)
 
+        first = producer_module.stage(
+            self.fixture_bundle,
+            layout=self.layout,
+            producer=self.identity,
+            effective_uid=self.identity.uid,
+            internal_fixture_seal=self.fixture_seal,
+        )
+        shutil.rmtree(Path(first["receiptPath"]).parent)
         result = producer_module.stage(
             self.fixture_bundle,
             layout=self.layout,
@@ -250,6 +377,40 @@ class F1ProducerTests(unittest.TestCase):
             producer_module.ProducerError, "seal replay refused"
         ):
             self.preflight()
+
+    def test_candidate_must_descend_directly_from_admitted_seal(
+        self,
+    ) -> None:
+        first = producer_module.stage(
+            self.fixture_bundle,
+            layout=self.layout,
+            producer=self.identity,
+            effective_uid=self.identity.uid,
+            internal_fixture_seal=self.fixture_seal,
+        )
+        shutil.rmtree(Path(first["receiptPath"]).parent)
+        identity_sha = producer_module.sha256_file(
+            self.fixture_bundle / "build-identity.json"
+        )
+        fork_record = producer_module.build_evidence.producer_seal_record(
+            identity_sha,
+            "fixture",
+            generation=2,
+            previous_seal_sha256="f" * 64,
+        )
+        fork_seal = self.root / "forked-generation-2.producer-seal.json"
+        fork_seal.write_bytes(producer_module.canonical_json(fork_record))
+        fork_seal.chmod(0o444)
+        with self.assertRaisesRegex(
+            producer_module.ProducerError, "not the direct successor"
+        ):
+            producer_module.preflight(
+                self.fixture_bundle,
+                layout=self.layout,
+                producer=self.identity,
+                effective_uid=self.identity.uid,
+                internal_fixture_seal=fork_seal,
+            )
 
     def test_missing_key_refuses_before_bundle_admission(self) -> None:
         self.key.unlink()
