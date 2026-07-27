@@ -56,6 +56,12 @@ pub mod mass_cleanup;
 pub mod message_expiry;
 #[cfg(feature = "core")]
 pub mod password_lifecycle;
+// The pure half of the headless QA self-test driver in `main.rs`. It lives here
+// only so it can actually be tested: the `osl-privacy-hub` binary cannot be
+// built on a Linux host, so every `#[cfg(test)]` inside `main.rs` is compiled
+// and never run.
+#[cfg(all(feature = "core", feature = "discord-qa-shell"))]
+pub mod qa_selftest_request;
 #[cfg(feature = "core")]
 pub mod scrub_index;
 #[cfg(feature = "core")]
