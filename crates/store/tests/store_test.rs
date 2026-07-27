@@ -37,6 +37,129 @@ fn sample(
     }
 }
 
+fn v3_key() -> crypto::aead::Key {
+    let bytes = crypto::hkdf::derive_32(&[], SECRET_A, b"osl-message-store-v1").unwrap();
+    crypto::aead::Key::from_bytes(bytes)
+}
+
+fn v3_seal(aad: &[u8], plaintext: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let key = v3_key();
+    let nonce = crypto::random::random_nonce();
+    let ct = crypto::aead::seal(&key, &nonce, aad, plaintext).unwrap();
+    (nonce.as_bytes().to_vec(), ct)
+}
+
+fn build_v3_fixture(dir: &Path, rows: &[StoredMessage]) {
+    let sealed: Vec<(String, Vec<u8>, Vec<u8>)> = rows
+        .iter()
+        .map(|row| {
+            let (nonce, ct) = v3_seal(row.discord_message_id.as_bytes(), row.plaintext.as_bytes());
+            (row.discord_message_id.clone(), ct, nonce)
+        })
+        .collect();
+
+    let (canary_nonce, canary_ct) =
+        v3_seal(b"osl-message-store/canary", b"osl-message-store-canary-v1");
+    let canary: Vec<(String, Vec<u8>)> = vec![
+        ("canary_nonce".to_string(), canary_nonce),
+        ("canary_ct".to_string(), canary_ct),
+    ];
+
+    let db_path = dir.join("messages.sqlite");
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch(
+        r#"
+CREATE TABLE _meta (key TEXT PRIMARY KEY, value BLOB);
+CREATE TABLE messages (
+    discord_message_id TEXT PRIMARY KEY,
+    channel_id TEXT NOT NULL,
+    sender_discord_id TEXT NOT NULL,
+    sender_osl_user_id TEXT NOT NULL,
+    ciphertext BLOB NOT NULL,
+    nonce BLOB NOT NULL,
+    decrypted_at INTEGER NOT NULL,
+    burned INTEGER NOT NULL DEFAULT 0,
+    burned_at INTEGER,
+    wrapped_key BLOB,
+    scope_type TEXT,
+    scope_id TEXT
+);
+CREATE INDEX idx_messages_channel ON messages(channel_id, decrypted_at DESC);
+CREATE TABLE attachments (
+    cache_key TEXT PRIMARY KEY,
+    discord_message_id TEXT NOT NULL,
+    random_filename TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    ciphertext BLOB NOT NULL,
+    nonce BLOB NOT NULL,
+    byte_len INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    scope_type TEXT,
+    scope_id TEXT,
+    sender_discord_id TEXT
+);
+"#,
+    )
+    .unwrap();
+    for (key, value) in canary {
+        conn.execute(
+            "INSERT INTO _meta(key, value) VALUES(?1, ?2)",
+            params![key, value],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "INSERT INTO _meta(key, value) VALUES('schema_version', ?1)",
+        params![3u32.to_le_bytes().to_vec()],
+    )
+    .unwrap();
+    for (row, (_, ct, nonce)) in rows.iter().zip(sealed.iter()) {
+        conn.execute(
+            "INSERT INTO messages (discord_message_id, channel_id, sender_discord_id, \
+                sender_osl_user_id, ciphertext, nonce, decrypted_at, burned) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
+            params![
+                row.discord_message_id,
+                row.channel_id,
+                row.sender_discord_id,
+                row.sender_osl_user_id,
+                ct,
+                nonce,
+                row.decrypted_at,
+            ],
+        )
+        .unwrap();
+    }
+}
+
+fn schema_version(dir: &Path) -> u32 {
+    let conn = rusqlite::Connection::open(dir.join("messages.sqlite")).unwrap();
+    let version: Vec<u8> = conn
+        .query_row(
+            "SELECT value FROM _meta WHERE key = 'schema_version'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    u32::from_le_bytes(version.try_into().unwrap())
+}
+
+fn assert_migrated_rows(store: &MessageStore, rows: &[StoredMessage]) {
+    for row in rows {
+        let out = store
+            .get(&row.discord_message_id)
+            .unwrap()
+            .expect("migrated row should be present");
+        assert_eq!(&out, row);
+    }
+    let listed = store.list_by_channel("v3-chan-a", 10).unwrap();
+    let ids: Vec<&str> = listed
+        .iter()
+        .map(|m| m.discord_message_id.as_str())
+        .collect();
+    assert_eq!(ids, vec!["v3-newer", "v3-older"]);
+}
+
 // ---- roundtrip ----
 
 #[test]
@@ -114,6 +237,13 @@ fn list_by_channel_returns_desc_by_decrypted_at_respects_limit() {
     assert_eq!(listed[0].discord_message_id, "a-5");
     assert_eq!(listed[1].discord_message_id, "a-4");
     assert_eq!(listed[2].discord_message_id, "a-3");
+    // This catches an implementation that ignores the channel predicate.
+    let listed_ids: Vec<&str> = listed
+        .iter()
+        .map(|m| m.discord_message_id.as_str())
+        .collect();
+    assert_eq!(listed_ids, vec!["a-5", "a-4", "a-3"]);
+    assert!(!listed_ids.contains(&"b-1"));
     // Sanity: timestamps strictly descending.
     assert!(listed[0].decrypted_at > listed[1].decrypted_at);
     assert!(listed[1].decrypted_at > listed[2].decrypted_at);
@@ -122,6 +252,8 @@ fn list_by_channel_returns_desc_by_decrypted_at_respects_limit() {
     let all = store.list_by_channel("ch-a", 100).unwrap();
     assert_eq!(all.len(), 5);
     assert!(all.iter().all(|m| m.channel_id == "ch-a"));
+    let all_ids: Vec<&str> = all.iter().map(|m| m.discord_message_id.as_str()).collect();
+    assert_eq!(all_ids, vec!["a-5", "a-4", "a-3", "a-2", "a-1"]);
 }
 
 // ---- mark_burned ----
@@ -303,25 +435,62 @@ fn open_with_wrong_secret_returns_sealer_error() {
 #[test]
 fn reopen_with_correct_secret_migration_idempotent() {
     let tmp = TempDir::new().unwrap();
-    let path = tmp.path().to_path_buf();
-    {
-        let store = MessageStore::open(&path, SECRET_A).unwrap();
-        store
-            .put(&sample(
-                "across-runs",
-                "ch",
-                "s",
-                "alice",
-                "see you next session",
-                1,
-            ))
-            .unwrap();
-    }
-    // Drop the first store, re-open. Migration runs again
-    // (it's idempotent); canary verifies. Data survives.
-    let store2 = MessageStore::open(&path, SECRET_A).unwrap();
-    let m = store2.get("across-runs").unwrap().unwrap();
+    let rows = vec![
+        sample(
+            "v3-older",
+            "v3-chan-a",
+            "sender-1",
+            "alice",
+            "old v3 body",
+            100,
+        ),
+        sample(
+            "v3-newer",
+            "v3-chan-a",
+            "sender-2",
+            "bob",
+            "newer v3 body",
+            200,
+        ),
+        sample(
+            "v3-other",
+            "v3-chan-b",
+            "sender-3",
+            "carol",
+            "other channel body",
+            300,
+        ),
+    ];
+    build_v3_fixture(tmp.path(), &rows);
+    assert_eq!(schema_version(tmp.path()), 3);
+
+    // This catches a reopen path that only handles current-schema databases.
+    let store = MessageStore::open(tmp.path(), SECRET_A).unwrap();
+    assert_migrated_rows(&store, &rows);
+    let first_open_version = schema_version(tmp.path());
+    drop(store);
+
+    let store2 = MessageStore::open(tmp.path(), SECRET_A).unwrap();
+    assert_migrated_rows(&store2, &rows);
+    let second_open_version = schema_version(tmp.path());
+    assert_eq!(first_open_version, 4);
+    assert_eq!(second_open_version, first_open_version);
+    store2
+        .put(&sample(
+            "across-runs",
+            "ch",
+            "s",
+            "alice",
+            "see you next session",
+            1,
+        ))
+        .unwrap();
+    drop(store2);
+    let store3 = MessageStore::open(tmp.path(), SECRET_A).unwrap();
+    let m = store3.get("across-runs").unwrap().unwrap();
     assert_eq!(m.plaintext, "see you next session");
+    assert_migrated_rows(&store3, &rows);
+    assert_eq!(schema_version(tmp.path()), first_open_version);
 }
 
 #[test]
@@ -430,25 +599,72 @@ fn attachment_survives_reopen() {
 #[test]
 fn attachment_wrong_secret_cannot_unseal() {
     let tmp = TempDir::new().unwrap();
+    let original = b"secret bytes".to_vec();
     {
         let store = open_a(tmp.path());
         store
-            .put_attachment(
-                "msg1",
-                "f.bin",
-                "image/jpeg",
-                b"secret bytes",
-                None,
-                None,
-                None,
-            )
+            .put_attachment("msg1", "f.bin", "image/jpeg", &original, None, None, None)
             .unwrap();
+        let out = store
+            .get_attachment("msg1", "f.bin")
+            .unwrap()
+            .expect("attachment should read with the correct secret");
+        assert_eq!(out.0, "image/jpeg");
+        assert_eq!(out.1, original);
     }
     // A different secret fails the canary at open(), so we never
     // even reach get_attachment — assert the open itself refuses.
     match MessageStore::open(tmp.path(), SECRET_B) {
         Ok(_) => panic!("wrong secret must refuse to open"),
         Err(e) => assert!(matches!(e, StoreError::Sealer(_)), "got {e:?}"),
+    }
+
+    let (source_ct, source_nonce): (Vec<u8>, Vec<u8>) = {
+        let conn = rusqlite::Connection::open(tmp.path().join("messages.sqlite")).unwrap();
+        conn.query_row(
+            "SELECT ciphertext, nonce FROM attachments ORDER BY rowid LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+    };
+    let second = TempDir::new().unwrap();
+    let store_b = MessageStore::open(second.path(), SECRET_B).unwrap();
+    store_b
+        .put_attachment(
+            "msg1",
+            "f.bin",
+            "text/plain",
+            b"other store bytes",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let own = store_b
+        .get_attachment("msg1", "f.bin")
+        .unwrap()
+        .expect("second store attachment should be present before transplant");
+    assert_eq!(own.1, b"other store bytes");
+    {
+        let conn = rusqlite::Connection::open(second.path().join("messages.sqlite")).unwrap();
+        // Schema v4 has no plaintext cache key, so transplant by rowid.
+        let changed = conn
+            .execute(
+                "UPDATE attachments SET ciphertext = ?1, nonce = ?2 \
+                 WHERE rowid = (SELECT rowid FROM attachments ORDER BY rowid LIMIT 1)",
+                params![source_ct, source_nonce],
+            )
+            .unwrap();
+        assert_eq!(changed, 1);
+    }
+    match store_b.get_attachment("msg1", "f.bin") {
+        Err(StoreError::Corrupted(_)) | Ok(None) => {}
+        Err(e) => panic!("transplanted attachment failed with unexpected error: {e:?}"),
+        Ok(Some((_, got))) => panic!(
+            "wrong secret returned transplanted attachment bytes: {:?}",
+            got
+        ),
     }
 }
 
@@ -476,6 +692,16 @@ fn attachment_trim_keeps_newest() {
     // Newest (msg9) should remain; oldest (msg0) should be gone.
     assert!(store.get_attachment("msg9", "f.bin").unwrap().is_some());
     assert!(store.get_attachment("msg0", "f.bin").unwrap().is_none());
+    // This catches trim keeping any three rows instead of the newest three.
+    for i in 7..10 {
+        let out = store
+            .get_attachment(&format!("msg{i}"), "f.bin")
+            .unwrap()
+            .expect("newest attachment should survive trim");
+        assert_eq!(out.0, "image/png");
+        assert_eq!(out.1, vec![i as u8; 8]);
+    }
+    assert!(store.get_attachment("msg6", "f.bin").unwrap().is_none());
 }
 
 // ---- timed deletion: sweeper-named batch shred ----
