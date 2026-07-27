@@ -149,11 +149,35 @@ describe("canonical identity and rollout authority in the shipping Worker", () =
       .replace(/=+$/u, "");
     const nonceSha256 = await sha256Hex(nonce);
     const provisionedAt = Date.now() - 100;
+    const admissionReceiptSha256 = "d".repeat(64);
     await env.DB.prepare(
       `INSERT INTO sender_filter_rollout_genesis
-       (nonce_sha256, provisioned_at_ms, consumed_at_ms)
-       VALUES (?, ?, NULL)`,
-    ).bind(nonceSha256, provisionedAt).run();
+       (singleton, nonce_sha256, admission_receipt_sha256, worker_commit,
+        repository_tree, keyserver_tree, provisioned_at_ms, consumed_at_ms)
+       VALUES (1, ?, ?, ?, ?, ?, ?, NULL)`,
+    ).bind(
+      nonceSha256,
+      admissionReceiptSha256,
+      "1".repeat(40),
+      "2".repeat(40),
+      "3".repeat(40),
+      provisionedAt,
+    ).run();
+    await expect(
+      env.DB.prepare(
+        `INSERT INTO sender_filter_rollout_genesis
+         (singleton, nonce_sha256, admission_receipt_sha256, worker_commit,
+          repository_tree, keyserver_tree, provisioned_at_ms, consumed_at_ms)
+         VALUES (1, ?, ?, ?, ?, ?, ?, NULL)`,
+      ).bind(
+        "e".repeat(64),
+        admissionReceiptSha256,
+        "1".repeat(40),
+        "2".repeat(40),
+        "3".repeat(40),
+        provisionedAt + 1,
+      ).run(),
+    ).rejects.toThrow();
 
     const genesisTimestamp = Date.now();
     const genesisRequestId = requestId("G");
@@ -251,12 +275,22 @@ describe("canonical identity and rollout authority in the shipping Worker", () =
       )).status,
     ).toBe(409);
     expect(await env.DB.prepare(
-      `SELECT monotonic_version, last_observation_sha256
+      `SELECT singleton, root_user_id, root_ed25519_pub,
+              identity_bundle_sha256, capability_version,
+              monotonic_version, last_observation_sha256,
+              provisioned_at_ms, updated_at_ms
          FROM sender_filter_rollout_root
         WHERE singleton = 1`,
-    ).first()).toEqual({
+    ).first()).toMatchObject({
+      singleton: 1,
+      root_user_id: userId,
+      root_ed25519_pub: root.publicKeyB64,
+      identity_bundle_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      capability_version: 1,
       monotonic_version: 2,
       last_observation_sha256: observation,
+      provisioned_at_ms: genesisTimestamp,
+      updated_at_ms: advanceTimestamp,
     });
     await expect(
       env.DB.prepare(
@@ -282,5 +316,30 @@ describe("canonical identity and rollout authority in the shipping Worker", () =
         "DELETE FROM sender_filter_rollout_genesis WHERE nonce_sha256 = ?",
       ).bind(nonceSha256).run(),
     ).rejects.toThrow(/history cannot be deleted/);
+    await expect(
+      env.DB.prepare(
+        `UPDATE sender_filter_rollout_genesis
+            SET admission_receipt_sha256 = ?
+          WHERE singleton = 1`,
+      ).bind("f".repeat(64)).run(),
+    ).rejects.toThrow(/transition is invalid/);
+    expect(await env.DB.prepare(
+      `SELECT singleton, nonce_sha256, admission_receipt_sha256,
+              provisioned_at_ms, consumed_at_ms
+         FROM sender_filter_rollout_genesis`,
+    ).all()).toMatchObject({
+      results: [{
+        singleton: 1,
+        nonce_sha256: nonceSha256,
+        admission_receipt_sha256: admissionReceiptSha256,
+        provisioned_at_ms: provisionedAt,
+        consumed_at_ms: genesisTimestamp,
+      }],
+    });
+    expect(await env.DB.prepare(
+      `SELECT COUNT(*) AS count
+         FROM sender_filter_rollout_genesis
+        WHERE admission_receipt_sha256 = ?`,
+    ).bind(admissionReceiptSha256).first()).toEqual({ count: 1 });
   });
 });

@@ -87,6 +87,83 @@ npm run db:migrate:prod
 
 Wrangler reports each `00NN_*.sql` as applied. Re-runs are no-ops.
 
+### Canonical identity / sender-filter rollout (migration 0033)
+
+This ordering is mandatory and fail-closed. It is an operator sequence, not
+permission to deploy: the repository's production migration and deploy scripts
+remain refusal gates until the independent release authority admits the exact
+release.
+
+1. Freeze and record the full Worker commit, repository tree, and
+   `keyserver-cf` tree. The checkout must still have that commit at `HEAD`.
+2. Confirm `wrangler.toml` names Worker `oslprivacy-keyserver` and binds
+   `DB` to database name `osl-keyserver-prod`, database ID
+   `1de837cd-3bf6-4d33-be82-12d358523600`, with migrations directory
+   `migrations`. Any other binding or database is a refusal.
+3. Apply `0033_canonical_identity_rollout_authority.sql` to that exact D1
+   database **before** deploying the scheme-1 Worker. Read back the
+   `d1_migrations` row and the migration bytes' SHA-256. If the row is absent,
+   empty, or its application time/order cannot be proved, stop. A Worker-first
+   rollout is forbidden.
+4. Deploy only the exact frozen Worker commit/tree, then collect immutable
+   Worker version/deployment IDs and deployment time. The deployment time must
+   be strictly later than migration 0033's application time.
+5. Put those read-only facts in the exact
+   `osl.keyserver.canonical-rollout-predeploy-evidence.v1` payload, signed in
+   an `osl.keyserver.canonical-rollout-predeploy-envelope.v1` by an
+   independently reviewed producer key. Then create the source-bound
+   provisioning receipt:
+
+   ```sh
+   npm run canonical-rollout:admit-provisioning -- \
+     --expected-commit <40-hex-commit> \
+     --expected-tree <40-hex-repository-tree> \
+     --evidence /absolute/path/predeploy-evidence.json \
+     > /absolute/private/path/provisioning-admission.json
+   ```
+
+   This receipt admits only the genesis provisioning step. It explicitly does
+   not authorize a deployment or any other production action. The committed
+   trusted-producer registry is intentionally empty; enrollment of a reviewed
+   producer public key is a separate source change and live blocker. Until
+   that happens, both admission creation and provisioning refuse every
+   caller-authored evidence file.
+6. Before first use, create exactly one system recovery directory owned by the
+   provisioning account:
+
+   ```sh
+   sudo install -d -m 0700 -o "$(id -un)" -g "$(id -gn)" \
+     /var/lib/oslprivacy/keyserver
+   ```
+
+   `/var/lib/oslprivacy/keyserver/canonical-rollout-genesis.json` is the only
+   nonce recovery authority. Its name is fixed in source. `--output` below is
+   only a nonce-free derived receipt and cannot select or reset recovery state.
+7. Provision once:
+
+   ```sh
+   npm run sender-filter:provision-genesis -- \
+     --apply \
+     --admission /absolute/private/path/provisioning-admission.json \
+     --expected-commit <40-hex-commit> \
+     --expected-tree <40-hex-repository-tree> \
+     --expected-keyserver-tree <40-hex-keyserver-tree> \
+     --output /absolute/private/path/genesis-derived-receipt.json
+   ```
+
+   The command exclusively creates and fsyncs the fixed mode-0600 recovery
+   manifest before any remote call. One D1 `INSERT ... RETURNING` atomically
+   consumes the admission receipt, reserves the singleton genesis digest, and
+   performs a nonempty readback. Any process/transport/parse error is
+   ambiguous: do not rerun with
+   another output path or generate another nonce. Recover the exact nonce from
+   the fixed manifest.
+8. Use that retained nonce once with the shipping root-provision route. Then
+   advance the root from monotonic version 1 to 2 with one exact CAS. Read back
+   one consumed genesis row, one immutable root row, one consumed admission
+   receipt, the nonempty root fields, and the stale-version `changes=0`
+   refusal. Do not treat the request response alone as completion evidence.
+
 ---
 
 ## §4 Generate the three random secrets locally

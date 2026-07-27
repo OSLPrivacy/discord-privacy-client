@@ -826,10 +826,10 @@ describe("producer-owned deployment evidence receipt v3", () => {
       { encoding: "utf8" },
     ).trim();
     const migrations = loadCommittedMigrationClosure(REPO_ROOT, head);
-    expect(migrations).toHaveLength(32);
+    expect(migrations).toHaveLength(33);
     expect(migrations[0].name).toMatch(/^0001_/);
     expect(migrations.at(-1)?.name).toBe(
-      "0032_sender_filter_capability_floor.sql",
+      "0033_canonical_identity_rollout_authority.sql",
     );
     expect(
       migrations.every(

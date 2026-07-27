@@ -74,16 +74,34 @@ BEGIN
 END;
 
 CREATE TABLE sender_filter_rollout_genesis (
-  nonce_sha256 TEXT PRIMARY KEY
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  nonce_sha256 TEXT NOT NULL UNIQUE
     CHECK (
       length(nonce_sha256) = 64
       AND nonce_sha256 NOT GLOB '*[^0-9a-f]*'
     ),
+  admission_receipt_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(admission_receipt_sha256) = 64
+      AND admission_receipt_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  worker_commit TEXT NOT NULL CHECK (
+    length(worker_commit) = 40
+    AND worker_commit NOT GLOB '*[^0-9a-f]*'
+  ),
+  repository_tree TEXT NOT NULL CHECK (
+    length(repository_tree) = 40
+    AND repository_tree NOT GLOB '*[^0-9a-f]*'
+  ),
+  keyserver_tree TEXT NOT NULL CHECK (
+    length(keyserver_tree) = 40
+    AND keyserver_tree NOT GLOB '*[^0-9a-f]*'
+  ),
   provisioned_at_ms INTEGER NOT NULL CHECK (provisioned_at_ms > 0),
   consumed_at_ms INTEGER CHECK (
     consumed_at_ms IS NULL OR consumed_at_ms >= provisioned_at_ms
   )
-) WITHOUT ROWID;
+);
 
 CREATE TRIGGER sender_filter_rollout_genesis_no_delete
 BEFORE DELETE ON sender_filter_rollout_genesis
@@ -94,7 +112,12 @@ END;
 CREATE TRIGGER sender_filter_rollout_genesis_transition_guard
 BEFORE UPDATE ON sender_filter_rollout_genesis
 WHEN NOT (
-  NEW.nonce_sha256 = OLD.nonce_sha256
+  NEW.singleton = OLD.singleton
+  AND NEW.nonce_sha256 = OLD.nonce_sha256
+  AND NEW.admission_receipt_sha256 = OLD.admission_receipt_sha256
+  AND NEW.worker_commit = OLD.worker_commit
+  AND NEW.repository_tree = OLD.repository_tree
+  AND NEW.keyserver_tree = OLD.keyserver_tree
   AND NEW.provisioned_at_ms = OLD.provisioned_at_ms
   AND OLD.consumed_at_ms IS NULL
   AND NEW.consumed_at_ms IS NOT NULL

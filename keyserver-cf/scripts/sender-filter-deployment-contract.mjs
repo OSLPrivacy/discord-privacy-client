@@ -28,7 +28,7 @@ export const SENDER_FILTER_SOURCE_FILES = Object.freeze({
     Object.freeze({
       role: "migration-0033-canonical-rollout-authority",
       sha256:
-        "0211ff321a26447aebbdd20c63ed0896477f79822c0fa158946c674928880468",
+        "5660f5be340247fc0e4ac4caf48f333523856dc225352db8d01c12e75c4f32df",
     }),
   "keyserver-cf/src/index.ts": Object.freeze({
     role: "worker-route-registration",
@@ -80,7 +80,7 @@ export const SENDER_FILTER_SOURCE_FILES = Object.freeze({
   "keyserver-cf/src/lib/identity-authority.ts": Object.freeze({
       role: "canonical-opaque-id-and-full-bundle-proof",
       sha256:
-        "dfd1619affa2f263a28feb12d9de4dcb54978355e01b340f647268e30e9b177e",
+        "645a7250673836f88c72d7966f85d1447f014a9d1131ce29551d62cc33c4434c",
   }),
   "keyserver-cf/src/lib/control-inbox-sweep.ts": Object.freeze({
     role: "capability-schema-projection",
@@ -103,19 +103,19 @@ export const SENDER_FILTER_SOURCE_FILES = Object.freeze({
     Object.freeze({
       role: "real-worker-d1-canonical-authority-fixture",
       sha256:
-        "ad2cc9f3f14a5f05ddf260db4a8bc0d522f0fd4efdeb991590ddecb8c005a2f5",
+        "1117f699ce7db3580a2740449444d7ded950937b9058b2d2f79193dab95bb2ae",
     }),
   "keyserver-cf/scripts/provision-sender-filter-rollout-genesis.mjs":
     Object.freeze({
       role: "shipping-d1-admin-genesis-provisioning-interface",
       sha256:
-        "ea4ea49543e79085835298470451ada7ffae610f3a7066f5c4884b0fc6463617",
+        "737341e5c7f72de136ceef5cd99be2e4cbc329072ece2ca3de57acc0688b2322",
     }),
   "keyserver-cf/scripts/canonical-identity-rollout.test.ts":
     Object.freeze({
       role: "nonempty-identity-authority-and-cas-fixture",
       sha256:
-        "00b1779eeb61da8588f2d3e39a4f6182c4a96247d738b6c8c2f8445f7d09ad1d",
+        "b8387092656aada4a1da45e681817a9ceac4ddcf460a7d735bebd2e574af66c3",
     }),
 });
 

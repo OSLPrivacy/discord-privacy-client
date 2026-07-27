@@ -1,7 +1,6 @@
 import {
   mkdtemp,
   readFile,
-  readdir,
   rm,
   stat,
 } from "node:fs/promises";
@@ -20,14 +19,27 @@ import {
 } from "../src/endpoints/sender-filter-rollout-root.js";
 import {
   buildGenesisProvisioning,
-  commitProtectedRecoveryManifest,
   GENESIS_DATABASE,
+  loadCanonicalRecoveryManifest,
   provisionSenderFilterGenesis,
   runWranglerGenesisProvision,
-  stageProtectedRecoveryManifest,
 } from "./provision-sender-filter-rollout-genesis.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
+const SOURCE_COMMIT = "a".repeat(40);
+const REPOSITORY_TREE = "b".repeat(40);
+const KEYSERVER_TREE = "c".repeat(40);
+
+function provisioningAdmission() {
+  return {
+    payload_sha256: "d".repeat(64),
+    source: {
+      commit: SOURCE_COMMIT,
+      repository_tree: REPOSITORY_TREE,
+      keyserver_tree: KEYSERVER_TREE,
+    },
+  };
+}
 
 function base64(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("base64");
@@ -161,6 +173,26 @@ describe("canonical identity and sender-filter rollout authority", () => {
       ),
     ).rejects.toThrow(/canonical Ed25519 encoding/);
 
+    // RFC 8032 also rejects an encoded point whose recovered x is zero while
+    // the x-sign bit is one. A y<p-only check would accept this y=1 form.
+    const xZeroWithSign = new Uint8Array(32);
+    xZeroWithSign[0] = 1;
+    xZeroWithSign[31] = 0x80;
+    const nonCanonicalRoot = base64(xZeroWithSign);
+    await expect(
+      deriveCanonicalOslIdentityId(nonCanonicalRoot),
+    ).rejects.toThrow(/canonical Ed25519 encoding/);
+
+    const nonCanonicalRProof = Buffer.from(fixture.rootProof, "base64");
+    nonCanonicalRProof.set(xZeroWithSign, 0);
+    await expect(
+      validateCanonicalIdentityBundle(
+        fixture.bundle,
+        nonCanonicalRProof.toString("base64"),
+        fixture.currentProof,
+      ),
+    ).rejects.toThrow(/canonical Ed25519 encoding/);
+
     const wrongCurrentProof = Buffer.from(fixture.currentProof, "base64");
     wrongCurrentProof[0] = (wrongCurrentProof[0] ?? 0) ^ 1;
     await expect(
@@ -276,7 +308,11 @@ describe("canonical identity and sender-filter rollout authority", () => {
 
   it("pins production genesis to D1 administration and never places the raw nonce in SQL", () => {
     const nonce = Buffer.alloc(32, 7);
-    const built = buildGenesisProvisioning(nonce, 1_800_000_000_000);
+    const built = buildGenesisProvisioning(
+      nonce,
+      1_800_000_000_000,
+      provisioningAdmission(),
+    );
     expect(built.manifest.database).toBe(GENESIS_DATABASE);
     expect(built.manifest.genesis_nonce).toHaveLength(43);
     expect(built.sql).toContain(built.manifest.genesis_nonce_sha256);
@@ -285,16 +321,19 @@ describe("canonical identity and sender-filter rollout authority", () => {
     let invocation: string[] = [];
     const output = runWranglerGenesisProvision(
       built.sql,
+      built.expectedReadback,
       ((_command: string, args: string[]) => {
         invocation = args;
         return {
           status: 0,
-          stdout: JSON.stringify([{ success: true }]),
+          stdout: JSON.stringify([
+            { success: true, results: [built.expectedReadback] },
+          ]),
           stderr: "",
         };
       }) as any,
     );
-    expect(output).toEqual([{ success: true }]);
+    expect(output).toEqual(built.expectedReadback);
     expect(invocation).toContain("execute");
     expect(invocation).toContain(GENESIS_DATABASE);
     expect(invocation).toContain("--remote");
@@ -302,54 +341,66 @@ describe("canonical identity and sender-filter rollout authority", () => {
     expect(invocation).toContain("wrangler.toml");
   });
 
-  it("durably stages a private recovery manifest before remote mutation and refuses nonce replacement", async () => {
+  it("retains one canonical private nonce after ambiguous mutation and refuses a second remote call", async () => {
     const directory = await mkdtemp(
       path.join(tmpdir(), "osl-rollout-genesis-"),
     );
-    const outputPath = path.join(directory, "genesis.json");
+    const recoveryPath = path.join(directory, "canonical-genesis.json");
+    const recoveryOptions = {
+      expectedPath: recoveryPath,
+      expectedUid: process.getuid(),
+    };
     try {
       const built = buildGenesisProvisioning(
         Buffer.alloc(32, 9),
         1_800_000_000_000,
+        provisioningAdmission(),
       );
       let remoteCalled = 0;
       await expect(
         provisionSenderFilterGenesis(
-          outputPath,
+          recoveryPath,
           built.manifest,
           built.sql,
           () => {
             remoteCalled += 1;
             throw new Error("ambiguous remote transport failure");
           },
+          recoveryOptions,
         ),
       ).rejects.toThrow(/protected recovery manifest retained/);
       expect(remoteCalled).toBe(1);
-      const pendingNames = (await readdir(directory)).filter((entry) =>
-        entry.startsWith("genesis.json.pending-")
+      expect(
+        await loadCanonicalRecoveryManifest(
+          recoveryPath,
+          recoveryOptions,
+        ),
+      ).toEqual(built.manifest);
+      expect((await stat(recoveryPath)).mode & 0o777).toBe(0o600);
+
+      const replacement = buildGenesisProvisioning(
+        Buffer.alloc(32, 10),
+        1_800_000_000_001,
+        provisioningAdmission(),
       );
-      expect(pendingNames).toHaveLength(1);
-      const temporaryPath = path.join(directory, pendingNames[0] as string);
-      expect(
-        JSON.parse(await readFile(temporaryPath, "utf8")),
-      ).toEqual(built.manifest);
-      expect((await stat(temporaryPath)).mode & 0o777).toBe(0o600);
-
-      // This is the crash boundary after an ambiguous remote commit. An
-      // implementation that regenerates a nonce on restart would strand the
-      // consumed D1 digest; the second staging attempt must refuse instead.
       await expect(
-        stageProtectedRecoveryManifest(outputPath, built.manifest, 4243),
-      ).rejects.toThrow(/recovery state already exists/);
-
-      await commitProtectedRecoveryManifest(temporaryPath, outputPath);
+        provisionSenderFilterGenesis(
+          recoveryPath,
+          replacement.manifest,
+          replacement.sql,
+          () => {
+            remoteCalled += 1;
+          },
+          recoveryOptions,
+        ),
+      ).rejects.toMatchObject({ code: "EEXIST" });
+      expect(remoteCalled).toBe(1);
       expect(
-        JSON.parse(await readFile(outputPath, "utf8")),
-      ).toEqual(built.manifest);
-      expect((await stat(outputPath)).mode & 0o777).toBe(0o600);
-      await expect(stat(temporaryPath)).rejects.toMatchObject({
-        code: "ENOENT",
-      });
+        (await loadCanonicalRecoveryManifest(
+          recoveryPath,
+          recoveryOptions,
+        )).genesis_nonce,
+      ).toBe(built.manifest.genesis_nonce);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -375,7 +426,9 @@ describe("canonical identity and sender-filter rollout authority", () => {
     expect(index).toContain("handleSenderFilterRolloutRootProvision(request, env)");
     expect(index).toContain("handleSenderFilterRolloutRootAdvance(request, env)");
     expect(packageJson).toContain("sender-filter:provision-genesis");
+    expect(packageJson).toContain("canonical-rollout:admit-provisioning");
     expect(migration).toContain("sender_filter_rollout_root_no_delete");
+    expect(migration).toContain("admission_receipt_sha256 TEXT NOT NULL UNIQUE");
     expect(migration).toContain(
       "NEW.monotonic_version = OLD.monotonic_version + 1",
     );

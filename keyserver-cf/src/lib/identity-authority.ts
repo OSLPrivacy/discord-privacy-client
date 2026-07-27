@@ -102,9 +102,20 @@ const ED25519_GROUP_ORDER =
 
 function isCanonicalEd25519PointEncoding(bytes: Uint8Array): boolean {
   if (bytes.length !== 32) return false;
+  const xSign = ((bytes[31] ?? 0) & 0x80) !== 0;
   const encodedY = bytes.slice();
   encodedY[31] = (encodedY[31] ?? 0) & 0x7f;
-  return littleEndianInteger(encodedY) < ED25519_FIELD_PRIME;
+  const y = littleEndianInteger(encodedY);
+  // RFC 8032 decoding rejects the otherwise field-canonical encodings whose
+  // recovered x is zero but whose encoded x sign is one. On Edwards25519,
+  // x=0 implies y=1 or y=-1.
+  if (
+    xSign &&
+    (y === 1n || y === ED25519_FIELD_PRIME - 1n)
+  ) {
+    return false;
+  }
+  return y < ED25519_FIELD_PRIME;
 }
 
 function decodeCanonicalEd25519PublicKey(
