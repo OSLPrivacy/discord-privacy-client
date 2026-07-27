@@ -27,6 +27,8 @@ import { MAX_LIVE_BLOB_ROWS } from "./blob-limits.js";
 /// 90 leaves headroom for the `expires_at` bind and any future predicate.
 export const ATTACHMENT_D1_DELETE_CHUNK_IDS = 90;
 export const BLOB_SWEEP_BATCH_SIZE = 100;
+export const LINK_GRANT_SWEEP_BATCH_SIZE = 100;
+export const LINK_GRANT_SWEEP_MAX_ROWS = 1000;
 
 export async function sweepExpired(env: Env): Promise<number> {
   const now = Math.floor(Date.now() / 1000);
@@ -123,6 +125,32 @@ export async function sweepExpiredAttachments(env: Env): Promise<number> {
     }
     deleted += rows.length;
     if (rows.length < ATTACHMENT_SWEEP_BATCH_SIZE) break;
+  }
+  return deleted;
+}
+
+export async function sweepExpiredLinkGrantConsumptions(env: Env): Promise<number> {
+  const now = Math.floor(Date.now() / 1000);
+  let deleted = 0;
+  while (deleted < LINK_GRANT_SWEEP_MAX_ROWS) {
+    const result = await env.DB.prepare(
+      `SELECT jti FROM link_grant_consumed
+       WHERE expires_at < ? ORDER BY expires_at LIMIT ${LINK_GRANT_SWEEP_BATCH_SIZE}`,
+    ).bind(now).all<{ jti: string }>();
+    const rows = result.results ?? [];
+    if (rows.length === 0) break;
+
+    const ids = rows.map((row) => row.jti);
+    for (let offset = 0; offset < ids.length; offset += ATTACHMENT_D1_DELETE_CHUNK_IDS) {
+      const chunk = ids.slice(offset, offset + ATTACHMENT_D1_DELETE_CHUNK_IDS);
+      const placeholders = chunk.map(() => "?").join(", ");
+      await env.DB.prepare(
+        `DELETE FROM link_grant_consumed
+         WHERE expires_at < ? AND jti IN (${placeholders})`,
+      ).bind(now, ...chunk).run();
+    }
+    deleted += rows.length;
+    if (rows.length < LINK_GRANT_SWEEP_BATCH_SIZE) break;
   }
   return deleted;
 }

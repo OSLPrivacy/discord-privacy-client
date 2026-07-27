@@ -7,7 +7,8 @@ import {
   MAX_GRANT_LIFETIME_SECONDS,
   verifyLinkGrant,
 } from "../src/lib/link-grant.js";
-import { workerEnv } from "./helpers/workerd.js";
+import { sweepExpiredLinkGrantConsumptions } from "../src/lib/sweep.js";
+import { d1Count, d1Run, workerEnv } from "./helpers/workerd.js";
 
 function b64u(bytes: Uint8Array): string {
   let s = "";
@@ -177,30 +178,68 @@ describe("link-creation grants", () => {
   it("is single-use: the same grant cannot mint two links", async () => {
     const iss = await issuer();
     const env = testEnv(iss.pubB64);
+    const jti = randomJti();
     const auth = await sign(iss.pair, {
       aud: GRANT_AUDIENCE,
       exp: now() + 120,
-      jti: randomJti(),
+      jti,
     });
     expect(await verifyLinkGrant(request(auth), env)).toEqual({ ok: true });
     expect(await verifyLinkGrant(request(auth), env)).toMatchObject({
       code: "grant_replay",
     });
-    // The replay record is transient and carries no identity.
-    const replayKeys = await env.RATE_LIMIT.list({ prefix: "lg:" });
-    expect(replayKeys.keys).toHaveLength(1);
-    expect(replayKeys.keys[0]!.name).toMatch(/^lg:[0-9a-f]{32}$/);
+    expect(
+      await d1Count("SELECT COUNT(*) AS c FROM link_grant_consumed WHERE jti = ?", jti),
+    ).toBe(1);
+  });
+
+  it("is atomic under concurrent presentation of the same grant", async () => {
+    const iss = await issuer();
+    const env = testEnv(iss.pubB64);
+    const auth = await sign(iss.pair, {
+      aud: GRANT_AUDIENCE,
+      exp: now() + 120,
+      jti: randomJti(),
+    });
+
+    const results = await Promise.all([
+      verifyLinkGrant(request(auth), env),
+      verifyLinkGrant(request(auth), env),
+    ]);
+    expect(results.filter((result) => result.ok).length).toBe(1);
+    expect(results.filter((result) => !result.ok && result.code === "grant_replay").length).toBe(1);
+  });
+
+  it("accepts a different grant after consuming one grant", async () => {
+    const iss = await issuer();
+    const env = testEnv(iss.pubB64);
+    const first = await sign(iss.pair, {
+      aud: GRANT_AUDIENCE,
+      exp: now() + 120,
+      jti: randomJti(),
+    });
+    const second = await sign(iss.pair, {
+      aud: GRANT_AUDIENCE,
+      exp: now() + 120,
+      jti: randomJti(),
+    });
+
+    expect(await verifyLinkGrant(request(first), env)).toEqual({ ok: true });
+    expect(await verifyLinkGrant(request(second), env)).toEqual({ ok: true });
   });
 
   it("fails closed when the replay store is unavailable", async () => {
     const iss = await issuer();
     const env = {
       LINK_GRANT_PUBKEY_B64: iss.pubB64,
-      RATE_LIMIT: {
-        get: async () => {
-          throw new Error("kv down");
-        },
-        put: async () => undefined,
+      DB: {
+        prepare: () => ({
+          bind: () => ({
+            first: async () => {
+              throw new Error("d1 down");
+            },
+          }),
+        }),
       },
     } as unknown as Env;
     const auth = await sign(iss.pair, {
@@ -212,5 +251,26 @@ describe("link-creation grants", () => {
       ok: false,
       status: 503,
     });
+  });
+
+  it("sweeps expired grant consumption records in bounded batches", async () => {
+    const expired = now() - 1;
+    const live = now() + 120;
+    for (let index = 0; index < 101; index++) {
+      await d1Run(
+        "INSERT INTO link_grant_consumed (jti, expires_at) VALUES (?, ?)",
+        index.toString(16).padStart(32, "0"),
+        expired,
+      );
+    }
+    await d1Run(
+      "INSERT INTO link_grant_consumed (jti, expires_at) VALUES (?, ?)",
+      "f".repeat(32),
+      live,
+    );
+
+    await expect(sweepExpiredLinkGrantConsumptions(workerEnv())).resolves.toBe(101);
+    expect(await d1Count("SELECT COUNT(*) AS c FROM link_grant_consumed WHERE expires_at < ?", now())).toBe(0);
+    expect(await d1Count("SELECT COUNT(*) AS c FROM link_grant_consumed")).toBe(1);
   });
 });

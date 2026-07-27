@@ -161,17 +161,21 @@ export async function verifyLinkGrant(
     return unauthorized("grant_signature", "grant signature did not verify");
   }
 
-  // Single use. The jti record is transient (expires with the grant) and
-  // carries no identity -- it exists only to stop replay.
-  const replayKey = "lg:" + jti;
+  // Single use. The jti record is transient (expires with the grant plus
+  // sweep slack) and carries no identity -- it exists only to stop replay.
+  // INSERT success is the claim; there is deliberately no prior read.
   try {
-    const seen = await env.RATE_LIMIT.get(replayKey);
-    if (seen !== null) {
+    const consumed = await env.DB.prepare(
+      `INSERT INTO link_grant_consumed (jti, expires_at)
+       VALUES (?, ?)
+       ON CONFLICT(jti) DO NOTHING
+       RETURNING jti`,
+    )
+      .bind(jti, exp + 60)
+      .first<{ jti: string }>();
+    if (!consumed) {
       return unauthorized("grant_replay", "grant has already been used");
     }
-    await env.RATE_LIMIT.put(replayKey, "1", {
-      expirationTtl: Math.max(60, exp - now + 60),
-    });
   } catch {
     // Fail closed: without replay suppression a single captured grant
     // becomes an unbounded creation capability.

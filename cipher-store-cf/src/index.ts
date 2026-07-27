@@ -51,6 +51,7 @@ import { rateLimit, sweepRateCounters } from "./lib/rate-limit.js";
 import {
   sweepExpired,
   sweepExpiredAttachments,
+  sweepExpiredLinkGrantConsumptions,
   sweepExpiredLinks,
 } from "./lib/sweep.js";
 
@@ -88,6 +89,11 @@ export default {
       await sweepExpiredLinks(env);
     } catch {
       console.error("[link-sweep] failed");
+    }
+    try {
+      await sweepExpiredLinkGrantConsumptions(env);
+    } catch {
+      console.error("[link-grant-sweep] failed");
     }
     try {
       await sweepRateCounters(env);

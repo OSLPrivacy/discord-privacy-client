@@ -38,8 +38,13 @@ If you are picking this lane up cold, this is the state:
 Verification state at hand-off, both workers clean:
 
 ```
-cipher-store-cf   tsc --noEmit: exit 0    vitest: 10 files / 87 tests passed   (baseline 8 / 75)
-keyserver-cf      tsc --noEmit: exit 0    vitest: 39 files / 381 tests passed  (baseline 38 / 377)
+SUPERSEDED — these were measured before the pool-workers migration and are kept
+only to show the baseline they were compared against. The authoritative,
+current figures are in "Final verification state" at the end of this report.
+Do not quote the two lines below.
+
+cipher-store-cf   tsc --noEmit: exit 0    vitest (Node + doubles): 10 files / 87   (baseline 8 / 75)
+keyserver-cf      tsc --noEmit: exit 0    vitest-pool-workers:     39 files / 381  (baseline 38 / 377)
 keyserver-cf      vitest --config vitest.node.config.ts: 1 file / 3 tests passed
 ```
 
@@ -1246,6 +1251,29 @@ What makes it worth doing now rather than later: all three gates are single
 edits. Whoever opens one is unlikely to be the person who knows the consumption
 path is racy, and the fix costs nothing while the lane is dark.
 
+## Link-grant single-use is now atomic, and the race was demonstrated first
+
+Consumption claimed by INSERT success against a primary key — no prior read:
+
+```sql
+INSERT INTO link_grant_consumed (jti, expires_at) VALUES (?, ?)
+ON CONFLICT(jti) DO NOTHING RETURNING jti
+```
+
+A null result means the `jti` was already claimed, so the grant is refused. New
+migration `0007`, a bounded sweep following the shape used for the other two, and
+a database error returns **503 `grant_store_unavailable`** rather than admitting
+— because without replay suppression one captured grant becomes an unbounded
+creation capability, which `wrangler.toml` names as a release invariant.
+
+**Proven, not asserted.** With the old KV check-then-put temporarily restored,
+the new concurrency test fails `expected 2 to be 1` — both presentations of the
+*same* grant admitted. The atomic implementation was then restored and the test
+passes. That is the race demonstrated rather than argued.
+
+Severity is unchanged from the entry above: the lane is dark behind three
+independent gates, so this is preparatory hardening, not a production repair.
+
 ## Acceptance rows this earns
 
 Truth judges and applies these; I have not touched the checklist. An event was
@@ -1280,7 +1308,7 @@ than reporting it alongside the sweeps that were demonstrably broken.
 ### Final verification state
 
 ```
-cipher-store-cf   vitest-pool-workers, real D1/R2/KV   11 files /  93 tests   tsc clean
+cipher-store-cf   vitest-pool-workers, real D1/R2/KV   12 files / 100 tests   tsc clean
 keyserver-cf      vitest-pool-workers, real D1         40 files / 389 tests   tsc clean
 ```
 
