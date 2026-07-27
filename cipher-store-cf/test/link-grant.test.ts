@@ -83,8 +83,13 @@ describe("link-creation grants", () => {
       domain: GRANT_DOMAIN,
       scheme: GRANT_SCHEME,
     });
-    const grant = await mintKeyserverGrantFixture(iss.pair.privateKey, now());
-    expect(Object.keys(JSON.parse(grant.payload)).sort()).toEqual(["aud", "exp", "jti"]);
+    const issuedAt = now();
+    const grant = await mintKeyserverGrantFixture(iss.pair.privateKey, issuedAt);
+    const claims = JSON.parse(grant.payload) as Record<string, unknown>;
+    expect(Object.keys(claims).sort()).toEqual(["aud", "exp", "jti"]);
+    expect(grant.payload).toBe(
+      `{"aud":"osl-link-create","exp":${issuedAt + 300},"jti":"${claims.jti}"}`,
+    );
     await expect(
       verifyLinkGrant(request(grant.authorization), testEnv(iss.pubB64)),
     ).resolves.toEqual({ ok: true });

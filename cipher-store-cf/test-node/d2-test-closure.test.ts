@@ -64,6 +64,9 @@ describe("D2 test-closure gate", () => {
       productionCron: NATURAL_CRON,
       registeredScheduledSeamTests: 2,
       sweepCallBeforeMarker: true,
+      promotionCallsClosure: true,
+      cycleMarkerSemanticsPinned: true,
+      canonicalIssuerPayloadPinned: true,
       standaloneCipherStoreTests: true,
     });
   });
@@ -125,5 +128,38 @@ describe("D2 test-closure gate", () => {
     expect(() =>
       assertD2TestClosure(withSource("scheduledTestSource", emptied)),
     ).toThrow(/create, observe, and reclaim/);
+  });
+
+  it("rejects bypassing the closure in the promotion execution path", () => {
+    const bypassed = replaceOnce(
+      sources.promotionProofSource,
+      "assertD2TestClosure(readD2ClosureSources(projectRoot));",
+      "void readD2ClosureSources(projectRoot);",
+    );
+    expect(() =>
+      assertD2TestClosure(withSource("promotionProofSource", bypassed)),
+    ).toThrow(/directly invoke the D2 closure/);
+  });
+
+  it("rejects drift of the independently pinned cycle marker", () => {
+    const drifted = replaceOnce(
+      sources.proofContractSource,
+      "[attachment-sweep-cycle] complete",
+      "[attachment-sweep-cycle] drifted",
+    );
+    expect(() =>
+      assertD2TestClosure(withSource("proofContractSource", drifted)),
+    ).toThrow(/cycle marker semantics drifted/);
+  });
+
+  it("rejects reordering the canonical issuer payload", () => {
+    const reordered = replaceOnce(
+      sources.issuerFixtureSource,
+      '`{"aud":"${ISSUER_GRANT_AUDIENCE}","exp":${expiresAt},"jti":"${jti}"}`',
+      '`{"jti":"${jti}","aud":"${ISSUER_GRANT_AUDIENCE}","exp":${expiresAt}}`',
+    );
+    expect(() =>
+      assertD2TestClosure(withSource("issuerFixtureSource", reordered)),
+    ).toThrow(/exact canonical byte order/);
   });
 });

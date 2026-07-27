@@ -8,16 +8,28 @@ export interface D2ClosureSources {
   workerSource: string;
   scheduledTestSource: string;
   promotionProofSource: string;
+  proofContractSource: string;
+  proofContractTypesSource: string;
   linkGrantTestSource: string;
+  issuerFixtureSource: string;
 }
 
 export interface D2ClosureFacts {
   productionCron: typeof NATURAL_CRON;
   registeredScheduledSeamTests: 2;
   sweepCallBeforeMarker: true;
+  promotionCallsClosure: true;
+  cycleMarkerSemanticsPinned: true;
+  canonicalIssuerPayloadPinned: true;
   standaloneCipherStoreTests: true;
 }
 
+const REQUIRED_NATURAL_CRON = "*/5 * * * *";
+const REQUIRED_CYCLE_MARKER = "[attachment-sweep-cycle] complete";
+const REQUIRED_ISSUER_PAYLOAD =
+  '`{"aud":"${ISSUER_GRANT_AUDIENCE}","exp":${expiresAt},"jti":"${jti}"}`';
+const REQUIRED_INTEROP_PAYLOAD =
+  '`{"aud":"osl-link-create","exp":${issuedAt + 300},"jti":"${claims.jti}"}`';
 const SUITE_NAME = "natural attachment sweep witness";
 const POSITIVE_NAME = "emits the fixed marker only after R2 abort and D1 removal succeed";
 const NEGATIVE_NAME =
@@ -257,14 +269,105 @@ function promotionProofBinding(source: string): void {
     "CYCLE_MARKER",
     "NATURAL_CRON",
   ]);
+  requireNamedImport(parsed, "./d2-test-closure.ts", [
+    "assertD2TestClosure",
+    "readD2ClosureSources",
+  ]);
   if (
     /\b(?:export\s+)?const\s+(?:NATURAL_CRON|CYCLE_MARKER)\s*=/.test(source)
   ) {
     fail("promotion proof may not redeclare the cron or cycle marker");
   }
+
+  let executionBody: ts.Block | null = null;
+  visit(parsed, (node) => {
+    if (
+      ts.isFunctionDeclaration(node) &&
+      node.name?.text === "executePromotionAndProof" &&
+      node.body
+    ) {
+      executionBody = node.body;
+    }
+  });
+  const body = executionBody as ts.Block | null;
+  if (!body) fail("promotion execution function is absent");
+  const gateStatements = body.statements.filter((statement) => {
+    if (!ts.isExpressionStatement(statement)) return false;
+    const expression = statement.expression;
+    return (
+      ts.isCallExpression(expression) &&
+      expressionName(expression.expression) === "assertD2TestClosure"
+    );
+  });
+  if (gateStatements.length !== 1) {
+    fail("promotion execution must directly invoke the D2 closure exactly once");
+  }
+  const gateCall = (gateStatements[0] as ts.ExpressionStatement)
+    .expression as ts.CallExpression;
+  const gateInput = gateCall.arguments[0];
+  if (
+    !gateInput ||
+    !ts.isCallExpression(gateInput) ||
+    expressionName(gateInput.expression) !== "readD2ClosureSources" ||
+    gateInput.arguments.length !== 1 ||
+    !ts.isIdentifier(gateInput.arguments[0]!) ||
+    gateInput.arguments[0]!.text !== "projectRoot"
+  ) {
+    fail("promotion execution must gate the current project closure");
+  }
+  const sourceRead = callsWithin(body).find(
+    (call) => expressionName(call.expression) === "sourceFacts",
+  );
+  if (!sourceRead || gateCall.getStart(parsed) >= sourceRead.getStart(parsed)) {
+    fail("promotion closure must run before source and promotion work");
+  }
 }
 
-function standaloneLinkGrantClosure(source: string): true {
+function proofContractSemantics(source: string, typesSource: string): true {
+  const parsed = sourceFile(source, "src/lib/d2-proof-contract.js");
+  const value = (name: string): string => {
+    const matches: string[] = [];
+    visit(parsed, (node) => {
+      if (
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        node.name.text === name &&
+        node.initializer &&
+        ts.isStringLiteral(node.initializer)
+      ) {
+        matches.push(node.initializer.text);
+      }
+    });
+    if (matches.length !== 1) fail(`proof contract must declare ${name} once`);
+    return matches[0]!;
+  };
+  if (
+    value("NATURAL_CRON") !== REQUIRED_NATURAL_CRON ||
+    NATURAL_CRON !== REQUIRED_NATURAL_CRON
+  ) {
+    fail("shared natural cron semantics drifted");
+  }
+  if (
+    value("CYCLE_MARKER") !== REQUIRED_CYCLE_MARKER ||
+    CYCLE_MARKER !== REQUIRED_CYCLE_MARKER
+  ) {
+    fail("shared cycle marker semantics drifted");
+  }
+  for (const declaration of [
+    `export const NATURAL_CRON: "${REQUIRED_NATURAL_CRON}";`,
+    `export const CYCLE_MARKER: "${REQUIRED_CYCLE_MARKER}";`,
+  ]) {
+    if (!typesSource.includes(declaration)) {
+      fail("proof contract runtime and literal types must stay byte-identical");
+    }
+  }
+  return true;
+}
+
+function standaloneLinkGrantClosure(
+  source: string,
+  fixtureSource: string,
+): true {
   if (/keyserver-cf\/src\/lib\/link-grant-issuer/.test(source)) {
     fail("cipher-store tests may not import keyserver production source");
   }
@@ -279,6 +382,33 @@ function standaloneLinkGrantClosure(source: string): true {
   ) {
     fail("standalone keyserver wire fixture must be exercised");
   }
+  const fixture = sourceFile(
+    fixtureSource,
+    "test/helpers/link-grant-issuer-fixture.ts",
+  );
+  const payloadInitializers: string[] = [];
+  visit(fixture, (node) => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === "payload" &&
+      node.initializer
+    ) {
+      payloadInitializers.push(node.initializer.getText(fixture));
+    }
+  });
+  if (
+    payloadInitializers.length !== 1 ||
+    payloadInitializers[0] !== REQUIRED_ISSUER_PAYLOAD
+  ) {
+    fail("standalone issuer payload is not the exact canonical byte order");
+  }
+  if (
+    !source.includes("expect(grant.payload).toBe(") ||
+    !source.includes(REQUIRED_INTEROP_PAYLOAD)
+  ) {
+    fail("interoperability test must independently pin canonical payload bytes");
+  }
   return true;
 }
 
@@ -289,20 +419,33 @@ export function readD2ClosureSources(projectRoot: string): D2ClosureSources {
     workerSource: read("src/index.ts"),
     scheduledTestSource: read("test/scheduled-sweep-proof.test.ts"),
     promotionProofSource: read("scripts/d2-promotion-proof.ts"),
+    proofContractSource: read("src/lib/d2-proof-contract.js"),
+    proofContractTypesSource: read("src/lib/d2-proof-contract.d.ts"),
     linkGrantTestSource: read("test/link-grant.test.ts"),
+    issuerFixtureSource: read("test/helpers/link-grant-issuer-fixture.ts"),
   };
 }
 
 export function assertD2TestClosure(sources: D2ClosureSources): D2ClosureFacts {
+  const markerPinned = proofContractSemantics(
+    sources.proofContractSource,
+    sources.proofContractTypesSource,
+  );
   const cron = productionCron(sources.wranglerToml);
   promotionProofBinding(sources.promotionProofSource);
   const registered = scheduledSeamTests(sources.scheduledTestSource);
   const ordered = scheduledWorkerBoundary(sources.workerSource);
-  const standalone = standaloneLinkGrantClosure(sources.linkGrantTestSource);
+  const standalone = standaloneLinkGrantClosure(
+    sources.linkGrantTestSource,
+    sources.issuerFixtureSource,
+  );
   return {
     productionCron: cron,
     registeredScheduledSeamTests: registered,
     sweepCallBeforeMarker: ordered,
+    promotionCallsClosure: true,
+    cycleMarkerSemanticsPinned: markerPinned,
+    canonicalIssuerPayloadPinned: true,
     standaloneCipherStoreTests: standalone,
   };
 }
