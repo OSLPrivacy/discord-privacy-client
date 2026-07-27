@@ -1305,4 +1305,153 @@ describe("bundled preview security boundary", () => {
       ),
     ).toBe(false);
   });
+
+  it("separates legacy duress primitives from the reachable Hub burn password", () => {
+    const duress = readRelative("../../../crates/keystore/src/duress.rs");
+    const password = readRelative("../../../crates/keystore/src/password.rs");
+    const keystoreLib = readRelative("../../../crates/keystore/src/lib.rs");
+    const main = readRelative("../../osl-hub/src/main.rs");
+    const productionRust = [
+      readProductionRustTree("../../osl-hub/src/"),
+      readProductionRustTree("../../../crates/ipc/src/"),
+      readProductionRustTree("../../../src-tauri/src/"),
+    ].join("\n");
+    const legacyDuressSymbols = [
+      "DuressEngine",
+      "DuressHandlers",
+      "DuressPaths",
+      "DuressJournal",
+      "DuressReport",
+      "WipeStep",
+      "verify_against_record",
+      "VerifyOutcome",
+      "InactivityTimer",
+    ] as const;
+    const productionReferencesLegacyDuress = (source: string): boolean =>
+      new RegExp(`\\b(?:${legacyDuressSymbols.join("|")})\\b`, "u").test(
+        rustProductionPrefix(source),
+      );
+
+    // Positive implementation/re-export controls prevent removing the dormant
+    // subsystem from satisfying the absence assertion.
+    for (const implementationSymbol of [
+      "pub enum WipeStep",
+      "pub struct DuressHandlers",
+      "pub struct DuressPaths",
+      "pub struct DuressJournal",
+      "pub struct DuressReport",
+      "pub struct DuressEngine",
+      "pub fn execute(&self)",
+      "pub fn resume_if_pending(&self)",
+    ]) {
+      expect(duress).toContain(implementationSymbol);
+    }
+    for (const implementationSymbol of [
+      "pub enum VerifyOutcome",
+      "pub fn verify_against_record(",
+      "pub struct InactivityTimer",
+      "pub fn should_reprompt(&self)",
+    ]) {
+      expect(password).toContain(implementationSymbol);
+    }
+    expect(keystoreLib).toContain(
+      "DuressEngine, DuressError, DuressHandlers, DuressJournal, DuressPaths, DuressReport",
+    );
+    expect(keystoreLib).toContain(
+      "verify_against_record, Argon2Params, InactivityTimer",
+    );
+
+    expect(productionReferencesLegacyDuress(productionRust)).toBe(false);
+
+    // Positive controls for the separate, reachable Hub implementation.
+    const mainProduction = rustProductionPrefix(main);
+    const handler = mainProduction.slice(
+      mainProduction.indexOf("tauri::generate_handler!["),
+    );
+    expect(handler).toContain("unlock_hub_password_gate,");
+    expect(mainProduction).toContain(
+      "startup_gate::verify_password_role(&verify_app.state::<HubCoreState>(), password)",
+    );
+    expect(mainProduction).toContain("VerifiedGateRole::Burn => {");
+    expect(mainProduction).toContain("cleanup::execute_verified_gate_burn(");
+
+    const assertLegacyDuressTruth = (
+      duressSource: string,
+      passwordSource: string,
+    ): void => {
+      expect(duressSource).toContain(
+        "Legacy duress-engine primitives (implemented-unwired)",
+      );
+      expect(duressSource).toContain(
+        "neither construct a\n//! [`DuressEngine`] nor call",
+      );
+      expect(duressSource).toContain(
+        "separately implemented burn-password path uses `startup_gate` and",
+      );
+      expect(duressSource).toContain(
+        "No production startup path currently",
+      );
+      expect(duressSource).toContain(
+        "With no callback, this step is reported as",
+      );
+      expect(duressSource).toContain(
+        "After each step attempt, the engine records its",
+      );
+      expect(passwordSource).toContain(
+        "Legacy unlock/duress record primitives (implemented-unwired)",
+      );
+      expect(passwordSource).toContain(
+        "call neither\n//! [`verify_against_record`] nor [`InactivityTimer`]",
+      );
+      expect(passwordSource).toContain(
+        "separately\n//! implemented password gate uses `startup_gate` and `cleanup`",
+      );
+      expect(passwordSource).toContain(
+        "When invoked, this module's storage helpers serialize",
+      );
+    };
+    assertLegacyDuressTruth(duress, password);
+
+    for (const syntheticProductionReference of [
+      "let engine = DuressEngine::new(journal, paths, handlers);",
+      "let resume = DuressEngine::resume_if_pending;",
+      "use keystore::DuressEngine as WipeEngine;",
+      "let verify = keystore::verify_against_record;",
+      "match outcome { VerifyOutcome::Duress => burn(), _ => {} }",
+      "let timer = InactivityTimer::from_seconds(900);",
+    ]) {
+      expect(
+        productionReferencesLegacyDuress(syntheticProductionReference),
+      ).toBe(true);
+    }
+
+    expect(() =>
+      assertLegacyDuressTruth(
+        duress.replace(
+          "Legacy duress-engine primitives (implemented-unwired)",
+          "Shipping duress flow execution",
+        ),
+        password,
+      ),
+    ).toThrow();
+    expect(duress).not.toContain(
+      "The caller (Tauri shell) plays the normal unlock animation",
+    );
+    expect(password).not.toContain(
+      "then triggers\n//!   the duress flow",
+    );
+
+    expect(
+      productionReferencesLegacyDuress(
+        [
+          "// let engine = DuressEngine::new(journal, paths, handlers);",
+          "/* verify_against_record(record, password)?; */",
+          "#[cfg(test)]",
+          "mod tests {",
+          "  fn fixture() { let timer = InactivityTimer::from_seconds(900); }",
+          "}",
+        ].join("\n"),
+      ),
+    ).toBe(false);
+  });
 });

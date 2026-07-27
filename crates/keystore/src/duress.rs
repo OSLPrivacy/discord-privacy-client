@@ -1,37 +1,37 @@
-//! Duress flow execution.
+//! Legacy duress-engine primitives (implemented-unwired).
 //!
 //! Spec: `docs/design/unlock-and-duress.md` "Duress flow — full
 //! specification" + `docs/design/build-order.md` Layer B3.
 //!
-//! Four phases:
+//! Current Hub/IPC and legacy Tauri production sources neither construct a
+//! [`DuressEngine`] nor call its execute/resume methods. The current Hub's
+//! separately implemented burn-password path uses `startup_gate` and
+//! `cleanup`, not this engine.
 //!
-//! 1. **Apparent unlock** — UI concern, not driven from this engine.
-//!    The caller (Tauri shell) plays the normal unlock animation
-//!    while the engine runs phases 2 + 3 concurrently in the
-//!    background.
-//! 2. **Local burn** — synchronous wipe of every key-bearing piece
-//!    of state. Each step is idempotent so a crash mid-burn resumes
-//!    cleanly on relaunch.
-//! 3. **Strip OPSEC features** — delete injection scripts +
-//!    encryption-module config so future launches fall through to a
-//!    "stub" mode (plain Discord webview shell, no privacy
-//!    features).
-//! 4. **Stripped state** — runtime concern, not driven from this
-//!    engine. The next process launch sees the absence of the
-//!    OPSEC files and operates as a stub.
+//! The engine contract, when explicitly driven, has four phases:
+//!
+//! 1. **Apparent unlock** — an intended UI integration concern, not driven
+//!    from this engine.
+//! 2. **Local burn** — the engine attempts its configured synchronous wipe
+//!    steps. Each step is idempotent within this engine.
+//! 3. **Strip OPSEC features** — a caller-supplied callback can delete
+//!    injection/config files. With no callback, this step is reported as
+//!    `Skipped`.
+//! 4. **Stripped state** — an intended runtime integration concern, not
+//!    driven from this engine.
 //!
 //! ## Idempotency + journal
 //!
-//! Each wipe step writes its completion into the on-disk journal
-//! AFTER it succeeds. On relaunch, [`DuressEngine::resume_if_pending`]
-//! reads the journal and re-runs any steps not yet completed — every
-//! step is idempotent so re-running a completed step is a no-op.
-//! Once all steps complete the journal is removed and the engine
-//! reports [`DuressOutcome::Completed`].
+//! After each step attempt, the engine records its `Wiped`, `AlreadyClean`,
+//! `Skipped`, or `Failed` outcome in the on-disk journal. When an integration
+//! explicitly calls
+//! [`DuressEngine::resume_if_pending`], the engine reads the journal and
+//! re-runs steps not yet completed. No production startup path currently
+//! makes that call.
 //!
 //! ## Wipe set status (v1 alpha)
 //!
-//! Implemented today:
+//! Implemented inside this engine when it is explicitly invoked:
 //! - TPM key eviction (B1's `evict_tpm_key`).
 //! - Keyring purge (B1's `KeyringSealer::purge_keyring_entry`).
 //! - Identity-blob file deletion.
@@ -199,8 +199,8 @@ impl From<DuressError> for KeystoreError {
     }
 }
 
-/// On-disk journal: lists which steps have been completed so far.
-/// Read on relaunch by [`DuressEngine::resume_if_pending`].
+/// On-disk journal of attempted step outcomes. Read when an integration calls
+/// [`DuressEngine::resume_if_pending`].
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct DuressJournal {
     pub completed: Vec<(WipeStep, StepOutcome)>,
