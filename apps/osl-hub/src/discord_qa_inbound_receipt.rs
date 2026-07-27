@@ -440,6 +440,12 @@ fn keyserver_post_error_class(error: &keystore::Error) -> &'static str {
         keystore::Error::Transport(_) | keystore::Error::Io(_) => "transport",
         keystore::Error::Json(_) | keystore::Error::Base64(_) => "encode_or_response",
         keystore::Error::Crypto(_) => "crypto",
+        // Its own class on purpose, and never folded into `crypto` or `transport`.
+        // This is the C1 full-bundle proof refusing a peer bundle whose identity
+        // signature did not verify, i.e. the one symptom a keyserver attempting
+        // key substitution produces. Sharing a label with a decode failure would
+        // make an active attack indistinguishable from a glitch.
+        keystore::Error::PeerBundleProofInvalid => "peer_bundle_proof_invalid",
         keystore::Error::Sealer(_)
         | keystore::Error::BlobVersionMismatch { .. }
         | keystore::Error::BlobFieldLength { .. }
@@ -451,11 +457,25 @@ pub fn record_headless_post_control_stage(
     outcome: &'static str,
     error: Option<&keystore::Error>,
 ) -> Result<(), String> {
+    let receipt = headless_post_control_stage_receipt(outcome, error)?;
+    let encoded = serde_json::to_vec(&receipt)
+        .map_err(|_| "Discord QA control-inbox receipt could not be encoded".to_owned())?;
+    crate::atomic_file::write_recoverable(
+        &fixed_receipt_path(SEND_STAGE_RECEIPT_FILE)?,
+        &encoded,
+        "Discord QA control-inbox receipt",
+    )
+}
+
+fn headless_post_control_stage_receipt(
+    outcome: &'static str,
+    error: Option<&keystore::Error>,
+) -> Result<DiscordQaSendStageReceipt, String> {
     if !matches!(outcome, "entered" | "ready" | "error") || (outcome == "error") != error.is_some()
     {
         return Err("Discord QA control-inbox stage is invalid".to_owned());
     }
-    let receipt = DiscordQaSendStageReceipt {
+    Ok(DiscordQaSendStageReceipt {
         schema_version: 2,
         observed_at_unix_ms: now_unix_ms(),
         plaintext_sha256: sha256_hex(b"OSL Discord QA probe"),
@@ -473,14 +493,7 @@ pub fn record_headless_post_control_stage(
         carrier_placed: None,
         carrier_enter_sent: None,
         overlay_context_unchanged: None,
-    };
-    let encoded = serde_json::to_vec(&receipt)
-        .map_err(|_| "Discord QA control-inbox receipt could not be encoded".to_owned())?;
-    crate::atomic_file::write_recoverable(
-        &fixed_receipt_path(SEND_STAGE_RECEIPT_FILE)?,
-        &encoded,
-        "Discord QA control-inbox receipt",
-    )
+    })
 }
 
 fn overlay_open_error_class(error: &str) -> &'static str {
@@ -910,6 +923,55 @@ mod tests {
         assert_eq!(
             headless_phase_error_class("permission", "raw private identity detail"),
             "permission_rejected"
+        );
+    }
+
+    #[test]
+    fn peer_bundle_proof_invalid_is_an_explicit_terminal_control_inbox_refusal() {
+        let error = keystore::Error::PeerBundleProofInvalid;
+        let receipt = headless_post_control_stage_receipt("error", Some(&error))
+            .expect("proof-invalid produces a bounded refusal receipt");
+
+        assert_eq!(receipt.phase, "post_control_inbox");
+        assert_eq!(receipt.phase_outcome, "error");
+        assert!(!receipt.post_succeeded);
+        assert_eq!(
+            receipt.error_class,
+            Some("peer_bundle_proof_invalid"),
+            "an invalid peer-bundle proof must never be retried or accepted as transport success"
+        );
+
+        assert!(
+            headless_post_control_stage_receipt("ready", Some(&error)).is_err(),
+            "the proof-invalid error cannot coexist with a successful stage outcome"
+        );
+    }
+
+    #[test]
+    fn keyserver_error_classifier_has_no_wildcard_policy_arm() {
+        let source = include_str!("discord_qa_inbound_receipt.rs");
+        let classifier = source
+            .split_once("fn keyserver_post_error_class(")
+            .expect("keyserver classifier exists")
+            .1
+            .split_once("pub fn record_headless_post_control_stage(")
+            .expect("keyserver classifier has a bounded source slice")
+            .0;
+        let explicit = [
+            "keystore::Error::PeerBundle",
+            "ProofInvalid => \"peer_bundle_proof_invalid\"",
+        ]
+        .concat();
+
+        assert!(
+            classifier.contains(&explicit),
+            "peer-bundle proof failure needs its own explicit refusal arm"
+        );
+        assert!(
+            !classifier
+                .lines()
+                .any(|line| line.trim_start().starts_with("_ =>")),
+            "a wildcard arm would let future keystore errors bypass explicit fail-closed policy"
         );
     }
 
