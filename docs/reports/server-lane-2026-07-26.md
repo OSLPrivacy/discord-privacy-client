@@ -68,9 +68,10 @@ exactly. That is the ceiling being real, not approximately real.
 
 ### Production status — what is confirmed, and what is not
 
-Both Workers were deployed by the owner: **cipher-store `3374d057`**, **keyserver
-`3f92f0f5`**. Three different confidence levels apply, and they should not be
-collapsed:
+Historical snapshot, superseded by the exact-version listing at the end of this
+report: both Workers had been deployed by the owner as **cipher-store
+`3374d057`**, **keyserver `3f92f0f5`**. Three different confidence levels applied
+at that point and should not be collapsed:
 
 | Fix | Status | Evidence |
 |---|---|---|
@@ -1710,3 +1711,227 @@ No checklist edit and no point are claimed. B5 remains 1/4. This audit narrows
 the next honest point to one already-deployed server capability and one missing
 broker call boundary; it does not round route existence or local tests up to an
 end-to-end production contract.
+
+---
+
+## Read-only production Worker version truth — 2026-07-26 22:17 PDT
+
+Probe window: `2026-07-26T22:14:05-07:00` through
+`2026-07-26T22:17:09-07:00`
+(`2026-07-27T05:14:05Z` through `2026-07-27T05:17:09Z`).
+Repository HEAD observed after the probes:
+`245564999e57c388459c71f91a9779a89a05a78d`.
+Wrangler was `4.110.0` on Node 24.
+
+This run made only Cloudflare listing/detail API reads and public GETs. It did
+not deploy, migrate, register, POST, PUT, DELETE, consume a grant, upload
+content, query or mutate D1/R2, or read secret values.
+
+### Exact active deployments
+
+Wrangler returns these arrays oldest-first; `.[-1]`, not `.[0]`, is the current
+entry. The exact commands and selected output were:
+
+```text
+$ cd keyserver-cf
+$ npx wrangler deployments list --json |
+    jq '.[-1] | {id, created_on, versions}'
+{
+  "id": "8fa82d0b-9593-46dd-8e01-bdeb9bf79342",
+  "created_on": "2026-07-27T00:34:24.935251Z",
+  "versions": [
+    {
+      "version_id": "3f92f0f5-c6ac-4426-9a83-1555f5c6394b",
+      "percentage": 100
+    }
+  ]
+}
+
+$ npx wrangler versions view \
+    3f92f0f5-c6ac-4426-9a83-1555f5c6394b --json |
+    jq '{id, number, created_on: .metadata.created_on,
+         source: .metadata.source,
+         triggered_by: .annotations["workers/triggered_by"],
+         etag: .resources.script.etag,
+         handlers: .resources.script.handlers,
+         last_deployed_from: .resources.script.last_deployed_from,
+         runtime: .resources.script_runtime}'
+{
+  "id": "3f92f0f5-c6ac-4426-9a83-1555f5c6394b",
+  "number": 169,
+  "created_on": "2026-07-27T00:34:24.489404Z",
+  "source": "wrangler",
+  "triggered_by": "version_upload",
+  "etag": "4a9b3f0555fa352995a70f5a5b6629dc3978c2a12e37376f492a4030619409d8",
+  "handlers": ["fetch", "scheduled"],
+  "last_deployed_from": "wrangler",
+  "runtime": {
+    "compatibility_date": "2026-07-15",
+    "compatibility_flags": ["nodejs_compat"],
+    "usage_model": "standard"
+  }
+}
+
+$ cd ../cipher-store-cf
+$ npx wrangler deployments list --json |
+    jq '.[-1] | {id, created_on, versions}'
+{
+  "id": "785314a9-f273-4eb5-8fcf-bbbcd0d345a7",
+  "created_on": "2026-07-27T01:13:19.214428Z",
+  "versions": [
+    {
+      "version_id": "0a17547d-577e-4f70-8159-f5d90e9c9e31",
+      "percentage": 100
+    }
+  ]
+}
+
+$ npx wrangler versions view \
+    0a17547d-577e-4f70-8159-f5d90e9c9e31 --json |
+    jq '{id, number, created_on: .metadata.created_on,
+         source: .metadata.source,
+         triggered_by: .annotations["workers/triggered_by"],
+         etag: .resources.script.etag,
+         handlers: .resources.script.handlers,
+         last_deployed_from: .resources.script.last_deployed_from,
+         runtime: .resources.script_runtime}'
+{
+  "id": "0a17547d-577e-4f70-8159-f5d90e9c9e31",
+  "number": 15,
+  "created_on": "2026-07-27T01:13:18.684701Z",
+  "source": "wrangler",
+  "triggered_by": "version_upload",
+  "etag": "48c427bdd725a12e4257e0877417acc929708143fdc4680c129e392064fc3023",
+  "handlers": ["fetch", "scheduled"],
+  "last_deployed_from": "wrangler",
+  "runtime": {
+    "compatibility_date": "2026-05-13",
+    "usage_model": "standard"
+  }
+}
+```
+
+| Claim | Tier | Evidence |
+|---|---|---|
+| Keyserver's active Worker is version 169, exact UUID `3f92f0f5-c6ac-4426-9a83-1555f5c6394b`, at 100% | `verified-live` | Current deployment and version-detail output above |
+| Cipher-store's active Worker is version 15, exact UUID `0a17547d-577e-4f70-8159-f5d90e9c9e31`, at 100% | `verified-live` | Current deployment and version-detail output above |
+| Coordinator-state's `3f92f0f5` and `0a17547d` are Worker-version abbreviations | `verified-live` | Each is the exact prefix of the active Cloudflare UUID |
+| Keyserver deployed runtime configuration matches `keyserver-cf/wrangler.toml:3-4` | `verified-live` | Cloudflare reports `2026-07-15` + `nodejs_compat`; local config has the same values |
+| Cipher-store deployed runtime configuration matches `cipher-store-cf/wrangler.toml:3` | `verified-live` | Cloudflare reports `2026-05-13`; local config has the same value |
+
+### Harmless runtime probes
+
+These are the exact requests and complete status/body output:
+
+```text
+$ curl --silent --show-error --max-time 20 --write-out \
+    "\nHTTP %{http_code}" \
+    https://keyserver.oslprivacy.com/v1/healthz
+{"ok":true}
+HTTP 200
+
+$ curl --silent --show-error --max-time 20 --write-out \
+    "\nHTTP %{http_code}" \
+    https://keyserver.oslprivacy.com/v1/pubkeys/12345678901234567
+{"error":"Discord identifiers are not OSL identities"}
+HTTP 400
+
+$ curl --silent --show-error --max-time 20 --write-out \
+    "\nHTTP %{http_code}" \
+    'https://keyserver.oslprivacy.com/v1/control-inbox/osl_live_truth_missing?ts=1785129429522&sig=AAAA&sender='
+{"error":"sender must be a bounded identifier when present"}
+HTTP 400
+
+$ curl --silent --show-error --max-time 20 --write-out \
+    "\nHTTP %{http_code}" \
+    https://ciphers.oslprivacy.com/v1/healthz
+{"ok":true,"ts":1785129429}
+HTTP 200
+
+$ curl --silent --show-error --max-time 20 --write-out \
+    "\nHTTP %{http_code}" \
+    https://ciphers.oslprivacy.com/robots.txt
+User-agent: *
+Disallow: /
+
+HTTP 200
+
+$ curl --silent --show-error --max-time 20 --write-out \
+    "\nHTTP %{http_code}" \
+    https://ciphers.oslprivacy.com/v1/attachment/not-hex
+{"error":"not_found","message":"no such route or blob"}
+HTTP 404
+```
+
+| Claim | Tier | Evidence and bound |
+|---|---|---|
+| Both production hostnames currently dispatch their health routes | `verified-live` | Both health GETs returned 200 |
+| The active keyserver refuses Discord snowflakes | `verified-live` | The public pubkeys refusal returned the exact branch at `keyserver-cf/src/endpoints/pubkeys.ts:37-40` |
+| The active keyserver treats a present-but-empty control-inbox sender filter as invalid rather than silently dropping the filter | `verified-live` | The 400 matches `keyserver-cf/src/endpoints/control-inbox.ts:792-795`; this validation occurs before the D1 lookup at line 798 |
+| The active cipher-store serves the deny-all robots body represented locally | `verified-live` | Live bytes match `cipher-store-cf/src/lib/landing.ts:531-539` |
+| The active cipher-store falls through a malformed attachment path without reaching attachment fetch/rate-limit state | `verified-live` | `/v1/attachment/not-hex` does not match the hex route and returned the `cipher-store-cf/src/index.ts:240` not-found response |
+
+No authenticated success path was exercised. These probes do not establish that
+an inbox filter affects returned D1 rows, that pubkeys omit lifecycle fields for
+a real identity, or that attachment quota and R2 writes work.
+
+### Mapping the Worker versions to repository source
+
+The exact Git commit for **both** Worker versions is `unknown`.
+
+Cloudflare's version records provide a Worker UUID, upload time, script etag,
+Wrangler source marker, handlers, and runtime settings. They provide no Git
+commit/tag annotation. A Cloudflare script etag is not a Git object ID, so it
+cannot be compared to the current keyserver tree
+`3551ac56a761d2d971b04db2b4470d7ff9f33651` or cipher-store tree
+`3bb26488890396348e9c36bb066435c37dfbdc53`.
+
+For the keyserver there is positive evidence that a commit-time mapping would
+be false precision:
+
+```text
+$ git log --all -S'Discord identifiers are not OSL identities' \
+    --format='%H %cI %s' -- keyserver-cf/src/endpoints/pubkeys.ts
+b6f456e032b3b40b8046344190520eef6933dfea 2026-07-26T18:00:51-07:00 server lane: fix both HIGH Cloudflare audit findings + a runtime-broken upload path
+```
+
+The Worker version was uploaded at `17:34:24-07:00`, 26 minutes before that
+source branch first entered a commit, yet the live Worker returns its exact
+refusal. This maps that specific deployed behavior to source now present at
+`keyserver-cf/src/endpoints/pubkeys.ts:37-40`; it does **not** map the whole
+bundle to `b6f456e`. The deploy could have used uncommitted bytes, and the
+version metadata cannot distinguish those bytes from any later committed tree.
+
+Cipher-store version `0a17547d...` was uploaded at `18:13:18-07:00`, after
+`b6f456e` (`18:00:51-07:00`) and before the next cipher-store commits
+(`f8161ac` at `18:27:46-07:00`, `d5ea447` at `18:29:39-07:00`). Timing alone
+does not establish that its bundle equals `b6f456e`; an uncommitted working
+tree could have been uploaded. The health and robots probes map only those
+route bytes to current local source, not the entire bundle.
+
+### Coordinator-state reconciliation
+
+| Coordinator claim | Reconciled tier | Result |
+|---|---|---|
+| Keyserver Worker `3f92f0f5` | `verified-live` | Correct short form; expanded above to the exact UUID and version 169 |
+| Cipher-store Worker `0a17547d` | `verified-live` | Correct short form; expanded above to the exact UUID and version 15 |
+| Earlier report header calling cipher-store `3374d057` current | `verified-live` | Superseded. Live listing says `0a17547d...`; the earlier paragraph is now explicitly marked historical |
+| Keyserver per-sender filter is in the active Worker | `verified-live` | Empty-filter negative branch is live. Actual filtered D1 selection remains `unknown` because this run had no authenticated identity and did not query state |
+| Keyserver `429 recipient_inbox_full` behavior is in the active Worker | `unknown` | A decisive probe requires state-mutating inbox posts and was forbidden |
+| Keyserver pubkeys minimisation is in the active Worker | `unknown` | Snowflake refusal is live, but no permitted probe can inspect a real identity response without choosing an identity |
+| Cipher-store R2 known-length fix is in `0a17547d` | `verified-live` | The earlier recorded production probe at this report's lines 641-644 returned `201 {"part_number":1,"size_bytes":1024}` after the `0a17547d` redeploy, and the current listing proves no later version replaced it. This run did not repeat the upload |
+| Cipher-store attachment session quota fix is in the active Worker | `unknown` | Earlier live evidence established the fixed TTL split on a deployment, but the allowed GETs do not prove the current bundle's admission accounting |
+
+There is no live-output conflict with the coordinator's two current short
+Worker IDs. The only direct conflict was the report's older `3374d057`
+cipher-store snapshot, which is now explicitly superseded. Feature claims not
+reachable by harmless GETs remain `unknown`; they are not inferred from version
+timing or from sharing a source file.
+
+## Acceptance rows this earns
+
+No checklist edit and no acceptance point are claimed. This earns a
+`verified-live` version identity and bounded safe-route evidence for both
+Workers. Exact Git commits, authenticated keyserver success paths, current
+inbox-cap enforcement, current pubkeys field minimisation, and current
+cipher-store quota accounting remain `unknown`.
