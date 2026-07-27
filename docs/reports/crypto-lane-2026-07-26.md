@@ -1999,3 +1999,24 @@ runtime behavior is claimed.
 None. This corrects one false present-tense source claim and adds a
 failure-capable reachability gate; it does not wire content sequence
 enforcement.
+
+## Rejected candidate — legacy `cmd_osl_burn_engage` is reachable
+
+The next candidate was not changed. Committed search at `f95dc4a` found:
+
+- `crates/ipc/src/commands.rs:10530` defines `cmd_osl_burn_engage`;
+- `src-tauri/src/main.rs:1333-1355` defines the Tauri wrapper and calls the IPC
+  function at line 1347; and
+- `src-tauri/src/main.rs:3098-3169` registers `osl_burn_engage` in the real
+  `generate_handler!` surface.
+
+The root `Cargo.toml` includes `src-tauri` as a workspace member. Therefore
+this is not a zero-production-caller leaf across the repository, even though
+the newer `apps/osl-hub` command surface uses separate burn implementations.
+Relabeling the IPC function implemented-unwired would create a false claim.
+No source or behavior was changed, and no test/build/runtime action ran for
+this rejected candidate.
+
+## Acceptance rows this earns
+
+None. This is a recorded candidate rejection with no product change.
