@@ -784,6 +784,29 @@ collaboration, a sandboxed plugin system, expiry that destroys keys, overlays th
 the `osl_notes`/`osl_lan`/`osl_assets` wiring). **The other thirteen are Codex's counts and are
 unverified** — re-grep before acting on any of them.
 
+### How to triage these — the count is not the interesting number
+
+A subsystem nobody claims is dead code and can wait indefinitely. One that is *sold* is a live false
+claim. So the ranking that matters is by **harm surface**, not by caller count:
+
+| Bucket | Meaning | What to do |
+|---|---|---|
+| **SOLD** | A user or auditor is currently told this works — an in-app string, the threat model, the public claim allowlist, or website copy | Live false claim. Either wire it or withdraw the claim. Urgent. |
+| **INTERNAL ONLY** | Only a checklist row or internal design doc mentions it | Correct the row's status. Not user-facing, not urgent. |
+| **UNCLAIMED** | Nothing asserts it | Genuinely just dead code. Leave it; deleting is its own risk. |
+
+Two searches are running to fill this in: a re-verification of the thirteen unverified counts
+(required to quote the actual command and its raw output per entry, and to distinguish "no callers
+anywhere" from "no callers under the cfgs I compiled with" — this tree is heavily `#[cfg]`-gated and
+those are different claims), and a search for what asserts each subsystem to a human.
+
+**Boundaries for whoever completes this:** anything touching `crates/store` is the store lane's;
+anything touching `docs/` or the website is the truth lane's. This lane reports, it does not reach.
+The `osl_notes` case is already routed to truth, since the claim gate is theirs.
+
+**Keep hand-verified entries marked separately from delegated counts.** That distinction is the
+only thing making this table safe to act on.
+
 **Why it is worth finishing:** every entry is a candidate for a checklist row or a user-facing claim
 that asserts something inert. That is exactly the shape of both defects confirmed above.
 
