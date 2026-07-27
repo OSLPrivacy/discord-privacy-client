@@ -476,6 +476,43 @@ Two left unfixed and recorded rather than dropped:
   survive. Observed failing with `OR REPLACE` restored (`a migration that cannot represent both
   rows reported success`).
 
+## Repo-wide gate audit — DISPATCHED, RESULTS NOT YET LANDED
+
+Taken because `crates/store` is closed and this class is unowned. Three lanes hit it
+independently tonight: a minimum-test floor of 3 against a real count of 313 with five of six
+thresholds wired to nothing; 17 subsystems with zero production callers whose tests pass because
+nothing exercises them; and this lane's own two — a migration failure arm that had never once
+executed, and v3 fixtures that had to bypass `MessageStore` because building them through it hid a
+real data-loss bug.
+
+Two read-only sweeps were dispatched, split by mechanism because "the alarm is not wired up" and
+"the stand-in is too forgiving" are different failures:
+
+1. **Gates that enforce nothing** — every threshold, floor, `check*`, `gate*`, `guard*`, `smoke*`,
+   `selftest*` across `.github/workflows/**`, `scripts/**` and sub-project `package.json` scripts.
+   For each: does the number reach a failing exit path at all, is it MEASURED or INHERITED, would
+   it pass on an empty glob or a wrong root, and has its error arm ever executed.
+2. **Test doubles that can only confirm their author's belief** — what real constraint each double
+   fails to impose, and what broken production behaviour would therefore pass. The R2 double that
+   accepted any stream is the standard.
+
+Both were required to label every finding **PROVED** (a specific starved input can be named) or
+**READ** (inferred from code only), and told that a short honest list beats a padded one. Neither
+can execute anything, so nearly all findings will be READ.
+
+**Status: results not yet landed.** Both produced large output, but what is extractable so far is
+file-reading trace rather than the final analysis, and one job was still running at the time of
+writing. **This is unfinished, not clean.** Nothing has been routed to any lane yet, and no
+finding from these sweeps is recorded anywhere as established.
+
+Raw output for whoever picks this up:
+`scratchpad/gate-audit-1.md` (gates/thresholds) and `scratchpad/gate-audit-2.md` (test doubles).
+Extract the final analysis sections, keep the PROVED/READ split intact, and route each finding to
+the owning lane rather than fixing it — none of it is in `crates/store`.
+
+**Why I stopped here:** my remaining context was too thin to triage output of that size honestly.
+Skimming it and implying coverage would reproduce the exact defect the audit exists to find.
+
 ## Handoffs
 
 ### To the crypto lane
