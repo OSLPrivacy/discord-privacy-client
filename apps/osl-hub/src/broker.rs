@@ -2631,6 +2631,17 @@ pub fn drain_osl_chat_text(
     )
 }
 
+/// Fetch the active peer's control rows through the signed sender-filtered
+/// boundary. Both text and attachment receive paths share this function so
+/// neither can silently drift back to the unfiltered, cross-peer page.
+fn fetch_peer_control_inbox(
+    identity: &keystore::Identity,
+    client: &keystore::KeyServerClient,
+    peer_osl_user_id: &str,
+) -> keystore::Result<Vec<keystore::client::ControlInboxItem>> {
+    client.get_control_inbox_from(identity, peer_osl_user_id)
+}
+
 fn drain_peer_inbox_text(
     core: &HubCoreState,
     security_state: &HubSecurityState,
@@ -2663,8 +2674,7 @@ fn drain_peer_inbox_text(
         manual.scope.clone(),
     )?;
     let (identity, client) = keyserver_transport(core)?;
-    let items = client
-        .get_control_inbox_from(&identity, &manual.peer_osl_user_id)
+    let items = fetch_peer_control_inbox(&identity, &client, &manual.peer_osl_user_id)
         .map_err(|_| "OSL could not receive protected messages".to_owned())?;
     let mut messages = Vec::new();
     let mut pending_view_once = Vec::new();
@@ -3612,8 +3622,7 @@ fn native_overlay_attachment_plans(
     let scope_id =
         native_overlay_relay_scope_id(&context.conversation_id).map_err(|_| ERROR.to_owned())?;
     let (identity, client) = keyserver_transport(core)?;
-    let items = client
-        .get_control_inbox_from(&identity, &manual.peer_osl_user_id)
+    let items = fetch_peer_control_inbox(&identity, &client, &manual.peer_osl_user_id)
         .map_err(|_| ERROR.to_owned())?;
     let now = ipc::main_password::now_unix_secs_pub();
     let limit = if wanted_id.is_some() {
@@ -6462,6 +6471,13 @@ mod tests {
     #[test]
     fn text_and_attachment_drains_are_bound_to_the_active_peer_sender() {
         let source = include_str!("broker.rs");
+        let fetch = source
+            .split_once("fn fetch_peer_control_inbox(")
+            .expect("shared filtered fetch boundary present")
+            .1
+            .split_once("fn drain_peer_inbox_text(")
+            .expect("shared filtered fetch boundary ends before text drain")
+            .0;
         let text = source
             .split_once("fn drain_peer_inbox_text(")
             .expect("text drain present")
@@ -6477,23 +6493,248 @@ mod tests {
             .expect("attachment drain boundary present")
             .0;
         // Constructed in fragments so this source-introspection test cannot
-        // satisfy itself merely by containing its own expected call text.
-        let filtered = [
-            ".get_control_inbox",
-            "_from(&identity, &manual.peer_osl_user_id)",
-        ]
-        .concat();
+        // satisfy itself merely by containing its own expected call text. Pin
+        // all three links: each production drain calls the shared boundary,
+        // and only that boundary calls the signed filtered client method.
+        let shared_call =
+            ["fetch_peer_control_", "inbox(&identity, &client, &manual.peer_osl_user_id)"]
+                .concat();
+        let filtered = [".get_control_inbox", "_from(identity, peer_osl_user_id)"].concat();
         let unfiltered = [".get_control_", "inbox(&identity)"].concat();
 
+        assert!(
+            fetch.contains(&filtered),
+            "the shared receive boundary must use the signed sender filter"
+        );
+        assert!(
+            !fetch.contains(&unfiltered),
+            "the shared receive boundary must not fall back to an unfiltered inbox page"
+        );
         for (name, drain) in [("text", text), ("attachment", attachments)] {
             assert!(
-                drain.contains(&filtered),
-                "{name} receive drain must request the active peer's signed sender filter"
+                drain.contains(&shared_call),
+                "{name} receive drain must use the shared signed-sender boundary"
             );
             assert!(
                 !drain.contains(&unfiltered),
                 "{name} receive drain must not fall back to an unfiltered inbox page"
             );
+        }
+    }
+
+    fn control_inbox_test_row(
+        id: &str,
+        sender_id: &str,
+        message_type: u8,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "sender_id": sender_id,
+            "scope_id": "native-overlay:test-conversation",
+            "bundle_b64": STANDARD.encode([0x03, message_type]),
+            "created_at": 1_700_000_000i64,
+        })
+    }
+
+    fn spawn_control_inbox_test_server(
+        responses: Vec<serde_json::Value>,
+    ) -> (
+        String,
+        std::sync::mpsc::Receiver<String>,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::io::{Read, Write};
+
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind control-inbox test server");
+        let address = listener.local_addr().expect("read test server address");
+        let (request_tx, request_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            for body in responses {
+                let (mut stream, _) = listener.accept().expect("accept control-inbox request");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .expect("bound request read time");
+                let mut request = Vec::new();
+                let mut chunk = [0u8; 2048];
+                loop {
+                    let read = stream.read(&mut chunk).expect("read control-inbox request");
+                    assert!(read > 0, "request ended before its headers");
+                    request.extend_from_slice(&chunk[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                    assert!(request.len() <= 16 * 1024, "request headers stay bounded");
+                }
+                request_tx
+                    .send(String::from_utf8(request).expect("request headers are UTF-8"))
+                    .expect("record control-inbox request");
+
+                let body = serde_json::to_vec(&body).expect("serialize control-inbox response");
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream
+                    .write_all(headers.as_bytes())
+                    .and_then(|_| stream.write_all(&body))
+                    .expect("write control-inbox response");
+            }
+        });
+        (format!("http://{address}"), request_rx, server)
+    }
+
+    fn assert_filtered_request(request: &str, sender_id: &str) {
+        let request_line = request.lines().next().expect("request line");
+        assert!(
+            request_line.starts_with("GET /v1/control-inbox/"),
+            "production boundary issues a control-inbox GET"
+        );
+        assert!(
+            request_line.contains(&format!("&sender={sender_id} ")),
+            "production boundary includes the requested sender filter"
+        );
+        assert!(
+            request_line.contains("?ts=") && request_line.contains("&sig="),
+            "production boundary carries the signed query fields"
+        );
+    }
+
+    #[test]
+    fn production_receive_boundary_drains_exact_sender_text_and_attachment_without_touching_other_sender(
+    ) {
+        let identity = keystore::generate_identity("recipient".to_owned());
+        let sender_a = "peer-a";
+        let sender_b = "peer-b";
+        let a_text = control_inbox_test_row(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            sender_a,
+            ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
+        );
+        let a_attachment = control_inbox_test_row(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab",
+            sender_a,
+            ipc::wire_v2::MSG_TYPE_ATTACHMENT,
+        );
+        let b_text = control_inbox_test_row(
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            sender_b,
+            ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
+        );
+        let (base_url, requests, server) = spawn_control_inbox_test_server(vec![
+            serde_json::json!({
+                "items": [a_text, a_attachment],
+                "filtered_sender_id": sender_a,
+            }),
+            serde_json::json!({
+                "items": [b_text],
+                "filtered_sender_id": sender_b,
+            }),
+        ]);
+        let client = keystore::KeyServerClient::new(&base_url).expect("build test client");
+
+        let a_rows = fetch_peer_control_inbox(&identity, &client, sender_a)
+            .expect("sender A's filtered production fetch succeeds");
+        assert_eq!(a_rows.len(), 2, "A has exactly its text and attachment rows");
+        assert!(
+            a_rows.iter().all(|row| row.sender_id == sender_a),
+            "A's page contains no row from B"
+        );
+        let a_bundles = a_rows
+            .iter()
+            .map(|row| STANDARD.decode(&row.bundle_b64).expect("fixture bundle is base64"))
+            .collect::<Vec<_>>();
+        assert!(
+            a_bundles
+                .iter()
+                .any(|bundle| ipc::wire_v2::is_native_overlay_relay_bundle(bundle)),
+            "A's text row reaches the production receive boundary"
+        );
+        assert!(
+            a_bundles
+                .iter()
+                .any(|bundle| ipc::wire_v2::is_attachment_bundle(bundle)),
+            "A's attachment row reaches the production receive boundary"
+        );
+
+        let b_rows = fetch_peer_control_inbox(&identity, &client, sender_b)
+            .expect("B remains independently drainable after A");
+        assert_eq!(b_rows.len(), 1, "B's row remains untouched by A's fetch");
+        assert_eq!(b_rows[0].sender_id, sender_b);
+
+        assert_filtered_request(
+            &requests.recv().expect("capture A's production request"),
+            sender_a,
+        );
+        assert_filtered_request(
+            &requests.recv().expect("capture B's production request"),
+            sender_b,
+        );
+        server.join().expect("control-inbox test server exits");
+    }
+
+    #[test]
+    fn production_receive_boundary_refuses_every_unconfirmed_or_widened_sender_page() {
+        let identity = keystore::generate_identity("recipient".to_owned());
+        let sender_a = "peer-a";
+        let sender_b = "peer-b";
+        let a_row = || {
+            control_inbox_test_row(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                sender_a,
+                ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
+            )
+        };
+        let b_row = || {
+            control_inbox_test_row(
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                sender_b,
+                ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
+            )
+        };
+        let cases = [
+            (
+                "missing echo",
+                serde_json::json!({ "items": [a_row()] }),
+                "did not confirm the sender filter",
+            ),
+            (
+                "echo mismatch",
+                serde_json::json!({
+                    "items": [a_row()],
+                    "filtered_sender_id": sender_b,
+                }),
+                "did not confirm the sender filter",
+            ),
+            (
+                "echoed A containing B rows",
+                serde_json::json!({
+                    "items": [b_row()],
+                    "filtered_sender_id": sender_a,
+                }),
+                "outside its sender filter",
+            ),
+            (
+                "unfiltered fallback without echo",
+                serde_json::json!({ "items": [b_row(), a_row()] }),
+                "did not confirm the sender filter",
+            ),
+        ];
+
+        for (label, response, expected_error) in cases {
+            let (base_url, requests, server) = spawn_control_inbox_test_server(vec![response]);
+            let client = keystore::KeyServerClient::new(&base_url).expect("build test client");
+            let error = fetch_peer_control_inbox(&identity, &client, sender_a)
+                .expect_err("an unconfirmed or widened page must be refused");
+            assert!(
+                error.to_string().contains(expected_error),
+                "{label} must fail through its specific closed-path verdict"
+            );
+            assert_filtered_request(
+                &requests.recv().expect("capture refused production request"),
+                sender_a,
+            );
+            server.join().expect("control-inbox test server exits");
         }
     }
 
