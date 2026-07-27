@@ -29,6 +29,20 @@ npm ci --no-audit --no-fund
 echo "::endgroup::"
 
 IFS=',' read -ra wanted <<< "$steps"
+
+# A steps argument that is non-empty but contains no actual step - " " or ",,"
+# - used to run nothing and then report "all requested steps passed". That is a
+# vacuous pass in the gate that fronts every TypeScript package, so it is
+# refused rather than skipped.
+resolved=0
+for step in "${wanted[@]}"; do
+  [ -n "$(echo "$step" | tr -d '[:space:]')" ] && resolved=$((resolved + 1))
+done
+if [ "$resolved" -eq 0 ]; then
+  echo "::error::$dir was given no runnable steps (got \"$steps\"); refusing to report success for zero work" >&2
+  exit 1
+fi
+
 for step in "${wanted[@]}"; do
   step="$(echo "$step" | tr -d '[:space:]')"
   [ -n "$step" ] || continue

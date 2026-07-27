@@ -167,7 +167,10 @@ scan_file() {
     fi
   done < "$path"
 
-  return "$failures"
+  # Clamp: `return 256` (or any multiple) wraps to 0 and the shell
+  # reads a wall of violations as success.
+  [ "$failures" -eq 0 ] && return 0
+  return 1
 }
 
 scan_tree() {
@@ -185,7 +188,10 @@ scan_tree() {
       -o -type f ! -name package-lock.json -print0
   )
 
-  return "$failures"
+  # Clamp: `return 256` (or any multiple) wraps to 0 and the shell
+  # reads a wall of violations as success.
+  [ "$failures" -eq 0 ] && return 0
+  return 1
 }
 
 write_fixture() {

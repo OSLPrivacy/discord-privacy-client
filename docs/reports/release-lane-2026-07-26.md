@@ -952,6 +952,31 @@ green CI **and** no new capability drift (the 115→118 permission drift recorde
   work. This change touches only `.github/**`, `scripts/ci/**`, `scripts/release/**` and
   `docs/testing/`, none of which appear in the serialized-central-file conflict set.
 
+## Two vacuous-pass holes closed in my own CI scripts
+
+Both were flagged by the adversarial review and left recorded-but-unfixed. I confirmed each before
+touching it, rather than trusting the report.
+
+**`node-suite.sh` reported success for zero work.** Confirmed by running it:
+`node-suite.sh keyserver-cf " "` printed `all requested steps passed ( )` and exited 0 having run
+no npm script at all. A non-empty argument that trims to nothing satisfied the non-empty check and
+then iterated over nothing. This script fronts **every** TypeScript package in CI, so the entire
+matrix could have reported green while running none of its steps. It now counts steps that survive
+trimming and refuses when that count is zero.
+
+**`check-window-targeting.sh` could wrap its exit code to success.** It ended `return "$failures"`
+at two sites; `return 256` — or any multiple — is seen by the shell as **0**. Verified directly:
+`bash -c 'exit 256'` yields `$? = 0`. A wall of violations would have read as a pass. Both sites now
+clamp to 1.
+
+Verified in both directions after the change: whitespace-only and comma-only step lists are refused,
+a real step list still runs; the window guard's self-test still passes, a clean tree still passes,
+and a freshly planted violation is still caught and then clears on removal.
+
+That makes three defects of this family found in my own tooling tonight, plus one faulty test harness
+of my own. The tools written to detect checks that cannot fail are not exempt from being checks that
+cannot fail.
+
 ## Acceptance rows this earns
 
 Proposed for the single writer of the build checklist to adjudicate; deliberately conservative.
