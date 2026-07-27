@@ -5,7 +5,7 @@
 > An agent should be able to start or resume work by reading this file and then following the
 > linked subsystem document for its task. Do not reconstruct product intent from old chats.
 >
-> **Control revision:** `OSL-MASTER-2026-07-26-r7`. A model/account reads this document completely
+> **Control revision:** `OSL-MASTER-2026-07-26-r8`. A model/account reads this document completely
 > the first time only. On later work it checks this revision and its saved memory card, then reads
 > only changed sections and the linked subsystem/report. Every semantic edit must increment the
 > revision and add a one-line delta to section 0.5.
@@ -81,6 +81,16 @@ Capture a fact once and link to it elsewhere.
 
 ### 0.5 Revision digest
 
+- `r8` — keyserver escalation **closed**. Migration `0027` is deployed and there is now a named
+  Worker version, which is the exact condition the §9 row and the coordination trap were blocked on:
+  keyserver `3f92f0f5`, cipher-store `0a17547d`, `0029` applied. The `NOT DEPLOYED` header in the
+  0027 migration file is stale — ignore it; the keyserver lane owns correcting it. `0028` is applied
+  but dark behind a default-off flag. Also recorded: attachment part upload returned **500 in
+  production for an unbounded period** and now returns 201 under `0a17547d`, so any pre-2026-07-26
+  attachment success is unproven; and the honest Rust gate is
+  `--features core,discord-qa-shell` (731 tests) because plain `--features core` silently omits the
+  module deciding whether a trigger becomes a status read or the irreversible send. Coordination
+  layer: `docs/reports/coordinator-state-2026-07-26.md`.
 - `r7` — **owner reframe: the website is pre-launch marketing for v1, not a live status dashboard.**
   A site with no `Available` badge reads as a dead product, which is its own dishonesty. Feature
   cards no longer carry per-card `Planned` stamps; the full v1 product is shown with real
@@ -649,7 +659,7 @@ tabs are changing several rows. An agent must recheck the exact worktree/build b
 | Discord composer/window hosting | `runtime-proven` with repeated regressions | First-launch adoption, drag/resize/minimize, focus, no flash/corners, current exact build |
 | Attachments/flag media | `implemented-unwired` with open findings | No plaintext staging, real row handoff, measured media rect, send/receive/view-once |
 | View-once, timed deletion, bilateral burn | `implemented-unwired`; bilateral burn additionally has an **open defect** (verified 2026-07-26) | Two identities, offline/restart, second-open refusal, honest peer/platform receipts. Burn defect: the text/receipt drain recognises an inbound revocation frame and **DELETEs it from the control inbox without applying it** (`apps/osl-hub/src/broker.rs:2635-2640`), so the notice cannot be replayed once the apply path is wired. Tab 5 owns the fix; description corrected in `docs/qa/two-identity-p2p-verification.md` §6 item 4. |
-| Keyserver | **`unknown-recheck-required`** (2026-07-26) — repository cannot prove remote D1 state | Three sources conflict on migration 0027: the migration header says `NOT DEPLOYED` (`keyserver-cf/migrations/0027_control_inbox_revocation_lane.sql:4`), the completion plan said applied and smoke-tested, and `keyserver-cf/DEPLOY.md:619` records that approval for the 0026/0027 deploy was given. None names a Worker version or deploy timestamp, and remote migration state is external to this checkout (corroborated by `docs/security/osl-audit-2026-07-26-codex.md:599-602`). **Escalated as a bounded owner question** — see Conflict C2 in `osl-completion-plan-2026-07-26.md` for the single read-only command. Blocks Tab 5. |
+| Keyserver | **RESOLVED 2026-07-26 → `verified-live`.** The escalation is closed: `0027` **is deployed**, and there is now the named Worker version the conflict was blocked on — keyserver `3f92f0f5` (control-inbox per-sender recycling, `429 recipient_inbox_full`, pubkeys minimisation), plus cipher-store `0a17547d` and migration `0029` applied. The `NOT DEPLOYED` header inside `keyserver-cf/migrations/0027_control_inbox_revocation_lane.sql:4` is **stale and must be ignored**; correcting that file belongs to the keyserver lane, not this one. `0028` link-grant is applied but **dark** behind a default-off `LINK_GRANT_ENABLED`. Source: `docs/reports/coordinator-state-2026-07-26.md`. | Three sources conflict on migration 0027: the migration header says `NOT DEPLOYED` (`keyserver-cf/migrations/0027_control_inbox_revocation_lane.sql:4`), the completion plan said applied and smoke-tested, and `keyserver-cf/DEPLOY.md:619` records that approval for the 0026/0027 deploy was given. None names a Worker version or deploy timestamp, and remote migration state is external to this checkout (corroborated by `docs/security/osl-audit-2026-07-26-codex.md:599-602`). **Escalated as a bounded owner question** — see Conflict C2 in `osl-completion-plan-2026-07-26.md` for the single read-only command. Blocks Tab 5. |
 | Scrub discovery/import | active dirty integration work; broad browser evidence exists | Exact-build walkthrough, all selected browsers/profiles, revocation/back teardown |
 | Free Scrub deletion | active implementation | Per-account/category scan, review, confirm, execute, verify, receipt |
 | AutoScrub | active implementation; optional-module packaging unresolved | Native Pro gate, transport-scoped presence, global stop/status, module boundary |
