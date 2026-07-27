@@ -86,6 +86,33 @@ echo "Quarantined until $QUARANTINE_EXPIRES:"
 printf '  %s\n' "${QUARANTINED[@]}"
 echo
 
+# FEATURE SELECTION — this is a correctness control, not a convenience.
+#
+# `qa_selftest_request` is gated behind all(core, discord-qa-shell). It is the
+# code that decides whether an incoming trigger becomes a harmless status read
+# or the IRREVERSIBLE SEND. Running the lane-standard `--features core` compiles
+# that module out entirely, so the suite reports success having never exercised
+# the one decision with a destructive branch. The tell is a test count that does
+# not move when tests are added.
+#
+# So: use the feature when the crate declares it, and REFUSE to run if the
+# module is present while the feature is not, rather than silently skipping it.
+manifest="apps/osl-hub/Cargo.toml"
+features="core"
+if grep -Eq '^[[:space:]]*discord-qa-shell[[:space:]]*=' "$manifest"; then
+  features="core,discord-qa-shell"
+else
+  # As of origin/main @ 38d0867 neither the feature nor the module exists here;
+  # both live on the in-flight Discord branch. If the module ever lands without
+  # its feature reaching this gate, that is exactly the silent-exclusion bug.
+  if compgen -G "apps/osl-hub/src/qa_selftest_request*" > /dev/null; then
+    echo "::error::qa_selftest_request exists but apps/osl-hub declares no discord-qa-shell feature." >&2
+    echo "The irreversible-send decision would be compiled out of this run. Fix the manifest." >&2
+    exit 1
+  fi
+fi
+echo "features: $features"
+
 set -x
-cargo test --manifest-path apps/osl-hub/Cargo.toml --features core --lib \
+cargo test --manifest-path "$manifest" --features "$features" --lib \
   -- --test-threads=1 "${skip_args[@]}"

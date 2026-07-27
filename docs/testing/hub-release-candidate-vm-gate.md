@@ -146,9 +146,10 @@ Operational rules carried from `azure-vm-qa-workflow.md`, each of which has alre
 - **Target the instance by its single-instance marker window class `<identifier>-sic`. Never by
   window title, never by "first process with a window".** Every OSL build is titled `OSL Privacy`.
   Selecting by name has already driven the wrong lane's application through six UI steps and graded
-  a stale instance. This is a hard requirement of this gate. An
-  automated CI guard was attempted and is **not** in place — a delegated implementation did not
-  parse and was rejected — so today this is enforced by review, not by tooling.
+  a stale instance. Enforced by `scripts/ci/check-window-targeting.sh`,
+  which runs on every PR and fails on title-based selection, so this is unexpressible rather than
+  merely discouraged. Three existing PowerShell capture helpers are allowlisted with reasons until
+  **2026-08-09**; new violations are blocked from today.
 - **Assert non-empty on the positive path.** A harness that guesses its subject confirms whatever it
   happened to find, and a default-deny assertion that passes because it read nothing is the same
   defect. Every case below must prove it observed something real before it may report a pass;

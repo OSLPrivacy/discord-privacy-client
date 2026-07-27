@@ -452,14 +452,58 @@ read-back:
 `Rust gate` is still deliberately not required — adding it today would freeze every merge this week
 over three other lanes' defects. Add it the moment it goes green; the phase-2 payload is ready.
 
-## A delegation that failed, recorded
+## Feature gate — the silent exclusion, and what it does and does not change here
 
-`scripts/ci/check-window-targeting.sh` was delegated to Codex to make name-based window selection
-unexpressible. It returned a script that **does not parse** — shellcheck reports `SC1073`/`SC1072`
-syntax errors, and it would have failed CI immediately had I not run shellcheck before wiring it in.
-The file was moved out of the tree rather than committed or silently dropped. The marker-class rule
-is documented and mandatory in the gate doc; the automated guard is **not** built, and I am not
-claiming it. Verifying a delegate's output in both directions is what caught this.
+`qa_selftest_request` is gated behind `all(core, discord-qa-shell)`, so the lane-standard
+`--features core` compiles out the module that decides whether an incoming trigger becomes a
+harmless status read or the **irreversible send**. A suite can then report success having never
+exercised the only decision with a destructive branch.
+
+**Checked before restating any number:** on `origin/main` @ `38d0867` neither the feature nor the
+module exists — `apps/osl-hub/Cargo.toml` declares only `default`, `core`, `desktop` and
+`custom-protocol`, and there is no `qa_selftest_request*` source file. Both live on the in-flight
+Discord branch. So the 680/731 figures are from that branch, not from the integration line, and
+this lane's measured **237 passed / 1 failed** was taken where the module genuinely is not present.
+That number stands, and adding the feature on `main` today would fail with an unknown-feature error.
+
+Rather than hard-code either answer, `hub-core-tests.sh` now selects features by inspection and
+**refuses to run** if the module is ever present while the feature is not:
+
+```
+features: core                                    # today, on origin/main
+::error::qa_selftest_request exists but apps/osl-hub declares no discord-qa-shell feature.
+The irreversible-send decision would be compiled out of this run.   # exit 1
+```
+
+Both branches are verified against a stubbed cargo. The moment the Discord work lands on `main`,
+the gate picks up `core,discord-qa-shell` automatically; if it lands without the feature wired, CI
+stops rather than quietly under-testing. Note the corrected gate also surfaces a pre-existing
+`native_discord_adapter` failure that belongs to the crypto lane — expected, not mine, not blocking.
+
+**Attachments (cipher-store `0a17547d`) do not affect this lane's evidence.** Nothing here rested on
+an attachment upload; the claims made are CI runs, gate proofs with stubbed inputs, and read-only
+Azure queries. No re-derivation needed.
+
+## A delegation that failed, then succeeded — recorded
+
+The window-targeting guard took two attempts. The first returned a script that **did not parse**
+(`SC1073`/`SC1072`); it was rejected rather than committed. An earlier delegation returned 0 bytes,
+which I initially read as a wedged session — on the coordinator's later note it was more likely an
+**OOM kill**, which presents identically. Both are recorded because "the delegate said it was done"
+is not evidence.
+
+The second attempt is **in place and working**. I verified it independently of its own self-test:
+`bash -n` parses, shellcheck is clean, its self-test is 12/0, and — the check that matters — I
+planted a fresh violation of my own and confirmed it was caught, then removed it and confirmed the
+guard returned to green. It found **8 real violations** across three PowerShell capture helpers
+(`apps/osl-hub/scripts/capture_window.ps1`,
+`apps/osl-hub-ui/screenshots/capture-osl-hub.ps1`, `.../measure-osl-hub-startup.ps1`) — all
+selecting OSL by process title, one of which also does `Stop-Process -Force` on whatever it found,
+which can kill another lane's build.
+
+Those three are allowlisted with reasons and an expiry of **2026-08-09**, so the guard blocks *new*
+violations from today without freezing `main` over files this lane does not own. The guard itself is
+permanently allowlisted, since a detector necessarily contains the patterns it detects.
 
 ## PR #5 (Scrub) merge order — this lane owns the order, Scrub owns the content
 

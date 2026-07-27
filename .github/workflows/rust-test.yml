@@ -229,6 +229,13 @@ jobs:
       # `az`, so it proves the logic without needing Azure credentials in CI.
       - name: Snapshot lineage guard refuses invented snapshots
         run: bash scripts/release/verify-snapshot-lineage.sh --self-test
+      # Every OSL build is titled "OSL Privacy", so selecting a window by title
+      # picks whichever build the machine happens to be running. That has
+      # already driven the wrong lane's application through six UI steps.
+      - name: Window targeting guard self-test
+        run: bash scripts/ci/check-window-targeting.sh --self-test
+      - name: No new title-based window targeting
+        run: bash scripts/ci/check-window-targeting.sh
 
   # Single stable check name for branch protection, so adding or renaming a
   # Rust job never silently un-enrols a required check.

@@ -1,0 +1,20 @@
+# Existing violations, allowlisted so the guard can block NEW ones today
+# without freezing main over files this lane does not own.
+#
+# THIS ALLOWLIST EXPIRES — see ALLOWLIST_EXPIRES in check-window-targeting.sh.
+# After that date CI fails until these are fixed or the window is renewed
+# deliberately. Each of these selects OSL by process/window TITLE. Every OSL
+# build is titled "OSL Privacy", so on a machine running two builds these pick
+# whichever they happen to find. That is how the wrong lane's application was
+# driven through six UI steps.
+#
+# Correct fix in each: locate the instance by its single-instance marker window
+# class <identifier>-sic, then take that window's owning process.
+#
+# format: path:reason
+apps/osl-hub/scripts/capture_window.ps1:QA screenshot helper; selects by Get-Process "OSL Privacy" + first MainWindowHandle. Owner: apps/osl-hub.
+apps/osl-hub-ui/screenshots/capture-osl-hub.ps1:screenshot helper; same title-then-first-window selection. Owner: apps/osl-hub-ui.
+apps/osl-hub-ui/screenshots/measure-osl-hub-startup.ps1:startup timing helper; Get-Process by title, and Stop-Process -Force on it, which can kill another lane's build. Owner: apps/osl-hub-ui.
+# The guard itself necessarily contains every pattern it detects, both in its
+# matching rules and in its known-bad self-test fixtures. Not an expiring entry.
+scripts/ci/check-window-targeting.sh:the detector and its known-bad fixtures must contain the patterns it looks for
