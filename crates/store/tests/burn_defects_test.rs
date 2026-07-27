@@ -168,13 +168,15 @@ fn list_by_channel_cannot_resurrect_a_burned_message() {
     let tmp = TempDir::new().unwrap();
     let store = open_a(tmp.path());
 
-    store
-        .put(&sample("m2", "chan", "sender1", "top secret"))
-        .unwrap();
+    let burned = sample("m2", "chan", "sender1", "top secret");
+    let mut survivor = sample("m2-survivor", "chan", "sender2", "must remain listed");
+    survivor.decrypted_at = 2;
+    store.put(&burned).unwrap();
+    store.put(&survivor).unwrap();
     assert_eq!(
-        store.list_by_channel("chan", 10).unwrap().len(),
-        1,
-        "positive path: the message must be listed before it is burned"
+        store.list_by_channel("chan", 10).unwrap(),
+        vec![survivor.clone(), burned.clone()],
+        "positive path: both selected-channel rows must be listed before burn"
     );
 
     store.mark_burned("m2").unwrap();
@@ -182,9 +184,12 @@ fn list_by_channel_cannot_resurrect_a_burned_message() {
         .put(&sample("m2", "chan", "sender1", "top secret"))
         .unwrap();
 
-    assert!(
-        store.list_by_channel("chan", 10).unwrap().is_empty(),
-        "defect 1: a burned message reappeared in list_by_channel after a re-put"
+    assert_eq!(
+        store.list_by_channel("chan", 10).unwrap(),
+        vec![survivor],
+        // This rejects a list implementation that hides every row, or a burn
+        // predicate that removes the whole channel instead of only m2.
+        "defect 1: re-put must not resurrect m2 or delete its live sibling"
     );
 }
 
@@ -200,13 +205,26 @@ fn put_with_burned_false_cannot_clear_the_burn_flag() {
         .put(&sample("m3", "chan", "sender1", "secret"))
         .unwrap();
     assert!(store.get("m3").unwrap().is_some(), "positive path");
+    let survivor = sample("m3-survivor", "other-chan", "sender2", "must remain live");
+    store.put(&survivor).unwrap();
     store.mark_burned("m3").unwrap();
 
     let mut unburn = sample("m3", "chan", "sender1", "secret");
     unburn.burned = false;
     store.put(&unburn).unwrap();
 
-    assert_all_bodies_shredded(&db_path);
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let (burned, zeroed): (i64, i64) = conn
+        .query_row(
+            "SELECT COUNT(*), SUM(ciphertext = zeroblob(length(ciphertext)) AND nonce = zeroblob(length(nonce))) FROM messages WHERE burned = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((burned, zeroed), (1, 1));
+    // This rejects a delete-all/broad-update repair that makes a one-row
+    // terminal test green without preserving unrelated live data.
+    assert_eq!(store.get("m3-survivor").unwrap(), Some(survivor));
 }
 
 // ---- Defect 2: mark_burned must not report success without shredding ----
@@ -249,10 +267,12 @@ fn mark_burned_shreds_a_row_left_live_by_an_older_build() {
     store
         .put(&sample("m4b", "chan", "sender1", "still on disk"))
         .unwrap();
+    let survivor = sample("m4b-survivor", "other-chan", "sender2", "still readable");
+    store.put(&survivor).unwrap();
     assert_eq!(
         count_live_bodies(&db_path),
-        1,
-        "positive path: a sealed body must exist on disk before the burn"
+        2,
+        "positive path: target and unaffected sealed bodies must exist before burn"
     );
     drop(store);
 
@@ -260,14 +280,22 @@ fn mark_burned_shreds_a_row_left_live_by_an_older_build() {
     // old body bytes so the final assertion can inspect the database, active
     // WAL/SHM, and every other same-prefix sidecar rather than trusting only
     // the logical row returned by SQLite.
-    let (old_ciphertext, old_nonce): (Vec<u8>, Vec<u8>) = {
+    let (_target_rowid, old_ciphertext, old_nonce): (i64, Vec<u8>, Vec<u8>) = {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         let old = conn
-            .query_row("SELECT ciphertext, nonce FROM messages", [], |row| {
-                Ok((row.get(0)?, row.get(1)?))
+            .query_row("SELECT rowid, ciphertext, nonce FROM messages ORDER BY rowid LIMIT 1", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })
             .unwrap();
-        conn.execute("UPDATE messages SET burned = 1", []).unwrap();
+        // m4b was inserted first. Fail if that fixture assumption changes,
+        // rather than manufacturing the legacy state on its live sibling.
+        assert_eq!(old.0, 1, "legacy target must be m4b's row");
+        assert_eq!(
+            conn.execute("UPDATE messages SET burned = 1 WHERE rowid = ?1", [old.0])
+                .unwrap(),
+            1,
+            "only the legacy target may be pre-flagged"
+        );
         old
     };
     assert!(old_ciphertext.iter().any(|byte| *byte != 0));
@@ -276,7 +304,15 @@ fn mark_burned_shreds_a_row_left_live_by_an_older_build() {
     let store = open_a(tmp.path());
     store.mark_burned("m4b").unwrap();
 
-    assert_all_bodies_shredded(&db_path);
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let burned_rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM messages WHERE burned = 1", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(burned_rows, 1, "only the pre-fix target may become terminal");
+    drop(conn);
+    // This rejects a repair that reports shredding the legacy target by
+    // zeroing or deleting every live row in the database.
+    assert_eq!(store.get("m4b-survivor").unwrap(), Some(survivor));
     let artifacts = raw_store_artifacts(&db_path);
     assert!(!artifacts.is_empty(), "store artifacts must exist");
     for (path, bytes) in &artifacts {
@@ -304,6 +340,8 @@ fn repeat_mark_burned_is_safe_and_keeps_the_terminal_row_exact() {
     store
         .put(&sample("m5", "chan", "sender1", "secret"))
         .unwrap();
+    let survivor = sample("m5-survivor", "other-chan", "sender2", "must stay live");
+    store.put(&survivor).unwrap();
     assert!(store.get("m5").unwrap().is_some(), "positive path");
     store.mark_burned("m5").unwrap();
 
@@ -361,7 +399,9 @@ fn repeat_mark_burned_is_safe_and_keeps_the_terminal_row_exact() {
         first_stub, second_stub,
         "a second burn rewrote the already-terminal row"
     );
-    assert_all_bodies_shredded(&db_path);
+    // This rejects an idempotency branch that preserves the target stub only
+    // by applying its terminal update to every row on the retry.
+    assert_eq!(store.get("m5-survivor").unwrap(), Some(survivor));
 }
 
 // ---- Defect 4: legacy / unscoped attachments survive scope burns ----
@@ -380,6 +420,20 @@ fn scope_burn_wipes_legacy_unscoped_attachments() {
     store
         .put_attachment("m6", "rnd.png", "image/png", b"PIXELS", None, None, None)
         .unwrap();
+    store
+        .put(&sample("m6-survivor", "other-chan", "sender2", "other attachment"))
+        .unwrap();
+    store
+        .put_attachment(
+            "m6-survivor",
+            "rnd.png",
+            "image/png",
+            b"OTHER-PIXELS",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
     assert!(
         store.get_attachment("m6", "rnd.png").unwrap().is_some(),
         "positive path: the attachment must be cached before the burn"
@@ -396,6 +450,12 @@ fn scope_burn_wipes_legacy_unscoped_attachments() {
         store.get_attachment("m6", "rnd.png").unwrap().is_none(),
         "defect 4: a legacy unscoped attachment survived a full-scope burn"
     );
+    // This rejects a wipe implementation that empties the attachment cache
+    // rather than selecting the requested channel's legacy row.
+    assert_eq!(
+        store.get_attachment("m6-survivor", "rnd.png").unwrap(),
+        Some(("image/png".to_string(), b"OTHER-PIXELS".to_vec()))
+    );
 }
 
 /// Same defect, sender-scoped: burning your own messages must take your own
@@ -409,6 +469,18 @@ fn sender_scoped_burn_wipes_that_senders_legacy_attachments() {
     store
         .put_attachment("m7", "mine.png", "image/png", b"MINE", None, None, None)
         .unwrap();
+    store.put(&sample("m7-other", "chan9", "other", "theirs")).unwrap();
+    store
+        .put_attachment(
+            "m7-other",
+            "mine.png",
+            "image/png",
+            b"THEIRS",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
     assert!(
         store.get_attachment("m7", "mine.png").unwrap().is_some(),
         "positive path"
@@ -421,6 +493,12 @@ fn sender_scoped_burn_wipes_that_senders_legacy_attachments() {
     assert!(
         store.get_attachment("m7", "mine.png").unwrap().is_none(),
         "defect 4: the burner's own legacy attachment survived a sender-scoped burn"
+    );
+    // This rejects a sender-scoped fallback that widens to every legacy row in
+    // the channel when the row has no explicit sender scope.
+    assert_eq!(
+        store.get_attachment("m7-other", "mine.png").unwrap(),
+        Some(("image/png".to_string(), b"THEIRS".to_vec()))
     );
 }
 

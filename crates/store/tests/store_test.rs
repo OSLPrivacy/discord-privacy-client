@@ -442,6 +442,11 @@ fn mark_burned_is_idempotent() {
     // idempotency branch.
     store.mark_burned("twice").unwrap();
     assert!(store.get("twice").unwrap().is_none());
+    let wrong_id = store.mark_burned("not-the-burned-row").unwrap_err();
+    // This rejects an idempotency shortcut that reports success for every
+    // later call once *any* row is burned, instead of still selecting the
+    // requested blind index and reporting an unknown id.
+    assert!(matches!(wrong_id, StoreError::NotFound(_)), "got {wrong_id:?}");
     let still_live = store
         .get("untouched")
         .unwrap()
@@ -473,6 +478,11 @@ fn corrupted_ciphertext_returns_corrupted_not_panic() {
         let conn = rusqlite::Connection::open(path.join("messages.sqlite")).unwrap();
         // Schema v4 stores no plaintext identifier, so corrupt exactly one row
         // by rowid and let public lookups prove which message it was.
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))
+            .unwrap();
+        // This positive control rejects a no-op/empty-store corruption probe.
+        assert_eq!(count, 2);
         let (rowid, mut ct): (i64, Vec<u8>) = conn
             .query_row(
                 "SELECT rowid, ciphertext FROM messages ORDER BY rowid LIMIT 1",
@@ -480,6 +490,10 @@ fn corrupted_ciphertext_returns_corrupted_not_panic() {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
+        // This fixture inserts `corrupt-a` first. If SQLite no longer gives
+        // that row the selected identity, fail instead of attributing a
+        // Corrupted result to the wrong row.
+        assert_eq!(rowid, 1, "the raw tamper target must be corrupt-a");
         // Flip the last byte (Poly1305 tag tail). Any single-bit
         // flip in either ciphertext or tag invalidates AEAD.
         let last = ct.len() - 1;
@@ -637,6 +651,13 @@ fn reopen_with_future_schema_version_refuses() {
         store.put(&current).unwrap();
         assert_eq!(store.get("current-schema-positive").unwrap(), Some(current));
     }
+    // A normal reopen before the future stamp is the nonempty valid-schema
+    // positive control. It rejects a test that only observes a refusal from a
+    // database that was never valid under this binary.
+    assert_eq!(schema_version(&path), 8);
+    let baseline = MessageStore::open(&path, SECRET_A).unwrap();
+    assert!(baseline.get("current-schema-positive").unwrap().is_some());
+    drop(baseline);
     // Manually stamp a future schema_version to simulate a DB
     // written by a later binary. The migration framework
     // should refuse to open rather than proceed under
@@ -864,14 +885,32 @@ fn attachment_wrong_secret_cannot_unseal() {
             None,
         )
         .unwrap();
+    store_b
+        .put_attachment(
+            "msg2",
+            "f.bin",
+            "text/plain",
+            b"unaffected sibling bytes",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
     let own = store_b
         .get_attachment("msg1", "f.bin")
         .unwrap()
         .expect("second store attachment should be present before transplant");
     assert_eq!(own.1, b"other store bytes");
+    assert_eq!(
+        store_b.get_attachment("msg2", "f.bin").unwrap(),
+        Some(("text/plain".to_string(), b"unaffected sibling bytes".to_vec())),
+        "the non-tampered sibling is a nonempty selected-row control"
+    );
     {
         let conn = rusqlite::Connection::open(second.path().join("messages.sqlite")).unwrap();
-        // Schema v4 has no plaintext cache key, so transplant by rowid.
+        // Schema v4 has no plaintext cache key, so transplant by rowid. The
+        // fixture's first row is msg1; assert that below by requiring only
+        // msg1 to return Corrupted and its sibling to remain readable.
         let changed = conn
             .execute(
                 "UPDATE attachments SET ciphertext = ?1, nonce = ?2 \
@@ -881,13 +920,16 @@ fn attachment_wrong_secret_cannot_unseal() {
             .unwrap();
         assert_eq!(changed, 1);
     }
-    match store_b.get_attachment("msg1", "f.bin") {
-        Err(StoreError::Corrupted(_)) | Ok(None) => {}
-        Err(e) => panic!("transplanted attachment failed with unexpected error: {e:?}"),
-        Ok(Some((_, got))) => {
-            panic!("wrong secret returned transplanted attachment bytes: {got:?}")
-        }
-    }
+    let err = store_b.get_attachment("msg1", "f.bin").unwrap_err();
+    // This rejects a key-ignoring/missing-row implementation that hid an AEAD
+    // failure as None. The selected, existing attachment must authenticate as
+    // Corrupted, while the unaffected sibling proves failure is not broad.
+    assert!(matches!(err, StoreError::Corrupted(_)), "got {err:?}");
+    assert_eq!(
+        store_b.get_attachment("msg2", "f.bin").unwrap(),
+        Some(("text/plain".to_string(), b"unaffected sibling bytes".to_vec())),
+        "tampering msg1 must not corrupt a valid sibling"
+    );
 }
 
 #[test]

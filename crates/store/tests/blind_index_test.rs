@@ -487,6 +487,8 @@ fn nonempty_bodies_roundtrip_after_restart_without_reversible_at_rest_leaks() {
     let db_path = tmp.path().join("messages.sqlite");
     let message = "A6-message-sentinel::zzzzzzzzzz::no-key-recovery";
     let attachment = b"A6-attachment-sentinel::yyyyyyyy::no-key-recovery";
+    let second_message = "A6-second-message::qqqqqqqqqq::no-key-recovery";
+    let second_attachment = b"A6-second-attachment::wwwwwwww::no-key-recovery";
     let msg = sample(
         "a6-message-id",
         "a6-channel-id",
@@ -497,6 +499,14 @@ fn nonempty_bodies_roundtrip_after_restart_without_reversible_at_rest_leaks() {
     );
     let filename = "a6-attachment.bin";
     let mime = "application/a6-test";
+    let second = sample(
+        "a6-message-id-second",
+        "a6-channel-id-second",
+        "a6-sender-id-second",
+        "a6-sender-osl-second",
+        second_message,
+        1_700_123_457,
+    );
 
     let store = open_a(tmp.path());
     store.put(&msg).unwrap();
@@ -511,6 +521,20 @@ fn nonempty_bodies_roundtrip_after_restart_without_reversible_at_rest_leaks() {
             Some(&msg.sender_discord_id),
         )
         .unwrap();
+    store.put(&second).unwrap();
+    // The same filename under a second message rejects a cache lookup that
+    // ignores its message-id component and returns an arbitrary first row.
+    store
+        .put_attachment(
+            &second.discord_message_id,
+            filename,
+            "application/a6-test-second",
+            second_attachment,
+            Some("dm"),
+            Some(&second.channel_id),
+            Some(&second.sender_discord_id),
+        )
+        .unwrap();
     assert_eq!(
         store.get(&msg.discord_message_id).unwrap(),
         Some(msg.clone())
@@ -521,6 +545,21 @@ fn nonempty_bodies_roundtrip_after_restart_without_reversible_at_rest_leaks() {
             .unwrap(),
         Some((mime.to_string(), attachment.to_vec()))
     );
+    assert_eq!(store.get(&second.discord_message_id).unwrap(), Some(second.clone()));
+    assert_eq!(
+        store.get_attachment(&second.discord_message_id, filename).unwrap(),
+        Some((
+            "application/a6-test-second".to_string(),
+            second_attachment.to_vec()
+        ))
+    );
+    // This rejects an empty/no-op store that happens to make raw leak scans
+    // pass, and a key-ignoring attachment lookup that returns the first row.
+    assert!(store.get("a6-message-never-written").unwrap().is_none());
+    assert!(store
+        .get_attachment("a6-message-never-written", filename)
+        .unwrap()
+        .is_none());
     drop(store);
 
     // The restart is material: a writer which only holds plaintext in memory
@@ -535,6 +574,17 @@ fn nonempty_bodies_roundtrip_after_restart_without_reversible_at_rest_leaks() {
             .get_attachment(&msg.discord_message_id, filename)
             .unwrap(),
         Some((mime.to_string(), attachment.to_vec()))
+    );
+    assert_eq!(
+        reopened.get(&second.discord_message_id).unwrap(),
+        Some(second.clone())
+    );
+    assert_eq!(
+        reopened.get_attachment(&second.discord_message_id, filename).unwrap(),
+        Some((
+            "application/a6-test-second".to_string(),
+            second_attachment.to_vec()
+        ))
     );
 
     // Keep the second connection live so all three SQLite persistence
@@ -559,6 +609,8 @@ fn nonempty_bodies_roundtrip_after_restart_without_reversible_at_rest_leaks() {
         &[
             ("message body", message.as_bytes()),
             ("attachment body", attachment),
+            ("second message body", second_message.as_bytes()),
+            ("second attachment body", second_attachment),
         ],
     );
     assert!(
