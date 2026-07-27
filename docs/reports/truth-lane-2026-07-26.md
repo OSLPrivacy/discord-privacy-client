@@ -2356,3 +2356,25 @@ path-ownership boundary recorded above.
 
 - Status checkpoint +0; no new evidence or correction.
 - Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — stateless-v3 reachability handoff
+
+Independent source/test audit object `0d558341a68a1aa257959206efc7598242e7a044`
+(parent `744209e92fd555ad7e9ece6a0f3982b27cef5df2`, tree
+`68f3fc323bd6272d96cf0b0219815c36728d7133`) verified the production
+main→broker→IPC→v3 path, the v4 false gate, absence of a production v5 setter,
+and no prekey lifecycle caller across the production Rust roots. Its focused
+Vitest command passed 1 test with 5 skipped. The verdict is source/test-only
+`+0`; no runtime claim is made.
+
+The audit independently confirms the unresolved public mismatch at
+`README.md:42-48`: the root README still sells Double Ratchet forward secrecy
+and sender keys, while shipping behavior is stateless v3 and those paths are
+disabled. `README.md` remains outside this lane's `docs/**` and
+`oslprivacy-web` ownership, so the correction is blocked by path ownership.
+
+## Acceptance rows this earns
+
+- Stateless-v3 reachability audit: +0 source/test only.
+- README ratchet/sender-key correction: +0 pending authorized owner edit.
+- Checklist remains untouched; authority remains **100 / 303**.
