@@ -25,7 +25,7 @@ import {
   resolveCleanBuildSource,
 } from "./build-readiness-artifacts.mjs";
 
-export const ADMISSION_FORMAT = "osl.keyserver.readiness-admission.v1";
+export const ADMISSION_FORMAT = "osl.keyserver.readiness-admission.v2";
 export const READINESS_WORKER = "oslprivacy-keyserver";
 export const READINESS_DATABASE = "osl-keyserver-prod";
 export const READINESS_DATABASE_ID = "1de837cd-3bf6-4d33-be82-12d358523600";
@@ -420,7 +420,8 @@ export function validateCapturedEvidence(
   ) {
     throw new Error("capability table evidence must be exactly 0 or 1");
   }
-  const markers = {
+  const selectionEvidence = {
+    capability_table_exists: evidence.capability_table_exists,
     control_inbox_sender_disposition: exactMarker(
       evidence.control_inbox_sender_disposition,
       "disposition marker",
@@ -432,8 +433,8 @@ export function validateCapturedEvidence(
   };
   if (
     evidence.capability_table_exists === 0 &&
-    (markers.control_inbox_sender_disposition !== null ||
-      markers.control_inbox_sender_reconciliation_started !== null)
+    (selectionEvidence.control_inbox_sender_disposition !== null ||
+      selectionEvidence.control_inbox_sender_reconciliation_started !== null)
   ) {
     throw new Error("markers exist while capability table is absent");
   }
@@ -449,7 +450,7 @@ export function validateCapturedEvidence(
   ) {
     throw new Error("marker output is absent while capability table exists");
   }
-  return markers;
+  return selectionEvidence;
 }
 
 function parseJsonOutput(output, label) {
@@ -731,12 +732,15 @@ export async function runAdmissionCli(argv, dependencies = {}) {
     expectedActiveVersion: options.expectedActiveVersion,
     now,
   });
-  const markers = validateCapturedEvidence(
+  const selectionEvidence = validateCapturedEvidence(
     evidence,
     options.expectedActiveVersion,
     now(),
   );
-  validateReadinessSelection(verified.manifests[options.artifact], markers);
+  validateReadinessSelection(
+    verified.manifests[options.artifact],
+    selectionEvidence,
+  );
   const result = {
     format: ADMISSION_FORMAT,
     admitted: true,
@@ -757,7 +761,13 @@ export async function runAdmissionCli(argv, dependencies = {}) {
       evidence.deployment_status_before_sha256,
     deployment_status_after_sha256:
       evidence.deployment_status_after_sha256,
-    markers,
+    capability_table_exists: selectionEvidence.capability_table_exists,
+    markers: {
+      control_inbox_sender_disposition:
+        selectionEvidence.control_inbox_sender_disposition,
+      control_inbox_sender_reconciliation_started:
+        selectionEvidence.control_inbox_sender_reconciliation_started,
+    },
   };
   write(`${JSON.stringify(result, null, 2)}\n`);
   return result;

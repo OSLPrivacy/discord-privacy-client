@@ -671,6 +671,7 @@ database_id = "${READINESS_DATABASE_ID}"
   it("requires fresh exact D1/deployment provenance", () => {
     const now = Date.parse("2026-07-27T12:00:00Z");
     expect(validateCapturedEvidence(evidence(now), ACTIVE_VERSION, now)).toEqual({
+      capability_table_exists: 1,
       control_inbox_sender_disposition: 1,
       control_inbox_sender_reconciliation_started: null,
     });
@@ -740,10 +741,16 @@ database_id = "${READINESS_DATABASE_ID}"
     await expect(
       runAdmissionCli(args("A"), dependencies(evidence(now))),
     ).resolves.toMatchObject({
+      format: "osl.keyserver.readiness-admission.v2",
       admitted: true,
       expected_commit: COMMIT,
       artifact: "A",
       active_worker_version: ACTIVE_VERSION,
+      capability_table_exists: 1,
+      markers: {
+        control_inbox_sender_disposition: 1,
+        control_inbox_sender_reconciliation_started: null,
+      },
     });
     await expect(
       runAdmissionCli(
@@ -765,6 +772,8 @@ database_id = "${READINESS_DATABASE_ID}"
           }),
         ),
       ),
-    ).rejects.toThrow(/artifact B requires/);
+    ).rejects.toThrow(
+      /migration 0031 capability table and exact disposition marker/,
+    );
   });
 });

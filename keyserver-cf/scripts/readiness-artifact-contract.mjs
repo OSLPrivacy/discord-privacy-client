@@ -74,6 +74,26 @@ export const ARTIFACT_DEFINITIONS = Object.freeze({
   }),
 });
 
+export const READINESS_WORKER_TARGETS = Object.freeze({
+  "artifact-a-bridge": Object.freeze({
+    artifact: "A",
+    requires_0031: ARTIFACT_DEFINITIONS.A.requires_0031,
+    forbidden_after_reconciliation:
+      ARTIFACT_DEFINITIONS.A.forbidden_after_reconciliation,
+  }),
+  "artifact-b-final": Object.freeze({
+    artifact: "B",
+    requires_0031: ARTIFACT_DEFINITIONS.B.requires_0031,
+    forbidden_after_reconciliation:
+      ARTIFACT_DEFINITIONS.B.forbidden_after_reconciliation,
+  }),
+  "migration-dependent-worker": Object.freeze({
+    artifact: null,
+    requires_0031: true,
+    forbidden_after_reconciliation: false,
+  }),
+});
+
 export function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
@@ -441,19 +461,27 @@ export function validateReadinessArchiveIndex(indexValue) {
   return index;
 }
 
-export function validateReadinessSelection(manifestValue, evidenceValue) {
-  const manifest = validateReadinessManifest(manifestValue);
+export function validateReadinessWorkerPlan(targetName, evidenceValue) {
+  const target = READINESS_WORKER_TARGETS[targetName];
+  if (!target) {
+    throw new Error("readiness worker target is not exact");
+  }
   const evidence = requireObject(evidenceValue, "database evidence");
   requireExactKeys(
     evidence,
     [
+      "capability_table_exists",
       "control_inbox_sender_disposition",
       "control_inbox_sender_reconciliation_started",
     ],
     "database evidence",
   );
+  const tableExists = evidence.capability_table_exists;
   const disposition = evidence.control_inbox_sender_disposition;
   const reconciliation = evidence.control_inbox_sender_reconciliation_started;
+  if (tableExists !== 0 && tableExists !== 1) {
+    throw new Error("capability table evidence must be exactly 0 or 1");
+  }
   if (![null, 1].includes(disposition)) {
     throw new Error("disposition marker must be exactly 1 or null");
   }
@@ -463,13 +491,32 @@ export function validateReadinessSelection(manifestValue, evidenceValue) {
   if (reconciliation === 1 && disposition !== 1) {
     throw new Error("reconciliation evidence is internally inconsistent");
   }
-  if (manifest.artifact === "A" && reconciliation === 1) {
+  if (
+    tableExists === 0 &&
+    (disposition !== null || reconciliation !== null)
+  ) {
+    throw new Error("markers exist while capability table is absent");
+  }
+  if (target.forbidden_after_reconciliation && reconciliation === 1) {
     throw new Error(
       "artifact A is forbidden after control-inbox reconciliation starts",
     );
   }
-  if (manifest.artifact === "B" && disposition !== 1) {
-    throw new Error("artifact B requires the exact migration 0031 marker");
+  if (
+    target.requires_0031 &&
+    (tableExists !== 1 || disposition !== 1)
+  ) {
+    throw new Error(
+      "Artifact B or a migration-dependent worker requires the " +
+        "migration 0031 capability table and exact disposition marker",
+    );
   }
   return true;
+}
+
+export function validateReadinessSelection(manifestValue, evidenceValue) {
+  const manifest = validateReadinessManifest(manifestValue);
+  const target =
+    manifest.artifact === "A" ? "artifact-a-bridge" : "artifact-b-final";
+  return validateReadinessWorkerPlan(target, evidenceValue);
 }

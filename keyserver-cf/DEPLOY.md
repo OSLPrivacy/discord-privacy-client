@@ -683,6 +683,37 @@ reserves the `osl1_...` namespace only after a Worker that refuses that
 namespace is live; migration 0031 has the opposite compatibility constraint
 because its Worker names new columns.
 
+### Current live refusal boundary
+
+The independent read-only capture on 2026-07-27 from `11:58:53Z` through
+`11:59:00Z` found the exact production database/environment, one stable 100%
+active Worker version, no `worker_schema_capabilities` table, and therefore
+both 0031 markers `null`. This observation is truth evidence, not deployment
+authorization.
+
+Under that state, Artifact B and every ordinary/migration-dependent Worker
+must be refused. These source-only assertions must both print
+`refusal confirmed`; they perform no remote command:
+
+```sh
+node scripts/assert-readiness-refusal.mjs \
+  --candidate artifact-b-final \
+  --capability-table-exists 0 \
+  --disposition-marker null \
+  --reconciliation-marker null
+
+node scripts/assert-readiness-refusal.mjs \
+  --candidate migration-dependent-worker \
+  --capability-table-exists 0 \
+  --disposition-marker null \
+  --reconciliation-marker null
+```
+
+If either assertion fails, stop. Passing only proves that the unsafe choices
+are rejected for the stated absent-schema evidence. It never authorizes
+Artifact A, Artifact B, a migration, or a deployment. A fresh trusted
+`readiness:admit` invocation is still required for any actual selection.
+
 ### Exact safe order
 
 1. Prove the currently live Worker refuses a snowflake and the reserved

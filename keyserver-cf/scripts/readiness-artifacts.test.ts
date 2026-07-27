@@ -8,6 +8,7 @@ import {
   readinessArchiveId,
   sha256,
   validateReadinessSelection,
+  validateReadinessWorkerPlan,
   verifyReadinessBundle,
 } from "./readiness-artifact-contract.mjs";
 import {
@@ -211,40 +212,80 @@ describe("readiness artifact closure", () => {
 
     expect(
       validateReadinessSelection(bridge, {
+        capability_table_exists: 0,
         control_inbox_sender_disposition: null,
         control_inbox_sender_reconciliation_started: null,
       }),
     ).toBe(true);
     expect(
       validateReadinessSelection(bridge, {
+        capability_table_exists: 1,
         control_inbox_sender_disposition: 1,
         control_inbox_sender_reconciliation_started: null,
       }),
     ).toBe(true);
     expect(() =>
       validateReadinessSelection(bridge, {
+        capability_table_exists: 1,
         control_inbox_sender_disposition: 1,
         control_inbox_sender_reconciliation_started: 1,
       })
     ).toThrow(/artifact A is forbidden/);
     expect(() =>
       validateReadinessSelection(final, {
+        capability_table_exists: 0,
         control_inbox_sender_disposition: null,
         control_inbox_sender_reconciliation_started: null,
       })
-    ).toThrow(/requires the exact migration 0031 marker/);
+    ).toThrow(/migration 0031 capability table and exact disposition marker/);
     expect(
       validateReadinessSelection(final, {
+        capability_table_exists: 1,
         control_inbox_sender_disposition: 1,
         control_inbox_sender_reconciliation_started: null,
       }),
     ).toBe(true);
     expect(() =>
       validateReadinessSelection(final, {
+        capability_table_exists: 1,
         control_inbox_sender_disposition: 0,
         control_inbox_sender_reconciliation_started: 0,
       })
     ).toThrow(/must be exactly 1 or null/);
+  });
+
+  it("refuses Artifact B and every migration-dependent worker while 0031 is absent", () => {
+    const liveAbsent = {
+      capability_table_exists: 0,
+      control_inbox_sender_disposition: null,
+      control_inbox_sender_reconciliation_started: null,
+    };
+    expect(
+      validateReadinessWorkerPlan("artifact-a-bridge", liveAbsent),
+    ).toBe(true);
+    for (const target of [
+      "artifact-b-final",
+      "migration-dependent-worker",
+    ]) {
+      expect(
+        () => validateReadinessWorkerPlan(target, liveAbsent),
+        target,
+      ).toThrow(/capability table and exact disposition marker/);
+    }
+    expect(() =>
+      validateReadinessWorkerPlan("artifact-b-final", {
+        capability_table_exists: 1,
+        control_inbox_sender_disposition: null,
+        control_inbox_sender_reconciliation_started: null,
+      })
+    ).toThrow(/capability table and exact disposition marker/);
+    expect(() =>
+      validateReadinessWorkerPlan("artifact-b-final", {
+        capability_table_exists: 0,
+        control_inbox_sender_disposition: 1,
+        control_inbox_sender_reconciliation_started: null,
+      })
+    ).toThrow(/markers exist while capability table is absent/);
   });
 
   it("keeps the rollback marker before the candidate query in final source", async () => {
