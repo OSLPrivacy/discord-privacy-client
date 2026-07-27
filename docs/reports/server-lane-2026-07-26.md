@@ -632,6 +632,70 @@ version ever worked**, and no tag contains a working one (6 tags exist; none
 predate the file with a functioning variant, because no functioning variant
 exists).
 
+**Confirmed live 2026-07-26.** The owner probed production and got the 500 —
+`3374d057` had been cut *before* the fix existed, so the fix was local-only.
+Redeployed as **`0a17547d`**; part upload now returns
+`201 {"part_number":1,"size_bytes":1024}`. Attachment upload works in production
+for the first time.
+
+**The bound is structural, not temporal.** Every artefact of the attachment lane
+entered git in the *same* commit `08552e5` — the endpoint, migrations 0003 and
+0004, the `osl-cipher-attachments-prod` R2 binding in `wrangler.toml`, and the
+Rust multipart client in `crates/ipc/src/cipher_store_client.rs`. There is no
+earlier attachment implementation anywhere in history that might have worked, and
+no separate upload route: `cipher_store_client.rs` is the only caller of
+`/v1/attachment*`. So the answer to "how far back" is not a date. It is: **for the
+entire committed existence of the feature, an attachment body could not reach R2.**
+
+Residual uncertainty, stated precisely: `08552e5` is a WIP snapshot, so the code
+lived uncommitted for a window git cannot see. Everything in that window is the
+same broken code — the first committed version already had it — so the only way
+exposure could be non-nil is if a *differently implemented* attachment path was
+deployed and later replaced without ever being committed. Two read-only checks
+close that, and both are cheap:
+
+```sh
+# 1. Has any attachment ever completed? A `ready` row is the only way one can exist.
+npx wrangler d1 execute osl-cipher-store-prod --remote --command \
+  "SELECT state, COUNT(*) AS rows, SUM(size_bytes) AS bytes,
+          MIN(created_at) AS oldest, MAX(created_at) AS newest
+     FROM attachment_objects GROUP BY state"
+
+# 2. Ground truth: does the bucket hold anything that predates today's probes?
+npx wrangler r2 object list osl-cipher-attachments-prod
+```
+
+Neither proves "never" on its own, because rows and objects are swept at TTL
+(7 days maximum). What they do is corroborate the code argument with physical
+evidence for the last week. Code argument plus empty bucket is as close to proof
+as this can get without Cloudflare-side deploy history.
+
+**A second-order effect worth checking while you are in there.** Under the old
+code a session creation succeeded and then every part upload threw, and that
+throw did **not** delete the reservation row (`08552e5`, part-upload catch: it
+only cleans up on `attachment_too_large`, otherwise it rethrows). So each failed
+upload attempt could leave an `uploading` row holding its declared size for the
+full content TTL — HIGH-1's pathology occurring naturally rather than
+adversarially. I initially expected a pile of these and checked before saying so:
+the Rust client calls `delete_attachment` on failure
+(`cipher_store_client.rs`), and that path does not touch the broken stream code,
+so a well-behaved client cleaned up after itself. Orphans would only remain from
+clients killed between session-create and delete. Query 1 above shows whether any
+exist. If it reports stuck `uploading` rows, do **not** delete them directly —
+that orphans the R2 multipart uploads, which are billable and invisible. Expire
+them instead and let the existing sweep abort the multipart properly:
+
+```sh
+npx wrangler d1 execute osl-cipher-store-prod --remote --command \
+  "UPDATE attachment_objects SET expires_at = unixepoch()
+    WHERE state <> 'ready' AND created_at < <epoch-of-0a17547d-deploy>"
+```
+
+Note migration 0006 backfilled `content_expires_at = expires_at` for pre-existing
+rows but deliberately did not shorten their `expires_at`; the 15-minute hold
+applies to sessions created *after* the fix. Legacy stuck rows therefore keep
+their original TTL until swept or expired by hand.
+
 **What this invalidates — in descending order of how much it should worry you:**
 
 1. **Every test that "proves" attachment upload.** The whole cipher-store
@@ -647,7 +711,7 @@ exists).
    did not go through `/v1/attachment`. Either it predates cipher-store, or it
    observed something other than what it recorded. Crypto should treat all of
    them as unproven, which I understand they have been told.
-4. **A consequence for the audit's own CRITICAL #4 that nobody has flagged.**
+4. **A consequence for the audit's own CRITICAL #4.**
    "Shipping non-image attachments are decrypted into durable plaintext files"
    describes the *open* path: a recipient fetches an attachment and OSL writes
    the decrypted bytes to LocalAppData. But a recipient can only fetch what a
@@ -661,6 +725,16 @@ exists).
    "plaintext has been hitting disk" to "plaintext would hit disk the moment
    uploads start working" — which is a different remediation urgency and a
    different disclosure posture.
+
+   What I *can* now contribute to that question, from inside my lane: there is
+   no second server-side upload route. `/v1/attachment*` is the only one, and
+   `cipher_store_client.rs` is its only caller. So "another route" would have to
+   mean an attachment delivered without cipher-store at all — a Discord-native
+   upload, or the 64 KiB `/v1/blob` lane, which works fine because it buffers
+   via `readBoundedBody` and never had this defect. Whether the client ever
+   staged plaintext from either of those is the part crypto must answer.
+   **Do not treat "structurally nil" as established until they have.** The
+   argument is strong and it is still an argument, not a measurement.
 
 **The generalisable lesson,** which is why this belongs in the report and not
 just the commit message: three false greens today share one shape — a harness
