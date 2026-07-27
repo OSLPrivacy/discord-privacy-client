@@ -714,6 +714,44 @@ are rejected for the stated absent-schema evidence. It never authorizes
 Artifact A, Artifact B, a migration, or a deployment. A fresh trusted
 `readiness:admit` invocation is still required for any actual selection.
 
+### Source-only sender-filter deployment-admission receipt
+
+The signed `?sender=` route, its canonical signature component, exact filter
+echo/disposition response, health capability, migration 0031, route
+registration, schema projection, and nonempty Worker/D1 behavior fixture form
+one reviewed source closure. Produce its receipt only from the exact current
+commit:
+
+```sh
+EXPECTED_COMMIT="$(git rev-parse HEAD)"
+npm run sender-filter:admission -- --expected-commit "$EXPECTED_COMMIT"
+```
+
+The command reads committed Git objects only. It performs no HTTP, Wrangler,
+D1, deployment, migration, or secret operation, and writes the JSON receipt
+only to stdout. It refuses a symbolic, missing, or non-current commit and
+requires every reviewed source path to be nonempty and byte-identical to the
+accepted closure.
+
+The committed live evidence is the independently accepted historical
+production capture from `11:58:53Z` through `11:59:00Z`: the active Worker had
+no mapped Git commit, migration 0031 and its capability table were absent, and
+the disposition marker was `null`. The receipt must therefore say:
+
+```text
+source_contract_admitted = true
+deployment_admitted = false
+would_admit_with_trusted_live_evidence = false
+```
+
+Its refusal list must include the unmapped Worker commit, stale evidence,
+missing migration/table/health/route proof, and `live-disposition-null`.
+Positive live evidence exists only as a nonempty test fixture that exercises
+the future validator shape. Source-only output is deliberately incapable of
+authorizing deployment. A later release still needs a fresh trusted read-only
+capture tied to the exact active Worker commit; changing or replacing the
+fixture is not a substitute.
+
 ### Exact safe order
 
 1. Prove the currently live Worker refuses a snowflake and the reserved

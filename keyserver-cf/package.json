@@ -16,7 +16,8 @@
     "readiness:build": "node scripts/build-readiness-artifacts.mjs",
     "readiness:probe-bridge": "node scripts/probe-readiness-bridge.mjs",
     "readiness:admit": "node scripts/admit-readiness-archive.mjs",
-    "readiness:assert-refusal": "node scripts/assert-readiness-refusal.mjs"
+    "readiness:assert-refusal": "node scripts/assert-readiness-refusal.mjs",
+    "sender-filter:admission": "node scripts/create-sender-filter-deployment-receipt.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.18.4",
