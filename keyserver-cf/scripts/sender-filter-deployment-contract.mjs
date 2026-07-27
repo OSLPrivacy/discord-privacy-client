@@ -80,7 +80,7 @@ export const SENDER_FILTER_SOURCE_FILES = Object.freeze({
   "keyserver-cf/src/lib/identity-authority.ts": Object.freeze({
       role: "canonical-opaque-id-and-full-bundle-proof",
       sha256:
-        "645a7250673836f88c72d7966f85d1447f014a9d1131ce29551d62cc33c4434c",
+        "d53a6b4fe61b52aafe7dd2699ea469ac5ee2ee4d21cad7d03e11adf40e954909",
   }),
   "keyserver-cf/src/lib/control-inbox-sweep.ts": Object.freeze({
     role: "capability-schema-projection",
@@ -103,13 +103,13 @@ export const SENDER_FILTER_SOURCE_FILES = Object.freeze({
     Object.freeze({
       role: "real-worker-d1-canonical-authority-fixture",
       sha256:
-        "1117f699ce7db3580a2740449444d7ded950937b9058b2d2f79193dab95bb2ae",
+        "68a18f4f6f5f67f9292c01b0d81e52f766fae2e8bfa87f7897c92d22fa74c9ac",
     }),
   "keyserver-cf/scripts/provision-sender-filter-rollout-genesis.mjs":
     Object.freeze({
       role: "shipping-d1-admin-genesis-provisioning-interface",
       sha256:
-        "737341e5c7f72de136ceef5cd99be2e4cbc329072ece2ca3de57acc0688b2322",
+        "ea361582dad96c677907eb1c5ebb64c7adfde7fd3d998b2d8fc5501eee6ffd42",
     }),
   "keyserver-cf/scripts/canonical-identity-rollout.test.ts":
     Object.freeze({
