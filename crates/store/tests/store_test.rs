@@ -172,22 +172,49 @@ fn mark_burned_makes_get_return_none() {
 fn mark_burned_unknown_id_returns_not_found() {
     let tmp = TempDir::new().unwrap();
     let store = open_a(tmp.path());
+    let msg = sample("known", "ch", "s", "alice", "stays live", 1);
+    store.put(&msg).unwrap();
+    // Without it, 'nothing came back' is indistinguishable from 'nothing was ever stored'.
+    let before = store
+        .get("known")
+        .unwrap()
+        .expect("positive control row should be present");
+    assert_eq!(before, msg);
+
     let err = store.mark_burned("never-existed").unwrap_err();
     assert!(matches!(err, StoreError::NotFound(_)), "got {err:?}");
+    let after = store
+        .get("known")
+        .unwrap()
+        .expect("unknown-id burn must not touch a real row");
+    assert_eq!(after, msg);
+    assert!(!after.burned);
 }
 
 #[test]
 fn mark_burned_is_idempotent() {
     let tmp = TempDir::new().unwrap();
     let store = open_a(tmp.path());
-    store
-        .put(&sample("twice", "ch", "s", "alice", "double burn", 1))
-        .unwrap();
+    let msg = sample("twice", "ch", "s", "alice", "double burn", 1);
+    let other = sample("untouched", "ch", "s", "bob", "must remain", 2);
+    store.put(&msg).unwrap();
+    store.put(&other).unwrap();
+    // Without it, 'nothing came back' is indistinguishable from 'nothing was ever stored'.
+    let before = store
+        .get("twice")
+        .unwrap()
+        .expect("row should be present before burn");
+    assert_eq!(before, msg);
     store.mark_burned("twice").unwrap();
     // Second mark is a no-op (already burned). Exercises the
     // idempotency branch.
     store.mark_burned("twice").unwrap();
     assert!(store.get("twice").unwrap().is_none());
+    let still_live = store
+        .get("untouched")
+        .unwrap()
+        .expect("burn must not wipe unrelated rows");
+    assert_eq!(still_live, other);
 }
 
 // ---- corruption ----
@@ -196,11 +223,12 @@ fn mark_burned_is_idempotent() {
 fn corrupted_ciphertext_returns_corrupted_not_panic() {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().to_path_buf();
+    let first = sample("corrupt-a", "ch", "s", "alice", "tampered", 1);
+    let second = sample("corrupt-b", "ch", "s", "bob", "still intact", 2);
     {
         let store = open_a(&path);
-        store
-            .put(&sample("corrupt-me", "ch", "s", "alice", "tampered", 1))
-            .unwrap();
+        store.put(&first).unwrap();
+        store.put(&second).unwrap();
     }
     // Reach into the SQLite file directly and flip a byte in
     // the ciphertext. Use a fresh rusqlite handle (not the
@@ -208,21 +236,41 @@ fn corrupted_ciphertext_returns_corrupted_not_panic() {
     // raw bad blob. Tag will fail on next read.
     {
         let conn = rusqlite::Connection::open(path.join("messages.sqlite")).unwrap();
-        // Schema v4 stores no plaintext identifier, so the row cannot be named
-        // in SQL. This database holds exactly one row, which is enough.
-        let mut ct: Vec<u8> = conn
-            .query_row("SELECT ciphertext FROM messages", [], |r| r.get(0))
+        // Schema v4 stores no plaintext identifier, so corrupt exactly one row
+        // by rowid and let public lookups prove which message it was.
+        let (rowid, mut ct): (i64, Vec<u8>) = conn
+            .query_row(
+                "SELECT rowid, ciphertext FROM messages ORDER BY rowid LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .unwrap();
         // Flip the last byte (Poly1305 tag tail). Any single-bit
         // flip in either ciphertext or tag invalidates AEAD.
         let last = ct.len() - 1;
         ct[last] ^= 0x01;
-        conn.execute("UPDATE messages SET ciphertext = ?1", params![ct])
-            .unwrap();
+        conn.execute(
+            "UPDATE messages SET ciphertext = ?1 WHERE rowid = ?2",
+            params![ct, rowid],
+        )
+        .unwrap();
     }
     let store = open_a(&path);
-    let err = store.get("corrupt-me").unwrap_err();
-    assert!(matches!(err, StoreError::Corrupted(_)), "got {err:?}");
+    // Without it, 'nothing came back' is indistinguishable from 'nothing was ever stored'.
+    let mut corrupted = 0;
+    let mut readable = 0;
+    for msg in [&first, &second] {
+        match store.get(&msg.discord_message_id) {
+            Ok(Some(out)) => {
+                assert_eq!(out, *msg);
+                readable += 1;
+            }
+            Err(StoreError::Corrupted(_)) => corrupted += 1,
+            other => panic!("expected one corrupted and one readable row, got {other:?}"),
+        }
+    }
+    assert_eq!(corrupted, 1);
+    assert_eq!(readable, 1);
 }
 
 // ---- wrong-secret rejection ----
@@ -334,7 +382,33 @@ fn attachment_put_get_roundtrip() {
 fn attachment_get_miss_is_none() {
     let tmp = TempDir::new().unwrap();
     let store = open_a(tmp.path());
-    assert!(store.get_attachment("nope", "nope.bin").unwrap().is_none());
+    let bytes = b"cached attachment bytes".to_vec();
+    store
+        .put_attachment(
+            "msg1",
+            "present.bin",
+            "text/plain",
+            &bytes,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    // Without it, 'nothing came back' is indistinguishable from 'nothing was ever stored'.
+    let out = store
+        .get_attachment("msg1", "present.bin")
+        .unwrap()
+        .expect("positive control attachment should be present");
+    assert_eq!(out.0, "text/plain");
+    assert_eq!(out.1, bytes);
+    assert!(store
+        .get_attachment("msg1", "missing.bin")
+        .unwrap()
+        .is_none());
+    assert!(store
+        .get_attachment("other-msg", "present.bin")
+        .unwrap()
+        .is_none());
 }
 
 #[test]
@@ -504,9 +578,16 @@ fn shred_expired_messages_destroys_named_rows_and_their_attachments() {
 fn shred_expired_messages_tolerates_unknown_ids_and_is_idempotent() {
     let tmp = TempDir::new().unwrap();
     let store = open_a(tmp.path());
-    store
-        .put(&sample("known", "ch", "s", "alice", "once", 1))
-        .unwrap();
+    let known = sample("known", "ch", "s", "alice", "once", 1);
+    let untouched = sample("untouched", "ch", "s", "bob", "still here", 2);
+    store.put(&known).unwrap();
+    store.put(&untouched).unwrap();
+    // Without it, 'nothing came back' is indistinguishable from 'nothing was ever stored'.
+    let before = store
+        .get("known")
+        .unwrap()
+        .expect("row should be present before shred");
+    assert_eq!(before, known);
 
     // A sweeper legitimately names rows this device never cached. That is not
     // an error, unlike `mark_burned`.
@@ -516,6 +597,12 @@ fn shred_expired_messages_tolerates_unknown_ids_and_is_idempotent() {
             .unwrap(),
         1
     );
+    assert!(store.get("known").unwrap().is_none());
+    let still_live = store
+        .get("untouched")
+        .unwrap()
+        .expect("sweep must not touch unnamed rows");
+    assert_eq!(still_live, untouched);
     // A second sweep reports zero rather than re-stamping burned_at and making
     // an old destruction look fresh.
     assert_eq!(
@@ -524,5 +611,10 @@ fn shred_expired_messages_tolerates_unknown_ids_and_is_idempotent() {
             .unwrap(),
         0
     );
+    let still_live_after_second = store
+        .get("untouched")
+        .unwrap()
+        .expect("idempotent sweep must not remove unnamed rows");
+    assert_eq!(still_live_after_second, untouched);
     assert_eq!(store.shred_expired_messages(&[]).unwrap(), 0);
 }
