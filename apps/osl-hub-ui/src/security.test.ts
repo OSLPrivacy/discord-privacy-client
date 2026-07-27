@@ -817,6 +817,98 @@ describe("bundled preview security boundary", () => {
           "}",
         ].join("\n"),
       ),
+      ).toBe(false);
+  });
+
+  it("keeps the keyserver burn client classified as implemented-unwired", () => {
+    const burnPrimitive = readRelative("../../../crates/keystore/src/burn.rs");
+    const keystoreClient = readRelative("../../../crates/keystore/src/client.rs");
+    const keystoreLib = readRelative("../../../crates/keystore/src/lib.rs");
+    const main = readRelative("../../osl-hub/src/main.rs");
+    const security = readRelative("../../osl-hub/src/security.rs");
+    const commands = readRelative("../../../crates/ipc/src/commands.rs");
+    const productionRust = [
+      readProductionRustTree("../../osl-hub/src/"),
+      readProductionRustTree("../../../crates/ipc/src/"),
+    ].join("\n");
+    const productionUsesKeyserverBurn = (source: string): boolean =>
+      /(?:\bKeyServerClient::burn\b|\bBurnScope::(?:Single|ToUser|All)\b|\.\s*burn\s*\()/u.test(
+        rustProductionPrefix(source),
+      );
+
+    // Positive implementation controls prevent deletion of the dormant
+    // subsystem from satisfying the absence check.
+    expect(burnPrimitive).toContain("pub enum BurnScope");
+    expect(burnPrimitive).toContain("pub fn canonical_burn_bytes(");
+    expect(burnPrimitive).toContain("pub fn sign_burn(");
+    expect(keystoreClient).toContain("pub fn burn(");
+    expect(keystoreLib).toContain(
+      "pub use burn::{canonical_burn_bytes, sign_burn, BurnScope, BURN_DOMAIN}",
+    );
+
+    // Positive controls for the separate reachable product burn.
+    const mainProduction = rustProductionPrefix(main);
+    const handler = mainProduction.slice(
+      mainProduction.indexOf("tauri::generate_handler!["),
+    );
+    expect(handler).toContain("burn_active_hub_context");
+    expect(mainProduction).toContain("security::burn_scope(");
+    expect(rustProductionPrefix(security)).toContain(
+      "ipc::commands::cmd_osl_apply_burn(",
+    );
+    expect(rustProductionPrefix(commands)).toContain(
+      "store.wipe_wrapped_keys_in_scope(",
+    );
+
+    expect(productionUsesKeyserverBurn(productionRust)).toBe(false);
+
+    const assertUnwiredBurnTruth = (source: string): void => {
+      expect(source).toContain(
+        "Wrapped-key deletion request primitives (implemented-unwired)",
+      );
+      expect(source).toContain(
+        "Current Hub/IPC production code does not construct a",
+      );
+      expect(source).toContain(
+        "the reachable product burn",
+      );
+      expect(source).toContain(
+        "These primitives therefore do not establish that a product burn",
+      );
+    };
+    assertUnwiredBurnTruth(burnPrimitive);
+
+    for (const syntheticCaller of [
+      "let scope = BurnScope::All;",
+      "let scope = BurnScope::Single { content_id };",
+      "KeyServerClient::burn(client, identity, &scope)?;",
+      "client.burn(identity, &scope)?;",
+    ]) {
+      expect(productionUsesKeyserverBurn(syntheticCaller)).toBe(true);
+    }
+
+    expect(() =>
+      assertUnwiredBurnTruth(
+        burnPrimitive.replace(
+          "Wrapped-key deletion request primitives (implemented-unwired)",
+          "User-facing wrapped-key deletion",
+        ),
+      ),
+    ).toThrow();
+    expect(burnPrimitive).not.toContain(
+      'the user-facing Rust API\n//! for "delete my wrapped-key blobs from the server',
+    );
+
+    expect(
+      productionUsesKeyserverBurn(
+        [
+          "// client.burn(identity, &scope)?;",
+          "#[cfg(test)]",
+          "mod tests {",
+          "  fn fixture() { let scope = BurnScope::All; }",
+          "}",
+        ].join("\n"),
+      ),
     ).toBe(false);
   });
 });
