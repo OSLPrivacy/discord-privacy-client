@@ -121,7 +121,16 @@ describe("POST /v1/control-inbox hardening", () => {
       sender.signingKey,
     );
     const first = await post(body);
+    expect(first.status).toBe(201);
     const firstJson = (await first.json()) as { id: string };
+    expect(firstJson.id).toEqual(expect.any(String));
+    expect(firstJson.id.length).toBeGreaterThan(0);
+    const enqueued = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM control_inbox WHERE recipient_id = ?",
+    )
+      .bind(recipientId)
+      .first<{ count: number }>();
+    expect(enqueued?.count).toBe(1);
     await env.DB.prepare("DELETE FROM control_inbox WHERE recipient_id = ?")
       .bind(recipientId)
       .run();

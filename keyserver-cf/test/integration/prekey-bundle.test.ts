@@ -180,6 +180,11 @@ describe("POST /v1/prekey-bundle/replenish", () => {
       [makeOpk(700)],
     );
     expect((await postReplenish(body)).status).toBe(200);
+    const inserted = await testDb
+      .prepare("SELECT COUNT(*) AS count FROM opk_pool WHERE user_id = ? AND opk_id = 700")
+      .bind(userId)
+      .first<{ count: number }>();
+    expect(inserted?.count).toBe(1);
     await testDb.prepare("DELETE FROM opk_pool WHERE user_id = ? AND opk_id = 700")
       .bind(userId)
       .run();
@@ -431,6 +436,12 @@ describe("GET /v1/prekey-bundle/:user_id (atomic pop)", () => {
       await signedGetUrl(userId, userId, Date.now() - 6 * 60_000),
     );
     expect(res.status).toBe(401);
+    const remaining = await testDb.prepare(
+      "SELECT COUNT(*) AS count FROM opk_pool WHERE user_id = ?",
+    )
+      .bind(userId)
+      .first<{ count: number }>();
+    expect(remaining?.count).toBe(3);
   });
 
   it("identity-key CAS blocks a pop authorized by a replaced key", async () => {
@@ -474,12 +485,23 @@ describe("GET /v1/prekey-bundle/:user_id (atomic pop)", () => {
       SELF.fetch(url2),
       SELF.fetch(url3),
     ]);
+    expect(r1.status).toBe(200);
+    expect(r2.status).toBe(200);
+    expect(r3.status).toBe(200);
     const bundles = (await Promise.all([r1.json(), r2.json(), r3.json()])) as {
       opk: { id: number } | null;
     }[];
     const ids = bundles.map((b) => b.opk?.id).filter((x): x is number => x !== undefined);
     const distinct = new Set(ids);
+    expect(ids).toHaveLength(3);
     expect(distinct.size).toBe(ids.length);
+    expect(distinct.size).toBe(3);
+    const remaining = await testDb.prepare(
+      "SELECT COUNT(*) AS count FROM opk_pool WHERE user_id = ?",
+    )
+      .bind(userId)
+      .first<{ count: number }>();
+    expect(remaining?.count).toBe(0);
   });
 
   it("concurrent copies of one valid request consume at most once", async () => {
