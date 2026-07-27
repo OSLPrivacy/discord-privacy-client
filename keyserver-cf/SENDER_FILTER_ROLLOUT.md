@@ -1,6 +1,7 @@
 # Sender-filter rollout compatibility contract
 
-Status: shipping source closure plus source/test-only admission receipts. The
+Status: shipping source closure plus authenticated, nonauthorizing admission
+receipt derivation. The
 Rust client/broker boundary performs the ordinary read-only health and inbox
 GETs described below. This document and
 `scripts/sender-filter-rollout-contract.mjs` perform no HTTP, D1, migration,
@@ -41,11 +42,13 @@ schema × Worker × client rows and requires a nonempty continuity fixture.
   the legacy request only for the exact historical `{ok:true}` response while
   capability 1 has never been observed. Artifact A, a 503/0 bridge, malformed
   health, and wrong capability versions refuse.
-- Before the first filtered GET, the client writes a fixed-path, write-once,
-  identity-signed capability-floor receipt inside the active account. A fresh
-  client process verifies that durable receipt. Once capability 1 is observed,
-  its disappearance is a downgrade refusal; the broker has no boolean, probe,
-  path, reset, or fallback parameter.
+- Before the first filtered GET, the client atomically writes matching
+  identity-signed capability-floor records to the active account and the
+  shared-base identity-monotonic directory, syncing each file and its parent
+  directory. A fresh client requires both records. Once capability 1 is
+  observed, deleting either record, changing either record, or making the pair
+  disagree is a downgrade refusal; the broker has no boolean, probe, path,
+  reset, or fallback parameter.
 - A filtered response is accepted only with the exact echo and no foreign
   sender. An empty authenticated filtered response is not mislabeled
   starvation: a real client has no omniscient view of undisclosed server rows.
@@ -71,9 +74,9 @@ The source-only planner records selection labels, never actions:
    authorization.
 3. **Worker-first Artifact B:** refused. Before 0031, its routes and health
    return 503, so the planner never selects this order under active traffic.
-4. **Artifact A:** all inbox routes return 503. The planner refuses A while
-   traffic is active and can mention it only after traffic is independently
-   quiesced.
+4. **Artifact A:** all inbox routes return 503. The authenticated producer
+   chain does not prove traffic quiescence, so this planner always refuses to
+   advance from A.
 5. **Final Artifact B:** compatible only with schema 0031, capability exactly
    1, a nonempty legacy continuity probe, a nonempty exact-echo filtered probe,
    and zero cross-sender rows.
@@ -84,21 +87,26 @@ refusals.
 
 ## Phase receipts and source closure
 
-The planner no longer accepts independent `worker`, `schema`, capability,
-legacy-probe, filtered-probe, or prior-capability arguments. It consumes one
-exact phase receipt for `legacy-pre-0031`, `legacy-0031`,
-`artifact-a-pre-0031`, `artifact-a-0031`, `artifact-b-pre-0031`, or
-`artifact-b-0031`. Every capability/inbox observation repeats and must match
-the exact phase, Worker commit/version/deployment, and client commit. The
-receipt also binds migration 0031, the semantic source-closure digest, exact
-shipping call-site identifiers, capture time, and its recomputed receipt hash.
-Missing, empty, stale, cross-phase, leaky, or source-mismatched receipts refuse.
+The planner accepts no caller-authored phase value and has no phase-receipt
+constructor. It verifies the independently trusted producer's Ed25519
+deployment-evidence envelope, then requires that exact receipt to be the
+consumed head of the independently administered transactional verifier store.
+The phase is derived from the authenticated Artifact A/B observation rather
+than supplied by the caller. The derived view binds commit/archive, migration
+0031, D1 identity/environment/schema fingerprint, Worker version/deployment,
+sender-filter route observation, producer identity/sequence, verifier
+administrator/database/monotonic version, the semantic source closure, and
+exact shipping call-site identifiers. Caller-authored, unsigned, unconsumed,
+stale, replayed/superseded, empty, leaky, or source-mismatched evidence
+refuses.
 
 The closure spans migration 0031, Worker routing/health/filter/canonical
 functions, Artifact A refusals, the Rust capability probe and signed durable
-floor, and `broker.rs::fetch_peer_control_inbox`. Checks operate on executable
-tokens with comments and string contents removed, plus normalized SQL, so
-moving required call text into a comment or string cannot satisfy the gate.
-These receipts remain source/test-only and unsigned; they describe compatible
-selection labels and can never authorize a production action. Live admission
-still requires the independently trusted producer boundary.
+floor, and `broker.rs::fetch_peer_control_inbox`. The gate parses Rust function
+boundaries and call reachability, binds the capability probe result to the
+compatibility match branches, requires the broker boundary's sole tail call,
+resolves aliased filesystem-lowering calls, and parses executable SQL
+statements while excluding both line and block comments. The derived receipts
+remain source/test-only and can never authorize a production action; the
+production trust registry and verifier binding remain deliberately
+unprovisioned.

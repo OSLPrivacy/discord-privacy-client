@@ -2,13 +2,20 @@ import {
   canonicalJson,
   sha256,
 } from "./readiness-artifact-contract.mjs";
+import {
+  verifyDeploymentEvidenceReceipt,
+} from "./deployment-evidence-receipt-contract.mjs";
+import {
+  requireProvisionedDeploymentEvidenceVerifierStore,
+  validateDeploymentEvidenceVerifierSnapshot,
+} from "./deployment-evidence-verifier-store.mjs";
 
 export const SENDER_FILTER_ROLLOUT_FORMAT =
   "osl.keyserver.sender-filter-rollout-contract.v2";
 export const SENDER_FILTER_PLAN_FORMAT =
   "osl.keyserver.sender-filter-rollout-plan.v2";
 export const SENDER_FILTER_PHASE_RECEIPT_FORMAT =
-  "osl.keyserver.sender-filter-phase-receipt.v2";
+  "osl.keyserver.sender-filter-phase-receipt.v3";
 export const SENDER_FILTER_CAPABILITY =
   "control_inbox_sender_disposition";
 export const SENDER_FILTER_CAPABILITY_VERSION = 1;
@@ -502,43 +509,27 @@ const PHASES = Object.freeze({
 });
 
 const PHASE_RECEIPT_FIELDS = Object.freeze([
+  "applied_schema_fingerprint_sha256",
+  "archive_id",
+  "artifact",
   "call_sites",
-  "capability_probe",
   "captured_at",
-  "client_commit",
+  "database_environment",
+  "database_id",
   "deployment_id",
   "expected_commit",
-  "filtered_probe",
   "format",
-  "legacy_probe",
   "migration_0031_sha256",
   "phase",
-  "receipt_sha256",
+  "producer_identity",
+  "producer_key_id",
+  "producer_receipt_sha256",
+  "producer_sequence",
+  "route_observation_sha256",
   "source_closure_sha256",
-  "traffic",
-  "worker_commit",
-  "worker_version",
-]);
-const CAPABILITY_PROBE_FIELDS = Object.freeze([
-  "client_commit",
-  "deployment_id",
-  "mode",
-  "phase",
-  "status",
-  "version",
-  "worker_commit",
-  "worker_version",
-]);
-const INBOX_PROBE_FIELDS = Object.freeze([
-  "client_commit",
-  "cross_sender_count",
-  "deployment_id",
-  "echo",
-  "item_count",
-  "phase",
-  "request_mode",
-  "status",
-  "worker_commit",
+  "verifier_administrator_identity",
+  "verifier_database_id",
+  "verifier_monotonic_version",
   "worker_version",
 ]);
 
@@ -573,158 +564,188 @@ function requireUuid(value, label) {
   }
 }
 
-function receiptDigest(receipt) {
-  const payload = { ...receipt };
-  delete payload.receipt_sha256;
-  return sha256(Buffer.from(canonicalJson(payload)));
-}
-
-function validateBoundProbe(probeValue, fields, receipt, label) {
-  const probe = requireObject(probeValue, label);
-  requireExactKeys(probe, fields, label);
-  if (
-    probe.phase !== receipt.phase ||
-    probe.client_commit !== receipt.client_commit ||
-    probe.worker_commit !== receipt.worker_commit ||
-    probe.worker_version !== receipt.worker_version ||
-    probe.deployment_id !== receipt.deployment_id
-  ) {
-    throw new Error(`${label} is not bound to the receipt phase`);
-  }
-  return probe;
-}
-
-export function createSenderFilterPhaseReceipt(value) {
-  const receipt = structuredClone(value);
-  receipt.format = SENDER_FILTER_PHASE_RECEIPT_FORMAT;
-  receipt.receipt_sha256 = receiptDigest(receipt);
-  return receipt;
-}
-
-export function verifySenderFilterPhaseReceipt(
-  receiptValue,
-  sourceClosure,
-  nowMs,
+function requireConsumedVerifierState(
+  verified,
+  verifierStoreValue,
 ) {
-  const receipt = requireObject(receiptValue, "rollout phase receipt");
+  const store =
+    requireProvisionedDeploymentEvidenceVerifierStore(verifierStoreValue);
+  return store.readCurrent(verified.producer_key_id).then((snapshot) => {
+    if (snapshot === null) {
+      throw new Error(
+        "authenticated rollout receipt has no transactional verifier lineage",
+      );
+    }
+    validateDeploymentEvidenceVerifierSnapshot(
+      snapshot,
+      verified.producer_key_id,
+    );
+    const state = snapshot.state;
+    const transition = verified.payload.transition;
+    if (
+      state.pending_challenge !== null ||
+      state.producer_identity !== verified.producer_identity ||
+      state.sequence !== verified.payload.producer_sequence ||
+      state.receipt_sha256 !== verified.receipt_sha256 ||
+      state.current_artifact !== transition.current_artifact ||
+      state.current_worker_version !== transition.current_worker_version ||
+      state.current_deployment_id !== transition.current_deployment_id
+    ) {
+      throw new Error(
+        "rollout receipt is not the consumed head of verifier-administered lineage",
+      );
+    }
+    return { snapshot, store };
+  });
+}
+
+function validateDerivedPhaseReceipt(receiptValue) {
+  const receipt = requireObject(receiptValue, "derived rollout phase receipt");
   requireExactKeys(
     receipt,
     PHASE_RECEIPT_FIELDS,
-    "rollout phase receipt",
+    "derived rollout phase receipt",
   );
   if (receipt.format !== SENDER_FILTER_PHASE_RECEIPT_FORMAT) {
-    throw new Error("rollout phase receipt format mismatch");
+    throw new Error("derived rollout phase receipt format mismatch");
   }
-  const phase = PHASES[receipt.phase];
-  if (!phase) throw new Error("rollout phase is not exact");
   requireCommit(receipt.expected_commit, "rollout expected commit");
-  requireCommit(receipt.worker_commit, "rollout Worker commit");
-  requireCommit(receipt.client_commit, "rollout client commit");
+  requireSha(receipt.archive_id, "rollout archive");
   requireSha(receipt.migration_0031_sha256, "migration 0031 digest");
   requireSha(receipt.source_closure_sha256, "source closure digest");
-  requireSha(receipt.receipt_sha256, "phase receipt digest");
+  requireSha(
+    receipt.producer_receipt_sha256,
+    "authenticated producer receipt digest",
+  );
+  requireSha(
+    receipt.route_observation_sha256,
+    "authenticated route observation digest",
+  );
+  requireSha(
+    receipt.applied_schema_fingerprint_sha256,
+    "authenticated schema fingerprint",
+  );
   requireUuid(receipt.worker_version, "rollout Worker version");
   requireUuid(receipt.deployment_id, "rollout deployment id");
-  requireChoice(receipt.traffic, ["active", "quiesced"], "rollout traffic");
+  requireUuid(receipt.database_id, "rollout D1 database id");
+  requireUuid(receipt.verifier_database_id, "rollout verifier database id");
   if (
-    canonicalJson(receipt.call_sites) !== canonicalJson(ROLLOUT_CALL_SITES)
+    !Number.isSafeInteger(receipt.producer_sequence) ||
+    receipt.producer_sequence <= 0 ||
+    !Number.isSafeInteger(receipt.verifier_monotonic_version) ||
+    receipt.verifier_monotonic_version <= 0
   ) {
-    throw new Error("rollout call-site binding mismatch");
+    throw new Error("rollout producer or verifier sequence is invalid");
   }
-  if (
-    receipt.source_closure_sha256 !== sourceClosure.source_closure_sha256 ||
-    receipt.migration_0031_sha256 !==
-      sourceClosure.file_sha256[
-        "keyserver-cf/migrations/0031_control_inbox_sender_retention.sql"
-      ]
-  ) {
-    throw new Error("rollout source or migration closure mismatch");
-  }
-  if (receipt.receipt_sha256 !== receiptDigest(receipt)) {
-    throw new Error("rollout phase receipt digest mismatch");
-  }
-  const captured = Date.parse(receipt.captured_at);
-  if (
-    !Number.isFinite(captured) ||
-    Math.abs(captured - nowMs) > 120_000
-  ) {
-    throw new Error("rollout phase receipt is stale or future-dated");
-  }
-
-  const capability = validateBoundProbe(
-    receipt.capability_probe,
-    CAPABILITY_PROBE_FIELDS,
-    receipt,
-    "rollout capability probe",
-  );
-  const legacy = validateBoundProbe(
-    receipt.legacy_probe,
-    INBOX_PROBE_FIELDS,
-    receipt,
-    "rollout legacy probe",
-  );
-  const filtered = validateBoundProbe(
-    receipt.filtered_probe,
-    INBOX_PROBE_FIELDS,
-    receipt,
-    "rollout filtered probe",
-  );
-  if (
-    capability.mode !== phase.capability[0] ||
-    capability.status !== phase.capability[1] ||
-    capability.version !== phase.capability[2]
-  ) {
-    throw new Error("rollout capability probe phase mismatch");
-  }
-  for (const [probe, expected, label] of [
-    [legacy, phase.legacy, "legacy"],
-    [filtered, phase.filtered, "filtered"],
+  for (const [value, label] of [
+    [receipt.producer_key_id, "rollout producer key id"],
+    [receipt.producer_identity, "rollout producer identity"],
+    [
+      receipt.verifier_administrator_identity,
+      "rollout verifier administrator identity",
+    ],
   ]) {
-    const [requestMode, status, population] = expected;
-    if (
-      probe.request_mode !== requestMode ||
-      probe.status !== status ||
-      !Number.isSafeInteger(probe.item_count) ||
-      !Number.isSafeInteger(probe.cross_sender_count) ||
-      probe.item_count < 0 ||
-      probe.cross_sender_count < 0 ||
-      (population === "positive" && probe.item_count <= 0) ||
-      (population === "empty" &&
-        (probe.item_count !== 0 || probe.cross_sender_count !== 0))
-    ) {
-      throw new Error(`rollout ${label} probe phase mismatch`);
+    if (typeof value !== "string" || value.length === 0) {
+      throw new Error(`${label} must be nonempty`);
     }
   }
   if (
-    filtered.request_mode === "filtered" &&
-    (filtered.echo !== "sender-positive" ||
-      filtered.cross_sender_count !== 0)
+    receipt.database_environment !== "production" ||
+    !["A", "B"].includes(receipt.artifact) ||
+    !PHASES[receipt.phase] ||
+    canonicalJson(receipt.call_sites) !== canonicalJson(ROLLOUT_CALL_SITES)
   ) {
-    throw new Error("rollout filtered isolation probe mismatch");
-  }
-  if (
-    filtered.request_mode !== "filtered" &&
-    filtered.echo !== null
-  ) {
-    throw new Error("rollout non-filtered phase carried a sender echo");
+    throw new Error("derived rollout phase identity is not exact");
   }
   return Object.freeze(structuredClone(receipt));
 }
 
-export function admitSenderFilterRolloutPlan({
-  phaseReceipt,
-  sourceClosure,
+export async function deriveAuthenticatedSenderFilterPhaseReceipt({
+  producerReceipt,
+  deploymentExpectation,
+  trustedProducers,
+  verifierStore,
+  sourceFiles,
+  nowMs = Date.now(),
+}) {
+  const sourceClosure = validateRolloutSourceClosure(sourceFiles);
+  const verified = verifyDeploymentEvidenceReceipt(
+    producerReceipt,
+    deploymentExpectation,
+    { trustedProducers, nowMs },
+  );
+  const { snapshot, store } = await requireConsumedVerifierState(
+    verified,
+    verifierStore,
+  );
+  const payload = verified.payload;
+  const migration0031 = deploymentExpectation.expectedMigrations.find(
+    (entry) =>
+      entry.name === "0031_control_inbox_sender_retention.sql",
+  );
+  if (
+    !migration0031 ||
+    migration0031.sha256 !==
+      sourceClosure.file_sha256[
+        "keyserver-cf/migrations/0031_control_inbox_sender_retention.sql"
+      ]
+  ) {
+    throw new Error(
+      "authenticated rollout migration does not match the source closure",
+    );
+  }
+  const phase =
+    payload.artifact === "B"
+      ? "artifact-b-0031"
+      : "artifact-a-pre-0031";
+  return validateDerivedPhaseReceipt({
+    format: SENDER_FILTER_PHASE_RECEIPT_FORMAT,
+    phase,
+    artifact: payload.artifact,
+    expected_commit: payload.expected_commit,
+    archive_id: payload.archive_id,
+    migration_0031_sha256: migration0031.sha256,
+    source_closure_sha256: sourceClosure.source_closure_sha256,
+    call_sites: ROLLOUT_CALL_SITES,
+    captured_at: payload.timestamps.issued_at,
+    worker_version: payload.worker.version_id,
+    deployment_id: payload.worker.deployment_id,
+    database_id: payload.database.id,
+    database_environment: payload.database.environment,
+    applied_schema_fingerprint_sha256:
+      payload.database.schema_fingerprint_sha256,
+    route_observation_sha256:
+      payload.worker.sender_filter_route.response_sha256,
+    producer_key_id: verified.producer_key_id,
+    producer_identity: verified.producer_identity,
+    producer_sequence: payload.producer_sequence,
+    producer_receipt_sha256: verified.receipt_sha256,
+    verifier_database_id: store.database_id,
+    verifier_administrator_identity: store.administrator_identity,
+    verifier_monotonic_version: snapshot.monotonic_version,
+  });
+}
+
+export async function admitSenderFilterRolloutPlan({
+  producerReceipt,
+  deploymentExpectation,
+  trustedProducers,
+  verifierStore,
+  sourceFiles,
   nowMs,
 }) {
-  const receipt = verifySenderFilterPhaseReceipt(
-    phaseReceipt,
-    sourceClosure,
+  const receipt = await deriveAuthenticatedSenderFilterPhaseReceipt({
+    producerReceipt,
+    deploymentExpectation,
+    trustedProducers,
+    verifierStore,
+    sourceFiles,
     nowMs,
-  );
+  });
   const phase = PHASES[receipt.phase];
   const reasons = [];
-  if (phase.worker === "artifact-a" && receipt.traffic !== "quiesced") {
-    reasons.push("artifact-a-requires-quiesced-traffic");
+  if (phase.worker === "artifact-a") {
+    reasons.push("artifact-a-traffic-quiescence-is-not-authenticated");
   }
   if (
     phase.worker === "artifact-b" &&
@@ -734,18 +755,7 @@ export function admitSenderFilterRolloutPlan({
   }
   let nextSelection = "none";
   if (reasons.length === 0) {
-    if (receipt.phase === "legacy-pre-0031") {
-      nextSelection =
-        receipt.traffic === "quiesced"
-          ? "artifact-a"
-          : "quiesce-traffic";
-    } else if (receipt.phase === "legacy-0031") {
-      nextSelection = "artifact-b";
-    } else if (receipt.phase === "artifact-a-pre-0031") {
-      nextSelection = "migrations-0030-0031";
-    } else if (receipt.phase === "artifact-a-0031") {
-      nextSelection = "artifact-b";
-    } else if (receipt.phase === "artifact-b-0031") {
+    if (receipt.phase === "artifact-b-0031") {
       nextSelection = "stable-compatible";
     }
   }
@@ -755,7 +765,7 @@ export function admitSenderFilterRolloutPlan({
     direct_deploy_permitted: false,
     execution_authorized: false,
     next_selection: nextSelection,
-    phase_receipt_sha256: receipt.receipt_sha256,
+    phase_receipt_sha256: receipt.producer_receipt_sha256,
     source_closure_sha256: receipt.source_closure_sha256,
     reasons,
   };
@@ -836,12 +846,359 @@ function requireCode(source, path, patterns) {
   }
 }
 
-function normalizedSql(source) {
-  return source
-    .replace(/--[^\n]*/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
+function executableSqlStatements(source) {
+  const statements = [];
+  let current = "";
+  let state = "code";
+  let quote = "";
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    const next = source[index + 1];
+    if (state === "line-comment") {
+      if (char === "\n") {
+        state = "code";
+        current += " ";
+      }
+    } else if (state === "block-comment") {
+      if (char === "*" && next === "/") {
+        state = "code";
+        index += 1;
+        current += " ";
+      }
+    } else if (state === "quoted") {
+      current += char;
+      if (char === quote) {
+        if (next === quote) {
+          current += next;
+          index += 1;
+        } else {
+          state = "code";
+        }
+      }
+    } else if (char === "-" && next === "-") {
+      state = "line-comment";
+      index += 1;
+    } else if (char === "/" && next === "*") {
+      state = "block-comment";
+      index += 1;
+    } else if (char === "'" || char === '"' || char === "`") {
+      state = "quoted";
+      quote = char;
+      current += char;
+    } else if (char === ";") {
+      const statement = current.replace(/\s+/g, " ").trim().toLowerCase();
+      if (statement.length > 0) statements.push(statement);
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  if (state === "block-comment" || state === "quoted") {
+    throw new Error("migration 0031 has unterminated SQL syntax");
+  }
+  const tail = current.replace(/\s+/g, " ").trim().toLowerCase();
+  if (tail.length > 0) statements.push(tail);
+  return statements;
+}
+
+function maskCodeTrivia(source) {
+  const output = [...source];
+  let state = "code";
+  let quote = "";
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    const next = source[index + 1];
+    if (state === "line") {
+      if (char === "\n") state = "code";
+      else output[index] = " ";
+    } else if (state === "block") {
+      output[index] = char === "\n" ? "\n" : " ";
+      if (char === "*" && next === "/") {
+        output[index + 1] = " ";
+        index += 1;
+        state = "code";
+      }
+    } else if (state === "string") {
+      output[index] = char === "\n" ? "\n" : " ";
+      if (char === "\\") {
+        output[index + 1] = " ";
+        index += 1;
+      } else if (char === quote) {
+        state = "code";
+      }
+    } else if (char === "/" && next === "/") {
+      output[index] = " ";
+      output[index + 1] = " ";
+      index += 1;
+      state = "line";
+    } else if (char === "/" && next === "*") {
+      output[index] = " ";
+      output[index + 1] = " ";
+      index += 1;
+      state = "block";
+    } else if (char === "r" && /^(r#+")/.test(source.slice(index))) {
+      const opener = source.slice(index).match(/^r(#+)"/);
+      const terminator = `"${opener[1]}`;
+      const end = source.indexOf(terminator, index + opener[0].length);
+      if (end < 0) {
+        throw new Error("rollout Rust source has an unterminated raw string");
+      }
+      const final = end + terminator.length;
+      for (let cursor = index; cursor < final; cursor += 1) {
+        output[cursor] = source[cursor] === "\n" ? "\n" : " ";
+      }
+      index = final - 1;
+    } else if (
+      char === "'" &&
+      ((next === "\\" && source[index + 3] === "'") ||
+        (next !== "\\" && source[index + 2] === "'"))
+    ) {
+      const final = next === "\\" ? index + 4 : index + 3;
+      for (let cursor = index; cursor < final; cursor += 1) {
+        output[cursor] = " ";
+      }
+      index = final - 1;
+    } else if (
+      char === "'" &&
+      /[A-Za-z_]/.test(next ?? "") &&
+      source[index + 2] !== "'"
+    ) {
+      continue;
+    } else if (char === "'" || char === '"' || char === "`") {
+      output[index] = " ";
+      quote = char;
+      state = "string";
+    }
+  }
+  return output.join("");
+}
+
+function matchingDelimiter(source, start, open, close) {
+  let depth = 0;
+  for (let index = start; index < source.length; index += 1) {
+    if (source[index] === open) depth += 1;
+    if (source[index] === close) {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
+function rustFunctions(source) {
+  const masked = maskCodeTrivia(source);
+  const functions = new Map();
+  const declaration =
+    /\b(?:pub(?:\s*\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)\s*[<(]/g;
+  for (const match of masked.matchAll(declaration)) {
+    const name = match[1];
+    const brace = masked.indexOf("{", match.index + match[0].length);
+    if (brace < 0) continue;
+    const end = matchingDelimiter(masked, brace, "{", "}");
+    if (end < 0) {
+      throw new Error(`rollout Rust function ${name} has unbalanced braces`);
+    }
+    functions.set(name, {
+      body: masked.slice(brace + 1, end),
+      source: source.slice(brace + 1, end),
+    });
+  }
+  return functions;
+}
+
+function rustFunctionByName(source, name) {
+  const declaration = new RegExp(`\\bfn\\s+${name}\\s*\\(`);
+  const start = source.search(declaration);
+  if (start < 0) return null;
+  const tail = source.slice(start);
+  const masked = maskCodeTrivia(tail);
+  const brace = masked.indexOf("{");
+  if (brace < 0) return null;
+  const end = matchingDelimiter(masked, brace, "{", "}");
+  if (end < 0) {
+    throw new Error(`rollout Rust function ${name} has unbalanced braces`);
+  }
+  return {
+    body: masked.slice(brace + 1, end),
+    source: tail.slice(brace + 1, end),
+  };
+}
+
+function functionCalls(body) {
+  const calls = new Set();
+  for (const match of body.matchAll(
+    /(?:\.\s*|::\s*|\b)([A-Za-z_]\w*)\s*\(/g,
+  )) {
+    calls.add(match[1]);
+  }
+  return calls;
+}
+
+function reachableFunctions(functions, roots) {
+  const reachable = new Set();
+  const pending = [...roots];
+  while (pending.length > 0) {
+    const name = pending.pop();
+    if (reachable.has(name) || !functions.has(name)) continue;
+    reachable.add(name);
+    for (const called of functionCalls(functions.get(name).body)) {
+      if (!reachable.has(called)) pending.push(called);
+    }
+  }
+  return reachable;
+}
+
+function requireShippingClientDataflow(source) {
+  const functions = rustFunctions(source);
+  const boundary = functions.get("get_control_inbox_compatible_from");
+  if (!boundary) {
+    throw new Error("shipping client compatibility function is absent");
+  }
+  const code = boundary.body.replace(/\s+/g, " ");
+  const probeCalls =
+    code.match(/\bprobe_control_inbox_sender_filter_capability\s*\(/g) ?? [];
+  if (
+    probeCalls.length !== 1 ||
+    !/let\s+floor\s*=\s*load_sender_filter_capability_floor\s*\(\s*identity\s*\)\s*\?\s*;\s*match\s*\(\s*self\s*\.\s*probe_control_inbox_sender_filter_capability\s*\(\s*\)\s*\?\s*,\s*floor\s*\)\s*\{/.test(
+      code,
+    )
+  ) {
+    throw new Error(
+      "shipping client ignores or bypasses capability probe dataflow",
+    );
+  }
+  for (const branch of [
+    /Version1\s*,\s*SenderFilterCapabilityFloor\s*::\s*NeverObserved[\s\S]*record_sender_filter_capability_floor[\s\S]*get_control_inbox_from/,
+    /Version1\s*,\s*SenderFilterCapabilityFloor\s*::\s*Version1[\s\S]*get_control_inbox_from/,
+    /Legacy\s*,\s*SenderFilterCapabilityFloor\s*::\s*NeverObserved[\s\S]*get_control_inbox\s*\(/,
+    /Legacy\s*,\s*SenderFilterCapabilityFloor\s*::\s*Version1[\s\S]*Err\s*\(/,
+  ]) {
+    if (!branch.test(code)) {
+      throw new Error("shipping client compatibility branch is incomplete");
+    }
+  }
+}
+
+function requireBrokerCallGraph(source) {
+  const production = source.split("\n#[cfg(test)]\nmod tests")[0];
+  const boundary = rustFunctionByName(
+    production,
+    "fetch_peer_control_inbox",
+  );
+  if (!boundary) {
+    throw new Error("broker sender-filter boundary is absent");
+  }
+  const code = boundary.body.replace(/\s+/g, " ").trim();
+  if (
+    !/^client\s*\.\s*get_control_inbox_compatible_from\s*\(\s*identity\s*,\s*peer_osl_user_id\s*\)\s*$/.test(
+      code,
+    )
+  ) {
+    throw new Error(
+      "broker sender-filter boundary has a dead branch or direct bypass",
+    );
+  }
+  const calls =
+    maskCodeTrivia(production).match(/\bfetch_peer_control_inbox\s*\(/g) ??
+    [];
+  if (calls.length < 2) {
+    throw new Error("broker production drains do not reach the filtered boundary");
+  }
+}
+
+function requireNonLowerableFloor(source) {
+  const production = source.split("#[cfg(test)]")[0];
+  const functions = rustFunctions(production);
+  const reachable = reachableFunctions(functions, [
+    "load_sender_filter_capability_floor",
+    "record_sender_filter_capability_floor",
+  ]);
+  for (const required of [
+    "load_sender_filter_capability_floor",
+    "record_sender_filter_capability_floor",
+    "load_from_paths",
+    "write_receipt_atomically",
+    "sync_parent",
+  ]) {
+    if (!reachable.has(required)) {
+      throw new Error(`capability floor call graph does not reach ${required}`);
+    }
+  }
+  const load = functions.get("load_from_paths").body.replace(/\s+/g, " ");
+  if (
+    !/\(\s*None\s*,\s*None\s*\)\s*=>\s*Ok\s*\(\s*SenderFilterCapabilityFloor\s*::\s*NeverObserved\s*\)/.test(
+      load,
+    ) ||
+    !/\(\s*Some\s*\([^)]*\)\s*,\s*Some\s*\([^)]*\)\s*\)[\s\S]*Version1/.test(
+      load,
+    ) ||
+    !/_\s*=>\s*Err\s*\(/.test(load)
+  ) {
+    throw new Error(
+      "capability floor does not fail closed on one-sided identity-anchor absence",
+    );
+  }
+  const atomic = functions
+    .get("write_receipt_atomically")
+    .body.replace(/\s+/g, " ");
+  if (
+    !/file\s*\.\s*sync_all\s*\(\s*\)\s*\?/.test(atomic) ||
+    !/fs\s*::\s*rename\s*\(\s*&\s*temporary\s*,\s*path\s*\)\s*\?/.test(
+      atomic,
+    ) ||
+    !/sync_parent\s*\(\s*path\s*\)\s*\?/.test(atomic)
+  ) {
+    throw new Error(
+      "capability floor atomic replacement or parent durability is absent",
+    );
+  }
+  const record = functions
+    .get("record_sender_filter_capability_floor")
+    .body.replace(/\s+/g, " ");
+  if (
+    !/write_receipt_atomically\s*\(\s*&\s*anchor_path[\s\S]*write_receipt_atomically\s*\(\s*&\s*local_path/.test(
+      record,
+    )
+  ) {
+    throw new Error("capability floor is not anchored before local publication");
+  }
+  const code = maskCodeTrivia(production);
+  const forbidden = new Set([
+    "remove_file",
+    "remove_dir",
+    "remove_dir_all",
+    "set_len",
+    "truncate",
+  ]);
+  const aliases = new Set(forbidden);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const match of code.matchAll(
+      /\b(?:use|let)\s+([A-Za-z_]\w*)\s*=\s*(?:std\s*::\s*)?(?:fs\s*::\s*)?([A-Za-z_]\w*)/g,
+    )) {
+      if (aliases.has(match[2]) && !aliases.has(match[1])) {
+        aliases.add(match[1]);
+        changed = true;
+      }
+    }
+    for (const match of code.matchAll(
+      /\b([A-Za-z_]\w*)\s+as\s+([A-Za-z_]\w*)/g,
+    )) {
+      if (aliases.has(match[1]) && !aliases.has(match[2])) {
+        aliases.add(match[2]);
+        changed = true;
+      }
+    }
+  }
+  const called = functionCalls(code);
+  for (const alias of aliases) {
+    if (called.has(alias)) {
+      throw new Error(
+        "sender-filter capability floor exposes an aliased lowering path",
+      );
+    }
+  }
 }
 
 export function validateRolloutSourceClosure(filesValue) {
@@ -860,7 +1217,7 @@ export function validateRolloutSourceClosure(filesValue) {
     }
   }
 
-  const migration = normalizedSql(
+  const migration = executableSqlStatements(
     files[
       "keyserver-cf/migrations/0031_control_inbox_sender_retention.sql"
     ],
@@ -871,7 +1228,7 @@ export function validateRolloutSourceClosure(filesValue) {
     "insert into worker_schema_capabilities (capability, version)",
     "create trigger control_inbox_retention_delete_guard",
   ]) {
-    if (!migration.includes(sql)) {
+    if (!migration.some((statement) => statement.includes(sql))) {
       throw new Error(`migration 0031 semantic contract missing ${sql}`);
     }
   }
@@ -932,18 +1289,7 @@ export function validateRolloutSourceClosure(filesValue) {
   ) {
     throw new Error("Artifact A health marker binding mismatch");
   }
-  requireCode(
-    files["crates/keystore/src/client.rs"],
-    "crates/keystore/src/client.rs",
-    [
-      /get_control_inbox_compatible_from\s*\(/,
-      /load_sender_filter_capability_floor\s*\(\s*identity\s*\)/,
-      /probe_control_inbox_sender_filter_capability\s*\(\s*\)/,
-      /record_sender_filter_capability_floor\s*\(/,
-      /get_control_inbox_from\s*\(\s*identity\s*,\s*sender_id\s*\)/,
-      /get_control_inbox\s*\(\s*identity\s*\)/,
-    ],
-  );
+  requireShippingClientDataflow(files["crates/keystore/src/client.rs"]);
   const floorProduction = files[
     "crates/keystore/src/sender_filter_rollout.rs"
   ].split("#[cfg(test)]")[0];
@@ -952,27 +1298,19 @@ export function validateRolloutSourceClosure(filesValue) {
     "crates/keystore/src/sender_filter_rollout.rs",
     [
       /osl_config_dir\s*\(\s*\)/,
-      /create_new\s*\(\s*true\s*\)/,
+      /osl_base_dir\s*\(\s*\)/,
+      /identity_anchor_sha256\s*\(\s*identity\s*\)/,
+      /write_receipt_atomically\s*\(/,
+      /sync_parent\s*\(\s*path\s*\)/,
       /crypto\s*::\s*ed25519\s*::\s*sign\s*\(/,
       /crypto\s*::\s*ed25519\s*::\s*verify\s*\(/,
       /SenderFilterCapabilityFloor\s*::\s*Version1/,
     ],
   );
-  if (
-    /\b(?:remove_file|remove_dir|remove_dir_all|truncate|set_len)\s*\(/.test(
-      stripCommentsAndStrings(floorProduction),
-    )
-  ) {
-    throw new Error("sender-filter capability floor exposes a lowering path");
-  }
-  requireCode(
-    files["apps/osl-hub/src/broker.rs"],
-    "apps/osl-hub/src/broker.rs",
-    [
-      /fetch_peer_control_inbox\s*\(/,
-      /get_control_inbox_compatible_from\s*\(\s*identity\s*,\s*peer_osl_user_id\s*\)/,
-    ],
+  requireNonLowerableFloor(
+    files["crates/keystore/src/sender_filter_rollout.rs"],
   );
+  requireBrokerCallGraph(files["apps/osl-hub/src/broker.rs"]);
 
   const fileSha256 = Object.fromEntries(
     ROLLOUT_SOURCE_PATHS.map((sourcePath) => [

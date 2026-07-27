@@ -2,23 +2,27 @@
 //!
 //! The caller never supplies a capability bit, a state path, or a prior-state
 //! boolean. The client probes the Worker itself and this module resolves one
-//! fixed file inside the active account directory. Once capability version 1
-//! has been observed, the write-once identity-signed receipt makes a later
-//! capability disappearance a fail-closed downgrade across process restarts.
+//! fixed file inside the active account directory and a second identity-bound
+//! monotonic record in the shared OSL base. Once capability version 1 has been
+//! observed, both identity-signed records must remain present and equal. A
+//! deleted account-local record therefore cannot reset the floor to
+//! `NeverObserved`; one-sided absence is a fail-closed downgrade.
 
 use crate::identity::Identity;
-use crate::recipients::osl_config_dir;
+use crate::recipients::{osl_base_dir, osl_config_dir};
 use crate::{Error, Result};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use std::fs::{self, OpenOptions};
+use sha2::{Digest, Sha256};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-const FLOOR_FORMAT: &str = "osl.keyserver.sender-filter-capability-floor.v1";
-const FLOOR_DOMAIN: &[u8] = b"OSL-KEYSERVER-SENDER-FILTER-FLOOR-v1\0";
+const FLOOR_FORMAT: &str = "osl.keyserver.sender-filter-capability-floor.v2";
+const FLOOR_DOMAIN: &[u8] = b"OSL-KEYSERVER-SENDER-FILTER-FLOOR-v2\0";
 const FLOOR_FILENAME: &str = "keyserver-sender-filter-capability-floor.json";
+const IDENTITY_ANCHOR_DIRECTORY: &str = "identity-monotonic-records";
 pub(crate) const SENDER_FILTER_CAPABILITY_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -32,18 +36,42 @@ pub(crate) enum SenderFilterCapabilityFloor {
 struct CapabilityFloorReceipt {
     format: String,
     recipient_user_id: String,
+    identity_anchor_sha256: String,
     capability_version: u32,
     first_observed_at_ms: i64,
     signature_b64: String,
 }
 
-fn floor_path() -> Result<PathBuf> {
+fn floor_paths(identity: &Identity) -> Result<(PathBuf, PathBuf)> {
     let directory = osl_config_dir().map_err(|error| {
         Error::Transport(format!(
             "sender-filter capability floor directory is unavailable: {error}"
         ))
     })?;
-    Ok(directory.join(FLOOR_FILENAME))
+    let base = osl_base_dir().map_err(|error| {
+        Error::Transport(format!(
+            "sender-filter identity anchor directory is unavailable: {error}"
+        ))
+    })?;
+    let anchor = identity_anchor_sha256(identity);
+    Ok((
+        directory.join(FLOOR_FILENAME),
+        base.join(IDENTITY_ANCHOR_DIRECTORY)
+            .join(format!("{anchor}.json")),
+    ))
+}
+
+fn identity_anchor_sha256(identity: &Identity) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"OSL-IDENTITY-MONOTONIC-RECORD-v1\0");
+    digest.update((identity.user_id.len() as u32).to_be_bytes());
+    digest.update(identity.user_id.as_bytes());
+    digest.update(identity.ed25519_public.as_bytes());
+    digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn lp(value: &[u8], output: &mut Vec<u8>) {
@@ -53,12 +81,14 @@ fn lp(value: &[u8], output: &mut Vec<u8>) {
 
 fn canonical_floor_bytes(
     recipient_user_id: &str,
+    identity_anchor_sha256: &str,
     capability_version: u32,
     first_observed_at_ms: i64,
 ) -> Vec<u8> {
-    let mut output = Vec::with_capacity(FLOOR_DOMAIN.len() + recipient_user_id.len() + 32);
+    let mut output = Vec::with_capacity(FLOOR_DOMAIN.len() + recipient_user_id.len() + 96);
     lp(FLOOR_DOMAIN, &mut output);
     lp(recipient_user_id.as_bytes(), &mut output);
+    lp(identity_anchor_sha256.as_bytes(), &mut output);
     lp(capability_version.to_string().as_bytes(), &mut output);
     lp(first_observed_at_ms.to_string().as_bytes(), &mut output);
     output
@@ -77,12 +107,10 @@ fn validate_parent(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn load_from_path(path: &Path, identity: &Identity) -> Result<SenderFilterCapabilityFloor> {
+fn load_receipt(path: &Path, identity: &Identity) -> Result<Option<CapabilityFloorReceipt>> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(SenderFilterCapabilityFloor::NeverObserved)
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(Error::Io(error)),
     };
     if !metadata.is_file() || metadata.file_type().is_symlink() {
@@ -108,6 +136,7 @@ fn load_from_path(path: &Path, identity: &Identity) -> Result<SenderFilterCapabi
     let receipt: CapabilityFloorReceipt = serde_json::from_slice(&bytes)?;
     if receipt.format != FLOOR_FORMAT
         || receipt.recipient_user_id != identity.user_id
+        || receipt.identity_anchor_sha256 != identity_anchor_sha256(identity)
         || receipt.capability_version != SENDER_FILTER_CAPABILITY_VERSION
         || receipt.first_observed_at_ms <= 0
     {
@@ -124,6 +153,7 @@ fn load_from_path(path: &Path, identity: &Identity) -> Result<SenderFilterCapabi
     let signature = crypto::ed25519::Signature::from_bytes(signature_array);
     let message = canonical_floor_bytes(
         &receipt.recipient_user_id,
+        &receipt.identity_anchor_sha256,
         receipt.capability_version,
         receipt.first_observed_at_ms,
     );
@@ -132,17 +162,79 @@ fn load_from_path(path: &Path, identity: &Identity) -> Result<SenderFilterCapabi
             "sender-filter capability floor signature is invalid".into(),
         ));
     }
-    Ok(SenderFilterCapabilityFloor::Version1)
+    Ok(Some(receipt))
+}
+
+fn load_from_paths(
+    local_path: &Path,
+    identity_anchor_path: &Path,
+    identity: &Identity,
+) -> Result<SenderFilterCapabilityFloor> {
+    let local = load_receipt(local_path, identity)?;
+    let anchor = load_receipt(identity_anchor_path, identity)?;
+    match (local, anchor) {
+        (None, None) => Ok(SenderFilterCapabilityFloor::NeverObserved),
+        (Some(local), Some(anchor))
+            if local.identity_anchor_sha256 == anchor.identity_anchor_sha256
+                && local.capability_version == anchor.capability_version
+                && local.first_observed_at_ms == anchor.first_observed_at_ms
+                && local.signature_b64 == anchor.signature_b64 =>
+        {
+            Ok(SenderFilterCapabilityFloor::Version1)
+        }
+        (Some(_), Some(_)) => Err(Error::Transport(
+            "sender-filter capability floor and identity anchor disagree".into(),
+        )),
+        _ => Err(Error::Transport(
+            "sender-filter capability floor or identity anchor is absent".into(),
+        )),
+    }
 }
 
 pub(crate) fn load_sender_filter_capability_floor(
     identity: &Identity,
 ) -> Result<SenderFilterCapabilityFloor> {
-    load_from_path(&floor_path()?, identity)
+    let (local, anchor) = floor_paths(identity)?;
+    load_from_paths(&local, &anchor, identity)
 }
 
-fn write_receipt(path: &Path, bytes: &[u8]) -> Result<()> {
+fn sync_parent(path: &Path) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| Error::Transport("sender-filter record has no parent".into()))?;
+    #[cfg(windows)]
+    let directory = {
+        use std::os::windows::fs::OpenOptionsExt;
+        let mut options = OpenOptions::new();
+        options.read(true).custom_flags(0x02000000);
+        options.open(parent)?
+    };
+    #[cfg(not(windows))]
+    let directory = File::open(parent)?;
+    directory.sync_all()?;
+    Ok(())
+}
+
+fn ensure_private_directory(path: &Path) -> Result<()> {
+    match fs::create_dir(path) {
+        Ok(()) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+            }
+            sync_parent(path)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(Error::Io(error)),
+    }
+    validate_parent(&path.join("record"))?;
+    Ok(())
+}
+
+fn write_receipt_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
     validate_parent(path)?;
+    let temporary = path.with_extension("json.pending");
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -150,13 +242,20 @@ fn write_receipt(path: &Path, bytes: &[u8]) -> Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = match options.open(path) {
+    let mut file = match options.open(&temporary) {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(Error::Transport(
+                "sender-filter capability floor has an incomplete atomic write".into(),
+            ))
+        }
         Err(error) => return Err(Error::Io(error)),
     };
     file.write_all(bytes)?;
     file.sync_all()?;
+    drop(file);
+    fs::rename(&temporary, path)?;
+    sync_parent(path)?;
     Ok(())
 }
 
@@ -169,13 +268,18 @@ pub(crate) fn record_sender_filter_capability_floor(
             "sender-filter capability observation time is invalid".into(),
         ));
     }
-    let path = floor_path()?;
-    match load_from_path(&path, identity)? {
+    let (local_path, anchor_path) = floor_paths(identity)?;
+    match load_from_paths(&local_path, &anchor_path, identity)? {
         SenderFilterCapabilityFloor::Version1 => return Ok(()),
         SenderFilterCapabilityFloor::NeverObserved => {}
     }
+    if let Some(parent) = anchor_path.parent() {
+        ensure_private_directory(parent)?;
+    }
+    let identity_anchor = identity_anchor_sha256(identity);
     let message = canonical_floor_bytes(
         &identity.user_id,
+        &identity_anchor,
         SENDER_FILTER_CAPABILITY_VERSION,
         observed_at_ms,
     );
@@ -183,13 +287,17 @@ pub(crate) fn record_sender_filter_capability_floor(
     let receipt = CapabilityFloorReceipt {
         format: FLOOR_FORMAT.to_owned(),
         recipient_user_id: identity.user_id.clone(),
+        identity_anchor_sha256: identity_anchor,
         capability_version: SENDER_FILTER_CAPABILITY_VERSION,
         first_observed_at_ms: observed_at_ms,
         signature_b64: STANDARD.encode(signature.as_bytes()),
     };
     let bytes = serde_json::to_vec(&receipt)?;
-    write_receipt(&path, &bytes)?;
-    match load_from_path(&path, identity)? {
+    // Anchor first. A crash after this point leaves one-sided state, which is a
+    // refusal rather than a reset to NeverObserved.
+    write_receipt_atomically(&anchor_path, &bytes)?;
+    write_receipt_atomically(&local_path, &bytes)?;
+    match load_from_paths(&local_path, &anchor_path, identity)? {
         SenderFilterCapabilityFloor::Version1 => Ok(()),
         SenderFilterCapabilityFloor::NeverObserved => Err(Error::Transport(
             "sender-filter capability floor was not durably recorded".into(),
@@ -201,7 +309,7 @@ pub(crate) fn record_sender_filter_capability_floor(
 mod tests {
     use super::*;
 
-    fn test_path(label: &str) -> PathBuf {
+    fn test_paths(label: &str) -> (PathBuf, PathBuf) {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -211,12 +319,28 @@ mod tests {
             std::process::id()
         ));
         fs::create_dir_all(&directory).unwrap();
-        directory.join(FLOOR_FILENAME)
+        let anchor_directory = directory.join(IDENTITY_ANCHOR_DIRECTORY);
+        fs::create_dir(&anchor_directory).unwrap();
+        (
+            directory.join(FLOOR_FILENAME),
+            anchor_directory.join("identity-anchor.json"),
+        )
     }
 
-    fn record_at_path(path: &Path, identity: &Identity, observed_at_ms: i64) -> Result<()> {
+    fn record_at_paths(
+        local_path: &Path,
+        anchor_path: &Path,
+        identity: &Identity,
+        observed_at_ms: i64,
+    ) -> Result<()> {
+        match load_from_paths(local_path, anchor_path, identity)? {
+            SenderFilterCapabilityFloor::Version1 => return Ok(()),
+            SenderFilterCapabilityFloor::NeverObserved => {}
+        }
+        let identity_anchor = identity_anchor_sha256(identity);
         let message = canonical_floor_bytes(
             &identity.user_id,
+            &identity_anchor,
             SENDER_FILTER_CAPABILITY_VERSION,
             observed_at_ms,
         );
@@ -224,12 +348,15 @@ mod tests {
         let receipt = CapabilityFloorReceipt {
             format: FLOOR_FORMAT.to_owned(),
             recipient_user_id: identity.user_id.clone(),
+            identity_anchor_sha256: identity_anchor,
             capability_version: SENDER_FILTER_CAPABILITY_VERSION,
             first_observed_at_ms: observed_at_ms,
             signature_b64: STANDARD.encode(signature.as_bytes()),
         };
-        write_receipt(path, &serde_json::to_vec(&receipt)?)?;
-        match load_from_path(path, identity)? {
+        let bytes = serde_json::to_vec(&receipt)?;
+        write_receipt_atomically(anchor_path, &bytes)?;
+        write_receipt_atomically(local_path, &bytes)?;
+        match load_from_paths(local_path, anchor_path, identity)? {
             SenderFilterCapabilityFloor::Version1 => Ok(()),
             SenderFilterCapabilityFloor::NeverObserved => {
                 Err(Error::Transport("test floor did not persist".into()))
@@ -239,36 +366,46 @@ mod tests {
 
     #[test]
     fn signed_floor_is_write_once_and_survives_a_fresh_load() {
-        let path = test_path("positive");
+        let (local, anchor) = test_paths("positive");
         let identity = crate::generate_identity("recipient-positive".into());
         assert_eq!(
-            load_from_path(&path, &identity).unwrap(),
+            load_from_paths(&local, &anchor, &identity).unwrap(),
             SenderFilterCapabilityFloor::NeverObserved
         );
-        record_at_path(&path, &identity, 1_700_000_000_000).unwrap();
+        record_at_paths(&local, &anchor, &identity, 1_700_000_000_000).unwrap();
         assert_eq!(
-            load_from_path(&path, &identity).unwrap(),
+            load_from_paths(&local, &anchor, &identity).unwrap(),
             SenderFilterCapabilityFloor::Version1
         );
-        let before = fs::read(&path).unwrap();
-        record_at_path(&path, &identity, 1_800_000_000_000).unwrap();
-        assert_eq!(fs::read(&path).unwrap(), before);
-        let _ = fs::remove_dir_all(path.parent().unwrap());
+        let before = fs::read(&local).unwrap();
+        record_at_paths(&local, &anchor, &identity, 1_800_000_000_000).unwrap();
+        assert_eq!(fs::read(&local).unwrap(), before);
+        let _ = fs::remove_dir_all(local.parent().unwrap());
+    }
+
+    #[test]
+    fn deleted_local_floor_cannot_reset_the_external_identity_anchor() {
+        let (local, anchor) = test_paths("deleted-local");
+        let identity = crate::generate_identity("recipient-positive".into());
+        record_at_paths(&local, &anchor, &identity, 1_700_000_000_000).unwrap();
+        fs::remove_file(&local).unwrap();
+        assert!(load_from_paths(&local, &anchor, &identity).is_err());
+        let _ = fs::remove_dir_all(local.parent().unwrap());
     }
 
     #[test]
     fn malformed_wrong_identity_and_tampered_floors_fail_closed() {
-        let path = test_path("negative");
+        let (local, anchor) = test_paths("negative");
         let identity = crate::generate_identity("recipient-positive".into());
         let other = crate::generate_identity("recipient-other".into());
-        record_at_path(&path, &identity, 1_700_000_000_000).unwrap();
-        assert!(load_from_path(&path, &other).is_err());
+        record_at_paths(&local, &anchor, &identity, 1_700_000_000_000).unwrap();
+        assert!(load_from_paths(&local, &anchor, &other).is_err());
 
         let mut value: serde_json::Value =
-            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            serde_json::from_slice(&fs::read(&local).unwrap()).unwrap();
         value["capability_version"] = serde_json::json!(2);
-        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
-        assert!(load_from_path(&path, &identity).is_err());
-        let _ = fs::remove_dir_all(path.parent().unwrap());
+        fs::write(&local, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(load_from_paths(&local, &anchor, &identity).is_err());
+        let _ = fs::remove_dir_all(local.parent().unwrap());
     }
 }
