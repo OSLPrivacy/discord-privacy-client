@@ -1327,3 +1327,116 @@ keyserver-cf      vitest-pool-workers, real D1         40 files / 389 tests   ts
    has the schema without the logic. Harmless only while the lane is dark.
 6. Local branch is ahead of `origin` and unpushed; it carries other lanes' work,
    so pushing is not mine to do.
+
+---
+
+## Continuation at HEAD 5822a8f — local D1 contract and control-inbox sweep
+
+This section supersedes stale items 1, 2, and 4 immediately above. No live
+infrastructure was read or changed during this continuation.
+
+### `meta.changes` 0/1 semantics: resolved
+
+Status: `test-proven-only`.
+
+The existing real-D1 contract test was rerun under
+`@cloudflare/vitest-pool-workers`, using Wrangler 4.114.0 and Node 24.14.0:
+
+```text
+✓ A: reports one change when INSERT SELECT admits a row
+✓ B: reports zero changes when INSERT SELECT predicate rejects a row
+✓ C: reports one change when conflict update predicate applies
+✓ D: reports zero changes when conflict update predicate skips
+Test Files  1 passed (1)
+Tests       4 passed (4)
+```
+
+The positive and negative paths cannot pass from metadata alone. The test
+asserts `meta.changes` and then independently reads table state for each admitted
+and rejected statement (`cipher-store-cf/test/d1-meta-changes-contract.test.ts:48`,
+`:70`, `:92`, `:127`). It also exercises the corresponding `RETURNING` shape and
+asserts the total row count (`:58-67`, `:80-89`, `:112-124`, `:147-159`).
+
+Observed local-D1 contract:
+
+| statement branch | `meta.changes` | persisted state |
+|---|---:|---|
+| `INSERT ... SELECT ... WHERE` true | 1 | inserted row exists |
+| `INSERT ... SELECT ... WHERE` false | 0 | rejected row absent |
+| conflict update predicate true | 1 | seeded row changed |
+| conflict update predicate false | 0 | seeded row unchanged |
+
+This resolves the earlier `unknown`; it does not establish `verified-live`.
+
+### Highest-risk remaining scheduled cleanup: control inbox is bounded
+
+Status: `test-proven-only`.
+
+The control inbox was selected ahead of commerce cleanup because it is a live,
+publicly fillable privacy path whose per-recipient quotas do not bound global
+cardinality. The dark link-grant lane was deliberately not used to justify a
+production-repair claim.
+
+The failing-first real-D1 test seeded and positively counted 101 expired inbox
+rows, 101 expired replay receipts, one live inbox row, and one live replay
+receipt (`keyserver-cf/test/integration/control-inbox-sweep.test.ts:12-68`,
+`:111-123`). Against the unbounded implementation, the first cron invocation
+deleted all expired rows:
+
+```text
+[cron] control_inbox sweep deleted 101 expired row(s)
+FAIL expected expiredInbox=1, expiredReceipts=1
+     received expiredInbox=0, expiredReceipts=0
+Test Files  1 failed (1)
+Tests       1 failed (1)
+```
+
+That is a non-vacuous proof that the scheduled operation had no per-tick ceiling.
+It does not prove that 101 rows exhaust a production isolate; that failure mode
+remains `unknown`.
+
+The wired implementation now deletes at most 100 oldest expired rows from each
+table per invocation, using bounded primary-key subqueries and no `RETURNING`
+materialisation (`keyserver-cf/src/lib/control-inbox-sweep.ts:1-46`). The
+scheduled handler calls the bounded helper and reports both counts
+(`keyserver-cf/src/index.ts:187-202`).
+
+The same real-D1 test now observes exactly 100+100 deleted on tick one, 1+1 on
+tick two, and both live controls present after each tick
+(`keyserver-cf/test/integration/control-inbox-sweep.test.ts:125-139`):
+
+```text
+[cron] control_inbox sweep deleted 100 row(s) and 100 request receipt(s)
+[cron] control_inbox sweep deleted 1 row(s) and 1 request receipt(s)
+Test Files  1 passed (1)
+Tests       1 passed (1)
+```
+
+Focused worker/type gates:
+
+```text
+keyserver-cf vitest control-inbox + cron set  Test Files 6 passed (6)
+                                                Tests 35 passed (35)
+keyserver-cf npm run typecheck                 exit 0
+cipher-store meta contract                    Test Files 1 passed (1)
+                                                Tests 4 passed (4)
+```
+
+The still-unbounded scheduled functions are subscription expiry
+(`keyserver-cf/src/lib/subscriptions.ts:160`), anonymous crypto cleanup
+(`keyserver-cf/src/endpoints/crypto-settlement.ts:452`), Stripe checkout claims
+(`keyserver-cf/src/lib/stripe-checkout-claims.ts:304`), and delivered-payment
+alert retention (`keyserver-cf/src/lib/payment-alert-outbox.ts:195`). Whether any
+currently reaches a platform failure is `unknown`.
+
+Link-grant atomic consumption at HEAD 5822a8f remains
+`implemented-unwired`: it is preparatory hardening behind the existing dark
+gates, never a production repair. Nothing in this continuation changes that
+classification.
+
+## Acceptance rows this earns
+
+No checklist row is claimed. The `meta.changes` result closes an evidence gap,
+and the control-inbox change bounds server housekeeping, but this lane has no
+verified mapping from either result to an acceptance row. Nothing is claimed as
+`verified-live` or `runtime-proven`.

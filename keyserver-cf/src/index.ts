@@ -74,6 +74,7 @@ import {
   drainPaymentAlertOutbox,
   sweepDeliveredPaymentAlerts,
 } from "./lib/payment-alert-outbox.js";
+import { sweepExpiredControlInboxRows } from "./lib/control-inbox-sweep.js";
 
 const MAX_MUTATION_BODY_BYTES = 1024 * 1024;
 
@@ -186,22 +187,14 @@ export default {
     // tolerance, and clients drain their inbox far more frequently
     // than that anyway.
     try {
-      const now = Math.floor(Date.now() / 1000);
-      const r = await env.DB.prepare(
-        "DELETE FROM control_inbox WHERE expires_at < ?",
-      )
-        .bind(now)
-        .run();
-      const meta = r as unknown as { meta?: { changes?: number } };
-      const changes = meta.meta?.changes ?? 0;
-      if (changes > 0) {
-        console.log(`[cron] control_inbox sweep deleted ${changes} expired row(s)`);
+      const deleted = await sweepExpiredControlInboxRows(env.DB);
+      const total = deleted.inboxRows + deleted.requestReceipts;
+      if (total > 0) {
+        console.log(
+          `[cron] control_inbox sweep deleted ${deleted.inboxRows} row(s) and ` +
+          `${deleted.requestReceipts} request receipt(s)`,
+        );
       }
-      await env.DB.prepare(
-        "DELETE FROM control_inbox_requests WHERE expires_at < ?",
-      )
-        .bind(now)
-        .run();
     } catch {
       console.error("[cron] control_inbox sweep failed");
     }
