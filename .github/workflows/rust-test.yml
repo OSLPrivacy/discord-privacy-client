@@ -26,6 +26,11 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: webview/package-lock.json
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           # Keep CI aligned with rust-toolchain.toml and Cargo.toml's
@@ -34,6 +39,18 @@ jobs:
       # 9-TD1: rust-cache keeps cold-cache 5-7 min runs from blowing
       # out PR feedback latency once Phase F adds new crates.
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+      # The SAME compile-time-embed trap as apps/osl-hub, on the legacy root
+      # app: src-tauri/tauri.conf.json sets frontendDist to ../webview/dist,
+      # and `tauri::generate_context!()` panics at compile time if that path
+      # does not exist. webview/dist is a build output and is not committed,
+      # so any root cargo command that reaches the bin fails without this.
+      # It went unnoticed because clippy failed on crates/ipc first and
+      # never got this far.
+      - name: Build the embedded webview frontend first
+        working-directory: webview
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
       - run: cargo test --workspace
 
   # apps/osl-hub declares its own `[workspace]`, so root `--workspace` commands
@@ -57,7 +74,8 @@ jobs:
         with:
           workspaces: apps/osl-hub
       - name: Test OSL Privacy core
-        run: cargo test --manifest-path apps/osl-hub/Cargo.toml --features core --lib -- --test-threads=1
+        shell: bash
+        run: bash scripts/ci/hub-core-tests.sh
       - name: Test OSL Privacy Windows identity lifecycle
         run: cargo test --manifest-path apps/osl-hub/Cargo.toml --features core --test windows_identity_lifecycle -- --test-threads=1
 
@@ -98,11 +116,23 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: webview/package-lock.json
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: '1.88.0'
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+      # --all-targets reaches the src-tauri bin, so this job needs
+      # webview/dist for the same reason workspace-test does.
+      - name: Build the embedded webview frontend first
+        working-directory: webview
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
       # Deterministic, zero-false-positive, and already clean on main.
       - run: cargo fmt --all -- --check
       # Blocking clippy denies the classes that describe defects — rustc's own
@@ -189,6 +219,11 @@ jobs:
       # CAPTCHA, and every other tested way of promoting an untested build.
       - name: Promotion gate refuses bad candidates
         run: bash scripts/release/prove-promotion-gate.sh
+      # Rollback is the procedure nobody rehearses. These guards refuse the
+      # two that would actually hurt: pointing the update feed at a draft that
+      # was never published, and a "rollback" onto the live version.
+      - name: Rollback guards refuse bad targets
+        run: bash scripts/release/prove-rollback-guards.sh
 
   # Single stable check name for branch protection, so adding or renaming a
   # Rust job never silently un-enrols a required check.
