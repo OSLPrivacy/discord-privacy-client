@@ -1027,6 +1027,17 @@ function semanticAttachmentClaimSpans(text) {
     }
   }
 
+  function recordPattern(pattern) {
+    for (const match of text.matchAll(pattern)) {
+      const start = match.index ?? 0;
+      const end = start + match[0].length;
+      const key = `${start}:${end}`;
+      if (!spans.some((span) => span.key === key)) {
+        spans.push({ key, start, end });
+      }
+    }
+  }
+
   for (const sentenceMatch of text.matchAll(sentencePattern)) {
     const sentence = sentenceMatch[0];
     const sentenceStart = sentenceMatch.index ?? 0;
@@ -1052,6 +1063,27 @@ function semanticAttachmentClaimSpans(text) {
     const decoy = token(sentence, /\bdecoys?\b/i);
     const exclusive = token(sentence, /\b(?:only|instead\s+of|rather\s+than)\b/i);
     record(sentenceStart, [discord, decoy, exclusive]);
+  }
+
+  // Relational paraphrases found by the independent successor audit. These
+  // patterns bind the actor, downstream surface, and claimed outcome; they do
+  // not ban isolated words such as "placeholder", "blocks", or "unreadable".
+  for (const pattern of [
+    /\bosl\s+(?:thwart(?:s|ed|ing)?|circumvent(?:s|ed|ing)?)\s+discord(?:'s)?[^.!?;\n]{0,80}\b(?:attachment|upload(?:ed)?\s+files?)[^.!?;\n]{0,45}\b(?:scann?(?:er|ers|ing)?|inspection|checks?)\b/gi,
+    /\bosl\s+prevent(?:s|ed|ing)?\s+discord\s+from\s+inspect(?:s|ed|ing)?\s+(?:attachments?|uploaded\s+files?|files?|uploads?)\b/gi,
+    /\bdiscord(?:'s)?\s+checks?\s+on\s+attachments?\s+(?:are|is|were|was|have\s+been|has\s+been)\s+rendered\s+ineffective\s+by\s+osl\b/gi,
+    /\battachment\s+inspection\s+by\s+discord\s+no\s+longer\s+works(?:\s+when\s+osl\s+is\s+used)?\b/gi,
+    /\bdiscord\s+(?:gets?|receives?|sees?)\s+(?:an?\s+|the\s+)?(?:(?:harmless|benign|safe)\s+)?(?:placeholder|stand-in|dummy|surrogate|replacement|decoy)(?:\s+(?:file|image|blob|media))?\s+(?:instead\s+of|rather\s+than)\s+(?:the\s+)?(?:(?:real|original|actual|user's)\s+)?(?:attachments?|uploads?|uploaded\s+files?|files?)\b/gi,
+    /\bonly\s+(?:an?\s+)?(?:(?:harmless|benign|safe)\s+)?(?:placeholder|stand-in|dummy|surrogate|replacement|decoy)(?:\s+(?:file|image|blob|media))?\s+reaches\s+discord(?:\s*(?:;|,)\s*(?:the\s+)?(?:(?:real|original|actual|user's)\s+)?(?:attachments?|uploads?|files?)\s+(?:does\s+not|stays?\s+off)|\s+(?:instead\s+of|rather\s+than)\s+(?:the\s+)?(?:(?:real|original|actual|user's)\s+)?(?:attachments?|uploads?|files?))\b/gi,
+    /\bosl\s+substitut(?:e|es|ed|ing)\s+(?:an?\s+|the\s+)?(?:(?:harmless|benign|safe)\s+)?(?:placeholder|stand-in|dummy|surrogate|replacement|decoy)(?:\s+(?:file|image|blob|media))?\s+for\s+(?:every\s+|the\s+|an?\s+)?(?:attachments?|uploads?|files?)\s+(?:sent|uploaded)\s+to\s+discord\b/gi,
+    /\b(?:actual|original|real)\s+(?:attachments?|uploads?|files?)\s+(?:stays?|remains?)\s+off\s+discord\s*;\s*(?:an?\s+)?(?:(?:harmless|benign|safe)\s+)?(?:placeholder|stand-in|dummy|surrogate|replacement|decoy)(?:\s+(?:file|image|blob|media))?\s+is\s+(?:uploaded|sent)\s+in\s+its\s+place\b/gi,
+    /\bdiscord\s+sees\s+nothing\s+except\s+(?:decoy|fake|dummy|placeholder|surrogate)(?:\s+(?:files?|images?|media|blobs?))?\b/gi,
+    /\bevery\s+(?:file|attachment|upload)\s+visible\s+to\s+discord\s+is\s+(?:an?\s+)?(?:decoy|fake|dummy|placeholder|surrogate)(?:\s+(?:file|image|blob))?\b/gi,
+    /\bdiscord\s+can\s+inspect\s+only\s+(?:an?\s+)?(?:decoy|fake|dummy|placeholder|surrogate)(?:\s+(?:file|image|blob|upload))?\s*,?\s*not\s+(?:the\s+)?(?:user's|real|original|actual)\s+(?:attachments?|uploads?|files?)\b/gi,
+    /\b(?:the\s+)?(?:user's|real|original|actual)\s+(?:attachments?|uploads?|files?)\s+(?:is|are|being|remains?|stays?)\s+(?:opaque|unreadable)\s+to\s+discord\b/gi,
+    /\bdiscord(?:'s)?\s+(?:attachment\s+)?scann?(?:er|ers)\s+learns?\s+nothing\s+about\s+(?:the\s+)?(?:user's|real|original|actual)\s+(?:attachments?|uploads?|files?)\b/gi,
+  ]) {
+    recordPattern(pattern);
   }
 
   return spans.map(({ start, end }) => ({ start, end }));
@@ -1517,6 +1549,133 @@ async function runSelfTest() {
     {
       name: "passes leading attached unproved limitation",
       text: "It is unproved that Discord sees only decoys.",
+      shouldFlag: false,
+    },
+    {
+      name: "catches thwarts-scanner paraphrase",
+      text: "OSL thwarts Discord's attachment scanner.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches circumvents-inspection markup paraphrase",
+      text:
+        "OSL circum<strong>vents</strong> Discord&apos;s attachment inspection.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches prevents-inspection paraphrase",
+      text: "OSL prevents Discord from inspecting uploaded files.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches ineffective-checks paraphrase",
+      text:
+        "Discord&apos;s checks on <strong>attachments</strong> are rendered ineffective by OSL.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches inspection-no-longer-works paraphrase",
+      text: "Attachment inspection by Discord no longer works when OSL is used.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches placeholder-instead paraphrase",
+      text: "Discord gets a harmless placeholder file instead of the real attachment.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches stand-in-only adjacent-clause paraphrase",
+      text: "Only a benign stand-in reaches Discord; the original upload does not.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches dummy-substitution paraphrase",
+      text: "OSL substitutes a dummy image for every attachment sent to Discord.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches surrogate-rather-than paraphrase",
+      text: "Discord receives a surrogate blob rather than the uploaded file.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches placeholder-in-its-place paraphrase",
+      text:
+        "The actual attachment stays off Discord; a safe placeholder is uploaded in its place.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches nothing-except-decoys paraphrase",
+      text: "Discord sees nothing except decoy media.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches every-visible-file-decoy paraphrase",
+      text: "Every file visible to Discord is a decoy.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches only-fake-image paraphrase",
+      text: "Discord can inspect only a fake image, not the user's file.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches original-upload-unreadable paraphrase",
+      text: "The original upload remains unreadable to Discord.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches scanner-learns-nothing paraphrase",
+      text: "Discord's scanner learns nothing about the real attachment.",
+      shouldFlag: true,
+    },
+    {
+      name: "passes attached thwarts limitation",
+      text: "Whether OSL thwarts Discord's attachment scanner is unproved.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes attached prevention limitation",
+      text:
+        "OSL preventing Discord from inspecting uploaded files is Planned and not yet implemented.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes attached placeholder limitation",
+      text:
+        "The claim that Discord gets a harmless placeholder instead of the real attachment is unknown.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes attached stand-in limitation",
+      text:
+        "Whether only a benign stand-in reaches Discord instead of the upload is not established.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes attached visible-decoy limitation",
+      text: "Whether every file visible to Discord is a decoy is not established.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes attached unreadable-upload limitation",
+      text:
+        "The original upload being unreadable to Discord is not yet implemented.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes ordinary placeholder status copy",
+      text: "A placeholder explains that Discord inspection is pending.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes local corrupt-file explanation",
+      text: "The original upload is unreadable because the local file is corrupt.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes ordinary pre-upload prevention copy",
+      text: "OSL prevents accidental uploads before Discord opens.",
       shouldFlag: false,
     },
   ];
