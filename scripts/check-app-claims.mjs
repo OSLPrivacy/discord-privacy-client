@@ -99,6 +99,13 @@ function normalizedClaimTextWithSourceMap(source) {
       }
       return;
     }
+    if (normalized === "·") {
+      if (characters.length > 0 && characters.at(-1) !== "\n") {
+        characters.push("\n");
+        sourceIndexes.push(sourceIndex);
+      }
+      return;
+    }
     if (/\s/.test(normalized)) {
       if (characters.length === 0 || characters.at(-1) === " " || characters.at(-1) === "\n") {
         return;
@@ -125,6 +132,30 @@ function normalizedClaimTextWithSourceMap(source) {
       }
       const close = source.indexOf(">", index + 1);
       if (close !== -1) {
+        const rawTag = source.slice(index, close + 1);
+        for (const attribute of rawTag.matchAll(
+          /\bdata-[a-z0-9_:-]+\s*=\s*(["'])([\s\S]*?)\1/gi,
+        )) {
+          const valueStart = index + (attribute.index ?? 0)
+            + attribute[0].indexOf(attribute[2]);
+          append("\n", valueStart);
+          for (let offset = 0; offset < attribute[2].length;) {
+            if (attribute[2][offset] === "&") {
+              const entity = attribute[2].slice(offset)
+                .match(/^&(?:#[0-9]+|#x[0-9a-f]+|[a-z][a-z0-9]+);/i);
+              if (entity) {
+                for (const character of decodeClaimEntity(entity[0])) {
+                  append(character, valueStart + offset);
+                }
+                offset += entity[0].length;
+                continue;
+              }
+            }
+            append(attribute[2][offset], valueStart + offset);
+            offset += 1;
+          }
+          append("\n", valueStart + attribute[2].length);
+        }
         const tag = source.slice(index, close + 1).match(/^<\s*\/?\s*([a-z][a-z0-9]*)\b/i);
         if (tag && blockTags.test(tag[1])) {
           append("\n", index);
@@ -1117,11 +1148,61 @@ function semanticAttachmentClaimSpans(text) {
     /\bdiscord\s+receives?\s+(?:an?\s+|the\s+)?(?:upload|attachment|file)\s+reference[.!?]\s*(?:the\s+)?referenced\s+(?:attachments?|uploads?|files?)\s+reveals?\s+(?:no|zero)\s+(?:content|information|meaning)\s+to\s+it\b/gi,
     /\bto\s+discord\s*,?\s*(?:every\s+|the\s+)?(?:user's|genuine|actual|real|original|source)\s+(?:attachments?|uploads?|files?)\s+(?:is|are|becomes?|remain(?:s)?)\s+(?:indecipherable|invisible|unintelligible)\b/gi,
     /\bdiscord\s+can\s+extract\s+(?:no|zero)\s+(?:content|information|meaning)\s+from\s+(?:the\s+)?(?:payload|attachment|upload|file)\b/gi,
+    /\bosl\s+(?:skirts?|skirted|skirting)\s+discord(?:'s)?\s+(?:attachment\s+|file\s+|upload\s+)?audit\b/gi,
+    /\b(?:osl\s+)?renders?\s+discord(?:'s)?\s+(?:attachment\s+|file\s+|upload\s+)?audit\s+toothless\b/gi,
+    /\bdiscord\s+(?:gets?|receives?|sees?)\s+(?:an?\s+|the\s+)?(?:harmless|benign|safe|sanitized)?\s*(?:double|lookalike)\b/gi,
+    /\b(?:an?\s+|the\s+)?(?:harmless|benign|safe|sanitized)\s+(?:double|lookalike)\s+(?:in\s+lieu\s+of|instead\s+of|rather\s+than)\s+(?:the\s+)?(?:genuine|actual|real|original|source)\s+(?:attachments?|uploads?|files?)\b/gi,
+    /\bdiscord\s+cannot\s+make\s+sense\s+of\s+(?:the\s+)?(?:genuine|actual|real|original|source)\s+(?:attachments?|uploads?|files?)\b/gi,
+    /\bdiscord\s+sees\s+only\s+gibberish\b/gi,
   ]) {
     recordPattern(pattern);
   }
 
   return spans.map(({ start, end }) => ({ start, end }));
+}
+
+function semanticAtRestClaimSpans(text) {
+  const spans = [];
+  const universalScope =
+    /(?<!\bat\s)\ball\b|\b(?:each|every|everything|entire|entirety|whole|complete|totality|no|none|nothing|never|zero)\b|100\s*%/i;
+  const stateObject =
+    /\b(?:state|data|information|records?|storage|metadata|preferences?|settings?|profile|history|files?|content|cache|database|items?|things?|secrets?)\b/i;
+  const broadCategory =
+    /\b(?:private|local)\s+(?:conversation\s+)?(?:state|data|information|records?|storage|metadata|preferences?|settings?|profile|history)\b/i;
+  const protection =
+    /\b(?:encrypt(?:s|ed|ing)?|decrypt(?:s|ed|ing)?|encipher(?:s|ed|ing)?|unencrypted|ciphertext|cleartext|plain[-\s]*text|sealed?|protect(?:s|ed|ing)?|secur(?:e|es|ed|ing)?|gated|guards?|locked|unlocks?|inaccessible|unreadable|opaque|passphrase|password|in\s+the\s+clear)\b/i;
+  const localContext =
+    /\bat[-\s]+rest\b|\bon[-\s]+disk\b|\bfilesystem\b|\blocal(?:ly)?\b|\bon[-\s]+device\b|\bon\s+(?:this|your|the)\s+(?:device|computer|machine)\b|\bwhole[-\s]+profile\b|\b(?:persist(?:s|ed|ing)?|retain(?:s|ed|ing)?|saved?|stored?)\b/i;
+  const destructive =
+    /\b(?:delete|deletes|deleted|deleting|remove|removes|removed|removing|uninstall|clear|clears|cleared|clearing)\b/i;
+  const attachedLimitation =
+    /\b(?:planned|unavailable|unknown|unproved|unproven|not\s+yet\s+(?:available|implemented|proved)|not\s+established|does\s+not\s+(?:cover|protect|encrypt|secure|mean|imply)\s+(?:all|each|every)|not\s+(?:all|each|every|everything|the\s+(?:entire|whole|complete))|may\s+remain\s+plaintext|plaintext\s+(?:fallback|writes?)|without\s+(?:an?\s+)?(?:installed\s+)?storage\s+key|remov(?:e|es|ed|ing)\b.{0,80}\b(?:restores?|causes?)\s+plaintext\s+writes?)\b/i;
+
+  for (const block of text.matchAll(/[^\n]+/g)) {
+    const blockText = block[0];
+    const sentences = [...blockText.matchAll(/[^.!?;\n]+[.!?;]?/g)]
+      .map((match) => ({
+        start: match.index ?? 0,
+        text: match[0].trim(),
+      }))
+      .filter(({ text: sentence }) => sentence);
+    const scope = sentences.find(({ text: sentence }) => (
+      !attachedLimitation.test(sentence)
+      && !destructive.test(sentence)
+      && protection.test(sentence)
+      && localContext.test(sentence)
+      && (broadCategory.test(sentence)
+        || (universalScope.test(sentence) && stateObject.test(sentence)))
+    ));
+    if (!scope) {
+      continue;
+    }
+    spans.push({
+      start: (block.index ?? 0) + scope.start,
+      end: (block.index ?? 0) + scope.start + scope.text.length,
+    });
+  }
+  return spans;
 }
 
 function countNewlinesBefore(text, index) {
@@ -1203,6 +1284,20 @@ function analyseFragments(file, fragments, bannedPhrases) {
         file,
         line: fragment.line + countNewlinesBefore(fragment.text, sourceIndex),
         phrase: "attachment-scanning overclaim",
+        excerpt: excerptAround(
+          fragment.text,
+          sourceIndex,
+          Math.max(1, span.end - span.start),
+        ),
+      });
+    }
+
+    for (const span of semanticAtRestClaimSpans(lower)) {
+      const sourceIndex = normalized.sourceIndexes[span.start] ?? 0;
+      violations.push({
+        file,
+        line: fragment.line + countNewlinesBefore(fragment.text, sourceIndex),
+        phrase: "at-rest/local-protection overclaim",
         excerpt: excerptAround(
           fragment.text,
           sourceIndex,
@@ -1863,6 +1958,116 @@ async function runSelfTest() {
       text: "Whether Discord receives a sanitized proxy instead of the source upload is unknown.",
       shouldFlag: false,
     },
+    {
+      name: "catches all private state encrypted at rest",
+      text: "All private state is encrypted at rest.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches all local state password protected",
+      text: "All local state is password-protected.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches password encrypts all local data",
+      text: "Your password encrypts all local data.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches every private device record",
+      text: "Every private record on this device is protected with your password.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches recovery material for broad local state",
+      text: "OSL provides recovery material for password-protected local state.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches inline and entity split local protection",
+      text: "All <em>local</em> state is password&#45;protected.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches reversed broad at-rest phrasing",
+      text: "Encrypted at rest with your password: all private state on this device.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches broad public comment",
+      text: "<!-- All private state is encrypted at rest. -->",
+      shouldFlag: true,
+    },
+    {
+      name: "catches broad public data attribute",
+      text: '<div data-public-claim="Your password encrypts all local data."></div>',
+      shouldFlag: true,
+    },
+    {
+      name: "unrelated planned statement cannot launder broad at-rest claim",
+      text: "Account export is Planned. All local state is password-protected.",
+      shouldFlag: true,
+    },
+    {
+      name: "passes honest key-scoped identity statement",
+      text: "Private identity keys are encrypted at rest by the operating-system credential sealer.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes honest key-scoped message-store statement",
+      text: "Decrypted message bodies in the message store are encrypted at rest.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes explicit plaintext limitation",
+      text: "Some conversation metadata and preferences may remain plaintext.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes explicit all-record denial",
+      text: "Password protection does not cover every local record.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes attached unknown broad claim",
+      text: "Whether all local state is password-protected is unknown.",
+      shouldFlag: false,
+    },
+    {
+      name: "catches skirts attachment audit paraphrase",
+      text: "OSL skirts Discord’s audit.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches toothless attachment audit paraphrase",
+      text: "OSL renders Discord’s attachment audit toothless.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches harmless double paraphrase",
+      text: "Discord receives a harmless double.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches sanitized lookalike paraphrase",
+      text: "Discord receives a sanitized lookalike in lieu of the real file.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches cannot make sense paraphrase",
+      text: "Discord cannot make sense of the original attachment.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches sees only gibberish paraphrase",
+      text: "Discord sees only gibberish.",
+      shouldFlag: true,
+    },
+    {
+      name: "passes attached unknown gibberish limitation",
+      text: "Whether Discord sees only gibberish is unknown.",
+      shouldFlag: false,
+    },
   ];
   const rustFixtures = [
     {
@@ -1965,8 +2170,32 @@ async function runSelfTest() {
     );
   }
 
+  const productionReadme = await readUtf8(README_PATH);
+  const readmeMarker = "## What it protects and what it does not";
+  const readmeOccurrences = productionReadme.split(readmeMarker).length - 1;
+  const mutatedReadme = productionReadme.replace(
+    readmeMarker,
+    `${readmeMarker}\n\nAll private state is encrypted at rest.`,
+  );
+  const readmeMutationViolations = analyseFragments(
+    "README.md",
+    [{ text: mutatedReadme, line: 1 }],
+    bannedPhrases,
+  );
+  const readmeMutationCaught = readmeOccurrences === 1
+    && mutatedReadme !== productionReadme
+    && readmeMutationViolations.some(
+      ({ phrase }) => phrase === "at-rest/local-protection overclaim",
+    );
+  if (!readmeMutationCaught) {
+    failures += 1;
+  }
   console.log(
-    `Self-test: phrases parsed=${bannedPhrases.length}, fixtures=${fixtures.length + rustFixtures.length + inputCases.length}, failures=${failures}`,
+    `${readmeMutationCaught ? "PASS" : "FAIL"} actual README broad at-rest mutation is nonvacuous and caught`,
+  );
+
+  console.log(
+    `Self-test: phrases parsed=${bannedPhrases.length}, fixtures=${fixtures.length + rustFixtures.length + inputCases.length + 1}, failures=${failures}`,
   );
 
   return failures === 0 ? 0 : 1;
