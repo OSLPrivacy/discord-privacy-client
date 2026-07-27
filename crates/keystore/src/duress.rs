@@ -55,7 +55,7 @@
 //! pointing at the integration layer responsible. **No
 //! `unimplemented!()` / `todo!()` is used.**
 
-use crate::sealer::{evict_tpm_key, KeyringSealer};
+use crate::sealer::{evict_tpm_key, KeyringSealer, SealerError, TpmEvictOutcome};
 use crate::{Error as KeystoreError, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -259,6 +259,13 @@ impl DuressEngine {
     /// (every step finished) or every remaining step has logged a
     /// failure outcome.
     pub fn execute(&self) -> Result<DuressReport> {
+        self.execute_with_tpm_evict(evict_tpm_key)
+    }
+
+    fn execute_with_tpm_evict<F>(&self, tpm_evict: F) -> Result<DuressReport>
+    where
+        F: Fn() -> std::result::Result<TpmEvictOutcome, SealerError>,
+    {
         let mut journal = self.read_or_init_journal()?;
         let already_done: std::collections::HashSet<WipeStep> =
             journal.completed.iter().map(|(s, _)| *s).collect();
@@ -268,7 +275,7 @@ impl DuressEngine {
             if already_done.contains(&step) {
                 continue;
             }
-            let outcome = self.run_step(step);
+            let outcome = self.run_step(step, &tpm_evict);
             report_steps.push((step, outcome.clone()));
             journal.completed.push((step, outcome));
             self.write_journal(&journal)?;
@@ -308,13 +315,12 @@ impl DuressEngine {
         Ok(Some(self.execute()?))
     }
 
-    fn run_step(&self, step: WipeStep) -> StepOutcome {
+    fn run_step<F>(&self, step: WipeStep, tpm_evict: &F) -> StepOutcome
+    where
+        F: Fn() -> std::result::Result<TpmEvictOutcome, SealerError>,
+    {
         match step {
-            WipeStep::TpmEvict => evict_tpm_key()
-                .map(|_| StepOutcome::Wiped)
-                .unwrap_or_else(|e| StepOutcome::Failed {
-                    error: e.to_string(),
-                }),
+            WipeStep::TpmEvict => map_tpm_evict_result(tpm_evict()),
             WipeStep::KeyringPurge => KeyringSealer::purge_keyring_entry()
                 .map(|_| StepOutcome::Wiped)
                 .unwrap_or_else(|e| StepOutcome::Failed {
@@ -438,5 +444,121 @@ impl DuressEngine {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(DuressError::Io(e.to_string())),
         }
+    }
+}
+
+fn map_tpm_evict_result(result: std::result::Result<TpmEvictOutcome, SealerError>) -> StepOutcome {
+    match result {
+        Ok(TpmEvictOutcome::Evicted) => StepOutcome::Wiped,
+        Ok(TpmEvictOutcome::NoTpmNothingToEvict) => StepOutcome::AlreadyClean,
+        Err(e) => StepOutcome::Failed {
+            error: e.to_string(),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn test_paths(dir: &TempDir) -> (DuressPaths, PathBuf) {
+        (
+            DuressPaths {
+                identity_file: dir.path().join("identity.json"),
+                password_file: dir.path().join("password.json"),
+                prekey_file: Some(dir.path().join("prekeys.json")),
+            },
+            dir.path().join("duress.journal"),
+        )
+    }
+
+    fn write_journal_with_all_steps_except(journal_path: &Path, except: WipeStep) {
+        let completed = WipeStep::ordered()
+            .iter()
+            .copied()
+            .filter(|step| *step != except)
+            .map(|step| {
+                (
+                    step,
+                    StepOutcome::Skipped {
+                        reason: "prefilled test step".to_string(),
+                    },
+                )
+            })
+            .collect();
+        let journal = DuressJournal {
+            completed,
+            started_at_unix_seconds: 0,
+        };
+        std::fs::write(journal_path, serde_json::to_vec_pretty(&journal).unwrap()).unwrap();
+    }
+
+    fn outcome_for(steps: &[(WipeStep, StepOutcome)], target: WipeStep) -> &StepOutcome {
+        &steps
+            .iter()
+            .find(|(step, _)| *step == target)
+            .unwrap_or_else(|| panic!("step {target:?} missing from report"))
+            .1
+    }
+
+    #[test]
+    fn duress_tpm_no_tpm_nothing_to_evict_completes_and_removes_journal() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        write_journal_with_all_steps_except(&journal_path, WipeStep::TpmEvict);
+
+        let engine = DuressEngine::new(journal_path.clone(), paths, DuressHandlers::default());
+        let report = engine
+            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
+            .unwrap();
+
+        assert!(report.completed);
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::TpmEvict),
+            &StepOutcome::AlreadyClean
+        );
+        assert!(
+            !journal_path.exists(),
+            "NoTpmNothingToEvict is terminal and must remove the journal"
+        );
+    }
+
+    #[test]
+    fn duress_tpm_evict_error_retains_journal_and_reports_failed() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        write_journal_with_all_steps_except(&journal_path, WipeStep::TpmEvict);
+
+        let engine = DuressEngine::new(journal_path.clone(), paths, DuressHandlers::default());
+        let report = engine
+            .execute_with_tpm_evict(|| Err(SealerError::Tpm("DeleteKey: access denied".into())))
+            .unwrap();
+
+        assert!(report.completed);
+        assert!(matches!(
+            outcome_for(&report.steps, WipeStep::TpmEvict),
+            StepOutcome::Failed { error } if error.contains("DeleteKey")
+        ));
+        assert!(
+            journal_path.exists(),
+            "failed TPM deletion must retain the journal for resume"
+        );
+    }
+
+    #[test]
+    fn already_clean_is_not_conflated_with_wiped_in_report() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        write_journal_with_all_steps_except(&journal_path, WipeStep::TpmEvict);
+
+        let engine = DuressEngine::new(journal_path, paths, DuressHandlers::default());
+        let report = engine
+            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
+            .unwrap();
+        let tpm_outcome = outcome_for(&report.steps, WipeStep::TpmEvict);
+
+        assert_eq!(tpm_outcome, &StepOutcome::AlreadyClean);
+        assert_ne!(tpm_outcome, &StepOutcome::Wiped);
     }
 }

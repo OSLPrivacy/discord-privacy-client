@@ -1,24 +1,12 @@
 //! Identity key generation, plain-file storage, and HTTP client glue
 //! against the prototype key server.
 //!
-//! # ⚠️  INSECURE BY DESIGN — PROTOTYPE ONLY ⚠️
-//!
-//! v1 alpha prototype implementation — used for dev-to-dev testing
-//! between two of the developer's own devices. **Not safe for any
-//! production-like usage.** Specifically:
-//!
-//! - Identity keys are stored as **plain JSON on disk** with no
-//!   passphrase wrapping, no Argon2id KDF, and no TPM sealing.
-//! - HTTP traffic is **plain HTTP**, no TLS.
-//! - The key-server registration request carries no Discord OAuth
-//!   proof; the server trusts whatever `user_id` is sent.
-//! - Re-registration rate limiting and signature verification on the
-//!   identity-key bundle are deferred.
-//!
-//! v1 stable replaces every item above (TPM-sealed identity blobs via
-//! Windows TBS, Argon2id passphrase wrapping, Discord OAuth gate, TLS,
-//! signed re-registration) — see `docs/design/key-server-api.md`,
-//! `docs/design/auth-flow.md`, and `docs/design/unlock-and-duress.md`.
+//! Identity registration is deliberately service-neutral: a Discord
+//! snowflake is local carrier metadata, never a keyserver lookup name.
+//! Every public bundle returned by `/v1/pubkeys` must carry the
+//! identity's Ed25519 registration signature, which this crate verifies
+//! before returning it to callers. Secret-key at-rest protection is
+//! supplied by the selected [`sealer`] implementation.
 //!
 //! ## Modules
 //!
@@ -46,6 +34,12 @@ pub mod storage;
 pub mod unregister;
 pub mod wrapped_key;
 
+// A8: `Sealer::unseal` returns `Zeroizing<Vec<u8>>`, which makes that type part
+// of this crate's public API. Without this re-export no caller outside the crate
+// can name the return type or implement the trait, which is exactly what broke
+// `tests/sealer_test.rs` when the wrapper was introduced.
+pub use zeroize::Zeroizing;
+
 pub use burn::{canonical_burn_bytes, sign_burn, BurnScope, BURN_DOMAIN};
 pub use burn_alert::{sign_burn_alert, verify_burn_alert, BurnAlertPayload, BURN_ALERT_DOMAIN};
 pub use client::{
@@ -57,7 +51,10 @@ pub use duress::{
     DuressEngine, DuressError, DuressHandlers, DuressJournal, DuressPaths, DuressReport,
     StepOutcome, WipeFn, WipeStep,
 };
-pub use identity::{generate_identity, identity_from_entropy, Identity, IDENTITY_BLOB_VERSION};
+pub use identity::{
+    generate_identity, generate_native_identity, identity_from_entropy,
+    native_identity_from_entropy, native_user_id, Identity, IDENTITY_BLOB_VERSION,
+};
 pub use license_cache::{
     classify_state, load_license_cache, save_license_cache, LicenseCacheInner, LicenseCacheOnDisk,
     LicenseState, LicenseStateDto,
@@ -136,6 +133,9 @@ pub enum Error {
 
     #[error("HTTP server returned status {status}: {body}")]
     HttpStatus { status: u16, body: String },
+
+    #[error("OSL: keyserver bundle proof invalid")]
+    PeerBundleProofInvalid,
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
