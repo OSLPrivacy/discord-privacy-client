@@ -326,7 +326,7 @@ describe("D2 migration-0010 authoritative release contract", () => {
   it("blocks production while the fixed trusted-producer registry is empty", async () => {
     expect(D2_TRUSTED_PRODUCERS).toEqual({});
     await expect(verifyD2Migration0010ProductionRelease(await evidence()))
-      .rejects.toThrow(/no trusted production producers/);
+      .rejects.toThrow(/v2 production admission is retired/);
     expect(verifyD2Migration0010ProductionRelease.length).toBe(1);
   });
 

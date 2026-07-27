@@ -836,7 +836,10 @@ function validateBinding(
   }
 }
 
-function validateProbeOutcome(kind: D2ProbeKind, value: unknown): void {
+export function validateD2ProbeOutcomeForAdmission(
+  kind: D2ProbeKind,
+  value: unknown,
+): void {
   if (kind === "legacy-no-object") return validateLegacy(value);
   if (kind === "exact-size") return validateExact(value);
   if (kind === "wrong-size") return validateWrong(value);
@@ -1036,7 +1039,10 @@ async function validateProduction(
       fail(`probe ${index} predates the authorized Worker activation`);
     }
     validateBinding(probe.binding, provider, signed.producer);
-    validateProbeOutcome(probe.kind as D2ProbeKind, probe.outcome);
+    validateD2ProbeOutcomeForAdmission(
+      probe.kind as D2ProbeKind,
+      probe.outcome,
+    );
     if (
       probe.kind === "rollback-refusal"
       && objectValue(probe.outcome, "rollback-refusal outcome")
@@ -1081,42 +1087,12 @@ async function validateProduction(
 }
 
 export async function verifyD2Migration0010ProductionRelease(
-  input: unknown,
+  _input: unknown,
 ): Promise<D2ProductionReceipt> {
-  const valid = await validateProduction(input, D2_TRUSTED_PRODUCERS);
-  const witnessCounts = Object.fromEntries(
-    D2_PROBE_KINDS.map((kind) => [kind, 1]),
-  ) as Record<D2ProbeKind, 1>;
-  return {
-    format: D2_PRODUCTION_RECEIPT_FORMAT,
-    verdict: "production-release-authorized",
-    environment: "production",
-    source: {
-      commit_sha: D2_RELEASE_COMMIT,
-      tree_sha: D2_RELEASE_TREE,
-      manifest_sha256: D2_RELEASE_SOURCE_SHA256,
-    },
-    account_sha256: valid.provider.account_sha256,
-    d1: {
-      database_id: D2_DATABASE_ID,
-      migration_observed_at_ms: valid.provider.d1.observed_at_ms,
-    },
-    worker: {
-      version_id: valid.provider.worker.version_id,
-      activated_at_ms: valid.provider.worker.activated_at_ms,
-      traffic_percentage: 100,
-    },
-    r2: { bucket_name: D2_R2_BUCKET },
-    cron: {
-      natural_trigger_observation: "observed",
-      scheduled_time_ms: valid.provider.cron.scheduled_time_ms,
-      event_time_ms: valid.provider.cron.event_time_ms,
-    },
-    producer_ids: valid.producerIds,
-    signed_statement_sha256: valid.statementDigests,
-    witness_counts: witnessCounts,
-    production_authorized: true,
-  };
+  fail(
+    "v2 production admission is retired because it has no durable replay "
+    + "authority; use the v3 single-use admission contract",
+  );
 }
 
 /**
