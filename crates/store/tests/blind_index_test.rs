@@ -567,9 +567,11 @@ fn nonempty_bodies_roundtrip_after_restart_without_reversible_at_rest_leaks() {
     );
 }
 
-/// `crates/store` has one local persistence authority: SQLite writing
-/// `messages.sqlite`. SQLite may create any same-prefix sidecar; the raw-byte
-/// tests sweep all of them, not a hand-maintained extension list.
+/// `crates/store` has one local database persistence authority: SQLite writing
+/// `messages.sqlite`.  The optional monotonic-anchor provider is deliberately
+/// external and is not a second local file surface. SQLite may create any
+/// same-prefix sidecar; the raw-byte tests sweep all of them, not a
+/// hand-maintained extension list.
 ///
 /// This inventory is intentionally store-local. Other product crates own
 /// additional persistence surfaces and require their own at-rest proofs; this
@@ -583,11 +585,12 @@ fn store_persistence_surface_inventory_is_closed() {
     production_files.sort();
     assert_eq!(
         production_files,
-        ["cipher.rs", "error.rs", "lib.rs", "schema.rs"],
+        ["anchor.rs", "cipher.rs", "error.rs", "lib.rs", "schema.rs"],
         "the production source inventory changed; audit the new file for persistence"
     );
 
     let sources = [
+        ("anchor.rs", include_str!("../src/anchor.rs")),
         ("lib.rs", include_str!("../src/lib.rs")),
         ("schema.rs", include_str!("../src/schema.rs")),
         ("cipher.rs", include_str!("../src/cipher.rs")),
@@ -608,7 +611,10 @@ fn store_persistence_surface_inventory_is_closed() {
         .collect::<Vec<_>>();
     assert_eq!(
         connection_sites,
-        vec![("lib.rs", "Ok(Connection::open(path)?)".to_string())],
+        vec![
+            ("lib.rs", "Ok(Connection::open(path)?)".to_string()),
+            ("lib.rs", "Ok(Connection::open(path)?)".to_string()),
+        ],
         "a new SQLite persistence surface was added without an A8 privacy proof"
     );
 

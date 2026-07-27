@@ -82,6 +82,11 @@ pub enum StoreError {
     #[error("storage binding: {0}")]
     StorageBinding(String),
 
+    /// The externally provided monotonic anchor refused, was unavailable, or
+    /// observed a database generation behind the durable anchor state.
+    #[error("monotonic anchor: {0}")]
+    Anchor(String),
+
     #[error("corrupted: {0}")]
     Corrupted(String),
 }

@@ -38,6 +38,9 @@ const HKDF_INFO: &[u8] = b"osl-message-store-v1";
 /// encryption key so that compromising one does not hand over the other, and so
 /// index values can never be confused with key material.
 const INDEX_HKDF_INFO: &[u8] = b"osl-message-store-index-v1";
+const ANCHOR_STORE_ID_HKDF_INFO: &[u8] = b"osl-message-store-anchor/store-id-v1";
+const ANCHOR_DIGEST_HKDF_INFO: &[u8] = b"osl-message-store-anchor/digest-key-v1";
+const ANCHOR_DIGEST_DOMAIN: &[u8] = b"osl-message-store-anchor/digest-v1";
 
 /// Per-field domains for blind indexes.
 ///
@@ -75,6 +78,24 @@ pub(crate) fn derive_key(identity_secret: &[u8; 32]) -> Result<aead::Key, StoreE
 pub(crate) fn derive_index_key(identity_secret: &[u8; 32]) -> Result<[u8; 32], StoreError> {
     hkdf::derive_32(&[], identity_secret, INDEX_HKDF_INFO)
         .map_err(|e| StoreError::Sealer(format!("HKDF index derive: {e}")))
+}
+
+pub(crate) fn derive_anchor_material(
+    identity_secret: &[u8; 32],
+) -> Result<([u8; 32], [u8; 32]), StoreError> {
+    let store_id = hkdf::derive_32(&[], identity_secret, ANCHOR_STORE_ID_HKDF_INFO)
+        .map_err(|e| StoreError::Anchor(format!("anchor store-id derive: {e}")))?;
+    let digest_key = hkdf::derive_32(&[], identity_secret, ANCHOR_DIGEST_HKDF_INFO)
+        .map_err(|e| StoreError::Anchor(format!("anchor digest-key derive: {e}")))?;
+    Ok((store_id, digest_key))
+}
+
+pub(crate) fn anchor_digest(
+    digest_key: &[u8; 32],
+    canonical_state: &[u8],
+) -> Result<[u8; 32], StoreError> {
+    hkdf::derive_32(digest_key, canonical_state, ANCHOR_DIGEST_DOMAIN)
+        .map_err(|e| StoreError::Anchor(format!("anchor digest: {e}")))
 }
 
 /// Compute a keyed blind index for one identifier.

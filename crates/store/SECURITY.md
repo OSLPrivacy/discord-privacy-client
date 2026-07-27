@@ -189,6 +189,30 @@ up the channel by `chan_bi` and sorts by `seq DESC`. `seq` exists
 because sealing `decrypted_at` otherwise would force a full-channel
 decrypt just to sort.
 
+## Rollback detection: external anchor required
+
+SQLite authentication detects tampering, not a coherent restoration of an
+older authenticated database. `MessageStore::open` remains compatible with
+existing callers and **does not claim rollback protection**.
+
+`MessageStore::open_anchored` is the explicit protected mode. It requires a
+caller-provided `MonotonicAnchor` whose compare-and-advance state survives a
+SQLite restore (for example a keystore/TPM-backed counter). The Store derives
+a domain-separated opaque store identity and canonical state digest from the
+identity secret, records a generation/digest with each committed mutation, and
+requires the provider to advance before reporting success. A crash between the
+SQLite commit and provider advance is recoverable only for the exact next
+generation; a database behind, ahead by more than one generation, or with a
+different digest is refused.
+
+The provider is deliberately **implemented-unwired**: this crate supplies no
+file-backed fallback, because a second file beside `messages.sqlite` can be
+replayed with the database. Until the keystore/platform owner wires a durable
+provider and production callers select `open_anchored`, this is test-proven
+Store machinery, not shipping rollback protection. It does not protect OS
+root compromise, backups held by an attacker, or a provider that itself rolls
+back.
+
 ## Search
 
 v1 has no search. The public API is `get` + `list_by_channel`

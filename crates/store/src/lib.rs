@@ -45,10 +45,12 @@
 //! Burn is terminal: a `put` cannot restore a row that
 //! [`MessageStore::mark_burned`] has destroyed.
 
+mod anchor;
 mod cipher;
 mod error;
 mod schema;
 
+pub use anchor::{AnchorRecord, MonotonicAnchor};
 pub use error::StoreError;
 
 use cipher::{AttachmentMeta, MessageMeta};
@@ -56,7 +58,7 @@ use crypto::aead;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// A single decrypted Discord message persisted in the local
 /// store.
@@ -117,6 +119,7 @@ pub struct MessageStore {
     /// Separate HKDF derivation used only for blind indexes, never for
     /// encryption.
     index_key: [u8; 32],
+    anchor: Option<anchor::AnchorBinding>,
 }
 
 /// Complete cryptographic and selector state needed to authenticate a live
@@ -536,7 +539,20 @@ impl MessageStore {
     /// who mistyped a password. Failure returns [`StoreError::Sealer`] (the
     /// wrong-`identity_secret` signal) without exposing any plaintext.
     pub fn open(app_data_dir: &Path, identity_secret: &[u8; 32]) -> Result<Self, StoreError> {
-        Self::open_with_connection_factory(app_data_dir, identity_secret, |path| {
+        Self::open_with_connection_factory(app_data_dir, identity_secret, None, |path| {
+            Ok(Connection::open(path)?)
+        })
+    }
+
+    /// Open with an external, durable monotonic anchor.  Only this mode
+    /// detects coherent SQLite rollback/replay; [`Self::open`] intentionally
+    /// retains compatibility but makes no such claim.
+    pub fn open_anchored(
+        app_data_dir: &Path,
+        identity_secret: &[u8; 32],
+        provider: Arc<dyn MonotonicAnchor>,
+    ) -> Result<Self, StoreError> {
+        Self::open_with_connection_factory(app_data_dir, identity_secret, Some(provider), |path| {
             Ok(Connection::open(path)?)
         })
     }
@@ -551,6 +567,7 @@ impl MessageStore {
     fn open_with_connection_factory<F>(
         app_data_dir: &Path,
         identity_secret: &[u8; 32],
+        provider: Option<Arc<dyn MonotonicAnchor>>,
         factory: F,
     ) -> Result<Self, StoreError>
     where
@@ -586,11 +603,38 @@ impl MessageStore {
             checkpoint_after_shred(&conn)?;
         }
         validate_all_attachment_manifests(&conn, &key, &index_key)?;
+        let anchor = provider
+            .map(|provider| {
+                anchor::AnchorBinding::enroll_or_reconcile(&conn, identity_secret, provider)
+            })
+            .transpose()?;
         Ok(MessageStore {
             conn: Mutex::new(conn),
             key,
             index_key,
+            anchor,
         })
+    }
+
+    fn commit(&self, tx: rusqlite::Transaction<'_>) -> Result<(), StoreError> {
+        match &self.anchor {
+            Some(anchor) => anchor.commit(tx),
+            None => {
+                tx.commit()?;
+                Ok(())
+            }
+        }
+    }
+
+    /// `checkpoint_after_shred` clears a durable recovery marker in a second
+    /// SQLite transaction. Bind that post-checkpoint state too: otherwise an
+    /// anchored digest would describe the pre-checkpoint marker rather than
+    /// the database later reopened by the caller.
+    fn sync_anchor_after_checkpoint(&self, conn: &mut Connection) -> Result<(), StoreError> {
+        if let Some(anchor) = &self.anchor {
+            anchor.commit(conn.transaction()?)?;
+        }
+        Ok(())
     }
 
     fn bi(&self, domain: &[u8], value: &str) -> Result<Vec<u8>, StoreError> {
@@ -714,8 +758,9 @@ impl MessageStore {
                 params![&mid_bi],
             )?;
             schema::mark_shred_checkpoint_pending(&tx)?;
-            tx.commit()?;
+            self.commit(tx)?;
             checkpoint_after_shred(&conn)?;
+            self.sync_anchor_after_checkpoint(&mut conn)?;
             return Ok(());
         }
 
@@ -773,7 +818,7 @@ impl MessageStore {
                 },
             )?;
         }
-        tx.commit()?;
+        self.commit(tx)?;
         Ok(())
     }
 
@@ -902,8 +947,9 @@ impl MessageStore {
             params![&mid_bi],
         )?;
         schema::mark_shred_checkpoint_pending(&tx)?;
-        tx.commit()?;
+        self.commit(tx)?;
         checkpoint_after_shred(&conn)?;
+        self.sync_anchor_after_checkpoint(&mut conn)?;
         Ok(())
     }
 
@@ -1045,8 +1091,9 @@ impl MessageStore {
             )?,
         };
         schema::mark_shred_checkpoint_pending(&tx)?;
-        tx.commit()?;
+        self.commit(tx)?;
         checkpoint_after_shred(&conn)?;
+        self.sync_anchor_after_checkpoint(&mut conn)?;
         Ok(rows)
     }
 
@@ -1091,8 +1138,9 @@ impl MessageStore {
         )?;
         let rows = tx.execute("DELETE FROM messages WHERE chan_bi = ?1", params![chan_bi])?;
         schema::mark_shred_checkpoint_pending(&tx)?;
-        tx.commit()?;
+        self.commit(tx)?;
         checkpoint_after_shred(&conn)?;
+        self.sync_anchor_after_checkpoint(&mut conn)?;
         Ok(rows)
     }
 
@@ -1330,7 +1378,7 @@ impl MessageStore {
             StoreError::Corrupted("attachment manifest generation overflow".to_string())
         })?;
         write_attachment_manifest(&tx, &self.key, &mid_bi, &manifest)?;
-        tx.commit()?;
+        self.commit(tx)?;
         Ok(())
     }
 
@@ -1426,8 +1474,9 @@ impl MessageStore {
         if rows != 0 {
             schema::mark_shred_checkpoint_pending(&tx)?;
         }
-        tx.commit()?;
+        self.commit(tx)?;
         checkpoint_after_shred(&conn)?;
+        self.sync_anchor_after_checkpoint(&mut conn)?;
         Ok(rows)
     }
 
@@ -1603,7 +1652,7 @@ impl MessageStore {
         for (ck_bi, _, _) in &victims {
             rows += tx.execute("DELETE FROM attachments WHERE ck_bi = ?1", params![ck_bi])?;
         }
-        tx.commit()?;
+        self.commit(tx)?;
         Ok(rows)
     }
 
@@ -1631,15 +1680,16 @@ impl MessageStore {
                     "live message or attachment set has no manifest".to_string(),
                 ));
             }
-            tx.commit()?;
+            self.commit(tx)?;
             return Ok(0);
         }
         let rows = shred_attachment_rows(&tx, &mid_bi)?;
         if rows != 0 {
             schema::mark_shred_checkpoint_pending(&tx)?;
         }
-        tx.commit()?;
+        self.commit(tx)?;
         checkpoint_after_shred(&conn)?;
+        self.sync_anchor_after_checkpoint(&mut conn)?;
         Ok(rows)
     }
 
@@ -1708,8 +1758,9 @@ impl MessageStore {
             )?;
         }
         schema::mark_shred_checkpoint_pending(&tx)?;
-        tx.commit()?;
+        self.commit(tx)?;
         checkpoint_after_shred(&conn)?;
+        self.sync_anchor_after_checkpoint(&mut conn)?;
         Ok(shredded)
     }
 
@@ -1894,6 +1945,7 @@ mod storage_binding_tests {
         let error = match MessageStore::open_with_connection_factory(
             &trusted_root,
             &[7u8; 32],
+            None,
             |_trusted_path| Ok(Connection::open(&decoy_db)?),
         ) {
             Ok(_) => panic!("the production initializer accepted a wrong-root connection"),
