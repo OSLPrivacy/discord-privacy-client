@@ -284,8 +284,10 @@ away, per master §16.3.
   `8abdc2ff28c9c3cf6385bc66250f30407845a894`, tree
   `6295020f7f20900c9ff869d479b744f4e7d131ef`, gate blob
   `51a8b0551e91155597c84f7b2abfd9295bc6cd31`, archive SHA-256
-  `f5cafc221a879438fbaf08105a75ce591ec32eaeba96b0d9fbb1fc04907d5e5a`) is
-  independently accepted at the source/static-test tier. The authoritative machine-readable
+  `f5cafc221a879438fbaf08105a75ce591ec32eaeba96b0d9fbb1fc04907d5e5a`) received
+  **ACCEPT +1 from both immutable independent exact-object audits**: `store` receipt
+  `20260727T170053Z-5a7af576` and `audit_points` receipt
+  `20260727T170139Z-35a6fd5f`. Both are source/static-test-tier verdicts. The authoritative machine-readable
   census has raw SHA-256
   `a7468b174b07301873eee1a1a9e5e01f5af30716df2dbb4bac13f65820c83246` and
   accounts for exactly 18 backends, nine bound public claims, and 44 source anchors. The final
