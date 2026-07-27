@@ -467,15 +467,15 @@ interface RehydratedDiscordRow {
   flagtext: string;
   plaintext: string | null;
   /**
-   * Which end of the conversation wrote this row, as PROVEN by the backend --
-   * it is the orientation whose signature verified the wire, not a guess from
-   * position or from whose conversation is open.
+   * The only author verdict history rehydration can safely return: `incoming`,
+   * after the backend verifies a peer-signed wire addressed to this identity.
    *
-   * Non-null exactly when `plaintext` is non-null. The renderer never invents
-   * it: a row with text and no proven author is a malformed response, and the
-   * whole read is refused so Discord's own rows stay visible.
+   * A locally signed cover is not proof that the visible Discord row was posted
+   * locally: a peer can replay that cover in a new row. Until the trusted native
+   * reader supplies an independent poster/message binding, `outgoing` is not a
+   * valid history verdict. Non-null exactly when `plaintext` is non-null.
    */
-  orientation: "incoming" | "outgoing" | null;
+  orientation: "incoming" | null;
   row: DecodedDiscordRowRect | null;
 }
 
@@ -526,18 +526,17 @@ function parseRehydratedDiscordRow(value: unknown): RehydratedDiscordRow | null 
   if (typeof record.flagtext !== "string" || utf8Length(record.flagtext) > MAX_ROW_FLAGTEXT_BYTES) return null;
   if (record.plaintext !== null
     && (typeof record.plaintext !== "string" || utf8Length(record.plaintext) > MAX_PROTECTED_DRAFT_BYTES)) return null;
-  // Authorship is accepted only as one of the two proven answers, and only
-  // together with the text it describes. Text with no proven author would have
-  // to be attributed by guessing, and an author with no text describes nothing
-  // -- both are refused here rather than reconciled downstream.
-  if (record.orientation !== null && record.orientation !== "incoming" && record.orientation !== "outgoing") return null;
+  // Only a peer-signed inbound wire is a safe history verdict. In particular,
+  // never accept renderer/backend `outgoing` text without a trusted native
+  // row/poster binding: wire orientation alone survives a cross-author replay.
+  if (record.orientation !== null && record.orientation !== "incoming") return null;
   if ((record.plaintext === null) !== (record.orientation === null)) return null;
   const row = record.row === null ? null : parseDecodedDiscordRowRect(record.row);
   if (record.row !== null && row === null) return null;
   return {
     flagtext: record.flagtext,
     plaintext: record.plaintext as string | null,
-    orientation: record.orientation as "incoming" | "outgoing" | null,
+    orientation: record.orientation as "incoming" | null,
     row,
   };
 }
@@ -701,10 +700,9 @@ function applyDecodedTranscript(rows: readonly RehydratedDiscordRow[]): void {
   for (const row of rows) {
     // Undecodable, or unplaceable. Either way OSL owns no pixel over it.
     if (row.plaintext === null || row.row === null) continue;
-    // And authorship must have been PROVEN. The parser already refuses a row
-    // that has text without it, so this is the second half of the same
-    // fail-closed rule rather than a new one: OSL leaves the carrier visible
-    // rather than painting text it cannot name the author of.
+    // The parser accepts only the backend's peer-signed inbound verdict. A
+    // locally signed cover can be replayed by the peer and therefore cannot
+    // classify this visible row as local without a separate native row proof.
     if (row.orientation === null) continue;
     // Positional keys, so a row that is still the nth decodable row keeps its
     // DOM node across reads instead of being destroyed and rebuilt on a scroll.
@@ -714,11 +712,10 @@ function applyDecodedTranscript(rows: readonly RehydratedDiscordRow[]): void {
     decodedRows.push({
       key,
       kind: "text",
-      // From the backend's proof, never from the surface. Stamping every
-      // opened row `incoming` showed the operator their OWN sent messages
-      // attributed to their friend.
-      direction: row.orientation,
-      author: row.orientation === "outgoing" ? localIdentity : verifiedFriendIdentity,
+      // Bound to the protected wire's verified peer sender. The renderer never
+      // authors or upgrades ownership.
+      direction: "incoming",
+      author: verifiedFriendIdentity,
       timestamp: transcriptTimestamp(),
       plaintext: row.plaintext,
       // Born in whichever mode the eye is already in, so a read that lands with

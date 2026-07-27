@@ -1594,26 +1594,27 @@ pub struct PreparedNativeDiscordOverlayText {
 pub struct RehydratedNativeDiscordRow {
     pub flagtext: String,
     pub plaintext: Option<String>,
-    /// Which end of the conversation wrote this row, `Some` exactly when
-    /// `plaintext` is `Some`. See [`RehydratedRowOrientation`].
+    /// The only author this history path can safely prove: the verified peer.
+    /// `Some` exactly when `plaintext` is `Some`. See
+    /// [`RehydratedRowOrientation`].
     pub orientation: Option<RehydratedRowOrientation>,
     #[serde(skip)]
     pub bounds: Option<[i32; 4]>,
 }
 
-/// Who wrote one rehydrated row, as **proven** by the signature on its wire.
+/// The safe author verdict for one rehydrated history row.
 ///
-/// This is not a display hint and it is not derived from where the row sits or
-/// from whose conversation is open. The decode leg already had to pick exactly
-/// one orientation to decrypt under -- `authenticate_oriented_prose_pointer`
-/// tries each accepted orientation's signature and stops at the one that
-/// verifies -- and this type is that verdict, carried instead of discarded.
+/// The prose token authenticates a scope and the protected wire authenticates
+/// its sender, but neither is bound to the Discord row that currently displays
+/// the public cover. A peer can therefore paste a still-live locally signed
+/// cover into a new row. Treating that wire's `SelfToPeer` orientation as proof
+/// that the visible row was locally posted would label the peer's replay “You.”
 ///
-/// Discarding it is what made every opened row render as the friend's words:
-/// the renderer had nothing to label with, so it labelled everything `incoming`
-/// and attributed it to the verified friend. An operator's own sent message
-/// shown as something their friend said is a wrong-attribution defect, which is
-/// the same class as the audit's receive-misattribution finding.
+/// Until the trusted native reader supplies an independently verified row
+/// poster/message binding, this history path accepts only a wire signed by the
+/// verified peer and addressed to this identity. Locally signed history covers
+/// fail closed and Discord's own row remains visible. The separately verified
+/// just-sent carrier path is unaffected.
 ///
 /// There is deliberately no `Unknown` variant. A row whose orientation was not
 /// proven has no `plaintext` either, so it is not rendered at all and Discord's
@@ -1621,19 +1622,8 @@ pub struct RehydratedNativeDiscordRow {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RehydratedRowOrientation {
-    /// The verified peer wrote it.
+    /// The protected wire was signed by the verified peer and addressed here.
     Incoming,
-    /// This identity wrote it.
-    Outgoing,
-}
-
-impl From<PeerWireOrientation> for RehydratedRowOrientation {
-    fn from(orientation: PeerWireOrientation) -> Self {
-        match orientation {
-            PeerWireOrientation::PeerToSelf => Self::Incoming,
-            PeerWireOrientation::SelfToPeer => Self::Outgoing,
-        }
-    }
 }
 
 /// Fixed labels for the decode leg of one transcript rehydration.
@@ -1839,19 +1829,16 @@ pub fn rehydrate_native_discord_overlay_history(
                     &context_token,
                     &manual.person_id,
                     candidate,
-                    // BOTH directions, each proven in full and separately.
-                    // A transcript the operator cannot read their own half
-                    // of is not a transcript: with decrypted display on,
-                    // their sent messages must render as their words, not as
-                    // the cover sentences the friend's messages are not
-                    // rendered as either. The inbound proof is untouched --
-                    // this adds a second, equally strict one for the wires
-                    // this identity itself signed and addressed to itself as
-                    // well as to the peer.
-                    &[
-                        PeerWireOrientation::PeerToSelf,
-                        PeerWireOrientation::SelfToPeer,
-                    ],
+                    // Only an inbound wire can safely classify a history row.
+                    // Token authentication is scope-bound and the wire proves
+                    // its cryptographic sender, but neither proves who posted
+                    // this visible Discord row. In particular, a peer can paste
+                    // a still-live `SelfToPeer` cover into a new row. Until the
+                    // trusted native reader supplies an independent row/poster
+                    // binding, accepting that orientation would label the
+                    // peer's replay “You.” Refuse it and leave Discord's row
+                    // visible instead.
+                    &[PeerWireOrientation::PeerToSelf],
                 ) {
                     Ok(authenticated) => {
                         recovered = Some(authenticated);
@@ -1912,9 +1899,8 @@ pub fn rehydrate_native_discord_overlay_history(
                 return None;
             }
             counts.plaintext += 1;
-            // The orientation that actually verified this wire's signature, not
-            // an assumption about which side of the conversation is being read.
-            Some((payload.plaintext, RehydratedRowOrientation::from(orientation)))
+            debug_assert_eq!(orientation, PeerWireOrientation::PeerToSelf);
+            Some((payload.plaintext, RehydratedRowOrientation::Incoming))
         },
     );
     Ok(RehydratedNativeDiscordTranscript { rows, counts })
@@ -9687,55 +9673,30 @@ ok i will weekend again with you",
         );
     }
 
-    /// A message the OPERATOR sent, opened by the eye, must render as theirs.
+    /// History rehydration must never turn a locally signed cover into row-owner
+    /// proof.
     ///
-    /// The eye authenticates both orientations (`burn_scope`'s decode leg passes
-    /// `PeerToSelf` and `SelfToPeer`), and before this the proven verdict was
-    /// dropped on the floor: every opened row reached the renderer with no
-    /// author, so it stamped `incoming` and attributed all of them to the
-    /// verified friend. The operator saw their own sent messages presented as
-    /// their friend's words -- a wrong-attribution defect of the same class as
-    /// the audit's receive-misattribution finding, on the display surface.
+    /// A peer can paste an authenticated `SelfToPeer` cover into a new Discord
+    /// row. The wire still verifies, but the peer posted the visible row. The
+    /// history path has no trusted poster/message binding, so its only safe
+    /// answer is to refuse locally signed covers and leave Discord's row visible.
     #[test]
-    fn a_row_this_identity_sent_is_carried_as_outgoing_not_relabelled_incoming() {
-        // `SelfToPeer` is the orientation the wire's own signature proved.
-        assert_eq!(
-            RehydratedRowOrientation::from(PeerWireOrientation::SelfToPeer),
-            RehydratedRowOrientation::Outgoing
-        );
-        assert_eq!(
-            RehydratedRowOrientation::from(PeerWireOrientation::PeerToSelf),
-            RehydratedRowOrientation::Incoming
-        );
-
+    fn rehydrated_history_has_no_outgoing_author_verdict_without_row_poster_proof() {
         let rows = rehydrated_rows(
             [(
-                "You 3:16 PM the harbour lights are on".to_owned(),
+                "Peer 3:16 PM the harbour lights are on".to_owned(),
                 vec!["the harbour lights are on".to_owned()],
                 Some([12, 88, 700, 110]),
             )],
-            |_: &[String]| {
-                Some((
-                    "i am bringing the car round".to_owned(),
-                    RehydratedRowOrientation::from(PeerWireOrientation::SelfToPeer),
-                ))
-            },
+            // This models the production refusal: a locally signed cover is not
+            // a safe row-author verdict, so the decoder returns no painted row.
+            |_: &[String]| None,
         );
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].plaintext.as_deref(), Some("i am bringing the car round"));
-        assert_eq!(
-            rows[0].orientation,
-            Some(RehydratedRowOrientation::Outgoing),
-            "the operator's own sent row must not be attributed to the friend"
-        );
-
-        // And it reaches the renderer as `outgoing`, which is the exact string
-        // the parser accepts and the transcript labels from.
+        assert_eq!(rows[0].plaintext, None);
+        assert_eq!(rows[0].orientation, None);
         let wire = serde_json::to_string(&rows).expect("rehydrated rows serialise");
-        assert!(
-            wire.contains("\"orientation\":\"outgoing\""),
-            "proven authorship must survive serialisation: {wire}"
-        );
+        assert!(!wire.contains("\"orientation\":\"outgoing\""));
     }
 
     #[test]
