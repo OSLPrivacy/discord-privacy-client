@@ -565,4 +565,90 @@ describe("bundled preview security boundary", () => {
       ).prekeyLifecycleCalled,
     ).toBe(false);
   });
+
+  it("keeps signed burn alerts classified as implemented-unwired", () => {
+    const burnAlert = readRelative("../../../crates/keystore/src/burn_alert.rs");
+    const keystoreLib = readRelative("../../../crates/keystore/src/lib.rs");
+    const keystoreClient = readRelative("../../../crates/keystore/src/client.rs");
+    const broker = readRelative("../../osl-hub/src/broker.rs");
+    const productionRust = [
+      readProductionRustTree("../../osl-hub/src/"),
+      readProductionRustTree("../../../crates/ipc/src/"),
+      keystoreClient,
+    ].join("\n");
+    const productionReferencesBurnAlert = (source: string): boolean =>
+      /\b(?:BurnAlertPayload|sign_burn_alert|verify_burn_alert)\b/u.test(
+        rustProductionPrefix(source),
+      );
+
+    // Positive implementation controls: the prototype and public re-export
+    // must exist, so deleting the subsystem cannot make zero reachability pass.
+    expect(burnAlert).toContain("pub struct BurnAlertPayload");
+    expect(burnAlert).toContain("pub fn sign_burn_alert(");
+    expect(burnAlert).toContain("pub fn verify_burn_alert(");
+    expect(keystoreLib).toContain(
+      "pub use burn_alert::{sign_burn_alert, verify_burn_alert, BurnAlertPayload",
+    );
+
+    // Positive control for the distinct reachable revocation implementation:
+    // its presence cannot be used to imply this signature prototype is wired.
+    expect(broker).toContain("RevocationRowOutcome::EnforcementUnavailable");
+    expect(productionReferencesBurnAlert(productionRust)).toBe(false);
+
+    // The source contract must preserve both the implemented fact and the
+    // absent sender/upload/fetch/verify/render integration.
+    const assertUnwiredTruth = (source: string): void => {
+      expect(source).toContain("implements only the canonical payload bytes");
+      expect(source).toContain(
+        "Current production code does not construct this",
+      );
+      expect(source).toContain(
+        "The separate bilateral `0x0A`",
+      );
+      expect(source).toContain(
+        "implemented-unwired and are not a working peer action",
+      );
+      expect(source).toContain(
+        "That sender/recipient integration does not currently exist",
+      );
+    };
+    assertUnwiredTruth(burnAlert);
+
+    // Each public prototype type/function can independently become reachable;
+    // these positives keep the zero-caller detector failure-capable.
+    for (const syntheticCaller of [
+      "let payload = BurnAlertPayload::from_scope(sender, peer, scope, text, now);",
+      "let signature = sign_burn_alert(sender, &payload);",
+      "let accepted = verify_burn_alert(sender_public, &payload, &signature);",
+    ]) {
+      expect(productionReferencesBurnAlert(syntheticCaller)).toBe(true);
+    }
+
+    // Removing the status qualifier or restoring either former present-tense
+    // integration claim must fail.
+    expect(() =>
+      assertUnwiredTruth(
+        burnAlert.replace(
+          "implemented-unwired and are not a working peer action",
+          "available as a working peer action",
+        ),
+      ),
+    ).toThrow();
+    expect(burnAlert).not.toContain("the client\n//! uploads a regular wrapped-keys row");
+    expect(burnAlert).not.toContain("Recipients call this after decrypting");
+
+    // Comments and the conventional cfg(test) module are not production
+    // authority.
+    expect(
+      productionReferencesBurnAlert(
+        [
+          "// sign_burn_alert(sender, &payload);",
+          "#[cfg(test)]",
+          "mod tests {",
+          "  fn fixture() { verify_burn_alert(pk, &payload, &sig); }",
+          "}",
+        ].join("\n"),
+      ),
+    ).toBe(false);
+  });
 });
