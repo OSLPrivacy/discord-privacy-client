@@ -2020,3 +2020,79 @@ this rejected candidate.
 ## Acceptance rows this earns
 
 None. This is a recorded candidate rejection with no product change.
+
+## Round 21 — wrapped-key post/fetch primitives are implemented-unwired
+
+Source/test commit:
+`0d002453d6f4df44a1531293e567d94eca7da1e3` (parent
+`8510c688014f76d6d101830bb378d634afce9b29`, tree
+`1ff5451bb69c1213bb1a36c504dad88289ed8ca8`). Exact paths:
+
+- `crates/keystore/src/wrapped_key.rs`
+- `crates/keystore/src/signed_get.rs`
+- `apps/osl-hub-ui/src/security.test.ts`
+
+The post/get signing primitives, `WrappedKeyUpload`, and
+`KeyServerClient::{post_wrapped_key,fetch_wrapped_key}` remain implemented and
+public. A committed search across the newer Hub, IPC, and registered legacy
+Tauri Rust production sources found no construction, import, alias, signer
+call, or client-method call. The client methods call the canonical/signature
+helpers internally, but nothing outside the keystore implementation/tests
+calls those methods.
+
+The previous `wrapped_key.rs` header said every “persisted field” was signed,
+and `signed_get.rs` described authorization for destructive GETs that consume
+server state. Those statements blurred implemented wire helpers with a live
+product lifecycle. Corrected locations:
+
+- `wrapped_key.rs:1-11` describes canonical upload signing and explicitly
+  states that no current product source constructs/posts/fetches the model.
+- `signed_get.rs:1-9` describes canonical signing semantics and explicitly
+  states that no product source calls either GET client.
+
+The broader `crates/keystore/src/client.rs:17-20,802-804,826-828` prose still
+describes endpoint/request behavior. That file remains dirty with unrelated
+peer capability/bundle verification changes (14 insertions, 33 deletions),
+so it was read only as an implementation positive and was neither edited nor
+staged.
+
+### Reachability gate and focused evidence
+
+`security.test.ts:1177-1307` scans comment-stripped, non-test Rust under:
+
+- `apps/osl-hub/src/**`;
+- `crates/ipc/src/**`; and
+- `src-tauri/src/**`.
+
+This third root is nonvacuous and decisive: the prior rejected
+`cmd_osl_burn_engage` candidate proved that legacy `src-tauri` is registered
+production code and cannot be omitted from a repository-wide reachability
+claim.
+
+Implementation/re-export controls require the upload model, canonical post
+and GET encoders, both signers, and both client methods. Separate production
+controls require registered prepare → broker → IPC → stateless v3 and the
+current IK-as-SPK/no-OPK shape. Synthetic construction, direct calls,
+associated-function values, imported aliases, and signer calls all turn the
+detector positive. Comment and `cfg(test)` fixtures remain negative, and
+removing the implemented-unwired claim fails.
+
+Focused command:
+
+`./node_modules/.bin/vitest run src/security.test.ts -t "keeps wrapped-key
+post and fetch classified as implemented-unwired" --reporter=dot`
+
+Result: 1 test passed, 0 failed, 11 skipped (12 collected), duration 548 ms.
+`git diff --check -- apps/osl-hub-ui/src/security.test.ts
+crates/keystore/src/wrapped_key.rs crates/keystore/src/signed_get.rs`
+produced no output. No Cargo, build, install, browser, deployment, network,
+server mutation, or runtime action ran.
+
+Status: `source/test-proven-only`, `+0`. No upload, fetch, single-use
+destructive read, server persistence, per-message key lifecycle, or runtime
+behavior is claimed.
+
+## Acceptance rows this earns
+
+None. This corrects source truth and adds a two-product-tree reachability
+gate; it does not wire or exercise wrapped-key post/fetch.
