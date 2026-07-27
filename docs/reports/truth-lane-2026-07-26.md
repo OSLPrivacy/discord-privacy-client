@@ -2050,3 +2050,28 @@ deploy, push, or runtime test ran.
 - FAQ Free Scrub wording correction +0; no implementation or runtime behavior
   was awarded.
 - Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — status-date truth correction and WebView receipt
+
+The next public mismatch was a stale version date in the reachable status page:
+`docs/status.html:63` called the matrix `2026-07-26` while the page’s latest
+authoritative at-rest and Scrub evidence was reviewed on 2026-07-27. Website
+commit `e2e99f1a226e22be1b65138443d09aa57be44ae7`, tree
+`a9f2aef9a10981ce516ab6d9fdd94c351c93d930`, parent
+`6d251d5621a1836a97d54990148513c933178fea`, updates only that date.
+`docs/status.html` blob is `412dda68198ba262add5036752899b490c5f6a0e`.
+The full public scan passed 16/16 files with zero failures; `git diff --check`
+passed. This is metadata truth only, +0.
+
+Newest immutable WebView receipt correction `36afe006435c96786bca265ad84463e33c83b40e`,
+tree `ca2b1b9e7c9942094550bb92d5e9acc32fa6bfd0`, is **REJECT +0**. Its
+disposable fixture suite passed 21/21, but the exact verifier rejects its own
+candidate because the receipt binds the old verifier blob `e6585c3e…` while the
+candidate contains `9c005166…`; the measured test remains scaffolding-only and
+there is no production WebView caller. No score follows this receipt.
+
+## Acceptance rows this earns
+
+- Status matrix date correction +0.
+- WebView `36afe00` +0 by independent REJECT.
+- No checklist edit or score movement; authority remains **100 / 303**.
