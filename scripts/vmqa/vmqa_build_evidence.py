@@ -22,8 +22,8 @@ from typing import Any
 
 
 SCHEMA_VERSION = 2
-PINNED_COMMIT = "be5355d79e558ad6abf8f3cc5ee0a228829e7def"
-PINNED_TREE = "56427995071bf2224627ada8da447545b19ba55e"
+PINNED_COMMIT = "1f745c85bb23cf79a956aa87d623905e20f83cf1"
+PINNED_TREE = "1b9bbbcaf52fdac66d671d06a5a4ac585ec3167a"
 PINNED_LOADER_SOURCE = Path(
     "/mnt/c/Users/liamw/OSL-Scrub-Demo/WebView2Loader.dll"
 )
