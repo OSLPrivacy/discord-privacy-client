@@ -224,6 +224,11 @@ jobs:
       # was never published, and a "rollback" onto the live version.
       - name: Rollback guards refuse bad targets
         run: bash scripts/release/prove-rollback-guards.sh
+      # The snapshot-lineage guard closes the one hole the Python verifier
+      # cannot: an INVENTED goldenSnapshotId. Its self-test uses a stubbed
+      # `az`, so it proves the logic without needing Azure credentials in CI.
+      - name: Snapshot lineage guard refuses invented snapshots
+        run: bash scripts/release/verify-snapshot-lineage.sh --self-test
 
   # Single stable check name for branch protection, so adding or renaming a
   # Rust job never silently un-enrols a required check.

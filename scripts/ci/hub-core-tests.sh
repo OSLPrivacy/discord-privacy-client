@@ -11,6 +11,12 @@
 #                     core-gated, so a plain `cargo test` skips exactly the
 #                     modules most worth testing and is vacuous.
 #   --test-threads=1  those tests race on a process-global storage key.
+#
+# This script takes NO lock of its own, so it is safe to wrap when running it
+# locally beside another lane's build:
+#   CARGO_BUILD_JOBS=4 flock /tmp/osl-cargo.lock -c 'bash scripts/ci/hub-core-tests.sh'
+# flock is NOT reentrant — never wrap a script that acquires the same lock
+# internally, because the nested acquisition hangs silently with no output.
 set -euo pipefail
 
 # ---------------------------------------------------------------------------

@@ -105,8 +105,9 @@ Operational rules carried from `azure-vm-qa-workflow.md`, each of which has alre
 - **Target the instance by its single-instance marker window class `<identifier>-sic`. Never by
   window title, never by "first process with a window".** Every OSL build is titled `OSL Privacy`.
   Selecting by name has already driven the wrong lane's application through six UI steps and graded
-  a stale instance. Enforced in CI by `scripts/ci/check-window-targeting.sh`, so this is
-  unexpressible rather than merely discouraged.
+  a stale instance. This is a hard requirement of this gate. An
+  automated CI guard was attempted and is **not** in place — a delegated implementation did not
+  parse and was rejected — so today this is enforced by review, not by tooling.
 - **Assert non-empty on the positive path.** A harness that guesses its subject confirms whatever it
   happened to find, and a default-deny assertion that passes because it read nothing is the same
   defect. Every case below must prove it observed something real before it may report a pass;
@@ -246,10 +247,23 @@ candidate is built and a signed update is installed on a clean VM.
 
 ## Hardening still owed
 
-1. **Verify `goldenSnapshotId` against Azure at promotion time.** Today the verifier checks the two
-   IDs are non-empty and distinct, which catches reuse and blanks but not invention. Calling
-   `az snapshot show --ids <id>` during promotion — and asserting the snapshot pre-dates the run —
-   would close that. It needs an Azure credential available to CI, which is an owner decision.
+1. ~~Verify `goldenSnapshotId` against Azure at promotion time.~~ **Implemented** as
+   `scripts/release/verify-snapshot-lineage.sh`. It requires each `goldenSnapshotId` to be a full
+   Azure resource ID (a bare label like `snapshot-a` is refused), resolves it with
+   `az snapshot show --ids`, and requires the snapshot to pre-date `completedAtUtc` — a snapshot
+   created after the run cannot be what the run restored from. Self-test: **6 passed, 0 failed**,
+   including an invented bare name, a well-formed ID that does not exist, one-real-one-invented,
+   the same snapshot twice, and a snapshot created after the run.
+
+   **Run it before approving the `hub-vm-qa` environment:**
+
+   ```bash
+   scripts/release/verify-snapshot-lineage.sh candidate/hub-vm-qa-attestation.json
+   ```
+
+   It is deliberately an operator step rather than a CI step: wiring it into promotion would put an
+   Azure credential into GitHub Actions, which is an owner decision, not a release-lane one. CI runs
+   its `--self-test` on every PR so the logic itself cannot rot.
 2. **Bind the attestation to the run, not just the file.** A candidate hash proves *which* binary
    was tested, not *that* it was tested. Recording the VM agent's run id and verdict artifact hashes
    would make the claim checkable after the fact.

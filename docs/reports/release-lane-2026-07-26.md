@@ -408,6 +408,52 @@ name-based selection so it is unexpressible rather than discouraged. The same fa
 a harness that guesses its subject, or a default-deny assertion that passes because it read nothing
 — is why every case must assert non-empty on the positive path before it may report a pass.
 
+## Snapshot-lineage hardening — implemented
+
+`scripts/release/verify-snapshot-lineage.sh` closes the one hole the Python verifier structurally
+cannot: an **invented** `goldenSnapshotId`. It requires each ID to be a full Azure resource ID (a
+bare label like `snapshot-a` is refused), resolves it with `az snapshot show --ids`, and requires
+the snapshot to pre-date `completedAtUtc` — a snapshot created after the run cannot be what the run
+restored from.
+
+Self-test **6 passed, 0 failed**, with a stubbed `az` so it needs no subscription: a real pair
+(accepted), invented bare names, well-formed IDs that do not exist, one-real-one-invented, the same
+snapshot twice, and a snapshot created after the run. CI runs `--self-test` on every PR.
+
+It is an **operator** step run before approving `hub-vm-qa`, not a CI step, because wiring it into
+promotion would put an Azure credential into GitHub Actions — an owner decision, not a release-lane
+one.
+
+**The cold lineage itself is not created, and I did not fabricate one.** Creating it is not a
+snapshot command: every VM disk currently carries whatever state its lane left on it, and
+snapshotting a warm disk and labelling it "clean" is precisely the failure this guard exists to
+prevent. A genuine cold image needs a fresh provision — Windows plus the WebView2 runtime, no OSL
+identity, no Discord login — which costs compute on a fixed student credit pool and needs an owner's
+go-ahead. That is the one remaining blocker to a truthful two-VM attestation, and it is now the only
+one that cannot be solved in software.
+
+## Governance hole closed mid-session
+
+`enforce_admins` was `false`, so an admin could bypass every check. Now **`true`**, verified by
+read-back:
+
+```
+{"admins":true,"checks":["TypeScript gate","audit"],
+ "deletions":false,"force_push":false}
+```
+
+`Rust gate` is still deliberately not required — adding it today would freeze every merge this week
+over three other lanes' defects. Add it the moment it goes green; the phase-2 payload is ready.
+
+## A delegation that failed, recorded
+
+`scripts/ci/check-window-targeting.sh` was delegated to Codex to make name-based window selection
+unexpressible. It returned a script that **does not parse** — shellcheck reports `SC1073`/`SC1072`
+syntax errors, and it would have failed CI immediately had I not run shellcheck before wiring it in.
+The file was moved out of the tree rather than committed or silently dropped. The marker-class rule
+is documented and mandatory in the gate doc; the automated guard is **not** built, and I am not
+claiming it. Verifying a delegate's output in both directions is what caught this.
+
 ## PR #5 (Scrub) merge order — this lane owns the order, Scrub owns the content
 
 Verified by fetching `refs/pull/5/head` and running `git merge-tree` against `origin/main`
