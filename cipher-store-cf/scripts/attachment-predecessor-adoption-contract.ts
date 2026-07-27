@@ -11,6 +11,7 @@ export interface AttachmentPredecessorAdoptionFacts {
   predecessorOnlyAdoption: true;
   activeLineageLeasePreserved: true;
   postAbortHeadRequired: true;
+  wrongSizeAbortRequired: true;
   exactReadyVersionCas: true;
   exactAbsenceVersionCas: true;
 }
@@ -127,6 +128,11 @@ export function validateAttachmentPredecessorAdoption(
   );
   requirePattern(
     sweep,
+    /completedObject\?\.size !== claim\.size_bytes[\s\S]*?claim\.storage_fence_state !== "object_absent_confirmed"[\s\S]*?resumeMultipartUpload\(claim\.object_key, claim\.upload_id\)/,
+    "wrong-size objects do not unconditionally enter the multipart abort fence",
+  );
+  requirePattern(
+    sweep,
     /if \(abortFailure\) \{[\s\S]*?throw abortFailure; \}[\s\S]*?if \(completedObject\) \{[\s\S]*?delete\(claim\.object_key\)[\s\S]*?confirmAttachmentObjectAbsent\(env, claim, now\)[\s\S]*?completeAttachmentSweepClaim\(env, claim, now\)/,
     "ambiguous abort or absence-marker ordering is unsafe",
   );
@@ -161,6 +167,7 @@ export function validateAttachmentPredecessorAdoption(
     predecessorOnlyAdoption: true,
     activeLineageLeasePreserved: true,
     postAbortHeadRequired: true,
+    wrongSizeAbortRequired: true,
     exactReadyVersionCas: true,
     exactAbsenceVersionCas: true,
   };

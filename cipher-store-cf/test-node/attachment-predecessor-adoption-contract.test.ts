@@ -43,6 +43,7 @@ describe("attachment predecessor adoption source closure", () => {
       predecessorOnlyAdoption: true,
       activeLineageLeasePreserved: true,
       postAbortHeadRequired: true,
+      wrongSizeAbortRequired: true,
       exactReadyVersionCas: true,
       exactAbsenceVersionCas: true,
     });
@@ -72,6 +73,28 @@ describe("attachment predecessor adoption source closure", () => {
     );
     expect(() => validateAttachmentPredecessorAdoption(value)).toThrow(
       /post-abort HEAD/,
+    );
+  });
+
+  it("rejects reverting wrong-size abort to empty-only", () => {
+    const value = sources();
+    value.sweep = value.sweep.replace(
+      "completedObject?.size !== claim.size_bytes",
+      "!completedObject",
+    );
+    expect(() => validateAttachmentPredecessorAdoption(value)).toThrow(
+      /wrong-size objects.*abort fence/,
+    );
+  });
+
+  it("rejects disabling the wrong-size abort branch", () => {
+    const value = sources();
+    value.sweep = value.sweep.replace(
+      "completedObject?.size !== claim.size_bytes",
+      "false",
+    );
+    expect(() => validateAttachmentPredecessorAdoption(value)).toThrow(
+      /wrong-size objects.*abort fence/,
     );
   });
 
