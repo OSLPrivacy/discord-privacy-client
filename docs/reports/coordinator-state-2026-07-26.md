@@ -86,6 +86,20 @@ discard the whole import.
   `origin/release-lane-2026-07-26`; the keyserver test-count floor accepts the complete local output
   and refuses starvation, but the edited workflow has not run on GitHub-hosted CI. I3 stays 1/3;
   I2, I4 and I6 are unchanged.
+- **UI `82b9238`: `test-proven-only`.** An exact-archive Node 24 run passes 13/13 focused tests.
+  Removing recovery-proof invalidation makes the focus-loss semantic test fail, and removing the
+  friend-removal click binding makes the rendered-control semantic test fail. This advances the
+  evidence behind A1 and A5, but neither row crosses its live product boundary.
+- **Release `c0c18b1`: local floor only.** The exact commit adds the 34-test floor for the
+  36-test `qa_selftest_request` module and the floor independently refuses a zero-test collection.
+  The reported focused `36 passed` and full-suite `741 passed; 1 failed; 1 ignored` results came
+  from a disposable integration tree containing product bytes outside the release commit; an
+  exact committed product archive currently stops at compilation. The named full-suite blocker is
+  `broker::tests::the_text_drain_applies_inbound_revocations_instead_of_deleting_them`. The release
+  branch remains unpushed.
+- **Correction — public CI remains unchanged.** The earlier “public CI now requires” milestone was
+  retracted: `c0c18b1` changed only an unpushed workflow. No remote ref, branch setting or
+  GitHub-hosted run changed, so no public CI claim or I3 point moved. I3 stays 1/3.
 
 ## Coordination infrastructure built today
 

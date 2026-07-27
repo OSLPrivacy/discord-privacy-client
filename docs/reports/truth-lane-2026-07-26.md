@@ -1141,3 +1141,79 @@ restart, receipt ordering, view-once, burn and the remaining B6 points stay unea
 ## Acceptance rows this earns
 
 None.
+
+---
+
+## 22 · Exact-commit adjudication: UI `82b9238`, release `c0c18b1`
+
+Only these two completed commits were consumed. Owner approval for the C4/F2 live probes remains
+pending, and no crypto, Scrub, VM or later release work is evidence here.
+
+### UI `82b9238`: 13/13 plus two non-vacuous semantic breaks, no runtime point
+
+An archive of exact commit `82b9238`, run under Node 24 with the archived package dependencies,
+produced:
+
+```text
+Test Files  2 passed (2)
+Tests       13 passed (13)
+```
+
+The split is five recovery-capture tests and eight friend-trust tests. The recovery test dispatches
+the production focus callback with `payload: false`, then requires the accepted proof to be invalid,
+capture protection to be false and a render to occur
+(`apps/osl-hub-ui/src/recovery-capture-ui.test.ts:15-40` at `82b9238`). Deleting the production
+`actions.invalidateRecoveryCapture()` call makes that exact archive fail `1 failed | 4 passed` at
+line 38: `expected true to be false`.
+
+The friend test builds the rendered remove control, binds the production click dispatcher and
+requires the exact person id to reach the request function
+(`apps/osl-hub-ui/src/friend-trust-ui.test.ts:85-103` at `82b9238`). Deleting the production click
+listener makes that exact archive fail `1 failed | 7 passed` at line 102: the spy was called zero
+times instead of once.
+
+This is `test-proven-only`, not a live window, capture or persistence result. It materially
+strengthens A1's recovery-capture evidence and A5's friend-removal call-path evidence, but A1 still
+needs the product capture boundary and A5 still needs the live trust/removal ceremony. Neither
+row's earned score changes.
+
+### Release `c0c18b1`: exact floor/refusal proved; positive suite output is not exact-archive proof
+
+Exact commit `c0c18b1` adds a dedicated Windows job that invokes
+`qa_selftest_request::tests::` with `--features core,discord-qa-shell` and
+`--test-threads=1` (`.github/workflows/rust-test.yml:110-124` at `c0c18b1`). Its committed floor is
+34 against 36 source-declared module tests
+(`scripts/ci/test-count-floors.txt:25-36` at `c0c18b1`). The exact floor parser self-test reports
+`11 passed, 0 failed`. Feeding it a valid zero-collection Rust summary independently produces:
+
+```text
+::error::osl-hub-qa-request passed 0 tests, below floor 34; a drop means tests stopped being compiled or collected - check feature flags first
+```
+
+and exits 1. The starvation refusal is therefore `test-proven-only` on exact committed floor code.
+
+The release report names the integration-tree results as `36 passed; 707 filtered out` for the
+focused module and, for the unfiltered feature suite:
+
+```text
+broker::tests::the_text_drain_applies_inbound_revocations_instead_of_deleting_them
+test result: FAILED. 741 passed; 1 failed; 1 ignored
+```
+
+Those outputs are useful blocker evidence, but they are not exact-commit results: the report says
+the disposable tree included tracked and untracked integration bytes outside `c0c18b1`. An
+independent archive combining the exact workflow with the completed product commit stops during
+compilation on missing IPC key-bundle APIs, before either collection result can be reproduced.
+Accordingly, the two positive counts are `unknown` for exact committed bytes, and the exact-archive
+suite is `blocked` at compilation. The named blocker is recorded, not rounded into a verified
+exact-commit run.
+
+At adjudication time `c0c18b1` was two commits ahead of
+`origin/release-lane-2026-07-26`; the release branch has since advanced locally but remains
+unpushed. The earlier “public CI now requires” milestone was retracted. No remote ref, GitHub
+setting or hosted run changed, so public CI remains unchanged and I3 stays 1/3. The checklist
+remains **96 / 303**.
+
+## Acceptance rows this earns
+
+None.
