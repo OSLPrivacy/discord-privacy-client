@@ -427,6 +427,7 @@ pub(crate) fn keyserver_post_error_class_pub(error: &keystore::Error) -> &'stati
     keyserver_post_error_class(error)
 }
 
+#[deny(unreachable_patterns)]
 fn keyserver_post_error_class(error: &keystore::Error) -> &'static str {
     match error {
         keystore::Error::HttpStatus { status: 400, .. } => "http_400",
@@ -941,38 +942,66 @@ mod tests {
             "an invalid peer-bundle proof must never be retried or accepted as transport success"
         );
 
-        assert!(
-            headless_post_control_stage_receipt("ready", Some(&error)).is_err(),
-            "the proof-invalid error cannot coexist with a successful stage outcome"
-        );
+        let entered = headless_post_control_stage_receipt("entered", None)
+            .expect("entered without an error is a valid non-success state");
+        assert!(!entered.post_succeeded);
+        assert_eq!(entered.error_class, None);
+
+        let ready = headless_post_control_stage_receipt("ready", None)
+            .expect("ready without an error is the only successful state");
+        assert!(ready.post_succeeded);
+        assert_eq!(ready.error_class, None);
+
+        for (outcome, error, reason) in [
+            (
+                "entered",
+                Some(&error),
+                "entered must not accept an error as a default outcome",
+            ),
+            (
+                "ready",
+                Some(&error),
+                "proof-invalid must not coexist with transport success",
+            ),
+            (
+                "error",
+                None,
+                "an error outcome must carry the typed refusal",
+            ),
+            (
+                "unknown",
+                None,
+                "an unknown outcome must not gain a default accepted state",
+            ),
+            (
+                "unknown",
+                Some(&error),
+                "an unknown error outcome must not gain a default refusal state",
+            ),
+        ] {
+            assert!(
+                headless_post_control_stage_receipt(outcome, error).is_err(),
+                "{reason}"
+            );
+        }
     }
 
     #[test]
-    fn keyserver_error_classifier_has_no_wildcard_policy_arm() {
-        let source = include_str!("discord_qa_inbound_receipt.rs");
-        let classifier = source
-            .split_once("fn keyserver_post_error_class(")
-            .expect("keyserver classifier exists")
-            .1
-            .split_once("pub fn record_headless_post_control_stage(")
-            .expect("keyserver classifier has a bounded source slice")
-            .0;
-        let explicit = [
-            "keystore::Error::PeerBundle",
-            "ProofInvalid => \"peer_bundle_proof_invalid\"",
-        ]
-        .concat();
+    fn keyserver_error_classifier_semantically_separates_proof_invalid() {
+        let proof_invalid = keyserver_post_error_class(&keystore::Error::PeerBundleProofInvalid);
+        let transport =
+            keyserver_post_error_class(&keystore::Error::Transport("network down".to_owned()));
+        let local_state =
+            keyserver_post_error_class(&keystore::Error::BlobVersionMismatch {
+                got: 7,
+                expected: 1,
+            });
 
-        assert!(
-            classifier.contains(&explicit),
-            "peer-bundle proof failure needs its own explicit refusal arm"
-        );
-        assert!(
-            !classifier
-                .lines()
-                .any(|line| line.trim_start().starts_with("_ =>")),
-            "a wildcard arm would let future keystore errors bypass explicit fail-closed policy"
-        );
+        assert_eq!(proof_invalid, "peer_bundle_proof_invalid");
+        assert_eq!(transport, "transport");
+        assert_eq!(local_state, "local_state");
+        assert_ne!(proof_invalid, transport);
+        assert_ne!(proof_invalid, local_state);
     }
 
     #[test]
