@@ -8,8 +8,11 @@ import hashlib
 import json
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from vmqa_build_evidence import EvidenceError, verify_evidence
 
 
 SCHEMA_VERSION = 2
@@ -150,6 +153,31 @@ def require_text(value: Any, label: str, *, maximum: int = 4096) -> str:
     return value
 
 
+def require_int(
+    value: Any, label: str, *, minimum: int | None = None
+) -> int:
+    if type(value) is not int or (minimum is not None and value < minimum):
+        raise ContractError(f"{label} must be an integer with minimum {minimum}")
+    return value
+
+
+def require_bool(value: Any, label: str) -> bool:
+    if type(value) is not bool:
+        raise ContractError(f"{label} must be a boolean")
+    return value
+
+
+def require_timestamp(value: Any, label: str) -> datetime:
+    require_text(value, label, maximum=64)
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ContractError(f"{label} must be an ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ContractError(f"{label} must include a UTC offset")
+    return parsed.astimezone(timezone.utc)
+
+
 def validate_schema_version(value: Any, label: str) -> None:
     if type(value) is not int or value != SCHEMA_VERSION:
         raise ContractError(
@@ -157,10 +185,17 @@ def validate_schema_version(value: Any, label: str) -> None:
         )
 
 
-def validate_build_identity(value: Any, *, exe_path: Path | None = None) -> dict[str, Any]:
+def validate_build_identity(
+    value: Any,
+    *,
+    exe_path: Path,
+    evidence_dir: Path,
+    expected_commit: str,
+    expected_tree: str,
+) -> dict[str, Any]:
     identity = exact_object(
         value,
-        {"schemaVersion", "source", "ui", "build", "artifacts"},
+        {"schemaVersion", "source", "ui", "build", "artifacts", "evidence"},
         "buildIdentity",
     )
     validate_schema_version(identity["schemaVersion"], "buildIdentity")
@@ -177,6 +212,13 @@ def validate_build_identity(value: Any, *, exe_path: Path | None = None) -> dict
         raise ContractError("buildIdentity.source.clean must be true")
     if source["dirtyFingerprint"] != EMPTY_SHA256:
         raise ContractError("buildIdentity.source.dirtyFingerprint must hash an empty status")
+    if (
+        not COMMIT_RE.fullmatch(expected_commit)
+        or not COMMIT_RE.fullmatch(expected_tree)
+    ):
+        raise ContractError("independently expected source commit/tree is invalid")
+    if source["commit"] != expected_commit or source["tree"] != expected_tree:
+        raise ContractError("build identity differs from independently expected source")
 
     ui = exact_object(identity["ui"], {"distSha256"}, "buildIdentity.ui")
     require_sha(ui["distSha256"], "buildIdentity.ui.distSha256")
@@ -247,14 +289,31 @@ def validate_build_identity(value: Any, *, exe_path: Path | None = None) -> dict
         if type(artifact["sizeBytes"]) is not int or artifact["sizeBytes"] <= 0:
             raise ContractError(f"buildIdentity.artifacts.{name}.sizeBytes must be positive")
 
-    if exe_path is not None:
-        executable = artifacts["executable"]
-        if not exe_path.is_file():
-            raise ContractError(f"independent executable is missing: {exe_path}")
-        if sha256_file(exe_path) != executable["sha256"]:
-            raise ContractError("build identity executable digest differs from independent bytes")
-        if exe_path.stat().st_size != executable["sizeBytes"]:
-            raise ContractError("build identity executable size differs from independent bytes")
+    evidence = exact_object(
+        identity["evidence"],
+        {
+            "sourceArchiveSha256",
+            "distArchiveSha256",
+            "distManifestSha256",
+            "npmBuildLogSha256",
+            "cargoBuildLogSha256",
+            "buildLogSha256",
+        },
+        "buildIdentity.evidence",
+    )
+    for name, digest in evidence.items():
+        require_sha(digest, f"buildIdentity.evidence.{name}")
+    executable = artifacts["executable"]
+    if not exe_path.is_file():
+        raise ContractError(f"independent executable is missing: {exe_path}")
+    if sha256_file(exe_path) != executable["sha256"]:
+        raise ContractError("build identity executable digest differs from independent bytes")
+    if exe_path.stat().st_size != executable["sizeBytes"]:
+        raise ContractError("build identity executable size differs from independent bytes")
+    try:
+        verify_evidence(evidence_dir, exe_path, identity)
+    except EvidenceError as exc:
+        raise ContractError(str(exc)) from exc
     return identity
 
 
@@ -269,7 +328,7 @@ def validate_request(
     if not isinstance(request["runId"], str) or not RUN_ID_RE.fullmatch(request["runId"]):
         raise ContractError("request.runId is unsafe")
     require_text(request["identifier"], "request.identifier", maximum=255)
-    require_text(request["runStartUtc"], "request.runStartUtc", maximum=64)
+    require_timestamp(request["runStartUtc"], "request.runStartUtc")
     exe_sha = require_sha(request["exeSha256"], "request.exeSha256")
     if exe_sha != identity["artifacts"]["executable"]["sha256"]:
         raise ContractError("request executable differs from build identity")
@@ -283,6 +342,7 @@ def validate_request(
         step = exact_object(raw_step, STEP_KEYS, f"request.steps[{index}]")
         require_text(step["id"], f"request.steps[{index}].id", maximum=96)
         verb = step["verb"]
+        require_text(verb, f"request.steps[{index}].verb", maximum=32)
         if verb not in ARG_KEYS:
             raise ContractError(f"request.steps[{index}].verb is unsupported")
         args = exact_object(
@@ -290,6 +350,45 @@ def validate_request(
         )
         if "exeSha256" in args and args["exeSha256"] != exe_sha:
             raise ContractError(f"request.steps[{index}] executable differs from request")
+        if "exeSha256" in args:
+            require_sha(args["exeSha256"], f"request.steps[{index}].args.exeSha256")
+        if verb == "launch":
+            require_int(
+                args["timeoutSeconds"],
+                f"request.steps[{index}].args.timeoutSeconds",
+                minimum=1,
+            )
+        elif verb == "shot":
+            require_text(args["name"], f"request.steps[{index}].args.name", maximum=128)
+            require_text(
+                args["expectedSurfaceClass"],
+                f"request.steps[{index}].args.expectedSurfaceClass",
+                maximum=255,
+            )
+        elif verb == "click":
+            require_int(args["winX"], f"request.steps[{index}].args.winX")
+            require_int(args["winY"], f"request.steps[{index}].args.winY")
+            require_int(
+                args["settleMs"],
+                f"request.steps[{index}].args.settleMs",
+                minimum=0,
+            )
+        elif verb == "type":
+            require_text(args["text"], f"request.steps[{index}].args.text")
+            require_int(
+                args["settleMs"],
+                f"request.steps[{index}].args.settleMs",
+                minimum=0,
+            )
+        elif verb == "key":
+            require_text(args["key"], f"request.steps[{index}].args.key", maximum=64)
+            require_int(
+                args["settleMs"],
+                f"request.steps[{index}].args.settleMs",
+                minimum=0,
+            )
+        elif verb == "wait":
+            require_int(args["ms"], f"request.steps[{index}].args.ms", minimum=0)
     return request
 
 
@@ -313,20 +412,72 @@ def validate_verdict(
         raise ContractError("verdict request executable differs from request")
     if verdict["buildIdentitySha256"] != identity_sha256:
         raise ContractError("verdict build identity digest differs from retained identity")
+    request_start = require_timestamp(request["runStartUtc"], "request.runStartUtc")
+    verdict_start = require_timestamp(verdict["runStartUtc"], "verdict.runStartUtc")
+    agent_start = require_timestamp(verdict["agentStartedUtc"], "verdict.agentStartedUtc")
+    finished = require_timestamp(verdict["finishedUtc"], "verdict.finishedUtc")
+    if verdict_start != request_start:
+        raise ContractError("verdict run start differs from request")
+    if agent_start > finished or verdict_start > finished:
+        raise ContractError("verdict timestamps are not coherent")
     for key in ("agentSha", "win32Sha"):
         require_sha(verdict[key], f"verdict.{key}")
-    for key in ("vmName", "runStartUtc", "agentStartedUtc", "finishedUtc", "diffKey"):
-        if not isinstance(verdict[key], str):
-            raise ContractError(f"verdict.{key} must be a string")
+    require_text(verdict["vmName"], "verdict.vmName", maximum=255)
+    if not isinstance(verdict["diffKey"], str):
+        raise ContractError("verdict.diffKey must be a string")
     if verdict["overall"] not in ("pass", "fail", "unmeasurable", "blocked"):
         raise ContractError("verdict.overall is unsupported")
     if not isinstance(verdict["steps"], list):
         raise ContractError("verdict.steps must be an array")
+    if len(verdict["steps"]) != len(request["steps"]):
+        if verdict["overall"] != "blocked" or verdict["steps"]:
+            raise ContractError("verdict steps differ from requested step count")
+    integer_facts = {
+        "launchedPid",
+        "markerWindowsTotal",
+        "surfacePid",
+        "surfaceHwnd",
+        "surfaceWidth",
+        "surfaceHeight",
+        "captureDistinctColors",
+        "rawSurfaceWidth",
+        "rawSurfaceHeight",
+        "surfaceDpi",
+        "cleanupPid",
+        "cleanupMatchingExeCount",
+    }
+    boolean_facts = {
+        "launchProcessStarted",
+        "boundsWithinVirtualDesktop",
+        "coversVirtualDesktop",
+        "normalizedForCapture",
+        "foregroundPre",
+        "foregroundPost",
+        "sampleGridPre",
+        "sampleGridPost",
+        "unoccludedPre",
+        "unoccludedPost",
+        "rectStable",
+        "cleanupPidAbsent",
+        "cleanupExecutableAbsent",
+    }
+    string_facts = {
+        "exeSha256",
+        "surfaceClass",
+        "postSurfaceClass",
+        "boundsSource",
+        "artifactPath",
+        "pngSha256",
+        "cleanupOutcome",
+        "cleanupExeSha256",
+    }
     for index, raw_result in enumerate(verdict["steps"]):
         result = exact_object(raw_result, STEP_RESULT_KEYS, f"verdict.steps[{index}]")
         verb = result["verb"]
+        require_text(verb, f"verdict.steps[{index}].verb", maximum=32)
         if verb not in FACT_KEYS:
             raise ContractError(f"verdict.steps[{index}].verb is unsupported")
+        require_text(result["status"], f"verdict.steps[{index}].status", maximum=32)
         if result["status"] not in ("pass", "fail", "unmeasurable", "blocked"):
             raise ContractError(f"verdict.steps[{index}].status is unsupported")
         require_text(result["id"], f"verdict.steps[{index}].id", maximum=96)
@@ -334,7 +485,7 @@ def validate_verdict(
             raise ContractError(f"verdict.steps[{index}].detail must be a string")
         if (
             not isinstance(result["artifacts"], list)
-            or not all(isinstance(path, str) for path in result["artifacts"])
+            or not all(isinstance(path, str) and path for path in result["artifacts"])
         ):
             raise ContractError(f"verdict.steps[{index}].artifacts must be strings")
         facts = exact_object(
@@ -352,13 +503,51 @@ def validate_verdict(
                     RECT_KEYS,
                     f"verdict.steps[{index}].facts.{rect_name}",
                 )
+                rect = facts[rect_name]
+                for key in RECT_KEYS:
+                    require_int(
+                        rect[key],
+                        f"verdict.steps[{index}].facts.{rect_name}.{key}",
+                    )
+                if (
+                    rect["width"] <= 0
+                    or rect["height"] <= 0
+                    or rect["right"] - rect["left"] != rect["width"]
+                    or rect["bottom"] - rect["top"] != rect["height"]
+                ):
+                    raise ContractError(
+                        f"verdict.steps[{index}].facts.{rect_name} is inconsistent"
+                    )
+        for name, value in facts.items():
+            label = f"verdict.steps[{index}].facts.{name}"
+            if name in integer_facts:
+                require_int(value, label, minimum=0)
+            elif name in boolean_facts:
+                require_bool(value, label)
+            elif name in string_facts:
+                require_text(value, label)
+        for name in ("exeSha256", "pngSha256", "cleanupExeSha256"):
+            if name in facts:
+                require_sha(facts[name], f"verdict.steps[{index}].facts.{name}")
+        if index < len(request["steps"]):
+            requested = request["steps"][index]
+            if result["id"] != requested["id"] or result["verb"] != requested["verb"]:
+                raise ContractError(
+                    f"verdict.steps[{index}] does not answer the requested step"
+                )
+    if verdict["overall"] == "blocked":
+        require_text(verdict["diagnosis"], "verdict.diagnosis")
     return verdict
 
 
 def verify_pair(args: argparse.Namespace) -> None:
     identity_path = Path(args.build_identity)
     identity = validate_build_identity(
-        load_json(identity_path, "build identity"), exe_path=Path(args.exe)
+        load_json(identity_path, "build identity"),
+        exe_path=Path(args.exe),
+        evidence_dir=Path(args.evidence_dir),
+        expected_commit=args.expected_commit,
+        expected_tree=args.expected_tree,
     )
     identity_sha = sha256_file(identity_path)
     for side in ("positive", "negative"):
@@ -381,7 +570,10 @@ def verify_run(args: argparse.Namespace) -> None:
     identity_path = Path(args.build_identity)
     identity = validate_build_identity(
         load_json(identity_path, "build identity"),
-        exe_path=Path(args.exe) if args.exe else None,
+        exe_path=Path(args.exe),
+        evidence_dir=Path(args.evidence_dir),
+        expected_commit=args.expected_commit,
+        expected_tree=args.expected_tree,
     )
     identity_sha = sha256_file(identity_path)
     request_path = Path(args.request)
@@ -401,13 +593,21 @@ def verify_run(args: argparse.Namespace) -> None:
 def validate_build(args: argparse.Namespace) -> None:
     validate_build_identity(
         load_json(Path(args.build_identity), "build identity"),
-        exe_path=Path(args.exe) if args.exe else None,
+        exe_path=Path(args.exe),
+        evidence_dir=Path(args.evidence_dir),
+        expected_commit=args.expected_commit,
+        expected_tree=args.expected_tree,
     )
 
 
 def validate_cleanup(args: argparse.Namespace) -> None:
     directory = Path(args.directory)
     identity_path = directory / "build-identity.json"
+    request_path = directory / "request.json"
+    verdict_path = directory / "verdict.json"
+    raw_instance_path = directory / "azure-instance-view.raw.json"
+    raw_census_path = directory / "azure-subscription-census.raw.json"
+    raw_pages_path = directory / "azure-subscription-pages.raw.json"
     instance_path = directory / "azure-instance-view.json"
     census_path = directory / "azure-subscription-census.json"
     receipt_path = directory / "azure-cleanup-receipt.json"
@@ -430,6 +630,16 @@ def validate_cleanup(args: argparse.Namespace) -> None:
             "buildIdentitySha256",
             "targetVm",
             "targetResourceGroup",
+            "requestFile",
+            "requestSha256",
+            "verdictFile",
+            "verdictSha256",
+            "rawInstanceViewFile",
+            "rawInstanceViewSha256",
+            "rawCensusFile",
+            "rawCensusSha256",
+            "rawSubscriptionPagesFile",
+            "rawSubscriptionPagesSha256",
             "instanceViewFile",
             "instanceViewSha256",
             "censusFile",
@@ -440,7 +650,34 @@ def validate_cleanup(args: argparse.Namespace) -> None:
         },
         "azureCleanupReceipt",
     )
-    identity = validate_build_identity(load_json(identity_path, "build identity"))
+    identity = validate_build_identity(
+        load_json(identity_path, "build identity"),
+        exe_path=Path(args.exe),
+        evidence_dir=directory / "build-evidence",
+        expected_commit=args.expected_commit,
+        expected_tree=args.expected_tree,
+    )
+    identity_sha = sha256_file(identity_path)
+    request = validate_request(
+        load_json(request_path, "request"),
+        identity=identity,
+        identity_sha256=identity_sha,
+    )
+    verdict = validate_verdict(
+        load_json(verdict_path, "verdict"),
+        request=request,
+        request_sha256=sha256_file(request_path),
+        identity_sha256=identity_sha,
+    )
+    raw_instance = load_json(raw_instance_path, "raw Azure instance view")
+    raw_census = load_json(raw_census_path, "raw Azure subscription census")
+    raw_pages = load_json(raw_pages_path, "raw Azure subscription pages")
+    if not isinstance(raw_instance, dict):
+        raise ContractError("raw Azure instance view must be an object")
+    if not isinstance(raw_census, list):
+        raise ContractError("raw Azure subscription census must be an array")
+    if not isinstance(raw_pages, list) or not raw_pages:
+        raise ContractError("raw Azure subscription pages must be a nonempty array")
     for value, label in (
         (instance["schemaVersion"], "azureInstanceView"),
         (census["schemaVersion"], "azureSubscriptionCensus"),
@@ -471,14 +708,26 @@ def validate_cleanup(args: argparse.Namespace) -> None:
             "resourceGroup",
             "location",
             "powerState",
+            "powerStateCode",
             "agentStatus",
             "provisioningState",
         },
         "azureInstanceView.vm",
     )
-    if vm["powerState"] != "VM deallocated":
-        raise ContractError("Azure instance view does not prove VM deallocated")
-    for key in ("id", "name", "resourceGroup", "location", "agentStatus", "provisioningState"):
+    if (
+        vm["powerStateCode"] != "PowerState/deallocated"
+        or vm["powerState"] != "VM deallocated"
+    ):
+        raise ContractError("Azure instance view does not authoritatively prove VM deallocated")
+    for key in (
+        "id",
+        "name",
+        "resourceGroup",
+        "location",
+        "powerStateCode",
+        "agentStatus",
+        "provisioningState",
+    ):
         require_text(vm[key], f"azureInstanceView.vm.{key}")
     if not isinstance(census["vms"], list):
         raise ContractError("Azure subscription census vms must be an array")
@@ -495,10 +744,38 @@ def validate_cleanup(args: argparse.Namespace) -> None:
             require_text(census_vm[key], f"azureSubscriptionCensus.vms[{index}].{key}")
     if running != 0 or receipt["runningCount"] != 0:
         raise ContractError("Azure subscription census contains a running VM")
+    if type(receipt["runningCount"]) is not int:
+        raise ContractError("azureCleanupReceipt.runningCount must be an integer")
     if receipt["deallocated"] is not True:
         raise ContractError("Azure cleanup receipt does not assert deallocation")
     if receipt["targetVm"] != vm["name"] or receipt["targetResourceGroup"] != vm["resourceGroup"]:
         raise ContractError("Azure cleanup receipt target differs from instance view")
+    if verdict["vmName"] != vm["name"]:
+        raise ContractError("Azure cleanup target differs from retained verdict VM")
+    if receipt["runId"] != request["runId"] or verdict["runId"] != request["runId"]:
+        raise ContractError("Azure cleanup receipt run differs from retained request/verdict")
+    if directory.name != request["runId"]:
+        raise ContractError("Azure cleanup directory differs from retained run ID")
+    if receipt["requestFile"] != request_path.name:
+        raise ContractError("Azure cleanup request filename is not exact")
+    if receipt["verdictFile"] != verdict_path.name:
+        raise ContractError("Azure cleanup verdict filename is not exact")
+    if receipt["requestSha256"] != sha256_file(request_path):
+        raise ContractError("Azure cleanup request digest mismatch")
+    if receipt["verdictSha256"] != sha256_file(verdict_path):
+        raise ContractError("Azure cleanup verdict digest mismatch")
+    if receipt["rawInstanceViewFile"] != raw_instance_path.name:
+        raise ContractError("Azure cleanup raw instance-view filename is not exact")
+    if receipt["rawCensusFile"] != raw_census_path.name:
+        raise ContractError("Azure cleanup raw census filename is not exact")
+    if receipt["rawSubscriptionPagesFile"] != raw_pages_path.name:
+        raise ContractError("Azure cleanup raw subscription-pages filename is not exact")
+    if receipt["rawInstanceViewSha256"] != sha256_file(raw_instance_path):
+        raise ContractError("Azure raw instance-view digest mismatch")
+    if receipt["rawCensusSha256"] != sha256_file(raw_census_path):
+        raise ContractError("Azure raw census digest mismatch")
+    if receipt["rawSubscriptionPagesSha256"] != sha256_file(raw_pages_path):
+        raise ContractError("Azure raw subscription-pages digest mismatch")
     if receipt["instanceViewFile"] != instance_path.name:
         raise ContractError("Azure cleanup instance filename is not exact")
     if receipt["censusFile"] != census_path.name:
@@ -516,8 +793,161 @@ def validate_cleanup(args: argparse.Namespace) -> None:
         raise ContractError("Azure cleanup receipt build identity digest mismatch")
     if receipt["exeSha256"] != identity["artifacts"]["executable"]["sha256"]:
         raise ContractError("Azure cleanup receipt executable differs from build identity")
+    if request["exeSha256"] != receipt["exeSha256"] or verdict["requestExeSha256"] != receipt["exeSha256"]:
+        raise ContractError("Azure cleanup executable differs from retained request/verdict")
     if instance["subscriptionIdSha256"] != census["subscriptionIdSha256"]:
         raise ContractError("Azure subscription identity differs across retained JSON")
+    if not (
+        receipt["capturedUtc"] == instance["capturedUtc"] == census["capturedUtc"]
+    ):
+        raise ContractError("Azure cleanup capture timestamps differ")
+    captured = require_timestamp(receipt["capturedUtc"], "azureCleanupReceipt.capturedUtc")
+    finished = require_timestamp(verdict["finishedUtc"], "verdict.finishedUtc")
+    if captured < finished:
+        raise ContractError("Azure cleanup predates the retained verdict")
+
+    raw_instance_view = raw_instance.get("instanceView")
+    if not isinstance(raw_instance_view, dict):
+        raise ContractError("raw Azure instanceView must be an object")
+    raw_statuses = raw_instance_view.get("statuses")
+    raw_agent = raw_instance_view.get("vmAgent")
+    if not isinstance(raw_statuses, list) or not isinstance(raw_agent, dict):
+        raise ContractError("raw Azure instanceView statuses/vmAgent types are invalid")
+    raw_agent_statuses = raw_agent.get("statuses")
+    if not isinstance(raw_agent_statuses, list):
+        raise ContractError("raw Azure vmAgent.statuses must be an array")
+    raw_power = next(
+        (
+            status.get("displayStatus")
+            for status in raw_statuses
+            if isinstance(status, dict)
+            and isinstance(status.get("code"), str)
+            and status["code"].startswith("PowerState/")
+        ),
+        "unknown",
+    )
+    raw_power_code = next(
+        (
+            status.get("code")
+            for status in raw_statuses
+            if isinstance(status, dict)
+            and isinstance(status.get("code"), str)
+            and status["code"].startswith("PowerState/")
+        ),
+        "unknown",
+    )
+    raw_provisioning = next(
+        (
+            status.get("displayStatus")
+            for status in raw_statuses
+            if isinstance(status, dict)
+            and isinstance(status.get("code"), str)
+            and status["code"].startswith("ProvisioningState/")
+        ),
+        "unknown",
+    )
+    raw_agent = (
+        raw_agent_statuses[0].get("displayStatus")
+        if raw_agent_statuses and isinstance(raw_agent_statuses[0], dict)
+        else "unknown"
+    )
+    expected_vm = {
+        "id": raw_instance.get("id"),
+        "name": raw_instance.get("name"),
+        "resourceGroup": raw_instance.get("resourceGroup"),
+        "location": raw_instance.get("location"),
+        "powerState": raw_power,
+        "powerStateCode": raw_power_code,
+        "agentStatus": raw_agent,
+        "provisioningState": raw_provisioning,
+    }
+    if vm != expected_vm:
+        raise ContractError("Azure instance projection differs from retained raw response")
+    expected_census = sorted(
+        (
+            {
+                "id": raw_vm.get("id"),
+                "name": raw_vm.get("name"),
+                "resourceGroup": raw_vm.get("resourceGroup"),
+                "powerState": raw_vm.get("powerState", "unknown"),
+            }
+            for raw_vm in raw_census
+            if isinstance(raw_vm, dict)
+        ),
+        key=lambda item: str(item["id"]),
+    )
+    if census["vms"] != expected_census:
+        raise ContractError("Azure census projection differs from retained raw response")
+    target_members = [
+        candidate
+        for candidate in census["vms"]
+        if candidate["id"] == vm["id"]
+        and candidate["name"] == vm["name"]
+        and candidate["resourceGroup"] == vm["resourceGroup"]
+    ]
+    if len(target_members) != 1:
+        raise ContractError("target VM is not present exactly once in subscription census")
+    target_id = vm["id"]
+    target_parts = target_id.split("/")
+    if (
+        len(target_parts) < 3
+        or target_parts[1].lower() != "subscriptions"
+        or not target_parts[2]
+    ):
+        raise ContractError("target VM ID does not expose an Azure subscription identity")
+    paged_ids: list[str] = []
+    previous_next: str | None = None
+    for index, raw_page in enumerate(raw_pages):
+        page = exact_object(
+            raw_page, {"requestUrl", "response"}, f"azureSubscriptionPages[{index}]"
+        )
+        request_url = require_text(
+            page["requestUrl"],
+            f"azureSubscriptionPages[{index}].requestUrl",
+            maximum=8192,
+        )
+        response = page["response"]
+        if not isinstance(response, dict) or not isinstance(response.get("value"), list):
+            raise ContractError(
+                f"azureSubscriptionPages[{index}].response must contain a value array"
+            )
+        if index == 0:
+            if (
+                f"/subscriptions/{target_parts[2]}/providers/Microsoft.Compute/"
+                "virtualMachines"
+            ).lower() not in request_url.lower():
+                raise ContractError("Azure subscription pagination starts at the wrong scope")
+        elif request_url != previous_next:
+            raise ContractError("Azure subscription pagination did not follow nextLink")
+        for item_index, item in enumerate(response["value"]):
+            if not isinstance(item, dict):
+                raise ContractError(
+                    f"azureSubscriptionPages[{index}].response.value[{item_index}] "
+                    "must be an object"
+                )
+            paged_ids.append(
+                require_text(
+                    item.get("id"),
+                    f"azureSubscriptionPages[{index}].response.value[{item_index}].id",
+                )
+            )
+        next_link = response.get("nextLink")
+        if index < len(raw_pages) - 1:
+            previous_next = require_text(
+                next_link, f"azureSubscriptionPages[{index}].response.nextLink", maximum=8192
+            )
+        elif next_link not in (None, ""):
+            raise ContractError("Azure subscription pagination is incomplete")
+    census_ids = [candidate["id"] for candidate in census["vms"]]
+    if sorted(paged_ids) != sorted(census_ids) or len(set(paged_ids)) != len(paged_ids):
+        raise ContractError(
+            "Azure detailed census differs from the complete paginated subscription census"
+        )
+    raw_subscription_sha = hashlib.sha256(
+        target_parts[2].lower().encode("utf-8")
+    ).hexdigest()
+    if instance["subscriptionIdSha256"] != raw_subscription_sha:
+        raise ContractError("Azure subscription digest differs from retained raw target ID")
 
 
 def main() -> int:
@@ -530,19 +960,31 @@ def main() -> int:
     pair.add_argument("--negative-verdict", required=True)
     pair.add_argument("--build-identity", required=True)
     pair.add_argument("--exe", required=True)
+    pair.add_argument("--evidence-dir", required=True)
+    pair.add_argument("--expected-commit", required=True)
+    pair.add_argument("--expected-tree", required=True)
     pair.set_defaults(function=verify_pair)
     run = subparsers.add_parser("verify-run")
     run.add_argument("--request", required=True)
     run.add_argument("--verdict", required=True)
     run.add_argument("--build-identity", required=True)
-    run.add_argument("--exe")
+    run.add_argument("--exe", required=True)
+    run.add_argument("--evidence-dir", required=True)
+    run.add_argument("--expected-commit", required=True)
+    run.add_argument("--expected-tree", required=True)
     run.set_defaults(function=verify_run)
     build = subparsers.add_parser("validate-build")
     build.add_argument("--build-identity", required=True)
-    build.add_argument("--exe")
+    build.add_argument("--exe", required=True)
+    build.add_argument("--evidence-dir", required=True)
+    build.add_argument("--expected-commit", required=True)
+    build.add_argument("--expected-tree", required=True)
     build.set_defaults(function=validate_build)
     cleanup = subparsers.add_parser("verify-cleanup")
     cleanup.add_argument("--directory", required=True)
+    cleanup.add_argument("--exe", required=True)
+    cleanup.add_argument("--expected-commit", required=True)
+    cleanup.add_argument("--expected-tree", required=True)
     cleanup.set_defaults(function=validate_cleanup)
     args = parser.parse_args()
     try:

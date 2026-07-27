@@ -45,23 +45,60 @@ AGENT_SHA='1111111111111111111111111111111111111111111111111111111111111111'
 WIN32_SHA='2222222222222222222222222222222222222222222222222222222222222222'
 SURFACE_CLASS='Tauri Window'
 FIXTURE_PNG="$TMP/fixture.png"
-FIXTURE_EXE="$TMP/osl-privacy-hub.exe"
+FIXTURE_SOURCE="$TMP/source"
+FIXTURE_EXE="$FIXTURE_SOURCE/apps/osl-hub/target/x86_64-pc-windows-gnu/release/osl-privacy-hub.exe"
+FIXTURE_LOADER="$(dirname -- "$FIXTURE_EXE")/WebView2Loader.dll"
+FIXTURE_DIST="$FIXTURE_SOURCE/apps/osl-hub-ui/dist"
+EVIDENCE_DIR="$TMP/build-evidence"
 BUILD_IDENTITY="$TMP/build-identity.json"
+mkdir -p -- "$FIXTURE_SOURCE/apps/osl-hub" "$FIXTURE_SOURCE/apps/osl-hub-ui"
+printf '[workspace]\nmembers=[]\n' >"$FIXTURE_SOURCE/Cargo.toml"
+printf '[package]\nname=\"osl-hub\"\nversion=\"0.0.0\"\n' >"$FIXTURE_SOURCE/apps/osl-hub/Cargo.toml"
+printf '{\"name\":\"osl-hub-ui\",\"version\":\"0.0.0\"}\n' >"$FIXTURE_SOURCE/apps/osl-hub-ui/package.json"
+printf 'apps/osl-hub/target/\napps/osl-hub-ui/dist/\n' >"$FIXTURE_SOURCE/.gitignore"
+git -C "$FIXTURE_SOURCE" init -q
+git -C "$FIXTURE_SOURCE" config user.name vmqa-fixture
+git -C "$FIXTURE_SOURCE" config user.email vmqa@example.invalid
+git -C "$FIXTURE_SOURCE" add .
+git -C "$FIXTURE_SOURCE" commit -qm fixture
+EXPECTED_COMMIT="$(git -C "$FIXTURE_SOURCE" rev-parse HEAD)"
+EXPECTED_TREE="$(git -C "$FIXTURE_SOURCE" rev-parse HEAD^{tree})"
+mkdir -p -- "$(dirname -- "$FIXTURE_EXE")" "$FIXTURE_DIST"
 printf 'independent executable fixture bytes\n' >"$FIXTURE_EXE"
+printf 'loader\n' >"$FIXTURE_LOADER"
+printf '<!doctype html><title>fixture</title>\n' >"$FIXTURE_DIST/index.html"
+printf 'npm fixture build output\n' >"$TMP/npm-build.log"
+printf '{"reason":"compiler-artifact","target":{"name":"osl-privacy-hub"},"executable":"%s"}\n' \
+  "$FIXTURE_EXE" >"$TMP/cargo-build.jsonl"
+python3 "$SCRIPT_DIR/vmqa_build_evidence.py" create \
+  --source-repo "$FIXTURE_SOURCE" --dist "$FIXTURE_DIST" \
+  --exe "$FIXTURE_EXE" --loader "$FIXTURE_LOADER" \
+  --npm-log "$TMP/npm-build.log" --cargo-log "$TMP/cargo-build.jsonl" \
+  --output "$EVIDENCE_DIR" --expected-commit "$EXPECTED_COMMIT" \
+  --expected-tree "$EXPECTED_TREE" || exit 1
 EXE_SHA="$(sha256sum "$FIXTURE_EXE" | awk '{print $1}')"
 EXE_SIZE="$(stat -c %s "$FIXTURE_EXE")"
 jq -n \
   --arg exe "$EXE_SHA" \
   --argjson exeSize "$EXE_SIZE" \
+  --arg loaderSha "$(sha256sum "$FIXTURE_LOADER" | awk '{print $1}')" \
+  --argjson loaderSize "$(stat -c %s "$FIXTURE_LOADER")" \
+  --arg sourceArchiveSha256 "$(sha256sum "$EVIDENCE_DIR/source.tar" | awk '{print $1}')" \
+  --arg distArchiveSha256 "$(sha256sum "$EVIDENCE_DIR/dist.tar" | awk '{print $1}')" \
+  --arg distManifestSha256 "$(sha256sum "$EVIDENCE_DIR/dist-manifest.json" | awk '{print $1}')" \
+  --arg npmBuildLogSha256 "$(sha256sum "$EVIDENCE_DIR/npm-build.log" | awk '{print $1}')" \
+  --arg cargoBuildLogSha256 "$(sha256sum "$EVIDENCE_DIR/cargo-build.jsonl" | awk '{print $1}')" \
+  --arg buildLogSha256 "$(sha256sum "$EVIDENCE_DIR/build-log.json" | awk '{print $1}')" \
+  --slurpfile log "$EVIDENCE_DIR/build-log.json" \
   '{
     schemaVersion:2,
     source:{
-      commit:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      tree:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      commit:$log[0].source.commit,
+      tree:$log[0].source.tree,
       clean:true,
       dirtyFingerprint:"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
-    ui:{distSha256:"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
+    ui:{distSha256:$log[0].ui.distSha256},
     build:{
       target:"x86_64-pc-windows-gnu",features:["desktop"],profile:"release",
       commands:[
@@ -69,18 +106,23 @@ jq -n \
         ["osl-cargo","build","--release","--features","desktop","--bin",
          "osl-privacy-hub","--target","x86_64-pc-windows-gnu"]
       ],
-      toolchain:{
-        rustc:"rustc fixture",cargo:"cargo fixture",node:"node fixture",npm:"npm fixture",
-        oslCargoSha256:"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-      }
+      toolchain:$log[0].toolchain
     },
     artifacts:{
       executable:{name:"osl-privacy-hub.exe",sha256:$exe,sizeBytes:$exeSize},
       loader:{
         name:"WebView2Loader.dll",
-        sha256:"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-        sizeBytes:1
+        sha256:$loaderSha,
+        sizeBytes:$loaderSize
       }
+    },
+    evidence:{
+      sourceArchiveSha256:$sourceArchiveSha256,
+      distArchiveSha256:$distArchiveSha256,
+      distManifestSha256:$distManifestSha256,
+      npmBuildLogSha256:$npmBuildLogSha256,
+      cargoBuildLogSha256:$cargoBuildLogSha256,
+      buildLogSha256:$buildLogSha256
     }
   }' >"$BUILD_IDENTITY"
 BUILD_IDENTITY_SHA="$(sha256sum "$BUILD_IDENTITY" | awk '{print $1}')"
@@ -235,7 +277,8 @@ check() {
   local name="$1" want="$2" posf="$3" negf="$4" posrc="${5:-0}" negrc="${6:-3}" got out
   out="$(grade_selftest "$posf" "$negf" "$posrc" "$negrc" \
     "$AGENT_SHA" "$WIN32_SHA" "$EXE_SHA" "$SURFACE_CLASS" \
-    "$BUILD_IDENTITY" "$FIXTURE_EXE" 2>&1)"
+    "$BUILD_IDENTITY" "$FIXTURE_EXE" "$EVIDENCE_DIR" \
+    "$EXPECTED_COMMIT" "$EXPECTED_TREE" 2>&1)"
   got=$?
   if [ "$got" -eq "$want" ]; then
     printf '  ok    %-46s exit=%s\n' "$name" "$got"; pass_count=$((pass_count+1))
@@ -254,7 +297,8 @@ check_msg() {
   local name="$1" want="$2" pattern="$3" posf="$4" negf="$5" out got
   out="$(grade_selftest "$posf" "$negf" 0 3 \
     "$AGENT_SHA" "$WIN32_SHA" "$EXE_SHA" "$SURFACE_CLASS" \
-    "$BUILD_IDENTITY" "$FIXTURE_EXE" 2>&1)"
+    "$BUILD_IDENTITY" "$FIXTURE_EXE" "$EVIDENCE_DIR" \
+    "$EXPECTED_COMMIT" "$EXPECTED_TREE" 2>&1)"
   got=$?
   if [ "$got" -eq "$want" ] && printf '%s' "$out" | grep -qi -- "$pattern"; then
     printf '  ok    %-46s exit=%s +msg\n' "$name" "$got"; pass_count=$((pass_count+1))
@@ -277,7 +321,8 @@ check_fetch_preserves_blocked_verdict() {
     # the saved verdict path, or selftest grades an empty filename as a vacuous control.
     cmd_run() { set -e; return 3; }
     set +e
-    fetch_run_verdict vm identifier steps "$BUILD_IDENTITY" 1 fetch-blocked
+    fetch_run_verdict vm identifier steps "$BUILD_IDENTITY" "$FIXTURE_EXE" \
+      "$EVIDENCE_DIR" "$EXPECTED_COMMIT" "$EXPECTED_TREE" 1 fetch-blocked
   )"
   rc=$?
   set +e
@@ -339,6 +384,13 @@ check "request schemaVersion 999 -> INVALID" 9 \
 check "unknown nested request field -> INVALID" 9 \
   "$(mutate_request_bound pos_request_unknown "$GOOD_POS" '.steps[0].args.unknownField=true')" \
   "$(mkjson neg_for_request_unknown "$GOOD_NEG")"
+check "nested request scalar object -> INVALID" 9 \
+  "$(mutate_request_bound pos_request_object "$GOOD_POS" '.steps[0].args.exeSha256={}')" \
+  "$(mkjson neg_for_request_object "$GOOD_NEG")"
+check "nested verdict scalar object -> INVALID" 9 \
+  "$(mutate_json pos_verdict_object "$GOOD_POS" \
+      '(.steps[] | select(.verb=="shot").facts.foregroundPre)={}')" \
+  "$(mkjson neg_for_verdict_object "$GOOD_NEG")"
 check "stale embedded build identity -> INVALID" 9 \
   "$(mutate_request_bound pos_stale_build "$GOOD_POS" \
       '.buildIdentity.source.commit="ffffffffffffffffffffffffffffffffffffffff"')" \
@@ -376,13 +428,42 @@ for verdict in "$sub_pos" "$sub_neg"; do
 done
 grade_selftest "$sub_pos" "$sub_neg" 0 3 \
   "$AGENT_SHA" "$WIN32_SHA" "$SUB_EXE_SHA" "$SURFACE_CLASS" \
-  "$SUB_BUILD_IDENTITY" "$FIXTURE_EXE" >/dev/null 2>&1
+  "$SUB_BUILD_IDENTITY" "$FIXTURE_EXE" "$EVIDENCE_DIR" \
+  "$EXPECTED_COMMIT" "$EXPECTED_TREE" >/dev/null 2>&1
 sub_rc=$?
 if [ "$sub_rc" -eq 9 ]; then
   printf '  ok    %-46s exit=%s\n' "coherent digest substitution -> INVALID" "$sub_rc"
   pass_count=$((pass_count+1))
 else
   printf '  FAIL  %-46s exit=%s want=9\n' "coherent digest substitution -> INVALID" "$sub_rc"
+  fail_count=$((fail_count+1))
+fi
+python3 "$SCRIPT_DIR/vmqa-contract.py" verify-run \
+  --request "$(dirname -- "$sub_pos")/request.json" \
+  --verdict "$sub_pos" \
+  --build-identity "$SUB_BUILD_IDENTITY" \
+  --exe "$FIXTURE_EXE" --evidence-dir "$EVIDENCE_DIR" \
+  --expected-commit "$EXPECTED_COMMIT" --expected-tree "$EXPECTED_TREE" >/dev/null 2>&1
+ordinary_sub_rc=$?
+if [ "$ordinary_sub_rc" -eq 9 ]; then
+  printf '  ok    %-46s exit=%s\n' "ordinary run digest substitution -> INVALID" "$ordinary_sub_rc"
+  pass_count=$((pass_count+1))
+else
+  printf '  FAIL  %-46s exit=%s want=9\n' "ordinary run digest substitution -> INVALID" "$ordinary_sub_rc"
+  fail_count=$((fail_count+1))
+fi
+BAD_SCALAR_IDENTITY="$TMP/bad-scalar-build-identity.json"
+jq '.build.toolchain.rustc={}' "$BUILD_IDENTITY" >"$BAD_SCALAR_IDENTITY"
+python3 "$SCRIPT_DIR/vmqa-contract.py" validate-build \
+  --build-identity "$BAD_SCALAR_IDENTITY" --exe "$FIXTURE_EXE" \
+  --evidence-dir "$EVIDENCE_DIR" --expected-commit "$EXPECTED_COMMIT" \
+  --expected-tree "$EXPECTED_TREE" >/dev/null 2>&1
+bad_scalar_rc=$?
+if [ "$bad_scalar_rc" -eq 9 ]; then
+  printf '  ok    %-46s exit=%s\n' "nested build scalar object -> INVALID" "$bad_scalar_rc"
+  pass_count=$((pass_count+1))
+else
+  printf '  FAIL  %-46s exit=%s want=9\n' "nested build scalar object -> INVALID" "$bad_scalar_rc"
   fail_count=$((fail_count+1))
 fi
 
@@ -425,27 +506,27 @@ check "unmeasurable negative, 0 markers -> INVALID" 9 \
 # The positive half must prove it measured something non-empty, or the negative half's refusal
 # could be explained by nothing running at all.
 check "positive markerWindowsTotal 0 -> not PASS" 1 \
-  "$(mkjson pos_nomark '{"runId":"p","overall":"pass","steps":[{"id":"S1","verb":"launch","status":"pass"},{"id":"S2","verb":"ping","status":"pass","markerWindowsTotal":0},{"id":"S3","verb":"shot","status":"pass","distinctColors":4016}]}')" \
+  "$(mutate_json pos_nomark "$GOOD_POS" '(.steps[] | select(.verb=="ping").facts.markerWindowsTotal)=0')" \
   "$(mkjson gn2 "$GOOD_NEG")"
 
 # An all-black frame clears a pixel count but not a colour floor.
 check "positive distinctColors below floor -> not PASS" 1 \
-  "$(mkjson pos_black '{"runId":"p","overall":"pass","steps":[{"id":"S1","verb":"launch","status":"pass","facts":{"launchedPid":101}},{"id":"S2","verb":"ping","status":"pass","markerWindowsTotal":1},{"id":"S3","verb":"shot","status":"pass","distinctColors":3,"facts":{"surfacePid":101,"surfaceWidth":960,"surfaceHeight":640,"rawSurfaceWidth":980,"rawSurfaceHeight":660,"boundsSource":"dwm-extended-frame","boundsWithinVirtualDesktop":true,"coversVirtualDesktop":false,"surfaceDpi":96,"foregroundPre":true,"foregroundPost":true,"sampleGridPre":true,"sampleGridPost":true,"unoccludedPre":true,"unoccludedPost":true,"rectStable":true}}]}')" \
+  "$(mutate_json pos_black "$GOOD_POS" '(.steps[] | select(.verb=="shot").facts.captureDistinctColors)=3')" \
   "$(mkjson gn3 "$GOOD_NEG")"
 
 # Whole-desktop colour cannot substitute for a window bound to the process launch. This is the
 # exact shape that produced the Firefox false green: lots of colours, but no structured surface
 # facts from the staged process.
 check "missing surface binding facts -> not PASS" 1 \
-  "$(mkjson pos_unbound '{"runId":"p","overall":"pass","steps":[{"id":"S1","verb":"launch","status":"pass"},{"id":"S2","verb":"ping","status":"pass","markerWindowsTotal":1},{"id":"S3","verb":"shot","status":"pass","distinctColors":1133}]}')" \
+  "$(mutate_json pos_unbound "$GOOD_POS" '(.steps[] | select(.verb=="shot").facts) |= del(.surfacePid,.surfaceHwnd)')" \
   "$(mkjson gn_surface "$GOOD_NEG")"
 
 check "surface pid differs from launch -> not PASS" 1 \
-  "$(mkjson pos_swap '{"runId":"p","overall":"pass","steps":[{"id":"S1","verb":"launch","status":"pass","facts":{"launchedPid":101}},{"id":"S2","verb":"ping","status":"pass","markerWindowsTotal":1},{"id":"S3","verb":"shot","status":"pass","distinctColors":4016,"facts":{"surfacePid":202,"surfaceWidth":960,"surfaceHeight":640,"rawSurfaceWidth":980,"rawSurfaceHeight":660,"boundsSource":"dwm-extended-frame","boundsWithinVirtualDesktop":true,"coversVirtualDesktop":false,"surfaceDpi":96,"foregroundPre":true,"foregroundPost":true,"sampleGridPre":true,"sampleGridPost":true,"unoccludedPre":true,"unoccludedPost":true,"rectStable":true}}]}')" \
+  "$(mutate_json pos_swap "$GOOD_POS" '(.steps[] | select(.verb=="shot").facts.surfacePid)=202')" \
   "$(mkjson gn_swap "$GOOD_NEG")"
 
 check "post-capture occlusion -> not PASS" 1 \
-  "$(mkjson pos_occluded '{"runId":"p","overall":"pass","steps":[{"id":"S1","verb":"launch","status":"pass","facts":{"launchedPid":101}},{"id":"S2","verb":"ping","status":"pass","markerWindowsTotal":1},{"id":"S3","verb":"shot","status":"pass","distinctColors":4016,"facts":{"surfacePid":101,"surfaceWidth":960,"surfaceHeight":640,"rawSurfaceWidth":980,"rawSurfaceHeight":660,"boundsSource":"dwm-extended-frame","boundsWithinVirtualDesktop":true,"coversVirtualDesktop":false,"surfaceDpi":96,"foregroundPre":true,"foregroundPost":true,"sampleGridPre":true,"sampleGridPost":true,"unoccludedPre":true,"unoccludedPost":false,"rectStable":true}}]}')" \
+  "$(mutate_json pos_occluded "$GOOD_POS" '(.steps[] | select(.verb=="shot").facts.unoccludedPost)=false')" \
   "$(mkjson gn_occluded "$GOOD_NEG")"
 
 check "GetWindowRect fallback source -> not PASS" 1 \
@@ -460,7 +541,7 @@ check "whole-desktop bounds -> not PASS" 1 \
   "$(mutate_json pos_desktop_bounds "$GOOD_POS" '(.steps[] | select(.verb=="shot").facts) |= (.surfaceWidth=1024 | .surfaceHeight=768 | .rawSurfaceWidth=1024 | .rawSurfaceHeight=768 | .coversVirtualDesktop=true)')" \
   "$(mkjson gn_desktop_bounds "$GOOD_NEG")"
 
-check_msg "truncated two-step negative -> INVALID" 9 "exact five-step" \
+check_msg "truncated two-step negative -> INVALID" 9 "steps differ" \
   "$(mkjson pos_for_short_neg "$GOOD_POS")" \
   "$(mutate_json neg_two_step "$GOOD_NEG" '.steps = [.steps[0], .steps[1]]')"
 
@@ -513,7 +594,7 @@ check "both surface classes substituted -> not PASS" 1 \
 
 for rect in rawRect dwmRect postRawRect postDwmRect; do
   for field in left top right bottom width height; do
-    check "$rect.$field mutation -> not PASS" 1 \
+    check "$rect.$field mutation -> INVALID" 9 \
       "$(mutate_json "pos_${rect}_${field}" "$GOOD_POS" \
         "(.steps[] | select(.verb==\"shot\").facts.${rect}.${field}) += 1")" \
       "$(mkjson "neg_${rect}_${field}" "$GOOD_NEG")"
@@ -598,7 +679,7 @@ check "absent negative verdict file -> INVALID" 9 \
 # A genuinely failing positive half is a FAILURE (1), not an invalid harness (9). The gate has to
 # tell "the product is broken" apart from "we cannot trust the measurement".
 check "positive fails, good control -> fail not INVALID" 1 \
-  "$(mkjson pos_fail '{"runId":"p","overall":"fail","steps":[{"id":"S1","verb":"launch","status":"fail"},{"id":"S2","verb":"ping","status":"pass","markerWindowsTotal":1},{"id":"S3","verb":"shot","status":"pass","distinctColors":4016}]}')" \
+  "$(mutate_json pos_fail "$GOOD_POS" '.overall="fail" | (.steps[] | select(.verb=="launch").status)="fail"')" \
   "$(mkjson gn4 "$GOOD_NEG")" 1 3
 
 echo

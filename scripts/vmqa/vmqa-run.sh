@@ -21,14 +21,20 @@ PNG_FACTS="$SCRIPT_DIR/png-facts.py"
 VMQA_CONTRACT="$SCRIPT_DIR/vmqa-contract.py"
 usage() { cat >&2 <<'USAGE'
 vmqa-run.sh - host-side VM QA driver
-  build
+  build --source-repo <path> --evidence-dir <empty-dir>
+      --expected-commit <full-sha> --expected-tree <full-sha>
   stamp --source-repo <path> --exe <path> --loader <path> --dist <dir>
+      --evidence-dir <dir>
+      --expected-commit <full-sha> --expected-tree <full-sha>
   push [--exe <path>] [--loader <path>]
   run [--vm <vm>] [--identifier <id>] --steps <steps.json> --build-identity <json>
+      --exe <path> --evidence-dir <dir>
+      --expected-commit <full-sha> --expected-tree <full-sha>
       [--run-id <id>] [--timeout <sec>]
   agent-alive [--vm <vm>]
   selftest [--vm <vm>] [--identifier <id>] [--timeout <sec>]
-      --exe <path> --build-identity <json>
+      --exe <path> --build-identity <json> --evidence-dir <dir>
+      --expected-commit <full-sha> --expected-tree <full-sha>
 USAGE
 }
 
@@ -87,52 +93,85 @@ EOF
 cmd_build() {
   need_cmd npm
   need_cmd osl-cargo
-  local log exe fallback
-  log="$(mktemp)"
+  local source_repo="" evidence_dir="" expected_commit="" expected_tree=""
+  local ui_dir hub_dir dist_dir npm_log cargo_log
+  local exe fallback loader
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --source-repo) [ $# -ge 2 ] || die_usage "--source-repo needs a path"; source_repo="$2"; shift 2 ;;
+      --evidence-dir) [ $# -ge 2 ] || die_usage "--evidence-dir needs a path"; evidence_dir="$2"; shift 2 ;;
+      --expected-commit) [ $# -ge 2 ] || die_usage "--expected-commit needs a value"; expected_commit="$2"; shift 2 ;;
+      --expected-tree) [ $# -ge 2 ] || die_usage "--expected-tree needs a value"; expected_tree="$2"; shift 2 ;;
+      *) die_usage "unknown build argument: $1" ;;
+    esac
+  done
+  [ "$(git -C "$source_repo" status --porcelain=v1 --untracked-files=all 2>/dev/null)" = "" ] \
+    || { echo "REFUSED: exact build requires a clean source worktree" >&2; return 9; }
+  [ -n "$evidence_dir" ] || die_usage "build requires --evidence-dir"
+  [[ "$expected_commit" =~ ^[0-9a-f]{40}$ ]] || die_usage "build requires --expected-commit"
+  [[ "$expected_tree" =~ ^[0-9a-f]{40}$ ]] || die_usage "build requires --expected-tree"
+  mkdir -p -- "$evidence_dir"
+  [ -z "$(find "$evidence_dir" -mindepth 1 -maxdepth 1 -print -quit)" ] \
+    || { echo "REFUSED: evidence directory must be empty" >&2; return 9; }
+  ui_dir="$source_repo/apps/osl-hub-ui"
+  hub_dir="$source_repo/apps/osl-hub"
+  dist_dir="$ui_dir/dist"
+  npm_log="$(mktemp)"
+  cargo_log="$(mktemp)"
 
   # ORDER IS LOAD-BEARING: build the UI first because Tauri embeds the dist at compile time.
   # There are two embed consumers, including apps/osl-hub/webview/dist in older layouts, so a
   # cargo build before this step ships stale UI and looks like a Rust bug.
-  (cd "$UI_DIR" && npm run build)
+  (cd "$ui_dir" && npm run build) 2>&1 | tee "$npm_log"
 
   osl-cargo build \
-    --manifest-path "$HUB_DIR/Cargo.toml" \
+    --manifest-path "$hub_dir/Cargo.toml" \
     --release \
     --features desktop \
     --bin "$BIN_NAME" \
     --target "$TARGET" \
     --message-format=json \
-    | tee "$log"
+    | tee "$cargo_log"
 
   if command -v jq >/dev/null 2>&1; then
     exe="$(jq -r --arg bin "$BIN_NAME" '
       select(.reason == "compiler-artifact" and .target.name == $bin and .executable != null)
       | .executable
-    ' "$log" | tail -n 1)"
+    ' "$cargo_log" | tail -n 1)"
   else
     exe=""
   fi
-  fallback="$HUB_DIR/target/$TARGET/release/$BIN_NAME.exe"
+  fallback="$hub_dir/target/$TARGET/release/$BIN_NAME.exe"
   [ -n "$exe" ] || exe="$fallback"
   [ -f "$exe" ] || { echo "build finished but exe was not found: $exe" >&2; return 1; }
 
+  loader="$(resolve_loader "$exe")" || return
+  python3 "$SCRIPT_DIR/vmqa_build_evidence.py" create \
+    --source-repo "$source_repo" --dist "$dist_dir" --exe "$exe" --loader "$loader" \
+    --npm-log "$npm_log" --cargo-log "$cargo_log" --output "$evidence_dir" \
+    --expected-commit "$expected_commit" --expected-tree "$expected_tree" || return 9
   printf 'exe=%s\n' "$exe"
   printf 'exe_sha256=%s\n' "$(sha_file "$exe")"
-  printf 'dist_sha256=%s\n' "$(dist_sha "$DIST_DIR")"
-  rm -f -- "$log"
+  printf 'dist_sha256=%s\n' "$(dist_sha "$dist_dir")"
+  printf 'evidence_dir=%s\n' "$evidence_dir"
+  rm -f -- "$npm_log" "$cargo_log"
 }
 
 cmd_stamp() {
   need_cmd jq
   need_cmd python3
-  local source_repo="" exe="" loader="" dist="" profile="release"
+  local source_repo="" exe="" loader="" dist="" evidence_dir="" expected_commit="" expected_tree="" profile="release"
   local commit tree dirty clean rustc_version cargo_version node_version npm_version osl_cargo
+  local identity_tmp
   while [ $# -gt 0 ]; do
     case "$1" in
       --source-repo) [ $# -ge 2 ] || die_usage "--source-repo needs a path"; source_repo="$2"; shift 2 ;;
       --exe) [ $# -ge 2 ] || die_usage "--exe needs a path"; exe="$2"; shift 2 ;;
       --loader) [ $# -ge 2 ] || die_usage "--loader needs a path"; loader="$2"; shift 2 ;;
       --dist) [ $# -ge 2 ] || die_usage "--dist needs a path"; dist="$2"; shift 2 ;;
+      --evidence-dir) [ $# -ge 2 ] || die_usage "--evidence-dir needs a path"; evidence_dir="$2"; shift 2 ;;
+      --expected-commit) [ $# -ge 2 ] || die_usage "--expected-commit needs a value"; expected_commit="$2"; shift 2 ;;
+      --expected-tree) [ $# -ge 2 ] || die_usage "--expected-tree needs a value"; expected_tree="$2"; shift 2 ;;
       *) die_usage "unknown stamp argument: $1" ;;
     esac
   done
@@ -141,18 +180,24 @@ cmd_stamp() {
   [ -f "$exe" ] || { echo "executable is missing: $exe" >&2; return 66; }
   [ -f "$loader" ] || { echo "loader is missing: $loader" >&2; return 66; }
   [ -d "$dist" ] || { echo "dist is missing: $dist" >&2; return 66; }
+  [ -d "$evidence_dir" ] || { echo "build evidence is missing: $evidence_dir" >&2; return 66; }
+  [[ "$expected_commit" =~ ^[0-9a-f]{40}$ ]] || die_usage "stamp requires --expected-commit"
+  [[ "$expected_tree" =~ ^[0-9a-f]{40}$ ]] || die_usage "stamp requires --expected-tree"
   dirty="$(git -C "$source_repo" status --porcelain=v1 --untracked-files=all -z | sha256sum | awk '{print $1}')"
   clean=false
   [ "$dirty" = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ] && clean=true
   [ "$clean" = true ] || { echo "REFUSED: build identity requires a clean tracked and untracked source worktree" >&2; return 9; }
   commit="$(git -C "$source_repo" rev-parse HEAD)"
   tree="$(git -C "$source_repo" rev-parse HEAD^{tree})"
+  [ "$commit" = "$expected_commit" ] && [ "$tree" = "$expected_tree" ] \
+    || { echo "REFUSED: source differs from independently expected commit/tree" >&2; return 9; }
   rustc_version="$(rustc -Vv | tr '\n' ';' | sed 's/;*$//')"
   cargo_version="$(cargo -V)"
   node_version="$(node -v)"
   npm_version="$(npm -v)"
   osl_cargo="$(command -v osl-cargo)"
   [ -f "$osl_cargo" ] || { echo "osl-cargo executable is unavailable" >&2; return 69; }
+  identity_tmp="$(mktemp)"
   jq -n \
     --arg commit "$commit" \
     --arg tree "$tree" \
@@ -168,6 +213,12 @@ cmd_stamp() {
     --arg node "$node_version" \
     --arg npm "$npm_version" \
     --arg oslCargoSha256 "$(sha_file "$osl_cargo")" \
+    --arg sourceArchiveSha256 "$(sha_file "$evidence_dir/source.tar")" \
+    --arg distArchiveSha256 "$(sha_file "$evidence_dir/dist.tar")" \
+    --arg distManifestSha256 "$(sha_file "$evidence_dir/dist-manifest.json")" \
+    --arg npmBuildLogSha256 "$(sha_file "$evidence_dir/npm-build.log")" \
+    --arg cargoBuildLogSha256 "$(sha_file "$evidence_dir/cargo-build.jsonl")" \
+    --arg buildLogSha256 "$(sha_file "$evidence_dir/build-log.json")" \
     '{
       schemaVersion:2,
       source:{commit:$commit,tree:$tree,clean:true,dirtyFingerprint:$dirtyFingerprint},
@@ -184,8 +235,22 @@ cmd_stamp() {
       artifacts:{
         executable:{name:"osl-privacy-hub.exe",sha256:$exeSha256,sizeBytes:$exeSizeBytes},
         loader:{name:"WebView2Loader.dll",sha256:$loaderSha256,sizeBytes:$loaderSizeBytes}
+      },
+      evidence:{
+        sourceArchiveSha256:$sourceArchiveSha256,
+        distArchiveSha256:$distArchiveSha256,
+        distManifestSha256:$distManifestSha256,
+        npmBuildLogSha256:$npmBuildLogSha256,
+        cargoBuildLogSha256:$cargoBuildLogSha256,
+        buildLogSha256:$buildLogSha256
       }
-    }'
+    }' >"$identity_tmp"
+  python3 "$VMQA_CONTRACT" validate-build --build-identity "$identity_tmp" \
+    --exe "$exe" --evidence-dir "$evidence_dir" \
+    --expected-commit "$expected_commit" --expected-tree "$expected_tree" \
+    || { rm -f -- "$identity_tmp"; return 9; }
+  cat -- "$identity_tmp"
+  rm -f -- "$identity_tmp"
 }
 
 cmd_push() {
@@ -229,7 +294,8 @@ write_request() {
 }
 
 cmd_run() {
-  local vm="$DEFAULT_VM" identifier="$DEFAULT_IDENTIFIER" steps="" build_identity="" run_id="" timeout="$DEFAULT_TIMEOUT"
+  local vm="$DEFAULT_VM" identifier="$DEFAULT_IDENTIFIER" steps="" build_identity="" exe="" evidence_dir=""
+  local expected_commit="" expected_tree="" run_id="" timeout="$DEFAULT_TIMEOUT"
   local run_start request_tmp verdict_tmp report_dir wait_rc overall remote_prefix exit_rc
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -237,6 +303,10 @@ cmd_run() {
       --identifier) [ $# -ge 2 ] || die_usage "--identifier needs a value"; identifier="$2"; shift 2 ;;
       --steps) [ $# -ge 2 ] || die_usage "--steps needs a path"; steps="$2"; shift 2 ;;
       --build-identity) [ $# -ge 2 ] || die_usage "--build-identity needs a path"; build_identity="$2"; shift 2 ;;
+      --exe) [ $# -ge 2 ] || die_usage "--exe needs a path"; exe="$2"; shift 2 ;;
+      --evidence-dir) [ $# -ge 2 ] || die_usage "--evidence-dir needs a path"; evidence_dir="$2"; shift 2 ;;
+      --expected-commit) [ $# -ge 2 ] || die_usage "--expected-commit needs a value"; expected_commit="$2"; shift 2 ;;
+      --expected-tree) [ $# -ge 2 ] || die_usage "--expected-tree needs a value"; expected_tree="$2"; shift 2 ;;
       --run-id) [ $# -ge 2 ] || die_usage "--run-id needs a value"; run_id="$2"; shift 2 ;;
       --timeout) [ $# -ge 2 ] || die_usage "--timeout needs seconds"; timeout="$2"; shift 2 ;;
       *) die_usage "unknown run argument: $1" ;;
@@ -244,8 +314,14 @@ cmd_run() {
   done
   [ -n "$steps" ] || die_usage "run requires --steps"
   [ -n "$build_identity" ] || die_usage "run requires --build-identity"
+  [ -f "$exe" ] || die_usage "run requires --exe pointing to the exact local executable bytes"
+  [ -d "$evidence_dir" ] || die_usage "run requires --evidence-dir with retained exact-build inputs"
+  [[ "$expected_commit" =~ ^[0-9a-f]{40}$ ]] || die_usage "run requires --expected-commit"
+  [[ "$expected_tree" =~ ^[0-9a-f]{40}$ ]] || die_usage "run requires --expected-tree"
   [ -f "$VMQA_CONTRACT" ] || { echo "strict VMQA contract validator is missing" >&2; return 9; }
-  python3 "$VMQA_CONTRACT" validate-build --build-identity "$build_identity" || return 9
+  python3 "$VMQA_CONTRACT" validate-build --build-identity "$build_identity" \
+    --exe "$exe" --evidence-dir "$evidence_dir" \
+    --expected-commit "$expected_commit" --expected-tree "$expected_tree" || return 9
   [[ "$timeout" =~ ^[0-9]+$ ]] || die_usage "--timeout must be an integer"
   [ -n "$run_id" ] || run_id="$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"
   run_start="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -300,7 +376,9 @@ cmd_run() {
   if ! python3 "$VMQA_CONTRACT" verify-run \
       --request "$request_tmp" \
       --verdict "$verdict_tmp" \
-      --build-identity "$build_identity"; then
+      --build-identity "$build_identity" \
+      --exe "$exe" --evidence-dir "$evidence_dir" \
+      --expected-commit "$expected_commit" --expected-tree "$expected_tree"; then
     echo "REFUSING VERDICT: strict V2 request/verdict/build contract failed" >&2
     rm -f -- "$request_tmp" "$verdict_tmp"
     return 9
@@ -311,6 +389,8 @@ cmd_run() {
   jq . "$verdict_tmp" | tee "$report_dir/verdict.json"
   cp -- "$request_tmp" "$report_dir/request.json"
   cp -- "$build_identity" "$report_dir/build-identity.json"
+  mkdir -- "$report_dir/build-evidence"
+  cp -- "$evidence_dir"/* "$report_dir/build-evidence/"
   # Retain the exact screenshot bytes named by the verdict. A path and claimed digest in JSON are
   # not evidence until the host downloads those bytes and independently revalidates the digest.
   local artifact_rel artifact_dst
@@ -339,14 +419,17 @@ cmd_run() {
 }
 
 fetch_run_verdict() {
-  local vm="$1" identifier="$2" steps="$3" build_identity="$4" timeout="$5" run_id="$6"
+  local vm="$1" identifier="$2" steps="$3" build_identity="$4" exe="$5" evidence_dir="$6"
+  local expected_commit="$7" expected_tree="$8" timeout="$9" run_id="${10}"
   local rc
   # cmd_run restores errexit before returning the verdict's product status. Calling it as a bare
   # command under `set +e` is therefore not sufficient: a blocked return (3) can terminate this
   # function before it emits the saved verdict path, and selftest then grades an empty filename as
   # a vacuous control. An if-condition is an errexit-safe status boundary in Bash.
   if cmd_run --vm "$vm" --identifier "$identifier" --steps "$steps" \
-      --build-identity "$build_identity" --timeout "$timeout" --run-id "$run_id" >/dev/null; then
+      --build-identity "$build_identity" --exe "$exe" --evidence-dir "$evidence_dir" \
+      --expected-commit "$expected_commit" --expected-tree "$expected_tree" \
+      --timeout "$timeout" --run-id "$run_id" >/dev/null; then
     rc=0
   else
     rc=$?
@@ -459,6 +542,8 @@ grade_selftest() {
   local expected_agent_sha="${5:-}" expected_win32_sha="${6:-}" expected_exe_sha="${7:-}"
   local expected_surface_class="${8:-}"
   local expected_build_identity="${9:-}" expected_exe_path="${10:-}"
+  local expected_evidence_dir="${11:-}"
+  local expected_commit="${12:-}" expected_tree="${13:-}"
   local pos neg markers neg_markers colors launch_neg shot_neg neg_steps neg_ping result
   local launch_pid neg_launch_pid surface_pid surface_width surface_height foreground_pre foreground_post
   local raw_surface_width raw_surface_height bounds_source surface_class post_surface_class
@@ -479,13 +564,17 @@ grade_selftest() {
   local png_json png_width png_height png_colors png_bit_depth png_color_type png_stride
   local structured_surface_ok
   if [ -z "$expected_build_identity" ] || [ -z "$expected_exe_path" ] \
+     || [ -z "$expected_evidence_dir" ] \
+     || [ -z "$expected_commit" ] || [ -z "$expected_tree" ] \
      || ! python3 "$VMQA_CONTRACT" verify-pair \
           --positive-request "$(dirname -- "$pos_file")/request.json" \
           --positive-verdict "$pos_file" \
           --negative-request "$(dirname -- "$neg_file")/request.json" \
           --negative-verdict "$neg_file" \
           --build-identity "$expected_build_identity" \
-          --exe "$expected_exe_path"; then
+          --exe "$expected_exe_path" \
+          --evidence-dir "$expected_evidence_dir" \
+          --expected-commit "$expected_commit" --expected-tree "$expected_tree"; then
     echo "SELFTEST INVALID: strict V2 retained request/verdict/build contract failed" >&2
     return 9
   fi
@@ -753,7 +842,8 @@ grade_selftest() {
 cmd_selftest() {
   local vm="$DEFAULT_VM" identifier="$DEFAULT_IDENTIFIER" timeout="$DEFAULT_TIMEOUT"
   local pos_id neg_id pos_file neg_file pos_rc neg_rc pos neg markers neg_markers colors launch_neg shot_neg result
-  local exe="" exe_sha="" build_identity="" steps_file="$SELFTEST_STEPS" neg_steps neg_ping heartbeat_file
+  local exe="" exe_sha="" build_identity="" evidence_dir="" expected_commit="" expected_tree=""
+  local steps_file="$SELFTEST_STEPS" neg_steps neg_ping heartbeat_file
   local expected_agent_sha expected_win32_sha live_agent_sha live_win32_sha
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -762,14 +852,22 @@ cmd_selftest() {
       --timeout) [ $# -ge 2 ] || die_usage "--timeout needs seconds"; timeout="$2"; shift 2 ;;
       --exe) [ $# -ge 2 ] || die_usage "--exe needs a path"; exe="$2"; shift 2 ;;
       --build-identity) [ $# -ge 2 ] || die_usage "--build-identity needs a path"; build_identity="$2"; shift 2 ;;
+      --evidence-dir) [ $# -ge 2 ] || die_usage "--evidence-dir needs a path"; evidence_dir="$2"; shift 2 ;;
+      --expected-commit) [ $# -ge 2 ] || die_usage "--expected-commit needs a value"; expected_commit="$2"; shift 2 ;;
+      --expected-tree) [ $# -ge 2 ] || die_usage "--expected-tree needs a value"; expected_tree="$2"; shift 2 ;;
       *) die_usage "unknown selftest argument: $1" ;;
     esac
   done
   [[ "$timeout" =~ ^[0-9]+$ ]] || die_usage "--timeout must be an integer"
   [ -f "$exe" ] || die_usage "selftest requires --exe pointing to retained executable bytes"
   [ -f "$build_identity" ] || die_usage "selftest requires --build-identity"
+  [ -d "$evidence_dir" ] || die_usage "selftest requires --evidence-dir"
+  [[ "$expected_commit" =~ ^[0-9a-f]{40}$ ]] || die_usage "selftest requires --expected-commit"
+  [[ "$expected_tree" =~ ^[0-9a-f]{40}$ ]] || die_usage "selftest requires --expected-tree"
   exe_sha="$(sha_file "$exe")"
   python3 "$VMQA_CONTRACT" validate-build --build-identity "$build_identity" --exe "$exe" \
+    --evidence-dir "$evidence_dir" \
+    --expected-commit "$expected_commit" --expected-tree "$expected_tree" \
     || { echo "selftest build identity is not independently bound to executable bytes" >&2; return 9; }
   # Inject the staged build's sha into the step file. The `launch` verb addresses the binary by
   # content hash, which changes per build, so it cannot be baked into a checked-in step file.
@@ -809,12 +907,13 @@ cmd_selftest() {
   pos_id="$(date -u +%Y%m%dT%H%M%SZ)-pos-$RANDOM"
   neg_id="$(date -u +%Y%m%dT%H%M%SZ)-neg-$RANDOM"
   set +e
-  pos_file="$(fetch_run_verdict "$vm" "$identifier" "$steps_file" "$build_identity" "$timeout" "$pos_id")"; pos_rc=$?
-  neg_file="$(fetch_run_verdict "$vm" "$NEGATIVE_IDENTIFIER" "$steps_file" "$build_identity" "$timeout" "$neg_id")"; neg_rc=$?
+  pos_file="$(fetch_run_verdict "$vm" "$identifier" "$steps_file" "$build_identity" "$exe" "$evidence_dir" "$expected_commit" "$expected_tree" "$timeout" "$pos_id")"; pos_rc=$?
+  neg_file="$(fetch_run_verdict "$vm" "$NEGATIVE_IDENTIFIER" "$steps_file" "$build_identity" "$exe" "$evidence_dir" "$expected_commit" "$expected_tree" "$timeout" "$neg_id")"; neg_rc=$?
   set -e
   grade_selftest "$pos_file" "$neg_file" "$pos_rc" "$neg_rc" \
     "$expected_agent_sha" "$expected_win32_sha" "$exe_sha" \
-    "$EXPECTED_SELFTEST_SURFACE_CLASS" "$build_identity" "$exe"
+    "$EXPECTED_SELFTEST_SURFACE_CLASS" "$build_identity" "$exe" "$evidence_dir" \
+    "$expected_commit" "$expected_tree"
 }
 
 
@@ -823,7 +922,7 @@ main() {
   [ -n "$cmd" ] || die_usage "missing subcommand"
   shift
   case "$cmd" in
-    build) [ $# -eq 0 ] || die_usage "build takes no arguments"; cmd_build ;;
+    build) cmd_build "$@" ;;
     stamp) cmd_stamp "$@" ;;
     push) cmd_push "$@" ;;
     run) cmd_run "$@" ;;

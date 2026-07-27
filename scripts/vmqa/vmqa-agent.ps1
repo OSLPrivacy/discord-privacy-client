@@ -492,13 +492,38 @@ function Assert-ExactJsonProperties {
     }
 }
 
+function Assert-JsonString {
+    param([Parameter(Mandatory)]$Value, [Parameter(Mandatory)][string]$Context, [switch]$AllowEmpty)
+    if ($Value -isnot [string] -or (-not $AllowEmpty -and [string]::IsNullOrEmpty($Value))) {
+        throw "VMQA_SCHEMA_NOT_STRING: $Context"
+    }
+}
+
+function Assert-JsonInteger {
+    param([Parameter(Mandatory)]$Value, [Parameter(Mandatory)][string]$Context, [int64]$Minimum = [int64]::MinValue)
+    if (($Value -isnot [int]) -and ($Value -isnot [int64])) {
+        throw "VMQA_SCHEMA_NOT_INTEGER: $Context"
+    }
+    if ([int64]$Value -lt $Minimum) {
+        throw "VMQA_SCHEMA_INTEGER_RANGE: $Context"
+    }
+}
+
+function Assert-JsonBoolean {
+    param([Parameter(Mandatory)]$Value, [Parameter(Mandatory)][string]$Context)
+    if ($Value -isnot [bool]) {
+        throw "VMQA_SCHEMA_NOT_BOOLEAN: $Context"
+    }
+}
+
 function Assert-StrictBuildIdentity {
     param(
         [Parameter(Mandatory)]$Identity,
         [Parameter(Mandatory)][string]$ExpectedExeSha256
     )
     Assert-ExactJsonProperties -Object $Identity `
-        -Names @('schemaVersion','source','ui','build','artifacts') -Context 'buildIdentity'
+        -Names @('schemaVersion','source','ui','build','artifacts','evidence') -Context 'buildIdentity'
+    Assert-JsonInteger -Value $Identity.schemaVersion -Context 'buildIdentity.schemaVersion'
     if ([int]$Identity.schemaVersion -ne 2) {
         throw "VMQA_UNSUPPORTED_BUILD_IDENTITY_SCHEMA: $($Identity.schemaVersion)"
     }
@@ -516,6 +541,42 @@ function Assert-StrictBuildIdentity {
         -Names @('name','sha256','sizeBytes') -Context 'buildIdentity.artifacts.executable'
     Assert-ExactJsonProperties -Object $Identity.artifacts.loader `
         -Names @('name','sha256','sizeBytes') -Context 'buildIdentity.artifacts.loader'
+    Assert-ExactJsonProperties -Object $Identity.evidence `
+        -Names @('sourceArchiveSha256','distArchiveSha256','distManifestSha256',`
+            'npmBuildLogSha256','cargoBuildLogSha256','buildLogSha256') `
+        -Context 'buildIdentity.evidence'
+    Assert-JsonString -Value $Identity.source.commit -Context 'buildIdentity.source.commit'
+    Assert-JsonString -Value $Identity.source.tree -Context 'buildIdentity.source.tree'
+    Assert-JsonBoolean -Value $Identity.source.clean -Context 'buildIdentity.source.clean'
+    Assert-JsonString -Value $Identity.source.dirtyFingerprint -Context 'buildIdentity.source.dirtyFingerprint'
+    Assert-JsonString -Value $Identity.ui.distSha256 -Context 'buildIdentity.ui.distSha256'
+    Assert-JsonString -Value $Identity.build.target -Context 'buildIdentity.build.target'
+    Assert-JsonString -Value $Identity.build.profile -Context 'buildIdentity.build.profile'
+    if ($Identity.build.features -isnot [System.Array] -or $Identity.build.commands -isnot [System.Array]) {
+        throw 'VMQA_SCHEMA_BUILD_ARRAY_REQUIRED'
+    }
+    foreach ($feature in @($Identity.build.features)) {
+        Assert-JsonString -Value $feature -Context 'buildIdentity.build.features[]'
+    }
+    foreach ($command in @($Identity.build.commands)) {
+        if ($command -isnot [System.Array]) { throw 'VMQA_SCHEMA_COMMAND_ARRAY_REQUIRED' }
+        foreach ($token in @($command)) {
+            Assert-JsonString -Value $token -Context 'buildIdentity.build.commands[][]'
+        }
+    }
+    foreach ($name in @('rustc','cargo','node','npm','oslCargoSha256')) {
+        Assert-JsonString -Value $Identity.build.toolchain.$name -Context "buildIdentity.build.toolchain.$name"
+    }
+    foreach ($artifactName in @('executable','loader')) {
+        $artifact = $Identity.artifacts.$artifactName
+        Assert-JsonString -Value $artifact.name -Context "buildIdentity.artifacts.$artifactName.name"
+        Assert-JsonString -Value $artifact.sha256 -Context "buildIdentity.artifacts.$artifactName.sha256"
+        Assert-JsonInteger -Value $artifact.sizeBytes -Context "buildIdentity.artifacts.$artifactName.sizeBytes" -Minimum 1
+    }
+    foreach ($name in @('sourceArchiveSha256','distArchiveSha256','distManifestSha256',`
+            'npmBuildLogSha256','cargoBuildLogSha256','buildLogSha256')) {
+        Assert-JsonString -Value $Identity.evidence.$name -Context "buildIdentity.evidence.$name"
+    }
     $features = @($Identity.build.features)
     $commands = @($Identity.build.commands)
     $command0 = if ($commands.Count -ge 1) {
@@ -551,7 +612,13 @@ function Assert-StrictBuildIdentity {
         [int64]$Identity.artifacts.executable.sizeBytes -le 0 -or
         [string]$Identity.artifacts.loader.name -cne 'WebView2Loader.dll' -or
         [string]$Identity.artifacts.loader.sha256 -cnotmatch '^[0-9a-f]{64}$' -or
-        [int64]$Identity.artifacts.loader.sizeBytes -le 0) {
+        [int64]$Identity.artifacts.loader.sizeBytes -le 0 -or
+        [string]$Identity.evidence.sourceArchiveSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        [string]$Identity.evidence.distArchiveSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        [string]$Identity.evidence.distManifestSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        [string]$Identity.evidence.npmBuildLogSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        [string]$Identity.evidence.cargoBuildLogSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        [string]$Identity.evidence.buildLogSha256 -cnotmatch '^[0-9a-f]{64}$') {
         throw 'VMQA_INVALID_BUILD_IDENTITY'
     }
 }
@@ -563,6 +630,8 @@ function Assert-StrictRequestSteps {
     }
     foreach ($step in $Steps) {
         Assert-ExactJsonProperties -Object $step -Names @('id','verb','args') -Context 'step'
+        Assert-JsonString -Value $step.id -Context 'step.id'
+        Assert-JsonString -Value $step.verb -Context 'step.verb'
         $verb = ([string]$step.verb).ToLowerInvariant()
         $allowedArgs = switch ($verb) {
             'stage' { @('exeSha256') }
@@ -577,6 +646,35 @@ function Assert-StrictRequestSteps {
             default { throw "VMQA_UNSUPPORTED_VERB: $verb" }
         }
         Assert-ExactJsonProperties -Object $step.args -Names $allowedArgs -Context "step.$verb.args"
+        switch ($verb) {
+            'stage' {
+                Assert-JsonString -Value $step.args.exeSha256 -Context 'step.stage.args.exeSha256'
+            }
+            'launch' {
+                Assert-JsonString -Value $step.args.exeSha256 -Context 'step.launch.args.exeSha256'
+                Assert-JsonInteger -Value $step.args.timeoutSeconds -Context 'step.launch.args.timeoutSeconds' -Minimum 1
+            }
+            'shot' {
+                Assert-JsonString -Value $step.args.name -Context 'step.shot.args.name'
+                Assert-JsonString -Value $step.args.expectedSurfaceClass -Context 'step.shot.args.expectedSurfaceClass'
+            }
+            'click' {
+                Assert-JsonInteger -Value $step.args.winX -Context 'step.click.args.winX'
+                Assert-JsonInteger -Value $step.args.winY -Context 'step.click.args.winY'
+                Assert-JsonInteger -Value $step.args.settleMs -Context 'step.click.args.settleMs' -Minimum 0
+            }
+            'type' {
+                Assert-JsonString -Value $step.args.text -Context 'step.type.args.text'
+                Assert-JsonInteger -Value $step.args.settleMs -Context 'step.type.args.settleMs' -Minimum 0
+            }
+            'key' {
+                Assert-JsonString -Value $step.args.key -Context 'step.key.args.key'
+                Assert-JsonInteger -Value $step.args.settleMs -Context 'step.key.args.settleMs' -Minimum 0
+            }
+            'wait' {
+                Assert-JsonInteger -Value $step.args.ms -Context 'step.wait.args.ms' -Minimum 0
+            }
+        }
     }
 }
 
@@ -1237,6 +1335,8 @@ function Write-Verdict {
 function New-BlockedVerdict {
     param(
         [string]$RequestSha256 = '',
+        [string]$RequestExeSha256 = '0000000000000000000000000000000000000000000000000000000000000000',
+        [string]$BuildIdentitySha256 = '0000000000000000000000000000000000000000000000000000000000000000',
         [Parameter(Mandatory)][string]$RunId,
         [Parameter(Mandatory)][string]$VmName,
         [Parameter(Mandatory)][string]$Diagnosis,
@@ -1253,6 +1353,8 @@ function New-BlockedVerdict {
         finishedUtc = [datetime]::UtcNow.ToString('o')
         overall = 'blocked'
         requestSha256 = $RequestSha256
+        requestExeSha256 = $RequestExeSha256
+        buildIdentitySha256 = $BuildIdentitySha256
         diagnosis = $Diagnosis
         steps = @()
         diffKey = ''
@@ -1286,24 +1388,51 @@ function Process-RunDirectory {
         return $true
     }
 
+    $requestExeSha256 = '0000000000000000000000000000000000000000000000000000000000000000'
+    $buildIdentitySha256 = '0000000000000000000000000000000000000000000000000000000000000000'
     try {
         $request = $requestText | ConvertFrom-Json
+        # Preserve valid identity scalars even when a different request field makes the envelope
+        # invalid (for example schemaVersion 999 or an unknown step arg). The blocked producer must
+        # still say which executable/build the rejected request claimed, without coercing objects
+        # or accepting malformed digests.
+        $requestExeCandidate = Get-PropertyValue -Object $request -Name 'exeSha256'
+        if ($requestExeCandidate -is [string] -and
+            $requestExeCandidate -cmatch '^[0-9a-f]{64}$') {
+            $requestExeSha256 = $requestExeCandidate
+        }
+        $buildIdentityCandidate = Get-PropertyValue -Object $request -Name 'buildIdentitySha256'
+        if ($buildIdentityCandidate -is [string] -and
+            $buildIdentityCandidate -cmatch '^[0-9a-f]{64}$') {
+            $buildIdentitySha256 = $buildIdentityCandidate
+        }
         Assert-ExactJsonProperties -Object $request `
             -Names @('schemaVersion','runId','identifier','runStartUtc','exeSha256',`
                 'buildIdentitySha256','buildIdentity','steps') -Context 'request'
-        $schemaVersion = [int](Get-PropertyValue -Object $request -Name 'schemaVersion' -Required)
+        $schemaValue = Get-PropertyValue -Object $request -Name 'schemaVersion' -Required
+        Assert-JsonInteger -Value $schemaValue -Context 'request.schemaVersion'
+        $schemaVersion = [int]$schemaValue
         if ($schemaVersion -ne 2) {
             throw "VMQA_UNSUPPORTED_REQUEST_SCHEMA: $schemaVersion"
         }
-        $runId = [string](Get-PropertyValue -Object $request -Name 'runId' -Required)
-        $runStartRaw = [string](Get-PropertyValue -Object $request -Name 'runStartUtc' -Required)
+        $runIdValue = Get-PropertyValue -Object $request -Name 'runId' -Required
+        Assert-JsonString -Value $runIdValue -Context 'request.runId'
+        $runId = [string]$runIdValue
+        $runStartValue = Get-PropertyValue -Object $request -Name 'runStartUtc' -Required
+        Assert-JsonString -Value $runStartValue -Context 'request.runStartUtc'
+        $runStartRaw = [string]$runStartValue
         $runStartUtc = ([datetime]$runStartRaw).ToUniversalTime()
-        [void](Get-PropertyValue -Object $request -Name 'identifier' -Required)
-        $requestExeSha256 = ([string](Get-PropertyValue -Object $request -Name 'exeSha256' -Required)).ToLowerInvariant()
+        $identifierValue = Get-PropertyValue -Object $request -Name 'identifier' -Required
+        Assert-JsonString -Value $identifierValue -Context 'request.identifier'
+        $requestExeValue = Get-PropertyValue -Object $request -Name 'exeSha256' -Required
+        Assert-JsonString -Value $requestExeValue -Context 'request.exeSha256'
+        $requestExeSha256 = ([string]$requestExeValue).ToLowerInvariant()
         if ($requestExeSha256 -notmatch '^[0-9a-f]{64}$') {
             throw 'VMQA_BAD_REQUEST_EXE_SHA256'
         }
-        $buildIdentitySha256 = ([string](Get-PropertyValue -Object $request -Name 'buildIdentitySha256' -Required)).ToLowerInvariant()
+        $buildIdentityShaValue = Get-PropertyValue -Object $request -Name 'buildIdentitySha256' -Required
+        Assert-JsonString -Value $buildIdentityShaValue -Context 'request.buildIdentitySha256'
+        $buildIdentitySha256 = ([string]$buildIdentityShaValue).ToLowerInvariant()
         if ($buildIdentitySha256 -notmatch '^[0-9a-f]{64}$') {
             throw 'VMQA_BAD_BUILD_IDENTITY_SHA256'
         }
@@ -1312,7 +1441,9 @@ function Process-RunDirectory {
         $steps = @(Get-PropertyValue -Object $request -Name 'steps' -Required)
         Assert-StrictRequestSteps -Steps $steps
     } catch {
-        $blocked = New-BlockedVerdict -RunId $runIdFromPrefix -VmName $VmName -Diagnosis ('invalid-request: ' + $_.Exception.Message) -RequestSha256 $actualSha
+        $blocked = New-BlockedVerdict -RunId $runIdFromPrefix -VmName $VmName `
+            -Diagnosis ('invalid-request: ' + $_.Exception.Message) -RequestSha256 $actualSha `
+            -RequestExeSha256 $requestExeSha256 -BuildIdentitySha256 $buildIdentitySha256
         Write-Verdict -RunBlobPrefix $RunBlobPrefix -Verdict $blocked
         return $true
     }
@@ -1333,6 +1464,8 @@ function Process-RunDirectory {
     if ($null -ne $priorClaim) {
         Write-Log "interrupted run $RunBlobPrefix already claimed; refusing to re-execute its steps"
         $blocked = New-BlockedVerdict -RunId $runIdFromPrefix -VmName $VmName -RequestSha256 $actualSha `
+            -RequestExeSha256 $requestExeSha256 -BuildIdentitySha256 $buildIdentitySha256 `
+            -RunStartUtc ($runStartUtc.ToString('o')) `
             -Diagnosis 'interrupted-run: this run was already started by an agent that did not finish, so an unknown prefix of its steps has already executed; re-running them could double a side effect and still grade green'
         Write-Verdict -RunBlobPrefix $RunBlobPrefix -Verdict $blocked
         return $true
@@ -1373,7 +1506,7 @@ function Process-RunDirectory {
     $overall = Get-OverallStatus -Steps $stepResults
     $diffKey = (($stepResults | ForEach-Object { '{0}={1}' -f $_['id'], $_['status'] }) -join ';')
     $verdict = [ordered]@{
-        schemaVersion = 1
+        schemaVersion = 2
         runId = $runId
         # Bind the verdict to the exact request bytes that produced it. A runId alone does not do
         # this: reusing a runId (which `run --run-id` permits) would let a verdict left by an

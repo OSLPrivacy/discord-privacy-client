@@ -2,7 +2,7 @@
 
 ## Decision
 
-**Do not execute the F1 walkthrough. F1 earns +0 and remains 4/6.**
+**Do not execute the F1 walkthrough. This task earns F1 +0 and makes no checklist movement.**
 
 The requested Scrub harness landed within the ten-minute watch window:
 
@@ -50,19 +50,29 @@ The VMQA contract now requires:
 - a clean-source build identity binding commit, tree, empty dirty-state digest, UI dist digest,
   exact Windows release target/features/build argv, toolchain identity, and executable/loader
   size and SHA-256;
-- independent host measurement of retained executable bytes;
+- independent host measurement of retained executable bytes, plus a Git source archive,
+  deterministic dist archive/manifest, raw npm/Cargo output, and a closed build log whose Cargo
+  compiler-artifact path and digest bind those exact bytes to the named source and argv; the
+  verifier requires an independently supplied expected commit/tree and recomputes the Git tree ID
+  from the retained archive instead of trusting its label;
 - request, verdict, and build-identity digest agreement;
-- retained Azure instance-view, subscription-census, and cleanup JSON whose hashes bind the run,
-  executable, build identity, target VM/resource group, deallocated state, and zero running VMs.
+- normal and blocked live verdict producers using the exact V2 fields;
+- recursive scalar types, timestamp ordering, and exact request/result step correspondence;
+- retained raw Azure instance view, detailed census, followed subscription REST pages, projections,
+  and cleanup JSON whose hashes bind the request, verdict, executable, build identity, target VM
+  and resource group, authoritative `PowerState/deallocated`, complete target membership, and zero
+  running VMs.
 
 Focused local evidence:
 
-- `scripts/vmqa/test-selftest-grading.sh`: 83 passed, 0 failed.
-  - Includes V999, unknown top/nested field, stale embedded build identity, and coherent executable
-    digest-substitution mutations.
-- `python3 scripts/vmqa/test-vmqa-contract.py -v`: 7 passed.
-  - Includes Azure V999, unknown field, changed instance bytes, running target, running
-    subscription member, and target-substitution mutations.
+- `scripts/vmqa/test-selftest-grading.sh`: 87 passed, 0 failed.
+  - Includes V999, unknown top/nested field, nested object-for-scalar substitutions, stale embedded
+    identity, and coherent executable digest substitution through both selftest and ordinary-run
+    verification.
+- `python3 scripts/vmqa/test-vmqa-contract.py -v`: 19 passed.
+  - Includes clean unrelated source plus arbitrary executable, Azure V999/unknown fields, raw-byte
+    and projection drift, cross-run swaps, prose-only deallocation, empty/partial/incomplete
+    censuses, pagination, timestamp drift, and nested scalar substitutions.
 - Bash syntax, Python compilation, PowerShell parser, and `git diff --check`: passed.
 
 ## Cloud state
@@ -72,4 +82,3 @@ Read-only checks found `OSL-Azure-Client-1` already `VM deallocated` and the sub
 leak check reported nothing running. A run-scoped Azure cleanup receipt was deliberately not
 fabricated: without an admissible run and retained build identity there is no honest executable or
 build digest to bind it to.
-

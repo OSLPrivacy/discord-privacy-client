@@ -154,7 +154,17 @@ Target is under three minutes per iteration once setup is snapshotted.
    tree, an empty tracked/untracked status digest, UI dist digest, Windows target, exact
    `["desktop"]` feature set, release profile, build argv, Rust/Cargo/Node/npm and `osl-cargo`
    identity, and independently measured executable/loader sizes and SHA-256. A bare executable
-   digest is not a build identity and is not accepted by `selftest`.
+   digest is not a build identity. Both `run` and `selftest` require `--exe` so the host can
+   remeasure the exact local executable rather than trusting the identity's digest. Use
+   `vmqa-run.sh build --source-repo <clean-product-repo> --evidence-dir <empty-dir>
+   --expected-commit <full-sha> --expected-tree <full-sha>` and `vmqa-run.sh stamp ...` with the
+   same independent expectations. Every later `run`, `selftest`, and cleanup verification requires
+   those expectations again. The evidence directory retains the Git archive,
+   deterministic dist archive and manifest, raw npm/Cargo output, and a closed build log binding
+   the exact compiler-artifact path and digest. The verifier recomputes the Git tree ID from the
+   retained source archive, so rewriting the commit/tree fields coherently is still rejected. `run`
+   and `selftest` require that directory and copy it into the run report so an independent reviewer
+   can rebuild the named commit with the retained argv or recompute every digest.
 3. **Host** — upload `osl-privacy-hub.exe` and `WebView2Loader.dll` under
    `builds/<sha256>/` only if the hash moved. Write `runs/<vm>/<runId>/request.json` naming the run id
    and the verbs
@@ -167,11 +177,18 @@ Target is under three minutes per iteration once setup is snapshotted.
    grading. It retains the exact request and build-identity bytes, measures the local executable
    bytes independently, grades every artifact against run start, and pulls the evidence into
    `docs/reports/`.
-6. **Host cleanup** — deallocate the VM, then retain `azure-instance-view.json`,
-   `azure-subscription-census.json`, and `azure-cleanup-receipt.json` beside the run. The receipt
-   binds both JSON SHA-256 values to the run, executable, build identity, target VM/resource group,
-   deallocated state, and subscription-wide running count zero. Validate with
-   `python3 scripts/vmqa/vmqa-contract.py verify-cleanup --directory <run-report-dir>`.
+6. **Host cleanup** — deallocate the VM, then retain the raw Azure CLI responses,
+   `azure-instance-view.raw.json`, `azure-subscription-census.raw.json`, and the followed REST page
+   chain in `azure-subscription-pages.raw.json`, their closed projected JSON, and
+   `azure-cleanup-receipt.json` beside the retained request, verdict, build identity, and build
+   evidence.
+   The command derives run/executable/build fields from those retained bytes, hashes every raw and
+   projected file, recomputes the projections and subscription identity from raw Azure IDs, and
+   refuses unless every `nextLink` was followed, the detailed census equals the complete page-chain
+   ID set, the target is present, its raw status code is exactly `PowerState/deallocated`, and the
+   subscription-wide running count is zero. Validate with
+   `python3 scripts/vmqa/vmqa-contract.py verify-cleanup
+   --directory <run-report-dir> --exe <exact-local-exe>`.
 
 ## Traps that have already cost time
 
@@ -221,10 +238,14 @@ Target is under three minutes per iteration once setup is snapshotted.
   executable digest is harness-invalid. The independent executable bytes and retained
   `build-identity.json` are the trust roots; matching caller-authored digests are not.
 - **Console cleanup text is not retained evidence.** After deallocation, use
-  `vmqa-fleet.sh cleanup-receipt <vm> <run-id> <exe-sha> <build-identity-sha> <report-dir>`.
-  This reads Azure instance view and the subscription census, writes closed-schema JSON, hashes
-  both into the cleanup receipt, and refuses unless the target is `VM deallocated` and no
-  subscription VM is `VM running`.
+  `vmqa-fleet.sh cleanup-receipt <vm> <run-report-dir> <exact-local-exe> <expected-commit>
+  <expected-tree>`. The run ID,
+  executable digest, and build-identity digest are derived from the retained run rather than
+  accepted as caller arguments. The command retains raw Azure instance-view and subscription
+  census JSON, the complete followed REST page chain, plus closed projections; hashes every file
+  into the cleanup receipt; and refuses unless the target occurs exactly once, carries the
+  authoritative raw code `PowerState/deallocated`, the detailed and paginated censuses agree, and
+  no subscription VM is `VM running`.
 
 ## Input injection: where it is banned and where it is required
 
