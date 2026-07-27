@@ -2146,3 +2146,24 @@ evidence was introduced.
 - AutoScrub availability wording correction +0.
 - No implementation or runtime behavior was awarded.
 - Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — attachment/image claim audit: no correction required
+
+A bounded read-only audit found no remaining public overclaim in the image/file
+pricing surfaces. The exact copies are internally consistent:
+
+- `download.html:67` labels encrypted image sending and other files Planned and
+  says they are not in the shipping app or part of today’s purchase;
+- `download.html:106-107` repeats Planned badges for image opening and Scrub;
+- `download.html:129-134` places image/file sending under “Not in the app yet —
+  you are not paying for these today”; and
+- `docs/status.html:87-88` states image sending is not in the shipping app and
+  non-image files are unsupported, matching `data/pricing.json:221-245`.
+
+No file correction was justified by this audit. No browser, build, install,
+runtime, push, or deployment command ran.
+
+## Acceptance rows this earns
+
+- Attachment/image claim audit +0; no mismatch found.
+- Checklist remains untouched; authority remains **100 / 303**.
