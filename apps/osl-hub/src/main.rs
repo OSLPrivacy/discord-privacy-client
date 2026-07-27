@@ -1780,6 +1780,62 @@ fn require_engaged_lock(app: &tauri::AppHandle) -> Result<(), String> {
     Err("Protected Discord encryption is switched off".to_owned())
 }
 
+#[cfg(any(test, feature = "discord-qa-shell"))]
+fn canonical_native_visible_row_qa_build_hash(value: Option<&str>) -> Result<String, String> {
+    let value = value.ok_or_else(|| "The QA build hash is unavailable".to_owned())?;
+    if !matches!(value.len(), 40 | 64) || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("The QA build hash is unavailable".to_owned());
+    }
+    Ok(value.to_ascii_lowercase())
+}
+
+/// Take one non-mutating, bounded runtime census from the real Windows native
+/// visible-row producer.
+///
+/// No renderer value selects a window, scope, generation, identity or row. The
+/// trusted main window can only ask; native state supplies every authority.
+/// A zero-row or any-proof-missing result remains a refused receipt, never a
+/// positive. Nothing here changes focus, sends input, persists the receipt or
+/// contacts a network service. The called producer's pre-existing bounded
+/// geometry/completeness caches and fixed-label QA breadcrumbs remain unchanged.
+#[cfg(feature = "discord-qa-shell")]
+#[tauri::command]
+async fn request_native_discord_visible_row_qa_receipt(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+) -> Result<osl_privacy_hub::native_discord_adapter::NativeVisibleRowQaReceipt, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL Privacy window may request native QA evidence".to_owned());
+    }
+    require_engaged_lock(&app)?;
+    let owner = active_unlocked_osl_user_id(&app.state::<HubCoreState>())?;
+    let (epoch, context_host) = require_overlay_context_snapshot(&app)?;
+    let scope_binding = native_discord_scope_binding(&app)?;
+    require_same_overlay_context(&app, epoch, &context_host)?;
+    let build_hash =
+        canonical_native_visible_row_qa_build_hash(option_env!("OSL_SOURCE_COMMIT"))?;
+
+    let read_app = app.clone();
+    let receipt = tauri::async_runtime::spawn_blocking(move || {
+        osl_privacy_hub::native_discord_adapter::request_native_visible_row_qa_receipt(
+            &read_app.state::<NativeWindowHostState>(),
+            &owner,
+            &scope_binding,
+            &build_hash,
+            MAX_VISIBLE_CARRIER_ROWS,
+        )
+    })
+    .await
+    .map_err(|_| "The native visible-row QA request was interrupted".to_owned())??;
+
+    // The native host callback re-proves its HWND/process/generation after the
+    // producer returns. Re-prove the broker context and lock as well, so a
+    // receipt from a superseded session never leaves this command.
+    require_same_overlay_context(&app, epoch, &context_host)?;
+    require_engaged_lock(&app)?;
+    Ok(receipt)
+}
+
 #[tauri::command]
 fn send_native_discord_overlay_carrier(
     app: tauri::AppHandle,
@@ -7409,6 +7465,8 @@ fn main() {
         #[cfg(feature = "discord-qa-shell")]
             send_native_discord_qa_probe,
         #[cfg(feature = "discord-qa-shell")]
+            request_native_discord_visible_row_qa_receipt,
+        #[cfg(feature = "discord-qa-shell")]
         run_native_discord_headless_qa,
         #[cfg(feature = "discord-qa-shell")]
         poll_native_discord_headless_qa,
@@ -7541,5 +7599,96 @@ mod b6_startup_gate_tests {
             controller.contains("'negativeCrossPeerIsolation'"),
             "the retained receipt gate must bind the eighth starvation fact"
         );
+    }
+}
+
+#[cfg(all(test, feature = "discord-qa-shell"))]
+mod native_visible_row_qa_command_tests {
+    use super::canonical_native_visible_row_qa_build_hash;
+
+    fn command_is_registered(source: &str) -> bool {
+        let Some(handler_start) = source.find("tauri::generate_handler![") else {
+            return false;
+        };
+        let Some(handler_end) = source[handler_start..].find("]);") else {
+            return false;
+        };
+        source[handler_start..handler_start + handler_end]
+            .contains("request_native_discord_visible_row_qa_receipt,")
+    }
+
+    #[test]
+    fn native_visible_row_qa_command_is_reachable_only_through_trusted_state() {
+        let source = include_str!("main.rs");
+        assert!(command_is_registered(source));
+        let start = source
+            .find(
+                "#[cfg(feature = \"discord-qa-shell\")]\n#[tauri::command]\nasync fn request_native_discord_visible_row_qa_receipt(",
+            )
+            .expect("QA receipt command must exist");
+        let end = source[start..]
+            .find("#[tauri::command]\nfn send_native_discord_overlay_carrier(")
+            .map(|offset| start + offset)
+            .expect("QA receipt command must remain bounded");
+        let command = &source[start..end];
+        for required in [
+            "#[tauri::command]",
+            "caller.label() != \"main\"",
+            "require_engaged_lock(&app)?",
+            "active_unlocked_osl_user_id(",
+            "require_overlay_context_snapshot(&app)?",
+            "native_discord_scope_binding(&app)?",
+            "require_same_overlay_context(&app, epoch, &context_host)?",
+            "spawn_blocking(move ||",
+            "request_native_visible_row_qa_receipt(",
+            "MAX_VISIBLE_CARRIER_ROWS",
+        ] {
+            assert!(command.contains(required), "missing command gate: {required}");
+        }
+        assert_eq!(
+            command.matches("require_engaged_lock(&app)?").count(),
+            2,
+            "the lock must be checked before and after the native read"
+        );
+        assert_eq!(
+            command
+                .matches("require_same_overlay_context(&app, epoch, &context_host)?")
+                .count(),
+            2,
+            "the broker context must be checked before and after the native read"
+        );
+
+        let signature_end = command.find(") -> Result<").expect("command signature");
+        let signature = &command[..signature_end];
+        assert!(!signature.contains("String"));
+        assert!(!signature.contains("u64"));
+        assert!(!signature.contains("usize"));
+
+        let registration_removed = source.replacen(
+            "            request_native_discord_visible_row_qa_receipt,",
+            "",
+            1,
+        );
+        assert!(
+            !command_is_registered(&registration_removed),
+            "removing the real handler registration must fail reachability"
+        );
+    }
+
+    #[test]
+    fn native_visible_row_qa_build_hash_is_present_canonical_and_bounded() {
+        assert_eq!(
+            canonical_native_visible_row_qa_build_hash(Some(
+                "ABCDEF0123456789ABCDEF0123456789ABCDEF01"
+            ))
+            .unwrap(),
+            "abcdef0123456789abcdef0123456789abcdef01"
+        );
+        assert!(canonical_native_visible_row_qa_build_hash(None).is_err());
+        assert!(canonical_native_visible_row_qa_build_hash(Some("abc")).is_err());
+        assert!(canonical_native_visible_row_qa_build_hash(Some(
+            "gggggggggggggggggggggggggggggggggggggggg"
+        ))
+        .is_err());
     }
 }

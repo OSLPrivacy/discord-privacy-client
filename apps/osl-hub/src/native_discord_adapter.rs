@@ -6723,6 +6723,157 @@ pub fn read_visible_message_rows(
     }
 }
 
+/// Fixed, content-free reasons why one native visible-row QA receipt refused
+/// to count as positive runtime evidence.
+///
+/// Counts are used instead of samples so no message text, avatar URL, Discord
+/// message/account id, HWND or process id can cross the command boundary.
+#[cfg(any(test, feature = "discord-qa-shell"))]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeVisibleRowQaRefusalReasonCounts {
+    /// One when the bounded producer returned no visible rows.
+    pub no_rows_observed: usize,
+    /// One per visible row whose producer-owned attribution proof is absent.
+    pub native_proof_unavailable: usize,
+}
+
+/// Bounded, nonsecret runtime evidence from the real native visible-row
+/// producer.
+///
+/// The only values derived from Discord identity are domain-separated hashes
+/// of the already-adopted HWND/process pair and the trusted OSL scope binding.
+/// Row content and native ids are consumed only to form the existing producer
+/// proof and are never representable in this receipt.
+#[cfg(any(test, feature = "discord-qa-shell"))]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeVisibleRowQaReceipt {
+    pub schema_version: u8,
+    pub build_hash: String,
+    pub native_target_identity_sha256: String,
+    pub scope_binding_sha256: String,
+    pub window_generation: u64,
+    pub rows_observed: usize,
+    pub proof_some: usize,
+    pub proof_none: usize,
+    pub own_rows: usize,
+    pub peer_rows: usize,
+    pub refusal_reason_counts: NativeVisibleRowQaRefusalReasonCounts,
+    /// True only for a nonempty batch in which every observed row retained the
+    /// real producer's exact provider-owned attribution proof.
+    pub accepted: bool,
+}
+
+#[cfg(any(test, feature = "discord-qa-shell"))]
+fn native_visible_row_qa_receipt_from_rows(
+    build_hash: String,
+    native_target_identity_sha256: String,
+    scope_binding: &str,
+    window_generation: u64,
+    rows: Vec<VisibleMessageRow>,
+) -> NativeVisibleRowQaReceipt {
+    let rows_observed = rows.len();
+    let mut proof_some = 0usize;
+    let mut proof_none = 0usize;
+    let mut own_rows = 0usize;
+    let mut peer_rows = 0usize;
+    for row in rows {
+        match row.attribution {
+            Some(evidence) => {
+                proof_some = proof_some.saturating_add(1);
+                match evidence.poster {
+                    NativeDiscordRowPoster::SelfAccount => {
+                        own_rows = own_rows.saturating_add(1);
+                    }
+                    NativeDiscordRowPoster::PeerAccount => {
+                        peer_rows = peer_rows.saturating_add(1);
+                    }
+                }
+            }
+            None => {
+                proof_none = proof_none.saturating_add(1);
+            }
+        }
+    }
+    let refusal_reason_counts = NativeVisibleRowQaRefusalReasonCounts {
+        no_rows_observed: usize::from(rows_observed == 0),
+        native_proof_unavailable: proof_none,
+    };
+    let accepted = rows_observed > 0
+        && proof_some == rows_observed
+        && proof_none == 0
+        && own_rows.saturating_add(peer_rows) == proof_some;
+    NativeVisibleRowQaReceipt {
+        schema_version: 1,
+        build_hash,
+        native_target_identity_sha256,
+        scope_binding_sha256: native_row_attribution_scope_sha256(scope_binding),
+        window_generation,
+        rows_observed,
+        proof_some,
+        proof_none,
+        own_rows,
+        peer_rows,
+        refusal_reason_counts,
+        accepted,
+    }
+}
+
+/// Invoke the real Windows visible-row producer once against the exact adopted
+/// Discord target and reduce its result to a nonsecret QA receipt.
+///
+/// The host callback is the production authority boundary: it admits only the
+/// currently adopted Discord HWND/process/generation for the unlocked owner,
+/// holds the single-flight operation gate, and revalidates the target after the
+/// detached producer returns. This entry point adds no input, focus, network or
+/// receipt persistence; the producer's existing bounded caches and fixed-label
+/// QA breadcrumbs retain their ordinary behavior.
+#[cfg(feature = "discord-qa-shell")]
+pub fn request_native_visible_row_qa_receipt(
+    host: &crate::native_window_host::NativeWindowHostState,
+    owner_osl_user_id: &str,
+    scope_binding: &str,
+    build_hash: &str,
+    max_rows: usize,
+) -> Result<NativeVisibleRowQaReceipt, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let scope_binding = scope_binding.to_owned();
+        let build_hash = build_hash.to_owned();
+        host.with_current_discord_accessibility_target(owner_osl_user_id, move |target, trusted| {
+            let native_target_identity_sha256 = stable_hash(
+                "discord-native-visible-row-qa-target-v1",
+                &format!("{}\u{1f}{}", target.window, target.process_id),
+            );
+            let rows = windows::read_visible_message_rows_detached(
+                target,
+                trusted(target.process_id),
+                scope_binding.clone(),
+                max_rows,
+            );
+            Ok(native_visible_row_qa_receipt_from_rows(
+                build_hash,
+                native_target_identity_sha256,
+                &scope_binding,
+                target.generation,
+                rows,
+            ))
+        })
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (
+            host,
+            owner_osl_user_id,
+            scope_binding,
+            build_hash,
+            max_rows,
+        );
+        Err("Native visible-row QA evidence requires Windows".to_owned())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Guided deletion: the host-facing half.
 //
@@ -24771,5 +24922,165 @@ mod tests {
         let rendered = format!("{census:?}");
         assert!(!rendered.contains("see you at six"));
         assert!(!rendered.contains("Deckard"));
+    }
+
+    #[test]
+    fn native_visible_row_qa_receipt_has_nonempty_own_and_peer_positive_controls() {
+        const OWN_CARRIER: &str = "the quiet harbour keeps every lantern burning tonight";
+        const PEER_CARRIER: &str = "the winter garden waits beside the silver morning";
+        let (own, peer) = own_and_peer_provider_evidence();
+        let receipt = native_visible_row_qa_receipt_from_rows(
+            "a".repeat(40),
+            "b".repeat(64),
+            "trusted-scope",
+            7,
+            vec![
+                provider_visible_row(own, OWN_CARRIER),
+                provider_visible_row(peer, PEER_CARRIER),
+            ],
+        );
+        assert!(receipt.accepted);
+        assert_eq!(receipt.rows_observed, 2);
+        assert_eq!(receipt.proof_some, 2);
+        assert_eq!(receipt.proof_none, 0);
+        assert_eq!(receipt.own_rows, 1);
+        assert_eq!(receipt.peer_rows, 1);
+        assert_eq!(
+            receipt.refusal_reason_counts,
+            NativeVisibleRowQaRefusalReasonCounts::default()
+        );
+    }
+
+    #[test]
+    fn native_visible_row_qa_receipt_refuses_zero_and_proof_none_mutations() {
+        let zero = native_visible_row_qa_receipt_from_rows(
+            "a".repeat(40),
+            "b".repeat(64),
+            "trusted-scope",
+            7,
+            Vec::new(),
+        );
+        assert!(!zero.accepted);
+        assert_eq!(zero.rows_observed, 0);
+        assert_eq!(zero.proof_some, 0);
+        assert_eq!(zero.refusal_reason_counts.no_rows_observed, 1);
+
+        let missing = native_visible_row_qa_receipt_from_rows(
+            "a".repeat(40),
+            "b".repeat(64),
+            "trusted-scope",
+            7,
+            vec![VisibleMessageRow {
+                locator_sha256: "native-locator-must-not-escape".to_owned(),
+                line: "message text must not escape".to_owned(),
+                decode_candidates: vec!["carrier must not escape".to_owned()],
+                bounds: Some([1, 2, 3, 4]),
+                attribution: None,
+            }],
+        );
+        assert!(!missing.accepted);
+        assert_eq!(missing.rows_observed, 1);
+        assert_eq!(missing.proof_some, 0);
+        assert_eq!(missing.proof_none, 1);
+        assert_eq!(missing.refusal_reason_counts.no_rows_observed, 0);
+        assert_eq!(missing.refusal_reason_counts.native_proof_unavailable, 1);
+    }
+
+    #[test]
+    fn native_visible_row_qa_receipt_serialization_excludes_content_ids_and_geometry() {
+        const CARRIER: &str = "visible carrier must never enter the receipt";
+        const MESSAGE_ID: &str = "333333333333333333";
+        let evidence = native_row_attribution_from_provider(
+            provider_observation(
+                MESSAGE_ID,
+                "111111111111111111",
+                "111111111111111111",
+                CARRIER,
+                71,
+            ),
+            &[CARRIER.to_owned()],
+            "private-scope-binding",
+            19,
+            0,
+        )
+        .expect("positive native evidence");
+        let receipt = native_visible_row_qa_receipt_from_rows(
+            "c".repeat(40),
+            stable_hash(
+                "discord-native-visible-row-qa-target-v1",
+                "distinctive-raw-hwnd\u{1f}distinctive-raw-process-id",
+            ),
+            "private-scope-binding",
+            19,
+            vec![VisibleMessageRow {
+                locator_sha256: evidence.native_locator_sha256.clone(),
+                line: CARRIER.to_owned(),
+                decode_candidates: vec![
+                    CARRIER.to_owned(),
+                    "https://cdn.discordapp.com/avatars/private-avatar".to_owned(),
+                ],
+                bounds: Some([101, 202, 303, 404]),
+                attribution: Some(evidence),
+            }],
+        );
+        let encoded = serde_json::to_string(&receipt).expect("receipt serializes");
+        for forbidden in [
+            CARRIER,
+            MESSAGE_ID,
+            "111111111111111111",
+            "private-avatar",
+            "private-scope-binding",
+            "distinctive-raw-hwnd",
+            "distinctive-raw-process-id",
+            "locatorSha256",
+            "discordMessageId",
+            "posterIdentity",
+            "decodeCandidates",
+            "bounds",
+            "line",
+        ] {
+            assert!(
+                !encoded.contains(forbidden),
+                "receipt leaked forbidden value/key {forbidden}"
+            );
+        }
+        assert!(encoded.len() < 1_024, "receipt must remain tightly bounded");
+    }
+
+    #[test]
+    fn native_visible_row_qa_source_uses_the_real_adopted_producer_route() {
+        let source = include_str!("native_discord_adapter.rs");
+        let start = source
+            .find("pub fn request_native_visible_row_qa_receipt(")
+            .expect("QA producer request must exist");
+        let end = source[start..]
+            .find("// ---------------------------------------------------------------------------")
+            .map(|offset| start + offset)
+            .expect("QA request section must remain bounded");
+        let route = &source[start..end];
+        for required in [
+            "with_current_discord_accessibility_target",
+            "trusted(target.process_id)",
+            "windows::read_visible_message_rows_detached(",
+            "target.generation",
+            "target.window",
+            "target.process_id",
+            "native_visible_row_qa_receipt_from_rows(",
+        ] {
+            assert!(route.contains(required), "missing production route: {required}");
+        }
+        for forbidden in [
+            "SetForegroundWindow",
+            "set_focus",
+            "SendInput",
+            "reqwest",
+            "discord_message_id",
+            ".line",
+        ] {
+            assert!(
+                !route.contains(forbidden),
+                "QA request must remain non-mutating and content-free: {forbidden}"
+            );
+        }
     }
 }
