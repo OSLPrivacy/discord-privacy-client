@@ -2096,3 +2096,90 @@ behavior is claimed.
 
 None. This corrects source truth and adds a two-product-tree reachability
 gate; it does not wire or exercise wrapped-key post/fetch.
+
+## Round 22 — legacy duress primitives are not the reachable Hub burn path
+
+Source/test commits:
+
+- `18ce542ca8983ee806be58704cda25ba304fa316` (parent
+  `7395d8c6bed83a1ec5133a86e33dfec7cc0ecce2`, tree
+  `594480d44c530ff1895cb791c1bb2e5595b1800f`);
+- wording successor `5be42e8e93b79830a656e41249dec456f812418b`
+  (parent `18ce542ca8983ee806be58704cda25ba304fa316`, tree
+  `5c627b7344c462e6471fac71de62a99cba45b978`).
+
+Exact paths:
+
+- `crates/keystore/src/duress.rs`
+- `crates/keystore/src/password.rs`
+- `apps/osl-hub-ui/src/security.test.ts`
+
+Committed search across `apps/osl-hub/src/**`, `crates/ipc/src/**`, and
+`src-tauri/src/**` found zero production references to `DuressEngine`,
+`DuressHandlers`, `DuressPaths`, `DuressJournal`, `DuressReport`, `WipeStep`,
+`verify_against_record`, `VerifyOutcome`, or `InactivityTimer`. These types
+remain implemented and publicly re-exported by `crates/keystore/src/lib.rs`.
+
+This does **not** mean the current Hub lacks a burn password. The separate
+reachable path is:
+
+1. `main.rs:7412` registers `unlock_hub_password_gate`;
+2. `main.rs:857-861` calls `startup_gate::verify_password_role`;
+3. `main.rs:893-919` handles `VerifiedGateRole::Burn`; and
+4. `main.rs:909-915` calls `cleanup::execute_verified_gate_burn`.
+
+The old keystore module headers instead implied that a Tauri shell drove
+their apparent-unlock engine, that relaunch resumed its journal, and that
+their `VerifyOutcome` directly triggered duress. The corrections now identify
+those modules as legacy implemented-unwired primitives and explicitly
+separate them from the reachable `startup_gate`/`cleanup` path.
+
+Additional source-truth corrections:
+
+- caller-supplied OPSEC stripping defaults to `Skipped`; the engine does not
+  contain a production strip callback;
+- the journal records every attempted `Wiped`, `AlreadyClean`, `Skipped`, or
+  `Failed` outcome, not successes only; and
+- password persistence and inactivity behavior are helper/model semantics
+  only when invoked.
+
+The immediate wording successor fixed a post-commit prose splice in
+`password.rs:22-24`; it changed no behavior or gate logic.
+
+### Reachability gate and focused evidence
+
+`security.test.ts:1309-1456` scans both product trees plus IPC after stripping
+comments, tests, fixtures, and `cfg(test)` modules. Implementation/re-export
+positives require the engine, journal, paths, handlers, report, password
+outcomes, verifier, and inactivity timer. Synthetic constructor,
+associated-method, imported-alias, verifier, outcome, and timer references
+turn the detector positive; comment and `cfg(test)` fixtures remain negative.
+
+Crucially, the gate positively requires the registered current Hub path,
+`startup_gate::verify_password_role`, `VerifiedGateRole::Burn`, and
+`cleanup::execute_verified_gate_burn`, so it cannot turn an old zero-caller
+finding into a false claim that no product burn-password path exists.
+
+Focused command:
+
+`./node_modules/.bin/vitest run src/security.test.ts -t "separates legacy
+duress primitives from the reachable Hub burn password" --reporter=dot`
+
+Final successor result: 1 test passed, 0 failed, 12 skipped (13 collected),
+duration 595 ms. Two intentional pre-final failures caught an obsolete
+`execute(now)` positive-control signature and a provenance-free bare
+`engine.resume_if_pending()` mutation; the final gate uses the actual
+`execute(&self)` signature and attributable
+`DuressEngine::resume_if_pending`.
+
+`git diff --check` produced no output for every committed path. No Cargo,
+build, install, browser, deployment, network, destructive wipe, password
+attempt, or runtime action ran.
+
+Status: `source/test-proven-only`, `+0`. This makes no runtime claim about
+either the legacy engine or the separately reachable current Hub burn path.
+
+## Acceptance rows this earns
+
+None. This corrects legacy source claims and proves the current source-level
+path distinction; it does not add runtime or destructive-wipe evidence.
