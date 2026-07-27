@@ -13,13 +13,15 @@ flipped on, no gate was defaulted to enabled.
 
 ## Five plain lines
 
-1. The ratchet reuses its AEAD nonce deterministically if sender state ever rolls back, because
-   the nonce is derived from the message key alone — this is the finding that matters most.
+1. The ratchet reuses its AEAD nonce deterministically if sender state rolls back, because the
+   nonce is derived from the message key alone — real, already known as a hypothesis, and now
+   demonstrated, but reachable only in the prepared path and not in anything shipping.
 2. B4 was not unstarted — capability negotiation is already built across three layers, the server
    half is deployed live, and the real defect was a `bool` parameter that let any future caller
    void the whole downgrade proof.
-3. No OSL client advertises its capability at all, so negotiation is inert end to end and would
-   select v=3 for every peer, permanently.
+3. No Rust client advertises its capability, so flipping the wire-in alone would still send v=3
+   to every peer — though the server side already works, so this gap is client-side and not
+   permanent.
 4. The advertisement must be switched on in the same commit as the wire-in and never before,
    because advertising a capability the build cannot honour pins peers into an unrecoverable
    refusal state.
@@ -60,11 +62,16 @@ at `:609`, not `reg_msg_with_capabilities`. `RegisterRequest` (`:63-87`) has **n
 Confirmed by grep: `verify_peer_capabilities` has **zero production callers**, and
 `reg_msg_with_capabilities` is called only from within `client.rs` itself and from tests.
 
-Consequence: every OSL client registers as a legacy peer. Every peer therefore resolves to
-`PeerCapabilities::Absent`, so `select_wire_version` under the default `RnPolicy::Opportunistic`
-returns `LegacyV3` for **every peer, permanently**. Capability negotiation is inert end-to-end.
-Wiring the ratchet without fixing this would produce a system that appears to negotiate and in
-fact sends v=3 one hundred percent of the time.
+Consequence: every OSL **Rust** client registers as a legacy peer, so peers resolve to
+`PeerCapabilities::Absent` and `select_wire_version` under the default `RnPolicy::Opportunistic`
+returns `LegacyV3`. Wiring the ratchet without fixing this would produce a system that appears to
+negotiate and in fact sends v=3 one hundred percent of the time.
+
+**Corrected scope (see §5b).** This is a *client-side* gap, not a permanent property of the
+system. The keyserver already accepts, verifies, persists and monotonically raises a
+client-supplied signed bitmap, so a non-Rust or future client can create a verifiably RN-capable
+peer record with no server change. The earlier phrasing of this finding — "every peer, forever" —
+was overstated and is withdrawn.
 
 ### Why this is NOT being routed as a standalone fix
 
@@ -274,6 +281,60 @@ tree — so the §2 finding stands. But the route target is moving; re-check bef
 
 ---
 
+## 5b. ADVERSARIAL REVIEW CORRECTED BOTH HEADLINE CLAIMS — read this before §2 and §6
+
+A separate job (E, `gpt-5.6-sol`) was dispatched with one instruction: destroy the two findings
+this lane was about to hand over as gating claims. It returned **OVERSTATED** on both. The
+corrections are adopted here and the sections below are written in their corrected form; this
+section records what was wrong, because the overstated versions were nearly shipped.
+
+**Claim 1 (nonce reuse) — core survives, two overstatements removed.**
+
+- *Survives:* the body nonce is genuinely message-key-only (`kdf.rs:130-132`, with
+  `IKM_NONCE`/`LABEL_BODY_NONCE` fixed constants at `:65` and `:58`); XChaCha20-Poly1305 is not
+  nonce-misuse-resistant; and varying associated data does not vary the payload keystream.
+- *Overstated 1:* this lane implied reachability **through the presently shipping send path**.
+  It is not. `send_rn` has no callers and the ratchet is unwired, so the hazard lives in the
+  *prepared* path, not in anything users run today.
+- *Overstated 2:* "recoverable by anyone who captured both ciphertexts" is too strong. A passive
+  observer immediately obtains **the XOR of the overlapping plaintext bytes**. Recovering either
+  plaintext still requires knowing or successfully guessing the other. That is a serious break;
+  it is not automatic recovery of both, and the distinction matters to anyone sizing the risk.
+
+**Claim 2 (negotiation inert) — practical finding survives, the absolutes do not.**
+
+- *Survives:* production Rust registration emits the legacy signed form, `RegisterRequest` cannot
+  serialise `rn_capabilities`, production read paths never call `verify_peer_capabilities`, and
+  no production caller invokes `select_wire_version`. Flipping the wire-in constant alone would
+  **not** make negotiation work.
+- *Overstated:* "every peer resolves to Absent, permanently, forever" is wrong. The **keyserver
+  already accepts, verifies, persists and monotonically raises** a client-supplied signed bitmap.
+  A non-Rust client, or a future build, can therefore create a verifiably RN-capable peer record
+  without any change to the server. The gap is client-side only, and it is not permanent.
+
+**New finding surfaced by the refutation, verified independently by this lane.**
+
+`initiate_and_persist` (`crates/ipc/src/wire_rn.rs:660-661`) calls `store.raise_pin_to_rn(&peer_id)`
+immediately after locally constructing the session — **before any peer-confirmed handshake**:
+
+```rust
+store.save_session(&peer_id, &session, sealer)?;
+store.raise_pin_to_rn(&peer_id)?;
+```
+
+So a local initiation that the peer never completes still pins that peer. Because the pin has no
+lowering operation at all, every subsequent send to that peer is refused with
+`RnError::PinnedToRn`, with no recovery path short of a new peer identity key. This is a
+self-inflicted permanent send failure reachable without any attacker. It answers, in the
+affirmative, the question of whether a peer can be pinned by a path other than a successful RN
+handshake — and it should be resolved before the wire-in, not after.
+
+This lane's assessment: the pin should be raised on **confirmed** RN traffic from the peer, not
+on local initiation. That is a behavioural change to downgrade-protection logic, so under master
+§0.2 rule 6 it is recommended and not applied unilaterally.
+
+---
+
 ## 6. SECURITY FINDING — deterministic nonce reuse on sender state rollback
 
 This is the most consequential technical result of the session. It was surfaced by job B's
@@ -312,8 +373,17 @@ pub fn body_nonce(message_key: &Secret32) -> Result<[u8; AEAD_NONCE]> {
 
 There is no per-message randomness in it. Therefore **any reuse of a message key is a
 deterministic reuse of the nonce**. Two different plaintexts sealed under one key and one nonce
-is a two-time pad: an attacker holding both ciphertexts recovers the XOR of the plaintexts, and
-for XChaCha20-Poly1305 the authentication guarantee degrades as well.
+is a two-time pad.
+
+**Stated at the correct strength (see §5b).** A passive observer who captured both ciphertexts
+immediately obtains the **XOR of the overlapping plaintext bytes**. Recovering either plaintext
+still requires knowing or guessing the other. That is a serious confidentiality break and
+XChaCha20-Poly1305 is not nonce-misuse-resistant — but it is not automatic recovery of both
+plaintexts, and this report earlier implied that it was.
+
+**Reachability, corrected.** This is not reachable in anything shipping today: `send_rn` has no
+callers and the ratchet is unwired. The hazard is in the *prepared* path, which is why it is
+being recorded now rather than treated as an incident.
 
 Job B confirmed the reachable path by test: after a sender state rollback the code reuses the
 same message key and body nonce. Its exact words — "sender rollback is not prevented ... even

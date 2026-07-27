@@ -238,6 +238,53 @@ fn an_entire_chain_lost_forever_does_not_wedge_the_ratchet() {
 }
 
 #[test]
+fn previous_chain_inflight_messages_survive_later_dh_ratchet_step() {
+    let (mut alice, mut bob, mut rng) = established_pair(78);
+
+    let mut old_chain = Vec::new();
+    for i in 0..4u32 {
+        let body = format!("old chain {i}").into_bytes();
+        old_chain.push((alice.encrypt(0, &body, &mut rng).expect("encrypt"), body));
+    }
+
+    let (first_old_wire, first_old_body) = old_chain.remove(0);
+    assert_eq!(
+        bob.decrypt(&first_old_wire, &mut rng)
+            .expect("bob enters old Alice chain")
+            .plaintext,
+        first_old_body
+    );
+
+    let bob_reply = bob.encrypt(0, b"force Alice ratchet", &mut rng).expect("encrypt");
+    assert_eq!(
+        alice
+            .decrypt(&bob_reply, &mut rng)
+            .expect("alice enters Bob's next chain")
+            .plaintext,
+        b"force Alice ratchet"
+    );
+
+    let newer = alice
+        .encrypt(0, b"new Alice chain before old traffic", &mut rng)
+        .expect("encrypt");
+    assert_eq!(
+        bob.decrypt(&newer, &mut rng)
+            .expect("bob enters Alice's newer chain")
+            .plaintext,
+        b"new Alice chain before old traffic"
+    );
+
+    for (wire, body) in old_chain {
+        assert_eq!(
+            bob.decrypt(&wire, &mut rng)
+                .expect("late old-chain message must use drained key")
+                .plaintext,
+            body
+        );
+    }
+}
+
+#[test]
 fn long_unidirectional_run() {
     // A very long one-way burst: the symmetric chain must keep working
     // with no DH ratchet steps at all, and storage must not grow.
