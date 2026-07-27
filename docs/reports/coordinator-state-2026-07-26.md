@@ -3,7 +3,7 @@
 Written so a fresh context can resume coordination without re-deriving it. This is the
 *coordination* layer only: who owns what, what is decided, what is live, what is blocked. Product
 authority remains `docs/design/osl-master-decision-2026-07-26.md` (currently **r13**), and the
-scoreboard remains `docs/design/osl-internal-build-checklist.md` (**97 / 303**).
+scoreboard remains `docs/design/osl-internal-build-checklist.md` (**98 / 303**).
 
 ## Lane roster and exclusive ownership
 
@@ -31,8 +31,8 @@ discard the whole import.
 | Thing | State |
 |---|---|
 | Keyserver migration `0029` | **applied**; all 111 identities quarantined until re-registration; snowflakes refused (`400 Discord identifiers are not OSL identities`) — closes audit CRITICAL P0-3 |
-| Keyserver worker | `3f92f0f5` — control-inbox per-sender recycling, `429 recipient_inbox_full`, pubkeys minimisation |
-| cipher-store worker | `0a17547d` — attachment quota fix **and** the R2 known-length fix |
+| Keyserver worker | `verified-live`: version 169, exact UUID `3f92f0f5-c6ac-4426-9a83-1555f5c6394b`, 100%. Exact Git commit `unknown`; Cloudflare has no Git annotation. |
+| cipher-store worker | `verified-live`: version 15, exact UUID `0a17547d-577e-4f70-8159-f5d90e9c9e31`, 100%. Exact Git commit `unknown`; Cloudflare has no Git annotation. |
 | Attachment part upload | **`201`**. Was `500` for an unbounded period; verified fixed by live probe |
 | `0028` link-grant | applied but **dark** behind default-off `LINK_GRANT_ENABLED` in `src/index.ts` |
 | `0027` | deployed. The "NOT DEPLOYED" header in that migration file is stale — ignore it |
@@ -106,6 +106,15 @@ discard the whole import.
   remains visible. B3 moves 1/5 → 2/5: exact ratchet and dependency-closure archives prove the
   row's structural persistence/replay/reorder/skipped-key/restart boundary with negative controls.
   The ratchet remains `implemented-unwired`; no live traffic or dependent row is earned.
+- **`c0279dc`: B5 +1 at production-call reachability only.** Both compiled broker drains call the
+  signed per-sender client, and exact client/binding tests plus one-sided mutations prove nonempty
+  positive, missing/wrong echo, cross-sender and unfiltered-fallback behavior. B5 moves 1/4 → 2/4.
+  Status remains `test-proven-only`: exact broker E2E fakes omit the required echo, no authenticated
+  live drain ran, and active Worker version 169 is not mapped to this Git commit.
+- **`79f12eb`: no A6/D2/D4 point.** The helper refuses a PDF before its synthetic download,
+  decrypt, staging and durable write, and an image helper control continues. Removing the helper's
+  refusal fails; removing its call from production `open_pending_inner` leaves the test green.
+  Source ordering improved, but the protected-viewer production seam is not behaviorally proved.
 
 ## Coordination infrastructure built today
 

@@ -35,7 +35,7 @@ they qualify work. Scope additions increase the denominator; regressions remove 
 ## Progress snapshot
 
 ```text
-Provisional verified progress: 97 / 303 points = 32%   (was 85 / 303 = 28%, which understated section H by 2)
+Provisional verified progress: 98 / 303 points = 32%   (was 85 / 303 = 28%, which understated section H by 2)
 Confidence: low (several dirty concurrent worktrees and exact-build rechecks remain)
 Critical path:
 security identity/attribution → reviewed ratchet → two-identity proof
@@ -77,6 +77,17 @@ away, per master §16.3.
 - B3 +1 · exact ratchet and later dependency-closure archives prove sealed persistence plus
   replay/reorder/skipped-key/eviction/rollback/restart behaviour with non-vacuous negative controls.
   Status remains `test-proven-only` on an `implemented-unwired` path; no runtime row moved.
+
+**2026-07-27 signed per-sender drain adjudication (+1).**
+
+- B5 +1 · exact `c0279dc` makes both compiled production receive drains call the signed
+  per-sender client, whose nonempty positive and missing/wrong-echo/cross-sender refusals are
+  mutation-sensitive. This earns only the production-call reachability sub-boundary. The exact
+  broker E2E fakes do not produce a valid echoed nonempty response, and no authenticated live drain
+  ran, so status is `test-proven-only`.
+- A6/D2/D4 +0 · exact `79f12eb` proves its policy helper, but deleting the helper call from
+  `open_pending_inner` leaves the focused test green. Source ordering improved; the real viewer seam
+  and image continuation are not behaviorally proved.
 
 **2026-07-26 — recorded, deliberately NOT awarded.** Open defects earn nothing; they are
 logged here so they cannot be quietly forgotten or later re-counted as new work.
@@ -192,7 +203,7 @@ timestamped deltas, not keep this number manually forever.
   order and burn timing, so A6/social-graph secrecy is explicitly unearned. Full marks remain held.
   `needs: none` `weight: 4` `earned: 3`
 
-## B · Encryption and two-identity communication — 30 points (7 earned)
+## B · Encryption and two-identity communication — 30 points (8 earned)
 
 - 🟨 **B1 · Current message encryption primitives** — hybrid confidentiality exists **and is
   genuinely live** (ML-KEM-768 in every recipient slot, `crates/ipc/src/wire_v2.rs:731`);
@@ -218,14 +229,24 @@ timestamped deltas, not keep this number manually forever.
 - ⬜ **B4 · Capability negotiation and monotone downgrade pin** — no silent fallback after a peer
   proves stronger support. `needs: B2` `weight: 4` `earned: 0`
 - 🟨 **B5 · Keyserver/prekey/control-inbox production contract** — server deployment is
-  `verified-live`: migration `0027` is deployed and the named Worker is `3f92f0f5`; the stale
-  `NOT DEPLOYED` migration header does not override that live evidence. The broader row is not
+  `verified-live`: migration `0027` is deployed and active Worker version 169 is exact UUID
+  `3f92f0f5-c6ac-4426-9a83-1555f5c6394b` at 100%; Cloudflare provides no Git annotation, so its
+  exact source commit is `unknown`. The stale `NOT DEPLOYED` migration header does not override
+  that live evidence. The broader row is not
   complete: `post_wrapped_key` and `fetch_wrapped_key` are `implemented-unwired`, and the
   hand-checked evidence does not establish the prekey client path. No point added merely for
   resolving the old deployment uncertainty. **2026-07-27 no-point adjudication:** commit `284f0a5`
   bounds scheduled control-inbox and request-receipt cleanup to 100 rows per table per tick and is
   `test-proven-only`; local worker tests do not prove the changed Worker is deployed or complete the
-  client production contract. `needs: A2` `weight: 4` `earned: 1`
+  client production contract. **+1 awarded 2026-07-27 at the production-call reachability
+  sub-boundary:** exact `c0279dc` routes both text and attachment drains through
+  `get_control_inbox_from` for the active peer. Exact focused tests pass a nonempty signed positive
+  for two senders and refuse invalid filters, missing/wrong echoes and cross-sender rows; independent
+  mutations of each refusal and either drain binding fail. This is `test-proven-only`, not a live
+  authenticated drain: the exact broker E2E relay fakes omit the required echo, authenticated
+  filtered D1 selection remains `unknown`, and no deployed Git commit is inferred from the Worker
+  UUID. Prekeys, wrapped keys and two-identity receive remain unearned.
+  `needs: A2` `weight: 4` `earned: 2`
 - ⬜ **B6 · Controlled two-identity proof** — handshake, send, receive, offline queue, restart,
   drain, peer attribution. `needs: B3,B4,B5` `weight: 3` `earned: 0`
 - ⬜ **B7 · Independent crypto review** — required before uncontrolled traffic/public superiority

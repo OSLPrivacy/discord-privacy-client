@@ -1299,3 +1299,97 @@ Total: 97 / 303 = 32%
 ## Acceptance rows this earns
 
 - B3 +1.
+
+---
+
+## 24 · Exact commits `c0279dc` and `79f12eb`; live Worker UUIDs
+
+No later dirty source bytes were consumed. Arithmetic is `97 + 1 + 0 = 98 / 303`.
+
+### `c0279dc`: B5 `1/4 → 2/4`, production-call reachability only
+
+Exact archive `c0279dc9434d138234d435935fbb2779095e408e` produced:
+
+```text
+filtered_control_inbox...                         2 passed
+unfiltered_or_wrong_filter_echo...                1 passed
+text_and_attachment_drains_are_bound...           1 passed
+```
+
+The direct client positive is nonempty: it returns one row independently for `peer-a` and
+`peer-b`, checks the query's `sender`, and verifies that sender is inside the recipient's Ed25519
+signature. Invalid empty/control-character/oversized filters refuse before network I/O.
+Missing echo, wrong echo, and a row whose `sender_id` differs from the requested filter refuse the
+entire response; there is no unfiltered retry.
+
+Fresh one-sided mutations were non-vacuous:
+
+- accepting any present echo fails the wrong-echo assertion;
+- accepting a missing echo fails the 64-foreign-rows starvation control;
+- disabling the row-sender comparison fails the cross-sender assertion;
+- reverting the attachment drain to unfiltered makes the broker binding test fail. The independent
+  audit performed the equivalent filter-binding mutation for both drains.
+
+Production reachability is structural and exact: `drain_peer_inbox_text` and
+`native_overlay_attachment_plans` both compile with
+`get_control_inbox_from(&identity, &manual.peer_osl_user_id)`. Renderer invokes, Tauri registration
+and ACLs reach those drain functions. This closes the production-call reachability sub-boundary
+previously named as B5's smallest client gap.
+
+The ceiling remains explicit. All three exact broker relay fakes omit mandatory
+`filtered_sender_id`, so no nonempty broker-level behavioral positive succeeds on these bytes.
+No authenticated live drain or two-identity receive ran. Prekeys and wrapped-key production paths
+remain incomplete. The new point is therefore `test-proven-only`, not `runtime-proven` or
+`verified-live`.
+
+### `79f12eb`: helper proved, production viewer seam unproved; no A6/D2/D4 point
+
+Exact archive `79f12eb79cf9e6baa374b33de7a5caf7f8991a19` passes the focused
+`non_image_open_policy_refuses_without_creating_plaintext` test. The helper refuses
+`application/pdf` before its synthetic download/decrypt flags, staging directory, or durable
+plaintext file; an `image/png` control reaches the helper continuation. Removing the helper's
+refusal makes the test fail:
+
+```text
+non-image refusal must happen before download
+```
+
+But the test calls `require_protected_attachment_viewer` directly. It never calls the actual
+`open_pending_inner` product function. Removing
+`require_protected_attachment_viewer(&plan.mime_type)` from production leaves the focused test
+green. Thus the helper positive and negative controls are non-vacuous while the claimed production
+seam is not behaviorally protected by this test.
+
+Source inspection shows the production call is ordered before token parsing, attachment download,
+decrypt, staging and durable plaintext write. The helper is `test-proven-only`; the production
+ordering is source-inspected, not runtime-proven, and deletion of the call is undetected. A6 still
+covers all protected plaintext-at-rest surfaces and metadata; D2 covers functioning encrypted
+transport; D4 requires protected first paint and an end-to-end view-once image path. None crosses.
+
+### `a3ca157`: exact active Cloudflare versions, Git mapping unknown
+
+The read-only probe window was `2026-07-27T05:14:05Z` through `05:17:09Z`. Cloudflare reported:
+
+| Worker | Active deployment | Tier |
+|---|---|---|
+| Keyserver | version 169, `3f92f0f5-c6ac-4426-9a83-1555f5c6394b`, 100% | `verified-live` |
+| Cipher-store | version 15, `0a17547d-577e-4f70-8159-f5d90e9c9e31`, 100% | `verified-live` |
+
+Health GETs returned 200. The keyserver's present-but-empty sender filter returned its bounded-id
+400 refusal, proving that validation branch is active. It does not prove authenticated filtered D1
+selection. Cloudflare records UUIDs, upload metadata and script etags but no Git annotation; a
+script etag is not a Git object ID. The exact Git commit for both deployed bundles is therefore
+`unknown`, and neither active UUID is mapped to `c0279dc`, `79f12eb`, or any inferred local commit.
+
+Checklist arithmetic:
+
+```text
+A: 8 / 40
+B: 8 / 30   (B5 now 2/4)
+D: 7 / 30
+Total: 98 / 303 = 32%
+```
+
+## Acceptance rows this earns
+
+- B5 +1.
