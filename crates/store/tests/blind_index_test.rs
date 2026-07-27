@@ -1150,3 +1150,56 @@ fn attachment_metadata_cannot_be_transplanted_into_a_message_row() {
         ),
     }
 }
+
+/// Two different (message id, filename) pairs must not collapse to one cached
+/// attachment.
+///
+/// The cache key is `"{discord_message_id}/{random_filename}"`, so id `a/b`
+/// with filename `c` and id `a` with filename `b/c` both produce `a/b/c` —
+/// one key, one blind index, one row. Without validation the second write
+/// silently overwrites the first, and one message's cached attachment is served
+/// for another's. Both values arrive unvalidated from the IPC boundary, so
+/// nothing upstream enforces the digits-only snowflake shape that makes this
+/// unreachable in practice.
+#[test]
+fn ambiguous_cache_key_components_are_refused() {
+    let tmp = TempDir::new().unwrap();
+    let store = open_a(tmp.path());
+
+    // Positive path: an ordinary pair is accepted and round-trips, so the
+    // refusals below cannot pass because attachments never work at all.
+    store
+        .put_attachment("111", "ok.png", "image/png", b"FINE", None, None, None)
+        .unwrap();
+    assert_eq!(
+        store.get_attachment("111", "ok.png").unwrap().unwrap().1,
+        b"FINE"
+    );
+
+    // The colliding pair: both would key on "a/b/c".
+    assert!(
+        store
+            .put_attachment("a/b", "c", "image/png", b"FIRST", None, None, None)
+            .is_err(),
+        "a message id containing '/' was accepted, making the cache key ambiguous"
+    );
+    assert!(
+        store
+            .put_attachment("a", "b/c", "image/png", b"SECOND", None, None, None)
+            .is_err(),
+        "a filename containing '/' was accepted, making the cache key ambiguous"
+    );
+    // Reads are refused on the same rule, so a lookup cannot reach a row a
+    // write was not allowed to create.
+    assert!(store.get_attachment("a/b", "c").is_err());
+    assert!(store.get_attachment("a", "b/c").is_err());
+
+    // A message id containing '/' would also collide with an attachment cache
+    // key in the body AAD namespace.
+    let mut bad = sample("a/b", "chan", "s", "alice", "body", 1);
+    bad.discord_message_id = "a/b".to_string();
+    assert!(
+        store.put(&bad).is_err(),
+        "a message id containing '/' was stored"
+    );
+}

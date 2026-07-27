@@ -167,6 +167,24 @@ fn shred_row(conn: &Connection, mid_bi: &[u8]) -> Result<usize, StoreError> {
     Ok(rows)
 }
 
+/// Refuse an identifier that would make a cache key or an AEAD associated-data
+/// value ambiguous.
+///
+/// Validation rather than a wider separator is deliberate: the attachment body
+/// AAD *is* the cache key and the message body AAD *is* the message id, and
+/// both are already sealed into rows on disk. Changing either encoding would
+/// orphan every existing sealed body, because the migration copies those bytes
+/// verbatim — the same mistake that would have made every migrated attachment
+/// undecryptable. Rejecting the input costs no format change.
+fn check_id(field: &str, value: &str) -> Result<(), StoreError> {
+    if value.contains('/') || value.contains('\0') {
+        return Err(StoreError::InvalidId(format!(
+            "{field} may not contain '/' or NUL"
+        )));
+    }
+    Ok(())
+}
+
 /// Next ordering counter. `seq` replaces the plaintext `decrypted_at` index:
 /// relative order is inherent to storing rows at all, whereas wall-clock
 /// timing was a leak, so the leak goes and the ordering stays.
@@ -250,6 +268,7 @@ impl MessageStore {
     /// channel re-entry therefore no longer shuffles that history to the top
     /// of the channel view.
     pub fn put(&self, msg: &StoredMessage) -> Result<(), StoreError> {
+        check_id("discord_message_id", &msg.discord_message_id)?;
         let mid_bi = self.bi(cipher::BI_MESSAGE_ID, &msg.discord_message_id)?;
         let chan_bi = self.bi(cipher::BI_CHANNEL_ID, &msg.channel_id)?;
         let sender_bi = self.bi(cipher::BI_SENDER_ID, &msg.sender_discord_id)?;
@@ -309,6 +328,7 @@ impl MessageStore {
     /// burned. Burned rows are filtered at the SQL level so
     /// callers can't accidentally surface them.
     pub fn get(&self, discord_message_id: &str) -> Result<Option<StoredMessage>, StoreError> {
+        check_id("discord_message_id", discord_message_id)?;
         let mid_bi = self.bi(cipher::BI_MESSAGE_ID, discord_message_id)?;
         let conn = self.conn.lock().expect("store mutex poisoned");
         let row_opt: Option<MessageRow> = conn
@@ -522,6 +542,8 @@ impl MessageStore {
         scope_id: Option<&str>,
         sender_discord_id: Option<&str>,
     ) -> Result<(), StoreError> {
+        check_id("discord_message_id", discord_message_id)?;
+        check_id("random_filename", random_filename)?;
         let cache_key = format!("{discord_message_id}/{random_filename}");
         let ck_bi = self.bi(cipher::BI_CACHE_KEY, &cache_key)?;
         let mid_bi = self.bi(cipher::BI_MESSAGE_ID, discord_message_id)?;
@@ -627,6 +649,8 @@ impl MessageStore {
         discord_message_id: &str,
         random_filename: &str,
     ) -> Result<Option<(String, Vec<u8>)>, StoreError> {
+        check_id("discord_message_id", discord_message_id)?;
+        check_id("random_filename", random_filename)?;
         let cache_key = format!("{discord_message_id}/{random_filename}");
         let ck_bi = self.bi(cipher::BI_CACHE_KEY, &cache_key)?;
         let conn = self.conn.lock().expect("store mutex poisoned");

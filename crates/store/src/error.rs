@@ -62,6 +62,19 @@ pub enum StoreError {
 
     /// AEAD tag check failed reading a row's ciphertext —
     /// on-disk tampering or per-row key drift.
+    /// A caller supplied an identifier that would make an AEAD associated-data
+    /// value or an attachment cache key ambiguous.
+    ///
+    /// The attachment cache key is `"{discord_message_id}/{random_filename}"`,
+    /// so a `/` inside either part lets two different pairs collapse to one
+    /// key — id `a/b` with filename `c` and id `a` with filename `b/c` both
+    /// produce `a/b/c` — and therefore to one row. One message's cached
+    /// attachment could then be served for another's. Real Discord snowflakes
+    /// are digits, so this is unreachable in normal use, but nothing upstream
+    /// of this crate enforces that.
+    #[error("invalid identifier: {0}")]
+    InvalidId(String),
+
     #[error("corrupted: {0}")]
     Corrupted(String),
 }

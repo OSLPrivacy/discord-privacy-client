@@ -448,8 +448,20 @@ Two left unfixed and recorded rather than dropped:
   sealed body already on disk, because the migration copies those bytes verbatim — that is exactly
   the mistake that would have made every migrated attachment undecryptable earlier tonight. So:
   reject `/` in `discord_message_id` and `random_filename` at the write and read paths, which
-  costs no format change. Not started; queued behind the in-flight test work rather than applied
-  while another job is iterating against this crate.
+  costs no format change.
+
+  **Now done.** A new `StoreError::InvalidId` refuses `/` and NUL in both arguments at `put`,
+  `get`, `put_attachment` and `get_attachment`. Adding an enum variant was checked first rather
+  than assumed safe: nothing outside this crate matches on `StoreError` variants — the
+  `CipherStoreError::` hits in `crates/ipc` are a different type — so no caller's match arms
+  break. `ambiguous_cache_key_components_are_refused` was observed failing with the check
+  disabled (`a message id containing '/' was accepted, making the cache key ambiguous`), and
+  carries a positive control so it cannot pass because attachments are broken outright.
+
+  Scope of the evidence, stated precisely: the **refusal** is proven by test. The consequence —
+  that two accepted pairs would collapse onto one row and serve one message's attachment for
+  another's — is derived from the cache-key format `"{id}/{filename}"`, not separately observed,
+  because the validation now prevents constructing it.
 - Migration `INSERT OR REPLACE` would collapse two legacy rows sharing a blind index (Low).
   Requires an identifier collision.
 
@@ -514,8 +526,8 @@ takes the same lock internally.
 
 ```
 flock /tmp/osl-cargo.lock -c "cargo test -p store"
-  → 16 passed (blind_index_test), 13 passed (burn_defects_test),
-    17 passed (store_test), 0 failed, 0 ignored.  46 total.
+  → 17 passed (blind_index_test), 13 passed (burn_defects_test),
+    17 passed (store_test), 0 failed, 0 ignored.  47 total.
 
 flock /tmp/osl-cargo.lock -c "cargo clippy -p store --all-targets"   → clean, no warnings
 cargo fmt -p store -- --check                                        → clean
@@ -523,7 +535,7 @@ flock /tmp/osl-cargo.lock -c "cargo check -p store --target x86_64-pc-windows-gn
   → Finished. store cross-compiles for the shipping target.
 ```
 
-**On the test count and the gate that produced it.** 46 is measured, not inherited, and the gate
+**On the test count and the gate that produced it.** 47 is measured, not inherited, and the gate
 is the bare one: `osl-cargo test -p store`, no features.
 
 Naming the gate matters now, because the fleet learned tonight that a gate can move a number in
@@ -594,6 +606,8 @@ its evidence:
 | A populated database with its canary removed refuses to open | failing-first, covers attacker's and owner's secret | Earned |
 | Five pre-existing tests no longer pass against a no-op | each observed failing against a stubbed writer | Earned |
 | Message bodies and attachment bytes are unreadable in the file | failing-first against a no-op cipher | Earned |
+| Ambiguous cache-key identifiers are refused | failing-first, with a positive control | Earned |
+| Four tests now exercise the property their name claims | two never reached it before; verified by reading the assertions | Earned |
 | Hub builds with these changes | `osl-cargo -C apps/osl-hub check --features desktop …` → Finished | Earned |
 | **Burn is cryptographic / revokes recipient access** | **false; unchanged by this work** | **Not earned** |
 | **`messages.sqlite` hides the social graph** | **labels yes, shape no — see "What is still visible"** | **Partially earned; do not state unqualified** |
