@@ -718,8 +718,15 @@ function Invoke-Step {
             $winX = [int](Get-PropertyValue -Object $stepArgs -Name 'winX' -Required)
             $winY = [int](Get-PropertyValue -Object $stepArgs -Name 'winY' -Required)
             $settleMs = [int](Get-PropertyValue -Object $stepArgs -Name 'settleMs' -Default 600)
-            $click = Invoke-VmqaClick -Subject $resolved['subject'] -WinX $winX -WinY $winY -SettleMs $settleMs -RunNonce $RunNonce
-            return New-StepResult -Id $stepId -Verb $verb -Status 'pass' -Detail ("screenX={0}; screenY={1}" -f $click.ScreenX, $click.ScreenY)
+            # Undeliverable input is 'unmeasurable', never 'pass'. The click did not reach the
+            # subject, so nothing was learned about how the app responds - and reporting a pass
+            # here is the "something else worked" false green in its most literal form.
+            try {
+                $click = Invoke-VmqaClick -Subject $resolved['subject'] -WinX $winX -WinY $winY -SettleMs $settleMs -RunNonce $RunNonce
+            } catch {
+                return New-StepResult -Id $stepId -Verb $verb -Status 'unmeasurable' -Detail ([string]$_.Exception.Message)
+            }
+            return New-StepResult -Id $stepId -Verb $verb -Status 'pass' -Detail ("screenX={0}; screenY={1}; foreground={2}; cursorAtTarget={3}; pixelOwnedBySubject={4}" -f $click.ScreenX, $click.ScreenY, $click.Foreground, $click.CursorAtTarget, $click.PixelOwnedBySubject)
         }
         'type' {
             $resolved = Resolve-StepSubject -Identifier $identifier -RunNonce $RunNonce
@@ -728,7 +735,11 @@ function Invoke-Step {
             }
             $text = [string](Get-PropertyValue -Object $stepArgs -Name 'text' -Default '')
             $settleMs = [int](Get-PropertyValue -Object $stepArgs -Name 'settleMs' -Default 400)
-            Invoke-VmqaType -Subject $resolved['subject'] -Text $text -SettleMs $settleMs -RunNonce $RunNonce
+            try {
+                Invoke-VmqaType -Subject $resolved['subject'] -Text $text -SettleMs $settleMs -RunNonce $RunNonce
+            } catch {
+                return New-StepResult -Id $stepId -Verb $verb -Status 'unmeasurable' -Detail ([string]$_.Exception.Message)
+            }
             return New-StepResult -Id $stepId -Verb $verb -Status 'pass' -Detail ("chars={0}" -f $text.Length)
         }
         'key' {
@@ -738,7 +749,11 @@ function Invoke-Step {
             }
             $key = [string](Get-PropertyValue -Object $stepArgs -Name 'key' -Required)
             $settleMs = [int](Get-PropertyValue -Object $stepArgs -Name 'settleMs' -Default 400)
-            Invoke-VmqaKey -Subject $resolved['subject'] -Key $key -SettleMs $settleMs -RunNonce $RunNonce
+            try {
+                Invoke-VmqaKey -Subject $resolved['subject'] -Key $key -SettleMs $settleMs -RunNonce $RunNonce
+            } catch {
+                return New-StepResult -Id $stepId -Verb $verb -Status 'unmeasurable' -Detail ([string]$_.Exception.Message)
+            }
             return New-StepResult -Id $stepId -Verb $verb -Status 'pass' -Detail "key=$key"
         }
         'wait' {

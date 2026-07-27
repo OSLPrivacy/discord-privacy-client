@@ -90,7 +90,13 @@ public class VmqaNative {
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT r);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
+    [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
+    [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    public const uint GA_ROOT = 2;
+    public struct POINT { public int X, Y; }
     [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, int extra);
 
     public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
@@ -272,10 +278,25 @@ function Get-VmqaWindowRect {
 }
 
 function Set-VmqaForeground {
+    <# Returns whether the subject ACTUALLY owns the foreground, measured rather than requested.
+
+       SetForegroundWindow's return value was previously discarded. Windows refuses the foreground
+       transition under a foreground lock, and a covering window can take it back — in both cases
+       no exception is raised, so the caller typed into whatever happened to be focused and the
+       step still reported pass. That is not a hypothetical: OSL's worst known defect is keyboard
+       focus never reaching the composer, so the keystrokes land in Discord and send PLAINTEXT.
+       A harness that assumes focus cannot detect the one bug it most needs to detect. #>
     [CmdletBinding()]
-    param([Parameter(Mandatory)][VmqaSubject]$Subject)
-    [void][VmqaNative]::SetForegroundWindow($Subject.Hwnd)
-    Start-Sleep -Milliseconds 250
+    param(
+        [Parameter(Mandatory)][VmqaSubject]$Subject,
+        [int]$Attempts = 3
+    )
+    for ($i = 1; $i -le $Attempts; $i++) {
+        [void][VmqaNative]::SetForegroundWindow($Subject.Hwnd)
+        Start-Sleep -Milliseconds 250
+        if ([VmqaNative]::GetForegroundWindow() -eq $Subject.Hwnd) { return $true }
+    }
+    return $false
 }
 
 function Invoke-VmqaClick {
@@ -295,16 +316,41 @@ function Invoke-VmqaClick {
     if ($WinX -lt 0 -or $WinY -lt 0 -or $WinX -ge $rect.Width -or $WinY -ge $rect.Height) {
         throw "VMQA_CLICK_OUT_OF_BOUNDS: ($WinX,$WinY) outside $($rect.Width)x$($rect.Height)"
     }
-    Set-VmqaForeground -Subject $Subject
+    $foreground = Set-VmqaForeground -Subject $Subject
     $sx = $rect.Left + $WinX
     $sy = $rect.Top + $WinY
-    [void][VmqaNative]::SetCursorPos($sx, $sy)
+
+    # Placement is measured, not requested. SetCursorPos can fail or be overridden, and a click
+    # delivered somewhere other than the intended point is indistinguishable from a working one
+    # unless the position is read back.
+    $moved = [VmqaNative]::SetCursorPos($sx, $sy)
     Start-Sleep -Milliseconds 120
+    $actual = New-Object VmqaNative+POINT
+    [void][VmqaNative]::GetCursorPos([ref]$actual)
+    $atTarget = ($actual.X -eq $sx -and $actual.Y -eq $sy)
+
+    # Whose window is actually under the cursor? WindowFromPoint -> GA_ROOT is the only way to know
+    # the pixel about to be clicked belongs to the subject rather than to something covering it.
+    $under = [VmqaNative]::WindowFromPoint($actual)
+    $underRoot = if ($under -ne [IntPtr]::Zero) { [VmqaNative]::GetAncestor($under, [VmqaNative]::GA_ROOT) } else { [IntPtr]::Zero }
+    $ownsPixel = ($underRoot -eq $Subject.Hwnd)
+
+    if (-not ($foreground -and $atTarget -and $ownsPixel)) {
+        # Refuse rather than click blind. A click delivered to a covering window is an action against
+        # a program we did not choose, and reporting it as a pass is the "something else worked"
+        # false green in its most literal form.
+        throw ("VMQA_CLICK_NOT_DELIVERABLE: foreground=$foreground cursorAtTarget=$atTarget " +
+               "pixelOwnedBySubject=$ownsPixel (setCursorPos=$moved, cursor=$($actual.X),$($actual.Y) target=$sx,$sy)")
+    }
+
     [VmqaNative]::mouse_event([VmqaNative]::MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
     Start-Sleep -Milliseconds 60
     [VmqaNative]::mouse_event([VmqaNative]::MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
     Start-Sleep -Milliseconds $SettleMs
-    return [pscustomobject]@{ ScreenX = $sx; ScreenY = $sy; Rect = $rect }
+    return [pscustomobject]@{
+        ScreenX = $sx; ScreenY = $sy; Rect = $rect
+        Foreground = $foreground; CursorAtTarget = $atTarget; PixelOwnedBySubject = $ownsPixel
+    }
 }
 
 function Invoke-VmqaType {
@@ -316,9 +362,19 @@ function Invoke-VmqaType {
         [Parameter(Mandatory)][string]$RunNonce
     )
     [void](Assert-VmqaSubject -Subject $Subject -RunNonce $RunNonce)
-    Set-VmqaForeground -Subject $Subject
+    # REFUSE to type into a window we have not confirmed owns the foreground. SendKeys is global:
+    # it goes wherever focus actually is. Typing blind is precisely how OSL's known defect sends
+    # PLAINTEXT into Discord when focus never reached the composer, and a harness that does the
+    # same thing cannot detect it. Never send first and check afterwards - by then it is delivered.
+    if (-not (Set-VmqaForeground -Subject $Subject)) {
+        throw "VMQA_INPUT_NOT_DELIVERABLE: subject does not own the foreground; refusing to send keystrokes that would land in another window"
+    }
     [System.Windows.Forms.SendKeys]::SendWait($Text)
     Start-Sleep -Milliseconds $SettleMs
+    # Focus can be stolen mid-send, so confirm the subject still owns it afterwards too.
+    if ([VmqaNative]::GetForegroundWindow() -ne $Subject.Hwnd) {
+        throw "VMQA_INPUT_DELIVERY_UNCERTAIN: foreground changed during send; part of the input may have gone elsewhere"
+    }
 }
 
 function Invoke-VmqaKey {
@@ -330,9 +386,16 @@ function Invoke-VmqaKey {
         [Parameter(Mandatory)][string]$RunNonce
     )
     [void](Assert-VmqaSubject -Subject $Subject -RunNonce $RunNonce)
-    Set-VmqaForeground -Subject $Subject
+    # Same rule as Invoke-VmqaType: a key chord is global input and must not be sent to a window
+    # nobody has confirmed. A single unverified Enter is enough to commit something irreversible.
+    if (-not (Set-VmqaForeground -Subject $Subject)) {
+        throw "VMQA_INPUT_NOT_DELIVERABLE: subject does not own the foreground; refusing to send key '$Key'"
+    }
     [System.Windows.Forms.SendKeys]::SendWait($Key)
     Start-Sleep -Milliseconds $SettleMs
+    if ([VmqaNative]::GetForegroundWindow() -ne $Subject.Hwnd) {
+        throw "VMQA_INPUT_DELIVERY_UNCERTAIN: foreground changed during send of key '$Key'"
+    }
 }
 
 function Get-VmqaScreenshot {
