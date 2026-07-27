@@ -1017,6 +1017,67 @@ dismissing it, and had it independently searched for — it was real, one direct
 away. A wrong citation is not a wrong finding, and "I could not confirm this"
 is the correct verdict rather than "this is not a defect."
 
+## MY REGISTRATION CONTRACT WAS WRONG — superseded, do not implement it
+
+The 6-step contract above is **retained for the record and must not be built**.
+An adversarial review of it (`docs/reports/server-lane-contract-review-2026-07-26.md`)
+found four CRITICAL flaws. I dispatched that review precisely because I am the
+wrong person to review my own spec, and it was the right call.
+
+**The one that matters most: my rollout preserved the vulnerability it existed to
+remove.** Step 6 deploy 1 said "server accepts both schemes and records which."
+Because the server accepts any bounded non-snowflake string
+(`register.ts:110-116`), an attacker can submit *Bob's future derived
+identifier* as an ordinary scheme-0 registration during the rollout window. Bob's
+later legitimate scheme-1 registration then collides with the squatter's row. I
+designed a migration against first-claim squatting whose first phase permitted
+first-claim squatting. **The namespace must be syntactically reserved from the
+first server deploy**, before any client can emit it.
+
+The other three:
+
+- **The final deploy is unavoidably fail-closed** for a client that never
+  upgrades. I claimed no step would be. That is impossible: refusing scheme 0
+  must reject a never-upgraded first launch. It needs a stated
+  minimum-version/adoption gate and an explicit acceptance of that boundary, not
+  a claim it does not exist.
+- **Root proof must be ADDITIVE, never sufficient.** My step 3 said root signs
+  the bundle. If a root-signed bundle alone authorises rotation, an old
+  root-signed bundle replays and rolls an identity *back* to a superseded
+  operational key. Existing rotation's stored-previous-key equality, new-key
+  possession and SQL CAS (`register.ts:298-370`) must all survive.
+- **A forever-online root is an unrevocable credential.** I made it a routine
+  co-signer for every rotation, putting the highest-value secret on the ordinary
+  online path with no epoch, successor or revocation story. It should authorise
+  first enrollment and a separately specified recovery path — nothing routine.
+
+And one factual error of mine: I wrote that legacy rows are "permanently unable
+to enable lookup." They are not. Migration 0029 explicitly allows re-registration
+to enable lookup, and `enableIdentityLookup` (`lib/db.ts:399-415`) does exactly
+that. I asserted a property of a migration without reading its behaviour through.
+
+I also missed that an identifier derivation **already exists** —
+`native_user_id` (`crates/keystore/src/identity.rs:194-224`) hashes the
+*operational* keys, with a second copy in
+`apps/osl-hub/src/password_lifecycle.rs:339-351`. Any implementation must name
+every generation path and share one canonical function, or one path keeps
+emitting the old rotatable-key identifier.
+
+**Use the reviewer's 7-step replacement**, in the review document, as the
+contract of record. It is more precise than mine in the way that matters for two
+teams implementing independently: exact prefix, exact alphabet, exact framing,
+and mirrored known-answer vectors.
+
+### What I have implemented now, and why only this
+
+Namespace reservation only: migration 0030 adding `identity_scheme` and
+`ik_root_ed25519_pub`, and a guard refusing any registration whose `user_id`
+matches `^osl1_[a-z2-7]{32}$`, because root-proof verification does not exist
+yet. This is the CRITICAL fix and it is safe to ship immediately precisely
+because **nothing emits that namespace yet** — reserving it breaks no client and
+closes the squatting window before it can open. Everything else in the corrected
+contract needs the client change and a separately reviewed protocol.
+
 ## Remaining server-side audit items, checked
 
 - **Does the keyserver have the same KV limiter race?** No — verified, not
