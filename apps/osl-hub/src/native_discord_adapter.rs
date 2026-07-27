@@ -95,7 +95,7 @@ const DISCORD_ESCAPE_SCAN_CODE: u16 = 0x01;
 
 const MAX_COVER_BYTES: usize = discord_carrier_geometry::DISCORD_CHARACTER_CAP * 4;
 
-#[cfg(any(test, feature = "discord-qa-shell"))]
+#[cfg(any(test, feature = "discord-qa-shell", target_os = "windows"))]
 fn remapped_carrier_probe(
     row: AccessibilityBounds,
     sampled_host: [i32; 4],
@@ -272,7 +272,7 @@ struct PreparedVisualStructure {
     flagtext: String,
 }
 
-#[cfg(any(test, feature = "discord-qa-shell"))]
+#[cfg(any(test, feature = "discord-qa-shell", target_os = "windows"))]
 #[derive(Clone)]
 struct PendingSentCarrierRow {
     generation: u64,
@@ -6023,6 +6023,7 @@ fn native_provider_runtime_id_text(runtime_id: &[i32]) -> String {
 /// Raw facts read from Discord's native accessibility provider for one exact
 /// visible row. Private: neither IPC nor renderer input can construct it.
 #[cfg(any(test, target_os = "windows"))]
+#[derive(Clone)]
 pub(crate) struct NativeDiscordRowProviderObservation {
     pub(crate) discord_message_id: String,
     pub(crate) poster_identity: String,
@@ -6805,6 +6806,46 @@ pub struct NativeVisibleRowQaReceipt {
     pub accepted: bool,
 }
 
+/// Three-state answer used by a real runtime control.
+///
+/// `NotObserved` is deliberately distinct from `Refused`: a screen without a
+/// usable source row cannot prove that the corresponding mutation was rejected.
+/// A negative control earns its expected result only as `Refused`; a positive
+/// control earns its expected result only as `Accepted`.
+#[cfg(any(test, feature = "discord-qa-shell"))]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeVisibleRowQaTriState {
+    Accepted,
+    Refused,
+    #[default]
+    NotObserved,
+}
+
+/// Nonsecret controls produced inside the same Windows accessibility walk as
+/// the real visible rows.
+#[cfg(any(test, feature = "discord-qa-shell"))]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct NativeVisibleRowProducerControls {
+    pub peer_anchor: NativeVisibleRowQaTriState,
+    pub different_non_self: NativeVisibleRowQaTriState,
+}
+
+/// Internal handoff from the adopted Windows target to the broker runtime
+/// receipt. This type never crosses IPC: it intentionally retains the rows so
+/// the broker can run its real authentication/orientation path before reducing
+/// them to counts and tri-state outcomes.
+#[cfg(all(feature = "core", feature = "discord-qa-shell"))]
+pub(crate) struct NativeVisibleRowQaProbe {
+    pub build_hash: String,
+    pub osl_target_identity_sha256: String,
+    pub discord_target_identity_sha256: String,
+    pub scope_binding_sha256: String,
+    pub window_generation: u64,
+    pub rows: Vec<VisibleMessageRow>,
+    pub producer_controls: NativeVisibleRowProducerControls,
+}
+
 #[cfg(any(test, feature = "discord-qa-shell"))]
 fn native_visible_row_qa_receipt_from_rows(
     build_hash: String,
@@ -6911,6 +6952,79 @@ pub fn request_native_visible_row_qa_receipt(
             max_rows,
         );
         Err("Native visible-row QA evidence requires Windows".to_owned())
+    }
+}
+
+/// Bind the trusted OSL main-window HWND/process pair without exposing either
+/// value in a receipt.
+#[cfg(any(test, feature = "discord-qa-shell"))]
+pub fn native_visible_row_qa_osl_target_sha256(
+    window: isize,
+    process_id: u32,
+) -> Option<String> {
+    if window == 0 || process_id == 0 {
+        return None;
+    }
+    Some(stable_hash(
+        "discord-native-visible-row-qa-osl-target-v1",
+        &format!("{window}\u{1f}{process_id}"),
+    ))
+}
+
+/// Capture the real adopted Windows rows and producer controls for the broker.
+///
+/// The rows remain inside the native library. Only the broker's reduced,
+/// nonsecret runtime receipt can leave the registered command.
+#[cfg(all(feature = "core", feature = "discord-qa-shell"))]
+pub(crate) fn request_native_visible_row_qa_probe(
+    host: &crate::native_window_host::NativeWindowHostState,
+    owner_osl_user_id: &str,
+    scope_binding: &str,
+    build_hash: &str,
+    osl_target_identity_sha256: &str,
+    max_rows: usize,
+) -> Result<NativeVisibleRowQaProbe, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let scope_binding = scope_binding.to_owned();
+        let build_hash = build_hash.to_owned();
+        let osl_target_identity_sha256 = osl_target_identity_sha256.to_owned();
+        host.with_current_discord_accessibility_target(owner_osl_user_id, move |target, trusted| {
+            let discord_target_identity_sha256 = stable_hash(
+                "discord-native-visible-row-qa-target-v1",
+                &format!("{}\u{1f}{}", target.window, target.process_id),
+            );
+            let (rows, producer_controls) =
+                windows::read_visible_message_rows_qa_detached(
+                    target,
+                    trusted(target.process_id),
+                    scope_binding.clone(),
+                    max_rows,
+                );
+            Ok(NativeVisibleRowQaProbe {
+                build_hash,
+                osl_target_identity_sha256,
+                discord_target_identity_sha256,
+                scope_binding_sha256: native_row_attribution_scope_sha256(
+                    &scope_binding,
+                ),
+                window_generation: target.generation,
+                rows,
+                producer_controls,
+            })
+        })
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (
+            host,
+            owner_osl_user_id,
+            scope_binding,
+            build_hash,
+            osl_target_identity_sha256,
+            max_rows,
+        );
+        Err("Native visible-row runtime evidence requires Windows".to_owned())
     }
 }
 
@@ -9865,17 +9979,20 @@ mod windows {
         process_is_trusted: &dyn Fn(u32) -> bool,
         scope_binding: &str,
         max_rows: usize,
-    ) -> Vec<VisibleMessageRow> {
+    ) -> (
+        Vec<VisibleMessageRow>,
+        NativeVisibleRowProducerControls,
+    ) {
         let deadline = Instant::now() + Duration::from_millis(REHYDRATE_READ_TIMEOUT_MS);
         if !root_window_identity_holds(target, process_is_trusted) {
             qa_place_stage(REHYDRATE_ROW_READ_FAILED);
             qa_rehydrate_stage(super::REHYDRATE_READ_ROOT_IDENTITY_FAILED, None);
-            return Vec::new();
+            return (Vec::new(), NativeVisibleRowProducerControls::default());
         }
         let Some(host) = current_native_host_rect(target.window) else {
             qa_place_stage(REHYDRATE_ROW_READ_FAILED);
             qa_rehydrate_stage(super::REHYDRATE_READ_HOST_RECT_ABSENT, None);
-            return Vec::new();
+            return (Vec::new(), NativeVisibleRowProducerControls::default());
         };
         let root_bounds = AccessibilityBounds {
             left: host[0],
@@ -9917,7 +10034,7 @@ mod windows {
             // there was never anything to read. Every count downstream is zero
             // because of this, not because the conversation is empty.
             qa_rehydrate_stage(super::REHYDRATE_READ_LIST_NOT_FOUND, None);
-            return Vec::new();
+            return (Vec::new(), NativeVisibleRowProducerControls::default());
         };
         // Re-proven immediately before anything is read out of it, so a container
         // whose window was replaced between the probe and the walk can never be
@@ -9925,12 +10042,12 @@ mod windows {
         if !msaa_object_belongs_to_target(&list, target, process_is_trusted) {
             qa_place_stage(REHYDRATE_ROW_READ_FAILED);
             qa_rehydrate_stage(super::REHYDRATE_READ_LIST_FOREIGN, None);
-            return Vec::new();
+            return (Vec::new(), NativeVisibleRowProducerControls::default());
         }
         let Some(children) = msaa_child_refs(&list, MSAA_ROW_MAX_LIST_CHILDREN) else {
             qa_place_stage(REHYDRATE_ROW_READ_FAILED);
             qa_rehydrate_stage(super::REHYDRATE_READ_CHILDREN_UNAVAILABLE, None);
-            return Vec::new();
+            return (Vec::new(), NativeVisibleRowProducerControls::default());
         };
         // Found, proven to belong to the exact trusted window, and enumerable.
         qa_rehydrate_stage(super::REHYDRATE_READ_LIST_FOUND, None);
@@ -9961,6 +10078,16 @@ mod windows {
                 )
             })
         });
+        let peer_anchor = match (
+            native_self_identity.as_ref(),
+            native_peer_identity.as_ref(),
+        ) {
+            (_, Some(_)) => NativeVisibleRowQaTriState::Accepted,
+            (Some(_), None) => NativeVisibleRowQaTriState::Refused,
+            (None, None) => NativeVisibleRowQaTriState::NotObserved,
+        };
+        let foreign_poster_attempts = std::cell::Cell::new(0usize);
+        let foreign_poster_acceptances = std::cell::Cell::new(0usize);
         let read = rehydrate_collect_rows(
             children,
             scope_binding,
@@ -10009,6 +10136,38 @@ mod windows {
                         decode_candidates,
                         deadline,
                     )?;
+                    // Exercise the independent peer anchor against the exact
+                    // self/peer authority observed for this real row. The
+                    // synthetic third snowflake is never returned or persisted;
+                    // it exists only to prove that "non-self" is not accepted as
+                    // "the peer".
+                    let mut foreign = observation.clone();
+                    foreign.poster_identity = [
+                        "999999999999999999",
+                        "888888888888888888",
+                    ]
+                    .into_iter()
+                    .find(|candidate| {
+                        *candidate != foreign.self_identity
+                            && *candidate != foreign.expected_peer_identity
+                    })?
+                    .to_owned();
+                    foreign_poster_attempts.set(
+                        foreign_poster_attempts.get().saturating_add(1),
+                    );
+                    if native_row_attribution_from_provider(
+                        foreign,
+                        decode_candidates,
+                        scope_binding,
+                        target.generation,
+                        row_index,
+                    )
+                    .is_some()
+                    {
+                        foreign_poster_acceptances.set(
+                            foreign_poster_acceptances.get().saturating_add(1),
+                        );
+                    }
                     native_row_attribution_from_provider(
                         observation,
                         decode_candidates,
@@ -10061,11 +10220,25 @@ mod windows {
         // The exact window must still exist after the native walk, and every row
         // must carry a unique ordered proof before any Some leaves this producer.
         // main.rs then rechecks the full host context/generation after callback.
-        finish_native_visible_rows(
+        let rows = finish_native_visible_rows(
             read,
             scope_binding,
             target.generation,
             root_window_identity_holds(target, process_is_trusted),
+        );
+        let different_non_self = if foreign_poster_attempts.get() == 0 {
+            NativeVisibleRowQaTriState::NotObserved
+        } else if foreign_poster_acceptances.get() == 0 {
+            NativeVisibleRowQaTriState::Refused
+        } else {
+            NativeVisibleRowQaTriState::Accepted
+        };
+        (
+            rows,
+            NativeVisibleRowProducerControls {
+                peer_anchor,
+                different_non_self,
+            },
         )
     }
 
@@ -10089,6 +10262,37 @@ mod windows {
         scope_binding: String,
         max_rows: usize,
     ) -> Vec<VisibleMessageRow> {
+        run_detached_msaa_leg(
+            REHYDRATE_DEADLINE_EXCEEDED,
+            Duration::from_millis(REHYDRATE_DETACHED_LEG_BUDGET_MS),
+            move || {
+                let process_is_trusted =
+                    pinned_process_trust(target.process_id, target_process_trusted);
+                Some(read_visible_message_rows(
+                    target,
+                    &process_is_trusted,
+                    &scope_binding,
+                    max_rows,
+                )
+                .0)
+            },
+        )
+        .unwrap_or_default()
+    }
+
+    /// QA-only sibling of the production detached read. It runs the identical
+    /// adopted-target producer and additionally returns the fixed peer-anchor
+    /// mutation outcomes gathered inside that same native walk.
+    #[cfg(feature = "discord-qa-shell")]
+    pub(super) fn read_visible_message_rows_qa_detached(
+        target: crate::native_window_host::NativeDiscordAccessibilityTarget,
+        target_process_trusted: bool,
+        scope_binding: String,
+        max_rows: usize,
+    ) -> (
+        Vec<VisibleMessageRow>,
+        NativeVisibleRowProducerControls,
+    ) {
         run_detached_msaa_leg(
             REHYDRATE_DEADLINE_EXCEEDED,
             Duration::from_millis(REHYDRATE_DETACHED_LEG_BUDGET_MS),
@@ -25409,6 +25613,25 @@ mod tests {
             );
         }
         assert!(encoded.len() < 1_024, "receipt must remain tightly bounded");
+    }
+
+    #[test]
+    fn native_visible_row_qa_osl_target_hash_binds_window_and_process() {
+        let baseline =
+            native_visible_row_qa_osl_target_sha256(101, 202).expect("valid identity");
+        assert_eq!(baseline.len(), 64);
+        assert_ne!(
+            baseline,
+            native_visible_row_qa_osl_target_sha256(102, 202).unwrap()
+        );
+        assert_ne!(
+            baseline,
+            native_visible_row_qa_osl_target_sha256(101, 203).unwrap()
+        );
+        assert!(native_visible_row_qa_osl_target_sha256(0, 202).is_none());
+        assert!(native_visible_row_qa_osl_target_sha256(101, 0).is_none());
+        assert!(!baseline.contains("101"));
+        assert!(!baseline.contains("202"));
     }
 
     #[test]

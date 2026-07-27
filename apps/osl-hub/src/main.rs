@@ -1789,21 +1789,43 @@ fn canonical_native_visible_row_qa_build_hash(value: Option<&str>) -> Result<Str
     Ok(value.to_ascii_lowercase())
 }
 
+#[cfg(all(feature = "discord-qa-shell", target_os = "windows"))]
+fn trusted_native_visible_row_qa_caller_identity(
+    caller: &tauri::WebviewWindow,
+) -> Result<String, String> {
+    let window = caller
+        .hwnd()
+        .map_err(|_| "The trusted OSL QA window is unavailable".to_owned())?
+        .0 as isize;
+    osl_privacy_hub::native_discord_adapter::native_visible_row_qa_osl_target_sha256(
+        window,
+        std::process::id(),
+    )
+    .ok_or_else(|| "The trusted OSL QA window identity is unavailable".to_owned())
+}
+
+#[cfg(all(feature = "discord-qa-shell", not(target_os = "windows")))]
+fn trusted_native_visible_row_qa_caller_identity(
+    _caller: &tauri::WebviewWindow,
+) -> Result<String, String> {
+    Err("Native visible-row runtime evidence requires Windows".to_owned())
+}
+
 /// Take one non-mutating, bounded runtime census from the real Windows native
 /// visible-row producer.
 ///
 /// No renderer value selects a window, scope, generation, identity or row. The
 /// trusted main window can only ask; native state supplies every authority.
 /// A zero-row or any-proof-missing result remains a refused receipt, never a
-/// positive. Nothing here changes focus, sends input, persists the receipt or
-/// contacts a network service. The called producer's pre-existing bounded
-/// geometry/completeness caches and fixed-label QA breadcrumbs remain unchanged.
+/// positive. Nothing here changes focus or sends input. After the real broker
+/// authentication/orientation path returns, the command re-proves its lock and
+/// context and atomically persists only the bounded nonsecret receipt.
 #[cfg(feature = "discord-qa-shell")]
 #[tauri::command]
 async fn request_native_discord_visible_row_qa_receipt(
     app: tauri::AppHandle,
     caller: tauri::WebviewWindow,
-) -> Result<osl_privacy_hub::native_discord_adapter::NativeVisibleRowQaReceipt, String> {
+) -> Result<broker::NativeVisibleRowRuntimeReceipt, String> {
     if caller.label() != "main" {
         return Err("Only the trusted OSL Privacy window may request native QA evidence".to_owned());
     }
@@ -1814,14 +1836,19 @@ async fn request_native_discord_visible_row_qa_receipt(
     require_same_overlay_context(&app, epoch, &context_host)?;
     let build_hash =
         canonical_native_visible_row_qa_build_hash(option_env!("OSL_SOURCE_COMMIT"))?;
+    let osl_target_identity_sha256 =
+        trusted_native_visible_row_qa_caller_identity(&caller)?;
 
     let read_app = app.clone();
     let receipt = tauri::async_runtime::spawn_blocking(move || {
-        osl_privacy_hub::native_discord_adapter::request_native_visible_row_qa_receipt(
+        broker::request_native_visible_row_runtime_receipt(
             &read_app.state::<NativeWindowHostState>(),
+            &read_app.state::<HubCoreState>(),
+            &read_app.state::<HubBrokerState>(),
             &owner,
             &scope_binding,
             &build_hash,
+            &osl_target_identity_sha256,
             MAX_VISIBLE_CARRIER_ROWS,
         )
     })
@@ -1833,6 +1860,7 @@ async fn request_native_discord_visible_row_qa_receipt(
     // receipt from a superseded session never leaves this command.
     require_same_overlay_context(&app, epoch, &context_host)?;
     require_engaged_lock(&app)?;
+    broker::persist_native_visible_row_runtime_receipt(&receipt)?;
     Ok(receipt)
 }
 
@@ -7601,8 +7629,10 @@ mod native_visible_row_qa_command_tests {
             "require_overlay_context_snapshot(&app)?",
             "native_discord_scope_binding(&app)?",
             "require_same_overlay_context(&app, epoch, &context_host)?",
+            "trusted_native_visible_row_qa_caller_identity(&caller)?",
             "spawn_blocking(move ||",
-            "request_native_visible_row_qa_receipt(",
+            "broker::request_native_visible_row_runtime_receipt(",
+            "broker::persist_native_visible_row_runtime_receipt(&receipt)?;",
             "MAX_VISIBLE_CARRIER_ROWS",
         ] {
             assert!(command.contains(required), "missing command gate: {required}");

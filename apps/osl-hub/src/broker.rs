@@ -1802,6 +1802,54 @@ pub struct RehydratedNativeDiscordTranscript {
     pub counts: RehydrateDecodeCounts,
 }
 
+/// Every positive and failure-capable control in one real Windows visible-row
+/// runtime pass. Negative controls must say `refused`; `not_observed` never
+/// upgrades an unavailable source row into evidence.
+#[cfg(any(test, feature = "discord-qa-shell"))]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeVisibleRowRuntimeOutcomes {
+    pub own_outgoing: crate::native_discord_adapter::NativeVisibleRowQaTriState,
+    pub peer_incoming: crate::native_discord_adapter::NativeVisibleRowQaTriState,
+    pub peer_anchor: crate::native_discord_adapter::NativeVisibleRowQaTriState,
+    pub zero_rows: crate::native_discord_adapter::NativeVisibleRowQaTriState,
+    pub missing_proof: crate::native_discord_adapter::NativeVisibleRowQaTriState,
+    pub mixed_scope: crate::native_discord_adapter::NativeVisibleRowQaTriState,
+    pub different_non_self: crate::native_discord_adapter::NativeVisibleRowQaTriState,
+    pub replay: crate::native_discord_adapter::NativeVisibleRowQaTriState,
+    pub reorder: crate::native_discord_adapter::NativeVisibleRowQaTriState,
+    pub persistence: crate::native_discord_adapter::NativeVisibleRowQaTriState,
+}
+
+/// Atomic, nonsecret runtime receipt for the complete native producer → broker
+/// authentication/orientation path.
+///
+/// HWNDs, PIDs, Discord account/message ids, carriers, ciphertext ids and
+/// plaintext are not representable. The two target hashes bind the exact OSL
+/// main window/process and adopted Discord window/process without disclosing
+/// those raw values.
+#[cfg(any(test, feature = "discord-qa-shell"))]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeVisibleRowRuntimeReceipt {
+    pub schema_version: u8,
+    pub observed_at_unix_ms: u64,
+    pub build_hash: String,
+    pub osl_target_identity_sha256: String,
+    pub discord_target_identity_sha256: String,
+    pub scope_binding_sha256: String,
+    pub window_generation: u64,
+    pub rows_observed: usize,
+    pub native_proof_some: usize,
+    pub native_proof_none: usize,
+    pub authenticated_own_outgoing: usize,
+    pub authenticated_peer_incoming: usize,
+    pub broker_plaintext_rows: usize,
+    pub broker_refused_rows: usize,
+    pub outcomes: NativeVisibleRowRuntimeOutcomes,
+    pub accepted: bool,
+}
+
 /// The whole slice one transcript rehydration may spend opening pointers.
 ///
 /// Sized against the leg it shares a command with: the bounded accessibility
@@ -1827,7 +1875,7 @@ fn native_row_evidence_batch_is_valid(
     scope_binding: &str,
     window_generation: u64,
 ) -> bool {
-    if window_generation == 0 {
+    if rows.is_empty() || window_generation == 0 {
         return false;
     }
     let expected_scope =
@@ -2072,6 +2120,321 @@ pub fn rehydrate_native_discord_overlay_history(
         counts.refused += opened;
     }
     Ok(RehydratedNativeDiscordTranscript { rows, counts })
+}
+
+#[cfg(any(test, feature = "discord-qa-shell"))]
+fn native_visible_row_negative_outcome(
+    exercised: bool,
+    mutation_accepted: bool,
+) -> crate::native_discord_adapter::NativeVisibleRowQaTriState {
+    use crate::native_discord_adapter::NativeVisibleRowQaTriState;
+    if !exercised {
+        NativeVisibleRowQaTriState::NotObserved
+    } else if mutation_accepted {
+        NativeVisibleRowQaTriState::Accepted
+    } else {
+        NativeVisibleRowQaTriState::Refused
+    }
+}
+
+#[cfg(any(test, feature = "discord-qa-shell"))]
+fn native_visible_row_positive_outcome(
+    source_rows: usize,
+    authenticated_rows: usize,
+) -> crate::native_discord_adapter::NativeVisibleRowQaTriState {
+    use crate::native_discord_adapter::NativeVisibleRowQaTriState;
+    if source_rows == 0 {
+        NativeVisibleRowQaTriState::NotObserved
+    } else if authenticated_rows > 0 {
+        NativeVisibleRowQaTriState::Accepted
+    } else {
+        NativeVisibleRowQaTriState::Refused
+    }
+}
+
+#[cfg(all(feature = "core", feature = "discord-qa-shell"))]
+const NATIVE_VISIBLE_ROW_RUNTIME_RECEIPT_FILE: &str =
+    "discord-native-visible-row-runtime-receipt.json";
+#[cfg(all(feature = "core", feature = "discord-qa-shell"))]
+const MAX_NATIVE_VISIBLE_ROW_RUNTIME_RECEIPT_BYTES: usize = 32 * 1024;
+
+#[cfg(all(feature = "core", feature = "discord-qa-shell"))]
+fn native_visible_row_runtime_receipt_path() -> Result<std::path::PathBuf, String> {
+    keystore::osl_base_dir()
+        .map(|dir| dir.join(NATIVE_VISIBLE_ROW_RUNTIME_RECEIPT_FILE))
+        .map_err(|_| "Native visible-row QA receipt storage is unavailable".to_owned())
+}
+
+#[cfg(all(feature = "core", feature = "discord-qa-shell"))]
+fn write_native_visible_row_runtime_receipt_at(
+    path: &Path,
+    receipt: &NativeVisibleRowRuntimeReceipt,
+) -> Result<(), String> {
+    let encoded = serde_json::to_vec(receipt)
+        .map_err(|_| "Native visible-row QA receipt could not be encoded".to_owned())?;
+    if encoded.is_empty() || encoded.len() > MAX_NATIVE_VISIBLE_ROW_RUNTIME_RECEIPT_BYTES {
+        return Err("Native visible-row QA receipt exceeds its storage limit".to_owned());
+    }
+    crate::atomic_file::write_recoverable(
+        path,
+        &encoded,
+        "Native visible-row QA runtime receipt",
+    )
+}
+
+#[cfg(all(feature = "core", feature = "discord-qa-shell"))]
+fn evaluate_native_visible_row_runtime_probe(
+    core: &HubCoreState,
+    broker: &HubBrokerState,
+    scope_binding: &str,
+    probe: crate::native_discord_adapter::NativeVisibleRowQaProbe,
+) -> Result<NativeVisibleRowRuntimeReceipt, String> {
+    use crate::native_discord_adapter::{
+        NativeDiscordRowPoster, NativeVisibleRowQaTriState,
+    };
+
+    if !matches!(probe.build_hash.len(), 40 | 64)
+        || !probe
+            .build_hash
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+        || !canonical_hex(&probe.osl_target_identity_sha256, 64)
+        || !canonical_hex(&probe.discord_target_identity_sha256, 64)
+        || !canonical_hex(&probe.scope_binding_sha256, 64)
+        || probe.scope_binding_sha256
+            != crate::native_discord_adapter::native_row_attribution_scope_sha256(
+                scope_binding,
+            )
+        || probe.window_generation == 0
+    {
+        return Err("Native visible-row QA authority binding is invalid".to_owned());
+    }
+
+    let source_rows = probe.rows.clone();
+    let rows_observed = source_rows.len();
+    let native_proof_some = source_rows
+        .iter()
+        .filter(|row| row.attribution.is_some())
+        .count();
+    let native_proof_none = rows_observed.saturating_sub(native_proof_some);
+    let source_own = source_rows
+        .iter()
+        .filter(|row| {
+            row.attribution
+                .as_ref()
+                .is_some_and(|evidence| evidence.poster == NativeDiscordRowPoster::SelfAccount)
+        })
+        .count();
+    let source_peer = source_rows
+        .iter()
+        .filter(|row| {
+            row.attribution
+                .as_ref()
+                .is_some_and(|evidence| evidence.poster == NativeDiscordRowPoster::PeerAccount)
+        })
+        .count();
+
+    let zero_rows = native_visible_row_negative_outcome(
+        true,
+        native_row_evidence_batch_is_valid(
+            &[],
+            scope_binding,
+            probe.window_generation,
+        ),
+    );
+
+    let mut missing = source_rows.clone();
+    let missing_exercised = missing.first_mut().is_some_and(|row| {
+        let had_proof = row.attribution.is_some();
+        row.attribution = None;
+        had_proof
+    });
+    let missing_proof = native_visible_row_negative_outcome(
+        missing_exercised,
+        missing_exercised
+            && native_row_evidence_batch_is_valid(
+                &missing,
+                scope_binding,
+                probe.window_generation,
+            ),
+    );
+
+    let mut mixed = source_rows.clone();
+    let mixed_exercised = mixed.iter_mut().find_map(|row| row.attribution.as_mut()).map(
+        |evidence| {
+            evidence.scope_binding_sha256 =
+                crate::native_discord_adapter::native_row_attribution_scope_sha256(
+                    "qa-mutated-mixed-scope",
+                );
+        },
+    ).is_some();
+    let mixed_scope = native_visible_row_negative_outcome(
+        mixed_exercised,
+        mixed_exercised
+            && native_row_evidence_batch_is_valid(
+                &mixed,
+                scope_binding,
+                probe.window_generation,
+            ),
+    );
+
+    let mut replayed = source_rows.clone();
+    let replay_source = replayed
+        .iter()
+        .find(|row| row.attribution.is_some())
+        .cloned();
+    let replay_exercised = replay_source.is_some();
+    if let Some(mut row) = replay_source {
+        if let Some(evidence) = row.attribution.as_mut() {
+            evidence.row_index = replayed.len();
+        }
+        replayed.push(row);
+    }
+    let replay = native_visible_row_negative_outcome(
+        replay_exercised,
+        replay_exercised
+            && native_row_evidence_batch_is_valid(
+                &replayed,
+                scope_binding,
+                probe.window_generation,
+            ),
+    );
+
+    let mut reordered = source_rows.clone();
+    let reorder_exercised = reordered.len() >= 2;
+    if reorder_exercised {
+        reordered.swap(0, 1);
+    }
+    let reorder = native_visible_row_negative_outcome(
+        reorder_exercised,
+        reorder_exercised
+            && native_row_evidence_batch_is_valid(
+                &reordered,
+                scope_binding,
+                probe.window_generation,
+            ),
+    );
+
+    // This is the production broker authentication/orientation path. It may
+    // internally hold plaintext, but only counts and fixed tri-state outcomes
+    // survive into the receipt below.
+    let authenticated = rehydrate_native_discord_overlay_history(
+        core,
+        broker,
+        scope_binding,
+        probe.window_generation,
+        probe.rows,
+    )?;
+    let authenticated_own_outgoing = authenticated
+        .rows
+        .iter()
+        .filter(|row| {
+            row.attribution.as_ref().is_some_and(|attribution| {
+                attribution.poster == RehydratedRowPoster::SelfAccount
+                    && attribution.orientation == RehydratedRowOrientation::Outgoing
+            })
+        })
+        .count();
+    let authenticated_peer_incoming = authenticated
+        .rows
+        .iter()
+        .filter(|row| {
+            row.attribution.as_ref().is_some_and(|attribution| {
+                attribution.poster == RehydratedRowPoster::PeerAccount
+                    && attribution.orientation == RehydratedRowOrientation::Incoming
+            })
+        })
+        .count();
+    let own_outgoing =
+        native_visible_row_positive_outcome(source_own, authenticated_own_outgoing);
+    let peer_incoming =
+        native_visible_row_positive_outcome(source_peer, authenticated_peer_incoming);
+    let outcomes = NativeVisibleRowRuntimeOutcomes {
+        own_outgoing,
+        peer_incoming,
+        peer_anchor: probe.producer_controls.peer_anchor,
+        zero_rows,
+        missing_proof,
+        mixed_scope,
+        different_non_self: probe.producer_controls.different_non_self,
+        replay,
+        reorder,
+        persistence: NativeVisibleRowQaTriState::Accepted,
+    };
+    let accepted = own_outgoing == NativeVisibleRowQaTriState::Accepted
+        && peer_incoming == NativeVisibleRowQaTriState::Accepted
+        && outcomes.peer_anchor == NativeVisibleRowQaTriState::Accepted
+        && [
+            outcomes.zero_rows,
+            outcomes.missing_proof,
+            outcomes.mixed_scope,
+            outcomes.different_non_self,
+            outcomes.replay,
+            outcomes.reorder,
+        ]
+        .into_iter()
+        .all(|outcome| outcome == NativeVisibleRowQaTriState::Refused);
+    let observed_at_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "Native visible-row QA clock is unavailable".to_owned())?
+        .as_millis()
+        .try_into()
+        .map_err(|_| "Native visible-row QA clock is unavailable".to_owned())?;
+    Ok(NativeVisibleRowRuntimeReceipt {
+        schema_version: 2,
+        observed_at_unix_ms,
+        build_hash: probe.build_hash,
+        osl_target_identity_sha256: probe.osl_target_identity_sha256,
+        discord_target_identity_sha256: probe.discord_target_identity_sha256,
+        scope_binding_sha256: probe.scope_binding_sha256,
+        window_generation: probe.window_generation,
+        rows_observed,
+        native_proof_some,
+        native_proof_none,
+        authenticated_own_outgoing,
+        authenticated_peer_incoming,
+        broker_plaintext_rows: authenticated.counts.plaintext,
+        broker_refused_rows: authenticated.counts.refused,
+        outcomes,
+        accepted,
+    })
+}
+
+/// Product-side runtime evidence path: adopted native target followed by the
+/// production broker authentication/orientation path. The trusted command
+/// performs its final lock/context rechecks before calling the atomic writer.
+#[cfg(all(feature = "core", feature = "discord-qa-shell"))]
+pub fn request_native_visible_row_runtime_receipt(
+    host: &crate::native_window_host::NativeWindowHostState,
+    core: &HubCoreState,
+    broker: &HubBrokerState,
+    owner_osl_user_id: &str,
+    scope_binding: &str,
+    build_hash: &str,
+    osl_target_identity_sha256: &str,
+    max_rows: usize,
+) -> Result<NativeVisibleRowRuntimeReceipt, String> {
+    let probe = crate::native_discord_adapter::request_native_visible_row_qa_probe(
+        host,
+        owner_osl_user_id,
+        scope_binding,
+        build_hash,
+        osl_target_identity_sha256,
+        max_rows,
+    )?;
+    evaluate_native_visible_row_runtime_probe(core, broker, scope_binding, probe)
+}
+
+/// Commit the already reduced nonsecret receipt after the trusted command has
+/// re-proved its lock and broker context.
+#[cfg(all(feature = "core", feature = "discord-qa-shell"))]
+pub fn persist_native_visible_row_runtime_receipt(
+    receipt: &NativeVisibleRowRuntimeReceipt,
+) -> Result<(), String> {
+    write_native_visible_row_runtime_receipt_at(
+        &native_visible_row_runtime_receipt_path()?,
+        receipt,
+    )
 }
 
 /// Pair each row's public cover with whatever the decrypt produced for it.
@@ -10461,6 +10824,96 @@ ok i will weekend again with you",
         assert!(inconsistent_wire["plaintext"].is_null());
         assert!(inconsistent_wire["orientation"].is_null());
         assert!(inconsistent_wire["attribution"].is_null());
+    }
+
+    #[cfg(feature = "discord-qa-shell")]
+    fn runtime_receipt_fixture() -> NativeVisibleRowRuntimeReceipt {
+        use crate::native_discord_adapter::NativeVisibleRowQaTriState::{
+            Accepted, Refused,
+        };
+        NativeVisibleRowRuntimeReceipt {
+            schema_version: 2,
+            observed_at_unix_ms: 1,
+            build_hash: "a".repeat(40),
+            osl_target_identity_sha256: "b".repeat(64),
+            discord_target_identity_sha256: "c".repeat(64),
+            scope_binding_sha256: "d".repeat(64),
+            window_generation: 7,
+            rows_observed: 2,
+            native_proof_some: 2,
+            native_proof_none: 0,
+            authenticated_own_outgoing: 1,
+            authenticated_peer_incoming: 1,
+            broker_plaintext_rows: 2,
+            broker_refused_rows: 0,
+            outcomes: NativeVisibleRowRuntimeOutcomes {
+                own_outgoing: Accepted,
+                peer_incoming: Accepted,
+                peer_anchor: Accepted,
+                zero_rows: Refused,
+                missing_proof: Refused,
+                mixed_scope: Refused,
+                different_non_self: Refused,
+                replay: Refused,
+                reorder: Refused,
+                persistence: Accepted,
+            },
+            accepted: true,
+        }
+    }
+
+    #[cfg(feature = "discord-qa-shell")]
+    #[test]
+    fn native_visible_row_runtime_receipt_is_tri_state_nonsecret_and_atomic() {
+        use crate::native_discord_adapter::NativeVisibleRowQaTriState::{
+            Accepted, NotObserved, Refused,
+        };
+        assert_eq!(
+            native_visible_row_positive_outcome(0, 0),
+            NotObserved
+        );
+        assert_eq!(native_visible_row_positive_outcome(1, 0), Refused);
+        assert_eq!(native_visible_row_positive_outcome(1, 1), Accepted);
+        assert_eq!(native_visible_row_negative_outcome(false, false), NotObserved);
+        assert_eq!(native_visible_row_negative_outcome(true, false), Refused);
+        assert_eq!(native_visible_row_negative_outcome(true, true), Accepted);
+        assert!(!native_row_evidence_batch_is_valid(
+            &[],
+            "trusted-scope",
+            7
+        ));
+
+        let receipt = runtime_receipt_fixture();
+        let encoded = serde_json::to_string(&receipt).unwrap();
+        for forbidden in [
+            "plaintext",
+            "messageId",
+            "posterIdentity",
+            "carrierSha256",
+            "blobId",
+            "ciphertextSha256",
+            "payloadId",
+            "\"hwnd\"",
+            "\"pid\"",
+        ] {
+            assert!(!encoded.contains(forbidden), "receipt leaked {forbidden}");
+        }
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "osl-native-row-runtime-receipt-{}-{nonce}",
+            std::process::id()
+        ));
+        let path = dir.join("receipt.json");
+        write_native_visible_row_runtime_receipt_at(&path, &receipt).unwrap();
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted["accepted"], true);
+        assert_eq!(persisted["outcomes"]["differentNonSelf"], "refused");
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir(dir);
     }
 
     #[test]

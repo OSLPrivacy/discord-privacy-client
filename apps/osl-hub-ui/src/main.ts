@@ -110,7 +110,11 @@ import { bindFriendRemovalControls, bindMainWindowFocusChanges, friendRemovalBut
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
 import type { NativeOverlayPendingAttachment } from "./overlay-state";
 import { listOslChatAttachments, openOslChatAttachment, selectOslChatAttachment } from "./native-overlay-adapter";
-import { pollNativeDiscordHeadlessQa, runNativeDiscordHeadlessQa } from "./discord-headless-qa-adapter";
+import {
+  pollNativeDiscordHeadlessQa,
+  requestNativeDiscordVisibleRowRuntimeReceipt,
+  runNativeDiscordHeadlessQa,
+} from "./discord-headless-qa-adapter";
 
 type Route = "onboarding" | "home" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-servers";
 const PROTECTED_DISPLAY_VISIBILITY_CHANGED_EVENT = "osl://protected-display-visibility-changed";
@@ -297,6 +301,8 @@ let nativeProtectBusy = false;
 let protectedSheetCloseBusy = false;
 let nativeProtectFailureNotice = "";
 let discordQaHeaderBusy: "whitelist" | "visibility" | "roster" | null = null;
+type DiscordQaRowProofState = "idle" | "busy" | "accepted" | "refused" | "unavailable";
+let discordQaRowProofState: DiscordQaRowProofState = "idle";
 // The eye's last outcome, rendered on the control itself. A toast is not
 // feedback here: the borrowed native Discord window sits on top of this
 // webview's toast layer, so an occluded toast is indistinguishable from a
@@ -2406,6 +2412,7 @@ function nativeDiscordHeaderControls(): string {
   const inactive = nativeDiscordProtectionActive ? "" : "disabled";
   const whitelistBusy = discordQaHeaderBusy === "whitelist";
   const visibilityBusy = discordQaHeaderBusy === "visibility";
+  const rowProofBusy = discordQaRowProofState === "busy";
   const scopeApproved = context?.scopeApproved === true;
   // Revoking used to be silent: the scope goes un-approved and the very next
   // send just fails closed in Rust ("Approve encryption for this friend
@@ -2491,7 +2498,17 @@ function nativeDiscordHeaderControls(): string {
   const composerRefusalNotice = composerRefusal
     ? `<span class="discord-qa-composer-refusal" id="discord-qa-composer-refusal" role="status" data-lock-state="refused" title="${escapeHtml(composerRefusal.reason)}" style="align-self:center;max-width:min(48ch,40vw);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 8px;border:1px solid currentColor;border-radius:7px;font-size:11px;line-height:30px;color:#ffb347">${escapeHtml(composerRefusal.message)}</span>`
     : "";
-  return `<div class="native-discord-header-controls discord-qa-header-controls" aria-label="Discord QA privacy controls"><div class="discord-qa-header-left"><button class="discord-qa-control danger icon-only" data-open-burn="account" type="button" aria-label="Account Burn" title="Open Account Burn confirmation">${accountBurnIcon}</button></div><button class="discord-qa-control danger icon-only discord-qa-discord-burn" data-open-burn="app" type="button" aria-label="Discord Burn" title="Open Discord Burn confirmation">${discordBurnIcon}</button><div class="discord-qa-header-right"><div class="discord-qa-whitelist" role="group" aria-label="Connected verified peer whitelist"><button id="discord-qa-whitelist-roster" type="button" aria-haspopup="dialog" aria-expanded="${whitelistRosterOpen}" title="Review who is whitelisted and where" ${discordQaHeaderBusy ? "disabled" : ""}>Whitelist</button><button id="discord-qa-whitelist-add" type="button" aria-label="Allow this verified peer scope" title="Allow this verified peer scope" ${!nativeDiscordProtectionActive || !verifiedPeer || scopeApproved || whitelistBusy ? "disabled" : ""}>+</button><button id="discord-qa-whitelist-remove" type="button" aria-label="Revoke this verified peer scope" title="Revoke this verified peer scope" ${!nativeDiscordProtectionActive || !verifiedPeer || !scopeApproved || whitelistBusy ? "disabled" : ""}>−</button></div><button class="discord-qa-control danger icon-only chat-burn" data-open-burn="chat" type="button" ${inactive} aria-label="Chat Burn" title="Open Chat Burn confirmation">${flame}</button>${composerUnreachableNotice}${composerRefusalNotice}${transcriptNotice}${transcriptVisibilityControl}${composerControl}${whitelistWarningNotice}</div></div>`;
+  const rowProofLabel = discordQaRowProofState === "accepted"
+    ? "Row proof passed"
+    : discordQaRowProofState === "refused"
+      ? "Row proof refused"
+      : discordQaRowProofState === "unavailable"
+        ? "Row proof unavailable"
+        : rowProofBusy
+          ? "Checking row proof…"
+          : "Check row proof";
+  const rowProofControl = `<button class="discord-qa-control" id="discord-qa-row-proof" type="button" data-runtime-proof="${discordQaRowProofState}" aria-label="${rowProofLabel}" title="${rowProofLabel}" ${!nativeDiscordProtectionActive || !verifiedPeer || rowProofBusy ? "disabled" : ""}>Proof</button>`;
+  return `<div class="native-discord-header-controls discord-qa-header-controls" aria-label="Discord QA privacy controls"><div class="discord-qa-header-left"><button class="discord-qa-control danger icon-only" data-open-burn="account" type="button" aria-label="Account Burn" title="Open Account Burn confirmation">${accountBurnIcon}</button></div><button class="discord-qa-control danger icon-only discord-qa-discord-burn" data-open-burn="app" type="button" aria-label="Discord Burn" title="Open Discord Burn confirmation">${discordBurnIcon}</button><div class="discord-qa-header-right">${rowProofControl}<div class="discord-qa-whitelist" role="group" aria-label="Connected verified peer whitelist"><button id="discord-qa-whitelist-roster" type="button" aria-haspopup="dialog" aria-expanded="${whitelistRosterOpen}" title="Review who is whitelisted and where" ${discordQaHeaderBusy ? "disabled" : ""}>Whitelist</button><button id="discord-qa-whitelist-add" type="button" aria-label="Allow this verified peer scope" title="Allow this verified peer scope" ${!nativeDiscordProtectionActive || !verifiedPeer || scopeApproved || whitelistBusy ? "disabled" : ""}>+</button><button id="discord-qa-whitelist-remove" type="button" aria-label="Revoke this verified peer scope" title="Revoke this verified peer scope" ${!nativeDiscordProtectionActive || !verifiedPeer || !scopeApproved || whitelistBusy ? "disabled" : ""}>−</button></div><button class="discord-qa-control danger icon-only chat-burn" data-open-burn="chat" type="button" ${inactive} aria-label="Chat Burn" title="Open Chat Burn confirmation">${flame}</button>${composerUnreachableNotice}${composerRefusalNotice}${transcriptNotice}${transcriptVisibilityControl}${composerControl}${whitelistWarningNotice}</div></div>`;
 }
 
 function trustedHeader(): string {
@@ -4472,6 +4489,9 @@ function bindWorkspace(): void {
   document.querySelector<HTMLButtonElement>("#discord-qa-run-test")?.addEventListener("click", () => {
     void runDiscordQaOneClick();
   });
+  document.querySelector<HTMLButtonElement>("#discord-qa-row-proof")?.addEventListener("click", () => {
+    void requestDiscordQaVisibleRowRuntimeReceipt();
+  });
   document.querySelector<HTMLButtonElement>("#discord-qa-open-composer")?.addEventListener("click", () => {
     void openDiscordQaComposer();
   });
@@ -6359,6 +6379,28 @@ async function openDiscordQaComposerAfterHostReady(): Promise<void> {
       await new Promise<void>((resolve) => window.setTimeout(resolve, 500));
     }
   }
+}
+
+async function requestDiscordQaVisibleRowRuntimeReceipt(): Promise<void> {
+  if (!discordQaShell
+    || discordQaRowProofState === "busy"
+    || route !== "service"
+    || activeNativeHostId !== "discord"
+    || !nativeDiscordProtectionActive) return;
+  discordQaRowProofState = "busy";
+  render();
+  const receipt = await requestNativeDiscordVisibleRowRuntimeReceipt();
+  discordQaRowProofState = receipt === null
+    ? "unavailable"
+    : receipt.accepted
+      ? "accepted"
+      : "refused";
+  render();
+  showToast(receipt?.accepted
+    ? "Native row proof receipt saved"
+    : receipt === null
+      ? "Native row proof was unavailable"
+      : "Native row proof refused; receipt saved");
 }
 
 async function runDiscordQaOneClick(): Promise<void> {

@@ -79,6 +79,11 @@ description = "Allow only the disposable Discord QA overlay to append one label 
 commands.allow = ["record_native_discord_qa_send_stage"]
 
 [[permission]]
+identifier = "allow-request-native-discord-visible-row-qa-receipt"
+description = "Allow only the trusted main QA shell to request one zero-input, non-mutating runtime receipt from the exact adopted Discord target and active broker context. The command is absent from production binaries and accepts no HWND, PID, scope, identity, row, text, path, endpoint, or mutation input."
+commands.allow = ["request_native_discord_visible_row_qa_receipt"]
+
+[[permission]]
 identifier = "allow-run-native-discord-headless-qa"
 description = "Allow only the disposable trusted main QA shell to derive its hash-pinned controller pairing and exact current signed native Discord host, then send one fixed probe through the production peer encryption and authenticated inbox. The command is absent from production binaries and accepts no renderer input."
 commands.allow = ["run_native_discord_headless_qa"]
