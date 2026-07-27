@@ -106,11 +106,35 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           npm run build
-      # Uses the deterministic profile when the crate declares one and falls
-      # back to plain release otherwise, so this still measures the real
-      # current reproducibility while hub-profile-preflight reports the gap.
+      # DETERMINISM IS CONFIGURED HERE, NOT IN THE PROFILE NAME.
+      #
+      # `[profile.release-deterministic]` in the root Cargo.toml contains only
+      # `inherits = "release"` and a comment pointing at a design document that
+      # does not exist in this repository. No workflow pinned RUSTFLAGS,
+      # SOURCE_DATE_EPOCH, --remap-path-prefix or /Brepro anywhere. The profile
+      # therefore differed from plain `release` in no respect at all, which is
+      # exactly why two identical builds produced different hashes on
+      # 2026-07-26 (run 30230442447).
+      #
+      # Setting the levers here rather than in apps/osl-hub/Cargo.toml is
+      # deliberate: that manifest is a serialized central file PR #5 also
+      # edits, and everything below is measurable from this lane's own files.
+      #
+      #   codegen-units=1   parallel codegen partitions non-deterministically
+      #   /Brepro           the MSVC PE header carries a BUILD TIMESTAMP by
+      #                     default; /Brepro replaces it with a content hash
+      #   remap-path-prefix stops the runner's absolute path being baked into
+      #                     debug info and panic messages
+      #   CARGO_INCREMENTAL incremental artefacts carry ordering noise
+      #   SOURCE_DATE_EPOCH pins any build script that stamps a time
       - name: Build the shipped binary
         shell: bash
+        env:
+          RUSTFLAGS: >-
+            --remap-path-prefix=${{ github.workspace }}=.
+            -Clink-arg=/Brepro
+          CARGO_INCREMENTAL: '0'
+          SOURCE_DATE_EPOCH: '1700000000'
         run: |
           if grep -q '^\[profile\.release-deterministic\]' apps/osl-hub/Cargo.toml; then
             profile=release-deterministic
@@ -118,8 +142,11 @@ jobs:
             profile=release
           fi
           echo "profile=$profile" >> "$GITHUB_ENV"
+          echo "RUSTFLAGS=$RUSTFLAGS"
           cargo build --manifest-path apps/osl-hub/Cargo.toml \
-            --features desktop --bin osl-privacy-hub --profile "$profile"
+            --features desktop --bin osl-privacy-hub --profile "$profile" \
+            --config "profile.$profile.codegen-units=1" \
+            --config "profile.$profile.incremental=false"
       - name: Hash the shipped binary
         shell: bash
         run: |
