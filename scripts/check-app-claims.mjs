@@ -10,10 +10,12 @@ const ALLOWLIST_PATH = path.join(
   "docs/design/osl-public-claim-allowlist.md",
 );
 const APP_SRC_ROOT = path.join(REPO_ROOT, "apps/osl-hub-ui/src");
+const RUST_APP_SRC_ROOT = path.join(REPO_ROOT, "apps/osl-hub/src");
 const README_PATH = path.join(REPO_ROOT, "README.md");
 
 const MIN_BANNED_PHRASES = 8; // Prevents a malformed section-D parse from approving everything.
 const MIN_TS_STRING_LITERALS = 300; // Ensures the app copy scan cannot pass after extracting nothing.
+const MIN_RUST_STRING_LITERALS = 40; // Ensures the Rust high-precision subset cannot pass after extracting nothing.
 const MIN_README_BYTES = 1; // Ensures the public README claim surface was actually scanned.
 
 const NEGATOR_LOOKBACK_CHARS = 60;
@@ -151,6 +153,30 @@ async function listTypeScriptFiles(root) {
         !entry.name.endsWith(".test.ts") &&
         !entry.name.endsWith(".d.ts")
       ) {
+        files.push(fullPath);
+      }
+    }
+  }
+
+  await walk(root);
+  files.sort();
+  return files;
+}
+
+async function listRustFiles(root) {
+  const files = [];
+
+  async function walk(dir) {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+        continue;
+      }
+
+      if (entry.isFile() && entry.name.endsWith(".rs")) {
         files.push(fullPath);
       }
     }
@@ -408,6 +434,391 @@ function extractTypeScriptStrings(source) {
   return strings;
 }
 
+function parseRustQuotedLiteral(source, start) {
+  let text = "";
+  let i = start + 1;
+
+  while (i < source.length) {
+    const char = source[i];
+    if (char === "\\") {
+      if (i + 1 < source.length) {
+        text += source[i + 1];
+      }
+      i += 2;
+      continue;
+    }
+
+    if (char === '"') {
+      return { text, end: i + 1 };
+    }
+
+    text += char;
+    i += 1;
+  }
+
+  return { text, end: source.length };
+}
+
+function parseRustRawLiteral(source, start) {
+  if (source[start] !== "r") {
+    return null;
+  }
+
+  let i = start + 1;
+  while (source[i] === "#") {
+    i += 1;
+  }
+
+  if (source[i] !== '"') {
+    return null;
+  }
+
+  const hashes = i - start - 1;
+  const close = `"${"#".repeat(hashes)}`;
+  const textStart = i + 1;
+  const textEnd = source.indexOf(close, textStart);
+
+  if (textEnd === -1) {
+    return { text: source.slice(textStart), end: source.length };
+  }
+
+  return {
+    text: source.slice(textStart, textEnd),
+    end: textEnd + close.length,
+  };
+}
+
+function skipRustCharLiteral(source, start) {
+  let i = start + 1;
+  while (i < source.length) {
+    const char = source[i];
+    if (char === "\\") {
+      i += 2;
+      continue;
+    }
+
+    if (char === "'") {
+      return i + 1;
+    }
+
+    if (char === "\n") {
+      return i;
+    }
+
+    i += 1;
+  }
+
+  return source.length;
+}
+
+function skipRustStringLike(source, start) {
+  const raw = parseRustRawLiteral(source, start);
+  if (raw) {
+    return raw.end;
+  }
+
+  if (source[start] === '"') {
+    return parseRustQuotedLiteral(source, start).end;
+  }
+
+  if (source[start] === "'") {
+    return skipRustCharLiteral(source, start);
+  }
+
+  return start + 1;
+}
+
+function skipRustLineComment(source, start) {
+  const newline = source.indexOf("\n", start + 2);
+  return newline === -1 ? source.length : newline + 1;
+}
+
+function skipRustBlockComment(source, start) {
+  let depth = 1;
+  let i = start + 2;
+
+  while (i < source.length) {
+    const char = source[i];
+    const next = source[i + 1];
+
+    if (char === "/" && next === "*") {
+      depth += 1;
+      i += 2;
+      continue;
+    }
+
+    if (char === "*" && next === "/") {
+      depth -= 1;
+      i += 2;
+      if (depth === 0) {
+        return i;
+      }
+      continue;
+    }
+
+    i += 1;
+  }
+
+  return source.length;
+}
+
+function findMatchingRustBrace(source, openIndex) {
+  let depth = 1;
+  let i = openIndex + 1;
+
+  while (i < source.length) {
+    const char = source[i];
+    const next = source[i + 1];
+
+    if (char === "/" && next === "/") {
+      i = skipRustLineComment(source, i);
+      continue;
+    }
+
+    if (char === "/" && next === "*") {
+      i = skipRustBlockComment(source, i);
+      continue;
+    }
+
+    if (char === "r" || char === '"' || char === "'") {
+      i = skipRustStringLike(source, i);
+      continue;
+    }
+
+    if (char === "{") {
+      depth += 1;
+      i += 1;
+      continue;
+    }
+
+    if (char === "}") {
+      depth -= 1;
+      i += 1;
+      if (depth === 0) {
+        return i;
+      }
+      continue;
+    }
+
+    i += 1;
+  }
+
+  return source.length;
+}
+
+function findRustItemEnd(source, start) {
+  let i = start;
+
+  while (i < source.length) {
+    const char = source[i];
+    const next = source[i + 1];
+
+    if (char === "/" && next === "/") {
+      i = skipRustLineComment(source, i);
+      continue;
+    }
+
+    if (char === "/" && next === "*") {
+      i = skipRustBlockComment(source, i);
+      continue;
+    }
+
+    if (char === "r" || char === '"' || char === "'") {
+      i = skipRustStringLike(source, i);
+      continue;
+    }
+
+    if (char === "{") {
+      return findMatchingRustBrace(source, i);
+    }
+
+    if (char === ";") {
+      return i + 1;
+    }
+
+    i += 1;
+  }
+
+  return source.length;
+}
+
+function rustTestRanges(source) {
+  const ranges = [];
+  const cfgTestRe = /#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]/g;
+  const modTestsRe = /\bmod\s+tests\s*\{/g;
+  let match;
+
+  while ((match = cfgTestRe.exec(source)) !== null) {
+    ranges.push({
+      start: match.index,
+      end: findRustItemEnd(source, match.index + match[0].length),
+    });
+  }
+
+  while ((match = modTestsRe.exec(source)) !== null) {
+    const openIndex = source.indexOf("{", match.index);
+    ranges.push({
+      start: match.index,
+      end: findMatchingRustBrace(source, openIndex),
+    });
+  }
+
+  ranges.sort((a, b) => a.start - b.start || a.end - b.end);
+  return ranges;
+}
+
+function isInRange(index, range) {
+  return range && index >= range.start && index < range.end;
+}
+
+function isIdentifierShapedRustLiteral(text) {
+  const trimmed = text.trim();
+  if (/\s/.test(trimmed)) {
+    return false;
+  }
+
+  return (
+    trimmed.includes("::") ||
+    trimmed.includes("/") ||
+    trimmed.includes("_") ||
+    /^[a-z]+$/.test(trimmed)
+  );
+}
+
+const RUST_USER_VISIBLE_FIELDS = new Set([
+  "label",
+  "title",
+  "detail",
+  "message",
+  "warning",
+  "warnings",
+  "display_name",
+  "summary",
+  "description",
+  "body",
+  "heading",
+  "subtitle",
+]);
+const RUST_USER_VISIBLE_FIELD_RE = new RegExp(
+  `(?:^|[,{]\\s*)(${[...RUST_USER_VISIBLE_FIELDS].join("|")})\\s*:\\s*(?:(?:[A-Za-z_][A-Za-z0-9_:]*!?\\s*)?[\\(\\[\\{]\\s*)*$`,
+);
+const RUST_USER_VISIBLE_METHOD_RE =
+  /\.(?:title|set_title|add_filter|set_message|set_detail)\s*\(\s*$/;
+
+function rustLiteralIsStructFieldValue(source, start) {
+  const before = source.slice(Math.max(0, start - 300), start);
+  const match = before.match(RUST_USER_VISIBLE_FIELD_RE);
+  return Boolean(match && RUST_USER_VISIBLE_FIELDS.has(match[1]));
+}
+
+function rustLiteralIsMethodArgument(source, start) {
+  const before = source.slice(Math.max(0, start - 160), start);
+  return RUST_USER_VISIBLE_METHOD_RE.test(before);
+}
+
+function rustLiteralIsErrValue(source, start, end) {
+  const before = source.slice(Math.max(0, start - 160), start);
+  const after = source.slice(end, Math.min(source.length, end + 160));
+
+  if (/(?:^|[^\w])Err\s*\(\s*$/.test(before)) {
+    return /^\s*\.\s*(?:into|to_string)\s*\(\s*\)\s*\)/.test(after);
+  }
+
+  if (/(?:^|[^\w])Err\s*\(\s*format!\s*\(\s*$/.test(before)) {
+    return /^\s*(?:,|\)\s*\))/.test(after);
+  }
+
+  return false;
+}
+
+function rustLiteralIsBareReturnedValue(source, start, end) {
+  const before = source.slice(Math.max(0, start - 160), start);
+  const after = source.slice(end, Math.min(source.length, end + 80));
+
+  return (
+    /(?:\breturn\s+|=>\s*)$/.test(before) &&
+    /^\s*\.\s*(?:into|to_string)\s*\(\s*\)/.test(after)
+  );
+}
+
+function shouldSelectRustLiteral(source, start, end, text) {
+  if (isIdentifierShapedRustLiteral(text)) {
+    return false;
+  }
+
+  return (
+    rustLiteralIsStructFieldValue(source, start) ||
+    rustLiteralIsMethodArgument(source, start) ||
+    rustLiteralIsErrValue(source, start, end) ||
+    rustLiteralIsBareReturnedValue(source, start, end)
+  );
+}
+
+function extractRustStrings(source) {
+  const strings = [];
+  const lineStarts = lineStartsFor(source);
+  const testRanges = rustTestRanges(source);
+  let testRangeIndex = 0;
+  let i = 0;
+
+  while (i < source.length) {
+    while (testRangeIndex < testRanges.length && i >= testRanges[testRangeIndex].end) {
+      testRangeIndex += 1;
+    }
+
+    if (isInRange(i, testRanges[testRangeIndex])) {
+      i = testRanges[testRangeIndex].end;
+      continue;
+    }
+
+    const char = source[i];
+    const next = source[i + 1];
+
+    if (char === "/" && next === "/") {
+      i = skipRustLineComment(source, i);
+      continue;
+    }
+
+    if (char === "/" && next === "*") {
+      i = skipRustBlockComment(source, i);
+      continue;
+    }
+
+    const raw = parseRustRawLiteral(source, i);
+    if (raw) {
+      if (shouldSelectRustLiteral(source, i, raw.end, raw.text)) {
+        strings.push({
+          text: raw.text,
+          line: lineNumberAt(lineStarts, i),
+        });
+      }
+      i = raw.end;
+      continue;
+    }
+
+    if (char === '"') {
+      const literal = parseRustQuotedLiteral(source, i);
+      if (shouldSelectRustLiteral(source, i, literal.end, literal.text)) {
+        strings.push({
+          text: literal.text,
+          line: lineNumberAt(lineStarts, i),
+        });
+      }
+      i = literal.end;
+      continue;
+    }
+
+    if (char === "'") {
+      i = skipRustCharLiteral(source, i);
+      continue;
+    }
+
+    i += 1;
+  }
+
+  return strings;
+}
+
 function excerptAround(text, index, length) {
   const start = Math.max(0, index - 50);
   const end = Math.min(text.length, index + length + 50);
@@ -548,6 +959,7 @@ async function scanRepository() {
   const allViolations = [];
   const floorFailures = [];
   let tsStringCount = 0;
+  let rustStringCount = 0;
   let readmeBytes = 0;
 
   const tsFiles = await listTypeScriptFiles(APP_SRC_ROOT);
@@ -558,6 +970,22 @@ async function scanRepository() {
     const violations = analyseFragments(file, fragments, bannedPhrases);
 
     tsStringCount += fragments.length;
+    allViolations.push(...violations);
+    rows.push({
+      file,
+      units: fragments.length,
+      violations: violations.length,
+    });
+  }
+
+  const rustFiles = await listRustFiles(RUST_APP_SRC_ROOT);
+  for (const filePath of rustFiles) {
+    const source = await readUtf8(filePath);
+    const fragments = extractRustStrings(source);
+    const file = repoRelative(filePath);
+    const violations = analyseFragments(file, fragments, bannedPhrases);
+
+    rustStringCount += fragments.length;
     allViolations.push(...violations);
     rows.push({
       file,
@@ -601,6 +1029,14 @@ async function scanRepository() {
     });
   }
 
+  if (rustStringCount < MIN_RUST_STRING_LITERALS) {
+    floorFailures.push({
+      name: "Rust user-visible string literals extracted",
+      expected: MIN_RUST_STRING_LITERALS,
+      actual: rustStringCount,
+    });
+  }
+
   if (readmeBytes < MIN_README_BYTES) {
     floorFailures.push({
       name: "README.md bytes",
@@ -611,11 +1047,14 @@ async function scanRepository() {
 
   rows.sort((a, b) => a.file.localeCompare(b.file));
   printSummary(rows, {
-    units: tsStringCount + readmeFragments.length,
+    units: tsStringCount + rustStringCount + readmeFragments.length,
     violations: allViolations.length,
   });
   console.log(
-    `\nCounts: phrases parsed=${bannedPhrases.length}, strings extracted=${tsStringCount}, README bytes=${readmeBytes}, violations found=${allViolations.length}`,
+    `\nRust scan is a KNOWN-INCOMPLETE high-precision subset: ${rustStringCount} literals from user-visible positions. It does not prove the absence of banned phrases elsewhere in Rust.`,
+  );
+  console.log(
+    `Counts: phrases parsed=${bannedPhrases.length}, TypeScript strings extracted=${tsStringCount}, Rust strings extracted=${rustStringCount}, README bytes=${readmeBytes}, violations found=${allViolations.length}`,
   );
 
   printViolations(allViolations);
@@ -688,6 +1127,33 @@ async function runSelfTest() {
       shouldFlag: false,
     },
   ];
+  const rustFixtures = [
+    {
+      name: "rust catches banned struct label",
+      source: 'fn live() { let view = UiCopy { label: "cryptographic burn".into() }; }',
+      shouldFlag: true,
+      expectedSelected: 1,
+    },
+    {
+      name: "rust catches banned Err message",
+      source: 'fn live() -> Result<(), String> { Err("cryptographic burn".into()) }',
+      shouldFlag: true,
+      expectedSelected: 1,
+    },
+    {
+      name: "rust skips cfg-test block",
+      source:
+        '#[cfg(test)]\nmod tests { fn claim() { let view = UiCopy { label: "cryptographic burn".into() }; } }',
+      shouldFlag: false,
+      expectedSelected: 0,
+    },
+    {
+      name: "rust skips identifier-shaped literal",
+      source: 'fn live() { let view = UiCopy { label: "unbreakable".into() }; }',
+      shouldFlag: false,
+      expectedSelected: 0,
+    },
+  ];
 
   let failures = 0;
   for (const fixture of fixtures) {
@@ -707,8 +1173,22 @@ async function runSelfTest() {
     );
   }
 
+  for (const fixture of rustFixtures) {
+    const fragments = extractRustStrings(fixture.source);
+    const violations = analyseFragments(`self-test/${fixture.name}`, fragments, bannedPhrases);
+    const flagged = violations.length > 0;
+    const ok = flagged === fixture.shouldFlag && fragments.length === fixture.expectedSelected;
+    if (!ok) {
+      failures += 1;
+    }
+
+    console.log(
+      `${ok ? "PASS" : "FAIL"} ${fixture.name}: expected ${fixture.shouldFlag ? "flag" : "pass"} with ${fixture.expectedSelected} selected, actual ${flagged ? "flag" : "pass"} with ${fragments.length} selected`,
+    );
+  }
+
   console.log(
-    `Self-test: phrases parsed=${bannedPhrases.length}, fixtures=${fixtures.length}, failures=${failures}`,
+    `Self-test: phrases parsed=${bannedPhrases.length}, fixtures=${fixtures.length + rustFixtures.length}, failures=${failures}`,
   );
 
   return failures === 0 ? 0 : 1;
