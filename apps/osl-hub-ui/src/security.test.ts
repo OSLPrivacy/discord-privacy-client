@@ -649,6 +649,174 @@ describe("bundled preview security boundary", () => {
           "}",
         ].join("\n"),
       ),
+      ).toBe(false);
+  });
+
+  it("does not describe local burn cleanup as remote wrapped-key destruction", () => {
+    const main = readRelative("../../osl-hub/src/main.rs");
+    const security = readRelative("../../osl-hub/src/security.rs");
+    const commands = readRelative("../../../crates/ipc/src/commands.rs");
+    const productionRust = [
+      readProductionRustTree("../../osl-hub/src/"),
+      readProductionRustTree("../../../crates/ipc/src/"),
+    ].join("\n");
+    const productionUsesRemoteWrappedKeys = (source: string): boolean =>
+      /(?:\.(?:post_wrapped_key|fetch_wrapped_key)\s*\(|\bWrappedKeyUpload\s*\{)/u.test(
+        rustProductionPrefix(source),
+      );
+    const classifyBurnPath = (
+      mainSource: string,
+      securitySource: string,
+      commandSource: string,
+    ) => {
+      const mainProduction = rustProductionPrefix(mainSource);
+      const securityProduction = rustProductionPrefix(securitySource);
+      const commandProduction = rustProductionPrefix(commandSource);
+      const handler = mainProduction.slice(
+        mainProduction.indexOf("tauri::generate_handler!["),
+      );
+      return {
+        registered: handler.includes("burn_active_hub_context"),
+        mainCallsSecurity: mainProduction.includes("security::burn_scope("),
+        securityCallsLocalBurn: securityProduction.includes(
+          "ipc::commands::cmd_osl_apply_burn(",
+        ),
+        localRowsShredded: commandProduction.includes(
+          "store.wipe_wrapped_keys_in_scope(",
+        ),
+        remoteBlobDeleteAttempted: securityProduction.includes(
+          "ipc::prose_token::prose_token_burn_id(",
+        ),
+      };
+    };
+    const facts = classifyBurnPath(main, security, commands);
+
+    // Positive controls bind the claims to the actual registered burn route:
+    // Tauri -> security orchestration -> local row shred plus best-effort blob
+    // deletion.
+    expect(facts).toEqual({
+      registered: true,
+      mainCallsSecurity: true,
+      securityCallsLocalBurn: true,
+      localRowsShredded: true,
+      remoteBlobDeleteAttempted: true,
+    });
+
+    // The keyserver client primitives are implemented elsewhere, but no Hub or
+    // IPC production path constructs an upload or calls post/fetch.
+    expect(productionUsesRemoteWrappedKeys(productionRust)).toBe(false);
+
+    const assertBurnTruth = (
+      securitySource: string,
+      commandSource: string,
+    ): void => {
+      expect(securitySource).toContain(
+        "best-effort deletion of each known OSL cipher-store blob",
+      );
+      expect(securitySource).toContain(
+        "Production has no server-held per-message wrapped-key lifecycle",
+      );
+      expect(securitySource).toContain(
+        "does not erase connected-service/provider copies or destroy the",
+      );
+      expect(commandSource).toContain(
+        "That column is",
+      );
+      expect(commandSource).toContain(
+        "local store state, not evidence of the unwired server wrapped-key service",
+      );
+      expect(commandSource).toContain(
+        "it is not remote wrapped-key deletion or cryptographic erasure",
+      );
+    };
+    assertBurnTruth(security, commands);
+
+    for (const syntheticIntegration of [
+      "client.post_wrapped_key(sender, &upload)?;",
+      "client.fetch_wrapped_key(recipient, content_id)?;",
+      "let upload = WrappedKeyUpload { content_id, ..template };",
+    ]) {
+      expect(productionUsesRemoteWrappedKeys(syntheticIntegration)).toBe(true);
+    }
+
+    // One stage-removal mutation per reachable burn stage.
+    expect(
+      classifyBurnPath(
+        main.replaceAll("burn_active_hub_context", "removed_command"),
+        security,
+        commands,
+      ).registered,
+    ).toBe(false);
+    expect(
+      classifyBurnPath(
+        main.replaceAll("security::burn_scope(", "security::burn_scope_removed("),
+        security,
+        commands,
+      ).mainCallsSecurity,
+    ).toBe(false);
+    expect(
+      classifyBurnPath(
+        main,
+        security.replace(
+          "ipc::commands::cmd_osl_apply_burn(",
+          "ipc::commands::cmd_osl_apply_burn_removed(",
+        ),
+        commands,
+      ).securityCallsLocalBurn,
+    ).toBe(false);
+    expect(
+      classifyBurnPath(
+        main,
+        security,
+        commands.replace(
+          "store.wipe_wrapped_keys_in_scope(",
+          "store.wipe_wrapped_keys_in_scope_removed(",
+        ),
+      ).localRowsShredded,
+    ).toBe(false);
+    expect(
+      classifyBurnPath(
+        main,
+        security.replaceAll(
+          "ipc::prose_token::prose_token_burn_id(",
+          "ipc::prose_token::prose_token_burn_id_removed(",
+        ),
+        commands,
+      ).remoteBlobDeleteAttempted,
+    ).toBe(false);
+
+    // Reinstating the former remote/key-destruction semantics fails the claim
+    // contract even while the implementation stays unchanged.
+    expect(() =>
+      assertBurnTruth(
+        security.replace(
+          "best-effort deletion of each known OSL cipher-store blob",
+          "wrapped keys gone, remote cipher-store blobs gone",
+        ),
+        commands,
+      ),
+    ).toThrow();
+    for (const forbidden of [
+      "wrapped keys gone",
+      "can now never fetch it",
+      "destroys OUR ability to re-decrypt",
+      "Local decrypt is gated solely by wrapped-key presence",
+      "wipes its decrypt capability",
+    ]) {
+      expect(`${security}\n${commands}`).not.toContain(forbidden);
+    }
+
+    // Comment/test-only decoys are not remote wrapped-key production use.
+    expect(
+      productionUsesRemoteWrappedKeys(
+        [
+          "// client.post_wrapped_key(sender, &upload)?;",
+          "#[cfg(test)]",
+          "mod tests {",
+          "  fn fixture() { client.fetch_wrapped_key(recipient, id); }",
+          "}",
+        ].join("\n"),
+      ),
     ).toBe(false);
   });
 });

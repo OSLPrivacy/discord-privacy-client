@@ -6372,16 +6372,17 @@ fn refresh_peer_pubkeys_from_keyserver(state: &AppState, discord_id: &str) -> Re
 /// - Append a [`crate::peer_map::BurnedScope`] entry to
 ///   `peer_map[sender].burned_scopes` (idempotent — duplicates
 ///   skipped).
-/// - Wipe `wrapped_key` on matching rows in `messages.sqlite`
+/// - Shred matching sender rows in local `messages.sqlite`
 ///   (best-effort; failures logged, not propagated).
 /// Legacy `MSG_TYPE_BURN` (0x01) receive handler.
 ///
-/// # Two halves, one right and one wrong
+/// # Two separate properties
 ///
-/// The authorisation model here is **correct and is the model bilateral burn
-/// adopts**: `wipe_wrapped_keys_in_scope(.., Some(sender_discord_id))` —
-/// "Their burn must not blank our own or other members' messages." Burn authority
-/// is authorship.
+/// The row-selection boundary is sender-scoped:
+/// `wipe_wrapped_keys_in_scope(.., Some(sender_discord_id))`. A claimed sender's
+/// marker must not blank our own or other members' local rows. This selection
+/// property does not itself prove visible-row authorship or destroy anyone's
+/// remote decryption authority.
 ///
 /// The persistence model is **not**. It records a permanent scope-level entry in
 /// `peer_map.burned_scopes`, which has no epoch and no sequence bound, so one
@@ -6427,7 +6428,7 @@ fn apply_burn_recv(
             pe.burned_scopes.push(entry);
         }
     }
-    // Wipe sqlite wrapped_keys for the scope (best-effort).
+    // Shred matching local sqlite rows for the scope (best-effort).
     if let Some(store) = state
         .message_store
         .lock()
@@ -6513,11 +6514,14 @@ fn format_iso8601_secs(unix_secs: i64) -> Option<String> {
 /// time we're here the recipients have already been notified.
 ///
 /// Effects:
-/// - Wipes `wrapped_key` on matching rows in messages.sqlite
-///   (so we can't re-decrypt our outgoing history in `scope`).
+/// - Shreds matching local `messages.sqlite` rows: ciphertext and nonce are
+///   zeroed and the legacy `wrapped_key` column is cleared. That column is
+///   local store state, not evidence of the unwired server wrapped-key service.
+///   This removes this store's cached history; it does not destroy a
+///   per-message key or anyone's long-term decryption authority.
 /// - **Does not** mutate any peer_map entry. Peer-side burn
 ///   tracking lives in their burned_scopes; ours is implicit
-///   via the wiped wrapped_keys + the scope no longer being in
+///   via the shredded local rows + the scope no longer being in
 ///   whitelist_state.
 pub fn cmd_osl_apply_burn(
     state: &AppState,
@@ -6550,7 +6554,7 @@ pub fn cmd_osl_apply_burn(
         let _ = store.wipe_attachments_in_scope(&scope_type, &scope_id, self_did.as_deref());
     }
     // Record the burn on our OWN self-entry so OUR attachments in this
-    // scope are gated too. Text reverts via the wrapped-key wipe above;
+    // scope are gated too. Local text history is shredded by the row wipe above;
     // attachments decrypt from a self-contained att_key, so the
     // attachment-open gate consults this burned_scopes ledger
     // (is_burned_in_scope for the sender == us). Without this, your own
@@ -6591,7 +6595,7 @@ pub fn cmd_osl_apply_burn(
 
 /// Remove a whitelist entry for `peer` in `scope`. Returns the
 /// wire-format burn marker the caller must send through Discord's
-/// API so the peer's client wipes its decrypt capability.
+/// API so the peer's client records its own local burn/refusal state.
 ///
 /// Behaviour:
 /// - Compute burn marker recipients via `recipients_for_scope`
@@ -6607,7 +6611,7 @@ pub fn cmd_osl_apply_burn(
 ///     Per §3.4 this revokes their cross-scope grant in shared
 ///     GCs/servers without burning those scopes individually.
 ///   - Drop the scope's entry from `whitelist_state`.
-/// - Call `cmd_osl_apply_burn` to wipe wrapped_keys.
+/// - Call `cmd_osl_apply_burn` to shred matching local stored rows.
 ///
 /// Returns the wire-format burn marker string.
 pub fn cmd_osl_unwhitelist_scope(
@@ -6625,7 +6629,7 @@ pub fn cmd_osl_unwhitelist_scope(
     //    `local_unwhitelist_apply` so the two paths cannot drift.
     let wire =
         cmd_osl_send_burn_marker(state, scope_input.clone(), channel_members, self_discord_id)?;
-    // in-Discord burn path: WITH the wrapped-keys wipe — byte-
+    // in-Discord burn path: WITH the local-row shred — byte-
     // identical to pre-repair behaviour. Do not change.
     local_unwhitelist_apply(
         state,
@@ -6650,8 +6654,8 @@ pub fn cmd_osl_unwhitelist_scope(
 /// out-of-Discord Whitelist Manager, which has no channel roster /
 /// self-id context to address a burn marker to anyway.
 ///
-/// Adjustment (operator decision): this path also does NOT wipe OUR
-/// local wrapped keys — after "Remove" the operator can still read
+/// Adjustment (operator decision): this path also does NOT shred OUR
+/// local stored rows — after "Remove" the operator can still read
 /// previously-exchanged messages in that scope; they just stop
 /// encrypting to that peer going forward. Pure whitelist removal.
 pub fn cmd_osl_local_unwhitelist_scope(
@@ -6673,7 +6677,7 @@ pub fn cmd_osl_local_unwhitelist_scope(
 /// `cmd_osl_unwhitelist_scope` performs AFTER the wire is built —
 /// peer_map retain-filter + BurnedScope marker + revoke_broadened,
 /// the whitelist_state encrypt_toggle/scope-row-drop invariant,
-/// (conditionally) the wrapped-keys wipe, and the atomic persist of
+/// (conditionally) the local-row shred, and the atomic persist of
 /// both files. Keeping this in one place is the "cannot drift"
 /// guarantee: the two callers run byte-identical local effects and
 /// differ in EXACTLY two orthogonal axes —
@@ -6760,14 +6764,14 @@ fn local_unwhitelist_apply(
         }
     }
 
-    // 4. Wipe wrapped_keys — ONLY when the caller is the in-Discord
-    //    burn path. This is the SOLE behavioural difference between
-    //    the two callers. `cmd_osl_apply_burn` calls
-    //    `store.wipe_wrapped_keys_in_scope`, which NULLs the local
-    //    `wrapped_key` rows for the scope — that is precisely what
-    //    destroys OUR ability to re-decrypt the scope's old
-    //    messages. Local decrypt is gated solely by wrapped-key
-    //    presence (see `cmd_osl_apply_burn` docs); the `BurnedScope`
+    // 4. Shred matching local store rows — ONLY when the caller is the
+    //    in-Discord burn path. This is the SOLE behavioural difference
+    //    between the two callers. `cmd_osl_apply_burn` calls the legacy-
+    //    named `store.wipe_wrapped_keys_in_scope`, which zeroes local
+    //    ciphertext/nonces, clears the local `wrapped_key` column, and
+    //    marks those rows burned. This removes this store's cached history;
+    //    it is not remote wrapped-key deletion or cryptographic erasure of
+    //    carrier ciphertext sealed to long-term recipient keys. The `BurnedScope`
     //    marker pushed above is OUTBOUND-only bookkeeping — the
     //    decrypt path never consults `peer_map.burned_scopes` — so
     //    it stays in BOTH paths and the two cannot drift on it.

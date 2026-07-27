@@ -2067,12 +2067,14 @@ pub fn burn_scope(
     write_scope_blobs(&blobs_path, &blobs_file)?;
     let remote_blob_deletions_failed = failed_blob_ids.len();
 
-    // Notice LAST. Everything above is unilateral, enforceable deletion that
-    // needed no peer cooperation: local rows gone, wrapped keys gone, remote
-    // cipher-store blobs gone. A peer who had not fetched a message can now
-    // never fetch it. The notice only has to cover the residue — peers who
-    // already fetched — and failing to queue it does not undo any of the above,
-    // so it is reported rather than propagated as an error.
+    // Notice LAST. Everything above is unilateral local-row cleanup plus
+    // best-effort deletion of each known OSL cipher-store blob; failures remain
+    // counted in `remote_blobs_deleted` / `remote_cleanup_complete` below.
+    // Production has no server-held per-message wrapped-key lifecycle.
+    // Successfully removing an OSL blob blocks a later fetch through that store,
+    // but does not erase connected-service/provider copies or destroy the
+    // recipient's long-term decryption authority. The cooperative notice covers
+    // peer-side residue and its queue failure is reported rather than propagated.
     let (revocations_queued, revocation_queue_complete) = queue_scope_revocations_locked(
         core,
         &scope.storage_key(),
