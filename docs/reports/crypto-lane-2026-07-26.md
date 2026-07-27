@@ -1921,3 +1921,81 @@ runtime behavior is claimed.
 
 None. This corrects residual source prose and strengthens a zero-production-
 caller gate; it does not wire or exercise the prekey lifecycle.
+
+## Round 20 — sequence burn-floor enforcement is implemented-unwired
+
+Source/test commit:
+`cde1d999211a451c70c6bb985ab23c337160baf3` (parent
+`fd043b91037091a8103e929a809bf36616619aee`, tree
+`f1bc850fbea9eae4ba707af9eb700ccd409a85b2`). Exact paths:
+
+- `apps/osl-hub/src/security.rs`
+- `apps/osl-hub-ui/src/security.test.ts`
+
+The immutable audit of parent `fd043b9` found only the three definitions:
+
+- `security.rs:2386` — `next_peer_send_seq`;
+- `security.rs:2415` — `peer_scope_commitment`; and
+- `security.rs:2434` — `admit_peer_content_seq`.
+
+There was no production reference in `main.rs`, `broker.rs`, `security.rs`,
+`overlay.ts`, or `crates/ipc/src/**` beyond each definition. The lower-level
+`next_send_seq`, `accept_content`, and `record_content_accepted` operations
+likewise had no other non-test production caller. Reachable revocation code
+uses the lower-level scope-commitment primitive when queuing/applying control
+state, but does not use these wrappers or carry authenticated sequence
+metadata in protected content.
+
+The false present-tense source sentence was `security.rs:2413-2414`, which
+said the broker puts the commitment beside `send_seq` on the wire. The
+corrected `security.rs:2379-2437` preserves all implemented allocator,
+commitment, persistence, and admission behavior while stating that the
+helpers are implemented-unwired and current send/decrypt paths carry or call
+none of them.
+
+The reachable inbound revocation behavior remains honest:
+`broker.rs:3359-3376,5594-5602` retains the authenticated request and returns
+`EnforcementUnavailable`, without applying, acknowledging, or deleting it,
+until a content admission path exists. No broker, main, or overlay claim was
+changed.
+
+### Reachability gate and focused evidence
+
+`security.test.ts:1043-1175` strips comments and `cfg(test)` modules, scans
+non-test Hub/IPC Rust roots, and requires exactly the three definitions with
+no second production reference. Positive implementation controls bind the
+allocator to `SendCounters::next_send_seq` and admission to
+`accept_content`/`record_content_accepted`.
+
+The gate also requires the separate reachable product chain:
+
+1. registered `prepare_encrypted_text`;
+2. main calls the broker;
+3. broker calls IPC;
+4. IPC reaches stateless `encrypt_v3`; and
+5. v3 uses recipient IK as SPK with no OPK.
+
+Direct calls, imported aliases, and associated-function values add a second
+reference and change the verdict. Comment and `cfg(test)` fixtures stay
+negative. Removing the implemented-unwired qualifier fails the source-truth
+mutation.
+
+Focused command:
+
+`./node_modules/.bin/vitest run src/security.test.ts -t "keeps sequence
+burn-floor enforcement classified as implemented-unwired" --reporter=dot`
+
+Result: 1 test passed, 0 failed, 10 skipped (11 collected), duration 517 ms.
+`git diff --check -- apps/osl-hub/src/security.rs
+apps/osl-hub-ui/src/security.test.ts` produced no output. No Cargo, build,
+install, browser, deployment, network, peer action, or runtime action ran.
+
+Status: `source/test-proven-only`, `+0`. No sequence-bearing envelope,
+burn-floor enforcement before plaintext release, peer acknowledgement, or
+runtime behavior is claimed.
+
+## Acceptance rows this earns
+
+None. This corrects one false present-tense source claim and adds a
+failure-capable reachability gate; it does not wire content sequence
+enforcement.
