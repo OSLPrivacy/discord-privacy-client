@@ -9,6 +9,7 @@
 > the claim-eligibility half of master §20.2 and §8.2.
 > Authority: [`osl-master-decision-2026-07-26.md`](osl-master-decision-2026-07-26.md).
 > Status vocabulary: master §0.3. Evidence detail: [`../THREAT_MODEL.md`](../THREAT_MODEL.md).
+> Claim-gate source SHA-256: `918fcc4db6c38b2512ba184233adbf5ccea97c0f8cfd3972b9c433e5698f96c0`
 
 ## How to use it
 

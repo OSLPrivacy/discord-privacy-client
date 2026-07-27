@@ -23,8 +23,10 @@
 // whoever owns app Rust. See "F0" in docs/design/osl-public-claim-allowlist.md.
 
 import { promises as fs } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const ALLOWLIST_PATH = path.join(
@@ -34,6 +36,9 @@ const ALLOWLIST_PATH = path.join(
 const APP_SRC_ROOT = path.join(REPO_ROOT, "apps/osl-hub-ui/src");
 const RUST_APP_SRC_ROOT = path.join(REPO_ROOT, "apps/osl-hub/src");
 const README_PATH = path.join(REPO_ROOT, "README.md");
+const GATE_SOURCE_PATH = fileURLToPath(import.meta.url);
+const GATE_CONTRACT_PATTERN =
+  /^> Claim-gate source SHA-256: `([0-9a-f]{64})`$/m;
 
 const MIN_BANNED_PHRASES = 8; // Prevents a malformed section-D parse from approving everything.
 const MIN_TS_STRING_LITERALS = 300; // Ensures the app copy scan cannot pass after extracting nothing.
@@ -108,6 +113,16 @@ function normalizedClaimTextWithSourceMap(source) {
 
   for (let index = 0; index < source.length;) {
     if (source[index] === "<") {
+      if (source.startsWith("<!--", index)) {
+        const close = source.indexOf("-->", index + 4);
+        if (close !== -1) {
+          for (let inner = index + 4; inner < close; inner += 1) {
+            append(source[inner], inner);
+          }
+          index = close + 3;
+          continue;
+        }
+      }
       const close = source.indexOf(">", index + 1);
       if (close !== -1) {
         const tag = source.slice(index, close + 1).match(/^<\s*\/?\s*([a-z][a-z0-9]*)\b/i);
@@ -971,7 +986,7 @@ function attachmentLimitationGovernsClaim(text, start, end) {
   const before = text.slice(bounds.start, start);
   const after = text.slice(end, bounds.end);
   const limitation =
-    "(?:planned|unproved|unproven|unknown|not\\s+yet\\s+implemented|not\\s+established)";
+    "(?:planned|unavailable|unproved|unproven|unknown|not\\s+yet\\s+(?:available|implemented)|not\\s+established)";
   const beforePattern = new RegExp(
     `(?:\\b${limitation}\\b|\\bno\\b[^.!?;]{0,80}\\b(?:proves?|establishes?|shows?|demonstrates?|verifies?)\\s+)`
       + "\\s*"
@@ -1082,6 +1097,26 @@ function semanticAttachmentClaimSpans(text) {
     /\bdiscord\s+can\s+inspect\s+only\s+(?:an?\s+)?(?:decoy|fake|dummy|placeholder|surrogate)(?:\s+(?:file|image|blob|upload))?\s*,?\s*not\s+(?:the\s+)?(?:user's|real|original|actual)\s+(?:attachments?|uploads?|files?)\b/gi,
     /\b(?:the\s+)?(?:user's|real|original|actual)\s+(?:attachments?|uploads?|files?)\s+(?:is|are|being|remains?|stays?)\s+(?:opaque|unreadable)\s+to\s+discord\b/gi,
     /\bdiscord(?:'s)?\s+(?:attachment\s+)?scann?(?:er|ers)\s+learns?\s+nothing\s+about\s+(?:the\s+)?(?:user's|real|original|actual)\s+(?:attachments?|uploads?|files?)\b/gi,
+    /\bosl\s+(?:sidestep(?:s|ped|ping)?|dodg(?:e|es|ed|ing)|outflank(?:s|ed|ing)?|nullif(?:y|ies|ied|ying)|slip(?:s|ped|ping)?\s+(?:attachments?|uploads?)\s+past|route(?:s|d|ing)?\s+(?:attachments?|uploads?)\s+around|tunnel(?:s|ed|ing)?\s+(?:attachments?|uploads?)\s+(?:past|beyond))\s+discord(?:'s)?[^.!?;\n]{0,90}\b(?:inspection|review|scrutiny|screening|file[- ]analysis(?:\s+pass)?)\b/gi,
+    /\bosl\s+(?:sidestep(?:s|ped|ping)?|dodg(?:e|es|ed|ing)|outflank(?:s|ed|ing)?|nullif(?:y|ies|ied|ying))\s+discord(?:'s)?\s+(?:inspection|review|scrutiny|screening|file[- ]analysis(?:\s+pass)?)\s+of\s+(?:uploaded\s+)?(?:attachments?|uploads?|files?)\b/gi,
+    /\bosl\s+sidesteps\s+discord(?:'s)?\s+inspection\s+of\s+uploaded\s+attachments\b/gi,
+    /\bosl\b[^.!?]{0,90}[.!?]\s*it\s+(?:sidestep(?:s|ped|ping)?|dodg(?:e|es|ed|ing)|outflank(?:s|ed|ing)?|nullif(?:y|ies|ied|ying))\s+discord(?:'s)?\s+(?:inspection|review|scrutiny|screening|file[- ]analysis(?:\s+pass)?)\s+of\s+(?:uploaded\s+)?(?:attachments?|uploads?|files?)\b/gi,
+    /\bdiscord(?:'s)?\s+(?:attachment|upload|file)?\s*(?:inspection|review|scrutiny|screening|file[- ]analysis(?:\s+pass)?)\s+(?:is|was|has\s+been)\s+(?:outflanked|nullified|sidestepped|dodged|made\s+(?:useless|ineffective))\s+by\s+osl\b/gi,
+    /\bdiscord\s+(?:examines?|reviews?|screens?|inspects?)\s+(?:attachments?|uploads?|files?)[.!?]\s*(?:with\s+osl[^.!?]{0,35},?\s*)?(?:that|the)\s+(?:inspection|review|screening)\s+cannot\s+reach\s+(?:the\s+)?(?:actual|real|source|user's)?\s*(?:attachments?|uploads?|files?)\b/gi,
+    /\bdiscord(?:'s)?\s+(?:attachment|upload)?\s*(?:inspection|review|screening)\s+(?:is|was)\s+made\s+(?:useless|ineffective)\s+(?:whenever|when)\s+osl\s+(?:sends?|is\s+used)\b/gi,
+    /\bdiscord\s+(?:is\s+handed|gets?|receives?|is\s+shown)\s+(?:an?\s+|the\s+)?(?:(?:clean|benign|sanitized|scrubbed|innocuous|harmless)\s+)?(?:proxy|facade|shell|substitute|stand-in|surrogate|cover)(?:\s+(?:file|upload|blob|media))?\b[^.!?;\n]{0,100}\b(?:genuine|actual|real|original|source|user's)\s+(?:attachments?|uploads?|files?)\b/gi,
+    /\b(?:the\s+)?(?:user's|genuine|actual|real|original|source)\s+(?:attachments?|uploads?|files?)\s+(?:is|are)\s+(?:exchanged|swapped|substituted)\s+for\s+(?:an?\s+|the\s+)?(?:(?:clean|benign|sanitized|scrubbed|innocuous|harmless)\s+)?(?:proxy|facade|shell|substitute|stand-in|surrogate|cover)\b[^.!?;\n]{0,80}\bdiscord\b/gi,
+    /\bin\s+(?:the\s+)?(?:attachments?|uploads?|files?)(?:'s)?\s+place\s*,?\s*discord\s+(?:gets?|receives?|is\s+handed)\s+(?:an?\s+|the\s+)?(?:(?:clean|benign|sanitized|scrubbed|innocuous|harmless)\s+)?(?:proxy|facade|shell|substitute|stand-in|surrogate|cover)\b/gi,
+    /\b(?:the\s+)?(?:actual|real|original|source)\s+(?:attachments?|uploads?|files?)\s+(?:stays?|remains?)\s+local[.!?]\s*discord\s+(?:gets?|receives?|is\s+handed)\s+(?:an?\s+)?(?:separate\s+)?(?:(?:clean|benign|sanitized|scrubbed|innocuous|harmless)\s+)?(?:proxy|facade|shell|substitute|stand-in|surrogate|cover)\b/gi,
+    /\b(?:(?:an?\s+)?(?:clean|benign|sanitized|scrubbed|innocuous|harmless)\s+)?(?:proxy|facade|shell|substitute|stand-in|surrogate|cover)\s+(?:is\s+)?(?:sent|handed|given)\s+to\s+discord\s+(?:in\s+place\s+of|instead\s+of|rather\s+than)\s+(?:the\s+)?(?:user's|genuine|actual|real|original|source)\s+(?:attachments?|uploads?|files?)\b/gi,
+    /\bosl\s+(?:swaps?|exchanges?|substitutes?)\s+(?:an?\s+|the\s+)?(?:(?:clean|benign|sanitized|scrubbed|innocuous|harmless)\s+)?(?:proxy|facade|shell|substitute|stand-in|surrogate|cover)\s+for\s+(?:each|every|the|an?)\s+(?:user's|genuine|actual|real|original|source)?\s*(?:attachments?|uploads?|files?)[^.!?;\n]{0,55}\bdiscord\b/gi,
+    /\bdiscord\s+(?:is\s+blind\s+to|gains?\s+(?:no|zero)\s+information\s+from|cannot\s+(?:discern|decipher|understand|read))\s+(?:the\s+)?(?:contents?\s+of\s+)?(?:the\s+)?(?:user's|genuine|actual|real|original|source)\s+(?:attachments?|uploads?|files?)\b/gi,
+    /\b(?:nothing|zero\s+information)\s+(?:about\s+)?(?:the\s+)?(?:user's|genuine|actual|real|original|source)\s+(?:attachments?|uploads?|files?)\s+(?:is\s+)?(?:intelligible|visible|available|revealed)\s+to\s+discord\b/gi,
+    /\b(?:the\s+)?(?:user's|genuine|actual|real|original|source)\s+(?:attachments?|uploads?|files?)\s+(?:is|are|becomes?|remain(?:s)?)\s+(?:indecipherable|invisible|unintelligible)\s+to\s+discord\b/gi,
+    /\b(?:the\s+)?(?:referenced\s+)?(?:attachments?|uploads?|files?)\s+reveals?\s+(?:no|zero)\s+(?:content|information|meaning)\s+to\s+discord\b/gi,
+    /\bdiscord\s+receives?\s+(?:an?\s+|the\s+)?(?:upload|attachment|file)\s+reference[.!?]\s*(?:the\s+)?referenced\s+(?:attachments?|uploads?|files?)\s+reveals?\s+(?:no|zero)\s+(?:content|information|meaning)\s+to\s+it\b/gi,
+    /\bto\s+discord\s*,?\s*(?:every\s+|the\s+)?(?:user's|genuine|actual|real|original|source)\s+(?:attachments?|uploads?|files?)\s+(?:is|are|becomes?|remain(?:s)?)\s+(?:indecipherable|invisible|unintelligible)\b/gi,
+    /\bdiscord\s+can\s+extract\s+(?:no|zero)\s+(?:content|information|meaning)\s+from\s+(?:the\s+)?(?:payload|attachment|upload|file)\b/gi,
   ]) {
     recordPattern(pattern);
   }
@@ -1678,6 +1713,156 @@ async function runSelfTest() {
       text: "OSL prevents accidental uploads before Discord opens.",
       shouldFlag: false,
     },
+    {
+      name: "release I1 unrelated denial cannot launder sidestep",
+      text: "OSL does not alter message text. It sidesteps Discord's inspection of uploaded attachments.",
+      shouldFlag: true,
+    },
+    {
+      name: "release I2 distant Planned limitation cannot launder review bypass",
+      text: "Attachment shielding is Planned for a later release. Account settings are available today. OSL routes uploads around Discord's file review.",
+      shouldFlag: true,
+    },
+    {
+      name: "release I3 split-inline scrutiny outflank",
+      text: "Discord's upload scru<em>tiny</em> is outflanked by OSL.",
+      shouldFlag: true,
+    },
+    {
+      name: "release I4 file-analysis nullification",
+      text: "OSL nullifies Discord's file-analysis pass for attachments.",
+      shouldFlag: true,
+    },
+    {
+      name: "release I5 split-clause review cannot reach attachment",
+      text: "Discord examines uploads.<span>With OSL enabled, that review cannot reach the attachment.</span>",
+      shouldFlag: true,
+    },
+    {
+      name: "release I6 public data attribute inspection dodge",
+      text: 'data-public-claim="OSL dodges Discord&apos;s attachment review."',
+      shouldFlag: true,
+    },
+    {
+      name: "release I7 public comment inspection slip",
+      text: "<!-- OSL slips attachments past Discord inspection. -->",
+      shouldFlag: true,
+    },
+    {
+      name: "release I8 entity-split useless screening",
+      text: "Discord's attachment screening is made use&#108;ess whenever OSL sends.",
+      shouldFlag: true,
+    },
+    {
+      name: "release C1 unrelated denial cannot launder proxy substitution",
+      text: "OSL does not rename the upload. Discord is handed a benign proxy while the genuine attachment is retained locally.",
+      shouldFlag: true,
+    },
+    {
+      name: "release C2 distant Planned limitation cannot launder facade substitution",
+      text: "Future attachment privacy remains Planned. Account export is available. A clean facade is sent to Discord in place of the source upload.",
+      shouldFlag: true,
+    },
+    {
+      name: "release C3 split-inline proxy exchange",
+      text: "The user's attachment is exchanged for a pr<em>ox</em>y before Discord receives it.",
+      shouldFlag: true,
+    },
+    {
+      name: "release C4 sanitized shell in attachment place",
+      text: "In the attachment's place, Discord receives a sanitized shell.",
+      shouldFlag: true,
+    },
+    {
+      name: "release C5 benign proxy swap",
+      text: "OSL swaps a benign proxy for each real upload bound for Discord.",
+      shouldFlag: true,
+    },
+    {
+      name: "release C6 split-clause separate shell",
+      text: "The actual file remains local.<span>Discord receives a separate innocuous shell.</span>",
+      shouldFlag: true,
+    },
+    {
+      name: "release C7 public data attribute scrubbed proxy",
+      text: 'data-public-claim="Discord gets a scrubbed proxy rather than the source attachment."',
+      shouldFlag: true,
+    },
+    {
+      name: "release C8 entity-split surrogate",
+      text: "Discord receives a surr&#111;gate instead of the uploaded file.",
+      shouldFlag: true,
+    },
+    {
+      name: "release D1 unrelated denial cannot launder blind-content claim",
+      text: "OSL does not hide message timestamps. Discord is blind to the contents of real attachments.",
+      shouldFlag: true,
+    },
+    {
+      name: "release D2 distant Planned limitation cannot launder zero-information claim",
+      text: "Some protections are Planned. Account export is available. Discord gains no information from the actual upload.",
+      shouldFlag: true,
+    },
+    {
+      name: "release D3 split-inline unintelligible claim",
+      text: "Nothing about the source file is intelligible to Dis<strong>cord</strong>.",
+      shouldFlag: true,
+    },
+    {
+      name: "release D4 indecipherable upload",
+      text: "Real uploads are indecipherable to Discord.",
+      shouldFlag: true,
+    },
+    {
+      name: "release D5 split-clause zero-content reference",
+      text: "Discord receives an upload reference.<span>The referenced attachment reveals zero content to it.</span>",
+      shouldFlag: true,
+    },
+    {
+      name: "release D6 public data attribute cannot-discern claim",
+      text: 'data-public-claim="Discord cannot discern the user&apos;s attachment."',
+      shouldFlag: true,
+    },
+    {
+      name: "release D7 public comment invisible claim",
+      text: "<!-- To Discord, every genuine attachment is invisible. -->",
+      shouldFlag: true,
+    },
+    {
+      name: "release D8 entity-split invisible claim",
+      text: "To Discord, the genuine attachment is invisi&#98;le.",
+      shouldFlag: true,
+    },
+    {
+      name: "new inspection paraphrase tunnels beyond review",
+      text: "OSL tunnels uploads beyond Discord's attachment review.",
+      shouldFlag: true,
+    },
+    {
+      name: "new cover paraphrase sanitized stand-in",
+      text: "Discord is shown a sanitized stand-in while the source file remains local.",
+      shouldFlag: true,
+    },
+    {
+      name: "new visibility paraphrase extracts no meaning",
+      text: "Discord can extract no meaning from the attachment payload.",
+      shouldFlag: true,
+    },
+    {
+      name: "passes honest unavailable inspection statement",
+      text: "OSL sidestepping Discord's attachment inspection is unavailable.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes honest explicit denial of blind claim",
+      text: "Discord is not blind to the contents of real attachments.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes honest unknown proxy limitation",
+      text: "Whether Discord receives a sanitized proxy instead of the source upload is unknown.",
+      shouldFlag: false,
+    },
   ];
   const rustFixtures = [
     {
@@ -1788,6 +1973,19 @@ async function runSelfTest() {
 }
 
 async function main() {
+  const [gateSource, allowlist] = await Promise.all([
+    readUtf8(GATE_SOURCE_PATH),
+    readUtf8(ALLOWLIST_PATH),
+  ]);
+  const expectedDigest = allowlist.match(GATE_CONTRACT_PATTERN)?.[1];
+  const actualDigest = createHash("sha256").update(gateSource).digest("hex");
+  if (!expectedDigest || actualDigest !== expectedDigest) {
+    console.error(
+      `Claim-gate source contract mismatch: expected ${expectedDigest ?? "missing"}, actual ${actualDigest}.`,
+    );
+    return 1;
+  }
+
   const args = process.argv.slice(2);
   if (args.length > 1 || (args.length === 1 && args[0] !== "--self-test")) {
     console.error("Usage: node scripts/check-app-claims.mjs [--self-test]");
