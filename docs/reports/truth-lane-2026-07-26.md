@@ -2020,8 +2020,9 @@ The following exact objects were reconciled without scoring:
   no independently produced live operator receipt exists.
 - D2 correction successor `f54fac1970661bc7bc808abfcc94aba3069852bf`, tree
   `235d649134270c2d1db1398085a86cbd55b9e744`, adds the missing semantic
-  requirement and committed false-green mutations, but has no independent
-  acceptance verdict yet. It is held at +0 pending that audit.
+  requirement and committed false-green mutations. It is independently
+  **ACCEPT source/test tier, +0**; production R2 retry/idempotency behavior
+  remains unknown and receives no runtime credit.
 
 The next highest-impact reachable website mismatch was the FAQ pricing answer:
 `docs/faq.html` said Free “includes ... Free Scrub” while the canonical
@@ -2042,7 +2043,7 @@ deploy, push, or runtime test ran.
 ## Acceptance rows this earns
 
 - D2 +0; remains rejected pending a corrected independently accepted successor.
-- D2 `f54fac1` +0 pending independent exact-object acceptance.
+- D2 `f54fac1` +0 at source/test tier; live R2 retry remains unknown.
 - Visible-row +0; source/test acceptance does not prove runtime.
 - Sender-filter +0; live provisioning is absent.
 - Discord/WhatsApp F1 +0; exact successor remains rejected.
@@ -2075,3 +2076,33 @@ there is no production WebView caller. No score follows this receipt.
 - Status matrix date correction +0.
 - WebView `36afe00` +0 by independent REJECT.
 - No checklist edit or score movement; authority remains **100 / 303**.
+
+## 2026-07-27 — pricing visual and subsequent +0 verdicts
+
+The download-page pricing visual also listed bare “Free Scrub” beside current
+private-text features, despite the canonical registry marking Scrub discovery
+Planned. Website commit `a95c7da4cb15b7177044e69f3c2f76e930d52b46`, tree
+`47823f3bc834438376a97fd052c5cbede32f327b`, parent
+`e2e99f1a226e22be1b65138443d09aa57be44ae7`, changes only that visual label to
+“Free Scrub (planned)”. Blob: `download.html`
+`02cbdd94b54d4a0bb24804a8cb54e1f3bc7fe14b`. The public claim scan remained
+16/16 with zero failures.
+
+Further exact verdicts consumed without promotion:
+
+- WhatsApp successor `ad2bd47b84acfc6689f041f087064de7fa493477`, tree
+  `4d5708624526bd4b1b4c2c7a8f0e8360b9662991`, is **REJECT +0**. Its 5/5
+  focused suite does not bind media bytes/digests, exhaustive members,
+  account/self/conversation authority, replay, or complete boundaries.
+- Release reconciliation `704974973065c5a2e488f824e61a1071f4602219`, tree
+  `660467ce3f76ca4c8cab22eceeae077e9c7fd5e4`, is **REJECT +0**. Its fixture
+  reader masks the real Git-object mismatch and does not prove a production
+  release reconciliation path.
+
+## Acceptance rows this earns
+
+- D2 `f54fac1` +0 at source/test tier; no runtime score.
+- WhatsApp `ad2bd47` +0 by independent REJECT.
+- Release reconciliation `7049749` +0 by independent REJECT.
+- Pricing visual truth correction +0.
+- Checklist remains untouched; authority remains **100 / 303**.
