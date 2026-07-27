@@ -478,6 +478,66 @@ to restore its mutations. B's restore was verified clean before this edit was ma
 
 ---
 
+## 7b. LANE RULES — adopt these, they are not anecdotes
+
+Everything below was learned by getting it wrong tonight. They are written as rules because the
+corrective has to survive being tired at 3am, and a habit does not.
+
+### R1. For any claim that gates a decision, commission a job that can only succeed by destroying it
+
+Not "review this." The instruction must be *prove me wrong*, with the success criterion inverted
+in the prompt itself: "a confirmation is worth little; a refutation is worth a lot," and "if you
+cannot find a refutation, say which part survives and which part is overstated."
+
+Evidence this works: this lane's two headline findings both came back **OVERSTATED** and had to
+be corrected before hand-off. An agreeable reviewer would have confirmed both. The same shape
+found three decorative tests when told "finding decoration IS the valuable outcome, do not fix or
+rename what you find." Cost: two jobs. Value: two wrong gating claims caught before they reached
+the owner.
+
+### R2. The job that produced an artifact never validates that artifact
+
+Applies to delegates and to this lane equally. A test suite written under a discipline cannot
+audit itself for compliance with that discipline; the ~18 tests predating tonight looked exactly
+as green as the proven ones. Send it to a job that did not write it.
+
+### R3. Never accept a delegate's pasted output as a test run — re-run it here
+
+Job A's pasted "verification tail" showed only filtered-out integration binaries: real output,
+zero information. Re-running it produced `27 passed`. This is not distrust of the delegate; the
+paste is a *summary*, and a summary of a test run is not a test run.
+
+### R4. Never pipe a verification command through `head`/`tail`
+
+Capture full output to a file and grep it. This lane piped a full-suite run through `| tail -30`
+and got 11 tests, which would have been filed as a passing suite. Caught because 11 was
+implausible, **not** because the pipe was noticed. A truncating pipe produces output that is
+indistinguishable from a real result.
+
+### R5. Exactly one job per file, always
+
+Two jobs were dispatched against `wire_rn.rs` at once. One was mid break-and-restore with
+`if false && sealer.requires_insecure_banner()` — a mutation that disables the plaintext-sealer
+refusal — while the other was writing. Had those interleaved and the mutation persisted, ratchet
+state would be written unsealed **and the diff would have looked clean**. Exclusive file
+ownership is not a tidiness preference; it is what stops a temporary security-disabling mutation
+from becoming permanent.
+
+### R6. A killed job leaves work that looks finished
+
+Killing the second job left a complete-looking change: the parameter added, all four tests
+present, correctly named. What was missing was invisible — it had never run them or performed the
+break-then-restore step. **Treat a killed job's output as unverified until independently proven,
+and label it as weaker evidence if it ships that way.** See §9.
+
+### R7. Quote the build gate beside every test count
+
+`--features core` hides a module; `core,discord-qa-shell` relaxes header-proof enforcement. A
+bare number means nothing. Where a crate has no features at all, say that too — it is what makes
+the number unambiguous.
+
+---
+
 ## 8. Three pre-existing tests are decoration (job H)
 
 Four tests in `wire_rn.rs` were mutation-proven tonight. The ~18 that predate tonight's
@@ -491,11 +551,28 @@ deliverable, and fixing them silently would destroy the evidence of what they mi
 | `an_oversized_session_file_is_refused_without_being_read` | pre-read size check removed | Refusal happens. **Not** that it happens without reading — the "without being read" half of the name is unproven. |
 | `a_v3_blob_is_reported_as_a_version_mismatch` | the "v3" constant changed to `0x04` | Nothing about v3 specifically. The fixture is built from the same constant it asserts against, so it can only confirm the code agrees with itself. |
 
-The first is the one that matters. It backs the **at-rest sealing** guarantee — the property that
-matters if a device is seized — and it would pass against a sealer that encoded rather than
-encrypted. This does **not** mean sealing is broken: `a_plaintext_sealer_is_refused` is real (it
-was mutated and observed failing), and that is the gate which rejects a non-encrypting sealer. But
-the guarantee rests on one proven gate, not the two it appears to have.
+### Which gate the at-rest guarantee actually stands on — state this precisely
+
+The guarantee "OSL-RN session state is never written to disk in recoverable form" *appears* to be
+defended twice. It is not. Naming the two gates and what each really covers:
+
+| Gate | What it checks | Proven? | What it would catch |
+| --- | --- | --- | --- |
+| **`a_plaintext_sealer_is_refused`** (`wire_rn.rs:456`, `if sealer.requires_insecure_banner()`) | The sealer **self-declares** it does not encrypt, and the write is refused | **YES** — mutated to `if false && ...`, test failed | A sealer honest enough to admit it is insecure |
+| `the_sealed_file_contains_no_recognisable_state` | The bytes on disk contain no recognisable state | **NO** — passes against `base64(export)` | Raw plaintext only. Not encoding, not weak transformation |
+
+So the entire guarantee rests on **one** gate, and that gate depends on the sealer *truthfully
+declaring itself insecure*. A sealer that encodes rather than encrypts while reporting
+`requires_insecure_banner() == false` passes gate 1 by lying and gate 2 by being unrecognisable
+to a substring check. Nothing in this suite would notice.
+
+This is exactly the failure mode that reads as belt-and-braces right up until someone removes the
+belt: a future edit that touches `requires_insecure_banner` has, in appearance, a second test
+guarding it, and in reality has none. Fixing gate 2 to detect encoded forms is therefore not
+cosmetic tidying — it is the difference between one gate and two.
+
+**Status: being fixed** — see §10. It is not being left as a recorded finding, because unlike the
+routed items this one is inside this lane's own file and inside its own guarantee.
 
 The third is structurally identical to the fixture-coupling false green found by the store lane
 and to the R2 test double: a check built through the thing it is checking.
@@ -528,6 +605,38 @@ by inspection, but unlike the tests from jobs A, B, D and F, **they were never o
 They are therefore evidence that the code does what is intended, not proof that the tests would
 notice if it stopped. Treating them as equivalent would reintroduce the false-green pattern
 through bookkeeping rather than through code.
+
+---
+
+## 10. The three decorative tests are fixed — and the at-rest guarantee now has two gates
+
+Each fix was demonstrated by breaking the source, observing the failure, and restoring.
+
+| Test | What was added | Failure observed when broken |
+| --- | --- | --- |
+| `the_sealed_file_contains_no_recognisable_state` | rejects the standard base64, base64url-nopad, and lowercase-hex encodings of the export, not just raw bytes | `sealed file must not contain the standard base64 export` |
+| `an_oversized_session_file_is_refused_without_being_read` | asserts the exact pre-read error message, which names the byte count and can only come from the pre-read path | assertion on the `session file is N bytes, over the bound` message |
+| `a_v3_blob_is_reported_as_a_version_mismatch` | fixture uses a literal `0x03`; the constant is asserted separately | `left: 4, right: 3` |
+
+**The at-rest guarantee now genuinely stands on two independent gates**, which is what it appeared
+to have all along:
+
+1. `a_plaintext_sealer_is_refused` — a sealer that self-declares insecure is refused. Proven.
+2. `the_sealed_file_contains_no_recognisable_state` — the bytes on disk contain neither the raw
+   export nor a common encoding of it. **Now proven**, where before it could not tell encrypted
+   from encoded.
+
+A sealer that encodes rather than encrypts while falsely reporting `requires_insecure_banner()
+== false` now fails gate 2. Before this change it passed both.
+
+**An honest partial result on fix 2, reported rather than papered over.** The specified approach
+was to assert a distinct error variant. That is not possible: the pre-read and post-read paths
+both return `RnError::Storage(_)`, so no enum variant distinguishes them without changing the
+non-test error API, which is out of this lane's scope for a test fix. Asserting the exact pre-read
+message is a weaker discriminator than a variant would be — it is coupled to message text and a
+reword would silently loosen it. It does currently fail when the pre-read bound is removed, which
+is what was required. A distinct variant remains the better fix and is left as a recorded
+improvement, not claimed as done.
 
 ---
 

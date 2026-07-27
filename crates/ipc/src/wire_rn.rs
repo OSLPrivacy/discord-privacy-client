@@ -1334,6 +1334,25 @@ mod tests {
             !contains_subslice(&raw, &plain),
             "sealed file must not contain the plaintext export"
         );
+        use base64::Engine as _;
+        let standard_b64 = base64::engine::general_purpose::STANDARD.encode(&plain);
+        assert!(
+            !contains_subslice(&raw, standard_b64.as_bytes()),
+            "sealed file must not contain the standard base64 export"
+        );
+        let url_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&plain);
+        assert!(
+            !contains_subslice(&raw, url_b64.as_bytes()),
+            "sealed file must not contain the base64url no-pad export"
+        );
+        let lower_hex = plain
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert!(
+            !contains_subslice(&raw, lower_hex.as_bytes()),
+            "sealed file must not contain the lowercase hex export"
+        );
         // Nor may the peer's identity key appear in the clear. (It is
         // public, but its presence would prove the blob is unsealed.)
         assert!(!contains_subslice(&raw, &peer));
@@ -1472,6 +1491,14 @@ mod tests {
         assert!(matches!(
             store.load_session(&peer, &sealer),
             Err(RnError::Storage(_))
+        ));
+        assert!(matches!(
+            store.load_session(&peer, &sealer),
+            Err(RnError::Storage(message))
+                if message == format!(
+                    "session file is {} bytes, over the {MAX_SESSION_FILE_BYTES}-byte bound",
+                    MAX_SESSION_FILE_BYTES + 1
+                )
         ));
     }
 
@@ -1805,14 +1832,10 @@ mod tests {
     #[test]
     fn a_v3_blob_is_reported_as_a_version_mismatch() {
         use base64::Engine as _;
+        assert_eq!(LEGACY_WIRE_VERSION_V3, 0x03);
         let v3 = format!(
             "DPC0::{}",
-            base64::engine::general_purpose::STANDARD.encode([
-                LEGACY_WIRE_VERSION_V3,
-                0x00,
-                0x01,
-                0x02
-            ])
+            base64::engine::general_purpose::STANDARD.encode([0x03, 0x00, 0x01, 0x02])
         );
         let err = osl_ratchet_next::peek_bootstrap_initiator_identity(&v3)
             .expect_err("v3 must not parse as OSL-RN");
