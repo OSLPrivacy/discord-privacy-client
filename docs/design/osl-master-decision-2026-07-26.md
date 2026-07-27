@@ -5,7 +5,7 @@
 > An agent should be able to start or resume work by reading this file and then following the
 > linked subsystem document for its task. Do not reconstruct product intent from old chats.
 >
-> **Control revision:** `OSL-MASTER-2026-07-26-r10`. A model/account reads this document completely
+> **Control revision:** `OSL-MASTER-2026-07-26-r11`. A model/account reads this document completely
 > the first time only. On later work it checks this revision and its saved memory card, then reads
 > only changed sections and the linked subsystem/report. Every semantic edit must increment the
 > revision and add a one-line delta to section 0.5.
@@ -81,6 +81,18 @@ Capture a fact once and link to it elsewhere.
 
 ### 0.5 Revision digest
 
+- `r11` — **correction to the r10 gate advice, which was itself half of the truth.** r8/r10 said the
+  honest Rust gate is `--features core,discord-qa-shell`. That gate turns a **security check off**
+  while turning coverage on: `header_proof_is_enforced()` is literally
+  `!cfg!(feature = "discord-qa-shell")` (`apps/osl-hub/src/native_discord_adapter.rs:4529-4531`,
+  verified). **Neither gate alone is sufficient** — plain `--features core` hides the
+  `qa_selftest_request` module, and `core,discord-qa-shell` relaxes header-proof enforcement. A test
+  passing under the QA feature has **not** proven header proof is enforced. **Always quote the gate
+  beside the number; "741 passed" means nothing on its own.** Truth-lane assessment: **no current
+  allowlist row is load-bearing on header-proof enforcement** — sender attribution is already an
+  open finding (§10 finding 2) so no claim rests on it, and A1/A2 are confidentiality rather than
+  header authentication. Same family as the rest of tonight: a build configuration that makes a
+  check disappear looks identical to one where the check passes.
 - `r10` — **correction to the r8 Rust-gate note, which was true but could be read as more
   reassuring than it is.** Two distinct facts, verified in source: (1) `qa_selftest_request.rs` and
   its tests are gated `all(core, discord-qa-shell)`, so plain `--features core` omits them — that is
