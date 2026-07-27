@@ -1831,3 +1831,93 @@ server deletion, end-to-end result, or runtime behavior is claimed.
 None. This corrects an implemented-unwired source claim and adds a
 failure-capable reachability gate; it does not wire the client or prove a
 server-side wrapped-key deletion.
+
+## Round 19 — prekey lifecycle residual truth correction
+
+Source/test commit:
+`625c733745412899c6cc410e38a1484bb7173710` (parent
+`553f581ae209cb9804ec9263494886daba139f40`, tree
+`32a90bf7903ac7704140a48e939333cb6ff11123`). Exact paths:
+
+- `crates/keystore/src/prekeys.rs`
+- `apps/osl-hub-ui/src/security.test.ts`
+
+This is a residual correction after `0d558341`, which already documented and
+gated the stateless-v3/no-OPK shipping posture in `crates/ipc`. The immutable
+audit of parent `553f581` found zero `PrekeyState`,
+`fetch_prekey_bundle`, `replenish_prekeys`, `replenish_using_state`,
+`load_prekey_state`, or `save_prekey_state` references in
+`apps/osl-hub/src/{security,broker,main}.rs` and `crates/ipc/src/**`.
+
+Implemented source remains present:
+
+- `prekeys.rs:103-183` implements `PrekeyState` lifecycle helpers;
+- `prekeys.rs:327-379` implements sealed save/load helpers;
+- `client.rs:781-800` implements signed bundle fetch;
+- `client.rs:854-936` implements signed replenish methods; and
+- `lib.rs:73-76` publicly re-exports the prekey API.
+
+The only committed client invocations are under `crates/keystore/tests/**`;
+the sole source-internal call is `replenish_using_state` calling
+`replenish_prekeys` at `client.rs:935`.
+
+The corrected `prekeys.rs:1-41,77-79,150-152,171-174` wording preserves the
+implemented state, persistence, canonical signing, rotation, server-protocol,
+and intended PQXDH facts, but no longer says stale-message decrypt, OPK
+shipping/popping, or receive-side OPK consumption currently happens in the
+product.
+
+### Reachability gate and focused evidence
+
+`security.test.ts:915-1041` has implementation/re-export positives and scans
+comment-stripped, non-test Hub/IPC Rust roots for every lifecycle-bearing
+prekey type, method, constant, persistence function, and signing function.
+It deliberately excludes `iso_8601_from_unix_seconds`: bounded source search
+found that utility genuinely used independently at
+`crates/ipc/src/commands.rs:6200`, without constructing or calling the prekey
+lifecycle.
+
+The gate also requires the separate reachable production chain to remain
+present:
+
+1. registered `prepare_encrypted_text`;
+2. main calls the broker;
+3. broker calls IPC;
+4. IPC reaches stateless `encrypt_v3`; and
+5. v3 uses recipient IK as SPK and supplies no OPK.
+
+Synthetic import, alias, associated-method, instance-method, persistence,
+rotation, replenish, fetch, and consumption forms all turn the detector
+positive. Comment and `cfg(test)` decoys remain negative. Removing the
+implemented-unwired source qualifier fails the claim gate.
+
+Focused command:
+
+`./node_modules/.bin/vitest run src/security.test.ts -t "keeps the prekey
+lifecycle classified as implemented-unwired" --reporter=dot`
+
+Final result: 1 test passed, 0 failed, 9 skipped (10 collected), duration
+515 ms. An intentionally overbroad intermediate detector failed because it
+included `iso_8601_from_unix_seconds`, exposing the real independent caller
+above; narrowing the detector to lifecycle-bearing symbols produced the final
+passing result. `git diff --check -- apps/osl-hub-ui/src/security.test.ts
+crates/keystore/src/prekeys.rs` produced no output. No Cargo, build, install,
+browser, deployment, network, or runtime action ran.
+
+### Preserved dirty overlap
+
+`crates/keystore/src/client.rs` remains dirty with unrelated peer
+capability/bundle verification changes (14 insertions, 33 deletions).
+Its module comment at committed lines 17-20 still broadly says Tauri handlers
+drive every listed endpoint. This round did not edit or stage that file; the
+overlap prevents an atomic comment-only correction without risking unrelated
+work.
+
+Status: `source/test-proven-only`, `+0`. No prekey fetch, replenish,
+rotation, consumption, forward secrecy, handshake, server interaction, or
+runtime behavior is claimed.
+
+## Acceptance rows this earns
+
+None. This corrects residual source prose and strengthens a zero-production-
+caller gate; it does not wire or exercise the prekey lifecycle.
