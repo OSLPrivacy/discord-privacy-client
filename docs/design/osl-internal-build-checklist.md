@@ -35,7 +35,7 @@ they qualify work. Scope additions increase the denominator; regressions remove 
 ## Progress snapshot
 
 ```text
-Provisional verified progress: 96 / 303 points = 32%   (was 85 / 303 = 28%, which understated section H by 2)
+Provisional verified progress: 97 / 303 points = 32%   (was 85 / 303 = 28%, which understated section H by 2)
 Confidence: low (several dirty concurrent worktrees and exact-build rechecks remain)
 Critical path:
 security identity/attribution → reviewed ratchet → two-identity proof
@@ -68,6 +68,16 @@ away, per master §16.3.
   understating the project. Nothing was built to close that gap; it was an addition error.
 - H8 −1 · corrected an overclaim: H8 sat at full marks while its own text named an open defect.
   200% zoom and the accessibility checks in master §8.6 are still unmeasured.
+
+**2026-07-27 exact-commit A8/B3 adjudication (+1).**
+
+- A8 +0 · schema-v4/v3-scrub evidence is strong, but the held comprehensive at-rest audit remains
+  open across v2/unstamped legacy paths, a raw-byte v1 migration check, an executed older-reader
+  downgrade test, attachment selector-to-metadata validation, and non-store persistence.
+- B3 +1 · exact ratchet and later dependency-closure archives prove sealed persistence plus
+  replay/reorder/skipped-key/eviction/rollback/restart behaviour with non-vacuous negative controls.
+  Status remains `test-proven-only` on an `implemented-unwired` path; no runtime row moved.
+
 **2026-07-26 — recorded, deliberately NOT awarded.** Open defects earn nothing; they are
 logged here so they cannot be quietly forgotten or later re-counted as new work.
 
@@ -170,11 +180,19 @@ timestamped deltas, not keep this number manually forever.
   Strengthening the case: the test documents its own **negative control** — it does not compile
   against the pre-fix code, because `InnerIdentity` had no `Zeroize` derive — and honestly labels
   that a compile-time rather than runtime control, noting that reading a freed buffer to observe the
-  wipe would be undefined behaviour. Not full marks, because master §10 medium 9
-  also covers plaintext identifiers **at rest**, and no comprehensive at-rest audit was delivered.
+  wipe would be undefined behaviour. **2026-07-27 no-point adjudication:** exact `48b3ef1` passes
+  48 store tests and proves current schema-v4 identifier labels, raw-file v3 scrubbing, v1/v3
+  readability and a v4 version stamp. A dual mutation disabling both `secure_delete` and the
+  pending `VACUUM` makes the v3 scrub test fail on a recoverable channel id. This is
+  `test-proven-only` and does not close the held comprehensive boundary: v2 and unstamped legacy
+  paths have no dedicated fixtures; the v1 test does not scan post-migration raw bytes; the
+  downgrade test asserts the version stamp rather than executing an older reader; attachment blind
+  selectors are not cross-checked against sealed metadata; and persistence outside `crates/store`
+  remains unaudited. Deterministic blind indexes also preserve equality/frequency, counts, sizes,
+  order and burn timing, so A6/social-graph secrecy is explicitly unearned. Full marks remain held.
   `needs: none` `weight: 4` `earned: 3`
 
-## B · Encryption and two-identity communication — 30 points (6 earned)
+## B · Encryption and two-identity communication — 30 points (7 earned)
 
 - 🟨 **B1 · Current message encryption primitives** — hybrid confidentiality exists **and is
   genuinely live** (ML-KEM-768 in every recipient slot, `crates/ipc/src/wire_v2.rs:731`);
@@ -189,7 +207,14 @@ timestamped deltas, not keep this number manually forever.
   both incomplete; do not treat master §2's "gate 1 is clear" as consumed.
   `needs: A2,A3` `weight: 6` `earned: 2`
 - 🟨 **B3 · Persistence, replay, reorder, skipped keys, crash recovery** — must be structurally safe
-  and sealed. `needs: B2` `weight: 5` `earned: 1`
+  and sealed. **+1 awarded 2026-07-27 at the row's structural boundary:** exact `86f1d0e` passes
+  the ratchet crate's replay, reorder, eviction, skipped-key, rollback and restart tests; retaining
+  a consumed skipped key makes the restart-replay test fail with an authenticated replay opening.
+  That historical archive's IPC integration gate is blocked by missing later IPC/keystore APIs,
+  so it is not used as integration proof. Exact dependency closure `1d8bfa8` separately passes 35
+  `wire_rn` tests, including sealed save/load, persist-before-return, save-failure refusal and
+  crash-reload non-reuse. Status is `test-proven-only` on an `implemented-unwired` ratchet: no
+  real traffic, two-identity, or runtime point is implied. `needs: B2` `weight: 5` `earned: 2`
 - ⬜ **B4 · Capability negotiation and monotone downgrade pin** — no silent fallback after a peer
   proves stronger support. `needs: B2` `weight: 4` `earned: 0`
 - 🟨 **B5 · Keyserver/prekey/control-inbox production contract** — server deployment is

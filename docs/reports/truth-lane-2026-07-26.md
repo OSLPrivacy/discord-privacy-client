@@ -1217,3 +1217,85 @@ remains **96 / 303**.
 ## Acceptance rows this earns
 
 None.
+
+---
+
+## 23 · Urgent point adjudication: A8 held, B3 +1
+
+Only the completed store and ratchet evidence named in the request was consumed. The arithmetic is
+`96 + 0 + 1 = 97 / 303`.
+
+### A8 `3/4 → 4/4`: rejected; comprehensive at-rest boundary remains open
+
+Exact archive `48b3ef156c790930029b892cf2b7778bf8738683` passes all 48 store tests: 18
+blind-index/migration tests, 13 burn/metadata tests and 17 store tests. The accepted evidence
+proves current schema-v4 message and attachment labels are sealed or represented by keyed,
+domain-separated blind indexes; v3 rows and attachments remain readable; migrated v3 plaintext
+identifiers are scrubbed from raw bytes; a true v1 fixture remains readable, ordered and writable;
+and the new store carries a v4 version stamp.
+
+The scrub negative control is non-vacuous but narrower than a single-mechanism claim. Omitting only
+the pending `VACUUM` stayed green because `secure_delete=ON` also scrubs freed cells. Disabling both
+mechanisms made
+`migrating_a_v3_database_removes_its_plaintext_identifiers` fail with:
+
+```text
+migration left the plaintext channel id recoverable in the database file
+```
+
+That is strong `test-proven-only` evidence for current v4 and the v3 migration. It is not the
+comprehensive audit A8 explicitly held its final point for:
+
+- v2 and unstamped legacy migrations have no dedicated fixtures;
+- the v1 test proves readability/order/version/writability but does not raw-scan post-migration
+  bytes;
+- the downgrade test asserts a v4 version stamp rather than running an older reader against the
+  upgraded file;
+- attachment `mid_bi`/`sender_bi` selectors are not re-derived against sealed attachment metadata;
+- persistence outside `crates/store` has not received a comprehensive identifier-at-rest audit.
+
+The store also deliberately retains graph shape: deterministic equality/frequency, row counts,
+sizes, ordering, burn state and timing remain visible. A8 stays 3/4. Nothing here advances A6 or
+earns an unqualified social-graph secrecy claim.
+
+### B3 `1/5 → 2/5`: accepted at its structural boundary
+
+Exact archive `86f1d0e67af53100dd9be45c15bb43d58ed313ab` passes the full
+`osl-ratchet-next` suite, including:
+
+- duplicate and delayed replay refusal while the session remains usable;
+- bounded skipped-key storage and fail-closed eviction;
+- reverse-order, random-interleaving and permanent-loss delivery;
+- state export/import, receiver rollback recovery and replay refusal after restart.
+
+A fresh negative control retained a consumed skipped key. The exact
+`skipped_message_replay_stays_rejected_after_restart` test then failed:
+
+```text
+accepted skipped-message replay after restart
+left: Ok(Opened { ... })
+right: Err(AuthFailed)
+```
+
+Dependency semantics are qualified rather than hidden. The historical `86f1d0e` archive cannot
+compile the IPC integration gate because it predates required IPC/keystore key-bundle APIs. It is
+used only for the self-contained ratchet crate. Exact later dependency closure
+`1d8bfa8` passes 35 `wire_rn` tests, including sealed save/load, persist-before-return,
+save-failure refusal, store-full no-eviction, and crash-reload wire non-reuse.
+
+B3's literal next boundary is structural safety and sealed recovery, so this
+`test-proven-only` evidence earns one point even though the subsystem remains
+`implemented-unwired`. No real traffic was carried, and B2 live wiring, B4, B6, or any runtime row
+receives credit.
+
+Checklist arithmetic after adjudication:
+
+```text
+A: 8 / 40   (A8 unchanged at 3/4)
+B: 7 / 30   (B3 now 2/5)
+Total: 97 / 303 = 32%
+```
+
+## Acceptance rows this earns
+
+- B3 +1.

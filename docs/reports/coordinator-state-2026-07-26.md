@@ -3,7 +3,7 @@
 Written so a fresh context can resume coordination without re-deriving it. This is the
 *coordination* layer only: who owns what, what is decided, what is live, what is blocked. Product
 authority remains `docs/design/osl-master-decision-2026-07-26.md` (currently **r13**), and the
-scoreboard remains `docs/design/osl-internal-build-checklist.md` (**96 / 303**).
+scoreboard remains `docs/design/osl-internal-build-checklist.md` (**97 / 303**).
 
 ## Lane roster and exclusive ownership
 
@@ -100,6 +100,12 @@ discard the whole import.
 - **Correction — public CI remains unchanged.** The earlier “public CI now requires” milestone was
   retracted: `c0c18b1` changed only an unpushed workflow. No remote ref, branch setting or
   GitHub-hosted run changed, so no public CI claim or I3 point moved. I3 stays 1/3.
+- **Urgent A8/B3 adjudication: +1 net.** A8 stays 3/4: the store's exact v4/v3 evidence is
+  `test-proven-only` and does not cover every legacy migration, an executed older-reader
+  downgrade, attachment selector-to-metadata validation, or non-store persistence; graph shape
+  remains visible. B3 moves 1/5 → 2/5: exact ratchet and dependency-closure archives prove the
+  row's structural persistence/replay/reorder/skipped-key/restart boundary with negative controls.
+  The ratchet remains `implemented-unwired`; no live traffic or dependent row is earned.
 
 ## Coordination infrastructure built today
 
