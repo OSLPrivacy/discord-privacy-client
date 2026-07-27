@@ -99,7 +99,7 @@ Creative capabilities include selected-asset reads, derived-asset creation, boun
 
 Users can sideload signed packages, inspect manifests and sources, pin versions, export their setup, disable all modifications at startup, see performance impact, revoke grants per identity, and roll back updates. The free registry protocol permits mirrors and community curation without making one company the gatekeeper.
 
-The first executable surface is implemented for `.oslmod` command packs: an encrypted ZIP package contains a strict manifest and WebAssembly module exporting `osl_run(i64) -> i64`. It runs only after a user click in the native Wasmi interpreter with no WASI, no host imports, a 32 MiB linear-memory ceiling, one memory/table/instance, and a deterministic two-million-fuel cutoff. Package and run receipts are strictly parsed at the UI boundary. This deliberately exposes only the pure `ui:command` ABI; selected-note/asset brokers, signatures, audit logs, safe mode, rollback, and crash quarantine must land before broader executable permissions are enabled.
+An implemented-but-unwired `.oslmod` prototype exists in isolated source: it parses an encrypted ZIP package with a strict manifest and a WebAssembly module exporting `osl_run(i64) -> i64`. Its native Wasmi path denies WASI and host imports, limits linear memory to 32 MiB and one memory/table/instance, and applies a deterministic two-million-fuel cutoff. The current desktop build does not declare the module, register its inspect/run commands, or call its UI adapter, so it exposes no executable plugin surface. Selected-note/asset brokers, signatures, audit logs, safe mode, rollback, and crash quarantine remain integration requirements.
 
 ## Sharing and collaboration
 
