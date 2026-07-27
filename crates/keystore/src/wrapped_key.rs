@@ -1,9 +1,14 @@
-//! Identity authorization for wrapped-key uploads.
+//! Wrapped-key upload signing primitives (implemented-unwired).
 //!
 //! The canonical encoding mirrors
-//! `keyserver-cf/src/lib/canonical.ts::canonicalWrappedKeyPostBytes`. Every
-//! persisted field plus a short-lived timestamp is signed by the registered
-//! sender identity, replacing the former client-wide bearer.
+//! `keyserver-cf/src/lib/canonical.ts::canonicalWrappedKeyPostBytes`. The
+//! helper includes every modeled upload field plus a short-lived timestamp in
+//! bytes signed by the supplied sender identity.
+//!
+//! Current Hub/IPC and legacy Tauri production sources neither construct
+//! [`WrappedKeyUpload`] nor call the wrapped-key post/fetch client methods.
+//! These primitives therefore do not establish a live server-held
+//! per-message wrapped-key lifecycle.
 
 use crate::identity::Identity;
 use crypto::ed25519;

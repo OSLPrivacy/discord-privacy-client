@@ -1173,4 +1173,136 @@ describe("bundled preview security boundary", () => {
       ).toBe(0);
     }
   });
+
+  it("keeps wrapped-key post and fetch classified as implemented-unwired", () => {
+    const wrappedKey = readRelative("../../../crates/keystore/src/wrapped_key.rs");
+    const signedGet = readRelative("../../../crates/keystore/src/signed_get.rs");
+    const keystoreClient = readRelative("../../../crates/keystore/src/client.rs");
+    const keystoreLib = readRelative("../../../crates/keystore/src/lib.rs");
+    const main = readRelative("../../osl-hub/src/main.rs");
+    const broker = readRelative("../../osl-hub/src/broker.rs");
+    const commands = readRelative("../../../crates/ipc/src/commands.rs");
+    const state = readRelative("../../../crates/ipc/src/state.rs");
+    const wire = readRelative("../../../crates/ipc/src/wire_v2.rs");
+    const productionRust = [
+      readProductionRustTree("../../osl-hub/src/"),
+      readProductionRustTree("../../../crates/ipc/src/"),
+      readProductionRustTree("../../../src-tauri/src/"),
+    ].join("\n");
+    const productionReferencesWrappedKeyLifecycle = (source: string): boolean =>
+      /\b(?:WrappedKeyUpload|post_wrapped_key|fetch_wrapped_key|sign_wrapped_key_post|sign_wrapped_key_get|canonical_wrapped_key_post_bytes|canonical_wrapped_key_get_bytes|WRAPPED_KEY_POST_DOMAIN|WRAPPED_KEY_GET_DOMAIN)\b/u.test(
+        rustProductionPrefix(source),
+      );
+
+    // Positive implementation controls keep removal of the dormant subsystem
+    // from satisfying the zero-production-reference assertion.
+    for (const implementationSymbol of [
+      "pub struct WrappedKeyUpload",
+      "pub fn canonical_wrapped_key_post_bytes(",
+      "pub fn sign_wrapped_key_post(",
+    ]) {
+      expect(wrappedKey).toContain(implementationSymbol);
+    }
+    for (const implementationSymbol of [
+      "pub fn canonical_wrapped_key_get_bytes(",
+      "pub fn sign_wrapped_key_get(",
+    ]) {
+      expect(signedGet).toContain(implementationSymbol);
+    }
+    expect(keystoreClient).toContain("pub fn fetch_wrapped_key(");
+    expect(keystoreClient).toContain("pub fn post_wrapped_key(");
+    expect(keystoreLib).toContain(
+      "canonical_wrapped_key_post_bytes, sign_wrapped_key_post, WrappedKeyUpload",
+    );
+    expect(keystoreLib).toContain(
+      "canonical_wrapped_key_get_bytes, sign_prekey_bundle_get",
+    );
+
+    // Positive controls for the real production content path prevent an empty
+    // or deleted product tree from making absence look like proof.
+    const messagingFacts = classifyMessagingProductionPath(
+      main,
+      broker,
+      commands,
+      state,
+      productionRust,
+    );
+    expect(messagingFacts.registeredPrepareCommand).toBe(true);
+    expect(messagingFacts.mainCallsBroker).toBe(true);
+    expect(messagingFacts.brokerCallsIpc).toBe(true);
+    expect(messagingFacts.statelessV3Fallback).toBe(true);
+    expect(wire).toContain("recipient_ik plays both ik and spk");
+    expect(wire).toContain("None,\n            &recip.mlkem_pub,");
+
+    expect(productionReferencesWrappedKeyLifecycle(productionRust)).toBe(false);
+
+    const assertUnwiredWrappedKeyTruth = (
+      postSource: string,
+      getSource: string,
+    ): void => {
+      expect(postSource).toContain(
+        "Wrapped-key upload signing primitives (implemented-unwired)",
+      );
+      expect(postSource).toContain(
+        "neither construct\n//! [`WrappedKeyUpload`] nor call",
+      );
+      expect(postSource).toContain(
+        "do not establish a live server-held",
+      );
+      expect(getSource).toContain(
+        "Canonical keyserver GET signing primitives (implemented-unwired)",
+      );
+      expect(getSource).toContain(
+        "call neither the\n//! prekey-bundle nor wrapped-key GET client methods",
+      );
+      expect(getSource).toContain(
+        "do not\n//! establish a live destructive-read flow",
+      );
+    };
+    assertUnwiredWrappedKeyTruth(wrappedKey, signedGet);
+
+    for (const syntheticProductionReference of [
+      "let upload = WrappedKeyUpload { content_id, ..template };",
+      "client.post_wrapped_key(sender, &upload)?;",
+      "client.fetch_wrapped_key(recipient, content_id)?;",
+      "use keystore::WrappedKeyUpload as ServerShare;",
+      "let post = KeyServerClient::post_wrapped_key;",
+      "let fetch = KeyServerClient::fetch_wrapped_key;",
+      "sign_wrapped_key_post(identity, upload, now);",
+      "sign_wrapped_key_get(identity, content_id, now);",
+    ]) {
+      expect(
+        productionReferencesWrappedKeyLifecycle(syntheticProductionReference),
+      ).toBe(true);
+    }
+
+    expect(() =>
+      assertUnwiredWrappedKeyTruth(
+        wrappedKey.replace(
+          "Wrapped-key upload signing primitives (implemented-unwired)",
+          "Live wrapped-key upload authorization",
+        ),
+        signedGet,
+      ),
+    ).toThrow();
+    expect(wrappedKey).not.toContain("Every\n//! persisted field");
+    expect(signedGet).not.toContain(
+      "authorization for keyserver GETs that consume server state",
+    );
+
+    expect(
+      productionReferencesWrappedKeyLifecycle(
+        [
+          "// client.post_wrapped_key(sender, &upload)?;",
+          "/* let fetch = KeyServerClient::fetch_wrapped_key; */",
+          "#[cfg(test)]",
+          "mod tests {",
+          "  fn fixture() {",
+          "    let upload = WrappedKeyUpload { content_id, ..template };",
+          "  }",
+          "}",
+        ].join("\n"),
+      ),
+    ).toBe(false);
+  });
 });
