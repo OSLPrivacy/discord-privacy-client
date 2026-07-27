@@ -61,11 +61,16 @@ has applied it.
 Migration `0009_predecessor_completing_adoption.sql` is the additive rolling
 deployment recovery boundary for rows a predecessor Worker left in
 `completing` without a claim. Apply it before its matching Worker. It records
-one immutable one-hour creation cutoff and adds claim origin plus R2 absence
-stage; the 0008 Worker ignores all three. The rollout must replace predecessor
-Workers inside that hour. The matching Worker adopts only expired,
-unlineaged rows created through the cutoff, at the existing 100-row cycle
-bound. It never shortens or recovers an active lineaged lease.
+one historical one-hour creation cutoff and adds claim origin plus R2 absence
+stage; the 0008 Worker ignores all three.
+
+Migration `0010_continuous_predecessor_recovery.sql` closes the residual case
+where a predecessor Worker survives beyond that cutoff and later leaves
+another unlineaged `completing` row. Apply 0009 and then 0010 before the
+matching Worker. The 0010 Worker continuously adopts only expired
+`completing` rows with no claim at all, at the existing 100-row cycle bound.
+It never shortens, replaces, or recovers an active or expired lineaged claim
+through this exception.
 
 For an adopted row the Worker performs HEAD, multipart abort, and a mandatory
 post-abort HEAD. A correctly sized object is promoted with the exact
@@ -73,8 +78,8 @@ Worker/token/lease-version ready CAS. Empty or mismatched storage is eligible
 for metadata removal only after an exact claim/version CAS records confirmed
 absence. A crash before metadata deletion keeps the attachment row, quota, and
 absence marker; retry rechecks HEAD and completes idempotently. Missing or
-malformed 0009 marker state refuses before any R2 call. The migration and
-source tests are not evidence that production D1 has applied 0009.
+malformed 0009 or 0010 marker state refuses before any R2 call. The migrations
+and source tests are not evidence that production D1 has applied either one.
 
 ## §3 Provision KV (rate-limit)
 

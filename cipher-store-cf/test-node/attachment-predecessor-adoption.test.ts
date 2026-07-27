@@ -10,15 +10,15 @@ function envWith(db: D1Database, bucket: R2Bucket): Env {
   return { DB: db, ATTACHMENTS: bucket } as Env;
 }
 
-function openBoundedAdoption(database: TestD1): void {
+function placeRowsBeyondLegacyCutoff(database: TestD1): void {
   database.exec(
     `UPDATE attachment_predecessor_adoption
         SET migration_started_at = ?,
             eligible_created_through = ?,
             max_claims_per_cycle = 100
       WHERE singleton = 1`,
+    NOW - 200,
     NOW - 100,
-    NOW + 100,
   );
 }
 
@@ -191,7 +191,7 @@ describe("bounded predecessor completing-row adoption", () => {
     vi.setSystemTime(NOW * 1000);
     const database = migratedD1();
     const storage = memoryR2();
-    openBoundedAdoption(database);
+    placeRowsBeyondLegacyCutoff(database);
     const id = "0".repeat(32);
     await predecessorCompleting(
       database,
@@ -221,12 +221,48 @@ describe("bounded predecessor completing-row adoption", () => {
     expect(storage.liveUploads()).toBe(1);
   });
 
+  it("refuses a missing continuous-recovery marker before any R2 observation", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW * 1000);
+    const database = migratedD1();
+    const storage = memoryR2();
+    placeRowsBeyondLegacyCutoff(database);
+    const id = "8".repeat(32);
+    const objectKey = "attachments/missing-continuous-recovery-marker";
+    await predecessorCompleting(
+      database,
+      storage,
+      id,
+      objectKey,
+      new Uint8Array([8]),
+    );
+    database.exec(
+      "DELETE FROM attachment_predecessor_recovery WHERE singleton = 1",
+    );
+    const head = vi.fn((key: string) => storage.bucket.head(key));
+    const bucket = new Proxy(storage.bucket, {
+      get(target, property, receiver) {
+        if (property === "head") return head;
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as R2Bucket;
+
+    await expect(
+      sweepExpiredAttachments(envWith(database.d1, bucket)),
+    ).rejects.toThrow(/predecessor recovery marker is invalid/);
+    expect(head).not.toHaveBeenCalled();
+    expect(database.count("SELECT COUNT(*) AS c FROM attachment_objects")).toBe(1);
+    expect(database.count("SELECT COUNT(*) AS c FROM attachment_sweep_claims")).toBe(0);
+    expect(storage.liveUploads()).toBe(1);
+  });
+
   it("promotes a correctly sized completed object without releasing quota", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW * 1000);
     const database = migratedD1();
     const storage = memoryR2();
-    openBoundedAdoption(database);
+    placeRowsBeyondLegacyCutoff(database);
     const id = "1".repeat(32);
     const objectKey = "attachments/predecessor-complete";
     const bytes = new Uint8Array([1, 2, 3]);
@@ -268,7 +304,7 @@ describe("bounded predecessor completing-row adoption", () => {
     vi.setSystemTime(NOW * 1000);
     const database = migratedD1();
     const storage = memoryR2();
-    openBoundedAdoption(database);
+    placeRowsBeyondLegacyCutoff(database);
     const id = "5".repeat(32);
     const objectKey = "attachments/predecessor-wrong-size";
     await predecessorCompleting(
@@ -333,7 +369,7 @@ describe("bounded predecessor completing-row adoption", () => {
     vi.setSystemTime(NOW * 1000);
     const database = migratedD1();
     const storage = memoryR2();
-    openBoundedAdoption(database);
+    placeRowsBeyondLegacyCutoff(database);
     const id = "7".repeat(32);
     const objectKey = "attachments/predecessor-wrong-size-after-marker";
     const { multipart } = await predecessorCompleting(
@@ -385,7 +421,7 @@ describe("bounded predecessor completing-row adoption", () => {
     vi.setSystemTime(NOW * 1000);
     const database = migratedD1();
     const storage = memoryR2();
-    openBoundedAdoption(database);
+    placeRowsBeyondLegacyCutoff(database);
     const id = "2".repeat(32);
     const objectKey = "attachments/predecessor-incomplete";
     await predecessorCompleting(
@@ -454,7 +490,7 @@ describe("bounded predecessor completing-row adoption", () => {
     vi.setSystemTime(NOW * 1000);
     const database = migratedD1();
     const storage = memoryR2();
-    openBoundedAdoption(database);
+    placeRowsBeyondLegacyCutoff(database);
     const id = "4".repeat(32);
     const objectKey = "attachments/predecessor-consumed-retry";
     await predecessorCompleting(database, storage, id, objectKey, new Uint8Array([7, 8]));
@@ -502,7 +538,7 @@ describe("bounded predecessor completing-row adoption", () => {
     vi.setSystemTime(NOW * 1000);
     const database = migratedD1();
     const storage = memoryR2();
-    openBoundedAdoption(database);
+    placeRowsBeyondLegacyCutoff(database);
     const id = "6".repeat(32);
     const objectKey = "attachments/predecessor-unknown-retry";
     await predecessorCompleting(
@@ -564,7 +600,7 @@ describe("bounded predecessor completing-row adoption", () => {
     vi.setSystemTime(NOW * 1000);
     const database = migratedD1();
     const storage = memoryR2();
-    openBoundedAdoption(database);
+    placeRowsBeyondLegacyCutoff(database);
     const id = "3".repeat(32);
     const objectKey = "attachments/predecessor-completion-wins";
     const bytes = new Uint8Array([9]);

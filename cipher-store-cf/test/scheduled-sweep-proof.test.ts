@@ -55,6 +55,12 @@ describe("natural attachment sweep witness", () => {
     const objectKey = "attachments/scheduled-proof-success";
     const upload = await real.ATTACHMENTS.createMultipartUpload(objectKey);
     await insertStaleLegacy(id, objectKey, upload.uploadId);
+    await d1Run(
+      `UPDATE attachment_predecessor_adoption
+          SET migration_started_at = unixepoch() - 2000,
+              eligible_created_through = unixepoch() - 1000
+        WHERE singleton = 1`,
+    );
     await upload.uploadPart(1, new Uint8Array([7]));
     await real.ATTACHMENTS.put(objectKey, new Uint8Array([7, 7]));
     await d1Run(
@@ -67,6 +73,17 @@ describe("natural attachment sweep witness", () => {
       Math.floor(Date.now() / 1000) - 1,
       id,
     );
+    expect(
+      await d1Count(
+        `SELECT COUNT(*) AS c
+           FROM attachment_objects AS object_row
+           JOIN attachment_predecessor_adoption AS adoption
+             ON adoption.singleton = 1
+          WHERE object_row.id = ?
+            AND object_row.created_at > adoption.eligible_created_through`,
+        id,
+      ),
+    ).toBe(1);
 
     const marker = vi.spyOn(console, "log").mockImplementation(() => undefined);
     let abortFinished = false;

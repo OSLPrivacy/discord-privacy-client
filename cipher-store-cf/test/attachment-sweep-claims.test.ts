@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import migration0008 from "../migrations/0008_attachment_sweep_claims.sql?raw";
 import migration0009 from "../migrations/0009_predecessor_completing_adoption.sql?raw";
+import migration0010 from "../migrations/0010_continuous_predecessor_recovery.sql?raw";
 import type { Env } from "../src/env.js";
 import worker from "../src/index.js";
 import {
@@ -209,6 +210,34 @@ describe("transactional attachment sweep claims", () => {
     expect(marker.eligible_created_through - marker.migration_started_at).toBe(
       3600,
     );
+
+    const uncommented0010 = migration0010.replace(/--[^\n]*/g, "");
+    const statements0010 = uncommented0010
+      .split(";")
+      .map((statement) => statement.trim())
+      .filter(Boolean);
+    expect(statements0010).toHaveLength(2);
+    expect(statements0010[0]).toMatch(
+      /^CREATE TABLE attachment_predecessor_recovery/,
+    );
+    expect(statements0010[1]).toMatch(
+      /^INSERT INTO attachment_predecessor_recovery/,
+    );
+    expect(uncommented0010).not.toMatch(
+      /\b(?:ALTER\s+TABLE|DROP\s+TABLE|UPDATE\s+\w+|DELETE\s+FROM|CREATE\s+TRIGGER)\b/i,
+    );
+    const recovery = await d1First<{
+      format: string;
+      max_claims_per_cycle: number;
+    }>(
+      `SELECT format, max_claims_per_cycle
+         FROM attachment_predecessor_recovery
+        WHERE singleton = 1`,
+    );
+    expect(recovery).toEqual({
+      format: "osl.cipher-store.continuous-predecessor-recovery.v1",
+      max_claims_per_cycle: 100,
+    });
   });
 
   it("allows only one concurrent identity-bound claim for one object", async () => {

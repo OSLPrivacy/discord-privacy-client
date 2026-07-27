@@ -130,10 +130,11 @@ The mailbox must exist before the route is enabled.
 - **Cleanup cron** runs every 5 minutes and deletes expired rows. For view-once links it also destroys the ciphertext of any link past its reservation window or its TTL, regardless of client confirmation, and purges the content-free receipt a day after expiry.
 - **View-once links record no IP, user agent, referrer or timing.** The entire retrieval record is `retrieved_at` at second granularity plus a small integer count.
 - Attachment cleanup claims at most 100 expired objects per invocation through
-  migration `0008`'s D1 companion table. Migration `0009` adds a fixed
-  migration-owned one-hour creation cutoff for adopting expired predecessor
-  `completing` rows that have no claim; rows outside that cutoff cannot use the
-  exception, and an existing lineaged claim still requires lease expiry. Each
+  migration `0008`'s D1 companion table. Migration `0009` adds claim-origin
+  and durable R2-absence state for predecessor `completing` rows. Migration
+  `0010` continuously authorizes recovery of expired `completing` rows only
+  when no claim row exists, closing the residual post-cutoff rollout case.
+  An existing lineaged claim still requires ordinary lease expiry. Each
   claim is bound to a random Worker
   identity and token, fenced by a monotonic lease version, and recoverable after
   a two-minute lease. Multipart completion acquires that same exclusive claim
@@ -147,8 +148,8 @@ The mailbox must exist before the route is enabled.
   object keeps its indexed row,
   receives bounded retry backoff, and does not prevent unrelated claims from
   running. The previous Worker ignores the additive claim table, while the
-  matching Worker refuses before any sweep mutation if either the 0009 columns
-  or its singleton adoption marker is absent or malformed.
+  matching Worker refuses before any sweep mutation if the 0009 columns or
+  either the 0009/0010 singleton recovery marker is absent or malformed.
 
 ## Deploy
 

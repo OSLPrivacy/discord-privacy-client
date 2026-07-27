@@ -9,6 +9,8 @@ const WORKER_ID_RE = /^[0-9a-f]{32}$/;
 const CLAIM_TOKEN_RE = /^[0-9a-f]{64}$/;
 const PREDECESSOR_ADOPTION_FORMAT =
   "osl.cipher-store.predecessor-adoption.v1";
+const PREDECESSOR_RECOVERY_FORMAT =
+  "osl.cipher-store.continuous-predecessor-recovery.v1";
 
 export type AttachmentClaimOrigin =
   | "lineaged"
@@ -70,8 +72,8 @@ export function newAttachmentSweepWorkerId(): string {
 }
 
 /// Read-only migration-order gate. It names every claim column the Worker
-/// relies on so an absent or partial 0009 schema refuses before legacy expiry
-/// marking, R2 cleanup, or attachment metadata deletion.
+/// relies on so an absent or partial 0009/0010 schema refuses before legacy
+/// expiry marking, R2 cleanup, or attachment metadata deletion.
 export async function requireAttachmentSweepClaimSchema(env: Env): Promise<void> {
   await env.DB.prepare(
     `SELECT attachment_id, worker_id, claim_token, lease_version,
@@ -101,6 +103,21 @@ export async function requireAttachmentSweepClaimSchema(env: Env): Promise<void>
     || marker.max_claims_per_cycle !== ATTACHMENT_SWEEP_BATCH_SIZE
   ) {
     throw new Error("attachment predecessor adoption marker is invalid");
+  }
+  const recovery = await env.DB.prepare(
+    `SELECT format, max_claims_per_cycle
+       FROM attachment_predecessor_recovery
+      WHERE singleton = 1
+      LIMIT 1`,
+  ).first<{
+    format: string;
+    max_claims_per_cycle: number;
+  }>();
+  if (
+    recovery?.format !== PREDECESSOR_RECOVERY_FORMAT
+    || recovery.max_claims_per_cycle !== ATTACHMENT_SWEEP_BATCH_SIZE
+  ) {
+    throw new Error("attachment predecessor recovery marker is invalid");
   }
 }
 
@@ -161,17 +178,16 @@ export async function claimNextExpiredAttachment(
        FROM attachment_objects AS candidate
        LEFT JOIN attachment_sweep_claims AS existing
          ON existing.attachment_id = candidate.id
-       LEFT JOIN attachment_predecessor_adoption AS adoption
-         ON adoption.singleton = 1
+       LEFT JOIN attachment_predecessor_recovery AS recovery
+         ON recovery.singleton = 1
       WHERE candidate.expires_at <= ?
         AND candidate.state IN ('uploading', 'completing', 'ready')
         AND (
           candidate.state <> 'completing'
           OR existing.attachment_id IS NOT NULL
           OR (
-            adoption.format = 'osl.cipher-store.predecessor-adoption.v1'
-            AND adoption.max_claims_per_cycle = 100
-            AND candidate.created_at <= adoption.eligible_created_through
+            recovery.format = 'osl.cipher-store.continuous-predecessor-recovery.v1'
+            AND recovery.max_claims_per_cycle = 100
           )
         )
         AND (

@@ -16,6 +16,9 @@ function read(relative: string): string {
 function sources(): AttachmentPredecessorAdoptionSources {
   return {
     migration: read("migrations/0009_predecessor_completing_adoption.sql"),
+    recoveryMigration: read(
+      "migrations/0010_continuous_predecessor_recovery.sql",
+    ),
     claims: read("src/lib/attachment-sweep-claims.ts"),
     sweep: read("src/lib/sweep.ts"),
   };
@@ -51,6 +54,7 @@ describe("attachment predecessor adoption source closure", () => {
   it("accepts the nonempty shipping migration/claim/R2 closure", () => {
     expect(validateAttachmentPredecessorAdoption(sources())).toEqual({
       boundedMarker: true,
+      continuousRecoveryMarker: true,
       predecessorOnlyAdoption: true,
       activeLineageLeasePreserved: true,
       postAbortHeadRequired: true,
@@ -64,15 +68,34 @@ describe("attachment predecessor adoption source closure", () => {
     const value = sources();
     value.claims = value.claims.replace(
       `          OR (
-            adoption.format = 'osl.cipher-store.predecessor-adoption.v1'
-            AND adoption.max_claims_per_cycle = 100
-            AND candidate.created_at <= adoption.eligible_created_through
+            recovery.format = 'osl.cipher-store.continuous-predecessor-recovery.v1'
+            AND recovery.max_claims_per_cycle = 100
           )
 `,
       "",
     );
     expect(() => validateAttachmentPredecessorAdoption(value)).toThrow(
-      /old lineage-only predicate/,
+      /continuously recoverable/,
+    );
+  });
+
+  it("rejects restoring the migration-time creation cutoff", () => {
+    const value = sources();
+    value.claims = value.claims.replace(
+      "            AND recovery.max_claims_per_cycle = 100",
+      `            AND recovery.max_claims_per_cycle = 100
+            AND candidate.created_at <= adoption.eligible_created_through`,
+    );
+    expect(() => validateAttachmentPredecessorAdoption(value)).toThrow(
+      /creation-time cutoff.*strand/,
+    );
+  });
+
+  it("rejects removing the continuous recovery migration", () => {
+    const value = sources();
+    value.recoveryMigration = "";
+    expect(() => validateAttachmentPredecessorAdoption(value)).toThrow(
+      /0010 recovery migration statement count/,
     );
   });
 

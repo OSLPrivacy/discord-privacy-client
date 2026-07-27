@@ -2,12 +2,14 @@ import ts from "typescript";
 
 export interface AttachmentPredecessorAdoptionSources {
   migration: string;
+  recoveryMigration: string;
   claims: string;
   sweep: string;
 }
 
 export interface AttachmentPredecessorAdoptionFacts {
   boundedMarker: true;
+  continuousRecoveryMarker: true;
   predecessorOnlyAdoption: true;
   activeLineageLeasePreserved: true;
   postAbortHeadRequired: true;
@@ -194,19 +196,40 @@ export function validateAttachmentPredecessorAdoption(
     /unixepoch\(\), unixepoch\(\) \+ 3600, 100\)/,
     "predecessor marker window or cycle bound is not exact",
   );
+  const recoveryStatements = sources.recoveryMigration
+    .replace(/--[^\n]*/g, "")
+    .split(";")
+    .map((statement) => compact(statement).trim())
+    .filter(Boolean);
+  if (recoveryStatements.length !== 2) {
+    fail("0010 recovery migration statement count is not exact");
+  }
+  requirePattern(
+    recoveryStatements[0]!,
+    /^CREATE TABLE attachment_predecessor_recovery /,
+    "continuous predecessor recovery marker table is absent",
+  );
+  requirePattern(
+    recoveryStatements[1]!,
+    /VALUES \(1, 'osl\.cipher-store\.continuous-predecessor-recovery\.v1', 100\)$/,
+    "continuous predecessor recovery marker is not exact",
+  );
 
   const claim = compact(
     functionText(sources.claims, "claimNextExpiredAttachment"),
   );
   requirePattern(
     claim,
-    /LEFT JOIN attachment_predecessor_adoption AS adoption ON adoption\.singleton = 1/,
-    "claim does not consume the migration-owned adoption marker",
+    /LEFT JOIN attachment_predecessor_recovery AS recovery ON recovery\.singleton = 1/,
+    "claim does not consume the migration-owned recovery marker",
   );
+  if (/candidate\.created_at <= adoption\.eligible_created_through/.test(claim)) {
+    fail("legacy creation-time cutoff can strand unlineaged completing rows");
+  }
   requirePattern(
     claim,
-    /candidate\.state <> 'completing' OR existing\.attachment_id IS NOT NULL OR \( adoption\.format = 'osl\.cipher-store\.predecessor-adoption\.v1' AND adoption\.max_claims_per_cycle = 100 AND candidate\.created_at <= adoption\.eligible_created_through \)/,
-    "old lineage-only predicate still excludes bounded predecessor rows",
+    /candidate\.state <> 'completing' OR existing\.attachment_id IS NOT NULL OR \( recovery\.format = 'osl\.cipher-store\.continuous-predecessor-recovery\.v1' AND recovery\.max_claims_per_cycle = 100 \)/,
+    "unlineaged completing rows are not continuously recoverable",
   );
   requirePattern(
     claim,
@@ -307,6 +330,7 @@ export function validateAttachmentPredecessorAdoption(
 
   return {
     boundedMarker: true,
+    continuousRecoveryMarker: true,
     predecessorOnlyAdoption: true,
     activeLineageLeasePreserved: true,
     postAbortHeadRequired: true,

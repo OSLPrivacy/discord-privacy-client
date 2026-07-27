@@ -50,7 +50,7 @@ afterEach(() => {
 });
 
 describe("multipart completion versus sweep fencing", () => {
-  it("preserves active lineage while adopting only marker-bounded predecessor state", async () => {
+  it("preserves active lineage while continuously adopting unlineaged predecessor state", async () => {
     const database = migratedD1();
     const storage = memoryR2();
     const env = envWith(database.d1, storage.bucket);
@@ -133,7 +133,12 @@ describe("multipart completion versus sweep fencing", () => {
     );
     await expect(
       claimNextExpiredAttachment(env, "9".repeat(32), START + 200),
-    ).resolves.toBeNull();
+    ).resolves.toMatchObject({
+      attachment_id: postCutoffId,
+      claim_origin: "predecessor_adoption",
+      lease_version: 1,
+      storage_fence_state: "pending",
+    });
   });
 
   it("fails before R2 completion when the shared claim schema is absent", async () => {
