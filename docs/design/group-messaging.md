@@ -1,12 +1,15 @@
 # Design: Group messaging (v1 sender keys)
 
-Status: **Draft.** Pairwise fan-out (the previous v1 design) has been
-replaced by sender keys per user direction in this design round.
+Status: **Draft / planned, not wired.** Pairwise fan-out (the previous v1
+design) has been replaced by sender keys per user direction in this design
+round. The shipping client keeps group and channel protection disabled; the
+sender-key construction below is design intent, not an available runtime
+feature.
 
 ## v1 approach: sender keys
 
-In v1, group messaging (Discord group DMs and server-channel members
-with the app) uses **sender keys** with mandatory rotation. See
+The v1 design target for group messaging (Discord group DMs and server-channel
+members with the app) uses **sender keys** with mandatory rotation. See
 [`sender-keys.md`](sender-keys.md) for the full construction, threat
 model, and open questions.
 

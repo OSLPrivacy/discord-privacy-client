@@ -1,8 +1,10 @@
 # Design: Sender keys for group messaging (v1)
 
-Status: **Draft.** Construction decisions captured below.
-**v1 alpha ships without paid cryptographer audit** (budget
-constraint; loud disclosure to users in onboarding and
+Status: **Draft / planned, not wired.** Construction decisions captured below.
+The shipping client does not enable sender keys. The former “v1 alpha ships”
+wording is retained only as historical design context; this construction is
+not an available runtime feature. The design also assumes no paid cryptographer
+audit yet (budget constraint; loud disclosure to users in onboarding and
 [`../THREAT_MODEL.md`](../THREAT_MODEL.md) audit-status section).
 **v1 stable requires audit** — this doc is a hard prerequisite
 input to that engagement.

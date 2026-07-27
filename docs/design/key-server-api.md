@@ -1,8 +1,12 @@
 # Design: Key server API
 
-Status: **Draft.**
+Status: **Draft.** The API surface is partially implemented, but the burn-alert
+sender upload, recipient verification, and UI rendering described below are
+design-only and currently unwired; do not read those sections as shipping
+behavior.
 
-This is the API surface implemented in `discord-privacy-keyserver`.
+This is the intended API surface implemented in parts of
+`discord-privacy-keyserver`.
 v1 single-server; v2.2 fans out to 5 jurisdictions with `share_index`
 per upload.
 
