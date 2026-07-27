@@ -19,9 +19,9 @@
 //!
 //! ## Cryptographic role (per design doc)
 //!
-//! Password is a **UX gate**, not part of identity-key derivation.
-//! TPM-sealed identity unseals regardless of password input — the
-//! this helper only returns which modeled outcome a caller must handle.
+//! In this legacy model, password verification is a **UX gate**, not part of
+//! identity-key derivation. This helper only returns which modeled outcome a
+//! caller must handle.
 //!
 //! ## Argon2id parameters
 //!
