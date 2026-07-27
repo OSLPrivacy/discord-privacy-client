@@ -911,4 +911,132 @@ describe("bundled preview security boundary", () => {
       ),
     ).toBe(false);
   });
+
+  it("keeps the prekey lifecycle classified as implemented-unwired", () => {
+    const prekeys = readRelative("../../../crates/keystore/src/prekeys.rs");
+    const keystoreClient = readRelative("../../../crates/keystore/src/client.rs");
+    const keystoreLib = readRelative("../../../crates/keystore/src/lib.rs");
+    const main = readRelative("../../osl-hub/src/main.rs");
+    const broker = readRelative("../../osl-hub/src/broker.rs");
+    const commands = readRelative("../../../crates/ipc/src/commands.rs");
+    const state = readRelative("../../../crates/ipc/src/state.rs");
+    const wire = readRelative("../../../crates/ipc/src/wire_v2.rs");
+    const productionRust = [
+      readProductionRustTree("../../osl-hub/src/"),
+      readProductionRustTree("../../../crates/ipc/src/"),
+    ].join("\n");
+    const productionReferencesPrekeyLifecycle = (source: string): boolean =>
+      /\b(?:PrekeyState|PrekeyConfig|OpkEntry|SpkEntry|ReplenishOpk|ReplenishSpk|REPLENISH_DOMAIN|SPK_ROTATION_INTERVAL_SECONDS|fetch_prekey_bundle|replenish_prekeys|replenish_using_state|load_prekey_state|save_prekey_state|sign_replenish_batch|canonical_replenish_bytes|should_rotate_spk|rotate_spk|should_replenish|add_opk_batch|replenish_count_to_target|consume_opk)\b/u.test(
+        rustProductionPrefix(source),
+      );
+
+    // Positive implementation controls prevent deletion of the dormant
+    // subsystem from satisfying the absence check.
+    for (const implementationSymbol of [
+      "pub struct PrekeyState",
+      "pub fn new(",
+      "pub fn should_rotate_spk(",
+      "pub fn rotate_spk(",
+      "pub fn should_replenish(",
+      "pub fn save_prekey_state(",
+      "pub fn load_prekey_state(",
+      "pub fn sign_replenish_batch(",
+    ]) {
+      expect(prekeys).toContain(implementationSymbol);
+    }
+    for (const clientMethod of [
+      "pub fn fetch_prekey_bundle(",
+      "pub fn replenish_prekeys(",
+      "pub fn replenish_using_state(",
+    ]) {
+      expect(keystoreClient).toContain(clientMethod);
+    }
+    expect(keystoreLib).toContain(
+      "sign_replenish_batch, OpkEntry, PrekeyConfig, PrekeyState",
+    );
+
+    // The separate production messaging path must remain present and
+    // explicitly stateless, so an empty product tree cannot satisfy the gate.
+    const messagingFacts = classifyMessagingProductionPath(
+      main,
+      broker,
+      commands,
+      state,
+      productionRust,
+    );
+    expect(messagingFacts.registeredPrepareCommand).toBe(true);
+    expect(messagingFacts.mainCallsBroker).toBe(true);
+    expect(messagingFacts.brokerCallsIpc).toBe(true);
+    expect(messagingFacts.statelessV3Fallback).toBe(true);
+    expect(wire).toContain("recipient_ik plays both ik and spk");
+    expect(wire).toContain("None,\n            &recip.mlkem_pub,");
+
+    expect(productionReferencesPrekeyLifecycle(productionRust)).toBe(false);
+
+    const assertUnwiredPrekeyTruth = (source: string): void => {
+      expect(source).toContain(
+        "Client-side prekey primitives (implemented-unwired)",
+      );
+      expect(source).toContain(
+        "Current Hub/IPC production code neither constructs",
+      );
+      expect(source).toContain(
+        "it does not\n//! establish a live product prekey lifecycle or handshake",
+      );
+      expect(source).toContain(
+        "when a caller invokes them",
+      );
+      expect(source).toContain(
+        "matching the server protocol's atomic-pop design",
+      );
+      expect(source).toContain(
+        "reserved\n/// for a future integrated receive-side PQXDH handshake",
+      );
+      expect(source).toContain(
+        "Current production code has no such caller",
+      );
+    };
+    assertUnwiredPrekeyTruth(prekeys);
+
+    for (const syntheticProductionReference of [
+      "use keystore::PrekeyState;",
+      "let state = PrekeyState::new(identity, config, now);",
+      "client.fetch_prekey_bundle(identity, peer)?;",
+      "client.replenish_prekeys(identity, spk, opks)?;",
+      "client.replenish_using_state(identity, state, remaining, now)?;",
+      "save_prekey_state(path, state, sealer)?;",
+      "state.consume_opk(opk_id);",
+      "let rotate = PrekeyState::rotate_spk;",
+      "use keystore::ReplenishOpk as UploadKey;",
+      "let replenish = KeyServerClient::replenish_prekeys;",
+      "use keystore::PrekeyState as SessionBootstrap;",
+    ]) {
+      expect(
+        productionReferencesPrekeyLifecycle(syntheticProductionReference),
+      ).toBe(true);
+    }
+
+    expect(() =>
+      assertUnwiredPrekeyTruth(
+        prekeys.replace(
+          "Client-side prekey primitives (implemented-unwired)",
+          "Client-side prekey lifecycle",
+        ),
+      ),
+    ).toThrow();
+    expect(
+      productionReferencesPrekeyLifecycle(
+        [
+          "// client.fetch_prekey_bundle(identity, peer)?;",
+          "/* use keystore::PrekeyState; */",
+          "#[cfg(test)]",
+          "mod tests {",
+          "  fn fixture() {",
+          "    let state = PrekeyState::new(identity, config, now);",
+          "  }",
+          "}",
+        ].join("\n"),
+      ),
+    ).toBe(false);
+  });
 });

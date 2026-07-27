@@ -1,21 +1,24 @@
-//! Client-side prekey state management.
+//! Client-side prekey primitives (implemented-unwired).
 //!
 //! Spec: `docs/design/prekey-infrastructure.md` + the design doc's
 //! "Signed prekey" / "One-time prekey pool" subsections.
 //!
+//! Current Hub/IPC production code neither constructs [`PrekeyState`] nor
+//! calls the keyserver prekey fetch/replenish methods. This module implements
+//! state, persistence, canonical signing, and rotation helpers; it does not
+//! establish a live product prekey lifecycle or handshake.
+//!
 //! Holds:
 //! - The current SPK keypair (X25519) + its Ed25519 signature + the
 //!   ISO-8601 rotated-at timestamp.
-//! - The previous SPK keypair, retained for one rotation period so
-//!   in-flight messages from clients with stale bundles still
-//!   decrypt.
-//! - The OPK pool — single-use X25519 prekeys, each with a
-//!   monotonically-increasing `id` that the server uses to
-//!   atomically pop one per fetch.
+//! - The previous SPK keypair, retained by this state primitive for the
+//!   intended one-rotation stale-bundle handling.
+//! - The modeled OPK pool — X25519 prekeys with monotonically-increasing
+//!   identifiers matching the server protocol's atomic-pop design.
 //!
-//! Persistence: the secret halves are sealed under the active
-//! [`crate::sealer::Sealer`] and stored in
-//! `<dir>/prekeys.json`, alongside `identity.json`.
+//! The persistence helpers seal secret halves under a supplied
+//! [`crate::sealer::Sealer`] and store them in `<dir>/prekeys.json`, alongside
+//! `identity.json`, when a caller invokes them.
 //!
 //! ## Pool sizing
 //!
@@ -25,7 +28,7 @@
 //!
 //! ## SPK rotation
 //!
-//! Per design, weekly cadence — caller calls
+//! The API supports the designed weekly cadence: a caller must call
 //! [`PrekeyState::should_rotate_spk`] with the current time, and on
 //! `true` calls [`PrekeyState::rotate_spk`]. The previous SPK is
 //! kept on `previous_spk` for one rotation period.
@@ -71,9 +74,9 @@ impl Default for PrekeyConfig {
     }
 }
 
-/// One OPK keypair the client retains. The server only ever sees
-/// `public`; `secret` is consumed by the receive-side PQXDH handshake
-/// when the OPK is popped.
+/// One modeled OPK keypair. `public` is the wire half; `secret` is reserved
+/// for a future integrated receive-side PQXDH handshake. Current production
+/// code does not call [`PrekeyState::consume_opk`].
 #[derive(Clone, Serialize, Deserialize)]
 pub struct OpkEntry {
     pub id: u32,
@@ -144,9 +147,8 @@ impl PrekeyState {
         server_remaining_opk_count <= self.config.opk_replenish_threshold
     }
 
-    /// Generate `count` fresh OPKs and append to the pool. Returns
-    /// the slice of the pool that was newly added (the caller ships
-    /// the public halves to the server).
+    /// Generate `count` fresh OPKs and append to the pool. Returns the slice
+    /// that a future integrated caller can ship to the server.
     pub fn add_opk_batch(&mut self, count: u32) -> &[OpkEntry] {
         let start = self.opk_pool.len();
         for _ in 0..count {
@@ -166,8 +168,9 @@ impl PrekeyState {
         self.config.opk_pool_target.saturating_sub(server_remaining)
     }
 
-    /// Remove the OPK with `id` from the local pool (called after a
-    /// PQXDH initiation has consumed it on the receive side).
+    /// Remove the OPK with `id` from the local pool. This is intended for an
+    /// integrated receive-side PQXDH flow after initiation consumes the OPK.
+    /// Current production code has no such caller.
     /// Idempotent: removing a nonexistent id is a no-op.
     pub fn consume_opk(&mut self, id: u32) -> bool {
         let idx = self.opk_pool.iter().position(|o| o.id == id);
