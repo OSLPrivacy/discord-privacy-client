@@ -2107,12 +2107,18 @@ Further exact verdicts consumed without promotion:
 - Pricing visual truth correction +0.
 - Checklist remains untouched; authority remains **100 / 303**.
 
-The D2 retry-window implementation `9137d4b702a2b553ac23e9dd90b548f666c9bfde`,
-tree `787317fbcbf18ff161606693149e64d67a50e238`, reports Node adoption/contract
-tests 11/11 and adds exact `NoSuchUpload` terminal handling plus a
-crash-before-absence-CAS fixture. No independent exact-object audit verdict is
-recorded yet; it remains **+0 pending audit**, with unknown production R2
-retry/idempotency behavior.
+The D2 retry-window object `9137d4b702a2b553ac23e9dd90b548f666c9bfde`, tree
+`787317fbcbf18ff161606693149e64d67a50e238`, is now independently **REJECT +0**.
+Its Node/Worker evidence passed 21/21 and covers successful abort → crash before
+absence CAS → `NoSuchUpload` retry, but the exact contract still false-greens
+classifier widening and removal of the `lease_version` predicate from the
+absence `UPDATE`. Production R2 retry behavior is also unknown.
+
+## Acceptance rows this earns
+
+- D2 `9137d4b` +0 by independent REJECT; no score movement.
+- Image pricing visual qualification +0.
+- No checklist edit; authority remains **100 / 303**.
 
 ## Acceptance rows this earns
 
@@ -2146,6 +2152,24 @@ evidence was introduced.
 - AutoScrub availability wording correction +0.
 - No implementation or runtime behavior was awarded.
 - Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — image pricing visual qualification
+
+The remaining Pro pricing visual said “Private text + images” even though the
+same page and canonical registry mark image sending Planned and unavailable.
+Website commit `ea4f26c4afbeb4822d45c3648e8c07e3e2d3090e`, tree
+`d5a9acbb3e330da67c08120f5635ccbe716d7201`, parent
+`d5443410b16d66ba72a92b525befa952b2a1c5a0`, changes only that label to
+“Private text + planned images”. `download.html` blob:
+`6e4830bc744bab655ddbec1c318e3ea624e8b65a`.
+
+The full public scan passed 16/16 files with zero failures and
+`git diff --check` passed. No runtime or implementation evidence was added.
+
+## Acceptance rows this earns
+
+- Image pricing visual qualification +0.
+- No checklist edit or score movement; authority remains **100 / 303**.
 
 ## 2026-07-27 — attachment/image claim audit: no correction required
 
