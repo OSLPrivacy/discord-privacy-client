@@ -2556,6 +2556,15 @@ path.
 
 ### Exact safe deployment order
 
+> **Superseded 2026-07-27 for the current Scheme-1 lineage.** The `0030`
+> Worker-first sequence below is retained as historical deploy-readiness evidence for the reserved
+> namespace boundary. It is not the current rollout. Exact server/admission candidate
+> `e273436dfaf735daab44adbbeb205a3c95ecd4cc` plus keystore construction lineage
+> `a1b82a008f53d4864459d353bb6a89fc8753a446` now provide
+> Scheme-1 canonical proof/client shapes at `test-proven-only`; the missing product boundary is the
+> shipping register/fetch/replenish caller. The current blocked rollout is migrations `0033`, then
+> `0034`, then the matching Worker. None is deployed or live-proven.
+
 1. Build and release the Worker that contains the exact
    `isReservedDerivedId` refusal.
 2. Verify that exact artifact/version through the release lane, including a

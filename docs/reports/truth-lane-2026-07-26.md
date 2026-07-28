@@ -2463,3 +2463,29 @@ file change is needed from this audit.
 
 - BurnAlert implemented-unwired audit +0, source/test only.
 - Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — Five stale handoffs corrected, no score
+
+This truth-only correction supersedes five high-waste status/ownership statements without promoting
+any product claim:
+
+1. Exact F1 candidate `7bbf2e9e966634e7d434ec230b75a7f666db0003` exits `78` at B6 before
+   the F1 UI. Hub owns the first F1-only startup-reachability fix; VM provisioning and live capture
+   are downstream.
+2. Exact Scheme-1 server/admission candidate
+   `e273436dfaf735daab44adbbeb205a3c95ecd4cc` and keystore construction lineage
+   `a1b82a008f53d4864459d353bb6a89fc8753a446` exist at
+   `test-proven-only`. “Canonical proof/client shapes absent” is stale; the shipping
+   register/fetch/replenish caller is absent. The blocked rollout is migrations `0033`, then
+   `0034`, then the matching Worker.
+3. Exact Scrub IMAP `07384f67a829398527ed869034789304c7e74d87` is independently accepted
+   `test-proven-only` for UI → Tauri → main-only ACL → native authority. No production caller arms
+   `authorize_attended_imap_batch_reviewed`, and no live fixture ran; F3 is not code-complete.
+4. Provider lifecycle candidate `085b4e2d8837a8a2facc9ea09d73fb6a5f6e60ae` owns
+   `apps/osl-hub/src/main.rs`/`security.rs`, not `cleanup.rs`/`services.rs`, and is independently
+   `REJECT +0` pending a security successor.
+5. Revocation broker candidate `0572893105d1d75f9a0d43a4fae86539896b5321` is independently
+   accepted `test-proven-only`. The predecessor defect assignment is superseded; integration and
+   controlled two-identity runtime remain.
+
+No acceptance row changes. Checklist authority remains **100 / 303**.

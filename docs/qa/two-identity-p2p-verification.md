@@ -238,63 +238,16 @@ These are `blocked`, not `unmeasurable`. Each names the change that would fix it
    construction — already-consumed at `broker.rs:2872`, `continue` at `:2884`,
    empty batch trips the `Err` at `broker.rs:2536-2542` — but it is returned
    only to the renderer as a string. No file, no counter, no server call. **P4c.**
-4. **Bilateral burn is inert — and the drain now destroys the notice.**
-   *Corrected 2026-07-26. The previous wording said the drain "never checks
-   `is_revocation_bundle`, so an inbound `0x0A` is silently skipped by the
-   `continue`." That is stale. The conclusion — burn is inert — is unchanged;
-   the mechanism is different and worse.*
+4. **Bilateral burn remains unproved end to end; the old broker defect assignment is
+   superseded.** The historical predecessor really did recognise an inbound `0x0A` and delete it
+   before applying it. Exact successor
+   `0572893105d1d75f9a0d43a4fae86539896b5321` is independently accepted at
+   `test-proven-only`, so this document must not keep assigning that implementation defect.
 
-   The drain **does** check it now, at `apps/osl-hub/src/broker.rs:2635-2640`:
-
-   ```rust
-   if ipc::wire_v2::is_revocation_bundle(&bundle)
-       || ipc::wire_v2::is_revocation_ack_bundle(&bundle)
-   {
-       let _ = client.delete_control_inbox(&identity, &item.id);
-       continue;
-   }
-   ```
-
-   It recognises the revocation frame, **DELETEs it from the control inbox, and
-   applies nothing.** The in-source rationale is inbox hygiene: these frames
-   "are not accepted by this text/receipt drain", and leaving them would consume
-   the keyserver's bounded per-pair capacity. That reasoning is sound for a frame
-   nobody will ever process — but no other consumer exists, so the effect is that
-   an authenticated burn notice is *consumed and discarded* rather than merely
-   passed over.
-
-   Why this is worse than the old skip. A skipped row survives in the inbox, so
-   any future drain that learns to apply it recovers the burn. A deleted row is
-   gone: the notice cannot be replayed, the recipient never revokes, and the
-   sender's UI still shows a burn that was sent. Wiring `apply_peer_revocation`
-   later will not heal burns issued in the meantime. The failure is also silent
-   at both ends — `delete_control_inbox`'s result is discarded into `let _`.
-
-   Everything else in the original finding still holds, with line anchors
-   re-verified 2026-07-26 (the old ones had drifted):
-
-   - `apply_peer_revocation` (`apps/osl-hub/src/security.rs:2431`, was cited as
-     `:2124`), `due_revocations` (`:2668`, was `:2366`),
-     `record_revocation_attempt` (`:2698`, was `:2396`) and
-     `record_revocation_ack` (`:2723`, was `:2421`) still have **zero callers
-     outside `security.rs`** — the only call site is `security.rs:2534`, itself
-     internal.
-   - Burn commands still only *queue*, and nothing ever posts the queue.
-   - `is_native_overlay_ack_bundle` is now at `broker.rs:2641` (was `:2620`) and
-     `is_native_overlay_relay_bundle` at `:2702` (was `:2676`).
-   - Whether migration `0027` is deployed is **`unknown-recheck-required`**, not
-     "NOT DEPLOYED". The migration header
-     (`keyserver-cf/migrations/0027_control_inbox_revocation_lane.sql:4`) says
-     NOT DEPLOYED, but `keyserver-cf/DEPLOY.md:619` records that approval for the
-     0026/0027 deploy was given, and remote D1 state cannot be read from this
-     checkout. See Conflict C2 in
-     `docs/design/osl-completion-plan-2026-07-26.md`.
-
-   **P5 remains blocked.** No rig can fix this; Tab 5 owns the code fix. The fix
-   is not simply "stop deleting" — the row must be authenticated and applied via
-   `apply_peer_revocation` before any DELETE, on the same
-   ledger-write-then-cleanup ordering the acknowledgement branch already uses at
-   `broker.rs:2686-2695`.
+   **P5 remains blocked at integration/runtime, not at the old broker edit.** Required evidence is
+   a controlled two-identity run proving authenticated apply, durable state, ACK/delete ordering,
+   restart behavior, and the peer-visible result. The accepted source/tests are not that runtime
+   receipt and do not make bilateral burn available.
 5. **Inbox eviction is invisible to the client.** `evictOldestPending`
    (`keyserver-cf/src/endpoints/control-inbox.ts:197`) deletes silently: no error,
    no response field, no log. The client's `deferredRows` counts *retryable

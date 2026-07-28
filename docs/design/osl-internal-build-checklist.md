@@ -48,6 +48,32 @@ Resolved external blocker: keyserver migration 0027 is deployed; B5 remains part
 client-side prekey/wrapped-key production path is not established.
 ```
 
+**2026-07-27 stale-spec correction pass (+0; score unchanged).**
+
+- **F1 ownership:** exact `7bbf2e9e966634e7d434ec230b75a7f666db0003` exits `78` at B6 before
+  reaching the F1 UI. The first owner is Hub for an F1-only startup-reachability successor. VM
+  provisioning and live capture are downstream and cannot cure this product exit.
+- **Scheme 1:** exact server/admission candidate
+  `e273436dfaf735daab44adbbeb205a3c95ecd4cc` plus keystore construction lineage
+  `a1b82a008f53d4864459d353bb6a89fc8753a446` supersede the old assertion that canonical proof
+  and client shapes do not exist. Their honest tier is
+  `test-proven-only`; the shipping register/fetch/replenish caller is absent. The blocked rollout
+  order is migrations `0033` then `0034` before the matching Worker, not historical `0030`
+  Worker-first.
+- **Scrub IMAP:** exact `07384f67a829398527ed869034789304c7e74d87` is independently accepted
+  `test-proven-only` for committed UI → Tauri → main-only ACL → native authority. No production
+  caller arms `authorize_attended_imap_batch_reviewed`, and no live fixture ran; F3 is not
+  code-complete.
+- **Provider cleanup:** exact `085b4e2d8837a8a2facc9ea09d73fb6a5f6e60ae` owns the lifecycle in
+  `apps/osl-hub/src/main.rs` and `security.rs`, not `cleanup.rs`/`services.rs`. It is independently
+  `REJECT +0` pending a security successor.
+- **Revocation broker:** exact `0572893105d1d75f9a0d43a4fae86539896b5321` is independently accepted
+  `test-proven-only`. The predecessor broker-defect assignment is superseded; remaining work is
+  integration and controlled two-identity runtime.
+
+These corrections change ownership and blockers only. No claim is promoted, no row changes, and
+the authoritative score remains **100 / 303**.
+
 **2026-07-27 exact newly-landed-set acceptance audit (+0).**
 
 - F1 stays **4/6**. Exact product `7bbf2e9e966634e7d434ec230b75a7f666db0003`
@@ -416,9 +442,12 @@ timestamped deltas, not keep this number manually forever.
 - 🟨 **A1 · Local OSL identity and recovery** — create/import/unlock exists; recovery/capture and
   password-at-rest claims need reconciliation. `needs: none` `weight: 6` `earned: 3`
 - 🛑 **A2 · Full-bundle identity binding** — identity must authenticate Ed25519, X25519, ML-KEM and
-  capability bundle; no keyserver substitution. Exact `8802225` reserves and locally refusal-tests
-  the future derived-identity namespace, but migration `0030` is undeployed and no scheme-1
-  canonical proof, verifier, client field, or response exists. `needs: A1` `weight: 6` `earned: 0`
+  capability bundle; no keyserver substitution. Exact server/admission candidate
+  `e273436dfaf735daab44adbbeb205a3c95ecd4cc` and keystore construction lineage
+  `a1b82a008f53d4864459d353bb6a89fc8753a446` provide
+  `test-proven-only` canonical proof/client shapes, superseding the older “absent” wording. The
+  shipping register/fetch/replenish caller is still missing; migrations `0033` then `0034` and the
+  matching Worker remain unapplied/unshipped. `needs: A1` `weight: 6` `earned: 0`
 - 🛑 **A3 · Sender authentication equals displayed attribution** — no caller-supplied identity can
   relabel authenticated plaintext. `needs: A2` `weight: 5` `earned: 0`
 - 🛑 **A4 · Proven platform-account registration** — nobody can pre-register another owner's public
@@ -690,7 +719,10 @@ timestamped deltas, not keep this number manually forever.
   `blocked`; the exact walkthrough is still needed.
   `needs: F1` `weight: 5` `earned: 3`
 - 🟨 **F3 · Free Scrub account/category/scan/review flow** — substantial contracts/UI; exact
-  end-to-end proof remains. `needs: F2` `weight: 5` `earned: 3`
+  `07384f67a829398527ed869034789304c7e74d87` is independently accepted
+  `test-proven-only` for UI → Tauri → main-only ACL → native IMAP authority. No production caller
+  arms `authorize_attended_imap_batch_reviewed`, and no live fixture ran; end-to-end proof remains
+  and F3 is not code-complete. `needs: F2` `weight: 5` `earned: 3`
 - 🟨 **F4 · Attended per-target deletion and verification** — coverage expanded; live provider
   execution/receipts need qualification. `needs: F3` `weight: 5` `earned: 2`
 - 🧪 **F5 · Native-app/hosted-session Scrub port** — architecture/hosting foundations; adapters and

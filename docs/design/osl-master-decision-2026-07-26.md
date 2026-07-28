@@ -5,7 +5,7 @@
 > An agent should be able to start or resume work by reading this file and then following the
 > linked subsystem document for its task. Do not reconstruct product intent from old chats.
 >
-> **Control revision:** `OSL-MASTER-2026-07-26-r17`. A model/account reads this document completely
+> **Control revision:** `OSL-MASTER-2026-07-26-r18`. A model/account reads this document completely
 > the first time only. On later work it checks this revision and its saved memory card, then reads
 > only changed sections and the linked subsystem/report. Every semantic edit must increment the
 > revision and add a one-line delta to section 0.5.
@@ -81,6 +81,25 @@ Capture a fact once and link to it elsewhere.
 
 ### 0.5 Revision digest
 
+- `r18` — non-scoring stale-spec correction for five high-waste handoffs. Exact F1 product
+  `7bbf2e9e966634e7d434ec230b75a7f666db0003` exits `78` at the B6 startup gate before the F1 UI,
+  so Hub owns an F1-only startup-reachability successor before VM provisioning or live capture can
+  prove anything. Scheme-1 server/admission object
+  `e273436dfaf735daab44adbbeb205a3c95ecd4cc` and keystore construction lineage
+  `a1b82a008f53d4864459d353bb6a89fc8753a446` exist at
+  `test-proven-only`, superseding “canonical proof/client shapes absent”; the missing boundary is
+  the shipping register/fetch/replenish caller, and the blocked server rollout is migrations
+  `0033` then `0034` before the matching Worker. Scrub IMAP object
+  `07384f67a829398527ed869034789304c7e74d87` is independently accepted for its committed
+  UI → Tauri → main-only ACL → native authority path at `test-proven-only`; no production caller
+  arms `authorize_attended_imap_batch_reviewed`, and no live fixture ran, so F3 is not code-complete.
+  Provider-profile lifecycle belongs to `main.rs`/`security.rs`; exact
+  `085b4e2d8837a8a2facc9ea09d73fb6a5f6e60ae` is independently `REJECT +0` pending a security
+  successor, superseding handoffs to `cleanup.rs`/`services.rs`. Exact revocation broker object
+  `0572893105d1d75f9a0d43a4fae86539896b5321` is independently accepted at
+  `test-proven-only`; the old broker-defect assignment is superseded and the remaining boundary is
+  integration plus controlled two-identity runtime. No claim, tier, acceptance row, or score moves;
+  checklist remains **100 / 303**.
 - `r17` — superseding attachment-evidence correction; historical `r8` remains unchanged as a record
   of what was reported then. Worker `0a17547d` was not bound to reviewed source, so its production
   201 proves only a known-length part upload on that Worker, not the later recovery behavior.
@@ -775,9 +794,9 @@ tabs are changing several rows. An agent must recheck the exact worktree/build b
 | Discord eye | `runtime-proven` — geometry placement measured `0 → 3` (2026-07-26) | Evidence: `osl-rehydrate-geometry-diagnosis.md`, `rel_l −8 → 0`, `placedRowCount 0 → 3`, `unplaceableRowCount 3 → 0`, executable SHA-256 `6b6a36945b42…`. Still required: final visual screenshot, inbound/peer row, history, scroll, DPI, click-through. Measured on the QA shell, not the shipping build; no test binary executed. Supersedes the `BLOCKED` row in `osl-completion-plan-2026-07-26.md` — see its Conflict C1. |
 | Discord composer/window hosting | `runtime-proven` with repeated regressions | First-launch adoption, drag/resize/minimize, focus, no flash/corners, current exact build |
 | Attachments/flag media | `implemented-unwired` with open findings. Exact `e8fbd3f` locally exercises stale-upload reclamation and R2-before-D1 failure ordering; production Worker behavior is `unknown`. | No plaintext staging, real row handoff, measured media rect, send/receive/view-once; deploy and probe the exact cleanup repair separately. |
-| View-once, timed deletion, bilateral burn | `implemented-unwired`; bilateral burn additionally has an **open defect** (verified 2026-07-26) | Two identities, offline/restart, second-open refusal, honest peer/platform receipts. Burn defect: the text/receipt drain recognises an inbound revocation frame and **DELETEs it from the control inbox without applying it** (`apps/osl-hub/src/broker.rs:2635-2640`), so the notice cannot be replayed once the apply path is wired. Tab 5 owns the fix; description corrected in `docs/qa/two-identity-p2p-verification.md` §6 item 4. |
+| View-once, timed deletion, bilateral burn | `implemented-unwired`; exact revocation broker successor `0572893105d1d75f9a0d43a4fae86539896b5321` is independently accepted at `test-proven-only` | Two identities, offline/restart, second-open refusal, honest peer/platform receipts. The older defect assignment—recognising an inbound revocation frame and deleting it before apply—was correct for its frozen predecessor but is now **superseded**. Remaining work is integration and controlled two-identity runtime; source/test acceptance is not a working bilateral burn. |
 | Opened receipts | `open-security-finding`; D7 foundation point retained | The native-overlay acknowledgment is authenticated and bound to the existing sent record's message, service, conversation, peer and expiry. But production `Opened` emission/admission does not consult locked mutual consent, and `OpenedReceiptConsent`/`opened_receipt_status` is `implemented-unwired`. Suppress outbound `Opened` and reject inbound `Opened` before ledger/UI now, preserving `Received`. Restore only after durable scope/identity-bound signed, expiring, revocable mutual consent is checked under the receipt-state lock at both boundaries. |
-| Keyserver | **RESOLVED 2026-07-26 → `verified-live`.** The escalation is closed: `0027` **is deployed**, and there is now the named Worker version the conflict was blocked on — keyserver `3f92f0f5` (control-inbox per-sender recycling, `429 recipient_inbox_full`, pubkeys minimisation), plus cipher-store `0a17547d` and migration `0029` applied. The `NOT DEPLOYED` header inside `keyserver-cf/migrations/0027_control_inbox_revocation_lane.sql:4` is **stale and must be ignored**; correcting that file belongs to the keyserver lane, not this one. `0028` link-grant is applied but **dark** behind a default-off `LINK_GRANT_ENABLED`. Exact `8802225` locally proves the reserved derived-identity namespace and Worker-first/migration-second order; `0030` is not deployed and scheme 1 remains `implemented-unwired`. Source: `docs/reports/coordinator-state-2026-07-26.md`. | Existing deployment proof remains complete. The broader client contract is not: `post_wrapped_key` and `fetch_wrapped_key` are `implemented-unwired`, and the prekey client production path is unknown. A future `0030` rollout must deploy and identify the refusal-capable Worker first, then migrate and probe schema/guards; local readiness is not deployment evidence. |
+| Keyserver | **RESOLVED 2026-07-26 → `verified-live` for the older `0027` boundary only.** Keyserver `3f92f0f5`, cipher-store `0a17547d`, and migration `0029` remain the named live evidence; `0028` stays dark behind default-off `LINK_GRANT_ENABLED`. Scheme-1 server/admission object `e273436dfaf735daab44adbbeb205a3c95ecd4cc` and keystore construction lineage `a1b82a008f53d4864459d353bb6a89fc8753a446` now exist at `test-proven-only`, so older “canonical proof/client shape absent” wording is **superseded**. Scheme 1 remains `implemented-unwired`. | The shipping register/fetch/replenish caller is still absent. The current blocked rollout is migrations `0033` then `0034`, followed by the matching Worker—not the historical `0030` Worker-first plan. None is deployed or live-proven, and no Scheme-1 acceptance row moves. |
 | Scrub discovery/import | identity-binding verifier is code-ready and `test-proven-only` on exact `c5b516f`; runtime capture is `blocked` | Authorised strict-verifier-green exact-build VM walkthrough across grant, positive account list and persisted revoke; approval alone earns nothing. |
 | Free Scrub deletion | active implementation | Per-account/category scan, review, confirm, execute, verify, receipt |
 | AutoScrub | active implementation; optional-module packaging unresolved | Native Pro gate, transport-scoped presence, global stop/status, module boundary |

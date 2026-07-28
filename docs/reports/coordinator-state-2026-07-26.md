@@ -2,9 +2,24 @@
 
 Written so a fresh context can resume coordination without re-deriving it. This is the
 *coordination* layer only: who owns what, what is decided, what is live, what is blocked. Product
-authority remains `docs/design/osl-master-decision-2026-07-26.md` (currently **r16**), and the
+authority remains `docs/design/osl-master-decision-2026-07-26.md` (currently **r18**), and the
 scoreboard remains `docs/design/osl-internal-build-checklist.md` (**100 / 303**, authoritative
 checklist commit `5aec1fe9d8fb48e5d179e344f480c294b6017a7d`).
+
+## 2026-07-27 stale ownership/status correction — no score
+
+This section supersedes only the named stale handoffs below; it does not rewrite their historical
+evidence or promote a claim.
+
+| Workstream | Current exact truth | First owner / remaining receipt |
+|---|---|---|
+| F1 | `7bbf2e9e966634e7d434ec230b75a7f666db0003` exits `78` at B6 before F1 UI. | Hub owns an F1-only startup-reachability successor. VM provisioning/live capture follows only after that exact product path reaches F1. |
+| Scheme 1 | Server/admission `e273436dfaf735daab44adbbeb205a3c95ecd4cc` plus keystore construction lineage `a1b82a008f53d4864459d353bb6a89fc8753a446` exist at `test-proven-only`; old “canonical proof/client shape absent” text is superseded. | Shipping register/fetch/replenish caller remains absent. Apply `0033`, then `0034`, then the matching Worker; none is live evidence. |
+| Scrub IMAP | `07384f67a829398527ed869034789304c7e74d87` is independently accepted `test-proven-only` for UI → Tauri → main-only ACL → native authority. | Product must arm `authorize_attended_imap_batch_reviewed`; then run a live fixture. F3 is not code-complete. |
+| Provider lifecycle | `085b4e2d8837a8a2facc9ea09d73fb6a5f6e60ae` owns lifecycle code in `main.rs`/`security.rs` and is independently `REJECT +0`. | `crypto_hub` owns the security successor; `cleanup.rs`/`services.rs` are stale handoffs. |
+| Revocation broker | `0572893105d1d75f9a0d43a4fae86539896b5321` is independently accepted `test-proven-only`. | Broker-defect implementation assignment is superseded. Integration and controlled two-identity runtime remain. |
+
+Checklist authority remains **100 / 303**.
 
 ## 2026-07-27 exact release-truth reconciliation — no new score
 
@@ -284,6 +299,7 @@ and VMQA (Scrub's lived in its own worktree). Current release reconciliation is 
 | 2 | F2 `3/5 → 4/5` | One strict-verifier-green real VM five-frame identity-bound grant/import/revoke walkthrough on the exact build. | Scrub + VM lanes; `./scripts/qa/vm-run-loop.sh --share <share> --timeout 600 --identity-client 1 --confirm-create-identity --verbs identity-status,create-identity,list-browser-profiles,grant-browser-profile,run-browser-import,revoke-browser-profile`; five bound PNG/JSON pairs, positive account list and cleanup. | **Yes.** Disposable identity creation needs owner confirmation and mutates the live keyserver; confirmation itself earns nothing. |
 | 3 | I3 `1/3 → 2/3` | The exact candidate must be pushed and the named public Rust gate must finish green alongside the already-named public gates. | Release lane; remote commit SHA plus GitHub-hosted workflow URL showing the required Rust/TypeScript/selector/security jobs green. | **Yes.** Push and hosted CI mutate the remote; an unpushed local floor is not evidence. |
 
-Next coordination beats: VM/Scrub repair the visible-frame capture and wait for explicit identity
-authorization; release resolves the named Rust blocker,
+Next coordination beats: Hub first repairs F1-only startup reachability because `7bbf2e9` exits
+`78` at B6 before the F1 UI; VM/Scrub capture follows only after that product gate is reachable.
+Release resolves the named Rust blocker,
 pushes, and waits for GitHub-hosted results; truth awards only after each artifact exists.
