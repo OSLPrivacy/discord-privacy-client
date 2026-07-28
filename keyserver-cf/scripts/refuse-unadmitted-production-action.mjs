@@ -8,14 +8,15 @@ export function productionActionRefusal(action) {
     return (
       "production deploy refused: scheme-1 Worker activation requires a " +
       "fresh exact Rust-client preflight receipt, and trusted selection " +
-      "still does not authorize or execute the admitted bundle"
+      "still does not authorize or execute the exact admitted bundle"
     );
   }
   if (action === "migrate") {
     return (
       "production migration refused: migrations 0033/0034 require a fresh " +
-      "exact Rust-client preflight receipt, and no trusted release executor " +
-      "is enabled"
+      "exact Rust-client preflight receipt; no trusted receipt maps the " +
+      "active bridge Worker version to its exact commit and ordered " +
+      "migrations, and no trusted release executor is enabled"
     );
   }
   throw new Error("production action must be exactly deploy or migrate");
