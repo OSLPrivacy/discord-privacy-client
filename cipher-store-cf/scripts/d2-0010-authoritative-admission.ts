@@ -598,10 +598,18 @@ export const D2_CONSUME_CHALLENGE_SQL =
       AND consumed_at_ms IS NULL
       AND expires_at_ms >= ?`;
 
-export async function consumeD2AdmissionChallengeInD1(
+/**
+ * Execute the durable single-use challenge CAS and return D1's raw result.
+ *
+ * The boolean wrapper below deliberately derives admission from the real
+ * binding's `meta.changes` value. Exposing this narrow result is what lets the
+ * Workerd contract test prove that the exact conditional UPDATE reports one
+ * winner and zero losers; no adapter is permitted to invent that metadata.
+ */
+export async function runD2AdmissionChallengeConsumeInD1(
   db: D1Database,
   input: D2ChallengeConsumption,
-): Promise<boolean> {
+): Promise<D1Result> {
   if (
     !CHALLENGE_RE.test(input.challenge_id)
     || positiveInt(input.sequence, "D1 consume sequence") !== input.sequence
@@ -625,7 +633,7 @@ export async function consumeD2AdmissionChallengeInD1(
     input.authority_snapshot_sha256,
     "D1 consumed authority snapshot",
   );
-  const result = await db.prepare(D2_CONSUME_CHALLENGE_SQL).bind(
+  return db.prepare(D2_CONSUME_CHALLENGE_SQL).bind(
     input.consumed_at_ms,
     evidenceSha256,
     transcriptRootSha256,
@@ -639,6 +647,13 @@ export async function consumeD2AdmissionChallengeInD1(
     authoritySnapshotSha256,
     input.consumed_at_ms,
   ).run();
+}
+
+export async function consumeD2AdmissionChallengeInD1(
+  db: D1Database,
+  input: D2ChallengeConsumption,
+): Promise<boolean> {
+  const result = await runD2AdmissionChallengeConsumeInD1(db, input);
   return result.success === true && Number(result.meta.changes ?? 0) === 1;
 }
 
