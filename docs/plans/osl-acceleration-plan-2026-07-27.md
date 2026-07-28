@@ -108,7 +108,9 @@ Resource states:
 Fast children handle boilerplate, fixture generation, bounded searches, mechanical inventories, and
 repetitive mutation execution. Main Sol/Terra tabs retain architecture, cryptography, destructive
 behavior, conflict resolution, acceptance decisions, and final review. Never switch Codex accounts
-or set `CODEX_HOME` unless Liam explicitly changes that instruction.
+or change `CODEX_HOME` unless Liam explicitly changes that instruction. The
+guarded launcher inherits an already-selected `CODEX_HOME` unchanged; it never
+clears, replaces, or synthesizes one.
 
 Use the guarded launcher instead of invoking nested Codex directly:
 
