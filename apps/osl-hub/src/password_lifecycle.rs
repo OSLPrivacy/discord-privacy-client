@@ -324,10 +324,9 @@ fn install_identity(
     keystore::save_identity(&path, &identity, sealer)
         .map_err(|_| "OSL identity could not be sealed to device storage".to_owned())?;
     let user_id = identity.user_id.clone();
-    *state
-        .identity
-        .lock()
-        .map_err(|_| "OSL identity state is unavailable".to_owned())? = Some(identity);
+    state
+        .try_install_identity(identity)
+        .map_err(|_| "OSL identity state is unavailable".to_owned())?;
     Ok(HubIdentitySetupResult {
         user_id,
         identity_recovery_phrase,

@@ -920,7 +920,7 @@ pub(crate) fn attempt_unregister(
 }
 
 pub(crate) fn reset_account_scoped_state(state: &ipc::AppState) {
-    *state.identity.lock().expect("identity poisoned") = None;
+    state.clear_identity();
     *state.keyserver.lock().expect("keyserver poisoned") = None;
     state.set_cloud_registration_state(ipc::state::CloudRegistrationState::NotAttempted);
     *state

@@ -596,7 +596,7 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
             }
         }
 
-        *state.identity.lock().expect("identity mutex poisoned") = Some(snapshot);
+        state.install_identity(snapshot);
         // Finding 3b companion: this is a non-burn local identity
         // regen. Any ratchet_state in peer_map was derived from the
         // OLD local identity's SessionContext and is now
@@ -698,7 +698,7 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
             "OSL: register_self_snowflake: save_identity failed: {e}"
         ));
     }
-    *state.identity.lock().expect("identity mutex poisoned") = Some(to_save);
+    state.install_identity(to_save);
     // REGISTER-FIX: snowflake just attached to a pre-existing
     // identity and persisted — register against the keyserver now
     // rather than waiting for the next relaunch. Idempotent, non-fatal.
@@ -976,7 +976,7 @@ pub fn cmd_generate_identity(
         ik_x25519_pub_b64: STANDARD.encode(identity.x25519_public.as_bytes()),
         ik_mlkem768_pub_b64: STANDARD.encode(identity.mlkem_public_bytes),
     };
-    *state.identity.lock().expect("identity mutex poisoned") = Some(identity);
+    state.install_identity(identity);
     Ok(resp)
 }
 
@@ -988,7 +988,7 @@ pub fn cmd_load_identity(state: &AppState, path: String) -> IpcResult<GenerateId
         ik_x25519_pub_b64: STANDARD.encode(id.x25519_public.as_bytes()),
         ik_mlkem768_pub_b64: STANDARD.encode(id.mlkem_public_bytes),
     };
-    *state.identity.lock().expect("identity mutex poisoned") = Some(id);
+    state.install_identity(id);
     Ok(resp)
 }
 
@@ -8554,7 +8554,7 @@ pub fn cmd_osl_recover_identity_from_phrase_with_dir(
     }
     keystore::save_identity(&path, &recovered, sealer.as_ref())
         .map_err(|e| format!("OSL: recover: save_identity: {e}"))?;
-    *state.identity.lock().expect("identity mutex poisoned") = Some(recovered);
+    state.install_identity(recovered);
 
     // The freshly-generated (pre-recovery) identity's peer ratchet
     // state is moot now; clear it so nothing stale lingers.
@@ -9186,7 +9186,7 @@ fn cmd_osl_recover_account_from_export_with_dir(
         return Err(e);
     }
     let _ = std::fs::remove_dir_all(&stage);
-    *state.identity.lock().expect("identity mutex poisoned") = Some(id);
+    state.install_identity(id);
     Ok(())
 }
 
@@ -10673,7 +10673,7 @@ fn cmd_osl_burn_engage_finish(
     // queries state between this function returning and the webview
     // navigating away sees a fully-zeroed session — no pre-burn key
     // material, recipient sets, or membership accrual remain visible.
-    *state.identity.lock().expect("identity mutex poisoned") = Some(new_identity);
+    state.install_identity(new_identity);
     *state.keyserver.lock().expect("keyserver mutex poisoned") = None;
     *state
         .registration_alert

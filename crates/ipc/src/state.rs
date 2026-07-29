@@ -20,7 +20,7 @@ use keystore::{Identity, KeyServerClient};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use store::MessageStore;
 
 /// Time-to-live for cached sender public keys. Bounded staleness
@@ -180,6 +180,10 @@ pub struct AppState {
     /// never interleave validation, marker updates, and state reloads.
     pub account_switch_lock: Mutex<()>,
     pub identity: Mutex<Option<Identity>>,
+    /// Live prekey lifecycle for the loaded identity. This is absent
+    /// until an identity is explicitly installed; default AppState must
+    /// refuse prekey-dependent work rather than manufacturing authority.
+    pub prekey_state: Mutex<Option<keystore::PrekeyState>>,
     pub keyserver: Mutex<Option<KeyServerClient>>,
 
     /// Latest confirmed outcome of this process's remote public-key
@@ -372,10 +376,67 @@ impl AppState {
         AppState::default()
     }
 
+    /// Install an identity and construct its live prekey state in the
+    /// same AppState transition. Callers that bypass this helper leave
+    /// prekey-dependent production paths unavailable.
+    pub fn install_identity(&self, identity: Identity) {
+        self.try_install_identity(identity)
+            .expect("identity/prekey mutex poisoned");
+    }
+
+    pub fn try_install_identity(&self, identity: Identity) -> Result<(), &'static str> {
+        self.try_install_identity_at(identity, current_unix_seconds())
+    }
+
+    fn install_identity_at(&self, identity: Identity, now_unix_seconds: u64) {
+        self.try_install_identity_at(identity, now_unix_seconds)
+            .expect("identity/prekey mutex poisoned");
+    }
+
+    fn try_install_identity_at(
+        &self,
+        identity: Identity,
+        now_unix_seconds: u64,
+    ) -> Result<(), &'static str> {
+        let prekeys = keystore::PrekeyState::new(
+            &identity,
+            keystore::PrekeyConfig::default(),
+            now_unix_seconds,
+        );
+        let mut identity_slot = self
+            .identity
+            .lock()
+            .map_err(|_| "identity mutex poisoned")?;
+        let mut prekey_slot = self
+            .prekey_state
+            .lock()
+            .map_err(|_| "prekey_state mutex poisoned")?;
+        *identity_slot = Some(identity);
+        *prekey_slot = Some(prekeys);
+        Ok(())
+    }
+
+    /// Clear identity-owned live state. Account switches, imports, and burn
+    /// resets must not leave a stale prekey pool associated with no identity.
+    pub fn clear_identity(&self) {
+        *self.identity.lock().expect("identity mutex poisoned") = None;
+        *self
+            .prekey_state
+            .lock()
+            .expect("prekey_state mutex poisoned") = None;
+    }
+
     pub fn has_identity(&self) -> bool {
         self.identity
             .lock()
             .expect("identity mutex poisoned")
+            .is_some()
+    }
+
+    pub fn has_prekey_state(&self) -> bool {
+        self.prekey_state
+            .lock()
+            .expect("prekey_state mutex poisoned")
             .is_some()
     }
 
@@ -399,5 +460,59 @@ impl AppState {
             4 => CloudRegistrationState::Offline,
             _ => CloudRegistrationState::NotAttempted,
         }
+    }
+}
+
+fn current_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_state_has_no_prekey_authority() {
+        let state = AppState::new();
+
+        assert!(!state.has_identity());
+        assert!(!state.has_prekey_state());
+    }
+
+    #[test]
+    fn installing_identity_constructs_live_prekey_state() {
+        let state = AppState::new();
+        let identity = keystore::generate_identity("prekey-owner".to_owned());
+
+        state.install_identity_at(identity, 1_700_000_000);
+
+        assert!(state.has_identity());
+        let prekeys = state
+            .prekey_state
+            .lock()
+            .expect("prekey_state mutex poisoned");
+        let prekeys = prekeys.as_ref().expect("prekey state installed");
+        assert_eq!(prekeys.current_spk.rotated_at_unix_seconds, 1_700_000_000);
+        assert_eq!(
+            prekeys.opk_pool.len(),
+            keystore::PrekeyConfig::default().opk_pool_target as usize
+        );
+    }
+
+    #[test]
+    fn clearing_identity_also_clears_live_prekey_state() {
+        let state = AppState::new();
+        state.install_identity_at(
+            keystore::generate_identity("prekey-owner".to_owned()),
+            1_700_000_000,
+        );
+
+        state.clear_identity();
+
+        assert!(!state.has_identity());
+        assert!(!state.has_prekey_state());
     }
 }
