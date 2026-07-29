@@ -403,15 +403,25 @@ USAGE
   exit 64
 }
 
-case "${1:-}" in
-  status)     shift; cmd_status "${1:-all}" ;;
-  start)      shift; cmd_start "$@" ;;
-  stop)       shift; cmd_stop "$@" ;;
-  leak-check) shift; cmd_leak_check ;;
-  cleanup-receipt) shift; cmd_cleanup_receipt "$@" ;;
-  stop-all)   shift; cmd_stop_all "$@" ;;
-  snapshot)   shift; cmd_snapshot "$@" ;;
-  snapshots)  shift; cmd_snapshots "$@" ;;
-  restore)    shift; cmd_restore "$@" ;;
-  *) usage ;;
-esac
+main() {
+  case "${1:-}" in
+    status)     shift; cmd_status "${1:-all}" ;;
+    start)      shift; cmd_start "$@" ;;
+    stop)       shift; cmd_stop "$@" ;;
+    leak-check) shift; cmd_leak_check ;;
+    cleanup-receipt) shift; cmd_cleanup_receipt "$@" ;;
+    stop-all)   shift; cmd_stop_all "$@" ;;
+    snapshot)   shift; cmd_snapshot "$@" ;;
+    snapshots)  shift; cmd_snapshots "$@" ;;
+    restore)    shift; cmd_restore "$@" ;;
+    *) usage ;;
+  esac
+}
+
+# Only dispatch when executed, not when sourced. scripts/vmqa/test-vmqa-fleet.sh sources this file
+# to test fleet_rg/expand_target/cmd_* directly against a stubbed `az`; without this guard, sourcing
+# it would immediately run main against the *sourcing* script's own "$@" (mirrors the identical fix
+# already proven in vmqa-run.sh for test-selftest-grading.sh).
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi
