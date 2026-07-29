@@ -25,6 +25,7 @@ pub mod control_inbox;
 pub mod duress;
 pub mod identity;
 pub mod identity_bundle;
+pub mod keystore_anchor;
 pub mod license_cache;
 pub mod password;
 pub mod pending_rotation;
@@ -61,6 +62,7 @@ pub use identity::{
     generate_identity, generate_native_identity, identity_from_entropy,
     native_identity_from_entropy, native_user_id, Identity, IDENTITY_BLOB_VERSION,
 };
+pub use keystore_anchor::KeystoreBackedAnchor;
 pub use license_cache::{
     classify_state, load_license_cache, save_license_cache, LicenseCacheInner, LicenseCacheOnDisk,
     LicenseState, LicenseStateDto,
