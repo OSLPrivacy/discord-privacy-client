@@ -1,0 +1,205 @@
+import { beforeEach, describe, expect, it } from "vitest";
+import { env, SELF } from "cloudflare:test";
+import { base64Encode, mailSignedMessage, randomRequestId } from "../../src/mail/protocol.js";
+import { handleInboundEmail } from "../../src/mail/inbound.js";
+
+interface Identity {
+  userId: string;
+  username: string;
+  signingKey: CryptoKey;
+}
+
+beforeEach(async () => {
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM mail_control_receipts"),
+    env.DB.prepare("DELETE FROM mail_sender_consents"),
+    env.DB.prepare("DELETE FROM mail_address_epochs"),
+    env.DB.prepare("DELETE FROM username_directory"),
+    env.DB.prepare("DELETE FROM users"),
+  ]);
+});
+
+describe("OSL Mail Worker", () => {
+  it("advertises the truthful v1 transport and retention boundary", async () => {
+    const response = await SELF.fetch("https://test/v1/mail/capabilities");
+    expect(response.status).toBe(200);
+    const body = await response.json() as Record<string, unknown>;
+    expect(body.oslToOslE2ee).toBe(true);
+    expect(body.externalInbound).toBe(true);
+    expect(body.externalOutbound).toBe(false);
+    expect(JSON.stringify(body)).toContain("transactional-only");
+    expect(JSON.stringify(body)).toContain("72 hours");
+  });
+
+  it("provisions immutable epochs and permanently tombstones a rotated address", async () => {
+    const alice = await createIdentity("alice-id", "alice");
+    let response = await signedPost("/v1/mail/address", "PROVISION", alice, { username: "alice", rotate: false });
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({ address: "alice@oslprivacy.com", address_epoch: 1, state: "active" });
+
+    await env.DB.prepare("DELETE FROM username_directory WHERE user_id = ?").bind(alice.userId).run();
+    await env.DB.prepare("INSERT INTO username_directory(username,user_id,friend_code,claimed_at,updated_at) VALUES ('alice_new',?,?,?,?)")
+      .bind(alice.userId, "friend-code-placeholder", new Date().toISOString(), new Date().toISOString()).run();
+    response = await signedPost("/v1/mail/address", "PROVISION", alice, { username: "alice_new", rotate: true });
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({ address: "alice_new@oslprivacy.com", address_epoch: 2 });
+    const old = await env.DB.prepare("SELECT state FROM mail_address_epochs WHERE address='alice@oslprivacy.com'").first<{ state: string }>();
+    expect(old?.state).toBe("tombstoned");
+
+    const mallory = await createIdentity("mallory-id", "alice");
+    response = await signedPost("/v1/mail/address", "PROVISION", mallory, { username: "alice", rotate: false });
+    expect(response.status).toBe(409);
+  });
+
+  it("requires recipient consent, retains ciphertext only, and deletes on acknowledgement", async () => {
+    const alice = await createIdentity("alice-id", "alice");
+    const bob = await createIdentity("bob-id", "bob");
+    expect((await signedPost("/v1/mail/address", "PROVISION", alice, { username: "alice", rotate: false })).status).toBe(201);
+    expect((await signedPost("/v1/mail/address", "PROVISION", bob, { username: "bob", rotate: false })).status).toBe(201);
+
+    const payload = {
+      recipient_address: "bob@oslprivacy.com",
+      opaque_thread_token: "abcdefghijklmnop",
+      ciphertext_b64: base64Encode(new TextEncoder().encode("ciphertext-not-plaintext")),
+      envelope: { version: 1, nonce_b64: "bm9uY2U=" },
+      recipient_key_fingerprint: "fingerprint",
+    };
+    let response = await signedPost("/v1/mail/send/osl", "SEND-OSL", alice, payload);
+    expect(response.status).toBe(403);
+    expect((await signedPost("/v1/mail/consent", "CONSENT", bob, { sender_user_id: alice.userId, allowed: true })).status).toBe(200);
+    response = await signedPost("/v1/mail/send/osl", "SEND-OSL", alice, payload);
+    expect(response.status).toBe(200);
+    const sent = await response.json() as { message_id: string };
+
+    response = await signedPost("/v1/mail/list", "LIST", bob, { limit: 10 });
+    const listed = await response.json() as { messages: Array<Record<string, unknown>> };
+    expect(listed.messages).toHaveLength(1);
+    expect(JSON.stringify(listed)).not.toContain("ciphertext-not-plaintext");
+    expect(listed.messages[0]?.message_id).toBe(sent.message_id);
+
+    response = await signedPost("/v1/mail/fetch", "FETCH", bob, { message_id: sent.message_id });
+    expect(await response.json()).toMatchObject({ ciphertext_b64: payload.ciphertext_b64, kind: "osl_e2ee" });
+    response = await signedPost("/v1/mail/ack", "ACK", bob, { message_id: sent.message_id });
+    expect(await response.json()).toMatchObject({ deleted: true, replay: false });
+    response = await signedPost("/v1/mail/fetch", "FETCH", bob, { message_id: sent.message_id });
+    expect(response.status).toBe(404);
+  });
+
+  it("burns the mailbox atomically and tombstones its address", async () => {
+    const alice = await createIdentity("alice-id", "alice");
+    await signedPost("/v1/mail/address", "PROVISION", alice, { username: "alice", rotate: false });
+    const response = await signedPost("/v1/mail/burn", "BURN", alice, {});
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ deleted: 0, address_tombstoned: true, replay: false });
+    const row = await env.DB.prepare("SELECT state FROM mail_address_epochs WHERE address='alice@oslprivacy.com'").first<{ state: string }>();
+    expect(row?.state).toBe("tombstoned");
+  });
+
+  it("fails external outbound honestly without invoking a send binding", async () => {
+    const response = await SELF.fetch("https://test/v1/mail/send/external", { method: "POST", body: "{}", headers: { "content-type": "application/json" } });
+    expect(response.status).toBe(503);
+    expect(await response.text()).toContain("transactional-only");
+  });
+
+  it("rejects catch-all mail for unprovisioned recipients before reading MIME", async () => {
+    let rejected = "";
+    let rawRead = false;
+    const message = {
+      from: "sender@example.com",
+      to: "nobody@oslprivacy.com",
+      rawSize: 50,
+      headers: new Headers(),
+      get raw() {
+        rawRead = true;
+        return new ReadableStream<Uint8Array>();
+      },
+      setReject(reason: string) { rejected = reason; },
+    } as unknown as ForwardableEmailMessage;
+    await handleInboundEmail(message, env);
+    expect(rejected).toContain("not provisioned");
+    expect(rawRead).toBe(false);
+  });
+
+  it("immediately envelope-encrypts bounded external MIME and retains no plaintext fields", async () => {
+    const bob = await createIdentity("bob-id", "bob");
+    await signedPost("/v1/mail/address", "PROVISION", bob, { username: "bob", rotate: false });
+    const mime = "From: outside@example.com\r\nSubject: private subject\r\nMessage-ID: <thread@example.com>\r\n\r\nsecret external body";
+    let rejected = "";
+    const message = {
+      from: "outside@example.com",
+      to: "bob@oslprivacy.com",
+      rawSize: new TextEncoder().encode(mime).byteLength,
+      headers: new Headers({ "message-id": "<thread@example.com>" }),
+      raw: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(mime));
+          controller.close();
+        },
+      }),
+      setReject(reason: string) { rejected = reason; },
+    } as unknown as ForwardableEmailMessage;
+    await handleInboundEmail(message, env);
+    expect(rejected).toBe("");
+    const response = await signedPost("/v1/mail/list", "LIST", bob, { limit: 10 });
+    const listingText = await response.text();
+    expect(listingText).not.toContain("private subject");
+    expect(listingText).not.toContain("outside@example.com");
+    const listing = JSON.parse(listingText) as { messages: Array<{ message_id: string; kind: string; expires_at: number; received_at: number }> };
+    expect(listing.messages[0]?.kind).toBe("external_envelope");
+    expect((listing.messages[0]?.expires_at ?? 0) - (listing.messages[0]?.received_at ?? 0)).toBe(72 * 60 * 60 * 1000);
+    const fetched = await signedPost("/v1/mail/fetch", "FETCH", bob, { message_id: listing.messages[0]!.message_id });
+    const fetchedText = await fetched.text();
+    expect(fetchedText).not.toContain("secret external body");
+    expect(fetchedText).toContain("X25519-HKDF-SHA256-AES-256-GCM");
+  });
+
+  it("rejects every non-OSL recipient on the internal E2EE route", async () => {
+    const alice = await createIdentity("alice-id", "alice");
+    await signedPost("/v1/mail/address", "PROVISION", alice, { username: "alice", rotate: false });
+    const response = await signedPost("/v1/mail/send/osl", "SEND-OSL", alice, {
+      recipient_address: "person@example.com",
+      opaque_thread_token: "abcdefghijklmnop",
+      ciphertext_b64: base64Encode(new Uint8Array([1, 2, 3])),
+      envelope: { version: 1 },
+      recipient_key_fingerprint: "fingerprint",
+    });
+    expect(response.status).toBe(404);
+  });
+});
+
+async function createIdentity(userId: string, username: string): Promise<Identity> {
+  const ed = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair;
+  const edRaw = await crypto.subtle.exportKey("raw", ed.publicKey) as ArrayBuffer;
+  const x = await crypto.subtle.generateKey({ name: "X25519" }, true, ["deriveBits"]) as CryptoKeyPair;
+  const xRaw = await crypto.subtle.exportKey("raw", x.publicKey) as ArrayBuffer;
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT INTO users(user_id,ik_x25519_pub,ik_ed25519_pub,ik_mlkem768_pub,ik_x25519_signature,registered_at,ik_ratchet_initial_pub)
+     VALUES (?,?,?,?,?,?,?)`,
+  ).bind(userId, base64Encode(new Uint8Array(xRaw)), base64Encode(new Uint8Array(edRaw)), "mlkem", "signature", now, null).run();
+  await env.DB.prepare(
+    "INSERT INTO username_directory(username,user_id,friend_code,claimed_at,updated_at) VALUES (?,?,?,?,?)",
+  ).bind(username, userId, "friend-code-placeholder", now, now).run();
+  return { userId, username, signingKey: ed.privateKey };
+}
+
+async function signedPost(
+  path: string,
+  operation: string,
+  identity: Identity,
+  fields: Record<string, unknown>,
+): Promise<Response> {
+  const body: Record<string, unknown> = {
+    user_id: identity.userId,
+    request_id: randomRequestId(),
+    timestamp_ms: Date.now(),
+    ...fields,
+  };
+  const signature = await crypto.subtle.sign({ name: "Ed25519" }, identity.signingKey, mailSignedMessage(operation, body));
+  body.signature_b64 = base64Encode(new Uint8Array(signature));
+  return await SELF.fetch(`https://test${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-forwarded-for": "192.0.2.200" },
+    body: JSON.stringify(body),
+  });
+}

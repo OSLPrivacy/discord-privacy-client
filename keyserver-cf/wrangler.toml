@@ -45,6 +45,17 @@ database_name = "osl-keyserver-prod"
 database_id = "1de837cd-3bf6-4d33-be82-12d358523600"
 migrations_dir = "migrations"
 
+# OSL Mail message content is isolated by identity in SQLite-backed Durable
+# Objects. Adding this declaration does not create routes, DNS, or Email
+# Routing rules until a later explicit deployment/cutover.
+[[durable_objects.bindings]]
+name = "MAILBOX"
+class_name = "Mailbox"
+
+[[migrations]]
+tag = "osl-mail-v1"
+new_sqlite_classes = ["Mailbox"]
+
 # Native abuse-control counters. Cloudflare documents these as
 # permissive/eventually consistent, so identity signatures and D1
 # transactions remain the authorization and single-use boundaries.
