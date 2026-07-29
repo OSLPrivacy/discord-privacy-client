@@ -22,6 +22,7 @@ public static class OslWhatsAppDeployWindows {
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
   [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] public static extern bool IsWindowVisible(IntPtr hwnd);
   [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] public static extern bool IsIconic(IntPtr hwnd);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
 }
 '@
 
@@ -172,6 +173,7 @@ function Start-ExactOsl([string]$InteractiveUser) {
 }
 
 Assert-ArtifactLayout $ExeUri $WebView2LoaderUri
+$foregroundBefore=[OslWhatsAppDeployWindows]::GetForegroundWindow()
 $installRootPresent=Test-Path -LiteralPath $installRoot -PathType Container
 $exePresent=Test-Path -LiteralPath $oslPath -PathType Leaf
 $loaderPresent=Test-Path -LiteralPath $loaderPath -PathType Leaf
@@ -209,16 +211,18 @@ if(-not $initialInstall -and (Get-Sha256 $oslPath) -ceq $exeExpected -and (Get-S
   if($primaryBefore.Count -eq 0) { [void](Start-ExactOsl $interactiveUser);$taskRegistered=$true }
   $whatsAppAfter=@(Get-WhatsAppProcessSnapshot ([string]$package.InstallLocation))
   $windowsAfter=@(Get-WhatsAppWindowSnapshot $whatsAppAfter)
+  $foregroundAfter=[OslWhatsAppDeployWindows]::GetForegroundWindow()
   if(-not (Test-ExactSnapshot $whatsAppBefore $whatsAppAfter) -or -not (Test-ExactSnapshot $windowsBefore $windowsAfter)) {
     throw 'WhatsApp process or window state changed during idempotent verification'
   }
+  if($foregroundBefore -ne $foregroundAfter) { throw 'foreground window changed during idempotent verification' }
   [pscustomobject]@{
     Schema='whatsapp-deploy-preserve/v1';Status='alreadyInstalledPreserved';Terminal=$true
     InvocationId=$InvocationId;ExeSha256=$exeExpected;WebView2LoaderSha256=$loaderExpected
     SessionId=$SessionId;OslProcessCount=1;WhatsAppProcessCount=$whatsAppAfter.Count;WhatsAppWindowCount=$windowsAfter.Count
     ExactOfficialWhatsAppPackageVerified=$true;WhatsAppProcessSetUnchanged=$true;WhatsAppWindowStateUnchanged=$true
     OslProfileTouched=$false;WhatsAppPrivateStorageRead=$false;WhatsAppProfileTouched=$false
-    WhatsAppProcessTerminated=$false;WhatsAppWindowForegrounded=$false;BrowserFallbackUsed=$false
+    WhatsAppProcessTerminated=$false;WhatsAppWindowForegrounded=$false;ForegroundWindowUnchanged=$true;BrowserFallbackUsed=$false
   } | ConvertTo-Json -Compress
   exit 0
 }
@@ -259,8 +263,10 @@ try {
   $failureStage='providerRevalidation'
   $whatsAppAfter=@(Get-WhatsAppProcessSnapshot ([string]$package.InstallLocation))
   $windowsAfter=@(Get-WhatsAppWindowSnapshot $whatsAppAfter)
+  $foregroundAfter=[OslWhatsAppDeployWindows]::GetForegroundWindow()
   if(-not (Test-ExactSnapshot $whatsAppBefore $whatsAppAfter)) { throw 'WhatsApp process set changed during OSL-only deployment' }
   if(-not (Test-ExactSnapshot $windowsBefore $windowsAfter)) { throw 'WhatsApp top-level window state changed during OSL-only deployment' }
+  if($foregroundBefore -ne $foregroundAfter) { throw 'foreground window changed during OSL-only deployment' }
   if((Get-Sha256 $oslPath) -cne $exeExpected) { throw 'running OSL executable bytes changed after launch' }
 
   $failureStage='commit'
@@ -272,7 +278,7 @@ try {
     SessionId=$SessionId;OslProcessCount=1;WhatsAppProcessCount=$whatsAppAfter.Count;WhatsAppWindowCount=$windowsAfter.Count
     ExactOfficialWhatsAppPackageVerified=$true;WhatsAppProcessSetUnchanged=$true;WhatsAppWindowStateUnchanged=$true
     OslProfileTouched=$false;WhatsAppPrivateStorageRead=$false;WhatsAppProfileTouched=$false
-    WhatsAppProcessTerminated=$false;WhatsAppWindowForegrounded=$false;BrowserFallbackUsed=$false
+    WhatsAppProcessTerminated=$false;WhatsAppWindowForegrounded=$false;ForegroundWindowUnchanged=$true;BrowserFallbackUsed=$false
   } | ConvertTo-Json -Compress
 } catch {
   $failure=$_.Exception.Message

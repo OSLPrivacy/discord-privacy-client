@@ -112,7 +112,13 @@ def run_command(
             text=True, capture_output=True,
         )
         if completed.returncode != 0:
-            raise PublishError(f"{phase}: Azure RunCommand failed closed")
+            detail = " ".join(completed.stderr.strip().split())
+            if len(detail) > 800:
+                detail = detail[:800] + "…"
+            raise PublishError(
+                f"{phase}: Azure RunCommand failed closed"
+                + (f" ({detail})" if detail else "")
+            )
         deadline = time.monotonic() + 330
         instance: dict[str, Any] | None = None
         while time.monotonic() < deadline:

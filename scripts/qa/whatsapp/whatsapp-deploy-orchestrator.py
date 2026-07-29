@@ -122,7 +122,12 @@ def _discover(vm: str) -> int:
     return session_id
 
 
-def _deploy_one(vm: str, invocation: str, artifacts: dict[str, str]) -> dict[str, Any]:
+def _deploy_one(
+    vm: str,
+    invocation: str,
+    artifacts: dict[str, str],
+    expect_probe_dispatch: bool = False,
+) -> dict[str, Any]:
     session_id = _discover(vm)
     suffix = vm[-1]
     result = _run_command(vm, DEPLOY, {
@@ -135,7 +140,7 @@ def _deploy_one(vm: str, invocation: str, artifacts: dict[str, str]) -> dict[str
     })
     required_true = (
         "Terminal", "ExactOfficialWhatsAppPackageVerified", "WhatsAppProcessSetUnchanged",
-        "WhatsAppWindowStateUnchanged",
+        "WhatsAppWindowStateUnchanged", "ForegroundWindowUnchanged",
     )
     required_false = (
         "OslProfileTouched", "WhatsAppPrivateStorageRead", "WhatsAppProfileTouched",
@@ -156,15 +161,23 @@ def _deploy_one(vm: str, invocation: str, artifacts: dict[str, str]) -> dict[str
         "OslExeSha256": artifacts["exe_sha256"],
     })
     audit_required_false = (
-        "ProtectedControlsEnabled", "BrowserFallbackUsed", "ProviderContentRead",
-        "WhatsAppPrivateStorageRead", "ProfileRead", "InputSent", "WindowForegrounded",
+        "BrowserFallbackUsed", "ProviderContentRead",
+        "WhatsAppPrivateStorageRead", "ProfileRead", "WindowForegrounded",
     )
+    allowed_phases = (
+        {"protectedProbeDispatched", "protectedProbeDispatchFailed", "protectedProbePreparationFailed"}
+        if expect_probe_dispatch
+        else {"nativeWindowClaimed", "protectedControlsReady", "visualBindingFailed"}
+    )
+    expected_input = audit.get("Phase") in {"protectedProbeDispatched", "protectedProbeDispatchFailed"}
     if (
         audit.get("Schema") != "whatsapp-qa-runtime-audit/v1"
         or audit.get("Status") != "audited"
         or audit.get("ExeSha256") != artifacts["exe_sha256"]
-        or audit.get("Phase") != "nativeWindowClaimed"
+        or audit.get("Phase") not in allowed_phases
         or audit.get("NativeWindowClaimed") is not True
+        or not isinstance(audit.get("ProtectedControlsEnabled"), bool)
+        or audit.get("InputSent") is not expected_input
         or any(audit.get(key) is not False for key in audit_required_false)
     ):
         raise DeploymentError(f"{vm}: runtime audit receipt failed semantic validation")
@@ -176,9 +189,11 @@ def _deploy_one(vm: str, invocation: str, artifacts: dict[str, str]) -> dict[str
         "whatsAppProcessCount": result.get("WhatsAppProcessCount"),
         "whatsAppWindowCount": result.get("WhatsAppWindowCount"),
         "runtimeAudit": {
-            "phase": "nativeWindowClaimed",
+            "phase": audit["Phase"],
             "nativeWindowClaimed": True,
-            "protectedControlsEnabled": False,
+            "protectedControlsEnabled": audit["ProtectedControlsEnabled"],
+            "failureCode": audit.get("FailureCode"),
+            "inputSent": audit["InputSent"],
         },
         "preservation": {
             "officialPackageVerified": True,
@@ -209,6 +224,7 @@ def main() -> int:
     parser.add_argument("--exe-sha256", required=True)
     parser.add_argument("--webview2-loader-uri", required=True)
     parser.add_argument("--webview2-loader-sha256", required=True)
+    parser.add_argument("--expect-probe-dispatch", action="store_true")
     parser.add_argument("--receipt-dir", type=Path, default=ROOT / "receipts")
     args = parser.parse_args()
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{7,52}", args.invocation):
@@ -238,11 +254,21 @@ def main() -> int:
         "startedAt": started.isoformat(),
         "status": "running",
         "terminal": False,
+        "expectedProbeDispatch": args.expect_probe_dispatch,
     }
     _write_receipt(receipt_path, receipt)
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            futures = {executor.submit(_deploy_one, vm, args.invocation, artifacts): vm for vm in ALLOWED_VMS}
+            futures = {
+                executor.submit(
+                    _deploy_one,
+                    vm,
+                    args.invocation,
+                    artifacts,
+                    args.expect_probe_dispatch,
+                ): vm
+                for vm in ALLOWED_VMS
+            }
             machines = [future.result() for future in concurrent.futures.as_completed(futures)]
         receipt.update({
             "status": "deployedPreservedAndAudited",

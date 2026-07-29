@@ -31,15 +31,16 @@ $raw = Get-Content -LiteralPath $statusPath -Raw
 if ([Text.Encoding]::UTF8.GetByteCount($raw) -gt 4096) { throw 'QA runtime receipt exceeds its fixed bound' }
 $receipt = $raw | ConvertFrom-Json
 $keys = @($receipt.PSObject.Properties.Name | Sort-Object)
-$expectedKeys = @('browserFallbackUsed','hostReceipt','nativeWindowClaimed','phase','protectedControlsEnabled','providerContentRead','providerPrivateStorageRead','schema') | Sort-Object
+$expectedKeys = @('browserFallbackUsed','failureCode','hostReceipt','nativeWindowClaimed','phase','protectedControlsEnabled','providerContentRead','providerPrivateStorageRead','schema') | Sort-Object
 if (Compare-Object $keys $expectedKeys) { throw 'QA runtime receipt shape changed' }
 if ($receipt.schema -cne 'whatsapp-qa-runtime-status/v1' -or
-    $receipt.phase -notin @('coreReady','nativeWindowClaimed','failedClosed') -or
-    $receipt.protectedControlsEnabled -ne $false -or $receipt.browserFallbackUsed -ne $false -or
+    $receipt.phase -notin @('coreReady','nativeWindowClaimed','protectedControlsReady','visualBindingFailed','protectedProbeDispatched','protectedProbeDispatchFailed','protectedProbePreparationFailed','failedClosed') -or
+    $receipt.protectedControlsEnabled -notin @($true,$false) -or $receipt.browserFallbackUsed -ne $false -or
     $receipt.providerContentRead -ne $false -or $receipt.providerPrivateStorageRead -ne $false) {
   throw 'QA runtime receipt semantics failed closed'
 }
-if (($receipt.phase -ceq 'nativeWindowClaimed') -ne [bool]$receipt.nativeWindowClaimed) { throw 'QA runtime claim state is inconsistent' }
+if (($receipt.phase -cin @('nativeWindowClaimed','protectedControlsReady','visualBindingFailed','protectedProbeDispatched','protectedProbeDispatchFailed','protectedProbePreparationFailed')) -ne [bool]$receipt.nativeWindowClaimed) { throw 'QA runtime claim state is inconsistent' }
+if (($receipt.phase -ceq 'protectedControlsReady') -ne [bool]$receipt.protectedControlsEnabled) { throw 'QA runtime protection state is inconsistent' }
 
 $audit = [ordered]@{
   Schema='whatsapp-qa-runtime-audit/v1'
@@ -47,12 +48,13 @@ $audit = [ordered]@{
   ExeSha256=$expected
   Phase=[string]$receipt.phase
   NativeWindowClaimed=[bool]$receipt.nativeWindowClaimed
-  ProtectedControlsEnabled=$false
+  ProtectedControlsEnabled=[bool]$receipt.protectedControlsEnabled
+  FailureCode=if($receipt.failureCode){[string]$receipt.failureCode}else{$null}
   BrowserFallbackUsed=$false
   ProviderContentRead=$false
   WhatsAppPrivateStorageRead=$false
   ProfileRead=$false
-  InputSent=$false
+  InputSent=($receipt.phase -cin @('protectedProbeDispatched','protectedProbeDispatchFailed'))
   WindowForegrounded=$false
 }
 $auditJson = $audit | ConvertTo-Json -Compress

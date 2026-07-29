@@ -60,17 +60,27 @@ public static class OslWhatsAppStructuralCapture {
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd,out uint pid);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd,out RECT rect);
+  [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr hwnd,StringBuilder value,int capacity);
   [DllImport("user32.dll")] public static extern IntPtr GetWindowDC(IntPtr hwnd);
   [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr hwnd,IntPtr dc);
   [DllImport("gdi32.dll")] public static extern bool BitBlt(IntPtr destination,int x,int y,int width,int height,IntPtr source,int sourceX,int sourceY,uint operation);
   public static List<IntPtr> ForPid(uint expected){var result=new List<IntPtr>();EnumWindows((h,s)=>{uint pid;GetWindowThreadProcessId(h,out pid);if(pid==expected&&IsWindowVisible(h))result.Add(h);return true;},IntPtr.Zero);return result;}
+  public static int ExactTitleCount(uint expected,string title){var count=0;EnumWindows((h,s)=>{uint pid;GetWindowThreadProcessId(h,out pid);if(pid==expected&&IsWindowVisible(h)){var value=new StringBuilder(128);GetWindowText(h,value,value.Capacity);if(value.ToString()==title)count++;}return true;},IntPtr.Zero);return count;}
 }
 '@
 $oslPath='C:\Users\osltest\Desktop\OSL Privacy\OSL Privacy.exe'
 if(-not(Test-Path -LiteralPath $oslPath -PathType Leaf) -or (Get-FileHash -LiteralPath $oslPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $OslExeSha256){throw 'exact OSL executable identity mismatch'}
-$processes=@(Get-CimInstance Win32_Process -Filter "Name = 'OSL Privacy.exe'"|Where-Object{$_.ExecutablePath -and [string]::Equals([IO.Path]::GetFullPath([string]$_.ExecutablePath),$oslPath,[StringComparison]::OrdinalIgnoreCase) -and [int]$_.SessionId -eq $SessionId})
+$processes=@(Get-CimInstance Win32_Process -Filter "Name = 'OSL Privacy.exe'"|Where-Object{
+  $_.ExecutablePath -and
+  [string]::Equals([IO.Path]::GetFullPath([string]$_.ExecutablePath),$oslPath,[StringComparison]::OrdinalIgnoreCase) -and
+  [int]$_.SessionId -eq $SessionId -and
+  [string]$_.CommandLine -cnotmatch '(?:^|\s)--osl-whatsapp-window-guardian-v1(?:\s|$)'
+})
 if($processes.Count -ne 1){throw 'exact OSL process is unavailable or ambiguous'}
-$windows=[OslWhatsAppStructuralCapture]::ForPid([uint32]$processes[0].ProcessId);if($windows.Count -ne 1){throw 'exact OSL window is unavailable or ambiguous'}
+$primary=Get-Process -Id ([int]$processes[0].ProcessId) -ErrorAction Stop
+if($primary.MainWindowHandle -eq [IntPtr]::Zero){throw 'exact OSL window is unavailable or ambiguous'}
+$windows=@($primary.MainWindowHandle)
+$protectedOverlayCount=[OslWhatsAppStructuralCapture]::ExactTitleCount([uint32]$processes[0].ProcessId,'OSL protected WhatsApp composer')
 $captureStage='geometry'
 $rect=New-Object OslWhatsAppStructuralCapture+RECT;if(-not[OslWhatsAppStructuralCapture]::GetWindowRect($windows[0],[ref]$rect)){throw 'exact OSL geometry unavailable'}
 $width=$rect.Right-$rect.Left;$height=$rect.Bottom-$rect.Top;if($width -lt 960 -or $height -lt 680 -or $width -gt 4096 -or $height -gt 2160){throw 'exact OSL geometry rejected'}
@@ -78,8 +88,14 @@ $captureStage='surface'
 $full=[Drawing.Bitmap]::new($width,$height,[Drawing.Imaging.PixelFormat]::Format32bppArgb);$graphics=[Drawing.Graphics]::FromImage($full);$dc=$graphics.GetHdc();$source=[OslWhatsAppStructuralCapture]::GetWindowDC($windows[0])
 try{if($source -eq [IntPtr]::Zero -or -not[OslWhatsAppStructuralCapture]::BitBlt($dc,0,0,$width,$height,$source,0,0,0x40CC0020)){throw 'background OSL render failed'}}finally{if($source -ne [IntPtr]::Zero){[void][OslWhatsAppStructuralCapture]::ReleaseDC($windows[0],$source)};$graphics.ReleaseHdc($dc);$graphics.Dispose()}
 $captureStage='encode'
-$tiny=[Drawing.Bitmap]::new(160,100);$g=[Drawing.Graphics]::FromImage($tiny);$g.InterpolationMode=[Drawing.Drawing2D.InterpolationMode]::Low;$g.DrawImage($full,0,0,160,100);$g.Dispose();$full.Dispose()
-$preview=[Drawing.Bitmap]::new(320,200);$g=[Drawing.Graphics]::FromImage($preview);$g.InterpolationMode=[Drawing.Drawing2D.InterpolationMode]::NearestNeighbor;$g.PixelOffsetMode=[Drawing.Drawing2D.PixelOffsetMode]::Half;$g.DrawImage($tiny,0,0,320,200);$g.Dispose();$tiny.Dispose()
-$stream=[IO.MemoryStream]::new();try{$preview.Save($stream,[Drawing.Imaging.ImageFormat]::Png);$bytes=$stream.ToArray()}finally{$preview.Dispose();$stream.Dispose()}
-$json=[pscustomobject]@{Schema='whatsapp-structural-preview/v1';Status='captured';Width=$width;Height=$height;PreviewWidth=320;PreviewHeight=200;PngBase64=[Convert]::ToBase64String($bytes);ProviderTextReadable=$false;WindowForegrounded=$false;InputSent=$false;WhatsAppPrivateStorageRead=$false}|ConvertTo-Json -Compress
+$cropWidth=[Math]::Min(936,$width);$cropLeft=0;$cropTop=[Math]::Min(38,[Math]::Max(0,$height-1));$cropHeight=[Math]::Min(60,$height-$cropTop)
+$preview=[Drawing.Bitmap]::new($cropWidth,$cropHeight);$g=[Drawing.Graphics]::FromImage($preview);$g.DrawImage($full,[Drawing.Rectangle]::new(0,0,$cropWidth,$cropHeight),[Drawing.Rectangle]::new($cropLeft,$cropTop,$cropWidth,$cropHeight),[Drawing.GraphicsUnit]::Pixel);$g.Dispose();$full.Dispose()
+$stream=[IO.MemoryStream]::new()
+try{
+  $codec=[Drawing.Imaging.ImageCodecInfo]::GetImageEncoders()|Where-Object{$_.MimeType -ceq'image/jpeg'}|Select-Object -First 1
+  $parameters=[Drawing.Imaging.EncoderParameters]::new(1)
+  $parameters.Param[0]=[Drawing.Imaging.EncoderParameter]::new([Drawing.Imaging.Encoder]::Quality,[long]30)
+  $preview.Save($stream,$codec,$parameters);$bytes=$stream.ToArray()
+}finally{$preview.Dispose();$stream.Dispose()}
+$json=[pscustomobject]@{Schema='whatsapp-structural-preview/v1';Status='captured';Width=$width;Height=$height;ProtectedOverlayWindowCount=$protectedOverlayCount;PreviewWidth=$cropWidth;PreviewHeight=$cropHeight;CropRegion='oslTrustedStripRight';ImageFormat='jpeg';ImageBase64=[Convert]::ToBase64String($bytes);ProviderTextReadable=$false;WindowForegrounded=$false;InputSent=$false;WhatsAppPrivateStorageRead=$false}|ConvertTo-Json -Compress
 [Array]::Clear($bytes,0,$bytes.Length);$temporary="$ResultPath.tmp";[IO.File]::WriteAllText($temporary,$json,[Text.UTF8Encoding]::new($false));Move-Item -LiteralPath $temporary -Destination $ResultPath -Force

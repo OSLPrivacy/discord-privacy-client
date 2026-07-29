@@ -6,9 +6,9 @@ const read = (path: string): string => readFileSync(fileURLToPath(new URL(path, 
 
 describe("dedicated WhatsApp QA build surface", () => {
   it("routes the retained main window only to the dedicated local entry", () => {
-    const config = JSON.parse(read("../../osl-hub/tauri.conf.json")) as { app: { windows: Array<{ label: string; url: string }> } };
+    const config = JSON.parse(read("../../osl-hub/tauri.conf.json")) as { app: { windows: Array<{ label: string; url: string; focus: boolean }> } };
     expect(config.app.windows).toHaveLength(1);
-    expect(config.app.windows[0]).toMatchObject({ label: "main", url: "whatsapp-qa.html" });
+    expect(config.app.windows[0]).toMatchObject({ label: "main", url: "whatsapp-qa.html", focus: false });
     expect(read("../whatsapp-qa.html")).toContain('src="/src/whatsapp-qa.ts"');
   });
 
@@ -41,6 +41,7 @@ describe("dedicated WhatsApp QA build surface", () => {
     expect(source).toContain("begin_whatsapp_visual_binding");
     expect(source).toContain("confirm_whatsapp_visual_binding");
     expect(source).toContain("attested: true");
+    expect(source).not.toContain("VITE_WHATSAPP_QA_AUTO_BIND");
     expect(source).toContain("if (!nativeWindowClaimed");
     expect(source).toContain("Protected controls remain locked");
     expect(receipts).toContain('"accountHeader"');

@@ -9,12 +9,84 @@ use crate::security::{self, HubSecurityState};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 pub const PUBLIC_OFFER_FILENAME: &str = "whatsapp-qa-offer.v1.json";
 pub const PEER_OFFER_FILENAME: &str = "whatsapp-qa-peer-offer.v1.json";
 pub const PAIRING_STATUS_FILENAME: &str = "whatsapp-qa-pairing-status.v1.json";
 const VERSION: u32 = 1;
 const MAX_OFFER_BYTES: u64 = 16 * 1024;
+const REGISTRATION_WAIT_LIMIT: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct RegistrationBarrierOutcome {
+    pub state: &'static str,
+    pub ready: bool,
+}
+
+pub fn wait_for_registered_transport(core: &HubCoreState) -> RegistrationBarrierOutcome {
+    let expected_identity = match core
+        .osl
+        .identity
+        .lock()
+        .ok()
+        .as_ref()
+        .and_then(|identity| identity.as_ref().map(|value| value.user_id.clone()))
+    {
+        Some(identity) => identity,
+        None => {
+            return RegistrationBarrierOutcome {
+                state: "identityUnavailable",
+                ready: false,
+            }
+        }
+    };
+    let deadline = Instant::now() + REGISTRATION_WAIT_LIMIT;
+    loop {
+        let identity_unchanged = core
+            .osl
+            .identity
+            .lock()
+            .ok()
+            .as_ref()
+            .and_then(|identity| identity.as_ref())
+            .is_some_and(|identity| identity.user_id == expected_identity);
+        let state = core.osl.cloud_registration_state();
+        if !identity_unchanged {
+            return RegistrationBarrierOutcome {
+                state: "identityChanged",
+                ready: false,
+            };
+        }
+        if state == ipc::state::CloudRegistrationState::Registered && core.osl.has_keyserver() {
+            return RegistrationBarrierOutcome {
+                state: "registered",
+                ready: true,
+            };
+        }
+        if matches!(
+            state,
+            ipc::state::CloudRegistrationState::Conflict
+                | ipc::state::CloudRegistrationState::Offline
+        ) {
+            return RegistrationBarrierOutcome {
+                state: if state == ipc::state::CloudRegistrationState::Conflict {
+                    "registrationConflict"
+                } else {
+                    "registrationOffline"
+                },
+                ready: false,
+            };
+        }
+        if Instant::now() >= deadline {
+            return RegistrationBarrierOutcome {
+                state: "registrationTimeout",
+                ready: false,
+            };
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

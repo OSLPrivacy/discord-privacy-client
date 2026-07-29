@@ -628,17 +628,12 @@ fn visual_snapshots_match(left: &VisualSnapshot, right: &VisualSnapshot) -> bool
         && left.transcript == right.transcript
         && fingerprint_distance(&left.account_fingerprint, &right.account_fingerprint) <= 12
         && fingerprint_distance(&left.chat_fingerprint, &right.chat_fingerprint) <= 20
+        && fingerprint_distance(&left.composer_fingerprint, &right.composer_fingerprint) <= 20
+        && fingerprint_distance(&left.transcript_fingerprint, &right.transcript_fingerprint) <= 80
 }
 
 #[cfg(any(test, target_os = "windows"))]
 fn binding_matches_snapshot(binding: &VerifiedBinding, snapshot: &VisualSnapshot) -> bool {
-    let structural_evidence_present = binding
-        .composer_fingerprint
-        .iter()
-        .chain(binding.transcript_fingerprint.iter())
-        .chain(snapshot.composer_fingerprint.iter())
-        .chain(snapshot.transcript_fingerprint.iter())
-        .any(|byte| *byte != 0);
     binding.generation == snapshot.generation
         && binding.context.native_window_id == snapshot.native_window_id
         && binding.process_id == snapshot.process_id
@@ -648,7 +643,14 @@ fn binding_matches_snapshot(binding: &VerifiedBinding, snapshot: &VisualSnapshot
         && binding.transcript == snapshot.transcript
         && fingerprint_distance(&binding.account_fingerprint, &snapshot.account_fingerprint) <= 12
         && fingerprint_distance(&binding.chat_fingerprint, &snapshot.chat_fingerprint) <= 20
-        && structural_evidence_present
+        && fingerprint_distance(
+            &binding.composer_fingerprint,
+            &snapshot.composer_fingerprint,
+        ) <= 20
+        && fingerprint_distance(
+            &binding.transcript_fingerprint,
+            &snapshot.transcript_fingerprint,
+        ) <= 80
 }
 
 #[cfg(any(test, target_os = "windows"))]
@@ -663,22 +665,52 @@ fn fingerprint_distance(left: &[u8; 32], right: &[u8; 32]) -> u32 {
 fn capture_visual_snapshot(
     target: crate::whatsapp_qa_host::WhatsAppQaAccessibilityTarget,
 ) -> Result<VisualSnapshot, String> {
-    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
     use windows_sys::Win32::Graphics::Gdi::{
-        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits,
-        GetWindowDC, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT,
-        DIB_RGB_COLORS, SRCCOPY,
+        BitBlt, ClientToScreen, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
+        GetDC, GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+        CAPTUREBLT, DIB_RGB_COLORS, SRCCOPY,
     };
     use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetAncestor, GetClientRect, GetForegroundWindow, WindowFromPoint, GA_ROOT,
+    };
 
-    let [left, top, right, bottom] = target.window_rect;
+    let hwnd = target.window as HWND;
+    let mut client_rect: RECT = unsafe { std::mem::zeroed() };
+    if unsafe { GetClientRect(hwnd, &mut client_rect) } == 0 {
+        return Err("WhatsApp client geometry is unavailable".to_owned());
+    }
+    let mut client_top_left = POINT {
+        x: client_rect.left,
+        y: client_rect.top,
+    };
+    let mut client_bottom_right = POINT {
+        x: client_rect.right,
+        y: client_rect.bottom,
+    };
+    if unsafe { ClientToScreen(hwnd, &mut client_top_left) } == 0
+        || unsafe { ClientToScreen(hwnd, &mut client_bottom_right) } == 0
+    {
+        return Err("WhatsApp client geometry could not be mapped to the screen".to_owned());
+    }
+    let [left, top, right, bottom] = [
+        client_top_left.x,
+        client_top_left.y,
+        client_bottom_right.x,
+        client_bottom_right.y,
+    ];
+    let [outer_left, outer_top, outer_right, outer_bottom] = target.window_rect;
+    if left < outer_left || top < outer_top || right > outer_right || bottom > outer_bottom {
+        return Err("WhatsApp client geometry escaped the exact claimed window".to_owned());
+    }
     let width = right
         .checked_sub(left)
         .filter(|width| (720..=4096).contains(width))
         .ok_or_else(|| "WhatsApp window width is outside the visual-binding bounds".to_owned())?;
     let height = bottom
         .checked_sub(top)
-        .filter(|height| (480..=4096).contains(height))
+        .filter(|height| (420..=4096).contains(height))
         .ok_or_else(|| "WhatsApp window height is outside the visual-binding bounds".to_owned())?;
     let byte_len = usize::try_from(width)
         .ok()
@@ -690,8 +722,42 @@ fn capture_visual_snapshot(
         .and_then(|pixels| pixels.checked_mul(4))
         .filter(|bytes| *bytes <= 64 * 1024 * 1024)
         .ok_or_else(|| "WhatsApp visual capture size was rejected".to_owned())?;
-    let hwnd = target.window as HWND;
-    let source_dc = unsafe { GetWindowDC(hwnd) };
+    let sidebar = ((width * 35) / 100).clamp(280, 520);
+    let header_height = ((height * 10) / 100).clamp(64, 96);
+    let composer_height = ((height * 11) / 100).clamp(58, 104);
+    let account_region = [0, 0, sidebar, header_height];
+    let chat_region = [sidebar, 0, width, header_height];
+    let composer_region = [
+        sidebar.saturating_add(8),
+        height.saturating_sub(composer_height),
+        width.saturating_sub(8),
+        height.saturating_sub(8),
+    ];
+    let transcript_region = [
+        sidebar.saturating_add(8),
+        header_height,
+        width.saturating_sub(8),
+        height.saturating_sub(composer_height),
+    ];
+    let foreground_before = unsafe { GetForegroundWindow() };
+    for region in [
+        account_region,
+        chat_region,
+        composer_region,
+        transcript_region,
+    ] {
+        let point = windows_sys::Win32::Foundation::POINT {
+            x: left.saturating_add((region[0] + region[2]) / 2),
+            y: top.saturating_add((region[1] + region[3]) / 2),
+        };
+        let at_point = unsafe { WindowFromPoint(point) };
+        if at_point.is_null() || unsafe { GetAncestor(at_point, GA_ROOT) } != hwnd {
+            return Err(
+                "WhatsApp visual region is obscured or outside the exact window".to_owned(),
+            );
+        }
+    }
+    let source_dc = unsafe { GetDC(std::ptr::null_mut()) };
     if source_dc.is_null() {
         return Err("WhatsApp visual capture source is unavailable".to_owned());
     }
@@ -704,7 +770,7 @@ fn capture_visual_snapshot(
         if !memory_dc.is_null() {
             unsafe { DeleteDC(memory_dc) };
         }
-        unsafe { ReleaseDC(hwnd, source_dc) };
+        unsafe { ReleaseDC(std::ptr::null_mut(), source_dc) };
         return Err("WhatsApp visual capture resources are unavailable".to_owned());
     }
     let previous = unsafe { SelectObject(memory_dc, bitmap) };
@@ -716,8 +782,8 @@ fn capture_visual_snapshot(
             width,
             height,
             source_dc,
-            0,
-            0,
+            left,
+            top,
             SRCCOPY | CAPTUREBLT,
         )
     } != 0;
@@ -751,30 +817,17 @@ fn capture_visual_snapshot(
         SelectObject(memory_dc, previous);
         DeleteObject(bitmap);
         DeleteDC(memory_dc);
-        ReleaseDC(hwnd, source_dc);
+        ReleaseDC(std::ptr::null_mut(), source_dc);
+    }
+    if unsafe { GetForegroundWindow() } != foreground_before {
+        pixels.zeroize();
+        return Err("Foreground window changed during WhatsApp visual capture".to_owned());
     }
     if copied != height {
         pixels.zeroize();
         return Err("WhatsApp did not provide a complete visual frame".to_owned());
     }
 
-    let sidebar = ((width * 35) / 100).clamp(280, 520);
-    let header_height = ((height * 10) / 100).clamp(64, 96);
-    let composer_height = ((height * 11) / 100).clamp(58, 104);
-    let account_region = [0, 0, sidebar, header_height];
-    let chat_region = [sidebar, 0, width, header_height];
-    let composer_region = [
-        sidebar.saturating_add(8),
-        height.saturating_sub(composer_height),
-        width.saturating_sub(8),
-        height.saturating_sub(8),
-    ];
-    let transcript_region = [
-        sidebar.saturating_add(8),
-        header_height,
-        width.saturating_sub(8),
-        height.saturating_sub(composer_height),
-    ];
     let account = visual_fingerprint(&pixels, width, height, account_region)?;
     let chat = visual_fingerprint(&pixels, width, height, chat_region)?;
     let composer_fingerprint = visual_fingerprint(&pixels, width, height, composer_region)?.0;
@@ -1250,6 +1303,20 @@ mod tests {
         context_change.chat_fingerprint[1] ^= u8::MAX;
         context_change.chat_fingerprint[2] ^= u8::MAX;
         assert!(!binding_matches_snapshot(&binding, &context_change));
+
+        let mut composer_change = snapshot.clone();
+        composer_change.composer_fingerprint[0] ^= u8::MAX;
+        composer_change.composer_fingerprint[1] ^= u8::MAX;
+        composer_change.composer_fingerprint[2] ^= u8::MAX;
+        assert!(!visual_snapshots_match(&snapshot, &composer_change));
+        assert!(!binding_matches_snapshot(&binding, &composer_change));
+
+        let mut transcript_change = snapshot.clone();
+        for byte in transcript_change.transcript_fingerprint.iter_mut().take(11) {
+            *byte ^= u8::MAX;
+        }
+        assert!(!visual_snapshots_match(&snapshot, &transcript_change));
+        assert!(!binding_matches_snapshot(&binding, &transcript_change));
     }
 
     fn verified() -> (WhatsAppAccessibilityState, WhatsAppVerificationReceipt) {

@@ -28,16 +28,26 @@ class WhatsAppDeployPowerShellTests(unittest.TestCase):
         self.assertNotRegex(DISCOVER, r"Get-Content|LocalState|SetForegroundWindow|Stop-Process")
 
     def test_runtime_receipt_is_fixed_content_free_and_fail_closed(self) -> None:
-        self.assertIn('"protectedControlsEnabled": false', MAIN_RS)
+        self.assertIn('"protectedControlsEnabled": protected_controls_enabled', MAIN_RS)
+        self.assertIn('"protectedControlsReady"', MAIN_RS)
+        self.assertIn('"visualBindingFailed"', MAIN_RS)
         self.assertIn('"browserFallbackUsed": false', MAIN_RS)
         self.assertIn('"providerContentRead": false', MAIN_RS)
         self.assertIn('"providerPrivateStorageRead": false', MAIN_RS)
         self.assertIn('"nativeWindowClaimed"', MAIN_RS)
         self.assertIn('state::<WhatsAppQaHostState>().detach()', MAIN_RS)
-        self.assertIn("$receipt.phase -notin @('coreReady','nativeWindowClaimed','failedClosed')", RUNTIME_AUDIT)
+        self.assertIn("'protectedControlsReady','visualBindingFailed'", RUNTIME_AUDIT)
         self.assertIn("WhatsAppPrivateStorageRead=$false", RUNTIME_AUDIT)
         self.assertIn("metadata/identity/oauth2/token", RUNTIME_AUDIT)
         self.assertNotRegex(RUNTIME_AUDIT, r"SetForegroundWindow|SendKeys|LocalState|Packages\\5319275A")
+
+    def test_approved_visual_binding_is_qa_feature_and_compile_token_gated(self) -> None:
+        self.assertIn('option_env!("OSL_WHATSAPP_QA_VISUAL_BINDING_APPROVED")', MAIN_RS)
+        self.assertIn('Some("approved")', MAIN_RS)
+        self.assertIn("begin_whatsapp_visual_binding(app.clone())", MAIN_RS)
+        self.assertIn("confirm_whatsapp_visual_binding(app.clone(), binding.capture_id, true)", MAIN_RS)
+        self.assertIn('option_env!("OSL_WHATSAPP_QA_PROBE_DISPATCH_APPROVED")', MAIN_RS)
+        self.assertIn("dispatch_bound_cover_text", MAIN_RS)
 
     def test_exact_scope_and_managed_identity_only(self) -> None:
         self.assertIn("C:\\Users\\osltest\\Desktop\\OSL Privacy\\OSL Privacy.exe", POWERSHELL)
@@ -74,6 +84,9 @@ class WhatsAppDeployPowerShellTests(unittest.TestCase):
         self.assertIn("Get-WhatsAppWindowSnapshot", POWERSHELL)
         self.assertIn("Test-ExactSnapshot $whatsAppBefore $whatsAppAfter", POWERSHELL)
         self.assertIn("Test-ExactSnapshot $windowsBefore $windowsAfter", POWERSHELL)
+        self.assertIn("GetForegroundWindow", POWERSHELL)
+        self.assertIn("$foregroundBefore -ne $foregroundAfter", POWERSHELL)
+        self.assertIn("ForegroundWindowUnchanged", PYTHON)
         self.assertNotRegex(POWERSHELL, r"SetForegroundWindow|ShowWindow|SetWindowPos")
 
     def test_limited_interactive_launch_and_repeatability(self) -> None:
@@ -104,8 +117,12 @@ class WhatsAppDeployControllerTests(unittest.TestCase):
 
     def test_one_command_requires_the_content_free_runtime_audit(self) -> None:
         self.assertIn("RUNTIME_AUDIT", PYTHON)
-        self.assertIn('audit.get("Phase") != "nativeWindowClaimed"', PYTHON)
+        self.assertIn('"protectedControlsReady", "visualBindingFailed"', PYTHON)
         self.assertIn('audit.get("NativeWindowClaimed") is not True', PYTHON)
+        self.assertIn('"phase": audit["Phase"]', PYTHON)
+        self.assertIn('"failureCode": audit.get("FailureCode")', PYTHON)
+        self.assertIn('"--expect-probe-dispatch"', PYTHON)
+        self.assertIn('"inputSent": audit["InputSent"]', PYTHON)
         for field in ("ProtectedControlsEnabled", "BrowserFallbackUsed", "ProviderContentRead", "WhatsAppPrivateStorageRead"):
             self.assertIn(field, PYTHON)
 

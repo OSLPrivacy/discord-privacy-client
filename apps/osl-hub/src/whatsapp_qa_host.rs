@@ -102,37 +102,60 @@ impl WhatsAppQaHostState {
         &self,
         operation: impl FnOnce(WhatsAppQaAccessibilityTarget) -> Result<T, String>,
     ) -> Result<T, String> {
+        let (target, identity) = {
+            let slot = self
+                .inner
+                .lock()
+                .map_err(|_| "WhatsApp QA host unavailable".to_owned())?;
+            let claimed = slot
+                .as_ref()
+                .ok_or_else(|| "WhatsApp QA host is not active".to_owned())?;
+            let identity = (
+                claimed.hwnd,
+                claimed.parent,
+                claimed.pid,
+                claimed.creation,
+                claimed.session,
+                claimed.path.clone(),
+            );
+            if !claimed.healthy.load(Ordering::Acquire) || !windows::identity_valid(&identity) {
+                return Err("WhatsApp QA window identity changed".to_owned());
+            }
+            let mut rect: windows_sys::Win32::Foundation::RECT = unsafe { std::mem::zeroed() };
+            if unsafe {
+                windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect(
+                    claimed.hwnd as _,
+                    &mut rect,
+                )
+            } == 0
+            {
+                return Err("WhatsApp QA window geometry unavailable".to_owned());
+            }
+            (
+                WhatsAppQaAccessibilityTarget {
+                    generation: claimed.generation,
+                    window: claimed.hwnd,
+                    process_id: claimed.pid,
+                    window_rect: [rect.left, rect.top, rect.right, rect.bottom],
+                },
+                identity,
+            )
+        };
+        let result = operation(target)?;
         let slot = self
             .inner
             .lock()
             .map_err(|_| "WhatsApp QA host unavailable".to_owned())?;
-        let claimed = slot
+        let current = slot
             .as_ref()
-            .ok_or_else(|| "WhatsApp QA host is not active".to_owned())?;
-        let snapshot = (
-            claimed.hwnd,
-            claimed.parent,
-            claimed.pid,
-            claimed.creation,
-            claimed.session,
-            claimed.path.clone(),
-        );
-        if !claimed.healthy.load(Ordering::Acquire) || !windows::identity_valid(&snapshot) {
-            return Err("WhatsApp QA window identity changed".to_owned());
-        }
-        let mut rect: windows_sys::Win32::Foundation::RECT = unsafe { std::mem::zeroed() };
-        if unsafe {
-            windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect(claimed.hwnd as _, &mut rect)
-        } == 0
+            .ok_or_else(|| "WhatsApp QA host changed during accessibility work".to_owned())?;
+        if current.generation != target.generation
+            || !current.healthy.load(Ordering::Acquire)
+            || !windows::identity_valid(&identity)
         {
-            return Err("WhatsApp QA window geometry unavailable".to_owned());
+            return Err("WhatsApp QA window identity changed during accessibility work".to_owned());
         }
-        operation(WhatsAppQaAccessibilityTarget {
-            generation: claimed.generation,
-            window: claimed.hwnd,
-            process_id: claimed.pid,
-            window_rect: [rect.left, rect.top, rect.right, rect.bottom],
-        })
+        Ok(result)
     }
 
     pub fn claim(&self, trusted_parent: isize) -> WhatsAppQaResult {

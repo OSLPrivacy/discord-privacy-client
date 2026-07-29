@@ -23,20 +23,29 @@ $taskInfo = if ($task) { Get-ScheduledTaskInfo -TaskName $taskName } else { $nul
 
 if (Test-Path -LiteralPath $resultPath -PathType Leaf) {
   $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json -ErrorAction Stop
+  $captured = $result.Status -ceq 'capturedStructure'
+  $failedClosed = $result.Status -ceq 'failedClosed'
+  $structuralCountsValid = $failedClosed -or (
+      $null -ne $result.HitTestNodeCount -and [int]$result.HitTestNodeCount -le 54 -and
+      @($result.HitTestNodes).Count -eq [int]$result.HitTestNodeCount -and
+      $null -ne $result.DescendantWindowCount -and [int]$result.DescendantWindowCount -le 128 -and
+      @($result.DescendantWindows).Count -eq [int]$result.DescendantWindowCount)
+  $modeOutcomeValid = $failedClosed -or (
+      $result.AccessibilityFlagObserved -eq ($request.Mode -cne 'observe') -and
+      $result.AppLaunched -eq ($request.Mode -cne 'observe') -and
+      $result.GracefulCloseOnly -eq ($request.Mode -ceq 'gracefulRelaunch') -and
+      [int]$result.ProcessesTerminated -eq $(if ($request.Mode -ceq 'verifiedRelaunch') { 1 } else { 0 }))
   if ($result.InvocationId -cne $InvocationId -or -not $result.Terminal -or
+      (-not $captured -and -not $failedClosed) -or
       $result.WrapperSha256 -cne $request.WrapperSha256 -or
       $result.PackageFamily -cne '5319275A.WhatsAppDesktop_cv1g1gvanyjgm' -or
       [int]$result.NodeCount -gt 512 -or @($result.Nodes).Count -ne [int]$result.NodeCount -or
-      [int]$result.HitTestNodeCount -gt 54 -or @($result.HitTestNodes).Count -ne [int]$result.HitTestNodeCount -or
-      [int]$result.DescendantWindowCount -gt 128 -or @($result.DescendantWindows).Count -ne [int]$result.DescendantWindowCount -or
+      -not $structuralCountsValid -or
       $result.ForegroundChanged -ne $false -or $result.InputInjected -ne $false -or
       $result.ProviderStorageRead -ne $false -or $result.ContentPropertiesRead -ne $false -or
       $result.AccessibilityHintRestored -ne $true -or
       $result.AccessibilityOverrideRestored -ne $true -or
-      $result.AccessibilityFlagObserved -ne ($request.Mode -cne 'observe') -or
-      $result.AppLaunched -ne ($request.Mode -cne 'observe') -or
-      $result.GracefulCloseOnly -ne ($request.Mode -ceq 'gracefulRelaunch') -or
-      [int]$result.ProcessesTerminated -ne $(if ($request.Mode -ceq 'verifiedRelaunch') { 1 } else { 0 })) {
+      -not $modeOutcomeValid) {
     throw 'UIA terminal result contract mismatch'
   }
   [pscustomobject]@{

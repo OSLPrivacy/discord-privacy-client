@@ -248,7 +248,7 @@ const currentWindow = getCurrentWindow();
 document.querySelector("#window-minimize")?.addEventListener("click", () => void currentWindow.minimize());
 document.querySelector("#window-maximize")?.addEventListener("click", () => void currentWindow.toggleMaximize());
 document.querySelector("#window-close")?.addEventListener("click", () => void currentWindow.close());
-bindTrigger.addEventListener("click", openBinding);
+bindTrigger.addEventListener("click", () => openBinding());
 document.querySelector("#binding-close")?.addEventListener("click", () => {
   bindingCard.hidden = true;
   resetBinding();
