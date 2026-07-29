@@ -81,7 +81,9 @@ function classifyMessagingProductionPath(
     mainCallsBroker: mainProduction.includes("broker::prepare_encrypted_text("),
     brokerCallsIpc: brokerProduction.includes("ipc::commands::cmd_osl_encrypt_message_v2("),
     statelessV3Fallback: dispatcher.includes("crate::wire_v2::encrypt_v3("),
-    dmRatchetEnabled: /let\s+v4_dm_enabled\s*=\s*true\s*;/u.test(dispatcher),
+    dmRatchetEnabled:
+      /let\s+v4_dm_enabled\s*=\s*true\s*;/u.test(dispatcher) ||
+      /\bencrypt_v4_send\s*\(/u.test(dispatcher),
     groupSenderKeysEnabled:
       /sender_keys_enabled\s*\.\s*store\s*\(\s*true\b/u.test(allProduction),
     prekeyLifecycleCalled:
@@ -189,10 +191,6 @@ describe("bundled preview security boundary", () => {
       "allow-install-hub-update",
       "allow-open-hub-releases-page",
       "allow-list-native-apps",
-      // Read-only consent/marker probes. Both return booleans from local native
-      // state and perform no takeover or cross-app write.
-      "allow-native-app-takeover-requires-consent",
-      "allow-discord-marker-available",
       "allow-install-native-app",
       "allow-get-mullvad-status",
       "allow-install-mullvad",
@@ -215,6 +213,9 @@ describe("bundled preview security boundary", () => {
       "allow-focus-default-browser-companion",
       "allow-detach-default-browser-companion",
       "allow-host-native-app-window",
+      // Read-only consent probe. It returns a boolean from local native state
+      // and performs no takeover or cross-app write.
+      "allow-native-app-takeover-requires-consent",
       "allow-resize-native-app-window",
       "allow-focus-native-app-window",
       "allow-detach-native-app-window",
@@ -228,6 +229,7 @@ describe("bundled preview security boundary", () => {
       // permission here is inert outside QA builds. They stay local/main-
       // window scoped either way.
       "allow-send-native-discord-qa-probe",
+      "allow-request-native-discord-visible-row-qa-receipt",
       "allow-run-native-discord-headless-qa",
       "allow-poll-native-discord-headless-qa",
       "allow-prepare-osl-chat-text",
@@ -256,11 +258,6 @@ describe("bundled preview security boundary", () => {
       "allow-export-hub-friend-code",
       "allow-add-hub-friend",
       "allow-verify-hub-friend-safety-number",
-      // Friend removal is hub-local only: the Rust `remove_hub_friend` command
-      // withdraws local approvals/policy and queues revocation notices. It adds
-      // no remote or cross-app reach, so it stays inside the local, main-window
-      // boundary this test protects.
-      "allow-remove-hub-friend",
       "allow-list-hub-people",
       "allow-set-hub-friend-nickname",
       "allow-set-active-hub-friend-permission",
@@ -298,7 +295,6 @@ describe("bundled preview security boundary", () => {
       ["allow-focus-default-browser-companion", "focus_default_browser_companion"],
       ["allow-detach-default-browser-companion", "detach_default_browser_companion"],
       ["allow-copy-hub-friend-invite", "copy_hub_friend_invite"],
-      ["allow-discord-marker-available", "discord_marker_available"],
     ] as const) {
       expect(handler).toContain(`${command},`);
       expect(permissions).toContain(`identifier = "${permission}"`);
@@ -450,10 +446,11 @@ describe("bundled preview security boundary", () => {
     expect(prekeyClient).toContain("pub fn replenish_prekeys(");
 
     // Implemented prototype code is not a shipping guarantee until each
-    // production gate/caller exists.
+    // production gate/caller exists. Initial prekey publish is live, while
+    // peer-bundle fetch and receive-side consumption remain outside messaging.
     expect(facts.dmRatchetEnabled).toBe(false);
     expect(facts.groupSenderKeysEnabled).toBe(false);
-    expect(facts.prekeyLifecycleCalled).toBe(false);
+    expect(facts.prekeyLifecycleCalled).toBe(true);
 
     // The owned crate's public documentation must retain the reachable v3 and
     // implemented-but-disabled distinction. Root README truth is separately
@@ -468,7 +465,10 @@ describe("bundled preview security boundary", () => {
         "implementation inventory, not current",
       );
       expect(source).toContain(
-        "keystore prekey client is likewise not called by this production",
+        "Identity registration publishes the initial prekey batch",
+      );
+      expect(source).toContain(
+        "messaging\n//!   send path still does not fetch peer prekey bundles",
       );
     };
     assertOwnedPublicTruth(ipcPublicDocs);
@@ -525,7 +525,10 @@ describe("bundled preview security boundary", () => {
       classifyMessagingProductionPath(
         main,
         broker,
-        commands.replace("let v4_dm_enabled = false;", "let v4_dm_enabled = true;"),
+        commands.replace(
+          "RatchetPolicyDecision::LegacyV3 | RatchetPolicyDecision::LegacyV4Dm => {}",
+          "RatchetPolicyDecision::LegacyV4Dm => { encrypt_v4_send(); }\n        RatchetPolicyDecision::LegacyV3 => {}",
+        ),
         state,
       ).dmRatchetEnabled,
     ).toBe(true);
@@ -548,7 +551,8 @@ describe("bundled preview security boundary", () => {
       ).prekeyLifecycleCalled,
     ).toBe(true);
 
-    // Comments and cfg(test)-only fixtures are not production authority.
+    // Comments and cfg(test)-only fixtures do not add production authority; the
+    // live initial publish/replenish path is the baseline either way.
     expect(
       classifyMessagingProductionPath(
         main,
@@ -563,7 +567,7 @@ describe("bundled preview security boundary", () => {
           "}",
         ].join("\n"),
       ).prekeyLifecycleCalled,
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("keeps signed burn alerts classified as implemented-unwired", () => {
@@ -660,8 +664,8 @@ describe("bundled preview security boundary", () => {
       readProductionRustTree("../../osl-hub/src/"),
       readProductionRustTree("../../../crates/ipc/src/"),
     ].join("\n");
-    const productionUsesRemoteWrappedKeys = (source: string): boolean =>
-      /(?:\.(?:post_wrapped_key|fetch_wrapped_key)\s*\(|\bWrappedKeyUpload\s*\{)/u.test(
+    const productionUsesRemoteWrappedKeyUpload = (source: string): boolean =>
+      /(?:\.post_wrapped_key\s*\(|\bWrappedKeyUpload\s*\{)/u.test(
         rustProductionPrefix(source),
       );
     const classifyBurnPath = (
@@ -702,9 +706,11 @@ describe("bundled preview security boundary", () => {
       remoteBlobDeleteAttempted: true,
     });
 
-    // The keyserver client primitives are implemented elsewhere, but no Hub or
-    // IPC production path constructs an upload or calls post/fetch.
-    expect(productionUsesRemoteWrappedKeys(productionRust)).toBe(false);
+    // Wrapped-key fetch is live for attachment open. Burn must still not be
+    // described as a server-held wrapped-key destruction path, and production
+    // still must not construct or upload wrapped keys from this route.
+    expect(productionUsesRemoteWrappedKeyUpload(productionRust)).toBe(false);
+    expect(rustProductionPrefix(productionRust)).toMatch(/\.fetch_wrapped_key\s*\(/u);
 
     const assertBurnTruth = (
       securitySource: string,
@@ -733,11 +739,13 @@ describe("bundled preview security boundary", () => {
 
     for (const syntheticIntegration of [
       "client.post_wrapped_key(sender, &upload)?;",
-      "client.fetch_wrapped_key(recipient, content_id)?;",
       "let upload = WrappedKeyUpload { content_id, ..template };",
     ]) {
-      expect(productionUsesRemoteWrappedKeys(syntheticIntegration)).toBe(true);
+      expect(productionUsesRemoteWrappedKeyUpload(syntheticIntegration)).toBe(true);
     }
+    expect(productionUsesRemoteWrappedKeyUpload(
+      "client.fetch_wrapped_key(recipient, content_id)?;",
+    )).toBe(false);
 
     // One stage-removal mutation per reachable burn stage.
     expect(
@@ -808,7 +816,7 @@ describe("bundled preview security boundary", () => {
 
     // Comment/test-only decoys are not remote wrapped-key production use.
     expect(
-      productionUsesRemoteWrappedKeys(
+      productionUsesRemoteWrappedKeyUpload(
         [
           "// client.post_wrapped_key(sender, &upload)?;",
           "#[cfg(test)]",
@@ -912,7 +920,7 @@ describe("bundled preview security boundary", () => {
     ).toBe(false);
   });
 
-  it("keeps the prekey lifecycle classified as implemented-unwired", () => {
+  it("keeps the prekey lifecycle limited to publish and replenish paths", () => {
     const prekeys = readRelative("../../../crates/keystore/src/prekeys.rs");
     const keystoreClient = readRelative("../../../crates/keystore/src/client.rs");
     const keystoreLib = readRelative("../../../crates/keystore/src/lib.rs");
@@ -971,32 +979,41 @@ describe("bundled preview security boundary", () => {
     expect(wire).toContain("recipient_ik plays both ik and spk");
     expect(wire).toContain("None,\n            &recip.mlkem_pub,");
 
-    expect(productionReferencesPrekeyLifecycle(productionRust)).toBe(false);
+    expect(productionReferencesPrekeyLifecycle(productionRust)).toBe(true);
+    expect(commands).toContain("fn publish_initial_prekeys_after_register(");
+    expect(commands).toContain("fn publish_initial_prekeys_at<");
+    expect(commands).toContain(
+      "client.replenish_prekeys(identity, Some(&state.current_spk), &state.opk_pool)",
+    );
+    expect(commands).toContain("publish_initial_prekeys_after_register(&client, id);");
+    expect(commands).toContain("pub fn run_prekey_replenishment_tick(");
+    expect(commands).toContain("client\n                .replenish_using_state(");
+    expect(commands).toContain("crate::wire_rn::RN_WIRE_IN_ENABLED");
+    expect(rustProductionPrefix(productionRust)).not.toMatch(
+      /\bconsume_opk\s*\(/u,
+    );
 
-    const assertUnwiredPrekeyTruth = (source: string): void => {
+    const assertWiredPrekeyTruth = (source: string): void => {
       expect(source).toContain(
-        "Client-side prekey primitives (implemented-unwired)",
+        "Client-side prekey primitives.",
       );
       expect(source).toContain(
-        "Current Hub/IPC production code neither constructs",
+        "IPC production registration now constructs",
       );
       expect(source).toContain(
-        "it does not\n//! establish a live product prekey lifecycle or handshake",
+        "keyserver initial replenish path after successful identity registration",
       );
       expect(source).toContain(
-        "when a caller invokes them",
+        "IPC also owns server-count-driven\n//! replenish scheduling",
       );
       expect(source).toContain(
         "matching the server protocol's atomic-pop design",
       );
       expect(source).toContain(
-        "reserved\n/// for a future integrated receive-side PQXDH handshake",
-      );
-      expect(source).toContain(
-        "Current production code has no such caller",
+        "broader receive-side product lifecycle work remains\n//! future integration work",
       );
     };
-    assertUnwiredPrekeyTruth(prekeys);
+    assertWiredPrekeyTruth(prekeys);
 
     for (const syntheticProductionReference of [
       "use keystore::PrekeyState;",
@@ -1017,10 +1034,10 @@ describe("bundled preview security boundary", () => {
     }
 
     expect(() =>
-      assertUnwiredPrekeyTruth(
+      assertWiredPrekeyTruth(
         prekeys.replace(
-          "Client-side prekey primitives (implemented-unwired)",
-          "Client-side prekey lifecycle",
+          "IPC production registration now constructs",
+          "Current Hub/IPC production code neither constructs",
         ),
       ),
     ).toThrow();
@@ -1174,7 +1191,7 @@ describe("bundled preview security boundary", () => {
     }
   });
 
-  it("keeps wrapped-key post and fetch classified as implemented-unwired", () => {
+  it("keeps wrapped-key upload classified as implemented-unwired", () => {
     const wrappedKey = readRelative("../../../crates/keystore/src/wrapped_key.rs");
     const signedGet = readRelative("../../../crates/keystore/src/signed_get.rs");
     const keystoreClient = readRelative("../../../crates/keystore/src/client.rs");
@@ -1234,7 +1251,10 @@ describe("bundled preview security boundary", () => {
     expect(wire).toContain("recipient_ik plays both ik and spk");
     expect(wire).toContain("None,\n            &recip.mlkem_pub,");
 
-    expect(productionReferencesWrappedKeyLifecycle(productionRust)).toBe(false);
+    expect(productionReferencesWrappedKeyLifecycle(productionRust)).toBe(true);
+    expect(rustProductionPrefix(productionRust)).not.toMatch(
+      /(?:\.post_wrapped_key\s*\(|\bWrappedKeyUpload\s*\{)/u,
+    );
 
     const assertUnwiredWrappedKeyTruth = (
       postSource: string,

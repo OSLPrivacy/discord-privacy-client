@@ -8902,6 +8902,88 @@ mod keyserver_origin_policy_tests {
     }
 }
 
+#[cfg(test)]
+mod initial_prekey_publish_tests {
+    use super::{
+        publish_initial_prekeys_at, InitialPrekeyPublishFailure, InitialPrekeyPublishOutcome,
+    };
+
+    #[test]
+    fn creates_sealed_state_then_uploads_initial_spk_and_opk_pool() {
+        let dir = tempfile::tempdir().unwrap();
+        let prekey_path = dir.path().join("prekeys.json");
+        let marker_path = dir.path().join("prekeys.initial-published");
+        let sealer = keystore::MemorySealer::new();
+        let identity = keystore::generate_identity("test-user".to_string());
+        let mut calls = 0usize;
+        let mut uploaded_spk = false;
+        let mut uploaded_opks = 0usize;
+
+        let result =
+            publish_initial_prekeys_at(&prekey_path, &marker_path, &sealer, &identity, |state| {
+                calls += 1;
+                uploaded_spk = !state.current_spk.public.iter().all(|b| *b == 0);
+                uploaded_opks = state.opk_pool.len();
+                assert!(
+                    prekey_path.exists(),
+                    "prekey state must be durable before network upload"
+                );
+                Ok(keystore::ReplenishResponse {
+                    user_id: identity.user_id.clone(),
+                    opks_added: state.opk_pool.len() as u32,
+                })
+            });
+
+        assert_eq!(result, Ok(InitialPrekeyPublishOutcome::Published));
+        assert_eq!(calls, 1);
+        assert!(uploaded_spk);
+        assert_eq!(
+            uploaded_opks,
+            keystore::PrekeyConfig::default().opk_pool_target as usize
+        );
+        assert!(marker_path.exists());
+        let loaded = keystore::load_prekey_state(&prekey_path, &sealer).unwrap();
+        assert_eq!(loaded.opk_pool.len(), uploaded_opks);
+    }
+
+    #[test]
+    fn published_marker_suppresses_duplicate_replenish() {
+        let dir = tempfile::tempdir().unwrap();
+        let prekey_path = dir.path().join("prekeys.json");
+        let marker_path = dir.path().join("prekeys.initial-published");
+        let sealer = keystore::MemorySealer::new();
+        let identity = keystore::generate_identity("test-user".to_string());
+        let state = keystore::PrekeyState::new(&identity, keystore::PrekeyConfig::default(), 42);
+        keystore::save_prekey_state(&prekey_path, &state, &sealer).unwrap();
+        std::fs::write(&marker_path, b"published\n").unwrap();
+
+        let result =
+            publish_initial_prekeys_at(&prekey_path, &marker_path, &sealer, &identity, |_| {
+                panic!("already-published prekeys must not be uploaded again")
+            });
+
+        assert_eq!(result, Ok(InitialPrekeyPublishOutcome::AlreadyPublished));
+    }
+
+    #[test]
+    fn upload_failure_leaves_state_retryable_without_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let prekey_path = dir.path().join("prekeys.json");
+        let marker_path = dir.path().join("prekeys.initial-published");
+        let sealer = keystore::MemorySealer::new();
+        let identity = keystore::generate_identity("test-user".to_string());
+
+        let result =
+            publish_initial_prekeys_at(&prekey_path, &marker_path, &sealer, &identity, |_| {
+                Err(keystore::Error::Transport("offline".to_string()))
+            });
+
+        assert_eq!(result, Err(InitialPrekeyPublishFailure::Upload));
+        assert!(prekey_path.exists());
+        assert!(!marker_path.exists());
+    }
+}
+
 /// Best-effort read of `<config_dir>/keyserver.json` → `client_token`.
 /// `keyserver.json` is an OVERRIDE only (dev/staging); a fresh
 /// production install has no such file and registers against an
@@ -8917,6 +8999,118 @@ fn read_keyserver_client_token(dir: &std::path::Path) -> Option<String> {
         .as_str()
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
+}
+
+const PREKEY_STATE_FILE: &str = "prekeys.json";
+const PREKEY_INITIAL_PUBLISHED_MARKER: &str = "prekeys.initial-published";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InitialPrekeyPublishOutcome {
+    AlreadyPublished,
+    Published,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InitialPrekeyPublishFailure {
+    LoadExistingState,
+    SaveState,
+    Upload,
+    MarkPublished,
+}
+
+fn unix_timestamp_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn publish_initial_prekeys_after_register(client: &KeyServerClient, identity: &keystore::Identity) {
+    let dir = match keystore::osl_config_dir() {
+        Ok(dir) => dir,
+        Err(_) => {
+            tracing::warn!(
+                "OSL: ensure_keyserver_registered: cannot resolve config dir; \
+                 skipping initial prekey publish"
+            );
+            return;
+        }
+    };
+    let prekey_path = dir.join(PREKEY_STATE_FILE);
+    let marker_path = dir.join(PREKEY_INITIAL_PUBLISHED_MARKER);
+    let sealer = keystore::select_best_sealer();
+    match publish_initial_prekeys_at(
+        &prekey_path,
+        &marker_path,
+        sealer.as_ref(),
+        identity,
+        |state| client.replenish_prekeys(identity, Some(&state.current_spk), &state.opk_pool),
+    ) {
+        Ok(InitialPrekeyPublishOutcome::AlreadyPublished) => {
+            tracing::info!("OSL: ensure_keyserver_registered: initial prekeys already published");
+        }
+        Ok(InitialPrekeyPublishOutcome::Published) => {
+            tracing::info!("OSL: ensure_keyserver_registered: initial prekeys published");
+        }
+        Err(failure) => {
+            tracing::warn!(
+                failure = ?failure,
+                "OSL: ensure_keyserver_registered: initial prekey publish skipped"
+            );
+        }
+    }
+}
+
+fn publish_initial_prekeys_at<F>(
+    prekey_path: &Path,
+    marker_path: &Path,
+    sealer: &dyn keystore::Sealer,
+    identity: &keystore::Identity,
+    mut upload: F,
+) -> Result<InitialPrekeyPublishOutcome, InitialPrekeyPublishFailure>
+where
+    F: FnMut(&keystore::PrekeyState) -> keystore::Result<keystore::ReplenishResponse>,
+{
+    if marker_path.exists() {
+        if prekey_path.exists() {
+            let existing = keystore::load_prekey_state(prekey_path, sealer)
+                .map_err(|_| InitialPrekeyPublishFailure::LoadExistingState)?;
+            if !prekey_state_is_bound_to_identity(&existing, identity) {
+                return Err(InitialPrekeyPublishFailure::LoadExistingState);
+            }
+            return Ok(InitialPrekeyPublishOutcome::AlreadyPublished);
+        }
+        return Err(InitialPrekeyPublishFailure::LoadExistingState);
+    }
+
+    let state = if prekey_path.exists() {
+        let existing = keystore::load_prekey_state(prekey_path, sealer)
+            .map_err(|_| InitialPrekeyPublishFailure::LoadExistingState)?;
+        if !prekey_state_is_bound_to_identity(&existing, identity) {
+            return Err(InitialPrekeyPublishFailure::LoadExistingState);
+        }
+        existing
+    } else {
+        let state = keystore::PrekeyState::new(
+            identity,
+            keystore::PrekeyConfig::default(),
+            unix_timestamp_seconds(),
+        );
+        keystore::save_prekey_state(prekey_path, &state, sealer)
+            .map_err(|_| InitialPrekeyPublishFailure::SaveState)?;
+        state
+    };
+
+    upload(&state).map_err(|_| InitialPrekeyPublishFailure::Upload)?;
+    if let Some(parent) = marker_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|_| InitialPrekeyPublishFailure::MarkPublished)?;
+        }
+    }
+    std::fs::write(marker_path, b"published\n")
+        .map_err(|_| InitialPrekeyPublishFailure::MarkPublished)?;
+    Ok(InitialPrekeyPublishOutcome::Published)
 }
 
 /// REGISTER-FIX: the single shared implementation of "install the
@@ -9095,7 +9289,7 @@ pub fn ensure_keyserver_registered(state: &AppState, base_url: &str, client_toke
                 .registration_alert
                 .lock()
                 .expect("registration_alert mutex poisoned") = None;
-            ensure_prekeys_after_registration(&client, id);
+            publish_initial_prekeys_after_register(&client, id);
         };
 
         if let Some(proof) = usable_proof {
@@ -9189,7 +9383,7 @@ pub fn ensure_keyserver_registered(state: &AppState, base_url: &str, client_toke
                         .registration_alert
                         .lock()
                         .expect("registration_alert mutex poisoned") = None;
-                    ensure_prekeys_after_registration(&client, id);
+                    publish_initial_prekeys_after_register(&client, id);
                 }
                 // REGISTER-FIX: the ONE response we must NOT warn-swallow.
                 // 403 = our user_id is held by a DIFFERENT Ed25519 key
