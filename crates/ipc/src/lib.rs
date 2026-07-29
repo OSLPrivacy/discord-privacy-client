@@ -34,6 +34,7 @@
 //! `IpcError::Rejected` once the protocol is stable.
 
 pub mod app_preferences;
+pub mod at_rest_boundary;
 pub mod attachment_wire;
 pub mod burned_scopes_file;
 pub mod cipher_store_client;
@@ -75,6 +76,7 @@ pub mod wire_v2;
 // additive — the v=2/v=3/v=4/v=5 paths above are untouched.
 pub mod wire_rn;
 
+pub use at_rest_boundary::AtRestBoundary;
 pub use commands::{
     AeadOpenRequest, AeadSealRequest, AeadSealResponse, FetchPubkeysResponse,
     GenerateIdentityResponse, RegisterResponse, StatusResponse, StegoDecodeResponse,
