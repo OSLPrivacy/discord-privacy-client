@@ -45,6 +45,7 @@ pub mod fresh_start;
 pub mod license_lifecycle;
 pub mod log_id;
 pub mod main_password;
+pub mod mandatory_storage_key_policy;
 pub mod membership;
 pub mod migration;
 pub mod peer_map;
