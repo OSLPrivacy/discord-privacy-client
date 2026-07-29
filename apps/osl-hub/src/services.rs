@@ -6,6 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::account_identity_authority::AccountServiceIdentityAuthority;
+use crate::core_bridge::HubCoreState;
 use crate::models::{
     DemoConnectionState, EmailProvider, LinkedAccountDemo, LinkedServiceDemo, ServiceCategory,
     ServiceKind, ServiceLaunchState,
@@ -193,6 +195,42 @@ impl ServiceRegistryState {
         } else {
             Err("service account is not registered for the active OSL identity".to_owned())
         }
+    }
+
+    /// Re-derive the exact local identity authority before issuing an opaque
+    /// owner/service/account binding. The caller cannot nominate an owner
+    /// string independently of the loaded identity's public keys.
+    pub fn require_identity_authority(
+        &self,
+        core: &HubCoreState,
+        service_id: ServiceKind,
+        account_id: &str,
+    ) -> Result<AccountServiceIdentityAuthority, String> {
+        let _account_switch = core
+            .osl
+            .account_switch_lock
+            .lock()
+            .map_err(|_| "OSL identity switch is unavailable".to_owned())?;
+        let identity = core
+            .osl
+            .identity
+            .lock()
+            .map_err(|_| "OSL identity state is unavailable".to_owned())?
+            .clone()
+            .ok_or_else(|| "OSL identity is not loaded".to_owned())?;
+        let canonical_owner = keystore::native_user_id(&identity);
+        if identity.user_id != canonical_owner {
+            return Err("active OSL identity authority is invalid".to_owned());
+        }
+        let cache = self.locked_cache()?;
+        if !cache.accounts.iter().any(|account| {
+            account.service_id == service_id
+                && account.id == account_id
+                && account.owner_osl_user_id.as_deref() == Some(canonical_owner.as_str())
+        }) {
+            return Err("service account is not registered for the active OSL identity".to_owned());
+        }
+        AccountServiceIdentityAuthority::issue(&identity, service_id, account_id)
     }
 
     #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
