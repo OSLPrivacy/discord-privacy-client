@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(feature = "signal-qa-shell")]
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use osl_privacy_hub::broker::{
     self, DecryptedLocalProtectedMessage, HubBrokerState, OpenedHubAttachment,
     OpenedPeerProseMessage, PreparedCoreMessage, PreparedHubAttachment,
@@ -25,7 +27,9 @@ use osl_privacy_hub::native_apps::{
     MullvadActionResult, MullvadStatus, NativeAppId, NativeAppStatus, NativeInstallResult,
     ProtectedBrowserImportResult,
 };
-use osl_privacy_hub::native_window_host::{NativeWindowHostResult, NativeWindowHostState};
+use osl_privacy_hub::native_window_host::{
+    run_signal_guardian_if_requested, NativeWindowHostResult, NativeWindowHostState,
+};
 use osl_privacy_hub::osl_chat;
 use osl_privacy_hub::osl_profile::{HubProfileDto, HubProfileInput};
 use osl_privacy_hub::password_lifecycle::{
@@ -49,14 +53,21 @@ use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
 use osl_privacy_hub::service_host::{self, ServiceHostState};
 use osl_privacy_hub::service_scope_index::{ImmutableServiceBurnManifest, ServiceScopeIndexState};
 use osl_privacy_hub::services::ServiceRegistryState;
+use osl_privacy_hub::signal_destination_binding::{
+    SignalBindingReceipt, SignalDestinationBindingState,
+};
 use osl_privacy_hub::startup_gate::{self, HubGateUnlockResult, VerifiedGateRole};
 use osl_privacy_hub::updates::{
     bounded_plain_notes, bounded_version, RELEASES_URL, SOURCE_REPOSITORY_URL,
 };
 use serde::Serialize;
+#[cfg(feature = "signal-qa-shell")]
+use std::io::Write;
 use std::sync::Mutex;
 use tauri::{Manager, State};
 use tauri_plugin_updater::UpdaterExt;
+#[cfg(feature = "signal-qa-shell")]
+use zeroize::{Zeroize, Zeroizing};
 
 #[cfg(windows)]
 mod window_border;
@@ -986,29 +997,78 @@ async fn host_native_app_window(
         .app_local_data_dir()
         .map_err(|_| "The OSL-owned native profile directory is unavailable".to_owned())?;
     let operation_app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let result = tauri::async_runtime::spawn_blocking(move || {
         operation_app
             .state::<NativeWindowHostState>()
             .host(app_id, &profile_root, &owner, parent)
     })
     .await
-    .map_err(|_| "The experimental native host operation was interrupted".to_owned())
+    .map_err(|_| "The experimental native host operation was interrupted".to_owned())?;
+    let binding_state = app.state::<SignalDestinationBindingState>();
+    if result.status == osl_privacy_hub::native_window_host::NativeWindowHostStatus::ExistingSession
+    {
+        if let Some(binding) = app
+            .state::<NativeWindowHostState>()
+            .current_signal_binding()
+        {
+            binding_state
+                .claim_native_window(binding.host_generation, binding.window_identity_sha256);
+        } else {
+            binding_state.invalidate_window();
+        }
+    } else {
+        binding_state.invalidate_window();
+    }
+    Ok(result)
 }
 
 #[tauri::command]
 fn resize_native_app_window(app: tauri::AppHandle) -> Result<NativeWindowHostResult, String> {
     let parent = main_window_hwnd(&app)?;
-    Ok(app.state::<NativeWindowHostState>().resize(parent))
+    let result = app.state::<NativeWindowHostState>().resize(parent);
+    if result.status == osl_privacy_hub::native_window_host::NativeWindowHostStatus::Failed {
+        app.state::<SignalDestinationBindingState>()
+            .invalidate_window();
+    }
+    Ok(result)
 }
 
 #[tauri::command]
 fn focus_native_app_window(app: tauri::AppHandle) -> NativeWindowHostResult {
-    app.state::<NativeWindowHostState>().focus()
+    let result = app.state::<NativeWindowHostState>().focus();
+    let binding = app.state::<SignalDestinationBindingState>();
+    if result.status == osl_privacy_hub::native_window_host::NativeWindowHostStatus::Focused {
+        // A focus transition is not UIA proof. Require a new native observation
+        // of the exact destination and composer after focus settles.
+        binding.invalidate_focus_transition();
+    } else {
+        binding.invalidate_window();
+    }
+    result
 }
 
 #[tauri::command]
 fn detach_native_app_window(app: tauri::AppHandle) -> NativeWindowHostResult {
-    app.state::<NativeWindowHostState>().detach()
+    let result = app.state::<NativeWindowHostState>().detach();
+    app.state::<SignalDestinationBindingState>()
+        .invalidate_window();
+    result
+}
+
+/// Read-only, renderer-safe view. Evidence submission and send authorization
+/// are intentionally unavailable over IPC and remain native-only.
+#[tauri::command]
+fn get_signal_protected_send_readiness(app: tauri::AppHandle) -> SignalBindingReceipt {
+    let state = app.state::<SignalDestinationBindingState>();
+    if let Some(binding) = app
+        .state::<NativeWindowHostState>()
+        .current_signal_binding()
+    {
+        state.verify_native_window(binding.host_generation, binding.window_identity_sha256);
+    } else {
+        state.invalidate_window();
+    }
+    state.readiness()
 }
 
 fn with_indexed_context_write<T>(
@@ -2240,7 +2300,132 @@ async fn burn_active_hub_context(
     .map_err(|_| "OSL active-context burn worker failed".to_owned())?
 }
 
+#[cfg(feature = "signal-qa-shell")]
+fn bootstrap_signal_qa_device_identity(
+    state: &HubCoreState,
+    config_dir: &std::path::Path,
+) -> Result<(), String> {
+    const SECRET_FILE: &str = "signal-qa-device-secret.v1";
+    let secret_path = config_dir.join(SECRET_FILE);
+    let sealer = keystore::select_best_sealer();
+    if !matches!(
+        sealer.method_label(),
+        keystore::METHOD_TPM | keystore::METHOD_KEYRING
+    ) {
+        return Err("Signal QA requires persistent TPM or operating-system credential storage".to_owned());
+    }
+    let password = if secret_path.is_file() {
+        let sealed = std::fs::read(&secret_path)
+            .map_err(|_| "Signal QA device secret is unreadable".to_owned())?;
+        let plaintext = Zeroizing::new(
+            sealer
+                .unseal(&sealed)
+                .map_err(|_| "Signal QA device secret authentication failed".to_owned())?,
+        );
+        let value = std::str::from_utf8(&plaintext)
+            .map_err(|_| "Signal QA device secret is malformed".to_owned())?;
+        Zeroizing::new(value.to_owned())
+    } else {
+        std::fs::create_dir_all(config_dir)
+            .map_err(|_| "Signal QA configuration storage is unavailable".to_owned())?;
+        let random = Zeroizing::new(crypto::random::random_bytes(32));
+        let value = Zeroizing::new(URL_SAFE_NO_PAD.encode(&*random));
+        let sealed = sealer
+            .seal(value.as_bytes())
+            .map_err(|_| "Signal QA device secret could not be sealed".to_owned())?;
+        let temporary_tag = URL_SAFE_NO_PAD.encode(crypto::random::random_bytes(9));
+        let temporary = config_dir.join(format!(".signal-qa-device-secret.v1.{temporary_tag}.tmp"));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|_| "Signal QA device secret staging was rejected".to_owned())?;
+        if file.write_all(&sealed).and_then(|_| file.sync_all()).is_err() {
+            drop(file);
+            let _ = std::fs::remove_file(&temporary);
+            return Err("Signal QA device secret could not be persisted".to_owned());
+        }
+        drop(file);
+        if std::fs::rename(&temporary, &secret_path).is_err() {
+            let _ = std::fs::remove_file(&temporary);
+            return Err("Signal QA device secret could not be committed".to_owned());
+        }
+        value
+    };
+
+    let before = password_lifecycle::readiness(state);
+    if !before.identity_loaded && !before.main_password_set {
+        let mut identity = password_lifecycle::create_native_identity(state)?;
+        if let Some(phrase) = identity.identity_recovery_phrase.as_mut() {
+            phrase.zeroize();
+        }
+        identity.identity_recovery_phrase = None;
+    } else if !before.identity_loaded {
+        return Err("Signal QA found an existing password without its disposable identity".to_owned());
+    }
+    let current = password_lifecycle::readiness(state);
+    if !current.main_password_set {
+        let mut setup = password_lifecycle::setup_main_password(state, password.to_string())?;
+        setup.password_recovery_phrase.zeroize();
+    } else if !current.unlocked {
+        core_bridge::unlock_main_password(state, password.to_string())?;
+    }
+    let ready = core_bridge::readiness(state);
+    if !ready.identity_loaded || !ready.password_gate_required || !ready.unlocked {
+        return Err("Signal QA device identity did not reach a verified ready state".to_owned());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "signal-qa-shell")]
 fn main() {
+    // This build flavor creates one disposable, OS-sealed QA identity and
+    // exposes only exact Signal native-window/binding authority.
+    if run_signal_guardian_if_requested() {
+        return;
+    }
+    tauri::Builder::default()
+        .on_page_load(|webview, _| {
+            #[cfg(windows)]
+            let _ = window_border::suppress_accent_border(webview);
+        })
+        .setup(|app| {
+            let config_dir = app
+                .path()
+                .app_config_dir()
+                .map_err(|error| format!("could not resolve app config directory: {error}"))?;
+            keystore::set_active_account_dir(None);
+            keystore::set_base_dir_override(Some(config_dir.join("osl-core")));
+            identity_registry::select_active_identity_before_bootstrap()?;
+            let core = HubCoreState::bootstrap_from_disk();
+            bootstrap_signal_qa_device_identity(&core, &config_dir)?;
+            app.manage(core);
+            app.manage(NativeWindowHostState::default());
+            app.manage(SignalDestinationBindingState::default());
+            app.manage(HubAccountSessionState::default());
+            schedule_deferred_registration(app.handle());
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            list_native_apps,
+            host_native_app_window,
+            resize_native_app_window,
+            focus_native_app_window,
+            detach_native_app_window,
+            get_signal_protected_send_readiness
+        ])
+        .run(tauri::generate_context!("tauri.signal-qa.conf.json"))
+        .expect("error while running OSL Signal QA");
+}
+
+#[cfg(not(feature = "signal-qa-shell"))]
+fn main() {
+    // The crash-restoration guardian is the same hash-pinned executable in a
+    // private, fixed-argument mode. It must exit before plugins, windows,
+    // profile state, or any other desktop authority is initialized.
+    if run_signal_guardian_if_requested() {
+        return;
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             if let Some(window) = app.get_webview_window("main") {
@@ -2288,6 +2473,7 @@ fn main() {
             app.manage(HubIdentityRegistryState::default());
             app.manage(ServiceHostState::default());
             app.manage(NativeWindowHostState::default());
+            app.manage(SignalDestinationBindingState::default());
             app.manage(HubAccountSessionState::default());
             app.manage(HubUpdaterState::default());
             app.manage(HubNotificationState::default());
@@ -2373,6 +2559,7 @@ fn main() {
             resize_native_app_window,
             focus_native_app_window,
             detach_native_app_window,
+            get_signal_protected_send_readiness,
             create_service_account,
             open_service_host,
             close_service_host,

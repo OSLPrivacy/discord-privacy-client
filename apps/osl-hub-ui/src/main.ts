@@ -98,8 +98,18 @@ import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./
 import { applyAccessibilityPreferences, loadAccessibilityPreferences, saveAccessibilityPreferences, type AccessibilityPreferences, type TextScale } from "./accessibility-preference";
 import { applyThemeMod, parseThemeMod, themeModStorageKey, type ThemeMod } from "./theme-mod";
 import { oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
+import {
+  createSignalQaShell,
+  createSignalQaAttestationView,
+  signalQaTestDefinitions,
+  type SignalQaCheckStatus,
+  type SignalQaNativeReason,
+  type SignalQaNativeReceipt,
+  type SignalQaShellState,
+} from "./signal-qa-shell";
+import { getSignalProtectedSendReadiness } from "./signal-qa-ipc";
 
-type Route = "onboarding" | "home" | "service" | "settings" | "osl-chat";
+type Route = "onboarding" | "home" | "service" | "settings" | "osl-chat" | "signal-qa";
 type OnboardingRoute = "welcome" | "create" | "import" | "unlock" | "recovery" | "detected" | "browser" | "mullvad" | "sending" | "passwords" | "burnpass" | "privacy" | "scrub" | "decoy";
 type SettingsSection = "account" | "apps" | "scrub" | "cleanup" | "notifications" | "appearance" | "accessibility" | "developer" | "about";
 type SavedAccountMode = "ask" | "use" | "clean";
@@ -119,6 +129,7 @@ function requireRoot(): HTMLDivElement {
   return element;
 }
 const root = requireRoot();
+const signalQaShellEnabled = import.meta.env.VITE_OSL_SIGNAL_QA_SHELL === "1";
 
 function manualSendingAnimationMarkup(mode: SendMode = "clipboard"): string {
   const normalized = mode === "manual" ? "clipboard" : mode;
@@ -228,6 +239,41 @@ let autoScrubDryRunReceipt: ProviderDeletionReceipt | null = null;
 let autoScrubExecutionReceipt: ProviderDeletionReceipt | null = null;
 let autoScrubError = "";
 let lastFocusKey = "";
+function signalQaReceipt(receipt: Awaited<ReturnType<typeof hostNativeAppWindow>>): SignalQaNativeReceipt {
+  const statuses: SignalQaNativeReceipt["status"][] = ["existingSession", "focused", "detached", "failed"];
+  const reasons: SignalQaNativeReason[] = [
+    "none", "platformUnsupported", "secondaryInstanceUnverified", "existingSessionNotFound",
+    "existingSessionAmbiguous", "appNotInstalled", "launchFailed", "windowNotFound",
+    "windowIdentityChanged", "ownerWindowUnavailable", "hostWindowUnavailable",
+    "windowOperationRejected", "notHosted",
+  ];
+  const reasonAlias = receipt.reason === "existingSessionUnavailable" ? "existingSessionNotFound" : receipt.reason;
+  return {
+    id: "signal",
+    status: statuses.includes(receipt.status as SignalQaNativeReceipt["status"])
+      ? receipt.status as SignalQaNativeReceipt["status"]
+      : "failed",
+    reason: reasons.includes(reasonAlias as SignalQaNativeReason)
+      ? reasonAlias as SignalQaNativeReason
+      : "windowOperationRejected",
+    mode: receipt.mode === "existingNativeCompanion" ? receipt.mode : "none",
+    captureProtected: receipt.captureProtected ?? true,
+  };
+}
+
+const signalQaShell = createSignalQaShell({
+  listNativeApps: loadNativeApps,
+  hostNativeAppWindow: async (appId) => signalQaReceipt(await hostNativeAppWindow(appId)),
+  focusNativeAppWindow: async () => signalQaReceipt(await focusNativeAppWindow()),
+  detachNativeAppWindow: async () => signalQaReceipt(await detachNativeAppWindow()),
+});
+let signalQaState: SignalQaShellState = signalQaShell.state();
+let signalQaOperationPending = false;
+let signalQaExpiryTimer: ReturnType<typeof setTimeout> | null = null;
+const signalQaAttestation = createSignalQaAttestationView({
+  getSignalProtectedSendReadiness,
+  nowMs: () => Date.now(),
+});
 let lastWorkspaceMarkup: string | null = null;
 let lastWorkspaceViewKey = "";
 let deferredBackgroundRender = false;
@@ -660,7 +706,7 @@ function onboardingContent(): string {
       <img class="osl-logo signin-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/>
       <h1 id="route-heading" tabindex="-1">${partialIdentity ? "Finish your account" : returning ? "Sign in" : "Create your OSL account"}</h1>
       <button class="button primary signin-primary" data-onboarding="${primaryRoute}">${primaryLabel}</button>
-      <button class="signin-link" data-onboarding="import">Use a recovery phrase</button>
+      ${signalQaShellEnabled ? "" : `<button class="signin-link" data-onboarding="import">Use a recovery phrase</button>`}
       ${returning ? `<div class="signin-divider" aria-hidden="true"><span></span></div><p class="signin-new">New to OSL?</p><button class="button signin-create" data-onboarding="create">Create account</button>` : ""}
     </section>`;
   }
@@ -1038,7 +1084,18 @@ function bindOnboarding(): void {
   bindPasswordForm();
   bindImportForm();
   const recoveryContinue = document.querySelector<HTMLButtonElement>("#recovery-continue");
-  recoveryContinue?.addEventListener("click", () => { recoveryBundle = null; onboardingRoute = "browser"; render(); void refreshBrowserImportReadiness(); });
+  recoveryContinue?.addEventListener("click", () => {
+    recoveryBundle = null;
+    if (signalQaShellEnabled) {
+      route = "signal-qa";
+      render();
+      if (signalQaState.phase === "idle") void runSignalQaAction("open");
+      return;
+    }
+    onboardingRoute = "browser";
+    render();
+    void refreshBrowserImportReadiness();
+  });
   document.querySelector<HTMLButtonElement>("#continue-detected-apps")?.addEventListener("click", () => {
     if (savedAccountMode === "ask") savedAccountMode = nativeApps.some((app) => app.availability === "installed") ? "use" : "clean";
     if (savedAccountMode === "use") nativeApps.filter((app) => app.availability === "installed").forEach((app) => savedNativeApps.add(app.id));
@@ -1263,8 +1320,8 @@ function bindPasswordForm(): void {
         if (createStatus) createStatus.textContent = "Loading your account…";
         const [loadedCore, linkedServices, roleStatus] = await Promise.all([
           loadCoreIntegration(),
-          loadLinkedServices().catch(() => services),
-          loadHubPasswordRoleStatus().catch(() => null),
+          signalQaShellEnabled ? Promise.resolve([]) : loadLinkedServices().catch(() => services),
+          signalQaShellEnabled ? Promise.resolve(null) : loadHubPasswordRoleStatus().catch(() => null),
         ]);
         core = loadedCore;
         // The locked bootstrap intentionally cannot read the encrypted
@@ -1313,9 +1370,13 @@ function bindPasswordForm(): void {
         }
         if (!gate.readiness?.unlocked) throw new Error("OSL did not unlock");
         core = await loadCoreIntegration();
-        services = await loadLinkedServices().catch(() => services);
-        passwordRoleStatus = await loadHubPasswordRoleStatus().catch(() => null);
-        if (onboardingComplete) {
+        if (!signalQaShellEnabled) {
+          services = await loadLinkedServices().catch(() => services);
+          passwordRoleStatus = await loadHubPasswordRoleStatus().catch(() => null);
+        }
+        if (signalQaShellEnabled) {
+          route = "signal-qa";
+        } else if (onboardingComplete) {
           route = "home";
           void refreshUpdateStatus();
           void refreshIdentitySlots();
@@ -1327,6 +1388,7 @@ function bindPasswordForm(): void {
       secret = "";
       form.removeAttribute("aria-busy");
       render();
+      if (route === "signal-qa" && signalQaState.phase === "idle") void runSignalQaAction("open");
       if (route === "onboarding" && onboardingRoute === "browser") void refreshBrowserImportReadiness();
     } catch (failure) {
       secret = "";
@@ -1342,9 +1404,13 @@ function bindPasswordForm(): void {
       core = refreshedCore;
       const readiness = core.readiness;
       if (readiness.bootstrapStatus === "ready" && readiness.unlocked) {
-        services = await loadLinkedServices().catch(() => services);
-        passwordRoleStatus = await loadHubPasswordRoleStatus().catch(() => null);
-        if (form.dataset.passwordMode === "setup" || !onboardingComplete) {
+        if (!signalQaShellEnabled) {
+          services = await loadLinkedServices().catch(() => services);
+          passwordRoleStatus = await loadHubPasswordRoleStatus().catch(() => null);
+        }
+        if (signalQaShellEnabled) {
+          route = "signal-qa";
+        } else if (form.dataset.passwordMode === "setup" || !onboardingComplete) {
           onboardingRoute = pendingOnboardingRoute() ?? "browser";
           route = "onboarding";
           showToast("Password is configured. Continue setup.");
@@ -1352,6 +1418,7 @@ function bindPasswordForm(): void {
           route = "home";
         }
         render();
+        if (route === "signal-qa" && signalQaState.phase === "idle") void runSignalQaAction("open");
         if (route === "onboarding" && onboardingRoute === "browser") void refreshBrowserImportReadiness();
         return;
       }
@@ -1439,6 +1506,10 @@ function bindImportForm(): void {
 }
 
 function renderWorkspace(): void {
+  if (route === "signal-qa") {
+    renderSignalQaWorkspace();
+    return;
+  }
   const protectedSheet = activeEmbeddedHost
     ? protectedSheetMode === "local"
       ? localProtectedSheetMarkup(localProtectedSheet, setup.sendMode)
@@ -1471,6 +1542,94 @@ function renderWorkspace(): void {
       if (dialog && !dialog.open) dialog.showModal();
     }
   });
+}
+
+function signalQaFailureCopy(state: SignalQaShellState): string {
+  if (state.failure === "appNotInstalled") return "Official Signal Desktop is not installed for this Windows user.";
+  if (state.nativeReason === "existingSessionNotFound") return "No existing Signal Desktop window was found. Open the already-linked app, then retry.";
+  if (state.nativeReason === "existingSessionAmbiguous") return "More than one Signal window matched. Close the extra Signal window, then retry.";
+  if (state.nativeReason === "windowIdentityChanged") return "Signal's verified window identity changed. OSL released the claim.";
+  if (state.failure === "catalogUnavailable") return "OSL could not verify the installed-app catalog.";
+  if (state.failure === "receiptMismatch") return "Signal returned an unexpected native-window receipt. OSL failed closed.";
+  if (state.failure === "focusRejected") return "OSL could not safely focus the claimed Signal window.";
+  if (state.failure === "detachRejected") return "OSL could not verify that the Signal window was detached.";
+  if (state.failure === "busy") return "A Signal window operation is already in progress.";
+  return "OSL could not safely claim the existing Signal Desktop window.";
+}
+
+function signalQaStatusCopy(status: SignalQaCheckStatus): string {
+  if (status === "passed") return "Passed";
+  if (status === "failed") return "Failed";
+  if (status === "running") return "Running";
+  if (status === "expired") return "Expired";
+  if (status === "notRun") return "Not run";
+  return "Blocked";
+}
+
+function renderSignalQaWorkspace(): void {
+  const state = signalQaState;
+  const active = state.phase === "open";
+  const semantic = signalQaAttestation.state(active);
+  if (signalQaExpiryTimer !== null) {
+    clearTimeout(signalQaExpiryTimer);
+    signalQaExpiryTimer = null;
+  }
+  if (semantic.validForMs > 0) {
+    signalQaExpiryTimer = setTimeout(() => {
+      signalQaExpiryTimer = null;
+      if (route === "signal-qa") render();
+    }, Math.ceil(semantic.validForMs) + 1);
+  }
+  const busy = signalQaOperationPending || state.phase === "checking" || state.phase === "opening";
+  const headline = active ? "Signal Desktop claimed" : state.phase === "failed" ? "Signal needs attention" : busy ? "Locating Signal Desktop" : "Signal Desktop detached";
+  const detail = state.phase === "failed"
+    ? signalQaFailureCopy(state)
+    : active
+      ? "OSL is holding the exact existing Signal window for this Windows session."
+      : busy
+        ? "Verifying the installed app and its existing linked window."
+        : "Your Signal process and linked profile remain open and unchanged.";
+  const actions = active
+    ? `<button class="button primary" id="signal-qa-focus" type="button" ${busy ? "disabled" : ""}>Focus Signal</button><button class="button" id="signal-qa-detach" type="button" ${busy ? "disabled" : ""}>Detach</button>`
+    : `<button class="button primary" id="signal-qa-open" type="button" ${busy ? "disabled" : ""}>${busy ? "Locating…" : "Retry claim"}</button>`;
+  const bindingRows = [
+    ["Exact window", semantic.windowClaim],
+    ["Destination", semantic.destination],
+    ["Composer", semantic.composer],
+    ["Freshness", semantic.freshness],
+  ] as const;
+  const protectedAvailable = semantic.protectedComposer === "available";
+  const bindingMarkup = bindingRows.map(([label, status]) => `<div data-status="${status}"><dt>${label}</dt><dd>${signalQaStatusCopy(status)}</dd></div>`).join("");
+  const backendReceiptMarkup = `<div><dt>Receipt</dt><dd>${semantic.bindingStatus ?? "absent"} · ${semantic.bindingReason ?? "none"}</dd></div><div><dt>Generation</dt><dd>${semantic.lifecycleGeneration === null ? "—" : `${semantic.lifecycleGeneration} / ${semantic.attestationGeneration}`}</dd></div><div><dt>Validity</dt><dd>${semantic.validForMs > 0 ? `${Math.ceil(semantic.validForMs)} ms` : "None"}</dd></div>`;
+  const testMarkup = signalQaTestDefinitions.map(({ id, label }) => {
+    const status = semantic.tests[id];
+    return `<li data-status="${status}"><span>${label}</span><strong>${signalQaStatusCopy(status)}</strong></li>`;
+  }).join("");
+  root.innerHTML = `<div class="app-frame">${desktopTitlebar()}<main class="signal-qa-workspace" id="route-heading" tabindex="-1"><header class="signal-qa-header"><span class="signal-qa-mark" aria-hidden="true">${serviceLogo("signal")}</span><span><small>OSL native QA</small><strong>Signal</strong></span><span class="signal-qa-status ${active ? "ready" : state.phase === "failed" ? "failed" : "pending"}" role="status">${active ? "Claimed" : state.phase === "failed" ? "Blocked" : busy ? "Checking" : "Detached"}</span></header><section class="signal-qa-stage" aria-labelledby="signal-qa-title"><div><div class="signal-qa-state-mark ${active ? "ready" : state.phase === "failed" ? "failed" : "pending"}" aria-hidden="true"><span></span></div><p class="eyebrow">Existing session only</p><h1 id="signal-qa-title">${headline}</h1><p>${detail}</p><div class="signal-qa-actions">${actions}</div></div><aside class="signal-qa-attestation" aria-labelledby="signal-qa-attestation-title"><span class="eyebrow">Protected composer</span><h2 id="signal-qa-attestation-title">${protectedAvailable ? "Available" : "Fail-closed"}</h2><p>${protectedAvailable ? "A fresh backend receipt binds this exact window, destination, recipient set, and composer generation." : "Waiting for a fresh backend receipt that binds the exact destination, recipient set, and composer."}</p><dl>${bindingMarkup}${backendReceiptMarkup}</dl></aside></section><section class="signal-qa-tests" aria-labelledby="signal-qa-tests-title"><header><div><p class="eyebrow">Semantic receipts only</p><h2 id="signal-qa-tests-title">Live test matrix</h2></div><p>No names, message contents, phone numbers, paths, or Signal private state.</p></header><ul>${testMarkup}</ul></section><dl class="signal-qa-receipt" aria-label="Signal QA capability receipt"><div><dt>Desktop app</dt><dd>Official installed Signal only</dd></div><div><dt>Session</dt><dd>Existing linked session</dd></div><div><dt>Screen capture</dt><dd>Not protected</dd></div><div><dt>Protected send</dt><dd>${protectedAvailable ? "Fresh exact binding verified" : "Unavailable until fresh exact binding"}</dd></div></dl><p class="signal-qa-safety">No browser route, credentials, relinking, profile creation, private-storage access, or message-content logging.</p></main></div>`;
+  bindSignalQaWorkspace();
+}
+
+async function runSignalQaAction(action: "open" | "focus" | "detach"): Promise<void> {
+  if (signalQaOperationPending) return;
+  signalQaOperationPending = true;
+  const operation = action === "open" ? signalQaShell.open() : action === "focus" ? signalQaShell.focus() : signalQaShell.close();
+  signalQaState = signalQaShell.state();
+  render();
+  try {
+    signalQaState = await operation;
+    activeNativeHostId = signalQaState.phase === "open" ? "signal" : null;
+    if (signalQaState.phase === "open") await signalQaAttestation.refresh(true);
+    else signalQaAttestation.clear();
+  } finally {
+    signalQaOperationPending = false;
+    render();
+  }
+}
+
+function bindSignalQaWorkspace(): void {
+  document.querySelector<HTMLButtonElement>("#signal-qa-open")?.addEventListener("click", () => void runSignalQaAction("open"));
+  document.querySelector<HTMLButtonElement>("#signal-qa-focus")?.addEventListener("click", () => void runSignalQaAction("focus"));
+  document.querySelector<HTMLButtonElement>("#signal-qa-detach")?.addEventListener("click", () => void runSignalQaAction("detach"));
 }
 
 function appLauncherStrip(): string {
@@ -4268,7 +4427,7 @@ function startReadyWorkspaceLoads(): void {
       showToast("Windows capture resistance could not be restored");
     });
   }
-  if (route === "onboarding") return;
+  if (route === "onboarding" || route === "signal-qa") return;
   void loadHubPasswordRoleStatus().then((status) => { passwordRoleStatus = status; if (route === "settings" && settingsSection === "account") renderWhenIdle(); }).catch(() => undefined);
   void refreshUpdateStatus(true);
   void loadFriendProfile().then((profile) => { friendCode = profile?.friendCode ?? null; friendDisplayId = profile?.oslUserId ?? null; if (route === "home") renderWhenIdle(); });
@@ -4304,6 +4463,20 @@ async function bootstrap(): Promise<void> {
     }
     core = coreIntegration;
     refreshActiveBrowserAccountsReady();
+    if (signalQaShellEnabled) {
+      if (core.readiness.bootstrapStatus === "setupRequired") {
+        onboardingRoute = "welcome";
+        route = "onboarding";
+      } else if (core.readiness.bootstrapStatus === "passwordRequired") {
+        onboardingRoute = "unlock";
+        route = "onboarding";
+      } else {
+        route = "signal-qa";
+      }
+      renderNow();
+      if (route === "signal-qa" && signalQaState.phase === "idle") void runSignalQaAction("open");
+      return;
+    }
     const preferencesRequest = withNativeDeadline(loadOnboardingPreferences(), "Load OSL preferences", bootPreferenceDeadlineMs).catch(() => null);
     const servicesRequest = withNativeDeadline(loadLinkedServices(), "Load apps", bootSupportDeadlineMs).catch(() => null);
     const nativeAppsRequest = savedAccountMode === "use"
@@ -4328,11 +4501,14 @@ async function bootstrap(): Promise<void> {
     } else if (core.readiness.bootstrapStatus === "passwordRequired") {
       onboardingRoute = "unlock";
       route = "onboarding";
+    } else if (signalQaShellEnabled) {
+      route = "signal-qa";
     } else {
       route = preferences.onboardingComplete ? "home" : "onboarding";
       if (!preferences.onboardingComplete) onboardingRoute = pendingOnboardingRoute() ?? onboardingRoute;
     }
     renderNow();
+    if (route === "signal-qa" && signalQaState.phase === "idle") void runSignalQaAction("open");
     if (route === "onboarding" && onboardingRoute === "browser") void refreshBrowserImportReadiness();
     if (route === "onboarding" && onboardingRoute === "mullvad") void refreshMullvadSetup();
     startReadyWorkspaceLoads();

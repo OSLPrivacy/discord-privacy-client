@@ -138,6 +138,22 @@ describe("native window host IPC", () => {
     expect(mocks.invoke).toHaveBeenCalledWith("host_native_app_window", { appId: "discord" });
   });
 
+  it("accepts only the unprotected existing-session Signal companion receipt", async () => {
+    const response = {
+      id: "signal",
+      status: "existingSession",
+      reason: "none",
+      mode: "existingNativeCompanion",
+      captureProtected: false,
+    };
+    mocks.invoke.mockResolvedValueOnce(response);
+    await expect(hostNativeAppWindow("signal")).resolves.toEqual(response);
+    expect(mocks.invoke).toHaveBeenCalledWith("host_native_app_window", { appId: "signal" });
+
+    mocks.invoke.mockResolvedValueOnce({ ...response, captureProtected: true });
+    await expect(hostNativeAppWindow("signal")).rejects.toThrow("invalid native window host response");
+  });
+
   it("starts installation only for an exact allowlisted app", async () => {
     const response = { id: "telegram", started: true, packageId: "Telegram.TelegramDesktop" };
     mocks.invoke.mockResolvedValueOnce(response);

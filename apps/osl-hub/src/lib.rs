@@ -14,6 +14,7 @@ pub mod privacy_scan;
 pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;
+pub mod signal_destination_binding;
 pub mod updates;
 
 pub(crate) mod windows_executable_trust;

@@ -4378,3 +4378,71 @@ code {
   .home-dashboard .home-osl-section .app-grid { grid-template-columns: repeat(3, minmax(74px, 104px)); column-gap: 18px; }
   .home-primary { padding: 24px 16px 94px; }
 }
+
+.signal-qa-workspace {
+  min-height: calc(100vh - var(--titlebar-height));
+  padding: 0 32px 32px;
+  display: grid;
+  grid-template-rows: 72px auto auto auto auto;
+  align-content: start;
+  overflow: auto;
+  background: var(--bg);
+  color: var(--text);
+}
+.signal-qa-header { border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 12px; }
+.signal-qa-header > span:nth-child(2) { display: grid; gap: 1px; }
+.signal-qa-header small, .signal-qa-stage .eyebrow { color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.signal-qa-header strong { font-size: 14px; }
+.signal-qa-mark { width: 34px; height: 34px; display: grid; place-items: center; }
+.signal-qa-mark svg, .signal-qa-mark img { width: 28px; height: 28px; }
+.signal-qa-status { margin-left: auto; padding: 5px 9px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 11px; font-weight: 700; }
+.signal-qa-status.ready { border-color: color-mix(in srgb, var(--brand) 42%, var(--line)); color: var(--brand); }
+.signal-qa-status.failed { border-color: color-mix(in srgb, var(--danger) 42%, var(--line)); color: var(--danger); }
+.signal-qa-stage { width: min(980px, 100%); margin: 38px auto; display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(280px, .75fr); gap: 32px; align-items: center; }
+.signal-qa-stage > div { display: grid; justify-items: center; text-align: center; }
+.signal-qa-state-mark { width: 56px; height: 56px; margin-bottom: 22px; border: 1px solid var(--line); border-radius: 50%; display: grid; place-items: center; }
+.signal-qa-state-mark span { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+.signal-qa-state-mark.ready { border-color: color-mix(in srgb, var(--brand) 55%, var(--line)); }
+.signal-qa-state-mark.ready span { background: var(--brand); box-shadow: 0 0 18px color-mix(in srgb, var(--brand) 55%, transparent); }
+.signal-qa-state-mark.failed span { background: var(--danger); }
+.signal-qa-stage .eyebrow { margin: 0 0 10px; }
+.signal-qa-stage h1 { margin: 0; font-size: clamp(26px, 4vw, 40px); letter-spacing: -.035em; }
+.signal-qa-stage > div > p:not(.eyebrow) { max-width: 520px; margin: 14px 0 0; color: var(--muted); line-height: 1.65; }
+.signal-qa-actions { min-height: 42px; margin-top: 26px; display: flex; gap: 10px; }
+.signal-qa-attestation { padding: 22px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+.signal-qa-attestation .eyebrow, .signal-qa-tests .eyebrow { margin: 0; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+.signal-qa-attestation h2, .signal-qa-tests h2 { margin: 6px 0 0; font-size: 18px; }
+.signal-qa-attestation > p { margin: 10px 0 18px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.signal-qa-attestation dl { margin: 0; border-top: 1px solid var(--line); }
+.signal-qa-attestation dl div { padding: 10px 0; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; gap: 18px; }
+.signal-qa-attestation dt, .signal-qa-attestation dd { margin: 0; font-size: 11px; }
+.signal-qa-attestation dd, .signal-qa-tests strong { color: var(--muted); font-weight: 700; }
+.signal-qa-attestation [data-status="passed"] dd, .signal-qa-tests [data-status="passed"] strong { color: var(--brand); }
+.signal-qa-attestation [data-status="failed"] dd, .signal-qa-attestation [data-status="expired"] dd,
+.signal-qa-tests [data-status="failed"] strong, .signal-qa-tests [data-status="expired"] strong { color: var(--danger); }
+.signal-qa-tests { width: min(980px, 100%); margin: 0 auto 28px; }
+.signal-qa-tests > header { margin-bottom: 12px; display: flex; align-items: end; justify-content: space-between; gap: 20px; }
+.signal-qa-tests > header > p { max-width: 380px; margin: 0; color: var(--muted); font-size: 11px; text-align: right; }
+.signal-qa-tests ul { margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--radius); display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); list-style: none; overflow: hidden; }
+.signal-qa-tests li { min-width: 0; padding: 11px 13px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 11px; }
+.signal-qa-tests li:nth-child(3n) { border-right: 0; }
+.signal-qa-tests li:nth-last-child(-n + 1) { border-bottom: 0; }
+.signal-qa-tests strong { flex: 0 0 auto; font-size: 11px; }
+.signal-qa-receipt { margin: 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.signal-qa-receipt div { min-width: 0; padding: 16px; border-right: 1px solid var(--line); display: grid; gap: 5px; }
+.signal-qa-receipt div:last-child { border-right: 0; }
+.signal-qa-receipt dt { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+.signal-qa-receipt dd { margin: 0; font-size: 11px; line-height: 1.45; }
+.signal-qa-safety { margin: 16px 0 0; color: var(--muted); font-size: 11px; text-align: center; }
+@media (max-width: 720px) {
+  .signal-qa-workspace { padding: 0 16px 20px; grid-template-rows: 64px auto auto auto auto; }
+  .signal-qa-stage { margin: 28px auto; grid-template-columns: 1fr; }
+  .signal-qa-tests > header { align-items: start; flex-direction: column; }
+  .signal-qa-tests > header > p { text-align: left; }
+  .signal-qa-tests ul { grid-template-columns: 1fr; }
+  .signal-qa-tests li, .signal-qa-tests li:nth-child(3n) { border-right: 0; border-bottom: 1px solid var(--line); }
+  .signal-qa-tests li:last-child { border-bottom: 0; }
+  .signal-qa-receipt { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .signal-qa-receipt div:nth-child(2) { border-right: 0; }
+  .signal-qa-receipt div:nth-child(-n + 2) { border-bottom: 1px solid var(--line); }
+}

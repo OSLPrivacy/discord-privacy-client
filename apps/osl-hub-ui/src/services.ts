@@ -71,9 +71,10 @@ export interface MullvadAction {
 
 export interface NativeWindowHostAction {
   id: NativeAppId;
-  status: "hosted" | "resized" | "focused" | "detached" | "unsupported" | "failed";
-  reason: "none" | "platformUnsupported" | "secondaryInstanceUnverified" | "appNotInstalled" | "profileUnavailable" | "launchFailed" | "windowNotFound" | "windowIdentityChanged" | "ownerWindowUnavailable" | "hostWindowUnavailable" | "windowOperationRejected" | "notHosted";
-  mode: "none" | "ownedBorderless";
+  status: "hosted" | "existingSession" | "resized" | "focused" | "detached" | "unsupported" | "failed";
+  reason: "none" | "platformUnsupported" | "secondaryInstanceUnverified" | "existingSessionUnavailable" | "existingSessionAmbiguous" | "appNotInstalled" | "profileUnavailable" | "launchFailed" | "windowNotFound" | "windowIdentityChanged" | "ownerWindowUnavailable" | "hostWindowUnavailable" | "windowOperationRejected" | "notHosted";
+  mode: "none" | "ownedBorderless" | "existingNativeCompanion";
+  captureProtected?: boolean;
 }
 
 export interface FirefoxStatus {
@@ -358,18 +359,25 @@ export function parseBrowserImports(raw: unknown): BrowserImportStatus[] {
 }
 
 function parseNativeWindowHostAction(raw: unknown, expectedId?: NativeAppId): NativeWindowHostAction {
-  const statuses = ["hosted", "resized", "focused", "detached", "unsupported", "failed"];
-  const reasons = ["none", "platformUnsupported", "secondaryInstanceUnverified", "appNotInstalled", "profileUnavailable", "launchFailed", "windowNotFound", "windowIdentityChanged", "ownerWindowUnavailable", "hostWindowUnavailable", "windowOperationRejected", "notHosted"];
-  if (!isExactRecord(raw, ["id", "status", "reason", "mode"])
+  const statuses = ["hosted", "existingSession", "resized", "focused", "detached", "unsupported", "failed"];
+  const reasons = ["none", "platformUnsupported", "secondaryInstanceUnverified", "existingSessionUnavailable", "existingSessionAmbiguous", "appNotInstalled", "profileUnavailable", "launchFailed", "windowNotFound", "windowIdentityChanged", "ownerWindowUnavailable", "hostWindowUnavailable", "windowOperationRejected", "notHosted"];
+  const exactLegacy = isExactRecord(raw, ["id", "status", "reason", "mode"]);
+  const exactCurrent = isExactRecord(raw, ["id", "status", "reason", "mode", "captureProtected"]);
+  if ((!exactLegacy && !exactCurrent)
     || !nativeAppIds.includes(raw.id as NativeAppId)
     || (expectedId !== undefined && raw.id !== expectedId)
     || !statuses.includes(String(raw.status))
     || !reasons.includes(String(raw.reason))
-    || !["none", "ownedBorderless"].includes(String(raw.mode))) {
+    || !["none", "ownedBorderless", "existingNativeCompanion"].includes(String(raw.mode))
+    || (exactCurrent && typeof raw.captureProtected !== "boolean")) {
     throw new Error("invalid native window host response");
   }
-  const success = ["hosted", "resized", "focused", "detached"].includes(String(raw.status));
-  if ((success && (raw.reason !== "none" || raw.mode !== "ownedBorderless"))
+  const success = ["hosted", "existingSession", "resized", "focused", "detached"].includes(String(raw.status));
+  const expectedMode = raw.status === "existingSession" || raw.mode === "existingNativeCompanion"
+    ? "existingNativeCompanion"
+    : "ownedBorderless";
+  if ((success && (raw.reason !== "none" || raw.mode !== expectedMode))
+    || (raw.mode === "existingNativeCompanion" && (raw.id !== "signal" || raw.captureProtected !== false))
     || (!success && raw.mode !== "none")) {
     throw new Error("invalid native window host response");
   }

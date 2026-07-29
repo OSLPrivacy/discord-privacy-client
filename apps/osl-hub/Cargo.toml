@@ -57,6 +57,7 @@ keyring = { version = "=3.6.3", features = ["apple-native"] }
 default = []
 core = ["dep:bip39", "dep:crypto", "dep:ipc", "dep:keystore", "dep:store", "dep:tracing"]
 desktop = ["dep:runtime", "dep:tauri", "dep:tauri-plugin-dialog", "dep:tauri-plugin-single-instance", "dep:tauri-plugin-updater", "dep:tokio", "core"]
+signal-qa-shell = []
 custom-protocol = ["tauri/custom-protocol"]
 
 [[bin]]
@@ -70,3 +71,13 @@ required-features = ["desktop"]
 # without editing the repository's root workspace manifest.
 [workspace]
 resolver = "2"
+
+# The Signal QA artifact is an authority-minimized binary, not a differently
+# routed full Hub. Whole-program optimization removes unreachable general OSL
+# code and symbol stripping prevents private implementation names from being
+# carried into the deployable executable.
+[profile.signal-qa]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"

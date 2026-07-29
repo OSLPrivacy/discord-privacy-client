@@ -1,0 +1,25 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "location": { "value": "southcentralus" },
+    "vmSize": { "value": "Standard_B2als_v2" },
+    "imageVersion": { "value": "26100.8875.260711" },
+    "availabilityZone": { "value": "3" },
+    "rdpSource": { "value": "REPLACE_WITH_EXACT_IPV4_CIDR" },
+    "qaSecretsKeyVaultResourceId": { "value": "REPLACE_WITH_SIGNAL_QA_KEY_VAULT_RESOURCE_ID" },
+    "safeScreenshotContainerResourceId": { "value": "REPLACE_WITH_PRIVATE_SCREENSHOT_CONTAINER_RESOURCE_ID" },
+    "adminPassword1": {
+      "reference": {
+        "keyVault": { "id": "REPLACE_WITH_SIGNAL_QA_KEY_VAULT_RESOURCE_ID" },
+        "secretName": "signal-client-1-admin-password"
+      }
+    },
+    "adminPassword2": {
+      "reference": {
+        "keyVault": { "id": "REPLACE_WITH_SIGNAL_QA_KEY_VAULT_RESOURCE_ID" },
+        "secretName": "signal-client-2-admin-password"
+      }
+    }
+  }
+}
