@@ -65,6 +65,7 @@ pub mod scope_ttl_file;
 pub mod sender_key_state;
 pub mod state;
 pub mod state_reload;
+pub mod storage_key_policy;
 pub mod tier_gate;
 pub mod tofu;
 pub mod whitelist;
