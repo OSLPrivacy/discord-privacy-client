@@ -17,6 +17,28 @@ Facts you need, verified 2026-07-26:
 Pin `--location centralus` on every snapshot here. Azure region policy refuses a snapshot that
 inherits a default region instead of the source disk's, and the correct value differs per fleet.
 
+**Verifying the fleet discipline above without spending anything:**
+`scripts/vmqa/test-vmqa-fleet.sh` drives `vmqa-fleet.sh`'s real `fleet_rg`, `expand_target`,
+`cmd_snapshot`, `cmd_restore`, `cmd_stop_all` and `cmd_leak_check` against a stubbed `az`
+(`scripts/vmqa/fixtures/fake-az/az`) that costs nothing and touches no subscription. It asserts,
+per refusal path (unknown VM, malformed `WARM-`/`COLD-` label, VM not deallocated, missing
+`--yes`/`--yes-destroy-current-disk`), that **zero** `az` calls were made — not just that the exit
+code was non-zero — and separately proves the crypto pair's real success path pins
+`--location centralus` and tags `lineage=warm-iteration`/`lineage=cold-release-gate` correctly.
+This is regression coverage the lifecycle script did not have before (the prior lane's own report,
+`docs/reports/vmqa-lane-2026-07-26.md`, lists `vmqa-fleet.sh` as proven only by manual live runs).
+It does **not** prove anything about a real VM, snapshot, or identity — that stays `unproven` here
+by design; run it with `bash scripts/vmqa/test-vmqa-fleet.sh`.
+
+**A gap this inventory surfaced, not fixed here:** step 9 below says "pair them per
+`docs/qa/two-identity-p2p-verification.md` §3", but that section's pairing tool
+(`osl-p2p-pair.ps1`, itself not present in `scripts/qa/` under that name — see
+`scripts/qa/osl-p2p-loop.ps1:677`) copies `discord-qa-offer.v1.json` between two profiles **on one
+machine**. On this fleet the two identities live on two separate VMs, so nothing here moves an
+offer file from `OSL-Azure-Client-1` to `OSL-Azure-Client-2` or back. Closing that is out of this
+lane's file ownership (`scripts/qa/**`) and out of scope for a unit that may not create identities;
+it is recorded here so the next take does not assume §3 already covers the cross-VM case.
+
 ---
 
 ## Two WARM tiers, split at the consent boundary
