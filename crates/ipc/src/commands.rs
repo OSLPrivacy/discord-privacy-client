@@ -2708,6 +2708,53 @@ pub fn cmd_osl_encrypt_message_v2(
     }
 }
 
+/// Which wire path a send should use for one recipient.
+///
+/// Unit b1: this — plus [`select_rn_wire_path`] — is the seam that
+/// replaces the previously hardcoded `wire_v2::encrypt_v3` call at
+/// the tail of `cmd_osl_encrypt_message_v2_wire` with a real
+/// decision routed through `wire_rn::select_wire_version`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RnWirePath {
+    /// Route through the existing PQ-hybrid `wire_v2::encrypt_v3` path.
+    LegacyV3,
+    /// Route through OSL-RN (wire `0x10`). Unreachable while
+    /// `wire_rn::RN_WIRE_IN_ENABLED` is `false` — see
+    /// `select_rn_wire_path`.
+    Rn,
+}
+
+/// Choose the wire path for one recipient.
+///
+/// This never itself decides to downgrade: when
+/// `wire_rn::select_wire_version` returns
+/// `wire_rn::SelectedVersion::Rn` but OSL-RN wire-in is disabled
+/// (`RN_WIRE_IN_ENABLED == false`, the current and only shipped
+/// state), sending v=3 instead would be exactly the silent
+/// downgrade `wire_rn.rs` exists to prevent, so this refuses
+/// instead of falling back.
+fn select_rn_wire_path(
+    pin: &crate::wire_rn::RnPeerPin,
+    peer_capabilities: keystore::client::PeerCapabilities,
+    policy: crate::wire_rn::RnPolicy,
+) -> Result<RnWirePath, String> {
+    match crate::wire_rn::select_wire_version(pin, peer_capabilities, policy) {
+        Ok(crate::wire_rn::SelectedVersion::LegacyV3) => Ok(RnWirePath::LegacyV3),
+        Ok(crate::wire_rn::SelectedVersion::Rn) => {
+            if crate::wire_rn::RN_WIRE_IN_ENABLED {
+                Ok(RnWirePath::Rn)
+            } else {
+                Err(
+                    "OSL: peer requires OSL-RN but wire-in is disabled in this build; \
+                     refusing to send v=3 (no downgrade)"
+                        .to_string(),
+                )
+            }
+        }
+        Err(e) => Err(format!("OSL: RN wire-path selection: {e}")),
+    }
+}
+
 /// Pre-9-B1 entry point that produces a single Mode 0
 /// `DPC0::<b64>` wire string. Retained for tests and any caller
 /// that wants the wire bytes without the Mode 1 cover layer.
@@ -2961,6 +3008,45 @@ pub fn cmd_osl_encrypt_message_v2_wire(
             &non_self_peers,
             plaintext.as_bytes(),
         );
+    }
+
+    // Unit b1: RnWirePath dispatch seam. Every non-self recipient is
+    // checked against the sticky OSL-RN version pin before the v=3
+    // path below is allowed to run. `select_rn_wire_path` is a real
+    // decision through `wire_rn::select_wire_version`, not a
+    // hardcoded v=3 choice, and structurally cannot let a peer pinned
+    // to OSL-RN fall through to a v=3 send.
+    //
+    // Capability advertisement is documented as absent end-to-end
+    // (crates/osl-ratchet-next/MIGRATION.md, "Capability advertisement
+    // is absent end-to-end") — no code path in this build populates a
+    // signed rn_capabilities bitmap for any peer, so every recipient
+    // is checked with PeerCapabilities::Absent, the honest value
+    // today.
+    //
+    // The pin IS real: read from the sealed per-peer pin store
+    // wire_rn::RnSessionStore already ships. Nothing in this build
+    // ever raises a pin (RN_WIRE_IN_ENABLED is false and
+    // initiate_and_persist/accept_and_persist have zero production
+    // callers), so every peer resolves to RnPeerPin::UNKNOWN today —
+    // this loop is inert in production, not decorative: the day
+    // something upstream starts raising pins, this refuses instead of
+    // silently downgrading, with no further change to this call site.
+    let rn_pin_store = crate::wire_rn::RnSessionStore::new(
+        keystore::osl_config_dir()
+            .map_err(|e| format!("OSL: cannot resolve config dir for RN pin check: {e}"))?
+            .join("rn_state"),
+    );
+    for (_, recipient) in non_self_peers.iter() {
+        let peer_id = *recipient.x25519_pub.as_bytes();
+        let pin = rn_pin_store
+            .load_pin(&peer_id)
+            .map_err(|e| format!("OSL: RN pin check: {e}"))?;
+        select_rn_wire_path(
+            &pin,
+            keystore::client::PeerCapabilities::Absent,
+            crate::wire_rn::RnPolicy::default(),
+        )?;
     }
 
     // 7d-PIVOT: encrypt_toggle is no longer coupled to having a
@@ -11033,4 +11119,84 @@ pub enum UpdateInstallResult {
     /// Download / signature-verify / install failed. `message` is
     /// safe to show; on signature failure NOTHING was installed.
     Error { message: String },
+}
+
+/// Unit b1: `RnWirePath` dispatch seam acceptance tests.
+///
+/// `select_rn_wire_path` is a pure function of (pin, capabilities,
+/// policy) — no `AppState`/Tauri scaffolding needed, following the
+/// precedent in `test_deep_link_parser`.
+#[cfg(test)]
+mod unit_b1_rn_wire_path_dispatch {
+    use super::*;
+    use crate::wire_rn::{RnPeerPin, RnPolicy};
+    use keystore::client::{PeerCapabilities, RN_CAP_WIRE_RN};
+
+    /// (1) Gate off (the real, shipped `RN_WIRE_IN_ENABLED` constant —
+    /// not a test override) + an unpinned peer with no advertised
+    /// capabilities is exactly what every real send looks like today
+    /// (no code path raises a pin or advertises capabilities in this
+    /// build). Dispatch must select the v3 path, unchanged from
+    /// pre-unit-b1 behavior.
+    #[test]
+    fn gate_off_unpinned_peer_dispatches_legacy_v3_unchanged() {
+        assert!(
+            !crate::wire_rn::RN_WIRE_IN_ENABLED,
+            "this test asserts against the real production gate value"
+        );
+        let pin = RnPeerPin::UNKNOWN;
+        let result =
+            select_rn_wire_path(&pin, PeerCapabilities::Absent, RnPolicy::Opportunistic);
+        assert_eq!(result, Ok(RnWirePath::LegacyV3));
+    }
+
+    /// (2a) A peer pinned to OSL-RN, whose capability record does not
+    /// verify support (the honest state for every peer in this build,
+    /// since capability advertisement is absent end-to-end) must never
+    /// be dispatched as `LegacyV3` — it must refuse instead.
+    #[test]
+    fn pinned_peer_without_verified_support_refuses_not_downgrades() {
+        let mut pin = RnPeerPin::UNKNOWN;
+        pin.raise_to_rn();
+        assert!(pin.is_pinned_to_rn());
+
+        let result =
+            select_rn_wire_path(&pin, PeerCapabilities::Absent, RnPolicy::Opportunistic);
+        assert!(result.is_err(), "pinned peer must refuse, got {result:?}");
+        assert_ne!(result, Ok(RnWirePath::LegacyV3));
+    }
+
+    /// (2b) A peer pinned to OSL-RN whose capability record *does*
+    /// verify RN support selects `Rn` at the `wire_rn::select_wire_version`
+    /// layer — but this build ships with `RN_WIRE_IN_ENABLED == false`,
+    /// so `select_rn_wire_path` must still refuse rather than silently
+    /// falling back to v3. No input to this function can produce a
+    /// `LegacyV3` result for a pinned peer.
+    #[test]
+    fn pinned_peer_with_verified_support_still_never_downgrades_while_gate_is_off() {
+        let mut pin = RnPeerPin::UNKNOWN;
+        pin.raise_to_rn();
+
+        let result = select_rn_wire_path(
+            &pin,
+            PeerCapabilities::Verified(RN_CAP_WIRE_RN),
+            RnPolicy::Opportunistic,
+        );
+        assert!(
+            result.is_err(),
+            "gate is off in this build, so RN selection must refuse, not silently send v3: {result:?}"
+        );
+        assert_ne!(result, Ok(RnWirePath::LegacyV3));
+    }
+
+    /// (3) `RnPolicy::Required` against a peer with no verified RN
+    /// support must refuse — never silently proceed on the legacy
+    /// path when the caller explicitly required RN.
+    #[test]
+    fn required_policy_against_non_rn_peer_refuses() {
+        let pin = RnPeerPin::UNKNOWN;
+        let result = select_rn_wire_path(&pin, PeerCapabilities::Absent, RnPolicy::Required);
+        assert!(result.is_err(), "Required policy must refuse, got {result:?}");
+        assert_ne!(result, Ok(RnWirePath::LegacyV3));
+    }
 }
