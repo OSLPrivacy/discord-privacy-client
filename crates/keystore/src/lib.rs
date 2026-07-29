@@ -23,6 +23,7 @@ pub mod client;
 pub mod control_inbox;
 pub mod duress;
 pub mod identity;
+pub mod identity_bundle;
 pub mod license_cache;
 pub mod password;
 pub mod pending_rotation;
