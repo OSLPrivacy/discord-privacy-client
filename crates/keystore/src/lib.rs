@@ -17,7 +17,7 @@
 //!   server endpoints used in this layer (`/v1/register`,
 //!   `/v1/pubkeys/:user_id`).
 
-pub mod account_ownership;
+pub mod account_ownership_error;
 pub mod burn;
 pub mod burn_alert;
 pub mod client;
@@ -42,7 +42,7 @@ pub mod wrapped_key;
 // `tests/sealer_test.rs` when the wrapper was introduced.
 pub use zeroize::Zeroizing;
 
-pub use account_ownership::AccountOwnershipError;
+pub use account_ownership_error::AccountOwnershipError;
 pub use burn::{canonical_burn_bytes, sign_burn, BurnScope, BURN_DOMAIN};
 pub use burn_alert::{sign_burn_alert, verify_burn_alert, BurnAlertPayload, BURN_ALERT_DOMAIN};
 pub use client::{
