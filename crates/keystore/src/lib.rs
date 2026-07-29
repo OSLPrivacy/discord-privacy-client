@@ -27,6 +27,7 @@ pub mod license_cache;
 pub mod password;
 pub mod pending_rotation;
 pub mod prekeys;
+pub mod proof_challenge;
 pub mod recipients;
 pub mod sealer;
 mod sender_filter_rollout;
@@ -75,6 +76,7 @@ pub use prekeys::{
     sign_replenish_batch, OpkEntry, PrekeyConfig, PrekeyState, ReplenishOpk, ReplenishSpk,
     SpkEntry, REPLENISH_DOMAIN, SPK_ROTATION_INTERVAL_SECONDS,
 };
+pub use proof_challenge::{ProofChallenge, PROOF_CHALLENGE_NONCE_BYTES};
 pub use recipients::{
     account_dir, active_account_dir, get_recipients, get_recipients_from_path, osl_base_dir,
     osl_config_dir, set_active_account_dir, set_base_dir_override, RecipientError,
