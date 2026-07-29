@@ -5,6 +5,7 @@
 pub mod attachment_formats;
 pub mod browser_companion;
 pub mod burn_contract;
+pub mod cloud_autoscrub_consent;
 pub mod control_contract;
 pub mod discord_carrier_geometry;
 pub mod external_overlay;
