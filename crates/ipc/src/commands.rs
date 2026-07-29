@@ -1035,6 +1035,197 @@ pub fn cmd_fetch_pubkeys(state: &AppState, user_id: String) -> IpcResult<FetchPu
     })
 }
 
+/// Periodic cadence for the local prekey replenishment backstop.
+///
+/// This is deliberately slow: event-triggered calls with an observed
+/// server remaining count do the precise top-up work. The periodic tick is a
+/// launch-lifetime backstop that also catches SPK rotation due dates.
+pub const PREKEY_REPLENISH_INTERVAL_SECONDS: u64 = 6 * 60 * 60;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PrekeyReplenishmentOutcome {
+    InitialPublished { opks_published: u32 },
+    Replenished { opks_added: u32 },
+    Skipped,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PrekeyReplenishmentDecision {
+    InitialPublish,
+    Replenish { server_remaining: u32 },
+    Skip,
+}
+
+fn decide_prekey_replenishment(
+    state: Option<&keystore::PrekeyState>,
+    observed_server_remaining: Option<u32>,
+    now_unix_seconds: u64,
+) -> PrekeyReplenishmentDecision {
+    let Some(state) = state else {
+        return PrekeyReplenishmentDecision::InitialPublish;
+    };
+    let server_remaining = observed_server_remaining
+        .unwrap_or_else(|| u32::try_from(state.opk_pool.len()).unwrap_or(u32::MAX));
+    if state.should_rotate_spk(now_unix_seconds) || state.should_replenish(server_remaining) {
+        PrekeyReplenishmentDecision::Replenish { server_remaining }
+    } else {
+        PrekeyReplenishmentDecision::Skip
+    }
+}
+
+/// Run one local prekey replenishment scheduler tick.
+///
+/// Preconditions are intentionally strict. Missing identity or keyserver is a
+/// refusal, not permission to synthesize authority. Missing `prekeys.json`
+/// means this is the first authorized publication for the already-loaded
+/// identity; after that, all top-ups go through
+/// [`KeyServerClient::replenish_using_state`].
+pub fn run_prekey_replenishment_tick(
+    state: &AppState,
+    dir: &std::path::Path,
+    observed_server_remaining: Option<u32>,
+) -> Result<PrekeyReplenishmentOutcome, String> {
+    let now_unix_seconds = now_unix_secs().max(0) as u64;
+    run_prekey_replenishment_tick_at(state, dir, observed_server_remaining, now_unix_seconds)
+}
+
+fn run_prekey_replenishment_tick_at(
+    state: &AppState,
+    dir: &std::path::Path,
+    observed_server_remaining: Option<u32>,
+    now_unix_seconds: u64,
+) -> Result<PrekeyReplenishmentOutcome, String> {
+    let identity = state
+        .identity
+        .lock()
+        .expect("identity mutex poisoned")
+        .clone()
+        .ok_or_else(|| "OSL: prekey replenish refused: identity is not loaded".to_string())?;
+    let client = state
+        .keyserver
+        .lock()
+        .expect("keyserver mutex poisoned")
+        .clone()
+        .ok_or_else(|| "OSL: prekey replenish refused: keyserver is not configured".to_string())?;
+
+    let path = dir.join("prekeys.json");
+    let sealer = keystore::select_best_sealer();
+    let existing = if path.exists() {
+        Some(
+            keystore::load_prekey_state(&path, sealer.as_ref())
+                .map_err(|_| "OSL: prekey replenish refused: local prekey state is unreadable")?,
+        )
+    } else {
+        None
+    };
+
+    match decide_prekey_replenishment(
+        existing.as_ref(),
+        observed_server_remaining,
+        now_unix_seconds,
+    ) {
+        PrekeyReplenishmentDecision::InitialPublish => {
+            let prekeys = keystore::PrekeyState::new(
+                &identity,
+                keystore::PrekeyConfig::default(),
+                now_unix_seconds,
+            );
+            client
+                .replenish_prekeys(&identity, Some(&prekeys.current_spk), &prekeys.opk_pool)
+                .map_err(|_| "OSL: prekey initial publication failed".to_string())?;
+            keystore::save_prekey_state(&path, &prekeys, sealer.as_ref())
+                .map_err(|_| "OSL: prekey state persist failed".to_string())?;
+            Ok(PrekeyReplenishmentOutcome::InitialPublished {
+                opks_published: u32::try_from(prekeys.opk_pool.len()).unwrap_or(u32::MAX),
+            })
+        }
+        PrekeyReplenishmentDecision::Replenish { server_remaining } => {
+            let mut prekeys = existing.ok_or_else(|| {
+                "OSL: prekey replenish refused: local prekey state is absent".to_string()
+            })?;
+            let response = client
+                .replenish_using_state(&identity, &mut prekeys, server_remaining, now_unix_seconds)
+                .map_err(|_| "OSL: prekey replenish failed".to_string())?;
+            keystore::save_prekey_state(&path, &prekeys, sealer.as_ref())
+                .map_err(|_| "OSL: prekey state persist failed".to_string())?;
+            Ok(PrekeyReplenishmentOutcome::Replenished {
+                opks_added: response.opks_added,
+            })
+        }
+        PrekeyReplenishmentDecision::Skip => Ok(PrekeyReplenishmentOutcome::Skipped),
+    }
+}
+
+#[cfg(test)]
+mod prekey_replenishment_scheduler_tests {
+    use super::{
+        decide_prekey_replenishment, run_prekey_replenishment_tick_at, PrekeyReplenishmentDecision,
+    };
+    use crate::state::AppState;
+    use keystore::{generate_identity, PrekeyConfig, PrekeyState, SPK_ROTATION_INTERVAL_SECONDS};
+
+    #[test]
+    fn missing_local_state_plans_initial_publication() {
+        assert!(matches!(
+            decide_prekey_replenishment(None, None, 1_700_000_000),
+            PrekeyReplenishmentDecision::InitialPublish
+        ));
+    }
+
+    #[test]
+    fn observed_remaining_at_threshold_triggers_replenish_using_state_path() {
+        let identity = generate_identity("scheduler-test".to_string());
+        let state = PrekeyState::new(&identity, PrekeyConfig::default(), 1_700_000_000);
+
+        assert!(matches!(
+            decide_prekey_replenishment(Some(&state), Some(25), 1_700_000_001),
+            PrekeyReplenishmentDecision::Replenish {
+                server_remaining: 25
+            }
+        ));
+    }
+
+    #[test]
+    fn periodic_tick_skips_when_local_pool_is_above_threshold() {
+        let identity = generate_identity("scheduler-test".to_string());
+        let state = PrekeyState::new(&identity, PrekeyConfig::default(), 1_700_000_000);
+
+        assert!(matches!(
+            decide_prekey_replenishment(Some(&state), None, 1_700_000_001),
+            PrekeyReplenishmentDecision::Skip
+        ));
+    }
+
+    #[test]
+    fn periodic_tick_rotates_spk_when_due_even_without_opk_depletion() {
+        let identity = generate_identity("scheduler-test".to_string());
+        let state = PrekeyState::new(&identity, PrekeyConfig::default(), 1_700_000_000);
+
+        assert!(matches!(
+            decide_prekey_replenishment(
+                Some(&state),
+                None,
+                1_700_000_000 + SPK_ROTATION_INTERVAL_SECONDS
+            ),
+            PrekeyReplenishmentDecision::Replenish {
+                server_remaining: 100
+            }
+        ));
+    }
+
+    #[test]
+    fn scheduler_refuses_without_identity_before_touching_disk_or_network() {
+        let app = AppState::new();
+        let dir = tempfile::tempdir().unwrap();
+
+        let err = match run_prekey_replenishment_tick_at(&app, dir.path(), None, 1_700_000_000) {
+            Ok(_) => panic!("missing identity must refuse"),
+            Err(err) => err,
+        };
+        assert!(err.contains("identity is not loaded"), "err: {err}");
+    }
+}
+
 // ---- AEAD primitive ----
 
 pub fn cmd_aead_seal(req: AeadSealRequest) -> IpcResult<AeadSealResponse> {
