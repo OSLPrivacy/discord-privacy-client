@@ -43,6 +43,7 @@ pub mod control_inbox_dead_letter;
 pub mod control_messages;
 pub mod decoy_mp4;
 pub mod fresh_start;
+pub mod friend_request;
 pub mod license_lifecycle;
 pub mod log_id;
 pub mod main_password;
