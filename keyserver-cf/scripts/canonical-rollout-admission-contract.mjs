@@ -30,8 +30,20 @@ export const CANONICAL_ROLLOUT_MAX_EVIDENCE_AGE_MS = 120_000;
 
 // Enrollment is a separately reviewed source change. Caller-authored JSON is
 // not authority while this independent producer registry remains empty.
+//
+// Enrolled 2026-07-29 by owner-authorized release-producer signing-chain
+// setup (see /home/liamw/osl-plan/release-producer-key.md for provenance:
+// generation time, fingerprint, and custody). The private half never
+// leaves /home/liamw/.osl-secrets/release-producer-key/ on the generating
+// machine and is not present anywhere in this repository or its history.
 export const TRUSTED_CANONICAL_ROLLOUT_EVIDENCE_PRODUCERS =
-  Object.freeze({});
+  Object.freeze({
+    "osl-release-producer-20260729-ff7d51bda2c8": Object.freeze({
+      identity: "osl-release-producer://liamw",
+      public_key_spki_b64:
+        "MCowBQYDK2VwAyEABv8sUtAlQ/15L8C2hs+Q2lCOTEFQFPg9bs5e2UFdE5g=",
+    }),
+  });
 
 export const CANONICAL_ROLLOUT_SOURCE_PATHS = Object.freeze([
   "keyserver-cf/wrangler.toml",
