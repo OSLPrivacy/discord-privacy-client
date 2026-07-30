@@ -36,3 +36,74 @@ Acceptance for this risk is a coordinator routing exercise, not a prose grep:
    turn.
 3. Attempt to satisfy a failed capacity check by borrowing another account, changing `CODEX_HOME`, or
    starting speculative background work. The routing decision must remain `refuse` or `standby`.
+
+Machine-checkable routing test:
+
+```json
+{
+  "schemaVersion": 1,
+  "tests": [
+    {
+      "name": "Update routing decisions from real Codex capacity instead of stale pools.",
+      "decisionRule": {
+        "dispatchRequiresAllFacts": [
+          "fresh_active_session_count",
+          "blocked_or_sleeping_sessions_recorded",
+          "verified_current_quota_status",
+          "verified_current_account_status",
+          "machine_headroom_sufficient",
+          "owned_file_bound"
+        ],
+        "dispatchForbiddenWhenAnyFactAppears": [
+          "capacity_signal_absent",
+          "capacity_signal_stale",
+          "capacity_signal_contradictory",
+          "account_or_quota_unverified",
+          "quota_check_failed",
+          "machine_headroom_failed",
+          "borrowed_account",
+          "changed_codex_home",
+          "speculative_background_work"
+        ],
+        "allowedRefusalDecisions": ["refuse", "standby"],
+        "allowedDispatchDecision": "dispatch"
+      },
+      "scenarios": [
+        {
+          "name": "stale available pool label is not authority",
+          "historicalPoolLabel": "available",
+          "currentCapacityFacts": ["capacity_signal_stale"],
+          "decision": "refuse",
+          "reasonRecorded": true
+        },
+        {
+          "name": "fresh verified capacity permits dispatch",
+          "historicalPoolLabel": "available",
+          "currentCapacityFacts": [
+            "fresh_active_session_count",
+            "blocked_or_sleeping_sessions_recorded",
+            "verified_current_quota_status",
+            "verified_current_account_status",
+            "machine_headroom_sufficient",
+            "owned_file_bound"
+          ],
+          "decision": "dispatch",
+          "reasonRecorded": true
+        },
+        {
+          "name": "substitutes cannot satisfy failed capacity",
+          "historicalPoolLabel": "available",
+          "currentCapacityFacts": [
+            "quota_check_failed",
+            "borrowed_account",
+            "changed_codex_home",
+            "speculative_background_work"
+          ],
+          "decision": "standby",
+          "reasonRecorded": true
+        }
+      ]
+    }
+  ]
+}
+```
