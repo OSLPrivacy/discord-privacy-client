@@ -60,6 +60,7 @@
 
 use crate::scope::{Scope, ScopeInput};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 // ---- Errors ----
 
@@ -221,7 +222,7 @@ pub struct AttachmentEnvelope {
 /// leg provides PQ identity binding); the receiver's v=4 decode path
 /// routes the plaintext to the SKDM handler instead of surfacing it
 /// as user-visible content.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SenderKeyDistribution {
     /// `scope.storage_key()` of the group/server/channel this chain
     /// targets. Stable across both peers because storage_key encodes
@@ -229,7 +230,23 @@ pub struct SenderKeyDistribution {
     pub scope_storage_key: String,
     pub chain_id: u32,
     pub rotation_root: [u8; 32],
+    pub physical_device_id: [u8; 32],
     pub sent_at: i64,
+}
+
+impl fmt::Debug for SenderKeyDistribution {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SenderKeyDistribution")
+            .field(
+                "scope_storage_key",
+                &crate::log_id::log_id(&self.scope_storage_key),
+            )
+            .field("chain_id", &self.chain_id)
+            .field("rotation_root", &"[REDACTED]")
+            .field("physical_device_id", &"[REDACTED]")
+            .field("sent_at", &self.sent_at)
+            .finish()
+    }
 }
 
 /// Auto-recovery type=0x06: "I have been unable to decrypt your v=5
@@ -314,6 +331,7 @@ struct SenderKeyDistributionWire {
     scope_storage_key: String,
     chain_id: u32,
     rotation_root: [u8; 32],
+    physical_device_id: [u8; 32],
     sent_at: i64,
 }
 
@@ -417,6 +435,7 @@ pub fn serialize_sender_key_distribution(
         scope_storage_key: m.scope_storage_key.clone(),
         chain_id: m.chain_id,
         rotation_root: m.rotation_root,
+        physical_device_id: m.physical_device_id,
         sent_at: m.sent_at,
     })
 }
@@ -429,6 +448,7 @@ pub fn deserialize_sender_key_distribution(
         scope_storage_key: wire.scope_storage_key,
         chain_id: wire.chain_id,
         rotation_root: wire.rotation_root,
+        physical_device_id: wire.physical_device_id,
         sent_at: wire.sent_at,
     })
 }
