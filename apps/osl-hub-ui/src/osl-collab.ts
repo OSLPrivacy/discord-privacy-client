@@ -8,14 +8,20 @@ export interface OslLanSession { sessionId: string; role: "host" | "guest"; revi
 export interface OslLanSync { revision: number; document: OslSharedDocument; changed: boolean; conflict: boolean; connected: boolean; }
 export type CircleAudienceMembershipVisibility = "visible" | "count-only" | "hidden";
 export type CircleAudienceRefusal = "consent" | "binding" | "authority";
+export type CirclePostRefusal = CircleAudienceRefusal | "audience" | "draft" | "membership-review";
 export interface CircleAudienceMember { memberId: string; name: string; verified: boolean; }
 export interface CircleAudience { audienceId: string; name: string; memberCount: number; membershipVisibility: CircleAudienceMembershipVisibility; visibleMembers: CircleAudienceMember[]; canPost: boolean; refusal: CircleAudienceRefusal | null; }
+export interface CirclePostMembershipReview { audienceId: string; audienceName: string; memberCount: number; members: CircleAudienceMember[]; shownBeforePosting: true; }
+export interface CirclePostReady { status: "ready"; audienceId: string; audienceName: string; body: string; membershipReview: CirclePostMembershipReview; encryptedForAudience: true; feedOrder: "chronological"; sendAuthority: "user-action-required"; }
+export interface CirclePostRefused { status: "refused"; reason: CirclePostRefusal; audienceId: string | null; audienceName: string | null; membershipReview: CirclePostMembershipReview | null; encryptedForAudience: false; sendAuthority: "none"; }
+export type CirclePostComposition = CirclePostReady | CirclePostRefused;
 
 const kinds = new Set(["note", "document", "spreadsheet", "drawing", "presentation", "photo", "video", "audio", "model3d"]);
 const visibility = new Set(["visible", "count-only", "hidden"]);
 const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const exact = (value: Record<string, unknown>, keys: string[]) => Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
 const boundedText = (value: unknown, maxBytes: number): value is string => typeof value === "string" && value.trim().length > 0 && !/[\p{Cc}\p{Cf}]/u.test(value) && new TextEncoder().encode(value).byteLength <= maxBytes;
+const boundedPostBody = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0 && !/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\p{Cf}]/u.test(value) && new TextEncoder().encode(value).byteLength <= 16 * 1024;
 export function parseSharedDocument(value: unknown): OslSharedDocument | null { if (!record(value) || !exact(value, ["kind", "title", "body", "folder", "tags", "favorite"]) || !kinds.has(String(value.kind)) || typeof value.title !== "string" || new TextEncoder().encode(value.title).byteLength > 240 || typeof value.body !== "string" || new TextEncoder().encode(value.body).byteLength > 256 * 1024 || typeof value.folder !== "string" || new TextEncoder().encode(value.folder).byteLength > 80 || !Array.isArray(value.tags) || value.tags.length > 16 || !value.tags.every((tag) => typeof tag === "string" && tag.length > 0 && new TextEncoder().encode(tag).byteLength <= 32) || typeof value.favorite !== "boolean") return null; return value as unknown as OslSharedDocument; }
 export function sharedDocument(note: OslNote): OslSharedDocument { return { kind: note.kind, title: note.title, body: note.body, folder: note.folder, tags: [...note.tags], favorite: note.favorite }; }
 function parseInvitation(value: unknown): OslLanInvitation | null { if (!record(value) || !exact(value, ["code", "address", "roomId", "encrypted", "requiresCloud", "requiresPro"]) || typeof value.code !== "string" || value.code.length > 256 || typeof value.address !== "string" || typeof value.roomId !== "string" || !/^[a-f0-9]{32}$/u.test(value.roomId) || value.encrypted !== true || value.requiresCloud !== false || value.requiresPro !== false) return null; return value as unknown as OslLanInvitation; }
@@ -30,6 +36,34 @@ export function parseCircleAudience(value: unknown): CircleAudience | null {
   if (membershipVisibility !== "visible" && visibleMembers.length !== 0) return null;
   const refusal = value.consentGranted !== true ? "consent" : value.boundToCurrentCircle !== true ? "binding" : value.postingAuthorized !== true ? "authority" : null;
   return { audienceId: value.audienceId, name: value.name, memberCount: Number(value.memberCount), membershipVisibility, visibleMembers: visibleMembers as CircleAudienceMember[], canPost: refusal === null, refusal };
+}
+
+function parseComposedCircleAudience(value: unknown): CircleAudience | null {
+  if (!record(value) || !exact(value, ["audienceId", "name", "memberCount", "membershipVisibility", "visibleMembers", "canPost", "refusal"]) || typeof value.audienceId !== "string" || !/^[a-f0-9]{32}$/u.test(value.audienceId) || !boundedText(value.name, 80) || !Number.isSafeInteger(value.memberCount) || Number(value.memberCount) < 0 || Number(value.memberCount) > 10_000 || !visibility.has(String(value.membershipVisibility)) || !Array.isArray(value.visibleMembers) || value.visibleMembers.length > Number(value.memberCount) || typeof value.canPost !== "boolean" || !(value.refusal === null || value.refusal === "consent" || value.refusal === "binding" || value.refusal === "authority") || value.canPost !== (value.refusal === null)) return null;
+  const visibleMembers = value.visibleMembers.map(parseCircleAudienceMember);
+  if (visibleMembers.some((member) => member === null)) return null;
+  const membershipVisibility = value.membershipVisibility as CircleAudienceMembershipVisibility;
+  if (membershipVisibility !== "visible" && visibleMembers.length !== 0) return null;
+  return { audienceId: value.audienceId, name: value.name, memberCount: Number(value.memberCount), membershipVisibility, visibleMembers: visibleMembers as CircleAudienceMember[], canPost: value.canPost, refusal: value.refusal };
+}
+
+function circlePostRefusal(reason: CirclePostRefusal, audience: CircleAudience | null = null, membershipReview: CirclePostMembershipReview | null = null): CirclePostRefused {
+  return { status: "refused", reason, audienceId: audience?.audienceId ?? null, audienceName: audience?.name ?? null, membershipReview, encryptedForAudience: false, sendAuthority: "none" };
+}
+
+function circleMembershipReview(audience: CircleAudience): CirclePostMembershipReview | null {
+  if (audience.membershipVisibility !== "visible" || audience.visibleMembers.length !== audience.memberCount) return null;
+  return { audienceId: audience.audienceId, audienceName: audience.name, memberCount: audience.memberCount, members: audience.visibleMembers.map((member) => ({ ...member })), shownBeforePosting: true };
+}
+
+export function composeCirclePost(audienceInput: unknown, bodyInput: unknown): CirclePostComposition {
+  const audience = parseCircleAudience(audienceInput) ?? parseComposedCircleAudience(audienceInput);
+  if (!audience) return circlePostRefusal("audience");
+  const membershipReview = circleMembershipReview(audience);
+  if (!membershipReview) return circlePostRefusal("membership-review", audience);
+  if (!audience.canPost) return circlePostRefusal(audience.refusal ?? "authority", audience, membershipReview);
+  if (!boundedPostBody(bodyInput)) return circlePostRefusal("draft", audience, membershipReview);
+  return { status: "ready", audienceId: audience.audienceId, audienceName: audience.name, body: bodyInput.trim(), membershipReview, encryptedForAudience: true, feedOrder: "chronological", sendAuthority: "user-action-required" };
 }
 
 export async function hostOslLanRoom(document: OslSharedDocument): Promise<OslLanSession | null> { if (!isTauriRuntime() || !parseSharedDocument(document)) return null; return parseLanSession(await invoke("host_osl_lan_room", { document })); }
