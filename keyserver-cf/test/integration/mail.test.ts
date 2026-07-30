@@ -230,7 +230,7 @@ describe("OSL Mail Worker", () => {
     expect(stillOnlyConsentDelivery.messages.map((message) => message.message_id)).toEqual([delivery.message_id]);
   });
 
-  it("qualifies the OSL-to-OSL lifecycle from provisioning through burn", async () => {
+  it("m9 qualifies OSL Mail end-to-end lifecycle", async () => {
     const alice = await createIdentity("alice-life-id", "alice_life");
     const bob = await createIdentity("bob-life-id", "bob_life");
     expect((await signedPost("/v1/mail/address", "PROVISION", alice, { username: "alice_life", rotate: false })).status).toBe(201);
