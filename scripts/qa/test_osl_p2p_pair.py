@@ -3,11 +3,12 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 
-def osl_p2p_pair_refuses_same_osl_user_id(tmp_path: Path) -> None:
+def _run_osl_p2p_pair_refuses_same_osl_user_id(tmp_path: Path) -> None:
     pwsh = shutil.which("pwsh") or shutil.which("powershell")
     if pwsh is None or sys.platform != "win32":
         raise unittest.SkipTest("osl-p2p-pair.ps1 refusal test requires Windows PowerShell")
@@ -58,5 +59,10 @@ def osl_p2p_pair_refuses_same_osl_user_id(tmp_path: Path) -> None:
     assert not (root_b / "discord-qa-peer-offer.v1.json").exists()
 
 
+def osl_p2p_pair_refuses_same_osl_user_id() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        _run_osl_p2p_pair_refuses_same_osl_user_id(Path(tmp))
+
+
 def test_osl_p2p_pair_refuses_same_osl_user_id(tmp_path: Path) -> None:
-    osl_p2p_pair_refuses_same_osl_user_id(tmp_path)
+    _run_osl_p2p_pair_refuses_same_osl_user_id(tmp_path)
