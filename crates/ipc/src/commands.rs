@@ -1392,6 +1392,25 @@ pub const OSL_PHASE4_HKDF_INFO_WRAP: &[u8] = b"OSL/P4/wrap-key/v1";
 /// bump only if the JSON shape changes incompatibly.
 pub const OSL_TIER_BLOCKED_PREFIX: &str = "OSL-TIER-BLOCKED:";
 
+/// Legacy Phase-4 encrypt options.
+///
+/// This is intentionally empty and denies unknown fields. The old IPC wrapper
+/// still accepts an `options` JSON value for compatibility, but this command
+/// treats any caller-supplied key as unsupported input rather than as authority
+/// or display metadata.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct OutgoingEncryptOptions {}
+
+fn parse_outgoing_encrypt_options(
+    options: serde_json::Value,
+) -> Result<OutgoingEncryptOptions, String> {
+    if options.is_null() {
+        return Ok(OutgoingEncryptOptions {});
+    }
+    serde_json::from_value(options).map_err(|e| format!("OSL: encrypt options refused: {e}"))
+}
+
 /// F3.6 attachment-send tier gate. Called at the top of
 /// [`cmd_osl_seal_attachment_with_cover_v3`]. Paid + PaidOfflineGrace
 /// callers fall through; Free/Unconfigured/EXPIRED/etc. get the
@@ -1610,8 +1629,10 @@ pub fn cmd_osl_encrypt_message(
     state: &AppState,
     channel_id: String,
     plaintext: String,
-    _options: serde_json::Value,
+    options: serde_json::Value,
 ) -> Result<String, String> {
+    let _options = parse_outgoing_encrypt_options(options)?;
+
     let recipients =
         keystore::get_recipients(&channel_id).map_err(|e| format!("OSL: recipient lookup: {e}"))?;
 
@@ -1694,6 +1715,165 @@ pub fn cmd_osl_encrypt_message(
     }
 
     encrypt_osl_phase4_to_pubkeys(&identity.x25519_secret, &peer_pubkeys, &plaintext)
+}
+
+#[cfg(test)]
+mod outgoing_encrypt_api_surface_tests {
+    use super::*;
+    use base64::Engine as _;
+
+    fn function_signature<'a>(source: &'a str, name: &str) -> &'a str {
+        let needle = format!("pub fn {name}(");
+        let start = source
+            .find(&needle)
+            .unwrap_or_else(|| panic!("missing function {name}"));
+        let rest = &source[start..];
+        let end = rest
+            .find(") ->")
+            .unwrap_or_else(|| panic!("missing return marker for {name}"));
+        &rest[..=end]
+    }
+
+    fn struct_body<'a>(source: &'a str, name: &str) -> &'a str {
+        let needle = format!("struct {name} {{");
+        let start = source
+            .find(&needle)
+            .unwrap_or_else(|| panic!("missing struct {name}"));
+        let rest = &source[start..];
+        if rest.starts_with(&format!("{needle}}}")) {
+            return &rest[..needle.len() + 1];
+        }
+        let end = rest
+            .find("\n}")
+            .unwrap_or_else(|| panic!("missing closing brace for {name}"));
+        &rest[..end]
+    }
+
+    fn assert_no_display_surface(name: &str, source: &str) {
+        assert!(
+            !source.to_ascii_lowercase().contains("display"),
+            "{name} unexpectedly exposes caller-supplied display metadata: {source}"
+        );
+    }
+
+    #[test]
+    fn outgoing_encrypt_api_surface() {
+        let _: fn(&AppState, String, String, serde_json::Value) -> Result<String, String> =
+            cmd_osl_encrypt_message;
+        let _: fn(
+            &AppState,
+            String,
+            crate::scope::ScopeInput,
+            Vec<String>,
+            String,
+        ) -> Result<EncryptOutput, String> = cmd_osl_encrypt_message_v2;
+        let _: fn(
+            &AppState,
+            String,
+            crate::scope::ScopeInput,
+            Vec<String>,
+            String,
+        ) -> Result<EncryptWire, String> = cmd_osl_encrypt_message_v2_wire;
+        let _: fn(
+            &AppState,
+            crate::scope::ScopeInput,
+            Vec<String>,
+            String,
+            Vec<AttachmentEnvelopeInput>,
+        ) -> Result<String, String> = cmd_osl_encrypt_attachment_envelope;
+        let _: fn(
+            &AppState,
+            crate::scope::ScopeInput,
+            Vec<String>,
+            String,
+            String,
+            String,
+            String,
+        ) -> Result<SealedAttachmentV2, String> = cmd_osl_seal_attachment_with_cover_v2;
+        let _: fn(
+            &AppState,
+            crate::scope::ScopeInput,
+            Vec<String>,
+            String,
+            String,
+            String,
+            String,
+        ) -> Result<SealedAttachmentV2, String> = cmd_osl_seal_attachment_with_cover_v3;
+
+        assert_eq!(
+            parse_outgoing_encrypt_options(serde_json::json!({})),
+            Ok(OutgoingEncryptOptions {})
+        );
+        assert_eq!(
+            parse_outgoing_encrypt_options(serde_json::Value::Null),
+            Ok(OutgoingEncryptOptions {})
+        );
+        for key in [
+            "displayName",
+            "display_name",
+            "senderDisplayName",
+            "recipientDisplayName",
+        ] {
+            let mut object = serde_json::Map::new();
+            object.insert(
+                key.to_string(),
+                serde_json::Value::String("Mallory".to_string()),
+            );
+            let err =
+                parse_outgoing_encrypt_options(serde_json::Value::Object(object)).unwrap_err();
+            assert!(
+                err.contains("encrypt options refused") && err.contains(key),
+                "legacy options must reject caller-supplied {key}: {err}"
+            );
+        }
+
+        let state = AppState::default();
+        let err = cmd_osl_encrypt_message(
+            &state,
+            "channel-for-options-rejection".to_string(),
+            "hello".to_string(),
+            serde_json::json!({ "displayName": "Mallory" }),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("encrypt options refused") && err.contains("displayName"),
+            "displayName must be refused at the encrypt boundary: {err}"
+        );
+        assert!(
+            !err.contains("identity not loaded") && !err.contains("recipient lookup"),
+            "options validation must run before unrelated command state is consulted: {err}"
+        );
+
+        let attachment_with_display = serde_json::json!({
+            "attKeyB64": STANDARD.encode([7u8; 32]),
+            "originalFilename": "photo.png",
+            "randomFilename": "sealed.bin",
+            "mimeType": "image/png",
+            "displayName": "Mallory"
+        });
+        let attachment_err =
+            serde_json::from_value::<AttachmentEnvelopeInput>(attachment_with_display)
+                .expect_err("attachment envelope input must deny displayName");
+        assert!(
+            attachment_err.to_string().contains("displayName"),
+            "attachment displayName rejection should identify the refused field: {attachment_err}"
+        );
+
+        let source = include_str!("commands.rs");
+        for name in [
+            "cmd_osl_encrypt_message",
+            "cmd_osl_encrypt_message_v2",
+            "cmd_osl_encrypt_message_v2_wire",
+            "cmd_osl_encrypt_attachment_envelope",
+            "cmd_osl_seal_attachment_with_cover_v2",
+            "cmd_osl_seal_attachment_with_cover_v3",
+        ] {
+            assert_no_display_surface(name, function_signature(source, name));
+        }
+        for name in ["OutgoingEncryptOptions", "AttachmentEnvelopeInput"] {
+            assert_no_display_surface(name, struct_body(source, name));
+        }
+    }
 }
 
 // ---- Layer 10 / Phase 5: receive-side decoder + IPC command ----
@@ -4317,7 +4497,7 @@ pub fn cmd_osl_unburn_scope_after_encrypt(
 /// per file picked, then passes the whole list so the cover
 /// references every attachment in the Discord message.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AttachmentEnvelopeInput {
     pub att_key_b64: String,
     pub original_filename: String,
