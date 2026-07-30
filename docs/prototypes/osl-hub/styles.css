@@ -40,7 +40,7 @@ html[data-theme="light"] {
 
 * { box-sizing: border-box; }
 html { background: var(--bg); color: var(--text); }
-body { margin: 0; min-width: 320px; font-family: var(--font); font-size: 15px; line-height: 1.5; background: var(--bg); color: var(--text); }
+body { margin: 0; min-width: 0; overflow-x: clip; font-family: var(--font); font-size: 15px; line-height: 1.5; background: var(--bg); color: var(--text); }
 button, select, textarea, input { font: inherit; }
 button, select, label { -webkit-tap-highlight-color: transparent; }
 button { color: inherit; }
@@ -278,9 +278,9 @@ mark { padding: 2px 3px; border-radius: 4px; background: var(--warn-soft); color
 @media (max-width: 820px) {
   .prototype-banner { text-align: center; flex-wrap: wrap; gap: 2px 8px; }
   .app-shell { width: 100%; max-width: 100%; grid-template-columns: minmax(0, 1fr); overflow: hidden; }
-  .sidebar { position: static; width: 100%; height: auto; padding: 10px 12px; display: block; border-right: 0; border-bottom: 1px solid var(--border); }
+  .sidebar { position: static; min-width: 0; width: 100%; height: auto; padding: 10px 12px; display: block; overflow: hidden; border-right: 0; border-bottom: 1px solid var(--border); }
   .brand-row, .sidebar-bottom { display: none; }
-  .nav-list { width: 100%; max-width: 100%; display: flex; overflow-x: auto; gap: 6px; padding-bottom: 2px; }
+  .nav-list { width: 100%; max-width: 100%; display: flex; overflow-x: auto; overflow-y: hidden; gap: 6px; padding-bottom: 2px; }
   .nav-item { flex: 0 0 auto; width: auto; grid-template-columns: 20px auto auto; white-space: nowrap; }
   .nav-item svg { width: 18px; height: 18px; }
   .topbar { align-items: start; }
