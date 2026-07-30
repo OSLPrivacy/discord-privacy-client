@@ -7,7 +7,7 @@
 //! input gives a stable derived AEAD key across runs.
 
 use rusqlite::params;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use store::{MessageStore, StoreError, StoredMessage};
 use tempfile::TempDir;
 
@@ -35,6 +35,34 @@ fn sample(
         decrypted_at,
         burned: false,
     }
+}
+
+fn raw_store_artifacts(db_path: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let parent = db_path.parent().expect("database has a parent");
+    let prefix = db_path
+        .file_name()
+        .expect("database has a filename")
+        .to_string_lossy();
+    let mut artifacts = std::fs::read_dir(parent)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().starts_with(prefix.as_ref()))
+                .unwrap_or(false)
+        })
+        .filter(|path| path.is_file())
+        .map(|path| {
+            let bytes = std::fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect::<Vec<_>>();
+    artifacts.sort_by(|left, right| left.0.cmp(&right.0));
+    artifacts
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
 }
 
 fn v3_key() -> crypto::aead::Key {
@@ -966,6 +994,103 @@ fn attachment_trim_keeps_newest() {
         assert_eq!(out.1, vec![i as u8; 8]);
     }
     assert!(store.get_attachment("msg6", "f.bin").unwrap().is_none());
+}
+
+#[test]
+fn a70_trimmed_attachment_rows_leave_no_recoverable_plaintext_residue_after_trim() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("messages.sqlite");
+    let store = open_a(tmp.path());
+    for (msg_id, body) in [
+        ("a70-msg-oldest", b"a70 oldest attachment body".as_slice()),
+        ("a70-msg-middle", b"a70 middle attachment body".as_slice()),
+        ("a70-msg-newest", b"a70 newest attachment body".as_slice()),
+    ] {
+        store
+            .put_attachment(
+                msg_id,
+                "f.bin",
+                "application/octet-stream",
+                body,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+    }
+
+    let residue = "a70-trim-recoverable-plaintext-residue-582533417";
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let changed = conn
+            .execute(
+                "UPDATE attachments
+                    SET cache_key = ?1,
+                        discord_message_id = ?1,
+                        random_filename = ?1,
+                        mime = ?1,
+                        scope_type = ?1,
+                        scope_id = ?1,
+                        sender_discord_id = ?1
+                  WHERE ck_bi = (
+                    SELECT ck_bi FROM attachments ORDER BY seq ASC, ck_bi ASC LIMIT 1
+                  )",
+                params![residue],
+            )
+            .unwrap();
+        assert_eq!(changed, 1, "fixture must seed one trim victim");
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .unwrap();
+    }
+    assert_eq!(
+        store
+            .get_attachment("a70-msg-oldest", "f.bin")
+            .unwrap()
+            .unwrap()
+            .1,
+        b"a70 oldest attachment body",
+        "the seeded legacy columns must not make the live row unreadable"
+    );
+    assert!(
+        raw_store_artifacts(&db_path)
+            .iter()
+            .any(|(_, bytes)| contains(bytes, residue.as_bytes())),
+        "fixture must leave recoverable plaintext residue before trim"
+    );
+
+    assert_eq!(store.trim_attachments(1).unwrap(), 2);
+    assert!(store
+        .get_attachment("a70-msg-oldest", "f.bin")
+        .unwrap()
+        .is_none());
+    assert!(store
+        .get_attachment("a70-msg-middle", "f.bin")
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        store
+            .get_attachment("a70-msg-newest", "f.bin")
+            .unwrap()
+            .unwrap()
+            .1,
+        b"a70 newest attachment body"
+    );
+
+    let findings = raw_store_artifacts(&db_path)
+        .into_iter()
+        .filter_map(|(path, bytes)| {
+            contains(&bytes, residue.as_bytes()).then(|| path.display().to_string())
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        findings.is_empty(),
+        "trim left recoverable plaintext residue in raw store artifacts: {findings:?}"
+    );
+    let wal_path = db_path.with_extension("sqlite-wal");
+    assert!(
+        !wal_path.exists() || std::fs::metadata(wal_path).unwrap().len() == 0,
+        "trim must truncate WAL page images after shredding rows"
+    );
 }
 
 // ---- timed deletion: sweeper-named batch shred ----
