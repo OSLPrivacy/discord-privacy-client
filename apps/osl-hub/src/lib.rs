@@ -13,6 +13,8 @@ pub mod browser_footprint;
 pub mod burn_contract;
 pub mod cloud_autoscrub_authority;
 pub mod cloud_autoscrub_consent;
+#[cfg(feature = "core")]
+pub mod cloud_autoscrub_run;
 pub mod cloud_autoscrub_execution;
 pub mod cloud_autoscrub_envelope;
 pub mod control_contract;
@@ -67,6 +69,7 @@ pub mod discord_qa_inbound_receipt;
 pub mod identity_binding_verifier;
 #[cfg(feature = "core")]
 pub mod identity_registry;
+pub mod isolated_worker;
 #[cfg(feature = "core")]
 pub mod mass_cleanup;
 // Timed deletion and view-once expiry. Needs `ipc` (sealed-at-rest storage) and

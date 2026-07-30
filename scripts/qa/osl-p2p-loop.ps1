@@ -132,7 +132,11 @@ param(
     [int]$ObserveSec         = 90,
     [int]$OperatorObserveSec = 300,
     [int]$TimeoutSec         = 900,
-    [switch]$Quiet
+    [switch]$Quiet,
+
+    # Repository self-test entry point. It runs only synthetic precondition
+    # cases and never writes a self-test trigger or touches a live conversation.
+    [switch]$RunScriptSelfTests
 )
 
 $ErrorActionPreference = 'Stop'
@@ -568,6 +572,116 @@ function Read-B6StartupReceipt {
         Path = $path
         Receipt = $receipt
     }
+}
+
+function New-B6StartupReceiptForSelfTest {
+    return [ordered]@{
+        schemaVersion = 2
+        b6Preflight = [ordered]@{
+            schemaVersion = 2
+            startupAllowed = $true
+            startupBlockers = @()
+            sourceCommit = '0123456789abcdef0123456789abcdef01234567'
+            binarySha256 = ('a' * 64)
+            serverDeploymentIdentity = 'dedicated-qa-selftest'
+            identityPublicFingerprintsSha256 = ('b' * 64)
+            identityKeystoreRootFingerprintsSha256 = ('c' * 64)
+            runtime = [ordered]@{
+                distinctIdentityAndKeystoreRoots = $true
+                bidirectionalCiphertextAndPlaintext = $true
+                offlineEnqueueAndDelivery = $true
+                persistedRatchetRestart = $true
+                exactlyOnceDrain = $true
+                independentPeerAttribution = $true
+                negativeCrossPeerIsolation = $true
+            }
+        }
+    }
+}
+
+function Invoke-P2PLoopSelfTestChild {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$TempRootAForChild,
+        [Parameter(Mandatory)][string]$TempRootBForChild,
+        [Parameter(Mandatory)][string]$JsonOutForChild
+    )
+    $hostExe = $null
+    try { $hostExe = (Get-Process -Id $PID -ErrorAction Stop).Path } catch { }
+    if (-not $hostExe) { $hostExe = Join-Path $PSHOME 'pwsh.exe' }
+    if (-not (Test-Path -LiteralPath $hostExe)) { $hostExe = Join-Path $PSHOME 'powershell.exe' }
+    if (-not (Test-Path -LiteralPath $hostExe)) { throw ('{0}: could not resolve the current PowerShell host executable' -f $Name) }
+
+    & $hostExe -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath `
+        -BundleB 'org.oslprivacy.hub.selftest.b' `
+        -ExeB $PSCommandPath `
+        -TempRootA $TempRootAForChild `
+        -TempRootB $TempRootBForChild `
+        -JsonOut $JsonOutForChild `
+        -Quiet
+    $code = $LASTEXITCODE
+    if ($code -ne 2) {
+        throw ('{0}: child exited {1}, expected blocked exit code 2' -f $Name, $code)
+    }
+    return (Get-Content -LiteralPath $JsonOutForChild -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop)
+}
+
+function b6_controllers_read_the_retained_preflight_before_consent_or_drive {
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('osl-p2p-loop-selftest-' + [Guid]::NewGuid().ToString('N'))
+    $missingA = Join-Path $root 'missing-a'
+    $missingB = Join-Path $root 'missing-b'
+    $validA = Join-Path $root 'valid-a'
+    $validB = Join-Path $root 'valid-b'
+    try {
+        foreach ($path in @($missingA, $missingB, $validA, $validB)) {
+            [void](New-Item -ItemType Directory -Path $path -Force -ErrorAction Stop)
+        }
+
+        $missingJson = Join-Path $root 'missing.json'
+        $missing = Invoke-P2PLoopSelfTestChild `
+            -Name 'missing-retained-b6' `
+            -TempRootAForChild $missingA `
+            -TempRootBForChild $missingB `
+            -JsonOutForChild $missingJson
+        if ($missing.overall.blockedBy -cne 'b6-preflight') {
+            throw ('missing retained preflight blocked by {0}, not b6-preflight' -f $missing.overall.blockedBy)
+        }
+        if (@($missing.preconditionGate)[0].gate -cne 'b6-preflight') {
+            throw 'missing-retained-b6 did not evaluate the B6 gate first'
+        }
+
+        $receipt = New-B6StartupReceiptForSelfTest
+        foreach ($path in @($validA, $validB)) {
+            $receipt | ConvertTo-Json -Depth 12 | Out-File -LiteralPath (Join-Path $path 'osl-discord-qa-b6-preflight.v2.json') -Encoding utf8
+        }
+
+        $validJson = Join-Path $root 'valid-no-consent.json'
+        $valid = Invoke-P2PLoopSelfTestChild `
+            -Name 'valid-b6-no-consent' `
+            -TempRootAForChild $validA `
+            -TempRootBForChild $validB `
+            -JsonOutForChild $validJson
+        $gates = @($valid.preconditionGate)
+        if ($gates.Count -lt 2 -or $gates[0].gate -cne 'b6-preflight' -or $gates[0].ok -ne $true) {
+            throw 'valid retained B6 receipts were not accepted before consent'
+        }
+        if ($valid.overall.blockedBy -cne 'consent' -or $gates[1].gate -cne 'consent' -or $gates[1].ok -ne $false) {
+            throw 'valid retained B6 receipts without consent did not block at the consent gate'
+        }
+        if ($valid.overall.stepsRun -ne $false -or @($valid.steps).Count -ne 0) {
+            throw 'the no-consent self-test drove measurement steps'
+        }
+    } finally {
+        if (Test-Path -LiteralPath $root) {
+            Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+if ($RunScriptSelfTests) {
+    b6_controllers_read_the_retained_preflight_before_consent_or_drive
+    Say 'ok - b6_controllers_read_the_retained_preflight_before_consent_or_drive' 'Green'
+    exit 0
 }
 
 $b6A = Read-B6StartupReceipt -TempRoot $TempRootA -Side 'A'
