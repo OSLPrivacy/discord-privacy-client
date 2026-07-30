@@ -178,6 +178,8 @@ class OslVmDiscordUiaHarnessStaticTests(unittest.TestCase):
         self.assertRegex(body, r"(?i)Screen\]::FromHandle")
         self.assertRegex(body, r"(?i)BoundingRectangle")
         self.assertRegex(body, r"(?i)ExpectFullscreen")
+        self.assertRegex(body, r"(?i)GetDpiForWindow")
+        self.assertRegex(body, r"(?i)RequireOverlayMatrix")
         self.assertNotRegex(body, r"(?i)TitlebarCount")
 
     def test_element_not_available_retry_is_bounded_and_rediscovers(self) -> None:
@@ -289,6 +291,49 @@ class OslVmDiscordUiaHarnessStaticTests(unittest.TestCase):
         self.assertRegex(lifecycle, r"ManualBringForwardInvoked\s*=\s*\$false")
         self.assertNotIn("'native-companion-focus'", lifecycle)
         self.assertRegex(lifecycle, r"Select-Object\s+-First\s+10")
+
+    def test_lifecycle_proves_c45_visual_matrix_axes(self) -> None:
+        self.assertRegex(self.source, r"GetDpiForWindow")
+        self.assertRegex(self.source, r"PostMouseWheel")
+
+        visual = function_body(self.source, "Get-OverlayVisualMatrixState")
+        for required in (
+            "NativeSurfaceCaptured",
+            "ThemeSampleBound",
+            "NitroSampleBound",
+            "TypographyBound",
+            "FramelessStyleProven",
+            "ZOrderProven",
+        ):
+            self.assertIn(required, visual)
+        self.assertRegex(visual, r"(?i)osl-discord-qa-overlay-stage\.txt")
+        self.assertRegex(visual, r"(?i)osl-discord-qa-overlay-style\.txt")
+        self.assertRegex(visual, r"(?i)osl-discord-qa-composer-zorder\.txt")
+
+        scroll = function_body(self.source, "Invoke-OverlayScrollProbe")
+        self.assertRegex(scroll, r"PostMouseWheel")
+        self.assertRegex(scroll, r"osl-discord-qa-rehydrate\.txt")
+        self.assertRegex(scroll, r"LineCount|LastWriteUtcTicks")
+
+        lifecycle = action_body(self.source, "ExerciseWindowLifecycle")
+        for axis in (
+            "Adoption",
+            "Focus",
+            "CloseReopen",
+            "Scroll",
+            "Resize",
+            "Dpi",
+            "Theme",
+            "Nitro",
+            "Typography",
+        ):
+            self.assertRegex(lifecycle, rf"\b{axis}\s*=")
+        self.assertRegex(lifecycle, r"Set-QaProtectedComposerOpen\s+\$false")
+        self.assertRegex(lifecycle, r"Set-QaProtectedComposerOpen\s+\$true")
+        self.assertRegex(lifecycle, r"Invoke-OverlayScrollProbe")
+        self.assertRegex(lifecycle, r"LifecycleMatrix")
+        self.assertRegex(lifecycle, r"VisualEvidence")
+        self.assertNotRegex(lifecycle, r"(?m)^\s*(?:OslHwnd|DiscordHwnd)\s*=")
 
 
 if __name__ == "__main__":

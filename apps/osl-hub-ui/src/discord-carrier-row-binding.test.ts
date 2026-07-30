@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   applyCarrierRowGeometry,
+  bindCarrierRowGeometry,
   clearCarrierRowGeometry,
+  clearCarrierRowGeometryBinding,
   parseNativeDiscordCarrierRowBindings,
 } from "./discord-carrier-row-binding";
 
@@ -64,9 +66,11 @@ describe("native Discord carrier row binding", () => {
         getPropertyValue(name: string) { return properties.get(name) ?? ""; },
       },
     } as unknown as HTMLElement;
+    bindCarrierRowGeometry(row, binding);
     applyCarrierRowGeometry(row, binding);
     expect(row.hidden).toBe(false);
     expect(row.classList.contains("osl-discord-transcript__row--carrier-bound")).toBe(true);
+    expect(row.dataset.messageId).toBe(binding.messageId);
     expect(row.dataset.nativeLocatorSha256).toBe(binding.nativeLocatorSha256);
     expect(row.style.getPropertyValue("--osl-carrier-left")).toBe("184px");
     expect(row.style.getPropertyValue("--osl-carrier-top")).toBe("412px");
@@ -80,9 +84,49 @@ describe("native Discord carrier row binding", () => {
     clearCarrierRowGeometry(row);
     expect(row.hidden).toBe(true);
     expect(row.classList.contains("osl-discord-transcript__row--carrier-bound")).toBe(false);
+    expect(row.dataset.messageId).toBeUndefined();
     expect(row.dataset.nativeLocatorSha256).toBeUndefined();
     expect(row.style.getPropertyValue("--osl-carrier-left")).toBe("");
     expect(row.style.getPropertyValue("--osl-carrier-background")).toBe("");
+  });
+
+  it("keeps Eye plaintext hidden unless the row carries the exact carrier-row geometry binding", () => {
+    const properties = new Map<string, string>();
+    const classes = new Set<string>();
+    const row = {
+      hidden: true,
+      dataset: {} as Record<string, string>,
+      classList: {
+        add(value: string) { classes.add(value); },
+        remove(value: string) { classes.delete(value); },
+        contains(value: string) { return classes.has(value); },
+      },
+      style: {
+        setProperty(name: string, value: string) { properties.set(name, value); },
+        removeProperty(name: string) { properties.delete(name); return ""; },
+        getPropertyValue(name: string) { return properties.get(name) ?? ""; },
+      },
+    } as unknown as HTMLElement;
+
+    expect(applyCarrierRowGeometry(row, binding)).toBe(false);
+    expect(row.hidden).toBe(true);
+    expect(row.classList.contains("osl-discord-transcript__row--carrier-bound")).toBe(false);
+    expect(row.style.getPropertyValue("--osl-carrier-left")).toBe("");
+
+    bindCarrierRowGeometry(row, { ...binding, leftPx: binding.leftPx + 1 });
+    expect(applyCarrierRowGeometry(row, binding)).toBe(false);
+    expect(row.hidden).toBe(true);
+    expect(row.dataset.nativeLocatorSha256).toBeUndefined();
+    expect(row.style.getPropertyValue("--osl-carrier-left")).toBe("");
+
+    bindCarrierRowGeometry(row, binding);
+    expect(applyCarrierRowGeometry(row, binding)).toBe(true);
+    expect(row.hidden).toBe(false);
+    expect(row.style.getPropertyValue("--osl-carrier-left")).toBe("184px");
+
+    clearCarrierRowGeometryBinding(row);
+    expect(applyCarrierRowGeometry(row, binding)).toBe(false);
+    expect(row.hidden).toBe(true);
   });
 
   it("writes every measured metric verbatim and re-writes it on a fresh measurement", () => {
@@ -116,6 +160,7 @@ describe("native Discord carrier row binding", () => {
       lineHeightPx: 13.125,
       letterSpacingPx: -0.25,
     };
+    bindCarrierRowGeometry(row, zoomedOut);
     applyCarrierRowGeometry(row, zoomedOut);
     expect(row.style.getPropertyValue("--osl-carrier-font-size")).toBe("10.5px");
     expect(row.style.getPropertyValue("--osl-carrier-font-weight")).toBe("350");
@@ -125,7 +170,9 @@ describe("native Discord carrier row binding", () => {
     // Self-heal: Discord is zoomed back in and the backend re-measures. Every
     // variable has to converge on the new measurement, with nothing stale left
     // over from the previous one -- applyCarrierRowGeometry clears first.
-    applyCarrierRowGeometry(row, { ...binding, fontSizePx: 17, lineHeightPx: 22.5 });
+    const zoomedIn = { ...binding, fontSizePx: 17, lineHeightPx: 22.5 };
+    bindCarrierRowGeometry(row, zoomedIn);
+    applyCarrierRowGeometry(row, zoomedIn);
     expect(row.style.getPropertyValue("--osl-carrier-font-size")).toBe("17px");
     expect(row.style.getPropertyValue("--osl-carrier-font-weight")).toBe("400");
     expect(row.style.getPropertyValue("--osl-carrier-line-height")).toBe("22.5px");
