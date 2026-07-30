@@ -66,9 +66,13 @@ def _reconcile_public_docs_and_site_claims_against_the_exact_released_binary(
     stale_source_claim = (
         f"Release v1.2.3 source commit {'e' * 40} is release-proven."
     )
+    stale_tree_claim = (
+        f"Release v1.2.3 source tree {'f' * 40} is release-proven."
+    )
     unbound_release_claim = (
         "This released binary proves protected messages send through Discord."
     )
+    qa_only_identity = {**identity, "claimProfile": "qa-only"}
 
     self.assertEqual(release_claim_violations(exact_binary_claim, identity), [])
     self.assertEqual(release_claim_violations(exact_source_claim, identity), [])
@@ -84,7 +88,12 @@ def _reconcile_public_docs_and_site_claims_against_the_exact_released_binary(
         release_identity_mismatch_violations(stale_source_claim, identity),
         [(1, "release claim references a different released binary identity")],
     )
+    self.assertEqual(
+        release_identity_mismatch_violations(stale_tree_claim, identity),
+        [(1, "release claim references a different released binary identity")],
+    )
     self.assertTrue(release_claim_violations(unbound_release_claim, None))
+    self.assertTrue(release_claim_violations(unbound_release_claim, qa_only_identity))
 
 
 setattr(
