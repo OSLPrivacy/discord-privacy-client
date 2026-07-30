@@ -111,6 +111,54 @@ afterEach(async () => {
 });
 
 describe("migration 0036 account ownership proof required", () => {
+  it("(new) migration 0035 adding a proof-required constraint to the keyserv", async () => {
+    const db = await preProofRequiredDb();
+    await seedUser(db, "owner-osl-id");
+    await applyMigration(db, "0036_account_ownership_proof_required.sql");
+
+    const nonce = "7".repeat(64);
+    const binding = "8".repeat(64);
+
+    await expect(
+      insertProofBinding(db, { nonce, binding }),
+    ).rejects.toThrow(/proof challenge is required/);
+
+    await insertChallenge(db, { nonce, binding });
+    await expect(
+      insertProofBinding(db, { nonce, binding }),
+    ).rejects.toThrow(/proof challenge is required/);
+
+    await spendChallenge(db, nonce, 1_900_000_030);
+    await expect(
+      insertProofBinding(db, { nonce, binding, verifiedAt: 1_900_000_040 }),
+    ).resolves.toMatchObject({ success: true });
+
+    const admitted = await db.prepare(
+      `SELECT COUNT(*) AS count
+         FROM account_ownership_proof_bindings
+        WHERE nonce_sha256 = ?
+          AND binding_sha256 = ?
+          AND owner_user_id = 'owner-osl-id'`,
+    ).bind(nonce, binding).first<{ count: number }>();
+    expect(admitted?.count).toBe(1);
+
+    const expiredNonce = "9".repeat(64);
+    const expiredBinding = "0".repeat(64);
+    await insertChallenge(db, {
+      nonce: expiredNonce,
+      binding: expiredBinding,
+      expiresAt: 1_900_000_100,
+      spentAt: 1_900_000_120,
+    });
+    await expect(
+      insertProofBinding(db, {
+        nonce: expiredNonce,
+        binding: expiredBinding,
+        verifiedAt: 1_900_000_130,
+      }),
+    ).rejects.toThrow(/proof challenge is required/);
+  });
+
   it("requires a matching spent challenge before durable proof binding", async () => {
     const db = await preProofRequiredDb();
     await seedUser(db, "owner-osl-id");
