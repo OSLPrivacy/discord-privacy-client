@@ -8,20 +8,27 @@ const MAX_BODY_BYTES = 256 * 1024;
 
 export type OslMailTransit = "oslE2ee" | "externalSmtp";
 export type OslMailAddress = `${string}@oslprivacy.com`;
+export type OslMailUnreadCount = number;
+export type OslMailRetentionSeconds = number;
+export const OSL_MAIL_STATUS_CONTRACT = {
+  maximumUnreadCount: 100_000,
+  minimumRetentionSeconds: 60,
+  maximumRetentionSeconds: 7 * 24 * 60 * 60,
+} as const;
 export type OslMailStatus = OslMailProvisionedStatus | OslMailUnprovisionedStatus;
 export interface OslMailProvisionedStatus {
   readonly available: true;
   readonly provisioned: true;
   readonly address: OslMailAddress;
-  readonly unreadCount: number;
-  readonly retentionSeconds: number;
+  readonly unreadCount: OslMailUnreadCount;
+  readonly retentionSeconds: OslMailRetentionSeconds;
 }
 export interface OslMailUnprovisionedStatus {
   readonly available: true;
   readonly provisioned: false;
   readonly address: null;
   readonly unreadCount: 0;
-  readonly retentionSeconds: number;
+  readonly retentionSeconds: OslMailRetentionSeconds;
 }
 export interface OslMailThreadSummary {
   threadId: string;
@@ -94,8 +101,8 @@ export function parseOslMailStatus(value: unknown): OslMailStatus | null {
   if (!record(value) || !exact(value, ["available", "provisioned", "address", "unreadCount", "retentionSeconds"])
     || value.available !== true || typeof value.provisioned !== "boolean"
     || !(value.address === null || (typeof value.address === "string" && ADDRESS.test(value.address)))
-    || !Number.isSafeInteger(value.unreadCount) || Number(value.unreadCount) < 0 || Number(value.unreadCount) > 100_000
-    || !Number.isSafeInteger(value.retentionSeconds) || Number(value.retentionSeconds) < 60 || Number(value.retentionSeconds) > 604_800
+    || !Number.isSafeInteger(value.unreadCount) || Number(value.unreadCount) < 0 || Number(value.unreadCount) > OSL_MAIL_STATUS_CONTRACT.maximumUnreadCount
+    || !Number.isSafeInteger(value.retentionSeconds) || Number(value.retentionSeconds) < OSL_MAIL_STATUS_CONTRACT.minimumRetentionSeconds || Number(value.retentionSeconds) > OSL_MAIL_STATUS_CONTRACT.maximumRetentionSeconds
     || (value.provisioned ? value.address === null : value.address !== null || value.unreadCount !== 0)) return null;
   return value as unknown as OslMailStatus;
 }
