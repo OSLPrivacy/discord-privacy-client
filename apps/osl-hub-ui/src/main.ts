@@ -424,6 +424,11 @@ const oslChatUnreadStorageKey = "osl-chat-unread-v1";
 const oslChatNotificationStorageKey = "osl-chat-notifications-v1";
 type OslChatSecureStore = Pick<SecureLocalStore, "getItem" | "setItem">;
 type BrowserImportStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+export type OslChatUiPreferenceSnapshot = {
+  readonly previewsVisible: boolean;
+  readonly mutedPeople: readonly string[];
+  readonly unread: readonly (readonly [string, number])[];
+};
 type RnWirePolicyState = {
   readonly requested: boolean;
   readonly buildEnabled: boolean;
@@ -536,6 +541,10 @@ function parseSavedAccountMode(raw: string | null): SavedAccountMode {
   return raw === "use" || raw === "clean" ? raw : "ask";
 }
 
+function parseOslChatPreviewVisibility(raw: string | null): boolean {
+  return raw !== "false";
+}
+
 function parseOslChatMutedPeople(raw: string | null): Set<string> {
   try {
     const parsed = JSON.parse(raw ?? "[]") as unknown;
@@ -582,30 +591,83 @@ function encodeOslChatUnread(unread: ReadonlyMap<string, number>): string {
     .slice(0, 512)));
 }
 
+function encodeOslChatPreviewVisibility(visible: boolean): string {
+  return String(visible);
+}
+
 function persistSensitiveOslChatJson(logicalKey: string, payload: string): void {
   if (!oslChatSecureStore) return;
   void oslChatSecureStore.setItem(logicalKey, payload).catch(() => undefined);
+}
+
+function persistOslChatPreviewVisibility(): void {
+  persistSensitiveOslChatJson(oslChatPreviewStorageKey, encodeOslChatPreviewVisibility(oslChatPreviewsVisible));
 }
 
 function persistOslChatMutedPeople(): void {
   persistSensitiveOslChatJson(oslChatMutedStorageKey, encodeOslChatMutedPeople(oslChatMutedPeople));
 }
 
-async function loadOslChatSensitiveStateFromSecureStore(): Promise<void> {
-  if (!oslChatSecureStore) return;
-  const [mutedRaw, unreadRaw] = await Promise.all([
-    oslChatSecureStore.getItem(oslChatMutedStorageKey).catch(() => null),
-    oslChatSecureStore.getItem(oslChatUnreadStorageKey).catch(() => null),
-  ]);
-  if (mutedRaw !== null) oslChatMutedPeople = parseOslChatMutedPeople(mutedRaw);
-  if (unreadRaw !== null) {
-    oslChatUnread.clear();
-    for (const [personId, count] of parseOslChatUnread(unreadRaw)) oslChatUnread.set(personId, count);
+async function secureOrLegacyOslChatPreference(
+  store: OslChatSecureStore | null,
+  storage: Pick<Storage, "getItem">,
+  logicalKey: string,
+): Promise<string | null> {
+  if (!store) return storage.getItem(logicalKey);
+  try {
+    return await store.getItem(logicalKey) ?? storage.getItem(logicalKey);
+  } catch {
+    return storage.getItem(logicalKey);
   }
+}
+
+export async function loadMigratedOslChatUiPreferences(
+  store: OslChatSecureStore | null,
+  storage: Pick<Storage, "getItem">,
+): Promise<OslChatUiPreferenceSnapshot> {
+  const [previewRaw, mutedRaw, unreadRaw] = await Promise.all([
+    secureOrLegacyOslChatPreference(store, storage, oslChatPreviewStorageKey),
+    secureOrLegacyOslChatPreference(store, storage, oslChatMutedStorageKey),
+    secureOrLegacyOslChatPreference(store, storage, oslChatUnreadStorageKey),
+  ]);
+  return {
+    previewsVisible: parseOslChatPreviewVisibility(previewRaw),
+    mutedPeople: [...parseOslChatMutedPeople(mutedRaw)],
+    unread: [...parseOslChatUnread(unreadRaw)],
+  };
+}
+
+function applyOslChatUiPreferences(preferences: OslChatUiPreferenceSnapshot): void {
+  oslChatPreviewsVisible = preferences.previewsVisible;
+  oslChatMutedPeople = new Set(preferences.mutedPeople);
+  oslChatUnread.clear();
+  for (const [personId, count] of preferences.unread) oslChatUnread.set(personId, count);
+}
+
+async function loadOslChatSensitiveStateFromSecureStore(): Promise<void> {
+  applyOslChatUiPreferences(await loadMigratedOslChatUiPreferences(oslChatSecureStore, localStorage));
 }
 
 export function configureOslChatSecureLocalStore(store: OslChatSecureStore | null): void {
   oslChatSecureStore = store;
+}
+
+export function oslChatUiPreferenceSnapshot(): OslChatUiPreferenceSnapshot {
+  return {
+    previewsVisible: oslChatPreviewsVisible,
+    mutedPeople: [...oslChatMutedPeople],
+    unread: [...oslChatUnread],
+  };
+}
+
+export async function migrateOslChatPreviewVisibilityToSecureLocalStore(
+  store: OslChatSecureStore,
+  storage: BrowserImportStorage,
+): Promise<boolean> {
+  const parsed = parseOslChatPreviewVisibility(storage.getItem(oslChatPreviewStorageKey));
+  await store.setItem(oslChatPreviewStorageKey, encodeOslChatPreviewVisibility(parsed));
+  storage.removeItem(oslChatPreviewStorageKey);
+  return parsed;
 }
 
 export async function migrateOslChatUnreadToSecureLocalStore(
@@ -850,7 +912,7 @@ function orderedServices(): LinkedService[] {
   return [...ordered, ...[...byId.values()].sort((a, b) => a.sidebarOrder - b.sidebarOrder)];
 }
 
-function loadUiPreferences(): void {
+export async function loadUiPreferences(): Promise<void> {
   try {
     const order = JSON.parse(localStorage.getItem(sidebarStorageKey) ?? "[]") as unknown;
     if (Array.isArray(order)) sidebarOrder = order.filter((id): id is string => typeof id === "string").slice(0, 20);
@@ -905,13 +967,8 @@ function loadUiPreferences(): void {
   notificationScopeSuggestions = localStorage.getItem(notificationScopeStorageKey) !== "false";
   notificationChatActivity = localStorage.getItem(notificationChatStorageKey) !== "false";
   notificationSecurityActivity = localStorage.getItem(notificationSecurityStorageKey) !== "false";
-  oslChatPreviewsVisible = localStorage.getItem(oslChatPreviewStorageKey) !== "false";
   rnWirePolicyRequested = localStorage.getItem(rnWirePolicyStorageKey) === "true";
-  oslChatMutedPeople = parseOslChatMutedPeople(localStorage.getItem(oslChatMutedStorageKey));
-  oslChatUnread.clear();
-  for (const [personId, count] of parseOslChatUnread(localStorage.getItem(oslChatUnreadStorageKey))) {
-    oslChatUnread.set(personId, count);
-  }
+  await loadOslChatSensitiveStateFromSecureStore();
   try {
     const notices = JSON.parse(localStorage.getItem(oslChatNotificationStorageKey) ?? "[]") as unknown;
     if (Array.isArray(notices)) {
@@ -4698,7 +4755,7 @@ function bindWorkspace(): void {
     const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
     if (!pro) return;
     oslChatPreviewsVisible = (event.currentTarget as HTMLInputElement).checked;
-    localStorage.setItem(oslChatPreviewStorageKey, String(oslChatPreviewsVisible));
+    persistOslChatPreviewVisibility();
     render();
   });
   document.querySelector<HTMLButtonElement>("#osl-chat-permission-toggle")?.addEventListener("click", () => void toggleOslChatPermission());
@@ -6862,8 +6919,7 @@ async function bootstrap(): Promise<void> {
   const attempt = ++bootstrapEpoch;
   mullvadAutoStartAttempted = false;
   applyTheme(themeChoice);
-  loadUiPreferences();
-  void loadOslChatSensitiveStateFromSecureStore().then(() => {
+  void loadUiPreferences().then(() => {
     if (route === "home" || route === "osl-chat" || (route === "settings" && settingsSection === "notifications")) renderWhenIdle();
   });
   root.innerHTML = `<div class="app-frame with-titlebar">${desktopTitlebar()}<main class="loading-screen"><div class="loading-seal" aria-hidden="true"><img class="osl-logo loading-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/></div><span class="sr-only">Opening OSL</span></main></div>`;

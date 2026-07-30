@@ -57,6 +57,20 @@ describe("first-party OSL Chats integration", () => {
     expect(source).toContain('data-osl-chat-unmute="${escapeHtml(personId)}"');
   });
 
+  it("keeps migrated chat preference persistence out of plaintext localStorage", () => {
+    expect(source).toContain("osl-chat-previews-visible-v1");
+    expect(source).toContain("osl-chat-muted-people-v1");
+    expect(source).toContain("osl-chat-unread-v1");
+    expect(source).toContain("persistSensitiveOslChatJson(oslChatPreviewStorageKey");
+    expect(source).toContain("persistSensitiveOslChatJson(oslChatMutedStorageKey");
+    expect(source).toContain("persistSensitiveOslChatJson(oslChatUnreadStorageKey");
+    expect(source).not.toMatch(/localStorage\.setItem\(\s*oslChat(?:Preview|Muted|Unread)StorageKey/u);
+    expect(source).not.toMatch(/localStorage\.setItem\(\s*["']osl-chat-(?:previews-visible|muted-people|unread)-v1/u);
+    expect(source).toContain("storage.removeItem(oslChatPreviewStorageKey)");
+    expect(source).toContain("storage.removeItem(oslChatMutedStorageKey)");
+    expect(source).toContain("storage.removeItem(oslChatUnreadStorageKey)");
+  });
+
   it("separates real chat and security activity controls", () => {
     expect(source).toContain('id="notification-chat-activity"');
     expect(source).toContain('id="notification-security-activity"');
