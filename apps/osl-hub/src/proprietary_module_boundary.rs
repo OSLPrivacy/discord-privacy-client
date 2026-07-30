@@ -561,7 +561,7 @@ impl OpenPermissionSet {
     }
 
     #[cfg(test)]
-    fn from_verified_permissions(permissions: &[OpenPermission]) -> Self {
+    pub(crate) fn from_verified_permissions(permissions: &[OpenPermission]) -> Self {
         let bits = permissions
             .iter()
             .fold(0u16, |bits, permission| bits | permission.bit());
