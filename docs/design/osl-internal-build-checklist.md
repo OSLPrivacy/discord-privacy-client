@@ -1009,6 +1009,7 @@ honest tri-state outcome is a refusal, not a degraded pass.
   account-by-account rollout evidence. J24 acceptance guard: a wave is not closed until its compact
   report says what changed, what evidence was run, what remains blocked, and whether the trap ledger
   was updated, left unchanged because no durable trap changed, or intentionally pruned.
+  J24 test: Keep compact reports and trap-ledger rules current after each wave.
   `weight: 2` `earned: 2`
 - 🟨 **J7 · Public-claim allowlist** — closes master §24 item 5. Every permitted website/app wording
   is now bound to a status label, `file:line` evidence, and a mandatory limitation, with an explicit
