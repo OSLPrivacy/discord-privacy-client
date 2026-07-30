@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$#" -eq 1 ] && [ "$1" = "-V" ]
+printf 'cargo 0.0.0-vmqa-fixture\n'

@@ -11,7 +11,12 @@
 //! Skipped automatically if `node` isn't on PATH or `npm install`
 //! hasn't been run for the keyserver.
 
-use keystore::{generate_identity, KeyServerClient, PrekeyConfig, PrekeyState};
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
+use keystore::{
+    generate_identity, identity_bundle::BundleMergeError, identity_bundle::BundleVerifyPolicy,
+    identity_bundle::IdentityBundle, KeyServerClient, PrekeyConfig, PrekeyState,
+};
 use std::io::{BufRead, BufReader};
 use std::net::TcpStream;
 use std::path::PathBuf;
@@ -116,6 +121,34 @@ fn spawn_keyserver() -> ServerHandle {
     }
 }
 
+fn identity_bundle_for(identity: &keystore::Identity, revision: u64) -> IdentityBundle {
+    let mut bundle = IdentityBundle {
+        ed25519_identity_pub: *identity.ed25519_public.as_bytes(),
+        x25519_identity_pub: *identity.x25519_public.as_bytes(),
+        mlkem768_identity_pub: identity.mlkem_public_bytes,
+        capability_bundle: 1,
+        revision,
+        signature: [0; crypto::ed25519::SIGNATURE_SIZE],
+    };
+    let signature = crypto::ed25519::sign(&identity.ed25519_secret, &bundle.signed_bytes());
+    bundle.signature = *signature.as_bytes();
+    bundle
+}
+
+fn decode_prekey_pub(pub_b64: &str) -> [u8; 32] {
+    let bytes = STANDARD.decode(pub_b64).expect("prekey pub is base64");
+    bytes.try_into().expect("prekey pub is exactly 32 bytes")
+}
+
+fn state_opk_public(state: &PrekeyState, id: u32) -> [u8; 32] {
+    state
+        .opk_pool
+        .iter()
+        .find(|entry| entry.id == id)
+        .expect("server returned an OPK id from the published state")
+        .public
+}
+
 #[test]
 fn prekey_round_trip_through_real_keyserver() {
     if skip_if_keyserver_unavailable() {
@@ -124,38 +157,168 @@ fn prekey_round_trip_through_real_keyserver() {
     let server = spawn_keyserver();
     let client = KeyServerClient::new(format!("http://127.0.0.1:{}", server.port)).unwrap();
 
-    // 1. Register identity (which now includes Ed25519 pub).
-    let id = generate_identity("alice".to_string());
-    let resp = client.register(&id).expect("register");
-    assert_eq!(resp.user_id, "alice");
+    // 1. Register two identities (which now include Ed25519 pub).
+    let alice = generate_identity("alice".to_string());
+    let bob = generate_identity("bob".to_string());
+    let alice_resp = client.register(&alice).expect("register alice");
+    let bob_resp = client.register(&bob).expect("register bob");
+    assert_eq!(alice_resp.user_id, "alice");
+    assert_eq!(bob_resp.user_id, "bob");
 
-    // 2. Generate prekeys + replenish.
-    let mut state = PrekeyState::new(&id, PrekeyConfig::default(), 1_700_000_000);
-    let _replenish_resp = client
-        .replenish_prekeys(&id, Some(&state.current_spk), &state.opk_pool)
-        .expect("replenish");
-    // The server accepted our signed batch — proves Rust's
+    // 2. Generate independent Alice and Bob prekeys + replenish both.
+    let alice_state = PrekeyState::new(&alice, PrekeyConfig::default(), 1_700_000_000);
+    let alice_replenish_resp = client
+        .replenish_prekeys(
+            &alice,
+            Some(&alice_state.current_spk),
+            &alice_state.opk_pool,
+        )
+        .expect("replenish alice");
+    assert_eq!(alice_replenish_resp.user_id, "alice");
+    assert_eq!(alice_replenish_resp.opks_added, 100);
+
+    let mut bob_state = PrekeyState::new(&bob, PrekeyConfig::default(), 1_700_000_000);
+    let replenish_resp = client
+        .replenish_prekeys(&bob, Some(&bob_state.current_spk), &bob_state.opk_pool)
+        .expect("replenish bob");
+    assert_eq!(replenish_resp.user_id, "bob");
+    assert_eq!(replenish_resp.opks_added, 100);
+    // The server accepted Bob's signed batch — proves Rust's
     // canonical encoding matches Node's verbatim. (If they
     // disagreed, the Ed25519 verification would have rejected with
     // 401 and `replenish_prekeys` would have returned an
     // `Error::HttpStatus` here.)
-    let _ = &mut state; // mark used
 
-    // 3. Fetch the bundle — server pops one OPK.
+    // 3. Alice fetches Bob's bundle — server pops one OPK from Bob.
     let bundle = client
-        .fetch_prekey_bundle(&id, "alice")
-        .expect("fetch bundle");
-    assert_eq!(bundle.user_id, "alice");
+        .fetch_prekey_bundle(&alice, "bob")
+        .expect("alice fetches bob bundle");
+    assert_eq!(bundle.user_id, "bob");
+    assert_eq!(
+        decode_prekey_pub(&bundle.spk_pub),
+        bob_state.current_spk.public
+    );
     assert_eq!(bundle.remaining_opk_count, 99);
     let opk = bundle.opk.expect("opk should be present");
-    // Server-popped OPK ID should be in the range we generated.
-    assert!(opk.id < 100, "server popped an unknown OPK id: {}", opk.id);
+    assert_eq!(
+        decode_prekey_pub(&opk.pub_b64),
+        state_opk_public(&bob_state, opk.id)
+    );
 
     // 4. Fetch a few more — counts decrement, distinct IDs.
-    let bundle2 = client.fetch_prekey_bundle(&id, "alice").expect("fetch 2");
+    let bundle2 = client
+        .fetch_prekey_bundle(&alice, "bob")
+        .expect("alice fetches bob bundle 2");
     assert_eq!(bundle2.remaining_opk_count, 98);
     let opk2 = bundle2.opk.unwrap();
     assert_ne!(opk.id, opk2.id);
+    assert_eq!(
+        decode_prekey_pub(&opk2.pub_b64),
+        state_opk_public(&bob_state, opk2.id)
+    );
+
+    // 5. Drain Bob below threshold, then replenish through the stateful
+    // path. This proves the live server's remaining count can drive
+    // Bob's local replenishment without accidentally touching Alice.
+    for _ in 0..78 {
+        client.fetch_prekey_bundle(&alice, "bob").unwrap();
+    }
+    let low_bundle = client.fetch_prekey_bundle(&alice, "bob").unwrap();
+    assert_eq!(low_bundle.user_id, "bob");
+    assert_eq!(low_bundle.remaining_opk_count, 19);
+
+    let top_up = client
+        .replenish_using_state(&bob, &mut bob_state, 19, 1_700_000_001)
+        .expect("top up bob");
+    assert_eq!(top_up.user_id, "bob");
+    assert_eq!(top_up.opks_added, 81);
+
+    let replenished = client
+        .fetch_prekey_bundle(&alice, "bob")
+        .expect("alice fetches bob after top up");
+    assert_eq!(replenished.user_id, "bob");
+    assert_eq!(
+        decode_prekey_pub(&replenished.spk_pub),
+        bob_state.current_spk.public
+    );
+    assert_eq!(replenished.remaining_opk_count, 99);
+
+    // Alice's pool is separate: Bob's drain and top-up must not mutate
+    // Alice's server-side OPK count or publish Bob's SPK under Alice.
+    let alice_bundle = client
+        .fetch_prekey_bundle(&bob, "alice")
+        .expect("bob fetches alice after bob was replenished");
+    assert_eq!(alice_bundle.user_id, "alice");
+    assert_eq!(
+        decode_prekey_pub(&alice_bundle.spk_pub),
+        alice_state.current_spk.public
+    );
+    assert_eq!(alice_bundle.remaining_opk_count, 99);
+    let alice_opk = alice_bundle.opk.expect("alice OPK should be present");
+    assert_eq!(
+        decode_prekey_pub(&alice_opk.pub_b64),
+        state_opk_public(&alice_state, alice_opk.id)
+    );
+}
+
+#[test]
+fn prekey_bundle_roundtrip_replenish_fetch_consumed_by_rn_handshake() {
+    if skip_if_keyserver_unavailable() {
+        return;
+    }
+    let server = spawn_keyserver();
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{}", server.port)).unwrap();
+
+    let alice = generate_identity("alice".to_string());
+    let bob = generate_identity("bob".to_string());
+    client.register(&alice).expect("register alice");
+    client.register(&bob).expect("register bob");
+
+    let bob_bundle = identity_bundle_for(&bob, 1);
+    let policy = BundleVerifyPolicy::new();
+    assert_eq!(
+        policy
+            .verify(&bob_bundle, &bob.ed25519_public, None)
+            .expect("bob identity bundle verifies"),
+        1
+    );
+
+    let bob_state = PrekeyState::new(&bob, PrekeyConfig::default(), 1_700_000_000);
+    client
+        .replenish_prekeys(&bob, Some(&bob_state.current_spk), &bob_state.opk_pool)
+        .expect("bob replenish");
+
+    let response = client
+        .fetch_prekey_bundle(&alice, "bob")
+        .expect("alice fetches bob prekey bundle");
+    assert_eq!(response.user_id, "bob");
+    assert_eq!(response.remaining_opk_count, 99);
+    let first_opk_id = response.opk.as_ref().expect("first fetch carries OPK").id;
+
+    let merged = bob_bundle
+        .merge_prekey_bundle_response(&response, None)
+        .expect("prekey response merges into pinned identity bundle");
+    assert_eq!(merged.identity, bob_bundle);
+    assert_eq!(merged.prekey.remaining_opk_count, 99);
+    assert_eq!(merged.prekey.opk.expect("merged OPK").0, first_opk_id);
+    assert_eq!(merged.prekey.spk_x25519_pub, bob_state.current_spk.public);
+
+    let second = client
+        .fetch_prekey_bundle(&alice, "bob")
+        .expect("alice fetches second bob prekey bundle");
+    assert_eq!(second.remaining_opk_count, 98);
+    assert_ne!(
+        first_opk_id,
+        second.opk.as_ref().expect("second fetch carries OPK").id,
+        "server must consume one OPK per authenticated prekey-bundle fetch"
+    );
+
+    let mut tampered = second;
+    tampered.spk_signature.pop();
+    assert!(matches!(
+        bob_bundle.merge_prekey_bundle_response(&tampered, None),
+        Err(BundleMergeError::MalformedSpk)
+    ));
 }
 
 #[test]

@@ -1,0 +1,103 @@
+:root {
+  font-family: "Inter Variable", Inter, "Segoe UI Variable Text", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  color: #e8e8e8;
+  background: transparent;
+  font-synthesis: none;
+}
+
+* { box-sizing: border-box; }
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; }
+body { padding: 0; }
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.wa-overlay-shell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  padding: 6px 10px;
+  border: 1px solid rgba(6, 182, 212, .72);
+  border-radius: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  column-gap: 9px;
+  background: rgba(17, 27, 33, .992);
+  box-shadow: none;
+}
+
+.wa-trust-mark {
+  display: grid;
+  place-items: center;
+  min-width: 28px;
+  height: 22px;
+  border: 1px solid rgba(6, 182, 212, .74);
+  color: #67e8f9;
+  background: rgba(6, 182, 212, .10);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  line-height: 1;
+  user-select: none;
+}
+
+.wa-draft-field { min-width: 0; display: grid; align-content: center; }
+.wa-draft-field textarea {
+  width: 100%;
+  min-height: 25px;
+  max-height: 25px;
+  padding: 2px 0;
+  border: 0;
+  resize: none;
+  overflow: hidden;
+  color: #e8e8e8;
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+  line-height: 20px;
+}
+.wa-draft-field textarea::placeholder { color: #a5adb3; }
+.wa-draft-field textarea:focus { outline: none; }
+.wa-overlay-shell:focus-within {
+  border-color: rgba(6, 182, 212, .9);
+  outline: 1px solid rgba(6, 182, 212, .35);
+  outline-offset: -2px;
+}
+
+.wa-draft-status {
+  grid-column: 3;
+  display: grid;
+  gap: 1px;
+  color: #9aa0a6;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+#overlay-status { color: #9fc9c2; font-size: 11px; }
+#protected-send {
+  grid-column: 4;
+  min-width: 52px;
+  height: 30px;
+  border: 1px solid rgba(6, 182, 212, .55);
+  border-radius: 0;
+  color: #d7fff7;
+  background: #075e54;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+#protected-send:disabled { opacity: .48; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: .01ms !important; }
+}

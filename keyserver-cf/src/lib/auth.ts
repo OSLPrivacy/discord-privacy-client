@@ -74,6 +74,6 @@ async function checkToken(
 
 // REGISTER-FIX: `isUserAllowed` / `OSL_KEYSERVER_ALLOWED_USERS` were
 // retired with the move to open signed registration. `/v1/register`
-// was the allowlist's only consumer; key-control + first-write-wins
-// (see endpoints/register.ts) replace it. No allowlist gate remains
-// anywhere in the keyserver.
+// was the allowlist's only consumer. Registration now requires
+// key-control and refuses platform identifiers; no allowlist gate
+// remains anywhere in the keyserver.

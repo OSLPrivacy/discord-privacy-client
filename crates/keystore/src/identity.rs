@@ -7,7 +7,11 @@
 //! See the crate-level docs for the (un)safety story.
 
 use crypto::{ed25519, ml_kem_768, x25519};
-use zeroize::Zeroizing;
+use sha2::{Digest, Sha256};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+
+const NATIVE_ID_DOMAIN: &[u8] = b"OSL-NATIVE-IDENTITY-v1";
+const NATIVE_ID_HASH_BYTES: usize = 20;
 
 /// On-disk identity blob format version. Bumped every time the field
 /// shape changes; loaders reject mismatched versions with a clear
@@ -81,8 +85,37 @@ pub struct Identity {
     /// [`identity_from_entropy`]; `None` for legacy random-key
     /// identities (which therefore can't show a recovery phrase). Held
     /// only in memory + the sealed on-disk blob — never transmitted.
+    ///
+    /// A8: the field type stays a plain `Option<[u8; 16]>` so existing
+    /// callers keep compiling, but [`Identity`]'s `Drop` impl below wipes
+    /// it. These 16 bytes rederive every keypair in this struct, so
+    /// leaving them in allocator-reusable memory is lasting key
+    /// compromise, not a scratch buffer.
     pub recovery_entropy: Option<[u8; 16]>,
 }
+
+/// A8: wipe the recovery entropy when an `Identity` — or any of its
+/// clones — drops.
+///
+/// The other secret halves (`x25519_secret`, `ed25519_secret`,
+/// `mlkem_secret_bytes`) already carry their own zeroizing wrappers, so
+/// this impl exists specifically to close the one field that did not.
+/// It runs *before* the fields' own destructors, which is the correct
+/// order: the entropy is dead by the time anything else is released.
+///
+/// `Identity` derives `Clone` so the hub can snapshot it out from under
+/// the `AppState` mutex; every one of those snapshots now scrubs its own
+/// copy of the entropy.
+impl Drop for Identity {
+    fn drop(&mut self) {
+        if let Some(entropy) = self.recovery_entropy.as_mut() {
+            entropy.zeroize();
+        }
+    }
+}
+
+/// Marker asserting the guarantee the `Drop` impl above provides.
+impl ZeroizeOnDrop for Identity {}
 
 impl Identity {
     /// Build an identity from raw bytes (e.g. loaded from storage).
@@ -156,6 +189,39 @@ pub fn generate_identity(user_id: String) -> Identity {
     let bytes = crypto::random::random_bytes(16);
     entropy.copy_from_slice(&bytes);
     identity_from_entropy(entropy, user_id)
+}
+
+/// Derive the service-neutral OSL routing identifier used by the hub.
+/// It deliberately contains no Discord snowflake. The complete key
+/// bundle, not this routing label, is the human identity authority.
+pub fn native_user_id(identity: &Identity) -> String {
+    let mut hash = Sha256::new();
+    hash.update(NATIVE_ID_DOMAIN);
+    hash.update(identity.ed25519_public.as_bytes());
+    hash.update(identity.x25519_public.as_bytes());
+    let digest = hash.finalize();
+    let mut encoded = String::with_capacity(4 + NATIVE_ID_HASH_BYTES * 2);
+    encoded.push_str("osl_");
+    for byte in &digest[..NATIVE_ID_HASH_BYTES] {
+        use std::fmt::Write as _;
+        let _ = write!(encoded, "{byte:02x}");
+    }
+    encoded
+}
+
+/// Generate a recoverable identity whose keyserver routing label is
+/// derived from its keys rather than supplied by a platform.
+pub fn generate_native_identity() -> Identity {
+    let mut identity = generate_identity("osl-pending".to_owned());
+    identity.user_id = native_user_id(&identity);
+    identity
+}
+
+/// Recover the same service-neutral OSL identity from phrase entropy.
+pub fn native_identity_from_entropy(entropy: [u8; 16]) -> Identity {
+    let mut identity = identity_from_entropy(entropy, "osl-pending".to_owned());
+    identity.user_id = native_user_id(&identity);
+    identity
 }
 
 /// Seed a CryptoRng deterministically from the identity entropy + a
@@ -236,6 +302,21 @@ mod recovery_derivation_tests {
         assert_eq!(a.x25519_secret.as_bytes(), b.x25519_secret.as_bytes());
         assert_eq!(a.mlkem_secret_bytes(), b.mlkem_secret_bytes());
         assert_eq!(a.recovery_entropy, Some(entropy));
+    }
+
+    #[test]
+    fn native_id_is_stable_and_contains_no_platform_identifier() {
+        let a = identity_from_entropy([17; 16], "900000000000000001".into());
+        let b = identity_from_entropy([17; 16], "another-platform-account".into());
+        assert_eq!(native_user_id(&a), native_user_id(&b));
+        assert!(native_user_id(&a).starts_with("osl_"));
+        assert!(!native_user_id(&a).contains("900000000000000001"));
+    }
+
+    #[test]
+    fn native_generation_and_recovery_choose_the_same_routing_id() {
+        let recovered = native_identity_from_entropy([19; 16]);
+        assert_eq!(recovered.user_id, native_user_id(&recovered));
     }
 
     #[test]

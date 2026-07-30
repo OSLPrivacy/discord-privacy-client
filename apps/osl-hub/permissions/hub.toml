@@ -4,29 +4,139 @@ description = "Read the local, non-sensitive OSL Privacy preview preferences."
 commands.allow = ["get_onboarding_preferences"]
 
 [[permission]]
-identifier = "allow-begin-whatsapp-visual-binding"
-description = "Capture four fixed regions of the exact claimed WhatsApp window in volatile memory, reduce them to non-content visual commitments, discard the pixels, and request explicit local confirmation."
-commands.allow = ["begin_whatsapp_visual_binding"]
+identifier = "allow-activate-native-manual-peer-context"
+description = "Bind one verified friend scope to the exact current signed native Discord host generation; accepts no Discord credentials, process, window, or conversation identifiers."
+commands.allow = ["activate_native_manual_peer_context"]
 
 [[permission]]
-identifier = "allow-confirm-whatsapp-visual-binding"
-description = "Bind the pending fixed-region commitments to the exact claimed WhatsApp generation only after explicit local attestation; reads no provider storage and persists no screenshot."
-commands.allow = ["confirm_whatsapp_visual_binding"]
+identifier = "allow-activate-osl-chat-context"
+description = "Allow only the trusted main OSL window to bind one verified friend to the fixed first-party OSL Chat service and account scope."
+commands.allow = ["activate_osl_chat_context"]
 
 [[permission]]
-identifier = "allow-prepare-whatsapp-qa-protected-text"
-description = "After exact visual revalidation, encrypt one bounded OSL draft to only the verified dedicated QA peer and return a carrier for explicit placement; never types into or sends through WhatsApp."
-commands.allow = ["prepare_whatsapp_qa_protected_text"]
+identifier = "allow-close-osl-chat-context"
+description = "Allow only the trusted main OSL window to revoke the active fixed first-party OSL Chat lease."
+commands.allow = ["close_osl_chat_context"]
 
 [[permission]]
-identifier = "allow-open-whatsapp-qa-protected-text"
-description = "Open one explicitly pasted OSL carrier only after exact WhatsApp visual revalidation; never reads provider content, clipboard, history, or private storage."
-commands.allow = ["open_whatsapp_qa_protected_text"]
+identifier = "allow-prepare-osl-chat-text"
+description = "Allow only the trusted main OSL window to encrypt bounded first-party chat text for the active verified friend and deliver it through the authenticated OSL inbox."
+commands.allow = ["prepare_osl_chat_text"]
+
+[[permission]]
+identifier = "allow-open-osl-chat-text"
+description = "Allow only the trusted main OSL window to drain and open authenticated first-party chat messages for the active verified friend."
+commands.allow = ["open_osl_chat_text"]
+
+[[permission]]
+identifier = "allow-list-osl-chat-history"
+description = "Allow only the trusted main OSL window to read bounded encrypted-at-rest history for the currently active first-party OSL Chat."
+commands.allow = ["list_osl_chat_history"]
+
+[[permission]]
+identifier = "allow-select-osl-chat-attachment"
+description = "Allow only the trusted main OSL window to choose, encrypt, upload, and deliver one Pro attachment for the exact active verified OSL friend scope."
+commands.allow = ["select_osl_chat_attachment"]
+
+[[permission]]
+identifier = "allow-list-osl-chat-attachments"
+description = "Allow only the trusted main OSL window to list authenticated pending Pro attachments for the exact active verified OSL friend scope."
+commands.allow = ["list_osl_chat_attachments"]
+
+[[permission]]
+identifier = "allow-open-osl-chat-attachment"
+description = "Allow only the trusted main OSL window to authenticate and open one pending Pro attachment for the exact active verified OSL friend scope."
+commands.allow = ["open_osl_chat_attachment"]
+
+[[permission]]
+identifier = "allow-set-native-discord-protected-overlay-open"
+description = "From the trusted main OSL UI only, show or close the capture-resistant bundled OSL private layer over the exact current signed native Discord window."
+commands.allow = ["set_native_discord_protected_overlay_open"]
+
+[[permission]]
+identifier = "allow-get-native-discord-overlay-state"
+description = "Allow only the bundled native Discord overlay to read bounded non-secret protection state; the context token is never returned."
+commands.allow = ["get_native_discord_overlay_state"]
+
+[[permission]]
+identifier = "allow-prepare-native-discord-overlay-text"
+description = "Allow only the bundled native Discord overlay to encrypt bounded text for the active verified friend and deliver it through the authenticated OSL inbox; no context capability is accepted."
+commands.allow = ["prepare_native_discord_overlay_text"]
+
+[[permission]]
+identifier = "allow-send-native-discord-qa-probe"
+description = "Allow only the disposable Discord QA overlay to send one fixed synthetic probe through the production peer encryption and authenticated OSL inbox transport. The command is absent from production binaries and accepts no renderer-supplied message, peer, path, endpoint, or transport option."
+commands.allow = ["send_native_discord_qa_probe"]
+
+[[permission]]
+identifier = "allow-send-native-discord-qa-atomic-text"
+description = "Allow only the disposable Discord QA overlay to place and confirm its harmless native carrier before committing the protected text to the authenticated OSL inbox. The command is absent from production binaries and accepts no peer, path, endpoint, or provider capability."
+commands.allow = ["send_native_discord_qa_atomic_text"]
+
+[[permission]]
+identifier = "allow-record-native-discord-qa-send-stage"
+description = "Allow only the disposable Discord QA overlay to append one label from a fixed native allowlist to a local QA send-stage trail so a refused send can name its exact hop. The command is absent from production binaries and accepts no free text, draft, carrier text, hash, measurement, path, or endpoint."
+commands.allow = ["record_native_discord_qa_send_stage"]
+
+[[permission]]
+identifier = "allow-request-native-discord-visible-row-qa-receipt"
+description = "Allow only the trusted main QA shell to request one zero-input, non-mutating runtime receipt from the exact adopted Discord target and active broker context. The command is absent from production binaries and accepts no HWND, PID, scope, identity, row, text, path, endpoint, or mutation input."
+commands.allow = ["request_native_discord_visible_row_qa_receipt"]
+
+[[permission]]
+identifier = "allow-run-native-discord-headless-qa"
+description = "Allow only the disposable trusted main QA shell to derive its hash-pinned controller pairing and exact current signed native Discord host, then send one fixed probe through the production peer encryption and authenticated inbox. The command is absent from production binaries and accepts no renderer input."
+commands.allow = ["run_native_discord_headless_qa"]
+
+[[permission]]
+identifier = "allow-poll-native-discord-headless-qa"
+description = "Allow only the disposable trusted main QA shell to drain the exact active native Discord peer context through the authenticated OSL inbox. The command is absent from production binaries and accepts no renderer input."
+commands.allow = ["poll_native_discord_headless_qa"]
+
+[[permission]]
+identifier = "allow-send-native-discord-overlay-carrier"
+description = "Allow only the bundled native Discord overlay to place one fixed non-secret OSL carrier into the exact calibrated signed Discord composer after an explicit gesture; no text, HWND, PID, path, or timing trace is accepted."
+commands.allow = ["send_native_discord_overlay_carrier"]
+
+[[permission]]
+identifier = "allow-open-native-discord-overlay-text"
+description = "Allow only the bundled native Discord overlay to drain ordinary authenticated OSL relay notices and list view-once notices without revealing them for the exact active friend and native Discord lifecycle; no context capability is accepted."
+commands.allow = ["open_native_discord_overlay_text"]
+
+[[permission]]
+identifier = "allow-rehydrate-native-discord-overlay-history"
+description = "Allow only the bundled native Discord overlay to run one bounded read of the Discord rows already on screen and receive, for each, its public cover, whatever that cover decrypts to for this account, and where that row sits inside the overlay's own window. It accepts only a conversation label it never parses, reads no Discord credential, profile, process, window handle or path, writes nothing, and consumes no message."
+commands.allow = ["rehydrate_native_discord_overlay_history"]
+
+[[permission]]
+identifier = "allow-reveal-native-discord-overlay-view-once"
+description = "Allow only the bundled native Discord overlay to reveal one explicitly selected authenticated view-once message for the exact active friend and native Discord lifecycle; only its opaque message id is accepted."
+commands.allow = ["reveal_native_discord_overlay_view_once"]
+
+[[permission]]
+identifier = "allow-burn-native-discord-overlay-chat"
+description = "Allow only the bundled native Discord overlay, after its own explicit two-step confirmation, to burn the exact Rust-held OSL friend scope and local protected ledger. It cannot touch Discord history, profiles, logins, or recipient copies."
+commands.allow = ["burn_native_discord_overlay_chat"]
+
+[[permission]]
+identifier = "allow-set-native-discord-overlay-security"
+description = "Allow only the bundled native Discord overlay to change the existing bounded TTL and decrypted-display preference for its exact Rust-held friend context; no context capability is accepted."
+commands.allow = ["set_native_discord_overlay_security"]
+
+[[permission]]
+identifier = "allow-set-native-discord-covertext-enabled"
+description = "Allow only the trusted OSL header to enable or disable the fixed local Discord cover marker for the active native Discord session."
+commands.allow = ["set_native_discord_covertext_enabled"]
 
 [[permission]]
 identifier = "allow-set-hub-screenshot-protection"
 description = "Apply or remove Windows capture resistance for the trusted OSL Privacy window and its child service surface."
 commands.allow = ["set_hub_screenshot_protection"]
+
+[[permission]]
+identifier = "allow-copy-hub-friend-invite"
+description = "Copy only the freshly signed friend invite obtained from the active unlocked Rust identity to the Windows clipboard; accepts no content and cannot read the clipboard."
+commands.allow = ["copy_hub_friend_invite"]
 
 [[permission]]
 identifier = "allow-list-hub-app-notifications"
@@ -77,6 +187,21 @@ commands.allow = ["resume_scrub_index"]
 identifier = "allow-cancel-scrub-index"
 description = "Cancel and remove only the active identity's fixed encrypted Scrub index directory; cannot delete service messages."
 commands.allow = ["cancel_scrub_index"]
+
+[[permission]]
+identifier = "allow-get-autoscrub-run-fl"
+description = "Read the bounded local AutoScrub run fleet status; returns review state only and grants no mutation authority."
+commands.allow = ["get_autoscrub_run_fl"]
+
+[[permission]]
+identifier = "allow-start-autoscrub-reviewed-run"
+description = "Start one explicitly reviewed local AutoScrub run only after native entitlement, reviewed-batch consent, and identity binding checks."
+commands.allow = ["start_autoscrub_reviewed_run"]
+
+[[permission]]
+identifier = "allow-request-autoscrub-global-stop"
+description = "Request a global stop for local AutoScrub runs; the native run state remains responsible for bounded halt progress."
+commands.allow = ["request_autoscrub_global_stop"]
 
 [[permission]]
 identifier = "allow-list-linked-services"
@@ -199,6 +324,51 @@ description = "Report installed status for the four fixed Windows-native messagi
 commands.allow = ["list_native_apps"]
 
 [[permission]]
+identifier = "allow-native-app-takeover-requires-consent"
+description = "Read-only probe for whether borrowing an existing native app window would require explicit local consent; it grants no launch, quit, or takeover authority."
+commands.allow = ["native_app_takeover_requires_consent"]
+
+[[permission]]
+identifier = "allow-discord-marker-available"
+description = "Read-only probe for whether the trusted native Discord composer marker is available; it grants no send, edit, or cross-app authority."
+commands.allow = ["discord_marker_available"]
+
+[[permission]]
+identifier = "allow-claim-whatsapp-qa-window"
+description = "Claim exactly one already-running official Store WhatsApp main window after OSL unlock; never launches, installs, relinks, or accepts a path."
+commands.allow = ["claim_whatsapp_qa_window"]
+
+[[permission]]
+identifier = "allow-resize-whatsapp-qa-window"
+description = "Revalidate and align only the exact WhatsApp window already claimed by the QA host."
+commands.allow = ["resize_whatsapp_qa_window"]
+
+[[permission]]
+identifier = "allow-get-whatsapp-qa-protection-status"
+description = "Revalidate the exact WhatsApp accessibility binding and return only redacted semantic commitments and geometry."
+commands.allow = ["get_whatsapp_qa_protection_status"]
+
+[[permission]]
+identifier = "allow-begin-whatsapp-visual-binding"
+description = "Capture four fixed regions of the exact claimed WhatsApp window in volatile memory, reduce them to non-content visual commitments, discard the pixels, and request explicit local confirmation."
+commands.allow = ["begin_whatsapp_visual_binding"]
+
+[[permission]]
+identifier = "allow-confirm-whatsapp-visual-binding"
+description = "Bind the pending fixed-region commitments to the exact claimed WhatsApp generation only after explicit local attestation; reads no provider storage and persists no screenshot."
+commands.allow = ["confirm_whatsapp_visual_binding"]
+
+[[permission]]
+identifier = "allow-prepare-whatsapp-qa-protected-text"
+description = "After exact visual revalidation, encrypt one bounded OSL draft to only the verified dedicated QA peer and return a carrier for explicit placement; never types into or sends through WhatsApp."
+commands.allow = ["prepare_whatsapp_qa_protected_text"]
+
+[[permission]]
+identifier = "allow-open-whatsapp-qa-protected-text"
+description = "Open one explicitly pasted OSL carrier only after exact WhatsApp visual revalidation; never reads provider content, clipboard, history, or private storage."
+commands.allow = ["open_whatsapp_qa_protected_text"]
+
+[[permission]]
 identifier = "allow-install-native-app"
 description = "Start one fixed silent winget or Microsoft Store background install after an explicit trusted-UI click, without shell input or automatic elevation."
 commands.allow = ["install_native_app"]
@@ -219,6 +389,26 @@ description = "Open only a fixed detected Mullvad desktop executable with no arg
 commands.allow = ["open_mullvad"]
 
 [[permission]]
+identifier = "allow-host-mullvad-window"
+description = "After explicit consent, borrow only the one eligible existing Mullvad window from the current Windows session; no path, process, window, account, or VPN state is accepted or returned."
+commands.allow = ["host_mullvad_window"]
+
+[[permission]]
+identifier = "allow-resize-mullvad-window"
+description = "Realign only the already verified borrowed Mullvad window to OSL's content bounds."
+commands.allow = ["resize_mullvad_window"]
+
+[[permission]]
+identifier = "allow-focus-mullvad-window"
+description = "Focus only the already verified borrowed Mullvad window."
+commands.allow = ["focus_mullvad_window"]
+
+[[permission]]
+identifier = "allow-restore-mullvad-window"
+description = "Restore the borrowed Mullvad window's original owner, styles, and bounds without closing Mullvad."
+commands.allow = ["restore_mullvad_window"]
+
+[[permission]]
 identifier = "allow-list-browser-imports"
 description = "Report only whether six fixed supported browsers exist in standard Windows install locations; never reads browser profiles, cookies, or credentials."
 commands.allow = ["list_browser_imports"]
@@ -227,6 +417,31 @@ commands.allow = ["list_browser_imports"]
 identifier = "allow-open-browser-import"
 description = "After an explicit click, open one detected browser's fixed password-manager/export surface; the browser retains confirmation and OSL never reads the database or exported CSV."
 commands.allow = ["open_browser_import"]
+
+[[permission]]
+identifier = "allow-list-browser-profiles-for-consent"
+description = "List only bounded browser profile labels from fixed native browser roots for an explicit consent picker; no owner, path, URL, history, login store, cookie, credential, or profile content crosses IPC."
+commands.allow = ["list_browser_profiles_for_consent"]
+
+[[permission]]
+identifier = "allow-grant-browser-profile-consent"
+description = "Mint one short-lived owner-derived browser profile consent grant for an exact listed browser/profile pair; no owner, path, URL, history, login store, cookie, credential, or profile content crosses IPC."
+commands.allow = ["grant_browser_profile_consent"]
+
+[[permission]]
+identifier = "allow-scan-consented-browser-profile"
+description = "Consume one exact browser profile consent grant before reading a bounded OSL-owned history snapshot from a fixed native browser root; no owner, path, URL, login store, cookie, or credential authority crosses IPC."
+commands.allow = ["scan_consented_browser_profile"]
+
+[[permission]]
+identifier = "allow-load-detected-browser-footprint"
+description = "Hydrate only browser footprint rows covered by explicit exact consent for the active owner; empty, false, duplicate, or mismatched consent refuses and grants no profile path, credential, URL, or owner authority."
+commands.allow = ["load_detected_browser_footprint"]
+
+[[permission]]
+identifier = "allow-revoke-detected-browser-footprint"
+description = "Revoke only the exact browser footprint consent scope for the active owner; no owner, path, URL, history, login store, cookie, credential, or broad browser authority crosses IPC."
+commands.allow = ["revoke_detected_browser_footprint"]
 
 [[permission]]
 identifier = "allow-get-firefox-status"
@@ -244,9 +459,44 @@ description = "After explicit local consent, open Firefox's fixed migration wiza
 commands.allow = ["begin_browser_account_import"]
 
 [[permission]]
+identifier = "allow-begin-protected-browser-import"
+description = "After explicit local consent, validate a bounded list of detected browser IDs and open Firefox's fixed migration wizard in the active OSL identity's isolated profile; no credential, path, URL, or arbitrary argument crosses IPC."
+commands.allow = ["begin_protected_browser_import"]
+
+[[permission]]
+identifier = "allow-finish-protected-browser-import"
+description = "Close only the exact retained OSL-owned Firefox migration process after a queued import finishes or is skipped."
+commands.allow = ["finish_protected_browser_import"]
+
+[[permission]]
 identifier = "allow-launch-firefox-service"
 description = "Open one reviewed service origin in the active identity's OSL-owned Firefox profile; callers cannot provide a URL, path, or browser argument."
 commands.allow = ["launch_firefox_service"]
+
+[[permission]]
+identifier = "allow-get-default-browser-companion-status"
+description = "Report only whether Windows' current HTTPS default resolves to one fixed Authenticode-verified supported browser."
+commands.allow = ["get_default_browser_companion_status"]
+
+[[permission]]
+identifier = "allow-host-default-browser-companion"
+description = "After explicit consent, open one fixed service origin in a new app-style window of the verified Windows default browser using its normal profile; no URL, path, profile, policy, or hook is accepted."
+commands.allow = ["host_default_browser_companion"]
+
+[[permission]]
+identifier = "allow-resize-default-browser-companion"
+description = "Realign only the exact default-browser app window created and retained by OSL."
+commands.allow = ["resize_default_browser_companion"]
+
+[[permission]]
+identifier = "allow-focus-default-browser-companion"
+description = "Focus only the exact default-browser app window created and retained by OSL."
+commands.allow = ["focus_default_browser_companion"]
+
+[[permission]]
+identifier = "allow-detach-default-browser-companion"
+description = "Restore and hide only the exact default-browser app window created and retained by OSL."
+commands.allow = ["detach_default_browser_companion"]
 
 [[permission]]
 identifier = "allow-host-native-app-window"
@@ -269,24 +519,24 @@ description = "Restore ownership, styles, and bounds only for the exact OSL-spaw
 commands.allow = ["detach_native_app_window"]
 
 [[permission]]
-identifier = "allow-claim-whatsapp-qa-window"
-description = "Claim exactly one already-running official Store WhatsApp main window after OSL unlock; never launches, installs, relinks, or accepts a path."
-commands.allow = ["claim_whatsapp_qa_window"]
+identifier = "allow-open-hosted-session-scan"
+description = "Open the trusted hosted-session scan surface for the exact active native-hosted context; grants no preview, confirmation, deletion, navigation, credential, profile, process, path, URL, conversation, row, or network authority."
+commands.allow = ["open_hosted_session_scan"]
 
 [[permission]]
-identifier = "allow-resize-whatsapp-qa-window"
-description = "Revalidate and align only the exact WhatsApp window already claimed by the QA host."
-commands.allow = ["resize_whatsapp_qa_window"]
-
-[[permission]]
-identifier = "allow-get-whatsapp-qa-protection-status"
-description = "Revalidate the exact WhatsApp accessibility binding and return only redacted semantic commitments and geometry."
-commands.allow = ["get_whatsapp_qa_protection_status"]
+identifier = "allow-request-hosted-session-scan"
+description = "Request one read-only scan of the exact active native-hosted context using only native-held owner, scope, generation, and attended binding state; returns content-free row shape metadata and grants no preview, confirmation, deletion, navigation, credential, profile, process, path, URL, conversation, row, or network authority."
+commands.allow = ["request_hosted_session_scan"]
 
 [[permission]]
 identifier = "allow-open-service-host"
 description = "Open one explicitly allowlisted service in an isolated per-account child webview."
 commands.allow = ["open_service_host"]
+
+[[permission]]
+identifier = "allow-request-hosted-session-scan-command"
+description = "Request one read-only scan of the exact checked native-hosted Discord context; native code derives owner, scope, generation, and attended binding state and grants no account, handle, credential, profile, path, URL, conversation, row, preview, confirmation, deletion, navigation, or network authority."
+commands.allow = ["request_hosted_session_scan_command"]
 
 [[permission]]
 identifier = "allow-close-service-host"
@@ -354,6 +604,21 @@ description = "Open one bounded OSL attachment only in the exact active trusted 
 commands.allow = ["open_hub_attachment"]
 
 [[permission]]
+identifier = "allow-select-native-discord-overlay-attachment"
+description = "Allow only the bundled native Discord overlay to open a system picker and stream one supported selected file without exposing its path or bytes."
+commands.allow = ["select_native_discord_overlay_attachment"]
+
+[[permission]]
+identifier = "allow-list-native-discord-overlay-attachments"
+description = "List authenticated pending attachment display metadata for only the active native Discord friend scope; never return capabilities, keys, paths, or bytes."
+commands.allow = ["list_native_discord_overlay_attachments"]
+
+[[permission]]
+identifier = "allow-open-native-discord-overlay-attachment"
+description = "Stream, authenticate, decrypt, and open one opaque attachment ID in a native viewer for only the active native Discord friend scope."
+commands.allow = ["open_native_discord_overlay_attachment"]
+
+[[permission]]
 identifier = "allow-export-hub-friend-code"
 description = "Export the active identity's signed public friend code and safety number."
 commands.allow = ["export_hub_friend_code"]
@@ -369,6 +634,11 @@ description = "Record explicit out-of-band verification of one friend's safety n
 commands.allow = ["verify_hub_friend_safety_number"]
 
 [[permission]]
+identifier = "allow-remove-hub-friend"
+description = "Remove one verified friend from encrypted local People state and queue only local revocation notices; it grants no remote account or provider authority."
+commands.allow = ["remove_hub_friend"]
+
+[[permission]]
 identifier = "allow-list-hub-people"
 description = "List bounded People metadata from encrypted local state."
 commands.allow = ["list_hub_people"]
@@ -382,6 +652,16 @@ commands.allow = ["set_hub_friend_nickname"]
 identifier = "allow-set-active-hub-friend-permission"
 description = "Grant or revoke one verified person's permission for only the exact active hosted context."
 commands.allow = ["set_active_hub_friend_permission"]
+
+[[permission]]
+identifier = "allow-set-active-hub-friend-reach"
+description = "Deliberately widen or withdraw one verified person's trust across the scopes shared with them; only the exact verified friend bound to the active hosted context can be named."
+commands.allow = ["set_active_hub_friend_reach"]
+
+[[permission]]
+identifier = "allow-revoke-active-hub-friend-scope"
+description = "Revoke exactly one approval OSL already recorded for the verified friend bound to the active hosted context."
+commands.allow = ["revoke_active_hub_friend_scope"]
 
 [[permission]]
 identifier = "allow-get-active-hub-context-security"

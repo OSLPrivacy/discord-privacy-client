@@ -1,12 +1,52 @@
+// Single source of truth for which attachment formats the trusted picker may
+// offer, derived from what the receiving viewer can decode. Needs `ipc` and
+// `peer_attachment_io`, so it lives behind `core` like they do.
+#[cfg(feature = "core")]
+pub mod attachment_formats;
+#[cfg(feature = "core")]
+pub mod autoscrub_run;
+pub mod attended_imap;
+pub mod background_priority;
+pub mod browser_companion;
+#[cfg(feature = "core")]
+pub mod browser_profile_scan;
+pub mod browser_footprint;
 pub mod burn_contract;
+pub mod cloud_autoscrub_authority;
+pub mod cloud_autoscrub_consent;
+#[cfg(feature = "core")]
+pub mod cloud_autoscrub_run;
+pub mod cloud_autoscrub_execution;
+pub mod cloud_autoscrub_envelope;
+pub mod consent_ledger;
 pub mod control_contract;
+pub mod discord_carrier_geometry;
+pub mod execution_consent;
 pub mod external_overlay;
+pub(crate) mod firefox_migration_coordinator;
+pub mod hosted_audience;
 pub mod models;
+pub mod mullvad_window_host;
 pub mod native_apps;
+pub mod native_attachment_jobs;
+pub mod native_discord_adapter;
+pub mod native_signal_adapter;
+pub mod native_whatsapp_adapter;
 pub mod native_window_host;
+pub mod proprietary_module_boundary;
+pub mod proprietary_module_lifecycle;
+pub mod hosted_port;
+pub mod hosted_session_port;
+pub mod hosted_provider_recipe;
+pub mod owner_presence;
+#[cfg(feature = "core")]
+pub mod peer_attachment_io;
 pub mod preferences;
 pub mod privacy_scan;
+#[cfg(feature = "core")]
+pub mod pro_context_cover;
 pub mod service_host;
+pub mod scrub_evidence_manifest;
 #[cfg(feature = "core")]
 pub mod services;
 pub mod updates;
@@ -15,6 +55,11 @@ pub mod whatsapp_qa_host;
 #[cfg(feature = "core")]
 pub mod whatsapp_qa_pairing;
 pub mod whatsapp_qa_transport;
+
+// Native executable verification is exercised only by Windows callers. Keep
+// its fail-closed types available to cross-platform manifests and tests.
+#[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
+pub(crate) mod windows_executable_trust;
 
 mod atomic_file;
 
@@ -27,14 +72,32 @@ pub mod broker;
 pub mod cleanup;
 #[cfg(feature = "core")]
 pub mod core_bridge;
+#[cfg(all(feature = "core", feature = "discord-qa-shell"))]
+pub mod discord_qa_identity;
+#[cfg(all(feature = "core", feature = "discord-qa-shell"))]
+pub mod discord_qa_inbound_receipt;
+#[cfg(feature = "core")]
+pub mod identity_binding_verifier;
 #[cfg(feature = "core")]
 pub mod identity_registry;
+pub mod isolated_worker;
 #[cfg(feature = "core")]
 pub mod mass_cleanup;
+// Timed deletion and view-once expiry. Needs `ipc` (sealed-at-rest storage) and
+// `store` (local plaintext cache), so it lives behind `core` like they do.
+#[cfg(feature = "core")]
+pub mod message_expiry;
 #[cfg(feature = "core")]
 pub mod password_lifecycle;
+// The pure half of the headless QA self-test driver in `main.rs`. It lives here
+// only so it can actually be tested: the `osl-privacy-hub` binary cannot be
+// built on a Linux host, so every `#[cfg(test)]` inside `main.rs` is compiled
+// and never run.
+#[cfg(all(feature = "core", feature = "discord-qa-shell"))]
+pub mod qa_selftest_request;
 #[cfg(feature = "core")]
 pub mod scrub_index;
+pub mod scrub_imap;
 #[cfg(feature = "core")]
 pub mod security;
 #[cfg(feature = "core")]
@@ -54,3 +117,16 @@ pub mod startup_gate;
 )]
 #[path = "../../../src-tauri/src/bootstrap.rs"]
 pub mod original_bootstrap;
+
+// The keystore/ipc crates deliberately keep the active-account dir, base-dir
+// override, and unlocked main-password key in process-wide statics (see
+// crates/keystore/src/recipients.rs and crates/ipc/src/main_password.rs) —
+// correct for a single-instance desktop app, but `cargo test` runs many test
+// functions concurrently on separate OS threads inside one process. Any test
+// (in any module) that mutates those globals must hold this lock for its
+// entire critical section, or it can race a sibling test running in another
+// module and silently read back the wrong key or directory. Deliberately
+// crate-wide: a lock private to one module is no protection at all when a
+// sibling module's test mutates the same global concurrently.
+#[cfg(test)]
+pub(crate) static GLOBAL_KEYSTORE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

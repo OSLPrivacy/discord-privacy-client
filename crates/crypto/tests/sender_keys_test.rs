@@ -271,8 +271,12 @@ fn wrong_session_version_rejected() {
     let ctx_v1 = make_sender_ctx(0xaa, b"group", SESSION_VERSION_V1);
     let ctx_v2 = make_sender_ctx(0xaa, b"group", SESSION_VERSION_V1 + 1);
 
-    let mut receiver =
-        ReceiverChain::install(sender.current_chain_id(), &sender.rotation_root_bytes()).unwrap();
+    let mut receiver = ReceiverChain::install(
+        sender.current_chain_id(),
+        &sender.rotation_root_bytes(),
+        sender.physical_device_id(),
+    )
+    .unwrap();
     let m = sender.encrypt(b"v1-only", &ctx_v1).unwrap();
     let err = receiver.decrypt(&m, &ctx_v2).unwrap_err();
     let err_msg = format!("{err}");
@@ -286,6 +290,8 @@ fn wrong_session_version_rejected() {
 fn canonical_ad_encoding_deterministic_and_lp_correct() {
     let sender_x = [0x11u8; 32];
     let sender_mlkem = vec![0x22u8; 16]; // small fake size for easy offset checks
+    let physical_device_id =
+        crypto::sender_keys::PhysicalDeviceId::from_bytes([0x33u8; 32]).unwrap();
     let group_id = b"group-7".to_vec();
     let chain_id: u32 = 0x0102_0304;
     let n: u32 = 0x0506_0708;
@@ -295,6 +301,7 @@ fn canonical_ad_encoding_deterministic_and_lp_correct() {
     let bytes_a = canonical_ad_sender_keys(
         &sender_x,
         &sender_mlkem,
+        &physical_device_id,
         &group_id,
         chain_id,
         n,
@@ -304,6 +311,7 @@ fn canonical_ad_encoding_deterministic_and_lp_correct() {
     let bytes_b = canonical_ad_sender_keys(
         &sender_x,
         &sender_mlkem,
+        &physical_device_id,
         &group_id,
         chain_id,
         n,
@@ -312,11 +320,13 @@ fn canonical_ad_encoding_deterministic_and_lp_correct() {
     );
     assert_eq!(bytes_a, bytes_b, "encoding must be deterministic");
 
-    // Layout: LP(32B sender_x) || LP(16B sender_mlkem) || LP(7B group_id)
+    // Layout: LP(32B sender_x) || LP(16B sender_mlkem)
+    //       || LP(32B physical_device_id) || LP(7B group_id)
     //       || LP(4B chain_id_be) || LP(4B n_be)
     //       || LP(4B prev_be) || LP(4B version_be).
     let expected_len = 4 + 32   // sender_x
                      + 4 + 16   // sender_mlkem
+                     + 4 + 32   // physical_device_id
                      + 4 + 7    // group_id
                      + 4 + 4    // chain_id
                      + 4 + 4    // n
@@ -334,6 +344,13 @@ fn canonical_ad_encoding_deterministic_and_lp_correct() {
     assert_eq!(read_u32_be(&bytes_a, pos), 16);
     assert_eq!(&bytes_a[pos + 4..pos + 4 + 16], sender_mlkem.as_slice());
     pos += 4 + 16;
+
+    assert_eq!(read_u32_be(&bytes_a, pos), 32);
+    assert_eq!(
+        &bytes_a[pos + 4..pos + 4 + 32],
+        physical_device_id.as_bytes()
+    );
+    pos += 4 + 32;
 
     assert_eq!(read_u32_be(&bytes_a, pos), 7);
     assert_eq!(&bytes_a[pos + 4..pos + 4 + 7], group_id.as_slice());
@@ -361,6 +378,7 @@ fn canonical_ad_encoding_deterministic_and_lp_correct() {
     let bumped = canonical_ad_sender_keys(
         &sender_x,
         &sender_mlkem,
+        &physical_device_id,
         &group_id,
         chain_id,
         n + 1,
@@ -382,10 +400,20 @@ fn multiple_peer_senders_to_same_receiver() {
 
     let mut carol = SenderKeyState::new();
     carol
-        .install_receiver(b"alice".to_vec(), 0, &alice_sender.rotation_root_bytes())
+        .install_receiver(
+            b"alice".to_vec(),
+            0,
+            &alice_sender.rotation_root_bytes(),
+            alice_sender.physical_device_id(),
+        )
         .unwrap();
     carol
-        .install_receiver(b"bob".to_vec(), 0, &bob_sender.rotation_root_bytes())
+        .install_receiver(
+            b"bob".to_vec(),
+            0,
+            &bob_sender.rotation_root_bytes(),
+            bob_sender.physical_device_id(),
+        )
         .unwrap();
 
     let m_a = alice_sender.encrypt(b"from alice", &alice_ctx).unwrap();
@@ -440,8 +468,12 @@ fn make_sender_ctx(ik_seed: u8, group_id: &[u8], session_version: u32) -> Sender
 
 fn setup() -> (SenderChain, ReceiverChain, SenderContext) {
     let sender = SenderChain::new().unwrap();
-    let receiver =
-        ReceiverChain::install(sender.current_chain_id(), &sender.rotation_root_bytes()).unwrap();
+    let receiver = ReceiverChain::install(
+        sender.current_chain_id(),
+        &sender.rotation_root_bytes(),
+        sender.physical_device_id(),
+    )
+    .unwrap();
     let ctx = make_sender_ctx(0xaa, b"group-default", SESSION_VERSION_V1);
     (sender, receiver, ctx)
 }

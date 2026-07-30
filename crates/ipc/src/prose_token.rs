@@ -230,24 +230,50 @@ pub fn prose_token_send(
     })
 }
 
-/// Try to decode a Discord message as an OSL prose-token. Returns
-/// `Ok(None)` for normal chat (no HMAC match — safe + cheap, can be
-/// called on every incoming message); `Ok(Some(...))` for a real
-/// token whose cipher was fetched successfully; `Err(...)` for an
-/// actual error (network failure, server returned !200 !404).
+/// Why one cover produced no wire.
 ///
-/// Specifically: NotFound from the server is folded into Ok(None)
-/// because from the user's perspective there's nothing to render,
-/// and the placeholder UX is the caller's concern (Phase 4).
-pub fn prose_token_recv(
+/// These two used to be the same `Ok(None)`, and that fusion made the eye
+/// undiagnosable: a conversation full of retired placeholders (which carry no
+/// pointer at all) and a conversation whose blobs had all expired reported
+/// exactly the same thing, so "OSL cannot decode this" could never be told apart
+/// from "OSL decoded this and the ciphertext is gone".
+///
+/// PRIVACY: a verdict, never a value. Neither variant carries the cover, the
+/// blob id or any part of the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProseTokenMiss {
+    /// The cover carried no prose token for this scope. Ordinary chat looks
+    /// exactly like this, and so does a retired placeholder. The check is local
+    /// and permanent: no fetch was attempted and retrying cannot change it.
+    NoToken,
+    /// A token decoded, and the cipher store answered a clean 404 for it. The
+    /// pointer was real; the ciphertext it named is gone -- burned, or expired
+    /// past its TTL. Permanent for this blob, and nothing to retry.
+    BlobGone,
+}
+
+/// What one `prose_token_recv_classified` produced.
+pub enum ProseTokenRecv {
+    Recovered(ProseTokenRecvOutput),
+    Missed(ProseTokenMiss),
+}
+
+/// Try to decode a Discord message as an OSL prose-token, keeping the two
+/// distinct reasons a cover can produce nothing apart.
+///
+/// The decode order is unchanged and so is every verdict: match the cover
+/// locally, and only then fetch. What is new is that the caller can tell which
+/// step declined. Callers that genuinely do not care use `prose_token_recv`,
+/// which folds both misses back into `Ok(None)` exactly as before.
+pub fn prose_token_recv_classified(
     config_dir: &std::path::Path,
     scope_input: &ScopeInput,
     msg: &str,
-) -> Result<Option<ProseTokenRecvOutput>, ProseTokenError> {
+) -> Result<ProseTokenRecv, ProseTokenError> {
     let (cipher, mac_key) = derive_scope_primitives(scope_input)?;
     let id_bytes = match stego::decode_token(&cipher, &mac_key, msg) {
         Some(id) => id,
-        None => return Ok(None),
+        None => return Ok(ProseTokenRecv::Missed(ProseTokenMiss::NoToken)),
     };
     let id_hex = bytes_to_id_hex(&id_bytes);
 
@@ -260,15 +286,45 @@ pub fn prose_token_recv(
     let fetch_token = derive_fetch_token(&mac_key, &[0u8; stego::TOKEN_ID_BYTES]);
     let cipher_bytes = match client.fetch(&id_hex, &fetch_token) {
         Ok(b) => b,
-        Err(CipherStoreError::NotFound) => return Ok(None),
+        // The one line this split exists for. A clean 404 means the pointer was
+        // real and its ciphertext is gone; it is NOT "this was never a token".
+        Err(CipherStoreError::NotFound) => {
+            return Ok(ProseTokenRecv::Missed(ProseTokenMiss::BlobGone))
+        }
         Err(e) => return Err(e.into()),
     };
     let wire = format!("{}{}", DPC0_PREFIX, B64.encode(&cipher_bytes));
 
-    Ok(Some(ProseTokenRecvOutput {
+    Ok(ProseTokenRecv::Recovered(ProseTokenRecvOutput {
         wire,
         blob_id: id_hex,
     }))
+}
+
+/// Try to decode a Discord message as an OSL prose-token. Returns
+/// `Ok(None)` for normal chat (no HMAC match — safe + cheap, can be
+/// called on every incoming message); `Ok(Some(...))` for a real
+/// token whose cipher was fetched successfully; `Err(...)` for an
+/// actual error (network failure, server returned !200 !404).
+///
+/// Specifically: NotFound from the server is folded into Ok(None)
+/// because from the user's perspective there's nothing to render,
+/// and the placeholder UX is the caller's concern (Phase 4).
+///
+/// Callers that need to tell those two apart -- the eye's transcript
+/// rehydration does -- use `prose_token_recv_classified` instead. This wrapper
+/// exists so every caller that does not is completely unchanged.
+pub fn prose_token_recv(
+    config_dir: &std::path::Path,
+    scope_input: &ScopeInput,
+    msg: &str,
+) -> Result<Option<ProseTokenRecvOutput>, ProseTokenError> {
+    Ok(
+        match prose_token_recv_classified(config_dir, scope_input, msg)? {
+            ProseTokenRecv::Recovered(output) => Some(output),
+            ProseTokenRecv::Missed(_) => None,
+        },
+    )
 }
 
 /// Best-effort burn of a single blob ID. Idempotent on the server

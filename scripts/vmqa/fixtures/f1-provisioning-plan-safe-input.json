@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 1,
+  "kind": "vmqa-f1-provisioning-plan-input",
+  "predecessorSnapshotSha256": "2d305361dabf7217c86ce20ac987bdd19fe0bc70194d7f3ad122756228f3de97",
+  "producerAccount": {
+    "name": "osl-vmqa-producer",
+    "uid": 991,
+    "gid": 991,
+    "home": "/var/lib/osl-vmqa",
+    "shell": "/usr/sbin/nologin",
+    "locked": true
+  },
+  "toolchain": {
+    "root": "/opt/osl-vmqa/toolchain",
+    "owner": "root",
+    "group": "root",
+    "mode": "0755",
+    "measurementMethod": "independent-offline-sha256",
+    "tools": [
+      {
+        "name": "cargo",
+        "path": "/opt/osl-vmqa/toolchain/bin/cargo",
+        "owner": "root",
+        "group": "root",
+        "mode": "0555",
+        "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      {
+        "name": "git",
+        "path": "/opt/osl-vmqa/toolchain/bin/git",
+        "owner": "root",
+        "group": "root",
+        "mode": "0555",
+        "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      {
+        "name": "node",
+        "path": "/opt/osl-vmqa/toolchain/bin/node",
+        "owner": "root",
+        "group": "root",
+        "mode": "0555",
+        "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      {
+        "name": "npm",
+        "path": "/opt/osl-vmqa/toolchain/bin/npm",
+        "owner": "root",
+        "group": "root",
+        "mode": "0555",
+        "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+      },
+      {
+        "name": "osl-cargo",
+        "path": "/opt/osl-vmqa/toolchain/bin/osl-cargo",
+        "owner": "root",
+        "group": "root",
+        "mode": "0555",
+        "sha256": "5555555555555555555555555555555555555555555555555555555555555555"
+      },
+      {
+        "name": "rustc",
+        "path": "/opt/osl-vmqa/toolchain/bin/rustc",
+        "owner": "root",
+        "group": "root",
+        "mode": "0555",
+        "sha256": "6666666666666666666666666666666666666666666666666666666666666666"
+      }
+    ],
+    "treeSha256": "f4598a28bd9de903618903ee86efea37d29be3f0e0bbdad8104cce50ce65f2db"
+  },
+  "witnessKey": {
+    "path": "/var/lib/osl-qa/private/f1-native-witness.key",
+    "present": true,
+    "owner": "osl-vmqa-producer",
+    "uid": 991,
+    "group": "osl-vmqa-producer",
+    "gid": 991,
+    "mode": "0600",
+    "keyId": "9999999999999999999999999999999999999999999999999999999999999999",
+    "keyBytesRead": false
+  },
+  "release": {
+    "sourceCommit": "1f745c85bb23cf79a956aa87d623905e20f83cf1",
+    "sourceTree": "1b9bbbcaf52fdac66d671d06a5a4ac585ec3167a",
+    "bundleManifestSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "buildIdentitySha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "executableSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "loaderSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "producerSealSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "terminalSnapshotSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "sealGeneration": 1,
+    "previousSealSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "transition": "initial",
+    "stagePath": "/var/lib/osl-qa/f1-staging/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "guestAcl": {
+    "ownerSid": "S-1-5-18",
+    "daclProtected": true,
+    "inheritanceEnabled": false,
+    "ace": {
+      "sid": "S-1-5-18",
+      "type": "Allow",
+      "rights": "FullControl",
+      "inherited": false,
+      "propagation": "None"
+    }
+  }
+}

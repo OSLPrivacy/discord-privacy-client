@@ -26,6 +26,44 @@ describe("identity mutation compare-and-swap", () => {
     const id = userId("rotate-cas");
     const owner = await registerTestUser(SELF, id);
     const next = await generateEd25519Pair();
+    const accepted = await rotateUserKeys(
+      env.DB,
+      {
+        user_id: id,
+        ik_x25519_pub: STUB_X25519_PUB_B64,
+        ik_ed25519_pub: next.publicKeyB64,
+        ik_mlkem768_pub: STUB_MLKEM_PUB_B64,
+        ik_x25519_signature: STUB_SIGNATURE_B64,
+        ik_ratchet_initial_pub: STUB_RATCHET_PUB_B64,
+      },
+      owner.publicKeyB64,
+    );
+    expect(accepted).not.toBeNull();
+    const acceptedRow = await env.DB.prepare(
+      "SELECT ik_ed25519_pub FROM users WHERE user_id = ?",
+    )
+      .bind(id)
+      .first<{ ik_ed25519_pub: string }>();
+    expect(acceptedRow?.ik_ed25519_pub).toBe(next.publicKeyB64);
+    const restored = await rotateUserKeys(
+      env.DB,
+      {
+        user_id: id,
+        ik_x25519_pub: STUB_X25519_PUB_B64,
+        ik_ed25519_pub: owner.publicKeyB64,
+        ik_mlkem768_pub: STUB_MLKEM_PUB_B64,
+        ik_x25519_signature: STUB_SIGNATURE_B64,
+        ik_ratchet_initial_pub: STUB_RATCHET_PUB_B64,
+      },
+      next.publicKeyB64,
+    );
+    expect(restored).not.toBeNull();
+    const restoredRow = await env.DB.prepare(
+      "SELECT ik_ed25519_pub FROM users WHERE user_id = ?",
+    )
+      .bind(id)
+      .first<{ ik_ed25519_pub: string }>();
+    expect(restoredRow?.ik_ed25519_pub).toBe(owner.publicKeyB64);
     const wrongExpected = await generateEd25519Pair();
     const result = await rotateUserKeys(
       env.DB,

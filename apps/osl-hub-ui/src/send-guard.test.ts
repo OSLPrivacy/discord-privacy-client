@@ -17,10 +17,34 @@ describe("TrustedSendGuard", () => {
     expect(guard.accept("clipboard", { eventId: "one", isTrusted: true, occurredAtMs: 10 }, snapshot)).toEqual({ action: "copy" });
   });
 
+  it("returns an immutable trusted-composer snapshot for a single-send handoff", () => {
+    const mutable = { ...snapshot };
+    const decision = new TrustedSendGuard().accept("single", { eventId: "one", isTrusted: true, occurredAtMs: 10 }, mutable);
+    if (decision.action !== "submit") throw new Error("expected submit");
+
+    expect(decision.snapshot).toEqual(snapshot);
+    expect(decision.snapshot).not.toBe(mutable);
+    expect(Object.isFrozen(decision.snapshot)).toBe(true);
+
+    mutable.conversationId = "changed-after-handoff";
+    expect(decision.snapshot.conversationId).toBe("conversation-1");
+    expect(() => {
+      (decision.snapshot as TrustedComposerSnapshot).conversationId = "mutated";
+    }).toThrow(TypeError);
+    expect(decision.snapshot.conversationId).toBe("conversation-1");
+  });
+
   it("requires two distinct trusted enters and an unchanged exact snapshot", () => {
     const guard = new TrustedSendGuard();
-    expect(guard.accept("double", { eventId: "one", isTrusted: true, occurredAtMs: 10 }, snapshot).action).toBe("place");
-    expect(guard.accept("double", { eventId: "two", isTrusted: true, occurredAtMs: 100 }, snapshot)).toEqual({ action: "submit" });
+    const placement = guard.accept("double", { eventId: "one", isTrusted: true, occurredAtMs: 10 }, snapshot);
+    if (placement.action !== "place") throw new Error("expected place");
+
+    expect(placement.expiresAtMs).toBe(2_510);
+    expect(placement.snapshot).toEqual(snapshot);
+    expect(Object.isFrozen(placement.snapshot)).toBe(true);
+
+    const submit = guard.accept("double", { eventId: "two", isTrusted: true, occurredAtMs: 100 }, snapshot);
+    expect(submit).toEqual({ action: "submit", snapshot: placement.snapshot });
   });
 
   it("cancels on repeated, expired, changed, or unverified input", () => {
@@ -38,5 +62,17 @@ describe("TrustedSendGuard", () => {
 
     expect(new TrustedSendGuard().accept("single", { eventId: "one", isTrusted: false, occurredAtMs: 10 }, snapshot)).toEqual({ action: "reject", reason: "untrusted" });
     expect(new TrustedSendGuard().accept("single", { eventId: "one", isTrusted: true, occurredAtMs: 10 }, { ...snapshot, exactComposerVerified: false })).toEqual({ action: "reject", reason: "unverified" });
+  });
+
+  it("keeps the armed handoff detached from later caller mutation", () => {
+    const guard = new TrustedSendGuard();
+    const mutable = { ...snapshot };
+    const placement = guard.accept("double", { eventId: "one", isTrusted: true, occurredAtMs: 10 }, mutable);
+    if (placement.action !== "place") throw new Error("expected place");
+
+    mutable.conversationId = "changed-after-arm";
+
+    expect(placement.snapshot.conversationId).toBe("conversation-1");
+    expect(guard.accept("double", { eventId: "two", isTrusted: true, occurredAtMs: 100 }, mutable)).toEqual({ action: "reject", reason: "changed" });
   });
 });

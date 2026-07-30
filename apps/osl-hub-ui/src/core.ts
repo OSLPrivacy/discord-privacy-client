@@ -13,6 +13,7 @@ export interface CoreReadiness {
   unlocked: boolean;
   activeOslUserId: string | null;
   bootstrapStatus: BootstrapStatus;
+  storageMethod: string | null;
 }
 
 export type BootstrapStatus = "notAttempted" | "setupRequired" | "inProgress" | "passwordRequired" | "ready" | "failed";
@@ -34,6 +35,20 @@ export interface HubIdentitySetupResult {
   identityRecoveryPhrase: string | null;
   storageMethod: string;
   passwordSetupRequired: boolean;
+}
+
+export interface HubIdentityCreationOwnerSignoff {
+  ownerPresent: true;
+  reviewedNoExistingIdentityReplacement: true;
+  acceptsRecoveryPhraseResponsibility: true;
+}
+
+export type IdentityProtectionState = "protected" | "not-secure";
+
+export interface IdentityProtectionStatus {
+  state: IdentityProtectionState;
+  label: string;
+  detail: string;
 }
 
 export interface HubPasswordReadiness {
@@ -115,6 +130,7 @@ export const unavailableCoreIntegration: CoreIntegration = {
     unlocked: false,
     activeOslUserId: null,
     bootstrapStatus: "notAttempted",
+    storageMethod: null,
   },
   features: [],
 };
@@ -136,6 +152,7 @@ const extendedReadinessKeys = [
   "activeOslUserId",
   "bootstrapStatus",
 ] as const;
+const protectedStorageMethods = new Set(["tpm-pcp", "keyring", "os-keyring"]);
 const bootstrapStatuses: readonly BootstrapStatus[] = ["notAttempted", "setupRequired", "inProgress", "passwordRequired", "ready", "failed"];
 const featureKeys = ["id", "group", "label", "bridgeState"] as const;
 const bridgeStates: CoreFeature["bridgeState"][] = [
@@ -195,7 +212,12 @@ export async function removeHubAlternatePassword(role: "stealth" | "burn", curre
 
 export async function createHubOslIdentity(): Promise<HubIdentitySetupResult> {
   if (!isTauriRuntime()) throw new Error("identity creation unavailable");
-  return parseIdentitySetupResult(await invoke<unknown>("create_hub_osl_identity"));
+  const ownerAuthorizationSignoff: HubIdentityCreationOwnerSignoff = {
+    ownerPresent: true,
+    reviewedNoExistingIdentityReplacement: true,
+    acceptsRecoveryPhraseResponsibility: true,
+  };
+  return parseIdentitySetupResult(await invoke<unknown>("create_hub_osl_identity", { ownerAuthorizationSignoff }));
 }
 
 export async function importHubOslIdentityPhrase(recoveryPhrase: string): Promise<HubIdentitySetupResult> {
@@ -305,6 +327,21 @@ export function parseIdentitySetupResult(raw: unknown): HubIdentitySetupResult {
   return raw as unknown as HubIdentitySetupResult;
 }
 
+export function identityProtectionStatus(storageMethod: string | null | undefined): IdentityProtectionStatus {
+  if (storageMethod && protectedStorageMethods.has(storageMethod)) {
+    return {
+      state: "protected",
+      label: "Account protected",
+      detail: "Device protection confirmed.",
+    };
+  }
+  return {
+    state: "not-secure",
+    label: "Account not secure",
+    detail: "Device protection is not confirmed.",
+  };
+}
+
 export function parseMainPasswordSetupResult(raw: unknown): HubMainPasswordSetupResult {
   if (!isExactRecord(raw, ["passwordRecoveryPhrase", "encryptedStateReloadComplete", "encryptedStateReloadIssueCount", "readiness"])) throw new Error("invalid password setup response");
   if (
@@ -322,7 +359,7 @@ export function parseMainPasswordSetupResult(raw: unknown): HubMainPasswordSetup
 export function parseCoreReadiness(raw: unknown): CoreReadiness {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return structuredClone(unavailableCoreIntegration.readiness);
   const record = raw as Record<string, unknown>;
-  const allowedKeys = [...readinessKeys, "cloudRegistrationState", ...extendedReadinessKeys];
+  const allowedKeys = [...readinessKeys, "cloudRegistrationState", ...extendedReadinessKeys, "storageMethod"];
   const actualKeys = Object.keys(record);
   if (actualKeys.some((key) => !allowedKeys.includes(key as typeof allowedKeys[number])) || readinessKeys.some((key) => !(key in record))) {
     return structuredClone(unavailableCoreIntegration.readiness);
@@ -332,6 +369,9 @@ export function parseCoreReadiness(raw: unknown): CoreReadiness {
   if (!cloudRegistrationStates.includes(cloudRegistrationState as CoreReadiness["cloudRegistrationState"])) {
     return structuredClone(unavailableCoreIntegration.readiness);
   }
+  if (record.storageMethod !== undefined
+    && record.storageMethod !== null
+    && !isSafeText(record.storageMethod, 32)) return structuredClone(unavailableCoreIntegration.readiness);
 
   const extendedCount = extendedReadinessKeys.filter((key) => key in record).length;
   if (extendedCount !== 0 && extendedCount !== extendedReadinessKeys.length) return structuredClone(unavailableCoreIntegration.readiness);
@@ -344,6 +384,7 @@ export function parseCoreReadiness(raw: unknown): CoreReadiness {
       unlocked: false,
       activeOslUserId: null,
       bootstrapStatus: "notAttempted",
+      storageMethod: null,
     };
   }
 
@@ -357,6 +398,7 @@ export function parseCoreReadiness(raw: unknown): CoreReadiness {
 
   if (
     (record.unlocked === true && record.originalCoreLinked !== true)
+    || (record.identityLoaded !== true && record.storageMethod !== undefined && record.storageMethod !== null)
     || (record.bootstrapStatus === "passwordRequired" && record.unlocked === true)
     || (record.bootstrapStatus === "ready" && (
       record.unlocked !== true
@@ -371,6 +413,7 @@ export function parseCoreReadiness(raw: unknown): CoreReadiness {
   return {
     ...(record as unknown as CoreReadiness),
     cloudRegistrationState: cloudRegistrationState as CoreReadiness["cloudRegistrationState"],
+    storageMethod: typeof record.storageMethod === "string" ? record.storageMethod : null,
   };
 }
 

@@ -165,9 +165,12 @@ fn sender_keys_message_round_trip_through_wire() {
 
     // Round-trip through a receiver chain to confirm protocol survives
     // the wire layer.
-    let mut receiver =
-        sender_keys::ReceiverChain::install(chain.current_chain_id(), &chain.rotation_root_bytes())
-            .expect("receiver install");
+    let mut receiver = sender_keys::ReceiverChain::install(
+        chain.current_chain_id(),
+        &chain.rotation_root_bytes(),
+        chain.physical_device_id(),
+    )
+    .expect("receiver install");
     let recovered = receiver.decrypt(&decoded, &ctx).expect("decrypt");
     assert_eq!(recovered, plaintext);
 }
@@ -344,6 +347,7 @@ fn ratchet_header_decode_rejects_wrong_length() {
 #[test]
 fn sender_keys_header_byte_round_trip() {
     let header = sender_keys::Header {
+        physical_device_id: sender_keys::PhysicalDeviceId::from_bytes([0x42u8; 32]).unwrap(),
         chain_id: 3,
         n: 12,
         prev_chain_length: 5,
@@ -357,8 +361,8 @@ fn sender_keys_header_byte_round_trip() {
 
 #[test]
 fn sender_keys_header_decode_rejects_wrong_length() {
-    assert!(sender_keys::Header::from_bytes(&[0u8; 15]).is_err());
-    assert!(sender_keys::Header::from_bytes(&[0u8; 17]).is_err());
+    assert!(sender_keys::Header::from_bytes(&[0u8; sender_keys::HEADER_BYTES - 1]).is_err());
+    assert!(sender_keys::Header::from_bytes(&[0u8; sender_keys::HEADER_BYTES + 1]).is_err());
 }
 
 // ---- corner cases ----

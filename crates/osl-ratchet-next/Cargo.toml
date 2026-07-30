@@ -1,0 +1,29 @@
+[package]
+name = "osl-ratchet-next"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+ml-kem = { workspace = true }
+chacha20poly1305 = "0.10"
+hkdf = { workspace = true }
+sha2 = { workspace = true }
+zeroize = { workspace = true }
+subtle = { workspace = true }
+rand = { workspace = true }
+rand_core = { workspace = true }
+base64 = "0.22"
+# Deterministic CSPRNG. Already in the workspace lockfile via `rand`.
+# A normal dependency (not dev-only) because `test_support` is a
+# public module: integration tests and future reviewers need the same
+# seeded harness the unit tests use.
+rand_chacha = "0.3"
+
+[dev-dependencies]
+hex = { workspace = true }
+# Integration tests hash frozen wire blobs into compact KAT vectors.
+sha2 = { workspace = true }

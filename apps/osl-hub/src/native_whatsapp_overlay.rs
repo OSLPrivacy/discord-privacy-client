@@ -7,8 +7,8 @@
 use std::path::PathBuf;
 use tauri::{webview::NewWindowResponse, Manager, WebviewUrl};
 
-pub(crate) const OVERLAY_LABEL: &str = "composer-overlay";
-const OVERLAY_ASSET: &str = "overlay.html";
+pub(crate) const OVERLAY_LABEL: &str = "whatsapp-composer-overlay";
+const OVERLAY_ASSET: &str = "whatsapp-overlay.html";
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 struct OverlayRect {
@@ -52,7 +52,7 @@ fn bundled_navigation(url: &url::Url) -> bool {
         && url.password().is_none()
         && url.query().is_none()
         && url.fragment().is_none()
-        && matches!(url.path(), "/overlay.html" | "/overlay.html/")
+        && matches!(url.path(), "/whatsapp-overlay.html" | "/whatsapp-overlay.html/")
 }
 
 pub(crate) fn hide(app: &tauri::AppHandle) {

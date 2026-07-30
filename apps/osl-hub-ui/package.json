@@ -11,6 +11,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "build:discord-qa": "tsc --noEmit && vite build --mode discord-qa",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

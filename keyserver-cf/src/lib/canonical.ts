@@ -38,9 +38,12 @@ const UNREGISTER_DOMAIN = "discord-privacy-client/unregister/v1";
 const CONTROL_INBOX_POST_DOMAIN = "discord-privacy-client/control-inbox-post/v1";
 const CONTROL_INBOX_GET_DOMAIN = "discord-privacy-client/control-inbox-get/v1";
 const CONTROL_INBOX_DELETE_DOMAIN = "discord-privacy-client/control-inbox-delete/v1";
+const SENDER_FILTER_FLOOR_GET_DOMAIN =
+  "discord-privacy-client/sender-filter-floor-get/v1";
 const PREKEY_BUNDLE_GET_DOMAIN = "discord-privacy-client/prekey-bundle-get/v1";
 const WRAPPED_KEY_GET_DOMAIN = "discord-privacy-client/wrapped-key-get/v1";
 const WRAPPED_KEY_POST_DOMAIN = "discord-privacy-client/wrapped-key-post/v1";
+const LINK_GRANT_DOMAIN = "discord-privacy-client/link-grant/v1";
 
 export const SIGNED_COMMAND_FRESHNESS_WINDOW_MS = 5 * 60 * 1000;
 
@@ -282,32 +285,146 @@ export function canonicalWrappedKeyGetBytes(args: {
   ]);
 }
 
+/**
+ * Canonical bytes for a control-inbox POST.
+ *
+ * Wire:
+ *   LP(domain) || LP(sender_id) || LP(recipient_id) || LP(scope_id)
+ *   || LP(timestamp_ms) || LP(kind) || sha256(bundle) [ || LP(collapse_key) ]
+ *
+ * `kind` occupies the slot that shipped as `LP("")` and was documented as
+ * "reserved for future fields without breaking sig shape". This is that future
+ * field: an omitted or empty `kind` reproduces the pre-lane bytes exactly, so
+ * every deployed client keeps verifying, while a `revocation` row's lane is a
+ * **signed** component.
+ *
+ * That signing is load-bearing, in both directions:
+ *
+ * - An attacker cannot strip `kind: "revocation"` in transit to demote the row
+ *   into the evictable ordinary lane, which would silently destroy a burn.
+ * - An attacker cannot add it to a stranger's ordinary message to jump the
+ *   non-evictable lane.
+ *
+ * `collapse_key` is an optional trailing length-prefixed component -- the same
+ * shape (and the same reasoning) as the `sender_id` filter on the GET. It is an
+ * opaque client-computed MAC over (scope commitment, burn epoch); this server
+ * never learns either. Appending after the fixed-length digest is unambiguous.
+ */
 export function canonicalControlInboxPostBytes(args: {
   sender_id: string;
   recipient_id: string;
   scope_id: string;
   timestamp_ms: number;
   bundle_sha256: Uint8Array;
+  kind?: string | null;
+  collapse_key?: string | null;
 }): Uint8Array {
-  return concatBytes([
+  const parts = [
     lpString(CONTROL_INBOX_POST_DOMAIN),
     lpString(args.sender_id),
     lpString(args.recipient_id),
     lpString(args.scope_id),
     lpString(String(args.timestamp_ms)),
-    lpString(""), // reserved for future fields without breaking sig shape
+    lpString(args.kind ?? ""),
     args.bundle_sha256,
-  ]);
+  ];
+  if (args.collapse_key !== undefined && args.collapse_key !== null) {
+    parts.push(lpString(args.collapse_key));
+  }
+  return concatBytes(parts);
 }
 
+/**
+ * Canonical bytes for the inbox drain.
+ *
+ * `sender_id` is the optional per-sender filter (see
+ * `handleControlInboxGet`). It is a **signed** component, appended only
+ * when the caller asked for a filtered drain — exactly the
+ * optional-component shape `buildRegMsg` uses, and for the same two
+ * reasons:
+ *
+ * - A caller that did not ask for a filter produces the byte-identical
+ *   pre-filter message, so every deployed client keeps working.
+ * - Adding, removing or altering `?sender=` in transit changes the
+ *   server's reconstruction, so the signature stops verifying. In
+ *   particular an attacker **cannot strip the filter** to silently
+ *   restore the head-of-line starvation the filter exists to fix: that
+ *   request is refused, not quietly served unfiltered.
+ *
+ * Unambiguity: the unfiltered form ends after the timestamp; the
+ * filtered form appends one more length-prefixed component. A zero
+ * length prefix is not producible, because an empty `?sender=` is
+ * rejected by `isProtocolId` before it ever reaches here.
+ */
 export function canonicalControlInboxGetBytes(args: {
   user_id: string;
   timestamp_ms: number;
+  sender_id?: string | null;
 }): Uint8Array {
-  return concatBytes([
+  const parts = [
     lpString(CONTROL_INBOX_GET_DOMAIN),
     lpString(args.user_id),
     lpString(String(args.timestamp_ms)),
+  ];
+  if (args.sender_id !== undefined && args.sender_id !== null) {
+    parts.push(lpString(args.sender_id));
+  }
+  return concatBytes(parts);
+}
+
+/**
+ * Identity-authenticated request for the Worker/D1-owned sender-filter floor.
+ *
+ * The 256-bit request id is echoed by the response. Together with the signed
+ * timestamp, it prevents a previously observed response from being replayed
+ * after the caller deletes local data or restarts.
+ */
+export function canonicalSenderFilterFloorGetBytes(args: {
+  user_id: string;
+  timestamp_ms: number;
+  request_id: string;
+}): Uint8Array {
+  return concatBytes([
+    lpString(SENDER_FILTER_FLOOR_GET_DOMAIN),
+    lpString(args.user_id),
+    lpString(String(args.timestamp_ms)),
+    lpString(args.request_id),
+  ]);
+}
+
+// ---- link-creation grant request ----
+//
+// The client asks the keyserver to vouch for it so the cipher-store will
+// accept ONE view-once link creation. This message authenticates the
+// *request*; it is deliberately NOT the grant. The grant the keyserver
+// signs in reply carries no identity at all (see
+// `lib/link-grant-issuer.ts`), so the keyserver knows who asked and the
+// cipher-store never does.
+//
+// Wire:
+//   LP(domain) || LP(user_id) || LP(timestamp_ms decimal string)
+//   || LP(request_id base64url string)
+//
+// `request_id` is the single-use anchor: the server records SHA-256 over
+// these exact bytes, so a captured issuance request cannot be replayed
+// into a second grant inside the freshness window. `timestamp_ms` bounds
+// how long a captured request is worth replaying at all.
+//
+// The Rust client builds the byte-identical message in
+// `crates/ipc/src/cipher_store_client.rs` (`link_grant_canonical_bytes`).
+
+export const LINK_GRANT_FRESHNESS_WINDOW_MS = 5 * 60 * 1000;
+
+export function canonicalLinkGrantBytes(args: {
+  user_id: string;
+  timestamp_ms: number;
+  request_id: string;
+}): Uint8Array {
+  return concatBytes([
+    lpString(LINK_GRANT_DOMAIN),
+    lpString(args.user_id),
+    lpString(String(args.timestamp_ms)),
+    lpString(args.request_id),
   ]);
 }
 

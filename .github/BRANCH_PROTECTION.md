@@ -16,22 +16,71 @@ checklist below is what most contributors will follow.
    - **Require a pull request before merging**
    - **Require status checks to pass before merging**
      - Click **Add checks** and pick:
-       - `test` (the rust-test workflow's main job)
-       - `quality-checks` (the workflow's boot.js + capability-audit job)
+       - The `test` check from the **Rust Test** workflow. This is
+         mandatory. Do not substitute the TypeScript workflow's `test`
+         job or any stale unqualified `test` context.
+       - The `quality-checks` check from the **Rust Test** workflow.
      - **Require branches to be up to date before merging**
    - **Do not allow bypassing the above settings** (so admins can't
      accidentally skip CI in a hurry)
+   - Include administrators in the rule. Admin bypass is a refusal, not an
+     emergency permission.
 5. **Save changes**.
 
 ## Verifying
 
-Open any PR. Both required checks should appear in the merge box.
-The **Merge** button is disabled until both pass.
+Verify the live `main` rule with the GitHub API, not only the
+merge box:
 
-If a check name appears in the UI as `test` but doesn't actually
-gate the merge, GitHub may be matching a stale check from an
-earlier workflow version. Re-add it from the dropdown after the
-next CI run.
+```sh
+gh api repos/OSLPrivacy/discord-privacy-client/branches/main/protection \
+  --jq '.required_status_checks.contexts[], .enforce_admins.enabled'
+```
+
+The output must include both required contexts, plus admin
+enforcement:
+
+```text
+test
+quality-checks
+true
+```
+
+Then open any PR. Both required checks should appear in the merge
+box, and the **Merge** button is disabled until both pass.
+
+If a check name appears in the UI as `test` but doesn't actually gate the
+merge, GitHub may be matching a stale check from an earlier workflow version
+or the TypeScript workflow's job with the same name. Re-add the `test` check
+whose source is **Rust Test** after the next Rust Test run.
+
+The equivalent API contract is:
+
+```json
+{
+  "required_status_checks": {
+    "strict": true,
+    "contexts": [
+      "test",
+      "quality-checks"
+    ]
+  },
+  "enforce_admins": true
+}
+```
+
+When configuring by API, verify the `test` context came from the Rust Test
+workflow run. Absence of that Rust source means refusal, not permission.
+
+Source contract checks for this file:
+
+```sh
+grep -F "Rust Test" .github/BRANCH_PROTECTION.md
+grep -F "test" .github/BRANCH_PROTECTION.md
+grep -F "quality-checks" .github/BRANCH_PROTECTION.md
+grep -F "Do not allow bypassing the above settings" .github/BRANCH_PROTECTION.md
+grep -F "Admin bypass is a refusal" .github/BRANCH_PROTECTION.md
+```
 
 ## When to update
 

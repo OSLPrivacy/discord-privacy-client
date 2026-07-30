@@ -1,9 +1,14 @@
-//! Burn flow types + canonical signing bytes.
+//! Wrapped-key deletion request primitives (implemented-unwired).
 //!
 //! Mirrors `keyserver/src/canonical.js` `canonicalBurnBytes` and
-//! `keyserver/src/db.js` `burnWrappedKeys` — the user-facing Rust API
-//! for "delete my wrapped-key blobs from the server, signed by my
-//! identity key so nobody else can do it for me".
+//! `keyserver/src/db.js` `burnWrappedKeys`.
+//!
+//! This module supplies the request scope, canonical bytes, and Ed25519
+//! signature helper. Current Hub/IPC production code does not construct a
+//! [`BurnScope`] or call `KeyServerClient::burn`; the reachable product burn
+//! path performs local-row cleanup and best-effort cipher-store blob deletion
+//! instead. These primitives therefore do not establish that a product burn
+//! deletes server-held wrapped keys.
 //!
 //! ## Wire format (must match the server byte-for-byte)
 //!
@@ -30,7 +35,7 @@ use crypto::ed25519;
 
 pub const BURN_DOMAIN: &[u8] = b"discord-privacy-client/burn/v1";
 
-/// Burn scope. Matches the server's three-way `scope` field.
+/// Prototype wrapped-key deletion scope matching the server's three-way field.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BurnScope {
     /// Burn one specific message by `content_id`.

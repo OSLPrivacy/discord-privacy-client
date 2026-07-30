@@ -27,6 +27,7 @@ const SLOT_DOMAIN: &[u8] = b"OSL-HUB-IDENTITY-SLOT-v1";
 
 const ACCOUNT_ARTIFACTS: &[&str] = &[
     "identity.json",
+    "prekeys.json",
     "peer_map.json",
     "whitelist_state.json",
     "sender_key_state.json",
@@ -920,7 +921,7 @@ pub(crate) fn attempt_unregister(
 }
 
 pub(crate) fn reset_account_scoped_state(state: &ipc::AppState) {
-    *state.identity.lock().expect("identity poisoned") = None;
+    state.clear_identity();
     *state.keyserver.lock().expect("keyserver poisoned") = None;
     state.set_cloud_registration_state(ipc::state::CloudRegistrationState::NotAttempted);
     *state
@@ -1039,6 +1040,11 @@ mod tests {
 
     #[test]
     fn registry_requires_unlock_and_is_never_plain_json() {
+        // This test flips the process-wide main-password test key
+        // (crates/ipc/src/main_password.rs), which other modules' tests also
+        // mutate; hold the crate-wide lock so a sibling test can't swap the
+        // key out from under this one mid-test.
+        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
         let base = temp_base("registry");
         ipc::main_password::set_file_storage_key(None);
         assert!(write_registry(&base, &IdentityRegistryFile::default()).is_err());

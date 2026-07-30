@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "runId": "20260727T093633Z-neg-2236",
+  "identifier": "org.oslprivacy.doesnotexist",
+  "runStartUtc": "2026-07-27T09:38:38Z",
+  "exeSha256": "d2f6db781a4b5149520d315a1f3378df2cd256292f1e07d04f13e24846a62950",
+  "steps": [
+    {
+      "id": "S0",
+      "verb": "stage",
+      "args": {
+        "exeSha256": "d2f6db781a4b5149520d315a1f3378df2cd256292f1e07d04f13e24846a62950"
+      }
+    },
+    {
+      "id": "S1",
+      "verb": "launch",
+      "args": {
+        "timeoutSeconds": 45,
+        "exeSha256": "d2f6db781a4b5149520d315a1f3378df2cd256292f1e07d04f13e24846a62950"
+      }
+    },
+    {
+      "id": "S2",
+      "verb": "ping",
+      "args": {}
+    },
+    {
+      "id": "S3",
+      "verb": "shot",
+      "args": {
+        "name": "selftest",
+        "expectedSurfaceClass": "Tauri Window"
+      }
+    },
+    {
+      "id": "S4",
+      "verb": "kill",
+      "args": {}
+    }
+  ]
+}

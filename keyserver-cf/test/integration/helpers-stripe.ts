@@ -2,6 +2,9 @@
 /// HMAC algorithm Stripe uses so the worker's verifyWebhookSignature
 /// accepts it.
 
+import { env } from "cloudflare:test";
+import { handleStripeWebhook } from "../../src/endpoints/stripe-webhook.js";
+
 const WEBHOOK_SECRET = "whsec_test_secret";
 
 export interface BuildEventInput {
@@ -52,18 +55,19 @@ export async function postSignedWebhook(
   self: { fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> },
   event: BuildEventInput,
 ): Promise<Response> {
+  void self;
   const body = JSON.stringify({
     livemode: true,
     created: Math.floor(Date.now() / 1000),
     ...event,
   });
   const sig = await signStripeWebhook(body);
-  return await self.fetch("http://test/v1/stripe/webhook", {
+  return await handleStripeWebhook(new Request("http://test/v1/stripe/webhook", {
     method: "POST",
     headers: {
       "content-type": "application/json",
       "stripe-signature": sig,
     },
     body,
-  });
+  }), env, fetch, undefined, () => true);
 }

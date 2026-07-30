@@ -746,7 +746,7 @@ mod tests {
     fn rejects_empty_after_prefix() {
         let c = cipher();
         let err = decode_mode1(&c, "DPC1::").unwrap_err();
-        assert!(matches!(err, Error::Mode1ParseError(_)));
+        assert!(matches!(&err, Error::Mode1ParseError(_)));
     }
 
     #[test]

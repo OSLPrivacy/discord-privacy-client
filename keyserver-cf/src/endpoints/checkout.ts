@@ -21,12 +21,22 @@ import {
 } from "../lib/stripe-checkout-claims.js";
 import { badRequest, json, serverError, serviceUnavailable, tooMany } from "../lib/http.js";
 import { callerIp, checkRateLimit } from "../lib/rate-limit.js";
+import {
+  prepaidRedemptionReady,
+  PREPAID_REDEMPTION_UNAVAILABLE,
+  type PrepaidRedemptionReadiness,
+} from "../lib/prepaid-redemption-readiness.js";
 
 export async function handleCheckout(
   request: Request,
   env: Env,
   fetcher: typeof fetch = fetch,
+  readiness: PrepaidRedemptionReadiness = prepaidRedemptionReady,
 ): Promise<Response> {
+  if (!readiness()) {
+    return serviceUnavailable(PREPAID_REDEMPTION_UNAVAILABLE);
+  }
+
   const rl = await checkRateLimit(env, callerIp(request), 5, "checkout");
   if (!rl.ok) return tooMany(rl.retryAfter);
 

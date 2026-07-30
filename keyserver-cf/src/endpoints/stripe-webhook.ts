@@ -27,12 +27,18 @@ import {
   verifyWebhookSignature,
 } from "../lib/stripe.js";
 import { badRequest, json, serviceUnavailable, unauthorized } from "../lib/http.js";
+import {
+  prepaidRedemptionReady,
+  PREPAID_REDEMPTION_UNAVAILABLE,
+  type PrepaidRedemptionReadiness,
+} from "../lib/prepaid-redemption-readiness.js";
 
 export async function handleStripeWebhook(
   request: Request,
   env: Env,
   fetcher: typeof fetch = fetch,
   ctx?: ExecutionContext,
+  readiness: PrepaidRedemptionReadiness = prepaidRedemptionReady,
 ): Promise<Response> {
   if (!env.STRIPE_WEBHOOK_SECRET) {
     return serviceUnavailable("webhook not configured on this deployment");
@@ -55,6 +61,9 @@ export async function handleStripeWebhook(
   if (!event) return badRequest("malformed event envelope");
   if (!event.livemode) {
     return badRequest("test-mode Stripe events are disabled on this deployment");
+  }
+  if (stripeEventMayFulfillPaidCode(event) && !readiness()) {
+    return serviceUnavailable(PREPAID_REDEMPTION_UNAVAILABLE);
   }
 
   const claim = await claimStripeEvent(env.DB, event.id, event.type);
@@ -104,4 +113,29 @@ export async function handleStripeWebhook(
       headers: { "content-type": "application/json; charset=utf-8" },
     });
   }
+}
+
+function stripeEventMayFulfillPaidCode(event: {
+  type: string;
+  data: { object: Record<string, unknown> };
+}): boolean {
+  if (
+    event.type !== "checkout.session.completed" &&
+    event.type !== "checkout.session.async_payment_succeeded"
+  ) {
+    return false;
+  }
+  const object = event.data.object;
+  const metadata = object.metadata;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return typeof object.subscription === "string";
+  }
+  const values = metadata as Record<string, unknown>;
+  if (values.osl_kind === "donation") return false;
+  return (
+    object.mode === "payment" &&
+    values.osl_plan === "pro" &&
+    values.osl_purchase === "one-time" &&
+    values.osl_fulfillment === "instant-v1"
+  ) || typeof object.subscription === "string";
 }

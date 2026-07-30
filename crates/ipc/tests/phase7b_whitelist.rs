@@ -38,6 +38,7 @@ fn peer_entry_with_pubkey(discord_id: &str) -> (PeerEntry, x25519::PublicKey) {
         ik_ratchet_initial_pub: None,
         ratchet_state: None,
         tofu_ed25519_pub: None,
+        tofu_key_bundle: None,
     };
     (entry, pk)
 }

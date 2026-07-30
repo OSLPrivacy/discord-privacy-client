@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>OSL protected WhatsApp composer</title>
+  </head>
+  <body>
+    <main class="wa-overlay-shell" aria-label="OSL protected WhatsApp composer">
+      <span class="wa-trust-mark" title="This field belongs to OSL, not WhatsApp" aria-label="OSL-owned field">OSL</span>
+      <label class="wa-draft-field" for="protected-draft">
+        <span class="sr-only">Private message</span>
+        <textarea id="protected-draft" rows="1" autocomplete="off" spellcheck="true" aria-describedby="draft-bytes overlay-status" placeholder="Protected message"></textarea>
+      </label>
+      <div class="wa-draft-status">
+        <span id="overlay-status">Exact chat verified</span>
+        <span id="draft-bytes" role="status" aria-live="polite" aria-atomic="true">0 / 1000 bytes</span>
+      </div>
+      <button id="protected-send" type="button" disabled aria-label="Encrypt and copy protected message">Copy</button>
+    </main>
+    <script type="module" src="/src/whatsapp-overlay.ts"></script>
+  </body>
+</html>

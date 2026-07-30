@@ -91,6 +91,14 @@ fn install_peer_pubkey_v3(
     pe.discord_id = Some(discord_id.to_string());
 }
 
+fn pin_sender_pubkey(state: &AppState, discord_id: &str, identity: &Identity) {
+    let mut pm = state.peer_map.lock().unwrap();
+    let pe = pm.entry(discord_id.to_string()).or_default();
+    pe.pubkey = Some(STANDARD.encode(identity.x25519_public.as_bytes()));
+    pe.ik_mlkem768_pub = Some(STANDARD.encode(identity.mlkem_public_bytes));
+    pe.discord_id = Some(discord_id.to_string());
+}
+
 fn install_dm_whitelist(state: &AppState, peer_discord_id: &str) {
     let scope = Scope::dm(peer_discord_id);
     {
@@ -215,6 +223,11 @@ fn decrypt_blocked_for_message_in_burn_kill_list() {
         &henry_mlkem_sk,
         &henry_mlkem_pk,
     ));
+    pin_sender_pubkey(
+        &henry_state,
+        LIAM_DID,
+        liam_state.identity.lock().unwrap().as_ref().unwrap(),
+    );
     // From Henry's PoV the DM scope id is Liam's discord id.
     let henry_scope = Scope::dm(LIAM_DID);
     mark_sender_accepted_in_scope(&henry_state, LIAM_DID, &henry_scope);
@@ -290,6 +303,11 @@ fn decrypt_allowed_for_message_not_in_kill_list() {
         &henry_mlkem_sk,
         &henry_mlkem_pk,
     ));
+    pin_sender_pubkey(
+        &henry_state,
+        LIAM_DID,
+        liam_state.identity.lock().unwrap().as_ref().unwrap(),
+    );
     let henry_scope = Scope::dm(LIAM_DID);
     mark_sender_accepted_in_scope(&henry_state, LIAM_DID, &henry_scope);
 

@@ -67,34 +67,44 @@ Notification delivery: encrypted control message via Discord (DM channel for DM-
 
 ## 3. Burn semantics
 
+> **Status: designed, NOT implemented (2026-07-26).** The per-message wrapped-key model described
+> below is not what the shipping code does. `MessageStore::put` never populates `wrapped_key`
+> (`crates/store/src/lib.rs:194-206`), so there is no per-message key to destroy and no key to
+> withhold. Burn today is **state deletion**: local shredding, server-side deletion, and a
+> cooperative request to the peer. Because messages are sealed to the recipient's long-term keys,
+> the carrier retained by the connected service stays readable to any holder of that key material.
+> Building this model is deliberately deferred. Read everything below as intended design, not as
+> current behaviour, and never quote it as a capability. See
+> `docs/design/osl-public-claim-allowlist.md` §D.
+
 ### 3.1 Scope hierarchy
 
 Burns are **never broadenable except account burn.** Each burn affects only the named scope.
 
 | Burn | Effect | Cascade |
 |---|---|---|
-| **DM burn** | Your messages in that DM → ciphertext for both you and peer. Peer's messages unaffected. | None |
-| **GC burn** | Your messages in that GC → ciphertext for everyone. Other members' messages unaffected. | None |
-| **Server channel burn** | Your messages in that one channel → ciphertext. Your messages in other channels of same server unaffected. | None |
-| **Entire server burn** | Your messages in ALL channels of that server → ciphertext. Other servers/DMs/GCs unaffected. | All channels in that server |
-| **Account burn** | All your sent messages everywhere → permanent ciphertext. Local state wiped. Fresh-install state. | EVERYTHING |
+| **DM burn** | Your messages in that DM → ciphertext for both you and peer (designed, not implemented). Peer's messages unaffected. | None |
+| **GC burn** | Your messages in that GC → ciphertext for everyone (designed, not implemented). Other members' messages unaffected. | None |
+| **Server channel burn** | Your messages in that one channel → ciphertext (designed, not implemented). Your messages in other channels of same server unaffected. | None |
+| **Entire server burn** | Your messages in ALL channels of that server → ciphertext (designed, not implemented). Other servers/DMs/GCs unaffected. | All channels in that server |
+| **Account burn** | All your sent messages everywhere → permanent ciphertext (designed, not implemented). Local state wiped. Fresh-install state. | EVERYTHING |
 
 ### 3.2 Burn = key rotation
 
-Burn is implemented via **per-message ephemeral key destruction**:
-- Each encrypted message uses an ephemeral symmetric key K (AES-256-GCM)
-- K is wrapped with the static-static ECDH shared secret, included in wire format
-- Burn = wipe K from local SQLite on both sides
-- Without K and without ability to derive K from the wrapped form, the ciphertext on Discord's servers is mathematically opaque
+Burn is implemented via **per-message ephemeral key destruction** (designed, not implemented):
+- Each encrypted message uses an ephemeral symmetric key K (AES-256-GCM) (designed, not implemented)
+- K is wrapped with the static-static ECDH shared secret, included in wire format (designed, not implemented)
+- Burn = wipe K from local SQLite on both sides (designed, not implemented)
+- Without K and without ability to derive K from the wrapped form, the ciphertext on Discord's servers is mathematically opaque (designed, not implemented)
 
-This gives burns real teeth: a recipient can no longer decrypt even with developer tools or local data access.
+This gives burns real teeth: a recipient can no longer decrypt even with developer tools or local data access (designed, not implemented).
 
 ### 3.3 Un-whitelist = burn
 
-Un-whitelisting a scope is **functionally identical to burning that scope.** The user clicks "un-whitelist" and the system:
-1. Triggers the burn for that scope (key rotation, ciphertext for everyone going forward AND retroactively)
+Un-whitelisting a scope is **functionally identical to burning that scope** (designed, not implemented). The user clicks "un-whitelist" and the system:
+1. Triggers the burn for that scope (key rotation, ciphertext for everyone going forward AND retroactively) (designed, not implemented)
 2. Removes whitelist entry
-3. Sends control message to peer(s) so they wipe their decryption capability
+3. Sends control message to peer(s) so they wipe their decryption capability (designed, not implemented)
 
 ### 3.4 DM un-whitelist broaden choice
 
@@ -102,14 +112,14 @@ When un-whitelisting a DM, the user is prompted:
 > "Un-whitelist Henry from DM. Henry currently has broadened access in 3 shared GCs/servers. Also revoke his broadened access there?"
 > [ Yes, revoke everywhere ]  [ No, just this DM ]
 
-- Yes → burns DM AND removes broadened access (he loses decryption in all scopes where his access came from the DM broaden)
-- No → burns just the DM. Any independent whitelists in shared scopes remain. Broadened access in unaffected.
+- Yes → burns DM AND removes broadened access (he loses decryption in all scopes where his access came from the DM broaden) (designed, not implemented)
+- No → burns just the DM (designed, not implemented). Any independent whitelists in shared scopes remain. Broadened access in unaffected.
 
-For GC/server un-whitelist: always just burns that scope. Never affects DM (since GC/server whitelists aren't broadenable).
+For GC/server un-whitelist: always just burns that scope (designed, not implemented). Never affects DM (since GC/server whitelists aren't broadenable).
 
 ### 3.5 Re-enabling encryption after burn
 
-Past burned messages stay gibberish forever. New messages encrypt with new keys.
+Past burned messages stay gibberish forever (designed, not implemented). New messages encrypt with new keys.
 - Whitelist the scope again → fresh keys → new messages encrypt and decrypt normally
 - Both parties re-acknowledge whitelist (receiver gets notification again)
 
@@ -120,7 +130,7 @@ Account burn:
 2. Wipes keyserver entries tied to user
 3. Client returns to fresh-install state — looks like never used OSL
 4. To use OSL again: reinstall (or re-onboard from scratch)
-5. All prior messages across all channels → permanent gibberish
+5. All prior messages across all channels → permanent gibberish (designed, not implemented)
 
 ---
 
@@ -211,7 +221,7 @@ UI shows persistent banner per pending entry.
 
 - `burned INTEGER DEFAULT 0`
 - `burned_at INTEGER`
-- `wrapped_key BLOB` — the per-message K wrapped for this recipient (NULL if burned)
+- `wrapped_key BLOB` — the per-message K wrapped for this recipient (NULL if burned) (designed, not implemented)
 - `scope_type TEXT` — dm, gc, server_channel, server_full (for query filtering on burns)
 - `scope_id TEXT` — channel/GC/server ID
 
