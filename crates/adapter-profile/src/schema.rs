@@ -83,14 +83,25 @@ impl fmt::Debug for SignedProfileDoc {
 
 impl ProfileDoc {
     pub fn validate_structure(&self) -> Result<ValidatedProfile, ProfileValidationError> {
+        fn require_canonical_text(
+            field: &'static str,
+            value: &str,
+        ) -> Result<(), ProfileValidationError> {
+            require_non_empty(field, value)?;
+            if value.trim() != value || value.chars().any(char::is_control) {
+                return Err(ProfileValidationError::EmptyField(field));
+            }
+            Ok(())
+        }
+
         if self.version != PROFILE_DOC_VERSION {
             return Err(ProfileValidationError::UnsupportedVersion {
                 got: self.version,
                 expected: PROFILE_DOC_VERSION,
             });
         }
-        require_non_empty("profile_id", &self.profile_id)?;
-        require_non_empty("min_client_version", &self.min_client_version)?;
+        require_canonical_text("profile_id", &self.profile_id)?;
+        require_canonical_text("min_client_version", &self.min_client_version)?;
         if self.profile_sequence < self.rollback_floor {
             return Err(ProfileValidationError::RollbackBelowFloor);
         }
@@ -872,6 +883,59 @@ mod tests {
         first_grant.remove("authority");
         let json = serde_json::to_vec(&value).unwrap();
         assert_eq!(parse_profile_doc(&json), Err(ProfileValidationError::Json));
+    }
+
+    #[test]
+    fn validate_structure_rejects_non_canonical_text_fields() {
+        let mut spaced_id = profile();
+        spaced_id.profile_id = " discord-windows-reviewed-v1".to_string();
+        assert_eq!(
+            spaced_id.validate_structure(),
+            Err(ProfileValidationError::EmptyField("profile_id"))
+        );
+
+        let mut control_version = profile();
+        control_version.min_client_version = "0.0.1\n".to_string();
+        assert_eq!(
+            control_version.validate_structure(),
+            Err(ProfileValidationError::EmptyField("min_client_version"))
+        );
+    }
+
+    #[test]
+    fn validate_structure_rejects_absent_consent_binding_or_authority() {
+        for field in ["consent_required", "binding_required", "authority"] {
+            let mut value = serde_json::to_value(profile()).unwrap();
+            value["capabilities"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+            let json = serde_json::to_vec(&value).unwrap();
+            assert_eq!(parse_profile_doc(&json), Err(ProfileValidationError::Json));
+        }
+
+        let mut no_consent = profile();
+        no_consent.capabilities[0].consent_required = false;
+        assert_eq!(
+            no_consent.validate_structure(),
+            Err(ProfileValidationError::ConsentNotRequired(
+                Capability::InspectVisibleComposer
+            ))
+        );
+
+        let mut no_account_binding = profile();
+        no_account_binding.capabilities[0].binding_required.account = false;
+        assert_eq!(
+            no_account_binding.validate_structure(),
+            Err(ProfileValidationError::AccountBindingMissing(
+                Capability::InspectVisibleComposer
+            ))
+        );
+
+        let validated = profile().validate_structure().unwrap();
+        let mut no_authority_evidence = full_evidence();
+        no_authority_evidence.authority = None;
+        assert!(!validated.permits(Capability::InspectVisibleComposer, no_authority_evidence));
     }
 
     #[test]
