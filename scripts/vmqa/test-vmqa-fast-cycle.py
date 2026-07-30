@@ -27,6 +27,20 @@ def digest(label: str) -> str:
     return hashlib.sha256(label.encode("ascii")).hexdigest()
 
 
+def checked_in_selftest_shape() -> str:
+    steps = json.loads(
+        (SCRIPT_ROOT / "steps" / "selftest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    if not isinstance(steps, list):
+        raise AssertionError("selftest.json must be a JSON array")
+    suffix = ",".join(
+        f"{step.get('id')}:{step.get('verb')}" for step in steps
+    )
+    return f"S0:stage,{suffix}"
+
+
 def fixture() -> dict:
     subscription = "11111111-2222-3333-4444-555555555555"
     prefix = (
@@ -82,13 +96,17 @@ def fixture() -> dict:
             "positive": {
                 "receiptSha256": digest("attempt-one-positive"),
                 "sizeBytes": 1024,
-                "stepsExecuted": 5,
+                "stepsExecuted": cycle.SELFTEST_STEP_COUNT,
                 "stepShape": cycle.SELFTEST_STEP_SHAPE,
                 "stepStatuses": [
                     "pass",
                     "pass",
                     "fail",
                     "blocked",
+                    "blocked",
+                    "blocked",
+                    "blocked",
+                    "pass",
                     "pass",
                 ],
                 "outcome": "fail",
@@ -96,7 +114,7 @@ def fixture() -> dict:
             "negative": {
                 "receiptSha256": digest("attempt-one-negative"),
                 "sizeBytes": 1024,
-                "stepsExecuted": 5,
+                "stepsExecuted": cycle.SELFTEST_STEP_COUNT,
                 "stepShape": cycle.SELFTEST_STEP_SHAPE,
                 "stepStatuses": list(cycle.NEGATIVE_STEP_STATUSES),
                 "outcome": "blocked",
@@ -129,7 +147,7 @@ def fixture() -> dict:
             "positive": {
                 "receiptSha256": digest("attempt-two-positive"),
                 "sizeBytes": 8192,
-                "stepsExecuted": 5,
+                "stepsExecuted": cycle.SELFTEST_STEP_COUNT,
                 "stepShape": cycle.SELFTEST_STEP_SHAPE,
                 "stepStatuses": list(cycle.PASS_STEP_STATUSES),
                 "outcome": "pass",
@@ -137,7 +155,7 @@ def fixture() -> dict:
             "negative": {
                 "receiptSha256": digest("attempt-two-negative"),
                 "sizeBytes": 2048,
-                "stepsExecuted": 5,
+                "stepsExecuted": cycle.SELFTEST_STEP_COUNT,
                 "stepShape": cycle.SELFTEST_STEP_SHAPE,
                 "stepStatuses": list(cycle.NEGATIVE_STEP_STATUSES),
                 "outcome": "blocked",
@@ -157,11 +175,32 @@ class FastCycleReceiptTests(unittest.TestCase):
             value["attemptTwo"]["positive"]["sizeBytes"], 0
         )
         self.assertEqual(
-            value["attemptTwo"]["positive"]["stepsExecuted"], 5
+            value["attemptTwo"]["positive"]["stepsExecuted"],
+            cycle.SELFTEST_STEP_COUNT,
         )
         self.assertNotEqual(
             value["attemptOne"]["runNonce"],
             value["attemptTwo"]["runNonce"],
+        )
+
+    def test_checked_in_selftest_steps_match_pinned_capsule_matrix(self) -> None:
+        self.assertEqual(
+            checked_in_selftest_shape(),
+            cycle.SELFTEST_STEP_SHAPE,
+        )
+        self.assertEqual(
+            cycle.SELFTEST_STEP_SEQUENCE,
+            (
+                ("S0", "stage"),
+                ("S1", "launch"),
+                ("S2", "ping"),
+                ("S3", "shot"),
+                ("S4", "click"),
+                ("S5", "type"),
+                ("S6", "key"),
+                ("S7", "wait"),
+                ("S8", "kill"),
+            ),
         )
 
     def test_normal_boundary_rejects_simulation(self) -> None:
@@ -280,7 +319,9 @@ class FastCycleReceiptTests(unittest.TestCase):
 
     def test_selftest_pair_shape_and_negative_control_are_exact(self) -> None:
         candidate = fixture()
-        candidate["attemptTwo"]["positive"]["stepsExecuted"] = 4
+        candidate["attemptTwo"]["positive"]["stepsExecuted"] = (
+            cycle.SELFTEST_STEP_COUNT - 1
+        )
         with self.assertRaisesRegex(cycle.ReceiptError, "bounded integer"):
             cycle.validate_receipt(candidate, allow_simulation=True)
         candidate = fixture()

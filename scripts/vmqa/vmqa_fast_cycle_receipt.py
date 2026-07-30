@@ -40,9 +40,33 @@ SEQUENCE = [
     "agent-alive-after",
     "attempt-2",
 ]
-SELFTEST_STEP_SHAPE = "S0:stage,S1:launch,S2:ping,S3:shot,S4:kill"
-PASS_STEP_STATUSES = ["pass", "pass", "pass", "pass", "pass"]
-NEGATIVE_STEP_STATUSES = ["pass", "blocked", "pass", "blocked", "pass"]
+SELFTEST_STEP_SEQUENCE = (
+    ("S0", "stage"),
+    ("S1", "launch"),
+    ("S2", "ping"),
+    ("S3", "shot"),
+    ("S4", "click"),
+    ("S5", "type"),
+    ("S6", "key"),
+    ("S7", "wait"),
+    ("S8", "kill"),
+)
+SELFTEST_STEP_COUNT = len(SELFTEST_STEP_SEQUENCE)
+SELFTEST_STEP_SHAPE = ",".join(
+    f"{step_id}:{verb}" for step_id, verb in SELFTEST_STEP_SEQUENCE
+)
+PASS_STEP_STATUSES = ["pass"] * SELFTEST_STEP_COUNT
+NEGATIVE_STEP_STATUSES = [
+    "pass",
+    "blocked",
+    "pass",
+    "blocked",
+    "blocked",
+    "blocked",
+    "blocked",
+    "pass",
+    "pass",
+]
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -341,12 +365,17 @@ def validate_selftest_half(value: Any, label: str) -> dict[str, Any]:
     )
     require_sha(half["receiptSha256"], f"{label} receipt")
     require_int(half["sizeBytes"], f"{label} bytes", 1, MAX_JSON_BYTES)
-    require_int(half["stepsExecuted"], f"{label} steps", 5, 5)
+    require_int(
+        half["stepsExecuted"],
+        f"{label} steps",
+        SELFTEST_STEP_COUNT,
+        SELFTEST_STEP_COUNT,
+    )
     if half["stepShape"] != SELFTEST_STEP_SHAPE:
         raise ReceiptError(f"{label} step sequence differs")
     if (
         not isinstance(half["stepStatuses"], list)
-        or len(half["stepStatuses"]) != 5
+        or len(half["stepStatuses"]) != SELFTEST_STEP_COUNT
         or any(
             status not in {"pass", "fail", "blocked", "unmeasurable"}
             for status in half["stepStatuses"]
