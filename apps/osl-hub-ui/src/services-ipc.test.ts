@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -435,6 +436,23 @@ describe("browser-owned import IPC", () => {
     mocks.invoke.mockResolvedValueOnce(response);
     await expect(beginProtectedBrowserImport(["edge"])).resolves.toEqual(response);
     expect(mocks.invoke).toHaveBeenCalledWith("begin_protected_browser_import", { browserIds: ["edge"] });
+  });
+
+  it("production renderer caller wiring in main.ts", () => {
+    const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+    const start = source.indexOf("function bindBrowserImportControls(): void {");
+    const end = source.indexOf("async function ensureFirefoxForProtectedImport(): Promise<void> {");
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const bindBrowserImportControls = source.slice(start, end);
+
+    expect(bindBrowserImportControls).toContain("browserImportQueue = [...selectedBrowserImportIds];");
+    expect(bindBrowserImportControls).toContain("const operation = beginProtectedBrowserImport([currentSource]);");
+    expect(bindBrowserImportControls).toContain("browserImportOperation = operation;");
+    expect(bindBrowserImportControls).toContain("await finishProtectedBrowserImport();");
+    expect(bindBrowserImportControls).toContain("await activeOperation?.catch(() => undefined);");
+    expect(bindBrowserImportControls.indexOf("const operation = beginProtectedBrowserImport([currentSource]);"))
+      .toBeLessThan(bindBrowserImportControls.indexOf("await finishProtectedBrowserImport();"));
   });
 
   it("permits the explicit existing-session mode for Signal", async () => {
