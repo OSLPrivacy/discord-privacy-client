@@ -1779,9 +1779,28 @@ impl MessageStore {
         }
         let mut rows = 0usize;
         for (ck_bi, _, _) in &victims {
+            tx.execute(
+                "UPDATE attachments
+                    SET meta_nonce = zeroblob(length(meta_nonce)),
+                        meta_ct = zeroblob(length(meta_ct)),
+                        ciphertext = zeroblob(length(ciphertext)),
+                        nonce = zeroblob(length(nonce)),
+                        wrapped_key_nonce = NULL,
+                        wrapped_key = NULL,
+                        burned = 1
+                  WHERE ck_bi = ?1 AND burned = 0",
+                params![ck_bi],
+            )?;
             rows += tx.execute("DELETE FROM attachments WHERE ck_bi = ?1", params![ck_bi])?;
         }
+        if rows != 0 {
+            schema::mark_shred_checkpoint_pending(&tx)?;
+        }
         self.commit(tx)?;
+        if rows != 0 {
+            checkpoint_after_shred(&conn)?;
+            self.sync_anchor_after_checkpoint(&mut conn)?;
+        }
         Ok(rows)
     }
 
