@@ -325,6 +325,107 @@ encode_browser_import_choices_and_noninterrupting_monetization.__name__ = (
 )
 
 
+def gui_final_plan_fixed_information_architecture_contract() -> None:
+    markdown = GUI_PLAN.read_text(encoding="utf-8")
+    testcase = unittest.TestCase()
+    testcase.assertEqual(_errors_for_information_architecture(markdown), [])
+
+    seventh_destination = markdown.replace(
+        "| **Connections** | Which accounts and devices are connected?",
+        "| **Connections** | Which accounts and devices are connected?\n"
+        "| **Settings** | How do I configure OSL?",
+    )
+    testcase.assertIn(
+        "primary destinations are not exactly the fixed six",
+        _errors_for_information_architecture(seventh_destination),
+    )
+
+    promoted_settings = markdown.replace(
+        "Settings remains a fixed item at the bottom of the sidebar rather than a seventh competing destination.",
+        "Settings is a primary destination in the sidebar.",
+    )
+    testcase.assertIn(
+        "Settings is not fixed at the bottom outside the six",
+        _errors_for_information_architecture(promoted_settings),
+    )
+
+
+gui_final_plan_fixed_information_architecture_contract.__name__ = (
+    "docs/design/osl-gui-final-plan.md'"
+)
+
+
+def gui_final_plan_browser_import_and_monetization_contract() -> None:
+    markdown = GUI_PLAN.read_text(encoding="utf-8")
+    testcase = unittest.TestCase()
+    testcase.assertEqual(_errors_for_browser_and_monetization(markdown), [])
+
+    third_browser_choice = markdown.replace(
+        "a web app shows only `Browser account` and `New account`",
+        "a web app shows only `Browser account`, `Existing profile` and `New account`",
+    )
+    testcase.assertIn(
+        "browser import receipt path must expose exactly two choices",
+        _errors_for_browser_and_monetization(third_browser_choice),
+    )
+
+    interrupting_upsell = markdown.replace(
+        "they must never interrupt a safety warning, destructive confirmation or honest capability refusal",
+        "they may interrupt a safety warning, destructive confirmation or honest capability refusal",
+        1,
+    )
+    testcase.assertIn(
+        "monetization can interrupt safety or capability refusal",
+        _errors_for_browser_and_monetization(interrupting_upsell),
+    )
+
+
+gui_final_plan_browser_import_and_monetization_contract.__name__ = (
+    "docs/design/osl-gui-final-plan.md'"
+)
+
+
+def simple_spec_sending_contract() -> None:
+    simple = SIMPLE_SPEC.read_text(encoding="utf-8")
+    gui = GUI_PLAN.read_text(encoding="utf-8")
+    testcase = unittest.TestCase()
+    testcase.assertEqual(_errors_for_send_contract(simple, gui), [])
+
+    optimistic_outcome = simple.replace(
+        "sent, not sent, or delivery uncertain",
+        "sent or failed",
+    )
+    testcase.assertIn(
+        "sending outcomes are not the honest tri-state",
+        _errors_for_send_contract(optimistic_outcome, gui),
+    )
+
+    auto_retry = simple.replace(
+        "never auto-retries it",
+        "automatically retries it",
+    ).replace(
+        "never retries\nautomatically",
+        "retries\nautomatically",
+    )
+    errors = _errors_for_send_contract(auto_retry, gui)
+    testcase.assertTrue(
+        any("auto-retr" in error for error in errors),
+        errors,
+    )
+
+    synthetic_second_enter = gui.replace(
+        "The second Enter must be a separate, trusted user key press after key-up.",
+        "OSL may synthesize the second Enter after placement.",
+    )
+    testcase.assertIn(
+        "missing GUI Double Enter refusal: second enter must be a separate, trusted user key press after key-up",
+        _errors_for_send_contract(simple, synthetic_second_enter),
+    )
+
+
+simple_spec_sending_contract.__name__ = "docs/design/osl-simple-spec.md'"
+
+
 def encode_burns_five_guarantees_and_banned_phrases() -> None:
     markdown = SIMPLE_SPEC.read_text(encoding="utf-8")
     broken = markdown.replace(
@@ -380,6 +481,9 @@ def load_tests(
         encode_the_six_fixed_information_architecture_destinations,
         encode_honest_tri_state_sending_and_double_enter_without_auto_retry,
         encode_browser_import_choices_and_noninterrupting_monetization,
+        gui_final_plan_fixed_information_architecture_contract,
+        gui_final_plan_browser_import_and_monetization_contract,
+        simple_spec_sending_contract,
         encode_burns_five_guarantees_and_banned_phrases,
         simple_spec_burn_contract,
     ):
