@@ -763,6 +763,103 @@ impl BrowserImportReport {
     }
 }
 
+/// Automation lanes covered by the challenge/stop/restart QA matrix.
+///
+/// The labels are fixed capability names, not account ids or provider-supplied
+/// strings. F4 is the reviewed IMAP item path; F5 is the hosted scan-only path.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum AutomationQaLane {
+    F4Imap,
+    F5HostedScan,
+}
+
+impl AutomationQaLane {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::F4Imap => "f4-imap",
+            Self::F5HostedScan => "f5-hosted-scan",
+        }
+    }
+
+    fn authority_scope(self) -> &'static str {
+        match self {
+            Self::F4Imap => "reviewed-imap-item",
+            Self::F5HostedScan => "scan-only-hosted-port",
+        }
+    }
+}
+
+/// The interruption states the QA fixture must exercise for each lane.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum AutomationQaInterruption {
+    Challenge,
+    Stop,
+    Restart,
+}
+
+impl AutomationQaInterruption {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Challenge => "challenge",
+            Self::Stop => "stop",
+            Self::Restart => "restart",
+        }
+    }
+
+    fn refusal(self) -> &'static str {
+        match self {
+            Self::Challenge => "operator-challenge-required",
+            Self::Stop => "operator-stop-revoked-authority",
+            Self::Restart => "restart-requires-fresh-authority",
+        }
+    }
+}
+
+/// One fixed-label decision in the F4/F5 challenge matrix.
+///
+/// `may_continue` and `may_delete` are deliberately false for every
+/// interruption. A challenge, stop, or restart must never be interpreted as
+/// permission to keep acting with stale authority.
+#[derive(Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationQaInterruptionDecision {
+    pub lane: &'static str,
+    pub interruption: &'static str,
+    pub authority_scope: &'static str,
+    pub may_continue: bool,
+    pub may_delete: bool,
+    pub refusal: &'static str,
+}
+
+pub fn challenge_stop_restart_decision(
+    lane: AutomationQaLane,
+    interruption: AutomationQaInterruption,
+) -> AutomationQaInterruptionDecision {
+    AutomationQaInterruptionDecision {
+        lane: lane.label(),
+        interruption: interruption.label(),
+        authority_scope: lane.authority_scope(),
+        may_continue: false,
+        may_delete: false,
+        refusal: interruption.refusal(),
+    }
+}
+
+pub fn challenge_stop_restart_matrix() -> Vec<AutomationQaInterruptionDecision> {
+    [AutomationQaLane::F4Imap, AutomationQaLane::F5HostedScan]
+        .into_iter()
+        .flat_map(|lane| {
+            [
+                AutomationQaInterruption::Challenge,
+                AutomationQaInterruption::Stop,
+                AutomationQaInterruption::Restart,
+            ]
+            .into_iter()
+            .map(move |interruption| challenge_stop_restart_decision(lane, interruption))
+        })
+        .collect()
+}
+
 /// What one drive of the inbound drain observed.
 ///
 /// Counts and booleans only. There is no field here that any plaintext, cover
@@ -1666,6 +1763,82 @@ mod tests {
             serde_json::json!(["Default", "QA_Profile", "Work Profile"])
         );
         assert_eq!(encoded.as_object().expect("object").len(), 1);
+    }
+
+    #[test]
+    fn challenge_stop_restart_matrix_across_imap_and_hosted_scan() {
+        let matrix = challenge_stop_restart_matrix();
+        assert_eq!(matrix.len(), 6);
+
+        let expected = [
+            (
+                "f4-imap",
+                "challenge",
+                "reviewed-imap-item",
+                "operator-challenge-required",
+            ),
+            (
+                "f4-imap",
+                "stop",
+                "reviewed-imap-item",
+                "operator-stop-revoked-authority",
+            ),
+            (
+                "f4-imap",
+                "restart",
+                "reviewed-imap-item",
+                "restart-requires-fresh-authority",
+            ),
+            (
+                "f5-hosted-scan",
+                "challenge",
+                "scan-only-hosted-port",
+                "operator-challenge-required",
+            ),
+            (
+                "f5-hosted-scan",
+                "stop",
+                "scan-only-hosted-port",
+                "operator-stop-revoked-authority",
+            ),
+            (
+                "f5-hosted-scan",
+                "restart",
+                "scan-only-hosted-port",
+                "restart-requires-fresh-authority",
+            ),
+        ];
+
+        for (decision, (lane, interruption, authority_scope, refusal)) in
+            matrix.iter().zip(expected)
+        {
+            assert_eq!(decision.lane, lane);
+            assert_eq!(decision.interruption, interruption);
+            assert_eq!(decision.authority_scope, authority_scope);
+            assert_eq!(decision.refusal, refusal);
+            assert!(!decision.may_continue, "{lane} {interruption}");
+            assert!(!decision.may_delete, "{lane} {interruption}");
+        }
+
+        assert_eq!(
+            challenge_stop_restart_decision(
+                AutomationQaLane::F4Imap,
+                AutomationQaInterruption::Restart
+            ),
+            AutomationQaInterruptionDecision {
+                lane: "f4-imap",
+                interruption: "restart",
+                authority_scope: "reviewed-imap-item",
+                may_continue: false,
+                may_delete: false,
+                refusal: "restart-requires-fresh-authority",
+            }
+        );
+
+        let encoded = serde_json::to_string(&matrix).expect("encode");
+        for forbidden in ["account-", "secret", "credential", "profile", "handle"] {
+            assert!(!encoded.contains(forbidden), "{encoded}");
+        }
     }
 
     #[test]
