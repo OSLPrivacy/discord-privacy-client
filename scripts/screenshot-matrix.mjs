@@ -14,7 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const SCRIPTS_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.dirname(SCRIPTS_DIR);
@@ -240,12 +240,50 @@ function pageMetricsExpression() {
   })()`;
 }
 
+export function deterministicPageScript() {
+  return `(() => {
+    const fixedNow = Date.parse('2026-01-01T12:00:00Z');
+    const RealDate = Date;
+    class MatrixDate extends RealDate {
+      constructor(...args) {
+        super(...(args.length ? args : [fixedNow]));
+      }
+      static now() { return fixedNow; }
+    }
+    MatrixDate.UTC = RealDate.UTC;
+    MatrixDate.parse = RealDate.parse;
+    Date = MatrixDate;
+  })();`;
+}
+
+export function stabilizeCaptureExpression() {
+  return `(() => {
+    const style = document.createElement('style');
+    style.setAttribute('data-screenshot-matrix-stability', 'true');
+    style.textContent = [
+      '*,*::before,*::after{',
+      'animation-delay:0s!important;',
+      'animation-duration:0s!important;',
+      'animation-iteration-count:1!important;',
+      'transition-delay:0s!important;',
+      'transition-duration:0s!important;',
+      'scroll-behavior:auto!important;',
+      'caret-color:transparent!important;',
+      '}'
+    ].join('');
+    document.head.append(style);
+  })()`;
+}
+
 async function captureCombo({ cdp, port, page, width, mode }) {
   const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
   const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
   try {
     await cdp.send('Page.enable', {}, sessionId);
     await cdp.send('Runtime.enable', {}, sessionId);
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: deterministicPageScript(),
+    }, sessionId);
     await cdp.send('Emulation.setDeviceMetricsOverride', {
       width,
       height: VIEWPORT_HEIGHT,
@@ -263,6 +301,13 @@ async function captureCombo({ cdp, port, page, width, mode }) {
     await cdp.send('Page.navigate', { url: `http://127.0.0.1:${port}${page.route}` }, sessionId);
     await loaded;
     await delay(mode.javascript ? 650 : 250);
+    const stabilized = await cdp.send('Runtime.evaluate', {
+      expression: stabilizeCaptureExpression(),
+      returnByValue: true,
+    }, sessionId);
+    if (stabilized.exceptionDetails) {
+      throw new Error(stabilized.exceptionDetails.text || 'capture stabilization threw');
+    }
 
     const metricsResult = await cdp.send('Runtime.evaluate', {
       expression: pageMetricsExpression(),
@@ -404,7 +449,12 @@ async function run() {
   }
 }
 
-run().catch((error) => {
-  console.error(`screenshot-matrix: fatal error: ${error.stack || error.message}`);
-  process.exit(1);
-});
+const isCliEntrypoint = process.argv[1] !== undefined
+  && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+
+if (isCliEntrypoint) {
+  run().catch((error) => {
+    console.error(`screenshot-matrix: fatal error: ${error.stack || error.message}`);
+    process.exit(1);
+  });
+}
