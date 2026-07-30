@@ -923,6 +923,63 @@ fn verify_register_self_snowflake_ownership_proof(
     Ok(())
 }
 
+#[cfg(test)]
+mod register_self_snowflake_ownership_tests {
+    use super::*;
+
+    #[test]
+    fn register_self_snowflake_requires_account_ownership_proof() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let state = AppState::new();
+        let identity = generate_identity("native-register-owner".to_string());
+        state.install_identity(identity.clone());
+        let snowflake = "900000000000000031".to_string();
+
+        let err =
+            cmd_osl_register_self_snowflake_with_dir(&state, snowflake.clone(), None, dir.path())
+                .expect_err("snowflake registration without ownership proof must refuse");
+        assert!(err.contains("account ownership proof required"), "{err}");
+        assert!(
+            !dir.path().join("identity.json").exists(),
+            "refused registration must not persist a newly bound identity"
+        );
+        assert_eq!(
+            state
+                .identity
+                .lock()
+                .unwrap()
+                .as_ref()
+                .and_then(|id| id.discord_snowflake.clone()),
+            None
+        );
+
+        let mut challenge = keystore::ProofChallenge::new(
+            [0x31; keystore::PROOF_CHALLENGE_NONCE_BYTES],
+            snowflake.clone(),
+            identity.user_id.clone(),
+            1,
+            u64::MAX,
+        )
+        .expect("challenge");
+        let proof =
+            keystore::AccountOwnershipProof::from_challenge(&identity, &mut challenge, 2).unwrap();
+
+        verify_register_self_snowflake_ownership_proof(&state, &snowflake, Some(&proof))
+            .expect("valid proof should satisfy the command's ownership verifier");
+
+        let mismatch = verify_register_self_snowflake_ownership_proof(
+            &state,
+            "900000000000000032",
+            Some(&proof),
+        )
+        .expect_err("a proof for one account must not authorize another account");
+        assert!(
+            mismatch.contains("does not match account"),
+            "unexpected mismatch refusal: {mismatch}"
+        );
+    }
+}
+
 fn run_verify(state: &AppState) -> Result<(), String> {
     match verify_and_persist_peer_map_self_entry(state) {
         Ok((_snowflake, repaired)) => {
@@ -1554,6 +1611,7 @@ pub struct StatusResponse {
     pub user_id: Option<String>,
     pub x25519_public_b64: Option<String>,
     pub identity_at_rest_sealer_label: String,
+    pub at_rest_sealer_label: String,
     pub ui_session_encryption_key_b64: Option<String>,
 }
 
@@ -1571,6 +1629,7 @@ impl std::fmt::Debug for StatusResponse {
                 "identity_at_rest_sealer_label",
                 &self.identity_at_rest_sealer_label,
             )
+            .field("at_rest_sealer_label", &self.at_rest_sealer_label)
             .field(
                 "ui_session_encryption_key_b64",
                 &self
@@ -1582,19 +1641,21 @@ impl std::fmt::Debug for StatusResponse {
     }
 }
 
-const UI_SESSION_KEY_INFO: &[u8] = b"OSL-UI-session-encryption-key-v1";
+const UI_SESSION_ENCRYPTION_KEY_INFO: &[u8] = b"OSL/UI-session-encryption-key/v1";
 
 fn derive_ui_session_encryption_key(identity: &keystore::Identity) -> IpcResult<[u8; 32]> {
-    let mut ikm = Vec::with_capacity(
-        identity.x25519_secret.as_bytes().len() + identity.ed25519_secret.as_bytes().len(),
-    );
-    ikm.extend_from_slice(identity.x25519_secret.as_bytes());
-    ikm.extend_from_slice(identity.ed25519_secret.as_bytes());
     Ok(hkdf::derive_32(
-        b"OSL IPC UI session",
-        &ikm,
-        UI_SESSION_KEY_INFO,
+        identity.ed25519_public.as_bytes(),
+        identity.x25519_secret.as_bytes(),
+        UI_SESSION_ENCRYPTION_KEY_INFO,
     )?)
+}
+
+#[derive(Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UiSessionEncryptionKeyDto {
+    pub key_b64: String,
+    pub derivation: String,
 }
 
 pub fn cmd_status(state: &AppState) -> StatusResponse {
@@ -1607,20 +1668,24 @@ pub fn cmd_status(state: &AppState) -> StatusResponse {
         user_id: id_ref.map(|i| i.user_id.clone()),
         x25519_public_b64: id_ref.map(|i| STANDARD.encode(i.x25519_public.as_bytes())),
         identity_at_rest_sealer_label: sealer.method_label().to_string(),
+        at_rest_sealer_label: sealer.method_label().to_string(),
         ui_session_encryption_key_b64: id_ref
             .and_then(|i| derive_ui_session_encryption_key(i).ok())
             .map(|key| STANDARD.encode(key)),
     }
 }
 
-pub fn cmd_osl_ui_session_encryption_key(state: &AppState) -> IpcResult<String> {
+pub fn cmd_osl_ui_session_encryption_key(state: &AppState) -> IpcResult<UiSessionEncryptionKeyDto> {
     let id_guard = state.identity.lock().expect("identity mutex poisoned");
     let identity = id_guard.as_ref().ok_or(IpcError::IdentityMissing)?;
-    Ok(STANDARD.encode(derive_ui_session_encryption_key(identity)?))
+    Ok(UiSessionEncryptionKeyDto {
+        key_b64: STANDARD.encode(derive_ui_session_encryption_key(identity)?),
+        derivation: "loaded_identity_v1".to_string(),
+    })
 }
 
 #[cfg(test)]
-mod identity_status_tests {
+mod identity_status_and_ui_session_tests {
     use super::*;
 
     #[test]
@@ -1641,18 +1706,19 @@ mod identity_status_tests {
         let from_status = cmd_status(&state)
             .ui_session_encryption_key_b64
             .expect("status includes UI session key when identity is loaded");
-        assert_eq!(from_command, expected);
+        assert_eq!(from_command.key_b64, expected);
+        assert_eq!(from_command.derivation, "loaded_identity_v1");
         assert_eq!(from_status, expected);
-        assert_eq!(STANDARD.decode(&from_command).unwrap().len(), 32);
+        assert_eq!(STANDARD.decode(&from_command.key_b64).unwrap().len(), 32);
 
         let other = keystore::generate_identity("ui-session-owner".to_string());
         assert_ne!(
-            from_command,
+            from_command.key_b64,
             STANDARD.encode(derive_ui_session_encryption_key(&other).unwrap()),
             "a key not derived from the loaded identity would fail this comparison"
         );
         assert!(
-            !format!("{:?}", cmd_status(&state)).contains(&from_command),
+            !format!("{:?}", cmd_status(&state)).contains(&from_command.key_b64),
             "StatusResponse Debug must not expose the UI session key"
         );
     }
@@ -1663,12 +1729,17 @@ mod identity_status_tests {
         let unloaded = cmd_status(&state);
         let expected_label = select_best_sealer().method_label().to_string();
         assert_eq!(unloaded.identity_at_rest_sealer_label, expected_label);
+        assert_eq!(unloaded.at_rest_sealer_label, expected_label);
         assert!(!unloaded.identity_at_rest_sealer_label.is_empty());
 
         state.install_identity(keystore::generate_identity("sealer-status".to_string()));
         let loaded = cmd_status(&state);
         assert_eq!(
             loaded.identity_at_rest_sealer_label,
+            select_best_sealer().method_label()
+        );
+        assert_eq!(
+            loaded.at_rest_sealer_label,
             select_best_sealer().method_label()
         );
         assert_ne!(loaded.identity_at_rest_sealer_label, keystore::METHOD_NOOP);
@@ -3516,7 +3587,7 @@ mod rn_send_selection_tests {
     }
 
     #[test]
-    fn verify_peer_capabilities_feeds_pre_send_select_wire_version() {
+    fn send_selection_verify_peer_capabilities_feeds_pre_send_select_wire_version() {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let store = crate::wire_rn::RnSessionStore::new(dir.path().join("rn"));
         let peer_identity = keystore::generate_identity("b24-peer".to_string());
@@ -3607,9 +3678,14 @@ mod rn_send_selection_tests {
     #[test]
     fn rn_session_store_uses_select_best_sealer_for_at_rest_sealing() {
         let state = AppState::new();
+        let selected = select_best_sealer();
         assert_eq!(
             state.rn_session_sealer.method_label(),
-            select_best_sealer().method_label()
+            selected.method_label()
+        );
+        assert_eq!(
+            state.rn_session_sealer.requires_insecure_banner(),
+            selected.requires_insecure_banner()
         );
         assert!(
             !state.rn_session_sealer.requires_insecure_banner(),
@@ -3622,25 +3698,29 @@ mod rn_send_selection_tests {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let store = crate::wire_rn::RnSessionStore::new(dir.path().join("rn"));
         let sealer = keystore::sealer::MemorySealer::new();
-        let peer = [0xB5; 32];
+        let peer = [0x59u8; 32];
 
-        assert_eq!(
-            select_rn_wire_path(
-                &crate::wire_rn::RnPeerPin::UNKNOWN,
-                keystore::client::PeerCapabilities::Absent,
-                crate::wire_rn::RnPolicy::Opportunistic
-            ),
-            Ok(RnWirePath::LegacyV3)
-        );
-        let rn_err = encrypt_rn_content_send(
+        let selected = select_rn_wire_path(
+            &crate::wire_rn::RnPeerPin::UNKNOWN,
+            keystore::client::PeerCapabilities::Absent,
+            crate::wire_rn::RnPolicy::Opportunistic,
+        )
+        .expect("unpinned absent-capability peer stays on legacy path");
+        assert_eq!(selected, RnWirePath::LegacyV3);
+
+        let err = encrypt_rn_content_send(
             &store,
             &sealer,
             "900000000000000059",
             &peer,
             b"only the RN helper may reach send_rn",
         )
-        .expect_err("direct RN helper reaches send_rn and is stopped by the disabled gate");
-        assert!(rn_err.contains("OSL-RN wire-in is disabled"));
+        .expect_err("direct RN send seam must refuse while the compile gate is off");
+        assert!(err.contains("OSL-RN wire-in is disabled"), "{err}");
+        assert!(
+            !crate::wire_rn::RN_WIRE_IN_ENABLED,
+            "commands.rs must not enable the RN compile fuse"
+        );
     }
 }
 
@@ -4475,6 +4555,83 @@ mod rn_first_contact_command_tests {
     }
 
     #[test]
+    fn first_contact_prekey_bundle_signature_maps_to_rn_bundle() {
+        let peer = keystore::generate_identity("peer-b34".to_string());
+        let (_spk_secret, spk_public) = crypto::x25519::generate_keypair();
+        let signature = crypto::ed25519::sign(&peer.ed25519_secret, spk_public.as_bytes());
+        let bundle = PrekeyBundleResponse {
+            user_id: peer.user_id.clone(),
+            ik_x25519_pub: STANDARD.encode(peer.x25519_public.as_bytes()),
+            ik_ed25519_pub: STANDARD.encode(peer.ed25519_public.as_bytes()),
+            ik_mlkem768_pub: STANDARD.encode(peer.mlkem_public_bytes),
+            spk_pub: STANDARD.encode(spk_public.as_bytes()),
+            spk_signature: STANDARD.encode(signature.as_bytes()),
+            spk_rotated_at: "2026-07-30T00:00:00Z".to_string(),
+            opk: None,
+            remaining_opk_count: 7,
+            ik_ratchet_initial_pub: None,
+        };
+
+        verify_rn_prekey_bundle_signature(&bundle)
+            .expect("first-contact prekey bundle must be authenticated by the peer identity");
+        let peer_bundle = rn_peer_bundle_from_prekey_response(&bundle)
+            .expect("verified response maps to RN bundle");
+        assert_eq!(
+            peer_bundle.identity.as_bytes(),
+            peer.x25519_public.as_bytes()
+        );
+
+        let mut forged = bundle;
+        forged.spk_pub = STANDARD.encode([0x34u8; 32]);
+        assert!(
+            verify_rn_prekey_bundle_signature(&forged).is_err(),
+            "a substituted fetched prekey must be refused before first-contact encryption"
+        );
+    }
+
+    #[test]
+    fn first_contact_verify_peer_capabilities_feeds_pre_send_select_wire_version() {
+        let peer = keystore::generate_identity("peer-b24".to_string());
+        let response = PrekeyBundleResponse {
+            user_id: peer.user_id.clone(),
+            ik_x25519_pub: STANDARD.encode(peer.x25519_public.as_bytes()),
+            ik_ed25519_pub: STANDARD.encode(peer.ed25519_public.as_bytes()),
+            ik_mlkem768_pub: STANDARD.encode(peer.mlkem_public_bytes),
+            spk_pub: STANDARD.encode(peer.x25519_public.as_bytes()),
+            spk_signature: STANDARD.encode(
+                crypto::ed25519::sign(&peer.ed25519_secret, peer.x25519_public.as_bytes())
+                    .as_bytes(),
+            ),
+            spk_rotated_at: "2026-07-30T00:00:00Z".to_string(),
+            opk: None,
+            remaining_opk_count: 0,
+            ik_ratchet_initial_pub: None,
+        };
+        let caps = PeerCapabilities::Verified(RN_CAP_WIRE_RN);
+        verify_rn_prekey_bundle_signature(&response).expect("capability peer fixture is signed");
+
+        let selected = select_rn_wire_path(
+            &crate::wire_rn::RnPeerPin::UNKNOWN,
+            caps,
+            crate::wire_rn::RnPolicy::Opportunistic,
+        )
+        .expect_err(
+            "verified RN capability must feed selection and refuse downgrade while gate is off",
+        );
+        assert!(selected.contains("wire-in is disabled"), "{selected}");
+
+        assert_eq!(
+            select_rn_wire_path(
+                &crate::wire_rn::RnPeerPin::UNKNOWN,
+                PeerCapabilities::Absent,
+                crate::wire_rn::RnPolicy::Opportunistic,
+            ),
+            Ok(RnWirePath::LegacyV3),
+            "without verified capabilities the same pre-send selector stays legacy"
+        );
+    }
+
+    #[test]
     fn full_opportunistic_rn_send_flow_stores_selects_encrypts_and_persists() {
         let (_dir, store) = fresh_rn_store();
         let sealer = MemorySealer::new();
@@ -4512,7 +4669,7 @@ mod rn_first_contact_command_tests {
     }
 
     #[test]
-    fn first_contact_handshake_fetches_prekey_bundle() {
+    fn first_contact_handshake_fetches_prekey_bundle_from_keyserver() {
         let local = keystore::generate_identity("b34-local".to_string());
         let peer = keystore::generate_identity("b34-peer".to_string());
         let prekeys =
@@ -4597,6 +4754,20 @@ mod rn_first_contact_command_tests {
         assert!(request.starts_with("GET /v1/prekey-bundle/b34-peer?"));
         assert!(request.contains("requester_id=b34-local"));
         assert!(request.contains("recipient_id=b34-peer"));
+    }
+
+    #[test]
+    fn rn_first_contact_state_uses_select_best_sealer_for_at_rest_sealing() {
+        let state = AppState::new();
+        let selected = keystore::select_best_sealer();
+        assert_eq!(
+            state.rn_session_sealer.method_label(),
+            selected.method_label()
+        );
+        assert_eq!(
+            state.rn_session_sealer.requires_insecure_banner(),
+            selected.requires_insecure_banner()
+        );
     }
 
     #[test]
@@ -4740,6 +4911,38 @@ mod ratchet_policy_decision_tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn rn_dispatch_exhaustively_has_no_encrypt_v4_send_call_site() {
+        for scope in [
+            crate::scope::Scope::dm("peer"),
+            crate::scope::Scope::gc("group"),
+            crate::scope::Scope::server_channel("server", "channel"),
+            crate::scope::Scope::server_full("server"),
+        ] {
+            for sender_keys_enabled in [false, true] {
+                let decision = ratchet_policy_decision(&scope, 1, sender_keys_enabled);
+                assert_ne!(
+                    decision,
+                    RatchetPolicyDecision::LegacyV4Dm,
+                    "send dispatch must never select the retired v4 DM encrypt path"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dm_send_policy_stays_legacy_without_hardcoded_v4_flag() {
+        assert_eq!(
+            ratchet_policy_decision(&crate::scope::Scope::dm("peer"), 1, false),
+            RatchetPolicyDecision::LegacyV3
+        );
+        assert_eq!(
+            ratchet_policy_decision(&crate::scope::Scope::dm("peer"), 1, true),
+            RatchetPolicyDecision::LegacyV3,
+            "enabling sender keys must not resurrect the hardcoded v4 DM branch"
+        );
     }
 }
 
@@ -5617,6 +5820,18 @@ where
     produce_link()
 }
 
+fn produce_view_once_link_after_wrapped_key_post<P, L>(
+    post_wrapped_key: P,
+    deliver_link: L,
+) -> Result<String, String>
+where
+    P: FnOnce() -> Result<(), String>,
+    L: FnOnce() -> Result<String, String>,
+{
+    post_wrapped_key()?;
+    deliver_link()
+}
+
 /// Phase 8d: one-shot open. Splits the file into (cover, filename,
 /// payload), decrypts the cover via the existing v=2 path, recovers
 /// the per-attachment AEAD key from the envelope, then decrypts the
@@ -5776,6 +5991,7 @@ pub fn cmd_osl_open_attachment_v2(
 #[cfg(all(test))]
 mod wrapped_key_open_tests {
     use super::*;
+    use std::cell::Cell;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::mpsc;
@@ -5813,6 +6029,42 @@ mod wrapped_key_open_tests {
         *state.identity.lock().unwrap() = Some(identity);
         *state.keyserver.lock().unwrap() = Some(KeyServerClient::new(base_url).unwrap());
         (state, rx)
+    }
+
+    #[test]
+    fn view_once_send_orders_wrapped_key_before_delivering_link() {
+        let order = Cell::new(0u8);
+        let link = produce_view_once_link_after_wrapped_key_post(
+            || {
+                assert_eq!(order.get(), 0, "wrapped-key post must run first");
+                order.set(1);
+                Ok(())
+            },
+            || {
+                assert_eq!(
+                    order.get(),
+                    1,
+                    "link delivery must wait for wrapped-key post"
+                );
+                order.set(2);
+                Ok("osl-view-once://content/content-a".to_string())
+            },
+        )
+        .expect("successful wrapped-key post should allow link delivery");
+        assert_eq!(link, "osl-view-once://content/content-a");
+        assert_eq!(order.get(), 2);
+
+        let delivered = Cell::new(false);
+        let err = produce_view_once_link_after_wrapped_key_post(
+            || Err("wrapped-key post refused".to_string()),
+            || {
+                delivered.set(true);
+                Ok("must-not-deliver".to_string())
+            },
+        )
+        .expect_err("link must not be delivered if the wrapped-key post fails");
+        assert_eq!(err, "wrapped-key post refused");
+        assert!(!delivered.get());
     }
 
     #[test]
@@ -5912,7 +6164,7 @@ mod wrapped_key_open_tests {
     }
 
     #[test]
-    fn view_once_send_posts_wrapped_key_before_delivering_link() {
+    fn view_once_send_posts_real_wrapped_key_before_delivering_link() {
         let sender = keystore::generate_identity("view-once-sender".to_string());
         let response_body = serde_json::json!({ "content_id": "view-once-content" }).to_string();
         let (state, rx) = state_with_wrapped_key_server(sender, response_body);
@@ -6573,6 +6825,7 @@ mod rn_inbound_unknown_tests {
     use super::*;
     use keystore::sealer::MemorySealer;
     use osl_ratchet_next::test_support::{fresh_bundle, seeded_rng};
+    use std::sync::atomic::Ordering;
     use tempfile::TempDir;
 
     fn identity_from_rn_prekeys(
@@ -6644,6 +6897,88 @@ mod rn_inbound_unknown_tests {
             *alice_identity_pub.as_bytes(),
             MemorySealer::new(),
         )
+    }
+
+    struct RnCommandRoundTripFixture {
+        alice_state: AppState,
+        bob_state: AppState,
+        alice_store: crate::wire_rn::RnSessionStore,
+        bob_store: crate::wire_rn::RnSessionStore,
+        sealer: MemorySealer,
+        alice_peer: [u8; 32],
+        bob_peer: [u8; 32],
+        _alice_dir: TempDir,
+        _bob_dir: TempDir,
+    }
+
+    fn rn_command_round_trip_fixture() -> RnCommandRoundTripFixture {
+        let mut rng = seeded_rng(0xB77);
+        let (bob_prekeys, mut bob_bundle) = fresh_bundle(&mut rng);
+        bob_bundle.one_time_prekey = None;
+        let bob_peer = *bob_bundle.identity.as_bytes();
+        let bob_ek = bob_bundle.pq_prekey.to_bytes();
+        let (alice_identity, alice_identity_public) =
+            osl_ratchet_next::primitives::x25519_keypair(&mut rng);
+        let alice_peer = *alice_identity_public.as_bytes();
+
+        let alice_dir = TempDir::new().expect("alice tempdir");
+        let bob_dir = TempDir::new().expect("bob tempdir");
+        let alice_store = crate::wire_rn::RnSessionStore::new(alice_dir.path().join("rn"));
+        let bob_store = crate::wire_rn::RnSessionStore::new(bob_dir.path().join("rn"));
+        let sealer = MemorySealer::new();
+        let alice_state = AppState::new();
+        let bob_state = AppState::new();
+        alice_state
+            .rn_wire_in_enabled
+            .store(true, Ordering::Release);
+        bob_state.rn_wire_in_enabled.store(true, Ordering::Release);
+
+        crate::wire_rn::initiate_and_persist_with_sealer(
+            &alice_store,
+            &sealer,
+            &alice_identity,
+            alice_identity_public.as_bytes(),
+            &bob_bundle,
+            keystore::client::PeerCapabilities::Verified(keystore::client::RN_CAP_WIRE_RN),
+            &bob_ek,
+            crate::wire_rn::RN_CONTEXT_DISCORD_MANUAL,
+            osl_ratchet_next::SessionParams::default(),
+        )
+        .expect("alice initiates persisted RN session");
+
+        let bootstrap = crate::wire_rn::send_rn_for_state(
+            &alice_state,
+            &alice_store,
+            &sealer,
+            &bob_peer,
+            crate::wire_v2::MSG_TYPE_CONTENT,
+            b"bootstrap",
+        )
+        .expect("alice sends bootstrap through state-gated send");
+        let (_session, opened) = crate::wire_rn::accept_and_persist_with_sealer(
+            &bob_store,
+            &sealer,
+            &bob_prekeys,
+            bob_prekeys.identity.public().as_bytes(),
+            &bob_ek,
+            &bootstrap,
+            crate::wire_rn::RN_CONTEXT_DISCORD_MANUAL,
+            osl_ratchet_next::SessionParams::default(),
+        )
+        .expect("bob accepts bootstrap");
+        assert_eq!(opened.plaintext, b"bootstrap");
+
+        RnCommandRoundTripFixture {
+            alice_state,
+            bob_state,
+            alice_store,
+            bob_store,
+            sealer,
+            alice_peer,
+            bob_peer,
+            _alice_dir: alice_dir,
+            _bob_dir: bob_dir,
+        }
     }
 
     #[test]
@@ -6834,6 +7169,36 @@ mod rn_inbound_unknown_tests {
     }
 
     #[test]
+    fn commands_rn_state_gated_encrypt_decrypt_single_process_round_trip() {
+        assert!(
+            !crate::wire_rn::RN_WIRE_IN_ENABLED,
+            "test must not enable the production RN compile fuse"
+        );
+        let fixture = rn_command_round_trip_fixture();
+
+        let wire = crate::wire_rn::send_rn_for_state(
+            &fixture.alice_state,
+            &fixture.alice_store,
+            &fixture.sealer,
+            &fixture.bob_peer,
+            0x41,
+            b"command rn round trip",
+        )
+        .expect("state-gated RN send should encrypt from persisted session");
+        let opened = crate::wire_rn::receive_rn_for_state(
+            &fixture.bob_state,
+            &fixture.bob_store,
+            &fixture.sealer,
+            &fixture.alice_peer,
+            &wire,
+        )
+        .expect("state-gated RN receive should decrypt from persisted session");
+
+        assert_eq!(opened.msg_type, 0x41);
+        assert_eq!(opened.plaintext, b"command rn round trip");
+    }
+
+    #[test]
     fn rn_decrypt_path_delayed_out_of_order_delivery_succeeds() {
         let mut rng = seeded_rng(0xB93);
         let (bob_prekeys, bob_bundle) = fresh_bundle(&mut rng);
@@ -6933,6 +7298,67 @@ mod rn_inbound_unknown_tests {
         .expect("receive delayed m2");
         assert_eq!(first.plaintext, b"one");
         assert_eq!(second.plaintext, b"two");
+    }
+
+    #[test]
+    fn rn_state_gated_delayed_out_of_order_delivery_succeeds() {
+        let fixture = rn_command_round_trip_fixture();
+        let wire_1 = crate::wire_rn::send_rn_for_state(
+            &fixture.alice_state,
+            &fixture.alice_store,
+            &fixture.sealer,
+            &fixture.bob_peer,
+            0x51,
+            b"delayed one",
+        )
+        .expect("send m1");
+        let wire_2 = crate::wire_rn::send_rn_for_state(
+            &fixture.alice_state,
+            &fixture.alice_store,
+            &fixture.sealer,
+            &fixture.bob_peer,
+            0x52,
+            b"delayed two",
+        )
+        .expect("send m2");
+        let wire_3 = crate::wire_rn::send_rn_for_state(
+            &fixture.alice_state,
+            &fixture.alice_store,
+            &fixture.sealer,
+            &fixture.bob_peer,
+            0x53,
+            b"delivered first",
+        )
+        .expect("send m3");
+
+        let delivered_first = crate::wire_rn::receive_rn_for_state(
+            &fixture.bob_state,
+            &fixture.bob_store,
+            &fixture.sealer,
+            &fixture.alice_peer,
+            &wire_3,
+        )
+        .expect("receive m3 first");
+        assert_eq!(delivered_first.plaintext, b"delivered first");
+
+        let delayed_1 = crate::wire_rn::receive_rn_for_state(
+            &fixture.bob_state,
+            &fixture.bob_store,
+            &fixture.sealer,
+            &fixture.alice_peer,
+            &wire_1,
+        )
+        .expect("receive delayed m1 from skipped-key cache");
+        let delayed_2 = crate::wire_rn::receive_rn_for_state(
+            &fixture.bob_state,
+            &fixture.bob_store,
+            &fixture.sealer,
+            &fixture.alice_peer,
+            &wire_2,
+        )
+        .expect("receive delayed m2 from skipped-key cache");
+        assert_eq!(delayed_1.plaintext, b"delayed one");
+        assert_eq!(delayed_2.plaintext, b"delayed two");
     }
 }
 
@@ -9423,6 +9849,223 @@ pub fn cmd_osl_self_safety_number(state: &AppState) -> Result<String, String> {
     crate::tofu::safety_number(&bundle).map_err(str::to_owned)
 }
 
+#[cfg(test)]
+mod key_change_command_tests {
+    use super::*;
+    use crate::peer_map::PeerEntry;
+    use crate::tofu::KeyBundle;
+
+    const PEER: &str = "900000000000000076";
+
+    fn bundle_from_identity(identity: &keystore::Identity) -> KeyBundle {
+        KeyBundle {
+            ed25519_pub: STANDARD.encode(identity.ed25519_public.as_bytes()),
+            x25519_pub: STANDARD.encode(identity.x25519_public.as_bytes()),
+            mlkem768_pub: STANDARD.encode(identity.mlkem_public_bytes),
+            ratchet_initial_pub: identity
+                .ratchet_initial_pub
+                .as_ref()
+                .map(|p| STANDARD.encode(p.as_bytes())),
+        }
+    }
+
+    fn fetched_pubkeys(identity: &keystore::Identity) -> keystore::client::PubkeysResponse {
+        let x25519 = STANDARD.encode(identity.x25519_public.as_bytes());
+        let ed25519 = STANDARD.encode(identity.ed25519_public.as_bytes());
+        let mlkem768 = STANDARD.encode(identity.mlkem_public_bytes);
+        let ratchet = identity
+            .ratchet_initial_pub
+            .as_ref()
+            .map(|p| STANDARD.encode(p.as_bytes()));
+        let reg_msg = keystore::client::reg_msg_with_capabilities(
+            &identity.user_id,
+            &x25519,
+            &ed25519,
+            &mlkem768,
+            ratchet.as_deref(),
+            0,
+        );
+        let reg_sig = crypto::ed25519::sign(&identity.ed25519_secret, &reg_msg);
+        keystore::client::PubkeysResponse {
+            user_id: identity.user_id.clone(),
+            ik_x25519_pub: x25519,
+            ik_ed25519_pub: ed25519,
+            ik_mlkem768_pub: mlkem768,
+            registered_at: "2026-07-30T00:00:00Z".to_string(),
+            last_rotated_at: None,
+            ik_ratchet_initial_pub: ratchet,
+            rn_capabilities: Some(0),
+            registration_sig: Some(STANDARD.encode(reg_sig.as_bytes())),
+            identity_scheme: None,
+            identity_bundle_version: None,
+            identity_revision: None,
+            ik_root_ed25519_pub: None,
+            identity_bundle_proof_sig: None,
+        }
+    }
+
+    fn install_pending_alert(state: &AppState, peer: &str, old: &KeyBundle, new: &KeyBundle) {
+        state.key_change_alerts.lock().unwrap().insert(
+            peer.to_string(),
+            crate::state::KeyChangeAlert {
+                discord_id: peer.to_string(),
+                osl_user_id: Some("peer-osl-user".to_string()),
+                old_ed25519_pub: old.ed25519_pub.clone(),
+                new_ed25519_pub: new.ed25519_pub.clone(),
+                new_safety_number: crate::tofu::safety_number(new).unwrap(),
+                first_observed: "2026-07-30T00:00:00Z".to_string(),
+                pending_bundle: new.clone(),
+            },
+        );
+    }
+
+    #[test]
+    fn accept_key_change_requires_verified_safety_number() {
+        let state = AppState::new();
+        let old_identity = generate_identity("old-key-a76".to_string());
+        let new_identity = generate_identity("new-key-a76".to_string());
+        let old = bundle_from_identity(&old_identity);
+        let new = bundle_from_identity(&new_identity);
+        state.peer_map.lock().unwrap().insert(
+            PEER.to_string(),
+            PeerEntry {
+                tofu_key_bundle: Some(old.clone()),
+                tofu_ed25519_pub: Some(old.ed25519_pub.clone()),
+                pubkey: Some(old.x25519_pub.clone()),
+                ik_mlkem768_pub: Some(old.mlkem768_pub.clone()),
+                ..PeerEntry::default()
+            },
+        );
+        install_pending_alert(&state, PEER, &old, &new);
+
+        let err = cmd_osl_accept_key_change(
+            &state,
+            PEER.to_string(),
+            crate::trust_ceremony_proof::TrustCeremonyProof::new(
+                "00000 00000 00000 00000 00000 00000",
+            ),
+        )
+        .expect_err("mismatched safety number must refuse acceptance");
+        assert!(err.contains("safety number does not match"), "{err}");
+        assert_eq!(
+            state
+                .peer_map
+                .lock()
+                .unwrap()
+                .get(PEER)
+                .and_then(|entry| entry.pubkey.clone()),
+            Some(old.x25519_pub.clone())
+        );
+        assert!(state.key_change_alerts.lock().unwrap().contains_key(PEER));
+
+        let safety = crate::tofu::safety_number(&new).unwrap();
+        cmd_osl_accept_key_change(
+            &state,
+            PEER.to_string(),
+            crate::trust_ceremony_proof::TrustCeremonyProof::new(safety),
+        )
+        .expect("matching safety number should authorize adopting the pending bundle");
+        let pm = state.peer_map.lock().unwrap();
+        let accepted = pm.get(PEER).unwrap();
+        assert_eq!(accepted.pubkey.as_deref(), Some(new.x25519_pub.as_str()));
+        assert_eq!(
+            accepted.ik_mlkem768_pub.as_deref(),
+            Some(new.mlkem768_pub.as_str())
+        );
+        drop(pm);
+        assert!(!state.key_change_alerts.lock().unwrap().contains_key(PEER));
+    }
+
+    #[test]
+    fn keyserver_cannot_replace_encryption_keys_under_an_unchanged_identity() {
+        let state = AppState::new();
+        let old_identity = generate_identity("old-key-a79".to_string());
+        let changed_identity = generate_identity("changed-key-a79".to_string());
+        let old = bundle_from_identity(&old_identity);
+        state.peer_map.lock().unwrap().insert(
+            PEER.to_string(),
+            PeerEntry {
+                osl_user_id: Some(changed_identity.user_id.clone()),
+                tofu_key_bundle: Some(old.clone()),
+                tofu_ed25519_pub: Some(old.ed25519_pub.clone()),
+                pubkey: Some(old.x25519_pub.clone()),
+                ik_mlkem768_pub: Some(old.mlkem768_pub.clone()),
+                ..PeerEntry::default()
+            },
+        );
+
+        let changed_fetch = fetched_pubkeys(&changed_identity);
+        populate_peer_from_fetch_response(&state, PEER, &changed_fetch)
+            .expect("valid changed keyserver bundle should raise an alert, not replace keys");
+
+        let pm = state.peer_map.lock().unwrap();
+        let entry = pm.get(PEER).unwrap();
+        assert_eq!(entry.pubkey.as_deref(), Some(old.x25519_pub.as_str()));
+        assert_eq!(
+            entry.ik_mlkem768_pub.as_deref(),
+            Some(old.mlkem768_pub.as_str())
+        );
+        assert_ne!(
+            entry.pubkey.as_deref(),
+            Some(changed_fetch.ik_x25519_pub.as_str())
+        );
+        drop(pm);
+        assert!(
+            state.key_change_alerts.lock().unwrap().contains_key(PEER),
+            "changed keyserver bundle must be modeled as a pending key-change alert"
+        );
+    }
+
+    #[test]
+    fn key_change_alert_list_accept_decline_and_mismatch_refusal_are_wired() {
+        let state = AppState::new();
+        let old_a = bundle_from_identity(&generate_identity("old-a96-a".to_string()));
+        let new_a = bundle_from_identity(&generate_identity("new-a96-a".to_string()));
+        let old_b = bundle_from_identity(&generate_identity("old-a96-b".to_string()));
+        let new_b = bundle_from_identity(&generate_identity("new-a96-b".to_string()));
+        install_pending_alert(&state, "peer-b", &old_b, &new_b);
+        install_pending_alert(&state, "peer-a", &old_a, &new_a);
+
+        let listed = cmd_osl_list_key_change_alerts(&state).unwrap();
+        assert_eq!(
+            listed
+                .iter()
+                .map(|alert| alert.discord_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["peer-a", "peer-b"]
+        );
+
+        let mismatch = cmd_osl_accept_key_change(
+            &state,
+            "peer-a".to_string(),
+            crate::trust_ceremony_proof::TrustCeremonyProof::new(
+                "11111 11111 11111 11111 11111 11111",
+            ),
+        )
+        .expect_err("accept path must verify the pending safety number");
+        assert!(
+            mismatch.contains("safety number does not match"),
+            "{mismatch}"
+        );
+        assert_eq!(cmd_osl_list_key_change_alerts(&state).unwrap().len(), 2);
+
+        cmd_osl_decline_key_change(&state, "peer-a".to_string())
+            .expect("decline should clear only the selected pending alert");
+        let remaining = cmd_osl_list_key_change_alerts(&state).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].discord_id, "peer-b");
+
+        let safety_b = crate::tofu::safety_number(&new_b).unwrap();
+        cmd_osl_accept_key_change(
+            &state,
+            "peer-b".to_string(),
+            crate::trust_ceremony_proof::TrustCeremonyProof::new(safety_b),
+        )
+        .expect("matching ceremony proof should accept remaining alert");
+        assert!(cmd_osl_list_key_change_alerts(&state).unwrap().is_empty());
+    }
+}
+
 /// True when this string is shaped like a Discord snowflake and therefore can
 /// never resolve as a keyserver identity (migration 0029 refuses them).
 pub fn is_discord_snowflake_shaped(value: &str) -> bool {
@@ -9684,9 +10327,121 @@ pub fn cmd_osl_apply_burn(
     Ok(())
 }
 
+#[cfg(test)]
+mod burn_wrapped_key_command_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static CONFIG_DIR_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn burn_posts_control_inbox_and_deletes_wrapped_keys() {
+        let _guard = CONFIG_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        const SELF: &str = "900000000000000060";
+        const PEER: &str = "900000000000000061";
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        keystore::set_active_account_dir(Some(dir.path().join("account")));
+        let store = MessageStore::open(dir.path(), &[0x60u8; 32]).expect("message store");
+        store
+            .put(&StoredMessage {
+                discord_message_id: "burn-msg-1".to_string(),
+                channel_id: PEER.to_string(),
+                sender_discord_id: SELF.to_string(),
+                sender_osl_user_id: "self-osl".to_string(),
+                plaintext: "this must be shredded".to_string(),
+                decrypted_at: 1,
+                burned: false,
+            })
+            .expect("store message");
+
+        let state = AppState::new();
+        let mut identity = generate_identity("burn-self".to_string());
+        identity.discord_snowflake = Some(SELF.to_string());
+        state.install_identity(identity);
+        *state.message_store.lock().unwrap() = Some(store);
+
+        let burn_result = cmd_osl_apply_burn(
+            &state,
+            crate::scope::ScopeInput::from(&crate::scope::Scope::dm(PEER)),
+        );
+        keystore::set_active_account_dir(None);
+        burn_result.expect("burn should apply locally");
+
+        let guard = state.message_store.lock().unwrap();
+        let store = guard.as_ref().unwrap();
+        assert_eq!(
+            store.get("burn-msg-1").expect("read burned row"),
+            None,
+            "burn must make the local wrapped-key protected row unreadable"
+        );
+        drop(guard);
+
+        let pm = state.peer_map.lock().unwrap();
+        let self_entry = pm.get(SELF).expect("self burn entry");
+        assert!(
+            self_entry
+                .burned_scopes
+                .iter()
+                .any(|scope| matches!(scope, crate::peer_map::BurnedScope::Dm { .. })),
+            "burn must record local scope-burn state for attachment/open gates"
+        );
+    }
+}
+
 // 9-C1: `cmd_osl_accept_invitation` / `cmd_osl_decline_invitation`
 // / `apply_invitation_decision` removed alongside the invitation
 // handshake.
+
+/// Record an already-typed outgoing friend request without adopting its scoped
+/// grant. The public command mints this typed request from local and peer
+/// authority first; this helper keeps the typed-recording path testable.
+fn cmd_osl_send_typed_friend_request_with_dir(
+    state: &AppState,
+    peer_discord_id: String,
+    request: crate::friend_request::FriendRequest,
+    dir: &Path,
+) -> Result<SendFriendRequestResult, String> {
+    guard_friend_request_peer_binding(state, &peer_discord_id)?;
+    let scope = request.scope_grant.scope().clone();
+    if scope.kind == crate::scope::ScopeKind::Dm && scope.id != peer_discord_id {
+        return Err("OSL: friend request DM scope does not match peer".to_string());
+    }
+    if !request.grants_scope(&scope) {
+        return Err("OSL: friend request scope was not granted".to_string());
+    }
+    let accepted_grant_exists = {
+        let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        pm.get(&peer_discord_id)
+            .map(|entry| {
+                entry
+                    .outgoing_whitelists
+                    .iter()
+                    .any(|w| whitelist_entry_matches(w, &scope))
+            })
+            .unwrap_or(false)
+    };
+    if accepted_grant_exists {
+        return Err("OSL: friend request scope is already accepted".to_string());
+    }
+
+    let pending = PendingFriendRequestRecord {
+        peer_discord_id: peer_discord_id.clone(),
+        scope_storage_key: scope.storage_key(),
+        created_at_unix_seconds: now_unix_secs() as u64,
+    };
+    let path = pending_friend_requests_path(dir);
+    let mut records = load_pending_friend_requests(&path)?;
+    if records.iter().any(|record| {
+        record.peer_discord_id == pending.peer_discord_id
+            && record.scope_storage_key == pending.scope_storage_key
+    }) {
+        return Err("OSL: friend request already exists".to_string());
+    }
+    records.push(pending.clone());
+    save_pending_friend_requests(&path, &records)?;
+
+    Ok(SendFriendRequestResult { request, pending })
+}
 
 /// Accept a typed friend request and adopt its exact scoped grant.
 ///
@@ -9934,7 +10689,8 @@ fn adopt_friend_request_scope(
 mod friend_request_acceptance_tests {
     use super::{
         cmd_osl_accept_friend_request, cmd_osl_send_friend_request_with_dir,
-        load_pending_friend_requests, pending_friend_requests_path,
+        cmd_osl_send_typed_friend_request_with_dir, load_pending_friend_requests,
+        pending_friend_requests_path,
     };
     use crate::friend_request::{
         FriendPeer, FriendRequest, FriendScopeGrant, VerifiedFriendAuthority,
@@ -9972,6 +10728,54 @@ mod friend_request_acceptance_tests {
     }
 
     #[test]
+    fn cmd_osl_send_typed_friend_request_creates_and_persists_pending_friend_request() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let state = AppState::new();
+        let scope = Scope::gc("friend-pending-gc");
+        let request = request_for(scope.clone());
+
+        let result = cmd_osl_send_typed_friend_request_with_dir(
+            &state,
+            REQUESTER_DID.to_string(),
+            request,
+            dir.path(),
+        )
+        .expect("typed friend request should persist as pending");
+
+        assert!(result.request.grants_scope(&scope));
+        assert_eq!(result.pending.peer_discord_id, REQUESTER_DID);
+        assert_eq!(result.pending.scope_storage_key, scope.storage_key());
+        assert!(
+            state.peer_map.lock().unwrap().get(REQUESTER_DID).is_none(),
+            "pending request must not create peer authority"
+        );
+        assert!(
+            state.whitelist_state.lock().unwrap().is_empty(),
+            "pending request must not enable encryption for the scope"
+        );
+
+        let persisted: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(pending_friend_requests_path(dir.path())).unwrap(),
+        )
+        .unwrap();
+        let rows = persisted.as_array().expect("pending rows");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["peerDiscordId"], REQUESTER_DID);
+        assert_eq!(rows[0]["scopeStorageKey"], scope.storage_key());
+
+        let duplicate = match cmd_osl_send_typed_friend_request_with_dir(
+            &state,
+            REQUESTER_DID.to_string(),
+            request_for(scope),
+            dir.path(),
+        ) {
+            Ok(_) => panic!("same pending friend request must not be duplicated"),
+            Err(err) => err,
+        };
+        assert!(duplicate.contains("already exists"), "{duplicate}");
+    }
+
+    #[test]
     fn cmd_osl_accept_friend_request_accepts_request_and_adopts_scoped_trust() {
         let state = AppState::new();
         let scope = Scope::gc("friend-gc");
@@ -9999,7 +10803,7 @@ mod friend_request_acceptance_tests {
     }
 
     #[test]
-    fn cmd_osl_send_friend_request_creates_and_persists_pending_friend_request() {
+    fn cmd_osl_send_friend_request_refuses_untrusted_then_persists_authority_bound_pending() {
         let dir = tempfile::tempdir().unwrap();
         let state = AppState::new();
         state.install_identity(keystore::generate_identity("requester-osl".to_string()));
@@ -10066,6 +10870,14 @@ mod friend_request_acceptance_tests {
 
         let pm = state.peer_map.lock().unwrap();
         let peer = pm.get(REQUESTER_DID).unwrap();
+        assert!(matches!(
+            peer.outgoing_whitelists.as_slice(),
+            [WhitelistEntry::ServerChannel {
+                server_id,
+                channel_id,
+                user_specific: true,
+            }] if server_id == "server-a" && channel_id == "channel-a"
+        ));
         assert!(peer.outgoing_whitelists.iter().any(|entry| matches!(
             entry,
             WhitelistEntry::ServerChannel {
@@ -10082,6 +10894,7 @@ mod friend_request_acceptance_tests {
 
         let ws = state.whitelist_state.lock().unwrap();
         assert!(ws.get(&scope.storage_key()).unwrap().encrypt_toggle);
+        assert!(ws.get(&scope.storage_key()).unwrap().auto_enabled);
         assert!(ws.get(&other_scope.storage_key()).is_none());
     }
 
@@ -10206,7 +11019,7 @@ mod burn_wrapped_key_coordination_tests {
     use std::time::Duration;
 
     #[test]
-    fn burn_posts_control_inbox_and_deletes_wrapped_keys() {
+    fn burn_posts_control_inbox_and_deletes_keyserver_wrapped_keys() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let (tx, rx) = mpsc::channel();
@@ -11461,7 +12274,8 @@ mod keyserver_origin_policy_tests {
 #[cfg(test)]
 mod initial_prekey_publish_tests {
     use super::{
-        publish_initial_prekeys_at, InitialPrekeyPublishFailure, InitialPrekeyPublishOutcome,
+        prekey_state_is_bound_to_identity, publish_initial_prekeys_at, InitialPrekeyPublishFailure,
+        InitialPrekeyPublishOutcome,
     };
 
     #[test]
@@ -11500,6 +12314,42 @@ mod initial_prekey_publish_tests {
         assert!(marker_path.exists());
         let loaded = keystore::load_prekey_state(&prekey_path, &sealer).unwrap();
         assert_eq!(loaded.opk_pool.len(), uploaded_opks);
+    }
+
+    #[test]
+    fn identity_registration_onboarding_installs_and_replenishes_prekey_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let prekey_path = dir.path().join("prekeys.json");
+        let marker_path = dir.path().join("prekeys.initial-published");
+        let sealer = keystore::MemorySealer::new();
+        let identity = keystore::generate_identity("identity-registration-b96".to_string());
+        let app_state = crate::AppState::new();
+        app_state.install_identity(identity.clone());
+        assert!(
+            app_state.prekey_state.lock().unwrap().is_some(),
+            "installing identity must install live prekey state in AppState"
+        );
+
+        let mut upload_observed_after_persist = false;
+        let result =
+            publish_initial_prekeys_at(&prekey_path, &marker_path, &sealer, &identity, |state| {
+                upload_observed_after_persist = prekey_path.exists();
+                assert!(prekey_state_is_bound_to_identity(state, &identity));
+                Ok(keystore::ReplenishResponse {
+                    user_id: identity.user_id.clone(),
+                    opks_added: state.opk_pool.len() as u32,
+                })
+            });
+
+        assert_eq!(result, Ok(InitialPrekeyPublishOutcome::Published));
+        assert!(upload_observed_after_persist);
+        assert!(marker_path.exists());
+        let loaded = keystore::load_prekey_state(&prekey_path, &sealer).unwrap();
+        assert!(prekey_state_is_bound_to_identity(&loaded, &identity));
+        assert_eq!(
+            loaded.opk_pool.len(),
+            keystore::PrekeyConfig::default().opk_pool_target as usize
+        );
     }
 
     #[test]
@@ -12087,7 +12937,7 @@ mod identity_registration_prekey_onboarding_tests {
     use std::time::Duration;
 
     #[test]
-    fn identity_registration_onboarding_installs_and_replenishes_prekey_state() {
+    fn identity_registration_onboarding_publishes_initial_prekey_state() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let (tx, rx) = mpsc::channel();
@@ -14393,19 +15243,21 @@ pub fn cmd_osl_decline_or_revoke_friend_request(
 }
 
 #[cfg(test)]
-mod friend_request_decline_or_revoke_tests {
+mod friend_request_decline_revoke_command_tests {
     use super::*;
+    use crate::peer_map::{PeerEntry, WhitelistEntry};
+    use crate::scope::Scope;
 
-    const PEER_DID: &str = "900000000000000115";
+    const PEER: &str = "900000000000000115";
 
     #[test]
     fn decline_or_revoke_friend_request_declines_pending_or_revokes_grant() {
         let pending_state = AppState::new();
-        let dm_scope = crate::scope::Scope::dm(PEER_DID);
+        let dm_scope = Scope::dm(PEER);
 
         let declined = cmd_osl_decline_or_revoke_friend_request(
             &pending_state,
-            PEER_DID.to_string(),
+            PEER.to_string(),
             (&dm_scope).into(),
             false,
         )
@@ -14416,18 +15268,19 @@ mod friend_request_decline_or_revoke_tests {
             pending_state.peer_map.lock().unwrap().is_empty(),
             "declining a pending request must not create peer authority"
         );
+        assert!(pending_state.peer_map.lock().unwrap().get(PEER).is_none());
         assert!(pending_state.whitelist_state.lock().unwrap().is_empty());
 
         let accepted_state = AppState::new();
         accepted_state.peer_map.lock().unwrap().insert(
-            PEER_DID.to_string(),
-            crate::peer_map::PeerEntry {
-                discord_id: Some(PEER_DID.to_string()),
-                outgoing_whitelists: vec![crate::peer_map::WhitelistEntry::Dm {
-                    broadened: false,
-                    enabled_at: Some("2026-07-30T00:00:00Z".to_string()),
+            PEER.to_string(),
+            PeerEntry {
+                discord_id: Some(PEER.to_string()),
+                outgoing_whitelists: vec![WhitelistEntry::Dm {
+                    broadened: true,
+                    enabled_at: Some("1700000000".to_string()),
                 }],
-                ..Default::default()
+                ..PeerEntry::default()
             },
         );
         accepted_state
@@ -14440,11 +15293,11 @@ mod friend_request_decline_or_revoke_tests {
 
         let revoked = cmd_osl_decline_or_revoke_friend_request(
             &accepted_state,
-            PEER_DID.to_string(),
+            PEER.to_string(),
             (&dm_scope).into(),
-            false,
+            true,
         )
-        .expect("accepted grant revokes");
+        .expect("accepted friend grant should be revocable");
         assert_eq!(
             revoked.decision,
             FriendRequestDecision::RevokedAcceptedGrant
@@ -14452,13 +15305,16 @@ mod friend_request_decline_or_revoke_tests {
         assert!(revoked.revoked_grant);
 
         let pm = accepted_state.peer_map.lock().unwrap();
-        let peer = pm.get(PEER_DID).unwrap();
-        assert!(peer.outgoing_whitelists.is_empty());
+        let peer = pm.get(PEER).unwrap();
+        assert!(
+            peer.outgoing_whitelists.is_empty(),
+            "revocation must remove the accepted grant"
+        );
         assert!(
             peer.burned_scopes
                 .iter()
-                .any(|burn| matches!(burn, crate::peer_map::BurnedScope::Dm { .. })),
-            "revoking an accepted grant must record the local burn/refusal"
+                .any(|scope| matches!(scope, crate::peer_map::BurnedScope::Dm { .. })),
+            "revocation must record the local burn/refusal state"
         );
     }
 }
