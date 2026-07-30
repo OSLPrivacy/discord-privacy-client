@@ -1,6 +1,6 @@
 use rusqlite::{params, Connection};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use store::{MessageStore, StoredMessage};
 use tempfile::TempDir;
 
@@ -70,9 +70,74 @@ fn assert_absent_from_store_files(dir: &Path, label: &str, needle: &[u8]) {
     }
 }
 
+fn read_named_paths(paths: &[PathBuf]) -> Vec<(String, Vec<u8>)> {
+    paths
+        .iter()
+        .map(|path| {
+            (
+                path.file_name().unwrap().to_string_lossy().into_owned(),
+                fs::read(path).unwrap(),
+            )
+        })
+        .collect()
+}
+
+fn copy_named_paths(paths: &[PathBuf], destination: &Path) -> Vec<(String, Vec<u8>)> {
+    paths
+        .iter()
+        .map(|path| {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let copy = destination.join(&name);
+            fs::copy(path, &copy).unwrap();
+            (name, fs::read(copy).unwrap())
+        })
+        .collect()
+}
+
+fn assert_named_artifact_absent(
+    boundary: &str,
+    artifacts: &[(String, Vec<u8>)],
+    artifact_name: &str,
+    label: &str,
+    needle: &[u8],
+) {
+    let (_, bytes) = artifacts
+        .iter()
+        .find(|(name, _)| name == artifact_name)
+        .unwrap_or_else(|| panic!("{boundary} did not inspect {artifact_name}"));
+    assert!(
+        !bytes.is_empty(),
+        "{boundary} artifact {artifact_name} is empty"
+    );
+    assert!(
+        !contains(bytes, needle),
+        "{label} was recoverable verbatim from {boundary} artifact {artifact_name}"
+    );
+}
+
+fn assert_artifact_set_absent(
+    boundary: &str,
+    artifacts: &[(String, Vec<u8>)],
+    label: &str,
+    needle: &[u8],
+) {
+    assert!(
+        !artifacts.is_empty(),
+        "{boundary} artifact scan must inspect at least one file"
+    );
+    for (name, bytes) in artifacts {
+        assert!(!bytes.is_empty(), "{boundary} artifact {name} is empty");
+        assert!(
+            !contains(bytes, needle),
+            "{label} was recoverable verbatim from {boundary} artifact {name}"
+        );
+    }
+}
+
 #[test]
 fn schema_v8_field_census_and_raw_wal_plaintext_guards_are_nonvacuous() {
     let tmp = TempDir::new().unwrap();
+    let backup = TempDir::new().unwrap();
     let store = MessageStore::open(tmp.path(), SECRET).unwrap();
     let decrypted_at = 0x1122_3344_5566_7788i64;
     let msg = message(
@@ -115,7 +180,28 @@ fn schema_v8_field_census_and_raw_wal_plaintext_guards_are_nonvacuous() {
         Some((mime.to_string(), attachment.to_vec()))
     );
 
-    let conn = Connection::open(tmp.path().join("messages.sqlite")).unwrap();
+    let artifacts = store.live_storage_artifacts().unwrap();
+    let live_artifacts = read_named_paths(&artifacts);
+    let backup_artifacts = copy_named_paths(&artifacts, backup.path());
+
+    let boundary_proofs = [
+        "message_store_runtime",
+        "schema_v8_field_census",
+        "physical_media_main_db",
+        "physical_media_wal",
+        "backup_rollback_copies",
+    ];
+    assert_eq!(
+        boundary_proofs
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        5,
+        "at-rest census closure must keep five distinct named boundary proofs"
+    );
+
+    let conn = Connection::open(&artifacts[0]).unwrap();
     assert_eq!(
         table_columns(&conn, "messages"),
         [
@@ -212,14 +298,49 @@ fn schema_v8_field_census_and_raw_wal_plaintext_guards_are_nonvacuous() {
         ("message body", msg.plaintext.as_bytes()),
         ("attachment filename", filename.as_bytes()),
         ("attachment MIME", mime.as_bytes()),
-        ("attachment bytes", attachment.as_slice()),
+        ("attachment bytes", &attachment[..]),
         ("attachment scope type", scope_type.as_bytes()),
         ("attachment scope id", scope_id.as_bytes()),
     ] {
         assert_absent_from_store_files(tmp.path(), label, needle);
+        assert_named_artifact_absent(
+            "physical_media_main_db",
+            &live_artifacts,
+            "messages.sqlite",
+            label,
+            needle,
+        );
+        assert_named_artifact_absent(
+            "physical_media_wal",
+            &live_artifacts,
+            "messages.sqlite-wal",
+            label,
+            needle,
+        );
+        assert_artifact_set_absent("backup_rollback_copies", &backup_artifacts, label, needle);
     }
     assert_absent_from_store_files(
         tmp.path(),
+        "message timestamp encoding",
+        &decrypted_at.to_le_bytes(),
+    );
+    assert_named_artifact_absent(
+        "physical_media_main_db",
+        &live_artifacts,
+        "messages.sqlite",
+        "message timestamp encoding",
+        &decrypted_at.to_le_bytes(),
+    );
+    assert_named_artifact_absent(
+        "physical_media_wal",
+        &live_artifacts,
+        "messages.sqlite-wal",
+        "message timestamp encoding",
+        &decrypted_at.to_le_bytes(),
+    );
+    assert_artifact_set_absent(
+        "backup_rollback_copies",
+        &backup_artifacts,
         "message timestamp encoding",
         &decrypted_at.to_le_bytes(),
     );
