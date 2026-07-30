@@ -2109,6 +2109,65 @@ pub fn cmd_osl_decrypt_message_with_id(
     Ok(plaintext)
 }
 
+#[cfg(test)]
+mod legacy_v1_decrypt_sender_binding_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_v1_decrypt_fails_closed_under_forged_sender() {
+        let recipient = generate_identity("recipient-osl".to_string());
+        let alice = generate_identity("alice-osl".to_string());
+        let bob = generate_identity("bob-osl".to_string());
+        let plaintext = "legacy v1 sender binding proof";
+
+        let cover =
+            encrypt_osl_phase4_to_pubkeys(&bob.x25519_secret, &[recipient.x25519_public], plaintext)
+                .expect("valid legacy v1 cover");
+
+        let state = AppState::new();
+        *state.identity.lock().expect("identity mutex poisoned") = Some(recipient);
+        {
+            let mut peers = state.peer_map.lock().expect("peer_map mutex poisoned");
+            peers.insert(
+                "alice-discord".to_string(),
+                crate::peer_map::legacy_entry(alice.user_id.clone()),
+            );
+            peers.insert(
+                "bob-discord".to_string(),
+                crate::peer_map::legacy_entry(bob.user_id.clone()),
+            );
+        }
+        state
+            .sender_pubkey_cache
+            .insert(alice.user_id.clone(), alice.x25519_public);
+        state
+            .sender_pubkey_cache
+            .insert(bob.user_id.clone(), bob.x25519_public);
+
+        let opened = cmd_osl_decrypt_message(
+            &state,
+            "channel".to_string(),
+            "bob-discord".to_string(),
+            cover.clone(),
+        )
+        .expect("control decrypt with the real sender should open");
+        assert_eq!(opened, plaintext);
+
+        let err = cmd_osl_decrypt_message(
+            &state,
+            "channel".to_string(),
+            "alice-discord".to_string(),
+            cover,
+        )
+        .expect_err("forged claimed sender must fail closed");
+
+        assert!(
+            err.contains("not a recipient of this message"),
+            "unexpected error: {err}"
+        );
+    }
+}
+
 /// Best-effort persistence of a freshly decrypted message into
 /// [`crate::state::AppState::message_store`]. Logs and swallows
 /// every failure so a store outage cannot regress decrypt UX.
