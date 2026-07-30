@@ -139,12 +139,22 @@ fn close_protected_browser_import_process() -> Result<(), String> {
 pub struct NativeAppStatus {
     pub id: NativeAppId,
     pub display_name: &'static str,
+    /// Installed means the fixed, reviewed native client can be launched. It is
+    /// not evidence that OSL Protected mode is available for that service.
     pub availability: NativeAppAvailability,
+    /// Public claim state for OSL's support of this native service. This is
+    /// deliberately separate from `availability` so a detected app does not
+    /// become a product support claim.
+    pub support_status: NativeAppSupportStatus,
+    /// The strongest protected-mode handoff the public UI may offer today.
+    pub protected_mode: NativeAppProtectedMode,
     /// True only when the current integration has a verified secondary-instance
     /// switch that keeps writable state inside an OSL-owned profile.
+    #[serde(skip_serializing)]
     pub isolated_profile_available: bool,
     /// Remains false until a service-specific Windows accessibility adapter
     /// can prove the exact account, conversation, recipients, and composer.
+    #[serde(skip_serializing)]
     pub supports_overlay: bool,
 }
 
@@ -153,6 +163,21 @@ pub struct NativeAppStatus {
 pub enum NativeAppAvailability {
     Installed,
     Installable,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NativeAppSupportStatus {
+    Beta,
+    ComingSoon,
+    ExternallyBlocked,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NativeAppProtectedMode {
+    AssistOnly,
     Unavailable,
 }
 
@@ -650,6 +675,26 @@ fn isolated_native_profile_available(id: NativeAppId) -> bool {
     matches!(id, NativeAppId::Discord | NativeAppId::Telegram)
 }
 
+fn native_app_support_status(id: NativeAppId) -> NativeAppSupportStatus {
+    match id {
+        NativeAppId::Discord => NativeAppSupportStatus::Beta,
+        NativeAppId::Telegram
+        | NativeAppId::Signal
+        | NativeAppId::Whatsapp
+        | NativeAppId::Outlook => NativeAppSupportStatus::ComingSoon,
+    }
+}
+
+fn native_app_protected_mode(id: NativeAppId) -> NativeAppProtectedMode {
+    match id {
+        NativeAppId::Discord => NativeAppProtectedMode::AssistOnly,
+        NativeAppId::Telegram
+        | NativeAppId::Signal
+        | NativeAppId::Whatsapp
+        | NativeAppId::Outlook => NativeAppProtectedMode::Unavailable,
+    }
+}
+
 #[cfg(target_os = "windows")]
 pub(crate) fn outlook_native_executable_paths() -> Vec<std::path::PathBuf> {
     let mut paths = Vec::with_capacity(2);
@@ -693,6 +738,8 @@ fn list_native_apps_with_installer_probe(
                 id: app.id,
                 display_name: app.display_name,
                 availability,
+                support_status: native_app_support_status(app.id),
+                protected_mode: native_app_protected_mode(app.id),
                 isolated_profile_available: isolated_native_profile_available(app.id),
                 supports_overlay: false,
             }
@@ -2329,6 +2376,7 @@ fn spawn_firefox_migration_wizard(
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::collections::BTreeSet;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
@@ -2479,6 +2527,61 @@ mod tests {
     fn dedicated_discord_fallback_is_one_fixed_official_channel() {
         assert_eq!(DISCORD_DEDICATED_PACKAGE_ID, "Discord.Discord.PTB");
         assert!(install_discord_dedicated_channel().is_err());
+    }
+
+    #[test]
+    fn native_app_status_serializes_only_the_public_support_contract() {
+        let status = NativeAppStatus {
+            id: NativeAppId::Discord,
+            display_name: "Discord",
+            availability: NativeAppAvailability::Installed,
+            support_status: NativeAppSupportStatus::Beta,
+            protected_mode: NativeAppProtectedMode::AssistOnly,
+            isolated_profile_available: true,
+            supports_overlay: false,
+        };
+
+        let json = serde_json::to_value(status).unwrap();
+        let object = json.as_object().unwrap();
+        let keys = object.keys().map(String::as_str).collect::<BTreeSet<_>>();
+        assert_eq!(
+            keys,
+            BTreeSet::from([
+                "availability",
+                "displayName",
+                "id",
+                "protectedMode",
+                "supportStatus"
+            ])
+        );
+        assert_eq!(json["id"], "discord");
+        assert_eq!(json["availability"], "installed");
+        assert_eq!(json["supportStatus"], "beta");
+        assert_eq!(json["protectedMode"], "assistOnly");
+        assert!(json.get("isolatedProfileAvailable").is_none());
+        assert!(json.get("supportsOverlay").is_none());
+    }
+
+    #[test]
+    fn native_app_support_status_does_not_follow_install_availability() {
+        let statuses = list_native_apps_with_installer_probe(|| true);
+        assert_eq!(statuses.len(), NATIVE_APPS.len());
+
+        for status in statuses {
+            match status.id {
+                NativeAppId::Discord => {
+                    assert_eq!(status.support_status, NativeAppSupportStatus::Beta);
+                    assert_eq!(status.protected_mode, NativeAppProtectedMode::AssistOnly);
+                }
+                NativeAppId::Telegram
+                | NativeAppId::Signal
+                | NativeAppId::Whatsapp
+                | NativeAppId::Outlook => {
+                    assert_eq!(status.support_status, NativeAppSupportStatus::ComingSoon);
+                    assert_eq!(status.protected_mode, NativeAppProtectedMode::Unavailable);
+                }
+            }
+        }
     }
 
     #[test]
