@@ -1170,6 +1170,7 @@ mod tests {
             b"alice gap 3"
         );
         assert_eq!(bob.skipped_key_count(), 3);
+        assert_eq!(bob.skipped_chain_count(), 1);
 
         let interleaved = bob
             .encrypt(7, b"bob interleaved reply", &mut rng)
@@ -1200,6 +1201,7 @@ mod tests {
         assert_eq!(bob.skip_params(), skip);
         assert_eq!(bob.skip_params(), bob_skip_params);
         assert_eq!(bob.skipped_key_count(), 3);
+        assert_eq!(bob.skipped_chain_count(), 1);
         assert!(bob.skipped_key_count() <= bob.skip_params().max_total_keys);
 
         assert_eq!(
@@ -1227,6 +1229,7 @@ mod tests {
             b"alice gap 2"
         );
         assert_eq!(bob.skipped_key_count(), 0);
+        assert_eq!(bob.skipped_chain_count(), 0);
 
         let after = alice
             .encrypt(9, b"alice after restored gaps", &mut rng)
