@@ -42,7 +42,7 @@ async function signedFloorUrl(
 }
 
 describe("D1-backed sender-filter capability floor", () => {
-  it("creates a nonempty authority record and preserves it across a fresh request", async () => {
+  it("test/integration/sender-filter-capability-floor.test.ts", async () => {
     const recipientId = userId("positive");
     const identity = await registerTestUser(SELF, recipientId);
     const firstRequestId = "A".repeat(43);

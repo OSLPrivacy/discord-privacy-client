@@ -608,6 +608,57 @@ if (-not $tempHonoured) {
 }
 Add-Step 'assert/temp-redirect' 'ok' ('B honoured its private temp root: {0} was written during this run.' -f $traceB)
 
+# --- 11c. B created its own QA identity and public offer -------------------
+# -ConfirmCreatesIdentity is the operator's consent to cross the profile
+# mutation boundary. Prove that the launched B profile actually owns a distinct
+# identity artefact and published the fixed public offer used by the two-profile
+# pairing controller. Only file stamps and hashes are reported; no identity
+# material is displayed.
+$bCoreCandidates = @(
+    (Join-Path $rootB 'osl-core'),
+    (Join-Path $rootB 'discord-qa-shell-v1\osl-core')
+)
+$identityBAfter = $null
+$offerBAfter = $null
+$identityDeadline = (Get-Date).AddSeconds([Math]::Max(5, [Math]::Min($WindowWaitSec, 30)))
+while ((Get-Date) -lt $identityDeadline) {
+    foreach ($coreRoot in $bCoreCandidates) {
+        $identityCandidate = Join-Path $coreRoot 'identity.json'
+        $offerCandidate = Join-Path $coreRoot 'discord-qa-offer.v1.json'
+        if (-not $identityBAfter -and (Test-Path -LiteralPath $identityCandidate)) {
+            $identityBAfter = Get-P2PFileStamp -Path $identityCandidate -Label 'instance-b-identity'
+        }
+        if (-not $offerBAfter -and (Test-Path -LiteralPath $offerCandidate)) {
+            $offerBAfter = Get-P2PFileStamp -Path $offerCandidate -Label 'instance-b-public-offer'
+        }
+    }
+    if (($identityBAfter -and $identityBAfter.exists) -and ($offerBAfter -and $offerBAfter.exists)) { break }
+    Start-Sleep -Milliseconds 200
+}
+if (-not ($identityBAfter -and $identityBAfter.exists)) {
+    Add-Step 'assert/instance-b-identity' 'failed' ('No identity.json appeared under B profile root {0}.' -f $rootB)
+    Write-Result 'failed' `
+        ('Instance B started after -ConfirmCreatesIdentity, but no B identity file appeared under {0}. The consent switch must result in a disposable B identity, otherwise this is not a two-identity rig.' -f $rootB) `
+        'Use a desktop,discord-qa-shell build and a writable instance-B profile root, then re-run.' `
+        @{ instanceBIdentity = $null; instanceBPublicOffer = $offerBAfter }
+}
+if ($identityABefore -and $identityABefore.exists -and $identityBAfter.sha256 -eq $identityABefore.sha256) {
+    Add-Step 'assert/instance-b-identity' 'failed' 'B identity sha256 equals A identity sha256.'
+    Write-Result 'failed' `
+        'Instance B produced an identity file, but it is byte-identical to instance A''s identity file. That is a shared-profile or copied-identity rig, not a second OSL identity.' `
+        'Do not run the P2P harness. Rebuild/relaunch B with a distinct bundle identifier and isolated profile root.' `
+        @{ instanceAIdentity = $identityABefore; instanceBIdentity = $identityBAfter }
+}
+if (-not ($offerBAfter -and $offerBAfter.exists)) {
+    Add-Step 'assert/instance-b-identity' 'failed' ('No discord-qa-offer.v1.json appeared under B profile root {0}.' -f $rootB)
+    Write-Result 'failed' `
+        ('Instance B created an identity at {0}, but did not publish its QA public offer. The pairing controller would have no registered public identity material to exchange.' -f $identityBAfter.path) `
+        'Confirm the keyserver/QA bootstrap path is healthy and re-run after B can publish its public offer.' `
+        @{ instanceBIdentity = $identityBAfter; instanceBPublicOffer = $null }
+}
+Add-Step 'assert/instance-b-identity' 'ok' ('B owns a distinct QA identity ({0}) and public offer ({1}). A identity sha256 equal to B: {2}.' -f
+    $identityBAfter.path, $offerBAfter.path, $(if ($identityABefore -and $identityABefore.exists) { $identityBAfter.sha256 -eq $identityABefore.sha256 } else { $false }))
+
 # --- 12. done --------------------------------------------------------------
 $postBundleList = @($postBundles.Keys | ForEach-Object { [ordered]@{ pid = [int]$_; bundle = $postBundles[$_] } })
 Write-Result 'ok' `
@@ -635,6 +686,8 @@ Write-Result 'ok' `
             profileRoot = $rootB; profileRootExists = $rootBExists; profileRootTouchedThisRun = $rootBFresh
             tempRoot = $TempRootB; tempRootHonouredByChild = $tempHonoured
             startupTrace = $traceBStamp
+            identityFile = $identityBAfter
+            publicOffer = $offerBAfter
             family = @($familySeen | Sort-Object)
             relocated = $moved
         }
