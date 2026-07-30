@@ -18,12 +18,59 @@ interface StripeBalance {
   pending?: Array<{ amount?: number; currency?: string }>;
 }
 
+type TelegramChatRole = "operator" | "viewer";
+
 type TelegramChatConfiguration =
-  | { status: "configured"; operatorChatIds: string[]; viewerChatIds: string[]; chatIds: string[] }
-  | { status: "invalid" | "unconfigured"; operatorChatIds: []; viewerChatIds: []; chatIds: [] };
+  | Readonly<{
+    status: "configured";
+    operatorChatIds: readonly string[];
+    viewerChatIds: readonly string[];
+    chatIds: readonly string[];
+    chatRoles: Readonly<Record<string, TelegramChatRole>>;
+  }>
+  | Readonly<{
+    status: "invalid" | "unconfigured";
+    operatorChatIds: readonly [];
+    viewerChatIds: readonly [];
+    chatIds: readonly [];
+    chatRoles: Readonly<Record<string, TelegramChatRole>>;
+  }>;
 
 const MAX_TELEGRAM_CHAT_ID = 9_007_199_254_740_991n;
 const MAX_OPERATOR_CHAT_IDS = 32;
+const EMPTY_TELEGRAM_CHAT_IDS = Object.freeze([]) as readonly [];
+
+function emptyTelegramChatConfiguration(
+  status: "invalid" | "unconfigured",
+): TelegramChatConfiguration {
+  return Object.freeze({
+    status,
+    operatorChatIds: EMPTY_TELEGRAM_CHAT_IDS,
+    viewerChatIds: EMPTY_TELEGRAM_CHAT_IDS,
+    chatIds: EMPTY_TELEGRAM_CHAT_IDS,
+    chatRoles: Object.freeze({}),
+  });
+}
+
+function configuredTelegramChatConfiguration(
+  operatorChatIds: string[],
+  viewerChatIds: string[],
+): TelegramChatConfiguration {
+  const chatRoles: Record<string, TelegramChatRole> = {};
+  for (const chatId of operatorChatIds) {
+    chatRoles[chatId] = "operator";
+  }
+  for (const chatId of viewerChatIds) {
+    chatRoles[chatId] = "viewer";
+  }
+  return Object.freeze({
+    status: "configured",
+    operatorChatIds: Object.freeze([...operatorChatIds]),
+    viewerChatIds: Object.freeze([...viewerChatIds]),
+    chatIds: Object.freeze([...operatorChatIds, ...viewerChatIds]),
+    chatRoles: Object.freeze(chatRoles),
+  });
+}
 
 function normalizeTelegramChatId(value: unknown): string | null {
   if (typeof value === "number") {
@@ -46,22 +93,22 @@ function telegramChatConfiguration(env: Env): TelegramChatConfiguration {
   if (env.TELEGRAM_OPERATOR_CHAT_IDS !== undefined) {
     const rawIds = env.TELEGRAM_OPERATOR_CHAT_IDS.split(",");
     if (rawIds.length === 0 || rawIds.length > MAX_OPERATOR_CHAT_IDS) {
-      return { status: "invalid", operatorChatIds: [], viewerChatIds: [], chatIds: [] };
+      return emptyTelegramChatConfiguration("invalid");
     }
     const uniqueIds = new Set<string>();
     for (const rawId of rawIds) {
       const normalized = normalizeTelegramChatId(rawId);
-      if (normalized === null) return { status: "invalid", operatorChatIds: [], viewerChatIds: [], chatIds: [] };
+      if (normalized === null) return emptyTelegramChatConfiguration("invalid");
       uniqueIds.add(normalized);
     }
     const chatIds = [...uniqueIds];
     if (chatIds.length === 0 || chatIds.filter((chatId) => chatId.startsWith("-")).length > 1) {
-      return { status: "invalid", operatorChatIds: [], viewerChatIds: [], chatIds: [] };
+      return emptyTelegramChatConfiguration("invalid");
     }
     operatorChatIds = chatIds;
   } else if (env.TELEGRAM_ADMIN_CHAT_ID !== undefined) {
     const legacyChatId = normalizeTelegramChatId(env.TELEGRAM_ADMIN_CHAT_ID);
-    if (legacyChatId === null) return { status: "invalid", operatorChatIds: [], viewerChatIds: [], chatIds: [] };
+    if (legacyChatId === null) return emptyTelegramChatConfiguration("invalid");
     operatorChatIds = [legacyChatId];
   } else {
     operatorChatIds = [];
@@ -71,12 +118,12 @@ function telegramChatConfiguration(env: Env): TelegramChatConfiguration {
   if (env.TELEGRAM_VIEWER_CHAT_IDS !== undefined) {
     const rawIds = env.TELEGRAM_VIEWER_CHAT_IDS.split(",");
     if (rawIds.length === 0 || rawIds.length > MAX_OPERATOR_CHAT_IDS) {
-      return { status: "invalid", operatorChatIds: [], viewerChatIds: [], chatIds: [] };
+      return emptyTelegramChatConfiguration("invalid");
     }
     for (const rawId of rawIds) {
       const normalized = normalizeTelegramChatId(rawId);
       if (normalized === null || normalized.startsWith("-")) {
-        return { status: "invalid", operatorChatIds: [], viewerChatIds: [], chatIds: [] };
+        return emptyTelegramChatConfiguration("invalid");
       }
       viewerChatIds.push(normalized);
     }
@@ -88,8 +135,8 @@ function telegramChatConfiguration(env: Env): TelegramChatConfiguration {
   );
   const chatIds = [...operatorChatIds, ...uniqueViewerChatIds];
   return chatIds.length === 0
-    ? { status: "unconfigured", operatorChatIds: [], viewerChatIds: [], chatIds: [] }
-    : { status: "configured", operatorChatIds, viewerChatIds: uniqueViewerChatIds, chatIds };
+    ? emptyTelegramChatConfiguration("unconfigured")
+    : configuredTelegramChatConfiguration(operatorChatIds, uniqueViewerChatIds);
 }
 
 export function telegramReportingIsConfigured(env: Env): boolean {
@@ -351,7 +398,7 @@ export async function handleTelegramCommand(
   const chatId = update.message?.chat?.id;
   const authorizedChatId = await authorizedTelegramChatId(chatId, configuration.chatIds);
   if (authorizedChatId === null) return "ignored";
-  const isOperator = configuration.operatorChatIds.includes(authorizedChatId);
+  const isOperator = configuration.chatRoles[authorizedChatId] === "operator";
   const command = update.message?.text?.trim().split(/\s+/, 1)[0]?.split("@", 1)[0] ?? "";
   let message: string;
   if (command === "/stats" || command === "/payments") {
