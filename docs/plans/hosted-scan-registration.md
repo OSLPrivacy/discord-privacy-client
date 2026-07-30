@@ -166,6 +166,28 @@ Therefore adding only `open_hosted_session_scan` and
 `hub.toml` exposes a read-only observation result. It does not expose row
 selection, preview, confirmation, platform input, or execution authority.
 
+## Security-Review Checklist for Isolation Boundary
+
+This checklist is deliberately written as a decision table: every row names the
+trusted boundary, the authority source, and the fail-closed result when that
+source is absent. It is meant to be parsed by the independent review test rather
+than treated as prose.
+
+| check_id | boundary | authority_source | renderer_supplied | deletion_authority | refusal_without_authority |
+| --- | --- | --- | --- | --- | --- |
+| hosted_identity_unlock | unlocked OSL owner identity | native_state | no | no | refuse |
+| hosted_active_context | current service host generation | native_state | no | no | refuse |
+| hosted_scope_binding | active hosted scope binding | native_state | no | no | refuse |
+| hosted_operator_binding | attended operator-name binding | native_state | no | no | refuse |
+| hosted_credential_handling | hosted credential and profile material | unavailable_to_command | no | no | refuse |
+| hosted_delete_boundary | delete-own-item authority | not_present_in_scan_port | no | no | refuse |
+
+Required review verdict: every hosted scan command remains read-only, every
+binding comes from trusted native state, the renderer supplies no account,
+handle, credential, profile, path, URL, conversation, plan, digest, row, or
+deletion verb, and absence of any required binding refuses instead of issuing an
+empty or permissive scan.
+
 ## Unit Tests To Add With The Registration
 
 Add a static reachability test under the UI test suite, for example

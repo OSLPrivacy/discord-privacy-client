@@ -6,6 +6,7 @@ pub mod attachment_formats;
 pub mod browser_companion;
 pub mod burn_contract;
 pub mod cloud_autoscrub_consent;
+pub mod cloud_autoscrub_execution;
 pub mod control_contract;
 pub mod discord_carrier_geometry;
 pub mod external_overlay;
@@ -17,6 +18,8 @@ pub mod native_attachment_jobs;
 pub mod native_discord_adapter;
 pub mod native_window_host;
 pub mod proprietary_module_boundary;
+pub mod hosted_port;
+pub mod hosted_provider_recipe;
 #[cfg(feature = "core")]
 pub mod peer_attachment_io;
 pub mod preferences;
