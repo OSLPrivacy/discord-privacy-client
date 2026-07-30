@@ -36,3 +36,120 @@ Acceptance for this risk is a coordinator routing exercise, not a prose grep:
    turn.
 3. Attempt to satisfy a failed capacity check by borrowing another account, changing `CODEX_HOME`, or
    starting speculative background work. The routing decision must remain `refuse` or `standby`.
+
+### Update routing decisions from real Codex capacity instead of stale pools.
+
+This is the machine-readable coordinator exercise for `risk-codex-quota`. A runner or reviewer
+passes the test only by evaluating the current-capacity inputs below, not by trusting the historical
+pool label.
+
+```json
+{
+  "test_name": "Update routing decisions from real Codex capacity instead of stale pools.",
+  "decision_rule": {
+    "dispatch_requires": [
+      "fresh_capacity_signal",
+      "active_session_count",
+      "blocked_or_sleeping_session_list",
+      "verified_account_and_quota_status",
+      "enough_machine_headroom",
+      "owned_file_bound"
+    ],
+    "refusal_triggers": [
+      "absent_capacity_signal",
+      "stale_capacity_signal",
+      "contradictory_capacity_signal",
+      "unverified_account_or_quota_state",
+      "failed_quota_check",
+      "failed_headroom_check",
+      "missing_owned_file_bound",
+      "borrowed_account",
+      "changed_CODEX_HOME",
+      "speculative_background_child"
+    ]
+  },
+  "cases": [
+    {
+      "name": "stale_available_pool_refuses",
+      "historical_pool_label": "available",
+      "current_capacity_record": {
+        "fresh": false,
+        "active_session_count": null,
+        "blocked_or_sleeping_sessions": null,
+        "account_and_quota_status": "unverified",
+        "machine_headroom": "unknown",
+        "owned_file_bound": true
+      },
+      "forbidden_substitute": null,
+      "allowed_decisions": ["refuse", "standby"],
+      "forbidden_decisions": ["dispatch"],
+      "reason_required": true
+    },
+    {
+      "name": "fresh_owned_capacity_may_dispatch",
+      "historical_pool_label": "available",
+      "current_capacity_record": {
+        "fresh": true,
+        "active_session_count": 2,
+        "blocked_or_sleeping_sessions": [],
+        "account_and_quota_status": "verified_enough_for_expected_turn",
+        "machine_headroom": "verified_enough_for_focused_verification",
+        "owned_file_bound": true
+      },
+      "forbidden_substitute": null,
+      "allowed_decisions": ["dispatch"],
+      "forbidden_decisions": ["refuse_without_reason", "standby_without_reason"],
+      "reason_required": false
+    },
+    {
+      "name": "failed_check_cannot_be_satisfied_by_borrowing",
+      "historical_pool_label": "available",
+      "current_capacity_record": {
+        "fresh": true,
+        "active_session_count": 7,
+        "blocked_or_sleeping_sessions": ["lane-b"],
+        "account_and_quota_status": "verified_quota_exhausted",
+        "machine_headroom": "verified_enough_for_focused_verification",
+        "owned_file_bound": true
+      },
+      "forbidden_substitute": "borrowed_account",
+      "allowed_decisions": ["refuse", "standby"],
+      "forbidden_decisions": ["dispatch"],
+      "reason_required": true
+    },
+    {
+      "name": "fresh_capacity_without_owned_file_bound_refuses",
+      "historical_pool_label": "available",
+      "current_capacity_record": {
+        "fresh": true,
+        "active_session_count": 1,
+        "blocked_or_sleeping_sessions": [],
+        "account_and_quota_status": "verified_enough_for_expected_turn",
+        "machine_headroom": "verified_enough_for_focused_verification",
+        "owned_file_bound": false
+      },
+      "forbidden_substitute": null,
+      "allowed_decisions": ["refuse", "standby"],
+      "forbidden_decisions": ["dispatch"],
+      "reason_required": true
+    }
+  ],
+  "mutation_checks": [
+    {
+      "from_case": "fresh_owned_capacity_may_dispatch",
+      "mutation": "set current_capacity_record.fresh to false",
+      "must_forbid": "dispatch"
+    },
+    {
+      "from_case": "fresh_owned_capacity_may_dispatch",
+      "mutation": "set current_capacity_record.account_and_quota_status to unverified",
+      "must_forbid": "dispatch"
+    },
+    {
+      "from_case": "fresh_owned_capacity_may_dispatch",
+      "mutation": "set forbidden_substitute to changed_CODEX_HOME",
+      "must_forbid": "dispatch"
+    }
+  ]
+}
+```
