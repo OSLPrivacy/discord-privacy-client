@@ -27,6 +27,9 @@ fn tour_advance_persists_slide() {
     use ipc::main_password::set_file_storage_key;
     let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     set_file_storage_key(None);
+    // app_preferences is encrypted at rest; without a key the persist is refused
+    // and the on-disk assertions below read defaults back.
+    ipc::main_password::set_file_storage_key_after_main_password_unlock([7u8; 32]);
 
     let state = AppState::new();
     let dir = tempdir().unwrap();
@@ -46,6 +49,9 @@ fn tour_complete_sets_flag() {
     use ipc::main_password::set_file_storage_key;
     let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     set_file_storage_key(None);
+    // app_preferences is encrypted at rest; without a key the persist is refused
+    // and the on-disk assertions below read defaults back.
+    ipc::main_password::set_file_storage_key_after_main_password_unlock([7u8; 32]);
 
     let state = AppState::new();
     let dir = tempdir().unwrap();
@@ -67,6 +73,9 @@ fn tour_skip_sets_both_flags() {
     use ipc::main_password::set_file_storage_key;
     let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     set_file_storage_key(None);
+    // app_preferences is encrypted at rest; without a key the persist is refused
+    // and the on-disk assertions below read defaults back.
+    ipc::main_password::set_file_storage_key_after_main_password_unlock([7u8; 32]);
 
     let state = AppState::new();
     let dir = tempdir().unwrap();
@@ -87,6 +96,9 @@ fn tour_reset_clears_state() {
     use ipc::main_password::set_file_storage_key;
     let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     set_file_storage_key(None);
+    // app_preferences is encrypted at rest; without a key the persist is refused
+    // and the on-disk assertions below read defaults back.
+    ipc::main_password::set_file_storage_key_after_main_password_unlock([7u8; 32]);
 
     let state = AppState::new();
     let dir = tempdir().unwrap();
@@ -115,6 +127,9 @@ fn writes_stamp_version_2() {
     use ipc::main_password::set_file_storage_key;
     let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     set_file_storage_key(None);
+    // app_preferences is encrypted at rest; without a key the persist is refused
+    // and the on-disk assertions below read defaults back.
+    ipc::main_password::set_file_storage_key_after_main_password_unlock([7u8; 32]);
 
     assert_eq!(APP_PREFERENCES_VERSION, 2);
 
@@ -149,6 +164,9 @@ fn mid_tour_resume_survives_reload() {
     use ipc::main_password::set_file_storage_key;
     let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     set_file_storage_key(None);
+    // app_preferences is encrypted at rest; without a key the persist is refused
+    // and the on-disk assertions below read defaults back.
+    ipc::main_password::set_file_storage_key_after_main_password_unlock([7u8; 32]);
 
     let state = AppState::new();
     let dir = tempdir().unwrap();
