@@ -42,6 +42,57 @@ async function signedFloorUrl(
 }
 
 describe("D1-backed sender-filter capability floor", () => {
+  it("implement sender_filter_capability_floor (migration 0032) worker write", async () => {
+    const recipientId = userId("migration0032");
+    const identity = await registerTestUser(SELF, recipientId);
+    const timestampMs = Date.now();
+    const requestId = "W".repeat(43);
+
+    const response = await SELF.fetch(
+      await signedFloorUrl(recipientId, identity.signingKey, {
+        requestId,
+        timestampMs,
+      }),
+    );
+    expect(response.status, await response.clone().text()).toBe(200);
+    const body = await response.json() as {
+      identity_anchor_sha256: string;
+      capability_version: number;
+      monotonic_version: number;
+      first_observed_at_ms: number;
+      request_timestamp_ms: number;
+      request_id: string;
+    };
+    expect(body).toMatchObject({
+      capability_version: 1,
+      monotonic_version: 1,
+      first_observed_at_ms: timestampMs,
+      request_timestamp_ms: timestampMs,
+      request_id: requestId,
+    });
+    expect(body.identity_anchor_sha256).toMatch(/^[0-9a-f]{64}$/);
+
+    const stored = await env.DB.prepare(
+      `SELECT identity_anchor_sha256,
+              capability_version,
+              monotonic_version,
+              first_observed_at_ms
+         FROM sender_filter_capability_floors
+        WHERE identity_anchor_sha256 = ?`,
+    ).bind(body.identity_anchor_sha256).first<{
+      identity_anchor_sha256: string;
+      capability_version: number;
+      monotonic_version: number;
+      first_observed_at_ms: number;
+    }>();
+    expect(stored).toEqual({
+      identity_anchor_sha256: body.identity_anchor_sha256,
+      capability_version: 1,
+      monotonic_version: 1,
+      first_observed_at_ms: timestampMs,
+    });
+  });
+
   it("test/integration/sender-filter-capability-floor.test.ts", async () => {
     const recipientId = userId("exact-name");
     const identity = await registerTestUser(SELF, recipientId);
