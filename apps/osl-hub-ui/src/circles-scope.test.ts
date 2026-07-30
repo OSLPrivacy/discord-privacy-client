@@ -22,7 +22,9 @@ describe("public Circles network scope", () => {
     expect(publicCircles).toContain('<span class="status-tag">Unavailable</span>');
     expect(publicCircles).toContain("Public Circles network unavailable.");
     expect(publicCircles).toContain("Private audience posts stay off");
-    expect(inbox).toContain('id === "circles" ? publicCirclesUnavailableMarkup()');
+    expect(source).toContain("function circlesDestinationContent");
+    expect(source).toContain("publicCirclesUnavailableMarkup()");
+    expect(inbox).toContain('if (id === "circles") return circlesDestinationContent()');
   });
 
   it("offers no action or protected-public claim for unavailable Circles", () => {
