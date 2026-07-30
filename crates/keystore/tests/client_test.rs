@@ -47,6 +47,31 @@ fn register_request_carries_correct_base64_keys() {
     .unwrap();
     assert!(ok, "registration_sig must verify against ik_ed25519_pub");
     assert!(req.rotation.is_none(), "Case A/B carries no rotation proof");
+    assert!(
+        req.rn_capabilities.is_none(),
+        "legacy builder must not advertise unsigned capabilities"
+    );
+}
+
+#[test]
+fn register_request_serializes_optional_rn_capabilities_bitmap() {
+    let id = generate_identity("alice".to_string());
+    let mut req = KeyServerClient::build_register_request(&id);
+
+    let legacy = serde_json::to_value(&req).unwrap();
+    assert!(
+        legacy.get("rn_capabilities").is_none(),
+        "absent capability bitmap must stay absent on the wire"
+    );
+
+    req.rn_capabilities = Some(keystore::client::RN_CAP_WIRE_RN);
+    let advertised = serde_json::to_value(&req).unwrap();
+    assert_eq!(
+        advertised
+            .get("rn_capabilities")
+            .and_then(serde_json::Value::as_u64),
+        Some(u64::from(keystore::client::RN_CAP_WIRE_RN))
+    );
 }
 
 /// GATE: REG_MSG byte format. This exact vector is mirrored in
