@@ -45,6 +45,7 @@ describe("OSL Mail view", () => {
     });
     expect(html).toContain("Standard email");
     expect(html).toContain("Ordinary email outside OSL protection");
+    expect(html).toContain('<span class="osl-mail-transit is-standard-email" title="Ordinary email outside OSL protection">Standard email</span>');
     expect(html.match(/Standard email/gu)).toHaveLength(2);
     expect(html.match(/is-standard-email/gu)).toHaveLength(2);
     expect(html).not.toContain("is-e2ee");

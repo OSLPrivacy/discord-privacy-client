@@ -22,10 +22,14 @@ function escape(value: string): string {
 function date(seconds: number): string {
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(seconds * 1_000));
 }
+const transitCopy = {
+  oslE2ee: { className: "is-e2ee", title: "Protected between verified OSL identities", label: "OSL protected" },
+  externalSmtp: { className: "is-standard-email", title: "Ordinary email outside OSL protection", label: "Standard email" },
+} as const;
+
 function transitBadge(transit: "oslE2ee" | "externalSmtp"): string {
-  return transit === "oslE2ee"
-    ? '<span class="osl-mail-transit is-e2ee" title="Protected between verified OSL identities">OSL protected</span>'
-    : '<span class="osl-mail-transit is-standard-email" title="Ordinary email outside OSL protection">Standard email</span>';
+  const copy = transitCopy[transit];
+  return `<span class="osl-mail-transit ${copy.className}" title="${copy.title}">${copy.label}</span>`;
 }
 function receipt(label: string, hash: string): string {
   return `<div class="osl-mail-receipt" role="status"><strong>${escape(label)}</strong><code>${escape(hash.slice(0, 12))}…</code></div>`;
