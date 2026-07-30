@@ -789,7 +789,6 @@ vmqa_named_test_tmpdir() {
 f1_live_windows_walkthrough_imports_nonempty_receipt() {
   local tmp good bad_empty bad_grant
   tmp="$(vmqa_named_test_tmpdir)"
-  trap 'rm -rf -- "$tmp"' RETURN
   good="$tmp/f1-good.json"
   bad_empty="$tmp/f1-empty.json"
   bad_grant="$tmp/f1-unbound.json"
@@ -803,16 +802,19 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
     ]}' >"$good"
   jq '.steps[2].facts.importedRows=0 | .steps[3].facts.importedRows=0' "$good" >"$bad_empty"
   jq '.steps[1].facts.grantBoundToRun=false' "$good" >"$bad_grant"
-  grade_f1_live_windows_walkthrough_import "$good" >/dev/null || return 1
-  grade_f1_live_windows_walkthrough_import "$bad_empty" >/dev/null 2>&1 && return 1
-  grade_f1_live_windows_walkthrough_import "$bad_grant" >/dev/null 2>&1 && return 1
+  grade_f1_live_windows_walkthrough_import "$good" >/dev/null \
+    || { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_empty" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_grant" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
+  rm -rf -- "$tmp"
   return 0
 }
 
 f2_real_vm_five_frame_walkthrough() {
   local tmp good bad_four bad_reused
   tmp="$(vmqa_named_test_tmpdir)"
-  trap 'rm -rf -- "$tmp"' RETURN
   good="$tmp/f2-good.json"
   bad_four="$tmp/f2-four.json"
   bad_reused="$tmp/f2-reused.json"
@@ -836,9 +838,13 @@ f2_real_vm_five_frame_walkthrough() {
     }' >"$good"
   jq '.steps=.steps[0:4]' "$good" >"$bad_four"
   jq '(.steps[] | .facts.pngSha256)=("d" * 64)' "$good" >"$bad_reused"
-  grade_f2_real_vm_five_frame_walkthrough "$good" >/dev/null || return 1
-  grade_f2_real_vm_five_frame_walkthrough "$bad_four" >/dev/null 2>&1 && return 1
-  grade_f2_real_vm_five_frame_walkthrough "$bad_reused" >/dev/null 2>&1 && return 1
+  grade_f2_real_vm_five_frame_walkthrough "$good" >/dev/null \
+    || { rm -rf -- "$tmp"; return 1; }
+  grade_f2_real_vm_five_frame_walkthrough "$bad_four" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
+  grade_f2_real_vm_five_frame_walkthrough "$bad_reused" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
+  rm -rf -- "$tmp"
   return 0
 }
 
@@ -924,6 +930,8 @@ main() {
     run) cmd_run "$@" ;;
     agent-alive) cmd_agent_alive "$@" ;;
     selftest) cmd_selftest "$@" ;;
+    f1_live_windows_walkthrough_imports_nonempty_receipt)
+      f1_live_windows_walkthrough_imports_nonempty_receipt "$@" ;;
     *) die_usage "unknown subcommand: $cmd" ;;
   esac
 }
