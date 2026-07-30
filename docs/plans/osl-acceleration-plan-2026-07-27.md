@@ -134,7 +134,8 @@ zero-byte, truncated, or missing result is failure—not “no findings.”
 - An unchanged screen for ten minutes with no attributable process is dead and must be reprompted.
 - Repeated sleep/poll loops with no branch or file movement are coordination spin; stop polling and
   enter explicit standby.
-- New mirror sessions are inspected and pinned by session ID before prompting. Never route by title.
+- New mirror sessions are inspected and pinned by session ID before prompting or resuming them.
+  Never route by title.
 
 ## Runtime discipline
 
