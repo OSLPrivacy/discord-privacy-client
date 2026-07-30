@@ -438,7 +438,7 @@ describe("fresh-account continuation", () => {
     expect(continuation).toContain("advanceOnboardingConnection(completedAppId)");
     expect(workspace.slice(finishStart, exitStart)).toContain("advanceOnboardingConnection(activeHomeAppId)");
     expect(workspace.slice(exitStart, nativeBackStart)).toContain("clearServiceOnboardingResume()");
-    expect(functionSource("completeOnboarding", "bindPasswordForm")).toContain("clearServiceOnboardingResume()");
+    expect(functionSource("completeSixStepOnboarding", "completeOnboarding")).toContain("clearServiceOnboardingResume()");
   });
 
   it("shows the recovery title without the removed grey subtitle", () => {
@@ -502,7 +502,7 @@ describe("fresh-account continuation", () => {
 
   it("uses the approved order and defers Scrub until after onboarding", () => {
     const binding = functionSource("bindOnboarding", "completeOnboarding");
-    const completion = functionSource("completeOnboarding", "bindPasswordForm");
+    const completion = functionSource("completeSixStepOnboarding", "completeOnboarding");
     const previous = functionSource("previousSetupRoute", "bindOnboarding");
     expect(binding).toMatch(/#continue-onboarding-privacy[\s\S]*?onboardingRoute = "sending"/);
     expect(binding).toMatch(/onboardingRoute !== "sending"[\s\S]*?canCompleteSetup\(setup\)[\s\S]*?onboardingRoute = "cover"/);
@@ -524,6 +524,27 @@ describe("fresh-account continuation", () => {
     expect(binding).not.toContain("initializeOnboardingScrub");
     expect(completion.indexOf("await loadNativeApps()")).toBeGreaterThan(completion.indexOf("await saveOnboardingPreferences"));
     expect(completion).toContain('route = "home"');
+  });
+
+  it("completes first run into the useful Balanced default", () => {
+    const normalizer = functionSource("balancedFirstRunSetup", "completeSixStepOnboarding");
+    const completion = functionSource("completeSixStepOnboarding", "completeOnboarding");
+    const wrapper = functionSource("completeOnboarding", "bindPasswordForm");
+    expect(normalizer).toContain('state.sendMode === "manual" ? "clipboard" : state.sendMode');
+    expect(normalizer).toContain('placementMode: "atomic"');
+    expect(normalizer).toContain("needsRiskAcceptance(sendMode) && state.acceptedRisk && state.acceptedRiskForMode === sendMode");
+    expect(completion).toContain("if (!canCompleteSetup(completedSetup)) throw new Error");
+    expect(completion).toContain("setup = completedSetup");
+    expect(completion).toContain("saveOnboardingPreferences({ onboardingComplete: true, setup, showPlaintextPreview: true, windowCaptureEnabled })");
+    expect(completion).toContain("onboardingComplete = true");
+    expect(completion).toContain("clearServiceOnboardingResume()");
+    expect(completion).toContain("resetOnboardingBranch()");
+    expect(completion).toContain("resetOnboardingConnections()");
+    expect(completion).toContain("await refreshIdentityScopedState()");
+    expect(completion).toContain("nativeApps = await loadNativeApps().catch(() => nativeApps)");
+    expect(completion).toContain('route = "home"');
+    expect(completion).toContain("clearPrivacyScanState()");
+    expect(wrapper).toMatch(/try \{[\s\S]*?await completeSixStepOnboarding\(\);[\s\S]*?\} catch/);
   });
 
   it("offers Pro activation after fresh account creation without storing the code in the renderer", () => {
