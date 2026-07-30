@@ -1,10 +1,23 @@
 use rusqlite::{params, Connection};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use store::{MessageStore, StoredMessage};
 use tempfile::TempDir;
 
 const SECRET: &[u8; 32] = b"field-census-secret-32-bytes!!xx";
+const BOUNDARY_MESSAGE_STORE_RUNTIME: &str = "message_store_runtime";
+const BOUNDARY_SCHEMA_V8_FIELD_CENSUS: &str = "schema_v8_field_census";
+const BOUNDARY_PHYSICAL_MEDIA_MAIN_DB: &str = "physical_media_main_db";
+const BOUNDARY_PHYSICAL_MEDIA_WAL: &str = "physical_media_wal";
+const BOUNDARY_BACKUP_ROLLBACK_COPIES: &str = "backup_rollback_copies";
+const CENSUS_BOUNDARY_PROOFS: [&str; 5] = [
+    BOUNDARY_MESSAGE_STORE_RUNTIME,
+    BOUNDARY_SCHEMA_V8_FIELD_CENSUS,
+    BOUNDARY_PHYSICAL_MEDIA_MAIN_DB,
+    BOUNDARY_PHYSICAL_MEDIA_WAL,
+    BOUNDARY_BACKUP_ROLLBACK_COPIES,
+];
 
 fn message(id: &str, channel: &str, sender: &str, osl: &str, body: &str, at: i64) -> StoredMessage {
     StoredMessage {
@@ -134,6 +147,20 @@ fn assert_artifact_set_absent(
     }
 }
 
+fn assert_exact_boundary_proof_set(actual: &[&'static str]) {
+    let expected = CENSUS_BOUNDARY_PROOFS
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    let actual = actual.iter().copied().collect::<HashSet<_>>();
+    assert_eq!(
+        actual.len(),
+        CENSUS_BOUNDARY_PROOFS.len(),
+        "at-rest census closure must keep five distinct named boundary proofs"
+    );
+    assert_eq!(actual, expected);
+}
+
 #[test]
 fn schema_v8_field_census_and_raw_wal_plaintext_guards_are_nonvacuous() {
     let tmp = TempDir::new().unwrap();
@@ -184,24 +211,27 @@ fn schema_v8_field_census_and_raw_wal_plaintext_guards_are_nonvacuous() {
     let live_artifacts = read_named_paths(&artifacts);
     let backup_artifacts = copy_named_paths(&artifacts, backup.path());
 
-    let boundary_proofs = [
-        "message_store_runtime",
-        "schema_v8_field_census",
-        "physical_media_main_db",
-        "physical_media_wal",
-        "backup_rollback_copies",
-    ];
-    assert_eq!(
-        boundary_proofs
-            .iter()
-            .copied()
-            .collect::<std::collections::HashSet<_>>()
-            .len(),
-        5,
-        "at-rest census closure must keep five distinct named boundary proofs"
-    );
+    assert_exact_boundary_proof_set(&[
+        BOUNDARY_MESSAGE_STORE_RUNTIME,
+        BOUNDARY_SCHEMA_V8_FIELD_CENSUS,
+        BOUNDARY_PHYSICAL_MEDIA_MAIN_DB,
+        BOUNDARY_PHYSICAL_MEDIA_WAL,
+        BOUNDARY_BACKUP_ROLLBACK_COPIES,
+    ]);
 
     let conn = Connection::open(&artifacts[0]).unwrap();
+    let schema_version: Vec<u8> = conn
+        .query_row(
+            "SELECT value FROM _meta WHERE key='schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        schema_version,
+        8u32.to_le_bytes(),
+        "{BOUNDARY_SCHEMA_V8_FIELD_CENSUS} must inspect schema v8"
+    );
     assert_eq!(
         table_columns(&conn, "messages"),
         [
@@ -304,20 +334,25 @@ fn schema_v8_field_census_and_raw_wal_plaintext_guards_are_nonvacuous() {
     ] {
         assert_absent_from_store_files(tmp.path(), label, needle);
         assert_named_artifact_absent(
-            "physical_media_main_db",
+            BOUNDARY_PHYSICAL_MEDIA_MAIN_DB,
             &live_artifacts,
             "messages.sqlite",
             label,
             needle,
         );
         assert_named_artifact_absent(
-            "physical_media_wal",
+            BOUNDARY_PHYSICAL_MEDIA_WAL,
             &live_artifacts,
             "messages.sqlite-wal",
             label,
             needle,
         );
-        assert_artifact_set_absent("backup_rollback_copies", &backup_artifacts, label, needle);
+        assert_artifact_set_absent(
+            BOUNDARY_BACKUP_ROLLBACK_COPIES,
+            &backup_artifacts,
+            label,
+            needle,
+        );
     }
     assert_absent_from_store_files(
         tmp.path(),
@@ -325,21 +360,21 @@ fn schema_v8_field_census_and_raw_wal_plaintext_guards_are_nonvacuous() {
         &decrypted_at.to_le_bytes(),
     );
     assert_named_artifact_absent(
-        "physical_media_main_db",
+        BOUNDARY_PHYSICAL_MEDIA_MAIN_DB,
         &live_artifacts,
         "messages.sqlite",
         "message timestamp encoding",
         &decrypted_at.to_le_bytes(),
     );
     assert_named_artifact_absent(
-        "physical_media_wal",
+        BOUNDARY_PHYSICAL_MEDIA_WAL,
         &live_artifacts,
         "messages.sqlite-wal",
         "message timestamp encoding",
         &decrypted_at.to_le_bytes(),
     );
     assert_artifact_set_absent(
-        "backup_rollback_copies",
+        BOUNDARY_BACKUP_ROLLBACK_COPIES,
         &backup_artifacts,
         "message timestamp encoding",
         &decrypted_at.to_le_bytes(),
