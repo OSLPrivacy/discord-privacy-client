@@ -1,4 +1,5 @@
 import { readFileSync, readdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -191,6 +192,8 @@ describe("bundled preview security boundary", () => {
       "allow-install-hub-update",
       "allow-open-hub-releases-page",
       "allow-list-native-apps",
+      "allow-native-app-takeover-requires-consent",
+      "allow-discord-marker-available",
       "allow-install-native-app",
       "allow-get-mullvad-status",
       "allow-install-mullvad",
@@ -213,9 +216,6 @@ describe("bundled preview security boundary", () => {
       "allow-focus-default-browser-companion",
       "allow-detach-default-browser-companion",
       "allow-host-native-app-window",
-      // Read-only consent probe. It returns a boolean from local native state
-      // and performs no takeover or cross-app write.
-      "allow-native-app-takeover-requires-consent",
       "allow-resize-native-app-window",
       "allow-focus-native-app-window",
       "allow-detach-native-app-window",
@@ -259,6 +259,7 @@ describe("bundled preview security boundary", () => {
       "allow-export-hub-friend-code",
       "allow-add-hub-friend",
       "allow-verify-hub-friend-safety-number",
+      "allow-remove-hub-friend",
       "allow-list-hub-people",
       "allow-set-hub-friend-nickname",
       "allow-set-active-hub-friend-permission",
@@ -276,6 +277,7 @@ describe("bundled preview security boundary", () => {
       "allow-burn-hub-service-account",
       "allow-burn-active-hub-context",
     ]);
+    expect(new Set(capability.permissions).size).toBe(capability.permissions.length);
     expect(capability.permissions).not.toEqual(
       expect.arrayContaining([
         expect.stringMatching(/shell/i),
@@ -296,6 +298,9 @@ describe("bundled preview security boundary", () => {
       ["allow-focus-default-browser-companion", "focus_default_browser_companion"],
       ["allow-detach-default-browser-companion", "detach_default_browser_companion"],
       ["allow-copy-hub-friend-invite", "copy_hub_friend_invite"],
+      ["allow-native-app-takeover-requires-consent", "native_app_takeover_requires_consent"],
+      ["allow-discord-marker-available", "discord_marker_available"],
+      ["allow-remove-hub-friend", "remove_hub_friend"],
     ] as const) {
       expect(handler).toContain(`${command},`);
       expect(permissions).toContain(`identifier = "${permission}"`);
@@ -657,6 +662,30 @@ describe("bundled preview security boundary", () => {
       ).toBe(false);
   });
 
+  it("public 'independently reviewed' claim gate unlocked", () => {
+    const allowlist = readRelative("../../../docs/design/osl-public-claim-allowlist.md");
+
+    expect(allowlist).toContain(
+      "A narrow SESSION_RESET ratchet remediation was independently reviewed and signed off.",
+    );
+    expect(allowlist).toContain(
+      "This was source review of one remediation, not a third-party cryptographic audit of OSL.",
+    );
+
+    const gateScript = fileURLToPath(
+      new URL("../../../scripts/check-app-claims.mjs", import.meta.url),
+    );
+    const output = execFileSync(process.execPath, [gateScript, "--self-test"], {
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+    });
+
+    expect(output).toContain("PASS passes narrow independently reviewed remediation claim");
+    expect(output).toContain("PASS catches narrow independently reviewed claim without limitation");
+    expect(output).toContain("PASS catches broad independently reviewed encryption claim");
+    expect(output).toContain("PASS catches independently reviewed claim that implies outside firm");
+  });
+
   it("does not describe local burn cleanup as remote wrapped-key destruction", () => {
     const main = readRelative("../../osl-hub/src/main.rs");
     const security = readRelative("../../osl-hub/src/security.rs");
@@ -707,10 +736,12 @@ describe("bundled preview security boundary", () => {
       remoteBlobDeleteAttempted: true,
     });
 
-    // Wrapped-key fetch is live for attachment open. Burn must still not be
-    // described as a server-held wrapped-key destruction path, and production
-    // still must not construct or upload wrapped keys from this route.
-    expect(productionUsesRemoteWrappedKeyUpload(productionRust)).toBe(false);
+    // Wrapped-key upload is live for native-overlay relay, and fetch is live
+    // for attachment open. Burn must still not be described as a server-held
+    // wrapped-key destruction path.
+    expect(productionUsesRemoteWrappedKeyUpload(productionRust)).toBe(true);
+    expect(productionUsesRemoteWrappedKeyUpload(security)).toBe(false);
+    expect(productionUsesRemoteWrappedKeyUpload(commands)).toBe(false);
     expect(rustProductionPrefix(productionRust)).toMatch(/\.fetch_wrapped_key\s*\(/u);
 
     const assertBurnTruth = (
@@ -721,16 +752,19 @@ describe("bundled preview security boundary", () => {
         "best-effort deletion of each known OSL cipher-store blob",
       );
       expect(securitySource).toContain(
-        "Production has no server-held per-message wrapped-key lifecycle",
+        "Burn does not spend or delete native-overlay server-held wrapped-key",
       );
       expect(securitySource).toContain(
-        "does not erase connected-service/provider copies or destroy the",
+        "does not erase connected-service/provider copies or",
+      );
+      expect(securitySource).toContain(
+        "destroy the recipient's long-term decryption authority",
       );
       expect(commandSource).toContain(
         "That column is",
       );
       expect(commandSource).toContain(
-        "local store state, not evidence of the unwired server wrapped-key service",
+        "local store state, not a native-overlay server wrapped-key row",
       );
       expect(commandSource).toContain(
         "it is not remote wrapped-key deletion or cryptographic erasure",
@@ -1192,7 +1226,7 @@ describe("bundled preview security boundary", () => {
     }
   });
 
-  it("keeps wrapped-key upload classified as implemented-unwired", () => {
+  it("keeps wrapped-key upload scoped to native overlay relay", () => {
     const wrappedKey = readRelative("../../../crates/keystore/src/wrapped_key.rs");
     const signedGet = readRelative("../../../crates/keystore/src/signed_get.rs");
     const keystoreClient = readRelative("../../../crates/keystore/src/client.rs");
@@ -1212,8 +1246,8 @@ describe("bundled preview security boundary", () => {
         rustProductionPrefix(source),
       );
 
-    // Positive implementation controls keep removal of the dormant subsystem
-    // from satisfying the zero-production-reference assertion.
+    // Positive implementation controls keep removal of the signing subsystem
+    // from satisfying the production-scope assertions.
     for (const implementationSymbol of [
       "pub struct WrappedKeyUpload",
       "pub fn canonical_wrapped_key_post_bytes(",
@@ -1253,34 +1287,50 @@ describe("bundled preview security boundary", () => {
     expect(wire).toContain("None,\n            &recip.mlkem_pub,");
 
     expect(productionReferencesWrappedKeyLifecycle(productionRust)).toBe(true);
-    expect(rustProductionPrefix(productionRust)).not.toMatch(
+    expect(rustProductionPrefix(productionRust)).toMatch(
       /(?:\.post_wrapped_key\s*\(|\bWrappedKeyUpload\s*\{)/u,
     );
 
-    const assertUnwiredWrappedKeyTruth = (
+    const brokerProduction = rustProductionPrefix(broker);
+    const producer = brokerProduction
+      .split("fn prepare_peer_inbox_text(")[1]
+      ?.split("fn split_native_overlay_text(")[0] ?? "";
+    const helper = brokerProduction
+      .split("fn post_native_overlay_wrapped_key(")[1]
+      ?.split("fn prepare_direct_manual_v3(")[0] ?? "";
+    const wrappedPost = producer.indexOf("post_native_overlay_wrapped_key(");
+    const relayPost = producer.indexOf(
+      ".post_control_inbox(&identity, &manual.peer_osl_user_id, &scope_id, &bundle)",
+    );
+    expect(wrappedPost).toBeGreaterThanOrEqual(0);
+    expect(relayPost).toBeGreaterThanOrEqual(0);
+    expect(wrappedPost).toBeLessThan(relayPost);
+    expect(helper).toContain(".post_wrapped_key(identity, &upload)");
+
+    const assertScopedWrappedKeyTruth = (
       postSource: string,
       getSource: string,
     ): void => {
       expect(postSource).toContain(
-        "Wrapped-key upload signing primitives (implemented-unwired)",
+        "Wrapped-key upload signing primitives",
       );
       expect(postSource).toContain(
-        "neither construct\n//! [`WrappedKeyUpload`] nor call",
+        "constructs [`WrappedKeyUpload`] only for the native",
       );
       expect(postSource).toContain(
-        "do not establish a live server-held",
+        "not remote\n//! burn key destruction or a product-wide attachment lifecycle",
       );
       expect(getSource).toContain(
-        "Canonical keyserver GET signing primitives (implemented-unwired)",
+        "Canonical keyserver GET signing primitives",
       );
       expect(getSource).toContain(
-        "call neither the\n//! prekey-bundle nor wrapped-key GET client methods",
+        "uses wrapped-key GET for bounded attachment open",
       );
       expect(getSource).toContain(
-        "do not\n//! establish a live destructive-read flow",
+        "not by themselves establish a live destructive-read flow",
       );
     };
-    assertUnwiredWrappedKeyTruth(wrappedKey, signedGet);
+    assertScopedWrappedKeyTruth(wrappedKey, signedGet);
 
     for (const syntheticProductionReference of [
       "let upload = WrappedKeyUpload { content_id, ..template };",
@@ -1298,10 +1348,10 @@ describe("bundled preview security boundary", () => {
     }
 
     expect(() =>
-      assertUnwiredWrappedKeyTruth(
+      assertScopedWrappedKeyTruth(
         wrappedKey.replace(
-          "Wrapped-key upload signing primitives (implemented-unwired)",
-          "Live wrapped-key upload authorization",
+          "constructs [`WrappedKeyUpload`] only for the native",
+          "constructs [`WrappedKeyUpload`] for every",
         ),
         signedGet,
       ),

@@ -1392,7 +1392,8 @@ function countNewlinesBefore(text, index) {
 }
 
 // Section D bans '"Audited" / "reviewed" / "independently verified"' as SECURITY
-// claims. "Reviewed" is also ordinary English: the first run of this gate
+// claims, except the exact b90 source-review claim documented in the public
+// allowlist. "Reviewed" is also ordinary English: the first run of this gate
 // flagged "Selected apps reviewed" and "Every batch is reviewed and confirmed",
 // which are about the *user* reviewing and have nothing to do with an audit.
 //
@@ -1403,6 +1404,12 @@ const CONTEXT_GATED_TERMS = new Set(["reviewed", "independently verified"]);
 const SECURITY_CONTEXT_RE =
   /\b(security|securely|crypto|cryptograph\w*|encryption|encrypted|protocol|third[- ]party|outside firm|externally|independent\w*|auditor\w*|penetration|pentest)\b/i;
 const SECURITY_CONTEXT_WINDOW = 90;
+const ALLOWED_PUBLIC_REVIEW_CLAIM =
+  "a narrow session_reset ratchet remediation was independently reviewed and signed off";
+const ALLOWED_PUBLIC_REVIEW_LIMIT =
+  "this was source review of one remediation, not a third-party cryptographic audit of osl";
+const PUBLIC_REVIEW_CLAIM_DISALLOWED_CONTEXT_RE =
+  /\b(?:audit|audited|auditor|cryptograph\w*|encryption|encrypted|outside firm|provider|discord|approval|approved|penetration|pentest)\b/i;
 
 function inSecurityContext(text, index, length) {
   const start = Math.max(0, index - SECURITY_CONTEXT_WINDOW);
@@ -1410,6 +1417,34 @@ function inSecurityContext(text, index, length) {
   const before = text.slice(start, index);
   const after = text.slice(index + length, end);
   return SECURITY_CONTEXT_RE.test(before) || SECURITY_CONTEXT_RE.test(after);
+}
+
+function sentenceAround(text, index) {
+  const beforeBreaks = [".", "!", "?", "\n", ";"].map((mark) => text.lastIndexOf(mark, index));
+  const afterBreaks = [".", "!", "?", "\n", ";"]
+    .map((mark) => text.indexOf(mark, index))
+    .filter((position) => position !== -1);
+  const start = Math.max(-1, ...beforeBreaks) + 1;
+  const end = afterBreaks.length === 0 ? text.length : Math.min(...afterBreaks);
+  return text.slice(start, end).trim();
+}
+
+function publicReviewClaimAllowed(text, index, phrase) {
+  if (phrase !== "reviewed") {
+    return false;
+  }
+
+  const claimIndex = text.indexOf(ALLOWED_PUBLIC_REVIEW_CLAIM);
+  if (
+    claimIndex === -1 ||
+    index < claimIndex ||
+    index >= claimIndex + ALLOWED_PUBLIC_REVIEW_CLAIM.length ||
+    !text.includes(ALLOWED_PUBLIC_REVIEW_LIMIT)
+  ) {
+    return false;
+  }
+
+  return !PUBLIC_REVIEW_CLAIM_DISALLOWED_CONTEXT_RE.test(sentenceAround(text, index));
 }
 
 function analyseFragments(file, fragments, bannedPhrases) {
@@ -1434,7 +1469,11 @@ function analyseFragments(file, fragments, bannedPhrases) {
         if (attachmentClaim) {
           exactAttachmentRanges.push({ start: index, end });
         }
-        if (!gatedOut && !limited) {
+        if (
+          !gatedOut &&
+          !limited &&
+          !publicReviewClaimAllowed(lower, index, phrase.normalized)
+        ) {
           const sourceIndex = normalized.sourceIndexes[index] ?? 0;
           violations.push({
             file,
@@ -1734,6 +1773,30 @@ async function runSelfTest() {
     {
       name: "catches reviewed as a security claim about OSL",
       text: "OSL has been reviewed by an outside firm.",
+      shouldFlag: true,
+    },
+    {
+      name: "passes narrow independently reviewed remediation claim",
+      text:
+        "A narrow SESSION_RESET ratchet remediation was independently reviewed and signed off. "
+        + "This was source review of one remediation, not a third-party cryptographic audit of OSL.",
+      shouldFlag: false,
+    },
+    {
+      name: "catches narrow independently reviewed claim without limitation",
+      text: "A narrow SESSION_RESET ratchet remediation was independently reviewed and signed off.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches broad independently reviewed encryption claim",
+      text: "OSL encryption was independently reviewed.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches independently reviewed claim that implies outside firm",
+      text:
+        "A narrow SESSION_RESET ratchet remediation was independently reviewed and signed off by an outside firm. "
+        + "This was source review of one remediation, not a third-party cryptographic audit of OSL.",
       shouldFlag: true,
     },
     {

@@ -1,14 +1,15 @@
-//! Wrapped-key upload signing primitives (implemented-unwired).
+//! Wrapped-key upload signing primitives.
 //!
 //! The canonical encoding mirrors
 //! `keyserver-cf/src/lib/canonical.ts::canonicalWrappedKeyPostBytes`. The
 //! helper includes every modeled upload field plus a short-lived timestamp in
 //! bytes signed by the supplied sender identity.
 //!
-//! Current Hub/IPC and legacy Tauri production sources neither construct
-//! [`WrappedKeyUpload`] nor call the wrapped-key post/fetch client methods.
-//! These primitives therefore do not establish a live server-held
-//! per-message wrapped-key lifecycle.
+//! Current Hub production constructs [`WrappedKeyUpload`] only for the native
+//! overlay relay text path in `apps/osl-hub/src/broker.rs`. Legacy Tauri/IPC
+//! v3 message preparation still does not construct uploads. This establishes a
+//! server-held key-share transport for that relay path only; it is not remote
+//! burn key destruction or a product-wide attachment lifecycle.
 
 use crate::identity::Identity;
 use crypto::ed25519;

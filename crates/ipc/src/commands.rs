@@ -8465,9 +8465,9 @@ fn format_iso8601_secs(unix_secs: i64) -> Option<String> {
 /// Effects:
 /// - Shreds matching local `messages.sqlite` rows: ciphertext and nonce are
 ///   zeroed and the legacy `wrapped_key` column is cleared. That column is
-///   local store state, not evidence of the unwired server wrapped-key service.
-///   This removes this store's cached history; it does not destroy a
-///   per-message key or anyone's long-term decryption authority.
+///   local store state, not a native-overlay server wrapped-key row. This
+///   removes this store's cached history; it does not destroy a per-message key
+///   or anyone's long-term decryption authority.
 /// - **Does not** mutate any peer_map entry. Peer-side burn
 ///   tracking lives in their burned_scopes; ours is implicit
 ///   via the shredded local rows + the scope no longer being in

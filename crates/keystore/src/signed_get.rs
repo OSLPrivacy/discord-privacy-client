@@ -1,12 +1,12 @@
-//! Canonical keyserver GET signing primitives (implemented-unwired).
+//! Canonical keyserver GET signing primitives.
 //!
 //! A client-wide bearer is not an identity credential. These helpers bind a
 //! supplied requester, intended recipient, concrete read target, and
 //! short-lived timestamp in the bytes they sign.
 //!
-//! Current Hub/IPC and legacy Tauri production sources call neither the
-//! prekey-bundle nor wrapped-key GET client methods. These primitives do not
-//! establish a live destructive-read flow.
+//! Current IPC production uses wrapped-key GET for bounded attachment open;
+//! prekey-bundle GET remains outside production messaging. These primitives do
+//! not by themselves establish a live destructive-read flow.
 
 use crate::identity::Identity;
 use crypto::ed25519;

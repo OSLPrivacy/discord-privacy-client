@@ -9,7 +9,7 @@
 > the claim-eligibility half of master §20.2 and §8.2.
 > Authority: [`osl-master-decision-2026-07-26.md`](osl-master-decision-2026-07-26.md).
 > Status vocabulary: master §0.3. Evidence detail: [`../THREAT_MODEL.md`](../THREAT_MODEL.md).
-> Claim-gate source SHA-256: `12906c1b71a5dcd96f318420d1f630c2233690f7ea10306257682efb44beae91`
+> Claim-gate source SHA-256: `e9e87c8729cfaabc5f804c3dc74910c6703fe87f7e97d7355d8549830446ceb9`
 
 ## How to use it
 
@@ -203,7 +203,7 @@ Each is listed with why, so nobody re-derives it and reintroduces the phrase.
 | **"Disappears forever" / "permanently undecryptable" / "gone for good"** | Same root cause as above, plus: v3 wraps to *long-term* recipient keys with no one-time prekeys (`crates/ipc/src/wire_v2.rs:722-729`), so a recipient's keys decrypt their entire history indefinitely. Also unfixable in principle for screenshots and copies — master §8.4 requires Burn copy to separate local erasure, cooperative peer request, host-platform deletion attempt, and unpreventable copies. |
 | **"Works on Gmail / Discord"** as a general capability claim | Discord is the reference adapter and is `runtime-proven` on QA builds only — see section C. Gmail has no adapter at all; Outlook is scoped as OSL Mail, a separate staged program (master §7.8, §9). Naming a service you have not qualified is exactly the "logo implies support" failure master §8.6 prohibits. Per-service claims must come from the versioned support matrix (master §8.4), not from this general form. |
 | **"Provider-tested" / "verified by Discord" / "works with Discord's approval"** | No provider has tested, reviewed, or approved anything. The opposite is closer to true: master §5 and THREAT_MODEL "Discord ToS" note that using OSL may violate Discord's Terms of Service and may get the account banned. Implying provider sanction is both false and harmful to users making a risk decision. |
-| **"Audited" / "reviewed" / "independently verified"** | No audit has been commissioned. THREAT_MODEL "Audit status" requires the *opposite* disclosure in onboarding: the construction is custom and unaudited. The only completed review is an internal source audit that found 5 critical and 2 high findings (`docs/security/osl-audit-2026-07-26-codex.md`). |
+| **"Audited" / "independently verified" / broad security "reviewed" claims** | No third-party cryptographic audit has been commissioned. THREAT_MODEL "Audit status" requires the *opposite* disclosure in onboarding: the construction is custom and unaudited. The narrow b90 exception is eligible only as: "A narrow SESSION_RESET ratchet remediation was independently reviewed and signed off." It must be paired with: "This was source review of one remediation, not a third-party cryptographic audit of OSL." Evidence: `docs/reports/ratchet-lane-2026-07-26.md` section "Reviewer Sign-Off: b15-b20 Findings Closed", `apps/osl-hub/tests/ratchet_lane_signoff_b36.rs`, and `crates/ipc/src/commands.rs` test `remediate_independent_review_findings`. Do not turn that into a provider, outside-firm, independent-verification, penetration-test, or product-wide audit claim. |
 | **"Military-grade" / "unbreakable" / "NSA-proof"** | Meaningless or false. THREAT_MODEL "Out of scope": OSL is explicitly *not* intended to resist targeted federal investigation, and points such users to Signal, Briar or Cwtch. |
 | **"Screenshot-proof" / "prevents screenshots"** | Overstates A5. Capture protection is a platform affordance that can silently fail and cannot stop a camera. |
 | **"Discord attachment scanning defeated"** / **"defeats Discord attachment scanning"** / **"Discord cannot scan attachments"** / **"Discord sees only decoys"** / **"Discord's attachment scanner is defeated by OSL"** / **"OSL bypasses Discord's attachment inspection"** / **"Discord receives harmless cover files instead of the attachment"** / **"Uploaded files are opaque to Discord's scanners"** | These assert the intended ciphertext/decoy transport property as a shipping fact. Attachment transport is still `Planned`; no named release build proves the app-to-Discord path, and migration `0010` plus its matching recovery Worker are inactive. A historical source-unbound Worker returning 201 for one known-length part upload does not establish what Discord received or what the release app can send. Equivalent claims that Discord inspection is *defeated, solved, bypassed, neutralized, blocked, evaded, thwarted, circumvented, prevented,* or *rendered ineffective* are also ineligible, as are claims that Discord receives only a *cover, placeholder, stand-in, dummy, surrogate, fake,* or *decoy*, or that the real upload is *opaque, unreadable,* or reveals nothing to its scanner. |
@@ -351,7 +351,9 @@ Two precision rules were required to make it usable, both learned from its first
   but the first run flagged "Selected apps reviewed" and "Every batch is reviewed and confirmed" —
   the user reviewing a batch. Those single words now fire only near security context (osl,
   encryption, protocol, independently, third-party). Multi-word section D phrases stay absolute:
-  "cryptographic burn" is never innocent.
+  "cryptographic burn" is never innocent. The b90 public-review unlock is deliberately narrower:
+  the app gate admits only the exact `SESSION_RESET` remediation sentence when the exact
+  one-remediation, not-third-party-audit limitation is in the same scanned fragment.
 
 **The crawler now exists.** `scripts/check-claims.mjs` in the website repository asserts that no
 page contains a section D phrase, that no bare price appears outside the pricing manifest, that

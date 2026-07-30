@@ -2258,11 +2258,12 @@ pub fn burn_scope(
     // Notice LAST. Everything above is unilateral local-row cleanup plus
     // best-effort deletion of each known OSL cipher-store blob; failures remain
     // counted in `remote_blobs_deleted` / `remote_cleanup_complete` below.
-    // Production has no server-held per-message wrapped-key lifecycle.
-    // Successfully removing an OSL blob blocks a later fetch through that store,
-    // but does not erase connected-service/provider copies or destroy the
-    // recipient's long-term decryption authority. The cooperative notice covers
-    // peer-side residue and its queue failure is reported rather than propagated.
+    // Burn does not spend or delete native-overlay server-held wrapped-key
+    // rows. Successfully removing an OSL blob blocks a later fetch through
+    // that store, but does not erase connected-service/provider copies or
+    // destroy the recipient's long-term decryption authority. The cooperative
+    // notice covers peer-side residue and its queue failure is reported rather
+    // than propagated.
     let (revocations_queued, revocation_queue_complete) = queue_scope_revocations_locked(
         core,
         &scope.storage_key(),
