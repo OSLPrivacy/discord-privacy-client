@@ -20,8 +20,6 @@ import { isTauriRuntime, loadOnboardingPreferences, saveOnboardingPreferences } 
 import { lastBackendFailure, recordBackendFailure } from "./backend-failure";
 import {
   escapeHtml,
-  beginProtectedBrowserImport,
-  finishProtectedBrowserImport,
   closeEmbeddedServiceHost,
   configuredTopStripApps,
   detachDefaultBrowserCompanion,
@@ -29,7 +27,9 @@ import {
   embeddedAccountsForHomeApp,
   focusNativeAppWindow,
   focusDefaultBrowserCompanion,
-  loadBrowserImports,
+  grantBrowserProfileConsent,
+  listBrowserProfilesForConsent,
+  loadDetectedBrowserFootprint,
   loadDefaultBrowserCompanionStatus,
   homeAppsFromServices,
   hostBrowserCompanion,
@@ -37,8 +37,6 @@ import {
   hostMullvadWindow,
   installNativeApp,
   installMullvad,
-  loadFirefoxStatus,
-  installFirefox,
   loadLinkedServices,
   loadMullvadStatus,
   loadNativeApps,
@@ -51,13 +49,14 @@ import {
   resizeNativeAppWindow,
   resizeMullvadWindow,
   restoreMullvadWindow,
+  revokeDetectedBrowserFootprint,
+  scanConsentedBrowserProfile,
   setupEmbeddedHomeApp,
   type EmailProvider,
   type DiscordSessionMode,
   type NativeDiscordTakeover,
   type NativeSessionMode,
   type EmbeddedServiceHost,
-  type FirefoxStatus,
   type HomeAppCatalogEntry,
   type HomeAppId,
   type LinkedService,
@@ -66,7 +65,9 @@ import {
   type NativeAppId,
   type BrowserCompanionStatus,
   type BrowserImportId,
-  type BrowserImportStatus,
+  type BrowserFootprintHydration,
+  type BrowserProfileDescriptor,
+  type NativeBrowserImportReceipt,
   type ServiceId,
   AndroidSurface,
 } from "./services";
@@ -229,25 +230,26 @@ let mullvadWindowHosted = false;
 let mullvadReturnRoute: "onboarding" | "home" = "home";
 let privacyProtectionReviewOpen = false;
 let activityAttentionReviewOpen = false;
-let browserImports: BrowserImportStatus[] = [];
+let browserProfiles: BrowserProfileDescriptor[] = [];
+type BrowserAvailability = { id: BrowserImportId; displayName: string; installed: true };
+let browserImports: BrowserAvailability[] = [];
 let browserReadinessBusy = false;
 let browserImportBusy = false;
 let browserImportFailureNotice = "";
-let selectedBrowserImportIds = new Set<BrowserImportStatus["id"]>();
-let browserImportQueue: BrowserImportStatus["id"][] = [];
+let selectedBrowserProfileKeys = new Set<string>();
+let browserImportQueue: BrowserImportId[] = [];
 let browserImportQueueIndex = 0;
-let browserImportAwaitingConfirmation = false;
 let browserImportSourceSelected = false;
 let browserImportRunEpoch = 0;
 let browserImportCancelling = false;
-let browserImportOperation: ReturnType<typeof beginProtectedBrowserImport> | null = null;
-let firefoxStatus: FirefoxStatus = { availability: "unavailable" };
 let defaultBrowserCompanionStatus: BrowserCompanionStatus = { status: "unsupported", browserId: null, displayName: null, reason: "platformUnsupported", captureProtected: false, containment: "bestEffort" };
 let useDefaultBrowserCompanion = localStorage.getItem("osl-default-browser-companion-v1") === "true";
 let activeDefaultBrowserCompanion = false;
 let savedAccountsReady = false;
 let preferredBrowserId: BrowserImportId | null = null;
 let completedBrowserImportIds = new Set<BrowserImportId>();
+let browserFootprintImports: NativeBrowserImportReceipt[] = [];
+let browserFootprintOwner: string | null = null;
 let savedAccountMode: SavedAccountMode = "ask";
 let savedNativeApps = new Set<NativeAppId>();
 let discordSessionMode: DiscordSessionMode = "existingSession";
@@ -518,10 +520,6 @@ const bootCoreDeadlineMs = 4_000;
 const bootPreferenceDeadlineMs = 1_500;
 const bootSupportDeadlineMs = 2_000;
 const nativeCatalogDecisionDeadlineMs = 8_000;
-const firefoxInstallDecisionDeadlineMs = 120_000;
-// The backend fork flips this only after begin_protected_browser_import ships
-// with the exact selected-ID contract declared in services.ts.
-const protectedBrowserImportReady = true;
 
 type OnboardingBranch = {
   detected: boolean;
@@ -1024,6 +1022,24 @@ function supportedBrowserId(raw: unknown): raw is BrowserImportId {
   return typeof raw === "string" && ["chrome", "edge", "firefox", "brave", "opera", "duckduckgo"].includes(raw);
 }
 
+function browserProfileKey(profile: BrowserProfileDescriptor): string {
+  return `${profile.browserId}:${encodeURIComponent(profile.profile)}`;
+}
+
+function setBrowserProfiles(profiles: BrowserProfileDescriptor[]): void {
+  browserProfiles = profiles;
+  const displayNames: Record<BrowserImportId, string> = {
+    chrome: "Chrome",
+    edge: "Edge",
+    firefox: "Firefox",
+    brave: "Brave",
+    opera: "Opera",
+    duckduckgo: "DuckDuckGo",
+  };
+  browserImports = [...new Set(profiles.map((profile) => profile.browserId))]
+    .map((id) => ({ id, displayName: displayNames[id], installed: true as const }));
+}
+
 function persistBrowserAccountPreferences(): void {
   const preferredKey = activeOwnerStorageKey(preferredBrowserStorageKey);
   const importsKey = activeOwnerStorageKey(completedBrowserImportsStorageKey);
@@ -1040,78 +1056,40 @@ function activeBrowserImportPendingStorageKey(): string | null {
 }
 
 function refreshActiveBrowserAccountsReady(): void {
+  const activeOwner = core.readiness.activeOslUserId;
   const key = activeBrowserAccountsReadyStorageKey();
-  savedAccountsReady = key !== null && localStorage.getItem(key) === "true";
+  if (key) localStorage.removeItem(key);
   const preferred = activeOwnerStorageKey(preferredBrowserStorageKey);
   const imported = activeOwnerStorageKey(completedBrowserImportsStorageKey);
   const storedPreferred = preferred ? localStorage.getItem(preferred) : null;
-  preferredBrowserId = supportedBrowserId(storedPreferred) ? storedPreferred : null;
-  completedBrowserImportIds.clear();
-  try {
-    const stored = imported ? JSON.parse(localStorage.getItem(imported) ?? "[]") as unknown : [];
-    if (Array.isArray(stored)) stored.filter(supportedBrowserId).forEach((id) => completedBrowserImportIds.add(id));
-  } catch { completedBrowserImportIds.clear(); }
+  if (imported) localStorage.removeItem(imported);
+  if (browserFootprintOwner !== activeOwner) {
+    browserFootprintOwner = activeOwner;
+    savedAccountsReady = false;
+    browserFootprintImports = [];
+    selectedBrowserProfileKeys.clear();
+    preferredBrowserId = supportedBrowserId(storedPreferred) ? storedPreferred : null;
+    completedBrowserImportIds.clear();
+  }
   const pendingKey = activeBrowserImportPendingStorageKey();
-  if (!pendingKey || localStorage.getItem(pendingKey) === null) {
-    browserImportQueue = [];
-    browserImportQueueIndex = 0;
-    browserImportAwaitingConfirmation = false;
-    browserImportSourceSelected = false;
-    return;
-  }
-  try {
-    const pending = JSON.parse(localStorage.getItem(pendingKey) ?? "null") as {
-      sources?: unknown;
-      index?: unknown;
-      awaitingConfirmation?: unknown;
-      sourceSelected?: unknown;
-    } | null;
-    const supported = new Set<BrowserImportStatus["id"]>(["chrome", "edge", "firefox", "brave", "opera", "duckduckgo"]);
-    if (!pending
-      || !Array.isArray(pending.sources)
-      || pending.sources.length < 1
-      || pending.sources.length > supported.size
-      || !pending.sources.every((id): id is BrowserImportStatus["id"] => typeof id === "string" && supported.has(id as BrowserImportStatus["id"]))
-      || new Set(pending.sources).size !== pending.sources.length
-      || !Number.isInteger(pending.index)
-      || (pending.index as number) < 0
-      || (pending.index as number) >= pending.sources.length
-      || typeof pending.awaitingConfirmation !== "boolean"
-      || typeof pending.sourceSelected !== "boolean") {
-      localStorage.removeItem(pendingKey);
-      browserImportQueue = [];
-      browserImportQueueIndex = 0;
-      browserImportAwaitingConfirmation = false;
-      browserImportSourceSelected = false;
-      return;
-    }
-    browserImportQueue = [...pending.sources];
-    browserImportQueueIndex = pending.index as number;
-    browserImportAwaitingConfirmation = pending.awaitingConfirmation;
-    browserImportSourceSelected = pending.sourceSelected;
-    selectedBrowserImportIds = new Set(browserImportQueue);
-  } catch {
-    localStorage.removeItem(pendingKey);
-    browserImportQueue = [];
-    browserImportQueueIndex = 0;
-    browserImportAwaitingConfirmation = false;
-    browserImportSourceSelected = false;
-  }
+  if (pendingKey) localStorage.removeItem(pendingKey);
+  browserImportQueue = [];
+  browserImportQueueIndex = 0;
+  browserImportSourceSelected = false;
 }
 
-function persistBrowserImportQueue(): void {
-  const key = activeBrowserImportPendingStorageKey();
-  if (!key) return;
-  if (browserImportQueue.length === 0) {
-    localStorage.removeItem(key);
-    return;
+function applyNativeBrowserFootprint(hydration: BrowserFootprintHydration): void {
+  browserFootprintOwner = core.readiness.activeOslUserId;
+  browserFootprintImports = hydration.imports;
+  completedBrowserImportIds = new Set(hydration.imports.map((receipt) => receipt.browserId));
+  savedAccountsReady = hydration.imports.length > 0
+    && hydration.observations.length > 0
+    && hydration.imports.every((receipt) =>
+      receipt.persistedCount > 0
+      && receipt.persistedCount === receipt.immediateRereadCount);
+  if (!preferredBrowserId || !completedBrowserImportIds.has(preferredBrowserId)) {
+    preferredBrowserId = hydration.imports[0]?.browserId ?? null;
   }
-  localStorage.setItem(key, JSON.stringify({
-    sources: browserImportQueue,
-    index: browserImportQueueIndex,
-    awaitingConfirmation: browserImportAwaitingConfirmation,
-    sourceSelected: browserImportSourceSelected,
-  }));
 }
 
 function saveHomeTilePreferences(): void {
@@ -1758,11 +1736,18 @@ function onboardingAppsContent(): string {
 function browserImportContent(): string {
   const installed = browserImports.filter((browser) => browser.installed);
   const queueActive = browserImportQueue.length > 0;
+  const browserName = (id: BrowserImportId): string =>
+    installed.find((browser) => browser.id === id)?.displayName ?? id;
   const detectedBrowsers = installed.length
-    ? `<fieldset class="browser-detected-sources" ${queueActive ? "disabled" : ""}><legend>Choose browsers</legend><label class="browser-detected-item browser-import-all"><span><strong>Import all detected browsers</strong><small>One click starts the protected import queue</small></span><input type="checkbox" data-browser-select-all aria-label="Import all detected browsers"/></label><div class="browser-detected-list">${installed.map((browser) => `<label class="browser-detected-item">${browserLogo(browser.id)}<span><strong>${escapeHtml(browser.displayName)}</strong><small>Import from this browser</small></span><input type="checkbox" data-browser-source="${browser.id}" ${selectedBrowserImportIds.has(browser.id) ? "checked" : ""}/></label>`).join("")}</div></fieldset>`
-    : `<p class="saved-account-truth">No supported browser detected.</p>`;
+    ? `<fieldset class="browser-detected-sources" ${queueActive ? "disabled" : ""}><legend>Choose saved browser areas</legend><div class="browser-detected-list">${browserProfiles.map((profile) => {
+      const key = browserProfileKey(profile);
+      return `<label class="browser-detected-item">${browserLogo(profile.browserId)}<span><strong>${escapeHtml(browserName(profile.browserId))} · ${escapeHtml(profile.displayName)}</strong><small>Read only a bounded history snapshot after this consent</small></span><input type="checkbox" data-browser-profile="${escapeHtml(key)}" ${selectedBrowserProfileKeys.has(key) ? "checked" : ""}/></label>`;
+    }).join("")}</div></fieldset>`
+    : browserProfiles.length === 0
+      ? `<p class="saved-account-truth">No readable saved browser areas were found. OSL has not opened any browser database.</p>`
+      : `<p class="saved-account-truth">No supported browser detected.</p>`;
   const ready = savedAccountsReady
-    ? `<div class="saved-account-browser-note"><strong>Browser import completed</strong><small>Account contents remain browser-owned.</small></div>`
+    ? `<div class="saved-account-browser-note"><strong>Saved browser account hints protected</strong><small>Encrypted locally. Login stores and passwords were not read.</small>${browserFootprintImports.map((receipt) => `<button class="button compact" type="button" data-revoke-browser-footprint="${escapeHtml(browserProfileKey({ browserId: receipt.browserId, profile: receipt.profile, displayName: receipt.profile }))}">Delete ${escapeHtml(receipt.browserId)} · ${escapeHtml(receipt.profile)}</button>`).join("")}</div>`
     : "";
   const failure = browserImportFailureNotice
     ? `<p class="saved-account-browser-error" role="alert">${escapeHtml(browserImportFailureNotice)}</p>`
@@ -1771,15 +1756,15 @@ function browserImportContent(): string {
   const currentBrowser = currentSource ? browserImports.find((browser) => browser.id === currentSource) : null;
   const currentName = currentBrowser?.displayName ?? currentSource ?? "browser";
   const progress = queueActive
-    ? `<div class="saved-account-browser-note" aria-live="polite"><strong>${escapeHtml(currentName)} · ${browserImportQueueIndex + 1} of ${browserImportQueue.length}</strong><small>${browserImportSourceSelected ? `OSL selected ${escapeHtml(currentName)} and started Firefox's import.` : `OSL is opening ${escapeHtml(currentName)} in Firefox's importer.`} The next selected browser starts automatically.</small></div>`
+    ? `<div class="saved-account-browser-note" aria-live="polite"><strong>${escapeHtml(currentName)} · ${browserImportQueueIndex + 1} of ${browserImportQueue.length}</strong><small>${browserImportSourceSelected ? "The encrypted account hints were saved and verified." : "OSL is copying a bounded private snapshot before reading it."}</small></div>`
     : "";
-  const selectionReady = selectedBrowserImportIds.size > 0;
-  const importEnabled = selectionReady && protectedBrowserImportReady && !browserReadinessBusy && !browserImportBusy;
+  const selectionReady = selectedBrowserProfileKeys.size > 0;
+  const importEnabled = selectionReady && !browserReadinessBusy && !browserImportBusy;
   const importLabel = browserImportBusy
-    ? (firefoxStatus.availability === "installed" ? "Opening import…" : "Preparing protected import…")
-    : selectionReady ? "Import selected" : "Choose browsers";
-  const secondaryLabel = browserImportCancelling ? "Closing Firefox…" : queueActive ? "Cancel import" : "Not now";
-  return `<h1 id="route-heading" tabindex="-1">Bring your logins</h1><p class="compact-lead onboarding-centered-copy">Optional. Choose every browser you want to import from.</p>${detectedBrowsers}${progress}${ready}${failure}<div class="setup-footer onboarding-actions browser-import-actions-primary"><button class="button primary" id="import-saved-accounts" type="button" ${importEnabled ? "" : "disabled"}>${importLabel}</button><button class="browser-import-skip" id="continue-browser-import" type="button" ${browserImportCancelling ? "disabled" : ""}>${secondaryLabel}</button></div><p class="saved-account-truth">Choose once here. Firefox asks you to approve each selected browser in order.</p>`;
+    ? "Checking selected areas..."
+    : selectionReady ? "Check selected areas" : "Choose areas";
+  const secondaryLabel = browserImportBusy ? "Wait for scan..." : "Not now";
+  return `<h1 id="route-heading" tabindex="-1">Find saved browser accounts</h1><p class="compact-lead onboarding-centered-copy">Optional. Consent separately to each browser area OSL may inspect.</p>${detectedBrowsers}${progress}${ready}${failure}<div class="setup-footer onboarding-actions browser-import-actions-primary"><button class="button primary" id="import-saved-accounts" type="button" ${importEnabled ? "" : "disabled"}>${importLabel}</button><button class="browser-import-skip" id="continue-browser-import" type="button" ${browserImportBusy || browserImportCancelling ? "disabled" : ""}>${secondaryLabel}</button></div><p class="saved-account-truth">OSL never reads browser databases before consent. After consent it copies one bounded history snapshot, reads that copy, deletes it, and never opens passwords or login stores.</p>`;
 }
 
 function persistSavedAccountPreferences(): void {
@@ -1884,73 +1869,118 @@ function bindSavedAccountControls(): void {
 }
 
 function bindBrowserImportControls(): void {
-  document.querySelectorAll<HTMLInputElement>("[data-browser-source]").forEach((input) => input.addEventListener("change", () => {
-    const browserId = input.dataset.browserSource as BrowserImportStatus["id"];
+  document.querySelectorAll<HTMLButtonElement>("[data-revoke-browser-footprint]").forEach((button) => button.addEventListener("click", async () => {
+    const key = button.dataset.revokeBrowserFootprint ?? "";
+    const receipt = browserFootprintImports.find((candidate) =>
+      browserProfileKey({ browserId: candidate.browserId, profile: candidate.profile, displayName: candidate.profile }) === key);
+    if (!receipt || browserImportBusy) return;
+    browserImportBusy = true;
     browserImportFailureNotice = "";
-    if (input.checked) selectedBrowserImportIds.add(browserId);
-    else selectedBrowserImportIds.delete(browserId);
+    render();
+    try {
+      await revokeDetectedBrowserFootprint(receipt.browserId, receipt.profile, receipt.account);
+      const remaining = browserFootprintImports.filter((candidate) =>
+        candidate.browserId !== receipt.browserId
+        || candidate.profile !== receipt.profile
+        || candidate.account !== receipt.account);
+      if (remaining.length > 0) {
+        applyNativeBrowserFootprint(await loadDetectedBrowserFootprint(remaining));
+      } else {
+        browserFootprintImports = [];
+        completedBrowserImportIds.clear();
+        preferredBrowserId = null;
+        savedAccountsReady = false;
+      }
+      showToast("Saved browser account hints deleted");
+    } catch (failure) {
+      browserImportFailureNotice = localActionError(failure, "Saved browser account hints could not be deleted");
+      showToast(browserImportFailureNotice);
+    } finally {
+      browserImportBusy = false;
+      render();
+    }
+  }));
+  document.querySelectorAll<HTMLInputElement>("[data-browser-profile]").forEach((input) => input.addEventListener("change", () => {
+    const key = input.dataset.browserProfile ?? "";
+    if (!browserProfiles.some((profile) => browserProfileKey(profile) === key)) return;
+    browserImportFailureNotice = "";
+    if (input.checked) selectedBrowserProfileKeys.add(key);
+    else selectedBrowserProfileKeys.delete(key);
     render();
   }));
-  async function startProtectedBrowse(): Promise<void> {
-    if (!protectedBrowserImportReady || selectedBrowserImportIds.size === 0 || browserImportBusy) return;
+  const startProtectedBrowserImport = async (): Promise<void> => {
+    if (selectedBrowserProfileKeys.size === 0 || browserImportBusy) return;
+    const selectedProfiles = browserProfiles.filter((profile) =>
+      selectedBrowserProfileKeys.has(browserProfileKey(profile)));
+    if (selectedProfiles.length !== selectedBrowserProfileKeys.size) {
+      browserImportFailureNotice = "The selected browser areas changed. Review them again.";
+      selectedBrowserProfileKeys.clear();
+      render();
+      return;
+    }
+    // Profile consent is one-shot. Consume it before invoking native code so a
+    // retry, route revisit, or failed scan always requires another fresh click.
+    selectedBrowserProfileKeys.clear();
     const runEpoch = ++browserImportRunEpoch;
     browserImportFailureNotice = "";
-    browserImportQueue = [...selectedBrowserImportIds];
+    browserImportQueue = selectedProfiles.map((profile) => profile.browserId);
     browserImportQueueIndex = 0;
-    browserImportAwaitingConfirmation = false;
     browserImportSourceSelected = false;
-    persistBrowserImportQueue();
     browserImportBusy = true;
     render();
     try {
-      await ensureFirefoxForProtectedImport();
-      for (let index = 0; index < browserImportQueue.length; index += 1) {
+      const scanReceipts: NativeBrowserImportReceipt[] = [];
+      for (let index = 0; index < selectedProfiles.length; index += 1) {
         if (runEpoch !== browserImportRunEpoch) return;
         browserImportQueueIndex = index;
         browserImportSourceSelected = false;
-        persistBrowserImportQueue();
         render();
-        const currentSource = browserImportQueue[index];
-        if (!currentSource) throw new Error("Browser import queue is invalid");
-        const operation = beginProtectedBrowserImport([currentSource]);
-        browserImportOperation = operation;
-        const result = await operation.finally(() => {
-          if (browserImportOperation === operation) browserImportOperation = null;
-        });
+        const selectedProfile = selectedProfiles[index];
+        if (!selectedProfile) throw new Error("Browser selection queue is invalid");
+        const grant = await grantBrowserProfileConsent(
+          selectedProfile.browserId,
+          selectedProfile.profile,
+        );
+        const receipt = await scanConsentedBrowserProfile(
+          selectedProfile.browserId,
+          selectedProfile.profile,
+          grant.grantId,
+        );
         if (runEpoch !== browserImportRunEpoch) return;
-        await finishProtectedBrowserImport();
-        if (!result.sourceSelected) {
-          const name = browserImports.find((browser) => browser.id === currentSource)?.displayName ?? currentSource;
-          throw new Error(`${name} could not be selected safely. Nothing was imported from it.`);
+        if (receipt.persistedCount < 1
+          || receipt.persistedCount !== receipt.immediateRereadCount) {
+          throw new Error("The saved browser account hints did not survive their immediate reread.");
         }
+        scanReceipts.push(receipt);
         browserImportSourceSelected = true;
         browserImportFailureNotice = "";
-        if (index + 1 < browserImportQueue.length) {
-          await new Promise((resolve) => window.setTimeout(resolve, 1_000));
-        }
       }
       if (runEpoch !== browserImportRunEpoch) return;
-      const readyKey = activeBrowserAccountsReadyStorageKey();
-      if (readyKey) localStorage.setItem(readyKey, "true");
-      savedAccountsReady = true;
-      browserImportQueue.forEach((id) => completedBrowserImportIds.add(id));
-      if (!preferredBrowserId) preferredBrowserId = browserImportQueue[0] ?? null;
-      persistBrowserAccountPreferences();
+      const ownerBeforeHydration = core.readiness.activeOslUserId;
+      const hydration = await loadDetectedBrowserFootprint(scanReceipts);
+      if (ownerBeforeHydration === null || core.readiness.activeOslUserId !== ownerBeforeHydration) return;
+      applyNativeBrowserFootprint(hydration);
+      const persistedScopes = new Set(hydration.imports.map((receipt) =>
+        `${receipt.browserId}:${encodeURIComponent(receipt.profile)}`));
+      if (!savedAccountsReady || selectedProfiles.some((profile) =>
+        !persistedScopes.has(browserProfileKey(profile)))) {
+        throw new Error("The saved browser account hints were not verified.");
+      }
       browserImportQueue = [];
       browserImportQueueIndex = 0;
       browserImportSourceSelected = false;
-      persistBrowserImportQueue();
+      selectedBrowserProfileKeys.clear();
       resetOnboardingBranch();
       resetOnboardingConnections();
-      showToast("Browser import finished");
+      showToast("Saved browser account hints protected");
       await enterCombinedAppChoice();
     } catch (failure) {
       if (runEpoch !== browserImportRunEpoch) return;
       browserImportQueue = [];
       browserImportQueueIndex = 0;
       browserImportSourceSelected = false;
-      persistBrowserImportQueue();
-      browserImportFailureNotice = localActionError(failure, "Browser import did not start");
+      selectedBrowserProfileKeys.clear();
+      browserImportFailureNotice = localActionError(failure, "Saved browser account check did not finish");
       showToast(browserImportFailureNotice);
     } finally {
       if (runEpoch === browserImportRunEpoch) {
@@ -1958,38 +1988,22 @@ function bindBrowserImportControls(): void {
         render();
       }
     }
-  }
-  const startProtectedBrowserImport = startProtectedBrowse;
+  };
   document.querySelector<HTMLButtonElement>("#import-saved-accounts")?.addEventListener("click", () => {
     void startProtectedBrowserImport();
   });
-  document.querySelector<HTMLInputElement>("[data-browser-select-all]")?.addEventListener("change", (event) => {
-    const input = event.currentTarget as HTMLInputElement;
-    if (!input.checked || browserImportBusy) return;
-    selectedBrowserImportIds = new Set(
-      browserImports.filter((browser) => browser.installed).map((browser) => browser.id),
-    );
-    browserImportFailureNotice = "";
-    render();
-    void startProtectedBrowserImport();
-  });
   document.querySelector<HTMLButtonElement>("#continue-browser-import")?.addEventListener("click", async () => {
-    if (browserImportCancelling) return;
+    if (browserImportBusy || browserImportCancelling) return;
     browserImportCancelling = true;
     browserImportRunEpoch += 1;
-    const activeOperation = browserImportOperation;
     render();
-    await finishProtectedBrowserImport().catch(() => undefined);
-    await activeOperation?.catch(() => undefined);
-    await finishProtectedBrowserImport().catch(() => undefined);
-    browserImportOperation = null;
     browserImportBusy = false;
     const pendingKey = activeBrowserImportPendingStorageKey();
     if (pendingKey) localStorage.removeItem(pendingKey);
     browserImportQueue = [];
     browserImportQueueIndex = 0;
-    browserImportAwaitingConfirmation = false;
     browserImportSourceSelected = false;
+    selectedBrowserProfileKeys.clear();
     browserImportCancelling = false;
     resetOnboardingBranch();
     resetOnboardingConnections();
@@ -1997,36 +2011,24 @@ function bindBrowserImportControls(): void {
   });
 }
 
-async function ensureFirefoxForProtectedImport(): Promise<void> {
-  let status = await loadFirefoxStatus();
-  firefoxStatus = status;
-  if (status.availability === "installed") return;
-  if (status.availability !== "installable") {
-    throw new Error("Protected browser import is unavailable on this PC");
-  }
-  await installFirefox();
-  const deadline = Date.now() + firefoxInstallDecisionDeadlineMs;
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => window.setTimeout(resolve, 1_000));
-    status = await loadFirefoxStatus();
-    firefoxStatus = status;
-    if (status.availability === "installed") return;
-  }
-  throw new Error("Firefox installation did not finish. Try Import selected again.");
-}
-
 async function refreshBrowserImportReadiness(): Promise<void> {
   if (browserReadinessBusy) return;
   browserReadinessBusy = true;
   if (route === "onboarding" && onboardingRoute === "browser") render();
-  const [catalog, currentFirefoxStatus] = await Promise.all([
-    withNativeDeadline(loadBrowserImports(), "Refresh browsers", nativeCatalogDecisionDeadlineMs).catch(() => null),
-    withNativeDeadline(loadFirefoxStatus(), "Refresh Firefox", nativeCatalogDecisionDeadlineMs).catch(() => null),
-  ]);
+  const profiles = await withNativeDeadline(
+    listBrowserProfilesForConsent(),
+    "List saved browser areas",
+    nativeCatalogDecisionDeadlineMs,
+  ).catch(() => null);
   try {
-    if (catalog) browserImports = catalog;
-    if (currentFirefoxStatus) firefoxStatus = currentFirefoxStatus;
-    if (!catalog && !currentFirefoxStatus) throw new Error("browser readiness unavailable");
+    if (profiles) {
+      setBrowserProfiles(profiles);
+      const currentKeys = new Set(profiles.map(browserProfileKey));
+      selectedBrowserProfileKeys = new Set(
+        [...selectedBrowserProfileKeys].filter((key) => currentKeys.has(key)),
+      );
+    }
+    if (!profiles) throw new Error("browser readiness unavailable");
   } catch {
     showToast("Couldn’t check browser import. Try again.");
   } finally {
@@ -7618,12 +7620,13 @@ async function bootstrap(): Promise<void> {
     const nativeAppsRequest = savedAccountMode === "use"
       ? withNativeDeadline(loadNativeApps(), "Load selected Windows apps", bootSupportDeadlineMs).catch(() => null)
       : Promise.resolve(null);
-    const firefoxRequest = savedAccountsReady
-      ? withNativeDeadline(loadFirefoxStatus(), "Check selected Firefox profile", bootSupportDeadlineMs).catch(() => null)
-      : Promise.resolve(null);
     const licenseRequest = withNativeDeadline(loadHubLicenseState(), "Load plan", bootSupportDeadlineMs).catch(() => null);
     const browserCompanionRequest = withNativeDeadline(loadDefaultBrowserCompanionStatus(), "Check default browser", bootSupportDeadlineMs).catch(() => null);
-    const browserCatalogRequest = withNativeDeadline(loadBrowserImports(), "Load browsers", bootSupportDeadlineMs).catch(() => null);
+    const browserProfilesRequest = withNativeDeadline(
+      listBrowserProfilesForConsent(),
+      "Load saved browser areas",
+      bootSupportDeadlineMs,
+    ).catch(() => null);
     const preferences = await preferencesRequest ?? {
       onboardingComplete: core.readiness.bootstrapStatus === "ready",
       setup: parseSetupState(null),
@@ -7658,16 +7661,15 @@ async function bootstrap(): Promise<void> {
     if (route === "onboarding" && onboardingRoute === "browser") void refreshBrowserImportReadiness();
     if (route === "onboarding" && onboardingRoute === "mullvad") void refreshMullvadSetup();
     startReadyWorkspaceLoads();
-    void Promise.all([servicesRequest, nativeAppsRequest, firefoxRequest, licenseRequest, browserCompanionRequest, browserCatalogRequest]).then(([linkedServices, nativeCatalog, currentFirefoxStatus, currentLicenseState, currentBrowserCompanionStatus, browserCatalog]) => {
+    void Promise.all([servicesRequest, nativeAppsRequest, licenseRequest, browserCompanionRequest, browserProfilesRequest]).then(([linkedServices, nativeCatalog, currentLicenseState, currentBrowserCompanionStatus, profiles]) => {
       if (attempt !== bootstrapEpoch) return;
       if (linkedServices) services = linkedServices;
       if (nativeCatalog && isCompleteNativeCatalog(nativeCatalog)) {
         nativeApps = nativeCatalog;
       }
-      if (currentFirefoxStatus) firefoxStatus = currentFirefoxStatus;
       if (currentLicenseState) licenseState = currentLicenseState;
       if (currentBrowserCompanionStatus) defaultBrowserCompanionStatus = currentBrowserCompanionStatus;
-      if (browserCatalog) browserImports = browserCatalog;
+      if (profiles) setBrowserProfiles(profiles);
       renderWhenIdle();
       if (!discordQaShell) void recoverNativeHostAfterRendererLoad();
     });
