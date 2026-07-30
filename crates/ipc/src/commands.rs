@@ -2593,6 +2593,76 @@ impl EncryptWire {
     }
 }
 
+fn rn_session_store_from_config_dir() -> Result<crate::wire_rn::RnSessionStore, String> {
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    Ok(crate::wire_rn::RnSessionStore::new(dir.join("rn")))
+}
+
+fn ensure_legacy_send_allowed_by_rn_pin(
+    store: &crate::wire_rn::RnSessionStore,
+    peer_discord_id: &str,
+    peer_identity_x25519: &[u8; 32],
+) -> Result<(), String> {
+    use crate::wire_rn::{select_wire_version, RnPolicy, SelectedVersion};
+
+    let pin = store.load_pin(peer_identity_x25519).map_err(|e| {
+        format!(
+            "OSL: send refused for peer {peer}: OSL-RN version pin could not be read: {e}",
+            peer = crate::log_id::log_id(peer_discord_id)
+        )
+    })?;
+    match select_wire_version(
+        &pin,
+        // The send dispatcher has no signed RN capability record in
+        // peer_map. Treat that absence as no capability; a stored RN
+        // pin still turns it into a refusal instead of permission.
+        keystore::client::PeerCapabilities::Absent,
+        RnPolicy::Opportunistic,
+    ) {
+        Ok(SelectedVersion::LegacyV3) => Ok(()),
+        Ok(SelectedVersion::Rn) => Err(format!(
+            "OSL: send refused for peer {peer}: OSL-RN is selected but wire-in is disabled",
+            peer = crate::log_id::log_id(peer_discord_id)
+        )),
+        Err(e) => Err(format!(
+            "OSL: send refused for peer {peer}: {e}",
+            peer = crate::log_id::log_id(peer_discord_id)
+        )),
+    }
+}
+
+#[cfg(test)]
+mod rn_send_selection_tests {
+    use super::*;
+
+    #[test]
+    fn send_time_selection_allows_legacy_for_absent_pin() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let store = crate::wire_rn::RnSessionStore::new(dir.path().join("rn"));
+        let peer = [17u8; 32];
+
+        ensure_legacy_send_allowed_by_rn_pin(&store, "123456789012345678", &peer)
+            .expect("absent pin should allow existing legacy send path");
+    }
+
+    #[test]
+    fn send_time_selection_refuses_legacy_for_stored_rn_pin() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let store = crate::wire_rn::RnSessionStore::new(dir.path().join("rn"));
+        let peer = [18u8; 32];
+        store.raise_pin_to_rn(&peer).expect("raise pin");
+
+        let err = ensure_legacy_send_allowed_by_rn_pin(&store, "123456789012345678", &peer)
+            .expect_err("pinned peer must not use the legacy send path");
+
+        assert!(
+            err.contains("refusing to send a legacy v=3 message"),
+            "unexpected refusal: {err}"
+        );
+    }
+}
+
 /// Layer 10 / Phase 7b IPC entry point: encrypt a v=2 content
 /// message for the whitelist-resolved recipients in `scope`.
 ///
@@ -2840,6 +2910,16 @@ pub fn cmd_osl_encrypt_message_v2_wire(
         .iter()
         .skip(1) // recipients[0] is (self_discord_id, self) per recipients_for_scope_v3
         .collect();
+    if !non_self_peers.is_empty() {
+        let rn_store = rn_session_store_from_config_dir()?;
+        for (peer_did, recipient) in &non_self_peers {
+            ensure_legacy_send_allowed_by_rn_pin(
+                &rn_store,
+                peer_did,
+                recipient.x25519_pub.as_bytes(),
+            )?;
+        }
+    }
     // OPTION B: DMs no longer use the v=4 Double Ratchet. They route
     // through the stateless v=3 path below (the same PQ-hybrid scheme
     // groups use), which eliminates the desync class entirely — there

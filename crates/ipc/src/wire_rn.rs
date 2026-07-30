@@ -12,9 +12,9 @@
 //!    written atomically, and degrading to a clean re-handshake rather
 //!    than to a silent plaintext or legacy send when it is lost.
 //!
-//! Nothing here is wired into a send path yet. See `MIGRATION.md` for
-//! the call-site changes `broker.rs` must make; this module is the API
-//! those changes call.
+//! The production send path calls [`select_wire_version`] as a
+//! downgrade guard before sending legacy wire formats. OSL-RN
+//! encryption/decryption remains behind [`RN_WIRE_IN_ENABLED`].
 //!
 //! # Downgrade protection: what is enforced here
 //!
