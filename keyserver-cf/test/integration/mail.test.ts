@@ -208,11 +208,18 @@ describe("OSL Mail Worker", () => {
       .toHaveLength(0);
 
     expect((await signedPost("/v1/mail/consent", "CONSENT", bob, { sender_user_id: alice.userId, allowed: true })).status).toBe(200);
-    const alicePayload = oslPayload("bob_m3@oslprivacy.com", "alice ciphertext");
+    const aliceSendRequestId = randomRequestId();
+    const alicePayload = {
+      ...oslPayload("bob_m3@oslprivacy.com", "alice ciphertext"),
+      request_id: aliceSendRequestId,
+    };
     const delivered = await signedPost("/v1/mail/send/osl", "SEND-OSL", alice, alicePayload);
     expect(delivered.status).toBe(200);
     const delivery = await delivered.json() as { message_id: string; accepted: boolean; replay: boolean };
     expect(delivery).toMatchObject({ accepted: true, replay: false });
+    const replay = await signedPost("/v1/mail/send/osl", "SEND-OSL", alice, alicePayload);
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ message_id: delivery.message_id, accepted: true, replay: true });
 
     const listed = await signedPost("/v1/mail/list", "LIST", bob, { limit: 10 }).then((response) => response.json()) as {
       messages: Array<{ message_id: string; sender_user_id: string; kind: string }>;
@@ -228,6 +235,17 @@ describe("OSL Mail Worker", () => {
       ciphertext_b64: alicePayload.ciphertext_b64,
       recipient_key_fingerprint: alicePayload.recipient_key_fingerprint,
     });
+
+    expect((await signedPost("/v1/mail/consent", "CONSENT", carol, { sender_user_id: alice.userId, allowed: true })).status).toBe(200);
+    const replayToDifferentRecipient = await signedPost("/v1/mail/send/osl", "SEND-OSL", alice, {
+      ...oslPayload("carol_m3@oslprivacy.com", "alice replay to carol"),
+      request_id: aliceSendRequestId,
+    });
+    expect(replayToDifferentRecipient.status).toBe(409);
+    const carolList = await signedPost("/v1/mail/list", "LIST", carol, { limit: 10 }).then((response) => response.json()) as {
+      messages: Array<{ message_id: string }>;
+    };
+    expect(carolList.messages).toHaveLength(0);
 
     expect((await signedPost("/v1/mail/consent", "CONSENT", bob, { sender_user_id: alice.userId, allowed: false })).status).toBe(200);
     const afterRevoke = await signedPost("/v1/mail/send/osl", "SEND-OSL", alice, oslPayload("bob_m3@oslprivacy.com", "alice after revoke"));

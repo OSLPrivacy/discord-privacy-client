@@ -112,11 +112,16 @@ export class Mailbox extends DurableObject<Env> {
     if (!Number.isSafeInteger(byteLength) || byteLength < 1 || byteLength > MAIL_MAX_CIPHERTEXT_BYTES) {
       return { ok: false, replay: false, reason: "message_too_large" };
     }
-    const prior = this.sql.exec<{ outcome: string }>(
-      "SELECT outcome FROM request_receipts WHERE request_id = ? AND operation = 'send'",
+    const prior = this.sql.exec<{ outcome: string; message_id: string | null }>(
+      "SELECT outcome, message_id FROM request_receipts WHERE request_id = ? AND operation = 'send'",
       requestId,
     ).toArray()[0];
-    if (prior) return { ok: prior.outcome === "reserved" || prior.outcome === "stored", replay: true };
+    if (prior) {
+      if (prior.message_id !== recipientUserId) {
+        return { ok: false, replay: true, reason: "request_replay_mismatch" };
+      }
+      return { ok: prior.outcome === "reserved" || prior.outcome === "stored", replay: true };
+    }
 
     const bucket = Math.floor(now / 86_400_000) * 86_400_000;
     const totals = this.sql.exec<{ sends: number; bytes: number }>(
@@ -143,8 +148,9 @@ export class Mailbox extends DurableObject<Env> {
         byteLength,
       );
       this.sql.exec(
-        "INSERT INTO request_receipts(request_id, operation, outcome, expires_at) VALUES (?, 'send', 'reserved', ?)",
+        "INSERT INTO request_receipts(request_id, operation, message_id, outcome, expires_at) VALUES (?, 'send', ?, 'reserved', ?)",
         requestId,
+        recipientUserId,
         now + RECEIPT_TTL_MS,
       );
     });

@@ -149,8 +149,13 @@ export async function handleMailSendOsl(request: Request, env: Env): Promise<Res
   const now = Date.now();
   const senderBox = env.MAILBOX.getByName(auth.userId);
   const reservation = await senderBox.reserveOutgoing(auth.userId, auth.requestId, recipient.user_id, ciphertextBytes, now);
-  if (!reservation.ok) return reservation.reason?.includes("quota") || reservation.reason?.includes("limit")
-    ? tooMany(86_400) : badRequest(reservation.reason ?? "send rejected");
+  if (!reservation.ok) {
+    if (reservation.reason === "request_replay_mismatch") {
+      return conflict("send request replayed for a different recipient");
+    }
+    return reservation.reason?.includes("quota") || reservation.reason?.includes("limit")
+      ? tooMany(86_400) : badRequest(reservation.reason ?? "send rejected");
+  }
   const messageId = await deterministicMessageId(auth.userId, auth.requestId);
   const recipientBox = env.MAILBOX.getByName(recipient.user_id);
   const stored = await recipientBox.store({
