@@ -3962,6 +3962,20 @@ fn drain_peer_inbox_text(
         ) else {
             continue;
         };
+        let received_already_sent = two_phase_view_once
+            && broker
+                .view_once_received_was_sent(&payload.message_id, now)
+                .unwrap_or(true);
+        let sent_received_ack = payload.view_once
+            && !received_already_sent
+            && send_native_overlay_received_acknowledgment(
+                core, &verified, &identity, &client, &manual, &context, &payload, &scope_id,
+            )
+            .is_ok();
+        if sent_received_ack && two_phase_view_once {
+            let _ =
+                broker.record_view_once_received(&payload.message_id, payload.expires_at, now);
+        }
         // First-party chat history is the durable copy the operator owns. It
         // must commit before either the replay slot is burned or the remote
         // inbox row is retired. Re-persisting an already-consumed redelivery is
@@ -4107,6 +4121,29 @@ fn drain_peer_inbox_text(
         let mut logical = group.template;
         logical.message_id = logical_message_id;
         logical.plaintext = plaintext;
+        let now = ipc::main_password::now_unix_secs_pub();
+        let received_already_sent = two_phase_view_once
+            && broker
+                .view_once_received_was_sent(&logical.message_id, now)
+                .unwrap_or(true);
+        if logical.view_once && !received_already_sent {
+            let mut receipt_payload = logical.clone();
+            receipt_payload.plaintext.clear();
+            let sent = send_native_overlay_received_acknowledgment(
+                core,
+                &verified,
+                &identity,
+                &client,
+                &manual,
+                &context,
+                &receipt_payload,
+                &scope_id,
+            );
+            if sent.is_ok() && two_phase_view_once {
+                let _ =
+                    broker.record_view_once_received(&logical.message_id, logical.expires_at, now);
+            }
+        }
         if context.service_id == "osl-chat"
             && !logical.view_once
             && ipc::commands::cmd_osl_persist_inbound(
@@ -11134,8 +11171,46 @@ mod tests {
             production
                 .matches("send_native_overlay_received_acknowledgment(")
                 .count(),
-            3,
-            "only the helper definition and the single-row/chunked Received branches may post"
+            5,
+            "only the helper definition and the view-once Received branches may post"
+        );
+    }
+
+    #[test]
+    fn d7_one_phase_view_once_posts_received_before_replay_retirement() {
+        let source = include_str!("broker.rs");
+        let production = source
+            .split_once("#[cfg(test)]\nmod tests {")
+            .map(|(production, _)| production)
+            .expect("broker test module boundary remains visible");
+        let drain = production
+            .split_once("fn drain_peer_inbox_text(")
+            .and_then(|(_, tail)| tail.split_once("fn begin_peer_attachment("))
+            .map(|(drain, _)| drain)
+            .expect("drain body remains visible");
+
+        let one_phase_single = drain
+            .split_once("} else if reveal_view_once.is_some() {")
+            .and_then(|(_, tail)| tail.split_once("if already_consumed {"))
+            .map(|(segment, _)| segment)
+            .expect("single-row one-phase branch remains visible");
+        assert!(
+            one_phase_single.contains("payload.view_once")
+                && one_phase_single.contains("!received_already_sent")
+                && one_phase_single.contains("send_native_overlay_received_acknowledgment("),
+            "one-phase single-row view-once opens and replays must post Received before deletion"
+        );
+
+        let one_phase_chunked = drain
+            .split_once("let mut logical = group.template;")
+            .and_then(|(_, tail)| tail.split_once("if !already_consumed"))
+            .map(|(segment, _)| segment)
+            .expect("chunked one-phase branch remains visible");
+        assert!(
+            one_phase_chunked.contains("logical.view_once")
+                && one_phase_chunked.contains("!received_already_sent")
+                && one_phase_chunked.contains("send_native_overlay_received_acknowledgment("),
+            "one-phase chunked view-once opens and replays must post Received before deletion"
         );
     }
 
