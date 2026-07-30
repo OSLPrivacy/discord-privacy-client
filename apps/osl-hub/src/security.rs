@@ -4394,7 +4394,7 @@ mod tests {
     }
 
     #[test]
-    fn scoped_trust_grant() {
+    fn scoped_trust_acceptance_friend_request_grant_roundtrip() {
         let harness = FileBackedSecurityHarness::new("scoped-trust-friend-request");
         let core = HubCoreState::default();
         let security = HubSecurityState::default();
