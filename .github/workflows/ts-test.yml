@@ -121,23 +121,56 @@ jobs:
       - telegram-reporting-bot
       - public-audit
     steps:
-      - name: Require TypeScript, selector, and public-audit success
+      - name: "success'"
+        env:
+          TEST_RESULT: ${{ needs.test.result }}
+          SELECTOR_CHECK_RESULT: ${{ needs.selector-check.result }}
+          TELEGRAM_REPORTING_BOT_RESULT: ${{ needs.telegram-reporting-bot.result }}
+          PUBLIC_AUDIT_RESULT: ${{ needs.public-audit.result }}
         run: |
-          failed=0
-          if [ '${{ needs.test.result }}' != 'success' ]; then
-            echo "TypeScript workflow failed with result: ${{ needs.test.result }}"
-            failed=1
-          fi
-          if [ '${{ needs.selector-check.result }}' != 'success' ]; then
-            echo "Selector check failed with result: ${{ needs.selector-check.result }}"
-            failed=1
-          fi
-          if [ '${{ needs.telegram-reporting-bot.result }}' != 'success' ]; then
-            echo "Telegram reporting bot script check failed with result: ${{ needs.telegram-reporting-bot.result }}"
-            failed=1
-          fi
-          if [ '${{ needs.public-audit.result }}' != 'success' ]; then
-            echo "Public audit failed with result: ${{ needs.public-audit.result }}"
-            failed=1
-          fi
-          exit "$failed"
+          require_required_checks_green() {
+            failed=0
+            for check in "$@"; do
+              label="${check%%=*}"
+              result="${check#*=}"
+              if [ "$result" != 'success' ]; then
+                echo "$label failed with result: $result"
+                failed=1
+              fi
+            done
+            return "$failed"
+          }
+
+          require_required_checks_green \
+            'TypeScript workflow=success' \
+            'Selector check=success' \
+            'Telegram reporting bot script check=success' \
+            'Public audit=success'
+
+          for failed_check in \
+            'TypeScript workflow=failure' \
+            'Selector check=cancelled' \
+            'Telegram reporting bot script check=skipped' \
+            'Public audit=failure'
+          do
+            if self_test_output=$(require_required_checks_green \
+              "$failed_check" \
+              'other required check=success')
+            then
+              echo "success' self-test accepted a non-green required check: $failed_check"
+              exit 1
+            fi
+            expected_message="${failed_check%%=*} failed with result: ${failed_check#*=}"
+            if [ "$self_test_output" != "$expected_message" ]; then
+              echo "success' self-test produced the wrong refusal for: $failed_check"
+              echo "expected: $expected_message"
+              echo "actual: $self_test_output"
+              exit 1
+            fi
+          done
+
+          require_required_checks_green \
+            "TypeScript workflow=$TEST_RESULT" \
+            "Selector check=$SELECTOR_CHECK_RESULT" \
+            "Telegram reporting bot script check=$TELEGRAM_REPORTING_BOT_RESULT" \
+            "Public audit=$PUBLIC_AUDIT_RESULT"

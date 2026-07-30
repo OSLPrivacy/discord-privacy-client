@@ -7787,37 +7787,54 @@ mod qa_selftest {
 
         #[test]
         fn p5_offline_queue_restart_proof() {
-            let instance_b = "org.oslprivacy.hub.qa-b";
-            let addressed_drain = r#"{"verb":"drain","instance":"org.oslprivacy.hub.qa-b"}"#;
-            let shared_for_a = r#"{"verb":"send","instance":"org.oslprivacy.hub.qa-a"}"#;
+            let instance_b = format!("org.oslprivacy.hub.qa-b-{}", std::process::id());
+            let instance_a = format!("org.oslprivacy.hub.qa-a-{}", std::process::id());
+            let addressed_drain = format!(r#"{{"verb":"drain","instance":"{}"}}"#, instance_b);
+            let shared_for_a = format!(r#"{{"verb":"send","instance":"{}"}}"#, instance_a);
 
             assert_eq!(
-                select_trigger_body(instance_b, Some(addressed_drain), Some(shared_for_a)),
-                TriggerSelection::Addressed(addressed_drain),
+                select_trigger_body(
+                    &instance_b,
+                    Some(addressed_drain.as_str()),
+                    Some(shared_for_a.as_str()),
+                ),
+                TriggerSelection::Addressed(addressed_drain.as_str()),
                 "B's addressed restart trigger must win even when the shared rendezvous is present"
             );
-            let ParsedRequest::Accepted(request) = parse_request(addressed_drain) else {
+            let ParsedRequest::Accepted(request) = parse_request(&addressed_drain) else {
                 panic!("addressed drain request must parse");
             };
             assert_eq!(request.verb, Verb::Drain);
             assert!(osl_privacy_hub::qa_selftest_request::request_is_for_me(
                 request.instance.as_deref(),
-                instance_b
+                &instance_b
             ));
 
             assert_eq!(
-                select_trigger_body(instance_b, None, Some(shared_for_a)),
+                select_trigger_body(&instance_b, None, Some(shared_for_a.as_str())),
                 TriggerSelection::DeclineLegacy {
-                    declared: "org.oslprivacy.hub.qa-a".to_owned(),
-                    body: shared_for_a,
+                    declared: instance_a.clone(),
+                    body: shared_for_a.as_str(),
                 },
                 "B must leave a shared trigger declared for A instead of consuming it"
             );
 
-            let legacy_drain = r#"{"verb":"drain","instance":"org.oslprivacy.hub.qa-b"}"#;
+            let decline_path = temp_path(&addressed_name(ADDRESSED_DECLINE_FORMAT, &instance_b));
+            let _ = std::fs::remove_file(&decline_path);
+            record_decline(&instance_b, &instance_a, &shared_for_a);
+            let declined: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&decline_path).expect("read decline"))
+                    .expect("decline JSON");
+            assert_eq!(declined["instance"].as_str(), Some(instance_b.as_str()));
+            assert_eq!(declined["declaredInstance"].as_str(), Some(instance_a.as_str()));
+            assert_eq!(declined["requestStatus"].as_str(), Some("declined-wrong-instance"));
+            assert_eq!(declined["action"].as_str(), Some("left-for-its-owner"));
+            let _ = std::fs::remove_file(&decline_path);
+
+            let legacy_drain = format!(r#"{{"verb":"drain","instance":"{}"}}"#, instance_b);
             assert_eq!(
-                select_trigger_body(instance_b, None, Some(legacy_drain)),
-                TriggerSelection::Legacy(legacy_drain),
+                select_trigger_body(&instance_b, None, Some(legacy_drain.as_str())),
+                TriggerSelection::Legacy(legacy_drain.as_str()),
                 "B may consume the shared trigger only when it is addressed to B"
             );
 
@@ -7844,7 +7861,7 @@ mod qa_selftest {
             let refused = refused_verdict(
                 "busy",
                 "A previous self-test invocation has not finished",
-                VerbOutcome::new(Verb::Drain.label(), instance_b, "osl-qa-selftest.b.request"),
+                VerbOutcome::new(Verb::Drain.label(), &instance_b, "osl-qa-selftest.b.request"),
             );
             assert_eq!(refused.outcome, "busy");
             assert!(!refused.pass, "a busy restart proof must not pass green");
@@ -7859,7 +7876,7 @@ mod qa_selftest {
             let durable: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(&verdict_path).expect("read verdict"))
                     .expect("durable verdict JSON");
-            assert_eq!(durable["instance"], instance_b);
+            assert_eq!(durable["instance"].as_str(), Some(instance_b.as_str()));
             assert_eq!(durable["verb"], "drain");
             assert_eq!(durable["outcome"], "busy");
             assert_eq!(durable["pass"], false);

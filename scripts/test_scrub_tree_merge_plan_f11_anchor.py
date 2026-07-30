@@ -9,6 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DOC = ROOT / "docs" / "plans" / "scrub-tree-merge-plan-f11-anchor.md"
 INTEGRATION_PIN = "403cfa2e090bf76ae4cb2950f3febcc72204fc59"
+INTEGRATION_SOURCE = "osl-newest-integration"
 
 
 def _git(*args: str) -> str:
@@ -64,12 +65,17 @@ def integration_branch_anchor_records_osl_newest_integration_403cfa2() -> None:
     assert re.findall(r"`([^`]+)`", fields["Worktree path"]) == ["/home/<user>/osl-unit-f11"]
     base_sha = re.findall(r"`([^`]+)`", fields["Base SHA (per plan §2 \"Base tree\")"])[0]
     assert base_sha == "16778b297d3ec8d0358b7d3812a95f4f8443e462"
-    assert rows["osl-newest-integration"][0] == INTEGRATION_PIN
+    assert rows[INTEGRATION_SOURCE][0] == INTEGRATION_PIN
 
     branch_commit = _git("rev-parse", "--verify", "unit-f11^{commit}")
     commit_and_parents = _git("rev-list", "--parents", "-n", "1", branch_commit).split()
     assert commit_and_parents == [branch_commit, base_sha]
     assert _git("rev-parse", "--verify", f"{INTEGRATION_PIN}^{{commit}}") == INTEGRATION_PIN
+    assert re.fullmatch(
+        r"[0-9a-f]{40}",
+        _git("rev-parse", "--verify", f"{INTEGRATION_SOURCE}^{{commit}}"),
+    )
+    assert _git("merge-base", "--is-ancestor", INTEGRATION_PIN, INTEGRATION_SOURCE) == ""
 
     worktrees = [
         record for record in _worktree_records()
