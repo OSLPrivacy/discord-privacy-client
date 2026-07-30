@@ -61,6 +61,11 @@ const REQUIRED_BURN_BANS = [
   "destroys keys, not messages",
   "burn makes messages unrecoverable",
   "burn removes recipient copies",
+  "burn deletes provider messages",
+  "burn removes provider messages",
+  "burn deletes discord messages",
+  "burn removes discord messages",
+  "burn unsends messages",
   "permanent ciphertext",
   "permanent gibberish",
   "mathematically opaque",
@@ -76,10 +81,14 @@ const REQUIRED_SUPPORT_BANS = [
   "works on telegram",
   "works on outlook",
   "signal support",
+  "signal support is available",
   "whatsapp support",
+  "whatsapp support is available",
   "telegram support",
   "outlook support",
   "osl mail support",
+  "osl supports signal",
+  "osl supports whatsapp",
   "supports gmail",
   "supports discord",
   "supports signal",
@@ -177,6 +186,68 @@ const REQUIRED_VERSIONED_PUBLIC_SUPPORT_ROWS = [
     supportBoundary: /\bOutlook is scoped as OSL Mail\b.*\bnot Outlook chat support\b/i,
   },
 ];
+const REQUIRED_CHAT_APP_EVIDENCE = [
+  {
+    id: "signal_desktop_native",
+    service: "Signal",
+    claimScope: "protected_native_adapter",
+    status: "qualified_profile",
+    publicStatus: "coming_soon",
+    publicClaimAllowed: false,
+    evidenceType: "signed_adapter_profile",
+    evidenceReport: "crates/adapter-profile/src/defaults.rs",
+    evidenceAnchor: "signal_default_profile",
+    trustedAnchor: "signal_default_trusted_signing_key_b64",
+    requiredBoundary: /\bsigned data-only Signal support profile exists\b.*\bpublic support remains Coming soon\b/i,
+  },
+  {
+    id: "whatsapp_windows_native",
+    service: "WhatsApp",
+    claimScope: "protected_native_adapter",
+    status: "qualified_profile",
+    publicStatus: "coming_soon",
+    publicClaimAllowed: false,
+    evidenceType: "signed_adapter_profile",
+    evidenceReport: "crates/adapter-profile/src/defaults.rs",
+    evidenceAnchor: "whatsapp_default_profile",
+    trustedAnchor: "whatsapp_default_trusted_signing_key_b64",
+    requiredBoundary: /\bsigned data-only WhatsApp support profile exists\b.*\bpublic support remains Coming soon\b/i,
+  },
+];
+const REQUIRED_PUBLIC_SUPPORT_EVIDENCE_LINKS = [
+  {
+    publicId: "signal_desktop_public",
+    evidenceCollection: "chat_app_evidence",
+    evidenceId: "signal_desktop_native",
+    evidenceStatus: "qualified_profile",
+    publicStatus: "coming_soon",
+    claimAllowed: false,
+  },
+  {
+    publicId: "whatsapp_windows_public",
+    evidenceCollection: "chat_app_evidence",
+    evidenceId: "whatsapp_windows_native",
+    evidenceStatus: "qualified_profile",
+    publicStatus: "coming_soon",
+    claimAllowed: false,
+  },
+  {
+    publicId: "telegram_desktop_public",
+    evidenceCollection: "conditional_app_evidence",
+    evidenceId: "telegram_desktop_native",
+    evidenceStatus: "externally_blocked",
+    publicStatus: "externally_blocked",
+    claimAllowed: false,
+  },
+  {
+    publicId: "osl_mail_public",
+    evidenceCollection: "conditional_app_evidence",
+    evidenceId: "outlook_osl_mail",
+    evidenceStatus: "unsupported",
+    publicStatus: "unsupported",
+    claimAllowed: false,
+  },
+];
 const SUPPORT_CLAIM_TARGETS = [
   { service: "Signal", pattern: /\bsignal\b/i },
   { service: "WhatsApp", pattern: /\bwhats\s*app\b/i },
@@ -212,6 +283,22 @@ function versionedPublicSupportMatrixFailure(message) {
   };
 }
 
+function chatAppEvidenceFailure(message) {
+  return {
+    name: "chat_app_evidence",
+    expected: message,
+    actual: "invalid support matrix",
+  };
+}
+
+function supportMatrixClaimFailure(message) {
+  return {
+    name: "validateSupportMatrixClaims",
+    expected: message,
+    actual: "invalid support matrix",
+  };
+}
+
 function normalizeSupportEvidenceStatus(value) {
   if (typeof value !== "string") {
     return null;
@@ -225,6 +312,9 @@ function normalizeSupportEvidenceStatus(value) {
     "implemented_unwired",
     "designed_only",
     "externally_blocked",
+    "qualified_profile",
+    "qa_foundations_only",
+    "separate_qa_required",
     "unsupported",
   ].includes(normalized) ? normalized : null;
 }
@@ -355,6 +445,7 @@ async function validateSupportMatrix() {
   }
 
   failures.push(...await validateVersionedPublicSupportMatrix(matrix));
+  failures.push(...(await validateChatAppEvidence(matrix)));
 
   if (!Array.isArray(matrix.conditional_app_evidence)) {
     failures.push(supportMatrixFailure("conditional_app_evidence array"));
@@ -437,6 +528,166 @@ async function validateSupportMatrix() {
   }
 
   failures.push(...supportMatrixPublicClaimProofFailures(rowsById));
+  failures.push(...validateSupportMatrixEvidenceLinks(matrix));
+
+  return failures;
+}
+
+function validateSupportMatrixEvidenceLinks(matrix) {
+  const failures = [];
+  const publicRows = new Map();
+  const publicMatrix = matrix?.versioned_public_support_matrix;
+  if (publicMatrix && Array.isArray(publicMatrix.rows)) {
+    for (const row of publicMatrix.rows) {
+      if (row && typeof row === "object" && !Array.isArray(row) && typeof row.id === "string") {
+        publicRows.set(row.id, row);
+      }
+    }
+  }
+
+  const evidenceCollections = {
+    chat_app_evidence: new Map(),
+    conditional_app_evidence: new Map(),
+  };
+  for (const collectionName of Object.keys(evidenceCollections)) {
+    const collection = matrix?.[collectionName];
+    if (!Array.isArray(collection)) {
+      failures.push(supportMatrixClaimFailure(`${collectionName} array`));
+      continue;
+    }
+    for (const row of collection) {
+      if (row && typeof row === "object" && !Array.isArray(row) && typeof row.id === "string") {
+        evidenceCollections[collectionName].set(row.id, row);
+      }
+    }
+  }
+
+  for (const link of REQUIRED_PUBLIC_SUPPORT_EVIDENCE_LINKS) {
+    const publicRow = publicRows.get(link.publicId);
+    if (!publicRow) {
+      failures.push(supportMatrixClaimFailure(`public row ${link.publicId}`));
+      continue;
+    }
+
+    const evidenceRow = evidenceCollections[link.evidenceCollection].get(link.evidenceId);
+    if (!evidenceRow) {
+      failures.push(supportMatrixClaimFailure(`evidence row ${link.evidenceCollection}.${link.evidenceId}`));
+      continue;
+    }
+
+    if (evidenceRow.status !== link.evidenceStatus) {
+      failures.push(
+        supportMatrixClaimFailure(`${link.evidenceId}.status=${JSON.stringify(link.evidenceStatus)}`),
+      );
+    }
+
+    if (publicRow.public_status !== link.publicStatus) {
+      failures.push(
+        supportMatrixClaimFailure(`${link.publicId}.public_status=${JSON.stringify(link.publicStatus)}`),
+      );
+    }
+
+    if (publicRow.claim_allowed !== link.claimAllowed) {
+      failures.push(
+        supportMatrixClaimFailure(`${link.publicId}.claim_allowed=${JSON.stringify(link.claimAllowed)}`),
+      );
+    }
+
+    if (
+      Object.hasOwn(evidenceRow, "public_status") &&
+      evidenceRow.public_status !== publicRow.public_status
+    ) {
+      failures.push(supportMatrixClaimFailure(`${link.evidenceId}.public_status matches ${link.publicId}`));
+    }
+
+    if (
+      Object.hasOwn(evidenceRow, "public_claim_allowed") &&
+      evidenceRow.public_claim_allowed !== publicRow.claim_allowed
+    ) {
+      failures.push(supportMatrixClaimFailure(`${link.evidenceId}.public_claim_allowed matches ${link.publicId}`));
+    }
+
+    if (publicRow.claim_allowed === true && evidenceRow.public_claim_allowed !== true) {
+      failures.push(supportMatrixClaimFailure(`${link.publicId} requires exact public evidence`));
+    }
+  }
+
+  return failures;
+}
+
+async function validateChatAppEvidence(matrix) {
+  const failures = [];
+
+  if (!Array.isArray(matrix.chat_app_evidence)) {
+    failures.push(chatAppEvidenceFailure("chat_app_evidence array"));
+    return failures;
+  }
+
+  const rowsById = new Map();
+  for (const row of matrix.chat_app_evidence) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) {
+      failures.push(chatAppEvidenceFailure("each chat_app_evidence row is an object"));
+      continue;
+    }
+    if (typeof row.id !== "string" || row.id.length === 0) {
+      failures.push(chatAppEvidenceFailure("each chat_app_evidence row has a non-empty id"));
+      continue;
+    }
+    if (rowsById.has(row.id)) {
+      failures.push(chatAppEvidenceFailure(`unique chat_app_evidence id ${row.id}`));
+      continue;
+    }
+    rowsById.set(row.id, row);
+  }
+
+  for (const required of REQUIRED_CHAT_APP_EVIDENCE) {
+    const row = rowsById.get(required.id);
+    if (!row) {
+      failures.push(chatAppEvidenceFailure(`row ${required.id}`));
+      continue;
+    }
+
+    for (const [field, expected] of [
+      ["service", required.service],
+      ["claim_scope", required.claimScope],
+      ["status", required.status],
+      ["public_status", required.publicStatus],
+      ["public_claim_allowed", required.publicClaimAllowed],
+      ["evidence_type", required.evidenceType],
+      ["evidence_report", required.evidenceReport],
+      ["evidence_anchor", required.evidenceAnchor],
+      ["trusted_anchor", required.trustedAnchor],
+    ]) {
+      if (row[field] !== expected) {
+        failures.push(
+          chatAppEvidenceFailure(`${required.id}.${field}=${JSON.stringify(expected)}`),
+        );
+      }
+    }
+
+    if (
+      typeof row.support_boundary !== "string" ||
+      !required.requiredBoundary.test(row.support_boundary)
+    ) {
+      failures.push(chatAppEvidenceFailure(`${required.id}.support_boundary matches public boundary`));
+    }
+
+    let report;
+    try {
+      report = await readUtf8(path.join(REPO_ROOT, required.evidenceReport));
+    } catch (error) {
+      failures.push(chatAppEvidenceFailure(`source report ${required.evidenceReport}`));
+      continue;
+    }
+
+    if (!new RegExp(`^pub fn ${required.evidenceAnchor}\\(\\) -> SignedProfileDoc \\{$`, "m").test(report)) {
+      failures.push(chatAppEvidenceFailure(`${required.id} signed profile function`));
+    }
+
+    if (!new RegExp(`^pub fn ${required.trustedAnchor}\\(\\) -> &'static str \\{$`, "m").test(report)) {
+      failures.push(chatAppEvidenceFailure(`${required.id} trusted signing key function`));
+    }
+  }
 
   return failures;
 }
@@ -2323,6 +2574,16 @@ async function runSelfTest() {
       shouldFlag: true,
     },
     {
+      name: "catches banned provider Burn deletion wording",
+      text: "Burn unsends messages from the connected service.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches banned Signal support wording",
+      text: "OSL supports Signal for protected messages.",
+      shouldFlag: true,
+    },
+    {
       name: "passes denied cryptographic-erasure wording",
       text: "Burn is not cryptographic erasure.",
       shouldFlag: false,
@@ -3118,6 +3379,11 @@ async function runSelfTest() {
   const productionSupportMatrix = JSON.parse(await readUtf8(SUPPORT_MATRIX_PATH));
   const supportMatrixWithoutPublic = JSON.parse(JSON.stringify(productionSupportMatrix));
   delete supportMatrixWithoutPublic.versioned_public_support_matrix;
+  const supportMatrixWithoutChatEvidence = JSON.parse(JSON.stringify(productionSupportMatrix));
+  delete supportMatrixWithoutChatEvidence.chat_app_evidence;
+  const supportMatrixWithForgedPublicClaim = JSON.parse(JSON.stringify(productionSupportMatrix));
+  supportMatrixWithForgedPublicClaim.versioned_public_support_matrix.rows
+    .find((row) => row.id === "signal_desktop_public").claim_allowed = true;
   const inputCases = [
     {
       name: "real docs allowlist supplies every required attachment ban",
@@ -3136,8 +3402,11 @@ async function runSelfTest() {
         "disappears forever",
         "permanently undecryptable",
         "gone for good",
+        "burn unsends messages",
         "works on gmail",
         "works on discord",
+        "osl supports signal",
+        "works on whatsapp",
         "provider-tested",
         "verified by discord",
         "works with discord's approval",
@@ -3195,6 +3464,22 @@ async function runSelfTest() {
         (await validateVersionedPublicSupportMatrix(productionSupportMatrix)).length === 0
         && (await validateVersionedPublicSupportMatrix(supportMatrixWithoutPublic)).some(
           (failure) => failure.name === "versioned_public_support_matrix",
+        ),
+    },
+    {
+      name: "chat_app_evidence",
+      passed:
+        (await validateChatAppEvidence(productionSupportMatrix)).length === 0
+        && (await validateChatAppEvidence(supportMatrixWithoutChatEvidence)).some(
+          (failure) => failure.name === "chat_app_evidence",
+        ),
+    },
+    {
+      name: "validateSupportMatrixClaims",
+      passed:
+        validateSupportMatrixEvidenceLinks(productionSupportMatrix).length === 0
+        && validateSupportMatrixEvidenceLinks(supportMatrixWithForgedPublicClaim).some(
+          (failure) => failure.name === "validateSupportMatrixClaims",
         ),
     },
   ];

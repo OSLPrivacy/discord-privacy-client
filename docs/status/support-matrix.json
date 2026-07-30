@@ -83,6 +83,38 @@
       }
     ]
   },
+  "chat_app_evidence": [
+    {
+      "id": "signal_desktop_native",
+      "service": "Signal",
+      "surface": "Signal Desktop native Windows adapter",
+      "claim_scope": "protected_native_adapter",
+      "status": "qualified_profile",
+      "public_status": "coming_soon",
+      "public_claim_allowed": false,
+      "evidence_type": "signed_adapter_profile",
+      "evidence_report": "crates/adapter-profile/src/defaults.rs",
+      "evidence_anchor": "signal_default_profile",
+      "trusted_anchor": "signal_default_trusted_signing_key_b64",
+      "verdict_recorded": "2026-07-30",
+      "support_boundary": "A signed data-only Signal support profile exists, but public support remains Coming soon until the versioned public matrix allows the exact claim."
+    },
+    {
+      "id": "whatsapp_windows_native",
+      "service": "WhatsApp",
+      "surface": "WhatsApp for Windows adapter",
+      "claim_scope": "protected_native_adapter",
+      "status": "qualified_profile",
+      "public_status": "coming_soon",
+      "public_claim_allowed": false,
+      "evidence_type": "signed_adapter_profile",
+      "evidence_report": "crates/adapter-profile/src/defaults.rs",
+      "evidence_anchor": "whatsapp_default_profile",
+      "trusted_anchor": "whatsapp_default_trusted_signing_key_b64",
+      "verdict_recorded": "2026-07-30",
+      "support_boundary": "A signed data-only WhatsApp support profile exists, but public support remains Coming soon until the versioned public matrix allows the exact claim."
+    }
+  ],
   "conditional_app_evidence": [
     {
       "id": "telegram_desktop_native",
