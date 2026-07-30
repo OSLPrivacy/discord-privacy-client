@@ -84,6 +84,31 @@ pub struct ScrubIndexStatus {
     pub deletion_enabled: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScrubIndexManifest {
+    pub version: u8,
+    pub import_id: String,
+    pub source: ScrubIndexSource,
+    pub phase: ScrubIndexPhase,
+    pub selections: Vec<ScrubAccountSelection>,
+    pub next_sequence: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScrubIndexScan {
+    pub import_id: String,
+    pub phase: ScrubIndexPhase,
+    pub messages_indexed: u64,
+    pub findings_indexed: u64,
+    pub rejected_messages: u64,
+    pub completed_chunks: u32,
+    pub analysis_location: &'static str,
+    pub persisted_encrypted: bool,
+    pub deletion_enabled: bool,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct JournalDocument {
@@ -161,6 +186,16 @@ impl ScrubIndexState {
         Ok(document.status())
     }
 
+    pub fn set_scrub_index_manifest(
+        &self,
+        owner: &str,
+        request: ScrubIndexInitializeRequest,
+    ) -> Result<ScrubIndexManifest, String> {
+        self.initialize(owner, request)?;
+        self.get_scrub_index_manifest(owner)?
+            .ok_or_else(|| "Scrub manifest was not persisted".to_owned())
+    }
+
     pub fn status(&self, owner: &str) -> Result<Option<ScrubIndexStatus>, String> {
         let _guard = self.lock()?;
         validate_owner(owner)?;
@@ -172,6 +207,35 @@ impl ScrubIndexState {
         require_owner(&document, owner)?;
         recover_orphans(&root, document.next_sequence)?;
         Ok(Some(document.status()))
+    }
+
+    pub fn get_scrub_index_manifest(
+        &self,
+        owner: &str,
+    ) -> Result<Option<ScrubIndexManifest>, String> {
+        let _guard = self.lock()?;
+        validate_owner(owner)?;
+        let root = self.root()?;
+        ensure_safe_root(&root, false)?;
+        let Some(document) = load_journal(&root, &self.key()?)? else {
+            return Ok(None);
+        };
+        require_owner(&document, owner)?;
+        recover_orphans(&root, document.next_sequence)?;
+        Ok(Some(document.manifest()))
+    }
+
+    pub fn get_scrub_index_scan(&self, owner: &str) -> Result<Option<ScrubIndexScan>, String> {
+        let _guard = self.lock()?;
+        validate_owner(owner)?;
+        let root = self.root()?;
+        ensure_safe_root(&root, false)?;
+        let Some(document) = load_journal(&root, &self.key()?)? else {
+            return Ok(None);
+        };
+        require_owner(&document, owner)?;
+        recover_orphans(&root, document.next_sequence)?;
+        Ok(Some(document.scan()))
     }
 
     pub fn append_chunk(
@@ -303,6 +367,19 @@ impl ScrubIndexState {
         remove_index_tree(&root)
     }
 
+    pub fn revoke_for_owner(&self, owner: &str) -> Result<bool, String> {
+        let _guard = self.lock()?;
+        validate_owner(owner)?;
+        let root = self.root()?;
+        ensure_safe_root(&root, false)?;
+        let Some(document) = load_journal(&root, &self.key()?)? else {
+            return Ok(false);
+        };
+        require_owner(&document, owner)?;
+        remove_index_tree(&root)?;
+        Ok(true)
+    }
+
     fn change_phase(
         &self,
         owner: &str,
@@ -399,6 +476,31 @@ fn scrub_index_root(config_dir: Option<PathBuf>) -> Result<PathBuf, String> {
 const KEY_FOR_TESTS: [u8; 32] = [91; 32];
 
 impl JournalDocument {
+    fn manifest(&self) -> ScrubIndexManifest {
+        ScrubIndexManifest {
+            version: self.version,
+            import_id: self.import_id.clone(),
+            source: self.source,
+            phase: self.phase,
+            selections: self.selections.clone(),
+            next_sequence: self.next_sequence,
+        }
+    }
+
+    fn scan(&self) -> ScrubIndexScan {
+        ScrubIndexScan {
+            import_id: self.import_id.clone(),
+            phase: self.phase,
+            messages_indexed: self.messages_indexed,
+            findings_indexed: self.findings_indexed,
+            rejected_messages: self.rejected_messages,
+            completed_chunks: self.next_sequence,
+            analysis_location: "this_device_only",
+            persisted_encrypted: true,
+            deletion_enabled: false,
+        }
+    }
+
     fn status(&self) -> ScrubIndexStatus {
         ScrubIndexStatus {
             import_id: self.import_id.clone(),
@@ -894,5 +996,155 @@ mod tests {
             )
             .unwrap();
         state.cancel(OWNER, &accepted.import_id).unwrap();
+    }
+
+    #[test]
+    fn scrub_index_manifest_and_scan_round_trip() {
+        let root = root("manifest-round-trip");
+        let state = ScrubIndexState::for_test(root.clone());
+        let manifest = state
+            .set_scrub_index_manifest(
+                OWNER,
+                ScrubIndexInitializeRequest {
+                    selections: vec![selection()],
+                    source: ScrubIndexSource::OslVisibleData,
+                },
+            )
+            .unwrap();
+        assert_eq!(manifest.version, VERSION);
+        assert_eq!(manifest.source, ScrubIndexSource::OslVisibleData);
+        assert_eq!(manifest.selections, vec![selection()]);
+        assert_eq!(manifest.next_sequence, 0);
+
+        let indexed = state
+            .append_chunk(
+                OWNER,
+                ScrubIndexChunkRequest {
+                    import_id: manifest.import_id.clone(),
+                    sequence: 0,
+                    final_chunk: true,
+                    messages: vec![message("token=ghp_abcdefghijklmnop")],
+                },
+            )
+            .unwrap();
+        assert_eq!(indexed.phase, ScrubIndexPhase::Complete);
+
+        let reopened = ScrubIndexState::for_test(root.clone());
+        assert_eq!(
+            reopened.get_scrub_index_manifest(OWNER).unwrap().unwrap(),
+            ScrubIndexManifest {
+                phase: ScrubIndexPhase::Complete,
+                next_sequence: 1,
+                import_id: manifest.import_id.clone(),
+                source: manifest.source,
+                selections: manifest.selections.clone(),
+                version: manifest.version,
+            }
+        );
+        let scan = reopened.get_scrub_index_scan(OWNER).unwrap().unwrap();
+        assert_eq!(scan.import_id, manifest.import_id);
+        assert_eq!(scan.messages_indexed, 1);
+        assert!(scan.findings_indexed >= 1);
+        assert_eq!(scan.rejected_messages, 0);
+        assert_eq!(scan.completed_chunks, 1);
+        assert_eq!(scan.analysis_location, "this_device_only");
+        assert!(scan.persisted_encrypted);
+        assert!(!scan.deletion_enabled);
+        assert!(reopened.get_scrub_index_scan(&"f".repeat(64)).is_err());
+    }
+
+    #[test]
+    fn revoke_for_owner_persists_deletion_before_cache_replace() {
+        let root = root("owner-revoke");
+        let state = ScrubIndexState::for_test(root.clone());
+        let initial = state
+            .initialize(
+                OWNER,
+                ScrubIndexInitializeRequest {
+                    selections: vec![selection()],
+                    source: ScrubIndexSource::OslVisibleData,
+                },
+            )
+            .unwrap();
+        state
+            .append_chunk(
+                OWNER,
+                ScrubIndexChunkRequest {
+                    import_id: initial.import_id.clone(),
+                    sequence: 0,
+                    final_chunk: false,
+                    messages: vec![message("token=ghp_abcdefghijklmnop")],
+                },
+            )
+            .unwrap();
+        assert!(chunk_path(&root, 0).exists());
+
+        let other_owner = "f".repeat(64);
+        assert!(state.revoke_for_owner(&other_owner).is_err());
+        assert!(root.join(JOURNAL).exists());
+        assert!(chunk_path(&root, 0).exists());
+
+        assert_eq!(state.revoke_for_owner(OWNER), Ok(true));
+        assert!(!root.exists());
+        assert_eq!(
+            ScrubIndexState::for_test(root.clone())
+                .get_scrub_index_manifest(OWNER)
+                .unwrap(),
+            None
+        );
+
+        let replacement = ScrubIndexState::for_test(root.clone())
+            .initialize(
+                &other_owner,
+                ScrubIndexInitializeRequest {
+                    selections: vec![selection()],
+                    source: ScrubIndexSource::OslVisibleData,
+                },
+            )
+            .unwrap();
+        assert_ne!(replacement.import_id, initial.import_id);
+        ScrubIndexState::for_test(root.clone())
+            .cancel(&other_owner, &replacement.import_id)
+            .unwrap();
+    }
+
+    #[test]
+    fn recover_orphans_removes_uncommitted_chunks_on_startup() {
+        let root = root("orphan-recovery");
+        let state = ScrubIndexState::for_test(root.clone());
+        let initial = state
+            .initialize(
+                OWNER,
+                ScrubIndexInitializeRequest {
+                    selections: vec![selection()],
+                    source: ScrubIndexSource::OslVisibleData,
+                },
+            )
+            .unwrap();
+        state
+            .append_chunk(
+                OWNER,
+                ScrubIndexChunkRequest {
+                    import_id: initial.import_id.clone(),
+                    sequence: 0,
+                    final_chunk: false,
+                    messages: vec![message("safe committed message")],
+                },
+            )
+            .unwrap();
+        ensure_safe_chunks_dir(&root).unwrap();
+        fs::write(chunk_path(&root, 1), b"uncommitted").unwrap();
+        fs::write(root.join(CHUNKS).join("chunk-00000002.tmp"), b"partial").unwrap();
+        assert!(chunk_path(&root, 1).exists());
+        assert!(root.join(CHUNKS).join("chunk-00000002.tmp").exists());
+
+        let startup_state = ScrubIndexState::for_test(root.clone());
+        let status = startup_state.status(OWNER).unwrap().unwrap();
+        assert_eq!(status.next_sequence, 1);
+        assert!(chunk_path(&root, 0).exists());
+        assert!(!chunk_path(&root, 1).exists());
+        assert!(!root.join(CHUNKS).join("chunk-00000002.tmp").exists());
+
+        startup_state.cancel(OWNER, &initial.import_id).unwrap();
     }
 }

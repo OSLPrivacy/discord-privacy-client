@@ -11,6 +11,8 @@ use std::num::NonZeroU64;
 
 pub const PROPRIETARY_MODULE_CONTRACT_VERSION: u16 = 1;
 pub const MAX_EXPLICIT_PLAINTEXT_BYTES: usize = 16 * 1024;
+pub const MAX_PROPRIETARY_MODULE_ID_BYTES: usize = 64;
+pub const MAX_PROPRIETARY_MODULE_NAME_BYTES: usize = 96;
 
 const PERMISSION_LOCAL_RISK_ADVICE: u16 = 1 << 0;
 const PERMISSION_SERVICE_LAYOUT_ADVICE: u16 = 1 << 1;
@@ -100,6 +102,183 @@ impl fmt::Debug for BoundaryService {
             Self::NativeApp => "BoundaryService::NativeApp",
             Self::OslHub => "BoundaryService::OslHub",
         })
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProprietaryLicenseTier {
+    Pro,
+    Enterprise,
+}
+
+impl fmt::Debug for ProprietaryLicenseTier {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Pro => "ProprietaryLicenseTier::Pro",
+            Self::Enterprise => "ProprietaryLicenseTier::Enterprise",
+        })
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProprietaryNetworkPolicy {
+    NoNetwork,
+    BrokeredHttpsOnly,
+}
+
+impl fmt::Debug for ProprietaryNetworkPolicy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::NoNetwork => "ProprietaryNetworkPolicy::NoNetwork",
+            Self::BrokeredHttpsOnly => "ProprietaryNetworkPolicy::BrokeredHttpsOnly",
+        })
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProprietaryModuleManifest {
+    contract_version: u16,
+    module_id: String,
+    display_name: String,
+    license_tier: ProprietaryLicenseTier,
+    network_policy: ProprietaryNetworkPolicy,
+    permissions: OpenPermissionSet,
+    max_explicit_plaintext_bytes: usize,
+}
+
+impl ProprietaryModuleManifest {
+    pub fn new(
+        module_id: impl Into<String>,
+        display_name: impl Into<String>,
+        license_tier: ProprietaryLicenseTier,
+        network_policy: ProprietaryNetworkPolicy,
+        permissions: OpenPermissionSet,
+    ) -> Result<Self, BoundaryError> {
+        let module_id = module_id.into();
+        let display_name = display_name.into();
+        if !valid_module_id(&module_id) || !valid_display_name(&display_name) {
+            return Err(BoundaryError::InvalidManifest);
+        }
+        if permissions.is_empty() {
+            return Err(BoundaryError::PermissionRefused);
+        }
+        Ok(Self {
+            contract_version: PROPRIETARY_MODULE_CONTRACT_VERSION,
+            module_id,
+            display_name,
+            license_tier,
+            network_policy,
+            permissions,
+            max_explicit_plaintext_bytes: MAX_EXPLICIT_PLAINTEXT_BYTES,
+        })
+    }
+
+    pub fn contract_version(&self) -> u16 {
+        self.contract_version
+    }
+
+    pub fn module_id(&self) -> &str {
+        &self.module_id
+    }
+
+    pub fn license_tier(&self) -> ProprietaryLicenseTier {
+        self.license_tier
+    }
+
+    pub fn network_policy(&self) -> ProprietaryNetworkPolicy {
+        self.network_policy
+    }
+
+    pub fn permissions(&self) -> OpenPermissionSet {
+        self.permissions
+    }
+
+    pub fn max_explicit_plaintext_bytes(&self) -> usize {
+        self.max_explicit_plaintext_bytes
+    }
+}
+
+impl fmt::Debug for ProprietaryModuleManifest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProprietaryModuleManifest")
+            .field("contract_version", &self.contract_version)
+            .field("module_id", &"[redacted; module id]")
+            .field("display_name", &"[redacted; module name]")
+            .field("license_tier", &self.license_tier)
+            .field("network_policy", &self.network_policy)
+            .field("permissions", &self.permissions)
+            .field(
+                "max_explicit_plaintext_bytes",
+                &self.max_explicit_plaintext_bytes,
+            )
+            .finish()
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub enum OptionalModuleInstallGrant {
+    Absent,
+    Installed { manifest: ProprietaryModuleManifest },
+}
+
+impl Default for OptionalModuleInstallGrant {
+    fn default() -> Self {
+        Self::Absent
+    }
+}
+
+impl fmt::Debug for OptionalModuleInstallGrant {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Absent => formatter.write_str("OptionalModuleInstallGrant::Absent"),
+            Self::Installed { manifest } => formatter
+                .debug_struct("OptionalModuleInstallGrant::Installed")
+                .field("manifest", manifest)
+                .finish(),
+        }
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct VerifiedOptionalModuleAccess {
+    manifest: ProprietaryModuleManifest,
+    access: VerifiedOpenAccess,
+}
+
+impl VerifiedOptionalModuleAccess {
+    pub fn authorize(
+        install: OptionalModuleInstallGrant,
+        consent: ConsentGrant,
+        binding: BindingGrant,
+        authority: AuthorityGrant,
+    ) -> Result<Self, BoundaryError> {
+        let OptionalModuleInstallGrant::Installed { manifest } = install else {
+            return Err(BoundaryError::ModuleNotInstalled);
+        };
+        let access = VerifiedOpenAccess::new(consent, binding, authority, manifest.permissions())?;
+        Ok(Self { manifest, access })
+    }
+
+    pub fn manifest(&self) -> &ProprietaryModuleManifest {
+        &self.manifest
+    }
+
+    pub fn access(&self) -> VerifiedOpenAccess {
+        self.access
+    }
+}
+
+impl fmt::Debug for VerifiedOptionalModuleAccess {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VerifiedOptionalModuleAccess")
+            .field("manifest", &self.manifest)
+            .field("access", &self.access)
+            .finish()
     }
 }
 
@@ -245,7 +424,7 @@ impl fmt::Debug for OpenPermission {
     }
 }
 
-#[derive(Clone, Copy, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Default, Eq, PartialEq, Serialize)]
 pub struct OpenPermissionSet {
     bits: u16,
 }
@@ -579,6 +758,8 @@ impl fmt::Debug for BoundaryOutcome {
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub enum BoundaryError {
+    InvalidManifest,
+    ModuleNotInstalled,
     MissingConsent,
     MissingBinding,
     MissingAuthority,
@@ -589,6 +770,8 @@ pub enum BoundaryError {
 impl fmt::Debug for BoundaryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::InvalidManifest => "BoundaryError::InvalidManifest",
+            Self::ModuleNotInstalled => "BoundaryError::ModuleNotInstalled",
             Self::MissingConsent => "BoundaryError::MissingConsent",
             Self::MissingBinding => "BoundaryError::MissingBinding",
             Self::MissingAuthority => "BoundaryError::MissingAuthority",
@@ -601,6 +784,8 @@ impl fmt::Debug for BoundaryError {
 impl fmt::Display for BoundaryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::InvalidManifest => "proprietary module manifest is invalid",
+            Self::ModuleNotInstalled => "optional proprietary module is not installed",
             Self::MissingConsent => "consent is absent",
             Self::MissingBinding => "binding is absent",
             Self::MissingAuthority => "authority is absent",
@@ -652,6 +837,23 @@ fn all_zero(bytes: &[u8; 32]) -> bool {
     bytes.iter().all(|byte| *byte == 0)
 }
 
+fn valid_module_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_PROPRIETARY_MODULE_ID_BYTES
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_' | b'.')
+        })
+}
+
+fn valid_display_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_PROPRIETARY_MODULE_NAME_BYTES
+        && value.trim() == value
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b' ' | b'-' | b'_'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -677,6 +879,17 @@ mod tests {
             OpenPermissionSet::from_verified_permissions(permissions),
         )
         .expect("test access is verified")
+    }
+
+    fn manifest() -> ProprietaryModuleManifest {
+        ProprietaryModuleManifest::new(
+            "risk-advice.module",
+            "Risk Advice Module",
+            ProprietaryLicenseTier::Pro,
+            ProprietaryNetworkPolicy::NoNetwork,
+            OpenPermissionSet::from_verified_permissions(&[OpenPermission::LocalRiskAdvice]),
+        )
+        .expect("manifest is valid")
     }
 
     #[test]
@@ -900,5 +1113,107 @@ mod tests {
         assert!(!rendered.contains("redaction-sentinel-bytes"));
         assert!(!rendered.contains("C7C7"));
         assert!(rendered.contains("[redacted]") || rendered.contains("[redacted; sha256]"));
+    }
+
+    #[test]
+    fn proprietary_module_manifest_contract_is_bounded_and_redacted() {
+        let manifest = manifest();
+
+        assert_eq!(
+            manifest.contract_version(),
+            PROPRIETARY_MODULE_CONTRACT_VERSION
+        );
+        assert_eq!(manifest.module_id(), "risk-advice.module");
+        assert_eq!(manifest.license_tier(), ProprietaryLicenseTier::Pro);
+        assert_eq!(
+            manifest.network_policy(),
+            ProprietaryNetworkPolicy::NoNetwork
+        );
+        assert_eq!(
+            manifest.max_explicit_plaintext_bytes(),
+            MAX_EXPLICIT_PLAINTEXT_BYTES
+        );
+        assert!(manifest
+            .permissions()
+            .allows(OpenPermission::LocalRiskAdvice));
+        assert_eq!(
+            ProprietaryModuleManifest::new(
+                "x".repeat(MAX_PROPRIETARY_MODULE_ID_BYTES + 1),
+                "Risk Advice Module",
+                ProprietaryLicenseTier::Pro,
+                ProprietaryNetworkPolicy::NoNetwork,
+                OpenPermissionSet::from_verified_permissions(&[OpenPermission::LocalRiskAdvice]),
+            ),
+            Err(BoundaryError::InvalidManifest)
+        );
+        assert_eq!(
+            ProprietaryModuleManifest::new(
+                "risk-advice.module",
+                "Risk Advice Module",
+                ProprietaryLicenseTier::Pro,
+                ProprietaryNetworkPolicy::NoNetwork,
+                OpenPermissionSet::empty(),
+            ),
+            Err(BoundaryError::PermissionRefused)
+        );
+
+        let rendered = format!("{manifest:?}");
+        assert!(!rendered.contains("risk-advice.module"));
+        assert!(!rendered.contains("Risk Advice Module"));
+        assert!(rendered.contains("[redacted; module id]"));
+        assert!(rendered.contains("ProprietaryLicenseTier::Pro"));
+        assert!(rendered.contains("ProprietaryNetworkPolicy::NoNetwork"));
+    }
+
+    #[test]
+    fn optional_module_install_and_consent_are_separate_from_base_app() {
+        let manifest = manifest();
+        let binding = BindingGrant::Bound { digest: [0x22; 32] };
+        let authority = AuthorityGrant::Verified {
+            revision: nonzero_revision(3),
+        };
+
+        assert_eq!(
+            VerifiedOptionalModuleAccess::authorize(
+                OptionalModuleInstallGrant::Absent,
+                ConsentGrant::Present {
+                    revision: nonzero_revision(2),
+                },
+                binding,
+                authority,
+            ),
+            Err(BoundaryError::ModuleNotInstalled)
+        );
+        assert_eq!(
+            VerifiedOptionalModuleAccess::authorize(
+                OptionalModuleInstallGrant::Installed {
+                    manifest: manifest.clone(),
+                },
+                ConsentGrant::Absent,
+                binding,
+                authority,
+            ),
+            Err(BoundaryError::MissingConsent)
+        );
+
+        let verified = VerifiedOptionalModuleAccess::authorize(
+            OptionalModuleInstallGrant::Installed {
+                manifest: manifest.clone(),
+            },
+            ConsentGrant::Present {
+                revision: nonzero_revision(2),
+            },
+            binding,
+            authority,
+        )
+        .expect("installed module with explicit consent is authorized");
+        assert_eq!(verified.manifest(), &manifest);
+        assert!(verified.access().allows(OpenPermission::LocalRiskAdvice));
+
+        let slot: ProprietaryModuleSlot<()> = ProprietaryModuleSlot::default();
+        assert!(
+            slot.is_absent(),
+            "base app must not install the module by default"
+        );
     }
 }
