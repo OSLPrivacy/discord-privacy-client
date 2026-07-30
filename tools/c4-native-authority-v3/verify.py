@@ -990,6 +990,7 @@ class _VerifySelfTests(unittest.TestCase):
         }
         mismatched_target = copy.deepcopy(good_context.expected_target)
         mismatched_target["hwnd"] += 1
+        mismatched_target["bindingSha256"] = target_binding_digest(mismatched_target)
         cases["Discord target differs from expected target"] = {
             **good_context.__dict__,
             "expected_target": mismatched_target,
