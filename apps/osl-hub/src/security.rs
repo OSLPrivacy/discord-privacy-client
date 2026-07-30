@@ -199,6 +199,7 @@ pub struct ScopedTrustGrant {
     person_id: String,
     service_id: String,
     account_id: String,
+    binding_commitment: [u8; 32],
     scope: Scope,
     storage_key: String,
 }
@@ -214,19 +215,22 @@ impl ScopedTrustGrant {
         if consent != ScopedTrustConsent::ExplicitUserAction {
             return Err("OSL scoped trust requires explicit approval".to_owned());
         }
+        require_exact_manual_peer_scope_input(&scope_input, "OSL scoped trust scope is invalid")?;
         let scope: Scope = scope_input
             .try_into()
             .map_err(|_| "OSL scoped trust scope is invalid".to_owned())?;
-        if scope.kind != ScopeKind::Dm
-            || scope.id != manual_peer_scope_id(service_id, account_id, &binding.person_id)?
-            || scope.channel_id.as_deref().is_none_or(str::is_empty)
-        {
-            return Err("OSL scoped trust scope is invalid".to_owned());
-        }
+        require_exact_manual_peer_scope(
+            service_id,
+            account_id,
+            &binding.person_id,
+            &scope,
+            "OSL scoped trust scope is invalid",
+        )?;
         Ok(Self {
             person_id: binding.person_id.clone(),
             service_id: service_id.to_owned(),
             account_id: account_id.to_owned(),
+            binding_commitment: manual_peer_binding_commitment(binding),
             storage_key: scope.storage_key(),
             scope,
         })
@@ -254,7 +258,12 @@ impl ScopedTrustGrant {
 
     pub fn require_binding(&self, binding: Option<&ManualPeerBinding>) -> Result<(), String> {
         let binding = binding.ok_or_else(|| "OSL scoped trust binding is missing".to_owned())?;
-        if binding.person_id != self.person_id {
+        if binding.person_id.as_str() != self.person_id.as_str()
+            || !constant_time_eq_32(
+                &manual_peer_binding_commitment(binding),
+                &self.binding_commitment,
+            )
+        {
             return Err("OSL scoped trust binding does not match".to_owned());
         }
         Ok(())
@@ -268,10 +277,45 @@ impl fmt::Debug for ScopedTrustGrant {
             .field("person_id", &"[REDACTED]")
             .field("service_id", &"[REDACTED]")
             .field("account_id", &"[REDACTED]")
+            .field("binding_commitment", &"[REDACTED]")
             .field("scope_kind", &self.scope.kind)
             .field("storage_key", &"[REDACTED]")
             .finish()
     }
+}
+
+impl fmt::Display for ManualPeerBinding {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ManualPeerBinding([REDACTED])")
+    }
+}
+
+impl fmt::Display for ScopedTrustGrant {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "ScopedTrustGrant(scope_kind={:?}, identifiers=[REDACTED])",
+            self.scope.kind
+        )
+    }
+}
+
+fn manual_peer_binding_commitment(binding: &ManualPeerBinding) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"OSL-SCOPED-TRUST-BINDING-v1");
+    for part in [
+        binding.person_id.as_bytes(),
+        binding.peer_osl_user_id.as_bytes(),
+        binding.peer_x25519_public.as_slice(),
+        binding.peer_mlkem768_public.as_slice(),
+    ] {
+        hash.update((part.len() as u64).to_be_bytes());
+        hash.update(part);
+    }
+    let digest = hash.finalize();
+    let mut commitment = [0u8; 32];
+    commitment.copy_from_slice(&digest);
+    commitment
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1488,15 +1532,17 @@ fn manual_peer_scope_approved_for_binding(
     binding: &ManualPeerBinding,
     scope_input: ScopeInput,
 ) -> Result<bool, String> {
+    require_exact_manual_peer_scope_input(&scope_input, "OSL manual peer scope is invalid")?;
     let scope: Scope = scope_input
         .try_into()
         .map_err(|_| "OSL manual peer scope is invalid".to_owned())?;
-    if scope.kind != ScopeKind::Dm
-        || scope.id != manual_peer_scope_id(service_id, account_id, &binding.person_id)?
-        || scope.channel_id.as_deref().is_none_or(str::is_empty)
-    {
-        return Err("OSL manual peer scope is invalid".to_owned());
-    }
+    require_exact_manual_peer_scope(
+        service_id,
+        account_id,
+        &binding.person_id,
+        &scope,
+        "OSL manual peer scope is invalid",
+    )?;
     let dir = config_dir()?;
     let prefs = load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE))?;
     let storage_key = scope.storage_key();
@@ -1567,6 +1613,41 @@ pub fn manual_peer_scope_id(
     ))
 }
 
+fn require_exact_manual_peer_scope(
+    service_id: &str,
+    account_id: &str,
+    person_id: &str,
+    scope: &Scope,
+    error: &str,
+) -> Result<(), String> {
+    let expected_id = manual_peer_scope_id(service_id, account_id, person_id)?;
+    if scope.kind != ScopeKind::Dm
+        || scope.id.as_str() != expected_id.as_str()
+        || scope.server_id.is_some()
+        || scope.channel_id.as_deref() != Some(scope.id.as_str())
+    {
+        return Err(error.to_owned());
+    }
+    Ok(())
+}
+
+fn require_exact_manual_peer_scope_input(
+    scope_input: &ScopeInput,
+    error: &str,
+) -> Result<(), String> {
+    if scope_input.kind != ScopeKind::Dm
+        || scope_input.id.is_empty()
+        || scope_input.server_id.is_some()
+        || scope_input
+            .channel_id
+            .as_deref()
+            .is_some_and(|channel_id| channel_id != scope_input.id.as_str())
+    {
+        return Err(error.to_owned());
+    }
+    Ok(())
+}
+
 pub fn set_manual_peer_scope_permission(
     core: &HubCoreState,
     security: &HubSecurityState,
@@ -1577,15 +1658,17 @@ pub fn set_manual_peer_scope_permission(
     enabled: bool,
 ) -> Result<(), String> {
     let binding = manual_peer_binding(core, person_id)?;
+    require_exact_manual_peer_scope_input(&scope_input, "OSL manual peer scope is invalid")?;
     let scope: Scope = scope_input
         .try_into()
         .map_err(|_| "OSL manual peer scope is invalid".to_owned())?;
-    if scope.kind != ScopeKind::Dm
-        || scope.id != manual_peer_scope_id(service_id, account_id, &binding.person_id)?
-        || scope.channel_id.as_deref().is_none_or(str::is_empty)
-    {
-        return Err("OSL manual peer scope is invalid".to_owned());
-    }
+    require_exact_manual_peer_scope(
+        service_id,
+        account_id,
+        &binding.person_id,
+        &scope,
+        "OSL manual peer scope is invalid",
+    )?;
     let _transition = security
         .transition
         .lock()
@@ -2218,16 +2301,18 @@ pub fn burn_manual_peer_scope(
     scope_input: ScopeInput,
 ) -> Result<HubScopeBurnResult, String> {
     require_unlocked()?;
+    require_exact_manual_peer_scope_input(&scope_input, "OSL manual peer scope is invalid")?;
     let scope: Scope = scope_input
         .clone()
         .try_into()
         .map_err(|_| "OSL manual peer scope is invalid".to_owned())?;
-    if scope.kind != ScopeKind::Dm
-        || scope.id != manual_peer_scope_id(service_id, account_id, person_id)?
-        || scope.channel_id.as_deref().is_none_or(str::is_empty)
-    {
-        return Err("OSL manual peer scope is invalid".to_owned());
-    }
+    require_exact_manual_peer_scope(
+        service_id,
+        account_id,
+        person_id,
+        &scope,
+        "OSL manual peer scope is invalid",
+    )?;
     // Resolved before the destructive sequence, for the same reason as in
     // `burn_scope`: afterwards the approval this lookup depends on is gone. A
     // binding this device cannot read leaves the peer unnotified, so it is
@@ -4048,6 +4133,21 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(wrong_scope, "OSL scoped trust scope is invalid");
+
+        let wrong_channel = ScopedTrustGrant::for_manual_peer(
+            &binding,
+            "osl-chat",
+            account_id,
+            ScopeInput {
+                kind: ScopeKind::Dm,
+                id: scope_id,
+                server_id: None,
+                channel_id: Some("manual-scope-other".to_owned()),
+            },
+            ScopedTrustConsent::ExplicitUserAction,
+        )
+        .unwrap_err();
+        assert_eq!(wrong_channel, "OSL scoped trust scope is invalid");
     }
 
     #[test]
@@ -4074,6 +4174,27 @@ mod tests {
         let other_binding = test_manual_binding(other_person_id);
         assert_eq!(
             grant.require_binding(Some(&other_binding)).unwrap_err(),
+            "OSL scoped trust binding does not match"
+        );
+
+        let mut changed_handle = binding.clone();
+        changed_handle.peer_osl_user_id = "changed-private-handle".to_owned();
+        assert_eq!(
+            grant.require_binding(Some(&changed_handle)).unwrap_err(),
+            "OSL scoped trust binding does not match"
+        );
+
+        let mut changed_x25519 = binding.clone();
+        changed_x25519.peer_x25519_public[0] ^= 1;
+        assert_eq!(
+            grant.require_binding(Some(&changed_x25519)).unwrap_err(),
+            "OSL scoped trust binding does not match"
+        );
+
+        let mut changed_mlkem = binding.clone();
+        changed_mlkem.peer_mlkem768_public[0] ^= 1;
+        assert_eq!(
+            grant.require_binding(Some(&changed_mlkem)).unwrap_err(),
             "OSL scoped trust binding does not match"
         );
     }
@@ -4107,6 +4228,20 @@ mod tests {
         assert!(!binding_debug.contains("peer-private-handle"));
         assert!(!binding_debug.contains("33"));
         assert!(!binding_debug.contains("66"));
+
+        let grant_display = format!("{grant}");
+        assert!(grant_display.contains("ScopedTrustGrant"));
+        assert!(!grant_display.contains(&person_id));
+        assert!(!grant_display.contains(account_id));
+        assert!(!grant_display.contains(&scope_id));
+        assert!(!grant_display.contains(&format!("dm:{scope_id}")));
+
+        let binding_display = format!("{binding}");
+        assert!(binding_display.contains("ManualPeerBinding"));
+        assert!(!binding_display.contains(&person_id));
+        assert!(!binding_display.contains("peer-private-handle"));
+        assert!(!binding_display.contains("33"));
+        assert!(!binding_display.contains("66"));
     }
 
     #[test]
