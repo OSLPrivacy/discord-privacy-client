@@ -47,6 +47,15 @@ fn deliver(
     Ok(())
 }
 
+/// Simulate a process restart by round-tripping both parties through
+/// the persisted session blob.
+fn restart_pair(alice: &mut Session, bob: &mut Session) {
+    let alice_state = alice.export_state().expect("export alice");
+    let bob_state = bob.export_state().expect("export bob");
+    *alice = Session::import_state(&alice_state).expect("import alice");
+    *bob = Session::import_state(&bob_state).expect("import bob");
+}
+
 #[test]
 fn random_interleavings_deliver_correctly() {
     for seed in 0..24u64 {
@@ -375,33 +384,124 @@ fn state_export_import_survives_an_interleaved_run() {
     let (mut alice, mut bob, mut rng) = established_pair(31);
     let mut driver = seeded_rng(0xE7A7);
     let mut inflight: Vec<InFlight> = Vec::new();
+    let mut spent: Vec<InFlight> = Vec::new();
+    let mut delivered = 0u32;
+    let mut restarts = 0u32;
+    let mut immediate_replays = 0u32;
+    let mut restart_replays = 0u32;
+    let mut delayed_replays = 0u32;
+    let mut max_inflight = 0usize;
 
-    for i in 0..150u32 {
-        let to_bob = driver.gen_bool(0.5);
-        let body = format!("persist {i}").into_bytes();
-        let wire = if to_bob {
-            alice.encrypt(0, &body, &mut rng)
-        } else {
-            bob.encrypt(0, &body, &mut rng)
+    for i in 0..180u32 {
+        // Bursts create same-chain gaps; mixed directions create DH
+        // ratchet steps while old chain messages are still in flight.
+        let send_count = if i % 13 == 0 { 4 } else { 1 };
+        for j in 0..send_count {
+            let to_bob = driver.gen_bool(0.5);
+            let body = format!("persist {i}.{j}").into_bytes();
+            let wire = if to_bob {
+                alice.encrypt(0, &body, &mut rng)
+            } else {
+                bob.encrypt(0, &body, &mut rng)
+            }
+            .expect("encrypt");
+            inflight.push(InFlight {
+                to_bob,
+                wire,
+                plaintext: body,
+            });
         }
-        .expect("encrypt");
-        inflight.push(InFlight {
-            to_bob,
-            wire,
-            plaintext: body,
-        });
+        max_inflight = max_inflight.max(inflight.len());
 
-        // Round-trip both sessions through serialization every step.
-        alice = Session::import_state(&alice.export_state().expect("export")).expect("import");
-        bob = Session::import_state(&bob.export_state().expect("export")).expect("import");
+        if i % 3 == 0 {
+            restart_pair(&mut alice, &mut bob);
+            restarts += 1;
+        }
 
-        if inflight.len() > 5 {
+        let deliveries = if driver.gen_bool(0.25) { 2 } else { 1 };
+        for _ in 0..deliveries {
+            if inflight.len() <= 24 {
+                break;
+            }
             let idx = driver.gen_range(0..inflight.len());
             let msg = inflight.remove(idx);
             deliver(&mut alice, &mut bob, &mut rng, &msg).expect("deliver after restore");
+            delivered += 1;
+
+            assert!(
+                deliver(&mut alice, &mut bob, &mut rng, &msg).is_err(),
+                "immediate replay must be rejected before restart"
+            );
+            immediate_replays += 1;
+
+            restart_pair(&mut alice, &mut bob);
+            restarts += 1;
+            assert!(
+                deliver(&mut alice, &mut bob, &mut rng, &msg).is_err(),
+                "replay must stay rejected after simulated process restart"
+            );
+            restart_replays += 1;
+            spent.push(msg);
+        }
+
+        if i % 5 == 0 && !spent.is_empty() {
+            restart_pair(&mut alice, &mut bob);
+            restarts += 1;
+            let idx = driver.gen_range(0..spent.len());
+            let old = &spent[idx];
+            assert!(
+                deliver(&mut alice, &mut bob, &mut rng, old).is_err(),
+                "delayed replay must stay rejected after more reordering and restarts"
+            );
+            delayed_replays += 1;
         }
     }
-    while let Some(msg) = inflight.pop() {
+
+    while !inflight.is_empty() {
+        restart_pair(&mut alice, &mut bob);
+        restarts += 1;
+        let idx = driver.gen_range(0..inflight.len());
+        let msg = inflight.remove(idx);
         deliver(&mut alice, &mut bob, &mut rng, &msg).expect("drain after restore");
+        delivered += 1;
+        assert!(
+            deliver(&mut alice, &mut bob, &mut rng, &msg).is_err(),
+            "drained message replay must be rejected"
+        );
+        immediate_replays += 1;
+        spent.push(msg);
     }
+
+    let w = alice
+        .encrypt(0, b"fresh after replay storm", &mut rng)
+        .expect("alice encrypt after replay storm");
+    assert_eq!(
+        bob.decrypt(&w, &mut rng)
+            .expect("bob decrypt after replay storm")
+            .plaintext,
+        b"fresh after replay storm"
+    );
+    let w = bob
+        .encrypt(0, b"fresh reply after replay storm", &mut rng)
+        .expect("bob encrypt after replay storm");
+    assert_eq!(
+        alice
+            .decrypt(&w, &mut rng)
+            .expect("alice decrypt after replay storm")
+            .plaintext,
+        b"fresh reply after replay storm"
+    );
+
+    assert!(delivered > 180, "too few interleaved deliveries");
+    assert!(
+        max_inflight > 20,
+        "run did not keep enough messages in flight"
+    );
+    assert!(restarts > 100, "too few simulated process restarts");
+    assert!(immediate_replays > 150, "too few immediate replay refusals");
+    assert!(
+        restart_replays > 100,
+        "too few post-restart replay refusals"
+    );
+    assert!(delayed_replays > 25, "too few delayed replay refusals");
 }
