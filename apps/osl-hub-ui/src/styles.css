@@ -307,7 +307,7 @@ code {
 .osl-mail-thread-meta { justify-items: end; color: var(--muted); font-size: 11px; }
 .osl-mail-transit { display: inline-flex; align-items: center; width: max-content; border: 1px solid currentColor; border-radius: 999px; padding: 2px 6px; font-size: 11px; font-weight: 700; letter-spacing: .03em; }
 .osl-mail-transit.is-e2ee { color: #36d6b5; }
-.osl-mail-transit.is-smtp { color: #f0b65c; }
+.osl-mail-transit.is-standard-email { color: #f0b65c; }
 .osl-mail-reading { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
 .osl-mail-reading.is-empty { place-items: center; align-content: center; gap: 12px; color: var(--muted); }
 .osl-mail-retrieval { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 13px 22px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--accent) 5%, transparent); }
