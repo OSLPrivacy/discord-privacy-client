@@ -200,6 +200,28 @@ def _reject_content_bearing_accessibility_bench_artifacts(
     self.assertIn("content-bearing artifact", reason)
     self.assertNotIn(transcript_path, reason)
 
+    raw_json_path = "a11ybench/raw-row.json"
+    reason = self.reject(
+        lambda evidence: evidence["artifacts"][0].update(
+            kind="structured-json",
+            relativePath=raw_json_path,
+            containsUserContent=False,
+        )
+    )
+    self.assertIn("content-bearing artifact", reason)
+    self.assertNotIn(raw_json_path, reason)
+
+    message_json_path = "a11ybench/message-facts.json"
+    reason = self.reject(
+        lambda evidence: evidence["artifacts"][0].update(
+            kind="structured-json",
+            relativePath=message_json_path,
+            containsUserContent=False,
+        )
+    )
+    self.assertIn("content-bearing artifact", reason)
+    self.assertNotIn(message_json_path, reason)
+
     reason = self.reject(
         lambda evidence: evidence["artifacts"][0].update(
             messageContentSha256="e" * 64

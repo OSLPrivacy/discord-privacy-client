@@ -23,13 +23,20 @@ REQUIRED_BINDING_FIELDS = frozenset(("method", "subjectBindingSha256"))
 ALLOWED_TEXT_KEYS = frozenset(("noRawText",))
 CONTENT_BEARING_ARTIFACT_KINDS = frozenset(
     (
+        "cleartext",
+        "content",
         "dom",
         "html",
         "image",
         "jpeg",
         "jpg",
         "log",
+        "message",
+        "messages",
         "png",
+        "payload",
+        "plaintext",
+        "raw",
         "rawlog",
         "screenshot",
         "snapshot",
