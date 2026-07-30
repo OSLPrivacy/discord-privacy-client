@@ -124,38 +124,66 @@ fn prekey_round_trip_through_real_keyserver() {
     let server = spawn_keyserver();
     let client = KeyServerClient::new(format!("http://127.0.0.1:{}", server.port)).unwrap();
 
-    // 1. Register identity (which now includes Ed25519 pub).
-    let id = generate_identity("alice".to_string());
-    let resp = client.register(&id).expect("register");
-    assert_eq!(resp.user_id, "alice");
+    // 1. Register two identities (which now include Ed25519 pub).
+    let alice = generate_identity("alice".to_string());
+    let bob = generate_identity("bob".to_string());
+    let alice_resp = client.register(&alice).expect("register alice");
+    let bob_resp = client.register(&bob).expect("register bob");
+    assert_eq!(alice_resp.user_id, "alice");
+    assert_eq!(bob_resp.user_id, "bob");
 
-    // 2. Generate prekeys + replenish.
-    let mut state = PrekeyState::new(&id, PrekeyConfig::default(), 1_700_000_000);
-    let _replenish_resp = client
-        .replenish_prekeys(&id, Some(&state.current_spk), &state.opk_pool)
-        .expect("replenish");
-    // The server accepted our signed batch — proves Rust's
+    // 2. Generate Bob's prekeys + replenish.
+    let mut bob_state = PrekeyState::new(&bob, PrekeyConfig::default(), 1_700_000_000);
+    let replenish_resp = client
+        .replenish_prekeys(&bob, Some(&bob_state.current_spk), &bob_state.opk_pool)
+        .expect("replenish bob");
+    assert_eq!(replenish_resp.user_id, "bob");
+    assert_eq!(replenish_resp.opks_added, 100);
+    // The server accepted Bob's signed batch — proves Rust's
     // canonical encoding matches Node's verbatim. (If they
     // disagreed, the Ed25519 verification would have rejected with
     // 401 and `replenish_prekeys` would have returned an
     // `Error::HttpStatus` here.)
-    let _ = &mut state; // mark used
 
-    // 3. Fetch the bundle — server pops one OPK.
+    // 3. Alice fetches Bob's bundle — server pops one OPK from Bob.
     let bundle = client
-        .fetch_prekey_bundle(&id, "alice")
-        .expect("fetch bundle");
-    assert_eq!(bundle.user_id, "alice");
+        .fetch_prekey_bundle(&alice, "bob")
+        .expect("alice fetches bob bundle");
+    assert_eq!(bundle.user_id, "bob");
     assert_eq!(bundle.remaining_opk_count, 99);
     let opk = bundle.opk.expect("opk should be present");
     // Server-popped OPK ID should be in the range we generated.
     assert!(opk.id < 100, "server popped an unknown OPK id: {}", opk.id);
 
     // 4. Fetch a few more — counts decrement, distinct IDs.
-    let bundle2 = client.fetch_prekey_bundle(&id, "alice").expect("fetch 2");
+    let bundle2 = client
+        .fetch_prekey_bundle(&alice, "bob")
+        .expect("alice fetches bob bundle 2");
     assert_eq!(bundle2.remaining_opk_count, 98);
     let opk2 = bundle2.opk.unwrap();
     assert_ne!(opk.id, opk2.id);
+
+    // 5. Drain Bob below threshold, then replenish through the stateful
+    // path. This proves the live server's remaining count can drive
+    // Bob's local replenishment without accidentally touching Alice.
+    for _ in 0..78 {
+        client.fetch_prekey_bundle(&alice, "bob").unwrap();
+    }
+    let low_bundle = client.fetch_prekey_bundle(&alice, "bob").unwrap();
+    assert_eq!(low_bundle.user_id, "bob");
+    assert_eq!(low_bundle.remaining_opk_count, 19);
+
+    let top_up = client
+        .replenish_using_state(&bob, &mut bob_state, 19, 1_700_000_001)
+        .expect("top up bob");
+    assert_eq!(top_up.user_id, "bob");
+    assert_eq!(top_up.opks_added, 81);
+
+    let replenished = client
+        .fetch_prekey_bundle(&alice, "bob")
+        .expect("alice fetches bob after top up");
+    assert_eq!(replenished.user_id, "bob");
+    assert_eq!(replenished.remaining_opk_count, 99);
 }
 
 #[test]
