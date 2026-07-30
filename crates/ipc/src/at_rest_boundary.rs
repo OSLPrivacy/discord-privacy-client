@@ -23,19 +23,23 @@ pub enum AtRestBoundary {
     /// Import, backup, staging, and rollback copies retained during account
     /// replacement or recovery.
     BackupRollbackCopies,
+    /// Decrypted plaintext, draft text, or key material temporarily held by
+    /// application or IPC callers while crossing a command boundary.
+    CallerRoot,
     /// Bytes persisted by the operating system, filesystem, swap, crash dumps,
     /// removable drives, or other physical media below the application layer.
     PhysicalMedia,
 }
 
 impl AtRestBoundary {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::SealedIdentity,
         Self::AccountStateFiles,
         Self::MessageStore,
         Self::AttachmentStaging,
         Self::UiLocalStorage,
         Self::BackupRollbackCopies,
+        Self::CallerRoot,
         Self::PhysicalMedia,
     ];
 
@@ -47,6 +51,7 @@ impl AtRestBoundary {
             Self::AttachmentStaging => "attachment_staging",
             Self::UiLocalStorage => "ui_local_storage",
             Self::BackupRollbackCopies => "backup_rollback_copies",
+            Self::CallerRoot => "caller_root",
             Self::PhysicalMedia => "physical_media",
         }
     }
@@ -78,8 +83,9 @@ mod tests {
         assert!(all.contains(&AtRestBoundary::AttachmentStaging));
         assert!(all.contains(&AtRestBoundary::UiLocalStorage));
         assert!(all.contains(&AtRestBoundary::BackupRollbackCopies));
+        assert!(all.contains(&AtRestBoundary::CallerRoot));
         assert!(all.contains(&AtRestBoundary::PhysicalMedia));
-        assert_eq!(all.len(), 7);
+        assert_eq!(all.len(), 8);
     }
 
     #[test]
@@ -94,6 +100,9 @@ mod tests {
             "alice@example.com",
             "dm:",
             "server_channel:",
+            "decrypted message body",
+            "private draft text",
+            "x25519_secret",
         ];
 
         for boundary in AtRestBoundary::ALL {
