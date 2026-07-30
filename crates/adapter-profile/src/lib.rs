@@ -6,7 +6,9 @@
 
 pub mod contract;
 pub mod envelope;
+pub mod loader;
 pub mod schema;
+pub mod trust;
 
 pub use contract::{
     CheckOutcome, ContractVerdict, Predicate, ReportError, SelfTestReport, Subsystem,
@@ -16,6 +18,9 @@ pub use envelope::{
     canonical_profile_digest, EnvelopeError, SignedProfile, ADAPTER_PROFILE_ENVELOPE_DOMAIN,
     ADAPTER_PROFILE_ENVELOPE_VERSION, ED25519_PUBLIC_KEY_LEN, ED25519_SIGNATURE_LEN,
     MAX_PROFILE_BYTES, MAX_SIGNER_KEY_ID_BYTES, SHA256_DIGEST_LEN,
+};
+pub use loader::{
+    load_trusted_profile, load_trusted_profile_from_wire_json, LoadedProfile, LoaderError,
 };
 
 pub use schema::{
@@ -29,4 +34,8 @@ pub use schema::{
     ProfilePayload, ProfileRevision, SelectorKind, SelectorStrategy, SignedProfileDoc,
     SupportLevel, TypedSelector, PROFILE_DOC_DOMAIN, PROFILE_DOC_ENVELOPE_VERSION,
     PROFILE_DOC_SCHEMA_VERSION,
+};
+pub use trust::{
+    verify_signed_profile, ShippedAnchorKey, TrustError, DISCORD_PROFILE_ROLLBACK_FLOOR,
+    SHIPPED_ANCHOR_KEYS,
 };
