@@ -32,6 +32,7 @@ struct TestAnchor {
     records: Mutex<BTreeMap<[u8; 32], AnchorRecord>>,
     fault: Mutex<Fault>,
     calls: Mutex<usize>,
+    loads: Mutex<usize>,
     fault_call: Mutex<Option<usize>>,
 }
 
@@ -52,6 +53,14 @@ impl TestAnchor {
         self.records.lock().unwrap().len()
     }
 
+    fn load_calls(&self) -> usize {
+        *self.loads.lock().unwrap()
+    }
+
+    fn compare_calls(&self) -> usize {
+        *self.calls.lock().unwrap()
+    }
+
     fn generation(&self) -> u64 {
         self.records
             .lock()
@@ -65,6 +74,7 @@ impl TestAnchor {
 
 impl MonotonicAnchor for TestAnchor {
     fn load(&self, store_id: [u8; 32]) -> Result<Option<AnchorRecord>, StoreError> {
+        *self.loads.lock().unwrap() += 1;
         Ok(self.records.lock().unwrap().get(&store_id).cloned())
     }
 
@@ -126,6 +136,89 @@ fn checkpoint(dir: &Path) {
     let conn = rusqlite::Connection::open(dir.join("messages.sqlite")).unwrap();
     conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
         .unwrap();
+}
+
+#[test]
+fn full_anchor_coverage_load_compare_and_restore() {
+    let tmp = TempDir::new().unwrap();
+    let backup = TempDir::new().unwrap();
+    let anchor = Arc::new(TestAnchor::default());
+    {
+        let store = open(tmp.path(), anchor.clone());
+        assert!(
+            anchor.load_calls() > 0,
+            "anchored first open must consult the provider before enrollment"
+        );
+        assert_eq!(
+            anchor.compare_calls(),
+            1,
+            "anchored first open must enroll with compare-and-advance"
+        );
+        store
+            .put(&message("coverage-first", "first generation"))
+            .unwrap();
+    }
+    assert_eq!(
+        anchor.compare_calls(),
+        2,
+        "message mutation must advance the provider anchor"
+    );
+    checkpoint(tmp.path());
+    fs::copy(
+        tmp.path().join("messages.sqlite"),
+        backup.path().join("messages.sqlite"),
+    )
+    .unwrap();
+
+    let compare_calls_after_backup = anchor.compare_calls();
+    let load_calls_after_backup = anchor.load_calls();
+    {
+        let reopened = open(tmp.path(), anchor.clone());
+        assert_eq!(
+            reopened.get("coverage-first").unwrap(),
+            Some(message("coverage-first", "first generation"))
+        );
+    }
+    assert!(
+        anchor.load_calls() > load_calls_after_backup,
+        "anchored reopen must re-load the provider record"
+    );
+    assert_eq!(
+        anchor.compare_calls(),
+        compare_calls_after_backup,
+        "matching reopen must not advance an already-current provider record"
+    );
+
+    {
+        let store = open(tmp.path(), anchor.clone());
+        store
+            .put(&message("coverage-second", "newer than backup"))
+            .unwrap();
+    }
+    checkpoint(tmp.path());
+    assert!(
+        anchor.compare_calls() > compare_calls_after_backup,
+        "post-backup mutation must publish a newer provider generation"
+    );
+    let compare_calls_before_restore = anchor.compare_calls();
+    fs::copy(
+        backup.path().join("messages.sqlite"),
+        tmp.path().join("messages.sqlite"),
+    )
+    .unwrap();
+    let error = match MessageStore::open_anchored(tmp.path(), SECRET_A, anchor.clone()) {
+        Ok(_) => panic!("stale restored backup was accepted"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error, StoreError::Anchor(message) if message.contains("behind external anchor")),
+        "wrong restored-backup refusal: {error}"
+    );
+    assert_eq!(
+        anchor.compare_calls(),
+        compare_calls_before_restore,
+        "stale restore must fail from load comparison before any provider advance"
+    );
 }
 
 #[test]
@@ -288,7 +381,10 @@ fn anchored_pending_shred_reconciles_before_marker_clear_after_first_cas_crash()
     // dies before checkpoint/marker clear. A restart must first reconcile that
     // pending anchor, not mutate metadata under an unverified state.
     anchor.set_fault_on_call(Fault::AfterAdvance, 1);
-    assert!(matches!(store.mark_burned("pending"), Err(StoreError::Anchor(_))));
+    assert!(matches!(
+        store.mark_burned("pending"),
+        Err(StoreError::Anchor(_))
+    ));
     drop(store);
     anchor.set_fault(Fault::None);
     let reopened = open(tmp.path(), anchor.clone());
@@ -303,7 +399,10 @@ fn anchored_marker_clear_cas_crash_reconciles_on_repeated_restart() {
     store.put(&message("burn", "body")).unwrap();
     // Call 1 anchors pending destruction; call 2 is the cleared-marker CAS.
     anchor.set_fault_on_call(Fault::BeforeAdvance, 2);
-    assert!(matches!(store.mark_burned("burn"), Err(StoreError::Anchor(_))));
+    assert!(matches!(
+        store.mark_burned("burn"),
+        Err(StoreError::Anchor(_))
+    ));
     drop(store);
     anchor.set_fault(Fault::None);
     for _ in 0..2 {
