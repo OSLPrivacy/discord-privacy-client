@@ -173,6 +173,79 @@ export interface NotificationIntegrationEligibility {
   eligible: boolean;
 }
 
+export interface AndroidSurface {
+  id: "androidCompanion" | "androidMobileWorkspace";
+  displayName: string;
+  surface: "companion" | "mobileWorkspace";
+  launchState: "comingSoon";
+  entitlement: "included" | "pro";
+  defaultEnabled: false;
+  consent: "required";
+  binding: "pairedDevice" | "localWorkspace";
+  authority: "userActionOnly";
+  hostedExecution: false;
+  workspace: null | {
+    runtime: "localVirtualDevice";
+    encryptedDisk: true;
+    snapshotStorage: "encryptedLocalOnly";
+    wipeKey: "perOslIdentity";
+    clipboard: "denied";
+    files: "denied";
+    notifications: "denied";
+    camera: "denied";
+    microphone: "denied";
+    location: "denied";
+  };
+}
+
+export const AndroidSurface = {
+  preview(): AndroidSurface[] {
+    return parseAndroidSurfaces([
+      {
+        id: "androidCompanion",
+        displayName: "Android Companion",
+        surface: "companion",
+        launchState: "comingSoon",
+        entitlement: "included",
+        defaultEnabled: false,
+        consent: "required",
+        binding: "pairedDevice",
+        authority: "userActionOnly",
+        hostedExecution: false,
+        workspace: null,
+      },
+      {
+        id: "androidMobileWorkspace",
+        displayName: "Android Mobile Workspace",
+        surface: "mobileWorkspace",
+        launchState: "comingSoon",
+        entitlement: "pro",
+        defaultEnabled: false,
+        consent: "required",
+        binding: "localWorkspace",
+        authority: "userActionOnly",
+        hostedExecution: false,
+        workspace: {
+          runtime: "localVirtualDevice",
+          encryptedDisk: true,
+          snapshotStorage: "encryptedLocalOnly",
+          wipeKey: "perOslIdentity",
+          clipboard: "denied",
+          files: "denied",
+          notifications: "denied",
+          camera: "denied",
+          microphone: "denied",
+          location: "denied",
+        },
+      },
+    ]);
+  },
+
+  parse(raw: unknown): AndroidSurface[] {
+    return parseAndroidSurfaces(raw);
+  },
+};
+
 const serviceIds: readonly ServiceId[] = ["discord", "telegram", "instagram", "snapchat", "email", "x", "slack", "linkedin", "teams", "messenger", "signal", "whatsapp"];
 const connectionStates: readonly ConnectionState[] = ["demoLinked", "notLinked"];
 const emailProviders: readonly EmailProvider[] = ["gmail", "outlook", "proton", "tuta", "fastmail", "yahoo", "zoho", "aol", "gmx", "maildotcom", "icloud"];
@@ -289,6 +362,64 @@ function mullvadStatusFromAvailability(availability: MullvadStatus["availability
     privacyScope: "networkOnly",
     connectionState: "notObserved",
   };
+}
+
+function parseAndroidSurfaces(raw: unknown): AndroidSurface[] {
+  if (!Array.isArray(raw) || raw.length !== 2) throw new Error("invalid Android surface catalog");
+  const parsed = raw.map(parseAndroidSurface);
+  const companion = parsed.find((surface) => surface.id === "androidCompanion");
+  const workspace = parsed.find((surface) => surface.id === "androidMobileWorkspace");
+  if (!companion || !workspace || new Set(parsed.map((surface) => surface.id)).size !== 2) {
+    throw new Error("invalid Android surface catalog");
+  }
+  if (companion.displayName !== "Android Companion"
+    || companion.surface !== "companion"
+    || companion.entitlement !== "included"
+    || companion.binding !== "pairedDevice"
+    || companion.workspace !== null) {
+    throw new Error("invalid Android surface catalog");
+  }
+  if (workspace.displayName !== "Android Mobile Workspace"
+    || workspace.surface !== "mobileWorkspace"
+    || workspace.entitlement !== "pro"
+    || workspace.binding !== "localWorkspace"
+    || workspace.launchState !== "comingSoon"
+    || workspace.workspace === null) {
+    throw new Error("invalid Android surface catalog");
+  }
+  return [companion, workspace];
+}
+
+function parseAndroidSurface(raw: unknown): AndroidSurface {
+  if (!isExactRecord(raw, ["id", "displayName", "surface", "launchState", "entitlement", "defaultEnabled", "consent", "binding", "authority", "hostedExecution", "workspace"])
+    || !["androidCompanion", "androidMobileWorkspace"].includes(String(raw.id))
+    || !isDisplayString(raw.displayName, 80)
+    || !["companion", "mobileWorkspace"].includes(String(raw.surface))
+    || raw.launchState !== "comingSoon"
+    || !["included", "pro"].includes(String(raw.entitlement))
+    || raw.defaultEnabled !== false
+    || raw.consent !== "required"
+    || !["pairedDevice", "localWorkspace"].includes(String(raw.binding))
+    || raw.authority !== "userActionOnly"
+    || raw.hostedExecution !== false
+    || !(raw.workspace === null || isAndroidWorkspace(raw.workspace))) {
+    throw new Error("invalid Android surface catalog");
+  }
+  return raw as unknown as AndroidSurface;
+}
+
+function isAndroidWorkspace(value: unknown): boolean {
+  return isExactRecord(value, ["runtime", "encryptedDisk", "snapshotStorage", "wipeKey", "clipboard", "files", "notifications", "camera", "microphone", "location"])
+    && value.runtime === "localVirtualDevice"
+    && value.encryptedDisk === true
+    && value.snapshotStorage === "encryptedLocalOnly"
+    && value.wipeKey === "perOslIdentity"
+    && value.clipboard === "denied"
+    && value.files === "denied"
+    && value.notifications === "denied"
+    && value.camera === "denied"
+    && value.microphone === "denied"
+    && value.location === "denied";
 }
 
 function parseMullvadAction(raw: unknown): MullvadAction {
