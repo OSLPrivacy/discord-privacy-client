@@ -1,7 +1,7 @@
 use keystore::{
     generate_identity, save_identity, save_password_record, save_prekey_state, Argon2Params,
     DuressEngine, DuressHandlers, DuressJournal, DuressPaths, NoOpSealer, PasswordRecord,
-    PrekeyConfig, PrekeyState, StepOutcome, WipeStep,
+    PrekeyConfig, PrekeyState, ProductionDuressHandlers, StepOutcome, WipeStep,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -222,9 +222,64 @@ fn missing_files_yield_already_clean_not_failure() {
 }
 
 #[test]
+fn production_duress_wipes_cache_prekeys_and_identity_files() {
+    let dir = TempDir::new().unwrap();
+    let (paths, journal_path) = build_paths(&dir);
+    let sealer = NoOpSealer::new();
+    let id = generate_identity("alice".into());
+    save_identity(&paths.identity_file, &id, &sealer).unwrap();
+    let prekey_state = PrekeyState::new(&id, PrekeyConfig::default(), 1_700_000_000);
+    save_prekey_state(paths.prekey_file.as_ref().unwrap(), &prekey_state, &sealer).unwrap();
+
+    let identity_file = paths.identity_file.clone();
+    let prekey_file = paths.prekey_file.clone().unwrap();
+    let cache_dir = dir.path().join("local-cache");
+    std::fs::create_dir(&cache_dir).unwrap();
+    std::fs::write(cache_dir.join("sealed-cache-record"), b"cache").unwrap();
+
+    let handlers = ProductionDuressHandlers::new()
+        .with_purge_keyring(Box::new(|| Ok(())))
+        .with_wipe_local_cache_dir_path(cache_dir.clone())
+        .into_handlers();
+    let engine = DuressEngine::new(journal_path, paths, handlers);
+
+    let report = engine.execute().unwrap();
+
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::IdentityFile),
+        &StepOutcome::Wiped
+    );
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::PrekeyFile),
+        &StepOutcome::Wiped
+    );
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::LocalCacheDir),
+        &StepOutcome::Wiped
+    );
+    assert!(!identity_file.exists());
+    assert!(!prekey_file.exists());
+    assert!(!cache_dir.exists());
+}
+
+#[test]
 fn handlers_run_in_canonical_order() {
     let dir = TempDir::new().unwrap();
     let (paths, journal_path) = build_paths(&dir);
+    let sealer = NoOpSealer::new();
+    let id = generate_identity("alice".into());
+    save_identity(&paths.identity_file, &id, &sealer).unwrap();
+    let pw = PasswordRecord::new("111111", None, fast()).unwrap();
+    save_password_record(&paths.password_file, &pw, &sealer).unwrap();
+    let prekey_state = PrekeyState::new(&id, PrekeyConfig::default(), 1_700_000_000);
+    save_prekey_state(paths.prekey_file.as_ref().unwrap(), &prekey_state, &sealer).unwrap();
+    let cache_dir = dir.path().join("local-cache");
+    std::fs::create_dir(&cache_dir).unwrap();
+    std::fs::write(cache_dir.join("sealed-cache-record"), b"cache").unwrap();
+
+    let identity_file = paths.identity_file.clone();
+    let password_file = paths.password_file.clone();
+    let prekey_file = paths.prekey_file.clone().unwrap();
 
     let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
     let mk_handler = |name: &'static str| {
@@ -234,25 +289,53 @@ fn handlers_run_in_canonical_order() {
             Ok(())
         }) as keystore::WipeFn
     };
-
-    let handlers = DuressHandlers {
-        purge_keyring: Some(mk_handler("keyring")),
-        wipe_local_cache_dir: Some(mk_handler("local_cache")),
-        wipe_anonymous_credentials: Some(mk_handler("creds")),
-        wipe_prekeys: Some(mk_handler("prekeys")),
-        wipe_double_ratchet: Some(mk_handler("ratchet")),
-        wipe_sender_keys: Some(mk_handler("sender_keys")),
-        wipe_peer_ratchets: Some(mk_handler("peer_ratchets")),
-        zeroize_in_memory: Some(mk_handler("zeroize")),
-        strip_opsec_files: Some(mk_handler("strip")),
-        unregister_account: Some(mk_handler("unregister")),
+    let mk_cache_handler = {
+        let calls = calls.clone();
+        let cache_dir = cache_dir.clone();
+        Box::new(move || {
+            calls.lock().unwrap().push("local_cache");
+            std::fs::remove_dir_all(&cache_dir)?;
+            Ok(())
+        }) as keystore::WipeFn
     };
+
+    let handlers = ProductionDuressHandlers::new()
+        .with_purge_keyring(mk_handler("keyring"))
+        .with_unregister_account(mk_handler("unregister"))
+        .with_wipe_local_cache_dir(mk_cache_handler)
+        .with_wipe_anonymous_credentials(mk_handler("creds"))
+        .with_wipe_prekeys(mk_handler("prekeys"))
+        .with_wipe_double_ratchet(mk_handler("ratchet"))
+        .with_wipe_sender_keys(mk_handler("sender_keys"))
+        .with_wipe_peer_ratchets(mk_handler("peer_ratchets"))
+        .with_zeroize_in_memory(mk_handler("zeroize"))
+        .with_strip_opsec_files(mk_handler("strip"))
+        .into_handlers();
 
     let engine = DuressEngine::new(journal_path, paths, handlers);
     let report = engine.execute().unwrap();
     assert!(report.completed);
     assert!(report.failed_steps().is_empty());
     assert!(report.skipped_steps().is_empty());
+    assert_eq!(
+        report.steps.iter().map(|(step, _)| *step).collect::<Vec<_>>(),
+        vec![
+            WipeStep::TpmEvict,
+            WipeStep::KeyringPurge,
+            WipeStep::IdentityFile,
+            WipeStep::PasswordHashes,
+            WipeStep::UnregisterAccount,
+            WipeStep::PrekeyFile,
+            WipeStep::LocalCacheDir,
+            WipeStep::AnonymousCredentials,
+            WipeStep::Prekeys,
+            WipeStep::DoubleRatchet,
+            WipeStep::SenderKeys,
+            WipeStep::PeerRatchets,
+            WipeStep::InMemoryZeroize,
+            WipeStep::StripOpsecFiles,
+        ]
+    );
 
     let calls = calls.lock().unwrap();
     assert_eq!(
@@ -270,6 +353,10 @@ fn handlers_run_in_canonical_order() {
             "strip",
         ]
     );
+    assert!(!identity_file.exists());
+    assert!(!password_file.exists());
+    assert!(!prekey_file.exists());
+    assert!(!cache_dir.exists());
 }
 
 #[test]
