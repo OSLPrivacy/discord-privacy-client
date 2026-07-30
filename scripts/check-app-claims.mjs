@@ -36,6 +36,7 @@ const ALLOWLIST_PATH = path.join(
 const APP_SRC_ROOT = path.join(REPO_ROOT, "apps/osl-hub-ui/src");
 const RUST_APP_SRC_ROOT = path.join(REPO_ROOT, "apps/osl-hub/src");
 const README_PATH = path.join(REPO_ROOT, "README.md");
+const SUPPORT_MATRIX_PATH = path.join(REPO_ROOT, "docs/status/support-matrix.json");
 const GATE_SOURCE_PATH = fileURLToPath(import.meta.url);
 const GATE_CONTRACT_PATTERN =
   /^> Claim-gate source SHA-256: `([0-9a-f]{64})`$/m;
@@ -44,6 +45,7 @@ const MIN_BANNED_PHRASES = 8; // Prevents a malformed section-D parse from appro
 const MIN_TS_STRING_LITERALS = 300; // Ensures the app copy scan cannot pass after extracting nothing.
 const MIN_RUST_STRING_LITERALS = 40; // Ensures the Rust high-precision subset cannot pass after extracting nothing.
 const MIN_README_BYTES = 1; // Ensures the public README claim surface was actually scanned.
+const MIN_CHAT_APP_EVIDENCE_APPS = 2; // Discord plus Signal are the current dependency-bound app evidence rows.
 
 const REQUIRED_ATTACHMENT_BANS = [
   "discord attachment scanning defeated",
@@ -55,6 +57,54 @@ const REQUIRED_ATTACHMENT_BANS = [
   "discord receives harmless cover files instead of the attachment",
   "uploaded files are opaque to discord's scanners",
 ];
+
+const CHAT_APP_EVIDENCE_SCHEMA = "osl-chat-app-evidence-v1";
+const SUPPORT_MATRIX_SCHEMA = "osl-support-matrix-v1";
+const REQUIRED_CHAT_APP_UNITS = new Map([
+  ["discord", ["d6", "w9"]],
+  ["signal", ["s9"]],
+]);
+const FORBIDDEN_PROMOTION_STATUSES = new Set([
+  "available",
+  "beta",
+  "runtime-proven",
+  "verified-live",
+  "release-qualified",
+  "supported",
+]);
+const ALLOWED_EVIDENCE_STATUSES = new Set([
+  "blocked",
+  "source-profile-only",
+  "test-proven-only",
+  "implemented-unwired",
+  "unavailable",
+]);
+const REQUIRED_AUTHORITY_FLAGS = [
+  "user_consent_required",
+  "account_binding_required",
+  "release_authority_required",
+];
+const REQUIRED_CHAT_CAPABILITIES = [
+  "protected_send",
+  "protected_receive",
+  "attachments",
+  "burn",
+];
+const FORBIDDEN_EVIDENCE_KEYS = new Set([
+  "account_id",
+  "account_identifier",
+  "api_key",
+  "cookie",
+  "credential",
+  "handle",
+  "password",
+  "private_key",
+  "secret",
+  "session",
+  "snowflake",
+  "token",
+  "user_id",
+]);
 
 function repoRelative(filePath) {
   return path.relative(REPO_ROOT, filePath).split(path.sep).join("/");
@@ -1430,6 +1480,391 @@ function printFloorFailures(failures) {
   }
 }
 
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function jsonPointer(pathParts) {
+  if (pathParts.length === 0) {
+    return "$";
+  }
+  return `$${pathParts.map((part) => `[${JSON.stringify(String(part))}]`).join("")}`;
+}
+
+function pushMatrixFailure(failures, pathParts, message) {
+  failures.push(`${jsonPointer(pathParts)}: ${message}`);
+}
+
+function normalizedStatus(value) {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+function scanSensitiveEvidenceMaterial(value, failures, pathParts = []) {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => {
+      scanSensitiveEvidenceMaterial(item, failures, [...pathParts, index]);
+    });
+    return;
+  }
+
+  if (!isPlainObject(value)) {
+    return;
+  }
+
+  for (const [key, child] of Object.entries(value)) {
+    const lowerKey = key.toLowerCase();
+    if (FORBIDDEN_EVIDENCE_KEYS.has(lowerKey)) {
+      pushMatrixFailure(
+        failures,
+        [...pathParts, key],
+        "chat-app evidence must not carry secrets, credentials, handles, account identifiers, sessions, tokens, or snowflakes",
+      );
+    }
+    scanSensitiveEvidenceMaterial(child, failures, [...pathParts, key]);
+  }
+}
+
+function collectMatrixSourceAnchors(value, anchors = []) {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectMatrixSourceAnchors(item, anchors);
+    }
+    return anchors;
+  }
+
+  if (!isPlainObject(value)) {
+    return anchors;
+  }
+
+  if (
+    typeof value.path === "string"
+    && typeof value.contains === "string"
+    && Object.keys(value).some((key) => key === "contains")
+  ) {
+    anchors.push(value);
+  }
+
+  for (const child of Object.values(value)) {
+    collectMatrixSourceAnchors(child, anchors);
+  }
+  return anchors;
+}
+
+function validateSupportMatrixObject(matrix) {
+  const failures = [];
+  if (!isPlainObject(matrix)) {
+    return {
+      failures: ["$: support matrix must be a JSON object"],
+      appCount: 0,
+      anchors: [],
+    };
+  }
+
+  if (matrix.schema !== SUPPORT_MATRIX_SCHEMA) {
+    pushMatrixFailure(failures, ["schema"], `must be ${SUPPORT_MATRIX_SCHEMA}`);
+  }
+
+  const evidence = matrix.chat_app_evidence;
+  if (!isPlainObject(evidence)) {
+    pushMatrixFailure(failures, ["chat_app_evidence"], "must be an object");
+    return { failures, appCount: 0, anchors: [] };
+  }
+
+  if (evidence.schema !== CHAT_APP_EVIDENCE_SCHEMA) {
+    pushMatrixFailure(
+      failures,
+      ["chat_app_evidence", "schema"],
+      `must be ${CHAT_APP_EVIDENCE_SCHEMA}`,
+    );
+  }
+
+  const policy = evidence.evidence_policy;
+  if (!isPlainObject(policy)) {
+    pushMatrixFailure(failures, ["chat_app_evidence", "evidence_policy"], "must be an object");
+  } else {
+    for (const key of [
+      "no_runtime_inference",
+      "no_secret_or_account_identifier_material",
+      "absence_of_authority_means_refusal",
+    ]) {
+      if (policy[key] !== true) {
+        pushMatrixFailure(
+          failures,
+          ["chat_app_evidence", "evidence_policy", key],
+          "must be true",
+        );
+      }
+    }
+  }
+
+  if (!Array.isArray(evidence.apps)) {
+    pushMatrixFailure(failures, ["chat_app_evidence", "apps"], "must be an array");
+    return { failures, appCount: 0, anchors: collectMatrixSourceAnchors(evidence) };
+  }
+
+  if (evidence.apps.length < MIN_CHAT_APP_EVIDENCE_APPS) {
+    pushMatrixFailure(
+      failures,
+      ["chat_app_evidence", "apps"],
+      `must contain at least ${MIN_CHAT_APP_EVIDENCE_APPS} app evidence rows`,
+    );
+  }
+
+  const byAppId = new Map();
+  evidence.apps.forEach((app, index) => {
+    const pathParts = ["chat_app_evidence", "apps", index];
+    if (!isPlainObject(app)) {
+      pushMatrixFailure(failures, pathParts, "must be an object");
+      return;
+    }
+
+    const appId = typeof app.app_id === "string" ? app.app_id : "";
+    if (!appId) {
+      pushMatrixFailure(failures, [...pathParts, "app_id"], "must be a non-empty string");
+    } else if (byAppId.has(appId)) {
+      pushMatrixFailure(failures, [...pathParts, "app_id"], "must be unique");
+    } else {
+      byAppId.set(appId, { app, index });
+    }
+
+    for (const key of ["display_name", "service_family", "public_status", "evidence_status", "qualification"]) {
+      if (typeof app[key] !== "string" || app[key].trim() === "") {
+        pushMatrixFailure(failures, [...pathParts, key], "must be a non-empty string");
+      }
+    }
+
+    const evidenceStatus = normalizedStatus(app.evidence_status);
+    const publicStatus = normalizedStatus(app.public_status);
+    if (!ALLOWED_EVIDENCE_STATUSES.has(evidenceStatus)) {
+      pushMatrixFailure(
+        failures,
+        [...pathParts, "evidence_status"],
+        `must be one of ${[...ALLOWED_EVIDENCE_STATUSES].join(", ")}`,
+      );
+    }
+    if (FORBIDDEN_PROMOTION_STATUSES.has(evidenceStatus)) {
+      pushMatrixFailure(
+        failures,
+        [...pathParts, "evidence_status"],
+        "must not promote chat-app evidence to runtime, verified-live, release-qualified, or available status",
+      );
+    }
+    if (FORBIDDEN_PROMOTION_STATUSES.has(publicStatus)) {
+      pushMatrixFailure(
+        failures,
+        [...pathParts, "public_status"],
+        "must not publish unsupported chat-app availability",
+      );
+    }
+
+    if (!isPlainObject(app.authority_requirements)) {
+      pushMatrixFailure(failures, [...pathParts, "authority_requirements"], "must be an object");
+    } else {
+      for (const flag of REQUIRED_AUTHORITY_FLAGS) {
+        if (app.authority_requirements[flag] !== true) {
+          pushMatrixFailure(
+            failures,
+            [...pathParts, "authority_requirements", flag],
+            "must be true; absence of authority means refusal",
+          );
+        }
+      }
+    }
+
+    if (!isPlainObject(app.capabilities)) {
+      pushMatrixFailure(failures, [...pathParts, "capabilities"], "must be an object");
+    } else {
+      for (const capability of REQUIRED_CHAT_CAPABILITIES) {
+        const status = normalizedStatus(app.capabilities[capability]);
+        if (!status) {
+          pushMatrixFailure(failures, [...pathParts, "capabilities", capability], "must be present");
+        } else if (FORBIDDEN_PROMOTION_STATUSES.has(status)) {
+          pushMatrixFailure(
+            failures,
+            [...pathParts, "capabilities", capability],
+            "must remain unavailable until exact chat-app runtime evidence exists",
+          );
+        }
+      }
+    }
+
+    if (!Array.isArray(app.dependency_units) || app.dependency_units.length === 0) {
+      pushMatrixFailure(failures, [...pathParts, "dependency_units"], "must be a non-empty array");
+      return;
+    }
+
+    const dependencyUnitIds = new Set();
+    app.dependency_units.forEach((dependency, dependencyIndex) => {
+      const dependencyPath = [...pathParts, "dependency_units", dependencyIndex];
+      if (!isPlainObject(dependency)) {
+        pushMatrixFailure(failures, dependencyPath, "must be an object");
+        return;
+      }
+      const unitId = typeof dependency.unit_id === "string" ? dependency.unit_id.toLowerCase() : "";
+      if (!unitId) {
+        pushMatrixFailure(failures, [...dependencyPath, "unit_id"], "must be a non-empty string");
+      } else if (dependencyUnitIds.has(unitId)) {
+        pushMatrixFailure(failures, [...dependencyPath, "unit_id"], "must be unique per app");
+      } else {
+        dependencyUnitIds.add(unitId);
+      }
+
+      if (FORBIDDEN_PROMOTION_STATUSES.has(normalizedStatus(dependency.status))) {
+        pushMatrixFailure(
+          failures,
+          [...dependencyPath, "status"],
+          "dependency evidence must not be promoted beyond its source proof",
+        );
+      }
+      if (FORBIDDEN_PROMOTION_STATUSES.has(normalizedStatus(dependency.evidence_tier))) {
+        pushMatrixFailure(
+          failures,
+          [...dependencyPath, "evidence_tier"],
+          "dependency tier must not claim runtime, verified-live, release-qualified, or supported evidence",
+        );
+      }
+      if (!Array.isArray(dependency.source_anchors) || dependency.source_anchors.length === 0) {
+        pushMatrixFailure(failures, [...dependencyPath, "source_anchors"], "must be a non-empty array");
+      } else {
+        dependency.source_anchors.forEach((anchor, anchorIndex) => {
+          const anchorPath = [...dependencyPath, "source_anchors", anchorIndex];
+          if (!isPlainObject(anchor)) {
+            pushMatrixFailure(failures, anchorPath, "must be an object");
+            return;
+          }
+          if (typeof anchor.path !== "string" || !anchor.path || path.isAbsolute(anchor.path)) {
+            pushMatrixFailure(failures, [...anchorPath, "path"], "must be a relative file path");
+          }
+          if (typeof anchor.contains !== "string" || anchor.contains.length < 8) {
+            pushMatrixFailure(failures, [...anchorPath, "contains"], "must be a non-empty source snippet");
+          }
+        });
+      }
+    });
+
+    const requiredUnits = REQUIRED_CHAT_APP_UNITS.get(appId);
+    if (requiredUnits) {
+      for (const unitId of requiredUnits) {
+        if (!dependencyUnitIds.has(unitId)) {
+          pushMatrixFailure(
+            failures,
+            [...pathParts, "dependency_units"],
+            `must include prerequisite unit ${unitId}`,
+          );
+        }
+      }
+    }
+  });
+
+  for (const appId of REQUIRED_CHAT_APP_UNITS.keys()) {
+    if (!byAppId.has(appId)) {
+      pushMatrixFailure(
+        failures,
+        ["chat_app_evidence", "apps"],
+        `must include ${appId} chat-app evidence`,
+      );
+    }
+  }
+
+  scanSensitiveEvidenceMaterial(evidence, failures, ["chat_app_evidence"]);
+
+  return {
+    failures,
+    appCount: evidence.apps.length,
+    anchors: collectMatrixSourceAnchors(evidence),
+  };
+}
+
+async function validateSupportMatrixSources(anchors) {
+  const failures = [];
+  const sourceCache = new Map();
+
+  for (const [index, anchor] of anchors.entries()) {
+    if (
+      !isPlainObject(anchor)
+      || typeof anchor.path !== "string"
+      || typeof anchor.contains !== "string"
+      || path.isAbsolute(anchor.path)
+    ) {
+      continue;
+    }
+
+    const sourcePath = path.join(REPO_ROOT, anchor.path);
+    let source = sourceCache.get(sourcePath);
+    if (source === undefined) {
+      try {
+        source = await readUtf8(sourcePath);
+      } catch (error) {
+        if (error && error.code === "ENOENT") {
+          failures.push(`source_anchors[${index}]: ${anchor.path} does not exist`);
+          sourceCache.set(sourcePath, null);
+          continue;
+        }
+        throw error;
+      }
+      sourceCache.set(sourcePath, source);
+    }
+
+    if (source === null) {
+      continue;
+    }
+
+    if (!source.includes(anchor.contains)) {
+      failures.push(
+        `source_anchors[${index}]: ${anchor.path} does not contain ${JSON.stringify(anchor.contains)}`,
+      );
+    }
+  }
+
+  return failures;
+}
+
+async function validateSupportMatrixFile() {
+  let matrixText = "";
+  try {
+    matrixText = await readUtf8(SUPPORT_MATRIX_PATH);
+  } catch (error) {
+    if (error && error.code === "ENOENT") {
+      return {
+        failures: [`${repoRelative(SUPPORT_MATRIX_PATH)}: file is missing`],
+        appCount: 0,
+        anchorCount: 0,
+      };
+    }
+    throw error;
+  }
+
+  let matrix;
+  try {
+    matrix = JSON.parse(matrixText);
+  } catch (error) {
+    return {
+      failures: [`${repoRelative(SUPPORT_MATRIX_PATH)}: invalid JSON: ${error.message}`],
+      appCount: 0,
+      anchorCount: 0,
+    };
+  }
+
+  const validation = validateSupportMatrixObject(matrix);
+  const sourceFailures = await validateSupportMatrixSources(validation.anchors);
+  return {
+    failures: [...validation.failures, ...sourceFailures],
+    appCount: validation.appCount,
+    anchorCount: validation.anchors.length,
+  };
+}
+
+function printSupportMatrixFailures(failures) {
+  if (failures.length === 0) {
+    return;
+  }
+
+  console.error("\nSupport matrix failures:");
+  for (const failure of failures) {
+    console.error(failure);
+  }
+}
+
 async function loadBannedPhrases() {
   const allowlist = await readUtf8(ALLOWLIST_PATH);
   return parseBannedPhrases(allowlist);
@@ -1458,6 +1893,7 @@ function bannedPhraseInputFailures(bannedPhrases) {
 
 async function scanRepository() {
   const bannedPhrases = await loadBannedPhrases();
+  const supportMatrix = await validateSupportMatrixFile();
   const rows = [];
   const allViolations = [];
   const floorFailures = bannedPhraseInputFailures(bannedPhrases);
@@ -1551,11 +1987,19 @@ async function scanRepository() {
   console.log(
     `Counts: phrases parsed=${bannedPhrases.length}, TypeScript strings extracted=${tsStringCount}, Rust strings extracted=${rustStringCount}, README bytes=${readmeBytes}, violations found=${allViolations.length}`,
   );
+  console.log(
+    `Support matrix: chat-app evidence apps=${supportMatrix.appCount}, source anchors=${supportMatrix.anchorCount}, failures=${supportMatrix.failures.length}`,
+  );
 
   printViolations(allViolations);
   printFloorFailures(floorFailures);
+  printSupportMatrixFailures(supportMatrix.failures);
 
-  return allViolations.length === 0 && floorFailures.length === 0 ? 0 : 1;
+  return allViolations.length === 0
+    && floorFailures.length === 0
+    && supportMatrix.failures.length === 0
+    ? 0
+    : 1;
 }
 
 async function runSelfTest() {
@@ -2311,6 +2755,149 @@ async function runSelfTest() {
       expectedSelected: 0,
     },
   ];
+  const supportMatrixFixture = {
+    schema: SUPPORT_MATRIX_SCHEMA,
+    updated_utc: "2026-07-30T00:00:00Z",
+    chat_app_evidence: {
+      schema: CHAT_APP_EVIDENCE_SCHEMA,
+      unit: "p2",
+      evidence_policy: {
+        no_runtime_inference: true,
+        no_secret_or_account_identifier_material: true,
+        absence_of_authority_means_refusal: true,
+      },
+      apps: [
+        {
+          app_id: "discord",
+          display_name: "Discord",
+          service_family: "messaging",
+          public_status: "unavailable",
+          evidence_status: "blocked",
+          qualification: "not-qualified",
+          authority_requirements: {
+            user_consent_required: true,
+            account_binding_required: true,
+            release_authority_required: true,
+          },
+          capabilities: {
+            protected_send: "unavailable",
+            protected_receive: "unavailable",
+            attachments: "unavailable",
+            burn: "unavailable",
+          },
+          dependency_units: [
+            {
+              unit_id: "d6",
+              status: "open-security-finding",
+              evidence_tier: "source/test-proven-only",
+              source_anchors: [
+                {
+                  path: "docs/design/osl-internal-build-checklist.md",
+                  contains: "D6 · Bilateral Burn",
+                },
+              ],
+            },
+            {
+              unit_id: "w9",
+              status: "blocks-core-feature",
+              evidence_tier: "source-audit",
+              source_anchors: [
+                {
+                  path: "docs/OSL-DISCORD-STATE-MAP.md",
+                  contains: "| W9 | Nothing raises Discord above the composer at engage time |",
+                },
+              ],
+            },
+          ],
+        },
+        {
+          app_id: "signal",
+          display_name: "Signal",
+          service_family: "messaging",
+          public_status: "unavailable",
+          evidence_status: "source-profile-only",
+          qualification: "profile-published-unwired",
+          authority_requirements: {
+            user_consent_required: true,
+            account_binding_required: true,
+            release_authority_required: true,
+          },
+          capabilities: {
+            protected_send: "unavailable",
+            protected_receive: "unavailable",
+            attachments: "unavailable",
+            burn: "unavailable",
+          },
+          dependency_units: [
+            {
+              unit_id: "s9",
+              status: "source-profile-published",
+              evidence_tier: "source/test-proven-only",
+              source_anchors: [
+                {
+                  path: "crates/adapter-profile/src/defaults.rs",
+                  contains: "signal_default_profile",
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  };
+  const cloneSupportMatrixFixture = () => JSON.parse(JSON.stringify(supportMatrixFixture));
+  const supportMatrixFixtures = [
+    {
+      name: "support matrix accepts dependency-bound chat-app evidence",
+      mutate: () => {},
+      shouldPass: true,
+    },
+    {
+      name: "support matrix catches missing W9 dependency",
+      mutate: (matrix) => {
+        matrix.chat_app_evidence.apps[0].dependency_units =
+          matrix.chat_app_evidence.apps[0].dependency_units.filter(
+            (dependency) => dependency.unit_id !== "w9",
+          );
+      },
+      shouldPass: false,
+    },
+    {
+      name: "support matrix catches Signal runtime promotion",
+      mutate: (matrix) => {
+        matrix.chat_app_evidence.apps[1].evidence_status = "runtime-proven";
+      },
+      shouldPass: false,
+    },
+    {
+      name: "support matrix catches capability availability promotion",
+      mutate: (matrix) => {
+        matrix.chat_app_evidence.apps[0].capabilities.protected_send = "available";
+      },
+      shouldPass: false,
+    },
+    {
+      name: "support matrix catches missing account-binding authority",
+      mutate: (matrix) => {
+        matrix.chat_app_evidence.apps[1].authority_requirements.account_binding_required = false;
+      },
+      shouldPass: false,
+    },
+    {
+      name: "support matrix catches missing source anchors",
+      mutate: (matrix) => {
+        matrix.chat_app_evidence.apps[0].dependency_units[0].source_anchors = [];
+      },
+      shouldPass: false,
+    },
+    {
+      name: "support matrix catches sensitive handle material",
+      mutate: (matrix) => {
+        matrix.chat_app_evidence.apps[0].handle = "not-allowed";
+      },
+      shouldPass: false,
+    },
+  ];
 
   let failures = 0;
   const renamedSection = allowlist.replace(
@@ -2386,6 +2973,21 @@ async function runSelfTest() {
     );
   }
 
+  for (const fixture of supportMatrixFixtures) {
+    const matrix = cloneSupportMatrixFixture();
+    fixture.mutate(matrix);
+    const validation = validateSupportMatrixObject(matrix);
+    const passed = validation.failures.length === 0;
+    const ok = passed === fixture.shouldPass;
+    if (!ok) {
+      failures += 1;
+    }
+    console.log(
+      `${ok ? "PASS" : "FAIL"} ${fixture.name}: expected ${fixture.shouldPass ? "pass" : "fail"}, actual ${passed ? "pass" : "fail"}`
+        + (ok ? "" : ` (${validation.failures.join("; ") || "no failure"})`),
+    );
+  }
+
   for (const fixture of fixtures) {
     const violations = analyseFragments(
       `self-test/${fixture.name}`,
@@ -2443,7 +3045,7 @@ async function runSelfTest() {
   );
 
   const productionMain = await readUtf8(path.join(APP_SRC_ROOT, "main.ts"));
-  const scrubMarker = "<h3>Review an export</h3>";
+  const scrubMarker = '<h2>Scrub</h2><p class="scrub-local-promise">';
   const scrubMarkerOccurrences = productionMain.split(scrubMarker).length - 1;
   const mutatedMain = productionMain.replace(
     scrubMarker,
@@ -2466,8 +3068,28 @@ async function runSelfTest() {
     `${scrubMutationCaught ? "PASS" : "FAIL"} actual Scrub UI completeness mutation is nonvacuous and caught`,
   );
 
+  const productionSupportMatrix = JSON.parse(await readUtf8(SUPPORT_MATRIX_PATH));
+  const productionSupportMatrixShape = validateSupportMatrixObject(productionSupportMatrix);
+  const mutatedSupportMatrix = JSON.parse(JSON.stringify(productionSupportMatrix));
+  const firstAnchor = collectMatrixSourceAnchors(mutatedSupportMatrix)[0];
+  if (firstAnchor) {
+    firstAnchor.contains = "p2 self-test intentionally missing support-matrix source anchor";
+  }
+  const supportMatrixSourceFailures = await validateSupportMatrixSources(
+    collectMatrixSourceAnchors(mutatedSupportMatrix),
+  );
+  const supportMatrixMutationCaught = productionSupportMatrixShape.failures.length === 0
+    && Boolean(firstAnchor)
+    && supportMatrixSourceFailures.length > 0;
+  if (!supportMatrixMutationCaught) {
+    failures += 1;
+  }
   console.log(
-    `Self-test: phrases parsed=${bannedPhrases.length}, fixtures=${fixtures.length + rustFixtures.length + inputCases.length + 2}, failures=${failures}`,
+    `${supportMatrixMutationCaught ? "PASS" : "FAIL"} actual support matrix source-anchor mutation is nonvacuous and caught`,
+  );
+
+  console.log(
+    `Self-test: phrases parsed=${bannedPhrases.length}, fixtures=${fixtures.length + rustFixtures.length + inputCases.length + supportMatrixFixtures.length + 3}, failures=${failures}`,
   );
 
   return failures === 0 ? 0 : 1;
