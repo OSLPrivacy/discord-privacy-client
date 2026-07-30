@@ -3201,6 +3201,17 @@ pub fn cmd_osl_encrypt_message_v2_wire(
         .iter()
         .skip(1) // recipients[0] is (self_discord_id, self) per recipients_for_scope_v3
         .collect();
+
+    if let Some(wire) = try_encrypt_rn_first_contact_from_state(
+        state,
+        crate::wire_rn::RN_WIRE_IN_ENABLED,
+        &scope,
+        &non_self_peers,
+        plaintext.as_bytes(),
+    )? {
+        return Ok(EncryptWire::content_only(wire));
+    }
+
     if !non_self_peers.is_empty() {
         let rn_store = rn_session_store_from_config_dir()?;
         for (peer_did, recipient) in &non_self_peers {
@@ -3211,6 +3222,7 @@ pub fn cmd_osl_encrypt_message_v2_wire(
             )?;
         }
     }
+
     let ratchet_decision = ratchet_policy_decision(
         &scope,
         non_self_peers.len(),
@@ -3369,6 +3381,454 @@ pub fn cmd_osl_encrypt_message_v2_wire(
     )
     .map_err(|e| format!("OSL: encrypt_v3: {e}"))
     .map(EncryptWire::content_only)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn try_encrypt_rn_first_contact_from_state(
+    state: &AppState,
+    rn_wire_in_enabled: bool,
+    scope: &crate::scope::Scope,
+    non_self_peers: &[&(String, crate::wire_v2::RecipientV3)],
+    plaintext: &[u8],
+) -> Result<Option<String>, String> {
+    if !rn_wire_in_enabled || scope_is_group_or_server(scope) || non_self_peers.len() != 1 {
+        return Ok(None);
+    }
+
+    let peer_did = non_self_peers
+        .first()
+        .map(|peer| peer.0.as_str())
+        .ok_or_else(|| "OSL: OSL-RN first contact: missing peer".to_string())?;
+    let (identity, peer_entry) = {
+        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let identity = id_guard
+            .as_ref()
+            .ok_or_else(|| "OSL: identity not loaded".to_string())?
+            .clone();
+        drop(id_guard);
+
+        let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let peer_entry = pm
+            .get(peer_did)
+            .cloned()
+            .ok_or_else(|| format!("OSL: no peer entry for discord_id={peer_did}", peer_did = crate::log_id::log_id(peer_did)))?;
+        (identity, peer_entry)
+    };
+
+    let peer_identity = rn_peer_identity_from_entry(peer_did, &peer_entry)?;
+    let dir = keystore::osl_config_dir().map_err(|e| format!("OSL: OSL-RN state dir: {e}"))?;
+    let store = crate::wire_rn::RnSessionStore::new(dir.join("rn"));
+    let sealer = keystore::select_best_sealer();
+
+    let caps = match verified_rn_capabilities_for_live_peer(state, &peer_entry) {
+        Ok(caps) => caps,
+        Err(e) => {
+            if store
+                .load_pin(peer_identity.as_bytes())
+                .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?
+                .is_pinned_to_rn()
+            {
+                return Err(e);
+            }
+            return Ok(None);
+        }
+    };
+
+    let pin = store
+        .load_pin(peer_identity.as_bytes())
+        .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?;
+    match crate::wire_rn::select_wire_version(&pin, caps, crate::wire_rn::RnPolicy::Opportunistic)
+        .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?
+    {
+        crate::wire_rn::SelectedVersion::LegacyV3 => return Ok(None),
+        crate::wire_rn::SelectedVersion::Rn => {}
+    }
+
+    let Some(prekey_bundle) =
+        fetch_rn_prekey_bundle_for_peer(state, &identity, peer_did, &peer_entry)?
+    else {
+        return Err("OSL: OSL-RN first contact: selected OSL-RN but no authenticated prekey bundle is available".to_string());
+    };
+
+    let peer_bundle = rn_peer_bundle_from_prekey_response(&prekey_bundle)?;
+    try_encrypt_rn_first_contact_with_bundle(
+        rn_wire_in_enabled,
+        &store,
+        sealer.as_ref(),
+        &identity.x25519_secret,
+        &identity.x25519_public,
+        &peer_bundle,
+        caps,
+        prekey_bundle.ik_mlkem768_pub.as_str(),
+        plaintext,
+    )
+}
+
+fn verified_rn_capabilities_for_live_peer(
+    state: &AppState,
+    peer_entry: &crate::peer_map::PeerEntry,
+) -> Result<keystore::client::PeerCapabilities, String> {
+    let Some(osl_user_id) = peer_entry.osl_user_id.as_deref() else {
+        return Ok(keystore::client::PeerCapabilities::Absent);
+    };
+    if is_discord_snowflake_shaped(osl_user_id) {
+        return Ok(keystore::client::PeerCapabilities::Absent);
+    }
+    let resp = {
+        let ks = state.keyserver.lock().expect("keyserver mutex poisoned");
+        let client = ks
+            .as_ref()
+            .ok_or_else(|| "OSL: OSL-RN first contact: key-server not initialised".to_string())?;
+        client
+            .fetch_pubkeys(osl_user_id)
+            .map_err(|_| "OSL: OSL-RN first contact: peer key fetch refused".to_string())?
+    };
+    if !rn_pubkeys_response_matches_live_peer(peer_entry, &resp) {
+        return Ok(keystore::client::PeerCapabilities::Unverified);
+    }
+    if resp.user_id != osl_user_id {
+        return Ok(keystore::client::PeerCapabilities::Unverified);
+    }
+    Ok(keystore::client::verify_peer_capabilities(&resp))
+}
+
+fn rn_pubkeys_response_matches_live_peer(
+    peer_entry: &crate::peer_map::PeerEntry,
+    resp: &keystore::client::PubkeysResponse,
+) -> bool {
+    let trusted_ed25519 = peer_entry
+        .tofu_key_bundle
+        .as_ref()
+        .map(|bundle| bundle.ed25519_pub.as_str())
+        .or(peer_entry.tofu_ed25519_pub.as_deref());
+
+    peer_entry.pubkey.as_deref() == Some(resp.ik_x25519_pub.as_str())
+        && peer_entry.ik_mlkem768_pub.as_deref() == Some(resp.ik_mlkem768_pub.as_str())
+        && matches!(trusted_ed25519, Some(trusted) if trusted == resp.ik_ed25519_pub)
+}
+
+fn fetch_rn_prekey_bundle_for_peer(
+    state: &AppState,
+    identity: &keystore::Identity,
+    peer_did: &str,
+    peer_entry: &crate::peer_map::PeerEntry,
+) -> Result<Option<keystore::client::PrekeyBundleResponse>, String> {
+    let Some(osl_user_id) = peer_entry.osl_user_id.as_deref() else {
+        return Ok(None);
+    };
+    if is_discord_snowflake_shaped(osl_user_id) {
+        return Ok(None);
+    }
+    let bundle = {
+        let ks = state.keyserver.lock().expect("keyserver mutex poisoned");
+        let client = ks
+            .as_ref()
+            .ok_or_else(|| "OSL: OSL-RN first contact: key-server not initialised".to_string())?;
+        client
+            .fetch_prekey_bundle(identity, osl_user_id)
+            .map_err(|_| "OSL: OSL-RN first contact: peer prekey fetch refused".to_string())?
+    };
+    if bundle.user_id != osl_user_id {
+        return Err("OSL: OSL-RN first contact: prekey bundle identity mismatch".to_string());
+    }
+    if peer_entry.pubkey.as_deref() != Some(bundle.ik_x25519_pub.as_str())
+        || peer_entry.ik_mlkem768_pub.as_deref() != Some(bundle.ik_mlkem768_pub.as_str())
+        || peer_entry
+            .tofu_key_bundle
+            .as_ref()
+            .map(|trusted| trusted.ed25519_pub.as_str())
+            .or(peer_entry.tofu_ed25519_pub.as_deref())
+            != Some(bundle.ik_ed25519_pub.as_str())
+    {
+        return Err(format!(
+            "OSL: OSL-RN first contact: prekey bundle for peer {peer_did} does not match trusted keys",
+            peer_did = crate::log_id::log_id(peer_did)
+        ));
+    }
+    verify_rn_prekey_bundle_signature(&bundle)?;
+    Ok(Some(bundle))
+}
+
+fn verify_rn_prekey_bundle_signature(
+    bundle: &keystore::client::PrekeyBundleResponse,
+) -> Result<(), String> {
+    let ed = decode_b64_array::<32>("OSL-RN prekey Ed25519", &bundle.ik_ed25519_pub)?;
+    let spk = decode_b64_array::<32>("OSL-RN prekey SPK", &bundle.spk_pub)?;
+    let sig = decode_b64_array::<64>("OSL-RN prekey signature", &bundle.spk_signature)?;
+    let ok = crypto::ed25519::verify(
+        &crypto::ed25519::PublicKey::from_bytes(ed),
+        &spk,
+        &crypto::ed25519::Signature::from_bytes(sig),
+    )
+    .map_err(|e| format!("OSL: OSL-RN first contact: prekey signature verify: {e}"))?;
+    if !ok {
+        return Err("OSL: OSL-RN first contact: prekey signature refused".to_string());
+    }
+    Ok(())
+}
+
+fn rn_peer_identity_from_entry(
+    peer_did: &str,
+    entry: &crate::peer_map::PeerEntry,
+) -> Result<osl_ratchet_next::XPublic, String> {
+    let b64 = entry.pubkey.as_deref().ok_or_else(|| {
+        format!(
+            "OSL: OSL-RN first contact: peer {peer_did} missing X25519 key",
+            peer_did = crate::log_id::log_id(peer_did)
+        )
+    })?;
+    Ok(osl_ratchet_next::XPublic::from_bytes(decode_b64_array::<32>(
+        "OSL-RN peer identity",
+        b64,
+    )?))
+}
+
+fn rn_peer_bundle_from_prekey_response(
+    bundle: &keystore::client::PrekeyBundleResponse,
+) -> Result<osl_ratchet_next::PeerBundle, String> {
+    let identity = osl_ratchet_next::XPublic::from_bytes(decode_b64_array::<32>(
+        "OSL-RN IK",
+        &bundle.ik_x25519_pub,
+    )?);
+    let signed_prekey = osl_ratchet_next::XPublic::from_bytes(decode_b64_array::<32>(
+        "OSL-RN SPK",
+        &bundle.spk_pub,
+    )?);
+    let one_time_prekey = match bundle.opk.as_ref() {
+        Some(opk) => Some((
+            opk.id,
+            osl_ratchet_next::XPublic::from_bytes(decode_b64_array::<32>(
+                "OSL-RN OPK",
+                &opk.pub_b64,
+            )?),
+        )),
+        None => None,
+    };
+    let pq_bytes = decode_b64_array::<{ osl_ratchet_next::MLKEM_EK }>(
+        "OSL-RN ML-KEM",
+        &bundle.ik_mlkem768_pub,
+    )?;
+    Ok(osl_ratchet_next::PeerBundle {
+        identity,
+        signed_prekey,
+        one_time_prekey,
+        pq_prekey: osl_ratchet_next::KemPublic::from_bytes(&pq_bytes)
+            .map_err(|e| format!("OSL: OSL-RN first contact: ML-KEM public key: {e}"))?,
+    })
+}
+
+fn decode_b64_array<const N: usize>(label: &str, b64: &str) -> Result<[u8; N], String> {
+    let bytes = STANDARD
+        .decode(b64)
+        .map_err(|e| format!("OSL: {label} base64 decode failed: {e}"))?;
+    let got = bytes.len();
+    bytes
+        .try_into()
+        .map_err(|_| format!("OSL: {label} length {got} != {N}"))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn try_encrypt_rn_first_contact_with_bundle(
+    rn_wire_in_enabled: bool,
+    store: &crate::wire_rn::RnSessionStore,
+    sealer: &dyn keystore::sealer::Sealer,
+    own_identity_secret: &crypto::x25519::SecretKey,
+    own_identity_public: &crypto::x25519::PublicKey,
+    peer_bundle: &osl_ratchet_next::PeerBundle,
+    caps: keystore::client::PeerCapabilities,
+    peer_mlkem768_ek_b64: &str,
+    plaintext: &[u8],
+) -> Result<Option<String>, String> {
+    if !rn_wire_in_enabled {
+        return Ok(None);
+    }
+
+    let peer_identity = *peer_bundle.identity.as_bytes();
+    let pin = store
+        .load_pin(&peer_identity)
+        .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?;
+    match crate::wire_rn::select_wire_version(&pin, caps, crate::wire_rn::RnPolicy::Opportunistic)
+        .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?
+    {
+        crate::wire_rn::SelectedVersion::LegacyV3 => return Ok(None),
+        crate::wire_rn::SelectedVersion::Rn => {}
+    }
+
+    let own_secret = osl_ratchet_next::XSecret::from_bytes(*own_identity_secret.as_bytes());
+    let peer_mlkem768_ek = STANDARD
+        .decode(peer_mlkem768_ek_b64)
+        .map_err(|e| format!("OSL: OSL-RN first contact: peer ML-KEM base64: {e}"))?;
+
+    let mut session = match store
+        .load_session(&peer_identity, sealer)
+        .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?
+    {
+        Some(session) => session,
+        None => crate::wire_rn::initiate_and_persist(
+            store,
+            sealer,
+            &own_secret,
+            own_identity_public.as_bytes(),
+            peer_bundle,
+            caps,
+            &peer_mlkem768_ek,
+            crate::wire_rn::RN_CONTEXT_DISCORD_MANUAL,
+            osl_ratchet_next::SessionParams::default(),
+        )
+        .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?,
+    };
+    let wire = osl_ratchet_next::encrypt_rn(
+        &mut session,
+        crate::wire_v2::MSG_TYPE_CONTENT,
+        plaintext,
+    )
+    .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?;
+    store
+        .save_session(&peer_identity, &session, sealer)
+        .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?;
+    Ok(Some(wire))
+}
+
+#[cfg(test)]
+mod rn_first_contact_command_tests {
+    use super::*;
+    use base64::Engine as _;
+    use keystore::client::{PeerCapabilities, PrekeyBundleResponse, RN_CAP_WIRE_RN};
+    use keystore::sealer::MemorySealer;
+    use osl_ratchet_next::test_support::{fresh_bundle, seeded_rng};
+    use tempfile::TempDir;
+
+    fn fresh_rn_store() -> (TempDir, crate::wire_rn::RnSessionStore) {
+        let dir = TempDir::new().expect("tempdir");
+        let store = crate::wire_rn::RnSessionStore::new(dir.path().join("rn"));
+        (dir, store)
+    }
+
+    #[test]
+    fn rn_first_contact_gate_false_does_not_initiate_or_persist() {
+        let (_dir, store) = fresh_rn_store();
+        let sealer = MemorySealer::new();
+        let mut rng = seeded_rng(61);
+        let (_peer_prekeys, peer_bundle) = fresh_bundle(&mut rng);
+        let (own_sk, own_pk) = crypto::x25519::generate_keypair();
+        let peer_mlkem_b64 = STANDARD.encode(peer_bundle.pq_prekey.to_bytes());
+
+        let wire = try_encrypt_rn_first_contact_with_bundle(
+            false,
+            &store,
+            &sealer,
+            &own_sk,
+            &own_pk,
+            &peer_bundle,
+            PeerCapabilities::Verified(RN_CAP_WIRE_RN),
+            peer_mlkem_b64.as_str(),
+            b"hello",
+        )
+        .expect("helper");
+
+        assert_eq!(wire, None);
+        assert!(store
+            .load_session(peer_bundle.identity.as_bytes(), &sealer)
+            .expect("load session")
+            .is_none());
+        assert_eq!(
+            store
+                .load_pin(peer_bundle.identity.as_bytes())
+                .expect("load pin"),
+            crate::wire_rn::RnPeerPin::UNKNOWN
+        );
+    }
+
+    #[test]
+    fn rn_first_contact_absent_capability_falls_through_without_persisting() {
+        let (_dir, store) = fresh_rn_store();
+        let sealer = MemorySealer::new();
+        let mut rng = seeded_rng(62);
+        let (_peer_prekeys, peer_bundle) = fresh_bundle(&mut rng);
+        let (own_sk, own_pk) = crypto::x25519::generate_keypair();
+        let peer_mlkem_b64 = STANDARD.encode(peer_bundle.pq_prekey.to_bytes());
+
+        let wire = try_encrypt_rn_first_contact_with_bundle(
+            true,
+            &store,
+            &sealer,
+            &own_sk,
+            &own_pk,
+            &peer_bundle,
+            PeerCapabilities::Absent,
+            peer_mlkem_b64.as_str(),
+            b"hello",
+        )
+        .expect("helper");
+
+        assert_eq!(wire, None);
+        assert!(store
+            .load_session(peer_bundle.identity.as_bytes(), &sealer)
+            .expect("load session")
+            .is_none());
+    }
+
+    #[test]
+    fn rn_first_contact_verified_capability_initiates_persists_and_pins() {
+        let (_dir, store) = fresh_rn_store();
+        let sealer = MemorySealer::new();
+        let mut rng = seeded_rng(63);
+        let (_peer_prekeys, peer_bundle) = fresh_bundle(&mut rng);
+        let (own_sk, own_pk) = crypto::x25519::generate_keypair();
+        let peer_mlkem_b64 = STANDARD.encode(peer_bundle.pq_prekey.to_bytes());
+
+        let wire = try_encrypt_rn_first_contact_with_bundle(
+            true,
+            &store,
+            &sealer,
+            &own_sk,
+            &own_pk,
+            &peer_bundle,
+            PeerCapabilities::Verified(RN_CAP_WIRE_RN),
+            peer_mlkem_b64.as_str(),
+            b"hello",
+        )
+        .expect("helper")
+        .expect("rn wire");
+
+        assert_eq!(
+            osl_ratchet_next::peek_wire_version(&wire),
+            Some(osl_ratchet_next::WIRE_VERSION_RN)
+        );
+        assert!(store
+            .load_session(peer_bundle.identity.as_bytes(), &sealer)
+            .expect("load session")
+            .is_some());
+        assert!(store
+            .load_pin(peer_bundle.identity.as_bytes())
+            .expect("load pin")
+            .is_pinned_to_rn());
+    }
+
+    #[test]
+    fn rn_prekey_bundle_signature_must_verify_under_peer_identity() {
+        let peer = keystore::generate_identity("peer".to_string());
+        let (_spk_secret, spk_public) = crypto::x25519::generate_keypair();
+        let signature = crypto::ed25519::sign(&peer.ed25519_secret, spk_public.as_bytes());
+        let bundle = PrekeyBundleResponse {
+            user_id: peer.user_id.clone(),
+            ik_x25519_pub: STANDARD.encode(peer.x25519_public.as_bytes()),
+            ik_ed25519_pub: STANDARD.encode(peer.ed25519_public.as_bytes()),
+            ik_mlkem768_pub: STANDARD.encode(peer.mlkem_public_bytes),
+            spk_pub: STANDARD.encode(spk_public.as_bytes()),
+            spk_signature: STANDARD.encode(signature.as_bytes()),
+            spk_rotated_at: "2026-07-29T00:00:00.000Z".to_string(),
+            opk: None,
+            remaining_opk_count: 0,
+            ik_ratchet_initial_pub: None,
+        };
+
+        verify_rn_prekey_bundle_signature(&bundle).expect("valid signature");
+
+        let mut forged = bundle;
+        forged.spk_signature = STANDARD.encode([0u8; 64]);
+        assert!(verify_rn_prekey_bundle_signature(&forged).is_err());
+    }
 }
 
 /// Phase 9-A3: group/server scopes are eligible for v=5 sender-keys.
