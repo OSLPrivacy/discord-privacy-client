@@ -46,6 +46,28 @@ pub struct HubPasswordReadiness {
     pub password_lockout_seconds_remaining: i64,
 }
 
+impl std::fmt::Debug for HubIdentitySetupResult {
+    /// Never derive Debug here: `identity_recovery_phrase` is the recovery phrase
+    /// itself, and `user_id` is an account identifier. Report only whether a phrase
+    /// is present, never its value.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HubIdentitySetupResult")
+            .field("user_id", &"[REDACTED]")
+            .field(
+                "identity_recovery_phrase",
+                &if self.identity_recovery_phrase.is_some() {
+                    "[REDACTED-PRESENT]"
+                } else {
+                    "none"
+                },
+            )
+            .field("storage_method", &self.storage_method)
+            .field("password_setup_required", &self.password_setup_required)
+            .finish()
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HubIdentitySetupResult {
@@ -238,18 +260,6 @@ fn create_native_identity_after_owner_authorization_signoff(
     )?;
     initialise_keyserver(&state.osl, &dir);
     Ok(result)
-}
-
-pub fn create_native_identity(
-    state: &HubCoreState,
-    authorization: Option<IdentityCreationOwnerAuthorization>,
-) -> Result<HubIdentitySetupResult, String> {
-    require_identity_creation_owner_authorization(authorization)
-        .map_err(|error| error.to_string())?;
-    create_native_identity_with_owner_authorization_signoff(
-        state,
-        HubIdentityCreationOwnerSignoff::owner_authorized_for_new_identity(),
-    )
 }
 
 fn create_native_identity_after_owner_authorization_signoff_using(

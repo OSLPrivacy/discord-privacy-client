@@ -534,6 +534,15 @@ impl AppState {
         Ok(())
     }
 
+    /// Recovered from 9c1894bb: a merge dropped this accessor from the impl block
+    /// while every caller kept using it, so the crate stopped compiling.
+    pub fn has_prekey_state(&self) -> bool {
+        self.prekey_state
+            .lock()
+            .expect("prekey_state mutex poisoned")
+            .is_some()
+    }
+
     pub fn set_prekey_state(&self, prekeys: keystore::PrekeyState) {
         *self
             .prekey_state

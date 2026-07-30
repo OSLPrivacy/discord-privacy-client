@@ -110,11 +110,10 @@ a partially prepared pair.
 The controller owns a fixed matrix so a manifest cannot omit an identity, a
 direction, or a security case. It requires exactly the two dedicated Signal QA
 identities, `signal-qa-1` and `signal-qa-2`, exercised as
-`signal-qa-1 → signal-qa-2` and `signal-qa-2 → signal-qa-1` for protected text,
+`signal-qa-1 -> signal-qa-2` and `signal-qa-2 -> signal-qa-1` for protected text,
 multiline/UTF-8, encryption, protected-composer binding, transcript overlay,
-burn, Covertext,
-attachments/images, delivery/read receipts, reconnect, replay rejection,
-malformed-data rejection, expiry, and window lifecycle.
+burn, Covertext, attachments/images, delivery/read receipts, reconnect, replay
+rejection, malformed-data rejection, expiry, and window lifecycle.
 
 Until the live signed Signal build yields reviewed accessibility selectors for
 the exact destination, participant set, and composer, all 28 matrix stages are
