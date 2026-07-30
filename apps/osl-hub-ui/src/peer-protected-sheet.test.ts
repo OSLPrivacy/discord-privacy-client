@@ -186,6 +186,10 @@ describe("manual peer protected sheet", () => {
     expect(approval).toContain("Approved for this app + friend.");
     expect(prepare.indexOf("context?.scopeApproved")).toBeLessThan(prepare.indexOf("preparePeerProseText"));
     expect(prepare.indexOf("saveActiveContextSecurity")).toBeLessThan(prepare.indexOf("preparePeerProseText"));
-    expect(prepare).toContain("navigator.clipboard.writeText(prepared.coverText)");
+    expect(prepare).toContain('peerProtectedSheet.receipt = { direction: "sent", state: "prepared" };');
+    expect(prepare).toContain("Protected text is ready. Your draft stays here until you send.");
+    expect(prepare).not.toContain("navigator.clipboard.writeText");
+    expect(prepare).not.toContain('peerProtectedSheet.draft = ""');
+    expect(source.slice(openStart)).toContain("navigator.clipboard.writeText(peerProtectedSheet.coverText)");
   });
 });

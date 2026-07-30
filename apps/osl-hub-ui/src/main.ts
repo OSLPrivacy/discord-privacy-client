@@ -4036,12 +4036,7 @@ async function preparePeerProtectedDraft(event: SubmitEvent): Promise<void> {
   }
   peerProtectedSheet.coverText = prepared.coverText;
   peerProtectedSheet.receipt = { direction: "sent", state: "prepared" };
-  try {
-    await navigator.clipboard.writeText(prepared.coverText);
-    peerProtectedSheet.status = "Encrypted and copied. OSL did not press Send.";
-  } catch {
-    peerProtectedSheet.status = "Encrypted. Select the protected text to copy it.";
-  }
+  peerProtectedSheet.status = "Protected text is ready. Your draft stays here until you send.";
   render();
 }
 
