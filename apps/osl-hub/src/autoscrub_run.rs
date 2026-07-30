@@ -722,10 +722,11 @@ impl AutoScrubRunState {
         } else {
             "AutoScrub fleet status is bounded to this owner."
         };
+        let total_runs = runs.len();
         let status = RunFleetStatus {
             runs,
             working,
-            total_runs: ledger.runs.len(),
+            total_runs,
             run_capacity: MAX_CONCURRENT_RUNS,
             blocking_dry_run,
             detail: detail.to_owned(),
@@ -1007,6 +1008,10 @@ fn validate_open_contract(
             .stop_on
             .iter()
             .any(|condition| condition == "deadline")
+        || !capability
+            .stop_on
+            .iter()
+            .any(|condition| condition == "global_stop")
     {
         return Err(AutoScrubRunError::StopConditionsNarrowed);
     }
@@ -1291,14 +1296,24 @@ mod tests {
                 "owner_stop".to_owned(),
                 "manifest_drift".to_owned(),
                 "deadline".to_owned(),
+                "global_stop".to_owned(),
             ],
         }
     }
 
     fn open_run(ledger: &AutoScrubRunState, run_id: &str, account_id: &str) -> RunOpened {
+        open_run_for(ledger, OWNER, run_id, account_id)
+    }
+
+    fn open_run_for(
+        ledger: &AutoScrubRunState,
+        owner: &str,
+        run_id: &str,
+        account_id: &str,
+    ) -> RunOpened {
         ledger
             .open(
-                OWNER,
+                owner,
                 NativeEntitlement::Confirmed,
                 &manifest(run_id, account_id),
                 &session(account_id),
@@ -1491,6 +1506,22 @@ mod tests {
             ),
             Err(AutoScrubRunError::MechanismNotPermitted)
         ));
+        let mut missing_global_stop = cap.clone();
+        missing_global_stop
+            .stop_on
+            .retain(|condition| condition != "global_stop");
+        assert!(matches!(
+            ledger.open(
+                OWNER,
+                NativeEntitlement::Confirmed,
+                &m,
+                &s,
+                &c,
+                &missing_global_stop,
+                &registry()
+            ),
+            Err(AutoScrubRunError::StopConditionsNarrowed)
+        ));
         let mut bad_session = s.clone();
         bad_session.account_id = SECOND_ACCOUNT.to_owned();
         assert!(matches!(
@@ -1664,6 +1695,106 @@ mod tests {
             ledger.step(OWNER, NativeEntitlement::Confirmed, &step_for(&opened_b)),
             Err(AutoScrubRunError::RunHalted)
         ));
+    }
+
+    #[test]
+    fn full_autoscrub_native_authority_acceptance() {
+        let ledger = AutoScrubRunState::default();
+        let opened_a = open_run(&ledger, "run-a", ACCOUNT);
+        let opened_b = open_run(&ledger, "run-b", SECOND_ACCOUNT);
+        open_run_for(&ledger, OTHER_OWNER, "run-c", ACCOUNT);
+
+        assert!(matches!(
+            ledger.open(
+                OWNER,
+                NativeEntitlement::Confirmed,
+                &manifest("run-a-duplicate", ACCOUNT),
+                &session(ACCOUNT),
+                &consent("run-a-duplicate", ACCOUNT),
+                &capability(),
+                &registry()
+            ),
+            Err(AutoScrubRunError::RunAlreadyOpen)
+        ));
+        assert!(matches!(
+            ledger.step(OWNER, NativeEntitlement::Absent, &step_for(&opened_a)),
+            Err(AutoScrubRunError::EntitlementRequired)
+        ));
+
+        let first_step = ledger
+            .step(OWNER, NativeEntitlement::Confirmed, &step_for(&opened_a))
+            .unwrap();
+        assert_eq!(first_step.run_id, "run-a");
+        assert_eq!(first_step.items_authorized, 1);
+        assert!(matches!(
+            ledger.authorize_imap_prepare(
+                OWNER,
+                NativeEntitlement::Absent,
+                ACCOUNT,
+                "INBOX",
+                "<a@x>"
+            ),
+            Err(AutoScrubRunError::EntitlementRequired)
+        ));
+        let prepare = ledger
+            .authorize_imap_prepare(
+                OWNER,
+                NativeEntitlement::Confirmed,
+                ACCOUNT,
+                "INBOX",
+                "<a@x>",
+            )
+            .unwrap();
+        assert_eq!(prepare.run_id, "run-a");
+        assert_eq!(prepare.mailbox, "INBOX");
+        assert_eq!(prepare.message_id, "<a@x>");
+        assert_eq!(prepare.source, "autoscrub_run");
+        ledger
+            .step(OWNER, NativeEntitlement::Confirmed, &step_for(&opened_b))
+            .unwrap();
+
+        assert!(matches!(
+            ledger.status(OWNER),
+            Err(AutoScrubRunError::RunAmbiguous)
+        ));
+        let owner_fleet = ledger.fleet_status(OWNER).unwrap();
+        assert_eq!(owner_fleet.working, 2);
+        assert_eq!(owner_fleet.total_runs, 2);
+        assert_eq!(
+            owner_fleet
+                .runs
+                .iter()
+                .map(|run| run.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run-a", "run-b"]
+        );
+
+        let stopped = ledger.global_stop(OWNER).unwrap();
+        assert_eq!(stopped.working, 0);
+        assert_eq!(stopped.total_runs, 2);
+        assert!(stopped.runs.iter().all(
+            |run| run.phase == RunPhaseDto::Halted && run.halted_reason == Some("global_stop")
+        ));
+        assert!(matches!(
+            ledger.authorize_imap_prepare(
+                OWNER,
+                NativeEntitlement::Confirmed,
+                SECOND_ACCOUNT,
+                "INBOX",
+                "<a@x>"
+            ),
+            Err(AutoScrubRunError::RunHalted)
+        ));
+        assert!(matches!(
+            ledger.step(OWNER, NativeEntitlement::Confirmed, &step_for(&opened_a)),
+            Err(AutoScrubRunError::RunHalted)
+        ));
+
+        let other_fleet = ledger.fleet_status(OTHER_OWNER).unwrap();
+        assert_eq!(other_fleet.working, 1);
+        assert_eq!(other_fleet.total_runs, 1);
+        assert_eq!(other_fleet.runs[0].run_id, "run-c");
+        assert_eq!(other_fleet.runs[0].phase, RunPhaseDto::Active);
     }
 
     #[test]
