@@ -462,6 +462,26 @@ describe("scheme-1 Rust-client deployment admission", () => {
     ).toBe(producer.public_key_spki_b64);
   });
 
+  it("enroll the frozen shipping Rust client as a trusted evidence producer", () => {
+    const producer =
+      TRUSTED_SCHEME1_CLIENT_EVIDENCE_PRODUCERS[
+        SCHEME1_FROZEN_RUST_CLIENT_PRODUCER_KEY_ID
+      ];
+    expect(producer).toBeDefined();
+    expect(Object.isFrozen(producer)).toBe(true);
+    expect(producer.minimum_sequence).toBeGreaterThan(0);
+    expect(producer.key_epoch).toBeGreaterThan(0);
+    expect(producer.identity).toBe(
+      "osl://scheme1-rust-client/frozen-shipping/2026-07-27",
+    );
+    const publicKey = createPublicKey({
+      key: Buffer.from(producer.public_key_spki_b64, "base64"),
+      format: "der",
+      type: "spki",
+    });
+    expect(publicKey.asymmetricKeyType).toBe("ed25519");
+  });
+
   it("refuses untrusted Rust-client evidence by default", async () => {
     const files = await sourceValues();
     const fixture = await frozenFixtureBytes();
@@ -714,6 +734,23 @@ describe("scheme-1 Rust-client deployment admission", () => {
     });
     expect(JSON.parse(output)).toEqual(receipt);
     expect(receipt.execution_authorized).toBe(false);
+  });
+
+  it("run scheme1 client-preflight admission to generate admitted contract v", async () => {
+    const files = await sourceValues();
+    const frozenFiles = await frozenSourceValues();
+    const receipt = await positiveReceipt("migrate-0033-0034");
+
+    expect(receipt.client_contract_admitted).toBe(true);
+    expect(receipt.execution_authorized).toBe(false);
+    expect(receipt.client.commit).toBe(CLIENT_COMMIT);
+    expect(receipt.client.repository_tree).toBe(CLIENT_TREE);
+    expect(receipt.challenge_nonce).toBe(CHALLENGE);
+    expect(() =>
+      validateScheme1ClientPreflightReceipt(
+        receipt,
+        validationOptions("migrate-0033-0034", files, frozenFiles),
+      )).not.toThrow();
   });
 
   it("loads only exact server HEAD/tree, exact client tree, frozen fixture, and a regular evidence file", async () => {

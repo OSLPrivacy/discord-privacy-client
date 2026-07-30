@@ -78,8 +78,11 @@ fn create_and_lock(root: &Path) {
     )
     .expect("write loopback-only keyserver override");
 
-    let created = password_lifecycle::create_native_identity(&state)
-        .expect("create isolated native identity");
+    let created = password_lifecycle::create_native_identity(
+        &state,
+        Some(password_lifecycle::IdentityCreationOwnerAuthorization::ExplicitOwnerSignoff),
+    )
+    .expect("create isolated native identity");
     assert_eq!(created.storage_method, keystore::METHOD_KEYRING);
     let identity_phrase = created
         .identity_recovery_phrase

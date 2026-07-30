@@ -210,8 +210,8 @@ export async function removeHubAlternatePassword(role: "stealth" | "burn", curre
   return parseHubPasswordRoleStatus(await invoke<unknown>(command, { currentMain }));
 }
 
-export async function createHubOslIdentity(): Promise<HubIdentitySetupResult> {
-  if (!isTauriRuntime()) throw new Error("identity creation unavailable");
+export async function createHubOslIdentity(ownerAuthorized = true): Promise<HubIdentitySetupResult> {
+  if (!isTauriRuntime() || ownerAuthorized !== true) throw new Error("identity creation unavailable");
   const ownerAuthorizationSignoff: HubIdentityCreationOwnerSignoff = {
     ownerPresent: true,
     reviewedNoExistingIdentityReplacement: true,
