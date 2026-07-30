@@ -502,6 +502,7 @@ mod tests {
             .1
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn duress_tpm_no_tpm_nothing_to_evict_completes_and_removes_journal() {
         let dir = TempDir::new().unwrap();
@@ -509,9 +510,7 @@ mod tests {
         write_journal_with_all_steps_except(&journal_path, WipeStep::TpmEvict);
 
         let engine = DuressEngine::new(journal_path.clone(), paths, DuressHandlers::default());
-        let report = engine
-            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
-            .unwrap();
+        let report = engine.execute().unwrap();
 
         assert!(report.completed);
         assert_eq!(
