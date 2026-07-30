@@ -36,3 +36,136 @@ Acceptance for this risk is a coordinator routing exercise, not a prose grep:
    turn.
 3. Attempt to satisfy a failed capacity check by borrowing another account, changing `CODEX_HOME`, or
    starting speculative background work. The routing decision must remain `refuse` or `standby`.
+
+Machine-checkable acceptance contract:
+
+```json
+{
+  "schemaVersion": 1,
+  "tests": [
+    {
+      "name": "Update routing decisions from real Codex capacity instead of stale pools.",
+      "decisionRules": {
+        "historicalPoolLabelIsAuthority": false,
+        "dispatchRequiresCurrentCapacityRecord": true,
+        "dispatchRequiresFreshSignal": true,
+        "dispatchRequiresVerifiedAccountQuota": true,
+        "dispatchRequiresMachineHeadroom": true,
+        "dispatchRequiresOwnedFileBound": true,
+        "failedCapacityCheckDecision": ["refuse", "standby"],
+        "forbiddenSubstitutes": [
+          "borrowed_account",
+          "changed_CODEX_HOME",
+          "speculative_background_child"
+        ]
+      },
+      "cases": [
+        {
+          "case": "stale available pool is not authority",
+          "historicalPoolLabel": "available",
+          "currentCapacityRecord": {
+            "state": "absent"
+          },
+          "requestedWork": {
+            "ownedFileBound": true,
+            "expectedTurn": "focused_verification"
+          },
+          "attemptedSubstitute": null,
+          "expectedDecision": "refuse",
+          "expectedReasonRecorded": "missing_current_capacity_record"
+        },
+        {
+          "case": "fresh enough capacity can dispatch",
+          "historicalPoolLabel": "available",
+          "currentCapacityRecord": {
+            "state": "fresh",
+            "activeSessionCount": 2,
+            "blockedOrSleepingSessions": ["lane-rust-sleeping"],
+            "accountQuotaStatus": "verified_enough_for_expected_turn",
+            "machineHeadroom": "enough_for_focused_verification"
+          },
+          "requestedWork": {
+            "ownedFileBound": true,
+            "expectedTurn": "focused_verification"
+          },
+          "attemptedSubstitute": null,
+          "expectedDecision": "dispatch",
+          "expectedReasonRecorded": "fresh_capacity_and_owned_file_bound"
+        },
+        {
+          "case": "unverified quota refuses even when pool says available",
+          "historicalPoolLabel": "available",
+          "currentCapacityRecord": {
+            "state": "fresh",
+            "activeSessionCount": 1,
+            "blockedOrSleepingSessions": [],
+            "accountQuotaStatus": "unverified",
+            "machineHeadroom": "enough_for_focused_verification"
+          },
+          "requestedWork": {
+            "ownedFileBound": true,
+            "expectedTurn": "focused_verification"
+          },
+          "attemptedSubstitute": null,
+          "expectedDecision": "standby",
+          "expectedReasonRecorded": "unverified_account_quota_status"
+        },
+        {
+          "case": "borrowed account cannot repair failed capacity",
+          "historicalPoolLabel": "available",
+          "currentCapacityRecord": {
+            "state": "fresh",
+            "activeSessionCount": 5,
+            "blockedOrSleepingSessions": ["lane-docs-blocked"],
+            "accountQuotaStatus": "insufficient_for_expected_turn",
+            "machineHeadroom": "enough_for_focused_verification"
+          },
+          "requestedWork": {
+            "ownedFileBound": true,
+            "expectedTurn": "focused_verification"
+          },
+          "attemptedSubstitute": "borrowed_account",
+          "expectedDecision": "refuse",
+          "expectedReasonRecorded": "failed_capacity_check_forbidden_substitute_borrowed_account"
+        },
+        {
+          "case": "changed CODEX_HOME cannot repair failed headroom",
+          "historicalPoolLabel": "idle",
+          "currentCapacityRecord": {
+            "state": "fresh",
+            "activeSessionCount": 3,
+            "blockedOrSleepingSessions": [],
+            "accountQuotaStatus": "verified_enough_for_expected_turn",
+            "machineHeadroom": "insufficient_for_focused_verification"
+          },
+          "requestedWork": {
+            "ownedFileBound": true,
+            "expectedTurn": "focused_verification"
+          },
+          "attemptedSubstitute": "changed_CODEX_HOME",
+          "expectedDecision": "standby",
+          "expectedReasonRecorded": "failed_headroom_check_forbidden_substitute_changed_CODEX_HOME"
+        },
+        {
+          "case": "speculative background child cannot bypass missing owned-file bound",
+          "historicalPoolLabel": "green",
+          "currentCapacityRecord": {
+            "state": "fresh",
+            "activeSessionCount": 1,
+            "blockedOrSleepingSessions": [],
+            "accountQuotaStatus": "verified_enough_for_expected_turn",
+            "machineHeadroom": "enough_for_focused_verification"
+          },
+          "requestedWork": {
+            "ownedFileBound": false,
+            "expectedTurn": "focused_verification"
+          },
+          "attemptedSubstitute": "speculative_background_child",
+          "expectedDecision": "refuse",
+          "expectedReasonRecorded": "missing_owned_file_bound_forbidden_substitute_speculative_background_child"
+        }
+      ]
+    }
+  ]
+}
+```
