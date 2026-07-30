@@ -13023,25 +13023,11 @@ pub fn cmd_osl_verify_gate_password(
     state: &AppState,
     password: String,
 ) -> Result<GateVerifyDto, String> {
-    use crate::main_password::GateMatch;
+    use crate::main_password::GatePasswordAttemptResult;
     let dir = password_dir()?;
-    // Lockout-window check first (same as verify_main_password).
-    let mut lock = crate::main_password::read_lockout_pub(&dir);
-    let now = crate::main_password::now_unix_secs_pub();
-    if let Some(until) = lock.password_locked_until {
-        if now < until {
-            return Ok(GateVerifyDto {
-                result: "wrong".to_string(),
-                lockout_seconds_remaining: until - now,
-                attempts_used: lock.password_failed_attempts,
-            });
-        }
-    }
-    let marker = crate::main_password::read_marker_pub(&dir)?;
-    let outcome = crate::main_password::verify_gate_password_with_marker(&marker, &password)?;
+    let outcome = crate::main_password::verify_gate_password_attempt(&dir, &password)?;
     match outcome {
-        GateMatch::Main(file_key) => {
-            crate::main_password::set_file_storage_key_after_main_password_unlock(file_key);
+        GatePasswordAttemptResult::Main(_) => {
             // 9-D-FIX2: reload every encrypted-at-rest state file
             // now that `file_storage_key` is in slot. Bootstrap
             // attempted these reads pre-gate with no key, so each
@@ -13095,48 +13081,41 @@ pub fn cmd_osl_verify_gate_password(
                 &resolve_keyserver_base_url(&dir),
                 read_keyserver_client_token(&dir),
             );
-            lock.password_failed_attempts = 0;
-            lock.password_locked_until = None;
-            let _ = crate::main_password::write_lockout_pub(&dir, &lock);
             Ok(GateVerifyDto {
                 result: "main".to_string(),
                 lockout_seconds_remaining: 0,
                 attempts_used: 0,
             })
         }
-        GateMatch::Stealth => {
-            // Shared counter reset on any successful entry — see
-            // security rationale in the spec (prevents attacker
-            // distinguishing main from stealth via counter dynamics).
-            lock.password_failed_attempts = 0;
-            lock.password_locked_until = None;
-            let _ = crate::main_password::write_lockout_pub(&dir, &lock);
+        GatePasswordAttemptResult::Stealth => {
             Ok(GateVerifyDto {
                 result: "stealth".to_string(),
                 lockout_seconds_remaining: 0,
                 attempts_used: 0,
             })
         }
-        GateMatch::Burn => {
-            lock.password_failed_attempts = 0;
-            lock.password_locked_until = None;
-            let _ = crate::main_password::write_lockout_pub(&dir, &lock);
+        GatePasswordAttemptResult::Burn => {
             Ok(GateVerifyDto {
                 result: "burn".to_string(),
                 lockout_seconds_remaining: 0,
                 attempts_used: 0,
             })
         }
-        GateMatch::Wrong => {
-            lock.password_failed_attempts = lock.password_failed_attempts.saturating_add(1);
-            let secs =
-                crate::main_password::password_lockout_secs_pub(lock.password_failed_attempts);
-            lock.password_locked_until = if secs > 0 { Some(now + secs) } else { None };
-            let _ = crate::main_password::write_lockout_pub(&dir, &lock);
+        GatePasswordAttemptResult::Wrong {
+            attempts_used,
+            lockout_seconds_remaining,
+        } => {
             Ok(GateVerifyDto {
                 result: "wrong".to_string(),
-                lockout_seconds_remaining: secs,
-                attempts_used: lock.password_failed_attempts,
+                lockout_seconds_remaining,
+                attempts_used,
+            })
+        }
+        GatePasswordAttemptResult::Duress { attempts_used } => {
+            Ok(GateVerifyDto {
+                result: "duress".to_string(),
+                lockout_seconds_remaining: 0,
+                attempts_used,
             })
         }
     }
