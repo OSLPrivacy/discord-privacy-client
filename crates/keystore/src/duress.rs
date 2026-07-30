@@ -1,12 +1,11 @@
-//! Legacy duress-engine primitives (implemented-unwired).
+//! Duress-engine primitives.
 //!
 //! Spec: `docs/design/unlock-and-duress.md` "Duress flow — full
 //! specification" + `docs/design/build-order.md` Layer B3.
 //!
-//! Current Hub/IPC and legacy Tauri production sources neither construct a
-//! [`DuressEngine`] nor call its execute/resume methods. The current Hub's
-//! separately implemented burn-password path uses `startup_gate` and
-//! `cleanup`, not this engine.
+//! IPC constructs a production [`DuressEngine`] in application state and the
+//! Hub password gate invokes it for duress outcomes. The separate burn-password
+//! path still uses `startup_gate` and `cleanup`, not this engine.
 //!
 //! The engine contract, when explicitly driven, has four phases:
 //!
@@ -26,8 +25,8 @@
 //! `Skipped`, or `Failed` outcome in the on-disk journal. When an integration
 //! explicitly calls
 //! [`DuressEngine::resume_if_pending`], the engine reads the journal and
-//! re-runs steps not yet completed. No production startup path currently
-//! makes that call.
+//! re-runs steps not yet completed. Startup resume remains a caller
+//! responsibility.
 //!
 //! ## Wipe set status (v1 alpha)
 //!
@@ -956,7 +955,7 @@ mod tests {
     }
 
     #[test]
-    fn build_production_duress_handlers() {
+    fn build_production_duress_config_handlers_wipes_bound_paths() {
         let dir = TempDir::new().unwrap();
         let (paths, journal_path) = test_paths(&dir);
         std::fs::write(&paths.identity_file, b"identity").unwrap();
@@ -1245,5 +1244,62 @@ mod tests {
 
         assert_eq!(tpm_outcome, &StepOutcome::AlreadyClean);
         assert_ne!(tpm_outcome, &StepOutcome::Wiped);
+    }
+
+    #[test]
+    fn build_production_duress_handlers() {
+        let dir = TempDir::new().unwrap();
+        let account_dir = dir.path().join("account");
+        let password_dir = dir.path().join("base");
+        std::fs::create_dir_all(account_dir.join("store")).unwrap();
+        std::fs::write(account_dir.join("identity.json"), b"identity").unwrap();
+        std::fs::write(account_dir.join("prekeys.json"), b"prekeys").unwrap();
+        std::fs::write(account_dir.join("store").join("messages.sqlite"), b"cache").unwrap();
+        std::fs::create_dir_all(&password_dir).unwrap();
+        std::fs::write(password_dir.join("password_marker.json"), b"marker").unwrap();
+        let opsec_script = account_dir.join("boot.js");
+        let opsec_config = account_dir.join("opsec.json");
+        std::fs::write(&opsec_script, b"script").unwrap();
+        std::fs::write(&opsec_config, b"config").unwrap();
+
+        let mut config = ProductionDuressConfig::new(account_dir.clone(), password_dir.clone());
+        config.strip_opsec_files = vec![opsec_script.clone(), opsec_config.clone()];
+
+        let (paths, journal_path) = super::build_production_duress_paths(&config);
+        assert_eq!(journal_path, account_dir.join("duress.journal"));
+        assert_eq!(paths.identity_file, account_dir.join("identity.json"));
+        assert_eq!(
+            paths.password_file,
+            password_dir.join("password_marker.json")
+        );
+        let expected_prekey_file = account_dir.join("prekeys.json");
+        assert_eq!(
+            paths.prekey_file.as_deref(),
+            Some(expected_prekey_file.as_path())
+        );
+
+        let handlers = super::build_production_duress_config_handlers(&config);
+        let engine = DuressEngine::new(journal_path.clone(), paths, handlers);
+        let report = engine
+            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
+            .unwrap();
+
+        assert!(report.completed);
+        assert!(report.failed_steps().is_empty());
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::LocalCacheDir),
+            &StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::StripOpsecFiles),
+            &StepOutcome::Wiped
+        );
+        assert!(!account_dir.join("identity.json").exists());
+        assert!(!account_dir.join("prekeys.json").exists());
+        assert!(!account_dir.join("store").exists());
+        assert!(!opsec_script.exists());
+        assert!(!opsec_config.exists());
+        assert!(!password_dir.join("password_marker.json").exists());
+        assert!(!journal_path.exists());
     }
 }

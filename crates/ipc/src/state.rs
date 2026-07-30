@@ -185,7 +185,6 @@ pub struct AppState {
     /// refuse prekey-dependent work rather than manufacturing authority.
     pub prekey_state: Mutex<Option<keystore::PrekeyState>>,
     pub keyserver: Mutex<Option<KeyServerClient>>,
-
     /// Latest confirmed outcome of this process's remote public-key
     /// registration. This is deliberately launch-local: every launch retries
     /// registration and must prove the current public keys again.
@@ -605,7 +604,8 @@ fn build_production_duress_engine_for_state(
     state: Arc<AppState>,
     config_dir: PathBuf,
 ) -> keystore::DuressEngine {
-    let paths = production_duress_paths(&config_dir);
+    let password_dir = keystore::osl_base_dir().unwrap_or_else(|_| config_dir.clone());
+    let paths = production_duress_paths(&config_dir, &password_dir);
     let handlers = keystore::duress::build_production_duress_handlers(
         keystore::ProductionDuressHandlers::new()
             .with_wipe_local_cache_dir_path(config_dir.join("store"))
@@ -627,10 +627,10 @@ fn build_production_duress_engine_for_state(
     keystore::DuressEngine::new(config_dir.join("duress.journal"), paths, handlers)
 }
 
-fn production_duress_paths(config_dir: &Path) -> keystore::DuressPaths {
+fn production_duress_paths(config_dir: &Path, password_dir: &Path) -> keystore::DuressPaths {
     keystore::DuressPaths {
         identity_file: config_dir.join("identity.json"),
-        password_file: config_dir.join("password_marker.json"),
+        password_file: password_dir.join("password_marker.json"),
         prekey_file: Some(config_dir.join("prekeys.json")),
     }
 }

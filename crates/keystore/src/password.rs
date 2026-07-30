@@ -1,4 +1,4 @@
-//! Legacy unlock/duress record primitives (implemented-unwired).
+//! Legacy unlock/duress record primitives plus the shared inactivity timer.
 //!
 //! Spec: `docs/design/unlock-and-duress.md`. This record model supports two
 //! optional password roles:
@@ -11,11 +11,10 @@
 //! [`crate::sealer::Sealer`]. Failed-attempt tracking, threshold, and
 //! inactivity-timer settings are fields in that model.
 //!
-//! Current Hub/IPC and legacy Tauri production sources call neither
-//! [`verify_against_record`] nor [`InactivityTimer`], and do not construct the
-//! legacy [`crate::duress::DuressEngine`]. The current Hub's separately
-//! implemented password gate uses `startup_gate` and `cleanup`; these
-//! primitives do not establish that path.
+//! Current Hub/IPC production code uses [`InactivityTimer`] for auto-lock, but
+//! the older [`PasswordRecord`] / [`verify_against_record`] storage model
+//! remains legacy. The current Hub password gate has its own marker format and
+//! routes duress outcomes to [`crate::duress::DuressEngine`].
 //!
 //! ## Cryptographic role (per design doc)
 //!

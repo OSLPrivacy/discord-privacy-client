@@ -18,7 +18,7 @@ function sourceBetween(source: string, start: string, end: string): string {
 }
 
 describe("duress wipe production reachability", () => {
-  it("routes the unlock-screen burn password through the typed gate and destructive branch", () => {
+  it("routes destructive unlock outcomes through the typed gate and cleanup branch", () => {
     const uiCore = readFileSync(new URL("./core.ts", import.meta.url), "utf8");
     const uiMain = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
     const nativeMain = readFileSync(
@@ -87,10 +87,13 @@ describe("duress wipe production reachability", () => {
     expect(passwordBinding).toContain('return (gate.outcome === "burned" || gate.outcome === "duress") && gate.burn !== null;');
     expect(passwordBinding).toContain("if (unlockScreenDuressPinTriggeredWipe(gate))");
     expect(burnBranch).toContain("localStorage.clear();");
+    expect(burnBranch).toContain("setup = parseSetupState(null);");
     expect(burnBranch).toContain("core = structuredClone(unavailableCoreIntegration);");
     expect(burnBranch).toContain('onboardingRoute = "welcome";');
     expect(burnBranch).toContain("gate.burn?.localCleanupComplete");
     expect(burnBranch).not.toMatch(/loadLinkedServices|loadCoreIntegration|fetch\(|invoke\(/u);
+    expect(passwordBinding).not.toContain('if (gate.outcome === "duress") {');
+    expect(passwordBinding).not.toContain('if (gate.outcome === "burned") {');
 
     for (const claim of LEGACY_DURESS_PRODUCT_CLAIMS) {
       expect(uiMain).not.toMatch(claim);
@@ -100,8 +103,6 @@ describe("duress wipe production reachability", () => {
       'const gate = await unlockHubPasswordGate(secret);',
       'return gate.outcome === "burned";',
       'return gate.outcome === "duress";',
-      'if (gate.outcome === "burned") {',
-      'if (gate.outcome === "duress") {',
     ];
     for (const mutation of forbiddenMutations) {
       expect(
