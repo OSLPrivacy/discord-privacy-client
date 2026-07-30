@@ -7805,6 +7805,45 @@ mod qa_selftest {
                 instance_b
             ));
 
+            let addressed_for_a = r#"{"verb":"drain","instance":"org.oslprivacy.hub.qa-a"}"#;
+            let ParsedRequest::Accepted(wrong_instance_request) = parse_request(addressed_for_a)
+            else {
+                panic!("wrong-instance addressed drain request must still parse");
+            };
+            assert!(
+                !osl_privacy_hub::qa_selftest_request::request_is_for_me(
+                    wrong_instance_request.instance.as_deref(),
+                    instance_b
+                ),
+                "B must not treat A's addressed restart request as its own"
+            );
+            let mut wrong_instance_detail = VerbOutcome::new(
+                wrong_instance_request.verb.label(),
+                instance_b,
+                &addressed_name(ADDRESSED_TRIGGER_FORMAT, instance_b),
+            )
+            .refused("declined-wrong-instance");
+            wrong_instance_detail.request_format = wrong_instance_request.format;
+            let wrong_instance_verdict = refused_verdict(
+                "refused",
+                "This self-test request was addressed to another instance",
+                wrong_instance_detail,
+            );
+            assert_eq!(wrong_instance_verdict.instance, instance_b);
+            assert_eq!(wrong_instance_verdict.request_format, "json");
+            assert_eq!(
+                wrong_instance_verdict.request_status,
+                "declined-wrong-instance"
+            );
+            assert_eq!(
+                wrong_instance_verdict.refusal,
+                Some("declined-wrong-instance")
+            );
+            assert!(
+                !wrong_instance_verdict.pass,
+                "a wrong-instance restart request must not produce green proof for B"
+            );
+
             assert_eq!(
                 select_trigger_body(instance_b, None, Some(shared_for_a)),
                 TriggerSelection::DeclineLegacy {
@@ -9338,6 +9377,33 @@ mod native_visible_row_qa_command_tests {
             ]
         );
 
+        let stale_after_events = RefCell::new(Vec::<&'static str>::new());
+        let stale_after = finish_native_visible_row_qa_request(
+            &context,
+            runtime_receipt_fixture(),
+            || {
+                stale_after_events.borrow_mut().push("lock-after");
+                Ok(())
+            },
+            |_epoch, _host| {
+                stale_after_events.borrow_mut().push("context-after");
+                Err("stale native context".to_owned())
+            },
+            |_receipt| {
+                stale_after_events.borrow_mut().push("persist");
+                Ok(())
+            },
+        );
+        match stale_after {
+            Err(error) => assert_eq!(error, "stale native context"),
+            Ok(_) => panic!("stale native context must refuse the QA receipt"),
+        }
+        assert_eq!(
+            stale_after_events.into_inner(),
+            ["context-after"],
+            "a stale post-read context must refuse before the lock-after gate or persistence"
+        );
+
         let refused_events = RefCell::new(Vec::<&'static str>::new());
         let refused = prepare_native_visible_row_qa_request(
             || {
@@ -10089,6 +10155,39 @@ mod tauri_registration_surface_tests {
                 "context-recheck"
             ],
             "a stale context after native scan must refuse before the result is returned"
+        );
+
+        let native_scan_refusal_events = RefCell::new(Vec::<&'static str>::new());
+        let native_scan_refused = checked_hosted_session_scan_flow(
+            || {
+                native_scan_refusal_events.borrow_mut().push("checked-host");
+                Ok(test_checked_host())
+            },
+            |_checked| {
+                native_scan_refusal_events
+                    .borrow_mut()
+                    .push("attended-binding");
+                Ok(vec!["operator".to_owned()])
+            },
+            |_checked, _operator_names| {
+                native_scan_refusal_events.borrow_mut().push("native-scan");
+                Err("native scan refused".to_owned())
+            },
+            |_checked| {
+                native_scan_refusal_events
+                    .borrow_mut()
+                    .push("context-recheck");
+                Ok(())
+            },
+        );
+        match native_scan_refused {
+            Err(error) => assert_eq!(error, "native scan refused"),
+            Ok(_) => panic!("native scan refusal must not be converted into success"),
+        }
+        assert_eq!(
+            native_scan_refusal_events.into_inner(),
+            ["checked-host", "attended-binding", "native-scan"],
+            "native scan refusal must stop before context recheck or result return"
         );
 
         let missing_checked_host_events = RefCell::new(Vec::<&'static str>::new());
