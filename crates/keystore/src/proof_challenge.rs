@@ -12,10 +12,10 @@
 //! closes that off structurally instead of relying on a caller to
 //! remember to re-check them.
 //!
-//! This module defines the type only: no issuance (no server endpoint
-//! mints one of these yet), no signature verification (checking a client's
-//! signed response against `nonce` is a separate concern), no network, and
-//! no callers elsewhere in the tree.
+//! This module defines the value type only: issuance, transport, and
+//! signature verification live in separate client/server units. Checking a
+//! client's signed response against `nonce` is deliberately separate from
+//! constructing and carrying the challenge.
 //!
 //! A sibling unit (`a26`) is concurrently defining `AccountOwnershipError`
 //! in this crate, which is expected to eventually wrap the failure modes a

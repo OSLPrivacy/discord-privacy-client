@@ -29,6 +29,7 @@ use crate::identity::Identity;
 use crate::prekeys::{
     sign_replenish_batch, OpkEntry, PrekeyState, ReplenishOpk, ReplenishSpk, SpkEntry,
 };
+use crate::proof_challenge::{ProofChallenge, PROOF_CHALLENGE_NONCE_BYTES};
 use crate::sender_filter_rollout::{
     validate_sender_filter_capability_floor_observation, SenderFilterCapabilityFloor,
     SenderFilterCapabilityFloorObservation, SENDER_FILTER_CAPABILITY_VERSION,
@@ -520,6 +521,21 @@ struct LicenseValidateRequest<'a> {
     license_key: &'a str,
 }
 
+#[derive(Serialize)]
+struct OwnershipChallengeRequest<'a> {
+    service_account_id: &'a str,
+    owner_user_id: &'a str,
+}
+
+#[derive(Deserialize)]
+struct OwnershipChallengeResponse {
+    nonce_b64: String,
+    service_account_id: String,
+    owner_user_id: String,
+    issued_at_unix_seconds: u64,
+    expires_at_unix_seconds: u64,
+}
+
 /// Response body for `POST /v1/license/validate`.
 ///
 /// The endpoint always returns HTTP 200 on a parseable request,
@@ -822,6 +838,59 @@ impl KeyServerClient {
         let resp = self.send_request("GET", &path, None)?;
         check_2xx(&resp)?;
         Ok(serde_json::from_slice(&resp.body)?)
+    }
+
+    /// `POST /v1/account-ownership/challenge`.
+    ///
+    /// This is only a nonce request. A returned value is useful only if it is
+    /// bound to the exact service account and local owner identity the caller
+    /// requested; a missing, malformed, expired-at-issue, or differently bound
+    /// response is refused as unusable challenge material.
+    pub fn request_ownership_challenge(
+        &self,
+        service_account_id: &str,
+        owner_user_id: &str,
+    ) -> Result<ProofChallenge> {
+        if service_account_id.is_empty() || owner_user_id.is_empty() {
+            return Err(Error::Transport(
+                "ownership challenge request binding is incomplete".into(),
+            ));
+        }
+        let body = OwnershipChallengeRequest {
+            service_account_id,
+            owner_user_id,
+        };
+        let body_json = serde_json::to_vec(&body)?;
+        let response = self.send_request(
+            "POST",
+            "/v1/account-ownership/challenge",
+            Some(("application/json", &body_json)),
+        )?;
+        if !(200..300).contains(&response.status) {
+            return Err(Error::HttpStatus {
+                status: response.status,
+                body: "ownership challenge request refused".into(),
+            });
+        }
+        let wire: OwnershipChallengeResponse = serde_json::from_slice(&response.body)?;
+        if wire.service_account_id != service_account_id || wire.owner_user_id != owner_user_id {
+            return Err(Error::Transport(
+                "ownership challenge response binding mismatch".into(),
+            ));
+        }
+        let nonce_bytes = STANDARD.decode(&wire.nonce_b64)?;
+        let nonce: [u8; PROOF_CHALLENGE_NONCE_BYTES] = nonce_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::Transport("ownership challenge nonce length is invalid".into()))?;
+        ProofChallenge::new(
+            nonce,
+            wire.service_account_id,
+            wire.owner_user_id,
+            wire.issued_at_unix_seconds,
+            wire.expires_at_unix_seconds,
+        )
+        .ok_or_else(|| Error::Transport("ownership challenge lifetime is invalid".into()))
     }
 
     /// `GET /v1/prekey-bundle/:user_id`. Atomically pops one OPK

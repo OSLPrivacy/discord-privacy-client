@@ -315,6 +315,127 @@ fn query_value(target: &str, key: &str) -> String {
 }
 
 #[test]
+fn ownership_challenge_request_round_trips_through_mock_server() {
+    let nonce = [0x5au8; 32];
+    let nonce_b64 = STANDARD.encode(nonce);
+    let response_body = format!(
+        r#"{{"nonce_b64":"{nonce_b64}","service_account_id":"123456789012345678","owner_user_id":"osl1_owner","issued_at_unix_seconds":1800000000,"expires_at_unix_seconds":1800000300}}"#
+    );
+    let mut response = Vec::new();
+    response.extend_from_slice(b"HTTP/1.1 201 Created\r\n");
+    response.extend_from_slice(format!("Content-Length: {}\r\n", response_body.len()).as_bytes());
+    response.extend_from_slice(b"Content-Type: application/json\r\n\r\n");
+    response.extend_from_slice(response_body.as_bytes());
+    let (port, rx) = one_shot_server(response);
+
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+    let challenge = client
+        .request_ownership_challenge("123456789012345678", "osl1_owner")
+        .unwrap();
+    assert_eq!(challenge.nonce(), &nonce);
+    assert!(challenge.binds("123456789012345678", "osl1_owner"));
+    assert_eq!(challenge.issued_at_unix_seconds(), 1_800_000_000);
+    assert_eq!(challenge.expires_at_unix_seconds(), 1_800_000_300);
+    assert!(!challenge.is_spent());
+
+    let request = String::from_utf8(rx.recv().unwrap()).unwrap();
+    let lower = request.to_ascii_lowercase();
+    assert!(lower.starts_with("post /v1/account-ownership/challenge http/1.1\r\n"));
+    assert!(lower.contains("content-type: application/json"));
+    assert!(!lower.contains("authorization:"));
+    let body = request.split("\r\n\r\n").nth(1).unwrap();
+    let value: serde_json::Value = serde_json::from_str(body).unwrap();
+    assert_eq!(value["service_account_id"], "123456789012345678");
+    assert_eq!(value["owner_user_id"], "osl1_owner");
+    assert_eq!(value.as_object().unwrap().len(), 2);
+}
+
+#[test]
+fn ownership_challenge_refuses_unbound_or_malformed_responses() {
+    let nonce_b64 = STANDARD.encode([0x42u8; 32]);
+    let mismatched = format!(
+        r#"{{"nonce_b64":"{nonce_b64}","service_account_id":"123456789012345678","owner_user_id":"other-owner","issued_at_unix_seconds":1800000000,"expires_at_unix_seconds":1800000300}}"#
+    );
+    let mut response = Vec::new();
+    response.extend_from_slice(b"HTTP/1.1 201 Created\r\n");
+    response.extend_from_slice(format!("Content-Length: {}\r\n\r\n", mismatched.len()).as_bytes());
+    response.extend_from_slice(mismatched.as_bytes());
+    let (port, _rx) = one_shot_server(response);
+
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+    match client.request_ownership_challenge("123456789012345678", "osl1_owner") {
+        Err(Error::Transport(message)) => {
+            assert!(message.contains("binding"));
+            assert!(!message.contains("123456789012345678"));
+            assert!(!message.contains("other-owner"));
+            assert!(!message.contains("osl1_owner"));
+        }
+        other => panic!("expected categorical binding refusal, got {other:?}"),
+    }
+
+    let short_nonce = r#"{"nonce_b64":"AQ==","service_account_id":"123456789012345678","owner_user_id":"osl1_owner","issued_at_unix_seconds":1800000000,"expires_at_unix_seconds":1800000300}"#;
+    let mut response = Vec::new();
+    response.extend_from_slice(b"HTTP/1.1 201 Created\r\n");
+    response.extend_from_slice(format!("Content-Length: {}\r\n\r\n", short_nonce.len()).as_bytes());
+    response.extend_from_slice(short_nonce.as_bytes());
+    let (port, _rx) = one_shot_server(response);
+
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+    match client.request_ownership_challenge("123456789012345678", "osl1_owner") {
+        Err(Error::Transport(message)) => {
+            assert!(message.contains("nonce length"));
+            assert!(!message.contains("AQ=="));
+            assert!(!message.contains("123456789012345678"));
+        }
+        other => panic!("expected categorical nonce refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn ownership_challenge_http_status_error_redacts_response_body() {
+    let response_body = br#"{"error":"account 123456789012345678 belongs to osl1_owner"}"#;
+    let mut response = Vec::new();
+    response.extend_from_slice(b"HTTP/1.1 409 Conflict\r\n");
+    response.extend_from_slice(format!("Content-Length: {}\r\n\r\n", response_body.len()).as_bytes());
+    response.extend_from_slice(response_body);
+    let (port, _rx) = one_shot_server(response);
+
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+    match client.request_ownership_challenge("123456789012345678", "osl1_owner") {
+        Err(Error::HttpStatus { status, body }) => {
+            assert_eq!(status, 409);
+            assert_eq!(body, "ownership challenge request refused");
+            assert!(!body.contains("123456789012345678"));
+            assert!(!body.contains("osl1_owner"));
+        }
+        other => panic!("expected redacted HTTP status error, got {other:?}"),
+    }
+}
+
+#[test]
+fn ownership_challenge_refuses_missing_request_binding_without_wire_call() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+    match client.request_ownership_challenge("", "osl1_owner") {
+        Err(Error::Transport(message)) => {
+            assert!(message.contains("incomplete"));
+            assert!(!message.contains("osl1_owner"));
+        }
+        other => panic!("expected incomplete binding refusal, got {other:?}"),
+    }
+    match client.request_ownership_challenge("123456789012345678", "") {
+        Err(Error::Transport(message)) => {
+            assert!(message.contains("incomplete"));
+            assert!(!message.contains("123456789012345678"));
+        }
+        other => panic!("expected incomplete binding refusal, got {other:?}"),
+    }
+}
+
+#[test]
 fn prekey_fetch_carries_registered_identity_signature() {
     let response_body = br#"{"user_id":"bob","ik_x25519_pub":"AA","ik_ed25519_pub":"CC","ik_mlkem768_pub":"BB","ik_ratchet_initial_pub":null,"spk_pub":"DD","spk_signature":"EE","spk_rotated_at":"2026-05-08T11:00:00Z","opk":null,"remaining_opk_count":0}"#;
     let mut response = Vec::new();
