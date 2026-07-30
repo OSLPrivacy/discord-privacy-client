@@ -136,7 +136,7 @@ describe("fresh-account continuation", () => {
     const pending = functionSource("pendingOnboardingRoute", "beginServiceOnboarding");
     const renderOnboarding = functionSource("renderOnboarding", "onboardingContent");
     const bootstrap = source.slice(source.indexOf("async function bootstrap"));
-    for (const route of ["pro", "privacy", "sending", "cover", "passwords", "burnpass", "mullvad", "browser", "tutorial"]) {
+    for (const route of ["pro", "privacy", "defaults", "sending", "cover", "passwords", "burnpass", "mullvad", "browser", "tutorial"]) {
       expect(pending).toContain(`pending === "${route}"`);
     }
     expect(pending).not.toContain('pending === "apps"');
@@ -493,7 +493,7 @@ describe("fresh-account continuation", () => {
     expect(onboardingRender).toContain('id="onboarding-back"');
     expect(onboardingRender).not.toContain('id="skip-onboarding"');
     expect(onboardingRender).not.toContain("Skip · manual setup");
-    expect(onboardingRender).toContain('["pro", "privacy", "sending", "cover", "passwords", "burnpass", "browser", "tutorial", "detected", "install", "apps", "mullvad"]');
+    expect(onboardingRender).toContain('["pro", "privacy", "defaults", "sending", "cover", "passwords", "burnpass", "browser", "tutorial", "detected", "install", "apps", "mullvad"]');
     expect(onboardingRender).not.toContain('"scrub"].includes(onboardingRoute)');
     expect(binding).not.toContain('document.querySelector("#skip-onboarding")');
     expect(binding).toContain('document.querySelector("#onboarding-back")?.addEventListener("click"');
@@ -520,7 +520,8 @@ describe("fresh-account continuation", () => {
     const binding = functionSource("bindOnboarding", "completeOnboarding");
     const completion = functionSource("completeSixStepOnboarding", "completeOnboarding");
     const previous = functionSource("previousSetupRoute", "bindOnboarding");
-    expect(binding).toMatch(/#continue-onboarding-privacy[\s\S]*?onboardingRoute = "sending"/);
+    expect(binding).toMatch(/#continue-onboarding-privacy[\s\S]*?onboardingRoute = "defaults"/);
+    expect(binding).toMatch(/#continue-defaults-review[\s\S]*?onboardingRoute = "sending"/);
     expect(binding).toMatch(/onboardingRoute !== "sending"[\s\S]*?canCompleteSetup\(setup\)[\s\S]*?onboardingRoute = "cover"/);
     expect(binding).toMatch(/#continue-cover-draft[\s\S]*?onboardingRoute = "passwords"/);
     expect(source).toContain('data-onboarding-password-next="${next}"');
@@ -529,7 +530,8 @@ describe("fresh-account continuation", () => {
     expect(functionSource("bindBrowserImportControls", "importIdentityForm")).toMatch(/#continue-browser-import[\s\S]*?enterCombinedAppChoice\(\)/);
     expect(previous).toContain('pro: "recovery"');
     expect(previous).toContain('privacy: "pro"');
-    expect(previous).toContain('sending: "pro"');
+    expect(previous).toContain('defaults: "privacy"');
+    expect(previous).toContain('sending: "defaults"');
     expect(previous).toContain('cover: "sending"');
     expect(previous).toContain('passwords: "cover"');
     expect(previous).toContain('burnpass: "passwords"');

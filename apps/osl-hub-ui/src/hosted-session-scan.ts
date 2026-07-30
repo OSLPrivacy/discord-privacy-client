@@ -91,7 +91,10 @@ function parseHostedSessionScanRowShape(raw: unknown): HostedSessionScanRowShape
     || raw.children > 10_000) {
     throw new Error("invalid hosted session scan response");
   }
-  return raw as HostedSessionScanRowShape;
+  return {
+    heightPx: raw.heightPx,
+    children: raw.children,
+  };
 }
 
 function isExactRecord(value: unknown, keys: readonly string[]): value is Record<string, unknown> {

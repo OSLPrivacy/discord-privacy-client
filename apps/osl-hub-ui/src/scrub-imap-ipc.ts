@@ -147,25 +147,24 @@ function parsePreparedDelete(
 
 function parseDeleteReceipt(
   raw: unknown,
-  prepared: ScrubImapPreparedDelete,
-): ScrubImapDeleteReceipt {
-  if (!exactRecord(raw, ["accountId", "mailbox", "messageId", "deletedUid"])) {
-    throw new Error("invalid scrub IMAP delete receipt");
-  }
-  const deletedUid = raw.deletedUid;
-  if (raw.accountId !== prepared.accountId
+  prepared: NativePreparedImapDelete,
+): NativeImapDeleteReceipt {
+  if (!isNativeImapDeleteReceipt(raw)
+    || raw.accountId !== prepared.accountId
     || raw.mailbox !== prepared.mailbox
     || raw.messageId !== prepared.messageId
-    || deletedUid !== prepared.preparedUid
-    || !positiveU32(deletedUid)) {
+    || raw.deletedUid !== prepared.preparedUid) {
     throw new Error("invalid scrub IMAP delete receipt");
   }
-  return {
-    accountId: prepared.accountId,
-    mailbox: prepared.mailbox,
-    messageId: prepared.messageId,
-    deletedUid,
-  };
+  return raw;
+}
+
+function isNativeImapDeleteReceipt(value: unknown): value is NativeImapDeleteReceipt {
+  return exactRecord(value, ["accountId", "mailbox", "messageId", "deletedUid"])
+    && safeBinding(value.accountId, 128)
+    && safeBinding(value.mailbox, 128)
+    && safeBinding(value.messageId, 256)
+    && safeCounter(value.deletedUid);
 }
 
 function validatePrepareRequest(request: ScrubImapPrepareDeleteRequest): void {
@@ -204,6 +203,16 @@ function exactRecord(value: unknown, keys: readonly string[]): value is Record<s
   const actual = Object.keys(value).sort();
   const expected = [...keys].sort();
   return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+function safeBinding(value: unknown, maxBytes: number): value is string {
+  return typeof value === "string"
+    && value.length > 0
+    && new TextEncoder().encode(value).length <= maxBytes;
+}
+
+function safeCounter(value: unknown): value is number {
+  return positiveU32(value);
 }
 
 function positiveU32(value: unknown): value is number {

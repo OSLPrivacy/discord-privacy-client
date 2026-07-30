@@ -127,4 +127,22 @@ describe("scrub IMAP IPC", () => {
       delete: vi.fn().mockResolvedValue({ ...receipt, deletedUid: 11 }),
     }))).rejects.toThrow("invalid scrub IMAP delete receipt");
   });
+
+  it("rejects malformed native delete receipts before trusting IPC data", async () => {
+    const malformedReceipts: unknown[] = [
+      { mailbox: "INBOX", messageId: "message-0001", deletedUid: 42 },
+      { accountId: "account-a", messageId: "message-0001", deletedUid: 42 },
+      { accountId: "account-a", mailbox: "INBOX", deletedUid: 42 },
+      { accountId: "account-a", mailbox: "INBOX", messageId: "message-0001" },
+      { accountId: "", mailbox: "INBOX", messageId: "message-0001", deletedUid: 42 },
+      { accountId: "account-a", mailbox: "INBOX", messageId: "message-0001", deletedUid: "42" },
+      { accountId: "account-a", mailbox: "INBOX", messageId: "message-0001", deletedUid: 42, extra: true },
+    ];
+
+    for (const malformed of malformedReceipts) {
+      await expect(scrubImapDelete(prepared, methodPort({
+        delete: vi.fn().mockResolvedValue(malformed),
+      }))).rejects.toThrow("invalid scrub IMAP delete receipt");
+    }
+  });
 });

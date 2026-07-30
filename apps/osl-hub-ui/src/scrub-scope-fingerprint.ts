@@ -17,7 +17,7 @@ export async function computeScopeFingerprint(input: ScrubScopeFingerprintInput)
     .join("");
 }
 
-export function encodeScopeFingerprintInput(input: ScrubScopeFingerprintInput): Uint8Array {
+export function encodeScopeFingerprintInput(input: ScrubScopeFingerprintInput): Uint8Array<ArrayBuffer> {
   if (!validToken(input.serviceId)
     || !validToken(input.accountId)
     || !boundedText(input.scanScope)
@@ -56,7 +56,7 @@ class LengthPrefixedWriter {
     this.bytes.push((value >>> 24) & 0xff, (value >>> 16) & 0xff, (value >>> 8) & 0xff, value & 0xff);
   }
 
-  finish(): Uint8Array {
+  finish(): Uint8Array<ArrayBuffer> {
     return new Uint8Array(this.bytes);
   }
 

@@ -37,4 +37,15 @@ describe("review defaults onboarding", () => {
   it("keeps implementation concepts out of first-run copy", () => {
     expect(review).not.toMatch(/keyserver|ratchet|receipt|browser profile|provider adapter/iu);
   });
+
+  it("is wired between protection presets and send setup", () => {
+    const content = functionSource("onboardingContent", "tutorialContent");
+    const binding = functionSource("bindOnboarding", "completeOnboarding");
+    const previous = functionSource("previousSetupRoute", "bindOnboarding");
+    expect(content).toContain('if (onboardingRoute === "defaults") return reviewDefaultsOnboardingContent();');
+    expect(binding).toMatch(/#continue-onboarding-privacy[\s\S]*?onboardingRoute = "defaults"/);
+    expect(binding).toMatch(/#continue-defaults-review[\s\S]*?onboardingRoute = "sending"/);
+    expect(previous).toContain('defaults: "privacy"');
+    expect(previous).toContain('sending: "defaults"');
+  });
 });
