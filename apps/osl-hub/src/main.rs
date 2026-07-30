@@ -7821,6 +7821,50 @@ mod qa_selftest {
                 "B may consume the shared trigger only when it is addressed to B"
             );
 
+            let addressed_for_a = r#"{"verb":"drain","instance":"org.oslprivacy.hub.qa-a"}"#;
+            assert_eq!(
+                select_trigger_body(instance_b, Some(addressed_for_a), None),
+                TriggerSelection::Addressed(addressed_for_a),
+                "an addressed trigger is B's responsibility even when the body contradicts it"
+            );
+            let ParsedRequest::Accepted(wrong_instance_request) = parse_request(addressed_for_a)
+            else {
+                panic!("wrong-instance addressed drain request must parse");
+            };
+            assert!(
+                !osl_privacy_hub::qa_selftest_request::request_is_for_me(
+                    wrong_instance_request.instance.as_deref(),
+                    instance_b
+                ),
+                "a trigger body addressed to A must not authorize B's restart proof"
+            );
+            let mut wrong_instance_detail = VerbOutcome::new(
+                wrong_instance_request.verb.label(),
+                instance_b,
+                "osl-qa-selftest.b.request",
+            )
+            .refused("declined-wrong-instance");
+            wrong_instance_detail.request_format = wrong_instance_request.format;
+            let wrong_instance_refusal = refused_verdict(
+                "refused",
+                "This self-test request was addressed to another instance",
+                wrong_instance_detail,
+            );
+            assert_eq!(wrong_instance_refusal.instance, instance_b);
+            assert_eq!(wrong_instance_refusal.verb, "drain");
+            assert_eq!(
+                wrong_instance_refusal.request_status,
+                "declined-wrong-instance"
+            );
+            assert_eq!(
+                wrong_instance_refusal.refusal,
+                Some("declined-wrong-instance")
+            );
+            assert!(
+                !wrong_instance_refusal.pass,
+                "a wrong-instance addressed trigger must fail closed"
+            );
+
             assert!(!selftest_busy());
             RUN_IN_FLIGHT.store(true, Ordering::SeqCst);
             assert!(
