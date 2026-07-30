@@ -97,10 +97,32 @@ impl<M: ProprietaryModule> ProprietaryModuleSlot<M> {
         &self,
         request: ProprietaryModuleRequest<'_>,
     ) -> Result<BoundaryOutcome, ProprietaryModuleError> {
+        if request.missing_native_recipe_authority() {
+            return Err(ProprietaryModuleError::NativeAuthorityRequired);
+        }
         match self {
             Self::Absent => Ok(BoundaryOutcome::ModuleAbsent),
             Self::Present(module) => module.evaluate(request).map(BoundaryOutcome::Advice),
         }
+    }
+
+    pub fn evaluate_native_recipe(
+        &self,
+        recipe: ProprietaryRecipeDescriptor,
+        access: VerifiedProprietaryRecipeAccess,
+        account_binding_digest: [u8; 32],
+        scope_binding_digest: [u8; 32],
+        ciphertext_digest: [u8; 32],
+    ) -> Result<BoundaryOutcome, ProprietaryRecipeEvaluationError> {
+        let request = ProprietaryModuleRequest::native_recipe(
+            recipe,
+            access,
+            account_binding_digest,
+            scope_binding_digest,
+            ciphertext_digest,
+        )?;
+        self.evaluate(request)
+            .map_err(ProprietaryRecipeEvaluationError::Module)
     }
 }
 
@@ -549,6 +571,113 @@ impl fmt::Debug for VerifiedOptionalModuleAccess {
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
+pub enum NativeRecipeAuthorityGrant {
+    Absent,
+    Verified {
+        revision: NonZeroU64,
+        binding_digest: [u8; 32],
+    },
+}
+
+impl Default for NativeRecipeAuthorityGrant {
+    fn default() -> Self {
+        Self::Absent
+    }
+}
+
+impl fmt::Debug for NativeRecipeAuthorityGrant {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Absent => formatter.write_str("NativeRecipeAuthorityGrant::Absent"),
+            Self::Verified { .. } => formatter.write_str(
+                "NativeRecipeAuthorityGrant::Verified { revision: ..., binding_digest: ... }",
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct VerifiedNativeRecipeAuthority {
+    revision: NonZeroU64,
+    binding_digest: [u8; 32],
+}
+
+impl VerifiedNativeRecipeAuthority {
+    pub fn revision(&self) -> NonZeroU64 {
+        self.revision
+    }
+
+    pub fn binding_digest(&self) -> [u8; 32] {
+        self.binding_digest
+    }
+}
+
+impl fmt::Debug for VerifiedNativeRecipeAuthority {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VerifiedNativeRecipeAuthority")
+            .field("revision", &"[redacted]")
+            .field("binding_digest", &"[redacted; sha256]")
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct VerifiedProprietaryRecipeAccess {
+    open_access: VerifiedOpenAccess,
+    native_authority: VerifiedNativeRecipeAuthority,
+}
+
+impl VerifiedProprietaryRecipeAccess {
+    pub fn authorize(
+        optional_access: &VerifiedOptionalModuleAccess,
+        native_authority: NativeRecipeAuthorityGrant,
+    ) -> Result<Self, BoundaryError> {
+        if !optional_access
+            .access()
+            .allows(OpenPermission::ServiceLayoutAdvice)
+        {
+            return Err(BoundaryError::PermissionRefused);
+        }
+        let NativeRecipeAuthorityGrant::Verified {
+            revision,
+            binding_digest,
+        } = native_authority
+        else {
+            return Err(BoundaryError::MissingAuthority);
+        };
+        if all_zero(&binding_digest) {
+            return Err(BoundaryError::MissingBinding);
+        }
+        Ok(Self {
+            open_access: optional_access.access(),
+            native_authority: VerifiedNativeRecipeAuthority {
+                revision,
+                binding_digest,
+            },
+        })
+    }
+
+    pub fn open_access(&self) -> VerifiedOpenAccess {
+        self.open_access
+    }
+
+    pub fn native_authority(&self) -> VerifiedNativeRecipeAuthority {
+        self.native_authority
+    }
+}
+
+impl fmt::Debug for VerifiedProprietaryRecipeAccess {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VerifiedProprietaryRecipeAccess")
+            .field("open_access", &self.open_access)
+            .field("native_authority", &self.native_authority)
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub struct BoundaryContext {
     service: BoundaryService,
     account_binding_digest: [u8; 32],
@@ -845,6 +974,8 @@ pub struct ProprietaryModuleRequest<'a> {
     access: VerifiedOpenAccess,
     ciphertext_digest: [u8; 32],
     explicit_plaintext: Option<ExplicitPlaintext<'a>>,
+    recipe: Option<ProprietaryRecipeDescriptor>,
+    native_recipe_authority: Option<VerifiedNativeRecipeAuthority>,
 }
 
 impl<'a> ProprietaryModuleRequest<'a> {
@@ -854,7 +985,15 @@ impl<'a> ProprietaryModuleRequest<'a> {
         access: VerifiedOpenAccess,
         ciphertext_digest: [u8; 32],
     ) -> Result<Self, BoundaryError> {
-        Self::new(operation, context, access, ciphertext_digest, None)
+        Self::new(
+            operation,
+            context,
+            access,
+            ciphertext_digest,
+            None,
+            None,
+            None,
+        )
     }
 
     pub fn with_explicit_plaintext(
@@ -870,6 +1009,31 @@ impl<'a> ProprietaryModuleRequest<'a> {
             access,
             ciphertext_digest,
             Some(explicit_plaintext),
+            None,
+            None,
+        )
+    }
+
+    pub fn native_recipe(
+        recipe: ProprietaryRecipeDescriptor,
+        access: VerifiedProprietaryRecipeAccess,
+        account_binding_digest: [u8; 32],
+        scope_binding_digest: [u8; 32],
+        ciphertext_digest: [u8; 32],
+    ) -> Result<Self, BoundaryError> {
+        let context = BoundaryContext::new(
+            recipe.service(),
+            account_binding_digest,
+            scope_binding_digest,
+        )?;
+        Self::new(
+            recipe.operation(),
+            context,
+            access.open_access(),
+            ciphertext_digest,
+            None,
+            Some(recipe),
+            Some(access.native_authority()),
         )
     }
 
@@ -879,6 +1043,8 @@ impl<'a> ProprietaryModuleRequest<'a> {
         access: VerifiedOpenAccess,
         ciphertext_digest: [u8; 32],
         explicit_plaintext: Option<ExplicitPlaintext<'a>>,
+        recipe: Option<ProprietaryRecipeDescriptor>,
+        native_recipe_authority: Option<VerifiedNativeRecipeAuthority>,
     ) -> Result<Self, BoundaryError> {
         if !access.allows(operation.required_permission()) {
             return Err(BoundaryError::PermissionRefused);
@@ -892,7 +1058,17 @@ impl<'a> ProprietaryModuleRequest<'a> {
             access,
             ciphertext_digest,
             explicit_plaintext,
+            recipe,
+            native_recipe_authority,
         })
+    }
+
+    fn missing_native_recipe_authority(&self) -> bool {
+        let Some(recipe) = proprietary_recipe_for_service(self.context.service()) else {
+            return false;
+        };
+        self.operation == recipe.operation()
+            && (self.recipe != Some(recipe) || self.native_recipe_authority.is_none())
     }
 
     pub fn contract_version(&self) -> u16 {
@@ -918,6 +1094,14 @@ impl<'a> ProprietaryModuleRequest<'a> {
     pub fn explicit_plaintext(&self) -> Option<ExplicitPlaintext<'a>> {
         self.explicit_plaintext
     }
+
+    pub fn recipe(&self) -> Option<ProprietaryRecipeDescriptor> {
+        self.recipe
+    }
+
+    pub fn native_recipe_authority(&self) -> Option<VerifiedNativeRecipeAuthority> {
+        self.native_recipe_authority
+    }
 }
 
 impl fmt::Debug for ProprietaryModuleRequest<'_> {
@@ -930,6 +1114,8 @@ impl fmt::Debug for ProprietaryModuleRequest<'_> {
             .field("access", &self.access)
             .field("ciphertext_digest", &"[redacted; sha256]")
             .field("explicit_plaintext", &self.explicit_plaintext)
+            .field("recipe", &self.recipe)
+            .field("native_recipe_authority", &self.native_recipe_authority)
             .finish()
     }
 }
@@ -1072,6 +1258,7 @@ pub enum ProprietaryModuleError {
     Declined,
     ExecutionLimitExceeded,
     MalformedAdvice,
+    NativeAuthorityRequired,
 }
 
 impl fmt::Debug for ProprietaryModuleError {
@@ -1083,6 +1270,7 @@ impl fmt::Debug for ProprietaryModuleError {
             Self::Declined => "ProprietaryModuleError::Declined",
             Self::ExecutionLimitExceeded => "ProprietaryModuleError::ExecutionLimitExceeded",
             Self::MalformedAdvice => "ProprietaryModuleError::MalformedAdvice",
+            Self::NativeAuthorityRequired => "ProprietaryModuleError::NativeAuthorityRequired",
         })
     }
 }
@@ -1096,11 +1284,52 @@ impl fmt::Display for ProprietaryModuleError {
             Self::Declined => "proprietary module declined to advise",
             Self::ExecutionLimitExceeded => "proprietary module execution limit was exceeded",
             Self::MalformedAdvice => "proprietary module returned malformed advice",
+            Self::NativeAuthorityRequired => {
+                "native authority is required for this proprietary recipe"
+            }
         })
     }
 }
 
 impl Error for ProprietaryModuleError {}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum ProprietaryRecipeEvaluationError {
+    Boundary(BoundaryError),
+    Module(ProprietaryModuleError),
+}
+
+impl fmt::Debug for ProprietaryRecipeEvaluationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Boundary(error) => formatter
+                .debug_tuple("ProprietaryRecipeEvaluationError::Boundary")
+                .field(error)
+                .finish(),
+            Self::Module(error) => formatter
+                .debug_tuple("ProprietaryRecipeEvaluationError::Module")
+                .field(error)
+                .finish(),
+        }
+    }
+}
+
+impl fmt::Display for ProprietaryRecipeEvaluationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Boundary(error) => fmt::Display::fmt(error, formatter),
+            Self::Module(error) => fmt::Display::fmt(error, formatter),
+        }
+    }
+}
+
+impl Error for ProprietaryRecipeEvaluationError {}
+
+impl From<BoundaryError> for ProprietaryRecipeEvaluationError {
+    fn from(error: BoundaryError) -> Self {
+        Self::Boundary(error)
+    }
+}
 
 fn all_zero(bytes: &[u8; 32]) -> bool {
     bytes.iter().all(|byte| *byte == 0)
@@ -1157,14 +1386,47 @@ mod tests {
     fn manifest_with_network_policy(
         network_policy: ProprietaryNetworkPolicy,
     ) -> ProprietaryModuleManifest {
+        manifest_with_network_policy_and_permissions(
+            network_policy,
+            &[OpenPermission::LocalRiskAdvice],
+        )
+    }
+
+    fn manifest_with_permissions(permissions: &[OpenPermission]) -> ProprietaryModuleManifest {
+        manifest_with_network_policy_and_permissions(
+            ProprietaryNetworkPolicy::NoNetwork,
+            permissions,
+        )
+    }
+
+    fn manifest_with_network_policy_and_permissions(
+        network_policy: ProprietaryNetworkPolicy,
+        permissions: &[OpenPermission],
+    ) -> ProprietaryModuleManifest {
         ProprietaryModuleManifest::new(
             "risk-advice.module",
             "Risk Advice Module",
             ProprietaryLicenseTier::Pro,
             network_policy,
-            OpenPermissionSet::from_verified_permissions(&[OpenPermission::LocalRiskAdvice]),
+            OpenPermissionSet::from_verified_permissions(permissions),
         )
         .expect("manifest is valid")
+    }
+
+    fn optional_access(permissions: &[OpenPermission]) -> VerifiedOptionalModuleAccess {
+        VerifiedOptionalModuleAccess::authorize(
+            OptionalModuleInstallGrant::Installed {
+                manifest: manifest_with_permissions(permissions),
+            },
+            ConsentGrant::Present {
+                revision: nonzero_revision(2),
+            },
+            BindingGrant::Bound { digest: [0x22; 32] },
+            AuthorityGrant::Verified {
+                revision: nonzero_revision(3),
+            },
+        )
+        .expect("test optional module access is authorized")
     }
 
     #[test]
@@ -1493,6 +1755,125 @@ mod tests {
                 "whatsapp-native-autoscrub-visible-rows-v1",
                 "snapchat-native-autoscrub-visible-rows-v1",
             ]
+        );
+    }
+
+    #[test]
+    fn proprietary_recipes_reachable_only_through_native_authority() {
+        struct MustNotBeCalled;
+
+        impl ProprietaryModule for MustNotBeCalled {
+            fn evaluate(
+                &self,
+                _request: ProprietaryModuleRequest<'_>,
+            ) -> Result<ProprietaryModuleAdvice, ProprietaryModuleError> {
+                panic!("unauthorized proprietary recipe reached the module");
+            }
+        }
+
+        struct RecipeProbe {
+            expected: ProprietaryRecipeDescriptor,
+        }
+
+        impl ProprietaryModule for RecipeProbe {
+            fn evaluate(
+                &self,
+                request: ProprietaryModuleRequest<'_>,
+            ) -> Result<ProprietaryModuleAdvice, ProprietaryModuleError> {
+                assert_eq!(request.recipe(), Some(self.expected));
+                let native_authority = request
+                    .native_recipe_authority()
+                    .expect("native authority is attached");
+                assert_eq!(native_authority.revision(), nonzero_revision(17));
+                assert_eq!(native_authority.binding_digest(), [0x55; 32]);
+                assert_eq!(request.context().service(), self.expected.service());
+                assert_eq!(request.operation(), BoundaryOperation::ServiceLayoutAdvice);
+                assert!(request.explicit_plaintext().is_none());
+                ProprietaryModuleAdvice::new(
+                    AdvisoryDisposition::ProceedWithOpenSourceDecision,
+                    70,
+                    6,
+                )
+            }
+        }
+
+        let recipe = proprietary_recipe_for_service(BoundaryService::Instagram)
+            .expect("Instagram has a proprietary recipe");
+        let layout_access = optional_access(&[OpenPermission::ServiceLayoutAdvice]);
+        let risk_only_access = optional_access(&[OpenPermission::LocalRiskAdvice]);
+
+        assert_eq!(
+            VerifiedProprietaryRecipeAccess::authorize(
+                &layout_access,
+                NativeRecipeAuthorityGrant::Absent,
+            ),
+            Err(BoundaryError::MissingAuthority)
+        );
+        assert_eq!(
+            VerifiedProprietaryRecipeAccess::authorize(
+                &layout_access,
+                NativeRecipeAuthorityGrant::Verified {
+                    revision: nonzero_revision(17),
+                    binding_digest: [0; 32],
+                },
+            ),
+            Err(BoundaryError::MissingBinding)
+        );
+        assert_eq!(
+            VerifiedProprietaryRecipeAccess::authorize(
+                &risk_only_access,
+                NativeRecipeAuthorityGrant::Verified {
+                    revision: nonzero_revision(17),
+                    binding_digest: [0x55; 32],
+                },
+            ),
+            Err(BoundaryError::PermissionRefused)
+        );
+
+        let direct_request = ProprietaryModuleRequest::sealed_only(
+            recipe.operation(),
+            BoundaryContext::new(recipe.service(), [0x33; 32], [0x44; 32])
+                .expect("recipe context is bound"),
+            layout_access.access(),
+            [0xC7; 32],
+        )
+        .expect("open access alone can form a generic request");
+        assert_eq!(direct_request.recipe(), None);
+        assert_eq!(direct_request.native_recipe_authority(), None);
+        assert_eq!(
+            ProprietaryModuleSlot::present(MustNotBeCalled).evaluate(direct_request),
+            Err(ProprietaryModuleError::NativeAuthorityRequired)
+        );
+
+        let recipe_access = VerifiedProprietaryRecipeAccess::authorize(
+            &layout_access,
+            NativeRecipeAuthorityGrant::Verified {
+                revision: nonzero_revision(17),
+                binding_digest: [0x55; 32],
+            },
+        )
+        .expect("native authority admits proprietary recipe access");
+        let recipe_request = ProprietaryModuleRequest::native_recipe(
+            recipe,
+            recipe_access,
+            [0x33; 32],
+            [0x44; 32],
+            [0xC7; 32],
+        )
+        .expect("native-authorized recipe request is valid");
+        assert_eq!(recipe_request.recipe(), Some(recipe));
+        assert!(recipe_request.native_recipe_authority().is_some());
+        let rendered = format!("{recipe_request:?}");
+        assert!(rendered.contains("instagram-native-autoscrub-visible-rows-v1"));
+        assert!(!rendered.contains("5555"));
+
+        let expected_advice =
+            ProprietaryModuleAdvice::new(AdvisoryDisposition::ProceedWithOpenSourceDecision, 70, 6)
+                .unwrap();
+        assert_eq!(
+            ProprietaryModuleSlot::present(RecipeProbe { expected: recipe })
+                .evaluate_native_recipe(recipe, recipe_access, [0x33; 32], [0x44; 32], [0xC7; 32],),
+            Ok(BoundaryOutcome::Advice(expected_advice))
         );
     }
 
