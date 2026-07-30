@@ -167,6 +167,12 @@ def _sha256(value: Any, label: str) -> str:
     return value
 
 
+def _target_binding(value: Any, label: str, binding: str) -> None:
+    claimed = _sha256(value, label)
+    if not hmac.compare_digest(claimed, binding):
+        raise SchemaError(f"{label} does not match the Discord target binding")
+
+
 def _windows_executable(value: Any, label: str) -> str:
     path = _string(value, label, maximum=1024)
     parts = path[3:].split("\\")
@@ -278,8 +284,11 @@ def _validate_readback(
     utf16_length: int,
 ) -> None:
     readback = _exact_keys(value, READBACK_KEYS, label)
-    if readback["targetBindingSha256"] != binding:
-        raise SchemaError(f"{label} target binding changed")
+    _target_binding(
+        readback["targetBindingSha256"],
+        f"{label}.targetBindingSha256",
+        binding,
+    )
     _exact_string(readback["classification"], classification, f"{label}.classification")
     _boolean(readback["complete"], True, f"{label}.complete")
     if not hmac.compare_digest(_sha256(readback["sha256"], f"{label}.sha256"), digest):
@@ -302,8 +311,11 @@ def _validate_carrier(value: Any, binding: str) -> tuple[str, int, int]:
         },
         "carrier",
     )
-    if carrier["targetBindingSha256"] != binding:
-        raise SchemaError("carrier target binding changed")
+    _target_binding(
+        carrier["targetBindingSha256"],
+        "carrier.targetBindingSha256",
+        binding,
+    )
     encoded = _string(carrier["utf8B64"], "carrier.utf8B64", maximum=16 * 1024)
     try:
         raw = base64.b64decode(encoded, validate=True)
@@ -417,8 +429,11 @@ def validate_receipt(receipt: dict[str, Any]) -> None:
         {"targetBindingSha256", "readback", "foreground"},
         "preSend",
     )
-    if pre_send["targetBindingSha256"] != binding:
-        raise SchemaError("preSend target binding changed")
+    _target_binding(
+        pre_send["targetBindingSha256"],
+        "preSend.targetBindingSha256",
+        binding,
+    )
     _validate_readback(
         pre_send["readback"],
         label="preSend.readback",
@@ -441,8 +456,11 @@ def validate_receipt(receipt: dict[str, Any]) -> None:
         },
         "preSend.foreground",
     )
-    if foreground["targetBindingSha256"] != binding:
-        raise SchemaError("foreground target binding changed")
+    _target_binding(
+        foreground["targetBindingSha256"],
+        "preSend.foreground.targetBindingSha256",
+        binding,
+    )
     _integer(foreground["foregroundHwnd"], "preSend.foreground.foregroundHwnd", minimum=1)
     foreground_root = _integer(
         foreground["foregroundRootHwnd"],
@@ -486,8 +504,11 @@ def validate_receipt(receipt: dict[str, Any]) -> None:
         },
         "action",
     )
-    if action["targetBindingSha256"] != binding:
-        raise SchemaError("action target binding changed")
+    _target_binding(
+        action["targetBindingSha256"],
+        "action.targetBindingSha256",
+        binding,
+    )
     _exact_string(action["mechanism"], "sendinput_enter", "action.mechanism")
     _boolean(action["attempted"], True, "action.attempted")
     if _integer(action["acceptedInputCount"], "action.acceptedInputCount") != 2:
@@ -511,8 +532,11 @@ def validate_receipt(receipt: dict[str, Any]) -> None:
         },
         "postSend",
     )
-    if post_send["targetBindingSha256"] != binding:
-        raise SchemaError("postSend target binding changed")
+    _target_binding(
+        post_send["targetBindingSha256"],
+        "postSend.targetBindingSha256",
+        binding,
+    )
     empty_digest = sha256_hex(b"")
     _validate_readback(
         post_send["readback"],
