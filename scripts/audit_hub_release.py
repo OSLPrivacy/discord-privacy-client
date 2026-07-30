@@ -207,6 +207,14 @@ def _scripts_audit_hub_release_py(self: HubReleaseAuditTests) -> None:
     workflow, promotion, hub, original, root = self.fixture()
     audit_release_policy(workflow, promotion, hub, original, root)
 
+    def assert_rejects(
+        mutant: tuple[str, str, dict[str, object], dict[str, object], Path],
+        expected: str,
+    ) -> None:
+        with self.assertRaises(SystemExit) as raised:
+            audit_release_policy(*mutant)
+        self.assertIn(expected, str(raised.exception))
+
     mutants = [
         (
             workflow.replace(
@@ -218,6 +226,7 @@ def _scripts_audit_hub_release_py(self: HubReleaseAuditTests) -> None:
             hub,
             original,
             root,
+            "full commit SHAs",
         ),
         (
             workflow.replace(
@@ -238,6 +247,7 @@ def _scripts_audit_hub_release_py(self: HubReleaseAuditTests) -> None:
             hub,
             original,
             root,
+            "must run before candidate signing",
         ),
         (
             workflow.replace("releaseDraft: true", "releaseDraft: false"),
@@ -245,6 +255,7 @@ def _scripts_audit_hub_release_py(self: HubReleaseAuditTests) -> None:
             hub,
             original,
             root,
+            "must remain draft",
         ),
         (
             workflow,
@@ -257,11 +268,11 @@ def _scripts_audit_hub_release_py(self: HubReleaseAuditTests) -> None:
             }}},
             original,
             root,
+            "must not share an updater signing key",
         ),
     ]
-    for mutant in mutants:
-        with self.assertRaises(SystemExit):
-            audit_release_policy(*mutant)
+    for *mutant, expected in mutants:
+        assert_rejects(tuple(mutant), expected)
 
 
 setattr(HubReleaseAuditTests, "scripts/audit_hub_release.py", _scripts_audit_hub_release_py)

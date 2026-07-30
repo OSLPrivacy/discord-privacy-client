@@ -42,7 +42,7 @@ All three plan SHAs still resolve as valid objects and none have been rewritten:
 |---|---|---|---|
 | main | `16778b2...` | yes | yes — current main HEAD `73dccd58...` is exactly 1 commit ahead |
 | f1-footprint | `61933d3...` | yes | yes — `61933d3...` **is** current f1-footprint HEAD (unchanged) |
-| osl-newest-integration | `403cfa2...` | yes | yes — current integration HEAD `c08941e9...` is exactly 1 commit ahead |
+| osl-newest-integration | `403cfa2e090bf76ae4cb2950f3febcc72204fc59` | yes | yes — current integration HEAD `c08941e9...` is exactly 1 commit ahead |
 
 Merge-bases re-verified and match the plan exactly:
 - main ∩ f1-footprint = `4b5b1d30caa45a363382211a020133e64584f6fd`

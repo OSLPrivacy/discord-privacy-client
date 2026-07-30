@@ -17,6 +17,14 @@ enough machine headroom for the requested focused verification. If either check 
 coordinator leaves the lane idle and records the reason rather than borrowing from another account,
 changing `CODEX_HOME`, or starting speculative background work.
 
+Routing decisions are derived only from the current capacity record:
+
+| Historical pool label | Current capacity record | Forbidden substitute | Decision |
+| --- | --- | --- | --- |
+| `available` | absent, stale, contradictory, or unverified account/quota state | none | `refuse` or `standby` |
+| `available` | fresh active-session count, blocked/sleeping-session list, verified quota/account status, enough machine headroom, and owned-file bound | none | `dispatch` allowed |
+| any value | failed quota/headroom check | borrowed account, changed `CODEX_HOME`, speculative background child | `refuse` or `standby` |
+
 Acceptance for this risk is a coordinator routing exercise, not a prose grep:
 
 1. Present a lane whose historical pool label says `available`, but whose current capacity signal is
