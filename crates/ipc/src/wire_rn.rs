@@ -728,8 +728,14 @@ impl RnSessionStore {
             Some(b) => b,
             None => return Ok(None),
         };
-        let blob: SealedBlob = serde_json::from_slice(&bytes)
-            .map_err(|e| RnError::Storage(format!("parse session blob: {e}")))?;
+        let blob: SealedBlob = match serde_json::from_slice(&bytes) {
+            Ok(blob) => blob,
+            Err(e) if looks_like_legacy_v4_session_blob(&bytes) => {
+                retire_legacy_v4_session_file(&path)?;
+                return Ok(None);
+            }
+            Err(e) => return Err(RnError::Storage(format!("parse session blob: {e}"))),
+        };
         if blob.version != SESSION_BLOB_VERSION {
             return Err(RnError::Storage(format!(
                 "session blob version {} != {SESSION_BLOB_VERSION}",
@@ -947,6 +953,65 @@ pub fn accept_and_persist_with_sealer(
     store.save_session_with_sealer(&peer_id, &session, sealer)?;
     store.raise_pin_to_rn(&peer_id)?;
     Ok((session, opened))
+}
+
+/// Accept an inbound OSL-RN bootstrap against live B5 prekey state.
+///
+/// The OPK named by the authenticated bootstrap is consumed only after
+/// the RN accept path has authenticated the first message and the
+/// resulting session has been sealed. A replay of the same bootstrap
+/// therefore fails because the one-time key is no longer available.
+pub fn accept_b5_prekey_state_and_persist(
+    store: &RnSessionStore,
+    identity: &keystore::Identity,
+    prekeys: &mut keystore::PrekeyState,
+    wire: &str,
+    context: &[u8],
+    params: SessionParams,
+) -> Result<(Session, Opened), RnError> {
+    let sealer = keystore::select_best_sealer();
+    accept_b5_prekey_state_and_persist_with_sealer(
+        store,
+        sealer.as_ref(),
+        identity,
+        prekeys,
+        wire,
+        context,
+        params,
+    )
+}
+
+pub fn accept_b5_prekey_state_and_persist_with_sealer(
+    store: &RnSessionStore,
+    sealer: &dyn keystore::sealer::Sealer,
+    identity: &keystore::Identity,
+    prekeys: &mut keystore::PrekeyState,
+    wire: &str,
+    context: &[u8],
+    params: SessionParams,
+) -> Result<(Session, Opened), RnError> {
+    let consumed_b5_opk = b5_opk_id_from_bootstrap_wire(wire)?;
+    let local = local_prekeys_from_b5(identity, prekeys)?;
+    let accepted = accept_and_persist_with_sealer(
+        store,
+        sealer,
+        &local,
+        identity.x25519_public.as_bytes(),
+        &identity.mlkem_public_bytes,
+        wire,
+        context,
+        params,
+    )?;
+
+    if let Some(opk_id) = consumed_b5_opk {
+        if !prekeys.consume_opk(opk_id) {
+            return Err(RnError::PrekeyAdapter(
+                "accepted one-time prekey was not present for consumption",
+            ));
+        }
+    }
+
+    Ok(accepted)
 }
 
 /// Result of fetching the peer's B5 prekey bundle and bootstrapping an
@@ -1211,6 +1276,89 @@ fn read_bounded(path: &Path, max: u64, what: &str) -> Result<Option<Vec<u8>>, Rn
         )));
     }
     Ok(Some(buf))
+}
+
+fn looks_like_legacy_v4_session_blob(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<crypto::ratchet::RatchetStateOnDisk>(bytes).is_ok()
+}
+
+fn retire_legacy_v4_session_file(path: &Path) -> Result<(), RnError> {
+    let mut retired = path.with_extension("session.legacy-v4-retired");
+    for suffix in 1.. {
+        if !retired.exists() {
+            break;
+        }
+        retired = path.with_extension(format!("session.legacy-v4-retired-{suffix}"));
+    }
+    std::fs::rename(path, &retired)
+        .map_err(|e| RnError::Storage(format!("retire legacy v4 session file: {e}")))
+}
+
+const RN_WIRE_PREFIX: &str = "DPC0::";
+const RN_FLAG_BOOTSTRAP: u8 = 0x01;
+const RN_FLAG_RESERVED_MASK: u8 = 0xfe;
+
+fn b5_opk_id_from_bootstrap_wire(wire: &str) -> Result<Option<u32>, RnError> {
+    use base64::Engine as _;
+
+    let body = wire
+        .strip_prefix(RN_WIRE_PREFIX)
+        .ok_or_else(|| RnError::Protocol("not an OSL-RN wire blob".into()))?;
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(body)
+        .map_err(|e| RnError::Protocol(format!("wire base64: {e}")))?;
+
+    let version = *raw
+        .first()
+        .ok_or_else(|| RnError::Protocol("empty OSL-RN wire blob".into()))?;
+    if version != WIRE_VERSION_RN {
+        return Err(RnError::Protocol(format!(
+            "wire version {version} != {WIRE_VERSION_RN}"
+        )));
+    }
+    let flags = *raw
+        .get(1)
+        .ok_or_else(|| RnError::Protocol("missing OSL-RN flags".into()))?;
+    if flags & RN_FLAG_RESERVED_MASK != 0 {
+        return Err(RnError::Protocol("reserved OSL-RN flag bits set".into()));
+    }
+    if flags & RN_FLAG_BOOTSTRAP == 0 {
+        return Ok(None);
+    }
+
+    let mut offset = 2usize;
+    offset = offset
+        .checked_add(64)
+        .ok_or_else(|| RnError::Protocol("bootstrap preamble offset overflow".into()))?;
+    if raw.len() <= offset {
+        return Err(RnError::Protocol("bootstrap preamble is too short".into()));
+    }
+    let rn_opk_id = read_u32_varint(&raw, &mut offset)?;
+    Ok(rn_opk_id.checked_sub(1))
+}
+
+fn read_u32_varint(raw: &[u8], offset: &mut usize) -> Result<u32, RnError> {
+    let mut value = 0u32;
+    for group in 0u32..5 {
+        let byte = *raw
+            .get(*offset)
+            .ok_or_else(|| RnError::Protocol("truncated varint".into()))?;
+        *offset = offset.saturating_add(1);
+
+        let low = u32::from(byte & 0x7f);
+        if group == 4 && (byte & 0xf0) != 0 {
+            return Err(RnError::Protocol("varint overflows u32".into()));
+        }
+        value |= low << (group * 7);
+
+        if byte & 0x80 == 0 {
+            if group > 0 && value < (1u32 << (group * 7)) {
+                return Err(RnError::Protocol("non-canonical varint".into()));
+            }
+            return Ok(value);
+        }
+    }
+    Err(RnError::Protocol("varint overflows u32".into()))
 }
 
 /// Write `bytes` to `path` atomically: temp file in the same directory,
@@ -1537,6 +1685,65 @@ mod tests {
     }
 
     #[test]
+    fn consume_opk_is_wired_to_live_fetched_prekey_bundle() {
+        let alice_id = b5_identity(83, "alice-live-fetched-rn");
+        let bob_id = b5_identity(84, "bob-live-fetched-rn");
+        let mut bob_state =
+            keystore::PrekeyState::new(&bob_id, keystore::PrekeyConfig::default(), 83);
+        let fetched_opk_id = bob_state.opk_pool[0].id;
+        let bob_identity_bundle = b5_identity_bundle(&bob_id, RN_CAP_WIRE_RN, 83);
+        let response = b5_response(&bob_id, &bob_state, Some(0));
+        let (base_url, rx) = one_shot_prekey_server(prekey_response_json(&response));
+        let client = keystore::KeyServerClient::new(base_url).expect("client");
+        let (_alice_dir, alice_store) = fresh_store();
+        let (_bob_dir, bob_store) = fresh_store();
+        let sealer = MemorySealer::new();
+
+        let mut first_contact = fetch_prekey_bundle_and_initiate_first_contact(
+            &client,
+            &alice_store,
+            &sealer,
+            &alice_id,
+            &bob_id.user_id,
+            &bob_identity_bundle,
+            &bob_id.ed25519_public,
+            None,
+            RnPolicy::Opportunistic,
+            CTX,
+            SessionParams::default(),
+        )
+        .expect("first contact");
+        let request = String::from_utf8(rx.recv().expect("request")).expect("utf8");
+        assert!(
+            request.starts_with("GET /v1/prekey-bundle/bob-live-fetched-rn?"),
+            "first contact must use the live fetched B5 prekey bundle"
+        );
+
+        let mut rng = seeded_rng(0xB83);
+        let wire = first_contact
+            .session
+            .encrypt(83, b"live fetched opk", &mut rng)
+            .expect("bootstrap wire");
+        let (_session, opened) = accept_b5_prekey_state_and_persist_with_sealer(
+            &bob_store,
+            &sealer,
+            &bob_id,
+            &mut bob_state,
+            &wire,
+            CTX,
+            SessionParams::default(),
+        )
+        .expect("accept live-fetched bootstrap");
+
+        assert_eq!(opened.msg_type, 83);
+        assert_eq!(opened.plaintext, b"live fetched opk");
+        assert!(
+            !bob_state.consume_opk(fetched_opk_id),
+            "the OPK selected by the live fetched bundle must already be consumed"
+        );
+    }
+
+    #[test]
     fn negotiation_digest_uses_real_capability_floor_end_to_end() {
         let alice_id = b5_identity(53, "alice-b30");
         let bob_id = b5_identity(54, "bob-b30");
@@ -1748,7 +1955,105 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn rn_handshake_consumes_local_prekey_state_opk_once() {
+        let alice_id = b5_identity(64, "alice-consume-opk-once");
+        let bob_id = b5_identity(65, "bob-consume-opk-once");
+        let mut bob_state =
+            keystore::PrekeyState::new(&bob_id, keystore::PrekeyConfig::default(), 64);
+        let consumed_opk_id = bob_state.opk_pool[0].id;
+        let bob_response = b5_response(&bob_id, &bob_state, Some(0));
+        let bob_peer = peer_bundle_from_b5(&bob_response).expect("peer bundle");
+        let (_alice_dir, alice_store) = fresh_store();
+        let (_bob_dir, bob_store) = fresh_store();
+        let sealer = MemorySealer::new();
+        let alice_secret = XSecret::from_bytes(*alice_id.x25519_secret.as_bytes());
+        let mut alice = initiate_and_persist_with_sealer(
+            &alice_store,
+            &sealer,
+            &alice_secret,
+            alice_id.x25519_public.as_bytes(),
+            &bob_peer,
+            PeerCapabilities::Verified(RN_CAP_WIRE_RN),
+            &bob_id.mlkem_public_bytes,
+            CTX,
+            SessionParams::default(),
+        )
+        .expect("initiate");
+        let mut rng = seeded_rng(0xB64);
+        let wire = alice
+            .encrypt(64, b"consume exactly once", &mut rng)
+            .expect("bootstrap wire");
+
+        let (_session, opened) = accept_b5_prekey_state_and_persist_with_sealer(
+            &bob_store,
+            &sealer,
+            &bob_id,
+            &mut bob_state,
+            &wire,
+            CTX,
+            SessionParams::default(),
+        )
+        .expect("first accept consumes OPK");
+
+        assert_eq!(opened.msg_type, 64);
+        assert_eq!(opened.plaintext, b"consume exactly once");
+        assert!(
+            !bob_state.consume_opk(consumed_opk_id),
+            "the authenticated bootstrap must consume its local B5 OPK"
+        );
+        assert!(
+            accept_b5_prekey_state_and_persist_with_sealer(
+                &bob_store,
+                &sealer,
+                &bob_id,
+                &mut bob_state,
+                &wire,
+                CTX,
+                SessionParams::default(),
+            )
+            .is_err(),
+            "replaying the same bootstrap must fail once the one-time key is gone"
+        );
+        assert!(
+            !bob_state.consume_opk(consumed_opk_id),
+            "a replay must not recreate or consume the OPK a second time"
+        );
+    }
+
     // ---- version selection / downgrade ----
+
+    #[test]
+    fn ratchet_policy_decision_replaces_scattered_wire_flags() {
+        fn wire_generation(decision: crate::commands::RatchetPolicyDecision) -> u8 {
+            match decision {
+                crate::commands::RatchetPolicyDecision::LegacyV3 => 3,
+                crate::commands::RatchetPolicyDecision::LegacyV4Dm => 4,
+                crate::commands::RatchetPolicyDecision::SenderKeysV5 => 5,
+            }
+        }
+
+        let decisions = [
+            crate::commands::RatchetPolicyDecision::LegacyV3,
+            crate::commands::RatchetPolicyDecision::LegacyV4Dm,
+            crate::commands::RatchetPolicyDecision::SenderKeysV5,
+        ];
+        assert_eq!(
+            decisions.map(wire_generation),
+            [3, 4, 5],
+            "each ratchet send path must be represented by one typed policy decision"
+        );
+        assert_ne!(
+            crate::commands::RatchetPolicyDecision::LegacyV3,
+            crate::commands::RatchetPolicyDecision::LegacyV4Dm,
+            "the typed decision must keep legacy v3 and retained v4 DM distinct"
+        );
+        assert_ne!(
+            crate::commands::RatchetPolicyDecision::LegacyV4Dm,
+            crate::commands::RatchetPolicyDecision::SenderKeysV5,
+            "the typed decision must keep retained v4 DM and sender-key v5 distinct"
+        );
+    }
 
     #[test]
     fn an_unpinned_peer_without_rn_support_uses_v3() {
@@ -2160,6 +2465,45 @@ mod tests {
     }
 
     #[test]
+    fn rn_wire_in_enabled_follows_app_state_controlled_toggle() {
+        let state = crate::AppState::new();
+        let (_d, store) = fresh_store();
+        let sealer = MemorySealer::new();
+        let mut rng = seeded_rng(73);
+        let (_prekeys, bundle) = fresh_bundle(&mut rng);
+        let (ik, _) = x25519_keypair(&mut rng);
+        let session =
+            Session::initiate(&ik, &bundle, SessionParams::default(), &mut rng).expect("initiate");
+        let peer = *bundle.identity.as_bytes();
+        store
+            .save_session_with_sealer(&peer, &session, &sealer)
+            .expect("save");
+
+        assert!(
+            !RN_WIRE_IN_ENABLED,
+            "the compile-time fuse must remain off while AppState controls the test path"
+        );
+        assert!(matches!(
+            send_rn_for_state(&state, &store, &sealer, &peer, 73, b"blocked"),
+            Err(RnError::WireInDisabled)
+        ));
+
+        state.set_rn_wire_in_enabled(true);
+        let wire = send_rn_for_state(&state, &store, &sealer, &peer, 73, b"allowed")
+            .expect("enabled AppState gate sends");
+        assert_eq!(
+            osl_ratchet_next::peek_wire_version(&wire),
+            Some(WIRE_VERSION_RN)
+        );
+
+        state.set_rn_wire_in_enabled(false);
+        assert!(matches!(
+            send_rn_for_state(&state, &store, &sealer, &peer, 73, b"blocked again"),
+            Err(RnError::WireInDisabled)
+        ));
+    }
+
+    #[test]
     fn send_rn_persists_advanced_state_before_returning_wire() {
         let (_d, store) = fresh_store();
         let sealer = MemorySealer::new();
@@ -2340,6 +2684,72 @@ mod tests {
     }
 
     #[test]
+    fn receive_rn_rejects_identical_wire_replay() {
+        let (_alice_dir, alice_store) = fresh_store();
+        let (_bob_dir, bob_store) = fresh_store();
+        let sealer = MemorySealer::new();
+        let mut rng = seeded_rng(6);
+        let (bob_prekeys, bob_bundle) = fresh_bundle(&mut rng);
+        let (alice_ik, alice_ik_pub) = x25519_keypair(&mut rng);
+        let bob_ek = bob_bundle.pq_prekey.to_bytes();
+        let bob_peer = *bob_bundle.identity.as_bytes();
+        let alice_peer = *alice_ik_pub.as_bytes();
+
+        initiate_and_persist_with_sealer(
+            &alice_store,
+            &sealer,
+            &alice_ik,
+            alice_ik_pub.as_bytes(),
+            &bob_bundle,
+            PeerCapabilities::Verified(RN_CAP_WIRE_RN),
+            &bob_ek,
+            CTX,
+            SessionParams::default(),
+        )
+        .expect("alice initiates");
+        let bootstrap_wire = with_wire_in_enabled_for_test(true, || {
+            send_rn_with_sealer(&alice_store, &sealer, &bob_peer, 6, b"bootstrap")
+                .expect("bootstrap send")
+        });
+        let (_bob_session, opened_bootstrap) = accept_and_persist_with_sealer(
+            &bob_store,
+            &sealer,
+            &bob_prekeys,
+            bob_prekeys.identity.public().as_bytes(),
+            &bob_ek,
+            &bootstrap_wire,
+            CTX,
+            SessionParams::default(),
+        )
+        .expect("bob accepts bootstrap");
+        assert_eq!(opened_bootstrap.plaintext, b"bootstrap");
+
+        let wire = with_wire_in_enabled_for_test(true, || {
+            send_rn_with_sealer(&alice_store, &sealer, &bob_peer, 7, b"replay target")
+                .expect("send replay target")
+        });
+        let first_open = with_wire_in_enabled_for_test(true, || {
+            receive_rn_with_sealer(&bob_store, &sealer, &alice_peer, &wire).expect("first receive")
+        });
+        assert_eq!(first_open.msg_type, 7);
+        assert_eq!(first_open.plaintext, b"replay target");
+
+        let before_replay = store_file_bytes(&bob_store.session_path(&alice_peer));
+        let replay = with_wire_in_enabled_for_test(true, || {
+            receive_rn_with_sealer(&bob_store, &sealer, &alice_peer, &wire)
+        });
+        assert!(
+            replay.is_err(),
+            "the identical RN wire must be rejected on replay"
+        );
+        assert_eq!(
+            store_file_bytes(&bob_store.session_path(&alice_peer)),
+            before_replay,
+            "a rejected replay must not roll back or advance persisted RN state"
+        );
+    }
+
+    #[test]
     fn a_plaintext_sealer_is_refused() {
         let (_d, store) = fresh_store();
         let mut rng = seeded_rng(11);
@@ -2482,6 +2892,10 @@ mod tests {
         haystack.windows(needle.len()).any(|w| w == needle)
     }
 
+    fn store_file_bytes(path: &Path) -> Vec<u8> {
+        std::fs::read(path).expect("read store file")
+    }
+
     /// Losing session state must degrade to "no session" — never to a
     /// silent legacy send. The pin must survive.
     #[test]
@@ -2518,6 +2932,69 @@ mod tests {
                 Err(RnError::PinnedToRn)
             ),
             "state loss must not open a downgrade window"
+        );
+    }
+
+    #[test]
+    fn rn_session_store_migrates_or_retires_legacy_v4_sessions() {
+        let (_d, store) = fresh_store();
+        let sealer = MemorySealer::new();
+        let peer = [80u8; 32];
+        std::fs::create_dir_all(&store.dir).expect("mkdir");
+        store.raise_pin_to_rn(&peer).expect("pin");
+        let legacy_v4 = serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "root_key_b64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "dhs_secret_b64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "dhs_pub_b64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "sending_counter": 0,
+            "receiving_counter": 0,
+            "prev_sending_count": 0,
+            "nhks_b64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "nhkr_b64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "skipped": [],
+            "ctx": {
+                "local_ik_x25519_pub_b64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                "local_ik_mlkem_pub_b64": "",
+                "peer_ik_x25519_pub_b64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                "peer_ik_mlkem_pub_b64": "",
+                "conversation_id_b64": "",
+                "session_version": 1
+            }
+        }))
+        .expect("legacy v4 json");
+        let session_path = store.session_path(&peer);
+        std::fs::write(&session_path, &legacy_v4).expect("seed legacy session");
+
+        let loaded = store
+            .load_session_with_sealer(&peer, &sealer)
+            .expect("legacy session is retired");
+
+        assert!(
+            loaded.is_none(),
+            "a retired legacy v4 state must force a clean RN re-handshake"
+        );
+        assert!(
+            !session_path.exists(),
+            "legacy v4 state must not remain at the active RN session path"
+        );
+        assert_eq!(
+            std::fs::read(session_path.with_extension("session.legacy-v4-retired"))
+                .expect("retired legacy file"),
+            legacy_v4,
+            "retirement must preserve the legacy bytes out of the active load path"
+        );
+        assert!(store.load_pin(&peer).expect("pin").is_pinned_to_rn());
+        assert!(
+            matches!(
+                select_wire_version(
+                    &store.load_pin(&peer).expect("pin reload"),
+                    PeerCapabilities::Absent,
+                    RnPolicy::Opportunistic,
+                ),
+                Err(RnError::PinnedToRn)
+            ),
+            "retiring the session must not allow a silent v3 fallback"
         );
     }
 
