@@ -292,6 +292,25 @@ export interface NativeDiscordCarrierLayout {
   rowKind: "plainText" | "markdown" | "media" | "reply";
 }
 
+const NATIVE_DISCORD_CARRIER_RECEIPT_KEYS = [
+  "placed",
+  "enterSent",
+  "status",
+  "mode",
+  "compatibilityDelayMs",
+] as const;
+const NATIVE_DISCORD_CARRIER_STATUSES = [
+  "sent",
+  "calibrationRequired",
+  "contextChanged",
+  "composerUnavailable",
+  "composerNotEmpty",
+  "placementRejected",
+  "enterRejected",
+  "carrierUnconfirmed",
+  "platformUnsupported",
+] as const;
+
 function validCarrierLayout(layout: NativeDiscordCarrierLayout): boolean {
   const numbers = [layout.contentWidthPx, layout.averageGraphemeWidthPx, layout.lineHeightPx, layout.zoom, layout.density];
   return numbers.every((value) => Number.isFinite(value) && value > 0 && value <= 10_000)
@@ -299,15 +318,26 @@ function validCarrierLayout(layout: NativeDiscordCarrierLayout): boolean {
     && ["plainText", "markdown", "media", "reply"].includes(layout.rowKind);
 }
 
+function exactNativeDiscordCarrierReceiptRecord(
+  value: unknown,
+): value is Record<typeof NATIVE_DISCORD_CARRIER_RECEIPT_KEYS[number], unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const actual = Object.keys(value).sort();
+  const expected = [...NATIVE_DISCORD_CARRIER_RECEIPT_KEYS].sort();
+  return actual.length === expected.length
+    && actual.every((key, index) => key === expected[index]);
+}
+
 function parseNativeDiscordCarrierReceipt(
   value: unknown,
   mode: NativeDiscordCarrierMode,
 ): NativeDiscordCarrierReceipt | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  const statuses = ["sent", "calibrationRequired", "contextChanged", "composerUnavailable", "composerNotEmpty", "placementRejected", "enterRejected", "carrierUnconfirmed", "platformUnsupported"];
+  if (!exactNativeDiscordCarrierReceiptRecord(value)) return null;
+  const record = value;
   if (typeof record.placed !== "boolean" || typeof record.enterSent !== "boolean"
-    || !statuses.includes(String(record.status)) || record.mode !== mode
+    || typeof record.status !== "string"
+    || !NATIVE_DISCORD_CARRIER_STATUSES.includes(record.status as NativeDiscordCarrierReceipt["status"])
+    || record.mode !== mode
     || !Number.isInteger(record.compatibilityDelayMs)
     || Number(record.compatibilityDelayMs) < 63 || Number(record.compatibilityDelayMs) > 500
     || (record.status === "sent" && (record.placed !== true || record.enterSent !== true))
