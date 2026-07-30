@@ -88,6 +88,26 @@ class HubVmQaAttestationTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 verify("hub-v0.1.0", root, attestation)
 
+    def test_rejects_same_session_final_approver(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, attestation = self.candidate(root)
+            document = json.loads(attestation.read_text(encoding="utf-8"))
+            document["finalApprover"] = document["operator"]
+            attestation.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(SystemExit, "different session"):
+                verify("hub-v0.1.0", root, attestation)
+
+    def test_rejects_missing_second_session_reproduction(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, attestation = self.candidate(root)
+            document = json.loads(attestation.read_text(encoding="utf-8"))
+            document["packageReproducedBySecondSession"] = False
+            attestation.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(SystemExit, "second session"):
+                verify("hub-v0.1.0", root, attestation)
+
 
 def freeze_the_exact_signed_candidate_vm_attestation_contract() -> None:
     testcase = HubVmQaAttestationTests()
