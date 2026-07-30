@@ -13657,7 +13657,7 @@ pub fn cmd_osl_burn_password_status() -> Result<PasswordStatusDto, String> {
 
 // =====================================================================
 // Phase 7d-B2/B3: gate-side single-call password verify across the
-// three roles. Returns one of "main" | "stealth" | "burn" | "wrong"
+// three roles. Returns one of "main" | "stealth" | "burn" | "duress" | "wrong"
 // + the same lockout fields as `verify_main_password`. All three
 // successful entries reset the shared counter (so an attacker
 // observing repeated entries can't distinguish "main" from
@@ -13799,7 +13799,7 @@ pub fn cmd_osl_verify_gate_password(
                 } => {
                     let _ = crate::main_password::write_lockout_pub(&dir, &lock);
                     Ok(GateVerifyDto {
-                        result: "burn".to_string(),
+                        result: "duress".to_string(),
                         lockout_seconds_remaining: 0,
                         attempts_used,
                     })
