@@ -40,6 +40,8 @@ class HubVmQaAttestationTests(unittest.TestCase):
                     "candidateSha256": hashlib.sha256(installer.read_bytes()).hexdigest(),
                     "completedAtUtc": "2026-07-17T23:00:00Z",
                     "operator": "qa-reviewer",
+                    "finalApprover": "qa-final-approver-second-session",
+                    "packageReproducedBySecondSession": True,
                     "captchaHandling": "paused_for_manual_completion",
                     "vms": [
                         {"name": "A", "goldenSnapshotId": "signed-a", "cleanRestore": True},
@@ -85,6 +87,53 @@ class HubVmQaAttestationTests(unittest.TestCase):
             attestation.write_text(json.dumps(document), encoding="utf-8")
             with self.assertRaises(SystemExit):
                 verify("hub-v0.1.0", root, attestation)
+
+
+def freeze_the_exact_signed_candidate_vm_attestation_contract() -> None:
+    testcase = HubVmQaAttestationTests()
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        _, attestation = testcase.candidate(root)
+        verify("hub-v0.1.0", root, attestation)
+
+        document = json.loads(attestation.read_text(encoding="utf-8"))
+        document["candidateTag"] = "hub-v0.1.1"
+        attestation.write_text(json.dumps(document), encoding="utf-8")
+        with testcase.assertRaises(SystemExit):
+            verify("hub-v0.1.0", root, attestation)
+
+        _, attestation = testcase.candidate(root)
+        document = json.loads(attestation.read_text(encoding="utf-8"))
+        document["finalApprover"] = document["operator"]
+        attestation.write_text(json.dumps(document), encoding="utf-8")
+        with testcase.assertRaises(SystemExit):
+            verify("hub-v0.1.0", root, attestation)
+
+        _, attestation = testcase.candidate(root)
+        document = json.loads(attestation.read_text(encoding="utf-8"))
+        document["packageReproducedBySecondSession"] = False
+        attestation.write_text(json.dumps(document), encoding="utf-8")
+        with testcase.assertRaises(SystemExit):
+            verify("hub-v0.1.0", root, attestation)
+
+
+freeze_the_exact_signed_candidate_vm_attestation_contract.__name__ = (
+    "Freeze the exact signed-candidate VM attestation contract."
+)
+
+
+def load_tests(
+    loader: unittest.TestLoader,
+    tests: unittest.TestSuite,
+    pattern: str | None,
+) -> unittest.TestSuite:
+    del loader, pattern
+    suite = unittest.TestSuite()
+    suite.addTests(tests)
+    suite.addTest(unittest.FunctionTestCase(
+        freeze_the_exact_signed_candidate_vm_attestation_contract,
+    ))
+    return suite
 
 
 if __name__ == "__main__":
