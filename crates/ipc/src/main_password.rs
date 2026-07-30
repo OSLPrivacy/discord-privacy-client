@@ -43,8 +43,10 @@ use argon2::{Algorithm, Argon2, Params, Version};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use bip39::{Language, Mnemonic};
+use keystore::InactivityTimer;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -68,6 +70,7 @@ const NONCE_LEN: usize = 12;
 const ARGON_MEMORY_KB: u32 = 65_536; // 64 MiB
 const ARGON_ITERATIONS: u32 = 3;
 const ARGON_PARALLELISM: u32 = 1;
+pub const INACTIVITY_AUTO_LOCK_SECONDS: u64 = 15 * 60;
 
 // =====================================================================
 // On-disk schemas.
@@ -841,6 +844,71 @@ fn marker_phrase_hash(marker: &PasswordMarker) -> Option<String> {
     marker.phrase_hash_b64.clone()
 }
 
+struct InactivityAutoLockState {
+    timer: InactivityTimer,
+    locked: bool,
+}
+
+static INACTIVITY_AUTO_LOCK: OnceLock<Mutex<InactivityAutoLockState>> = OnceLock::new();
+
+fn inactivity_auto_lock_slot() -> &'static Mutex<InactivityAutoLockState> {
+    INACTIVITY_AUTO_LOCK.get_or_init(|| {
+        Mutex::new(InactivityAutoLockState {
+            timer: InactivityTimer::from_seconds(INACTIVITY_AUTO_LOCK_SECONDS),
+            locked: false,
+        })
+    })
+}
+
+pub fn run_inactivity_auto_lock_timer() -> bool {
+    let mut state = inactivity_auto_lock_slot()
+        .lock()
+        .expect("inactivity auto-lock mutex poisoned");
+    if state.locked {
+        return true;
+    }
+    if state.timer.should_reprompt() {
+        state.locked = true;
+        drop(state);
+        set_file_storage_key(None);
+        return true;
+    }
+    false
+}
+
+pub fn mark_inactivity_timer_activity() {
+    inactivity_auto_lock_slot()
+        .lock()
+        .expect("inactivity auto-lock mutex poisoned")
+        .timer
+        .mark_activity();
+}
+
+pub fn unlock_inactivity_auto_lock_timer() {
+    let mut state = inactivity_auto_lock_slot()
+        .lock()
+        .expect("inactivity auto-lock mutex poisoned");
+    state.locked = false;
+    state.timer.mark_activity();
+}
+
+pub fn inactivity_auto_lock_is_locked() -> bool {
+    inactivity_auto_lock_slot()
+        .lock()
+        .expect("inactivity auto-lock mutex poisoned")
+        .locked
+}
+
+#[cfg(test)]
+fn seed_inactivity_auto_lock_timer(last_activity: std::time::Instant, locked: bool) {
+    *inactivity_auto_lock_slot()
+        .lock()
+        .expect("inactivity auto-lock mutex poisoned") = InactivityAutoLockState {
+        timer: InactivityTimer::with_last_activity(INACTIVITY_AUTO_LOCK_SECONDS, last_activity),
+        locked,
+    };
+}
+
 // =====================================================================
 // 7d-B4 (scoped to 3 JSON files per user choice): encryption-at-rest
 // for peer_map.json, whitelist_state.json, pending_invitations.json.
@@ -866,8 +934,6 @@ fn marker_phrase_hash(marker: &PasswordMarker) -> Option<String> {
 // re-write. `clear_file_storage_key()` is called from
 // `remove_main_password` to revert future writes to plain JSON.
 // =====================================================================
-
-use std::sync::{Mutex, OnceLock};
 
 static FILE_STORAGE_KEY: OnceLock<Mutex<Option<[u8; 32]>>> = OnceLock::new();
 
@@ -1477,6 +1543,42 @@ mod password_policy_tests {
             ensure_device_bound_fallback_file_storage_key_with_sealer(dir.path(), &sealer).is_err(),
             "main-password installs must not also mint fallback authority"
         );
+        set_file_storage_key(None);
+    }
+
+    #[test]
+    fn run_inactivity_auto_lock_timer() {
+        let now = std::time::Instant::now();
+        seed_inactivity_auto_lock_timer(
+            now - std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS - 1),
+            false,
+        );
+        set_file_storage_key(Some([7; 32]));
+
+        assert!(
+            !super::run_inactivity_auto_lock_timer(),
+            "timer must not lock before the 15-minute threshold"
+        );
+        assert!(!inactivity_auto_lock_is_locked());
+        assert_eq!(get_file_storage_key(), Some([7; 32]));
+
+        seed_inactivity_auto_lock_timer(
+            now - std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS),
+            false,
+        );
+        assert!(
+            super::run_inactivity_auto_lock_timer(),
+            "timer must lock at the 15-minute threshold"
+        );
+        assert!(inactivity_auto_lock_is_locked());
+        assert_eq!(
+            get_file_storage_key(),
+            None,
+            "auto-lock must clear password-derived storage authority"
+        );
+
+        unlock_inactivity_auto_lock_timer();
+        assert!(!inactivity_auto_lock_is_locked());
         set_file_storage_key(None);
     }
 }
