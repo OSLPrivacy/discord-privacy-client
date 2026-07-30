@@ -33,7 +33,7 @@ set -uo pipefail
 
 if [ "${1:-}" = "--self-test" ]; then
   instance_b_build_requires_distinct_identifier() {
-    local tmp json log out rc
+    local tmp json log out rc repo fake_bin stage temp_root dll
     tmp="$(mktemp -d)"
     json="$tmp/result.json"
     log="$tmp/build.log"
@@ -56,6 +56,57 @@ assert receipt["overall"]["verdict"] == "blocked"
 assert "Identifier equals instance A" in receipt["overall"]["diagnosis"]
 assert receipt["diffKey"].startswith("BLOCKED:")
 PY
+
+    repo="$tmp/repo"
+    fake_bin="$tmp/bin"
+    stage="$tmp/stage"
+    temp_root="$tmp/win-temp"
+    dll="$tmp/WebView2Loader.dll"
+    mkdir -p "$repo/apps/osl-hub" "$repo/apps/osl-hub-ui/src" \
+      "$repo/apps/osl-hub-ui/dist" "$fake_bin" "$stage" "$temp_root"
+    printf '{}\n' >"$repo/apps/osl-hub/tauri.conf.json"
+    printf 'source-v1\n' >"$repo/apps/osl-hub-ui/src/App.tsx"
+    printf 'dist-v1\n' >"$repo/apps/osl-hub-ui/dist/index.html"
+    printf 'dll\n' >"$dll"
+    touch -d '2026-01-01 00:00:00 UTC' \
+      "$repo/apps/osl-hub-ui/src/App.tsx"
+    touch -d '2026-01-02 00:00:00 UTC' \
+      "$repo/apps/osl-hub-ui/dist/index.html"
+    cat >"$fake_bin/cargo" <<'SH'
+#!/usr/bin/env bash
+set -eu
+mkdir -p target/x86_64-pc-windows-gnu/debug
+printf '%s\n' "${TAURI_CONFIG:-}" \
+  > target/x86_64-pc-windows-gnu/debug/osl-privacy-hub.exe
+SH
+    chmod +x "$fake_bin/cargo"
+
+    json="$tmp/distinct.json"
+    log="$tmp/distinct.log"
+    out="$tmp/distinct.out"
+    REPO="$repo" JSON_OUT="$json" LOG="$log" STAGE="$stage" \
+      OSL_WIN_TEMP_ROOT="$temp_root" DLL_SRC="$dll" \
+      PATH="$fake_bin:$PATH" bash "$0" "org.oslprivacy.hubqab" \
+      >"$out" 2>&1
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+      printf 'expected distinct-id fake build to exit 0, got %s\n' "$rc" >&2
+      cat "$out" >&2
+      return 1
+    fi
+    grep -qa -- "org.oslprivacy.hubqab" "$stage/osl-privacy-hub.exe" \
+      || { printf 'staged executable did not contain B identifier\n' >&2; return 1; }
+    grep -qa -- "org.oslprivacy.hub\"" "$stage/osl-privacy-hub.exe" \
+      && { printf 'staged executable retained A identifier\n' >&2; return 1; }
+    python3 - "$json" <<'PY' || return 1
+import json, sys
+receipt = json.load(open(sys.argv[1], "r", encoding="utf-8"))
+assert receipt["overall"]["verdict"] == "ok"
+assert receipt["identifier"] == "org.oslprivacy.hubqab"
+assert receipt["identifier"] != "org.oslprivacy.hub"
+assert receipt["diffKey"].startswith("OK:org.oslprivacy.hubqab:")
+PY
+    rm -rf -- "$tmp"
   }
 
   frontend_dist_is_embedded_after_frontend_build() {

@@ -63,63 +63,14 @@ bundle identifier through the fake build output and checks the staged executable
 while the two negative cases check the harness exits at the build-order gate before
 any executable can be produced.
 
-```rust
-#[test]
-fn frontend_dist_is_embedded_after_frontend_build() {
-    use std::time::{Duration, SystemTime};
-
-    #[derive(Clone, Copy)]
-    struct FileStamp {
-        exists: bool,
-        modified: SystemTime,
-    }
-
-    fn build_order_gate(dist_files: &[FileStamp], shipping_sources: &[FileStamp]) -> bool {
-        let Some(newest_dist) = dist_files
-            .iter()
-            .filter(|file| file.exists)
-            .map(|file| file.modified)
-            .max()
-        else {
-            return false;
-        };
-
-        shipping_sources
-            .iter()
-            .filter(|file| file.exists)
-            .all(|source| source.modified <= newest_dist)
-    }
-
-    let frontend_build = SystemTime::UNIX_EPOCH + Duration::from_secs(200);
-    let older_source = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
-    let newer_source = SystemTime::UNIX_EPOCH + Duration::from_secs(300);
-
-    assert!(build_order_gate(
-        &[FileStamp {
-            exists: true,
-            modified: frontend_build,
-        }],
-        &[FileStamp {
-            exists: true,
-            modified: older_source,
-        }],
-    ));
-    assert!(!build_order_gate(
-        &[],
-        &[FileStamp {
-            exists: true,
-            modified: older_source,
-        }],
-    ));
-    assert!(!build_order_gate(
-        &[FileStamp {
-            exists: true,
-            modified: frontend_build,
-        }],
-        &[FileStamp {
-            exists: true,
-            modified: newer_source,
-        }],
-    ));
+```bash
+frontend_dist_is_embedded_after_frontend_build() {
+  local repo_root="${1:-$(git rev-parse --show-toplevel)}"
+  (
+    cd "$repo_root" &&
+    bash scripts/qa/osl-instance-b-build-wsl.sh --self-test
+  )
 }
+
+frontend_dist_is_embedded_after_frontend_build "$@"
 ```

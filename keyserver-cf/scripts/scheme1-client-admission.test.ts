@@ -517,6 +517,14 @@ describe("scheme-1 Rust-client deployment admission", () => {
         expectedClientTree: CLIENT_TREE,
         expectedChallenge: CHALLENGE,
         nowMs: NOW,
+      })).toThrow(/scheme-1 client evidence signature is invalid/);
+
+    expect(() =>
+      validateScheme1ClientEvidenceEnvelope(evidence, {
+        expectedClientCommit: CLIENT_COMMIT,
+        expectedClientTree: CLIENT_TREE,
+        expectedChallenge: CHALLENGE,
+        nowMs: NOW,
         trustedProducers: {},
       })).toThrow(/trusted scheme-1 client evidence producer/);
   });
