@@ -2399,6 +2399,7 @@ dependencies = [
  "subtle",
  "tempfile",
  "thiserror 1.0.69",
+ "tracing",
  "windows 0.56.0",
  "zeroize",
 ]
