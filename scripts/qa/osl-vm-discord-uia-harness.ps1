@@ -77,6 +77,8 @@ public static class OslVmDiscordUiaNative {
   [DllImport("user32.dll")]
   public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")]
+  public static extern uint GetDpiForWindow(IntPtr hwnd);
+  [DllImport("user32.dll")]
   public static extern bool SetForegroundWindow(IntPtr hwnd);
   [DllImport("user32.dll")]
   public static extern bool PostMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
@@ -192,6 +194,12 @@ public static class OslVmDiscordUiaNative {
       && PostMessage(renderer, WM_KEYUP, (IntPtr)VK_F11, up);
   }
 
+  public static bool PostMouseWheel(IntPtr renderer, int delta) {
+    const uint WM_MOUSEWHEEL = 0x020A;
+    var wParam = (IntPtr)(delta << 16);
+    return renderer != IntPtr.Zero && PostMessage(renderer, WM_MOUSEWHEEL, wParam, IntPtr.Zero);
+  }
+
   public static void PressF11Keyboard() {
     const byte VK_F11 = 0x7A;
     const byte SCAN_F11 = 0x57;
@@ -209,6 +217,35 @@ if ($script:ExpectedOslSha -cnotmatch '^[0-9a-f]{64}$') { throw 'invalid OSL exe
 
 function ConvertTo-SafeJson([object]$Value) {
   $Value | ConvertTo-Json -Depth 8 -Compress
+}
+
+function Get-QaTempPath([string]$Name) {
+  Join-Path ([IO.Path]::GetTempPath()) $Name
+}
+
+function Get-QaLogState([string]$Name) {
+  $path = Get-QaTempPath $Name
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+    return [pscustomobject]@{ Exists=$false; LineCount=0; LastWriteUtcTicks=0; Tail=@() }
+  }
+  $item = Get-Item -LiteralPath $path
+  $lines = @(Get-Content -LiteralPath $path -Tail 32 -ErrorAction Stop | ForEach-Object {
+    $line = [string]$_
+    $line = $line -replace 'hwnd=\d+', 'hwnd=<redacted>'
+    if ($line.Length -gt 180) { $line.Substring(0, 180) } else { $line }
+  })
+  [pscustomobject]@{
+    Exists=$true
+    LineCount=@(Get-Content -LiteralPath $path -ErrorAction Stop).Count
+    LastWriteUtcTicks=$item.LastWriteTimeUtc.Ticks
+    Tail=$lines
+  }
+}
+
+function Test-QaLogContains([string]$Name, [string]$Pattern) {
+  $path = Get-QaTempPath $Name
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
+  return [bool](Select-String -LiteralPath $path -Pattern $Pattern -CaseSensitive -Quiet)
 }
 
 function Test-SameRuntimeId([Windows.Automation.AutomationElement]$Left, [Windows.Automation.AutomationElement]$Right) {
@@ -677,6 +714,43 @@ function Set-DecryptVisibility([ValidateSet('On','Off')][string]$Requested) {
     } | Out-Null
 }
 
+function Set-QaProtectedComposerOpen([bool]$Open) {
+  $ready = Get-OverlayReadyState
+  if ($ready.Satisfied -eq $Open) {
+    return [pscustomobject]@{ Satisfied=$true; Changed=$false; Key='already|' + $Open }
+  }
+  Invoke-FreshControl 'Main' @([Windows.Automation.ControlType]::Button) @() 'discord-qa-toggle-composer'
+  Wait-SemanticPostcondition {
+    $next = Get-OverlayReadyState
+    [pscustomobject]@{
+      Satisfied=($next.Satisfied -eq $Open)
+      Key='composer|' + $Open + '|' + $next.Key
+      Changed=$true
+    }
+  } "protected composer close/open transition $Open" 2
+}
+
+function Invoke-OverlayScrollProbe {
+  $before = Get-QaLogState 'osl-discord-qa-rehydrate.txt'
+  $surface = Get-FreshOverlaySurface
+  if (-not [OslVmDiscordUiaNative]::PostMouseWheel([IntPtr]$surface.RendererHwnd, -120)) {
+    throw 'overlay scroll edge was rejected'
+  }
+  Wait-SemanticPostcondition {
+    $after = Get-QaLogState 'osl-discord-qa-rehydrate.txt'
+    $advanced = $after.Exists -and (
+      $after.LineCount -gt $before.LineCount -or
+      $after.LastWriteUtcTicks -gt $before.LastWriteUtcTicks
+    )
+    [pscustomobject]@{
+      Satisfied=$advanced
+      Key='scroll|' + $after.LineCount + '|' + $after.LastWriteUtcTicks
+      BeforeLines=$before.LineCount
+      AfterLines=$after.LineCount
+    }
+  } 'protected transcript scroll edge rehydration' 2
+}
+
 function Get-SendPostcondition {
   $surface = Get-FreshOverlaySurface
   $status = Resolve-FreshControl 'Overlay' @([Windows.Automation.ControlType]::Text) @() 'overlay-status' $false
@@ -695,23 +769,64 @@ function Get-SendPostcondition {
   }
 }
 
-function Get-WindowLifecycleState([bool]$ExpectFullscreen) {
+function Get-OverlayVisualMatrixState {
+  $surface = Get-FreshOverlaySurface
+  $draft = Resolve-FreshControl 'Overlay' @([Windows.Automation.ControlType]::Edit) @() 'protected-draft' $false
+  $send = Resolve-FreshControl 'Overlay' @([Windows.Automation.ControlType]::Button) @() 'prepare-protected' $false
+  $display = Resolve-FreshControl 'Overlay' @([Windows.Automation.ControlType]::CheckBox) @() 'protected-decrypt-display' $false
+  $draftBounds = $draft.Element.Current.BoundingRectangle
+  $overlayDpi = [int][OslVmDiscordUiaNative]::GetDpiForWindow([IntPtr]$surface.Hwnd)
+  $stageLog = Get-QaLogState 'osl-discord-qa-overlay-stage.txt'
+  $styleLog = Get-QaLogState 'osl-discord-qa-overlay-style.txt'
+  $zOrderLog = Get-QaLogState 'osl-discord-qa-composer-zorder.txt'
+  $nativeSurfaceCaptured = Test-QaLogContains 'osl-discord-qa-overlay-stage.txt' '^native_surface_captured$'
+  $framelessStyleProven = Test-QaLogContains 'osl-discord-qa-overlay-style.txt' 'style_after=0x[0-9A-F]{8}.*ex_after=0x[0-9A-F]{8}'
+  $zOrderProven = Test-QaLogContains 'osl-discord-qa-composer-zorder.txt' 'composer_zorder=above-discord visible=true'
+  [pscustomobject]@{
+    Satisfied = $draftBounds.Width -gt 0 -and $draftBounds.Height -gt 0 -and
+      $overlayDpi -ge 72 -and $overlayDpi -le 480 -and
+      $nativeSurfaceCaptured -and $framelessStyleProven -and $zOrderProven
+    Key = $surface.Fingerprint + '|' + $overlayDpi + '|' + $stageLog.LastWriteUtcTicks + '|' + $styleLog.LastWriteUtcTicks + '|' + $zOrderLog.LastWriteUtcTicks
+    OverlayPresent = $true
+    DraftPresent = $draft.Element.Current.IsEnabled
+    SendPresent = $send.Element.Current.ControlType.ProgrammaticName -ceq 'ControlType.Button'
+    EyeControlPresent = $display.Element.Current.ControlType.ProgrammaticName -ceq 'ControlType.CheckBox'
+    Dpi = $overlayDpi
+    NativeSurfaceCaptured = $nativeSurfaceCaptured
+    ThemeSampleBound = $nativeSurfaceCaptured
+    NitroSampleBound = $nativeSurfaceCaptured
+    TypographyBound = $nativeSurfaceCaptured
+    FramelessStyleProven = $framelessStyleProven
+    ZOrderProven = $zOrderProven
+  }
+}
+
+function Get-WindowLifecycleState([bool]$ExpectFullscreen, [bool]$RequireOverlayMatrix = $false) {
   $surface = Get-FreshMainSurface
   $bounds = $surface.Root.Current.BoundingRectangle
   $screen = [System.Windows.Forms.Screen]::FromHandle([IntPtr]$surface.Hwnd).Bounds
+  $window = $surface.Root.GetCurrentPattern([Windows.Automation.WindowPattern]::Pattern)
+  $dpi = [int][OslVmDiscordUiaNative]::GetDpiForWindow([IntPtr]$surface.Hwnd)
   $fullscreen = [Math]::Abs($bounds.Left - $screen.Left) -le 2 -and
     [Math]::Abs($bounds.Top - $screen.Top) -le 2 -and
     [Math]::Abs($bounds.Width - $screen.Width) -le 2 -and
     [Math]::Abs($bounds.Height - $screen.Height) -le 2
+  $overlayMatrix = if ($RequireOverlayMatrix) {
+    try { Get-OverlayVisualMatrixState } catch { [pscustomobject]@{ Satisfied=$false; Key='missing'; OverlayPresent=$false } }
+  } else {
+    [pscustomobject]@{ Satisfied=$true; Key='not-required'; OverlayPresent=$false }
+  }
   [pscustomobject]@{
-    Satisfied = $fullscreen -eq $ExpectFullscreen
-    Key = $surface.Fingerprint + '|' + $fullscreen
-    Fingerprint = $surface.Fingerprint
+    Satisfied = $fullscreen -eq $ExpectFullscreen -and $dpi -ge 72 -and $dpi -le 480 -and $overlayMatrix.Satisfied
+    Key = $surface.Fingerprint + '|' + $fullscreen + '|' + $dpi + '|' + $window.Current.WindowVisualState + '|' + $overlayMatrix.Key
     Fullscreen = $fullscreen
+    VisualState = [string]$window.Current.WindowVisualState
+    Dpi = $dpi
     Left = [int]$bounds.Left
     Top = [int]$bounds.Top
     Width = [int]$bounds.Width
     Height = [int]$bounds.Height
+    OverlayMatrix = $overlayMatrix
   }
 }
 
@@ -1109,28 +1224,79 @@ try {
       if ($state.Forward -ne 1) { throw 'Discord native route is not active' }
       $baseline = Get-InitialDiscordHostIdentity
       $evidence = @()
+      $visualEvidence = @()
       $initial = Wait-DiscordContinuity $baseline 'initial exact Discord containment'
       $evidence += [pscustomobject]@{ Phase='initial'; Visible=$initial.Visible; Parent=$initial.ParentStable; Above=$initial.StackedAboveOslBackground }
+
+      if (-not (Get-OverlayReadyState).Satisfied) {
+        if ($state.Friend -eq 1) {
+          Invoke-FreshControl 'Main' @([Windows.Automation.ControlType]::Button) @() 'native-protect-verified-peer'
+        } elseif ($state.Protect -eq 1) {
+          Invoke-FreshControl 'Main' @([Windows.Automation.ControlType]::Button) @() 'local-protected-toggle'
+          $null = Wait-SemanticPostcondition {
+            $next = Get-MainState
+            $overlay = Get-OverlayReadyState
+            [pscustomobject]@{ Satisfied=($next.Friend -eq 1 -or $overlay.Satisfied); Key=$next.Friend.ToString() + '|' + $overlay.Key }
+          } 'verified friend picker for lifecycle matrix' 2
+          if (-not (Get-OverlayReadyState).Satisfied) {
+            Invoke-FreshControl 'Main' @([Windows.Automation.ControlType]::Button) @() 'native-protect-verified-peer'
+          }
+        } else {
+          Set-QaProtectedComposerOpen $true | Out-Null
+        }
+      }
+      $null = Wait-SemanticPostcondition { Get-OverlayReadyState } 'protected overlay adopted for lifecycle matrix' 2
+      Set-DecryptVisibility 'On'
+      $visualInitial = Wait-SemanticPostcondition { Get-WindowLifecycleState $false $true } 'initial overlay visual matrix' 2
+      $visualEvidence += [pscustomobject]@{
+        Phase='initialVisual'; Dpi=$visualInitial.Dpi; Theme=$visualInitial.OverlayMatrix.ThemeSampleBound;
+        Nitro=$visualInitial.OverlayMatrix.NitroSampleBound; Typography=$visualInitial.OverlayMatrix.TypographyBound
+      }
 
       for ($focusAttempt = 1; $focusAttempt -le 3; $focusAttempt++) {
         Assert-ForegroundAndFocus 'Main' 'window-fullscreen' @([Windows.Automation.ControlType]::Button) @()
         $focused = Wait-DiscordContinuity $baseline "trusted header focus $focusAttempt"
         $evidence += [pscustomobject]@{ Phase="headerFocus$focusAttempt"; Visible=$focused.Visible; Parent=$focused.ParentStable; Above=$focused.StackedAboveOslBackground }
       }
+      Assert-ForegroundAndFocus 'Overlay' 'protected-draft' @([Windows.Automation.ControlType]::Edit) @()
+      $overlayFocused = Wait-SemanticPostcondition { Get-OverlayVisualMatrixState } 'focused overlay visual matrix' 2
+      $visualEvidence += [pscustomobject]@{
+        Phase='overlayFocus'; Dpi=$overlayFocused.Dpi; Theme=$overlayFocused.ThemeSampleBound;
+        Nitro=$overlayFocused.NitroSampleBound; Typography=$overlayFocused.TypographyBound
+      }
+
+      $closed = Set-QaProtectedComposerOpen $false
+      if (-not $closed.Satisfied) { throw 'protected overlay close was not verified' }
+      $reopened = Set-QaProtectedComposerOpen $true
+      if (-not $reopened.Satisfied) { throw 'protected overlay reopen was not verified' }
+      $reopenedVisual = Wait-SemanticPostcondition { Get-WindowLifecycleState $false $true } 'reopened overlay visual matrix' 2
+      Set-DecryptVisibility 'On'
+      $scroll = Invoke-OverlayScrollProbe
+      $visualEvidence += [pscustomobject]@{
+        Phase='closeReopenScroll'; CloseReopen=($closed.Satisfied -and $reopened.Satisfied);
+        ScrollRehydrated=$scroll.Satisfied; Theme=$reopenedVisual.OverlayMatrix.ThemeSampleBound;
+        Nitro=$reopenedVisual.OverlayMatrix.NitroSampleBound; Typography=$reopenedVisual.OverlayMatrix.TypographyBound
+      }
 
       $beforeTransform = Get-WindowLifecycleState $false
       Invoke-WindowTransformFresh
       $transformed = Wait-SemanticPostcondition {
-        $candidate = Get-WindowLifecycleState $false
+        $candidate = Get-WindowLifecycleState $false $true
         $changed = $candidate.Left -ne $beforeTransform.Left -or $candidate.Top -ne $beforeTransform.Top -or
           $candidate.Width -ne $beforeTransform.Width -or $candidate.Height -ne $beforeTransform.Height
         [pscustomobject]@{
           Satisfied=$candidate.Satisfied -and $changed
           Key=$candidate.Key + '|' + $candidate.Left + '|' + $candidate.Top + '|' + $candidate.Width + '|' + $candidate.Height
+          Dpi=$candidate.Dpi
+          OverlayMatrix=$candidate.OverlayMatrix
         }
       } 'moved and resized windowed surface' 2
       $afterTransform = Wait-DiscordContinuity $baseline 'Discord continuity after move and resize'
       $evidence += [pscustomobject]@{ Phase='moveResize'; Visible=$afterTransform.Visible; Parent=$afterTransform.ParentStable; Above=$afterTransform.StackedAboveOslBackground }
+      $visualEvidence += [pscustomobject]@{
+        Phase='moveResizeDpi'; Dpi=$transformed.Dpi; Theme=$transformed.OverlayMatrix.ThemeSampleBound;
+        Nitro=$transformed.OverlayMatrix.NitroSampleBound; Typography=$transformed.OverlayMatrix.TypographyBound
+      }
 
       $oslHwnd = [IntPtr]$baseline.OslHwnd
       if (-not [OslVmDiscordUiaNative]::ShowWindowAsync($oslHwnd, 6)) { throw 'exact OSL minimize was rejected' }
@@ -1153,19 +1319,35 @@ try {
       $recovered = Wait-DiscordContinuity $baseline 'automatic Discord retether after session recovery sequence'
       $evidence += [pscustomobject]@{ Phase='sessionRecovery'; Visible=$recovered.Visible; Parent=$recovered.ParentStable; Above=$recovered.StackedAboveOslBackground }
 
+      $matrix = [ordered]@{
+        Adoption=$initial.Satisfied
+        Focus=(@($evidence | Where-Object { $_.Phase -like 'headerFocus*' }).Count -eq 3)
+        CloseReopen=($closed.Satisfied -and $reopened.Satisfied)
+        Scroll=$scroll.Satisfied
+        Resize=$afterTransform.Satisfied
+        Dpi=(@($visualEvidence | Where-Object { $_.Dpi -ge 72 -and $_.Dpi -le 480 }).Count -ge 3)
+        Theme=(@($visualEvidence | Where-Object { [bool]$_.Theme }).Count -ge 3)
+        Nitro=(@($visualEvidence | Where-Object { [bool]$_.Nitro }).Count -ge 3)
+        Typography=(@($visualEvidence | Where-Object { [bool]$_.Typography }).Count -ge 3)
+        Fullscreen=$afterFullscreen.Satisfied
+        MinimizeRestore=($minimized.Satisfied -and $afterRestore.Satisfied)
+        SessionRecovery=$recovered.Satisfied
+      }
+      $matrixPassed = -not @($matrix.GetEnumerator() | Where-Object { -not [bool]$_.Value })
+
       [pscustomobject]@{
-        Ok=$recovered.Satisfied
+        Ok=($recovered.Satisfied -and $matrixPassed)
         Action='ExerciseWindowLifecycle'
         OslProcessId=$baseline.OslProcessId
-        OslHwnd=$baseline.OslHwnd
         GuardianProcessCount=@($baseline.GuardianProcessIds).Count
         DiscordProcessIds=@($baseline.DiscordProcessIds)
-        DiscordHwnd=$baseline.DiscordHwnd
         ExactPidSetSurvived=$recovered.PidSetStable
         ExactHwndSurvived=$recovered.HwndStable
         AutoRetethered=($recovered.Visible -and $recovered.ParentStable -and $recovered.GeometryRetethered -and $recovered.StackedAboveOslBackground)
         ManualBringForwardInvoked=$false
+        LifecycleMatrix=$matrix
         Evidence=@($evidence | Select-Object -First 10)
+        VisualEvidence=@($visualEvidence | Select-Object -First 8)
       }
     }
   }
