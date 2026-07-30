@@ -3,6 +3,7 @@
 // `peer_attachment_io`, so it lives behind `core` like they do.
 #[cfg(feature = "core")]
 pub mod attachment_formats;
+#[cfg(feature = "core")]
 pub mod autoscrub_run;
 pub mod attended_imap;
 pub mod browser_companion;
