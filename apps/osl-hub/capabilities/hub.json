@@ -70,6 +70,7 @@
     "allow-focus-default-browser-companion",
     "allow-detach-default-browser-companion",
     "allow-host-native-app-window",
+    "allow-native-app-takeover-requires-consent",
     "allow-resize-native-app-window",
     "allow-focus-native-app-window",
     "allow-detach-native-app-window",
