@@ -767,6 +767,12 @@ mod tests {
                 host_generation: 12,
             })
             .is_none());
+        assert!(state
+            .current(NativeSurfaceKey {
+                session_epoch: 8,
+                host_generation: 12,
+            })
+            .is_none());
 
         let replacement_key = NativeSurfaceKey {
             session_epoch: 7,
@@ -787,6 +793,15 @@ mod tests {
         assert!(
             state.current(key).is_none(),
             "a newer generation must not be reused by an older generation"
+        );
+        assert!(
+            state
+                .current(NativeSurfaceKey {
+                    session_epoch: 8,
+                    host_generation: 12,
+                })
+                .is_none(),
+            "a newer generation must still be bound to its exact session"
         );
         let restored = state
             .current(replacement_key)
