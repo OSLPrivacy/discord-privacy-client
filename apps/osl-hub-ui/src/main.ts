@@ -1067,19 +1067,7 @@ function renderOnboarding(): void {
 
 function onboardingContent(): string {
   if (onboardingRoute === "pro") return proSetupContent();
-  if (onboardingRoute === "welcome") {
-    const partialIdentity = core.readiness.identityLoaded && core.readiness.bootstrapStatus === "setupRequired";
-    const returning = core.readiness.bootstrapStatus === "passwordRequired" || core.readiness.passwordGateRequired;
-    const primaryRoute: OnboardingRoute = partialIdentity ? "create" : returning ? "unlock" : "create";
-    const primaryLabel = partialIdentity ? "Finish setup" : returning ? "Unlock this device" : "Create account";
-    return `<section class="signin-card" aria-labelledby="route-heading">
-      <img class="osl-logo signin-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/>
-      <h1 id="route-heading" tabindex="-1">${partialIdentity ? "Finish your account" : returning ? "Sign in" : "Create your OSL account"}</h1>
-      <button class="button primary signin-primary" data-onboarding="${primaryRoute}">${primaryLabel}</button>
-      <button class="signin-link" data-onboarding="import">Use a recovery phrase</button>
-      ${returning ? `<div class="signin-divider" aria-hidden="true"><span></span></div><p class="signin-new">Unlock first to add another identity in Settings.</p>` : ""}
-    </section>`;
-  }
+  if (onboardingRoute === "welcome") return welcomeOnboardingContent();
 
   if (onboardingRoute === "create") return identityPasswordForm("Create a password", "Create account", "setup");
   if (onboardingRoute === "unlock") return identityPasswordForm("Unlock OSL", "Unlock", "unlock");
@@ -1098,6 +1086,25 @@ function onboardingContent(): string {
   if (onboardingRoute === "decoy") return `<section class="decoy-workspace" aria-labelledby="route-heading"><h1 id="route-heading" tabindex="-1">Workspace</h1><p>No recent items.</p><button class="button ghost" id="close-decoy" type="button">Close</button></section>`;
 
   return sendingSetupContent();
+}
+
+function welcomeOnboardingContent(): string {
+  const partialIdentity = core.readiness.identityLoaded && core.readiness.bootstrapStatus === "setupRequired";
+  const returning = core.readiness.bootstrapStatus === "passwordRequired" || core.readiness.passwordGateRequired;
+  const primaryRoute: OnboardingRoute = partialIdentity ? "create" : returning ? "unlock" : "create";
+  const primaryLabel = partialIdentity ? "Finish setup" : returning ? "Unlock this device" : "Create account";
+  const heading = partialIdentity ? "Finish your account" : returning ? "Sign in" : "Protect the accounts you already use";
+  const intro = returning
+    ? "Unlock this device to continue protecting your existing accounts and private OSL communication."
+    : "Use OSL with the messaging, social and email accounts you already have. For conversations that need their own private place, OSL communication is built in.";
+  return `<section class="signin-card" aria-labelledby="route-heading">
+    <img class="osl-logo signin-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/>
+    <h1 id="route-heading" tabindex="-1">${heading}</h1>
+    <p class="compact-lead onboarding-centered-copy">${intro}</p>
+    <button class="button primary signin-primary" data-onboarding="${primaryRoute}">${primaryLabel}</button>
+    <button class="signin-link" data-onboarding="import">Use a recovery phrase</button>
+    ${returning ? `<div class="signin-divider" aria-hidden="true"><span></span></div><p class="signin-new">Unlock first to add another identity in Settings.</p>` : ""}
+  </section>`;
 }
 
 function proSetupContent(): string {
