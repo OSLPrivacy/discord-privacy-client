@@ -1479,4 +1479,48 @@ mod password_policy_tests {
         );
         set_file_storage_key(None);
     }
+
+    #[test]
+    fn maybe_decrypt_transparently_supports_both_device_bound_and_main_password() {
+        set_file_storage_key(None);
+
+        let main_dir = tempfile::tempdir().unwrap();
+        set_main_password(main_dir.path(), "main-secret").unwrap();
+        let main_password_blob = maybe_encrypt(br#"{"mode":"main-password"}"#).unwrap();
+        assert!(has_enc_magic(&main_password_blob));
+
+        set_file_storage_key(Some([0xA5; 32]));
+        assert!(maybe_decrypt(&main_password_blob).is_err());
+        set_file_storage_key(None);
+        assert!(maybe_decrypt(&main_password_blob).is_err());
+
+        verify_main_password(main_dir.path(), "main-secret").unwrap();
+        assert_eq!(
+            maybe_decrypt(&main_password_blob).unwrap(),
+            br#"{"mode":"main-password"}"#
+        );
+
+        set_file_storage_key(None);
+
+        let device_dir = tempfile::tempdir().unwrap();
+        let sealer = keystore::MemorySealer::new();
+        ensure_device_bound_fallback_file_storage_key_with_sealer(device_dir.path(), &sealer)
+            .unwrap();
+        let device_bound_blob = maybe_encrypt(br#"{"mode":"device-bound"}"#).unwrap();
+        assert!(has_enc_magic(&device_bound_blob));
+
+        set_file_storage_key(Some([0x5A; 32]));
+        assert!(maybe_decrypt(&device_bound_blob).is_err());
+        set_file_storage_key(None);
+        assert!(maybe_decrypt(&device_bound_blob).is_err());
+
+        ensure_device_bound_fallback_file_storage_key_with_sealer(device_dir.path(), &sealer)
+            .unwrap();
+        assert_eq!(
+            maybe_decrypt(&device_bound_blob).unwrap(),
+            br#"{"mode":"device-bound"}"#
+        );
+
+        set_file_storage_key(None);
+    }
 }
