@@ -1577,6 +1577,30 @@ fn sent_row_proof_withholds(outcome: SentRowProof) -> bool {
     )
 }
 
+/// Whether the post-send proof is complete enough to bind the native carrier row.
+///
+/// This is deliberately stricter than `sent_row_proof_withholds`: an opt-in proof
+/// that is disabled cannot retroactively mark an injected Enter as not injected,
+/// but it also cannot prove the carrier was consumed into exactly one new sent
+/// row. The latter proof exists only when the composer was read back empty and
+/// the transcript diff found one new carrier row.
+#[cfg(any(target_os = "windows", test))]
+fn post_send_carrier_consumption_proven(
+    composer_empty_readback: bool,
+    row_proof: SentRowProof,
+) -> bool {
+    composer_empty_readback && matches!(row_proof, SentRowProof::Proven)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn post_send_carrier_consumption_stage(proven: bool) -> &'static str {
+    if proven {
+        "place_post_send_consumption_proven"
+    } else {
+        "place_post_send_consumption_unproven"
+    }
+}
+
 /// Names the diagnostic contract the placement path was compiled with.
 ///
 /// A fixed `&'static str` like every other label -- it carries no version of the
@@ -1584,7 +1608,7 @@ fn sent_row_proof_withholds(outcome: SentRowProof) -> bool {
 /// label's meaning or a gate's decision changes, so a trail can be matched to the
 /// source that wrote it instead of being assumed current.
 #[cfg(any(target_os = "windows", test))]
-const CARRIER_DIAGNOSTIC_CONTRACT: &str = "send_carrier_diagnostics_v6";
+const CARRIER_DIAGNOSTIC_CONTRACT: &str = "send_carrier_diagnostics_v7";
 
 /// The cause a `TargetChanged` will be reported with, given whatever the caller was
 /// able to establish.
@@ -17240,12 +17264,16 @@ mod windows {
             std::env::var(ROW_PROOF_OPT_IN_VARIABLE).ok().as_deref(),
         );
         if before.is_none() {
-            state.clear_composer_after_confirmed_send();
-            qa_place_stage(sent_row_proof_stage(if enabled {
+            let proof = if enabled {
                 SentRowProof::BaselineUnavailable
             } else {
                 SentRowProof::NotEnabled
-            }));
+            };
+            state.clear_composer_after_confirmed_send();
+            qa_place_stage(sent_row_proof_stage(proof));
+            qa_place_stage(post_send_carrier_consumption_stage(
+                post_send_carrier_consumption_proven(true, proof),
+            ));
             // Enabled but with no baseline is a real failure: the proof was asked for
             // and could not be set up. Disabled is not.
             return !enabled;
@@ -17254,11 +17282,15 @@ mod windows {
             unique_new_sent_carrier_row(target, process_is_trusted, composer, carrier, before)
         });
         state.clear_composer_after_confirmed_send();
-        qa_place_stage(sent_row_proof_stage(if verified.is_some() {
+        let proof = if verified.is_some() {
             SentRowProof::Proven
         } else {
             SentRowProof::RowNotProven
-        }));
+        };
+        qa_place_stage(sent_row_proof_stage(proof));
+        qa_place_stage(post_send_carrier_consumption_stage(
+            post_send_carrier_consumption_proven(true, proof),
+        ));
         if let Some(verified) = verified {
             state.remember_pending_sent_carrier(
                 scope_binding,
@@ -20978,6 +21010,12 @@ mod tests {
         // A proof that was asked for and failed still refuses.
         assert!(sent_row_proof_withholds(SentRowProof::BaselineUnavailable));
         assert!(sent_row_proof_withholds(SentRowProof::RowNotProven));
+        // Withholding the injected send and proving the final sent row are
+        // different facts. Disabled proof remains non-refusing, but never proven.
+        assert!(!post_send_carrier_consumption_proven(
+            true,
+            SentRowProof::NotEnabled
+        ));
 
         let stages = [
             SentRowProof::NotEnabled,
@@ -20998,6 +21036,87 @@ mod tests {
         assert!(finish.contains("unique_new_sent_carrier_row("));
         // Every path names its outcome.
         assert!(finish.contains("sent_row_proof_stage("));
+    }
+
+    #[test]
+    fn post_send_carrier_consumption_requires_empty_readback_and_one_new_sent_row() {
+        assert!(post_send_carrier_consumption_proven(
+            true,
+            SentRowProof::Proven
+        ));
+        for proof in [
+            SentRowProof::NotEnabled,
+            SentRowProof::BaselineUnavailable,
+            SentRowProof::RowNotProven,
+        ] {
+            assert!(
+                !post_send_carrier_consumption_proven(true, proof),
+                "{proof:?} cannot prove post-send carrier consumption"
+            );
+        }
+        for proof in [
+            SentRowProof::NotEnabled,
+            SentRowProof::BaselineUnavailable,
+            SentRowProof::Proven,
+            SentRowProof::RowNotProven,
+        ] {
+            assert!(
+                !post_send_carrier_consumption_proven(false, proof),
+                "a row proof cannot replace the empty composer readback"
+            );
+        }
+        assert_eq!(
+            post_send_carrier_consumption_stage(true),
+            "place_post_send_consumption_proven"
+        );
+        assert_eq!(
+            post_send_carrier_consumption_stage(false),
+            "place_post_send_consumption_unproven"
+        );
+
+        let source = adapter_source();
+        let finish = nested_function_body(source, "fn finish_confirmed_carrier_send(");
+        assert!(finish.contains("post_send_carrier_consumption_proven(true, proof)"));
+        assert!(finish.contains("post_send_carrier_consumption_stage("));
+        let msaa = nested_function_body(source, "fn msaa_unique_new_sent_carrier_row(");
+        assert!(msaa.contains("TranscriptDiffOutcome::OneAddition { index }"));
+        assert!(msaa.contains("MsaaRowProofOutcome::MultipleNew"));
+        assert!(msaa.contains("MsaaRowProofOutcome::RowsRemoved"));
+        assert!(msaa.contains("MsaaRowProofOutcome::TextMismatch"));
+    }
+
+    #[test]
+    fn confirmed_carrier_send_finishes_after_empty_readback_and_before_sent_row_binding() {
+        let source = adapter_source();
+        let place = nested_function_body(source, "pub(super) fn place(");
+        let finish_body = nested_function_body(source, "fn finish_confirmed_carrier_send(");
+        let enter = place
+            .find("qa_place_stage(\"place_enter_injected\");")
+            .expect("Enter injection must be recorded");
+        let consumed = place
+            .find("if !confirm_carrier_consumed(")
+            .expect("the composer must be read back empty after Enter");
+        let disarm = place
+            .find("cleanup.disarm_after_confirmed_send();")
+            .expect("cleanup is disarmed only after consumption proof");
+        let finish_call = place
+            .find("finish_confirmed_carrier_send(")
+            .expect("the sent-row proof must finish the send");
+
+        assert!(enter < consumed, "consumption cannot precede Enter");
+        assert!(consumed < disarm, "cleanup cannot disarm before empty readback");
+        assert!(
+            disarm < finish_call,
+            "row proof runs after the carrier is consumed"
+        );
+        assert!(
+            finish_body.contains("unique_new_sent_carrier_row("),
+            "finish must require one new sent carrier row"
+        );
+        assert!(
+            finish_body.contains("state.remember_pending_sent_carrier("),
+            "only the proven row path may prepare a visible row binding"
+        );
     }
 
     /// The `0,0,0,0` waiver sat downstream of the rejection that discarded the
@@ -21042,9 +21161,9 @@ mod tests {
     fn every_placement_stamps_the_diagnostic_contract_it_was_built_with() {
         assert!(CARRIER_DIAGNOSTIC_CONTRACT.starts_with("send_carrier_diagnostics_v"));
         // Bumped whenever a gate's decision changes, or a trail cannot be matched to
-        // the source that wrote it. v5 = the injection gate stops requiring the empty
-        // composer's rectangle.
-        assert_eq!(CARRIER_DIAGNOSTIC_CONTRACT, "send_carrier_diagnostics_v6");
+        // the source that wrote it. v7 = the post-send consumption proof reports
+        // whether empty readback plus one new carrier row was actually proven.
+        assert_eq!(CARRIER_DIAGNOSTIC_CONTRACT, "send_carrier_diagnostics_v7");
         // Content-free, like every other label.
         assert!(CARRIER_DIAGNOSTIC_CONTRACT
             .chars()
