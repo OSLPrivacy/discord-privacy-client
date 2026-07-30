@@ -402,6 +402,7 @@ describe("OSL Mail Worker", () => {
       kind: string;
     };
     expect(fetchedBody.kind).toBe("external_envelope");
+    expect(fetchedBody.ciphertext_b64).not.toBe(base64Encode(new TextEncoder().encode(mime)));
     const envelope = JSON.parse(fetchedBody.envelope_json) as {
       algorithm: string;
       ephemeral_public_key_b64: string;
