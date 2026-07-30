@@ -7155,17 +7155,26 @@ pub fn cmd_osl_list_key_change_alerts(
     Ok(v)
 }
 
-/// User ACCEPTED a peer's new identity key: adopt it as the new
-/// trusted TOFU baseline, persist, and clear the alert. (User did
-/// the out-of-band safety-number check, or accepts the risk.)
-pub fn cmd_osl_accept_key_change(state: &AppState, discord_id: String) -> Result<(), String> {
+/// User ACCEPTED a peer's new identity key after completing the
+/// out-of-band safety-number check: adopt it as the new trusted TOFU
+/// baseline, persist, and clear the alert.
+pub fn cmd_osl_accept_key_change(
+    state: &AppState,
+    discord_id: String,
+    ceremony_proof: crate::trust_ceremony_proof::TrustCeremonyProof,
+) -> Result<(), String> {
     let new_bundle = {
         let g = state
             .key_change_alerts
             .lock()
             .expect("key_change_alerts mutex poisoned");
         match g.get(&discord_id) {
-            Some(a) => a.pending_bundle.clone(),
+            Some(a) => {
+                ceremony_proof
+                    .verify_safety_number(&a.new_safety_number)
+                    .map_err(|error| error.to_string())?;
+                a.pending_bundle.clone()
+            }
             None => return Err("OSL: no pending key-change".to_string()),
         }
     };

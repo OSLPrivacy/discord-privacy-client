@@ -13,9 +13,12 @@
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use ipc::commands::{cmd_osl_set_whitelist, populate_peer_from_fetch_response};
+use ipc::commands::{
+    cmd_osl_accept_key_change, cmd_osl_set_whitelist, populate_peer_from_fetch_response,
+};
 use ipc::scope::{Scope, ScopeInput};
 use ipc::state::AppState;
+use ipc::trust_ceremony_proof::TrustCeremonyProof;
 use ipc::whitelist::{recipients_for_scope_v3, RecipientsV3Error, ScopeAuthCtx};
 use keystore::client::PubkeysResponse;
 use keystore::generate_identity;
@@ -41,7 +44,10 @@ fn si(s: &Scope) -> ScopeInput {
 
 /// A keyserver pubkeys response for PEER_DID with real-length keys.
 fn peer_pubkeys_response() -> PubkeysResponse {
-    let id = generate_identity("osl_peer_route".to_owned());
+    peer_pubkeys_response_for(generate_identity("osl_peer_route".to_owned()))
+}
+
+fn peer_pubkeys_response_for(id: keystore::Identity) -> PubkeysResponse {
     let x = STANDARD.encode(id.x25519_public.as_bytes());
     let ed = STANDARD.encode(id.ed25519_public.as_bytes());
     let mlkem = STANDARD.encode(id.mlkem_public_bytes);
@@ -258,6 +264,95 @@ fn keyserver_cannot_replace_encryption_keys_under_an_unchanged_identity() {
     assert_eq!(after.pubkey, before.pubkey);
     assert_eq!(after.ik_mlkem768_pub, before.ik_mlkem768_pub);
     assert_eq!(after.tofu_key_bundle, before.tofu_key_bundle);
+}
+
+#[test]
+fn accept_key_change_requires_verified_safety_number() {
+    let state = fresh_state();
+    let first = peer_pubkeys_response();
+    populate_peer_from_fetch_response(&state, PEER_DID, &first).unwrap();
+    let before = state
+        .peer_map
+        .lock()
+        .unwrap()
+        .get(PEER_DID)
+        .unwrap()
+        .clone();
+
+    let changed = peer_pubkeys_response_for(generate_identity(first.user_id.clone()));
+    populate_peer_from_fetch_response(&state, PEER_DID, &changed).unwrap();
+    let alert = state
+        .key_change_alerts
+        .lock()
+        .unwrap()
+        .get(PEER_DID)
+        .expect("changed bundle raises a pending alert")
+        .clone();
+    assert_ne!(
+        alert.pending_bundle,
+        before.tofu_key_bundle.clone().expect("fixture has TOFU bundle"),
+        "fixture must exercise a real bundle rotation"
+    );
+
+    assert_eq!(
+        cmd_osl_accept_key_change(&state, PEER_DID.to_owned(), TrustCeremonyProof::new(""))
+            .unwrap_err(),
+        "OSL safety-number ceremony was not completed"
+    );
+    assert_eq!(
+        cmd_osl_accept_key_change(
+            &state,
+            PEER_DID.to_owned(),
+            TrustCeremonyProof::new("00000 00000 00000 00000 00000 00000")
+        )
+        .unwrap_err(),
+        "OSL safety number does not match"
+    );
+    {
+        let after_refusals = state
+            .peer_map
+            .lock()
+            .unwrap()
+            .get(PEER_DID)
+            .unwrap()
+            .clone();
+        assert_eq!(after_refusals.pubkey, before.pubkey);
+        assert_eq!(after_refusals.ik_mlkem768_pub, before.ik_mlkem768_pub);
+        assert_eq!(after_refusals.tofu_key_bundle, before.tofu_key_bundle);
+        assert!(
+            state.key_change_alerts.lock().unwrap().contains_key(PEER_DID),
+            "failed ceremonies must leave the pending alert available"
+        );
+    }
+
+    cmd_osl_accept_key_change(
+        &state,
+        PEER_DID.to_owned(),
+        TrustCeremonyProof::new(alert.new_safety_number.clone()),
+    )
+    .expect("matching safety number accepts the pending bundle");
+    let accepted = state
+        .peer_map
+        .lock()
+        .unwrap()
+        .get(PEER_DID)
+        .unwrap()
+        .clone();
+    assert_eq!(accepted.pubkey, Some(changed.ik_x25519_pub.clone()));
+    assert_eq!(
+        accepted.ik_mlkem768_pub,
+        Some(changed.ik_mlkem768_pub.clone())
+    );
+    assert_eq!(
+        accepted.tofu_key_bundle,
+        Some(ipc::tofu::KeyBundle {
+            ed25519_pub: changed.ik_ed25519_pub,
+            x25519_pub: changed.ik_x25519_pub,
+            mlkem768_pub: changed.ik_mlkem768_pub,
+            ratchet_initial_pub: changed.ik_ratchet_initial_pub,
+        })
+    );
+    assert!(state.key_change_alerts.lock().unwrap().is_empty());
 }
 
 // NOTE: a 5th test (`receive_defaults_to_snowflake_instead_of_unknown_sender`)

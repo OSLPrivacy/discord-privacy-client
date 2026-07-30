@@ -1854,11 +1854,16 @@ async fn osl_list_key_change_alerts(
 
 /// User accepted a peer's new identity key → adopt as new baseline.
 #[tauri::command]
-async fn osl_accept_key_change(app: tauri::AppHandle, discord_id: String) -> Result<(), String> {
+async fn osl_accept_key_change(
+    app: tauri::AppHandle,
+    discord_id: String,
+    safety_number: String,
+) -> Result<(), String> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
-        ipc::commands::cmd_osl_accept_key_change(state.inner(), discord_id)
+        let proof = ipc::trust_ceremony_proof::TrustCeremonyProof::new(safety_number);
+        ipc::commands::cmd_osl_accept_key_change(state.inner(), discord_id, proof)
     })
     .await
     .map_err(|e| format!("OSL: join error: {e}"))?
