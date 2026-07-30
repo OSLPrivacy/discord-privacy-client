@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use osl_privacy_hub::autoscrub_run::{self, AutoScrubFleetStatus, AutoScrubReviewedRunRequest};
 use osl_privacy_hub::broker::{
     self, DecryptedLocalProtectedMessage, HubBrokerState, OpenedHubAttachment,
     OpenedNativeOverlayTextBatch, OpenedPeerProseMessage, PreparedCoreMessage,
@@ -825,6 +826,26 @@ fn execute_mass_cleanup_batch(
     request: MassCleanupExecutionRequest,
 ) -> Result<(), String> {
     mass_cleanup::execute_batch(&state.osl, request)
+}
+
+#[tauri::command]
+fn get_autoscrub_run_fl(state: State<'_, HubCoreState>) -> Result<AutoScrubFleetStatus, String> {
+    autoscrub_run::fleet_status(&state.osl)
+}
+
+#[tauri::command]
+fn start_autoscrub_reviewed_run(
+    state: State<'_, HubCoreState>,
+    request: AutoScrubReviewedRunRequest,
+) -> Result<AutoScrubFleetStatus, String> {
+    autoscrub_run::start_reviewed_run(&state.osl, request)
+}
+
+#[tauri::command]
+fn request_autoscrub_global_stop(
+    state: State<'_, HubCoreState>,
+) -> Result<AutoScrubFleetStatus, String> {
+    autoscrub_run::request_global_stop(&state.osl)
 }
 
 #[tauri::command]
@@ -7409,6 +7430,9 @@ fn main() {
         get_mass_cleanup_capabilities,
         discover_mass_cleanup_targets,
         execute_mass_cleanup_batch,
+        get_autoscrub_run_fl,
+        start_autoscrub_reviewed_run,
+        request_autoscrub_global_stop,
         validate_hub_activation_code,
         clear_hub_activation_code,
         unlock_hub_password_gate,
