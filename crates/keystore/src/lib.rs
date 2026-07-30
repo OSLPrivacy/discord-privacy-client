@@ -145,6 +145,9 @@ pub enum Error {
 
     #[error("OSL: keyserver bundle proof invalid")]
     PeerBundleProofInvalid,
+
+    #[error("required handshake key is absent")]
+    PrekeyMissing,
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
