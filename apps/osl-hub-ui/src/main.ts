@@ -2569,6 +2569,70 @@ function settingsButtonMarkup(extraClass = ""): string {
   return `<button class="button compact home-settings ${extraClass}" data-route="settings" aria-label="Open Settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.6 3.4 10.2 2h3.6l.6 1.4 1.4.8 1.5-.2 1.8 3.1-.9 1.2v1.6l.9 1.2-1.8 3.1-1.5-.2-1.4.8-.6 1.4h-3.6l-.6-1.4-1.4-.8-1.5.2-1.8-3.1.9-1.2V8.3l-.9-1.2L6.7 4l1.5.2 1.4-.8Z"/><circle cx="12" cy="9.1" r="2.6"/></svg><span>Settings</span></button>`;
 }
 
+function homeDestinationContent(): string {
+  const coreReady = isCoreProtectionReady(core.readiness);
+  const protection = identityProtectionStatus(core.readiness.storageMethod);
+  const deviceProtected = coreReady && protection.state === "protected";
+  const launchableApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch");
+  const connectedApps = launchableApps.filter((app) => app.linked || savedNativeApps.has(app.id as NativeAppId));
+  const pendingFriendReviews = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange).length;
+  const verifiedFriends = hubPeople.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange).length;
+  const recentActivity = notificationsEnabled ? visibleAppNotifications().at(0) ?? null : null;
+  const recommended = !coreReady
+    ? {
+        title: "Finish account protection",
+        detail: coreReadinessLabel(core.readiness),
+        action: `<button class="button primary compact" data-route="settings" data-profile-settings type="button">Fix now</button>`,
+      }
+    : protection.state !== "protected"
+      ? {
+          title: "Protect local storage",
+          detail: protection.detail,
+          action: `<button class="button primary compact" data-route="settings" data-profile-settings type="button">Review device</button>`,
+        }
+      : pendingFriendReviews
+        ? {
+            title: "Review trusted people",
+            detail: `${pendingFriendReviews.toLocaleString("en-US")} ${pendingFriendReviews === 1 ? "request needs" : "requests need"} your approval.`,
+            action: `<button class="button primary compact" data-open-friends type="button">Review</button>`,
+          }
+        : connectedApps.length === 0
+          ? {
+              title: "Connect a service",
+              detail: "No connected app is ready for protected use yet.",
+              action: `<button class="button primary compact" data-route="settings" type="button">Connect</button>`,
+            }
+          : verifiedFriends === 0
+            ? {
+                title: "Add a trusted person",
+                detail: "Protected conversations stay unavailable until someone is verified.",
+                action: `<button class="button primary compact" data-open-friends type="button">Add friend</button>`,
+              }
+            : recentActivity
+              ? {
+                  title: "Review recent protection",
+                  detail: "New local OSL activity is waiting.",
+                  action: `<button class="button primary compact" data-notification-settings type="button">Review</button>`,
+                }
+              : {
+                  title: "Open a protected conversation",
+                  detail: "Your account, local storage and trusted people are ready.",
+                  action: `<button class="button primary compact" data-home-module="osl-chats" type="button">Open OSL Chat</button>`,
+                };
+  const attention = !deviceProtected || pendingFriendReviews > 0 || connectedApps.length === 0 || verifiedFriends === 0
+    ? `<div class="setting-line home-status-row" role="status"><span><strong>${escapeHtml(recommended.title)}</strong><small>${escapeHtml(recommended.detail)}</small></span><span class="status-tag">Needs attention</span></div>`
+    : "";
+  const activityDetail = recentActivity
+    ? "New local OSL activity"
+    : notificationsEnabled
+      ? "No recent local activity"
+      : "Local activity is off";
+  const activityAction = recentActivity || !notificationsEnabled
+    ? `<button class="button compact" data-notification-settings type="button">${recentActivity ? "Review" : "Turn on"}</button>`
+    : `<span class="status-tag">Quiet</span>`;
+  return `<section class="home-protection-summary" aria-labelledby="route-heading" data-home-destination="protection-status"><h1 id="route-heading" tabindex="-1">Home</h1><div class="setting-line home-overall-state" data-home-protection-state="${deviceProtected ? "protected" : "needs-attention"}"><span><strong>${deviceProtected ? "Protected" : "Needs attention"}</strong><small>${escapeHtml(coreReady ? protection.detail : coreReadinessLabel(core.readiness))}</small></span>${recommended.action}</div>${attention}<div class="settings-list home-protection-facts" aria-label="Protection status"><div class="setting-line"><span><strong>Connected apps</strong><small>${connectedApps.length.toLocaleString("en-US")} of ${launchableApps.length.toLocaleString("en-US")} ready</small></span><span class="status-tag">${connectedApps.length ? "Ready" : "Unavailable"}</span></div><div class="setting-line"><span><strong>Trusted people</strong><small>${verifiedFriends.toLocaleString("en-US")} verified${pendingFriendReviews ? `, ${pendingFriendReviews.toLocaleString("en-US")} need review` : ""}</small></span><button class="button compact" data-open-friends type="button">${pendingFriendReviews ? "Review" : "Manage"}</button></div><div class="setting-line"><span><strong>Recent protection</strong><small>${escapeHtml(activityDetail)}</small></span>${activityAction}</div></div></section>`;
+}
+
 function workspaceContent(): string {
   if (route === "mullvad") return `<main class="content-viewport host-viewport native-host-open" id="route-heading" tabindex="-1" aria-label="Your existing Mullvad window is open inside OSL"><span class="sr-only">Mullvad remains a separate foreign application. OSL does not read its account or VPN state.</span></main>`;
   if (route === "osl-chat") return oslChatContent();
@@ -2612,11 +2676,11 @@ function workspaceContent(): string {
   const emailTiles = orderedIds.filter((id) => emailIds.has(id as HomeAppId)).map(renderHomeTile).join("");
   const oslTiles = orderedIds.filter((id) => moduleById.has(id as typeof modules[number]["id"])).map(renderHomeTile).join("");
   const organizeButton = (label: string) => `<button class="home-section-action" data-edit-home type="button" aria-label="${homeEditMode ? "Finish arranging" : `Customize ${label}`}" title="${homeEditMode ? "Done" : `Customize ${label}`}">${homeCommandIcon("organize")}</button>`;
-  const oslSection = oslTiles ? `<section class="home-app-section home-osl-section"><h1 id="route-heading" class="sr-only" tabindex="-1">Home</h1><div class="app-grid" aria-label="OSL tools">${oslTiles}</div></section>` : "";
+  const oslSection = oslTiles ? `<section class="home-app-section home-osl-section"><div class="app-grid" aria-label="OSL tools">${oslTiles}</div></section>` : "";
   const activeIdentity = hubIdentities.find((identity) => identity.active);
   const profileName = activeIdentity?.label?.trim() || "OSL Profile";
   const profileInitial = profileName.slice(0, 1).toLocaleUpperCase();
-  return `<main id="home-navigation" class="content-viewport home-dashboard ${homeEditMode ? "editing" : ""}"><section class="home-primary"><section class="home-apps" aria-labelledby="route-heading"><div class="home-app-groups">${oslSection}${socialTiles ? `<section class="home-app-section"><header><h2>Social</h2>${organizeButton("social apps")}</header><div class="app-grid" aria-label="Social apps">${socialTiles}</div></section>` : ""}${emailTiles ? `<section class="home-app-section"><header><h2>Email</h2>${organizeButton("email apps")}</header><div class="app-grid" aria-label="Email apps">${emailTiles}</div></section>` : ""}</div></section></section><button class="home-profile-dock" data-route="settings" data-profile-settings type="button" aria-label="Open your OSL profile" title="${escapeHtml(profileName)}"><span aria-hidden="true">${escapeHtml(profileInitial)}</span><strong>${escapeHtml(profileName)}</strong></button></main>`;
+  return `<main id="home-navigation" class="content-viewport home-dashboard ${homeEditMode ? "editing" : ""}"><section class="home-primary">${homeDestinationContent()}<section class="home-apps" aria-labelledby="route-heading"><div class="home-app-groups">${oslSection}${socialTiles ? `<section class="home-app-section"><header><h2>Social</h2>${organizeButton("social apps")}</header><div class="app-grid" aria-label="Social apps">${socialTiles}</div></section>` : ""}${emailTiles ? `<section class="home-app-section"><header><h2>Email</h2>${organizeButton("email apps")}</header><div class="app-grid" aria-label="Email apps">${emailTiles}</div></section>` : ""}</div></section></section><button class="home-profile-dock" data-route="settings" data-profile-settings type="button" aria-label="Open your OSL profile" title="${escapeHtml(profileName)}"><span aria-hidden="true">${escapeHtml(profileInitial)}</span><strong>${escapeHtml(profileName)}</strong></button></main>`;
 }
 
 function oslChatContent(): string {

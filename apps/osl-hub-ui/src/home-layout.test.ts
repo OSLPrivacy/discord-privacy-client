@@ -17,7 +17,37 @@ function functionSource(source: string, name: string, nextName: string): string 
 describe("home workspace hierarchy", () => {
   const source = readRelative("./main.ts");
   const styles = readRelative("./styles.css");
+  const destination = functionSource(source, "homeDestinationContent", "workspaceContent");
   const home = functionSource(source, "workspaceContent", "peopleListMarkup");
+
+  it("implements Home as the protection status destination", () => {
+    expect(home).toContain("${homeDestinationContent()}");
+    expect(destination).toContain('data-home-destination="protection-status"');
+    expect(destination).toContain('data-home-protection-state="${deviceProtected ? "protected" : "needs-attention"}"');
+    expect(destination).toContain("identityProtectionStatus(core.readiness.storageMethod)");
+    expect(destination).toContain("coreReadinessLabel(core.readiness)");
+    expect(destination).toContain("Connected apps");
+    expect(destination).toContain("Trusted people");
+    expect(destination).toContain("Recent protection");
+    expect(destination).toContain("visibleAppNotifications().at(0)");
+  });
+
+  it("routes the Home primary action to the highest-priority safe fix", () => {
+    expect(destination).toMatch(/const recommended = !coreReady[\s\S]*protection\.state !== "protected"[\s\S]*pendingFriendReviews[\s\S]*connectedApps\.length === 0[\s\S]*verifiedFriends === 0/);
+    expect(destination).toContain('data-profile-settings');
+    expect(destination).toContain('data-open-friends');
+    expect(destination).toContain('data-notification-settings');
+    expect(destination).toContain('data-home-module="osl-chats"');
+  });
+
+  it("keeps Home status copy product-facing and free of sensitive detail", () => {
+    expect(destination).not.toMatch(/keyservers?|ratchets?|receipts?|browser profiles?|provider adapters?/i);
+    expect(destination).not.toContain("accountId");
+    expect(destination).not.toContain("activeOslUserId");
+    expect(destination).not.toContain("tpm-pcp");
+    expect(destination).not.toContain("keyring");
+    expect(destination).not.toContain("noop-insecure");
+  });
 
   it("keeps a radically simple tile grid without a persistent friends rail", () => {
     const apps = home.indexOf('class="app-grid');
