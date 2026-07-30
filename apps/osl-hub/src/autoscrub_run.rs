@@ -5,13 +5,13 @@
 //! all authority when a run exits or is stopped.
 
 use crate::models::ServiceKind;
+use ipc::AppState;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
-use ipc::AppState;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -277,6 +277,14 @@ pub struct OwnSessionProofInput {
 
 #[derive(Clone, Eq, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RunConsentBatchInput {
+    pub plan_fingerprint: String,
+    pub findings_fingerprint: String,
+    pub item_count: usize,
+}
+
+#[derive(Clone, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunConsentInput {
     pub run_id: String,
     pub provider_id: String,
@@ -285,6 +293,7 @@ pub struct RunConsentInput {
     pub tos_caveat_acknowledged: bool,
     pub unattended_acknowledged: bool,
     pub estimated_item_count: usize,
+    pub batches: Vec<RunConsentBatchInput>,
 }
 
 #[derive(Clone, Eq, PartialEq, Deserialize)]
@@ -1053,6 +1062,19 @@ fn validate_open_contract(
     {
         return Err(AutoScrubRunError::ConsentRequired);
     }
+    if consent.batches.len() != manifest.batches.len() {
+        return Err(AutoScrubRunError::ConsentRequired);
+    }
+    for (consented, reviewed) in consent.batches.iter().zip(&manifest.batches) {
+        validate_field(&consented.plan_fingerprint, MAX_FINGERPRINT_LEN)?;
+        validate_field(&consented.findings_fingerprint, MAX_FINGERPRINT_LEN)?;
+        if consented.plan_fingerprint != reviewed.plan_fingerprint
+            || consented.findings_fingerprint != reviewed.findings_fingerprint
+            || consented.item_count != reviewed.item_keys.len()
+        {
+            return Err(AutoScrubRunError::ConsentRequired);
+        }
+    }
     if session.provider_id != manifest.provider_id
         || session.account_id != manifest.account_id
         || session.session_kind != "owner_provisioned_credential"
@@ -1145,6 +1167,11 @@ fn consent_digest(manifest_digest: &str, consent: &RunConsentInput) -> String {
     absorb(&mut digest, &consent.account_id);
     digest.update(consent.acknowledged_at.to_le_bytes());
     digest.update((consent.estimated_item_count as u64).to_le_bytes());
+    for batch in &consent.batches {
+        absorb(&mut digest, &batch.plan_fingerprint);
+        absorb(&mut digest, &batch.findings_fingerprint);
+        digest.update((batch.item_count as u64).to_le_bytes());
+    }
     format!("consent-{:x}", digest.finalize())
 }
 
@@ -1551,6 +1578,11 @@ mod tests {
             tos_caveat_acknowledged: true,
             unattended_acknowledged: true,
             estimated_item_count: 1,
+            batches: vec![RunConsentBatchInput {
+                plan_fingerprint: "plan-a".to_owned(),
+                findings_fingerprint: "findings-a".to_owned(),
+                item_count: 1,
+            }],
         }
     }
 
@@ -1608,6 +1640,96 @@ mod tests {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    #[test]
+    fn cloud_autoscrub_run_inputs_and_manifest_validate_strictly() {
+        let now = now_ms();
+        let manifest_value = json!({
+            "runId": "strict-run",
+            "providerId": "imap",
+            "accountId": ACCOUNT,
+            "reviewedAt": now - 1_000,
+            "expiresAt": now + 120_000,
+            "tosCaveatAcknowledged": true,
+            "unattended": true,
+            "maxItems": 2,
+            "batches": [{
+                "planFingerprint": "plan-a",
+                "findingsFingerprint": "findings-a",
+                "itemKeys": [item_key("INBOX", "<a@x>")]
+            }]
+        });
+        let consent_value = json!({
+            "runId": "strict-run",
+            "providerId": "imap",
+            "accountId": ACCOUNT,
+            "acknowledgedAt": now - 500,
+            "tosCaveatAcknowledged": true,
+            "unattendedAcknowledged": true,
+            "estimatedItemCount": 1,
+            "batches": [{
+                "planFingerprint": "plan-a",
+                "findingsFingerprint": "findings-a",
+                "itemCount": 1
+            }]
+        });
+
+        let manifest: RunManifestInput = serde_json::from_value(manifest_value.clone()).unwrap();
+        let consent: RunConsentInput = serde_json::from_value(consent_value.clone()).unwrap();
+        let session = session(ACCOUNT);
+        let cap = capability();
+        let opened = AutoScrubRunState::default()
+            .open(
+                OWNER,
+                NativeEntitlement::Confirmed,
+                &manifest,
+                &session,
+                &consent,
+                &cap,
+                &registry(),
+            )
+            .unwrap();
+        assert_eq!(opened.reviewed_items, 1);
+        assert_eq!(opened.reviewed_batches, 1);
+
+        let mut manifest_with_extra = manifest_value.clone();
+        manifest_with_extra["callerSuppliedAuthority"] = json!(true);
+        assert!(serde_json::from_value::<RunManifestInput>(manifest_with_extra).is_err());
+
+        let mut consent_with_extra = consent_value.clone();
+        consent_with_extra["manifestDigest"] = json!(opened.manifest_digest);
+        assert!(serde_json::from_value::<RunConsentInput>(consent_with_extra).is_err());
+
+        let mut wrong_batch = consent.clone();
+        wrong_batch.batches[0].findings_fingerprint = "findings-other".to_owned();
+        assert!(matches!(
+            AutoScrubRunState::default().open(
+                OWNER,
+                NativeEntitlement::Confirmed,
+                &manifest,
+                &session,
+                &wrong_batch,
+                &cap,
+                &registry(),
+            ),
+            Err(AutoScrubRunError::ConsentRequired)
+        ));
+
+        let mut too_small_manifest = manifest;
+        too_small_manifest.max_items = 0;
+        assert!(matches!(
+            AutoScrubRunState::default().open(
+                OWNER,
+                NativeEntitlement::Confirmed,
+                &too_small_manifest,
+                &session,
+                &consent,
+                &cap,
+                &registry(),
+            ),
+            Err(AutoScrubRunError::BoundsExceeded)
+        ));
     }
 
     #[test]
@@ -2165,7 +2287,7 @@ mod production_fleet_tests {
     }
 
     #[test]
-    fn full_autoscrub_native_authority_acceptance() {
+    fn full_autoscrub_reviewed_run_api_acceptance() {
         let _guard = crate::GLOBAL_KEYSTORE_TEST_LOCK
             .lock()
             .expect("global keystore test lock");

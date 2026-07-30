@@ -158,7 +158,7 @@ describe("D1-backed sender-filter capability floor", () => {
     }
   });
 
-  it("creates a nonempty authority record and preserves it across a fresh request", async () => {
+  it("creates a nonempty authority record and preserves it across duplicate requests", async () => {
     const recipientId = userId("positive");
     const identity = await registerTestUser(SELF, recipientId);
     const firstRequestId = "A".repeat(43);
