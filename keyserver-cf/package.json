@@ -7,11 +7,23 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "sh -c 'vitest run \"$@\" && vitest run --config vitest.node.config.ts --passWithNoTests \"$@\"' --",
+    "test:scheme1-mutants": "node scripts/scheme1-contract-mutants.mjs",
+    "test:scheme1-client-admission-mutants": "node scripts/scheme1-client-admission-mutants.mjs",
     "test:watch": "vitest",
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "deploy": "node scripts/refuse-unadmitted-production-action.mjs deploy",
     "db:migrate:local": "wrangler d1 migrations apply osl-keyserver-prod --local",
-    "db:migrate:prod": "wrangler d1 migrations apply osl-keyserver-prod --remote"
+    "db:migrate:prod": "node scripts/refuse-unadmitted-production-action.mjs migrate",
+    "gen:link-grant-key": "node scripts/gen-link-grant-key.mjs",
+    "readiness:build": "node scripts/build-readiness-artifacts.mjs",
+    "readiness:probe-bridge": "node scripts/probe-readiness-bridge.mjs",
+    "readiness:admit": "node scripts/admit-readiness-archive.mjs",
+    "readiness:assert-refusal": "node scripts/assert-readiness-refusal.mjs",
+    "sender-filter:admission": "node scripts/create-sender-filter-deployment-receipt.mjs",
+    "scheme1:client-preflight": "node scripts/create-scheme1-client-preflight.mjs",
+    "canonical-rollout:admit-provisioning": "node scripts/create-canonical-rollout-admission.mjs",
+    "sender-filter:provision-genesis": "node scripts/provision-sender-filter-rollout-genesis.mjs",
+    "release:select": "node scripts/select-trusted-release.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.18.4",

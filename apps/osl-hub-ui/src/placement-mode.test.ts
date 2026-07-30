@@ -20,13 +20,16 @@ describe("guarded sending choices", () => {
     expect(binding).toContain("canCompleteSetup(setup)");
   });
 
-  it("makes Copy safe and keeps Enter modes explicit and experimental", () => {
+  it("makes the onboarding choices ordinary and keeps advanced risk copy out of the trio", () => {
     const onboarding = functionSource("sendingSetupContent", "onboardingPasswordRoleContent");
     const settings = functionSource("sendingSettingsContent", "privacySettingsContent");
     expect(onboarding).toContain("Choose how to send");
     expect(onboarding).toContain('data-send-mode="${mode}"');
-    expect(onboarding).toContain("Never presses Send");
-    expect(onboarding).toContain("Each account asks again");
+    expect(onboarding).toContain('option("manual", "Manual"');
+    expect(onboarding).toContain('option("clipboard", "Clipboard"');
+    expect(onboarding).toContain('option("double", "Double Enter"');
+    expect(onboarding).not.toContain('option("single", "Single Enter"');
+    expect(onboarding).toContain("No mode silently sends");
     expect(settings).toContain("Will ask before first use");
     expect(`${onboarding}${settings}`).not.toMatch(/simulated typing|human-like|evasion/i);
   });

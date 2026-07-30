@@ -78,8 +78,7 @@ you keep this branch on git; resource and namespace IDs are not secrets.
 
 ## §3 Apply migrations
 
-All three migrations (F1.1 baseline + F1.2 subscriptions + F1.3
-crypto) ship together:
+Apply only the migrations approved for the release, in numeric order:
 
 ```sh
 npm run db:migrate:prod
@@ -87,6 +86,156 @@ npm run db:migrate:prod
 ```
 
 Wrangler reports each `00NN_*.sql` as applied. Re-runs are no-ops.
+
+### Canonical identity, scheme-1 prekeys, and sender-filter rollout
+(`0033` then `0034`)
+
+This ordering is mandatory and fail-closed. It is an operator sequence, not
+permission to deploy: the repository's production migration and deploy scripts
+remain refusal gates until the independent release authority admits the exact
+release.
+
+**Current hard stop:** migrations 0033/0034 are undeployed and ineligible for
+deployment. Do not begin this sequence until an independently frozen shipping
+Rust client object has admitted the exact
+`test/fixtures/scheme1-contract-vectors.json` bytes and
+`SCHEME1_PREKEY_CONTRACT_DESCRIPTOR` digest, rejects the stripped/downgrade
+vectors, and persists peer scheme/generation/batch pins across restart. Server
+tests, a clean release, or operator intent cannot substitute for that exact
+client admission.
+
+Before step 1, run the server-owned client admission preflight separately for
+the migration and Worker-activation actions:
+
+```sh
+npm run scheme1:client-preflight -- \
+  --action migrate-0033-0034 \
+  --expected-server-commit <40-hex-current-HEAD> \
+  --expected-server-tree <40-hex-current-repository-tree> \
+  --expected-client-commit <40-hex-shipping-Rust-client-commit> \
+  --expected-client-tree <40-hex-shipping-Rust-client-tree> \
+  --challenge <fresh-lowercase-uuid> \
+  --evidence /absolute/path/signed-rust-client-evidence.json
+
+npm run scheme1:client-preflight -- \
+  --action activate-scheme1-worker \
+  --expected-server-commit <40-hex-current-HEAD> \
+  --expected-server-tree <40-hex-current-repository-tree> \
+  --expected-client-commit <40-hex-shipping-Rust-client-commit> \
+  --expected-client-tree <40-hex-shipping-Rust-client-tree> \
+  --challenge <different-fresh-lowercase-uuid> \
+  --evidence /absolute/path/signed-rust-client-evidence.json
+```
+
+The signed evidence must bind exact Rust commit/tree, frozen server commit
+`6cb2b5a275b3676869d2a69fc10a8b6544dbc9e1`, contract digest
+`8041c9c14f841935c6b42e74829e39747e6b8915bf4c929c80ff1d3e189dffaa`,
+fixture digest
+`8cebfb7bd94a3614178d6cce1af8ed8d36d776978ac57fdc5f407b6e0ce97a6f`,
+the nonempty cross-language cases, distinct process-restart witnesses for the
+durable scheme/generation/batch pins, and all downgrade refusals. The envelope
+is canonical Ed25519, challenge-bound, short-lived, producer-epoch/sequence
+bound, and accepted only from the committed trusted-producer registry.
+The cross-language receipt includes a separate shipping
+register/fetch/replenish reachability witness; exercising only a new parser or
+test helper is not client admission.
+The preflight also reads every contract-critical migration, route, database,
+identity/proof helper, and fixture from both the candidate commit and
+`6cb2b5a…`; any byte drift is a refusal. New admission tooling may be a
+successor, but the scheme-1 server contract itself may not silently move.
+
+Both receipts explicitly set every execution authorization to `false`. They
+are necessary input for a future independently reviewed release selector, not
+permission to call Wrangler. The scheme-1 Rust-client producer registry
+contains only committed public verifier metadata, and the production
+migration/deploy package commands remain unconditional refusals. Therefore
+0033/0034 and scheme-1 Worker activation are still blocked even after a local
+preflight receipt can be produced from trusted client evidence.
+
+1. Freeze and record the full Worker commit, repository tree, and
+   `keyserver-cf` tree. The checkout must still have that commit at `HEAD`.
+2. Confirm `wrangler.toml` names Worker `oslprivacy-keyserver` and binds
+   `DB` to database name `osl-keyserver-prod`, database ID
+   `1de837cd-3bf6-4d33-be82-12d358523600`, with migrations directory
+   `migrations`. Any other binding or database is a refusal.
+3. Apply `0033_canonical_identity_rollout_authority.sql`, then
+   `0034_scheme1_prekey_owner_proofs.sql`, to that exact D1 database
+   **before** deploying the scheme-1 Worker. Read back both `d1_migrations`
+   rows, strict orders 33 then 34, application times, and the committed
+   migration bytes' SHA-256 values. If either row is absent/empty, the order
+   differs, or either digest cannot be proved, stop. The matching Worker reads
+   migration-0034 columns/tables, so Worker-first is both unsafe and
+   unavailable.
+4. Deploy only the exact frozen Worker commit/tree, then collect immutable
+   Worker version/deployment IDs and deployment time. The deployment time must
+   be strictly later than both migrations. Signed producer evidence must also
+   contain the Cloudflare provider observation that this exact version and
+   deployment serve **100%** of script traffic; a fresh signature without
+   those provider facts is a refusal.
+5. Put those read-only facts in the exact
+   `osl.keyserver.canonical-rollout-predeploy-evidence.v1` payload, signed in
+   an `osl.keyserver.canonical-rollout-predeploy-envelope.v1` by an
+   independently reviewed producer key. Then create the source-bound
+   provisioning receipt:
+
+   ```sh
+   npm run canonical-rollout:admit-provisioning -- \
+     --expected-commit <40-hex-commit> \
+     --expected-tree <40-hex-repository-tree> \
+     --evidence /absolute/path/predeploy-evidence.json \
+     > /absolute/private/path/provisioning-admission.json
+   ```
+
+   This receipt admits only the genesis provisioning step. It explicitly does
+   not authorize a deployment or any other production action. The committed
+   trusted-producer registry is intentionally empty; enrollment of a reviewed
+   producer public key is a separate source change and live blocker. Until
+   that happens, both admission creation and provisioning refuse every
+   caller-authored evidence file.
+6. Before first use, create exactly one system recovery directory owned by the
+   provisioning account:
+
+   ```sh
+   sudo install -d -m 0700 -o "$(id -un)" -g "$(id -gn)" \
+     /var/lib/oslprivacy/keyserver
+   ```
+
+   `/var/lib/oslprivacy/keyserver/canonical-rollout-genesis.json` is the only
+   nonce recovery authority. Its name is fixed in source. `--output` below is
+   only a nonce-free derived receipt and cannot select or reset recovery state.
+7. Provision once:
+
+   ```sh
+   npm run sender-filter:provision-genesis -- \
+     --apply \
+     --admission /absolute/private/path/provisioning-admission.json \
+     --expected-commit <40-hex-commit> \
+     --expected-tree <40-hex-repository-tree> \
+     --expected-keyserver-tree <40-hex-keyserver-tree> \
+     --output /absolute/private/path/genesis-derived-receipt.json
+   ```
+
+   The command exclusively creates, file-fsyncs, inode/link-checks, and
+   directory-fsyncs the fixed mode-0600 recovery manifest before any remote
+   call. D1 atomically consumes the admission receipt and reserves the
+   singleton genesis digest; a separate SELECT supplies the authoritative
+   readback. Any process/transport/parse error is ambiguous. A retry, even
+   with another derived `--output`, must load the fixed manifest and reuse its
+   exact nonce, provision time, admission, and source. It must never generate
+   a second nonce.
+8. The only recovery authority is
+   `/var/lib/oslprivacy/keyserver/canonical-rollout-genesis.json`, created
+   owner-only and synced before D1 mutation. `--output` is only a derived
+   receipt path and never selects the nonce/state location. After mutation,
+   require a separate authoritative D1 SELECT that returns the singleton,
+   nonce/receipt digests, exact Worker commit, repository tree, keyserver tree,
+   provision time, and unconsumed state. A matching INSERT `RETURNING` body
+   alone is not sufficient.
+9. Use that retained nonce once with the shipping root-provision route. Then
+   advance the root from monotonic version 1 to 2 with one exact CAS. Read back
+   one consumed genesis row, one immutable root row, one consumed admission
+   receipt, the nonempty root fields, and the stale-version `changes=0`
+   refusal. Do not treat the request response alone as completion evidence.
 
 ---
 
@@ -421,6 +570,31 @@ donation event and no subscription, license, activation delivery, or Pro
 entitlement. The private state binds the receipt path before polling; do not
 change that path during recovery.
 
+Every finalized BTC/XMR Pro purchase or donation atomically inserts one
+privacy-minimal row in `payment_alert_outbox`. The row contains only a one-way
+alert digest, asset, integer USD amount, and delivery timing state. It never
+contains an invoice capability, address, transaction reference, customer, or
+activation code. Telegram delivery is at-least-once: missing configuration or
+a transient API failure leaves the row pending, and every scheduled invocation
+retries it with bounded backoff. Delivered rows are retained for seven days for
+operational proof and then removed by the hourly sweep.
+
+Before enabling public crypto controls, confirm the outbound-only alert
+configuration is present. `TELEGRAM_WEBHOOK_SECRET` is required only for
+inbound bot commands; settlement alerts require the bot token and an operator
+destination:
+
+```sh
+npx wrangler secret list | jq -r '.[].name' \
+  | grep -E '^TELEGRAM_(BOT_TOKEN|OPERATOR_CHAT_IDS)$'
+
+npx wrangler d1 execute osl-keyserver-prod --remote \
+  --command "SELECT status, COUNT(*) AS count FROM payment_alert_outbox GROUP BY status"
+```
+
+Any `pending` row must remain durable until Telegram accepts it. Never delete
+pending rows to make an alert check appear green.
+
 If you see `503 no recent price snapshot`, the five-minute price cron has not
 completed successfully. Diagnose the scheduled handler; for a bounded canary
 only, seed today's
@@ -579,11 +753,414 @@ unset KS
 
 ---
 
+## §11b Audit fixes 2026-07-26 — control-inbox admission + pubkeys minimisation (STAGED, NOT DEPLOYED)
+
+Two medium findings from `docs/security/osl-audit-2026-07-26-codex.md`. Report:
+`docs/reports/server-lane-2026-07-26.md`.
+
+**No migration.** Both are Worker-only. The schema, including migration 0029, is
+untouched, so this is a single ordinary deploy and an ordinary rollback.
+
+```sh
+cd keyserver-cf
+npm run typecheck
+npx vitest run --maxWorkers=1                              # expect 39 files / 381 tests
+npx vitest run --config vitest.node.config.ts              # expect 1 file / 3 tests
+npx wrangler deploy                                        # note the printed version id
+```
+
+Two behaviour changes to be aware of before flipping this:
+
+1. **`POST /v1/control-inbox` can now answer `429 recipient_inbox_full`** on the
+   ordinary lane where it previously always answered 201. It only does so when
+   the recipient already holds 512 undelivered rows (or 384, for a sender that
+   is itself holding four or more). The client already handles this code
+   (`recipient_inbox_full` in `crates/keystore/src/client.rs`), so this is a
+   path that exists rather than a new one. What it replaces is silent deletion
+   of an unrelated sender's rows.
+2. **`GET /v1/pubkeys/:user_id` no longer returns `last_rotated_at`,** and
+   `registered_at` is now UTC-date granularity. `last_rotated_at` is
+   `Option<String>` in every client, so absence deserialises cleanly.
+   `registered_at` is deliberately still present — see the report for why
+   removing it needs a Rust change first.
+
+### Post-deploy probe — prove it is live, not just deployed
+
+```sh
+# Free and read-only. Proves the pubkeys fix and that 0029's snowflake refusal
+# still holds (the inbox probe's setup SQL depends on 0029's column).
+node scripts/post-deploy-probe.mjs --host "$KS" --user <a-known-opaque-osl-id>
+```
+
+The control-inbox probe is opt-in because it is the only one that **writes
+production rows** — the endpoint requires a registered sender and recipient, so
+there is no way to exercise it otherwise. It does not call `/v1/register`;
+it prints two clearly namespaced `wrangler d1 execute` statements, one to set up
+and one to reverse, so every row it creates is auditable and removable:
+
+```sh
+node scripts/post-deploy-probe.mjs --host "$KS" --inbox-probe --yes
+# apply the printed setup SQL, then:
+OSL_PROBE_SETUP_DONE=1 node scripts/post-deploy-probe.mjs --host "$KS" --inbox-probe --yes
+# then apply the printed cleanup SQL, whatever the result
+```
+
+A `201` from that probe is the alarm condition: it means the old evicting Worker
+is live and a row belonging to another sender was just destroyed. `429
+recipient_inbox_full` is the pass.
+
+The probe signs its request by importing the Worker's own
+`src/lib/canonical.ts`, so it cannot drift from what the Worker verifies. If it
+reports a 401 that is a probe/Worker mismatch, not a regression in the fix.
+
+**Rollback.** `npx wrangler rollback`. Nothing persistent changed, so the
+previous Worker resumes exactly its old behaviour — including, note, the
+cross-sender eviction defect.
+
+---
+
+## §11c Migration 0031 — control-inbox sender disposition (IMPLEMENTED, NOT DEPLOYED)
+
+Migration `0031_control_inbox_sender_retention.sql` and its exact Worker are a
+single forward-only release unit. The migration adds retry/quarantine/retired
+metadata, exact seven-day retention, physical quota backstops, D1 transition
+guards, and the schema capability marker
+`control_inbox_sender_disposition=1`. The Worker refuses every control-inbox
+route with 503 until both the marker and all six columns exist.
+
+The order below also accounts for pending migration 0030. Migration 0030
+reserves the `osl1_...` namespace only after a Worker that refuses that
+namespace is live; migration 0031 has the opposite compatibility constraint
+because its Worker names new columns.
+
+### Current live refusal boundary
+
+The independent read-only capture on 2026-07-27 from `11:58:53Z` through
+`11:59:00Z` found the exact production database/environment, one stable 100%
+active Worker version, no `worker_schema_capabilities` table, and therefore
+both 0031 markers `null`. This observation is truth evidence, not deployment
+authorization.
+
+Under that state, Artifact B and every ordinary/migration-dependent Worker
+must be refused. These source-only assertions must both print
+`refusal confirmed`; they perform no remote command:
+
+```sh
+node scripts/assert-readiness-refusal.mjs \
+  --candidate artifact-b-final \
+  --capability-table-exists 0 \
+  --disposition-marker null \
+  --reconciliation-marker null
+
+node scripts/assert-readiness-refusal.mjs \
+  --candidate migration-dependent-worker \
+  --capability-table-exists 0 \
+  --disposition-marker null \
+  --reconciliation-marker null
+```
+
+If either assertion fails, stop. Passing only proves that the unsafe choices
+are rejected for the stated absent-schema evidence. It never authorizes
+Artifact A, Artifact B, a migration, or a deployment. A fresh trusted
+`release:select` invocation is still required for a positive selection.
+
+### Source-only sender-filter deployment-admission receipt
+
+The signed `?sender=` route, its canonical signature component, exact filter
+echo/disposition response, health capability, migration 0031, route
+registration, schema projection, and nonempty Worker/D1 behavior fixture form
+one reviewed source closure. Produce its receipt only from the exact current
+commit:
+
+```sh
+EXPECTED_COMMIT="$(git rev-parse HEAD)"
+npm run sender-filter:admission -- --expected-commit "$EXPECTED_COMMIT"
+```
+
+The command reads committed Git objects only. It performs no HTTP, Wrangler,
+D1, deployment, migration, or secret operation, and writes the JSON receipt
+only to stdout. It refuses a symbolic, missing, or non-current commit and
+requires every reviewed source path to be nonempty and byte-identical to the
+accepted closure.
+
+The committed live evidence is the independently accepted historical
+production capture from `11:58:53Z` through `11:59:00Z`: the active Worker had
+no mapped Git commit, migration 0031 and its capability table were absent, and
+the disposition marker was `null`. The receipt must therefore say:
+
+```text
+source_contract_admitted = true
+deployment_admitted = false
+would_admit_with_trusted_live_evidence = false
+```
+
+Its refusal list must include the unmapped Worker commit, stale evidence,
+missing migration/table/health/route proof, and `live-disposition-null`.
+Positive live evidence exists only as a nonempty test fixture that exercises
+the future validator shape. Source-only output is deliberately incapable of
+authorizing deployment. A later release still needs a fresh trusted read-only
+capture tied to the exact active Worker commit; changing or replacing the
+fixture is not a substitute.
+
+### Enforced production-action boundary
+
+The package production entrypoints intentionally refuse:
+
+```sh
+npm run deploy
+npm run db:migrate:prod
+```
+
+Both commands exit nonzero before invoking Wrangler. The deploy refusal exists
+because the current trusted archive proves selection but does not yet provide
+an executor that uploads the exact admitted bundle. The migration refusal
+exists because the current evidence has no trusted mapping from the active
+bridge Worker version to its exact Git commit and ordered migration. Do not
+replace either command with a direct Wrangler invocation.
+
+The release selector runs source closure and trusted readiness admission in the
+same process, then consumes one independently signed producer receipt:
+
+```sh
+npm run release:select -- \
+  --expected-commit "$EXPECTED_COMMIT" \
+  --archive-dir "$READINESS_ARCHIVE_DIR" \
+  --artifact B \
+  --expected-active-version "$EXPECTED_ACTIVE_VERSION" \
+  --producer-receipt "$ABSOLUTE_PRODUCER_RECEIPT"
+```
+
+The receipt is not an operator-authored JSON form. Its Ed25519 signature must
+verify against a separately enrolled release-producer public key. Before any
+authorized production action, an independent verifier must already have a
+lineage record in its separately administered transactional D1-style store and
+must issue a one-use random challenge from that record. Challenge issue and
+receipt consumption each advance a positive monotonic version with one
+conditional `UPDATE ... WHERE state_version = ?`; a compare-and-swap conflict
+refuses without retry. The producer signs the exact challenge, prior receipt, prior
+Worker version and deployment ID, permitted A/B transition, new Worker version
+and deployment ID, exact commit/archive, and A/B bundle hashes. A producer-
+chosen nonce, a challenge copied from another lineage, an unrecorded first
+receipt, a Worker or deployment ID seen earlier in the lineage, and every
+downgrade transition are refused.
+
+The producer must carry the raw ordered D1 migration rows, canonical
+`sqlite_schema` rows, Worker deployment observation, health response, signed
+sender-filter request bytes and response, capability advertisement, isolation
+nonce, and both Artifact A/B probe observations. Every observation digest is
+recomputed from those raw bytes or canonical rows, and every claimed raw
+cardinality must be positive and exact. A digest-only assertion, zero digest,
+empty schema/migration/signature/probe, or caller-supplied collection is not a
+producer receipt.
+
+The sender-filter request observation includes the exact registered requester
+row selected by the production identity lookup query. Its raw Ed25519 public
+key must be exactly 32 bytes, and the request signature must be exactly 64
+bytes and verify against that registered key over the same length-prefixed
+`control-inbox-get/v1` bytes used by the Worker: recipient user ID, decimal
+timestamp, and requested sender ID. Arbitrary nonempty signature bytes, a
+different registered key, or a signature over a different request are refused.
+
+The selector checks freshness and timestamp ordering, requires nonempty schema
+and positive Artifact B route fixtures, and consumes the pending verifier
+challenge while atomically advancing its private lineage. The verifier state
+is not a receipt-side file and the selector exposes no state-directory flag.
+Restoring, deleting, or replacing caller files cannot change its monotonic
+version or resurrect a consumed challenge.
+There is deliberately no source bootstrap or genesis API: if the state record
+is absent, deleted, malformed, or reset, challenge issue and receipt
+consumption both fail closed. Restoring lineage would require an independent
+operator-controlled recovery procedure and review; presenting sequence 1 or a
+zero previous-receipt hash never creates authority.
+
+No production release-producer public key or verifier lineage is enrolled in
+source today, and the selector's production verifier-store binding is
+unprovisioned. That is deliberate: inventing a public key, challenge, or
+lineage anchor without an independently controlled producer and verifier would
+create fake authority. Therefore every production receipt currently refuses.
+A future key enrollment, durable verifier provisioning/recovery process, and
+producer implementation require separate security review; the producer must
+own provider capture and must never accept caller-written evidence fields.
+
+Even after a producer is independently enrolled, a passing selector result
+says `execution_authorized=false` and `execution_performed=false`; it records
+post-action evidence and is not permission to deploy or migrate.
+
+### Exact safe order (blocked at production mutation)
+
+1. Prove the currently live Worker refuses a snowflake and the reserved
+   `osl1_...` namespace. If the `osl1_...` refusal is not proved, deploy and
+   verify the reviewed 0030 refusal Worker first. That intermediate Worker must
+   not contain the 0031 column queries.
+2. Run the local gates against the exact 0031 source:
+
+   ```sh
+   cd keyserver-cf
+   npm run typecheck
+   npx vitest run --maxWorkers=1
+   npx vitest run --config vitest.node.config.ts
+   ```
+
+3. Stop before production migration. `npm run db:migrate:prod` is an
+   intentional refusal until a trusted receipt maps the active bridge Worker
+   version to its exact commit and proves the 0030→0031 order. No current
+   source fixture earns that fact.
+
+4. Stop before production deploy. A positive `release:select` result proves
+   only the exact candidate selection. `npm run deploy` remains an intentional
+   refusal until an executor can prove it uploads the exact admitted Artifact
+   A or B bundle rather than rebuilding or selecting other worktree bytes.
+
+5. Require the read-only capability probe to pass before calling the release
+   healthy:
+
+   ```sh
+   node scripts/post-deploy-probe.mjs --host "$KS"
+   ```
+
+   A legacy `{ "ok": true }`, capability 0, capability 2, or HTTP 503 is a
+   release failure. Success requires HTTP 200, `ok:true`, and
+   `capabilities.control_inbox_sender_disposition` exactly `1`.
+
+**Failure modes are deliberate.** Worker-first makes POST/GET/DELETE and
+healthz return 503 because the new columns/marker do not exist. Migration-first
+keeps the intermediate 0030 Worker SQL-compatible: existing and newly inserted
+rows take live/empty defaults, while the D1 delete guard prevents its scheduled
+expiry statement from deleting rows whose sender is lookup-disabled. The
+interval must remain brief because that Worker does not understand or surface
+dispositions.
+
+**Rollback is forward-only after step 4.** Once the status-aware Worker can run
+reconciliation, never use `wrangler rollback` to a pre-0031 Worker: its old
+SELECT predicate ignores `delivery_status` and would expose retained bytes as
+live. The D1 guard prevents its DELETE from silently removing protected rows,
+but an additive migration cannot make an old SELECT understand a new column.
+On a bad deploy, restore the exact status-aware Worker or deploy a fixed
+successor that still reports capability version 1. Do not remove the columns,
+marker, or guards.
+
+---
+
 ## §12 Next: F1.4 cutover
 
 Once §0–§11 all pass against the `.workers.dev` URL, proceed to
 [`CUTOVER.md`](./CUTOVER.md) to wire `keyserver.oslprivacy.com`
 and flip Railway to redirect mode.
+
+---
+
+## §12 View-once link grants (`POST /v1/link-grant`) — NOT DEPLOYED
+
+Migration `0028_link_grant_issuance.sql` and the `/v1/link-grant`
+endpoint are **committed and undeployed**. The live Worker serves the
+owner's real identity, and the approval given for the 0026/0027 deploy
+does not carry forward. Nothing below runs without a fresh explicit
+decision.
+
+Current live behaviour, and the correct one until then: the route does
+not exist on the deployed Worker, so no grant can be issued, so
+`cipher-store-cf`'s `POST /v1/link` answers 503 and no view-once link
+can be created anywhere. The lane is fail-closed end to end.
+
+### What the grant is
+
+An **anonymous, single-use, ≤10-minute** Ed25519 token:
+
+```
+Authorization: OSL-Link-Grant <base64url(payload)>.<base64url(sig)>
+payload = {"aud":"osl-link-create","exp":<unix>,"jti":"<32 hex>"}
+sig     = Ed25519( "OSL-LINK-GRANT-v1" || 0x00 || payload )
+```
+
+Three claims, no identity. The keyserver knows who asked (the request
+is signed by a registered identity) and never sees the link; the
+cipher-store sees the link and never knows who asked. Do not add a user
+id "for abuse handling" — abuse handling happens here, by refusing to
+issue. `cipher-store-cf/test/link-grant.test.ts` and
+`test/unit/link-grant-issuer.test.ts` both pin the claim set so this
+cannot drift silently.
+
+### Step 1 — generate the issuer keypair
+
+```bash
+cd keyserver-cf
+npm run gen:link-grant-key
+```
+
+Prints two values and writes nothing to disk. Do not redirect the
+output to a file or a log.
+
+- `LINK_GRANT_SECRET_B64` — PKCS#8 Ed25519 private key. This is the
+  link-creation capability for the entire lane. Keyserver Worker secret
+  only.
+- `LINK_GRANT_PUBKEY_B64` — raw 32-byte public key. Goes on **both**
+  Workers.
+
+### Step 2 — install, in this order
+
+Public half on the verifier first. Installing the secret before the
+verifier's public key would issue grants that the store refuses.
+
+```bash
+cd cipher-store-cf && npx wrangler secret put LINK_GRANT_PUBKEY_B64
+cd keyserver-cf   && npx wrangler secret put LINK_GRANT_PUBKEY_B64
+cd keyserver-cf   && npx wrangler secret put LINK_GRANT_SECRET_B64
+```
+
+The keyserver keeps its own copy of the public half solely so a
+mismatched pair fails loudly at issuance (503) instead of silently
+401-ing every link creation at the store.
+
+### Step 3 — migration BEFORE worker
+
+The new endpoint writes `link_grant_receipts` and `link_grant_quota`.
+Deploying the worker first would 5xx every issuance until the migration
+lands.
+
+```bash
+cd keyserver-cf
+npx wrangler d1 migrations apply osl-keyserver-prod --remote   # 0028
+npx wrangler deploy
+```
+
+Verify (expects `503` before Step 2's secrets exist, `400` after):
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -X POST https://keyserver.oslprivacy.com/v1/link-grant \
+  -H 'content-type: application/json' -d '{}'
+```
+
+### Rate limiting
+
+| Bound | Value | Mechanism |
+| --- | --- | --- |
+| per caller IP | 10/min | native rate-limit binding |
+| per identity | 5/min | native rate-limit binding |
+| per identity | 50/day | D1 trigger `link_grant_daily_quota` (race-safe) |
+| per signed request | 1 grant, ever | `link_grant_receipts` primary key |
+
+The per-minute counters are Cloudflare's permissive, eventually
+consistent ones — abuse control, not authorization. The durable bound is
+the daily trigger. It caps one identity; the anti-Sybil bound is the
+per-IP limit here plus the per-IP limit on `/v1/register`, since
+registration is open by design.
+
+### Rotation
+
+There is no dual-key window — the verifier holds exactly one public key.
+Install the new public half on `cipher-store-cf` first, then the new
+secret here, and accept a few seconds of `grant_signature` refusals in
+between. If the private half leaks, rotate immediately: a leaked issuer
+is not a disclosure (grants carry nothing) but it is an unbounded
+link-creation capability.
+
+### Still not enough to create a link
+
+Even after all of the above, `create_view_once_link` refuses until the
+operator's neutral aged domain exists and `link_url` is configured. See
+`crates/ipc/src/cipher_store_client.rs` `DEFAULT_LINK_HOST` and the
+commented-out route in `cipher-store-cf/wrangler.toml`.
 
 ---
 
@@ -639,5 +1216,6 @@ The deployed worker exposes:
 | POST | `/v1/crypto/quote` | public (rate-limited) |
 | POST | `/v1/crypto/status` | anonymous claim token (rate-limited) |
 | POST | `/v1/internal/crypto/settle` | timestamped watcher Ed25519 signature |
+| POST | `/v1/link-grant` | registered-identity Ed25519 signature (**not deployed**, see §12) |
 
 Plus `scheduled()` handler driven by `[triggers] crons`.

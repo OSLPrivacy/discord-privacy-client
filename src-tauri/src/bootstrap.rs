@@ -162,6 +162,18 @@ fn run_autostart_mode(state: &AppState, register_online: bool) {
     let keyserver_cfg = read_keyserver_config(&base);
     let (identity_loaded, identity_regenerated) =
         load_or_generate_identity(state, &dir, keyserver_cfg.as_ref());
+    if identity_loaded {
+        match ipc::state_reload::load_persisted_prekey_state(state, &dir) {
+            Ok(true) => tracing::info!("OSL bootstrap: prekey state loaded"),
+            Ok(false) => {
+                tracing::info!("OSL bootstrap: no prekeys.json; first replenish tick will publish")
+            }
+            Err(e) => tracing::warn!(
+                error = %e,
+                "OSL bootstrap: prekey state refused; prekey-dependent work stays unavailable"
+            ),
+        }
+    }
     // G3-FIX: keyserver.json is an OVERRIDE only. The base URL always
     // resolves (keyserver.json `base_url` if present+valid → else the
     // built-in production default, via the single shared resolver),
@@ -541,7 +553,7 @@ fn resolve_active_account_on_launch() {
 /// app prefs, password gate) is intentionally left alone.
 fn reset_account_scoped_state(state: &AppState) {
     use std::sync::atomic::Ordering;
-    *state.identity.lock().expect("identity poisoned") = None;
+    state.clear_identity();
     *state.keyserver.lock().expect("keyserver poisoned") = None;
     *state
         .registration_alert
@@ -1216,7 +1228,7 @@ fn load_or_generate_identity(
                     path = %path.display(),
                     "OSL bootstrap: identity loaded"
                 );
-                *state.identity.lock().expect("identity mutex poisoned") = Some(id);
+                install_loaded_identity_and_prekeys(state, id, dir, sealer.as_ref());
                 return (true, false);
             }
             Err(e) => {
@@ -1275,8 +1287,53 @@ fn load_or_generate_identity(
              but won't survive a restart"
         ),
     }
-    *state.identity.lock().expect("identity mutex poisoned") = Some(id);
+    state.install_identity(id);
     (true, true)
+}
+
+fn install_loaded_identity_and_prekeys(
+    state: &AppState,
+    identity: keystore::Identity,
+    dir: &Path,
+    sealer: &dyn keystore::Sealer,
+) {
+    let path = dir.join("prekeys.json");
+    if !path.exists() {
+        state.install_identity(identity);
+        tracing::info!(
+            path = %path.display(),
+            "OSL bootstrap: no prekeys.json; primed fresh launch-local prekey state"
+        );
+        return;
+    }
+
+    match keystore::load_prekey_state(&path, sealer) {
+        Ok(prekeys) => {
+            let opk_count = prekeys.opk_pool.len();
+            *state.identity.lock().expect("identity mutex poisoned") = Some(identity);
+            *state
+                .prekey_state
+                .lock()
+                .expect("prekey_state mutex poisoned") = Some(prekeys);
+            tracing::info!(
+                path = %path.display(),
+                opk_count,
+                "OSL bootstrap: persisted prekey state loaded"
+            );
+        }
+        Err(error) => {
+            *state.identity.lock().expect("identity mutex poisoned") = Some(identity);
+            *state
+                .prekey_state
+                .lock()
+                .expect("prekey_state mutex poisoned") = None;
+            tracing::warn!(
+                error = %error,
+                path = %path.display(),
+                "OSL bootstrap: prekeys.json could not be loaded; prekey authority remains absent"
+            );
+        }
+    }
 }
 
 /// Init the keyserver client and call `register`.
@@ -1363,6 +1420,61 @@ mod multi_account_marker_tests {
         let path = dir.join("active");
         std::fs::write(&path, "not-a-snowflake").expect("write malformed");
         assert_eq!(read_active_marker_at(&path), None);
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn load_or_generate_identity_loads_persisted_prekey_state_and_primes_replenishment() {
+        let dir = temp_dir("prekeys-load");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let sealer = select_best_sealer();
+        let identity = generate_identity("prekey-owner".to_owned());
+        let identity_path = dir.join("identity.json");
+        save_identity(&identity_path, &identity, sealer.as_ref()).expect("save identity");
+
+        let mut persisted =
+            keystore::PrekeyState::new(&identity, keystore::PrekeyConfig::default(), 1_700_000_000);
+        assert!(persisted.consume_opk(0));
+        persisted.add_opk_batch(3);
+        let expected_next_opk_id = persisted.next_opk_id;
+        let expected_opk_ids: Vec<u32> = persisted.opk_pool.iter().map(|opk| opk.id).collect();
+        keystore::save_prekey_state(&dir.join("prekeys.json"), &persisted, sealer.as_ref())
+            .expect("save prekey state");
+
+        let state = AppState::new();
+        assert_eq!(load_or_generate_identity(&state, &dir, None), (true, false));
+        let loaded_identity = state
+            .identity
+            .lock()
+            .expect("identity mutex poisoned")
+            .clone()
+            .expect("identity installed");
+        assert_eq!(loaded_identity.user_id, identity.user_id);
+
+        let loaded_prekeys = state
+            .prekey_state
+            .lock()
+            .expect("prekey_state mutex poisoned")
+            .clone()
+            .expect("persisted prekeys installed");
+        assert_eq!(
+            loaded_prekeys.current_spk.rotated_at_unix_seconds,
+            1_700_000_000
+        );
+        assert_eq!(loaded_prekeys.next_opk_id, expected_next_opk_id);
+        assert_eq!(
+            loaded_prekeys
+                .opk_pool
+                .iter()
+                .map(|opk| opk.id)
+                .collect::<Vec<_>>(),
+            expected_opk_ids
+        );
+        assert!(
+            loaded_prekeys.should_replenish(loaded_prekeys.config.opk_replenish_threshold),
+            "loaded state must be usable by the replenishment decision path"
+        );
+
         std::fs::remove_dir_all(dir).expect("cleanup");
     }
 }

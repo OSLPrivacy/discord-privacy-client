@@ -7,15 +7,53 @@
     <title>OSL private composer</title>
   </head>
   <body>
-    <main class="overlay-shell" aria-label="OSL private composer">
-      <span class="trust-mark" title="This field belongs to OSL, not the app underneath" aria-label="OSL-owned field">OSL</span>
-      <label class="draft-field" for="protected-draft">
-        <span class="sr-only">Private message</span>
-        <textarea id="protected-draft" rows="1" autocomplete="off" spellcheck="true" aria-describedby="draft-bytes" placeholder="Private message"></textarea>
-      </label>
-      <div class="draft-status">
-        <span id="draft-bytes" role="status" aria-live="polite" aria-atomic="true">0 / 1000 bytes</span>
+    <main class="overlay-shell" aria-label="OSL protected Discord conversation">
+      <strong id="friend-label" class="sr-only">Private message</strong>
+      <div id="osl-message-list" class="transcript-mount" aria-label="Messages prepared or opened in this OSL panel" hidden></div>
+      <section id="write-pane" aria-label="Private message composer">
+        <div class="composer-box">
+          <span class="trust-mark" title="This composer belongs to OSL, not Discord" aria-label="OSL-owned composer">OSL</span>
+          <div class="native-composer-backdrop" aria-hidden="true"></div>
+          <!-- The seen half of the failed-send signal. #overlay-send-warning below is
+               announced but lives in .composer-toolbar, which has no room (and under
+               data-native-composer-capture no display at all) in the natively sized
+               736x58 protected window. This banner is a child of .composer-box on
+               purpose: that rectangle is the only thing OSL paints, so the notice
+               needs no window height that does not exist and adds no opaque pixel
+               outside OSL's own composer. It is not a second live region -- the
+               announcement stays with the alerting output below, so a screen
+               reader hears the failure exactly once. -->
+          <div id="overlay-send-failure" class="send-failure" hidden>
+            <span class="send-failure__badge">Not sent</span>
+            <span id="overlay-send-failure-text" class="send-failure__text"></span>
+            <button id="overlay-send-failure-dismiss" class="send-failure__dismiss" type="button" aria-label="Dismiss this failed-send notice" title="Dismiss">&times;</button>
+          </div>
+          <label class="draft-field" for="protected-draft"><span class="sr-only">Private message</span><textarea id="protected-draft" rows="2" autocomplete="off" spellcheck="true" aria-describedby="draft-bytes overlay-status" placeholder="Message"></textarea></label>
+          <div class="composer-toolbar">
+            <output id="overlay-status" role="status" aria-live="polite">Checking protection…</output>
+            <output id="overlay-send-warning" role="alert" aria-live="assertive" aria-atomic="true" style="min-width:0;overflow:hidden;font-size:11px;text-overflow:ellipsis;white-space:nowrap;"></output>
+            <span id="draft-bytes" class="draft-status" role="status" aria-live="polite" aria-atomic="true"></span>
+            <button id="choose-attachment" class="composer-action" type="button" aria-label="Attach a protected file" title="Attach a protected file" disabled>+</button>
+            <button id="prepare-protected" class="send-action" type="button" disabled>Send</button>
+          </div>
+        </div>
+      </section>
+      <!-- Shipping C4 reads this non-live, visually clipped surface. It contains
+           only the bounded native carrier receipt fields already returned to
+           this renderer; never draft text, conversation text, or UI-derived
+           success copy. QA-shell sends do not publish to it. -->
+      <output id="native-carrier-receipt-evidence" class="sr-only" aria-label="Native carrier command receipt evidence" aria-live="off" aria-atomic="true"></output>
+      <div class="overlay-runtime-controls" hidden>
+        <button id="covertext-mode" type="button" aria-pressed="true" disabled>Covertext</button>
+        <button id="burn-protected-chat" type="button" disabled>Burn</button>
+        <select id="protected-send-mode" aria-label="Send behavior" disabled><option value="button">Manual</option><option value="double">Double Enter</option><option value="single">Experimental Single Enter</option></select>
+        <select id="protected-placement-mode" disabled><option value="atomic">Instant</option><option value="compatibility">Match typing · Pro</option></select>
+        <select id="protected-ttl" disabled><option value="3600">1 hour</option><option value="86400">1 day</option><option value="259200">3 days</option><option value="604800">7 days</option></select>
+        <span id="current-expiry">Current: checking…</span>
+        <input id="protected-view-once" type="checkbox" disabled/>
+        <input id="protected-decrypt-display" type="checkbox" disabled/>
       </div>
+      <footer class="sr-only">Discord stays separate. When OSL can verify its composer, Covertext can place a local OSL decoy line there; otherwise the message travels only through OSL. AI Covertext is unavailable until a verified local model pack is installed, and no cloud AI is used. Ordinary Windows capture sees a black composer area instead of this private panel.</footer>
     </main>
     <script type="module" src="/src/overlay.ts"></script>
   </body>

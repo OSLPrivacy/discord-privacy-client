@@ -57,6 +57,17 @@ pub enum SealerError {
 
 pub type Result<T> = core::result::Result<T, SealerError>;
 
+/// What an eviction attempt actually established.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TpmEvictOutcome {
+    /// A persisted TPM key existed and was deleted.
+    Evicted,
+    /// PROVABLY nothing to evict: the platform crypto provider is absent
+    /// or unsupported on this machine, so no key could ever have been
+    /// persisted through it. This is NOT 'the delete failed'.
+    NoTpmNothingToEvict,
+}
+
 /// Sealer abstraction: bytes in, opaque bytes out (and back).
 ///
 /// Implementations MUST authenticate plaintext (via AEAD or TPM
@@ -66,7 +77,15 @@ pub trait Sealer: Send + Sync {
     fn is_tpm_backed(&self) -> bool;
     fn requires_insecure_banner(&self) -> bool;
     fn seal(&self, plaintext: &[u8]) -> Result<Vec<u8>>;
-    fn unseal(&self, ciphertext: &[u8]) -> Result<Vec<u8>>;
+    /// Recover the sealed plaintext.
+    ///
+    /// A8: the return type is deliberately `Zeroizing<Vec<u8>>`, not a bare
+    /// `Vec<u8>`. Every shipping caller of this method is unsealing long-term
+    /// key material (identity blob, prekey state, password record, ratchet
+    /// session), so the buffer must wipe itself when the caller drops it
+    /// rather than being handed back to the allocator with the secret still
+    /// in it. Callers may still treat it as a `Vec<u8>` through `Deref`.
+    fn unseal(&self, ciphertext: &[u8]) -> Result<Zeroizing<Vec<u8>>>;
 }
 
 /// Verify that a sealer can perform the complete operation required by an
@@ -80,7 +99,7 @@ pub fn verify_sealer_round_trip(sealer: &dyn Sealer) -> Result<()> {
     const PROBE: &[u8] = b"OSL/keystore/sealer-readiness/v1";
     let sealed = sealer.seal(PROBE)?;
     let recovered = sealer.unseal(&sealed)?;
-    if recovered != PROBE {
+    if *recovered != *PROBE {
         return Err(SealerError::Malformed(
             "sealer readiness round-trip returned different bytes".into(),
         ));
@@ -114,8 +133,8 @@ impl Sealer for NoOpSealer {
     fn seal(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
         Ok(plaintext.to_vec())
     }
-    fn unseal(&self, ciphertext: &[u8]) -> Result<Vec<u8>> {
-        Ok(ciphertext.to_vec())
+    fn unseal(&self, ciphertext: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+        Ok(Zeroizing::new(ciphertext.to_vec()))
     }
 }
 
@@ -170,7 +189,7 @@ impl Sealer for EphemeralProcessSealer {
     fn seal(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
         seal_with_aead_key(&self.key, plaintext)
     }
-    fn unseal(&self, ciphertext: &[u8]) -> Result<Vec<u8>> {
+    fn unseal(&self, ciphertext: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
         unseal_with_aead_key(&self.key, ciphertext)
     }
 }
@@ -188,7 +207,7 @@ impl Sealer for MemorySealer {
     fn seal(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
         seal_with_aead_key(&self.key, plaintext)
     }
-    fn unseal(&self, ciphertext: &[u8]) -> Result<Vec<u8>> {
+    fn unseal(&self, ciphertext: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
         unseal_with_aead_key(&self.key, ciphertext)
     }
 }
@@ -298,7 +317,7 @@ impl Sealer for KeyringSealer {
     fn seal(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
         seal_with_aead_key(&self.key, plaintext)
     }
-    fn unseal(&self, ciphertext: &[u8]) -> Result<Vec<u8>> {
+    fn unseal(&self, ciphertext: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
         unseal_with_aead_key(&self.key, ciphertext)
     }
 }
@@ -307,7 +326,7 @@ impl Sealer for KeyringSealer {
 
 #[cfg(windows)]
 mod tpm {
-    use super::{Result, Sealer, SealerError, METHOD_TPM};
+    use super::{Result, Sealer, SealerError, TpmEvictOutcome, METHOD_TPM};
     use crypto::aead;
     use crypto::random;
     use windows::core::PCWSTR;
@@ -316,6 +335,7 @@ mod tpm {
         NCryptFreeObject, NCryptOpenKey, NCryptOpenStorageProvider, BCRYPT_PAD_PKCS1,
         CERT_KEY_SPEC, NCRYPT_FLAGS, NCRYPT_HANDLE, NCRYPT_KEY_HANDLE, NCRYPT_PROV_HANDLE,
     };
+    use zeroize::Zeroizing;
 
     const PROVIDER: PCWSTR = windows::core::w!("Microsoft Platform Crypto Provider");
     const KEY_NAME: PCWSTR = windows::core::w!("DiscordPrivacyClientIdentityKeyV1");
@@ -466,7 +486,7 @@ mod tpm {
             }
         }
 
-        fn unseal(&self, ciphertext: &[u8]) -> Result<Vec<u8>> {
+        fn unseal(&self, ciphertext: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
             if ciphertext.len() < 4 {
                 return Err(SealerError::Malformed(
                     "TPM sealed blob shorter than 4-byte length prefix".into(),
@@ -501,7 +521,10 @@ mod tpm {
                     SealerError::Tpm(format!("Decrypt size: {e}"))
                 })?;
 
-                let mut data_key_bytes = vec![0u8; got as usize];
+                // A8: this buffer receives the TPM-unwrapped AEAD data key.
+                // Plain `vec![0u8; n]` would hand that key straight back to
+                // the allocator on drop; `Zeroizing` wipes it first.
+                let mut data_key_bytes = Zeroizing::new(vec![0u8; got as usize]);
                 NCryptDecrypt(
                     key,
                     Some(wrapped),
@@ -525,9 +548,12 @@ mod tpm {
                         aead::KEY_SIZE
                     )));
                 }
-                let mut k = [0u8; aead::KEY_SIZE];
+                // Same reasoning for the fixed-size copy: `aead::Key::from_bytes`
+                // takes the array by value, so without the wrapper this stack
+                // copy of the data key would outlive the call unscrubbed.
+                let mut k = Zeroizing::new([0u8; aead::KEY_SIZE]);
                 k.copy_from_slice(&data_key_bytes[..aead::KEY_SIZE]);
-                let data_key = aead::Key::from_bytes(k);
+                let data_key = aead::Key::from_bytes(*k);
 
                 super::unseal_with_aead_key(&data_key, blob)
             }
@@ -536,22 +562,38 @@ mod tpm {
 
     /// Test/operations helper: evict the persisted TPM key. Used by
     /// the duress-flow strip path (B3).
-    pub fn evict_tpm_key() -> Result<()> {
+    pub fn evict_tpm_key() -> Result<TpmEvictOutcome> {
         unsafe {
             let mut prov = NCRYPT_PROV_HANDLE::default();
-            NCryptOpenStorageProvider(&mut prov, PROVIDER, 0)
-                .map_err(|e| SealerError::Tpm(format!("OpenStorageProvider: {e}")))?;
+            if let Err(e) = NCryptOpenStorageProvider(&mut prov, PROVIDER, 0) {
+                tracing::debug!(
+                    "TPM eviction found no platform crypto provider to evict from: {e}"
+                );
+                return Ok(TpmEvictOutcome::NoTpmNothingToEvict);
+            }
             let mut key = NCRYPT_KEY_HANDLE::default();
             match NCryptOpenKey(prov, &mut key, KEY_NAME, CERT_KEY_SPEC(0), NCRYPT_FLAGS(0)) {
                 Ok(_) => {
-                    let _ = windows::Win32::Security::Cryptography::NCryptDeleteKey(key, 0);
+                    match windows::Win32::Security::Cryptography::NCryptDeleteKey(key, 0) {
+                        Ok(_) => {
+                            // NCryptDeleteKey deletes the persisted key and releases
+                            // the key handle; only the provider remains to free.
+                            let _ = NCryptFreeObject(NCRYPT_HANDLE(prov.0));
+                            Ok(TpmEvictOutcome::Evicted)
+                        }
+                        Err(e) => {
+                            let _ = NCryptFreeObject(NCRYPT_HANDLE(key.0));
+                            let _ = NCryptFreeObject(NCRYPT_HANDLE(prov.0));
+                            Err(SealerError::Tpm(format!("DeleteKey: {e}")))
+                        }
+                    }
                 }
-                Err(_) => {
-                    // Already gone — nothing to do.
+                Err(e) => {
+                    tracing::debug!("TPM eviction found no persisted key to evict: {e}");
+                    let _ = NCryptFreeObject(NCRYPT_HANDLE(prov.0));
+                    Ok(TpmEvictOutcome::NoTpmNothingToEvict)
                 }
             }
-            let _ = NCryptFreeObject(NCRYPT_HANDLE(prov.0));
-            Ok(())
         }
     }
 }
@@ -589,7 +631,7 @@ impl Sealer for TpmSealer {
             "TPM sealer not available on this OS".into(),
         ))
     }
-    fn unseal(&self, _ciphertext: &[u8]) -> Result<Vec<u8>> {
+    fn unseal(&self, _ciphertext: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
         Err(SealerError::Tpm(
             "TPM sealer not available on this OS".into(),
         ))
@@ -597,9 +639,9 @@ impl Sealer for TpmSealer {
 }
 
 #[cfg(not(windows))]
-pub fn evict_tpm_key() -> Result<()> {
+pub fn evict_tpm_key() -> Result<TpmEvictOutcome> {
     // Non-Windows: nothing to evict.
-    Ok(())
+    Ok(TpmEvictOutcome::NoTpmNothingToEvict)
 }
 
 // ---- factory ----
@@ -646,7 +688,7 @@ fn seal_with_aead_key(key: &aead::Key, plaintext: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-fn unseal_with_aead_key(key: &aead::Key, blob: &[u8]) -> Result<Vec<u8>> {
+fn unseal_with_aead_key(key: &aead::Key, blob: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
     if blob.len() < aead::NONCE_SIZE {
         return Err(SealerError::Malformed(format!(
             "blob shorter than {}-byte nonce prefix",
@@ -657,7 +699,21 @@ fn unseal_with_aead_key(key: &aead::Key, blob: &[u8]) -> Result<Vec<u8>> {
     n.copy_from_slice(&blob[..aead::NONCE_SIZE]);
     let nonce = aead::Nonce::from_bytes(n);
     let ct = &blob[aead::NONCE_SIZE..];
+    // A8: `pt` is long-term key material. The previous `Zeroizing::new(())`
+    // here wiped a unit value and therefore nothing at all; wrapping the
+    // buffer itself is what makes the plaintext wipe on drop.
     let pt = aead::open(key, &nonce, SEAL_NONCE_PREFIX, ct)?;
-    let _ = Zeroizing::new(()); // marker: pt is sensitive (caller's responsibility)
-    Ok(pt)
+    Ok(Zeroizing::new(pt))
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(not(windows))]
+    #[test]
+    fn non_windows_evict_tpm_key_reports_no_tpm_nothing_to_evict() {
+        assert_eq!(
+            super::evict_tpm_key().unwrap(),
+            super::TpmEvictOutcome::NoTpmNothingToEvict
+        );
+    }
 }

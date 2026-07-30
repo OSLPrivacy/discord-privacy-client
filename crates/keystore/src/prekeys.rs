@@ -1,21 +1,31 @@
-//! Client-side prekey state management.
+//! Client-side prekey primitives.
 //!
 //! Spec: `docs/design/prekey-infrastructure.md` + the design doc's
 //! "Signed prekey" / "One-time prekey pool" subsections.
 //!
+//! IPC production registration now constructs [`PrekeyState`] and calls the
+//! keyserver initial replenish path after successful identity registration.
+//! This module implements state, persistence, canonical signing, and rotation
+//! helpers, plus the responder-side PQXDH path that removes a local OPK only
+//! after that handshake leg succeeds. IPC also owns server-count-driven
+//! replenish scheduling; broader receive-side product lifecycle work remains
+//! future integration work.
+//! Current Hub/IPC production code does not yet establish the full prekey
+//! fetch/replenish lifecycle. This module implements state, persistence,
+//! canonical signing, rotation helpers, and the responder-side PQXDH path that
+//! removes a local OPK only after that handshake leg succeeds.
+//!
 //! Holds:
 //! - The current SPK keypair (X25519) + its Ed25519 signature + the
 //!   ISO-8601 rotated-at timestamp.
-//! - The previous SPK keypair, retained for one rotation period so
-//!   in-flight messages from clients with stale bundles still
-//!   decrypt.
-//! - The OPK pool — single-use X25519 prekeys, each with a
-//!   monotonically-increasing `id` that the server uses to
-//!   atomically pop one per fetch.
+//! - The previous SPK keypair, retained by this state primitive for the
+//!   intended one-rotation stale-bundle handling.
+//! - The modeled OPK pool — X25519 prekeys with monotonically-increasing
+//!   identifiers matching the server protocol's atomic-pop design.
 //!
-//! Persistence: the secret halves are sealed under the active
-//! [`crate::sealer::Sealer`] and stored in
-//! `<dir>/prekeys.json`, alongside `identity.json`.
+//! The persistence helpers seal secret halves under a supplied
+//! [`crate::sealer::Sealer`] and store them in `<dir>/prekeys.json`, alongside
+//! `identity.json`, when a caller invokes them.
 //!
 //! ## Pool sizing
 //!
@@ -25,7 +35,7 @@
 //!
 //! ## SPK rotation
 //!
-//! Per design, weekly cadence — caller calls
+//! The API supports the designed weekly cadence: a caller must call
 //! [`PrekeyState::should_rotate_spk`] with the current time, and on
 //! `true` calls [`PrekeyState::rotate_spk`]. The previous SPK is
 //! kept on `previous_spk` for one rotation period.
@@ -42,7 +52,7 @@ use crate::sealer::Sealer;
 use crate::{Error, Result};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use crypto::{ed25519, x25519};
+use crypto::{ed25519, pqxdh, x25519};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -71,9 +81,8 @@ impl Default for PrekeyConfig {
     }
 }
 
-/// One OPK keypair the client retains. The server only ever sees
-/// `public`; `secret` is consumed by the receive-side PQXDH handshake
-/// when the OPK is popped.
+/// One modeled OPK keypair. `public` is the wire half; `secret` is consumed by
+/// the responder-side PQXDH path when an inbound handshake names this OPK id.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct OpkEntry {
     pub id: u32,
@@ -144,9 +153,8 @@ impl PrekeyState {
         server_remaining_opk_count <= self.config.opk_replenish_threshold
     }
 
-    /// Generate `count` fresh OPKs and append to the pool. Returns
-    /// the slice of the pool that was newly added (the caller ships
-    /// the public halves to the server).
+    /// Generate `count` fresh OPKs and append to the pool. Returns the slice
+    /// that a future integrated caller can ship to the server.
     pub fn add_opk_batch(&mut self, count: u32) -> &[OpkEntry] {
         let start = self.opk_pool.len();
         for _ in 0..count {
@@ -166,8 +174,8 @@ impl PrekeyState {
         self.config.opk_pool_target.saturating_sub(server_remaining)
     }
 
-    /// Remove the OPK with `id` from the local pool (called after a
-    /// PQXDH initiation has consumed it on the receive side).
+    /// Remove the OPK with `id` from the local pool after a receive-side PQXDH
+    /// flow has consumed it.
     /// Idempotent: removing a nonexistent id is a no-op.
     pub fn consume_opk(&mut self, id: u32) -> bool {
         let idx = self.opk_pool.iter().position(|o| o.id == id);
@@ -177,6 +185,63 @@ impl PrekeyState {
         } else {
             false
         }
+    }
+
+    /// Complete the responder side of a PQXDH handshake and consume the named
+    /// local OPK after, and only after, the caller authenticates the derived
+    /// session key against the enclosing wire leg.
+    ///
+    /// Absence is refusal: if the handshake says an OPK was used but this
+    /// state no longer holds that id, the method returns [`Error::PrekeyMissing`]
+    /// and leaves the pool unchanged. A no-OPK handshake proceeds without
+    /// changing the pool.
+    pub fn respond_and_consume_opk<T, F>(
+        &mut self,
+        recipient: &Identity,
+        sender_ik_pub: &x25519::PublicKey,
+        handshake: &pqxdh::InitiatorHandshake,
+        authenticate: F,
+    ) -> Result<T>
+    where
+        F: FnOnce(&pqxdh::SessionKey) -> Result<T>,
+    {
+        let spk_secret = x25519::SecretKey::from_bytes(self.current_spk.secret);
+        let mlkem_secret = recipient.mlkem_decapsulation_key();
+
+        if handshake.no_opk {
+            let session_key = pqxdh::respond(
+                &recipient.x25519_secret,
+                &spk_secret,
+                None,
+                &mlkem_secret,
+                sender_ik_pub,
+                handshake,
+            )?;
+            return authenticate(&session_key);
+        }
+
+        let opk_id = handshake.opk_id.ok_or(Error::PrekeyMissing)?;
+        let opk_secret_bytes = self
+            .opk_pool
+            .iter()
+            .find(|opk| opk.id == opk_id)
+            .map(|opk| opk.secret)
+            .ok_or(Error::PrekeyMissing)?;
+        let opk_secret = x25519::SecretKey::from_bytes(opk_secret_bytes);
+
+        let session_key = pqxdh::respond(
+            &recipient.x25519_secret,
+            &spk_secret,
+            Some(&opk_secret),
+            &mlkem_secret,
+            sender_ik_pub,
+            handshake,
+        )?;
+        let authenticated = authenticate(&session_key)?;
+        if !self.consume_opk(opk_id) {
+            return Err(Error::PrekeyMissing);
+        }
+        Ok(authenticated)
     }
 }
 
@@ -373,6 +438,150 @@ pub fn load_prekey_state(path: &Path, sealer: &dyn Sealer) -> Result<PrekeyState
     let inner = sealer.unseal(&sealed)?;
     let state: PrekeyState = serde_json::from_slice(&inner)?;
     Ok(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::generate_identity;
+
+    const T0: u64 = 1_700_000_000;
+
+    fn opk_public(entry: &OpkEntry) -> x25519::PublicKey {
+        x25519::PublicKey::from_bytes(entry.public)
+    }
+
+    fn spk_public(entry: &SpkEntry) -> x25519::PublicKey {
+        x25519::PublicKey::from_bytes(entry.public)
+    }
+
+    #[test]
+    fn respond_and_consume_opk_removes_consumed_handshake_key() {
+        let alice = generate_identity("alice".to_string());
+        let bob = generate_identity("bob".to_string());
+        let mut bob_prekeys = PrekeyState::new(&bob, PrekeyConfig::default(), T0);
+        let before = bob_prekeys.opk_pool.len();
+        let opk_id = bob_prekeys.opk_pool[0].id;
+        let opk_pub = opk_public(&bob_prekeys.opk_pool[0]);
+        let spk_pub = spk_public(&bob_prekeys.current_spk);
+
+        let (alice_key, handshake) = pqxdh::initiate(
+            &alice.x25519_secret,
+            &bob.x25519_public,
+            &spk_pub,
+            Some((opk_id, &opk_pub)),
+            &bob.mlkem_encapsulation_key(),
+        )
+        .expect("initiator handshake");
+
+        let bob_key = bob_prekeys
+            .respond_and_consume_opk(&bob, &alice.x25519_public, &handshake, |session_key| {
+                Ok(session_key.clone())
+            })
+            .expect("responder handshake");
+
+        assert_eq!(alice_key.as_bytes(), bob_key.as_bytes());
+        assert_eq!(bob_prekeys.opk_pool.len(), before - 1);
+        assert!(!bob_prekeys.opk_pool.iter().any(|opk| opk.id == opk_id));
+        assert!(!bob_prekeys.consume_opk(opk_id));
+    }
+
+    #[test]
+    fn respond_and_consume_opk_refuses_missing_opk_without_mutation() {
+        let alice = generate_identity("alice".to_string());
+        let bob = generate_identity("bob".to_string());
+        let mut bob_prekeys = PrekeyState::new(&bob, PrekeyConfig::default(), T0);
+        let before_ids: Vec<u32> = bob_prekeys.opk_pool.iter().map(|opk| opk.id).collect();
+        let opk_pub = opk_public(&bob_prekeys.opk_pool[0]);
+        let spk_pub = spk_public(&bob_prekeys.current_spk);
+
+        let (_alice_key, mut handshake) = pqxdh::initiate(
+            &alice.x25519_secret,
+            &bob.x25519_public,
+            &spk_pub,
+            Some((bob_prekeys.opk_pool[0].id, &opk_pub)),
+            &bob.mlkem_encapsulation_key(),
+        )
+        .expect("initiator handshake");
+        handshake.opk_id = Some(bob_prekeys.next_opk_id.saturating_add(100));
+
+        let err = match bob_prekeys.respond_and_consume_opk(
+            &bob,
+            &alice.x25519_public,
+            &handshake,
+            |session_key| Ok(session_key.clone()),
+        ) {
+            Ok(_) => panic!("missing OPK must refuse"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(err, Error::PrekeyMissing));
+        let after_ids: Vec<u32> = bob_prekeys.opk_pool.iter().map(|opk| opk.id).collect();
+        assert_eq!(after_ids, before_ids);
+    }
+
+    #[test]
+    fn respond_and_consume_opk_allows_no_opk_without_consuming_pool() {
+        let alice = generate_identity("alice".to_string());
+        let bob = generate_identity("bob".to_string());
+        let mut bob_prekeys = PrekeyState::new(&bob, PrekeyConfig::default(), T0);
+        let before_ids: Vec<u32> = bob_prekeys.opk_pool.iter().map(|opk| opk.id).collect();
+        let spk_pub = spk_public(&bob_prekeys.current_spk);
+
+        let (alice_key, handshake) = pqxdh::initiate(
+            &alice.x25519_secret,
+            &bob.x25519_public,
+            &spk_pub,
+            None,
+            &bob.mlkem_encapsulation_key(),
+        )
+        .expect("initiator handshake");
+
+        let bob_key = bob_prekeys
+            .respond_and_consume_opk(&bob, &alice.x25519_public, &handshake, |session_key| {
+                Ok(session_key.clone())
+            })
+            .expect("no-OPK responder handshake");
+
+        assert_eq!(alice_key.as_bytes(), bob_key.as_bytes());
+        let after_ids: Vec<u32> = bob_prekeys.opk_pool.iter().map(|opk| opk.id).collect();
+        assert_eq!(after_ids, before_ids);
+    }
+
+    #[test]
+    fn respond_and_consume_opk_keeps_opk_when_authentication_fails() {
+        let alice = generate_identity("alice".to_string());
+        let bob = generate_identity("bob".to_string());
+        let mut bob_prekeys = PrekeyState::new(&bob, PrekeyConfig::default(), T0);
+        let before_ids: Vec<u32> = bob_prekeys.opk_pool.iter().map(|opk| opk.id).collect();
+        let opk_id = bob_prekeys.opk_pool[0].id;
+        let opk_pub = opk_public(&bob_prekeys.opk_pool[0]);
+        let spk_pub = spk_public(&bob_prekeys.current_spk);
+
+        let (_alice_key, handshake) = pqxdh::initiate(
+            &alice.x25519_secret,
+            &bob.x25519_public,
+            &spk_pub,
+            Some((opk_id, &opk_pub)),
+            &bob.mlkem_encapsulation_key(),
+        )
+        .expect("initiator handshake");
+
+        let err = match bob_prekeys.respond_and_consume_opk(
+            &bob,
+            &alice.x25519_public,
+            &handshake,
+            |_session_key| Err(Error::Transport("wire authentication failed".into())),
+        ) {
+            Ok(()) => panic!("wire authentication failure must refuse"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(&err, Error::Transport(_)));
+        let after_ids: Vec<u32> = bob_prekeys.opk_pool.iter().map(|opk| opk.id).collect();
+        assert_eq!(after_ids, before_ids);
+        assert!(bob_prekeys.opk_pool.iter().any(|opk| opk.id == opk_id));
+    }
 }
 
 // ---- byte-array base64 serde helpers ----

@@ -445,8 +445,8 @@ async function createIdentity(userId: string, username: string): Promise<Identit
   const xRaw = await crypto.subtle.exportKey("raw", x.publicKey) as ArrayBuffer;
   const now = new Date().toISOString();
   await env.DB.prepare(
-    `INSERT INTO users(user_id,ik_x25519_pub,ik_ed25519_pub,ik_mlkem768_pub,ik_x25519_signature,registered_at,ik_ratchet_initial_pub)
-     VALUES (?,?,?,?,?,?,?)`,
+    `INSERT INTO users(user_id,ik_x25519_pub,ik_ed25519_pub,ik_mlkem768_pub,ik_x25519_signature,registered_at,ik_ratchet_initial_pub,identity_lookup_enabled)
+     VALUES (?,?,?,?,?,?,?,1)`,
   ).bind(userId, base64Encode(new Uint8Array(xRaw)), base64Encode(new Uint8Array(edRaw)), "mlkem", "signature", now, null).run();
   await env.DB.prepare(
     "INSERT INTO username_directory(username,user_id,friend_code,claimed_at,updated_at) VALUES (?,?,?,?,?)",

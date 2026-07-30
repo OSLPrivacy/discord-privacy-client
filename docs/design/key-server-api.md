@@ -1,8 +1,12 @@
 # Design: Key server API
 
-Status: **Draft.**
+Status: **Draft.** The API surface is partially implemented, but the burn-alert
+sender upload, recipient verification, and UI rendering described below are
+design-only and currently unwired; do not read those sections as shipping
+behavior.
 
-This is the API surface implemented in `discord-privacy-keyserver`.
+This is the intended API surface implemented in parts of
+`discord-privacy-keyserver`.
 v1 single-server; v2.2 fans out to 5 jurisdictions with `share_index`
 per upload.
 
@@ -84,8 +88,9 @@ calling `fetch_pubkeys`.
 
 This isolation is not free — it adds first-contact friction
 (peers must exchange UUIDs, not just Discord usernames) and a
-new client-side state file. v1 ships the simpler model
-deliberately, with the upgrade path documented here.
+new client-side state file. The current design targets the simpler model
+deliberately, with the upgrade path documented here; this text does not claim
+that the v1 behavior is enabled in a shipping client.
 
 TLS terminates at Cloudflare and the Rust client trusts the standard
 public-CA chain; certificate pinning remains deferred. Discord OAuth
@@ -194,6 +199,16 @@ Authenticated upload of new OPK batch and optional new SPK.
 
 ### `POST /v1/wrapped-keys`
 
+> **Status: designed, NOT implemented (2026-07-26).** The per-message wrapped-key model described
+> below is not what the shipping code does. `MessageStore::put` never populates `wrapped_key`
+> (`crates/store/src/lib.rs:194-206`), so there is no per-message key to destroy and no key to
+> withhold. Burn today is **state deletion**: local shredding, server-side deletion, and a
+> cooperative request to the peer. Because messages are sealed to the recipient's long-term keys,
+> the carrier retained by the connected service stays readable to any holder of that key material.
+> Building this model is deliberately deferred. Read everything below as intended design, not as
+> current behaviour, and never quote it as a capability. See
+> `docs/design/osl-public-claim-allowlist.md` §D.
+
 Upload a wrapped key blob.
 
 ```json
@@ -245,20 +260,20 @@ the same signed request is rejected; later fetches return `404 Not Found`.
 
 | `content_type` | Rendering on 404                                                |
 | ---            | ---                                                              |
-| `text`         | Render the original stego'd cover text from Discord as-is. **No "[deleted]" or "[unavailable]" marker.** Observer cannot distinguish burned from cover-text-only messages. |
+| `text`         | Render the original stego'd cover text from Discord as-is (designed, not implemented). **No "[deleted]" or "[unavailable]" marker.** Observer cannot distinguish burned from cover-text-only messages. |
 | `attachment`   | Subtle `[attachment no longer available]` placeholder. Binary content cannot render as readable cover. |
 | `system`       | `[notification no longer available]` placeholder. **NOT cover text** — system messages have a known semantic role and gibberish would be conspicuous. |
 
 See `group-messaging.md` for the full text/attachment burn-rendering
 rationale.
 
-**410 Gone**: returned for content explicitly tombstoned after expiry
+**410 Gone**: returned for content explicitly tombstoned after expiry (designed, not implemented)
 (distinct from 404 which means burned-or-never-existed). Client
 treats 410 the same as 404 for rendering purposes.
 
 ### `DELETE /v1/wrapped-keys`
 
-Burn endpoint.
+Burn endpoint (designed, not implemented).
 
 ```json
 {
@@ -268,7 +283,7 @@ Burn endpoint.
 }
 ```
 
-Authenticated by the burning user's identity signature. v2.2: fans out
+Authenticated by the burning user's identity signature (designed, not implemented). v2.2: fans out
 to all 5 servers; ack when ≥ 3 confirm.
 
 ### `POST /v1/sessions/:other_user_id/rotate`
@@ -307,12 +322,12 @@ Issue a batch of blinded Privacy Pass tokens. See
 ## Re-validation
 
 Recipient clients call `GET /v1/wrapped-keys/:content_id` to check
-whether visible-viewport messages have been burned. The server
+whether visible-viewport messages have been burned (designed, not implemented). The server
 returns:
 
 - `200 OK` with the blob (still present),
-- `404 Not Found` (burned),
-- `410 Gone` (explicitly tombstoned after expiry).
+- `404 Not Found` (burned) (designed, not implemented),
+- `410 Gone` (explicitly tombstoned after expiry) (designed, not implemented).
 
 ### Re-validation triggers
 
@@ -329,7 +344,7 @@ Re-validation fires on **any** of:
 
 ### Cache zero triggers
 
-Clients **zero their local wrapped-key cache** on:
+Clients **zero their local wrapped-key cache** on (designed, not implemented):
 
 - next user interaction (input, focus change, scroll, click), AND
 - a 5-minute timer regardless of interaction.
@@ -348,7 +363,7 @@ just looked at the conversation). Resumes 5-minute timer on focus.
 Server-push burn-event channel for sub-second burn propagation to
 online recipients, replacing the 5-minute polling cycle. Reduces
 burn exposure window from ~5 min to sub-second for online
-recipients.
+recipients (designed, not implemented).
 
 ## What the server sees
 

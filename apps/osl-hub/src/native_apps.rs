@@ -5,6 +5,7 @@
 //! This keeps the launcher useful without turning a Tauri command into a
 //! general process-execution primitive.
 
+use adapter_profile::{AdapterService, AdapterSurface, SupportLevel};
 use serde::{Deserialize, Serialize};
 
 use crate::windows_executable_trust::ExecutablePublisher;
@@ -12,15 +13,13 @@ use crate::windows_executable_trust::ExecutablePublisher;
 use crate::windows_executable_trust::{verify_executable, TrustedExecutable};
 
 #[cfg(target_os = "windows")]
-use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::os::windows::ffi::OsStringExt;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 #[cfg(any(target_os = "windows", test))]
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "windows")]
-use std::process::{Command, Output, Stdio};
-#[cfg(target_os = "windows")]
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::process::{Child, Command, Output, Stdio};
 #[cfg(any(target_os = "windows", test))]
 use std::sync::Mutex;
 #[cfg(target_os = "windows")]
@@ -30,30 +29,7 @@ use std::thread;
 #[cfg(any(target_os = "windows", test))]
 use std::time::{Duration, Instant};
 #[cfg(target_os = "windows")]
-use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_INVALID_PARAMETER, STILL_ACTIVE, WAIT_OBJECT_0,
-};
-#[cfg(target_os = "windows")]
-use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
-};
-#[cfg(target_os = "windows")]
-use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-    SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-};
-#[cfg(target_os = "windows")]
-use windows_sys::Win32::System::StationsAndDesktops::{CloseDesktop, CreateDesktopW};
-#[cfg(target_os = "windows")]
 use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
-#[cfg(target_os = "windows")]
-use windows_sys::Win32::System::Threading::{
-    CreateProcessW, GetExitCodeProcess, OpenProcess, ResumeThread, TerminateProcess,
-    WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, INFINITE,
-    PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
-    STARTUPINFOW,
-};
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -105,213 +81,15 @@ pub struct BrowserAccountImportResult {
 #[serde(rename_all = "camelCase")]
 pub struct ProtectedBrowserImportResult {
     pub selected_sources: Vec<BrowserImportId>,
-    pub password_follow_up_sources: Vec<BrowserImportId>,
-    pub session_only_sources: Vec<BrowserImportId>,
     pub started: bool,
     pub mode: &'static str,
     pub source_selected: bool,
     pub manual_fallback: Option<String>,
 }
 
-const MAX_PROTECTED_BROWSER_IMPORT_SOURCES: usize = 6;
-
-fn validate_protected_browser_import_sources(
-    selected_sources: Vec<BrowserImportId>,
-    available_sources: &[BrowserImportId],
-) -> Result<Vec<BrowserImportId>, String> {
-    if selected_sources.is_empty() || selected_sources.len() > MAX_PROTECTED_BROWSER_IMPORT_SOURCES
-    {
-        return Err("Choose between one and six browsers to import".to_owned());
-    }
-    let mut unique = Vec::with_capacity(selected_sources.len());
-    for source in selected_sources {
-        if unique.contains(&source) {
-            return Err("A browser was selected more than once".to_owned());
-        }
-        if !available_sources.contains(&source) {
-            return Err("A selected browser is unavailable".to_owned());
-        }
-        unique.push(source);
-    }
-    Ok(unique)
-}
-
-fn browser_import_uses_existing_session(source: BrowserImportId) -> bool {
-    matches!(source, BrowserImportId::Firefox | BrowserImportId::Opera)
-}
-
-#[cfg(any(target_os = "windows", test))]
-fn process_lineage(root_process_id: u32, processes: &[(u32, u32)]) -> Vec<u32> {
-    let mut lineage = vec![root_process_id];
-    for _ in 0..processes.len() {
-        let mut changed = false;
-        for &(process_id, parent_process_id) in processes {
-            if process_id != 0
-                && !lineage.contains(&process_id)
-                && lineage.contains(&parent_process_id)
-            {
-                lineage.push(process_id);
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    lineage
-}
-
 #[cfg(target_os = "windows")]
-struct HiddenFirefoxProcess {
-    process_handle: isize,
-    job_handle: isize,
-    process_id: u32,
-    desktop_handle: isize,
-    desktop_name: String,
-}
-
-#[cfg(target_os = "windows")]
-impl HiddenFirefoxProcess {
-    fn id(&self) -> u32 {
-        self.process_id
-    }
-
-    fn is_running(&self) -> std::io::Result<bool> {
-        let mut exit_code = 0u32;
-        if unsafe { GetExitCodeProcess(self.process_handle as _, &mut exit_code) } == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        Ok(exit_code == STILL_ACTIVE as u32)
-    }
-
-    fn terminate_tree(&self) -> std::io::Result<()> {
-        let process_ids = firefox_process_lineage(self.process_id)?;
-        let mut handles = Vec::with_capacity(process_ids.len());
-        handles.push((self.process_handle as _, false));
-        for process_id in process_ids {
-            if process_id == self.process_id {
-                continue;
-            }
-            let handle = unsafe {
-                OpenProcess(
-                    PROCESS_TERMINATE | PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
-                    0,
-                    process_id,
-                )
-            };
-            if handle.is_null() {
-                let error = std::io::Error::last_os_error();
-                // A captured descendant can exit between the snapshot and
-                // OpenProcess. Access-denied and every other failure remain a
-                // hard cleanup error; only a no-longer-valid PID is skipped.
-                if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
-                    continue;
-                }
-                for (handle, close_after) in handles {
-                    if close_after {
-                        unsafe { CloseHandle(handle) };
-                    }
-                }
-                return Err(error);
-            }
-            handles.push((handle, true));
-        }
-
-        // The job is the primary containment boundary. The exact captured PID
-        // lineage below is a bounded fallback for Firefox children that did
-        // not exit with the job on a real Windows host.
-        let _ = unsafe { TerminateJobObject(self.job_handle as _, 1) };
-        let mut result = Ok(());
-        for (handle, close_after) in handles {
-            let mut exit_code = 0u32;
-            let mut handle_error = None;
-            if unsafe { GetExitCodeProcess(handle, &mut exit_code) } == 0 {
-                handle_error = Some(std::io::Error::last_os_error());
-            } else if exit_code == STILL_ACTIVE as u32
-                && unsafe { TerminateProcess(handle, 1) } == 0
-            {
-                let terminate_error = std::io::Error::last_os_error();
-                if unsafe { GetExitCodeProcess(handle, &mut exit_code) } == 0
-                    || exit_code == STILL_ACTIVE as u32
-                {
-                    handle_error = Some(terminate_error);
-                }
-            }
-            if handle_error.is_none()
-                && unsafe { WaitForSingleObject(handle, 5_000) } != WAIT_OBJECT_0
-            {
-                handle_error = Some(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "OSL Firefox process did not exit before the cleanup deadline",
-                ));
-            }
-            if handle_error.is_none()
-                && (unsafe { GetExitCodeProcess(handle, &mut exit_code) } == 0
-                    || exit_code == STILL_ACTIVE as u32)
-            {
-                handle_error = Some(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "OSL Firefox process remained active after termination",
-                ));
-            }
-            if result.is_ok() {
-                if let Some(error) = handle_error {
-                    result = Err(error);
-                }
-            }
-            if close_after {
-                unsafe { CloseHandle(handle) };
-            }
-        }
-        result
-    }
-
-    fn wait(&self) -> std::io::Result<()> {
-        (unsafe { WaitForSingleObject(self.process_handle as _, INFINITE) } == WAIT_OBJECT_0)
-            .then_some(())
-            .ok_or_else(std::io::Error::last_os_error)
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn firefox_process_lineage(root_process_id: u32) -> std::io::Result<Vec<u32>> {
-    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
-    if snapshot.is_null() || snapshot == -1isize as _ {
-        return Err(std::io::Error::last_os_error());
-    }
-    let mut processes = Vec::new();
-    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
-    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-    let mut found = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
-    while found {
-        if processes.len() >= 16_384 {
-            unsafe { CloseHandle(snapshot) };
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Windows process snapshot exceeded its safety bound",
-            ));
-        }
-        processes.push((entry.th32ProcessID, entry.th32ParentProcessID));
-        found = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
-    }
-    unsafe { CloseHandle(snapshot) };
-    Ok(process_lineage(root_process_id, &processes))
-}
-
-#[cfg(target_os = "windows")]
-impl Drop for HiddenFirefoxProcess {
-    fn drop(&mut self) {
-        unsafe {
-            CloseHandle(self.job_handle as _);
-            CloseHandle(self.process_handle as _);
-            CloseDesktop(self.desktop_handle as _);
-        }
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn protected_browser_import_process() -> &'static Mutex<Option<HiddenFirefoxProcess>> {
-    static PROCESS: OnceLock<Mutex<Option<HiddenFirefoxProcess>>> = OnceLock::new();
+fn protected_browser_import_process() -> &'static Mutex<Option<Child>> {
+    static PROCESS: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
     PROCESS.get_or_init(|| Mutex::new(None))
 }
 
@@ -320,44 +98,41 @@ fn close_protected_browser_import_process() -> Result<(), String> {
     let mut process = protected_browser_import_process()
         .lock()
         .map_err(|_| "The OSL Firefox import process state is unavailable".to_owned())?;
-    let Some(child) = process.take() else {
+    let Some(mut child) = process.take() else {
         return Ok(());
     };
-    let root_process_id = child.id();
-    match child.is_running() {
-        Ok(false) => {}
-        Ok(true) => {
-            if crate::firefox_migration_coordinator::close(child.id(), &child.desktop_name).is_ok()
-            {
-                let deadline = Instant::now() + Duration::from_secs(1);
-                loop {
-                    match child.is_running() {
-                        Ok(false) => break,
-                        Ok(true) if Instant::now() < deadline => {
-                            thread::sleep(Duration::from_millis(50));
-                        }
-                        Ok(true) | Err(_) => break,
+    match child.try_wait() {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => {
+            crate::firefox_migration_coordinator::close(child.id())?;
+            let root_process_id = child.id();
+            let deadline = Instant::now() + Duration::from_secs(1);
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => return Ok(()),
+                    Ok(None) if Instant::now() < deadline => {
+                        thread::sleep(Duration::from_millis(50));
+                    }
+                    Ok(None) => {
+                        child.kill().map_err(|_| {
+                            "The OSL Firefox import window could not be closed".to_owned()
+                        })?;
+                        child.wait().map_err(|_| {
+                            "The OSL Firefox import process could not be reaped".to_owned()
+                        })?;
+                        thread::sleep(Duration::from_millis(200));
+                        return crate::firefox_migration_coordinator::is_closed(root_process_id);
+                    }
+                    Err(_) => {
+                        return Err(
+                            "The OSL Firefox import process could not be verified".to_owned()
+                        )
                     }
                 }
             }
         }
-        // Cleanup below uses the retained exact process handle and a fresh
-        // rooted lineage snapshot, so it remains safe even when this status
-        // query itself fails.
-        Err(_) => {}
+        Err(_) => Err("The OSL Firefox import process could not be verified".to_owned()),
     }
-
-    // Enforce cleanup even when Firefox's root has already exited: retained
-    // descendants can outlive it, and are still discoverable through the
-    // exact root PID lineage in the Toolhelp snapshot.
-    child
-        .terminate_tree()
-        .map_err(|_| "The OSL Firefox import window could not be closed".to_owned())?;
-    child
-        .wait()
-        .map_err(|_| "The OSL Firefox import process could not be reaped".to_owned())?;
-    thread::sleep(Duration::from_millis(200));
-    crate::firefox_migration_coordinator::is_closed(root_process_id, &child.desktop_name)
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -365,7 +140,15 @@ fn close_protected_browser_import_process() -> Result<(), String> {
 pub struct NativeAppStatus {
     pub id: NativeAppId,
     pub display_name: &'static str,
+    /// Installed means the fixed, reviewed native client can be launched. It is
+    /// not evidence that OSL Protected mode is available for that service.
     pub availability: NativeAppAvailability,
+    /// Public claim state for OSL's support of this native service. This is
+    /// deliberately separate from `availability` so a detected app does not
+    /// become a product support claim.
+    pub support_status: NativeAppSupportStatus,
+    /// The strongest protected-mode handoff the public UI may offer today.
+    pub protected_mode: NativeAppProtectedMode,
     /// True only when the current integration has a verified secondary-instance
     /// switch that keeps writable state inside an OSL-owned profile.
     pub isolated_profile_available: bool,
@@ -379,6 +162,21 @@ pub struct NativeAppStatus {
 pub enum NativeAppAvailability {
     Installed,
     Installable,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NativeAppSupportStatus {
+    Beta,
+    ComingSoon,
+    ExternallyBlocked,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NativeAppProtectedMode {
+    AssistOnly,
     Unavailable,
 }
 
@@ -453,14 +251,18 @@ struct ExecutableCandidate {
     relative_path: &'static str,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 struct NativeAppManifest {
     id: NativeAppId,
     display_name: &'static str,
+    adapter_service: AdapterService,
+    adapter_surface: AdapterSurface,
+    adapter_support: SupportLevel,
     package_id: &'static str,
     package_source: &'static str,
     candidates: &'static [ExecutableCandidate],
     publisher: Option<ExecutablePublisher>,
+    store_package_family_name: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -551,8 +353,8 @@ const WHATSAPP_PACKAGE_NAME: &str = "5319275A.WhatsAppDesktop";
 #[cfg(any(target_os = "windows", test))]
 const WHATSAPP_PACKAGE_PUBLISHER_ID: &str = "cv1g1gvanyjgm";
 
-#[cfg(any(target_os = "windows", test))]
-const WHATSAPP_PACKAGE_FAMILY_NAME: &str = "5319275A.WhatsAppDesktop_cv1g1gvanyjgm";
+pub(crate) const WHATSAPP_PACKAGE_FAMILY_NAME: &str =
+    "5319275A.WhatsAppDesktop_cv1g1gvanyjgm";
 
 #[cfg(target_os = "windows")]
 const MAX_WHATSAPP_PACKAGE_COUNT: u32 = 32;
@@ -634,38 +436,57 @@ const NATIVE_APPS: &[NativeAppManifest] = &[
     NativeAppManifest {
         id: NativeAppId::Discord,
         display_name: "Discord",
+        adapter_service: AdapterService::Discord,
+        adapter_surface: AdapterSurface::InstalledNativeClient,
+        adapter_support: SupportLevel::Experimental,
         package_id: "Discord.Discord",
         package_source: "winget",
         candidates: DISCORD_CANDIDATES,
         publisher: Some(ExecutablePublisher::Discord),
+        store_package_family_name: None,
     },
     NativeAppManifest {
         id: NativeAppId::Telegram,
         display_name: "Telegram",
+        adapter_service: AdapterService::Telegram,
+        adapter_surface: AdapterSurface::InstalledNativeClient,
+        adapter_support: SupportLevel::ComingSoon,
         package_id: "Telegram.TelegramDesktop",
         package_source: "winget",
         candidates: TELEGRAM_CANDIDATES,
         publisher: Some(ExecutablePublisher::Telegram),
+        store_package_family_name: None,
     },
     NativeAppManifest {
         id: NativeAppId::Signal,
         display_name: "Signal",
+        adapter_service: AdapterService::Signal,
+        adapter_surface: AdapterSurface::InstalledNativeClient,
+        adapter_support: SupportLevel::ComingSoon,
         package_id: "OpenWhisperSystems.Signal",
         package_source: "winget",
         candidates: SIGNAL_CANDIDATES,
         publisher: Some(ExecutablePublisher::Signal),
+        store_package_family_name: None,
     },
     NativeAppManifest {
         id: NativeAppId::Whatsapp,
         display_name: "WhatsApp",
+        adapter_service: AdapterService::Whatsapp,
+        adapter_surface: AdapterSurface::InstalledNativeClient,
+        adapter_support: SupportLevel::ComingSoon,
         package_id: "9NKSQGP7F2NH",
         package_source: "msstore",
         candidates: WHATSAPP_CANDIDATES,
         publisher: None,
+        store_package_family_name: Some(WHATSAPP_PACKAGE_FAMILY_NAME),
     },
     NativeAppManifest {
         id: NativeAppId::Outlook,
         display_name: "Outlook",
+        adapter_service: AdapterService::Outlook,
+        adapter_surface: AdapterSurface::InstalledNativeClient,
+        adapter_support: SupportLevel::ComingSoon,
         // Outlook is commonly provisioned with Microsoft 365 rather than as
         // an independently safe winget action. Missing Outlook remains
         // unavailable instead of exposing a guessed installer command.
@@ -673,6 +494,7 @@ const NATIVE_APPS: &[NativeAppManifest] = &[
         package_source: "unavailable",
         candidates: OUTLOOK_CLASSIC_CANDIDATES,
         publisher: Some(ExecutablePublisher::Microsoft),
+        store_package_family_name: None,
     },
 ];
 
@@ -857,7 +679,6 @@ const FIREFOX_SERVICES: &[(FirefoxServiceId, &str)] = &[
     (FirefoxServiceId::Icloud, "https://www.icloud.com/mail/"),
 ];
 
-#[cfg(any(target_os = "windows", test))]
 fn manifest(id: NativeAppId) -> &'static NativeAppManifest {
     // Exhaustive enum input and a static manifest make this infallible. Avoid
     // accepting a service name string and accidentally widening the boundary.
@@ -867,6 +688,12 @@ fn manifest(id: NativeAppId) -> &'static NativeAppManifest {
         .expect("every native app enum has a fixed manifest")
 }
 
+pub(crate) fn whatsapp_store_package_family_name() -> &'static str {
+    manifest(NativeAppId::Whatsapp)
+        .store_package_family_name
+        .expect("WhatsApp manifest must bind a Store package family")
+}
+
 #[cfg(any(target_os = "windows", test))]
 pub(crate) fn native_app_publisher(id: NativeAppId) -> Option<ExecutablePublisher> {
     manifest(id).publisher
@@ -874,6 +701,24 @@ pub(crate) fn native_app_publisher(id: NativeAppId) -> Option<ExecutablePublishe
 
 fn isolated_native_profile_available(id: NativeAppId) -> bool {
     matches!(id, NativeAppId::Discord | NativeAppId::Telegram)
+}
+
+fn native_app_support_status(id: NativeAppId) -> NativeAppSupportStatus {
+    match manifest(id).adapter_support {
+        SupportLevel::Supported | SupportLevel::Experimental => NativeAppSupportStatus::Beta,
+        SupportLevel::ComingSoon => NativeAppSupportStatus::ComingSoon,
+        SupportLevel::ExternallyBlocked => NativeAppSupportStatus::ExternallyBlocked,
+    }
+}
+
+fn native_app_protected_mode(id: NativeAppId) -> NativeAppProtectedMode {
+    match id {
+        NativeAppId::Discord => NativeAppProtectedMode::AssistOnly,
+        NativeAppId::Telegram
+        | NativeAppId::Signal
+        | NativeAppId::Whatsapp
+        | NativeAppId::Outlook => NativeAppProtectedMode::Unavailable,
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -919,6 +764,8 @@ fn list_native_apps_with_installer_probe(
                 id: app.id,
                 display_name: app.display_name,
                 availability,
+                support_status: native_app_support_status(app.id),
+                protected_mode: native_app_protected_mode(app.id),
                 isolated_profile_available: isolated_native_profile_available(app.id),
                 supports_overlay: false,
             }
@@ -1031,20 +878,29 @@ pub fn begin_browser_account_import(
             .collect::<Vec<_>>();
         let preferred_source = preferred_browser_import_source(&detected_sources)
             .ok_or_else(|| "No supported browser account source was found".to_owned())?;
-        let result = begin_protected_browser_import(
-            app_local_data_dir,
-            owner_osl_user_id,
-            vec![preferred_source],
-            0,
-        )?;
+        let firefox = firefox_executable().ok_or_else(|| {
+            "Firefox is required for OSL's browser-owned account migration".to_owned()
+        })?;
+        let profile = ensure_firefox_profile(app_local_data_dir, owner_osl_user_id)?;
+        let mut firefox_process = spawn_firefox_migration_wizard(&firefox, &profile)
+            .map_err(|_| "The OSL Firefox import settings could not be opened".to_owned())?;
+        thread::sleep(Duration::from_millis(900));
+        if firefox_process
+            .try_wait()
+            .map_err(|_| "The OSL Firefox import process could not be verified".to_owned())?
+            .is_some()
+        {
+            return Err("The OSL Firefox import settings closed before opening".to_owned());
+        }
         Ok(BrowserAccountImportResult {
             preferred_source,
             detected_sources,
             opened: true,
             mode: "firefoxMigrationWizard",
-            manual_export_required: result
-                .password_follow_up_sources
-                .contains(&preferred_source),
+            manual_export_required: matches!(
+                preferred_source,
+                BrowserImportId::Chrome | BrowserImportId::Firefox
+            ),
         })
     }
     #[cfg(not(target_os = "windows"))]
@@ -1060,86 +916,71 @@ pub fn begin_protected_browser_import(
     app_local_data_dir: &std::path::Path,
     owner_osl_user_id: &str,
     selected_sources: Vec<BrowserImportId>,
-    _owner_window: isize,
 ) -> Result<ProtectedBrowserImportResult, String> {
     #[cfg(target_os = "windows")]
     {
         close_protected_browser_import_process()?;
-        let available_sources = BROWSER_IMPORTS
-            .iter()
-            .filter(|browser| browser_import_executable(browser).is_some())
-            .map(|browser| browser.id)
-            .collect::<Vec<_>>();
-        let unique =
-            validate_protected_browser_import_sources(selected_sources, &available_sources)?;
+        if selected_sources.len() != 1 {
+            return Err("Open exactly one queued browser import at a time".to_owned());
+        }
+        let mut unique = Vec::with_capacity(selected_sources.len());
+        for id in selected_sources {
+            if unique.contains(&id)
+                || browser_import_executable(browser_import_manifest(id)).is_none()
+            {
+                return Err("A selected browser is unavailable".to_owned());
+            }
+            unique.push(id);
+        }
         let firefox = firefox_executable().ok_or_else(|| {
             "Firefox is required for OSL's browser-owned account migration".to_owned()
         })?;
         let profile = ensure_firefox_profile(app_local_data_dir, owner_osl_user_id)?;
-        let mut password_follow_up_sources = Vec::new();
-        let mut session_only_sources = Vec::new();
-        for (index, source) in unique.iter().copied().enumerate() {
-            // Current Firefox cannot complete Firefox-profile migration here,
-            // and Opera's migration never completed in a bounded hidden live
-            // run. Preserve those real sessions through OSL's existing-browser
-            // companion instead of opening a flow that cannot finish.
-            if browser_import_uses_existing_session(source) {
-                session_only_sources.push(source);
-                continue;
-            }
-            let firefox_process = spawn_firefox_migration_wizard(&firefox, &profile)
-                .map_err(|_| "The OSL Firefox migration wizard could not be opened".to_owned())?;
-            if !firefox_process
-                .is_running()
-                .map_err(|_| "The OSL Firefox import process could not be verified".to_owned())?
-            {
-                return Err("The OSL Firefox migration wizard closed before opening".to_owned());
-            }
-            let process_id = firefox_process.id();
-            let desktop_name = firefox_process.desktop_name.clone();
-            *protected_browser_import_process()
-                .lock()
-                .map_err(|_| "The OSL Firefox import process state is unavailable".to_owned())? =
-                Some(firefox_process);
-            match crate::firefox_migration_coordinator::coordinate(
-                process_id,
-                source,
-                0,
-                &desktop_name,
-            ) {
-                Ok(true) => password_follow_up_sources.push(source),
-                Ok(false) => {}
-                Err(error) => {
+        let mut firefox_process = spawn_firefox_migration_wizard(&firefox, &profile)
+            .map_err(|_| "The OSL Firefox migration wizard could not be opened".to_owned())?;
+        thread::sleep(Duration::from_millis(900));
+        if firefox_process
+            .try_wait()
+            .map_err(|_| "The OSL Firefox import process could not be verified".to_owned())?
+            .is_some()
+        {
+            return Err("The OSL Firefox migration wizard closed before opening".to_owned());
+        }
+        let process_id = firefox_process.id();
+        let coordination = crate::firefox_migration_coordinator::coordinate(process_id, unique[0]);
+        *protected_browser_import_process()
+            .lock()
+            .map_err(|_| "The OSL Firefox import process state is unavailable".to_owned())? =
+            Some(firefox_process);
+        if coordination.is_ok() {
+            // Firefox closes the migration wizard after its own Import action
+            // finishes. Wait for that exact OSL-owned window so the renderer
+            // can advance a multi-browser queue without asking for a second
+            // confirmation. The retained process is still the only process
+            // finish_protected_browser_import may close or terminate.
+            let deadline = Instant::now() + Duration::from_secs(300);
+            loop {
+                if crate::firefox_migration_coordinator::is_closed(process_id).is_ok() {
                     close_protected_browser_import_process()?;
-                    return Err(error);
+                    break;
                 }
-            }
-            // Firefox can leave a normal new-tab window behind after Done.
-            // Close the exact retained OSL-owned process before the next
-            // source; ordinary Firefox processes and profiles are untouched.
-            close_protected_browser_import_process()?;
-            if index + 1 < unique.len() {
-                thread::sleep(Duration::from_millis(300));
+                if Instant::now() >= deadline {
+                    return Err("Firefox import did not finish within five minutes".to_owned());
+                }
+                thread::sleep(Duration::from_millis(100));
             }
         }
         Ok(ProtectedBrowserImportResult {
             selected_sources: unique,
-            password_follow_up_sources,
-            session_only_sources,
             started: true,
             mode: "firefoxMigrationWizard",
-            source_selected: true,
-            manual_fallback: None,
+            source_selected: coordination.is_ok(),
+            manual_fallback: coordination.err(),
         })
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (
-            app_local_data_dir,
-            owner_osl_user_id,
-            selected_sources,
-            _owner_window,
-        );
+        let _ = (app_local_data_dir, owner_osl_user_id, selected_sources);
         Err("Browser account migration is available only on Windows".to_owned())
     }
 }
@@ -1770,7 +1611,7 @@ fn installed_executable(app: &NativeAppManifest) -> Option<TrustedExecutable> {
     })
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(test)]
 pub(crate) fn newest_discord_executable_under(install_root: &Path) -> Option<PathBuf> {
     newest_discord_channel_executable_under(install_root, "Discord.exe")
 }
@@ -1856,7 +1697,7 @@ fn whatsapp_store_package_root() -> Option<PathBuf> {
     use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS};
     use windows_sys::Win32::Storage::Packaging::Appx::GetPackagesByPackageFamily;
 
-    let family = std::ffi::OsStr::new(WHATSAPP_PACKAGE_FAMILY_NAME)
+    let family = std::ffi::OsStr::new(whatsapp_store_package_family_name())
         .encode_wide()
         .chain(std::iter::once(0))
         .collect::<Vec<_>>();
@@ -2544,145 +2385,24 @@ fn spawn_firefox_tab(
 fn spawn_firefox_migration_wizard(
     executable: &TrustedExecutable,
     profile: &Path,
-) -> std::io::Result<HiddenFirefoxProcess> {
-    static NEXT_DESKTOP: AtomicU64 = AtomicU64::new(1);
-    let desktop_name = format!(
-        "OSLBrowserImport-{}-{}",
-        std::process::id(),
-        NEXT_DESKTOP.fetch_add(1, Ordering::Relaxed)
-    );
-    let desktop_name_wide = desktop_name
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let desktop = unsafe {
-        CreateDesktopW(
-            desktop_name_wide.as_ptr(),
-            std::ptr::null(),
-            std::ptr::null(),
-            0,
-            0x1000_0000,
-            std::ptr::null(),
-        )
-    };
-    if desktop.is_null() {
-        return Err(std::io::Error::last_os_error());
-    }
-    let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
-    if job.is_null() {
-        unsafe { CloseDesktop(desktop) };
-        return Err(std::io::Error::last_os_error());
-    }
-    let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
-    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    if unsafe {
-        SetInformationJobObject(
-            job,
-            JobObjectExtendedLimitInformation,
-            (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
-            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-        )
-    } == 0
-    {
-        unsafe {
-            CloseHandle(job);
-            CloseDesktop(desktop);
-        }
-        return Err(std::io::Error::last_os_error());
-    }
-
-    let mut command_line = Vec::<u16>::new();
-    for argument in [
-        executable.path().as_os_str(),
-        std::ffi::OsStr::new("--no-remote"),
-        std::ffi::OsStr::new("--profile"),
-        profile.as_os_str(),
-        std::ffi::OsStr::new(FIREFOX_WAIT_FOR_BROWSER_SWITCH),
-        std::ffi::OsStr::new(FIREFOX_MIGRATION_SWITCH),
-    ] {
-        if !command_line.is_empty() {
-            command_line.push(b' ' as u16);
-        }
-        append_windows_quoted_argument(&mut command_line, argument);
-    }
-    command_line.push(0);
-    let executable_wide = executable
-        .path()
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
-    startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-    startup.lpDesktop = desktop_name_wide.as_ptr() as *mut _;
-    let mut process: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
-    let created = unsafe {
-        CreateProcessW(
-            executable_wide.as_ptr(),
-            command_line.as_mut_ptr(),
-            std::ptr::null(),
-            std::ptr::null(),
-            0,
-            CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
-            std::ptr::null(),
-            std::ptr::null(),
-            &startup,
-            &mut process,
-        )
-    };
-    if created == 0 {
-        unsafe {
-            CloseHandle(job);
-            CloseDesktop(desktop);
-        }
-        return Err(std::io::Error::last_os_error());
-    }
-    if unsafe { AssignProcessToJobObject(job, process.hProcess) } == 0
-        || unsafe { ResumeThread(process.hThread) } == u32::MAX
-    {
-        unsafe {
-            TerminateProcess(process.hProcess, 1);
-            CloseHandle(process.hThread);
-            CloseHandle(process.hProcess);
-            CloseHandle(job);
-            CloseDesktop(desktop);
-        }
-        return Err(std::io::Error::last_os_error());
-    }
-    unsafe { CloseHandle(process.hThread) };
-    Ok(HiddenFirefoxProcess {
-        process_handle: process.hProcess as isize,
-        job_handle: job as isize,
-        process_id: process.dwProcessId,
-        desktop_handle: desktop as isize,
-        desktop_name,
-    })
-}
-
-#[cfg(target_os = "windows")]
-fn append_windows_quoted_argument(command_line: &mut Vec<u16>, argument: &std::ffi::OsStr) {
-    command_line.push(b'"' as u16);
-    let mut backslashes = 0usize;
-    for unit in argument.encode_wide() {
-        if unit == b'\\' as u16 {
-            backslashes += 1;
-            continue;
-        }
-        if unit == b'"' as u16 {
-            command_line.extend(std::iter::repeat_n(b'\\' as u16, backslashes * 2 + 1));
-        } else {
-            command_line.extend(std::iter::repeat_n(b'\\' as u16, backslashes));
-        }
-        backslashes = 0;
-        command_line.push(unit);
-    }
-    command_line.extend(std::iter::repeat_n(b'\\' as u16, backslashes * 2));
-    command_line.push(b'"' as u16);
+) -> std::io::Result<Child> {
+    Command::new(executable.path())
+        .arg("--no-remote")
+        .arg("--profile")
+        .arg(profile)
+        .arg(FIREFOX_WAIT_FOR_BROWSER_SWITCH)
+        .arg(FIREFOX_MIGRATION_SWITCH)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(0x0800_0000)
+        .spawn()
 }
 
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::collections::BTreeSet;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
@@ -2701,6 +2421,22 @@ mod tests {
         assert_eq!(NATIVE_APPS.len(), 5);
         for (index, app) in NATIVE_APPS.iter().enumerate() {
             assert!(!app.display_name.is_empty());
+            assert_eq!(
+                app.adapter_surface,
+                AdapterSurface::InstalledNativeClient,
+                "{:?} native inventory must bind to installed native adapter surface",
+                app.id
+            );
+            assert_eq!(
+                native_app_support_status(app.id),
+                match app.adapter_support {
+                    SupportLevel::Supported | SupportLevel::Experimental => {
+                        NativeAppSupportStatus::Beta
+                    }
+                    SupportLevel::ComingSoon => NativeAppSupportStatus::ComingSoon,
+                    SupportLevel::ExternallyBlocked => NativeAppSupportStatus::ExternallyBlocked,
+                }
+            );
             if app.id == NativeAppId::Outlook {
                 assert!(app.package_id.is_empty());
                 assert_eq!(app.package_source, "unavailable");
@@ -2741,6 +2477,26 @@ mod tests {
                 r"DiscordCanary\Update.exe",
             ]
         );
+        assert_eq!(
+            &manifest(NativeAppId::Discord).adapter_service,
+            &AdapterService::Discord
+        );
+        assert_eq!(
+            &manifest(NativeAppId::Telegram).adapter_service,
+            &AdapterService::Telegram
+        );
+        assert_eq!(
+            &manifest(NativeAppId::Signal).adapter_service,
+            &AdapterService::Signal
+        );
+        assert_eq!(
+            &manifest(NativeAppId::Whatsapp).adapter_service,
+            &AdapterService::Whatsapp
+        );
+        assert_eq!(
+            &manifest(NativeAppId::Outlook).adapter_service,
+            &AdapterService::Outlook
+        );
         assert_eq!(manifest(NativeAppId::Whatsapp).package_source, "msstore");
         assert_eq!(
             native_app_publisher(NativeAppId::Discord),
@@ -2764,6 +2520,45 @@ mod tests {
         assert!(!isolated_native_profile_available(NativeAppId::Signal));
         assert!(!isolated_native_profile_available(NativeAppId::Whatsapp));
         assert!(!isolated_native_profile_available(NativeAppId::Outlook));
+    }
+
+    #[test]
+    fn telegram() {
+        let telegram = manifest(NativeAppId::Telegram);
+
+        assert_eq!(telegram.id, NativeAppId::Telegram);
+        assert_eq!(telegram.display_name, "Telegram");
+        assert_eq!(&telegram.adapter_service, &AdapterService::Telegram);
+        assert_eq!(
+            telegram.adapter_surface,
+            AdapterSurface::InstalledNativeClient
+        );
+        assert_eq!(telegram.adapter_support, SupportLevel::ComingSoon);
+        assert_eq!(telegram.package_id, "Telegram.TelegramDesktop");
+        assert_eq!(telegram.package_source, "winget");
+        assert_eq!(telegram.publisher, Some(ExecutablePublisher::Telegram));
+        assert_eq!(
+            telegram.candidates,
+            &[
+                ExecutableCandidate {
+                    folder: KnownFolder::Roaming,
+                    relative_path: r"Telegram Desktop\Telegram.exe",
+                },
+                ExecutableCandidate {
+                    folder: KnownFolder::Local,
+                    relative_path: r"Programs\Telegram Desktop\Telegram.exe",
+                },
+            ]
+        );
+        assert_eq!(
+            native_app_support_status(NativeAppId::Telegram),
+            NativeAppSupportStatus::ComingSoon
+        );
+        assert_eq!(
+            native_app_protected_mode(NativeAppId::Telegram),
+            NativeAppProtectedMode::Unavailable
+        );
+        assert!(isolated_native_profile_available(NativeAppId::Telegram));
     }
 
     #[test]
@@ -2813,9 +2608,21 @@ mod tests {
     }
 
     #[test]
-    fn mullvad_actions_have_one_fixed_safe_manifest() {
+    fn mullvad_actions_use_fixed_package_and_path() {
         assert_eq!(MULLVAD_PACKAGE_ID, "MullvadVPN.MullvadVPN");
-        assert_eq!(MULLVAD_CANDIDATES.len(), 2);
+        assert_eq!(
+            MULLVAD_CANDIDATES,
+            &[
+                ExecutableCandidate {
+                    folder: KnownFolder::ProgramFiles,
+                    relative_path: r"Mullvad VPN\Mullvad VPN.exe",
+                },
+                ExecutableCandidate {
+                    folder: KnownFolder::Local,
+                    relative_path: r"Programs\Mullvad VPN\Mullvad VPN.exe",
+                },
+            ]
+        );
         for candidate in MULLVAD_CANDIDATES {
             assert!(!candidate.relative_path.starts_with(['/', '\\']));
             assert!(!candidate.relative_path.contains(".."));
@@ -2833,6 +2640,63 @@ mod tests {
     fn dedicated_discord_fallback_is_one_fixed_official_channel() {
         assert_eq!(DISCORD_DEDICATED_PACKAGE_ID, "Discord.Discord.PTB");
         assert!(install_discord_dedicated_channel().is_err());
+    }
+
+    #[test]
+    fn native_app_status_serializes_the_public_support_contract_without_implying_overlay() {
+        let status = NativeAppStatus {
+            id: NativeAppId::Discord,
+            display_name: "Discord",
+            availability: NativeAppAvailability::Installed,
+            support_status: NativeAppSupportStatus::Beta,
+            protected_mode: NativeAppProtectedMode::AssistOnly,
+            isolated_profile_available: true,
+            supports_overlay: false,
+        };
+
+        let json = serde_json::to_value(status).unwrap();
+        let object = json.as_object().unwrap();
+        let keys = object.keys().map(String::as_str).collect::<BTreeSet<_>>();
+        assert_eq!(
+            keys,
+            BTreeSet::from([
+                "availability",
+                "displayName",
+                "id",
+                "isolatedProfileAvailable",
+                "protectedMode",
+                "supportStatus",
+                "supportsOverlay"
+            ])
+        );
+        assert_eq!(json["id"], "discord");
+        assert_eq!(json["availability"], "installed");
+        assert_eq!(json["supportStatus"], "beta");
+        assert_eq!(json["protectedMode"], "assistOnly");
+        assert_eq!(json["isolatedProfileAvailable"], true);
+        assert_eq!(json["supportsOverlay"], false);
+    }
+
+    #[test]
+    fn native_app_support_status_does_not_follow_install_availability() {
+        let statuses = list_native_apps_with_installer_probe(|| true);
+        assert_eq!(statuses.len(), NATIVE_APPS.len());
+
+        for status in statuses {
+            match status.id {
+                NativeAppId::Discord => {
+                    assert_eq!(status.support_status, NativeAppSupportStatus::Beta);
+                    assert_eq!(status.protected_mode, NativeAppProtectedMode::AssistOnly);
+                }
+                NativeAppId::Telegram
+                | NativeAppId::Signal
+                | NativeAppId::Whatsapp
+                | NativeAppId::Outlook => {
+                    assert_eq!(status.support_status, NativeAppSupportStatus::ComingSoon);
+                    assert_eq!(status.protected_mode, NativeAppProtectedMode::Unavailable);
+                }
+            }
+        }
     }
 
     #[test]
@@ -3056,78 +2920,6 @@ mod tests {
     }
 
     #[test]
-    fn protected_browser_import_validates_the_entire_bounded_queue() {
-        let available = [
-            BrowserImportId::Chrome,
-            BrowserImportId::Edge,
-            BrowserImportId::Firefox,
-            BrowserImportId::Brave,
-            BrowserImportId::Opera,
-            BrowserImportId::DuckDuckGo,
-        ];
-        assert_eq!(
-            validate_protected_browser_import_sources(
-                vec![
-                    BrowserImportId::Edge,
-                    BrowserImportId::Chrome,
-                    BrowserImportId::Firefox,
-                ],
-                &available,
-            ),
-            Ok(vec![
-                BrowserImportId::Edge,
-                BrowserImportId::Chrome,
-                BrowserImportId::Firefox,
-            ])
-        );
-        assert!(validate_protected_browser_import_sources(Vec::new(), &available).is_err());
-        assert!(validate_protected_browser_import_sources(
-            vec![BrowserImportId::Chrome, BrowserImportId::Chrome],
-            &available,
-        )
-        .is_err());
-        assert!(validate_protected_browser_import_sources(
-            vec![BrowserImportId::DuckDuckGo],
-            &available[..5],
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn unsupported_migration_sources_reuse_existing_sessions() {
-        assert!(browser_import_uses_existing_session(
-            BrowserImportId::Firefox
-        ));
-        assert!(browser_import_uses_existing_session(BrowserImportId::Opera));
-        assert!(!browser_import_uses_existing_session(
-            BrowserImportId::Chrome
-        ));
-        assert!(!browser_import_uses_existing_session(BrowserImportId::Edge));
-        assert!(!browser_import_uses_existing_session(
-            BrowserImportId::Brave
-        ));
-        assert!(!browser_import_uses_existing_session(
-            BrowserImportId::DuckDuckGo
-        ));
-    }
-
-    #[test]
-    fn process_lineage_is_rooted_and_excludes_unrelated_processes() {
-        let processes = [
-            (10, 1),
-            (11, 10),
-            (12, 11),
-            (13, 10),
-            (20, 1),
-            (21, 20),
-            (30, 999),
-        ];
-        let mut lineage = process_lineage(10, &processes);
-        lineage.sort_unstable();
-        assert_eq!(lineage, vec![10, 11, 12, 13]);
-    }
-
-    #[test]
     fn only_packaged_app_installer_winget_is_trusted() {
         assert_eq!(
             DESKTOP_APP_INSTALLER_FAMILY_NAME,
@@ -3149,6 +2941,14 @@ mod tests {
 
     #[test]
     fn whatsapp_store_identity_is_exact_and_rejects_non_application_packages() {
+        assert_eq!(
+            whatsapp_store_package_family_name(),
+            WHATSAPP_PACKAGE_FAMILY_NAME
+        );
+        assert_eq!(
+            manifest(NativeAppId::Whatsapp).store_package_family_name,
+            Some(WHATSAPP_PACKAGE_FAMILY_NAME)
+        );
         assert_eq!(
             WHATSAPP_PACKAGE_FAMILY_NAME,
             "5319275A.WhatsAppDesktop_cv1g1gvanyjgm"
@@ -3393,6 +3193,35 @@ mod tests {
             };
             assert_eq!(status.availability, expected, "{:?}", status.id);
         }
+    }
+
+    #[test]
+    fn list_native_apps_reports_statuses_without_overlay_support() {
+        let statuses = list_native_apps_with_installer_probe(|| true);
+
+        assert_eq!(statuses.len(), NATIVE_APPS.len());
+        for (status, manifest) in statuses.iter().zip(NATIVE_APPS) {
+            assert_eq!(status.id, manifest.id);
+            assert_eq!(status.display_name, manifest.display_name);
+            assert_eq!(
+                status.isolated_profile_available,
+                isolated_native_profile_available(manifest.id)
+            );
+            assert!(
+                !status.supports_overlay,
+                "{:?} must not imply native overlay support",
+                status.id
+            );
+        }
+
+        let json = serde_json::to_value(&statuses).unwrap();
+        let rows = json
+            .as_array()
+            .expect("native app statuses serialize as rows");
+        assert!(rows.iter().all(|row| row["supportsOverlay"] == false));
+        assert!(rows
+            .iter()
+            .any(|row| row["isolatedProfileAvailable"] == true));
     }
 
     #[test]

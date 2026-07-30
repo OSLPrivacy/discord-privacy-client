@@ -165,4 +165,140 @@ describe("sweepExpiredPrivacyRows (hourly cron)", () => {
       .all<{ target_id: string }>();
     expect(receipts.results.map((row) => row.target_id)).toEqual(["fresh"]);
   });
+
+  it("drains a multi-batch expired privacy backlog without deleting live rows", async () => {
+    const owner = `retention-backlog-owner-${crypto.randomUUID()}`;
+    const signer = `retention-backlog-signer-${crypto.randomUUID()}`;
+    const nowMs = Date.now();
+    const nowSeconds = Math.floor(nowMs / 1000);
+    const expiredIso = new Date(nowMs - 60_000).toISOString();
+    const freshIso = new Date(nowMs + 60_000).toISOString();
+    const createdIso = new Date(nowMs).toISOString();
+    const expiredRows = 101;
+    const statements: D1PreparedStatement[] = [];
+
+    for (let i = 0; i < expiredRows; i += 1) {
+      const digest = new Uint8Array(32).fill(i);
+      statements.push(
+        env.DB.prepare(
+          `INSERT INTO wrapped_keys
+             (content_id, content_type, sender_id, recipient_id, session_version,
+              share_index, wrapped_share_blob, blob_version, single_use,
+              expires_at, created_at)
+           VALUES (?, 'text', ?, 'recipient', 1, 0, 'blob', 1, 0, ?, ?)`,
+        ).bind(`expired-backlog-key-${owner}-${i}`, owner, expiredIso, createdIso),
+        env.DB.prepare(
+          `INSERT INTO consuming_get_receipts
+             (requester_id, request_digest, recipient_id, target_id, expires_at)
+           VALUES (?, ?, 'recipient', ?, ?)`,
+        ).bind(owner, digest, `expired-backlog-get-${i}`, nowSeconds - 1),
+        env.DB.prepare(
+          `INSERT INTO wrapped_key_post_receipts
+             (sender_id, request_digest, content_id, expires_at)
+           VALUES (?, ?, ?, ?)`,
+        ).bind(owner, digest, `expired-backlog-post-${i}`, nowSeconds - 1),
+        env.DB.prepare(
+          `INSERT INTO prekey_replenish_receipts
+             (user_id, signer_ed25519_pub, request_digest, expires_at)
+           VALUES (?, ?, ?, ?)`,
+        ).bind(owner, signer, digest, nowSeconds - 1),
+        env.DB.prepare(
+          `INSERT INTO wrapped_key_burn_receipts
+             (user_id, signer_ed25519_pub, request_digest, expires_at)
+           VALUES (?, ?, ?, ?)`,
+        ).bind(owner, signer, digest, nowSeconds - 1),
+        env.DB.prepare(
+          `INSERT INTO unregister_receipts
+             (user_id, signer_ed25519_pub, request_digest, expires_at)
+           VALUES (?, ?, ?, ?)`,
+        ).bind(owner, signer, digest, nowSeconds - 1),
+      );
+    }
+
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO wrapped_keys
+           (content_id, content_type, sender_id, recipient_id, session_version,
+            share_index, wrapped_share_blob, blob_version, single_use,
+            expires_at, created_at)
+         VALUES (?, 'text', ?, 'recipient', 1, 0, 'blob', 1, 0, ?, ?)`,
+      ).bind(`fresh-backlog-key-${owner}`, owner, freshIso, createdIso),
+      env.DB.prepare(
+        `INSERT INTO consuming_get_receipts
+           (requester_id, request_digest, recipient_id, target_id, expires_at)
+         VALUES (?, ?, 'recipient', 'fresh-backlog-get', ?)`,
+      ).bind(owner, new Uint8Array(32).fill(201), nowSeconds + 60),
+      env.DB.prepare(
+        `INSERT INTO wrapped_key_post_receipts
+           (sender_id, request_digest, content_id, expires_at)
+         VALUES (?, ?, 'fresh-backlog-post', ?)`,
+      ).bind(owner, new Uint8Array(32).fill(202), nowSeconds + 60),
+      env.DB.prepare(
+        `INSERT INTO prekey_replenish_receipts
+           (user_id, signer_ed25519_pub, request_digest, expires_at)
+         VALUES (?, ?, ?, ?)`,
+      ).bind(owner, signer, new Uint8Array(32).fill(203), nowSeconds + 60),
+      env.DB.prepare(
+        `INSERT INTO wrapped_key_burn_receipts
+           (user_id, signer_ed25519_pub, request_digest, expires_at)
+         VALUES (?, ?, ?, ?)`,
+      ).bind(owner, signer, new Uint8Array(32).fill(204), nowSeconds + 60),
+      env.DB.prepare(
+        `INSERT INTO unregister_receipts
+           (user_id, signer_ed25519_pub, request_digest, expires_at)
+         VALUES (?, ?, ?, ?)`,
+      ).bind(owner, signer, new Uint8Array(32).fill(205), nowSeconds + 60),
+    );
+
+    for (let offset = 0; offset < statements.length; offset += 50) {
+      await env.DB.batch(statements.slice(offset, offset + 50));
+    }
+
+    expect(await sweepExpiredPrivacyRows(env.DB, nowMs)).toEqual({
+      wrappedKeys: expiredRows,
+      consumingGetReceipts: expiredRows,
+      wrappedKeyPostReceipts: expiredRows,
+      prekeyReplenishReceipts: expiredRows,
+      wrappedKeyBurnReceipts: expiredRows,
+      unregisterReceipts: expiredRows,
+    });
+
+    const wrapped = await env.DB.prepare(
+      "SELECT content_id FROM wrapped_keys WHERE sender_id = ?",
+    ).bind(owner).all<{ content_id: string }>();
+    expect(wrapped.results.map((row) => row.content_id)).toEqual([
+      `fresh-backlog-key-${owner}`,
+    ]);
+
+    const consumingGets = await env.DB.prepare(
+      "SELECT target_id FROM consuming_get_receipts WHERE requester_id = ?",
+    ).bind(owner).all<{ target_id: string }>();
+    expect(consumingGets.results.map((row) => row.target_id)).toEqual([
+      "fresh-backlog-get",
+    ]);
+
+    const postReceipts = await env.DB.prepare(
+      "SELECT content_id FROM wrapped_key_post_receipts WHERE sender_id = ?",
+    ).bind(owner).all<{ content_id: string }>();
+    expect(postReceipts.results.map((row) => row.content_id)).toEqual([
+      "fresh-backlog-post",
+    ]);
+
+    for (const table of [
+      "prekey_replenish_receipts",
+      "wrapped_key_burn_receipts",
+      "unregister_receipts",
+    ]) {
+      const expired = await env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM ${table}
+          WHERE user_id = ? AND signer_ed25519_pub = ? AND expires_at <= ?`,
+      ).bind(owner, signer, nowSeconds).first<{ count: number }>();
+      expect(expired?.count).toBe(0);
+      const live = await env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM ${table}
+          WHERE user_id = ? AND signer_ed25519_pub = ? AND expires_at > ?`,
+      ).bind(owner, signer, nowSeconds).first<{ count: number }>();
+      expect(live?.count).toBe(1);
+    }
+  });
 });

@@ -22,6 +22,9 @@ struct Setup {
     alice_ik_sk: x25519::SecretKey,
     alice_ik_pub: x25519::PublicKey,
     bob_ik_sk: x25519::SecretKey,
+    bob_ik_pub: x25519::PublicKey,
+    bob_sk: SessionKey,
+    bob_spk_sk: x25519::SecretKey,
     bob_recipient: RecipientV3,
     bob_mlkem_dk: ml_kem_768::DecapsulationKey,
 }
@@ -70,6 +73,9 @@ fn setup() -> Setup {
         alice_ik_sk,
         alice_ik_pub,
         bob_ik_sk,
+        bob_ik_pub,
+        bob_sk,
+        bob_spk_sk,
         bob_recipient,
         bob_mlkem_dk,
     }
@@ -133,6 +139,47 @@ fn v4_roundtrip_single_recipient() {
         ciphertext: parsed.body_ct,
     };
     assert_eq!(s.bob.decrypt(&em_recovered).unwrap(), b"hello v=4");
+}
+
+#[test]
+fn v4_rejects_forged_sender_ik_pub() {
+    let mut s = setup();
+    let (_, forged_sender_ik_pub) = x25519::generate_keypair();
+    assert_ne!(forged_sender_ik_pub, s.alice_ik_pub);
+    let plaintext = b"sender identity must bind the ratchet body";
+    let em = s.alice.encrypt(plaintext).unwrap();
+    let wire = seal_v4(&s, true, &em);
+    let parsed = decrypt_v4(&wire, &s.bob_ik_sk, &s.bob_mlkem_dk).expect("decode");
+    assert_eq!(
+        parsed.sender_ik_pub, s.alice_ik_pub,
+        "fixture must parse Alice as the honest v4 sender"
+    );
+
+    let forged_ctx = SessionContext {
+        local_ik_x25519_pub: s.bob_ik_pub,
+        local_ik_mlkem_pub: vec![0xbb; 1184],
+        peer_ik_x25519_pub: forged_sender_ik_pub,
+        peer_ik_mlkem_pub: vec![0xaa; 1184],
+        conversation_id: b"wire-v4-test".to_vec(),
+        session_version: SESSION_VERSION_V1,
+    };
+    let mut bob_keyed_to_forged_sender =
+        DoubleRatchet::new_responder(&s.bob_sk, &s.bob_spk_sk, forged_ctx).unwrap();
+    let em_recovered = crypto::ratchet::EncryptedMessage {
+        header_nonce: parsed.enc_header_nonce,
+        enc_header: parsed.enc_header,
+        message_nonce: parsed.body_nonce,
+        ciphertext: parsed.body_ct,
+    };
+
+    let err = bob_keyed_to_forged_sender
+        .decrypt(&em_recovered)
+        .expect_err("SessionContext keyed to a forged sender_ik_pub must reject");
+    assert!(
+        matches!(err, crypto::Error::AeadFailure),
+        "expected body AEAD failure from sender identity AD mismatch, got: {err:?}"
+    );
+    assert_eq!(s.bob.decrypt(&em_recovered).unwrap(), plaintext);
 }
 
 #[test]

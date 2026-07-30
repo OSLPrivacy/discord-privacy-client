@@ -79,7 +79,13 @@ analytics or crash reports. The UI always distinguishes:
 
 - **reviewed locally** from **deleted on the service**;
 - a successful deletion request from confirmed absence after refresh;
-- OSL cryptographic burn from native-platform deletion;
+- OSL Burn — which deletes OSL's local and server-side state and sends a
+  cooperative request to the peer's client — from native-platform deletion.
+  Burn does **not** destroy the only decryption capability: `MessageStore::put`
+  (`crates/store/src/lib.rs:194-206`) never populates `wrapped_key`, so anyone
+  already holding the recipient key material can still read the carrier
+  ciphertext. Do not write "cryptographic burn" — see
+  `osl-public-claim-allowlist.md` §D;
 - user-authored messages from other people's messages, which OSL normally
   cannot delete.
 

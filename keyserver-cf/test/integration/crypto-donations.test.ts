@@ -15,6 +15,7 @@ import {
   type WatcherSettlementEvidence,
 } from "../../src/lib/crypto-watcher-auth.js";
 import { notifyTelegramForCryptoDonation } from "../../src/lib/telegram.js";
+import { paymentAlertId } from "../../src/lib/payment-alert-outbox.js";
 
 const TEST_ED25519_SEED = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
 
@@ -365,10 +366,27 @@ describe("anonymous node-verified crypto donations", () => {
     }
     const retry = await send();
     await expect(retry.json()).resolves.toEqual({ ok: true, duplicate: true, status: "recorded" });
-    const count = await env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM crypto_donation_events WHERE donation_id = ?",
-    ).bind(`crypto_${invoice.invoice_id}`).first<{ count: number }>();
-    expect(count?.count).toBe(1);
+    const alertId = await paymentAlertId("crypto_donation", invoice.invoice_id);
+    const counts = await env.DB.prepare(
+      `SELECT
+        (SELECT COUNT(*) FROM crypto_donation_events WHERE donation_id = ?) AS donations,
+        (SELECT COUNT(*) FROM payment_alert_outbox WHERE alert_id = ?) AS alerts`,
+    ).bind(`crypto_${invoice.invoice_id}`, alertId).first<{
+      donations: number;
+      alerts: number;
+    }>();
+    expect(counts).toEqual({ donations: 1, alerts: 1 });
+    const alert = await env.DB.prepare(
+      `SELECT alert_kind, payment_method, amount_usd_cents, status, attempts
+         FROM payment_alert_outbox WHERE alert_id = ?`,
+    ).bind(alertId).first();
+    expect(alert).toEqual({
+      alert_kind: "crypto_donation",
+      payment_method: "xmr",
+      amount_usd_cents: 1_000,
+      status: "pending",
+      attempts: 0,
+    });
   });
 
   it("fails closed if a durable donation id conflicts with the invoice terms", async () => {
@@ -424,7 +442,7 @@ describe("anonymous node-verified crypto donations", () => {
           delivery_public_key_spki: publicKey,
         }),
       },
-    ), checkoutEnv(), watcher("btc"));
+    ), checkoutEnv(), watcher("btc"), () => true);
     expect(proResponse.status).toBe(200);
     const pro = await proResponse.json() as {
       invoice_id: string; amount_atomic: string; expires_at: number;
@@ -437,7 +455,7 @@ describe("anonymous node-verified crypto donations", () => {
         headers: await settlementHeaders(proEvidence),
         body: JSON.stringify(proEvidence),
       },
-    ), checkoutEnv());
+    ), checkoutEnv(), undefined, () => true);
     expect(replay.status).toBe(409);
     await expect(replay.json()).resolves.toMatchObject({
       error: "payment reference is already assigned to another invoice",

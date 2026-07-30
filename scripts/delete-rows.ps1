@@ -9,6 +9,31 @@
 #
 # Confirms before deleting. Requires sqlite3.exe on PATH.
 
+# ============================================================================
+# RETIRED 2026-07-26 — do not repair this script.
+#
+# It queries messages.sqlite by plaintext discord_message_id / channel_id and
+# reads decrypted_at as a readable timestamp. Schema v4 removed every one of
+# those: identifiers are now keyed blind indexes, the real ids and timestamps
+# are sealed per row, and ordering uses an opaque counter. There is no way to
+# name a row in SQL without the store key, which is the entire point of the
+# change (audit defect 6 — an offline reader could reconstruct the protected
+# social graph without the key).
+#
+# This tool worked BECAUSE of that defect. It is retired, not broken: repairing
+# it would mean re-exposing the identifiers it reads. If the diagnostic is
+# still needed, it belongs behind the store's own API, which holds the key.
+#
+# See crates/store/SECURITY.md and docs/reports/store-lane-2026-07-26.md.
+# ============================================================================
+
+Write-Host ""
+Write-Host "  RETIRED: this script cannot work against schema v4." -ForegroundColor Yellow
+Write-Host "  It selects plaintext identifiers that no longer exist on disk." -ForegroundColor Yellow
+Write-Host "  See crates/store/SECURITY.md. Not a bug - see the header." -ForegroundColor Yellow
+Write-Host ""
+exit 2
+
 $ErrorActionPreference = "Stop"
 
 if ($args.Count -eq 0) {

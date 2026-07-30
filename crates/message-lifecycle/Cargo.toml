@@ -1,0 +1,16 @@
+[package]
+name = "message-lifecycle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Snapshots are sealed to disk as JSON by the receiver's ledger, so the
+# round-trip is part of the contract this crate must keep.
+serde_json = { workspace = true }
+

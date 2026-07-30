@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "runId": "20260727T093633Z-pos-17956",
+  "requestSha256": "429541cde7a5f423e27d04e54eefdf40e6e98cb891ee425e97051e3faf7a36a8",
+  "requestExeSha256": "d2f6db781a4b5149520d315a1f3378df2cd256292f1e07d04f13e24846a62950",
+  "vmName": "OSL-Azure-Client-1",
+  "agentSha": "8d72920b33601ccda96b2d14be8c84ab3e992482a4ed0c635f0a88e2462adbba",
+  "win32Sha": "c33b25900636a9ef1ad2d54c6ffb33eb6fba5333a2118ee81568f2e48d7d5d48",
+  "runStartUtc": "2026-07-27T09:36:33.0000000Z",
+  "agentStartedUtc": "2026-07-27T09:35:17.7211416Z",
+  "finishedUtc": "2026-07-27T09:38:27.3210996Z",
+  "overall": "pass",
+  "steps": [
+    {
+      "id": "S0",
+      "verb": "stage",
+      "status": "pass",
+      "detail": "staged=C:\\OSL-VMQA\\d2f6db781a4b5149520d315a1f3378df2cd256292f1e07d04f13e24846a62950 exeSha=d2f6db781a4b5149520d315a1f3378df2cd256292f1e07d04f13e24846a62950 webview2Sha=8427b1fc58ec707813e5c0a51eb5d69397bb333250a7b891be4d3b123f1e0f1c stoppedPriorPids=none",
+      "artifacts": [],
+      "facts": {}
+    },
+    {
+      "id": "S1",
+      "verb": "launch",
+      "status": "pass",
+      "detail": "pid=16320; exe=C:\\OSL-VMQA\\d2f6db781a4b5149520d315a1f3378df2cd256292f1e07d04f13e24846a62950\\osl-privacy-hub.exe",
+      "artifacts": [],
+      "facts": {
+        "launchedPid": 16320,
+        "exeSha256": "d2f6db781a4b5149520d315a1f3378df2cd256292f1e07d04f13e24846a62950",
+        "launchProcessStarted": true
+      }
+    },
+    {
+      "id": "S2",
+      "verb": "ping",
+      "status": "pass",
+      "detail": "vmName=OSL-Azure-Client-1; sessionId=1; isInteractiveSession=True; markerWindowsTotal=1",
+      "artifacts": [],
+      "facts": {
+        "markerWindowsTotal": 1
+      }
+    },
+    {
+      "id": "S3",
+      "verb": "shot",
+      "status": "pass",
+      "detail": "path=artifacts/selftest.png; width=960; height=656; distinctColors=330; pngSha256=1285cd20b16b1987296bd2160c86f5d9ff7b8bba3bc8ffeb87556fbede6fb934; subjectPid=16320; surfaceHwnd=394090; subjectRect=32,32 960x656; boundsSource=dwm-extended-frame; rawRect=32,32 960x656; dpi=96; normalizedForCapture=True; foreground=true; sampleGridOwned=true; postCaptureBound=true",
+      "artifacts": [
+        "artifacts/selftest.png"
+      ],
+      "facts": {
+        "surfacePid": 16320,
+        "surfaceHwnd": 394090,
+        "surfaceClass": "Tauri Window",
+        "postSurfaceClass": "Tauri Window",
+        "rawRect": {
+          "left": 32,
+          "top": 32,
+          "right": 992,
+          "bottom": 688,
+          "width": 960,
+          "height": 656
+        },
+        "dwmRect": {
+          "left": 32,
+          "top": 32,
+          "right": 992,
+          "bottom": 688,
+          "width": 960,
+          "height": 656
+        },
+        "postRawRect": {
+          "left": 32,
+          "top": 32,
+          "right": 992,
+          "bottom": 688,
+          "width": 960,
+          "height": 656
+        },
+        "postDwmRect": {
+          "left": 32,
+          "top": 32,
+          "right": 992,
+          "bottom": 688,
+          "width": 960,
+          "height": 656
+        },
+        "surfaceWidth": 960,
+        "surfaceHeight": 656,
+        "captureDistinctColors": 330,
+        "rawSurfaceWidth": 960,
+        "rawSurfaceHeight": 656,
+        "boundsSource": "dwm-extended-frame",
+        "boundsWithinVirtualDesktop": true,
+        "coversVirtualDesktop": false,
+        "surfaceDpi": 96,
+        "normalizedForCapture": true,
+        "artifactPath": "artifacts/selftest.png",
+        "pngSha256": "1285cd20b16b1987296bd2160c86f5d9ff7b8bba3bc8ffeb87556fbede6fb934",
+        "foregroundPre": true,
+        "foregroundPost": true,
+        "sampleGridPre": true,
+        "sampleGridPost": true,
+        "unoccludedPre": true,
+        "unoccludedPost": true,
+        "rectStable": true
+      }
+    },
+    {
+      "id": "S4",
+      "verb": "kill",
+      "status": "pass",
+      "detail": "cleanup proven pid=16320 outcome=stopped exactExecutableAbsent=true",
+      "artifacts": [],
+      "facts": {
+        "cleanupPid": 16320,
+        "cleanupOutcome": "stopped",
+        "cleanupExeSha256": "d2f6db781a4b5149520d315a1f3378df2cd256292f1e07d04f13e24846a62950",
+        "cleanupPidAbsent": true,
+        "cleanupExecutableAbsent": true,
+        "cleanupMatchingExeCount": 0
+      }
+    }
+  ],
+  "diffKey": "S0=pass;S1=pass;S2=pass;S3=pass;S4=pass"
+}

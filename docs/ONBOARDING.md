@@ -14,8 +14,8 @@ should pull from here.
    768), seal to TPM, register with key server.
 5. **Unlock password setup** (recommended, skippable). See "Password
    setup" below.
-6. **Duress password setup** (optional, skippable). See "Duress
-   feature explanation" below.
+6. **Burn password setup** (optional, skippable). See "Burn password
+   explanation" below.
 7. **Onboarding explainer modal** — what the tool does and does not
    protect against, account-ban risk, screenshot resistance vs
    prevention, view-once limitations.
@@ -211,8 +211,11 @@ Kill-switch behaviour (v2.2):
 ## Password setup
 
 See [`design/unlock-and-duress.md`](design/unlock-and-duress.md) for
-the full design. The user-facing copy below is pulled verbatim into
-the webview implementation.
+the earlier duress design. An isolated keystore engine models that
+wipe-and-strip sequence, but the desktop app does not construct or
+call it; several steps also require caller-supplied handlers. The
+current webview instead offers the narrower Burn password behavior
+documented below.
 
 ### Unlock password (recommended, optional)
 
@@ -234,92 +237,40 @@ Choose a 6-digit unlock password:
 
 Minimum 6 digits. Optionally accept longer alphanumeric passphrases.
 
-## Duress feature explanation
+## Burn password explanation
 
 ```
-Set up a duress password? (Optional)
+Burn password
 
-A duress password unlocks the app normally to anyone watching,
-but silently:
-  • Permanently deletes all your encrypted messages (no undo)
-  • Strips privacy features from the app
-  • Requires full reinstall to restore privacy features
+Erases OSL data from this device when entered at sign in.
 
-Use this if you might be forced to unlock under coercion.
+Current password: [______]
+New burn password: [______]
+Confirm: [______]
 
-[Set up duress password]    [Skip]
+[Set password]    [Not now]
 ```
 
-If user proceeds, show this warning modal **first**:
+The reachable setup screen validates that the new Burn password
+differs from the main password. It does not show the legacy duress
+warning or promise a covert apparent unlock.
 
-```
-⚠ Important — please read
+### What Burn does and does not protect against
 
-Setting up a duress password is a serious decision.
+> *"If you might be forced to unlock OSL under coercion, you can set
+> up a Burn password. Entering it at OSL sign in starts cleanup of
+> OSL-owned local data and returns the app to first-run setup."*
 
-When you enter the duress password:
-  • All your encrypted messages are permanently deleted
-  • All keys are destroyed — there is no recovery
-  • The app's privacy features are stripped — to use them
-    again, you must fully uninstall and reinstall
-  • The app appears as a normal Discord client to anyone
-    watching
+> *"Burn does not delete original Discord data, Discord history,
+> recipient copies, or operating-system backups. Remote identity
+> unregister is best effort and is reported separately from local
+> cleanup."*
 
-This protects you in coercion scenarios but means a single
-mistype is permanent. There is no undo.
-
-If you accidentally trigger duress, you will need to:
-  1. Uninstall this app
-  2. Reinstall it
-  3. Re-establish encrypted contact with everyone
-
-Continue setting up duress password?
-[Set up]    [Cancel]
-```
-
-If "Set up":
-
-```
-Choose a 6-digit duress password:
-[______]
-[______]  (confirm)
-
-⚠ Make this different from your unlock password and easy to
-remember in a stressful situation.
-⚠ There is no undo. Entering this code permanently destroys
-your data.
-
-[Confirm]
-```
-
-### What duress does and does not protect against
-
-> *"If you might be forced to unlock the app under coercion, set up a
-> duress password. Entering it appears to unlock the app normally
-> but silently destroys all your encrypted messages and strips
-> privacy features. The app then looks like a normal Discord client
-> to anyone watching."*
-
-> *"There is no undo. A single mistype permanently destroys your
-> data and requires full reinstall to restore."*
-
-> *"If your app stops showing privacy features (no encryption
-> toggles, no burn buttons, no per-contact controls), you may have
-> entered your duress password by accident. To restore privacy
-> features, uninstall the app and reinstall it. You will then need
-> to re-establish encrypted contact with everyone."*
-
-> *"Duress strip mode protects against casual examination after the
-> duress event. It does not protect against forensic disk analysis
-> by a sophisticated adversary. If you anticipate forensic
-> examination, full physical destruction of the device storage is
-> the only reliable answer."*
-
-> *"If a coercer is aware the app supports duress passwords, they
-> may demand to know which password is which. Plausible deniability
-> is strongest when the coercer doesn't know the feature exists, or
-> when many users skip duress setup so 'I don't have one' is
-> credible."*
+At sign in, a verified Burn password closes OSL-owned service
+windows, runs the fixed-root local cleanup, returns to first-run
+setup, and reports whether local cleanup completed. The earlier
+apparent-unlock and feature-strip sequence remains a draft design.
+The current desktop app does not call that `DuressEngine`.
 
 ## Post-reinstall key verification
 
@@ -350,10 +301,10 @@ This is equivalent to Signal's safety numbers.
 ## Cloud backup warning
 
 > *"If your operating system backs up app data to the cloud, those
-> backups may persist after a duress wipe. Disable cloud backup of
-> this app's data directory if this is a concern. On Windows, check
-> File History settings and OneDrive folder backup settings before
-> enabling duress."*
+> backups may persist after local Burn cleanup. Disable cloud backup
+> of this app's data directory if this is a concern. On Windows,
+> check File History settings and OneDrive folder backup settings
+> before enabling a Burn password."*
 
 ## License and ToS
 

@@ -53,6 +53,67 @@ fn unix_seconds_now() -> i64 {
         .unwrap_or(0)
 }
 
+/// License-scoped access projection for optional proprietary modules.
+///
+/// The base app is never paywalled by this projection. License expiry,
+/// revocation, an unknown key, or no configured key can only revoke optional
+/// module access.
+#[derive(Clone, Eq, PartialEq)]
+pub struct LicenseScopedModuleAccess {
+    base_app_available: bool,
+    proprietary_module_available: bool,
+    raw_license_status: String,
+}
+
+impl LicenseScopedModuleAccess {
+    pub fn from_license_state(dto: &LicenseStateDto) -> Self {
+        let proprietary_module_available = matches!(
+            dto.state,
+            LicenseState::Paid | LicenseState::PaidOfflineGrace
+        );
+        Self {
+            base_app_available: true,
+            proprietary_module_available,
+            raw_license_status: dto.raw_status.clone(),
+        }
+    }
+
+    pub fn from_app_state(state: &AppState) -> Self {
+        let dto = state
+            .license_state
+            .lock()
+            .expect("license_state mutex poisoned")
+            .clone();
+        Self::from_license_state(&dto)
+    }
+
+    pub fn base_app_available(&self) -> bool {
+        self.base_app_available
+    }
+
+    pub fn proprietary_module_available(&self) -> bool {
+        self.proprietary_module_available
+    }
+
+    pub fn raw_license_status(&self) -> &str {
+        &self.raw_license_status
+    }
+}
+
+impl std::fmt::Debug for LicenseScopedModuleAccess {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LicenseScopedModuleAccess")
+            .field("base_app_available", &self.base_app_available)
+            .field(
+                "proprietary_module_available",
+                &self.proprietary_module_available,
+            )
+            .field("raw_license_status", &"[redacted; license status]")
+            .finish()
+    }
+}
+
 /// Synchronous, cache-only classify. Stamps
 /// [`AppState::license_state`] without touching the network.
 ///
@@ -255,4 +316,91 @@ fn stamp(state: &AppState, dto: &LicenseStateDto) {
         .license_state
         .lock()
         .expect("license_state mutex poisoned") = dto.clone();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dto(
+        state: LicenseState,
+        raw_status: &str,
+        current_period_end: Option<i64>,
+    ) -> LicenseStateDto {
+        LicenseStateDto {
+            state,
+            raw_status: raw_status.to_string(),
+            current_period_end,
+            last_validated_at: Some(1_700_000_000),
+        }
+    }
+
+    fn install_license(state: &AppState, dto: LicenseStateDto) {
+        *state
+            .license_state
+            .lock()
+            .expect("license_state mutex poisoned") = dto;
+    }
+
+    #[test]
+    fn license_expiry_revokes_module_access_without_base_app() {
+        let app = AppState::new();
+
+        install_license(&app, dto(LicenseState::Paid, "ACTIVE", Some(1_900_000_000)));
+        let paid = LicenseScopedModuleAccess::from_app_state(&app);
+        assert!(paid.base_app_available());
+        assert!(paid.proprietary_module_available());
+        assert_eq!(paid.raw_license_status(), "ACTIVE");
+
+        install_license(
+            &app,
+            dto(
+                LicenseState::PaidOfflineGrace,
+                "ACTIVE",
+                Some(1_900_000_000),
+            ),
+        );
+        let grace = LicenseScopedModuleAccess::from_app_state(&app);
+        assert!(grace.base_app_available());
+        assert!(grace.proprietary_module_available());
+
+        install_license(
+            &app,
+            dto(LicenseState::Free, "EXPIRED", Some(1_600_000_000)),
+        );
+        let expired = LicenseScopedModuleAccess::from_app_state(&app);
+        assert!(
+            expired.base_app_available(),
+            "license expiry must not disable the base app"
+        );
+        assert!(
+            !expired.proprietary_module_available(),
+            "license expiry must revoke optional module access"
+        );
+        assert_eq!(expired.raw_license_status(), "EXPIRED");
+
+        install_license(&app, dto(LicenseState::Free, "REVOKED", None));
+        let revoked = LicenseScopedModuleAccess::from_app_state(&app);
+        assert!(revoked.base_app_available());
+        assert!(!revoked.proprietary_module_available());
+
+        install_license(&app, LicenseStateDto::unconfigured());
+        let unconfigured = LicenseScopedModuleAccess::from_app_state(&app);
+        assert!(unconfigured.base_app_available());
+        assert!(!unconfigured.proprietary_module_available());
+        assert_eq!(unconfigured.raw_license_status(), "Unconfigured");
+
+        let suspicious_status = LicenseScopedModuleAccess::from_license_state(&dto(
+            LicenseState::Free,
+            "OSL-secret-license-key",
+            None,
+        ));
+        let suspicious_rendered = format!("{suspicious_status:?}");
+        assert!(!suspicious_rendered.contains("OSL-secret-license-key"));
+
+        let rendered = format!("{expired:?}");
+        assert!(rendered.contains("base_app_available: true"));
+        assert!(rendered.contains("proprietary_module_available: false"));
+        assert!(!rendered.contains("OSL-"));
+    }
 }

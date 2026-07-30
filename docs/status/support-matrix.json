@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "generated_from": "manual-verdict-ingest",
+  "updated": "2026-07-30",
+  "versioned_public_support_matrix": {
+    "schema_version": 1,
+    "matrix_version": "E7",
+    "published": "2026-07-30",
+    "source": "docs/design/osl-master-decision-2026-07-26.md#9--exact-release-readiness-snapshot",
+    "entries": [
+      {
+        "id": "signal_desktop_public",
+        "service": "Signal",
+        "surface": "Signal Desktop native Windows adapter",
+        "public_status": "coming_soon",
+        "claim_allowed": false,
+        "evidence_status": "qa_foundations_only",
+        "evidence": "docs/design/osl-master-decision-2026-07-26.md:805",
+        "support_boundary": "Signal has QA foundations only; OSL must refuse support claims until a complete adapter contract and two-peer exact-build proof exist."
+      },
+      {
+        "id": "whatsapp_windows_public",
+        "service": "WhatsApp",
+        "surface": "WhatsApp for Windows adapter",
+        "public_status": "coming_soon",
+        "claim_allowed": false,
+        "evidence_status": "separate_qa_required",
+        "evidence": "docs/design/osl-master-decision-2026-07-26.md:806",
+        "support_boundary": "WhatsApp needs its own runtime proof; OSL must refuse support claims until a complete adapter contract and two-peer exact-build proof exist."
+      },
+      {
+        "id": "telegram_desktop_public",
+        "service": "Telegram",
+        "surface": "Telegram Desktop native Windows adapter",
+        "public_status": "externally_blocked",
+        "claim_allowed": false,
+        "evidence_status": "externally_blocked",
+        "evidence": "docs/reports/telegram-adapter-verdict.md#TelegramSupportVerdict",
+        "support_boundary": "Telegram Desktop cannot be listed as supported until a signed-client UI Automation probe proves stable, text-exposed message rows on an actual conversation surface."
+      },
+      {
+        "id": "osl_mail_public",
+        "service": "OSL Mail",
+        "surface": "OSL Mail for Outlook-connected mailboxes",
+        "public_status": "unsupported",
+        "claim_allowed": false,
+        "evidence_status": "unsupported",
+        "evidence": "docs/reports/outlook-osl-mail-verdict.md#OutlookOslMailSupportVerdict",
+        "support_boundary": "Outlook is scoped as OSL Mail, not Outlook chat support; protected inline replies must refuse until a separate OSL Mail gate proves mailbox binding, recipient authority, safe send behavior, draft handling, and runtime support."
+      }
+    ]
+  },
+  "conditional_app_evidence": [
+    {
+      "id": "telegram_desktop_native",
+      "service": "Telegram",
+      "surface": "Telegram Desktop native Windows adapter",
+      "claim_scope": "protected_native_adapter",
+      "status": "externally_blocked",
+      "evidence_report": "docs/reports/telegram-adapter-verdict.md",
+      "evidence_anchor": "TelegramSupportVerdict",
+      "verdict_recorded": "2026-07-30",
+      "support_boundary": "Cannot be listed as supported until a signed-client UI Automation probe proves stable, text-exposed message rows on an actual conversation surface."
+    },
+    {
+      "id": "outlook_osl_mail",
+      "service": "Outlook",
+      "surface": "OSL Mail for Outlook-connected mailboxes",
+      "claim_scope": "osl_mail",
+      "status": "unsupported",
+      "evidence_report": "docs/reports/outlook-osl-mail-verdict.md",
+      "evidence_anchor": "OutlookOslMailSupportVerdict",
+      "verdict_recorded": "2026-07-30",
+      "support_boundary": "Outlook is scoped as OSL Mail, not Outlook chat support; protected inline replies must refuse until a separate OSL Mail gate proves mailbox binding, recipient authority, safe send behavior, draft handling, and runtime support."
+    }
+  ]
+}
