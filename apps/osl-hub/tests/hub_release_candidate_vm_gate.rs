@@ -39,6 +39,26 @@ fn assert_order(source: &str, earlier: &str, later: &str) {
 }
 
 #[test]
+fn f1_live_windows_walkthrough_imports_nonempty_receipt() {
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let script = repo_root.join("scripts/vmqa/vmqa-run.sh");
+    let output = std::process::Command::new("bash")
+        .arg(&script)
+        .arg("f1_live_windows_walkthrough_imports_nonempty_receipt")
+        .current_dir(&repo_root)
+        .output()
+        .expect("run F1 live Windows walkthrough behavior harness");
+
+    assert!(
+        output.status.success(),
+        "F1 walkthrough behavior harness failed with status {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn second_session_rebuild_reproduces_recorded_executable_hash() {
     let agent = include_str!("../../../scripts/vmqa/vmqa-agent.ps1");
     let win32 = include_str!("../../../scripts/vmqa/vmqa-win32.ps1");
