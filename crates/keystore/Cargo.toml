@@ -28,6 +28,10 @@ license.workspace = true
 # sites are synchronous (invoked from
 # `tauri::async_runtime::spawn_blocking`).
 crypto = { path = "../crypto" }
+# A48: `KeystoreBackedAnchor` implements `store::MonotonicAnchor` against the
+# OS credential store. `store` has no dependency back on this crate (see
+# crates/store/Cargo.toml), so this is a one-directional edge, not a cycle.
+store = { path = "../store" }
 base64 = "0.22"
 sha2 = { workspace = true }
 # Device-transfer recovery: deterministically derive the identity
