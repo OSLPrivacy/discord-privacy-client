@@ -45,6 +45,7 @@ use base64::Engine;
 use bip39::{Language, Mnemonic};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -64,11 +65,13 @@ const ARGON_OUTPUT_LEN: usize = 64; // 32 hash + 32 AES key
 const HASH_LEN: usize = 32;
 const KEY_LEN: usize = 32;
 const NONCE_LEN: usize = 12;
-const DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD: u32 = 10;
+pub const DURESS_FAILED_ATTEMPT_THRESHOLD: u32 = keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD;
+const DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD: u32 = DURESS_FAILED_ATTEMPT_THRESHOLD;
 
 const ARGON_MEMORY_KB: u32 = 65_536; // 64 MiB
 const ARGON_ITERATIONS: u32 = 3;
 const ARGON_PARALLELISM: u32 = 1;
+pub const INACTIVITY_AUTO_LOCK_SECONDS: u64 = keystore::DEFAULT_INACTIVITY_SECONDS;
 
 // =====================================================================
 // On-disk schemas.
@@ -125,6 +128,10 @@ pub struct PasswordMarker {
     /// Same salt + params as main. Absent on v=1 markers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub burn_password_hash_b64: Option<String>,
+    /// Distinct duress credential. Matching this at the unlock gate runs the
+    /// journaled DuressEngine path, separate from the full-account burn role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duress_password_hash_b64: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -491,6 +498,7 @@ fn build_marker(password: &str, phrase: &str) -> Result<PasswordMarker, String> 
         phrase_hash_b64: Some(phrase_hash_b64),
         stealth_password_hash_b64: None,
         burn_password_hash_b64: None,
+        duress_password_hash_b64: None,
     })
 }
 
@@ -877,11 +885,10 @@ fn marker_phrase_hash(marker: &PasswordMarker) -> Option<String> {
 // `remove_main_password` to revert future writes to plain JSON.
 // =====================================================================
 
-use std::sync::{Mutex, OnceLock};
-
 static FILE_STORAGE_KEY: OnceLock<Mutex<Option<[u8; 32]>>> = OnceLock::new();
 static INACTIVITY_AUTO_LOCK_TIMER: OnceLock<Mutex<Option<keystore::InactivityTimer>>> =
     OnceLock::new();
+static INACTIVITY_AUTO_LOCK_LOCKED: OnceLock<Mutex<bool>> = OnceLock::new();
 
 fn file_storage_slot() -> &'static Mutex<Option<[u8; 32]>> {
     FILE_STORAGE_KEY.get_or_init(|| Mutex::new(None))
@@ -889,6 +896,16 @@ fn file_storage_slot() -> &'static Mutex<Option<[u8; 32]>> {
 
 fn inactivity_auto_lock_slot() -> &'static Mutex<Option<keystore::InactivityTimer>> {
     INACTIVITY_AUTO_LOCK_TIMER.get_or_init(|| Mutex::new(None))
+}
+
+fn inactivity_auto_lock_locked_slot() -> &'static Mutex<bool> {
+    INACTIVITY_AUTO_LOCK_LOCKED.get_or_init(|| Mutex::new(false))
+}
+
+fn set_inactivity_auto_lock_locked(locked: bool) {
+    *inactivity_auto_lock_locked_slot()
+        .lock()
+        .expect("inactivity auto-lock locked-state mutex poisoned") = locked;
 }
 
 fn arm_inactivity_auto_lock_timer_at(now: Instant) {
@@ -911,6 +928,7 @@ fn disarm_inactivity_auto_lock_timer() {
 fn set_file_storage_key_after_main_password_unlock_at(key: [u8; 32], now: Instant) {
     set_file_storage_key(Some(key));
     arm_inactivity_auto_lock_timer_at(now);
+    set_inactivity_auto_lock_locked(false);
 }
 
 /// Install a password-derived file storage key and arm the 15-minute
@@ -940,6 +958,7 @@ pub(crate) fn run_inactivity_auto_lock_timer_at(now: Instant) -> bool {
     };
     if should_lock {
         set_file_storage_key(None);
+        set_inactivity_auto_lock_locked(true);
     }
     should_lock
 }
@@ -948,6 +967,10 @@ pub(crate) fn run_inactivity_auto_lock_timer_at(now: Instant) -> bool {
 /// already fired, the file key is cleared and this activity does not re-open it.
 pub fn mark_activity_for_inactivity_auto_lock() -> bool {
     mark_activity_for_inactivity_auto_lock_at(Instant::now())
+}
+
+pub fn mark_inactivity_timer_activity() {
+    let _ = mark_activity_for_inactivity_auto_lock();
 }
 
 pub(crate) fn mark_activity_for_inactivity_auto_lock_at(now: Instant) -> bool {
@@ -963,6 +986,27 @@ pub(crate) fn mark_activity_for_inactivity_auto_lock_at(now: Instant) -> bool {
     } else {
         false
     }
+}
+
+pub fn unlock_inactivity_auto_lock_timer() {
+    arm_inactivity_auto_lock_timer_at(Instant::now());
+    set_inactivity_auto_lock_locked(false);
+}
+
+pub fn inactivity_auto_lock_is_locked() -> bool {
+    *inactivity_auto_lock_locked_slot()
+        .lock()
+        .expect("inactivity auto-lock locked-state mutex poisoned")
+}
+
+#[cfg(test)]
+fn seed_inactivity_auto_lock_timer(last_activity: Instant, locked: bool) {
+    if locked {
+        disarm_inactivity_auto_lock_timer();
+    } else {
+        arm_inactivity_auto_lock_timer_at(last_activity);
+    }
+    set_inactivity_auto_lock_locked(locked);
 }
 
 /// Public accessor used by peer_map / whitelist_state /
@@ -989,6 +1033,7 @@ pub fn set_file_storage_key(key: Option<[u8; 32]>) {
     if !is_some {
         disarm_inactivity_auto_lock_timer();
     }
+    set_inactivity_auto_lock_locked(false);
     if is_some && !was_some {
         eprintln!("[OSL][crypto] file_storage_key populated");
     } else if !is_some && was_some {
@@ -1257,6 +1302,7 @@ pub fn rotate_state_files(
 pub enum GateMatch {
     Main([u8; 32]), // also returns derived file_storage_key
     Stealth,
+    Duress,
     Burn,
     Wrong,
 }
@@ -1265,6 +1311,9 @@ pub enum GateMatch {
 pub enum GatePasswordAttemptResult {
     Main([u8; 32]), // also returns derived file_storage_key
     Stealth,
+    DuressCredential {
+        attempts_used: u32,
+    },
     Burn,
     Wrong {
         attempts_used: u32,
@@ -1305,8 +1354,16 @@ pub fn verify_gate_password_with_marker(
         ),
         None => None,
     };
+    let duress_hash = match marker.duress_password_hash_b64.as_ref() {
+        Some(s) => Some(
+            STANDARD
+                .decode(s)
+                .map_err(|e| format!("OSL: duress hash b64: {e}"))?,
+        ),
+        None => None,
+    };
     let candidate = &derived[..HASH_LEN];
-    // Constant-time: run all three comparisons regardless of
+    // Constant-time: run all role comparisons regardless of
     // early match. The bool ORs at the end pick the first match.
     let m_main = ct_eq(candidate, &main_hash);
     let m_stealth = stealth_hash
@@ -1317,12 +1374,19 @@ pub fn verify_gate_password_with_marker(
         .as_deref()
         .map(|h| ct_eq(candidate, h))
         .unwrap_or(false);
+    let m_duress = duress_hash
+        .as_deref()
+        .map(|h| ct_eq(candidate, h))
+        .unwrap_or(false);
     if m_main {
         let file_key = derive_file_storage_key(&derived[HASH_LEN..]);
         return Ok(GateMatch::Main(file_key));
     }
     if m_stealth {
         return Ok(GateMatch::Stealth);
+    }
+    if m_duress {
+        return Ok(GateMatch::Duress);
     }
     if m_burn {
         return Ok(GateMatch::Burn);
@@ -1363,6 +1427,9 @@ pub fn verify_gate_password_attempt(
             let _ = write_lockout(dir, &lock);
             Ok(GatePasswordAttemptResult::Stealth)
         }
+        GateMatch::Duress => Ok(GatePasswordAttemptResult::DuressCredential {
+            attempts_used: lock.password_failed_attempts,
+        }),
         GateMatch::Burn => {
             lock.password_failed_attempts = 0;
             lock.password_locked_until = None;
@@ -1426,6 +1493,18 @@ pub fn set_stealth_password(
             return Err("OSL: stealth and burn passwords must be different".to_string());
         }
     }
+    if let Some(duress_b64) = marker.duress_password_hash_b64.as_ref() {
+        let salt = STANDARD
+            .decode(&marker.salt_b64)
+            .map_err(|e| format!("OSL: salt b64: {e}"))?;
+        let derived = derive(new_stealth, &salt, &marker.params)?;
+        let duress = STANDARD
+            .decode(duress_b64)
+            .map_err(|e| format!("OSL: duress b64: {e}"))?;
+        if ct_eq(&derived[..HASH_LEN], &duress) {
+            return Err("OSL: stealth and duress passwords must be different".to_string());
+        }
+    }
     let salt = STANDARD
         .decode(&marker.salt_b64)
         .map_err(|e| format!("OSL: salt b64: {e}"))?;
@@ -1464,6 +1543,18 @@ pub fn set_burn_password(dir: &Path, current_main: &str, new_burn: &str) -> Resu
             return Err("OSL: stealth and burn passwords must be different".to_string());
         }
     }
+    if let Some(duress_b64) = marker.duress_password_hash_b64.as_ref() {
+        let salt = STANDARD
+            .decode(&marker.salt_b64)
+            .map_err(|e| format!("OSL: salt b64: {e}"))?;
+        let derived = derive(new_burn, &salt, &marker.params)?;
+        let duress = STANDARD
+            .decode(duress_b64)
+            .map_err(|e| format!("OSL: duress b64: {e}"))?;
+        if ct_eq(&derived[..HASH_LEN], &duress) {
+            return Err("OSL: burn and duress passwords must be different".to_string());
+        }
+    }
     let salt = STANDARD
         .decode(&marker.salt_b64)
         .map_err(|e| format!("OSL: salt b64: {e}"))?;
@@ -1492,6 +1583,71 @@ pub fn burn_password_status(dir: &Path) -> bool {
     read_marker(dir)
         .map(|m| m.burn_password_hash_b64.is_some())
         .unwrap_or(false)
+}
+
+pub fn set_duress_password(dir: &Path, current_main: &str, new_duress: &str) -> Result<(), String> {
+    validate_password(new_duress)?;
+    let mut marker = read_marker(dir)?;
+    let _ = verify_with_marker(&marker, current_main)
+        .map_err(|_| "OSL: current main password incorrect".to_string())?;
+    if current_main == new_duress {
+        return Err("OSL: duress password must be different from your main password".to_string());
+    }
+    let salt = STANDARD
+        .decode(&marker.salt_b64)
+        .map_err(|e| format!("OSL: salt b64: {e}"))?;
+    let derived = derive(new_duress, &salt, &marker.params)?;
+    if let Some(stealth_b64) = marker.stealth_password_hash_b64.as_ref() {
+        let stealth = STANDARD
+            .decode(stealth_b64)
+            .map_err(|e| format!("OSL: stealth b64: {e}"))?;
+        if ct_eq(&derived[..HASH_LEN], &stealth) {
+            return Err("OSL: stealth and duress passwords must be different".to_string());
+        }
+    }
+    if let Some(burn_b64) = marker.burn_password_hash_b64.as_ref() {
+        let burn = STANDARD
+            .decode(burn_b64)
+            .map_err(|e| format!("OSL: burn b64: {e}"))?;
+        if ct_eq(&derived[..HASH_LEN], &burn) {
+            return Err("OSL: burn and duress passwords must be different".to_string());
+        }
+    }
+    marker.duress_password_hash_b64 = Some(STANDARD.encode(&derived[..HASH_LEN]));
+    marker.version = MARKER_VERSION;
+    write_marker(dir, &marker)
+}
+
+pub fn remove_duress_password(dir: &Path, current_main: &str) -> Result<(), String> {
+    let mut marker = read_marker(dir)?;
+    let _ = verify_with_marker(&marker, current_main)
+        .map_err(|_| "OSL: current main password incorrect".to_string())?;
+    marker.duress_password_hash_b64 = None;
+    marker.version = MARKER_VERSION;
+    write_marker(dir, &marker)
+}
+
+pub fn duress_password_status(dir: &Path) -> bool {
+    read_marker(dir)
+        .map(|m| m.duress_password_hash_b64.is_some())
+        .unwrap_or(false)
+}
+
+pub fn execute_gate_duress(state: &AppState) -> Result<(), String> {
+    let report = state
+        .duress_engine
+        .lock()
+        .expect("duress_engine mutex poisoned")
+        .execute()
+        .map_err(|e| format!("OSL: duress wipe failed before it could be journaled: {e}"))?;
+    if !report.failed_steps().is_empty() {
+        tracing::warn!(
+            failed_steps = ?report.failed_steps(),
+            "OSL: duress wipe completed with failed steps; journal retained for resume"
+        );
+    }
+    set_file_storage_key(None);
+    Ok(())
 }
 
 // =====================================================================
@@ -1627,6 +1783,7 @@ mod password_policy_tests {
             phrase_hash_b64: Some(STANDARD.encode(&phrase_derived[..HASH_LEN])),
             stealth_password_hash_b64: None,
             burn_password_hash_b64: None,
+            duress_password_hash_b64: None,
         }
     }
 
@@ -1954,6 +2111,7 @@ mod password_policy_tests {
             phrase_hash_b64: None,
             stealth_password_hash_b64: None,
             burn_password_hash_b64: None,
+            duress_password_hash_b64: None,
         };
         write_marker(dir.path(), &marker).unwrap();
 
@@ -1987,5 +2145,41 @@ mod password_policy_tests {
             lock.password_failed_attempts,
             keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD
         );
+    }
+
+    #[test]
+    fn run_inactivity_auto_lock_timer_public_api() {
+        let now = std::time::Instant::now();
+        seed_inactivity_auto_lock_timer(
+            now - std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS - 1),
+            false,
+        );
+        set_file_storage_key(Some([7; 32]));
+
+        assert!(
+            !super::run_inactivity_auto_lock_timer(),
+            "timer must not lock before the 15-minute threshold"
+        );
+        assert!(!inactivity_auto_lock_is_locked());
+        assert_eq!(get_file_storage_key(), Some([7; 32]));
+
+        seed_inactivity_auto_lock_timer(
+            now - std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS),
+            false,
+        );
+        assert!(
+            super::run_inactivity_auto_lock_timer(),
+            "timer must lock at the 15-minute threshold"
+        );
+        assert!(inactivity_auto_lock_is_locked());
+        assert_eq!(
+            get_file_storage_key(),
+            None,
+            "auto-lock must clear password-derived storage authority"
+        );
+
+        unlock_inactivity_auto_lock_timer();
+        assert!(!inactivity_auto_lock_is_locked());
+        set_file_storage_key(None);
     }
 }

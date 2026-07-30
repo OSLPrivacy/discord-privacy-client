@@ -1079,6 +1079,15 @@ async fn unlock_hub_password_gate(
             startup_gate::enter_stealth_landing(&app.state::<HubCoreState>());
             Ok(HubGateUnlockResult::decoy(verification))
         }
+        VerifiedGateRole::Duress => {
+            service_host::desktop::shutdown(&app, &app.state::<ServiceHostState>()).await?;
+            native_discord_overlay::clear_and_hide(&app);
+            let _ = app.state::<NativeWindowHostState>().terminate();
+            let _ = app.state::<MullvadWindowHostState>().restore();
+            let _ = app.state::<BrowserCompanionState>().terminate();
+            app.state::<HubBrokerState>().clear()?;
+            Ok(HubGateUnlockResult::duress(verification))
+        }
         VerifiedGateRole::Burn => {
             service_host::desktop::shutdown(&app, &app.state::<ServiceHostState>()).await?;
             native_discord_overlay::clear_and_hide(&app);

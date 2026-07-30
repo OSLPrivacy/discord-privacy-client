@@ -1379,7 +1379,7 @@ describe("bundled preview security boundary", () => {
     ).toBe(false);
   });
 
-  it("separates legacy duress primitives from the reachable Hub burn password", () => {
+  it("binds the duress engine to a distinct reachable gate outcome", () => {
     const duress = readRelative("../../../crates/keystore/src/duress.rs");
     const password = readRelative("../../../crates/keystore/src/password.rs");
     const keystoreLib = readRelative("../../../crates/keystore/src/lib.rs");
@@ -1405,8 +1405,6 @@ describe("bundled preview security boundary", () => {
         rustProductionPrefix(source),
       );
 
-    // Positive implementation/re-export controls prevent removing the dormant
-    // subsystem from satisfying the absence assertion.
     for (const implementationSymbol of [
       "pub enum WipeStep",
       "pub struct DuressHandlers",
@@ -1434,54 +1432,22 @@ describe("bundled preview security boundary", () => {
       "verify_against_record, Argon2Params, InactivityTimer",
     );
 
-    expect(productionReferencesLegacyDuress(productionRust)).toBe(false);
+    expect(productionReferencesLegacyDuress(productionRust)).toBe(true);
+    expect(productionRust).toContain("pub duress_engine: Mutex<keystore::DuressEngine>");
+    expect(productionRust).toContain("execute_gate_duress(state)?");
+    expect(productionRust).toContain("GateMatch::Duress");
+    expect(productionRust).toContain("DURESS_FAILED_ATTEMPT_THRESHOLD");
 
-    // Positive controls for the separate, reachable Hub implementation.
     const mainProduction = rustProductionPrefix(main);
     const handler = tauriCommandSurface(mainProduction);
     expect(handler).toContain("unlock_hub_password_gate,");
     expect(mainProduction).toContain(
       "startup_gate::verify_password_role(&verify_app.state::<HubCoreState>(), password)",
     );
+    expect(mainProduction).toContain("VerifiedGateRole::Duress => {");
+    expect(mainProduction).toContain("HubGateUnlockResult::duress(verification)");
     expect(mainProduction).toContain("VerifiedGateRole::Burn => {");
     expect(mainProduction).toContain("cleanup::execute_verified_gate_burn(");
-
-    const assertLegacyDuressTruth = (
-      duressSource: string,
-      passwordSource: string,
-    ): void => {
-      expect(duressSource).toContain(
-        "Legacy duress-engine primitives (implemented-unwired)",
-      );
-      expect(duressSource).toContain(
-        "neither construct a\n//! [`DuressEngine`] nor call",
-      );
-      expect(duressSource).toContain(
-        "separately implemented burn-password path uses `startup_gate` and",
-      );
-      expect(duressSource).toContain(
-        "No production startup path currently",
-      );
-      expect(duressSource).toContain(
-        "With no callback, this step is reported as",
-      );
-      expect(duressSource).toContain(
-        "After each step attempt, the engine records its",
-      );
-      expect(passwordSource).toContain(
-        "Legacy unlock/duress record primitives (implemented-unwired)",
-      );
-      expect(passwordSource).toContain(
-        "call neither\n//! [`verify_against_record`] nor [`InactivityTimer`]",
-      );
-      expect(passwordSource).toContain(
-        "separately\n//! implemented password gate uses `startup_gate` and `cleanup`",
-      );
-      expect(passwordSource).toContain(
-        "When invoked, this module's storage helpers serialize",
-      );
-    };
-    assertLegacyDuressTruth(duress, password);
 
     for (const syntheticProductionReference of [
       "let engine = DuressEngine::new(journal, paths, handlers);",
@@ -1495,22 +1461,6 @@ describe("bundled preview security boundary", () => {
         productionReferencesLegacyDuress(syntheticProductionReference),
       ).toBe(true);
     }
-
-    expect(() =>
-      assertLegacyDuressTruth(
-        duress.replace(
-          "Legacy duress-engine primitives (implemented-unwired)",
-          "Shipping duress flow execution",
-        ),
-        password,
-      ),
-    ).toThrow();
-    expect(duress).not.toContain(
-      "The caller (Tauri shell) plays the normal unlock animation",
-    );
-    expect(password).not.toContain(
-      "then triggers\n//!   the duress flow",
-    );
 
     expect(
       productionReferencesLegacyDuress(

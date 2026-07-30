@@ -1,12 +1,11 @@
-//! Legacy duress-engine primitives (implemented-unwired).
+//! Duress-engine primitives.
 //!
 //! Spec: `docs/design/unlock-and-duress.md` "Duress flow — full
 //! specification" + `docs/design/build-order.md` Layer B3.
 //!
-//! Current Hub/IPC and legacy Tauri production sources neither construct a
-//! [`DuressEngine`] nor call its execute/resume methods. The current Hub's
-//! separately implemented burn-password path uses `startup_gate` and
-//! `cleanup`, not this engine.
+//! IPC constructs a production [`DuressEngine`] in application state and the
+//! Hub password gate invokes it for duress outcomes. The separate burn-password
+//! path still uses `startup_gate` and `cleanup`, not this engine.
 //!
 //! The engine contract, when explicitly driven, has four phases:
 //!
@@ -26,8 +25,8 @@
 //! `Skipped`, or `Failed` outcome in the on-disk journal. When an integration
 //! explicitly calls
 //! [`DuressEngine::resume_if_pending`], the engine reads the journal and
-//! re-runs steps not yet completed. No production startup path currently
-//! makes that call.
+//! re-runs steps not yet completed. Startup resume remains a caller
+//! responsibility.
 //!
 //! ## Wipe set status (v1 alpha)
 //!
@@ -359,6 +358,80 @@ pub struct DuressPaths {
     pub prekey_file: Option<PathBuf>,
 }
 
+/// Production duress-engine wiring that is independent of the UI or IPC
+/// layer. `account_dir` is the active account directory; `password_dir` is the
+/// device-level password directory.
+pub struct ProductionDuressConfig {
+    pub account_dir: PathBuf,
+    pub password_dir: PathBuf,
+    pub journal_path: PathBuf,
+    pub local_cache_dir: PathBuf,
+    pub anonymous_credentials_paths: Vec<PathBuf>,
+    pub opsec_paths: Vec<PathBuf>,
+    pub purge_keyring: Option<WipeFn>,
+    pub wipe_prekeys: Option<WipeFn>,
+    pub wipe_double_ratchet: Option<WipeFn>,
+    pub wipe_sender_keys: Option<WipeFn>,
+    pub wipe_peer_ratchets: Option<WipeFn>,
+    pub zeroize_in_memory: Option<WipeFn>,
+}
+
+impl ProductionDuressConfig {
+    pub fn new(account_dir: PathBuf, password_dir: PathBuf) -> Self {
+        Self {
+            journal_path: account_dir.join("duress.journal"),
+            local_cache_dir: account_dir.join("store"),
+            anonymous_credentials_paths: vec![
+                account_dir.join("anonymous_credentials.json"),
+                account_dir.join("anonymous_credentials"),
+            ],
+            opsec_paths: Vec::new(),
+            account_dir,
+            password_dir,
+            purge_keyring: None,
+            wipe_prekeys: None,
+            wipe_double_ratchet: None,
+            wipe_sender_keys: None,
+            wipe_peer_ratchets: None,
+            zeroize_in_memory: None,
+        }
+    }
+}
+
+pub struct ProductionDuressParts {
+    pub journal_path: PathBuf,
+    pub paths: DuressPaths,
+    pub handlers: DuressHandlers,
+}
+
+pub fn build_production_duress_handlers(config: ProductionDuressConfig) -> ProductionDuressParts {
+    let local_cache_dir = config.local_cache_dir;
+    let anonymous_credentials_paths = config.anonymous_credentials_paths;
+    let opsec_paths = config.opsec_paths;
+
+    ProductionDuressParts {
+        journal_path: config.journal_path,
+        paths: DuressPaths {
+            identity_file: config.account_dir.join("identity.json"),
+            password_file: config.password_dir.join("password_marker.json"),
+            prekey_file: Some(config.account_dir.join("prekeys.json")),
+        },
+        handlers: DuressHandlers {
+            purge_keyring: config.purge_keyring,
+            wipe_local_cache_dir: Some(Box::new(move || remove_path_idempotent(&local_cache_dir))),
+            wipe_anonymous_credentials: Some(Box::new(move || {
+                remove_paths_idempotent(&anonymous_credentials_paths)
+            })),
+            wipe_prekeys: config.wipe_prekeys,
+            wipe_double_ratchet: config.wipe_double_ratchet,
+            wipe_sender_keys: config.wipe_sender_keys,
+            wipe_peer_ratchets: config.wipe_peer_ratchets,
+            zeroize_in_memory: config.zeroize_in_memory,
+            strip_opsec_files: Some(Box::new(move || remove_paths_idempotent(&opsec_paths))),
+        },
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum DuressError {
     #[error("io: {0}")]
@@ -659,6 +732,22 @@ fn map_tpm_evict_result(result: std::result::Result<TpmEvictOutcome, SealerError
         Err(e) => StepOutcome::Failed {
             error: e.to_string(),
         },
+    }
+}
+
+fn remove_paths_idempotent(paths: &[PathBuf]) -> std::result::Result<(), DuressError> {
+    for path in paths {
+        remove_path_idempotent(path)?;
+    }
+    Ok(())
+}
+
+fn remove_path_idempotent(path: &Path) -> std::result::Result<(), DuressError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(path).map_err(DuressError::from),
+        Ok(_) => std::fs::remove_file(path).map_err(DuressError::from),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(DuressError::from(e)),
     }
 }
 
@@ -1016,5 +1105,91 @@ mod tests {
 
         assert_eq!(tpm_outcome, &StepOutcome::AlreadyClean);
         assert_ne!(tpm_outcome, &StepOutcome::Wiped);
+    }
+
+    #[test]
+    fn build_production_duress_handlers() {
+        let dir = TempDir::new().unwrap();
+        let account_dir = dir.path().join("account");
+        let password_dir = dir.path().join("base");
+        std::fs::create_dir_all(account_dir.join("store")).unwrap();
+        std::fs::create_dir_all(account_dir.join("anonymous_credentials")).unwrap();
+        std::fs::write(account_dir.join("identity.json"), b"identity").unwrap();
+        std::fs::write(account_dir.join("prekeys.json"), b"prekeys").unwrap();
+        std::fs::write(
+            account_dir.join("anonymous_credentials.json"),
+            b"anonymous credentials",
+        )
+        .unwrap();
+        std::fs::write(account_dir.join("store").join("messages.sqlite"), b"cache").unwrap();
+        std::fs::create_dir_all(&password_dir).unwrap();
+        std::fs::write(password_dir.join("password_marker.json"), b"marker").unwrap();
+        let opsec_script = account_dir.join("boot.js");
+        let opsec_config = account_dir.join("opsec.json");
+        std::fs::write(&opsec_script, b"script").unwrap();
+        std::fs::write(&opsec_config, b"config").unwrap();
+
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let callback = |name: &'static str| {
+            let calls = calls.clone();
+            Box::new(move || {
+                calls.lock().unwrap().push(name);
+                Ok(())
+            }) as WipeFn
+        };
+
+        let mut config = ProductionDuressConfig::new(account_dir.clone(), password_dir.clone());
+        config.purge_keyring = Some(callback("keyring"));
+        config.wipe_prekeys = Some(callback("prekeys"));
+        config.wipe_double_ratchet = Some(callback("double_ratchet"));
+        config.wipe_sender_keys = Some(callback("sender_keys"));
+        config.wipe_peer_ratchets = Some(callback("peer_ratchets"));
+        config.zeroize_in_memory = Some(callback("zeroize"));
+        config.opsec_paths = vec![opsec_script.clone(), opsec_config.clone()];
+
+        let parts = super::build_production_duress_handlers(config);
+        assert_eq!(parts.journal_path, account_dir.join("duress.journal"));
+        assert_eq!(parts.paths.identity_file, account_dir.join("identity.json"));
+        assert_eq!(
+            parts.paths.password_file,
+            password_dir.join("password_marker.json")
+        );
+        let expected_prekey_file = account_dir.join("prekeys.json");
+        assert_eq!(
+            parts.paths.prekey_file.as_deref(),
+            Some(expected_prekey_file.as_path())
+        );
+
+        let engine = DuressEngine::new(parts.journal_path.clone(), parts.paths, parts.handlers);
+        let report = engine
+            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
+            .unwrap();
+
+        assert!(report.completed);
+        assert!(report.failed_steps().is_empty());
+        assert!(
+            report.skipped_steps().is_empty(),
+            "production assembly must not leave handler-backed steps skipped"
+        );
+        assert!(!account_dir.join("identity.json").exists());
+        assert!(!account_dir.join("prekeys.json").exists());
+        assert!(!account_dir.join("store").exists());
+        assert!(!account_dir.join("anonymous_credentials").exists());
+        assert!(!account_dir.join("anonymous_credentials.json").exists());
+        assert!(!opsec_script.exists());
+        assert!(!opsec_config.exists());
+        assert!(!password_dir.join("password_marker.json").exists());
+        assert!(!parts.journal_path.exists());
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            [
+                "keyring",
+                "prekeys",
+                "double_ratchet",
+                "sender_keys",
+                "peer_ratchets",
+                "zeroize",
+            ]
+        );
     }
 }

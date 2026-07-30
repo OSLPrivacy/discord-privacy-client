@@ -2565,6 +2565,20 @@ function bindPasswordForm(): void {
           render();
           return;
         }
+        if (gate.outcome === "duress") {
+          identityStorageMethod = null;
+          localStorage.clear();
+          onboardingComplete = false;
+          setup = parseSetupState(null);
+          services = [];
+          passwordRoleStatus = null;
+          core = structuredClone(unavailableCoreIntegration);
+          route = "onboarding";
+          onboardingRoute = "welcome";
+          showToast("OSL signed out on this device");
+          render();
+          return;
+        }
         if (gate.outcome === "burned") {
           identityStorageMethod = null;
           localStorage.clear();

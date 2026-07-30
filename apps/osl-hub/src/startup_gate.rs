@@ -12,6 +12,7 @@ use crate::core_bridge::{self, CoreReadiness, HubCoreState};
 pub enum VerifiedGateRole {
     Main,
     Stealth,
+    Duress,
     Burn,
     Wrong,
 }
@@ -26,7 +27,7 @@ pub struct GatePasswordVerification {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HubGateUnlockResult {
-    /// `unlocked`, `decoy`, `burned`, or `wrong`.
+    /// `unlocked`, `decoy`, `duress`, `burned`, or `wrong`.
     pub outcome: &'static str,
     pub lockout_seconds_remaining: i64,
     pub attempts_used: u32,
@@ -65,6 +66,16 @@ impl HubGateUnlockResult {
         }
     }
 
+    pub fn duress(verification: GatePasswordVerification) -> Self {
+        Self {
+            outcome: "duress",
+            lockout_seconds_remaining: verification.lockout_seconds_remaining,
+            attempts_used: verification.attempts_used,
+            readiness: None,
+            burn: None,
+        }
+    }
+
     pub fn burned(
         verification: GatePasswordVerification,
         burn: crate::cleanup::HubFullCleanupResult,
@@ -87,6 +98,7 @@ pub fn verify_password_role(
     let parsed_role = match result.result.as_str() {
         "main" => VerifiedGateRole::Main,
         "stealth" => VerifiedGateRole::Stealth,
+        "duress" => VerifiedGateRole::Duress,
         "burn" => VerifiedGateRole::Burn,
         "wrong" => VerifiedGateRole::Wrong,
         _ => return Err("OSL password gate returned an invalid role".to_owned()),
@@ -189,6 +201,7 @@ mod tests {
                 HubGateUnlockResult::burned(verification, burn)
             }
             VerifiedGateRole::Wrong => HubGateUnlockResult::wrong(verification),
+            VerifiedGateRole::Duress => HubGateUnlockResult::duress(verification),
             VerifiedGateRole::Main | VerifiedGateRole::Stealth => {
                 panic!("test only routes burn and wrong gate roles")
             }
@@ -224,10 +237,11 @@ mod tests {
         let actions = [
             (VerifiedGateRole::Main, "unlocked"),
             (VerifiedGateRole::Stealth, "decoy"),
+            (VerifiedGateRole::Duress, "duress"),
             (VerifiedGateRole::Burn, "burned"),
             (VerifiedGateRole::Wrong, "wrong"),
         ];
-        assert_eq!(actions.len(), 4);
+        assert_eq!(actions.len(), 5);
         assert_ne!(actions[0].1, actions[1].1);
         assert_ne!(actions[0].1, actions[2].1);
         assert_ne!(actions[1].1, actions[2].1);

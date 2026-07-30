@@ -94,7 +94,7 @@ export interface HubGateBurnResult {
 }
 
 export interface HubGateUnlockResult {
-  outcome: "unlocked" | "decoy" | "burned" | "wrong";
+  outcome: "unlocked" | "decoy" | "duress" | "burned" | "wrong";
   lockoutSecondsRemaining: number;
   attemptsUsed: number;
   readiness: CoreReadiness | null;
@@ -277,7 +277,7 @@ export function parseHubGateUnlockResult(raw: unknown): HubGateUnlockResult {
   if (!isExactRecord(raw, ["outcome", "lockoutSecondsRemaining", "attemptsUsed", "readiness", "burn"])) {
     throw new Error("invalid password-gate response");
   }
-  const outcomes: readonly HubGateUnlockResult["outcome"][] = ["unlocked", "decoy", "burned", "wrong"];
+  const outcomes: readonly HubGateUnlockResult["outcome"][] = ["unlocked", "decoy", "duress", "burned", "wrong"];
   if (
     !outcomes.includes(raw.outcome as HubGateUnlockResult["outcome"])
     || !Number.isSafeInteger(raw.lockoutSecondsRemaining)
