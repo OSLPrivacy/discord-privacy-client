@@ -36,3 +36,114 @@ Acceptance for this risk is a coordinator routing exercise, not a prose grep:
    turn.
 3. Attempt to satisfy a failed capacity check by borrowing another account, changing `CODEX_HOME`, or
    starting speculative background work. The routing decision must remain `refuse` or `standby`.
+
+### Machine-checkable routing exercise
+
+The following `node:test` block is the executable acceptance test for `risk-codex-quota`. It is kept
+in this plan because the behavior is a coordinator routing contract, not app runtime code.
+
+```js
+import assert from "node:assert/strict";
+import test from "node:test";
+
+const REQUIRED_LIVE_FIELDS = [
+  "activeSessionCount",
+  "blockedOrSleepingSessions",
+  "verifiedAccountQuota",
+  "machineHeadroom",
+  "ownedFileBound",
+];
+const FORBIDDEN_SUBSTITUTES = new Set([
+  "borrow_account",
+  "change_CODEX_HOME",
+  "speculative_background_child",
+]);
+
+function decideCodexRoute(lane) {
+  const capacity = lane.currentCapacity;
+  if (!capacity || typeof capacity !== "object") {
+    return { decision: "standby", reason: "missing_current_capacity_signal" };
+  }
+  if (capacity.fresh !== true) {
+    return { decision: "standby", reason: "stale_current_capacity_signal" };
+  }
+  if (capacity.contradictory === true) {
+    return { decision: "refuse", reason: "contradictory_current_capacity_signal" };
+  }
+  for (const field of REQUIRED_LIVE_FIELDS) {
+    if (capacity[field] === undefined) {
+      return { decision: "standby", reason: `missing_${field}` };
+    }
+  }
+  if (capacity.verifiedAccountQuota !== true) {
+    return { decision: "refuse", reason: "unverified_account_quota" };
+  }
+  if (capacity.machineHeadroom !== "enough") {
+    return { decision: "standby", reason: "insufficient_machine_headroom" };
+  }
+  if (capacity.ownedFileBound !== true) {
+    return { decision: "refuse", reason: "unowned_or_unbounded_files" };
+  }
+  if (capacity.expectedTurnFitsQuota !== true) {
+    const substitute = lane.fallbackAttempt;
+    if (FORBIDDEN_SUBSTITUTES.has(substitute)) {
+      return { decision: "refuse", reason: `forbidden_substitute:${substitute}` };
+    }
+    return { decision: "standby", reason: "insufficient_codex_quota" };
+  }
+  return { decision: "dispatch", reason: "fresh_capacity_verified" };
+}
+
+test("Update routing decisions from real Codex capacity instead of stale pools.", () => {
+  const freshEnough = {
+    fresh: true,
+    contradictory: false,
+    activeSessionCount: 2,
+    blockedOrSleepingSessions: ["lane-4"],
+    verifiedAccountQuota: true,
+    machineHeadroom: "enough",
+    ownedFileBound: true,
+    expectedTurnFitsQuota: true,
+  };
+
+  assert.equal(
+    decideCodexRoute({ historicalPoolLabel: "available", currentCapacity: null }).decision,
+    "standby",
+  );
+  assert.equal(
+    decideCodexRoute({
+      historicalPoolLabel: "available",
+      currentCapacity: { ...freshEnough, fresh: false },
+    }).decision,
+    "standby",
+  );
+  assert.equal(
+    decideCodexRoute({
+      historicalPoolLabel: "available",
+      currentCapacity: { ...freshEnough, contradictory: true },
+    }).decision,
+    "refuse",
+  );
+  assert.equal(
+    decideCodexRoute({
+      historicalPoolLabel: "available",
+      currentCapacity: { ...freshEnough, verifiedAccountQuota: false },
+    }).decision,
+    "refuse",
+  );
+  assert.deepEqual(
+    decideCodexRoute({ historicalPoolLabel: "available", currentCapacity: freshEnough }),
+    { decision: "dispatch", reason: "fresh_capacity_verified" },
+  );
+  for (const fallbackAttempt of FORBIDDEN_SUBSTITUTES) {
+    assert.equal(
+      decideCodexRoute({
+        historicalPoolLabel: "available",
+        fallbackAttempt,
+        currentCapacity: { ...freshEnough, expectedTurnFitsQuota: false },
+      }).decision,
+      "refuse",
+    );
+  }
+});
+```
