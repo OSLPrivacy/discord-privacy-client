@@ -120,3 +120,62 @@ fn second_session_rebuild_reproduces_recorded_executable_hash() {
         "the second-session operator must re-read bundle bytes and compare them to the recorded executable identity"
     );
 }
+
+#[test]
+fn final_owner_gated_signoff_reproduces_package_from_second_session() {
+    let guide = include_str!("../../../docs/testing/hub-release-candidate-vm-gate.md");
+    let verifier = include_str!("../../../scripts/verify_hub_vm_qa_attestation.py");
+
+    let section = section(
+        guide,
+        "## final_owner_gated_signoff_reproduces_package_from_second_session",
+        "Validate locally before upload:",
+    );
+    for required in [
+        "Final promotion is a two-person/session gate.",
+        "final approver must use a second\nlogin/session to download the draft release assets",
+        "second session computes the installer SHA-256 and it exactly matches\n  `candidateSha256`",
+        "runs `scripts/verify_hub_vm_qa_attestation.py` against the\n  downloaded candidate directory, not a local build tree",
+        "`packageReproducedBySecondSession: true`",
+        "release owner and final approver are not the same session",
+    ] {
+        assert!(
+            section.contains(required),
+            "release gate guide must require second-session package reproduction: {required}"
+        );
+    }
+
+    for required in [
+        "operator = document.get(\"operator\")",
+        "final_approver = document.get(\"finalApprover\")",
+        "QA attestation needs a second-session final approver",
+        "require(final_approver.strip() != operator.strip(),",
+        "QA attestation final approver must be a different session",
+        "require(document.get(\"packageReproducedBySecondSession\") is True,",
+        "QA attestation must reproduce the package from a second session",
+    ] {
+        assert!(
+            verifier.contains(required),
+            "verifier must refuse final sign-off without independent package reproduction: {required}"
+        );
+    }
+
+    let hash_check = verifier
+        .find("require(file_sha256(installers[0]) == expected_hash,")
+        .expect("verifier must hash the downloaded installer");
+    let manifest_check = verifier
+        .find("verify_updater_manifest(tag, candidate_dir / \"latest.json\", installers[0])")
+        .expect("verifier must bind latest.json to the same downloaded installer");
+    let approver_check = verifier
+        .find("final_approver = document.get(\"finalApprover\")")
+        .expect("verifier must read the final approver");
+    let reproduction_check = verifier
+        .find("require(document.get(\"packageReproducedBySecondSession\") is True,")
+        .expect("verifier must require second-session reproduction");
+    assert!(
+        hash_check < manifest_check
+            && manifest_check < approver_check
+            && approver_check < reproduction_check,
+        "final sign-off must happen only after the downloaded package hash and manifest match"
+    );
+}
