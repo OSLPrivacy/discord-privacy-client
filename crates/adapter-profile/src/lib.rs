@@ -13,13 +13,13 @@ pub mod score;
 pub mod trust;
 
 pub use contract::{
-    CheckOutcome, ContractVerdict, Predicate, ReportError, SelfTestReport, Subsystem,
-    UnverifiedCause, CONTRACT_VERSION, MAX_SELF_TEST_CHECKS,
+    run_contract_self_test, CheckOutcome, ContractVerdict, Predicate, ReportError, SelfTestReport,
+    Subsystem, UnverifiedCause, CONTRACT_VERSION, MAX_SELF_TEST_CHECKS,
 };
 pub use defaults::{
-    signal_default_profile, signal_default_trusted_signing_key_b64,
-    SIGNAL_DESKTOP_NATIVE_APP_ROOT_ROLE, SIGNAL_DESKTOP_NATIVE_PRIMARY_WINDOW_CLASS,
-    SIGNAL_DESKTOP_NATIVE_WINDOW_TITLE,
+    signal_default_profile, signal_default_trusted_signing_key_b64, whatsapp_default_profile,
+    whatsapp_default_trusted_signing_key_b64, SIGNAL_DESKTOP_NATIVE_APP_ROOT_ROLE,
+    SIGNAL_DESKTOP_NATIVE_PRIMARY_WINDOW_CLASS, SIGNAL_DESKTOP_NATIVE_WINDOW_TITLE,
 };
 pub use envelope::{
     canonical_profile_digest, EnvelopeError, SignedProfile, ADAPTER_PROFILE_ENVELOPE_DOMAIN,
@@ -32,9 +32,9 @@ pub use loader::{
 
 pub use schema::{
     canonical_profile_bytes, parse_profile_doc, ActionLevel, AdapterAuthority, AdapterService,
-    AdapterSurface,
-    BindingRequirement, Capability, CapabilityGrant, ProfileDoc, ProfileValidationError,
-    SendOutcomeContract, ValidatedProfile, ValidationEvidence, PROFILE_DOC_VERSION,
+    AdapterSurface, BindingRequirement, Capability, CapabilityGrant, ProfileDoc,
+    ProfileValidationError, SendOutcomeContract, ValidatedProfile, ValidationEvidence,
+    PROFILE_DOC_VERSION,
 };
 pub use schema::{
     canonical_profile_payload_bytes, sign_profile_doc, verify_profile_doc, AppDescriptor,
