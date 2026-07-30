@@ -26,17 +26,38 @@ fn fresh_state() -> AppState {
 }
 
 fn fixture_response(x25519_b64: &str, mlkem_b64: &str) -> PubkeysResponse {
-    // Round-trip through JSON to construct without exposing all
-    // 6 PubkeysResponse fields verbatim in every test setup.
-    let json = serde_json::json!({
-        "user_id": "peer",
-        "ik_x25519_pub": x25519_b64,
-        "ik_ed25519_pub": "AA",
-        "ik_mlkem768_pub": mlkem_b64,
-        "registered_at": "2026-05-15T00:00:00Z",
-        "last_rotated_at": null,
-    });
-    serde_json::from_value(json).expect("fixture decode")
+    let identity = generate_identity("peer".to_string());
+    let ed25519_b64 = STANDARD.encode(identity.ed25519_public.as_bytes());
+    let msg =
+        keystore::client::reg_msg(&identity.user_id, x25519_b64, &ed25519_b64, mlkem_b64, None);
+    let sig = crypto::ed25519::sign(&identity.ed25519_secret, &msg);
+
+    PubkeysResponse {
+        user_id: identity.user_id.clone(),
+        ik_x25519_pub: x25519_b64.to_string(),
+        ik_ed25519_pub: ed25519_b64,
+        ik_mlkem768_pub: mlkem_b64.to_string(),
+        registered_at: "2026-05-15T00:00:00Z".to_string(),
+        last_rotated_at: None,
+        ik_ratchet_initial_pub: None,
+        rn_capabilities: None,
+        registration_sig: Some(STANDARD.encode(sig.as_bytes())),
+    }
+}
+
+#[test]
+fn fixture_response_carries_valid_registration_proof() {
+    let (_x_sk, x_pk) = x25519::generate_keypair();
+    let (_m_sk, m_pk) = ml_kem_768::generate_keypair();
+    let mut resp = fixture_response(
+        &STANDARD.encode(x_pk.as_bytes()),
+        &STANDARD.encode(m_pk.to_bytes()),
+    );
+
+    assert!(keystore::client::verify_peer_bundle(&resp));
+
+    resp.ik_x25519_pub = STANDARD.encode([0x42u8; 32]);
+    assert!(!keystore::client::verify_peer_bundle(&resp));
 }
 
 #[test]
@@ -79,18 +100,19 @@ fn populate_returns_false_when_mlkem_already_present() {
 }
 
 #[test]
-fn populate_with_empty_mlkem_leaves_field_none_but_writes_x25519() {
+fn populate_rejects_empty_mlkem_without_writing_x25519() {
     let state = fresh_state();
     let (_x_sk, x_pk) = x25519::generate_keypair();
     let resp = fixture_response(&STANDARD.encode(x_pk.as_bytes()), "");
-    let added = populate_peer_from_fetch_response(&state, PEER_DID, &resp).unwrap();
-    assert!(!added, "no ML-KEM in response → ml_kem_added=false");
-    let pm = state.peer_map.lock().unwrap();
-    let entry = pm.get(PEER_DID).expect("entry created");
-    assert!(entry.pubkey.is_some(), "X25519 still populated");
+    let err = populate_peer_from_fetch_response(&state, PEER_DID, &resp).unwrap_err();
     assert!(
-        entry.ik_mlkem768_pub.is_none(),
-        "ML-KEM stays None when response carries no value"
+        err.contains("keyserver bundle incomplete"),
+        "expected incomplete-bundle error, got: {err}"
+    );
+    let pm = state.peer_map.lock().unwrap();
+    assert!(
+        pm.get(PEER_DID).is_none(),
+        "incomplete bundle must not create a peer entry"
     );
 }
 
@@ -122,7 +144,8 @@ fn populate_rejects_wrong_length_x25519() {
     let state = fresh_state();
     // 33 bytes — one over PUBLIC_KEY_SIZE (32).
     let bad_x = vec![0u8; 33];
-    let resp = fixture_response(&STANDARD.encode(&bad_x), "");
+    let (_m_sk, m_pk) = ml_kem_768::generate_keypair();
+    let resp = fixture_response(&STANDARD.encode(&bad_x), &STANDARD.encode(m_pk.to_bytes()));
     let err = populate_peer_from_fetch_response(&state, PEER_DID, &resp).unwrap_err();
     assert!(
         err.contains("X25519 pubkey") && err.contains("wrong length"),
@@ -133,11 +156,12 @@ fn populate_rejects_wrong_length_x25519() {
 #[test]
 fn populate_rejects_empty_x25519() {
     let state = fresh_state();
-    let resp = fixture_response("", "");
+    let (_m_sk, m_pk) = ml_kem_768::generate_keypair();
+    let resp = fixture_response("", &STANDARD.encode(m_pk.to_bytes()));
     let err = populate_peer_from_fetch_response(&state, PEER_DID, &resp).unwrap_err();
     assert!(
-        err.contains("missing ik_x25519_pub"),
-        "expected missing-X25519 error, got: {err}"
+        err.contains("keyserver bundle incomplete"),
+        "expected incomplete-bundle error, got: {err}"
     );
 }
 
