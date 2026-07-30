@@ -89,7 +89,7 @@ describe("native Discord protected overlay routing", () => {
   it("opens a chosen native account in one click from the app page", () => {
     const binding = source.slice(
       source.indexOf("function bindSavedAccountControls"),
-      source.indexOf("async function ensureFirefoxForProtectedImport"),
+      source.indexOf("function bindBrowserImportControls"),
     );
     expect(binding).toContain('route === "service" && activeHomeAppId === appId && activeService');
     expect(binding).toContain("void setupEmbeddedApp()");
