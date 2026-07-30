@@ -37,6 +37,10 @@ fn set_channel_updates_in_memory_state() {
 
 #[test]
 fn set_channel_persists_to_app_preferences_file() {
+    let _base = tempfile::TempDir::new().unwrap();
+    keystore::set_base_dir_override(Some(_base.path().to_path_buf()));
+    ipc::main_password::set_file_storage_key(None);
+
     let dir = TempDir::new().unwrap();
     let state = AppState::new();
     cmd_osl_set_update_channel(&state, UpdateChannel::Beta, Some(dir.path().to_path_buf()))
