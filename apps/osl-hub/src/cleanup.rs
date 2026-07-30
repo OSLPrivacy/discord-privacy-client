@@ -612,14 +612,19 @@ mod tests {
             .exists());
         assert!(foreign_local.join(PROFILE_DIR).join("cache").exists());
 
+        keystore::set_active_account_dir(Some(config.join("accounts").join("stale")));
+        ipc::main_password::set_file_storage_key(Some([0x44; 32]));
         write_gate_burn_journal(&config).unwrap();
         assert!(resume_interrupted_gate_burn(&config, &local).unwrap());
         assert!(!config.join(HUB_CORE_DIR).exists());
         assert!(!local.join(PROFILE_DIR).exists());
         assert!(!config.join(GATE_BURN_JOURNAL).exists());
+        assert!(ipc::main_password::get_file_storage_key().is_none());
+        assert!(keystore::active_account_dir().is_none());
         // A completed recovery is a harmless no-op on the next launch.
         assert!(!resume_interrupted_gate_burn(&config, &local).unwrap());
 
+        keystore::set_active_account_dir(None);
         keystore::set_base_dir_override(None);
         let _ = std::fs::remove_dir_all(config);
         let _ = std::fs::remove_dir_all(local);

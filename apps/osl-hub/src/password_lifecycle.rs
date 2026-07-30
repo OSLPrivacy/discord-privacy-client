@@ -343,7 +343,9 @@ pub fn enter_duress_pin_for_full_wipe_report(
         // GateMatch::Main now carries the derived file_storage_key. This is a
         // refusal path, so bind it with `_` and let it drop immediately: a main
         // password must not yield usable key material on the duress route.
-        ipc::main_password::GateMatch::Main(_) | ipc::main_password::GateMatch::Stealth => {
+        ipc::main_password::GateMatch::Main(_)
+        | ipc::main_password::GateMatch::Stealth
+        | ipc::main_password::GateMatch::Duress => {
             return Err("OSL duress action requires the burn password".to_owned())
         }
     }
@@ -358,6 +360,9 @@ pub fn enter_duress_pin_for_full_wipe_report(
         ),
         crate::startup_gate::VerifiedGateRole::Wrong => {
             Err("OSL duress PIN was rejected".to_owned())
+        }
+        crate::startup_gate::VerifiedGateRole::Duress => {
+            Err("OSL duress action requires the burn password".to_owned())
         }
         crate::startup_gate::VerifiedGateRole::Main
         | crate::startup_gate::VerifiedGateRole::Stealth => {

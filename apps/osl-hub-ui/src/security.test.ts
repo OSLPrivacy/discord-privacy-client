@@ -1656,7 +1656,7 @@ describe("bundled preview security boundary", () => {
     ).toBe(false);
   });
 
-  it("separates legacy duress primitives from the reachable Hub burn password", () => {
+  it("binds the duress engine to a distinct reachable gate outcome", () => {
     const duress = readRelative("../../../crates/keystore/src/duress.rs");
     const password = readRelative("../../../crates/keystore/src/password.rs");
     const keystoreLib = readRelative("../../../crates/keystore/src/lib.rs");
@@ -1717,6 +1717,11 @@ describe("bundled preview security boundary", () => {
 
     // Positive controls for the separate, reachable Hub password gate and the
     // now-live production duress engine.
+    expect(productionRust).toContain("pub duress_engine: Mutex<keystore::DuressEngine>");
+    expect(productionRust).toContain("record_wrong_password_attempt_or_duress(");
+    expect(productionRust).toContain("WrongPasswordAttemptAction::DuressTriggered");
+    expect(productionRust).toContain("DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT");
+
     const mainProduction = rustProductionPrefix(main);
     const stateProduction = rustProductionPrefix(state);
     const mainPasswordProduction = rustProductionPrefix(mainPassword);
@@ -1725,7 +1730,8 @@ describe("bundled preview security boundary", () => {
     expect(mainProduction).toContain(
       "startup_gate::verify_password_role(&verify_app.state::<HubCoreState>(), password)",
     );
-    expect(mainProduction).toContain("VerifiedGateRole::Burn => {");
+    expect(mainProduction).toContain("VerifiedGateRole::Burn | VerifiedGateRole::Duress => {");
+    expect(mainProduction).toContain("HubGateUnlockResult::duress(verification, burn)");
     expect(mainProduction).toContain("cleanup::execute_verified_gate_burn(");
     const assertLiveDuressEngineTruth = (
       stateSource: string,

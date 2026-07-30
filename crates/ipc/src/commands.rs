@@ -35,6 +35,92 @@ macro_rules! osl_trace {
     };
 }
 
+#[cfg(test)]
+static COMMAND_ACTIVITY_MARK_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+fn record_activity_on_command_entry() {
+    #[cfg(test)]
+    COMMAND_ACTIVITY_MARK_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    crate::main_password::mark_inactivity_timer_activity();
+}
+
+#[cfg(test)]
+fn command_activity_mark_count_for_test() -> usize {
+    COMMAND_ACTIVITY_MARK_COUNT.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[cfg(test)]
+fn public_commands_missing_activity_hook(source: &str) -> (usize, Vec<String>) {
+    let pattern = concat!("pub fn ", "cmd_");
+    let hook = "record_activity_on_command_entry();";
+    let mut checked = 0;
+    let mut missing = Vec::new();
+    let mut offset = 0;
+
+    while let Some(relative_start) = source[offset..].find(pattern) {
+        let command_start = offset + relative_start;
+        let name_start = command_start + "pub fn ".len();
+        let Some(relative_name_end) = source[name_start..].find('(') else {
+            break;
+        };
+        let name_end = name_start + relative_name_end;
+        let name = source[name_start..name_end].to_string();
+        let Some(relative_body_start) = source[command_start..].find('{') else {
+            missing.push(name);
+            offset = name_end;
+            continue;
+        };
+        let body_start = command_start + relative_body_start + 1;
+        let body = source[body_start..].trim_start();
+        checked += 1;
+        if !body.starts_with(hook) {
+            missing.push(name);
+        }
+        offset = body_start;
+    }
+
+    (checked, missing)
+}
+
+#[cfg(test)]
+mod command_activity_tests {
+    use super::*;
+
+    #[test]
+    fn command_activity_hook_is_present_on_every_public_command() {
+        let source = include_str!("commands.rs");
+        let timer_call = concat!(
+            "crate::main_password::",
+            "mark_inactivity_timer_activity();"
+        );
+        assert!(
+            source.contains(timer_call),
+            "command activity hook must call the inactivity timer"
+        );
+
+        let (checked, missing) = public_commands_missing_activity_hook(source);
+        assert!(
+            checked >= 100,
+            "source scan unexpectedly covered only {checked} commands"
+        );
+        assert!(
+            missing.is_empty(),
+            "commands missing inactivity activity hook: {missing:?}"
+        );
+
+        let state = AppState::new();
+        let before = command_activity_mark_count_for_test();
+        let _ = cmd_status(&state);
+        let after = command_activity_mark_count_for_test();
+        assert_eq!(
+            after,
+            before + 1,
+            "calling a public command must record inactivity activity exactly once"
+        );
+    }
+}
+
 // =====================================================================
 // 7d-FIX1: persistence write-through helpers.
 //
@@ -402,6 +488,7 @@ mod production_duress_session_wipe_tests {
 /// intact (only the live session is dropped). Unknown peer → Err so
 /// a console typo is visible. Persists only if something changed.
 pub fn cmd_osl_reset_v4_session(state: &AppState, discord_id: String) -> Result<(), String> {
+    record_activity_on_command_entry();
     let changed = {
         let mut pm = state.peer_map.lock().expect("peer_map mutex poisoned");
         match pm.get_mut(&discord_id) {
@@ -461,6 +548,7 @@ pub fn cmd_osl_reset_v5_sender_key(
     state: &AppState,
     scope_input: crate::scope::ScopeInput,
 ) -> Result<Vec<SessionResetNotice>, String> {
+    record_activity_on_command_entry();
     let scope: crate::scope::Scope = scope_input
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
@@ -612,6 +700,7 @@ pub fn cmd_osl_build_skdm_request(
     scope_input: crate::scope::ScopeInput,
     peer_discord_id: String,
 ) -> Result<String, String> {
+    record_activity_on_command_entry();
     let scope: crate::scope::Scope = scope_input
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
@@ -668,6 +757,7 @@ pub fn cmd_osl_build_session_reset(
     state: &AppState,
     peer_discord_id: String,
 ) -> Result<String, String> {
+    record_activity_on_command_entry();
     let now = now_unix_secs();
     {
         let mut g = state
@@ -723,6 +813,7 @@ pub fn cmd_osl_build_session_reset(
 /// entry changed. A keyserver error is surfaced (boot.js cooldown-
 /// logs it); a stale identity is never silently accepted.
 pub fn cmd_osl_recover_peer_identity(state: &AppState, discord_id: String) -> Result<bool, String> {
+    record_activity_on_command_entry();
     let changed = refresh_peer_pubkeys_from_keyserver(state, &discord_id)?;
     if changed {
         persist_peer_map_now(state);
@@ -748,6 +839,7 @@ pub fn cmd_osl_register_self_snowflake(
     snowflake: String,
     ownership_proof: Option<keystore::AccountOwnershipProof>,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     let dir = keystore::osl_config_dir()
         .map_err(|e| format!("OSL: register_self_snowflake: config dir: {e}"))?;
     cmd_osl_register_self_snowflake_with_dir(state, snowflake, ownership_proof, &dir)
@@ -763,6 +855,7 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
     ownership_proof: Option<keystore::AccountOwnershipProof>,
     dir: &std::path::Path,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     osl_trace!("[F0-FIX3-TRACE] cmd_osl_register_self_snowflake entered");
     if !snowflake.chars().all(|c| c.is_ascii_digit()) || !(17..=20).contains(&snowflake.len()) {
         return Err(format!(
@@ -1026,6 +1119,7 @@ fn record_persist_error(state: &AppState, what: &str, err: impl std::fmt::Displa
 /// signal; the slot is for UX visibility, not for forensic audit
 /// (that lives in `tracing::warn!`).
 pub fn cmd_osl_take_last_persist_error(state: &AppState) -> Option<String> {
+    record_activity_on_command_entry();
     state
         .last_persist_error
         .lock()
@@ -1243,6 +1337,7 @@ pub fn cmd_generate_identity(
     state: &AppState,
     user_id: String,
 ) -> IpcResult<GenerateIdentityResponse> {
+    record_activity_on_command_entry();
     if user_id.trim().is_empty() {
         return Err(IpcError::InvalidArgument(
             "user_id must be non-empty".into(),
@@ -1259,6 +1354,7 @@ pub fn cmd_generate_identity(
 }
 
 pub fn cmd_load_identity(state: &AppState, path: String) -> IpcResult<GenerateIdentityResponse> {
+    record_activity_on_command_entry();
     let sealer = select_best_sealer();
     let id = keystore::load_identity(&PathBuf::from(path), sealer.as_ref())?;
     let resp = GenerateIdentityResponse {
@@ -1271,6 +1367,7 @@ pub fn cmd_load_identity(state: &AppState, path: String) -> IpcResult<GenerateId
 }
 
 pub fn cmd_save_identity(state: &AppState, path: String) -> IpcResult<()> {
+    record_activity_on_command_entry();
     let guard = state.identity.lock().expect("identity mutex poisoned");
     let id = guard.as_ref().ok_or(IpcError::IdentityMissing)?;
     let sealer = select_best_sealer();
@@ -1281,12 +1378,14 @@ pub fn cmd_save_identity(state: &AppState, path: String) -> IpcResult<()> {
 // ---- key server ----
 
 pub fn cmd_init_keyserver(state: &AppState, base_url: String) -> IpcResult<()> {
+    record_activity_on_command_entry();
     let client = KeyServerClient::new(base_url)?;
     *state.keyserver.lock().expect("keyserver mutex poisoned") = Some(client);
     Ok(())
 }
 
 pub fn cmd_register(state: &AppState) -> IpcResult<RegisterResponse> {
+    record_activity_on_command_entry();
     let id_guard = state.identity.lock().expect("identity mutex poisoned");
     let identity = id_guard.as_ref().ok_or(IpcError::IdentityMissing)?;
     let ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
@@ -1301,6 +1400,7 @@ pub fn cmd_register(state: &AppState) -> IpcResult<RegisterResponse> {
 }
 
 pub fn cmd_fetch_pubkeys(state: &AppState, user_id: String) -> IpcResult<FetchPubkeysResponse> {
+    record_activity_on_command_entry();
     let ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
     let client = ks_guard.as_ref().ok_or(IpcError::KeyserverMissing)?;
     let resp = client.fetch_pubkeys(&user_id)?;
@@ -1322,6 +1422,7 @@ pub fn cmd_osl_fetch_identity_bundle(
     state: &AppState,
     last_known_revision: Option<u64>,
 ) -> Result<FetchIdentityBundleResponse, String> {
+    record_activity_on_command_entry();
     let identity = state
         .identity
         .lock()
@@ -1551,6 +1652,7 @@ mod prekey_replenishment_scheduler_tests {
 // ---- AEAD primitive ----
 
 pub fn cmd_aead_seal(req: AeadSealRequest) -> IpcResult<AeadSealResponse> {
+    record_activity_on_command_entry();
     let key = aead::Key::from_bytes(b64_to_array::<{ aead::KEY_SIZE }>("key_b64", &req.key_b64)?);
     let nonce = aead::Nonce::from_bytes(b64_to_array::<{ aead::NONCE_SIZE }>(
         "nonce_b64",
@@ -1568,6 +1670,7 @@ pub fn cmd_aead_seal(req: AeadSealRequest) -> IpcResult<AeadSealResponse> {
 }
 
 pub fn cmd_aead_open(req: AeadOpenRequest) -> IpcResult<AeadSealResponse> {
+    record_activity_on_command_entry();
     let key = aead::Key::from_bytes(b64_to_array::<{ aead::KEY_SIZE }>("key_b64", &req.key_b64)?);
     let nonce = aead::Nonce::from_bytes(b64_to_array::<{ aead::NONCE_SIZE }>(
         "nonce_b64",
@@ -1590,12 +1693,14 @@ pub fn cmd_aead_open(req: AeadOpenRequest) -> IpcResult<AeadSealResponse> {
 // ---- stego ----
 
 pub fn cmd_stego_encode(req: StegoEncodeRequest) -> IpcResult<StegoEncodeResponse> {
+    record_activity_on_command_entry();
     let ciphertext = b64_to_vec(&req.ciphertext_b64)?;
     let s = stego::encode_mode0(&ciphertext)?;
     Ok(StegoEncodeResponse { stego_message: s })
 }
 
 pub fn cmd_stego_decode(stego_message: String) -> IpcResult<StegoDecodeResponse> {
+    record_activity_on_command_entry();
     let bytes = stego::decode_mode0(&stego_message)?;
     Ok(StegoDecodeResponse {
         ciphertext_b64: STANDARD.encode(&bytes),
@@ -1659,6 +1764,7 @@ pub struct UiSessionEncryptionKeyDto {
 }
 
 pub fn cmd_status(state: &AppState) -> StatusResponse {
+    record_activity_on_command_entry();
     let id_guard = state.identity.lock().expect("identity mutex poisoned");
     let id_ref = id_guard.as_ref();
     let sealer = select_best_sealer();
@@ -1676,6 +1782,7 @@ pub fn cmd_status(state: &AppState) -> StatusResponse {
 }
 
 pub fn cmd_osl_ui_session_encryption_key(state: &AppState) -> IpcResult<UiSessionEncryptionKeyDto> {
+    record_activity_on_command_entry();
     let id_guard = state.identity.lock().expect("identity mutex poisoned");
     let identity = id_guard.as_ref().ok_or(IpcError::IdentityMissing)?;
     Ok(UiSessionEncryptionKeyDto {
@@ -1750,6 +1857,7 @@ mod identity_status_and_ui_session_tests {
 // command surface). Kept here so the IPC tests can verify the X25519
 // glue end-to-end without re-importing the whole crypto crate API.
 pub fn cmd_x25519_diffie_hellman(secret_b64: String, peer_public_b64: String) -> IpcResult<String> {
+    record_activity_on_command_entry();
     let secret = x25519::SecretKey::from_bytes(b64_to_array::<{ x25519::SECRET_KEY_SIZE }>(
         "secret_b64",
         &secret_b64,
@@ -2090,8 +2198,8 @@ pub fn cmd_osl_encrypt_message(
     plaintext: String,
     options: serde_json::Value,
 ) -> Result<String, String> {
+    record_activity_on_command_entry();
     let _options = parse_outgoing_encrypt_options(options)?;
-
     let recipients =
         keystore::get_recipients(&channel_id).map_err(|e| format!("OSL: recipient lookup: {e}"))?;
 
@@ -2600,6 +2708,7 @@ pub fn cmd_osl_decrypt_message(
     sender_discord_id: String,
     content: String,
 ) -> Result<String, String> {
+    record_activity_on_command_entry();
     cmd_osl_decrypt_message_with_id(state, None, channel_id, sender_discord_id, content)
 }
 
@@ -2621,6 +2730,7 @@ pub fn cmd_osl_decrypt_message_with_id(
     sender_discord_id: String,
     content: String,
 ) -> Result<String, String> {
+    record_activity_on_command_entry();
     let id_guard = state.identity.lock().expect("identity mutex poisoned");
     let identity = id_guard
         .as_ref()
@@ -2658,15 +2768,16 @@ pub fn cmd_osl_decrypt_message_with_id(
         }
     };
 
+    if is_discord_snowflake_shaped(&osl_user_id) {
+        return Err("OSL: Discord identifiers cannot resolve keys".to_string());
+    }
+
     // Pubkey lookup: cache → keyserver → cache-insert. Keyed by
     // OSL user_id (post-resolution) so the cache is stable across
     // peer_map re-edits.
     let sender_pub = if let Some(cached) = state.sender_pubkey_cache.get(&osl_user_id) {
         cached
     } else {
-        if is_discord_snowflake_shaped(&osl_user_id) {
-            return Err("OSL: Discord identifiers cannot resolve keys".to_string());
-        }
         let ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
         let client = ks_guard
             .as_ref()
@@ -2932,6 +3043,7 @@ pub fn cmd_osl_persist_outbound(
     discord_message_id: String,
     plaintext: String,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     let self_id = {
         let guard = state.identity.lock().expect("identity mutex poisoned");
         match guard.as_ref() {
@@ -2989,6 +3101,7 @@ pub fn cmd_osl_persist_inbound(
     sender_osl_user_id: String,
     plaintext: String,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     if channel_id.is_empty()
         || channel_id.len() > 160
         || message_id.is_empty()
@@ -3075,6 +3188,7 @@ pub fn cmd_osl_load_channel_history(
     channel_id: String,
     limit: Option<u32>,
 ) -> Result<Vec<StoredMessageDto>, String> {
+    record_activity_on_command_entry();
     let guard = state
         .message_store
         .lock()
@@ -3110,6 +3224,7 @@ pub fn cmd_osl_attachment_cache_put(
     scope_input: Option<crate::scope::ScopeInput>,
     sender_discord_id: Option<String>,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     let bytes = STANDARD
         .decode(bytes_b64.as_bytes())
         .map_err(|e| format!("OSL: attachment_cache_put base64: {e}"))?;
@@ -3163,6 +3278,7 @@ pub fn cmd_osl_attachment_cache_get(
     discord_message_id: String,
     random_filename: String,
 ) -> Result<Option<AttachmentCacheDto>, String> {
+    record_activity_on_command_entry();
     let guard = state
         .message_store
         .lock()
@@ -3231,6 +3347,7 @@ pub fn cmd_osl_persist_edit(
     new_plaintext: String,
     channel_id: Option<String>,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     let guard = state
         .message_store
         .lock()
@@ -3305,6 +3422,7 @@ pub fn cmd_osl_persist_edit(
 /// burn button doesn't error against a persistence-disabled
 /// session.
 pub fn cmd_osl_burn_message(state: &AppState, discord_message_id: String) -> Result<(), String> {
+    record_activity_on_command_entry();
     let guard = state
         .message_store
         .lock()
@@ -3772,6 +3890,7 @@ pub fn cmd_osl_encrypt_message_v2(
     channel_members: Vec<String>,
     self_discord_id: String,
 ) -> Result<EncryptOutput, String> {
+    record_activity_on_command_entry();
     // F3.6 pivot: text encryption is unconditional for everyone.
     // The F3.2 launch-window gate that lived here is retired
     // alongside the 60-min model; the surviving tier gate fires
@@ -3922,6 +4041,7 @@ pub fn cmd_osl_encrypt_message_v2_wire(
     channel_members: Vec<String>,
     self_discord_id: String,
 ) -> Result<EncryptWire, String> {
+    record_activity_on_command_entry();
     // F3.6 pivot: text encryption is unconditional. The F3.2
     // gate here is retired; see the matching note at
     // `cmd_osl_encrypt_message_v2`.
@@ -5351,6 +5471,7 @@ pub fn cmd_osl_unburn_scope_after_encrypt(
     state: &AppState,
     scope_input: crate::scope::ScopeInput,
 ) -> bool {
+    record_activity_on_command_entry();
     // 7d-PIVOT-FIX3 Bug F: match the JS-style kind strings used by
     // `cmd_osl_mark_scope_burned` (the only writer of burned_scopes
     // entries). PIVOT-FIX2's "gc_full"/"server_channel_full" mapping
@@ -5394,6 +5515,7 @@ pub fn cmd_osl_encrypt_attachment_envelope(
     self_discord_id: String,
     attachments: Vec<AttachmentEnvelopeInput>,
 ) -> Result<String, String> {
+    record_activity_on_command_entry();
     if attachments.is_empty() {
         return Err("OSL: attachment envelope has no entries".to_string());
     }
@@ -5506,6 +5628,7 @@ pub fn cmd_osl_seal_attachment_with_cover_v2(
     original_filename: String,
     random_filename: String,
 ) -> Result<SealedAttachmentV2, String> {
+    record_activity_on_command_entry();
     // F3.6-DEFENSE: gate the legacy v2 seal path identically to
     // v3. F3.6 only gated v3 (the production step-2 upload path);
     // v2 is reachable via documented boot.js fallbacks (older
@@ -5614,6 +5737,7 @@ pub fn cmd_osl_seal_attachment_with_cover_v3(
     original_filename: String,
     random_filename: String,
 ) -> Result<SealedAttachmentV2, String> {
+    record_activity_on_command_entry();
     // F3.6 attachment-send tier gate. Free users get blocked at
     // the entry with a `OSL-TIER-BLOCKED:{json}` error whose JSON
     // tail parses to `TierGateError::PaidFeatureRequired`. Boot.js
@@ -5852,6 +5976,7 @@ pub fn cmd_osl_open_attachment_v2(
     legacy_att_key_b64: Option<String>,
     discord_message_id: Option<String>,
 ) -> Result<crate::attachment_wire::OpenedAttachment, String> {
+    record_activity_on_command_entry();
     // Burn enforcement on attachment open. Two layers:
     if let Some(input) = scope_input.as_ref() {
         let scope: crate::scope::Scope = input
@@ -6213,6 +6338,7 @@ pub fn cmd_osl_send_burn_marker(
     channel_members: Vec<String>,
     self_discord_id: String,
 ) -> Result<String, String> {
+    record_activity_on_command_entry();
     let scope: crate::scope::Scope = scope_input
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
@@ -6389,6 +6515,7 @@ pub fn cmd_osl_decrypt_message_v2(
     scope_input: Option<crate::scope::ScopeInput>,
     config_dir: Option<std::path::PathBuf>,
 ) -> Result<String, String> {
+    record_activity_on_command_entry();
     // 9-B1: Mode 1 envelope handling. If the cover string carries
     // a `DPC1::` prefix, decode it as a Mode 1 chunk and push to
     // the per-channel reassembly buffer. When the buffer completes,
@@ -8041,6 +8168,7 @@ pub fn cmd_osl_control_inbox_post(
     scope_input: crate::scope::ScopeInput,
     wire_string: String,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     let scope: crate::scope::Scope = scope_input
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: control_inbox_post scope: {e}"))?;
@@ -8170,6 +8298,7 @@ pub fn cmd_osl_control_inbox_drain(
     state: &AppState,
     config_dir: Option<std::path::PathBuf>,
 ) -> Result<ControlInboxDrainReport, String> {
+    record_activity_on_command_entry();
     // Snapshot identity + client out from under the AppState mutexes
     // and DROP the guards BEFORE any network call. The drain runs on a
     // 10s timer; holding state.identity across the GET + per-item
@@ -8781,11 +8910,11 @@ fn resolve_sender_pubkey(
             }
         )
     })?;
-    if let Some(cached) = state.sender_pubkey_cache.get(&osl_user_id) {
-        return Ok(cached);
-    }
     if is_discord_snowflake_shaped(&osl_user_id) {
         return Err("OSL: Discord identifiers cannot resolve keys".to_string());
+    }
+    if let Some(cached) = state.sender_pubkey_cache.get(&osl_user_id) {
+        return Ok(cached);
     }
     let ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
     let client = ks_guard
@@ -8832,7 +8961,7 @@ fn resolve_pinned_sender_pubkey(
 }
 
 #[cfg(test)]
-mod v3_pinned_sender_command_tests {
+mod sender_pubkey_resolution_tests {
     use super::*;
 
     fn pin_peer_x25519(state: &AppState, discord_id: &str, pubkey: crypto::x25519::PublicKey) {
@@ -8900,6 +9029,32 @@ mod v3_pinned_sender_command_tests {
         )
         .expect("same wire decrypts when the claimed sender matches the local pin");
         assert_eq!(opened, "forged sender body");
+    }
+
+    #[test]
+    fn v2_resolve_sender_pubkey_rejects_forged_sender() {
+        let state = AppState::new();
+        let forged_sender_discord_id = "123456789012345678";
+        let (_attacker_secret, attacker_pub) = crypto::x25519::generate_keypair();
+
+        state
+            .sender_pubkey_cache
+            .insert(forged_sender_discord_id.to_string(), attacker_pub);
+        state.peer_map.lock().unwrap().insert(
+            forged_sender_discord_id.to_string(),
+            crate::peer_map::PeerEntry {
+                osl_user_id: Some(forged_sender_discord_id.to_string()),
+                discord_id: Some(forged_sender_discord_id.to_string()),
+                ..Default::default()
+            },
+        );
+
+        let err = resolve_sender_pubkey(&state, forged_sender_discord_id)
+            .expect_err("Discord account ids must not resolve as OSL sender identities");
+        assert!(
+            err.contains("Discord identifiers cannot resolve keys"),
+            "expected forged sender refusal before cache/keyserver fallback, got: {err}"
+        );
     }
 }
 
@@ -9734,6 +9889,7 @@ fn tofu_observe_peer(
 /// `/v1/register` returned 403). `Some` means the user MUST be shown
 /// a blocking warning; the JS layer surfaces it then it's consumed.
 pub fn cmd_osl_take_registration_alert(state: &AppState) -> Result<Option<String>, String> {
+    record_activity_on_command_entry();
     Ok(state
         .registration_alert
         .lock()
@@ -9746,6 +9902,7 @@ pub fn cmd_osl_take_registration_alert(state: &AppState) -> Result<Option<String
 pub fn cmd_osl_list_key_change_alerts(
     state: &AppState,
 ) -> Result<Vec<crate::state::KeyChangeAlert>, String> {
+    record_activity_on_command_entry();
     let g = state
         .key_change_alerts
         .lock()
@@ -9763,6 +9920,7 @@ pub fn cmd_osl_accept_key_change(
     discord_id: String,
     ceremony_proof: crate::trust_ceremony_proof::TrustCeremonyProof,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     let new_bundle = {
         let g = state
             .key_change_alerts
@@ -9808,6 +9966,7 @@ pub fn cmd_osl_accept_key_change(
 /// the OLD trusted baseline. The alert re-raises on the next fetch
 /// while the key stays changed (so it can't be silently forgotten).
 pub fn cmd_osl_decline_key_change(state: &AppState, discord_id: String) -> Result<(), String> {
+    record_activity_on_command_entry();
     let removed = state
         .key_change_alerts
         .lock()
@@ -9823,6 +9982,7 @@ pub fn cmd_osl_decline_key_change(state: &AppState, discord_id: String) -> Resul
 
 /// Safety number for a peer's complete trusted key bundle.
 pub fn cmd_osl_peer_safety_number(state: &AppState, discord_id: String) -> Result<String, String> {
+    record_activity_on_command_entry();
     let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
     let entry = pm
         .get(&discord_id)
@@ -9834,6 +9994,7 @@ pub fn cmd_osl_peer_safety_number(state: &AppState, discord_id: String) -> Resul
 
 /// Safety number for our complete public-key bundle.
 pub fn cmd_osl_self_safety_number(state: &AppState) -> Result<String, String> {
+    record_activity_on_command_entry();
     let g = state.identity.lock().expect("identity mutex poisoned");
     let id = g
         .as_ref()
@@ -10265,6 +10426,7 @@ pub fn cmd_osl_apply_burn(
     state: &AppState,
     scope_input: crate::scope::ScopeInput,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     let scope: crate::scope::Scope = scope_input
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
@@ -10455,6 +10617,7 @@ pub fn cmd_osl_accept_friend_request(
     requester_discord_id: String,
     request: crate::friend_request::FriendRequest,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     guard_friend_request_peer_binding(state, &requester_discord_id)?;
 
     let scope = request.scope_grant.scope().clone();
@@ -10551,6 +10714,7 @@ pub fn cmd_osl_send_friend_request(
     peer_discord_id: String,
     scope_input: crate::scope::ScopeInput,
 ) -> Result<SendFriendRequestResult, String> {
+    record_activity_on_command_entry();
     let dir =
         keystore::osl_config_dir().map_err(|e| format!("OSL: pending friend request dir: {e}"))?;
     cmd_osl_send_friend_request_with_dir(state, peer_discord_id, scope_input, &dir)
@@ -10940,6 +11104,7 @@ pub fn cmd_osl_unwhitelist_scope(
     self_discord_id: String,
     revoke_broadened: bool,
 ) -> Result<String, String> {
+    record_activity_on_command_entry();
     // 1. Build the burn marker wire BEFORE mutating state. This is
     //    the ONLY in-Discord-specific step; the local mutation that
     //    follows is shared verbatim with the settings-side
@@ -11108,6 +11273,7 @@ pub fn cmd_osl_local_unwhitelist_scope(
     scope_input: crate::scope::ScopeInput,
     revoke_broadened: bool,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     local_unwhitelist_apply(
         state,
         peer_discord_id,
@@ -11302,6 +11468,7 @@ pub fn cmd_osl_set_whitelist(
     scope_input: crate::scope::ScopeInput,
     broadened: bool,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     // Whitelist repair (Bug A cleanup): the dead `from_discord_id`
     // param (9-C1 handshake leftover, "kept for binding
     // compatibility") is now removed end-to-end — Rust signature,
@@ -11408,6 +11575,7 @@ pub fn cmd_osl_bulk_set_whitelist(
     scope_input: crate::scope::ScopeInput,
     member_dids: Vec<String>,
 ) -> Result<usize, String> {
+    record_activity_on_command_entry();
     // SELF-GUARD (defense-in-depth): a correct caller filters self
     // out of the member list before bulk-whitelisting. If self is
     // present, a peer-resolution regression produced the roster —
@@ -11522,6 +11690,7 @@ pub fn cmd_osl_bulk_unwhitelist_scope(
     scope_input: crate::scope::ScopeInput,
     member_dids: Vec<String>,
 ) -> Result<usize, String> {
+    record_activity_on_command_entry();
     let scope: crate::scope::Scope = scope_input
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
@@ -11626,6 +11795,7 @@ pub fn cmd_osl_get_scope_encryption_state(
     state: &AppState,
     scope_input: crate::scope::ScopeInput,
 ) -> Result<ScopeEncryptionState, String> {
+    record_activity_on_command_entry();
     let scope: crate::scope::Scope = scope_input
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
@@ -11667,6 +11837,7 @@ pub fn cmd_osl_get_scope_whitelist_summary(
     channel_members: Vec<String>,
     self_discord_id: String,
 ) -> Result<ScopeWhitelistSummary, String> {
+    record_activity_on_command_entry();
     let scope: crate::scope::Scope = scope_input
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
@@ -11727,6 +11898,7 @@ pub fn cmd_osl_toggle_scope_encryption(
     state: &AppState,
     scope_input: crate::scope::ScopeInput,
 ) -> Result<bool, String> {
+    record_activity_on_command_entry();
     let scope: crate::scope::Scope = scope_input
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
@@ -11763,6 +11935,7 @@ pub fn cmd_osl_set_scope_encrypt(
     scope_input: crate::scope::ScopeInput,
     enabled: bool,
 ) -> Result<bool, String> {
+    record_activity_on_command_entry();
     let scope: crate::scope::Scope = scope_input
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
@@ -11807,6 +11980,7 @@ pub fn cmd_osl_set_scope_encrypt(
 ///     this so the user can fix peer_map.json without grepping
 ///     logs.
 pub fn cmd_osl_get_self_user_id(state: &AppState) -> Result<String, String> {
+    record_activity_on_command_entry();
     let osl_user_id = {
         let guard = state.identity.lock().expect("identity mutex poisoned");
         let identity = guard
@@ -11850,6 +12024,7 @@ pub struct IdentityInfoDto {
 /// best-effort read of `keyserver.json` for the configured base
 /// URL. The Tauri shell exposes this via `osl_get_identity_info`.
 pub fn cmd_osl_get_identity_info(state: &AppState) -> Result<IdentityInfoDto, String> {
+    record_activity_on_command_entry();
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
     let (osl_user_id, pubkey_b64) = {
@@ -11926,6 +12101,7 @@ pub fn cmd_osl_validate_license(
     state: &AppState,
     license_key: String,
 ) -> Result<keystore::LicenseValidateResponse, String> {
+    record_activity_on_command_entry();
     // license.json + keyserver.json are DEVICE-level (base), matching
     // where launch_classify reads them — otherwise the license cache
     // would be written into the per-account subdir and lost on relaunch.
@@ -12009,6 +12185,7 @@ pub fn cmd_osl_validate_license_with_dir_and_url(
     dir: &std::path::Path,
     base_url: &str,
 ) -> Result<keystore::LicenseValidateResponse, String> {
+    record_activity_on_command_entry();
     let client = keystore::KeyServerClient::new(base_url).map_err(|e| {
         validate_err(ValidateLicenseError::Other {
             message: format!("client init: {e}"),
@@ -12090,6 +12267,7 @@ pub fn cmd_osl_validate_license_with_dir_and_url(
 /// [`crate::license_lifecycle::launch_classify`]) and on each
 /// background refresh — never on this read path.
 pub fn cmd_osl_get_license_state(state: &AppState) -> Result<keystore::LicenseStateDto, String> {
+    record_activity_on_command_entry();
     Ok(state
         .license_state
         .lock()
@@ -12106,6 +12284,7 @@ pub fn cmd_osl_get_license_state_with_dir(
     state: &AppState,
     dir: &std::path::Path,
 ) -> Result<keystore::LicenseStateDto, String> {
+    record_activity_on_command_entry();
     crate::license_lifecycle::launch_classify(state, dir);
     cmd_osl_get_license_state(state)
 }
@@ -12115,6 +12294,7 @@ pub fn cmd_osl_get_license_state_with_dir(
 /// error — the desired post-state is "no cache", regardless of
 /// where we started.
 pub fn cmd_osl_clear_license(state: &AppState) -> Result<(), String> {
+    record_activity_on_command_entry();
     let dir =
         keystore::osl_base_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
     cmd_osl_clear_license_with_dir(state, &dir)
@@ -12133,6 +12313,7 @@ pub fn cmd_osl_clear_license_with_dir(
     state: &AppState,
     dir: &std::path::Path,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     *state
         .license_state
         .lock()
@@ -12160,6 +12341,7 @@ pub fn cmd_osl_clear_license_with_dir(
 /// future paid features (beta channels etc.) can add their own
 /// `*_allowed` flags without DTO-shape churn.
 pub fn cmd_osl_get_tier_gate_status(state: &AppState) -> Result<TierGateStatusDto, String> {
+    record_activity_on_command_entry();
     let is_paid = crate::tier_gate::is_paid_equivalent(state);
     let raw_license_state = state
         .license_state
@@ -13016,6 +13198,7 @@ pub struct WhitelistRowDto {
 /// scopes in the order they were added (`Vec` preserves insert
 /// order).
 pub fn cmd_osl_list_all_whitelists(state: &AppState) -> Result<Vec<WhitelistRowDto>, String> {
+    record_activity_on_command_entry();
     let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
     let ws_guard = state
         .whitelist_state
@@ -13266,7 +13449,7 @@ mod inactivity_command_activity_tests {
     static INACTIVITY_COMMAND_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
-    fn record_activity_on_every_command_marks_inactivity_timer() {
+    fn record_activity_on_every_command_extends_file_key_timer_window() {
         let _guard = INACTIVITY_COMMAND_TEST_LOCK.lock().unwrap();
         crate::main_password::set_file_storage_key(None);
         let t0 = Instant::now();
@@ -13304,26 +13487,31 @@ mod inactivity_command_activity_tests {
 }
 
 pub fn cmd_osl_password_status() -> Result<PasswordStatusDto, String> {
+    record_activity_on_command_entry();
     let dir = password_dir()?;
     Ok(crate::main_password::password_status(&dir))
 }
 
 pub fn cmd_osl_set_main_password(password: String) -> Result<String, String> {
+    record_activity_on_command_entry();
     let dir = password_dir()?;
     crate::main_password::set_main_password(&dir, &password)
 }
 
 pub fn cmd_osl_change_main_password(current: String, new: String) -> Result<String, String> {
+    record_activity_on_command_entry();
     let dir = password_dir()?;
     crate::main_password::change_main_password(&dir, &current, &new)
 }
 
 pub fn cmd_osl_remove_main_password(current: String) -> Result<(), String> {
+    record_activity_on_command_entry();
     let dir = password_dir()?;
     crate::main_password::remove_main_password(&dir, &current)
 }
 
 pub fn cmd_osl_view_recovery_phrase(current: String) -> Result<String, String> {
+    record_activity_on_command_entry();
     let dir = password_dir()?;
     crate::main_password::view_recovery_phrase(&dir, &current)
 }
@@ -13335,6 +13523,7 @@ pub fn cmd_osl_view_recovery_phrase(current: String) -> Result<String, String> {
 /// Returns an error for legacy random-key identities (no entropy
 /// stored — they predate transfer support).
 pub fn cmd_osl_view_identity_recovery_phrase(state: &AppState) -> Result<String, String> {
+    record_activity_on_command_entry();
     let entropy = {
         let g = state.identity.lock().expect("identity mutex poisoned");
         let id = g
@@ -13362,6 +13551,7 @@ pub fn cmd_osl_recover_identity_from_phrase(
     state: &AppState,
     phrase: String,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     let dir =
         keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
     cmd_osl_recover_identity_from_phrase_with_dir(state, phrase, &dir)
@@ -13372,6 +13562,7 @@ pub fn cmd_osl_recover_identity_from_phrase_with_dir(
     phrase: String,
     dir: &std::path::Path,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     let mnemonic = bip39::Mnemonic::parse_in_normalized(bip39::Language::English, phrase.trim())
         .map_err(|_| {
             "OSL: that doesn't look like a valid 12-word recovery phrase \
@@ -13483,6 +13674,7 @@ fn recovery_identity_key_matches(
 /// it does NOT touch the existing keys (those ride along in the data
 /// export for transfer). Idempotent. Called by boot.js on launch.
 pub fn cmd_osl_ensure_recovery_phrase(state: &AppState) -> Result<(), String> {
+    record_activity_on_command_entry();
     let already = {
         let g = state.identity.lock().expect("identity mutex poisoned");
         match g.as_ref() {
@@ -13973,6 +14165,7 @@ impl Drop for MessageStorePause<'_> {
 /// that recovers the identity on the new device also decrypts this — so
 /// the export file is safe to move between devices.
 pub fn cmd_osl_export_data(state: &AppState) -> Result<String, String> {
+    record_activity_on_command_entry();
     let dir =
         keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
     cmd_osl_export_data_with_dir(state, &dir)
@@ -14058,6 +14251,7 @@ pub fn cmd_osl_recover_account_from_export(
     blob_b64: String,
     phrase: String,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     let dir =
         keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
     cmd_osl_recover_account_from_export_with_dir(state, blob_b64, phrase, &dir)
@@ -14440,11 +14634,13 @@ mod account_transfer_tests {
 }
 
 pub fn cmd_osl_verify_main_password(password: String) -> Result<(), String> {
+    record_activity_on_command_entry();
     let dir = password_dir()?;
     crate::main_password::verify_main_password(&dir, &password)
 }
 
 pub fn cmd_osl_verify_recovery_phrase(state: &AppState, phrase: String) -> Result<String, String> {
+    record_activity_on_command_entry();
     let dir = password_dir()?;
     crate::main_password::verify_recovery_phrase(state, &dir, &phrase)
 }
@@ -14454,13 +14650,75 @@ pub fn cmd_osl_set_main_password_after_recovery(
     new_password: String,
     token: String,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     let dir = password_dir()?;
     crate::main_password::set_main_password_after_recovery(state, &dir, &new_password, &token)
 }
 
 pub fn cmd_osl_lockout_status() -> Result<LockoutStatusDto, String> {
+    record_activity_on_command_entry();
     let dir = password_dir()?;
     Ok(crate::main_password::lockout_status(&dir))
+}
+
+#[cfg(test)]
+mod duress_gate_tests {
+    use super::*;
+
+    struct OslDirOverrideGuard;
+
+    impl Drop for OslDirOverrideGuard {
+        fn drop(&mut self) {
+            keystore::set_active_account_dir(None);
+            keystore::set_base_dir_override(None);
+            crate::main_password::set_file_storage_key(None);
+        }
+    }
+
+    #[test]
+    fn gate_wrong_password_threshold_reports_duress_and_runs_cleanup() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let base_dir = temp.path().join("base");
+        let account_dir = temp.path().join("account");
+        std::fs::create_dir_all(account_dir.join("store")).unwrap();
+        std::fs::create_dir_all(&base_dir).unwrap();
+        let _guard = OslDirOverrideGuard;
+        keystore::set_base_dir_override(Some(base_dir.clone()));
+        keystore::set_active_account_dir(Some(account_dir.clone()));
+
+        crate::main_password::set_main_password(&base_dir, "correct-password").unwrap();
+        crate::main_password::write_lockout_pub(
+            &base_dir,
+            &crate::main_password::LockoutState {
+                version: 1,
+                password_failed_attempts:
+                    crate::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 1,
+                password_locked_until: None,
+                phrase_failed_attempts: 0,
+                phrase_locked_until: None,
+            },
+        )
+        .unwrap();
+        std::fs::write(account_dir.join("identity.json"), b"identity").unwrap();
+        std::fs::write(account_dir.join("prekeys.json"), b"prekeys").unwrap();
+        std::fs::write(account_dir.join("store").join("messages.sqlite"), b"cache").unwrap();
+
+        let state = AppState::new_with_production_duress_engine(account_dir.clone());
+
+        let result = cmd_osl_verify_gate_password(&state, "wrong-password".to_owned()).unwrap();
+
+        assert_eq!(result.result, "duress");
+        assert_eq!(
+            result.attempts_used,
+            crate::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT
+        );
+        assert_eq!(result.lockout_seconds_remaining, 0);
+        assert!(!account_dir.join("identity.json").exists());
+        assert!(!account_dir.join("prekeys.json").exists());
+        assert!(!account_dir.join("store").exists());
+        assert!(!base_dir.join("password_marker.json").exists());
+        assert_eq!(crate::main_password::get_file_storage_key(), None);
+    }
 }
 
 // =====================================================================
@@ -14471,16 +14729,19 @@ pub fn cmd_osl_set_stealth_password(
     current_main: String,
     new_stealth: String,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     let dir = password_dir()?;
     crate::main_password::set_stealth_password(&dir, &current_main, &new_stealth)
 }
 
 pub fn cmd_osl_remove_stealth_password(current_main: String) -> Result<(), String> {
+    record_activity_on_command_entry();
     let dir = password_dir()?;
     crate::main_password::remove_stealth_password(&dir, &current_main)
 }
 
 pub fn cmd_osl_stealth_password_status() -> Result<PasswordStatusDto, String> {
+    record_activity_on_command_entry();
     let dir = password_dir()?;
     Ok(PasswordStatusDto {
         is_set: crate::main_password::stealth_password_status(&dir),
@@ -14492,16 +14753,19 @@ pub fn cmd_osl_stealth_password_status() -> Result<PasswordStatusDto, String> {
 // =====================================================================
 
 pub fn cmd_osl_set_burn_password(current_main: String, new_burn: String) -> Result<(), String> {
+    record_activity_on_command_entry();
     let dir = password_dir()?;
     crate::main_password::set_burn_password(&dir, &current_main, &new_burn)
 }
 
 pub fn cmd_osl_remove_burn_password(current_main: String) -> Result<(), String> {
+    record_activity_on_command_entry();
     let dir = password_dir()?;
     crate::main_password::remove_burn_password(&dir, &current_main)
 }
 
 pub fn cmd_osl_burn_password_status() -> Result<PasswordStatusDto, String> {
+    record_activity_on_command_entry();
     let dir = password_dir()?;
     Ok(PasswordStatusDto {
         is_set: crate::main_password::burn_password_status(&dir),
@@ -14528,6 +14792,7 @@ pub fn cmd_osl_verify_gate_password(
     state: &AppState,
     password: String,
 ) -> Result<GateVerifyDto, String> {
+    record_activity_on_command_entry();
     use crate::main_password::GateMatch;
     let dir = password_dir()?;
     // Lockout-window check first (same as verify_main_password).
@@ -14622,6 +14887,17 @@ pub fn cmd_osl_verify_gate_password(
                 attempts_used: 0,
             })
         }
+        GateMatch::Duress => {
+            lock.password_failed_attempts = 0;
+            lock.password_locked_until = None;
+            let _ = crate::main_password::write_lockout_pub(&dir, &lock);
+            crate::main_password::execute_gate_duress(state)?;
+            Ok(GateVerifyDto {
+                result: "duress".to_string(),
+                lockout_seconds_remaining: 0,
+                attempts_used: 0,
+            })
+        }
         GateMatch::Burn => {
             lock.password_failed_attempts = 0;
             lock.password_locked_until = None;
@@ -14665,6 +14941,7 @@ pub fn cmd_osl_verify_gate_password(
 /// 7d-B2: hide the OSL config dir + record stealth-active for the
 /// session so initialization_script can suppress boot.js injection.
 pub fn cmd_osl_stealth_mode_engage(state: &AppState) -> Result<(), String> {
+    record_activity_on_command_entry();
     let dir =
         keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
     let _ = crate::main_password::stealth_hide_dir(&dir);
@@ -14703,6 +14980,7 @@ pub fn cmd_osl_burn_scope_data(
     scope_id: String,
     server_id: Option<String>,
 ) -> Result<BurnScopeDataDto, String> {
+    record_activity_on_command_entry();
     let channel_id = match scope_kind.as_str() {
         "dm" => scope_id.clone(),
         "server_channel_full" | "server_channel_per_user" | "server_channel" => {
@@ -14765,6 +15043,7 @@ pub fn cmd_osl_mark_scope_burned(
     channel_id: Option<String>,
     burned_message_ids: Vec<String>,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     use crate::burned_scopes_file::BurnedScopeEntry;
     let now = now_unix_secs();
     // Beta 1.0: also drop any cached decrypted attachments for the
@@ -14872,6 +15151,7 @@ pub fn cmd_osl_unburn_scope(
     scope_kind: String,
     scope_id: String,
 ) -> Result<bool, String> {
+    record_activity_on_command_entry();
     let removed = {
         let mut g = state
             .burned_scopes
@@ -14913,6 +15193,7 @@ pub fn cmd_osl_membership_update(
     channel_id: String,
     member_ids: Vec<String>,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     let mut g = state
         .channel_members
         .lock()
@@ -14925,6 +15206,7 @@ pub fn cmd_osl_membership_update(
 /// an empty vec when boot.js hasn't pushed yet (or the channel is
 /// genuinely empty).
 pub fn cmd_osl_membership_get(state: &AppState, channel_id: String) -> Result<Vec<String>, String> {
+    record_activity_on_command_entry();
     let g = state
         .channel_members
         .lock()
@@ -14942,6 +15224,7 @@ pub fn cmd_osl_note_scope_membership(
     scope_input: crate::scope::ScopeInput,
     member_ids: Vec<String>,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     let scope: crate::scope::Scope = scope_input
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
@@ -15000,6 +15283,7 @@ pub fn cmd_osl_get_server_whitelist_state(
     server_id: String,
     channel_scope_input: Option<crate::scope::ScopeInput>,
 ) -> Result<ServerWhitelistStateDto, String> {
+    record_activity_on_command_entry();
     let (server_header, server_dm) = {
         let sd = state
             .server_defaults
@@ -15045,6 +15329,7 @@ pub fn cmd_osl_set_server_lock(
     server_id: String,
     lock_state: String,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     let (green, yellow) = match lock_state.as_str() {
         "green" => (true, false),
         "yellow" => (false, true),
@@ -15080,6 +15365,7 @@ pub fn cmd_osl_set_server_header_whitelist(
     server_id: String,
     on: bool,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     {
         let mut sd = state
             .server_defaults
@@ -15105,6 +15391,7 @@ pub fn cmd_osl_set_channel_whitelist(
     scope_input: crate::scope::ScopeInput,
     on: bool,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     let scope: crate::scope::Scope = scope_input
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
@@ -15152,12 +15439,14 @@ pub struct GuildDto {
 /// each gateway READY. Ephemeral — not persisted; repopulated on
 /// reconnect. Read via [`cmd_osl_get_friend_ids`].
 pub fn cmd_osl_set_friend_ids(state: &AppState, ids: Vec<String>) -> Result<(), String> {
+    record_activity_on_command_entry();
     let mut g = state.friend_ids.lock().expect("friend_ids mutex poisoned");
     *g = ids;
     Ok(())
 }
 
 pub fn cmd_osl_get_friend_ids(state: &AppState) -> Result<Vec<String>, String> {
+    record_activity_on_command_entry();
     let g = state.friend_ids.lock().expect("friend_ids mutex poisoned");
     Ok(g.clone())
 }
@@ -15195,6 +15484,7 @@ pub fn cmd_osl_decline_or_revoke_friend_request(
     scope_input: crate::scope::ScopeInput,
     revoke_broadened: bool,
 ) -> Result<FriendRequestDecisionResult, String> {
+    record_activity_on_command_entry();
     if peer_discord_id.trim().is_empty() {
         return Err("OSL: friend request peer is missing".to_string());
     }
@@ -15322,12 +15612,14 @@ mod friend_request_decline_revoke_command_tests {
 /// 9-C2: boot.js pushes the user's guild-list snapshot here on
 /// each GUILD_CREATE. Ephemeral. Read via [`cmd_osl_get_guild_list`].
 pub fn cmd_osl_set_guild_list(state: &AppState, guilds: Vec<GuildDto>) -> Result<(), String> {
+    record_activity_on_command_entry();
     let mut g = state.guild_list.lock().expect("guild_list mutex poisoned");
     *g = guilds;
     Ok(())
 }
 
 pub fn cmd_osl_get_guild_list(state: &AppState) -> Result<Vec<GuildDto>, String> {
+    record_activity_on_command_entry();
     let g = state.guild_list.lock().expect("guild_list mutex poisoned");
     Ok(g.clone())
 }
@@ -15346,6 +15638,7 @@ pub fn cmd_osl_bulk_set_dm_whitelist(
     state: &AppState,
     member_dids: Vec<String>,
 ) -> Result<usize, String> {
+    record_activity_on_command_entry();
     let enabled_at_iso = format_iso8601_secs(now_unix_secs()).unwrap_or_else(|| "?".to_string());
     let mut affected = 0usize;
     {
@@ -15400,6 +15693,7 @@ pub fn cmd_osl_set_server_default(
     server_id: String,
     encrypt_by_default: bool,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     if server_id.is_empty() {
         return Err("OSL: server_id is empty".to_string());
     }
@@ -15417,6 +15711,7 @@ pub fn cmd_osl_set_server_default(
 /// 9-C3: read all server-default entries, sorted by server_id for
 /// deterministic UI rendering.
 pub fn cmd_osl_get_server_defaults(state: &AppState) -> Result<Vec<ServerDefaultDto>, String> {
+    record_activity_on_command_entry();
     let sd = state
         .server_defaults
         .lock()
@@ -15441,6 +15736,7 @@ pub fn cmd_osl_apply_server_default_to_existing_channels(
     state: &AppState,
     server_id: String,
 ) -> Result<usize, String> {
+    record_activity_on_command_entry();
     if server_id.is_empty() {
         return Err("OSL: server_id is empty".to_string());
     }
@@ -15483,6 +15779,7 @@ pub struct AppPreferencesDto {
 }
 
 pub fn cmd_osl_get_app_preferences(state: &AppState) -> Result<AppPreferencesDto, String> {
+    record_activity_on_command_entry();
     let g = state
         .app_preferences
         .lock()
@@ -15497,6 +15794,7 @@ pub fn cmd_osl_set_app_preferences(
     dto: AppPreferencesDto,
     config_dir: Option<std::path::PathBuf>,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     {
         let mut g = state
             .app_preferences
@@ -15533,6 +15831,7 @@ pub fn cmd_osl_set_app_preferences(
 pub fn cmd_osl_get_update_channel(
     state: &AppState,
 ) -> Result<crate::app_preferences::UpdateChannel, String> {
+    record_activity_on_command_entry();
     let g = state
         .app_preferences
         .lock()
@@ -15545,6 +15844,7 @@ pub fn cmd_osl_set_update_channel(
     channel: crate::app_preferences::UpdateChannel,
     config_dir: Option<std::path::PathBuf>,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     {
         let mut g = state
             .app_preferences
@@ -15578,6 +15878,7 @@ pub struct TourStateDto {
 }
 
 pub fn cmd_osl_tour_get_state(state: &AppState) -> Result<TourStateDto, String> {
+    record_activity_on_command_entry();
     // Robust onboarding guard: if a main password already exists, the
     // user has clearly been through setup before — report the tour as
     // completed so it never re-runs, regardless of whether the tour
@@ -15644,6 +15945,7 @@ pub fn cmd_osl_tour_advance(
     slide: u8,
     config_dir: Option<std::path::PathBuf>,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     {
         let mut g = state
             .app_preferences
@@ -15660,6 +15962,7 @@ pub fn cmd_osl_tour_complete(
     state: &AppState,
     config_dir: Option<std::path::PathBuf>,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     {
         let mut g = state
             .app_preferences
@@ -15677,6 +15980,7 @@ pub fn cmd_osl_tour_skip(
     state: &AppState,
     config_dir: Option<std::path::PathBuf>,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     {
         let mut g = state
             .app_preferences
@@ -15694,6 +15998,7 @@ pub fn cmd_osl_tour_reset(
     state: &AppState,
     config_dir: Option<std::path::PathBuf>,
 ) -> Result<(), String> {
+    record_activity_on_command_entry();
     {
         let mut g = state
             .app_preferences
@@ -15712,6 +16017,7 @@ pub fn cmd_osl_tour_reset(
 // boot.js installer, settings row, and ACL entries went too.
 
 pub fn cmd_osl_list_burned_scopes(state: &AppState) -> Result<Vec<BurnedScopeDto>, String> {
+    record_activity_on_command_entry();
     let g = state
         .burned_scopes
         .lock()
@@ -15781,6 +16087,7 @@ fn persist_burned_scopes_now(state: &AppState) {
 /// is intentionally preserved (a burn under stealth coercion must
 /// keep the vanilla-Discord facade for the rest of the session).
 pub fn cmd_osl_burn_engage(state: &AppState) -> Result<(), String> {
+    record_activity_on_command_entry();
     let dir =
         keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
 
@@ -16056,6 +16363,7 @@ pub struct OslTestDeepLinkResponse {
 /// the manual verification matrix can confirm Rust-side reception
 /// works independently of the JS event channel.
 pub fn cmd_osl_test_deep_link(url: String) -> Result<OslTestDeepLinkResponse, String> {
+    record_activity_on_command_entry();
     tracing::info!(
         target: "osl::deep_link",
         url = %url,
@@ -16237,6 +16545,7 @@ pub fn cmd_osl_check_for_updates(
     current: String,
     outcome: Result<Option<UpdateInfo>, String>,
 ) -> UpdateCheckResult {
+    record_activity_on_command_entry();
     match outcome {
         Err(message) => {
             tracing::warn!(
@@ -16481,7 +16790,7 @@ mod unit_a_sender_attribution_chain {
     }
 
     #[test]
-    fn v2_resolve_sender_pubkey_rejects_forged_sender() {
+    fn v2_decrypt_rejects_mallory_wire_attributed_to_alice() {
         let f = attribution_fixture();
         let wire = crate::wire_v2::encrypt_v2(
             b"v2 honest mallory",
