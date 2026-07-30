@@ -14,6 +14,7 @@ use crypto::{aead, ed25519, hkdf, random, x25519};
 use keystore::{generate_identity, select_best_sealer, KeyServerClient};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::{MessageStore, StoreError, StoredMessage};
 
@@ -155,6 +156,237 @@ pub fn clear_all_peer_ratchet_state(state: &AppState) {
              ratchet_state for all peers — next v=4 will re-handshake"
         );
         persist_peer_map_now(state);
+    }
+}
+
+fn wipe_all_peer_ratchet_state_for_duress(state: &AppState) -> Result<(), keystore::DuressError> {
+    let changed = {
+        let mut pm = state.peer_map.lock().map_err(|_| {
+            keystore::DuressError::Handler("peer_map mutex poisoned during duress wipe".to_owned())
+        })?;
+        let mut changed = 0usize;
+        for entry in pm.values_mut() {
+            if entry.ratchet_state.take().is_some() {
+                changed += 1;
+            }
+        }
+        changed
+    };
+    if changed > 0 {
+        tracing::warn!(
+            cleared = changed,
+            "OSL: duress wipe cleared persisted peer Double Ratchet session state"
+        );
+        persist_peer_map_now(state);
+    }
+    Ok(())
+}
+
+/// Duress callback for persisted Double Ratchet sessions.
+pub fn wipe_double_ratchet_session_state(state: &AppState) -> Result<(), keystore::DuressError> {
+    wipe_all_peer_ratchet_state_for_duress(state)
+}
+
+/// Duress callback for per-channel sender-key session state.
+pub fn wipe_sender_keys_session_state(state: &AppState) -> Result<(), keystore::DuressError> {
+    let changed = {
+        let mut file = state.sender_key_state.lock().map_err(|_| {
+            keystore::DuressError::Handler(
+                "sender_key_state mutex poisoned during duress wipe".to_owned(),
+            )
+        })?;
+        let changed = !file.states.is_empty();
+        if changed {
+            *file = crate::sender_key_state::SenderKeyStateFile::default();
+        }
+        changed
+    };
+    if changed {
+        tracing::warn!("OSL: duress wipe cleared sender-key session state");
+        persist_sender_key_state_now(state);
+    }
+    Ok(())
+}
+
+/// Duress callback for the per-peer ratchet slots stored in `peer_map.json`.
+pub fn wipe_peer_ratchet_session_state(state: &AppState) -> Result<(), keystore::DuressError> {
+    wipe_all_peer_ratchet_state_for_duress(state)
+}
+
+pub fn wipe_double_ratchet_session_state_handler(state: Arc<AppState>) -> keystore::WipeFn {
+    Box::new(move || wipe_double_ratchet_session_state(&state))
+}
+
+pub fn wipe_sender_keys_session_state_handler(state: Arc<AppState>) -> keystore::WipeFn {
+    Box::new(move || wipe_sender_keys_session_state(&state))
+}
+
+pub fn wipe_peer_ratchet_session_state_handler(state: Arc<AppState>) -> keystore::WipeFn {
+    Box::new(move || wipe_peer_ratchet_session_state(&state))
+}
+
+#[cfg(test)]
+mod production_duress_session_wipe_tests {
+    use super::*;
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+
+    struct ConfigDirGuard;
+
+    impl Drop for ConfigDirGuard {
+        fn drop(&mut self) {
+            keystore::set_active_account_dir(None);
+            keystore::set_base_dir_override(None);
+            crate::main_password::set_file_storage_key(None);
+        }
+    }
+
+    fn use_temp_config_dir(dir: &Path) -> ConfigDirGuard {
+        keystore::set_active_account_dir(None);
+        keystore::set_base_dir_override(Some(dir.to_path_buf()));
+        crate::main_password::set_file_storage_key(None);
+        ConfigDirGuard
+    }
+
+    fn test_ratchet_state() -> crypto::ratchet::RatchetStateOnDisk {
+        let b32 = |byte: u8| STANDARD.encode([byte; 32]);
+        crypto::ratchet::RatchetStateOnDisk {
+            version: 1,
+            root_key_b64: b32(0x01),
+            dhs_secret_b64: b32(0x02),
+            dhs_pub_b64: b32(0x03),
+            dhr_b64: Some(b32(0x04)),
+            sending_chain_b64: Some(b32(0x05)),
+            sending_counter: 7,
+            receiving_chain_b64: Some(b32(0x06)),
+            receiving_counter: 9,
+            prev_sending_count: 3,
+            hks_b64: Some(b32(0x07)),
+            hkr_b64: Some(b32(0x08)),
+            nhks_b64: b32(0x09),
+            nhkr_b64: b32(0x0a),
+            skipped: vec![crypto::ratchet::SkippedKeyOnDisk {
+                hk_b64: b32(0x0b),
+                counter: 11,
+                mk_b64: b32(0x0c),
+                inserted_at_unix_secs: 1_700_000_000,
+            }],
+            ctx: crypto::ratchet::SessionContextOnDisk {
+                local_ik_x25519_pub_b64: b32(0x0d),
+                local_ik_mlkem_pub_b64: STANDARD.encode([0x0e; 1184]),
+                peer_ik_x25519_pub_b64: b32(0x0f),
+                peer_ik_mlkem_pub_b64: STANDARD.encode([0x10; 1184]),
+                conversation_id_b64: STANDARD.encode(b"dm:peer"),
+                session_version: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn production_duress_wipes_session_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = use_temp_config_dir(dir.path());
+        let state = Arc::new(AppState::new());
+        {
+            let mut pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+            pm.insert(
+                "peer-a".to_owned(),
+                crate::peer_map::PeerEntry {
+                    osl_user_id: Some("peer-a-osl".to_owned()),
+                    ratchet_state: Some(test_ratchet_state()),
+                    ..Default::default()
+                },
+            );
+            pm.insert(
+                "peer-b".to_owned(),
+                crate::peer_map::PeerEntry {
+                    osl_user_id: Some("peer-b-osl".to_owned()),
+                    ratchet_state: Some(test_ratchet_state()),
+                    ..Default::default()
+                },
+            );
+        }
+        {
+            let mut sender_keys = state
+                .sender_key_state
+                .lock()
+                .expect("sender_key_state mutex poisoned");
+            sender_keys.version = 1;
+            sender_keys.states.insert(
+                "gc:alpha".to_owned(),
+                crypto::sender_keys::SenderKeyStateOnDisk::default(),
+            );
+        }
+        persist_peer_map_now(&state);
+        persist_sender_key_state_now(&state);
+
+        wipe_double_ratchet_session_state_handler(Arc::clone(&state))()
+            .expect("Double Ratchet handler should wipe seeded peer sessions");
+        assert!(
+            state
+                .peer_map
+                .lock()
+                .expect("peer_map mutex poisoned")
+                .values()
+                .all(|entry| entry.ratchet_state.is_none()),
+            "the Double Ratchet handler must remove every peer ratchet_state"
+        );
+        {
+            let mut pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+            pm.get_mut("peer-a").unwrap().ratchet_state = Some(test_ratchet_state());
+        }
+        persist_peer_map_now(&state);
+
+        wipe_peer_ratchet_session_state_handler(Arc::clone(&state))()
+            .expect("peer-ratchet handler should wipe seeded peer sessions");
+        assert!(
+            state
+                .peer_map
+                .lock()
+                .expect("peer_map mutex poisoned")
+                .values()
+                .all(|entry| entry.ratchet_state.is_none()),
+            "the peer-ratchet handler must remove every peer ratchet_state"
+        );
+        wipe_sender_keys_session_state_handler(Arc::clone(&state))()
+            .expect("sender-key handler should wipe seeded sender-key state");
+
+        assert!(
+            state
+                .peer_map
+                .lock()
+                .expect("peer_map mutex poisoned")
+                .values()
+                .all(|entry| entry.ratchet_state.is_none()),
+            "leaving any peer ratchet state would preserve decrypt session state"
+        );
+        assert!(
+            state
+                .sender_key_state
+                .lock()
+                .expect("sender_key_state mutex poisoned")
+                .states
+                .is_empty(),
+            "leaving sender-key rows would preserve group decrypt session state"
+        );
+
+        let raw_peer_map = std::fs::read(dir.path().join("peer_map.json"))
+            .expect("peer_map persists after duress session wipe");
+        let plain_peer_map =
+            crate::main_password::maybe_decrypt(&raw_peer_map).expect("peer_map decrypts");
+        let plain_peer_map =
+            String::from_utf8(plain_peer_map).expect("peer_map remains utf8 JSON");
+        assert!(
+            !plain_peer_map.contains("ratchet_state"),
+            "persisted peer_map must not retain ratchet_state"
+        );
+        let reloaded_sender_keys = crate::sender_key_state::load_sender_key_state(
+            &dir.path().join("sender_key_state.json"),
+        );
+        assert!(
+            reloaded_sender_keys.states.is_empty(),
+            "persisted sender_key_state must be empty after duress wipe"
+        );
     }
 }
 
