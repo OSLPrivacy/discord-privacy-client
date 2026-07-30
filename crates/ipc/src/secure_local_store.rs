@@ -321,8 +321,15 @@ pub fn open_record(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mandatory_storage_key_policy::MandatoryStorageKeyPolicy;
+    use crate::wire_rn::{RnError, RnSessionStore};
+    use keystore::sealer::NoOpSealer;
+    use osl_ratchet_next::primitives::x25519_keypair;
+    use osl_ratchet_next::test_support::{fresh_bundle, seeded_rng};
+    use osl_ratchet_next::{Session, SessionParams};
     use std::collections::HashMap;
     use std::sync::Mutex;
+    use tempfile::TempDir;
 
     /// In-memory `RawBackend` for tests. Records whether `write_blob` was
     /// ever called so the "no key" test can prove nothing was written, not
@@ -497,5 +504,45 @@ mod tests {
             store.get(&id),
             Err(SecureLocalStoreError::NotFound)
         ));
+    }
+
+    #[test]
+    fn mandatory_file_storage_key_and_ui_session_storage_share_no_plaintext_fallback() {
+        let policy = MandatoryStorageKeyPolicy::new();
+        let file_secret = br#"{"peer":"must not be plaintext"}"#;
+        assert!(
+            policy.authorize_write("peer_map.json", false).is_err(),
+            "mandatory file storage must refuse without a file-storage key"
+        );
+
+        let ui_store = SealedStore::without_key(InMemoryBackend::default());
+        let ui_id = RecordId::new("notification", "title-1");
+        assert!(matches!(
+            ui_store.put(&ui_id, file_secret),
+            Err(SecureLocalStoreError::NoKey)
+        ));
+        assert!(
+            ui_store.backend.blobs.lock().unwrap().is_empty(),
+            "UI store must not write plaintext when constructed without a key"
+        );
+
+        let dir = TempDir::new().expect("tempdir");
+        let rn_dir = dir.path().join("rn");
+        let rn_store = RnSessionStore::new(&rn_dir);
+        let mut rng = seeded_rng(140);
+        let (_prekeys, bundle) = fresh_bundle(&mut rng);
+        let (own_identity, _) = x25519_keypair(&mut rng);
+        let session = Session::initiate(&own_identity, &bundle, SessionParams::default(), &mut rng)
+            .expect("session");
+        let peer = *bundle.identity.as_bytes();
+
+        assert!(matches!(
+            rn_store.save_session(&peer, &session, &NoOpSealer),
+            Err(RnError::PlaintextSealerRefused)
+        ));
+        assert!(
+            !rn_dir.exists() || std::fs::read_dir(&rn_dir).expect("rn dir").next().is_none(),
+            "RN session store must not leave plaintext session files behind"
+        );
     }
 }

@@ -63,6 +63,95 @@ pub trait MonotonicAnchor: Send + Sync {
     ) -> Result<(), StoreError>;
 }
 
+/// Minimal durable key/value capability required by [`KeystoreBackedAnchor`].
+///
+/// The backend must be outside the SQLite directory it anchors. A file beside
+/// `messages.sqlite` can be restored with it and is not a rollback anchor.
+pub trait AnchorKeystore: Send + Sync {
+    fn load_anchor(&self, key: &str) -> Result<Option<Vec<u8>>, StoreError>;
+    fn compare_and_set_anchor(
+        &self,
+        key: &str,
+        expected: Option<&[u8]>,
+        next: &[u8],
+    ) -> Result<(), StoreError>;
+}
+
+/// Production [`MonotonicAnchor`] adapter for an external keystore service.
+///
+/// The keystore stores a compact authenticated-to-`store_id` record. All
+/// compare-and-advance decisions are delegated to the backend's atomic
+/// `compare_and_set_anchor` method; this type intentionally does not provide a
+/// colocated file fallback.
+pub struct KeystoreBackedAnchor<K: AnchorKeystore> {
+    keystore: Arc<K>,
+    namespace: String,
+}
+
+impl<K: AnchorKeystore> KeystoreBackedAnchor<K> {
+    pub fn new(namespace: impl Into<String>, keystore: Arc<K>) -> Self {
+        Self {
+            keystore,
+            namespace: namespace.into(),
+        }
+    }
+
+    fn key(&self, store_id: &[u8; 32]) -> String {
+        let mut key = String::with_capacity(self.namespace.len() + 1 + 64);
+        key.push_str(&self.namespace);
+        key.push(':');
+        for byte in store_id {
+            use std::fmt::Write as _;
+            let _ = write!(&mut key, "{byte:02x}");
+        }
+        key
+    }
+}
+
+impl<K: AnchorKeystore> std::fmt::Debug for KeystoreBackedAnchor<K> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeystoreBackedAnchor")
+            .field("has_namespace", &!self.namespace.is_empty())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<K: AnchorKeystore> MonotonicAnchor for KeystoreBackedAnchor<K> {
+    fn load(&self, store_id: [u8; 32]) -> Result<Option<AnchorRecord>, StoreError> {
+        self.keystore
+            .load_anchor(&self.key(&store_id))?
+            .map(|blob| decode_keystore_anchor(&store_id, &blob))
+            .transpose()
+    }
+
+    fn compare_and_advance(
+        &self,
+        store_id: [u8; 32],
+        expected: Option<AnchorRecord>,
+        next: AnchorRecord,
+    ) -> Result<(), StoreError> {
+        match &expected {
+            Some(expected) if next.generation <= expected.generation => {
+                return Err(StoreError::Anchor(
+                    "keystore anchor generation must advance".to_string(),
+                ));
+            }
+            None if next.generation == 0 => {
+                return Err(StoreError::Anchor(
+                    "keystore anchor generation must be nonzero".to_string(),
+                ));
+            }
+            _ => {}
+        }
+        let expected = expected
+            .as_ref()
+            .map(|record| encode_keystore_anchor(&store_id, record));
+        let next = encode_keystore_anchor(&store_id, &next);
+        self.keystore
+            .compare_and_set_anchor(&self.key(&store_id), expected.as_deref(), &next)
+    }
+}
+
 pub(crate) struct AnchorBinding {
     provider: Arc<dyn MonotonicAnchor>,
     store_id: [u8; 32],
@@ -472,6 +561,34 @@ fn delete_journal(tx: &Transaction<'_>) -> Result<(), StoreError> {
     Ok(())
 }
 
+const KEYSTORE_ANCHOR_MAGIC: &[u8; 4] = b"AKV1";
+const KEYSTORE_ANCHOR_LEN: usize = 4 + 32 + 8 + 32;
+
+fn encode_keystore_anchor(store_id: &[u8; 32], record: &AnchorRecord) -> Vec<u8> {
+    let mut out = Vec::with_capacity(KEYSTORE_ANCHOR_LEN);
+    out.extend_from_slice(KEYSTORE_ANCHOR_MAGIC);
+    out.extend_from_slice(store_id);
+    out.extend_from_slice(&record.generation.to_le_bytes());
+    out.extend_from_slice(&record.digest);
+    out
+}
+
+fn decode_keystore_anchor(store_id: &[u8; 32], blob: &[u8]) -> Result<AnchorRecord, StoreError> {
+    if blob.len() != KEYSTORE_ANCHOR_LEN || &blob[..4] != KEYSTORE_ANCHOR_MAGIC {
+        return Err(StoreError::Anchor(
+            "keystore anchor record has invalid format".to_string(),
+        ));
+    }
+    if &blob[4..36] != store_id {
+        return Err(StoreError::Anchor(
+            "keystore anchor record belongs to a different store".to_string(),
+        ));
+    }
+    let generation = u64::from_le_bytes(blob[36..44].try_into().expect("validated length"));
+    let digest = blob[44..76].try_into().expect("validated length");
+    Ok(AnchorRecord { generation, digest })
+}
+
 fn push(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
     out.extend_from_slice(bytes);
@@ -567,6 +684,34 @@ mod tests {
 
         fn calls(&self) -> usize {
             *self.calls.lock().unwrap()
+        }
+    }
+
+    #[derive(Default)]
+    struct MemoryAnchorKeystore {
+        records: Mutex<BTreeMap<String, Vec<u8>>>,
+    }
+
+    impl AnchorKeystore for MemoryAnchorKeystore {
+        fn load_anchor(&self, key: &str) -> Result<Option<Vec<u8>>, StoreError> {
+            Ok(self.records.lock().unwrap().get(key).cloned())
+        }
+
+        fn compare_and_set_anchor(
+            &self,
+            key: &str,
+            expected: Option<&[u8]>,
+            next: &[u8],
+        ) -> Result<(), StoreError> {
+            let mut records = self.records.lock().unwrap();
+            let current = records.get(key).map(Vec::as_slice);
+            if current != expected {
+                return Err(StoreError::Anchor(
+                    "keystore anchor compare-and-set rejected stale state".to_string(),
+                ));
+            }
+            records.insert(key.to_string(), next.to_vec());
+            Ok(())
         }
     }
 
@@ -858,6 +1003,58 @@ mod tests {
         assert!(
             !tmp.path().join("messages.sqlite").exists(),
             "a provider-backed replay refusal must not create SQLite first"
+        );
+    }
+
+    #[test]
+    fn keystore_backed_anchor_advances_and_refuses_stale_restore() {
+        let keystore = Arc::new(MemoryAnchorKeystore::default());
+        let provider = Arc::new(KeystoreBackedAnchor::new(
+            "osl-test-anchor",
+            keystore.clone(),
+        ));
+        let tmp = TempDir::new().unwrap();
+
+        {
+            let store = MessageStore::open_anchored(tmp.path(), SECRET, provider.clone()).unwrap();
+            store.put(&message()).unwrap();
+        }
+        let backup = TempDir::new().unwrap();
+        std::fs::copy(
+            tmp.path().join("messages.sqlite"),
+            backup.path().join("messages.sqlite"),
+        )
+        .unwrap();
+
+        {
+            let store = MessageStore::open_anchored(tmp.path(), SECRET, provider.clone()).unwrap();
+            let mut advanced = message();
+            advanced.plaintext = "new generation".to_string();
+            store.put(&advanced).unwrap();
+        }
+
+        std::fs::copy(
+            backup.path().join("messages.sqlite"),
+            tmp.path().join("messages.sqlite"),
+        )
+        .unwrap();
+        let error = match MessageStore::open_anchored(tmp.path(), SECRET, provider) {
+            Ok(_) => panic!("restored stale SQLite image was accepted by the keystore anchor"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, StoreError::Anchor(message) if message.contains("behind external anchor")),
+            "stale restore must be refused by the advanced keystore anchor, got {error}"
+        );
+
+        let (store_id, _) = cipher::derive_anchor_material(SECRET).unwrap();
+        let external = KeystoreBackedAnchor::new("osl-test-anchor", keystore)
+            .load(store_id)
+            .unwrap()
+            .expect("external record");
+        assert!(
+            external.generation >= 3,
+            "external keystore record must have advanced past the restored generation"
         );
     }
 
