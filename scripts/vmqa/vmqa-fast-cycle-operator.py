@@ -288,6 +288,27 @@ def heartbeat_matches_retained(
     )
 
 
+def executable_identity_diff(exe_raw: bytes, build: dict[str, Any]) -> str:
+    actual_sha = sha256_bytes(exe_raw)
+    actual_size = len(exe_raw)
+    differences: list[str] = []
+    if actual_sha != build["executableSha256"]:
+        differences.append(
+            "executableSha256 "
+            f"expected={build['executableSha256']} actual={actual_sha}"
+        )
+    if actual_sha != build["stagedExecutableSha256"]:
+        differences.append(
+            "stagedExecutableSha256 "
+            f"expected={build['stagedExecutableSha256']} actual={actual_sha}"
+        )
+    if actual_size != build["stagedSizeBytes"]:
+        differences.append(
+            f"stagedSizeBytes expected={build['stagedSizeBytes']} actual={actual_size}"
+        )
+    return "; ".join(differences)
+
+
 def validate_operator(
     receipt_path: Path,
     bundle_path: Path,
@@ -330,7 +351,8 @@ def validate_operator(
         or sha256_bytes(exe_raw) != build["stagedExecutableSha256"]
         or len(exe_raw) != build["stagedSizeBytes"]
     ):
-        raise OperatorError("exact staged executable hash or size differs")
+        diff = executable_identity_diff(exe_raw, build)
+        raise OperatorError(f"exact staged executable bytes differ: {diff}")
 
     retained = receipt["agentAliveAfter"]
     historic_raw = read_regular(

@@ -196,12 +196,31 @@ class FastCycleOperatorTests(unittest.TestCase):
             self.pin_receipt(),
             mock.patch.object(operator, "run_bundle_validators"),
             self.assertRaisesRegex(
-                operator.OperatorError, "staged executable"
+                operator.OperatorError,
+                "executableSha256 .* stagedExecutableSha256 .* stagedSizeBytes",
             ),
         ):
             operator.validate_operator(
                 self.receipt_path, self.bundle, self.heartbeat_path
             )
+
+    def test_staged_executable_mismatch_reports_only_differing_field(self):
+        self.receipt["build"]["stagedSizeBytes"] = len(self.exe) + 1
+        self.write_receipt()
+        with (
+            self.pin_receipt(),
+            mock.patch.object(operator, "run_bundle_validators"),
+            self.assertRaisesRegex(
+                operator.OperatorError,
+                "stagedSizeBytes expected=.* actual=",
+            ) as raised,
+        ):
+            operator.validate_operator(
+                self.receipt_path, self.bundle, self.heartbeat_path
+            )
+        message = str(raised.exception)
+        self.assertNotIn("executableSha256 expected=", message)
+        self.assertNotIn("stagedExecutableSha256 expected=", message)
 
     def test_retained_post_reset_heartbeat_bytes_must_match(self):
         self.heartbeat_path.write_bytes(self.heartbeat + b" ")
@@ -305,10 +324,11 @@ class FastCycleOperatorTests(unittest.TestCase):
                 "provisioningState": "Succeeded",
             }
         )
-        real_az = operator.AZ.read_bytes()
+        az_fixture = b"fixture azure cli"
         with (
+            mock.patch.object(operator, "AZ_SHA256", digest(az_fixture)),
             mock.patch.object(
-                operator, "read_regular", return_value=real_az
+                operator, "read_regular", return_value=az_fixture
             ),
             mock.patch.object(
                 operator,
