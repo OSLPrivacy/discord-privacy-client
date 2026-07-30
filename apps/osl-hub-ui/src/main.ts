@@ -8,7 +8,10 @@ import {
   canCompleteSetup,
   formatSendMode,
   needsRiskAcceptance,
+  oslPrimaryDestinations,
+  oslSettingsDestination,
   parseSetupState,
+  type OslPrimaryDestination,
   type SendMode,
   type SetupState,
 } from "./state";
@@ -2324,7 +2327,7 @@ function renderWorkspace(): void {
       ? localProtectedSheetMarkup(localProtectedSheet, setup.sendMode)
       : peerProtectedSheetMarkup(peerProtectedSheet, hubPeople)
     : "";
-  const markup = `<div class="hub-layout"><section class="hub-workspace"><div class="desktop-top-row" data-tauri-drag-region="deep">${trustedHeader()}${desktopWindowControlsMarkup()}</div>${workspaceContent()}</section></div>${protectedSheet}${nativeDiscordProtectPickerMarkup()}${whitelistRosterMarkup()}${peopleDialogMarkup()}${friendsDialogMarkup()}${scrubReviewDialogMarkup()}${burnDialogMarkup()}${ownedConfirmationMarkup()}${updateDialogMarkup()}`;
+  const markup = `<div class="hub-layout with-primary-sidebar">${primarySidebarMarkup()}<section class="hub-workspace"><div class="desktop-top-row" data-tauri-drag-region="deep">${trustedHeader()}${desktopWindowControlsMarkup()}</div>${workspaceContent()}</section></div>${protectedSheet}${nativeDiscordProtectPickerMarkup()}${whitelistRosterMarkup()}${peopleDialogMarkup()}${friendsDialogMarkup()}${scrubReviewDialogMarkup()}${burnDialogMarkup()}${ownedConfirmationMarkup()}${updateDialogMarkup()}`;
   let surface = root.querySelector<HTMLElement>("#workspace-render-surface");
   if (!surface) {
     // No separate 44px desktop titlebar row here: the drag region and window
@@ -2360,6 +2363,54 @@ function renderWorkspace(): void {
       if (dialog && !dialog.open) dialog.showModal();
     }
   });
+}
+
+function primarySidebarMarkup(): string {
+  const activeDestination = (id: OslPrimaryDestination): boolean => {
+    if (id === "home") return route === "home" && !friendsDialogOpen;
+    if (id === "inbox") return route === "osl-chat";
+    if (id === "people") return friendsDialogOpen;
+    if (id === "privacy") return route === "settings" && (settingsSection === "scrub" || settingsSection === "cleanup" || settingsSection === "appearance");
+    if (id === "activity") return route === "settings" && settingsSection === "notifications";
+    if (id === "connections") return route === "service" || route === "mullvad" || (route === "settings" && settingsSection === "apps");
+    return false;
+  };
+  const destinationAttributes = (id: OslPrimaryDestination): string => {
+    if (id === "home") return 'data-route="home"';
+    if (id === "inbox") return 'data-route="osl-chat"';
+    if (id === "people") return 'data-route="home" data-open-friends';
+    if (id === "privacy") return 'data-route="settings" data-settings="scrub"';
+    if (id === "activity") return 'data-route="settings" data-settings="notifications"';
+    if (id === "connections") return 'data-route="settings" data-settings="apps"';
+    return 'data-route="settings" data-settings="apps"';
+  };
+  const items = oslPrimaryDestinations.map((destination) => {
+    const current = activeDestination(destination.id);
+    return `<button class="primary-sidebar-item ${current ? "active" : ""}" type="button" data-primary-destination="${destination.id}" ${destinationAttributes(destination.id)} ${current ? 'aria-current="page"' : ""}><span class="primary-sidebar-icon" aria-hidden="true">${escapeHtml(destination.label.slice(0, 1))}</span><span><strong>${escapeHtml(destination.label)}</strong><small>${escapeHtml(destination.userQuestion)}</small></span></button>`;
+  }).join("");
+  return `<style>
+    .hub-layout.with-primary-sidebar { grid-template-columns: 232px minmax(0, 1fr); }
+    .primary-sidebar { width: 232px; min-height: 0; padding: 14px 10px; border-right: 1px solid var(--line); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 12px; background: var(--panel); }
+    .primary-sidebar-brand, .primary-sidebar-settings, .primary-sidebar-item { appearance: none; width: 100%; border: 0; background: transparent; color: var(--muted); font: inherit; text-align: left; cursor: pointer; }
+    .primary-sidebar-brand { min-height: 42px; padding: 0 8px; display: flex; align-items: center; gap: 9px; color: var(--text); font-weight: 700; }
+    .primary-sidebar-brand img { width: 28px; height: 28px; object-fit: contain; }
+    .primary-sidebar-nav { display: grid; align-content: start; gap: 3px; overflow: auto; }
+    .primary-sidebar-item { min-height: 48px; padding: 6px 8px; border-left: 2px solid transparent; display: grid; grid-template-columns: 26px minmax(0, 1fr); align-items: center; gap: 8px; }
+    .primary-sidebar-item:hover, .primary-sidebar-item.active, .primary-sidebar-settings:hover, .primary-sidebar-settings.active { background: var(--panel-2); color: var(--text); }
+    .primary-sidebar-item.active, .primary-sidebar-settings.active { border-left-color: var(--brand); }
+    .primary-sidebar-icon { width: 24px; height: 24px; border: 1px solid var(--line); display: grid; place-items: center; color: var(--text); font-size: 11px; font-weight: 750; }
+    .primary-sidebar-item strong, .primary-sidebar-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .primary-sidebar-item strong { font-size: 13px; }
+    .primary-sidebar-item small { margin-top: 2px; color: var(--subtle); font-size: 10px; }
+    .primary-sidebar-settings { min-height: 40px; padding: 0 8px; border-left: 2px solid transparent; font-size: 13px; font-weight: 700; }
+    @media (max-width: 760px) {
+      .hub-layout.with-primary-sidebar { grid-template-columns: 64px minmax(0, 1fr); }
+      .primary-sidebar { width: 64px; padding-inline: 8px; }
+      .primary-sidebar-brand span, .primary-sidebar-item span:last-child, .primary-sidebar-settings span { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+      .primary-sidebar-item { min-height: 44px; padding: 6px 0; grid-template-columns: 1fr; justify-items: center; }
+      .primary-sidebar-settings { text-align: center; }
+    }
+  </style><aside class="primary-sidebar" aria-label="OSL navigation"><button class="primary-sidebar-brand" type="button" data-route="home" aria-label="OSL Privacy home"><img class="osl-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/><span>OSL</span></button><nav class="primary-sidebar-nav" aria-label="Primary destinations">${items}</nav><button class="primary-sidebar-settings ${route === "settings" ? "active" : ""}" type="button" data-route="${oslSettingsDestination}" ${route === "settings" ? 'aria-current="page"' : ""}><span>Settings</span></button></aside>`;
 }
 
 function appLauncherStrip(): string {
