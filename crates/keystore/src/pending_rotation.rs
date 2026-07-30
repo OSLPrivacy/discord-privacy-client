@@ -238,13 +238,16 @@ mod tests {
             .map(|pk| STANDARD.encode(pk.as_bytes()));
         let prev_ed = STANDARD.encode(old.ed25519_public.as_bytes());
 
-        let msg = rot_msg(
+        // Minting signs rot_msg_with_capabilities (client.rs), so rebuild the same
+        // form here; the bitmap-less rot_msg made a valid signature look forged.
+        let msg = crate::client::rot_msg_with_capabilities(
             &old.user_id,
             &prev_ed,
             &new_x,
             &new_ed,
             &new_mlkem,
             new_ratchet.as_deref(),
+            crate::client::CLIENT_RN_CAPABILITY_FLOOR,
         );
         let mut sig_arr = [0u8; 64];
         sig_arr.copy_from_slice(&STANDARD.decode(&p.prev_sig).unwrap());
