@@ -10,7 +10,7 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from vmqa_build_evidence import (
     EvidenceError,
@@ -25,7 +25,7 @@ from vmqa_build_evidence import (
 )
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION: Final[int] = 2
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,96}$")
@@ -199,7 +199,7 @@ def require_timestamp(value: Any, label: str) -> datetime:
 def validate_schema_version(value: Any, label: str) -> None:
     if type(value) is not int or value != SCHEMA_VERSION:
         raise ContractError(
-            f"{label}.schemaVersion must be exactly {SCHEMA_VERSION}, got {value!r}"
+            f"{label}.schemaVersion must be exactly {SCHEMA_VERSION}"
         )
 
 
