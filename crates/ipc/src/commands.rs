@@ -14696,7 +14696,7 @@ mod account_transfer_tests {
         let err = commit_staged_account_import(dir.path(), &stage, &[], false).unwrap_err();
         assert!(err.contains("message_store"), "{err}");
         assert!(err.contains("backup_rollback_copies"), "{err}");
-        assert!(err.contains("unencrypted destination"), "{err}");
+        assert!(err.contains("an encrypted destination"), "{err}");
         assert_eq!(
             std::fs::read(dir.path().join("store/messages.sqlite")).unwrap(),
             b"live store backup source"

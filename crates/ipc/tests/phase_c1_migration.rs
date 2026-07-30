@@ -31,6 +31,13 @@ fn write_legacy(dir: &std::path::Path, body: &str) {
 
 #[test]
 fn dm_legacy_migrates_to_peer_outgoing_whitelists() {
+    // whitelist_state writes go through maybe_encrypt, whose device-bound
+    // fallback key lives in the process-global base dir; a record sealed by an
+    // earlier test makes the write fail and the migration marker never lands.
+    let _base = tempfile::TempDir::new().unwrap();
+    keystore::set_base_dir_override(Some(_base.path().to_path_buf()));
+    ipc::main_password::set_file_storage_key(None);
+
     let dir = tempdir().unwrap();
     write_legacy(
         dir.path(),
@@ -138,6 +145,13 @@ fn server_channel_per_user_migrates_whitelisted_users() {
 
 #[test]
 fn idempotent_second_run_does_not_duplicate_peer_links() {
+    // whitelist_state writes go through maybe_encrypt, whose device-bound
+    // fallback key lives in the process-global base dir; a record sealed by an
+    // earlier test makes the write fail and the migration marker never lands.
+    let _base = tempfile::TempDir::new().unwrap();
+    keystore::set_base_dir_override(Some(_base.path().to_path_buf()));
+    ipc::main_password::set_file_storage_key(None);
+
     let dir = tempdir().unwrap();
     write_legacy(
         dir.path(),

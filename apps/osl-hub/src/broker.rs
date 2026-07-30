@@ -10665,6 +10665,81 @@ mod tests {
     }
 
     #[test]
+    fn a_drain_report_separates_received_from_opened_and_keeps_their_order() {
+        let batch = OpenedNativeOverlayTextBatch {
+            messages: Vec::new(),
+            pending_view_once: Vec::new(),
+            acknowledgments: vec![
+                NativeOverlayAcknowledgment {
+                    message_id: "peer-received-first".to_owned(),
+                    status: NativeOverlayAcknowledgmentStatus::Received,
+                    acknowledged_at: 1_700_000_010,
+                },
+                NativeOverlayAcknowledgment {
+                    message_id: "peer-opened-second".to_owned(),
+                    status: NativeOverlayAcknowledgmentStatus::Opened,
+                    acknowledged_at: 1_700_000_011,
+                },
+                NativeOverlayAcknowledgment {
+                    message_id: "peer-received-third".to_owned(),
+                    status: NativeOverlayAcknowledgmentStatus::Received,
+                    acknowledged_at: 1_700_000_012,
+                },
+            ],
+            fetched: 0,
+            decrypt_display_enabled: true,
+            deferred_rows: 0,
+        };
+
+        assert_eq!(
+            batch.acknowledgment_counters(),
+            NativeOverlayAcknowledgmentCounters {
+                received: 2,
+                opened: 1,
+            }
+        );
+        assert_eq!(
+            batch
+                .acknowledgments
+                .iter()
+                .map(|ack| match ack.status {
+                    NativeOverlayAcknowledgmentStatus::Received => "received",
+                    NativeOverlayAcknowledgmentStatus::Opened => "opened",
+                })
+                .collect::<Vec<_>>(),
+            vec!["received", "opened", "received"]
+        );
+
+        let reordered = OpenedNativeOverlayTextBatch {
+            acknowledgments: vec![
+                batch.acknowledgments[1].clone(),
+                batch.acknowledgments[0].clone(),
+                batch.acknowledgments[2].clone(),
+            ],
+            ..batch
+        };
+        assert_eq!(
+            reordered.acknowledgment_counters(),
+            NativeOverlayAcknowledgmentCounters {
+                received: 2,
+                opened: 1,
+            },
+            "same counters alone must not be treated as proof of drain order"
+        );
+        assert_ne!(
+            reordered
+                .acknowledgments
+                .iter()
+                .map(|ack| match ack.status {
+                    NativeOverlayAcknowledgmentStatus::Received => "received",
+                    NativeOverlayAcknowledgmentStatus::Opened => "opened",
+                })
+                .collect::<Vec<_>>(),
+            vec!["received", "opened", "received"]
+        );
+    }
+
+    #[test]
     fn received_then_opened_ordering_proof() {
         fn production(source: &str) -> &str {
             source

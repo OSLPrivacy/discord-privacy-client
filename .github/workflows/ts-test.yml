@@ -68,3 +68,59 @@ jobs:
       - name: Test legacy keyserver
         working-directory: keyserver
         run: npm test
+  selector-check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Install selector deps
+        working-directory: selector-ci
+        run: npm ci
+      - name: Run selector check
+        working-directory: selector-ci
+        run: npm run check
+  public-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - name: Run public audit
+        run: |
+          python3 scripts/audit_reproducible_build.py --self-test
+          python3 - <<'PY'
+          from scripts.audit_public_release import audit_public_release_claims_self_test
+
+          errors = []
+          audit_public_release_claims_self_test(errors)
+          if errors:
+              raise SystemExit("\n".join(errors))
+          PY
+  success:
+    name: "success'"
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    needs:
+      - test
+      - selector-check
+      - public-audit
+    steps:
+      - name: Require TypeScript, selector, and public-audit success
+        run: |
+          failed=0
+          if [ '${{ needs.test.result }}' != 'success' ]; then
+            echo "TypeScript workflow failed with result: ${{ needs.test.result }}"
+            failed=1
+          fi
+          if [ '${{ needs.selector-check.result }}' != 'success' ]; then
+            echo "Selector check failed with result: ${{ needs.selector-check.result }}"
+            failed=1
+          fi
+          if [ '${{ needs.public-audit.result }}' != 'success' ]; then
+            echo "Public audit failed with result: ${{ needs.public-audit.result }}"
+            failed=1
+          fi
+          exit "$failed"
