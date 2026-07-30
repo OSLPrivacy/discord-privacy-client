@@ -65,8 +65,20 @@ export function peerProtectedDraftByteFeedback(value: string): string {
   return `${utf8Length(value)} / ${PEER_PROTECTED_DRAFT_BYTES.toLocaleString("en-US")} bytes`;
 }
 
+function hasOslPeerIdentity(person: HubPerson): boolean {
+  const discordSnowflake = /^[1-9]\d{16,19}$/u;
+  return person.personId.length > 0
+    && person.oslUserId.length > 0
+    && person.safetyNumber.length > 0
+    && person.personId !== person.oslUserId
+    && !discordSnowflake.test(person.personId)
+    && !discordSnowflake.test(person.oslUserId);
+}
+
 export function verifiedPeerFriends(people: HubPerson[]): HubPerson[] {
-  return people.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange);
+  return people.filter((person) => person.safetyNumberVerified
+    && !person.pendingKeyChange
+    && hasOslPeerIdentity(person));
 }
 
 function escapeHtml(value: string): string {
@@ -93,11 +105,11 @@ function closeButton(): string {
 function chooserMarkup(model: PeerProtectedSheetModel, people: HubPerson[]): string {
   const friends = verifiedPeerFriends(people);
   const rows = friends.length
-    ? friends.map((person) => `<button class="peer-friend-row" type="button" data-peer-person="${escapeHtml(person.personId)}" ${model.busy ? "disabled" : ""}><span>${escapeHtml(person.alias ?? "Verified friend")}</span><small>${model.busy ? "Opening…" : "Verified"}</small></button>`).join("")
-    : `<p class="peer-empty">Verify a friend first.</p>`;
+    ? friends.map((person) => `<button class="peer-friend-row" type="button" data-peer-person="${escapeHtml(person.personId)}" ${model.busy ? "disabled" : ""}><span>${escapeHtml(person.alias ?? "Trusted person")}</span><small>${model.busy ? "Opening…" : "Verified in OSL"}</small></button>`).join("")
+    : `<p class="peer-empty">Add and verify a person first.</p>`;
   return `<aside class="local-protected-sheet peer-protected-sheet" aria-labelledby="peer-protected-title">
     <header><div><span>Private message</span><h2 id="peer-protected-title">Protect</h2></div>${closeButton()}</header>
-    <div class="peer-choice-list" aria-label="Verified friends">${rows}</div>
+    <div class="peer-choice-list" aria-label="Trusted people">${rows}</div>
     <output class="local-protected-status" aria-live="polite">${escapeHtml(model.status)}</output>
     <button class="peer-local-choice" id="protect-local-only" type="button"><span>Only this device</span><small>Not person-to-person</small></button>
     <footer>Choose who should be able to open it. OSL does not read this page.</footer>
