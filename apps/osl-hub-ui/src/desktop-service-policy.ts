@@ -1,3 +1,5 @@
+import type { SendMode } from "./state";
+
 /**
  * Product classification for Windows desktop surfaces.
  *
@@ -7,6 +9,7 @@
  * closed instead of silently opening their website.
  */
 export type DesktopServiceId =
+  | "discord"
   | "outlook"
   | "proton"
   | "tuta"
@@ -38,17 +41,57 @@ export interface DesktopServicePolicy {
   nativeOnly: boolean;
   /** No reviewed secondary-profile launch contract exists for these apps. */
   separateProfileAvailable: false;
+  /**
+   * Send-mode account-risk facts for this service.
+   *
+   * Terms status and enforcement likelihood are independent. If reliable,
+   * current enforcement evidence is absent, likelihood stays `Unknown`; terms
+   * wording alone must not become a ban percentage or prediction.
+   */
+  sendModeRisk?: readonly {
+    mode: Exclude<SendMode, "manual">;
+    termsStatus: "No known restriction" | "May conflict with terms" | "Explicitly restricted" | "Unknown";
+    enforcementLikelihood: "Low" | "Medium" | "High" | "Unknown";
+    enforcementEvidence: { source: string; reviewedAt: string } | null;
+    explanation: string;
+  }[];
 }
 
 const policy = (
   id: DesktopServiceId,
   surface: WindowsDesktopSurface,
+  sendModeRisk?: DesktopServicePolicy["sendModeRisk"],
 ): DesktopServicePolicy => ({
   id,
   surface,
   nativeOnly: surface === "verified" || surface === "candidate",
   separateProfileAvailable: false,
+  ...(sendModeRisk ? { sendModeRisk } : {}),
 });
+
+const discordSendModeRisk: NonNullable<DesktopServicePolicy["sendModeRisk"]> = [
+  {
+    mode: "clipboard",
+    termsStatus: "No known restriction",
+    enforcementLikelihood: "Unknown",
+    enforcementEvidence: null,
+    explanation: "OSL encrypts and copies; the user chooses where and when to paste and send.",
+  },
+  {
+    mode: "double",
+    termsStatus: "May conflict with terms",
+    enforcementLikelihood: "Unknown",
+    enforcementEvidence: null,
+    explanation: "OSL places the encrypted payload after one Enter and sends only after a second distinct Enter, which may put the account at risk if the service treats assisted placement or sending as automation.",
+  },
+  {
+    mode: "single",
+    termsStatus: "May conflict with terms",
+    enforcementLikelihood: "Unknown",
+    enforcementEvidence: null,
+    explanation: "OSL places and sends after one explicit action and fresh checks, which may put the account at risk if the service treats assisted sending as automation.",
+  },
+] as const;
 
 /**
  * Current first-party Windows surface inventory.
@@ -58,6 +101,7 @@ const policy = (
  * New Outlook Store package. Neither route permits browser fallback.
  */
 export const desktopServicePolicies: readonly DesktopServicePolicy[] = [
+  policy("discord", "verified", discordSendModeRisk),
   policy("outlook", "verified"),
   policy("proton", "candidate"),
   policy("tuta", "candidate"),
