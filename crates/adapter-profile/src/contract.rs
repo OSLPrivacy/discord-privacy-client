@@ -589,6 +589,57 @@ mod tests {
 
     #[test]
     fn contract() {
+        assert_eq!(
+            REQUIRED_SELF_TEST_PROBES,
+            [
+                SelfTestProbe::new(Subsystem::Composer, Predicate::ComposerDiscovery),
+                SelfTestProbe::new(Subsystem::Transcript, Predicate::TranscriptDiscovery),
+                SelfTestProbe::new(Subsystem::RowText, Predicate::RowTextExtraction),
+                SelfTestProbe::new(Subsystem::WriteProof, Predicate::WritePrefixProof),
+                SelfTestProbe::new(Subsystem::Consent, Predicate::OperatorConsent),
+                SelfTestProbe::new(Subsystem::Binding, Predicate::ScopeBinding),
+                SelfTestProbe::new(Subsystem::Authority, Predicate::HostAuthority),
+            ]
+        );
+        let expected_required_checks: &[(Subsystem, Predicate, UnverifiedCause)] = &[
+            (
+                Subsystem::Composer,
+                Predicate::ComposerDiscovery,
+                UnverifiedCause::NotObserved,
+            ),
+            (
+                Subsystem::Transcript,
+                Predicate::TranscriptDiscovery,
+                UnverifiedCause::NotObserved,
+            ),
+            (
+                Subsystem::RowText,
+                Predicate::RowTextExtraction,
+                UnverifiedCause::NotObserved,
+            ),
+            (
+                Subsystem::WriteProof,
+                Predicate::WritePrefixProof,
+                UnverifiedCause::MissingWriteProof,
+            ),
+            (
+                Subsystem::Consent,
+                Predicate::OperatorConsent,
+                UnverifiedCause::MissingConsent,
+            ),
+            (
+                Subsystem::Binding,
+                Predicate::ScopeBinding,
+                UnverifiedCause::MissingBinding,
+            ),
+            (
+                Subsystem::Authority,
+                Predicate::HostAuthority,
+                UnverifiedCause::MissingAuthority,
+            ),
+        ];
+        assert_eq!(REQUIRED_CHECKS, expected_required_checks);
+
         let verified = SelfTestReport::from_checks(required_checks()).unwrap();
         assert_eq!(verified.verdict(), ContractVerdict::Verified);
         assert_eq!(verified.verdict().label(), "contract_verified");
@@ -773,6 +824,8 @@ mod tests {
                 .get("checks")
                 .and_then(Value::as_array)
                 .expect("checks");
+            let mut fixed_string_values =
+                vec![object.get("verdict").and_then(Value::as_str).unwrap()];
             let mut serialized_probes = Vec::new();
             for check in checks {
                 let fields = check.as_object().expect("check object");
@@ -793,10 +846,11 @@ mod tests {
                 assert_eq!(fields.get("observedCount"), Some(&Value::from(0)));
                 assert_eq!(fields.get("passed"), Some(&Value::Bool(true)));
                 assert_eq!(fields.get("requiredCount"), Some(&Value::from(0)));
-                serialized_probes.push((
-                    fields.get("subsystem").and_then(Value::as_str).unwrap(),
-                    fields.get("predicate").and_then(Value::as_str).unwrap(),
-                ));
+                let subsystem = fields.get("subsystem").and_then(Value::as_str).unwrap();
+                let predicate = fields.get("predicate").and_then(Value::as_str).unwrap();
+                fixed_string_values.push(subsystem);
+                fixed_string_values.push(predicate);
+                serialized_probes.push((subsystem, predicate));
             }
             assert_eq!(
                 serialized_probes,
@@ -808,6 +862,26 @@ mod tests {
                     ("consent", "operatorConsent"),
                     ("binding", "scopeBinding"),
                     ("authority", "hostAuthority"),
+                ]
+            );
+            assert_eq!(
+                fixed_string_values,
+                vec![
+                    "verified",
+                    "composer",
+                    "composerDiscovery",
+                    "transcript",
+                    "transcriptDiscovery",
+                    "rowText",
+                    "rowTextExtraction",
+                    "writeProof",
+                    "writePrefixProof",
+                    "consent",
+                    "operatorConsent",
+                    "binding",
+                    "scopeBinding",
+                    "authority",
+                    "hostAuthority",
                 ]
             );
 

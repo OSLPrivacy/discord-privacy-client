@@ -430,6 +430,9 @@ def audit_public_release_claims_self_test(errors: list[str]) -> None:
     bad_source_commit = (
         f"Release v1.2.3 source commit {'e' * 40} is the release-proven source."
     )
+    bad_source_tree = (
+        f"Release v1.2.3 source tree {'f' * 40} is the release-proven source."
+    )
     release_identity = None
     if not release_claim_violations(bad_release, release_identity):
         errors.append("internal release-claim test did not catch unbound release proof")
@@ -448,7 +451,7 @@ def audit_public_release_claims_self_test(errors: list[str]) -> None:
     }
     if release_claim_violations(good_exact, release_identity):
         errors.append(f"{exact_release_test}: exact release identity was rejected")
-    for bad in (bad_tag, bad_hash, bad_source_commit):
+    for bad in (bad_tag, bad_hash, bad_source_commit, bad_source_tree):
         if not release_identity_mismatch_violations(bad, release_identity):
             errors.append(f"{exact_release_test}: stale release identity was not caught")
 
@@ -492,10 +495,23 @@ class PublicReleaseAuditBehaviourTests(unittest.TestCase):
             ),
             [(1, "release claim references a different released binary identity")],
         )
+        self.assertEqual(
+            release_identity_mismatch_violations(
+                f"Release v1.2.3 source tree {'f' * 40} is release-proven.",
+                identity,
+            ),
+            [(1, "release claim references a different released binary identity")],
+        )
         self.assertTrue(
             release_claim_violations(
                 "This release build proves encrypted messages send through Discord.",
                 None,
+            )
+        )
+        self.assertTrue(
+            release_claim_violations(
+                "This release build proves encrypted messages send through Discord.",
+                {**identity, "claimProfile": "qa-only"},
             )
         )
 

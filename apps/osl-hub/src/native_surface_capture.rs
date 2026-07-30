@@ -740,8 +740,13 @@ mod tests {
             session_epoch: 7,
             host_generation: 11,
         };
-        state.replace(key, capture).expect("store");
-        assert!(state.current(key).is_some());
+        state.replace(key, capture.clone()).expect("store");
+        let restored = state.current(key).expect("exact key retrieves capture");
+        assert_eq!(restored.version, capture.version);
+        assert_eq!(restored.image_data_url, capture.image_data_url);
+        assert_eq!(restored.width_px, capture.width_px);
+        assert_eq!(restored.height_px, capture.height_px);
+        assert_eq!(restored.presentation_insets, capture.presentation_insets);
         assert!(state
             .current(NativeSurfaceKey {
                 session_epoch: 8,
@@ -754,7 +759,38 @@ mod tests {
                 host_generation: 12,
             })
             .is_none());
+
+        let replacement_key = NativeSurfaceKey {
+            session_epoch: 7,
+            host_generation: 12,
+        };
+        let mut replacement = capture;
+        replacement.width_px = 640;
+        replacement.height_px = 48;
+        replacement.presentation_insets = SurfaceInsets {
+            left: 4,
+            top: 1,
+            right: 5,
+            bottom: 2,
+        };
+        state
+            .replace(replacement_key, replacement.clone())
+            .expect("replace");
+        assert!(
+            state.current(key).is_none(),
+            "a newer generation must not be reused by an older generation"
+        );
+        let restored = state
+            .current(replacement_key)
+            .expect("replacement key retrieves replacement");
+        assert_eq!(restored.width_px, replacement.width_px);
+        assert_eq!(restored.height_px, replacement.height_px);
+        assert_eq!(
+            restored.presentation_insets,
+            replacement.presentation_insets
+        );
+
         state.clear();
-        assert!(state.current(key).is_none());
+        assert!(state.current(replacement_key).is_none());
     }
 }

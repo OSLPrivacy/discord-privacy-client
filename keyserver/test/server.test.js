@@ -75,12 +75,19 @@ async function assertWrappedKeyRoundtripAcrossSessions(payload) {
     });
     assert.equal(fetched.statusCode, 200);
     assert.equal(fetched.body.content_id, payload.content_id);
+    assert.equal(fetched.body.content_type, payload.content_type);
+    assert.equal(
+      fetched.body.system_message_kind,
+      payload.system_message_kind ?? null,
+    );
     assert.equal(fetched.body.sender_id, payload.sender_id);
     assert.equal(fetched.body.recipient_id, payload.recipient_id);
     assert.equal(fetched.body.session_version, payload.session_version);
     assert.equal(fetched.body.share_index, payload.share_index);
     assert.equal(fetched.body.wrapped_share_blob, payload.wrapped_share_blob);
     assert.equal(fetched.body.blob_version, payload.blob_version);
+    assert.equal(fetched.body.expires_at, payload.expires_at);
+    assert.match(fetched.body.created_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
     assert.equal(fetched.body.single_use, false);
   } finally {
     if (firstSession) await firstSession.close();
@@ -421,6 +428,7 @@ test('wrapped-key roundtrip e2e test: post then fetch across two sessions', asyn
     share_index: 2,
     wrapped_share_blob: b64('wrapped-share-across-sessions'),
     blob_version: 3,
+    expires_at: '2035-01-02T03:04:05.000Z',
   }));
 });
 
