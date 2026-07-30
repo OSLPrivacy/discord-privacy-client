@@ -57,7 +57,7 @@ pub struct HubIdentitySetupResult {
     pub password_setup_required: bool,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct HubIdentityCreationOwnerSignoff {
     pub owner_present: bool,
@@ -90,6 +90,32 @@ impl HubIdentityCreationOwnerSignoff {
             accepts_recovery_phrase_responsibility: true,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum IdentityCreationOwnerAuthorization {
+    ExplicitOwnerSignoff,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum IdentityCreationAuthorizationError {
+    OwnerSignoffRequired,
+}
+
+impl std::fmt::Display for IdentityCreationAuthorizationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OwnerSignoffRequired => {
+                f.write_str("OSL identity creation requires explicit owner authorization")
+            }
+        }
+    }
+}
+
+pub fn require_identity_creation_owner_authorization(
+    authorization: Option<IdentityCreationOwnerAuthorization>,
+) -> Result<IdentityCreationOwnerAuthorization, IdentityCreationAuthorizationError> {
+    authorization.ok_or(IdentityCreationAuthorizationError::OwnerSignoffRequired)
 }
 
 #[derive(Serialize)]
@@ -202,6 +228,18 @@ pub fn create_native_identity_with_owner_authorization_signoff(
     )?;
     initialise_keyserver(&state.osl, &dir);
     Ok(result)
+}
+
+pub fn create_native_identity(
+    state: &HubCoreState,
+    authorization: Option<IdentityCreationOwnerAuthorization>,
+) -> Result<HubIdentitySetupResult, String> {
+    require_identity_creation_owner_authorization(authorization)
+        .map_err(|error| error.to_string())?;
+    create_native_identity_with_owner_authorization_signoff(
+        state,
+        HubIdentityCreationOwnerSignoff::owner_authorized_for_new_identity(),
+    )
 }
 
 fn create_native_identity_after_owner_authorization_signoff_using(
@@ -539,7 +577,10 @@ mod tests {
 
     fn assert_removed_target(report: &crate::cleanup::HubFullCleanupResult, target: &str) {
         assert!(
-            report.removed_targets.iter().any(|removed| removed == target),
+            report
+                .removed_targets
+                .iter()
+                .any(|removed| removed == target),
             "cleanup report did not include removed target {target}; report={:?}",
             report.removed_targets
         );
@@ -588,6 +629,25 @@ mod tests {
         );
         assert_eq!(native_user_id(&identity), native_user_id(&recovered));
         assert_eq!(phrase.split_whitespace().count(), 12);
+    }
+
+    #[test]
+    fn identity_creation_requires_owner_authorization_token() {
+        assert_eq!(
+            require_identity_creation_owner_authorization(None),
+            Err(IdentityCreationAuthorizationError::OwnerSignoffRequired)
+        );
+        let state = HubCoreState::default();
+        assert_eq!(
+            create_native_identity(&state, None).unwrap_err(),
+            "OSL identity creation requires explicit owner authorization"
+        );
+        assert_eq!(
+            require_identity_creation_owner_authorization(Some(
+                IdentityCreationOwnerAuthorization::ExplicitOwnerSignoff
+            )),
+            Ok(IdentityCreationOwnerAuthorization::ExplicitOwnerSignoff)
+        );
     }
 
     #[test]
@@ -696,8 +756,16 @@ mod tests {
         std::fs::create_dir_all(&native_profiles).unwrap();
         std::fs::write(core_dir.join("peer_map.json"), br#"{}"#).unwrap();
         std::fs::write(core_dir.join("whitelist_state.json"), br#"{}"#).unwrap();
-        std::fs::write(service_profiles.join("profile-cache"), b"local profile bytes").unwrap();
-        std::fs::write(native_profiles.join("native-cache"), b"native profile bytes").unwrap();
+        std::fs::write(
+            service_profiles.join("profile-cache"),
+            b"local profile bytes",
+        )
+        .unwrap();
+        std::fs::write(
+            native_profiles.join("native-cache"),
+            b"native profile bytes",
+        )
+        .unwrap();
         std::fs::write(config_dir.join("service-registry.json"), br#"{}"#).unwrap();
         std::fs::write(config_dir.join("service-scope-index.json"), br#"{}"#).unwrap();
         std::fs::write(config_dir.join("preview-preferences.json"), br#"{}"#).unwrap();

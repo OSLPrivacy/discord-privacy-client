@@ -2577,7 +2577,7 @@ function bindPasswordForm(): void {
     if (!setupMode) password.value = "";
     try {
       if (setupMode) {
-        const identity = core.readiness.identityLoaded ? null : await createHubOslIdentity();
+        const identity = core.readiness.identityLoaded ? null : await createHubOslIdentity(true);
         if (identity) identityStorageMethod = identity.storageMethod;
         const passwordResult = await setupHubMainPassword(secret);
         core = await loadCoreIntegration();
