@@ -61,6 +61,7 @@ pub const PASSWORD_MIN_LEN: usize = 6;
 pub const RECOMMENDED_PASSWORD_LEN: usize = 12;
 pub const PASSWORD_MAX_LEN: usize = 128;
 pub const DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT: u32 = 10;
+pub const DURESS_FAILED_ATTEMPT_THRESHOLD: u32 = DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT;
 const SALT_LEN: usize = 16;
 const ARGON_OUTPUT_LEN: usize = 64; // 32 hash + 32 AES key
 const HASH_LEN: usize = 32;

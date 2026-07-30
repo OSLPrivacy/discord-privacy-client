@@ -404,7 +404,7 @@ impl Default for AppState {
             message_store: Mutex::new(None),
             rn_session_store: default_rn_session_store(),
             rn_session_sealer: keystore::select_best_sealer(),
-            duress_engine: Mutex::new(default_duress_engine()),
+            duress_engine: Mutex::new(default_production_duress_engine()),
             whitelist_state: Mutex::new(WhitelistState::default()),
             recovery_token: Mutex::new(None),
             stealth_active: Mutex::new(false),
@@ -888,7 +888,7 @@ fn default_rn_session_store() -> crate::wire_rn::RnSessionStore {
     crate::wire_rn::RnSessionStore::new(dir.join("rn_sessions"))
 }
 
-fn default_duress_engine() -> keystore::DuressEngine {
+fn default_production_duress_engine() -> keystore::DuressEngine {
     let config_dir = keystore::osl_config_dir()
         .unwrap_or_else(|_| std::env::temp_dir().join("osl-duress-unconfigured"));
     let password_dir = keystore::osl_base_dir().unwrap_or_else(|_| config_dir.clone());

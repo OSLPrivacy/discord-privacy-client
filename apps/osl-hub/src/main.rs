@@ -1133,11 +1133,17 @@ async fn unlock_hub_password_gate(
     app: tauri::AppHandle,
     session: State<'_, HubAccountSessionState>,
     password: String,
+    duress_pin: Option<String>,
 ) -> Result<HubGateUnlockResult, String> {
     let _session = session.transition.lock().await;
     let verify_app = app.clone();
     let verification = tauri::async_runtime::spawn_blocking(move || {
-        startup_gate::verify_password_role(&verify_app.state::<HubCoreState>(), password)
+        match duress_pin {
+            Some(pin) if !pin.is_empty() => {
+                startup_gate::verify_duress_pin(&verify_app.state::<HubCoreState>(), pin)
+            }
+            _ => startup_gate::verify_password_role(&verify_app.state::<HubCoreState>(), password),
+        }
     })
     .await
     .map_err(|_| "OSL password-gate worker failed".to_owned())??;
@@ -1172,7 +1178,16 @@ async fn unlock_hub_password_gate(
             startup_gate::enter_stealth_landing(&app.state::<HubCoreState>());
             Ok(HubGateUnlockResult::decoy(verification))
         }
-        VerifiedGateRole::Burn | VerifiedGateRole::Duress => {
+        VerifiedGateRole::Duress => {
+            service_host::desktop::shutdown(&app, &app.state::<ServiceHostState>()).await?;
+            native_discord_overlay::clear_and_hide(&app);
+            let _ = app.state::<NativeWindowHostState>().terminate();
+            let _ = app.state::<MullvadWindowHostState>().restore();
+            let _ = app.state::<BrowserCompanionState>().terminate();
+            app.state::<HubBrokerState>().clear()?;
+            Ok(HubGateUnlockResult::duress(verification))
+        }
+        VerifiedGateRole::Burn => {
             service_host::desktop::shutdown(&app, &app.state::<ServiceHostState>()).await?;
             native_discord_overlay::clear_and_hide(&app);
             let _ = app.state::<NativeWindowHostState>().terminate();
@@ -1189,6 +1204,14 @@ async fn unlock_hub_password_gate(
                 .map_err(|_| "OSL Privacy local storage is unavailable".to_owned())?;
             let burn_app = app.clone();
             let burn = tauri::async_runtime::spawn_blocking(move || {
+                burn_app
+                    .state::<HubCoreState>()
+                    .osl
+                    .duress_engine
+                    .lock()
+                    .map_err(|_| "OSL device cleanup could not start".to_owned())?
+                    .execute()
+                    .map_err(|_| "OSL device cleanup could not start".to_owned())?;
                 cleanup::execute_verified_gate_burn(
                     &burn_app.state::<HubCoreState>(),
                     &config_dir,
@@ -1197,12 +1220,8 @@ async fn unlock_hub_password_gate(
                 )
             })
             .await
-            .map_err(|_| "OSL cleanup worker failed".to_owned())??;
-            match verification.role {
-                VerifiedGateRole::Burn => Ok(HubGateUnlockResult::burned(verification, burn)),
-                VerifiedGateRole::Duress => Ok(HubGateUnlockResult::duress(verification, burn)),
-                _ => unreachable!("cleanup branch only handles burn and duress"),
-            }
+            .map_err(|_| "OSL burn worker failed".to_owned())??;
+            Ok(HubGateUnlockResult::burned(verification, burn))
         }
     }
 }
