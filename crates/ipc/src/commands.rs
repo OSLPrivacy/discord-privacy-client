@@ -3781,6 +3781,71 @@ mod rn_send_selection_tests {
     }
 
     #[test]
+    fn verify_peer_capabilities_feeds_pre_send_select_wire_version() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let store = crate::wire_rn::RnSessionStore::new(dir.path().join("rn"));
+        let peer_identity = keystore::generate_identity("b24-exact-peer".to_string());
+        let x25519 = STANDARD.encode(peer_identity.x25519_public.as_bytes());
+        let ed25519 = STANDARD.encode(peer_identity.ed25519_public.as_bytes());
+        let mlkem = STANDARD.encode(peer_identity.mlkem_public_bytes);
+        let capabilities = keystore::client::RN_CAP_WIRE_RN;
+        let reg_msg = keystore::client::reg_msg_with_capabilities(
+            &peer_identity.user_id,
+            &x25519,
+            &ed25519,
+            &mlkem,
+            None,
+            capabilities,
+        );
+        let sig = crypto::ed25519::sign(&peer_identity.ed25519_secret, &reg_msg);
+        let response = keystore::client::PubkeysResponse {
+            user_id: peer_identity.user_id.clone(),
+            ik_x25519_pub: x25519,
+            ik_ed25519_pub: ed25519,
+            ik_mlkem768_pub: mlkem,
+            registered_at: "2026-07-30T00:00:00Z".to_string(),
+            last_rotated_at: None,
+            ik_ratchet_initial_pub: None,
+            rn_capabilities: Some(capabilities),
+            registration_sig: Some(STANDARD.encode(sig.as_bytes())),
+            identity_scheme: None,
+            identity_bundle_version: None,
+            identity_revision: None,
+            ik_root_ed25519_pub: None,
+            identity_bundle_proof_sig: None,
+        };
+        let verified = keystore::client::verify_peer_capabilities(&response);
+        assert!(
+            verified.supports_rn(),
+            "signed RN capability response must verify before send selection"
+        );
+
+        let err = select_rn_wire_path_for_send(
+            &store,
+            "123456789012345678",
+            peer_identity.x25519_public.as_bytes(),
+            verified,
+        )
+        .expect_err("verified RN capability must reach pre-send RN selection");
+        assert!(
+            err.contains("wire-in is disabled"),
+            "verified RN capability reached the wrong refusal: {err}"
+        );
+
+        assert_eq!(
+            select_rn_wire_path_for_send(
+                &store,
+                "123456789012345678",
+                peer_identity.x25519_public.as_bytes(),
+                keystore::client::PeerCapabilities::Absent,
+            )
+            .expect("absent capability remains legacy while unpinned"),
+            RnWirePath::LegacyV3,
+            "without verified capabilities the pre-send selector must stay legacy"
+        );
+    }
+
+    #[test]
     fn unit_b59_rn_wire_path_calls_send_rn_and_keeps_gate_disabled() {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let store = crate::wire_rn::RnSessionStore::new(dir.path().join("rn"));
@@ -4801,8 +4866,7 @@ mod rn_first_contact_command_tests {
             .is_some());
     }
 
-    #[test]
-    fn first_contact_handshake_fetches_prekey_bundle_from_keyserver() {
+    fn assert_first_contact_handshake_fetches_prekey_bundle() {
         let local = keystore::generate_identity("b34-local".to_string());
         let peer = keystore::generate_identity("b34-peer".to_string());
         let prekeys =
@@ -4887,6 +4951,16 @@ mod rn_first_contact_command_tests {
         assert!(request.starts_with("GET /v1/prekey-bundle/b34-peer?"));
         assert!(request.contains("requester_id=b34-local"));
         assert!(request.contains("recipient_id=b34-peer"));
+    }
+
+    #[test]
+    fn first_contact_handshake_fetches_prekey_bundle_from_keyserver() {
+        assert_first_contact_handshake_fetches_prekey_bundle();
+    }
+
+    #[test]
+    fn first_contact_handshake_fetches_prekey_bundle() {
+        assert_first_contact_handshake_fetches_prekey_bundle();
     }
 
     #[test]
