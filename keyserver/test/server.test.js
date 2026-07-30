@@ -69,6 +69,12 @@ async function assertWrappedKeyRoundtripAcrossSessions(payload) {
     firstSession = null;
 
     secondSession = await buildServer({ logger: false, dbFile });
+    const missing = await inject(secondSession, {
+      method: 'GET',
+      url: `/v1/wrapped-keys/${payload.content_id}-missing`,
+    });
+    assert.equal(missing.statusCode, 404);
+
     const fetched = await inject(secondSession, {
       method: 'GET',
       url: `/v1/wrapped-keys/${payload.content_id}`,
