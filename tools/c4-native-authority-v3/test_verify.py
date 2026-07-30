@@ -456,6 +456,34 @@ class NativeAuthorityV3Tests(unittest.TestCase):
                 with self.assertRaises(VerificationError):
                     verify_receipt(encode(receipt), context(make_receipt()))
 
+    def test_verification_context_requires_all_independent_fact_sets(self) -> None:
+        receipt = make_receipt()
+        base = context(receipt)
+        cases = {
+            "expected-emitter": {
+                **base.__dict__,
+                "expected_emitter": None,
+            },
+            "pipe-client": {
+                **base.__dict__,
+                "pipe_client": None,
+            },
+            "expected-target": {
+                **base.__dict__,
+                "expected_target": None,
+            },
+        }
+        for name, fields in cases.items():
+            with self.subTest(missing=name):
+                with self.assertRaises(VerificationError):
+                    verify_receipt(encode(receipt), VerificationContext(**fields))
+
+        with self.assertRaisesRegex(
+            VerificationError,
+            "verification context is invalid",
+        ):
+            verify_receipt(encode(receipt), base.__dict__)  # type: ignore[arg-type]
+
     def test_receipt_digest_mutation_is_rejected(self) -> None:
         receipt = make_receipt()
         receipt["emittedAtUnixMs"] += 1
