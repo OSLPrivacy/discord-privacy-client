@@ -174,6 +174,18 @@ The child may edit only its exclusive files. The parent must inspect the final d
 outside the owned set changed, and rerun the smallest meaningful check before accepting it. A
 zero-byte, truncated, or missing result is failure—not “no findings.”
 
+Document-owned acceptance controls:
+
+- **Keep Codex account and heavy-resource routing explicit.** Pass only when the plan names the
+  allowed account behavior, preserves an inherited `CODEX_HOME`, routes Cargo and broad verification
+  through the guarded lanes, and requires child prompts to forbid account changes. It fails if a
+  delegate can clear, synthesize, switch, or infer a Codex account, or if heavyweight work can bypass
+  the named guarded routes.
+- **Pin mirror sessions by identifier before prompting or resuming them.** Pass only when new mirror
+  sessions are inspected and selected by concrete session ID before any prompt or resume action. It
+  fails if a title, stale screen text, or unverified background-terminal report is enough to route
+  work into a mirror session.
+
 ## Idle and dead-lane handling
 
 - A completed result plus an empty prompt is immediately routed to audit, integration, or fix-only
