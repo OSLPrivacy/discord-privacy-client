@@ -2266,7 +2266,9 @@ pub fn rehydrate_native_discord_overlay_history(
                         PeerProsePointerError::Pointer(
                             PeerProsePointerFailure::PointerBlobGone,
                         ) => counts.pointer_blob_gone += 1,
-                        PeerProsePointerError::Pointer(PeerProsePointerFailure::Transport) => {
+                        PeerProsePointerError::Pointer(
+                            PeerProsePointerFailure::Transport,
+                        ) => {
                             counts.store_unreachable += 1
                         }
                         PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected)
