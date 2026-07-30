@@ -5190,52 +5190,122 @@ mod tests {
 
     #[test]
     fn withdrawing_friend_grants_preserves_other_people_and_terminal_burns() {
-        let person_a_one = "dm:person-a-one".to_owned();
-        let person_a_two = "dm:person-a-two".to_owned();
-        let person_b = "dm:person-b".to_owned();
-        let terminal_burn = "dm:terminal-burn".to_owned();
-        let mut prefs = SecurityPreferences::default();
-        prefs.manual_approved_scopes.extend([
-            person_a_one.clone(),
-            person_a_two.clone(),
-            person_b.clone(),
+        let harness = FileBackedSecurityHarness::new("withdraw-friend-grants");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        let (person_a, metadata_a, peer_a) = test_friend(21);
+        let (person_b, metadata_b, peer_b) = test_friend(22);
+        write_encrypted_json(
+            &harness.path().join(PEOPLE_FILE),
+            &PeopleFile {
+                version: 1,
+                people: BTreeMap::from([
+                    (person_a.clone(), metadata_a),
+                    (person_b.clone(), metadata_b),
+                ]),
+            },
+        )
+        .unwrap();
+        let peers = ipc::peer_map::PeerMap::from([
+            (person_a.clone(), peer_a),
+            (person_b.clone(), peer_b),
         ]);
-        prefs.manual_approved_scope_people.extend([
-            (person_a_one.clone(), "person-a".to_owned()),
-            (person_a_two.clone(), "person-a".to_owned()),
-            (person_b.clone(), "person-b".to_owned()),
-        ]);
-        prefs.decrypt_display_by_scope.extend([
-            (person_a_one.clone(), true),
-            (person_a_two.clone(), false),
-            (person_b.clone(), true),
-        ]);
-        prefs
-            .reach_narrowed_scopes
-            .insert("person-a".to_owned(), BTreeSet::from(["gc:a".to_owned()]));
-        prefs
-            .reach_narrowed_scopes
-            .insert("person-b".to_owned(), BTreeSet::from(["gc:b".to_owned()]));
-        prefs.burned_manual_scopes.insert(terminal_burn.clone());
+        write_encrypted_json(&harness.path().join("peer_map.json"), &peers).unwrap();
+        *core.osl.peer_map.lock().unwrap() = peers;
+        write_encrypted_json(
+            &harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences {
+                version: 2,
+                ..SecurityPreferences::default()
+            },
+        )
+        .unwrap();
 
-        assert_eq!(withdraw_person_grants(&mut prefs, "person-a"), 2);
-        for removed in [&person_a_one, &person_a_two] {
-            assert!(!prefs.manual_approved_scopes.contains(removed));
-            assert!(!prefs.manual_approved_scope_people.contains_key(removed));
-            assert!(!prefs.decrypt_display_by_scope.contains_key(removed));
-        }
-        assert!(prefs.manual_approved_scopes.contains(&person_b));
+        let binding_a = manual_peer_binding(&core, person_a.clone()).unwrap();
+        let grant_a = ScopedTrustGrant::for_manual_peer(
+            &binding_a,
+            "osl-chat",
+            "osl-main",
+            dm_scope_input(manual_peer_scope_id("osl-chat", "osl-main", &person_a).unwrap()),
+            ScopedTrustConsent::ExplicitUserAction,
+        )
+        .unwrap();
+        apply_scoped_trust_grant(&security, &binding_a, &grant_a).unwrap();
+        let binding_b = manual_peer_binding(&core, person_b.clone()).unwrap();
+        let grant_b = ScopedTrustGrant::for_manual_peer(
+            &binding_b,
+            "osl-chat",
+            "osl-main",
+            dm_scope_input(manual_peer_scope_id("osl-chat", "osl-main", &person_b).unwrap()),
+            ScopedTrustConsent::ExplicitUserAction,
+        )
+        .unwrap();
+        apply_scoped_trust_grant(&security, &binding_b, &grant_b).unwrap();
+
+        let terminal_burn = "dm:terminal-burn".to_owned();
+        let mut prefs: SecurityPreferences =
+            load_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE)).unwrap();
+        prefs
+            .decrypt_display_by_scope
+            .insert(grant_a.storage_key().to_owned(), true);
+        prefs
+            .decrypt_display_by_scope
+            .insert(grant_b.storage_key().to_owned(), true);
+        prefs
+            .reach_narrowed_scopes
+            .insert(person_a.clone(), BTreeSet::from(["gc:a".to_owned()]));
+        prefs
+            .reach_narrowed_scopes
+            .insert(person_b.clone(), BTreeSet::from(["gc:b".to_owned()]));
+        prefs.burned_manual_scopes.insert(terminal_burn.clone());
+        write_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE), &prefs).unwrap();
+
+        let result = remove_friend(&core, &security, person_a.clone()).unwrap();
+        assert_eq!(result.approvals_withdrawn, 1);
+        assert!(result.peer_key_removed);
+
+        let stored: SecurityPreferences =
+            load_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE)).unwrap();
+        assert!(!stored.manual_approved_scopes.contains(grant_a.storage_key()));
+        assert!(!stored
+            .manual_approved_scope_people
+            .contains_key(grant_a.storage_key()));
+        assert!(!stored.decrypt_display_by_scope.contains_key(grant_a.storage_key()));
+        assert!(stored.manual_approved_scopes.contains(grant_b.storage_key()));
         assert_eq!(
-            prefs
+            stored
                 .manual_approved_scope_people
-                .get(&person_b)
+                .get(grant_b.storage_key())
                 .map(String::as_str),
-            Some("person-b")
+            Some(person_b.as_str())
         );
-        assert_eq!(prefs.decrypt_display_by_scope.get(&person_b), Some(&true));
-        assert!(!prefs.reach_narrowed_scopes.contains_key("person-a"));
-        assert!(prefs.reach_narrowed_scopes.contains_key("person-b"));
-        assert_eq!(prefs.burned_manual_scopes, BTreeSet::from([terminal_burn]));
+        assert_eq!(
+            stored.decrypt_display_by_scope.get(grant_b.storage_key()),
+            Some(&true)
+        );
+        assert!(!stored.reach_narrowed_scopes.contains_key(&person_a));
+        assert!(stored.reach_narrowed_scopes.contains_key(&person_b));
+        assert_eq!(stored.burned_manual_scopes, BTreeSet::from([terminal_burn]));
+
+        assert_eq!(
+            manual_peer_scope_approved(
+                &core,
+                "osl-chat",
+                "osl-main",
+                person_a,
+                dm_scope_input(grant_a.scope().id.clone())
+            )
+            .unwrap_err(),
+            "OSL friend is unknown"
+        );
+        assert!(manual_peer_scope_approved(
+            &core,
+            "osl-chat",
+            "osl-main",
+            person_b,
+            dm_scope_input(grant_b.scope().id.clone())
+        )
+        .unwrap());
     }
 
     #[test]
