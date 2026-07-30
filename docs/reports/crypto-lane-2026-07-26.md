@@ -2237,6 +2237,65 @@ Current source classification from this pass:
 
 Status: `audit-definition/source-reviewed-only`, `+0`.
 
+Structured audit contract:
+
+```json
+{
+  "schemaVersion": 1,
+  "audit": "decrypted_plaintext_spill_audit_apps_hub_and_ipc",
+  "sourceRoots": ["apps/osl-hub/src", "crates/ipc/src"],
+  "plaintextKinds": [
+    "message",
+    "attachment",
+    "note",
+    "asset",
+    "scrub_index",
+    "service_state",
+    "ratchet_session"
+  ],
+  "allowedSinks": ["renderer_dto_memory", "bounded_local_image_viewer_memory"],
+  "forbiddenSinks": [
+    "ordinary_filesystem_path",
+    "localStorage",
+    "log_or_trace",
+    "debug_or_display",
+    "receipt_file",
+    "cache_file",
+    "keyserver_request_body",
+    "cipher_store_request_body"
+  ],
+  "durableStateAuthorities": ["file_storage_key", "non_plaintext_sealer"],
+  "failClosedAuthorities": ["file_storage_key", "non_plaintext_sealer", "rn_session_store"],
+  "rnSessionState": {
+    "requiredStore": "rn_session_store",
+    "requiredSealerSelection": "selected_non_plaintext_sealer",
+    "plaintextPersistenceAllowed": false
+  },
+  "nonImageAttachmentOpen": {
+    "refusalBefore": ["download", "decrypt", "replay_consumption"],
+    "durablePlaintextCopyAllowed": false
+  },
+  "debugRedaction": {
+    "forbiddenFields": [
+      "account_identifier",
+      "handle",
+      "credential",
+      "decrypted_plaintext",
+      "key_or_sealer_material"
+    ]
+  },
+  "negativeControls": [
+    "decrypt_then_filesystem_write",
+    "decrypt_then_localStorage_write",
+    "decrypt_then_log_or_debug",
+    "decrypt_then_receipt_or_cache_file",
+    "decrypt_then_network_upload",
+    "missing_key_plaintext_fallback"
+  ],
+  "status": "audit-definition/source-reviewed-only"
+}
+```
+
 ### crypto_review_package_bundle_definition
 
 The crypto review package is the frozen set of source contracts, tests, and
@@ -2272,3 +2331,39 @@ Invalid package conditions:
   authority becomes permission.
 
 Status: `bundle-definition-only`, `+0`.
+
+Structured bundle contract:
+
+```json
+{
+  "schemaVersion": 1,
+  "bundle": "crypto_review_package_bundle_definition",
+  "requiredEvidence": [
+    "commit_tree_branch_dirty_state_date",
+    "reviewed_source_roots",
+    "owning_unit_behavior_tests",
+    "negative_control_statement",
+    "reachability_classification",
+    "production_registration_or_caller_search",
+    "at_rest_and_sealer_posture",
+    "wire_api_contract_evidence",
+    "explicit_exclusions"
+  ],
+  "reviewedRootMinimum": [
+    "apps/osl-hub/src",
+    "crates/ipc/src",
+    "crates/keystore/src",
+    "crates/crypto/src",
+    "touched_worker_endpoints_or_migrations"
+  ],
+  "authorityAbsenceRule": "refuse",
+  "runtimeClaimRule": "exact_runtime_evidence_required",
+  "invalidConditions": [
+    "source_text_only_test",
+    "inherited_test_count_without_focused_rerun",
+    "missing_serde_or_call_site_audit_after_public_type_change",
+    "absence_of_consent_binding_key_sealer_review_gate_or_authority_permits"
+  ],
+  "status": "bundle-definition-only"
+}
+```

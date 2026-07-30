@@ -69,7 +69,7 @@ async function accountFixture(): Promise<{
 }
 
 describe("account ownership proof verification", () => {
-  it("verify_ownership_proof validates a submitted Account", async () => {
+  it("server-side verify_ownership_proof validates a submitted Account", async () => {
     const { account } = await accountFixture();
 
     await expect(verify_ownership_proof(account, NOW)).resolves.toEqual({

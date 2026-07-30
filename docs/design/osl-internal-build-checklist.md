@@ -764,6 +764,48 @@ honest tri-state outcome is a refusal, not a degraded pass.
   browser-profile access, or calibrated risk percentages without supporting evidence.
   Fail condition: a marketing-only page, mock-only JSON, unlocated repo, unbound Worker route,
   permissive credential input, or schema drift counts as unimplemented, not partial proof.
+  Current scaffold confirmation:
+
+  ```json
+  {
+    "schemaVersion": 1,
+    "test": "test/integration/username-only-worker-scaffold.test.ts",
+    "websiteRepo": {
+      "path": "/home/liamw/projects/oslprivacy-web",
+      "role": "static_pages_checkout",
+      "located": true
+    },
+    "workerScaffold": {
+      "repo": "this_worktree",
+      "route": "POST /v1/username-coverage",
+      "entrypoint": "keyserver-cf/src/endpoints/username-coverage.ts",
+      "router": "keyserver-cf/src/index.ts",
+      "responseVersion": 1
+    },
+    "requestContract": {
+      "exactBodyKeys": ["username"],
+      "acceptedUsernameExamples": ["alice.example_1"],
+      "refusedInputs": [
+        "missing_username",
+        "extra_provider",
+        "credential_like_input",
+        "unsupported_provider_binding",
+        "discord_snowflake"
+      ]
+    },
+    "responseContract": {
+      "resultStatus": "not_scanned",
+      "signalsEmpty": true,
+      "forbiddenClaims": [
+        "deletion",
+        "private_mailbox_access",
+        "browser_profile_access",
+        "calibrated_risk_percentage"
+      ]
+    },
+    "status": "scaffold-confirmed-test-proven-only"
+  }
+  ```
 - 🟨 **F10 · Scrub tests/receipts/status projection** — many tests exist; full real-account,
   challenge/stop/restart matrix and simple reporting remain. `needs: F1-F9` `weight: 3`
   `earned: 1`
