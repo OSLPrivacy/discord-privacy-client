@@ -45,7 +45,7 @@ use base64::Engine;
 use bip39::{Language, Mnemonic};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use zeroize::{Zeroize, Zeroizing};
 
 const MARKER_FILENAME: &str = "password_marker.json";
@@ -68,6 +68,7 @@ const NONCE_LEN: usize = 12;
 const ARGON_MEMORY_KB: u32 = 65_536; // 64 MiB
 const ARGON_ITERATIONS: u32 = 3;
 const ARGON_PARALLELISM: u32 = 1;
+const INACTIVITY_AUTO_LOCK_SECONDS: u64 = 15 * 60;
 
 // =====================================================================
 // On-disk schemas.
@@ -870,9 +871,14 @@ fn marker_phrase_hash(marker: &PasswordMarker) -> Option<String> {
 use std::sync::{Mutex, OnceLock};
 
 static FILE_STORAGE_KEY: OnceLock<Mutex<Option<[u8; 32]>>> = OnceLock::new();
+static INACTIVITY_AUTO_LOCK: OnceLock<Mutex<Option<keystore::InactivityTimer>>> = OnceLock::new();
 
 fn file_storage_slot() -> &'static Mutex<Option<[u8; 32]>> {
     FILE_STORAGE_KEY.get_or_init(|| Mutex::new(None))
+}
+
+fn inactivity_auto_lock_slot() -> &'static Mutex<Option<keystore::InactivityTimer>> {
+    INACTIVITY_AUTO_LOCK.get_or_init(|| Mutex::new(None))
 }
 
 /// Public accessor used by peer_map / whitelist_state /
@@ -895,11 +901,59 @@ pub fn set_file_storage_key(key: Option<[u8; 32]>) {
     }
     *slot = key;
     drop(slot);
+    set_inactivity_auto_lock_armed_at(is_some, Instant::now());
     if is_some && !was_some {
         eprintln!("[OSL][crypto] file_storage_key populated");
     } else if !is_some && was_some {
         eprintln!("[OSL][crypto] file_storage_key cleared");
     }
+}
+
+fn set_inactivity_auto_lock_armed_at(armed: bool, now: Instant) {
+    let mut timer = inactivity_auto_lock_slot()
+        .lock()
+        .expect("inactivity_auto_lock mutex poisoned");
+    *timer = armed.then(|| {
+        keystore::InactivityTimer::with_last_activity(INACTIVITY_AUTO_LOCK_SECONDS, now)
+    });
+}
+
+pub fn mark_inactivity_timer_activity() {
+    mark_inactivity_timer_activity_at(Instant::now());
+}
+
+fn mark_inactivity_timer_activity_at(now: Instant) {
+    if let Some(timer) = inactivity_auto_lock_slot()
+        .lock()
+        .expect("inactivity_auto_lock mutex poisoned")
+        .as_mut()
+    {
+        timer.mark_activity_at(now);
+    }
+}
+
+pub fn run_inactivity_auto_lock_timer() -> bool {
+    run_inactivity_auto_lock_timer_at(Instant::now())
+}
+
+fn run_inactivity_auto_lock_timer_at(now: Instant) -> bool {
+    let should_lock = {
+        let mut timer = inactivity_auto_lock_slot()
+            .lock()
+            .expect("inactivity_auto_lock mutex poisoned");
+        let should_lock = timer
+            .as_ref()
+            .map(|timer| timer.should_reprompt_at(now))
+            .unwrap_or(false);
+        if should_lock {
+            *timer = None;
+        }
+        should_lock
+    };
+    if should_lock {
+        set_file_storage_key(None);
+    }
+    should_lock
 }
 
 /// Ensure this no-main-password install still has an encrypted
@@ -1477,6 +1531,32 @@ mod password_policy_tests {
             ensure_device_bound_fallback_file_storage_key_with_sealer(dir.path(), &sealer).is_err(),
             "main-password installs must not also mint fallback authority"
         );
+        set_file_storage_key(None);
+    }
+
+    #[test]
+    fn run_inactivity_auto_lock_timer() {
+        let start = Instant::now();
+        let key = [0x42; KEY_LEN];
+        set_file_storage_key(Some(key));
+        set_inactivity_auto_lock_armed_at(true, start);
+
+        assert!(!run_inactivity_auto_lock_timer_at(
+            start + std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS - 1)
+        ));
+        assert_eq!(get_file_storage_key(), Some(key));
+
+        let activity = start + std::time::Duration::from_secs(14 * 60);
+        mark_inactivity_timer_activity_at(activity);
+        assert!(!run_inactivity_auto_lock_timer_at(
+            activity + std::time::Duration::from_secs(14 * 60 + 59)
+        ));
+        assert_eq!(get_file_storage_key(), Some(key));
+
+        assert!(run_inactivity_auto_lock_timer_at(
+            activity + std::time::Duration::from_secs(15 * 60)
+        ));
+        assert_eq!(get_file_storage_key(), None);
         set_file_storage_key(None);
     }
 }
