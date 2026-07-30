@@ -164,6 +164,34 @@ Verification units:
 `v5_sender_keys_enabled_default_false_rationale_is_documented`,
 `threat_model_reconciles_v4_retirement_and_v5_ratchet_limits`.
 
+```json threat-model-reconciliation-v1
+{
+  "v4_pairwise_dm": {
+    "shipping_default": false,
+    "retirement_reason": "ratchet_desynchronization_failures",
+    "fallback_wire": 3
+  },
+  "rn_wire_in": {
+    "production_encrypt_decrypt": false,
+    "downgrade_refusal_guard": true
+  },
+  "v5_sender_keys": {
+    "public_product_default": false,
+    "ipc_owner_switch_default": true,
+    "default_false_rationale": "account_scoped_chain_state_is_not_device_bound",
+    "remediation": [
+      "device_bound_sender_key_chains",
+      "multi_device_ordering_tests",
+      "rotation_claims_limited_to_implemented_triggers"
+    ]
+  },
+  "v5_rotation_limits": {
+    "implemented_triggers": ["twenty_four_hours", "membership_change"],
+    "unimplemented_triggers": ["one_hour", "five_hundred_messages", "suspicious_event"]
+  }
+}
+```
+
 The retired `v=4` pairwise Double Ratchet path and the disabled `v=5`
 sender-key path must be read together. `v=4` is not merely waiting for a UI
 switch; it was removed from the shipping send path because real deployments
@@ -172,13 +200,17 @@ cannot inherit a proven pairwise distribution channel from the current
 product. Sender-key setup and rotation messages may exist in source, but the
 shipping route remains stateless `v=3`.
 
-`sender_keys_enabled` therefore defaults false as a safety property, not as a
+The product-facing default must stay false as a safety property, not as a
 feature flag awaiting marketing approval. The current sender-key state is
 account-scoped rather than bound to a distinct physical device, so one account
 used on two machines can advance or receive chain state in an order the other
 machine cannot prove. Enabling it by default would trade the known
 stateless-v3 limitation for a harder-to-debug group desynchronization and
-misdelivery class.
+misdelivery class. There is a source-level mismatch to resolve before any public
+claim changes: `apps/osl-hub/src/core_bridge.rs` reports group sender keys off,
+but the lower-level IPC `AppState::sender_keys_enabled` owner switch currently
+initializes true. Treat the safe product default as off until the IPC default,
+capability advertisement, UI status, and live walkthrough all agree.
 
 Remediation before changing any threat-model row from `Planned`:
 

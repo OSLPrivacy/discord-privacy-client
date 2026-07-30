@@ -265,6 +265,62 @@ function validationOptions(
 }
 
 describe("scheme-1 Rust-client deployment admission", () => {
+  it("scripts/scheme1-client-admission.test.ts", async () => {
+    const args = [
+      "--action",
+      "activate-scheme1-worker",
+      "--expected-server-commit",
+      DEPLOYMENT_COMMIT,
+      "--expected-server-tree",
+      DEPLOYMENT_TREE,
+      "--expected-client-commit",
+      CLIENT_COMMIT,
+      "--expected-client-tree",
+      CLIENT_TREE,
+      "--challenge",
+      CHALLENGE,
+      "--evidence",
+      "/tmp/scheme1-client-evidence.json",
+    ];
+    let emitted = "";
+
+    const receipt = await runScheme1ClientPreflightCli(args, {
+      loadInputs: async () => ({
+        deploymentAnchor: {
+          commit: DEPLOYMENT_COMMIT,
+          repository_tree: DEPLOYMENT_TREE,
+          keyserver_tree: DEPLOYMENT_KEYSERVER_TREE,
+        },
+        expectedClientCommit: CLIENT_COMMIT,
+        expectedClientTree: CLIENT_TREE,
+        fileValues: await sourceValues(),
+        frozenFixtureBytes: await frozenFixtureBytes(),
+        frozenContractFileValues: await frozenSourceValues(),
+        clientEvidence: signedEnvelope(),
+      }),
+      now: () => NOW,
+      trustedProducers: TRUSTED_PRODUCERS,
+      write: (text: string) => {
+        emitted += text;
+      },
+    });
+
+    const files = await sourceValues();
+    const frozenFiles = await frozenSourceValues();
+    expect(JSON.parse(emitted)).toEqual(receipt);
+    expect(receipt.client_contract_admitted).toBe(true);
+    expect(receipt.execution_authorized).toBe(false);
+    expect(receipt.worker_activation_authorized).toBe(false);
+    expect(receipt.source_files.map((entry) => entry.path)).toEqual(
+      SCHEME1_CLIENT_PREFLIGHT_SOURCE_PATHS,
+    );
+    expect(() =>
+      validateScheme1ClientPreflightReceipt(
+        receipt,
+        validationOptions("activate-scheme1-worker", files, frozenFiles),
+      )).not.toThrow();
+  });
+
   it("freezes the exact server descriptor and fixture while keeping the Rust private blob version nonnormative", async () => {
     const result = validateFrozenScheme1Fixture(
       await frozenFixtureBytes(),
