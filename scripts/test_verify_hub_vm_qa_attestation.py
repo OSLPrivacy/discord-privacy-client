@@ -40,6 +40,8 @@ class HubVmQaAttestationTests(unittest.TestCase):
                     "candidateSha256": hashlib.sha256(installer.read_bytes()).hexdigest(),
                     "completedAtUtc": "2026-07-17T23:00:00Z",
                     "operator": "qa-reviewer",
+                    "finalApprover": "qa-final-approver-second-session",
+                    "packageReproducedBySecondSession": True,
                     "captchaHandling": "paused_for_manual_completion",
                     "vms": [
                         {"name": "A", "goldenSnapshotId": "signed-a", "cleanRestore": True},
@@ -84,6 +86,26 @@ class HubVmQaAttestationTests(unittest.TestCase):
             document["cases"].pop("fullCleanup")
             attestation.write_text(json.dumps(document), encoding="utf-8")
             with self.assertRaises(SystemExit):
+                verify("hub-v0.1.0", root, attestation)
+
+    def test_rejects_same_session_final_approver(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, attestation = self.candidate(root)
+            document = json.loads(attestation.read_text(encoding="utf-8"))
+            document["finalApprover"] = document["operator"]
+            attestation.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(SystemExit, "different session"):
+                verify("hub-v0.1.0", root, attestation)
+
+    def test_rejects_missing_second_session_reproduction(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, attestation = self.candidate(root)
+            document = json.loads(attestation.read_text(encoding="utf-8"))
+            document["packageReproducedBySecondSession"] = False
+            attestation.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(SystemExit, "second session"):
                 verify("hub-v0.1.0", root, attestation)
 
 
