@@ -14,7 +14,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 
-REQUIRED_CASES = {
+REQUIRED_CASES: frozenset[str] = frozenset((
     "onboarding",
     "identityCreate",
     "identityRecover",
@@ -24,7 +24,7 @@ REQUIRED_CASES = {
     "oneSidedEncryption",
     "twoSidedEncryption",
     "fullCleanup",
-}
+))
 TAG = re.compile(r"^hub-v[0-9A-Za-z.+-]{1,64}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 RELEASE_DOWNLOAD_PREFIX = "/OSLPrivacy/discord-privacy-client/releases/download/"
