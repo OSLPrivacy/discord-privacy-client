@@ -2459,9 +2459,21 @@ mod tests {
     }
 
     #[test]
-    fn mullvad_actions_have_one_fixed_safe_manifest() {
+    fn mullvad_actions_use_fixed_package_and_path() {
         assert_eq!(MULLVAD_PACKAGE_ID, "MullvadVPN.MullvadVPN");
-        assert_eq!(MULLVAD_CANDIDATES.len(), 2);
+        assert_eq!(
+            MULLVAD_CANDIDATES,
+            &[
+                ExecutableCandidate {
+                    folder: KnownFolder::ProgramFiles,
+                    relative_path: r"Mullvad VPN\Mullvad VPN.exe",
+                },
+                ExecutableCandidate {
+                    folder: KnownFolder::Local,
+                    relative_path: r"Programs\Mullvad VPN\Mullvad VPN.exe",
+                },
+            ]
+        );
         for candidate in MULLVAD_CANDIDATES {
             assert!(!candidate.relative_path.starts_with(['/', '\\']));
             assert!(!candidate.relative_path.contains(".."));
