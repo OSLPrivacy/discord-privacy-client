@@ -76,6 +76,7 @@ const MAX_REVOCATION_BUNDLE_BYTES: usize = 16 * 1024;
 const MAX_REVOCATION_POSTS_PER_DRAIN: usize = 8;
 const MAX_PEER_LIFETIME_SECONDS: i64 = 7 * 24 * 60 * 60;
 const MAX_PEER_CLOCK_SKEW_SECONDS: i64 = 5 * 60;
+const VIEW_ONCE_UNAVAILABLE: &str = "This view-once message is unavailable or expired";
 const LOCAL_PROTECTED_MESSAGE_TYPE: u8 = 0x80;
 const LOCAL_PROTECTED_FILE: &str = "hub_local_protected.json";
 const NATIVE_OVERLAY_RECEIPTS_FILE: &str = "hub_native_overlay_receipts.json";
@@ -147,12 +148,46 @@ struct BrokerInner {
     active: Option<ActiveContext>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct HubBrokerState {
     inner: Mutex<BrokerInner>,
     local_protected_transition: Mutex<()>,
     native_overlay_receipt_transition: Mutex<()>,
     native_overlay_received_view_once: Mutex<BTreeMap<String, i64>>,
+    native_overlay_second_reveal_refusals: Mutex<BTreeMap<String, ViewOnceSecondRevealTrace>>,
+}
+
+impl core::fmt::Debug for HubBrokerState {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("HubBrokerState")
+            .field("inner", &"<redacted>")
+            .field("local_protected_transition", &"<mutex>")
+            .field("native_overlay_receipt_transition", &"<mutex>")
+            .field(
+                "native_overlay_received_view_once_len",
+                &self.native_overlay_received_count(),
+            )
+            .field(
+                "native_overlay_second_reveal_refusals_len",
+                &self.native_overlay_second_reveal_refusal_count(),
+            )
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ViewOnceSecondRevealTrace {
+    refused_at: i64,
+    refusal_count: u32,
+}
+
+fn prune_second_reveal_refusals(
+    refusals: &mut BTreeMap<String, ViewOnceSecondRevealTrace>,
+    now: i64,
+) {
+    refusals.retain(|_, trace| {
+        now.saturating_sub(trace.refused_at) <= MAX_PEER_LIFETIME_SECONDS
+    });
 }
 
 impl HubBrokerState {
@@ -313,6 +348,9 @@ impl HubBrokerState {
         if let Ok(mut received) = self.native_overlay_received_view_once.lock() {
             received.clear();
         }
+        if let Ok(mut refusals) = self.native_overlay_second_reveal_refusals.lock() {
+            refusals.clear();
+        }
         Ok(())
     }
 
@@ -341,6 +379,57 @@ impl HubBrokerState {
         }
         received.insert(message_id.to_owned(), expires_at);
         Ok(())
+    }
+
+    fn record_view_once_second_reveal_refusal(
+        &self,
+        message_id: &str,
+        now: i64,
+    ) -> Result<ViewOnceSecondRevealTrace, String> {
+        let mut refusals = self
+            .native_overlay_second_reveal_refusals
+            .lock()
+            .map_err(|_| "OSL view-once refusal trace state is unavailable".to_owned())?;
+        prune_second_reveal_refusals(&mut refusals, now);
+        if !refusals.contains_key(message_id) && refusals.len() >= MAX_LOCAL_LEDGER_ENTRIES {
+            return Err("OSL view-once refusal trace state reached its safe limit".to_owned());
+        }
+        let trace = refusals
+            .entry(message_id.to_owned())
+            .or_insert(ViewOnceSecondRevealTrace {
+                refused_at: now,
+                refusal_count: 0,
+            });
+        trace.refused_at = now;
+        trace.refusal_count = trace.refusal_count.saturating_add(1);
+        Ok(*trace)
+    }
+
+    fn view_once_second_reveal_refusal_trace(
+        &self,
+        message_id: &str,
+        now: i64,
+    ) -> Result<Option<ViewOnceSecondRevealTrace>, String> {
+        let mut refusals = self
+            .native_overlay_second_reveal_refusals
+            .lock()
+            .map_err(|_| "OSL view-once refusal trace state is unavailable".to_owned())?;
+        prune_second_reveal_refusals(&mut refusals, now);
+        Ok(refusals.get(message_id).copied())
+    }
+
+    fn native_overlay_received_count(&self) -> usize {
+        self.native_overlay_received_view_once
+            .lock()
+            .map(|received| received.len())
+            .unwrap_or_default()
+    }
+
+    fn native_overlay_second_reveal_refusal_count(&self) -> usize {
+        self.native_overlay_second_reveal_refusals
+            .lock()
+            .map(|refusals| refusals.len())
+            .unwrap_or_default()
     }
 
     fn context_for(&self, context_token: &str) -> Result<HubConversationContext, String> {
@@ -3228,9 +3317,22 @@ pub fn reveal_native_discord_overlay_view_once(
     message_id: &str,
 ) -> Result<OpenedNativeOverlayText, String> {
     if !valid_peer_attachment_id(message_id) {
-        return Err("This view-once message is unavailable or expired".to_owned());
+        return Err(VIEW_ONCE_UNAVAILABLE.to_owned());
     }
     let context_token = broker.active_native_manual_context_token()?;
+    let manual = broker.manual_peer_for(&context_token)?;
+    let now = ipc::main_password::now_unix_secs_pub();
+    if security::peer_message_was_consumed(
+        security_state,
+        manual.scope.clone(),
+        message_id,
+        now,
+    )
+    .unwrap_or(false)
+    {
+        let _ = broker.record_view_once_second_reveal_refusal(message_id, now);
+        return Err(VIEW_ONCE_UNAVAILABLE.to_owned());
+    }
     let mut batch = drain_peer_inbox_text(
         core,
         security_state,
@@ -3244,7 +3346,7 @@ pub fn reveal_native_discord_overlay_view_once(
         || !batch.pending_view_once.is_empty()
         || !batch.messages[0].view_once_consumed
     {
-        return Err("This view-once message is unavailable or expired".to_owned());
+        return Err(VIEW_ONCE_UNAVAILABLE.to_owned());
     }
     Ok(batch.messages.remove(0))
 }
@@ -8715,6 +8817,71 @@ mod tests {
             .unwrap();
         assert!(broker.view_once_received_was_sent(message_id, 11).unwrap());
         assert!(!broker.view_once_received_was_sent(message_id, 20).unwrap());
+    }
+
+    #[test]
+    fn second_reveal_refusal_trace_is_bounded_counted_and_expires() {
+        let broker = HubBrokerState::default();
+        let message_id = "peer-0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            broker
+                .view_once_second_reveal_refusal_trace(message_id, 10)
+                .unwrap(),
+            None
+        );
+
+        let first = broker
+            .record_view_once_second_reveal_refusal(message_id, 20)
+            .unwrap();
+        assert_eq!(first.refused_at, 20);
+        assert_eq!(first.refusal_count, 1);
+        let second = broker
+            .record_view_once_second_reveal_refusal(message_id, 25)
+            .unwrap();
+        assert_eq!(second.refused_at, 25);
+        assert_eq!(second.refusal_count, 2);
+        assert_eq!(
+            broker
+                .view_once_second_reveal_refusal_trace(message_id, 26)
+                .unwrap(),
+            Some(second)
+        );
+        assert_eq!(
+            broker
+                .view_once_second_reveal_refusal_trace(
+                    message_id,
+                    26 + MAX_PEER_LIFETIME_SECONDS + 1,
+                )
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn second_reveal_refusal_trace_clears_and_debug_redacts_handles() {
+        let broker = HubBrokerState::default();
+        let message_id = "peer-0123456789abcdef0123456789abcdef";
+        broker
+            .record_view_once_received(message_id, 100, 10)
+            .unwrap();
+        broker
+            .record_view_once_second_reveal_refusal(message_id, 20)
+            .unwrap();
+
+        let rendered = format!("{broker:?}");
+        assert!(rendered.contains("native_overlay_received_view_once_len"));
+        assert!(rendered.contains("native_overlay_second_reveal_refusals_len"));
+        assert!(!rendered.contains(message_id));
+        assert!(!rendered.contains("0123456789abcdef"));
+
+        broker.clear().unwrap();
+        assert!(!broker.view_once_received_was_sent(message_id, 21).unwrap());
+        assert_eq!(
+            broker
+                .view_once_second_reveal_refusal_trace(message_id, 21)
+                .unwrap(),
+            None
+        );
     }
 
     #[test]
