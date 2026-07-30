@@ -10264,6 +10264,28 @@ mod tauri_registration_surface_tests {
             is_registered_and_granted(handlers, permissions, capability, command),
             "{command} must be registered in generate_handler, declared in hub.toml, and granted by hub.json"
         );
+
+        let mut missing_handler = handlers.clone();
+        missing_handler.remove(command);
+        assert!(
+            !is_registered_and_granted(&missing_handler, permissions, capability, command),
+            "removing {command} from generate_handler must make the registration proof fail"
+        );
+
+        let permission = command_permission(command);
+        let mut missing_permission = permissions.clone();
+        missing_permission.remove(&permission);
+        assert!(
+            !is_registered_and_granted(handlers, &missing_permission, capability, command),
+            "removing {permission} from hub.toml must make the registration proof fail"
+        );
+
+        let mut missing_capability = capability.clone();
+        missing_capability.remove(&permission);
+        assert!(
+            !is_registered_and_granted(handlers, permissions, &missing_capability, command),
+            "removing {permission} from hub.json must make the registration proof fail"
+        );
     }
 
     fn registration_inputs() -> (BTreeSet<String>, BTreeMap<String, String>, BTreeSet<String>) {
