@@ -1695,6 +1695,50 @@ mod tests {
     }
 
     #[test]
+    fn p3a_acknowledgement_roundtrip_a_from_b() {
+        // P3a: after A sends a protected message, B's receive acknowledgement
+        // returns to A through the same drain report path the QA driver writes.
+        let request = accepted("{\"verb\":\"drain\",\"instance\":\"org.oslprivacy.hubqa-a\"}");
+        assert_eq!(request.verb, Verb::Drain);
+        assert!(readiness_criterion_is_graded(
+            request.verb,
+            "overlay_context_valid"
+        ));
+
+        let mut returned_to_a = batch(
+            Vec::new(),
+            vec![NativeOverlayAcknowledgmentStatus::Received],
+        );
+        returned_to_a.fetched = 1;
+
+        let report = DrainReport::from_batch(&returned_to_a);
+        assert_eq!(report.opened_count, 0);
+        assert_eq!(report.pending_view_once_count, 0);
+        assert_eq!(report.acknowledgment_count, 1);
+        assert_eq!(report.acknowledgment_received_count, 1);
+        assert_eq!(report.acknowledgment_opened_count, 0);
+        assert_eq!(report.acknowledgment_kind_order, ["received"]);
+        assert_eq!(report.fetched, 1);
+        assert_eq!(report.deferred_rows, 0);
+        assert!(report.decrypt_display_enabled);
+
+        let encoded = serde_json::to_value(&report).expect("encode");
+        assert_eq!(encoded["acknowledgmentCount"], 1);
+        assert_eq!(encoded["acknowledgmentReceivedCount"], 1);
+        assert_eq!(encoded["acknowledgmentOpenedCount"], 0);
+        assert_eq!(
+            encoded["acknowledgmentKindOrder"],
+            serde_json::json!(["received"])
+        );
+        assert!(
+            !encoded
+                .to_string()
+                .contains("peer-00001111222233334444555566667777"),
+            "{encoded}"
+        );
+    }
+
+    #[test]
     fn a_drain_report_counts_the_rows_the_eye_could_paint_in_place() {
         let report = DrainReport::from_batch(&batch(
             vec![
