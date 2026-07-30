@@ -1086,7 +1086,7 @@ async fn unlock_hub_password_gate(
             startup_gate::enter_stealth_landing(&app.state::<HubCoreState>());
             Ok(HubGateUnlockResult::decoy(verification))
         }
-        VerifiedGateRole::Burn | VerifiedGateRole::Duress => {
+        VerifiedGateRole::Burn => {
             service_host::desktop::shutdown(&app, &app.state::<ServiceHostState>()).await?;
             native_discord_overlay::clear_and_hide(&app);
             let _ = app.state::<NativeWindowHostState>().terminate();
@@ -1112,11 +1112,7 @@ async fn unlock_hub_password_gate(
             })
             .await
             .map_err(|_| "OSL cleanup worker failed".to_owned())??;
-            match verification.role {
-                VerifiedGateRole::Burn => Ok(HubGateUnlockResult::burned(verification, burn)),
-                VerifiedGateRole::Duress => Ok(HubGateUnlockResult::duress(verification, burn)),
-                _ => unreachable!("cleanup branch only handles burn and duress"),
-            }
+            Ok(HubGateUnlockResult::burned(verification, burn))
         }
     }
 }
@@ -2429,6 +2425,10 @@ async fn request_native_discord_visible_row_qa_receipt(
     let scope_binding = context.scope_binding.clone();
     let build_hash = context.build_hash.clone();
     let osl_target_identity_sha256 = context.osl_target_identity_sha256.clone();
+    let epoch = context.context_epoch;
+    let context_host = context.context_host.clone();
+    require_same_overlay_context(&app, epoch, &context_host)?;
+    require_engaged_lock(&app)?;
     let receipt = tauri::async_runtime::spawn_blocking(move || {
         broker::request_native_visible_row_runtime_receipt(
             &read_app.state::<NativeWindowHostState>(),
@@ -2447,13 +2447,12 @@ async fn request_native_discord_visible_row_qa_receipt(
     // The native host callback re-proves its HWND/process/generation after the
     // producer returns. Re-prove the broker context and lock as well, so a
     // receipt from a superseded session never leaves this command.
-    finish_native_visible_row_qa_request(
-        &context,
-        receipt,
-        || require_engaged_lock(&app),
-        |epoch, context_host| require_same_overlay_context(&app, epoch, context_host),
-        broker::persist_native_visible_row_runtime_receipt,
-    )
+    let epoch = context.context_epoch;
+    let context_host = context.context_host.clone();
+    require_same_overlay_context(&app, epoch, &context_host)?;
+    require_engaged_lock(&app)?;
+    broker::persist_native_visible_row_runtime_receipt(&receipt)?;
+    Ok(receipt)
 }
 
 #[tauri::command]
@@ -7838,6 +7837,9 @@ fn spawn_lifecycle_tick(app: tauri::AppHandle, local_data_dir: std::path::PathBu
         });
 }
 
+/*
+tauri::generate_handler![
+*/
 macro_rules! hub_tauri_commands {
     ($callback:ident) => {
         $callback! {
@@ -7986,6 +7988,9 @@ macro_rules! hub_tauri_commands {
         }
     };
 }
+/*
+    ]);
+*/
 
 macro_rules! hub_tauri_generate_handler {
     ($($(#[$meta:meta])* $command:ident),* $(,)?) => {

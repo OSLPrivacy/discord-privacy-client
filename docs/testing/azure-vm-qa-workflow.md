@@ -95,7 +95,7 @@ State as of 2026-07-26: the subscription held **zero** snapshots until tonight; 
 actually happened for anyone. The first is scrub's
 `OSL-Independent-Client-1-WARM-iteration-20260726`.
 
-### Acceptance: warm_agent_baseline_snapshot_for_osl_azure_clients_1_and_2
+### WARM-agent baseline for the crypto A/B pair
 
 The crypto lane's fast-iteration baseline is recorded as two per-VM WARM snapshots. Each row is
 valid only when the source VM is deallocated, the in-VM agent is registered as a logon task, the OSL
