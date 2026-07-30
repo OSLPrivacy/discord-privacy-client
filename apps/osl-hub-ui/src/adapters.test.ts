@@ -45,6 +45,7 @@ import {
   setLocalProtectedSheetOpen,
   setNativeDiscordProtectedOverlayOpen,
   setNativeDiscordProtectedOverlayOpenForQa,
+  supportMatrixPresentation,
   loadFriendProfile,
   GUIDED_DELETION_CONTRACT,
   executeDiscordGuidedDeletion,
@@ -82,6 +83,50 @@ describe("optional OSL Privacy adapters", () => {
     expect(parseFriendProfile({ ...profile, friendCode: "bad code", extra: true })).toBeNull();
     expect(parseNotifications([{ id: "1", title: "Update", detail: "Ready", createdAt: "2026-07-16" }])).toHaveLength(1);
     expect(parseNotifications([{ id: "1", title: "<script>", detail: "Ready", createdAt: "now" }])).toBeNull();
+  });
+
+  it("supportMatrixPresentation", () => {
+    const telegram = supportMatrixPresentation({
+      service: "Telegram",
+      claim_scope: "protected_native_adapter",
+      status: "externally-blocked",
+      support_boundary: "Cannot be listed until a signed-client UI Automation probe proves stable text-exposed message rows.",
+      evidence_anchor: "TelegramSupportVerdict",
+    });
+    expect(telegram).toEqual({
+      service: "Telegram",
+      label: "Externally blocked",
+      detail: "Telegram cannot be offered until OSL can confirm a reliable conversation view.",
+      tone: "blocked",
+      publicClaimAllowed: false,
+    });
+    expect(`${telegram?.label} ${telegram?.detail}`).not.toMatch(/adapter|UI Automation|probe|text-exposed|evidence|verdict/i);
+
+    const mail = supportMatrixPresentation({
+      service: "Outlook",
+      claim_scope: "osl_mail",
+      status: "unsupported",
+      support_boundary: "Outlook is scoped as OSL Mail, not Outlook chat support.",
+    });
+    expect(mail).toMatchObject({
+      service: "OSL Mail",
+      label: "Coming later",
+      tone: "planned",
+      publicClaimAllowed: false,
+    });
+    expect(`${mail?.label} ${mail?.detail}`).not.toMatch(/unsupported|claim scope|chat support|gate/i);
+
+    expect(supportMatrixPresentation({ service: "Signal", status: "runtime-proven" })).toMatchObject({
+      label: "Beta",
+      tone: "beta",
+      publicClaimAllowed: false,
+    });
+    expect(supportMatrixPresentation({ service: "Discord", status: "supported" })).toMatchObject({
+      label: "Supported",
+      tone: "available",
+      publicClaimAllowed: true,
+    });
+    expect(supportMatrixPresentation({ service: "Signal", status: "open_security_finding" })).toBeNull();
   });
 
   it("copies a friend invite through the argument-free native command", async () => {
