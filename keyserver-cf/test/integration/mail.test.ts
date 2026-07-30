@@ -77,6 +77,45 @@ describe("OSL Mail Worker", () => {
     expect(JSON.stringify(body)).toContain("72 hours");
   });
 
+  it("m2 provisions OSL Mail addresses as immutable epochs", async () => {
+    const alice = await createIdentity("alice-m2-id", "alice_m2");
+
+    let response = await signedPost("/v1/mail/address", "PROVISION", alice, { username: "alice_m2", rotate: false });
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({
+      address: "alice_m2@oslprivacy.com",
+      address_epoch: 1,
+      state: "active",
+    });
+
+    response = await signedPost("/v1/mail/address", "PROVISION", alice, { username: "alice_m2", rotate: false });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      address: "alice_m2@oslprivacy.com",
+      address_epoch: 1,
+      replay: true,
+    });
+    expect(await mailEpochCount()).toBe(1);
+
+    await replaceUsername(alice.userId, "alice_m2_next");
+    response = await signedPost("/v1/mail/address", "PROVISION", alice, { username: "alice_m2_next", rotate: true });
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({
+      address: "alice_m2_next@oslprivacy.com",
+      address_epoch: 2,
+      state: "active",
+    });
+    expect(await env.DB.prepare("SELECT state FROM mail_address_epochs WHERE address = 'alice_m2@oslprivacy.com'").first<{ state: string }>())
+      .toMatchObject({ state: "tombstoned" });
+
+    await replaceUsername(alice.userId, "alice_m2");
+    response = await signedPost("/v1/mail/address", "PROVISION", alice, { username: "alice_m2", rotate: true });
+    expect(response.status).toBe(409);
+    expect(await env.DB.prepare("SELECT address, address_epoch, state FROM mail_address_epochs WHERE user_id = ? AND state = 'active'")
+      .bind(alice.userId).first<{ address: string; address_epoch: number; state: string }>())
+      .toMatchObject({ address: "alice_m2_next@oslprivacy.com", address_epoch: 2, state: "active" });
+  });
+
   it("provisions immutable epochs and permanently tombstones a rotated address", async () => {
     const alice = await createIdentity("alice-id", "alice");
     let response = await signedPost("/v1/mail/address", "PROVISION", alice, { username: "alice", rotate: false });
@@ -375,6 +414,19 @@ async function createIdentity(userId: string, username: string): Promise<Identit
     "INSERT INTO username_directory(username,user_id,friend_code,claimed_at,updated_at) VALUES (?,?,?,?,?)",
   ).bind(username, userId, "friend-code-placeholder", now, now).run();
   return { userId, username, signingKey: ed.privateKey, x25519PrivateKey: x.privateKey };
+}
+
+async function replaceUsername(userId: string, username: string): Promise<void> {
+  const now = new Date().toISOString();
+  await env.DB.prepare("DELETE FROM username_directory WHERE user_id = ?").bind(userId).run();
+  await env.DB.prepare(
+    "INSERT INTO username_directory(username,user_id,friend_code,claimed_at,updated_at) VALUES (?,?,?,?,?)",
+  ).bind(username, userId, "friend-code-placeholder", now, now).run();
+}
+
+async function mailEpochCount(): Promise<number> {
+  const row = await env.DB.prepare("SELECT COUNT(*) count FROM mail_address_epochs").first<{ count: number }>();
+  return row?.count ?? 0;
 }
 
 async function signedPost(
