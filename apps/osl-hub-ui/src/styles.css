@@ -1649,6 +1649,10 @@ code {
 .service-context small { display: block; }
 .service-context strong { font-size: 12px; }
 .service-context small { margin-top: 1px; color: var(--subtle); font-size: 11px; }
+.mail-composer-encryption-scope { max-width: min(42ch, 100%); padding-left: 10px; border-left: 2px solid var(--warn); color: var(--muted); }
+.mail-composer-encryption-scope strong { color: var(--text); }
+.mail-composer-encryption-scope small { line-height: 1.3; }
+.service-context .mail-composer-encryption-scope { max-width: min(34ch, 34vw); }
 
 .mode-switch {
   min-height: 42px;
@@ -4311,6 +4315,7 @@ code {
 .native-app-page { display: grid; place-items: center; padding: 28px; }
 .native-app-card { width: min(460px, 100%); display: grid; justify-items: start; gap: 14px; padding: 28px; border: 1px solid var(--line); background: var(--panel); }
 .native-app-card h1, .native-app-card p { margin: 0; }
+.native-app-card .mail-composer-encryption-scope { max-width: 100%; padding: 10px 0 10px 12px; }
 .native-app-action { min-width: 180px; }
 .native-app-truth { display: grid; gap: 7px; padding-top: 10px; border-top: 1px solid var(--line); }
 .service-account-picker { width: min(500px, 100%); }
