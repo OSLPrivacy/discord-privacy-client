@@ -9,6 +9,15 @@ pub enum HostedPortMode {
     DeleteCapable,
 }
 
+impl HostedPortMode {
+    pub const fn wire_name(self) -> &'static str {
+        match self {
+            Self::ScanOnly => "scan_only",
+            Self::DeleteCapable => "delete_capable",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum HostedPortOperation {
     ScanOwnItems,
@@ -22,6 +31,143 @@ impl HostedPortMode {
             (_, _) => true,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum HostedContentKind {
+    DirectMessage,
+    Post,
+}
+
+impl HostedContentKind {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "direct-message" => Some(Self::DirectMessage),
+            "post" => Some(Self::Post),
+            _ => None,
+        }
+    }
+
+    pub const fn wire_name(self) -> &'static str {
+        match self {
+            Self::DirectMessage => "direct-message",
+            Self::Post => "post",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum HostedSessionCommand {
+    ScanOwnContent {
+        mode: HostedPortMode,
+        content_kind: HostedContentKind,
+    },
+    DeleteOwnContent {
+        mode: HostedPortMode,
+        content_kind: HostedContentKind,
+        delete_authority: DeleteAuthorityGrant,
+    },
+}
+
+impl HostedSessionCommand {
+    pub const fn mode(self) -> HostedPortMode {
+        match self {
+            Self::ScanOwnContent { mode, .. } | Self::DeleteOwnContent { mode, .. } => mode,
+        }
+    }
+
+    pub const fn content_kind(self) -> HostedContentKind {
+        match self {
+            Self::ScanOwnContent { content_kind, .. }
+            | Self::DeleteOwnContent { content_kind, .. } => content_kind,
+        }
+    }
+
+    pub const fn operation(self) -> HostedPortOperation {
+        match self {
+            Self::ScanOwnContent { .. } => HostedPortOperation::ScanOwnItems,
+            Self::DeleteOwnContent { .. } => HostedPortOperation::DeleteOwnItem,
+        }
+    }
+
+    pub const fn authorize(self) -> Result<(), RunDeleteAuthorityError> {
+        match self {
+            Self::ScanOwnContent { mode, .. } => {
+                RunDeleteAuthority::new(mode, None).authorize(HostedPortOperation::ScanOwnItems)
+            }
+            Self::DeleteOwnContent {
+                mode,
+                delete_authority,
+                ..
+            } => RunDeleteAuthority::new(mode, Some(delete_authority))
+                .authorize(HostedPortOperation::DeleteOwnItem),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum HostedSurfaceWidth {
+    Narrow,
+    Medium,
+    Wide,
+}
+
+impl HostedSurfaceWidth {
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::Narrow => 1,
+            Self::Medium => 2,
+            Self::Wide => 3,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct HostedSurface {
+    pub surface_id: &'static str,
+    pub content_kind: HostedContentKind,
+    pub width: HostedSurfaceWidth,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct HostedSurfaceManifest {
+    pub surfaces: &'static [HostedSurface],
+}
+
+impl HostedSurfaceManifest {
+    pub const fn surfaces(&self) -> &'static [HostedSurface] {
+        self.surfaces
+    }
+}
+
+pub const HOSTED_SURFACES_WIDE_FIRST: &[HostedSurface] = &[
+    HostedSurface {
+        surface_id: "gmail-web-conversation",
+        content_kind: HostedContentKind::DirectMessage,
+        width: HostedSurfaceWidth::Wide,
+    },
+    HostedSurface {
+        surface_id: "discord-web-channel",
+        content_kind: HostedContentKind::Post,
+        width: HostedSurfaceWidth::Wide,
+    },
+    HostedSurface {
+        surface_id: "telegram-web-chat",
+        content_kind: HostedContentKind::DirectMessage,
+        width: HostedSurfaceWidth::Medium,
+    },
+];
+
+pub const HOSTED_SURFACE_MANIFEST: HostedSurfaceManifest = HostedSurfaceManifest {
+    surfaces: HOSTED_SURFACES_WIDE_FIRST,
+};
+
+pub const fn hosted_surface_manifest() -> HostedSurfaceManifest {
+    HOSTED_SURFACE_MANIFEST
+}
+
+pub const fn hosted_surfaces_wide_first() -> &'static [HostedSurface] {
+    HOSTED_SURFACES_WIDE_FIRST
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -155,5 +301,109 @@ mod tests {
             delete_capable.authorize(HostedPortOperation::DeleteOwnItem),
             Ok(())
         );
+    }
+
+    #[test]
+    fn hosted_content_kind_parses_only_direct_message_and_post() {
+        assert_eq!(
+            HostedContentKind::parse("direct-message"),
+            Some(HostedContentKind::DirectMessage)
+        );
+        assert_eq!(
+            HostedContentKind::parse("post"),
+            Some(HostedContentKind::Post)
+        );
+
+        for rejected in [
+            "direct_message",
+            "dm",
+            "message",
+            "thread",
+            "comment",
+            "post ",
+            "DirectMessage",
+        ] {
+            assert_eq!(HostedContentKind::parse(rejected), None);
+        }
+        assert_eq!(
+            HostedContentKind::DirectMessage.wire_name(),
+            "direct-message"
+        );
+        assert_eq!(HostedContentKind::Post.wire_name(), "post");
+    }
+
+    #[test]
+    fn hosted_port_mode_and_session_command_contract_is_fixed() {
+        assert_eq!(HostedPortMode::ScanOnly.wire_name(), "scan_only");
+        assert_eq!(HostedPortMode::DeleteCapable.wire_name(), "delete_capable");
+
+        let scan = HostedSessionCommand::ScanOwnContent {
+            mode: HostedPortMode::ScanOnly,
+            content_kind: HostedContentKind::DirectMessage,
+        };
+        assert_eq!(scan.mode(), HostedPortMode::ScanOnly);
+        assert_eq!(scan.content_kind(), HostedContentKind::DirectMessage);
+        assert_eq!(scan.operation(), HostedPortOperation::ScanOwnItems);
+        assert_eq!(scan.authorize(), Ok(()));
+
+        let delete = HostedSessionCommand::DeleteOwnContent {
+            mode: HostedPortMode::DeleteCapable,
+            content_kind: HostedContentKind::Post,
+            delete_authority: DeleteAuthorityGrant::ExplicitUserAuthority,
+        };
+        assert_eq!(delete.mode(), HostedPortMode::DeleteCapable);
+        assert_eq!(delete.content_kind(), HostedContentKind::Post);
+        assert_eq!(delete.operation(), HostedPortOperation::DeleteOwnItem);
+        assert_eq!(delete.authorize(), Ok(()));
+
+        let refused = HostedSessionCommand::DeleteOwnContent {
+            mode: HostedPortMode::ScanOnly,
+            content_kind: HostedContentKind::Post,
+            delete_authority: DeleteAuthorityGrant::ExplicitUserAuthority,
+        };
+        assert_eq!(
+            refused.authorize(),
+            Err(RunDeleteAuthorityError::ScanOnlyMode)
+        );
+    }
+
+    #[test]
+    fn hosted_surface_manifest_lists_surfaces_widest_first() {
+        let manifest = hosted_surface_manifest();
+        assert_eq!(manifest.surfaces(), hosted_surfaces_wide_first());
+        assert_eq!(manifest.surfaces().len(), 3);
+
+        assert_eq!(
+            manifest
+                .surfaces()
+                .iter()
+                .map(|surface| surface.surface_id)
+                .collect::<Vec<_>>(),
+            vec![
+                "gmail-web-conversation",
+                "discord-web-channel",
+                "telegram-web-chat"
+            ]
+        );
+        assert_eq!(
+            manifest
+                .surfaces()
+                .iter()
+                .map(|surface| surface.width.rank())
+                .collect::<Vec<_>>(),
+            vec![3, 3, 2]
+        );
+        assert!(manifest
+            .surfaces()
+            .windows(2)
+            .all(|pair| pair[0].width.rank() >= pair[1].width.rank()));
+        assert!(manifest
+            .surfaces()
+            .iter()
+            .any(|surface| surface.content_kind == HostedContentKind::DirectMessage));
+        assert!(manifest
+            .surfaces()
+            .iter()
+            .any(|surface| surface.content_kind == HostedContentKind::Post));
     }
 }
