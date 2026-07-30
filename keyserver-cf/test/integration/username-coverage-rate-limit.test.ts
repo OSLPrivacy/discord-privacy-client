@@ -31,7 +31,7 @@ function minimallyShapedRegisterBody(userId: string): Record<string, unknown> {
 }
 
 describe("public registration abuse prevention", () => {
-  it("test/integration/username-coverage-rate-limit.test.ts", async () => {
+  it("Rate-limit and abuse-prevention on the public Worker endpoint", async () => {
     const ipDenied = vi.fn(async () => ({ success: false }));
     const deniedByIp = await handleRegister(
       registerRequest("not even json object"),
