@@ -31,6 +31,37 @@
 # script refuses if a non-test frontend source is newer than dist.
 set -uo pipefail
 
+if [ "${1:-}" = "--self-test" ]; then
+  instance_b_build_requires_distinct_identifier() {
+    local tmp json log out rc
+    tmp="$(mktemp -d)"
+    json="$tmp/result.json"
+    log="$tmp/build.log"
+    out="$tmp/output.txt"
+
+    JSON_OUT="$json" LOG="$log" BUNDLE_A="org.oslprivacy.hub" \
+      bash "$0" "org.oslprivacy.hub" >"$out" 2>&1
+    rc=$?
+
+    if [ "$rc" -ne 2 ]; then
+      printf 'expected exit 2, got %s\n' "$rc" >&2
+      return 1
+    fi
+    python3 - "$json" <<'PY'
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    receipt = json.load(handle)
+assert receipt["identifier"] == "org.oslprivacy.hub"
+assert receipt["overall"]["verdict"] == "blocked"
+assert "Identifier equals instance A" in receipt["overall"]["diagnosis"]
+assert receipt["diffKey"].startswith("BLOCKED:")
+PY
+  }
+
+  instance_b_build_requires_distinct_identifier
+  exit $?
+fi
+
 REPO="${REPO:-/home/liamw/discord-privacy-client}"
 IDENTIFIER="${1:-org.oslprivacy.hubqab}"
 BUNDLE_A="${BUNDLE_A:-org.oslprivacy.hub}"
