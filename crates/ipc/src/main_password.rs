@@ -1767,6 +1767,40 @@ mod password_policy_tests {
             maybe_decrypt(&device_bound_blob).unwrap(),
             br#"{"mode":"device-bound"}"#
         );
+        set_file_storage_key(None);
+    }
+
+    #[test]
+    fn correct_password_before_tenth_attempt_resets_counter() {
+        set_file_storage_key(None);
+        let dir = tempfile::tempdir().unwrap();
+        let password = "correct-password";
+        set_main_password(dir.path(), password).expect("password marker can be created");
+
+        let now = now_unix_secs();
+        write_lockout(
+            dir.path(),
+            &LockoutState {
+                version: LOCKOUT_VERSION,
+                password_failed_attempts: 9,
+                password_locked_until: Some(now - 1),
+                phrase_failed_attempts: 0,
+                phrase_locked_until: None,
+            },
+        )
+        .expect("pre-tenth lockout state can be seeded");
+
+        verify_main_password(dir.path(), password).expect("correct password must unlock");
+        let after_success = lockout_status(dir.path());
+        assert_eq!(after_success.password_attempts_used, 0);
+        assert_eq!(after_success.password_locked_until, None);
+
+        verify_main_password(dir.path(), "wrong-password").expect_err(
+            "a wrong password after successful unlock must fail as the first fresh attempt",
+        );
+        let after_next_failure = lockout_status(dir.path());
+        assert_eq!(after_next_failure.password_attempts_used, 1);
+        assert_eq!(after_next_failure.password_locked_until, None);
 
         set_file_storage_key(None);
     }
