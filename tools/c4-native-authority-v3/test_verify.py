@@ -614,6 +614,55 @@ class NativeAuthorityV3Tests(unittest.TestCase):
         self.assertEqual(authority.calls, 1)
         self.assertEqual(ledger.consume_calls, 1)
 
+    def test_verify(self) -> None:
+        receipt = make_receipt()
+        ctx = runtime_context(receipt)
+        authority = FakeFilesystemAuthorityVerifier()
+
+        unconnected = FakeRuntimeLedger(receipt)
+        unconnected.record["state"] = "issued"
+        with self.assertRaises(VerificationError):
+            verify_receipt(
+                encode(receipt),
+                ctx,
+                ledger=unconnected,
+                filesystem_authority_verifier=authority,
+            )
+        self.assertEqual(unconnected.consume_calls, 0)
+        self.assertEqual(authority.calls, 0)
+
+        wrong_pipe = FakeRuntimeLedger(receipt)
+        wrong_pipe.record["pipeBindingSha256"] = "f" * 64
+        with self.assertRaises(VerificationError):
+            verify_receipt(
+                encode(receipt),
+                ctx,
+                ledger=wrong_pipe,
+                filesystem_authority_verifier=authority,
+            )
+        self.assertEqual(wrong_pipe.consume_calls, 0)
+        self.assertEqual(authority.calls, 0)
+
+        ledger = FakeRuntimeLedger(receipt)
+        verdict = verify_receipt(
+            encode(receipt),
+            ctx,
+            ledger=ledger,
+            filesystem_authority_verifier=authority,
+        )
+        self.assertTrue(verdict.runtime_receipt_accepted)
+        self.assertEqual(ledger.consume_calls, 1)
+        self.assertEqual(ledger.record["state"], "consumed")
+
+        with self.assertRaises(VerificationError):
+            verify_receipt(
+                encode(receipt),
+                ctx,
+                ledger=ledger,
+                filesystem_authority_verifier=authority,
+            )
+        self.assertEqual(ledger.consume_calls, 1)
+
     def test_runtime_authority_and_request_path_refusals_do_not_consume(self) -> None:
         receipt = make_receipt()
         base = runtime_context(receipt)
@@ -1036,6 +1085,38 @@ class CrossLanguageConformanceTests(unittest.TestCase):
 
 
 class OneShotLedgerTests(unittest.TestCase):
+    def test_ledger(self) -> None:
+        receipt = make_receipt()
+        pipe = receipt["emitter"]
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = recovered_ledger(directory)
+            ledger.issue(CHALLENGE, NOW)
+
+            with self.assertRaises(LedgerError):
+                ledger.consume(CHALLENGE, pipe, "c" * 64, NOW + 1)
+            self.assertEqual(ledger.read(CHALLENGE)["state"], "issued")
+
+            connected_digest = ledger.connect(CHALLENGE, pipe, NOW + 2)
+            connected = ledger.read(CHALLENGE)
+            self.assertEqual(connected["state"], "connected")
+            self.assertEqual(connected["pipeBindingSha256"], connected_digest)
+            self.assertIsNone(connected["receiptFrameSha256"])
+
+            receipt_digest = "d" * 64
+            ledger.consume(CHALLENGE, pipe, receipt_digest, NOW + 3)
+            consumed = ledger.read(CHALLENGE)
+            self.assertEqual(consumed["state"], "consumed")
+            self.assertEqual(consumed["receiptFrameSha256"], receipt_digest)
+
+            with self.assertRaises(LedgerError):
+                ledger.consume(CHALLENGE, pipe, "e" * 64, NOW + 4)
+
+            restarted = OneShotLedger(directory)
+            self.assertEqual(restarted.recover_incomplete(NOW + 5), 0)
+            persisted = restarted.read(CHALLENGE)
+            self.assertEqual(persisted["state"], "consumed")
+            self.assertEqual(persisted["receiptFrameSha256"], receipt_digest)
+
     def test_recovery_is_mandatory_before_any_work(self) -> None:
         receipt = make_receipt()
         with tempfile.TemporaryDirectory() as directory:
