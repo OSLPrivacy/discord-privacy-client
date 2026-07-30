@@ -3108,32 +3108,9 @@ fn prepare_peer_inbox_text(
         record_fixed_discord_qa_broker_stage(true, "recipient_registration", "ready", None)?;
     }
     #[cfg(feature = "discord-qa-shell")]
-    record_fixed_discord_qa_broker_stage(is_fixed_discord_qa_probe, "record", "entered", None)?;
-    #[cfg(feature = "discord-qa-shell")]
     let allow_device_bound_qa_receipt_key = native_discord_qa_receipt_context(&context);
     #[cfg(not(feature = "discord-qa-shell"))]
     let allow_device_bound_qa_receipt_key = false;
-    let record_result = record_native_overlay_sent(
-        core,
-        broker,
-        &context,
-        &manual,
-        &logical_message_id,
-        expires_at,
-        allow_device_bound_qa_receipt_key,
-    );
-    #[cfg(feature = "discord-qa-shell")]
-    if let Err(error) = &record_result {
-        record_fixed_discord_qa_broker_stage(
-            is_fixed_discord_qa_probe,
-            "record",
-            "error",
-            Some(error),
-        )?;
-    }
-    record_result?;
-    #[cfg(feature = "discord-qa-shell")]
-    record_fixed_discord_qa_broker_stage(is_fixed_discord_qa_probe, "record", "ready", None)?;
     // One prose-token cover per chunk. Only a single-chunk message can carry a
     // Discord row: the row is one token, and a token is all-or-nothing.
     let mut carrier_flagtext = None::<String>;
@@ -3300,6 +3277,29 @@ fn prepare_peer_inbox_text(
             }
         }
     }
+    #[cfg(feature = "discord-qa-shell")]
+    record_fixed_discord_qa_broker_stage(is_fixed_discord_qa_probe, "record", "entered", None)?;
+    let record_result = record_native_overlay_sent(
+        core,
+        broker,
+        &context,
+        &manual,
+        &logical_message_id,
+        expires_at,
+        allow_device_bound_qa_receipt_key,
+    );
+    #[cfg(feature = "discord-qa-shell")]
+    if let Err(error) = &record_result {
+        record_fixed_discord_qa_broker_stage(
+            is_fixed_discord_qa_probe,
+            "record",
+            "error",
+            Some(error),
+        )?;
+    }
+    record_result?;
+    #[cfg(feature = "discord-qa-shell")]
+    record_fixed_discord_qa_broker_stage(is_fixed_discord_qa_probe, "record", "ready", None)?;
     if let Some(history_plaintext) = history_plaintext {
         ipc::commands::cmd_osl_persist_outbound(
             &core.osl,
@@ -10169,6 +10169,79 @@ mod tests {
             false,
         )
         .is_err());
+    }
+
+    #[test]
+    fn c32_sent_proof_ledger_persists_only_metadata_under_encryption() {
+        let private_text = "private text must never enter the receipt ledger";
+        let carrier_text = "carrier text must never enter the receipt ledger";
+        let path = std::env::temp_dir().join(format!(
+            "osl-hub-native-receipt-ledger-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let key = [0x32; 32];
+        let ledger = NativeOverlayReceiptLedger {
+            version: NATIVE_OVERLAY_ACK_VERSION,
+            records: BTreeMap::from([(
+                "msg-c32".to_owned(),
+                NativeOverlayReceiptRecord {
+                    service_id: "discord".to_owned(),
+                    conversation_binding: "dm-c32".to_owned(),
+                    peer_osl_user_id: "osl-peer-c32".to_owned(),
+                    expires_at: 1_700_003_600,
+                    status: NativeOverlayReceiptStatus::Sent,
+                    acknowledged_at: 0,
+                    device_bound_qa: false,
+                },
+            )]),
+        };
+
+        write_native_overlay_receipts(&path, &ledger, &key).unwrap();
+        let sealed = std::fs::read(&path).unwrap();
+        let sealed_text = String::from_utf8_lossy(&sealed);
+        assert!(ipc::main_password::has_enc_magic(&sealed));
+        assert!(!sealed_text.contains(private_text));
+        assert!(!sealed_text.contains(carrier_text));
+
+        let opened = load_native_overlay_receipts(&path, &key).unwrap();
+        let json = serde_json::to_value(&opened).unwrap();
+        let json_text = json.to_string();
+        assert_eq!(json["records"]["msg-c32"]["status"], "sent");
+        assert!(json["records"]["msg-c32"].get("service_id").is_some());
+        assert!(!json_text.contains(private_text));
+        assert!(!json_text.contains(carrier_text));
+        assert!(!json_text.contains("plaintext"));
+        assert!(!json_text.contains("cover_pointer"));
+        assert!(!json_text.contains("carrier"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn c32_send_proof_is_recorded_only_after_control_inbox_post_succeeds() {
+        let source = include_str!("broker.rs");
+        let prepare = source
+            .split_once("fn prepare_peer_inbox_text(")
+            .expect("send path exists")
+            .1
+            .split_once("\nfn split_native_overlay_text(")
+            .expect("send path boundary exists")
+            .0;
+        let post = prepare
+            .find("client.post_control_inbox(")
+            .expect("send path posts the encrypted control row");
+        let record = prepare
+            .find("record_native_overlay_sent(")
+            .expect("send path records a sent proof");
+
+        assert!(
+            post < record,
+            "the send-proof ledger must not claim a message before the encrypted row is accepted"
+        );
     }
 
     #[test]
