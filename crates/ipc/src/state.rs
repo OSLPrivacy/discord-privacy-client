@@ -232,6 +232,7 @@ pub struct AppState {
     /// identity storage; callers must not construct ad hoc plaintext RN stores.
     pub rn_session_store: crate::wire_rn::RnSessionStore,
     pub rn_session_sealer: Box<dyn keystore::Sealer>,
+    pub duress_engine: Mutex<keystore::DuressEngine>,
 
     /// Per-scope whitelist + encryption-toggle state, mirroring
     /// `<config_dir>/whitelist_state.json`. Empty by default —
@@ -397,6 +398,7 @@ impl Default for AppState {
             message_store: Mutex::new(None),
             rn_session_store: default_rn_session_store(),
             rn_session_sealer: keystore::select_best_sealer(),
+            duress_engine: Mutex::new(default_duress_engine()),
             whitelist_state: Mutex::new(WhitelistState::default()),
             recovery_token: Mutex::new(None),
             stealth_active: Mutex::new(false),
@@ -540,12 +542,60 @@ mod tests {
         state.set_rn_wire_in_enabled(false);
         assert!(!state.rn_wire_in_enabled());
     }
+
+    #[test]
+    fn app_state_constructs_production_duress_engine() {
+        struct OverrideReset;
+        impl Drop for OverrideReset {
+            fn drop(&mut self) {
+                keystore::set_active_account_dir(None);
+                keystore::set_base_dir_override(None);
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let base_dir = dir.path().join("base");
+        let account_dir = dir.path().join("accounts").join("active");
+        keystore::set_base_dir_override(Some(base_dir.clone()));
+        keystore::set_active_account_dir(Some(account_dir.clone()));
+        let _reset = OverrideReset;
+
+        let state = AppState::new();
+        let engine = state.duress_engine.lock().expect("duress mutex poisoned");
+
+        assert_eq!(engine.journal_path(), account_dir.join("duress.journal"));
+        assert_eq!(
+            engine.paths().identity_file,
+            account_dir.join("identity.json")
+        );
+        assert_eq!(
+            engine.paths().password_file,
+            base_dir.join("password_marker.json")
+        );
+        assert_eq!(
+            engine.paths().prekey_file,
+            Some(account_dir.join("prekeys.json"))
+        );
+        assert!(engine.handler_wired(keystore::WipeStep::LocalCacheDir));
+        assert!(engine.handler_wired(keystore::WipeStep::StripOpsecFiles));
+        assert!(!engine.handler_wired(keystore::WipeStep::DoubleRatchet));
+    }
 }
 
 fn default_rn_session_store() -> crate::wire_rn::RnSessionStore {
     let dir = keystore::osl_config_dir()
         .unwrap_or_else(|_| std::env::temp_dir().join("osl-rn-session-store-unconfigured"));
     crate::wire_rn::RnSessionStore::new(dir.join("rn_sessions"))
+}
+
+fn default_duress_engine() -> keystore::DuressEngine {
+    let config_dir = keystore::osl_config_dir()
+        .unwrap_or_else(|_| std::env::temp_dir().join("osl-duress-unconfigured"));
+    let password_dir = keystore::osl_base_dir().unwrap_or_else(|_| config_dir.clone());
+    keystore::build_production_duress_engine(keystore::ProductionDuressConfig::new(
+        config_dir,
+        password_dir,
+    ))
 }
 
 fn current_unix_seconds() -> u64 {
