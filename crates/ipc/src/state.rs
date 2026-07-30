@@ -18,6 +18,7 @@ use crate::whitelist_state::WhitelistState;
 use crypto::x25519;
 use keystore::{Identity, KeyServerClient};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -227,6 +228,13 @@ pub struct AppState {
     /// `crates/store` for the on-disk crypto + schema posture.
     pub message_store: Mutex<Option<MessageStore>>,
 
+    /// Production duress engine for the active account directory. The engine is
+    /// cheap to hold and only performs destructive work when an explicit caller
+    /// invokes it. Missing handler bindings remain fail-closed inside
+    /// `keystore::DuressEngine`; direct file paths are resolved from
+    /// `keystore::osl_config_dir()` at AppState construction.
+    pub duress_engine: keystore::DuressEngine,
+
     /// Sealed OSL-RN session and pin store for the active account. The sealer
     /// is process-local and selected with the same best-available policy as
     /// identity storage; callers must not construct ad hoc plaintext RN stores.
@@ -395,6 +403,7 @@ impl Default for AppState {
             sender_pubkey_cache: SenderPubkeyCache::default(),
             peer_map: Mutex::new(PeerMap::default()),
             message_store: Mutex::new(None),
+            duress_engine: production_duress_engine(),
             rn_session_store: default_rn_session_store(),
             rn_session_sealer: keystore::select_best_sealer(),
             whitelist_state: Mutex::new(WhitelistState::default()),
@@ -551,9 +560,47 @@ impl AppState {
     }
 }
 
+fn production_duress_engine() -> keystore::DuressEngine {
+    let dir = keystore::osl_config_dir()
+        .unwrap_or_else(|_| std::env::temp_dir().join("osl-duress-unconfigured"));
+    production_duress_engine_for_config_dir(dir)
+}
+
+fn production_duress_engine_for_config_dir(dir: PathBuf) -> keystore::DuressEngine {
+    let local_cache_dir = dir.join("store");
+    let handlers = keystore::ProductionDuressHandlers::new()
+        .with_wipe_local_cache_dir(Box::new(move || remove_bound_dir_idempotent(&local_cache_dir)))
+        .into_handlers();
+    let paths = keystore::DuressPaths {
+        identity_file: dir.join("identity.json"),
+        password_file: dir.join("password_marker.json"),
+        prekey_file: Some(dir.join("prekeys.json")),
+    };
+    keystore::DuressEngine::new(dir.join("duress.journal"), paths, handlers)
+}
+
+fn remove_bound_dir_idempotent(path: &Path) -> std::result::Result<(), keystore::DuressError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_dir() && !meta.file_type().is_symlink() => {
+            std::fs::remove_dir_all(path).map_err(|e| {
+                keystore::DuressError::Io(format!("remove bound directory: {e}"))
+            })?;
+            Ok(())
+        }
+        Ok(_) => Err(keystore::DuressError::Handler(
+            "local cache wipe path is not a directory".to_string(),
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(keystore::DuressError::Io(format!(
+            "inspect bound directory: {e}"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex as StdMutex, OnceLock};
 
     #[test]
     fn rn_wire_in_runtime_gate_defaults_to_refusal() {
@@ -570,6 +617,98 @@ mod tests {
         assert!(state.rn_wire_in_enabled());
         state.set_rn_wire_in_enabled(false);
         assert!(!state.rn_wire_in_enabled());
+    }
+
+    fn config_dir_test_lock() -> &'static StdMutex<()> {
+        static LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| StdMutex::new(()))
+    }
+
+    struct ConfigDirOverrideGuard;
+
+    impl ConfigDirOverrideGuard {
+        fn new(dir: PathBuf) -> Self {
+            keystore::set_active_account_dir(None);
+            keystore::set_base_dir_override(Some(dir));
+            Self
+        }
+    }
+
+    impl Drop for ConfigDirOverrideGuard {
+        fn drop(&mut self) {
+            keystore::set_base_dir_override(None);
+            keystore::set_active_account_dir(None);
+        }
+    }
+
+    fn write_journal_with_all_steps_except(journal_path: &Path, except: keystore::WipeStep) {
+        let completed = keystore::WipeStep::ordered()
+            .iter()
+            .copied()
+            .filter(|step| *step != except)
+            .map(|step| {
+                (
+                    step,
+                    keystore::StepOutcome::Skipped {
+                        reason: "prefilled construction test step".to_string(),
+                    },
+                )
+            })
+            .collect();
+        let journal = keystore::DuressJournal {
+            completed,
+            started_at_unix_seconds: 0,
+        };
+        std::fs::write(journal_path, serde_json::to_vec_pretty(&journal).unwrap()).unwrap();
+    }
+
+    fn execute_only(state: &AppState, dir: &Path, step: keystore::WipeStep) {
+        write_journal_with_all_steps_except(&dir.join("duress.journal"), step);
+        state.duress_engine.execute().expect("duress engine runs");
+    }
+
+    #[test]
+    fn app_state_constructs_production_duress_engine() {
+        let _guard = config_dir_test_lock().lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let _config_guard = ConfigDirOverrideGuard::new(dir.path().to_path_buf());
+
+        let identity_file = dir.path().join("identity.json");
+        let password_file = dir.path().join("password_marker.json");
+        let prekey_file = dir.path().join("prekeys.json");
+        let store_dir = dir.path().join("store");
+        std::fs::write(&identity_file, b"identity").unwrap();
+        std::fs::write(&password_file, b"password marker").unwrap();
+        std::fs::write(&prekey_file, b"prekeys").unwrap();
+        std::fs::create_dir(&store_dir).unwrap();
+        std::fs::write(store_dir.join("messages.sqlite"), b"cache").unwrap();
+
+        let state = AppState::new();
+
+        execute_only(&state, dir.path(), keystore::WipeStep::IdentityFile);
+        assert!(
+            !identity_file.exists(),
+            "production DuressPaths must target identity.json in the active config dir"
+        );
+
+        execute_only(&state, dir.path(), keystore::WipeStep::PasswordHashes);
+        assert!(
+            !password_file.exists(),
+            "production DuressPaths must target password_marker.json"
+        );
+
+        execute_only(&state, dir.path(), keystore::WipeStep::PrekeyFile);
+        assert!(
+            !prekey_file.exists(),
+            "production DuressPaths must target prekeys.json"
+        );
+
+        execute_only(&state, dir.path(), keystore::WipeStep::LocalCacheDir);
+        assert!(
+            !store_dir.exists(),
+            "production duress handlers must wipe the bound local store directory"
+        );
+
     }
 }
 
