@@ -38,6 +38,22 @@ Every connected service also has an approved dual-mode contract:
 
 Users do not give up calls, communities, rich media, bots, search, administration or any other native feature in order to use OSL. Full service functionality is preserved by companioning the native UI, not by reimplementing every platform inside the app. Each service offers a clear Native versus OSL Protected choice wherever a protected capability exists. If a recipient, endpoint or feature cannot use OSL protection, the UI explains why and offers Native or an explicit user-assisted fallback. It never silently changes mode and never describes an ordinary external platform message or email as OSL E2EE.
 
+### Staged product boundary resolution
+
+<!-- StagedProductBoundaryResolution -->
+
+Mail and Android are approved product directions, but they are not one launch promise. The app must present only the stage that has passed implementation, verification and operational review. Future stages remain visibly `Coming later`; they must not be implied by navigation labels, marketing copy, pricing cards or setup prompts.
+
+OSL Mail starts at **Stage A** as client-side protection for mailboxes the user already controls. It may connect an existing mailbox only after explicit account authorization and may warn, sanitize, organize retention and label protection scope honestly. It does not include an OSL-operated mailbox, custom domain hosting, universal encrypted delivery, silent mailbox import, account takeover recovery or server-side mail operations. External email remains ordinary interoperable email unless a separately supported encrypted path is explicitly selected before send.
+
+Stage B adds aliases and relay behavior only after abuse handling, deliverability, reply routing, account recovery and support operations have a separate release gate. Stage C adds an OSL mailbox only after a new mail-operations review. Until Stage C is accepted, every mailbox UI and pricing reference must say that a full OSL mailbox is `Coming later`, not available, bundled or in beta by default.
+
+**Android Companion** is a small phone app tied to the user's OSL identity and device approval flow. It may show OSL-native conversations, local warnings, approvals and supported share-sheet cleanup. It is not a remote-control surface for desktop accounts, does not receive master credentials, does not inherit unrestricted destructive authority and does not make a connected Android app protected merely because the companion is installed.
+
+**Android Mobile Workspace** is a separate Pro desktop feature and remains `Coming later` until the local runtime, isolation, input, rendering, recovery and wipe paths have passed independent verification. It may run official Android apps inside an isolated local workspace after the user signs in normally inside those apps. It must not copy sessions or credentials, bypass challenges, spoof device identity, automate account behavior or claim protection for an Android-only app before the exact app, account, window and user action are bound. A hosted workspace is a different product boundary and needs its own threat model, consent and audit.
+
+Across all staged surfaces, absence of user consent, account binding, recipient support, verified capability or send/delete authority means refusal or `Unavailable`, never permission. Monetization labels may indicate what will require Pro later, but they must never interrupt a safety warning, destructive confirmation or honest capability refusal.
+
 ## Platform compatibility boundary
 
 `Available at launch` means OSL can recognize the service, show an OSL-owned companion surface and provide the locally safe features the platform permits. It does not mean silent automation or identical capabilities everywhere.
@@ -278,7 +294,7 @@ The preview must state:
 
 ### OSL Mail
 
-OSL Mail should be a staged product, not part of the first OSL Privacy release.
+OSL Mail should be a staged product, not part of the first OSL Privacy release. Its stage labels are product boundaries, not marketing milestones; the UI must not display a later stage as available until its release gate has passed.
 
 **Stage A - private email client:** connect existing Gmail, Outlook, Proton, Tuta or standard mailboxes; block trackers, sanitize links and attachments, support retention rules and label encryption honestly.
 
@@ -288,7 +304,7 @@ OSL Mail should be a staged product, not part of the first OSL Privacy release.
 
 Messages between OSL Mail users can be automatically E2EE. Mail to an external address remains ordinary interoperable email unless the recipient opens an OSL encrypted message portal or uses a compatible encryption method. The composer must show this distinction before send.
 
-This sequencing lets OSL deliver email privacy value early without risking the brand on unreliable delivery or a rushed mail server.
+Stage A may inspect and clean only mail the user explicitly authorizes. If authorization, mailbox binding or provider support is missing, OSL refuses the protected action and preserves any local draft or warning state. This sequencing lets OSL deliver email privacy value early without risking the brand on unreliable delivery or a rushed mail server.
 
 ## People, identity and the universal whitelist
 
@@ -638,11 +654,11 @@ OSL does not proxy or retain card numbers, bank credentials, merchant transactio
 
 ### Android Companion
 
-The companion app provides OSL Chat, Circles, Mail, approvals, warnings, key management and supported share-sheet sanitization on a real phone.
+The companion app is a phone companion for OSL-owned experiences and local user approvals. It provides OSL Chat, Circles, Mail when that stage is available, warnings and supported share-sheet sanitization on a real phone. It never turns an unrelated Android app into an OSL Protected surface by presence alone and never receives master credentials or unrestricted destructive authority.
 
 ### Android Mobile Workspace
 
-The paid desktop feature runs selected Android-only apps inside a clearly isolated workspace. Its card exposes:
+The paid desktop feature runs selected Android-only apps inside a clearly isolated local workspace. Until the workspace is independently verified, its card is visible only as `Coming later`. When available, the card exposes:
 
 - Start or stop workspace.
 - Installed apps and storage use.
