@@ -5919,6 +5919,24 @@ function openServiceRoute(service: LinkedService, _provider: EmailProvider | nul
   render();
 }
 
+export function connectionsPrimaryAction(): void {
+  const target = homeAppsFromServices(services).find((app) => app.visibility === "launch"
+    && app.launchState === "available"
+    && app.setupEligible
+    && app.serviceId !== null);
+  const service = target ? services.find((candidate) => candidate.id === target.serviceId) : null;
+  if (!target || !service) {
+    route = "settings";
+    settingsSection = "apps";
+    activeService = null;
+    activeHomeAppId = null;
+    serviceAccountPickerOpen = false;
+    render();
+    return;
+  }
+  openServiceRoute(service, target.provider, target.id, true);
+}
+
 function persistServiceGuideState(): void {
   if (!activeService || serviceGuideStep === null) return;
   localStorage.setItem(serviceGuideStorageKey, JSON.stringify({ serviceId: activeService.id, step: serviceGuideStep }));
