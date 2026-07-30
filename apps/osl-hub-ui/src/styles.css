@@ -1597,6 +1597,7 @@ code {
 
 .trust-state .dot { background: var(--warn); }
 .trust-state.ready .dot { background: var(--brand); }
+.trust-state.not-secure .dot { background: var(--danger); }
 .trust-state strong,
 .trust-state small { display: block; }
 .trust-state strong { font-size: 11px; }
@@ -1610,6 +1611,7 @@ code {
   white-space: nowrap;
 }
 .trust-state.ready small { color: var(--muted); }
+.trust-state.not-secure small { color: var(--danger); }
 
 .service-context {
   min-width: 126px;

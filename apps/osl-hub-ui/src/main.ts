@@ -69,6 +69,7 @@ import {
   coreReadinessLabel,
   clearHubActivationCode,
   createHubOslIdentity,
+  identityProtectionStatus,
   importHubOslIdentityPhrase,
   isActivationCode,
   isCoreProtectionReady,
@@ -2354,8 +2355,12 @@ function appLauncherStrip(): string {
 }
 
 function simpleDeviceStatusMarkup(): string {
-  const ready = isCoreProtectionReady(core.readiness);
-  return `<div class="trust-state ${ready ? "ready" : "pending"}" role="status"><span class="dot"></span><strong>${ready ? "Ready" : "Needs attention"}</strong></div>`;
+  const coreReady = isCoreProtectionReady(core.readiness);
+  const protection = identityProtectionStatus(core.readiness.storageMethod);
+  const ready = coreReady && protection.state === "protected";
+  const label = coreReady ? protection.label : "Needs attention";
+  const detail = coreReady ? protection.detail : coreReadinessLabel(core.readiness);
+  return `<div class="trust-state ${ready ? "ready" : "pending"} ${coreReady && !ready ? "not-secure" : ""}" role="status" data-identity-protection="${protection.state}"><span class="dot"></span><span><strong>${escapeHtml(label)}</strong><small>${escapeHtml(detail)}</small></span></div>`;
 }
 
 /**
