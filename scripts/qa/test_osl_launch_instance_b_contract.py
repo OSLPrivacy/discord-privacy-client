@@ -93,6 +93,20 @@ def instance_b_launcher_uses_private_temp_root_and_preserves_instance_a() -> Non
         assert (Path(str(fixture["tempRootB"])) / "osl-startup-trace.txt").is_file()
         assert not (Path(str(fixture["tempRootA"])) / "osl-startup-trace.txt").exists()
 
+        shared_temp = dict(fixture)
+        shared_temp["tempRootB"] = fixture["tempRootA"]
+        shared, shared_payload = _run_fixture(tmp, shared_temp, confirm=True)
+        assert shared.returncode == 2, shared.stderr
+        assert shared_payload["overall"]["verdict"] == "blocked"
+        assert shared_payload["steps"][-1]["step"] == "temp-isolation"
+
+        touched_a = dict(fixture)
+        touched_a["instanceAIdentityShaAfter"] = "f" * 64
+        touched, touched_payload = _run_fixture(tmp, touched_a, confirm=True)
+        assert touched.returncode == 1, touched.stderr
+        assert touched_payload["overall"]["verdict"] == "failed"
+        assert touched_payload["steps"][-1]["step"] == "assert/instance-a-untouched"
+
 
 def instance_b_confirm_creates_identity_registers_second_identity() -> None:
     with tempfile.TemporaryDirectory() as raw_tmp:
@@ -116,6 +130,13 @@ def instance_b_confirm_creates_identity_registers_second_identity() -> None:
         assert identity_step["identitiesBefore"] == 1
         assert identity_step["identitiesAfter"] == 2
         assert allowed_payload["instanceB"]["registeredSecondIdentity"] is True
+
+        missing_second = dict(fixture)
+        missing_second["keyserverIdentitiesAfter"] = ["identity-a"]
+        failed, failed_payload = _run_fixture(tmp, missing_second, confirm=True)
+        assert failed.returncode == 1, failed.stderr
+        assert failed_payload["overall"]["verdict"] == "failed"
+        assert failed_payload["steps"][-1]["step"] == "identity/keyserver-registration"
 
 
 def load_tests(
