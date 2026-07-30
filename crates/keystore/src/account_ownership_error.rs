@@ -155,7 +155,10 @@ mod tests {
             err.to_string(),
             "no platform-account ownership proof was presented"
         );
-        assert_eq!(format!("{err:?}"), "AccountOwnershipError::NoProofPresented");
+        assert_eq!(
+            format!("{err:?}"),
+            "AccountOwnershipError::NoProofPresented"
+        );
     }
 
     #[test]

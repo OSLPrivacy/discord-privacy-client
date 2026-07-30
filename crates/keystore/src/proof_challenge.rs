@@ -253,7 +253,10 @@ mod tests {
         let display_str = format!("{c}");
         assert!(!debug_str.contains("super-secret-account-id"));
         assert!(!debug_str.contains("super-secret-owner-id"));
-        assert!(!debug_str.contains("[7"), "nonce bytes leaked into Debug: {debug_str}");
+        assert!(
+            !debug_str.contains("[7"),
+            "nonce bytes leaked into Debug: {debug_str}"
+        );
         assert!(!display_str.contains("super-secret-account-id"));
         assert!(!display_str.contains("super-secret-owner-id"));
     }

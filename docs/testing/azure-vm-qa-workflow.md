@@ -95,22 +95,40 @@ State as of 2026-07-26: the subscription held **zero** snapshots until tonight; 
 actually happened for anyone. The first is scrub's
 `OSL-Independent-Client-1-WARM-iteration-20260726`.
 
-### WARM-agent baseline for the crypto A/B pair
+### Acceptance: warm_agent_baseline_snapshot_for_osl_azure_clients_1_and_2
 
-Behavioral acceptance test:
-`warm_agent_baseline_snapshot_for_osl_azure_clients_1_and_2`.
-
-The crypto lane's fast-iteration baseline is recorded as two per-VM WARM snapshots.
-Each row is valid only when the source VM is deallocated, the in-VM agent is
-registered as a logon task, the OSL identity has already been created, Discord is
-signed in, and the snapshot is tagged `lineage=warm-iteration`. A row with COLD
-lineage, a missing agent, or no explicit snapshot name cannot be used for this
-baseline.
+The crypto lane's fast-iteration baseline is recorded as two per-VM WARM snapshots. Each row is
+valid only when the source VM is deallocated, the in-VM agent is registered as a logon task, the OSL
+identity has already been created, Discord is signed in, and the snapshot is tagged
+`lineage=warm-iteration`. A row with COLD lineage, a missing agent, or no explicit snapshot name
+cannot be used for this baseline.
 
 | VM | Resource group | Snapshot | Lineage tag | Required state | Agent baseline | Included setup |
 |---|---|---|---|---|---|---|
 | `OSL-Azure-Client-1` | `OSL-TWO-CLIENT-LAB` | `OSL-Azure-Client-1-WARM-agent-baseline-20260726` | `warm-iteration` | `deallocated` | `registered-logon-task` | `discord-signed-in;osl-identity-created` |
 | `OSL-Azure-Client-2` | `OSL-TWO-CLIENT-LAB` | `OSL-Azure-Client-2-WARM-agent-baseline-20260726` | `warm-iteration` | `deallocated` | `registered-logon-task` | `discord-signed-in;osl-identity-created` |
+
+The crypto pair baseline is proven only when both A/B VMs have deallocated, tagged WARM-agent
+snapshots whose names and source disks bind the exact VM. This is intentionally a falsifiable
+operator check, not a note in a report.
+
+For each VM in `OSL-Azure-Client-1` and `OSL-Azure-Client-2`:
+
+1. The VM is deallocated before snapshot creation:
+   `az vm get-instance-view -g OSL-TWO-CLIENT-LAB -n <vm> --query "instanceView.statuses[?starts_with(code, 'PowerState/')].code" -o tsv`
+   must return exactly `PowerState/deallocated`.
+2. The snapshot is created by `scripts/vmqa/vmqa-fleet.sh snapshot <vm> WARM-agent`, not by a
+   hand-written `az snapshot create` command.
+3. The retained snapshot name matches exactly `<vm>-WARM-agent-<yyyymmddHHmm>` and carries
+   `lineage=warm-iteration`.
+4. The retained raw Azure snapshot JSON shows `creationData.sourceResourceId` equal to that VM's
+   OS disk ID at the time of deallocation, and `location` equal to the source disk's location.
+5. A restore rehearsal to a throwaway managed disk succeeds from that snapshot ID, then the
+   throwaway disk is deleted. Do not swap the production VM OS disk as part of this check.
+
+The unit fails if either VM is missing, still running, tagged with any lineage other than
+`warm-iteration`, named `WARM-bootstrap`, named only `WARM-iteration`, created from a disk belonging
+to the other VM, or represented only by console text without retained raw Azure JSON.
 
 **Trap, already paid for: pin `--location` explicitly.** Azure region policy refuses a snapshot that
 inherits a default region rather than the source disk's. Read each disk's own location and pass it —

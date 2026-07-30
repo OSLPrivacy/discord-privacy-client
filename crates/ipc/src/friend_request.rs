@@ -9,6 +9,7 @@
 //! into [`FriendScopeGrant`].
 
 use crate::scope::Scope;
+use crate::secure_local_store::{RecordId, SecureLocalStore, SecureLocalStoreError};
 use crate::tofu::KeyBundle;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -19,6 +20,9 @@ use std::path::Path;
 const FRIEND_AUTHORITY_DOMAIN: &[u8] = b"OSL-FRIEND-AUTHORITY-v1";
 pub const FRIEND_REQUEST_STATE_FILE: &str = "friend_request_state.json";
 const FRIEND_REQUEST_STATE_SCHEMA_VERSION: u32 = 1;
+const FRIEND_REQUEST_STATE_VERSION: u32 = 1;
+const FRIEND_REQUEST_STATE_NAMESPACE: &str = "friend-request-state";
+const FRIEND_REQUEST_STATE_KEY: &str = "main-password-v1";
 
 /// Errors that can reject a friend-request operation.
 ///
@@ -314,7 +318,7 @@ impl fmt::Debug for FriendRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct StoredFriendRequest {
+pub struct StoredFriendRequestFileEntry {
     pub request_id: String,
     pub requester_id: String,
     pub target_id: String,
@@ -325,14 +329,14 @@ pub struct StoredFriendRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct FriendRequestState {
+pub struct FriendRequestFileState {
     pub schema_version: u32,
-    pub pending: Vec<StoredFriendRequest>,
-    pub accepted: Vec<StoredFriendRequest>,
-    pub declined_or_revoked: Vec<StoredFriendRequest>,
+    pub pending: Vec<StoredFriendRequestFileEntry>,
+    pub accepted: Vec<StoredFriendRequestFileEntry>,
+    pub declined_or_revoked: Vec<StoredFriendRequestFileEntry>,
 }
 
-impl FriendRequestState {
+impl FriendRequestFileState {
     pub fn new() -> Self {
         Self {
             schema_version: FRIEND_REQUEST_STATE_SCHEMA_VERSION,
@@ -352,21 +356,128 @@ impl FriendRequestState {
             .chain(self.accepted.iter())
             .chain(self.declined_or_revoked.iter())
         {
-            validate_stored_request(request)?;
+            validate_stored_request_file_entry(request)?;
         }
         Ok(())
     }
 }
 
-impl Default for FriendRequestState {
+impl Default for FriendRequestFileState {
     fn default() -> Self {
         Self::new()
     }
 }
 
-pub fn save_friend_request_state(
+/// Durable friend-request state stored only through the main-password-backed
+/// secure local store.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FriendRequestState {
+    pending: Vec<FriendRequest>,
+}
+
+impl FriendRequestState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn from_pending(pending: Vec<FriendRequest>) -> Self {
+        Self { pending }
+    }
+
+    pub fn pending_requests(&self) -> &[FriendRequest] {
+        &self.pending
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct StoredFriendRequestState {
+    version: u32,
+    pending: Vec<StoredFriendRequest>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct StoredFriendRequest {
+    requester_fingerprint: [u8; 32],
+    target_fingerprint: [u8; 32],
+    scope_key: String,
+}
+
+impl From<&FriendRequestState> for StoredFriendRequestState {
+    fn from(state: &FriendRequestState) -> Self {
+        Self {
+            version: FRIEND_REQUEST_STATE_VERSION,
+            pending: state
+                .pending
+                .iter()
+                .map(StoredFriendRequest::from)
+                .collect(),
+        }
+    }
+}
+
+impl TryFrom<StoredFriendRequestState> for FriendRequestState {
+    type Error = FriendRequestError;
+
+    fn try_from(value: StoredFriendRequestState) -> Result<Self, Self::Error> {
+        if value.version != FRIEND_REQUEST_STATE_VERSION {
+            return Err(FriendRequestError::InvalidRequest);
+        }
+        let pending = value
+            .pending
+            .into_iter()
+            .map(FriendRequest::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { pending })
+    }
+}
+
+impl From<&FriendRequest> for StoredFriendRequest {
+    fn from(request: &FriendRequest) -> Self {
+        Self {
+            requester_fingerprint: request.requester.authority.fingerprint.0,
+            target_fingerprint: request.target.authority.fingerprint.0,
+            scope_key: request.scope_grant.scope.storage_key(),
+        }
+    }
+}
+
+impl TryFrom<StoredFriendRequest> for FriendRequest {
+    type Error = FriendRequestError;
+
+    fn try_from(value: StoredFriendRequest) -> Result<Self, Self::Error> {
+        let scope = Scope::parse(&value.scope_key).ok_or(FriendRequestError::InvalidRequest)?;
+        let requester_authority = VerifiedFriendAuthority {
+            fingerprint: FriendAuthorityFingerprint(value.requester_fingerprint),
+        };
+        let target_authority = VerifiedFriendAuthority {
+            fingerprint: FriendAuthorityFingerprint(value.target_fingerprint),
+        };
+        let grant = FriendScopeGrant::new(&requester_authority, &target_authority, scope);
+        FriendRequest::new(
+            FriendPeer::from_authority(requester_authority),
+            FriendPeer::from_authority(target_authority),
+            Some(grant),
+        )
+    }
+}
+
+fn friend_request_state_record_id() -> RecordId {
+    RecordId::new(FRIEND_REQUEST_STATE_NAMESPACE, FRIEND_REQUEST_STATE_KEY)
+}
+
+fn storage_error_to_friend_request(error: SecureLocalStoreError) -> FriendRequestError {
+    match error {
+        SecureLocalStoreError::NotFound => FriendRequestError::RequestNotPending,
+        SecureLocalStoreError::NoKey
+        | SecureLocalStoreError::AuthenticationFailed
+        | SecureLocalStoreError::Malformed(_)
+        | SecureLocalStoreError::Backend(_) => FriendRequestError::StorageUnavailable,
+    }
+}
+
+pub fn save_friend_request_file_state(
     dir: &Path,
-    state: &FriendRequestState,
+    state: &FriendRequestFileState,
 ) -> Result<(), FriendRequestError> {
     state.validate()?;
     fs::create_dir_all(dir).map_err(|_| FriendRequestError::StorageUnavailable)?;
@@ -380,21 +491,25 @@ pub fn save_friend_request_state(
     Ok(())
 }
 
-pub fn load_friend_request_state(dir: &Path) -> Result<FriendRequestState, FriendRequestError> {
+pub fn load_friend_request_file_state(
+    dir: &Path,
+) -> Result<FriendRequestFileState, FriendRequestError> {
     let path = dir.join(FRIEND_REQUEST_STATE_FILE);
     if !path.exists() {
-        return Ok(FriendRequestState::new());
+        return Ok(FriendRequestFileState::new());
     }
     let blob = fs::read(path).map_err(|_| FriendRequestError::StorageUnavailable)?;
     let plain = crate::main_password::maybe_decrypt(&blob)
         .map_err(|_| FriendRequestError::StorageUnavailable)?;
-    let state: FriendRequestState =
+    let state: FriendRequestFileState =
         serde_json::from_slice(&plain).map_err(|_| FriendRequestError::StorageUnavailable)?;
     state.validate()?;
     Ok(state)
 }
 
-fn validate_stored_request(request: &StoredFriendRequest) -> Result<(), FriendRequestError> {
+fn validate_stored_request_file_entry(
+    request: &StoredFriendRequestFileEntry,
+) -> Result<(), FriendRequestError> {
     if request.request_id.is_empty()
         || request.requester_id.is_empty()
         || request.target_id.is_empty()
@@ -404,6 +519,30 @@ fn validate_stored_request(request: &StoredFriendRequest) -> Result<(), FriendRe
         return Err(FriendRequestError::InvalidRequest);
     }
     Ok(())
+}
+
+pub fn save_friend_request_state(
+    store: &dyn SecureLocalStore,
+    state: &FriendRequestState,
+) -> Result<(), FriendRequestError> {
+    let stored = StoredFriendRequestState::from(state);
+    let bytes = serde_json::to_vec(&stored).map_err(|_| FriendRequestError::InvalidRequest)?;
+    store
+        .put(&friend_request_state_record_id(), &bytes)
+        .map_err(storage_error_to_friend_request)
+}
+
+pub fn load_friend_request_state(
+    store: &dyn SecureLocalStore,
+) -> Result<Option<FriendRequestState>, FriendRequestError> {
+    let bytes = match store.get(&friend_request_state_record_id()) {
+        Ok(bytes) => bytes,
+        Err(SecureLocalStoreError::NotFound) => return Ok(None),
+        Err(error) => return Err(storage_error_to_friend_request(error)),
+    };
+    let stored: StoredFriendRequestState =
+        serde_json::from_slice(&bytes).map_err(|_| FriendRequestError::InvalidRequest)?;
+    FriendRequestState::try_from(stored).map(Some)
 }
 
 /// Source category for untrusted friend-request inputs.
@@ -502,6 +641,60 @@ fn update_component(hasher: &mut Sha256, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::secure_local_store::{RawBackend, SealedStore};
+    use std::path::{Path, PathBuf};
+    use tempfile::TempDir;
+
+    #[derive(Clone)]
+    struct DiskBackend {
+        root: PathBuf,
+    }
+
+    impl DiskBackend {
+        fn new(root: &Path) -> Self {
+            std::fs::create_dir_all(root).unwrap();
+            Self {
+                root: root.to_path_buf(),
+            }
+        }
+
+        fn path_for(&self, storage_key: &str) -> PathBuf {
+            let mut hasher = Sha256::new();
+            hasher.update(storage_key.as_bytes());
+            let digest = hasher.finalize();
+            let mut name = String::with_capacity(digest.len() * 2);
+            for byte in digest {
+                use std::fmt::Write as _;
+                let _ = write!(&mut name, "{byte:02x}");
+            }
+            self.root.join(name)
+        }
+    }
+
+    impl RawBackend for DiskBackend {
+        fn write_blob(&self, storage_key: &str, blob: &[u8]) -> Result<(), SecureLocalStoreError> {
+            std::fs::write(self.path_for(storage_key), blob)
+                .map_err(|error| SecureLocalStoreError::Backend(error.to_string()))
+        }
+
+        fn read_blob(&self, storage_key: &str) -> Result<Option<Vec<u8>>, SecureLocalStoreError> {
+            let path = self.path_for(storage_key);
+            match std::fs::read(path) {
+                Ok(bytes) => Ok(Some(bytes)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(SecureLocalStoreError::Backend(error.to_string())),
+            }
+        }
+
+        fn remove_blob(&self, storage_key: &str) -> Result<(), SecureLocalStoreError> {
+            let path = self.path_for(storage_key);
+            match std::fs::remove_file(path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(SecureLocalStoreError::Backend(error.to_string())),
+            }
+        }
+    }
 
     fn bundle(label: &str) -> KeyBundle {
         KeyBundle {
@@ -520,8 +713,8 @@ mod tests {
         FriendPeer::from_authority(authority)
     }
 
-    fn stored_request(label: &str, scope: Scope) -> StoredFriendRequest {
-        StoredFriendRequest {
+    fn stored_file_request(label: &str, scope: Scope) -> StoredFriendRequestFileEntry {
+        StoredFriendRequestFileEntry {
             request_id: format!("request-{label}"),
             requester_id: format!("requester-{label}"),
             target_id: format!("target-{label}"),
@@ -609,6 +802,67 @@ mod tests {
     }
 
     #[test]
+    fn friend_request_state_round_trips_through_main_password_storage() {
+        let dir = TempDir::new().expect("tempdir");
+        let store = SealedStore::new([0x31; 32], DiskBackend::new(dir.path()));
+        let requester_authority = authority("requester");
+        let target_authority = authority("target");
+        let scope_a = Scope::server_channel("server-a", "channel-a");
+        let scope_b = Scope::server_channel("server-a", "channel-b");
+        let request = FriendRequest::new(
+            peer(requester_authority.clone()),
+            peer(target_authority.clone()),
+            Some(FriendScopeGrant::new(
+                &requester_authority,
+                &target_authority,
+                scope_a.clone(),
+            )),
+        )
+        .unwrap();
+        let state = FriendRequestState::from_pending(vec![request]);
+
+        save_friend_request_state(&store, &state).expect("save keyed friend request state");
+
+        let persisted_files = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(persisted_files.len(), 1);
+        let persisted = std::fs::read(&persisted_files[0]).unwrap();
+        assert!(
+            !persisted
+                .windows(b"server_channel:server-a:channel-a".len())
+                .any(|window| window == b"server_channel:server-a:channel-a"),
+            "main-password storage must not write friend request state as plaintext"
+        );
+
+        let loaded = load_friend_request_state(&store)
+            .expect("load keyed friend request state")
+            .expect("state exists");
+        assert_eq!(loaded.pending_requests().len(), 1);
+        let loaded_request = &loaded.pending_requests()[0];
+        assert!(loaded_request.grants_scope(&scope_a));
+        assert!(
+            !loaded_request.grants_scope(&scope_b),
+            "round-tripped request must still refuse scopes outside the persisted grant"
+        );
+
+        let no_key_dir = TempDir::new().expect("no-key tempdir");
+        let no_key_store = SealedStore::without_key(DiskBackend::new(no_key_dir.path()));
+        assert!(matches!(
+            save_friend_request_state(&no_key_store, &state),
+            Err(FriendRequestError::StorageUnavailable)
+        ));
+        assert!(
+            std::fs::read_dir(no_key_dir.path())
+                .unwrap()
+                .next()
+                .is_none(),
+            "without the main-password key, saving must refuse before writing"
+        );
+    }
+
+    #[test]
     fn grant_must_match_request_parties() {
         let requester_authority = authority("requester");
         let target_authority = authority("target");
@@ -682,14 +936,25 @@ mod tests {
 
     #[test]
     fn error_display_contains_no_identifiers() {
-        assert_eq!(
-            FriendRequestError::UnauthenticatedAuthority.to_string(),
-            "friend request authority is not authenticated"
-        );
-        assert_eq!(
-            FriendRequestError::GrantAbsent.to_string(),
-            "friend request refused"
-        );
+        let forbidden = [
+            "123456789012345678",
+            "alice@example.com",
+            "@alice",
+            "osl_",
+            "server-secret",
+            "channel-secret",
+            "password",
+            "token",
+            "credential",
+        ];
+
+        for error in FriendRequestError::ALL {
+            let display = error.to_string();
+            assert!(!display.is_empty());
+            for term in forbidden {
+                assert!(!display.contains(term), "display leaked {term}: {display}");
+            }
+        }
     }
 
     #[test]
@@ -722,21 +987,24 @@ mod tests {
     }
 
     #[test]
-    fn friend_request_state_round_trips_through_main_password_storage() {
+    fn friend_request_file_state_round_trips_through_main_password_storage() {
         crate::main_password::set_file_storage_key(None);
         let dir = tempfile::tempdir().unwrap();
-        let state = FriendRequestState {
+        let state = FriendRequestFileState {
             schema_version: FRIEND_REQUEST_STATE_SCHEMA_VERSION,
-            pending: vec![stored_request(
+            pending: vec![stored_file_request(
                 "pending",
                 Scope::server_channel("server-secret-a113", "channel-secret-a113"),
             )],
-            accepted: vec![stored_request("accepted", Scope::dm("peer-secret-a113"))],
-            declined_or_revoked: vec![stored_request("revoked", Scope::gc("gc-secret-a113"))],
+            accepted: vec![stored_file_request(
+                "accepted",
+                Scope::dm("peer-secret-a113"),
+            )],
+            declined_or_revoked: vec![stored_file_request("revoked", Scope::gc("gc-secret-a113"))],
         };
 
         crate::main_password::set_file_storage_key(Some([0xA1; 32]));
-        save_friend_request_state(dir.path(), &state).unwrap();
+        save_friend_request_file_state(dir.path(), &state).unwrap();
         let raw = fs::read(dir.path().join(FRIEND_REQUEST_STATE_FILE)).unwrap();
         assert!(crate::main_password::has_enc_magic(&raw));
         for needle in [
@@ -753,18 +1021,18 @@ mod tests {
 
         crate::main_password::set_file_storage_key(None);
         assert!(matches!(
-            load_friend_request_state(dir.path()),
+            load_friend_request_file_state(dir.path()),
             Err(FriendRequestError::StorageUnavailable)
         ));
 
         crate::main_password::set_file_storage_key(Some([0xA1; 32]));
-        let loaded = load_friend_request_state(dir.path()).unwrap();
+        let loaded = load_friend_request_file_state(dir.path()).unwrap();
         assert_eq!(loaded, state);
 
         let mut tampered = state.clone();
         tampered.pending[0].scope_key = "server_channel:server-only".to_owned();
         assert!(matches!(
-            save_friend_request_state(dir.path(), &tampered),
+            save_friend_request_file_state(dir.path(), &tampered),
             Err(FriendRequestError::InvalidRequest)
         ));
         crate::main_password::set_file_storage_key(None);
