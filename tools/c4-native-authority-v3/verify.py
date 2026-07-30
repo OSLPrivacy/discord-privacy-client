@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
+import hashlib
 import hmac
 from os import PathLike
+import os
 import re
-from typing import Any, Literal, Protocol
+from typing import Any, Literal
 
 from ledger import LedgerError, OneShotLedger, pipe_binding_digest
 from schema import (
@@ -63,13 +65,322 @@ class VerificationError(ValueError):
     """Evidence did not meet the v3 native-authority acceptance contract."""
 
 
-class FilesystemAuthorityVerifier(Protocol):
-    """Future native-owned proof boundary; this package has no implementation.
+class _FilesystemNativeApi:
+    """Tiny ctypes boundary for the Windows file facts this verifier trusts."""
 
-    The integration owner must supply an implementation backed by Windows
-    handle identity and DACL inspection. Caller JSON or Linux path checks are
-    never sufficient to return ``True``.
+    def __init__(self) -> None:
+        if os.name != "nt":
+            raise OSError("native filesystem authority requires Windows")
+        import ctypes
+        from ctypes import wintypes
+
+        self._ctypes = ctypes
+        self._wintypes = wintypes
+        self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+
+        class Filetime(ctypes.Structure):
+            _fields_ = [
+                ("dwLowDateTime", wintypes.DWORD),
+                ("dwHighDateTime", wintypes.DWORD),
+            ]
+
+        class ByHandleFileInformation(ctypes.Structure):
+            _fields_ = [
+                ("dwFileAttributes", wintypes.DWORD),
+                ("ftCreationTime", Filetime),
+                ("ftLastAccessTime", Filetime),
+                ("ftLastWriteTime", Filetime),
+                ("dwVolumeSerialNumber", wintypes.DWORD),
+                ("nFileSizeHigh", wintypes.DWORD),
+                ("nFileSizeLow", wintypes.DWORD),
+                ("nNumberOfLinks", wintypes.DWORD),
+                ("nFileIndexHigh", wintypes.DWORD),
+                ("nFileIndexLow", wintypes.DWORD),
+            ]
+
+        class Acl(ctypes.Structure):
+            _fields_ = [
+                ("AclRevision", wintypes.BYTE),
+                ("Sbz1", wintypes.BYTE),
+                ("AclSize", wintypes.WORD),
+                ("AceCount", wintypes.WORD),
+                ("Sbz2", wintypes.WORD),
+            ]
+
+        class SidAndAttributes(ctypes.Structure):
+            _fields_ = [
+                ("Sid", wintypes.LPVOID),
+                ("Attributes", wintypes.DWORD),
+            ]
+
+        class TokenUser(ctypes.Structure):
+            _fields_ = [("User", SidAndAttributes)]
+
+        self._ByHandleFileInformation = ByHandleFileInformation
+        self._Acl = Acl
+        self._TokenUser = TokenUser
+
+        self._kernel32.CreateFileW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        self._kernel32.CreateFileW.restype = wintypes.HANDLE
+        self._kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        self._kernel32.CloseHandle.restype = wintypes.BOOL
+        self._kernel32.GetFileAttributesW.argtypes = [wintypes.LPCWSTR]
+        self._kernel32.GetFileAttributesW.restype = wintypes.DWORD
+        self._kernel32.GetFileInformationByHandle.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(ByHandleFileInformation),
+        ]
+        self._kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+        self._kernel32.GetFinalPathNameByHandleW.argtypes = [
+            wintypes.HANDLE,
+            wintypes.LPWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+        ]
+        self._kernel32.GetFinalPathNameByHandleW.restype = wintypes.DWORD
+        self._kernel32.GetCurrentProcess.argtypes = []
+        self._kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        self._kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
+        self._kernel32.LocalFree.restype = wintypes.HLOCAL
+
+        self._advapi32.GetNamedSecurityInfoW.argtypes = [
+            wintypes.LPWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.LPVOID),
+            ctypes.POINTER(wintypes.LPVOID),
+            ctypes.POINTER(wintypes.LPVOID),
+            ctypes.POINTER(wintypes.LPVOID),
+            ctypes.POINTER(wintypes.LPVOID),
+        ]
+        self._advapi32.GetNamedSecurityInfoW.restype = wintypes.DWORD
+        self._advapi32.GetLengthSid.argtypes = [wintypes.LPVOID]
+        self._advapi32.GetLengthSid.restype = wintypes.DWORD
+        self._advapi32.GetSecurityDescriptorControl.argtypes = [
+            wintypes.LPVOID,
+            ctypes.POINTER(wintypes.WORD),
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        self._advapi32.GetSecurityDescriptorControl.restype = wintypes.BOOL
+        self._advapi32.OpenProcessToken.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.HANDLE),
+        ]
+        self._advapi32.OpenProcessToken.restype = wintypes.BOOL
+        self._advapi32.GetTokenInformation.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        self._advapi32.GetTokenInformation.restype = wintypes.BOOL
+
+    def _raise_last_error(self) -> None:
+        raise self._ctypes.WinError(self._ctypes.get_last_error())
+
+    def _hash(self, value: bytes) -> str:
+        return hashlib.sha256(value).hexdigest()
+
+    def _sid_hash(self, sid: object) -> str:
+        length = self._advapi32.GetLengthSid(sid)
+        if length == 0:
+            self._raise_last_error()
+        return self._hash(self._ctypes.string_at(sid, length))
+
+    def _assert_not_reparse_point(self, path: str) -> None:
+        invalid_file_attributes = 0xFFFFFFFF
+        file_attribute_reparse_point = 0x00000400
+        attributes = self._kernel32.GetFileAttributesW(path)
+        if attributes == invalid_file_attributes:
+            self._raise_last_error()
+        if attributes & file_attribute_reparse_point:
+            raise OSError("filesystem authority path is a reparse point")
+
+    def _open_path(self, path: str, *, directory: bool) -> object:
+        self._assert_not_reparse_point(path)
+        desired_access = 0x80 | 0x00020000  # FILE_READ_ATTRIBUTES | READ_CONTROL
+        share_all = 0x00000001 | 0x00000002 | 0x00000004
+        open_existing = 3
+        file_flag_backup_semantics = 0x02000000
+        flags = file_flag_backup_semantics if directory else 0
+        handle = self._kernel32.CreateFileW(
+            path,
+            desired_access,
+            share_all,
+            None,
+            open_existing,
+            flags,
+            None,
+        )
+        if handle == self._wintypes.HANDLE(-1).value:
+            self._raise_last_error()
+        return handle
+
+    def _close(self, handle: object) -> None:
+        if not self._kernel32.CloseHandle(handle):
+            self._raise_last_error()
+
+    def _final_path(self, handle: object) -> str:
+        buffer_len = 32768
+        buffer = self._ctypes.create_unicode_buffer(buffer_len)
+        volume_name_dos = 0
+        written = self._kernel32.GetFinalPathNameByHandleW(
+            handle,
+            buffer,
+            buffer_len,
+            volume_name_dos,
+        )
+        if written == 0 or written >= buffer_len:
+            self._raise_last_error()
+        value = buffer.value
+        if value.startswith("\\\\?\\"):
+            value = value[4:]
+        return value
+
+    def file_identity(self, path: str, *, directory: bool) -> dict[str, int]:
+        handle = self._open_path(path, directory=directory)
+        try:
+            final_path = self._final_path(handle)
+            if not hmac.compare_digest(final_path.casefold(), path.casefold()):
+                raise OSError("filesystem authority path resolves through an alias")
+            information = self._ByHandleFileInformation()
+            if not self._kernel32.GetFileInformationByHandle(
+                handle,
+                self._ctypes.byref(information),
+            ):
+                self._raise_last_error()
+            file_index = (
+                int(information.nFileIndexHigh) << 32
+            ) | int(information.nFileIndexLow)
+            return {
+                "volumeSerialNumber": int(information.dwVolumeSerialNumber),
+                "fileIndex": file_index,
+            }
+        finally:
+            self._close(handle)
+
+    def record_is_regular_child(self, root: str, record_path: str) -> bool:
+        root_handle = self._open_path(root, directory=True)
+        try:
+            root_final = self._final_path(root_handle).casefold()
+        finally:
+            self._close(root_handle)
+        record_handle = self._open_path(record_path, directory=False)
+        try:
+            record_final = self._final_path(record_handle).casefold()
+        finally:
+            self._close(record_handle)
+        return (
+            hmac.compare_digest(root_final, root.casefold())
+            and hmac.compare_digest(record_final, record_path.casefold())
+            and record_final.startswith(root_final.rstrip("\\") + "\\")
+        )
+
+    def security_hashes(self, path: str) -> tuple[str, str, bool]:
+        ctypes = self._ctypes
+        owner = self._wintypes.LPVOID()
+        dacl = self._wintypes.LPVOID()
+        descriptor = self._wintypes.LPVOID()
+        se_file_object = 1
+        owner_security_information = 0x00000001
+        dacl_security_information = 0x00000004
+        error = self._advapi32.GetNamedSecurityInfoW(
+            path,
+            se_file_object,
+            owner_security_information | dacl_security_information,
+            ctypes.byref(owner),
+            None,
+            ctypes.byref(dacl),
+            None,
+            ctypes.byref(descriptor),
+        )
+        if error != 0:
+            raise OSError(error, "filesystem authority security descriptor failed")
+        try:
+            if not owner or not dacl or not descriptor:
+                raise OSError("filesystem authority owner or DACL is absent")
+            acl = ctypes.cast(dacl, ctypes.POINTER(self._Acl)).contents
+            if acl.AclSize <= 0:
+                raise OSError("filesystem authority DACL is empty")
+            control = self._wintypes.WORD()
+            revision = self._wintypes.DWORD()
+            if not self._advapi32.GetSecurityDescriptorControl(
+                descriptor,
+                ctypes.byref(control),
+                ctypes.byref(revision),
+            ):
+                self._raise_last_error()
+            se_dacl_protected = 0x1000
+            return (
+                self._hash(ctypes.string_at(dacl, int(acl.AclSize))),
+                self._sid_hash(owner),
+                bool(int(control.value) & se_dacl_protected),
+            )
+        finally:
+            self._kernel32.LocalFree(descriptor)
+
+    def current_user_sid_sha256(self) -> str:
+        ctypes = self._ctypes
+        token_query = 0x0008
+        token_user = 1
+        token = self._wintypes.HANDLE()
+        if not self._advapi32.OpenProcessToken(
+            self._kernel32.GetCurrentProcess(),
+            token_query,
+            ctypes.byref(token),
+        ):
+            self._raise_last_error()
+        try:
+            needed = self._wintypes.DWORD()
+            self._advapi32.GetTokenInformation(
+                token,
+                token_user,
+                None,
+                0,
+                ctypes.byref(needed),
+            )
+            if needed.value <= 0:
+                self._raise_last_error()
+            buffer = ctypes.create_string_buffer(int(needed.value))
+            if not self._advapi32.GetTokenInformation(
+                token,
+                token_user,
+                buffer,
+                needed.value,
+                ctypes.byref(needed),
+            ):
+                self._raise_last_error()
+            user = ctypes.cast(
+                buffer,
+                ctypes.POINTER(self._TokenUser),
+            ).contents.User
+            return self._sid_hash(user.Sid)
+        finally:
+            self._close(token)
+
+
+class FilesystemAuthorityVerifier:
+    """Verify native-owned C4 ledger authority with Windows filesystem APIs.
+
+    Caller JSON is treated only as a claim. This verifier returns ``True`` only
+    when native Windows calls independently reproduce the ledger root identity,
+    the root owner SID digest, the protected DACL digest, and the exact record
+    path under that root. Non-Windows hosts and missing native facts refuse.
     """
+
+    def __init__(self, native_api: object | None = None) -> None:
+        self._native_api = native_api
 
     def verify_filesystem_authority(
         self,
@@ -82,6 +393,91 @@ class FilesystemAuthorityVerifier(Protocol):
         now_unix_ms: int,
     ) -> bool:
         """Return the literal boolean True only for a native-proven binding."""
+
+        try:
+            if self._native_api is None and os.name != "nt":
+                return False
+            if (
+                type(now_unix_ms) is not int
+                or not 0 <= now_unix_ms <= (1 << 63) - 1
+            ):
+                return False
+            if (
+                type(expected_emitter) is not dict
+                or set(expected_emitter) != PROCESS_KEYS
+            ):
+                return False
+            validate_process_binding(expected_emitter, "expectedEmitter")
+            if (
+                type(attestation) is not dict
+                or set(attestation) != FILESYSTEM_ATTESTATION_KEYS
+            ):
+                return False
+            if (
+                attestation["schema"] != "osl.c4.filesystem-authority-attestation"
+                or attestation["version"] != 3
+                or attestation["authoritySource"] != "native_windows_owner"
+                or type(attestation["checkedAtUnixMs"]) is not int
+                or attestation["checkedAtUnixMs"] > now_unix_ms
+            ):
+                return False
+            if type(challenge) is not str or not hmac.compare_digest(
+                attestation["challenge"],
+                challenge,
+            ):
+                return False
+            root = _validate_windows_path(str(ledger_root), "ledger root", file=False)
+            record_path = _validate_windows_path(
+                str(ledger_record_path),
+                "ledger record path",
+                file=True,
+            )
+            if not hmac.compare_digest(attestation["ledgerRoot"], root):
+                return False
+            if not hmac.compare_digest(attestation["ledgerRecordPath"], record_path):
+                return False
+            if not record_path.startswith(root + "\\"):
+                return False
+            if type(attestation["rootIdentity"]) is not dict or set(
+                attestation["rootIdentity"]
+            ) != ROOT_IDENTITY_KEYS:
+                return False
+            for key in ROOT_IDENTITY_KEYS:
+                if (
+                    type(attestation["rootIdentity"][key]) is not int
+                    or not 1 <= attestation["rootIdentity"][key] <= (1 << 63) - 1
+                ):
+                    return False
+            for key in ("daclSha256", "ownerSidSha256"):
+                if (
+                    type(attestation[key]) is not str
+                    or SHA256_RE.fullmatch(attestation[key]) is None
+                ):
+                    return False
+
+            native_api = self._native_api or _FilesystemNativeApi()
+            root_identity = native_api.file_identity(root, directory=True)
+            if root_identity != attestation["rootIdentity"]:
+                return False
+            if not native_api.record_is_regular_child(root, record_path):
+                return False
+            dacl_sha256, owner_sid_sha256, dacl_protected = (
+                native_api.security_hashes(root)
+            )
+            if dacl_protected is not True:
+                return False
+            if not hmac.compare_digest(dacl_sha256, attestation["daclSha256"]):
+                return False
+            if not hmac.compare_digest(owner_sid_sha256, attestation["ownerSidSha256"]):
+                return False
+            if not hmac.compare_digest(
+                native_api.current_user_sid_sha256(),
+                owner_sid_sha256,
+            ):
+                return False
+        except (OSError, SchemaError, VerificationError, TypeError, ValueError):
+            return False
+        return True
 
 
 @dataclass(frozen=True)
