@@ -22,9 +22,11 @@ import {
   CANONICAL_ROLLOUT_EVIDENCE_FORMAT,
   CANONICAL_ROLLOUT_EVIDENCE_DOMAIN,
   CANONICAL_ROLLOUT_EVIDENCE_ENVELOPE_FORMAT,
+  CANONICAL_ROLLOUT_MIGRATION_GATE_FORMAT,
   CANONICAL_ROLLOUT_MIGRATION,
   CANONICAL_ROLLOUT_SOURCE_PATHS,
   createCanonicalRolloutProvisioningAdmission,
+  validateCanonicalRolloutMigrationGate,
   validateCanonicalRolloutCompletionEvidence,
   validateCanonicalRolloutProvisioningReceipt,
   validateCanonicalRolloutSourceClosure,
@@ -164,6 +166,26 @@ async function positiveEvidence() {
     },
   };
   return signEvidencePayload(payload);
+}
+
+async function migrationGateInputs() {
+  const sourceFiles = validateCanonicalRolloutSourceClosure(
+    await sourceValues(),
+  );
+  const evidence = await positiveEvidence();
+  return {
+    migrationRows: [
+      evidence.payload.migration,
+      evidence.payload.prekey_migration,
+    ],
+    sourceFiles,
+    worker: {
+      name: "oslprivacy-keyserver",
+      deployed_at: "2026-07-27T19:59:55.000Z",
+      binding: CANONICAL_ROLLOUT_DATABASE.binding,
+      database_id: CANONICAL_ROLLOUT_DATABASE.database_id,
+    },
+  };
 }
 
 async function positiveReceipt() {
@@ -313,6 +335,52 @@ describe("canonical rollout predeploy and provisioning admission", () => {
     expect(await make((e) => {
       delete e.payload.migration;
     })).toThrow(/fields are not exact/);
+  });
+
+  it("keeps scheme-1 Worker activation refused until migrations 0033/0034 are deployed in exact order", async () => {
+    const inputs = await migrationGateInputs();
+    expect(() => validateCanonicalRolloutMigrationGate({
+      ...inputs,
+      migrationRows: [],
+    })).toThrow(/0033\/0034 are undeployed/);
+    expect(() => validateCanonicalRolloutMigrationGate({
+      ...inputs,
+      migrationRows: [inputs.migrationRows[0]],
+    })).toThrow(/0033\/0034 are undeployed/);
+    expect(() => validateCanonicalRolloutMigrationGate({
+      ...inputs,
+      migrationRows: [
+        { ...inputs.migrationRows[0], applied_order: 34 },
+        { ...inputs.migrationRows[1], applied_order: 33 },
+      ],
+    })).toThrow(/applied order is not exact/);
+    expect(() => validateCanonicalRolloutMigrationGate({
+      ...inputs,
+      migrationRows: [
+        inputs.migrationRows[0],
+        {
+          ...inputs.migrationRows[1],
+          applied_at: "2026-07-27T19:59:50.000Z",
+        },
+      ],
+    })).toThrow(/timestamp order is invalid/);
+    expect(() => validateCanonicalRolloutMigrationGate({
+      ...inputs,
+      worker: {
+        ...inputs.worker,
+        deployed_at: "2026-07-27T19:59:51.000Z",
+      },
+    })).toThrow(/activation before migrations 0033\/0034 is refused/);
+
+    const gate = validateCanonicalRolloutMigrationGate(inputs);
+    expect(gate.format).toBe(CANONICAL_ROLLOUT_MIGRATION_GATE_FORMAT);
+    expect(gate.migrations_deployed).toBe(true);
+    expect(gate.worker_activation_precondition_satisfied).toBe(true);
+    expect(gate.execution_authorized).toBe(false);
+    expect(gate.migration_execution_authorized).toBe(false);
+    expect(gate.worker_activation_authorized).toBe(false);
+    expect(gate.migration.name).toBe(CANONICAL_ROLLOUT_MIGRATION);
+    expect(gate.prekey_migration.name).toBe(CANONICAL_PREKEY_MIGRATION);
   });
 
   it("refuses migration-byte substitution and receipt tampering", async () => {

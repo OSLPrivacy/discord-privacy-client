@@ -25,6 +25,8 @@ export const CANONICAL_ROLLOUT_ADMISSION_FORMAT =
   "osl.keyserver.canonical-rollout-provisioning-admission.v1";
 export const CANONICAL_ROLLOUT_COMPLETION_FORMAT =
   "osl.keyserver.canonical-rollout-completion-evidence.v1";
+export const CANONICAL_ROLLOUT_MIGRATION_GATE_FORMAT =
+  "osl.keyserver.canonical-rollout-migration-gate.v1";
 export const CANONICAL_ROLLOUT_MAX_CAPTURE_MS = 120_000;
 export const CANONICAL_ROLLOUT_MAX_EVIDENCE_AGE_MS = 120_000;
 
@@ -153,6 +155,125 @@ function exactSourceAnchor(value) {
   gitObject(source.repository_tree, "canonical rollout repository tree");
   gitObject(source.keyserver_tree, "canonical rollout keyserver tree");
   return source;
+}
+
+function canonicalRolloutMigrationPair(value, label) {
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be an array`);
+  }
+  if (value.length !== 2) {
+    throw new Error("migrations 0033/0034 are undeployed or incomplete");
+  }
+  const rows = value.map((entry) =>
+    exact(
+      entry,
+      ["applied_at", "applied_order", "database_id", "name", "sha256"],
+      `${label} row`,
+    ));
+  const migration = rows.find((row) => row.name === CANONICAL_ROLLOUT_MIGRATION);
+  const prekeyMigration = rows.find(
+    (row) => row.name === CANONICAL_PREKEY_MIGRATION,
+  );
+  if (!migration || !prekeyMigration) {
+    throw new Error("migrations 0033/0034 are undeployed or incomplete");
+  }
+  if (
+    migration.database_id !== CANONICAL_ROLLOUT_DATABASE.database_id ||
+    prekeyMigration.database_id !== CANONICAL_ROLLOUT_DATABASE.database_id
+  ) {
+    throw new Error("migrations 0033/0034 target the wrong D1 database");
+  }
+  if (migration.applied_order !== 33 || prekeyMigration.applied_order !== 34) {
+    throw new Error("migrations 0033/0034 applied order is not exact");
+  }
+  digest(migration.sha256, "canonical rollout migration digest");
+  digest(prekeyMigration.sha256, "scheme-1 prekey migration digest");
+  const migrationApplied = timestamp(
+    migration.applied_at,
+    "canonical rollout migration application",
+  );
+  const prekeyMigrationApplied = timestamp(
+    prekeyMigration.applied_at,
+    "scheme-1 prekey migration application",
+  );
+  if (prekeyMigrationApplied < migrationApplied) {
+    throw new Error("migrations 0033/0034 timestamp order is invalid");
+  }
+  return { migration, prekeyMigration, migrationApplied, prekeyMigrationApplied };
+}
+
+export function validateCanonicalRolloutMigrationGate({
+  migrationRows,
+  sourceFiles,
+  worker,
+}) {
+  const {
+    migration,
+    prekeyMigration,
+    migrationApplied,
+    prekeyMigrationApplied,
+  } = canonicalRolloutMigrationPair(
+    migrationRows,
+    "canonical rollout D1 migration readback",
+  );
+  if (
+    !Array.isArray(sourceFiles) ||
+    sourceFiles.length !== CANONICAL_ROLLOUT_SOURCE_PATHS.length
+  ) {
+    throw new Error("canonical rollout source files are incomplete");
+  }
+  const migrationFile = sourceFiles.find((file) =>
+    file.path.endsWith(`/${CANONICAL_ROLLOUT_MIGRATION}`));
+  const prekeyMigrationFile = sourceFiles.find((file) =>
+    file.path.endsWith(`/${CANONICAL_PREKEY_MIGRATION}`));
+  if (!migrationFile || migrationFile.sha256 !== migration.sha256) {
+    throw new Error("migration 0033 readback is not source-bound");
+  }
+  if (!prekeyMigrationFile || prekeyMigrationFile.sha256 !== prekeyMigration.sha256) {
+    throw new Error("migration 0034 readback is not source-bound");
+  }
+
+  const observedWorker = exact(
+    worker,
+    [
+      "binding",
+      "database_id",
+      "deployed_at",
+      "name",
+    ],
+    "canonical rollout Worker activation gate",
+  );
+  if (
+    observedWorker.name !== CANONICAL_ROLLOUT_WORKER_NAME ||
+    observedWorker.binding !== CANONICAL_ROLLOUT_DATABASE.binding ||
+    observedWorker.database_id !== CANONICAL_ROLLOUT_DATABASE.database_id
+  ) {
+    throw new Error("canonical rollout Worker is not bound to the exact D1");
+  }
+  const workerDeployed = timestamp(
+    observedWorker.deployed_at,
+    "canonical rollout Worker deployment",
+  );
+  if (
+    migrationApplied >= workerDeployed ||
+    prekeyMigrationApplied >= workerDeployed
+  ) {
+    throw new Error("scheme-1 Worker activation before migrations 0033/0034 is refused");
+  }
+  return Object.freeze({
+    format: CANONICAL_ROLLOUT_MIGRATION_GATE_FORMAT,
+    migrations_deployed: true,
+    migration_order_verified: true,
+    source_bound: true,
+    worker_activation_precondition_satisfied: true,
+    execution_authorized: false,
+    migration_execution_authorized: false,
+    worker_activation_authorized: false,
+    database: { ...CANONICAL_ROLLOUT_DATABASE },
+    migration: Object.freeze({ ...migration }),
+    prekey_migration: Object.freeze({ ...prekeyMigration }),
+    worker: Object.freeze({ ...observedWorker }),
+  });
 }
 
 export function validateCanonicalRolloutSourceClosure(fileValues) {
@@ -910,5 +1031,66 @@ export function validateCanonicalRolloutCompletionEvidence({
     keyserver_tree: receipt.source.keyserver_tree,
     admission_receipt_sha256: receipt.payload_sha256,
     evidence_sha256: sha256(Buffer.from(canonical(evidence))),
+  });
+}
+
+if (process.env.OSL_CANONICAL_ROLLOUT_CONTRACT_SELFTEST === "1") {
+  const { default: assert } = await import("node:assert/strict");
+  const { test } = await import("node:test");
+
+  const row33 = Object.freeze({
+    name: CANONICAL_ROLLOUT_MIGRATION,
+    sha256: "1".repeat(64),
+    applied_order: 33,
+    applied_at: "2026-07-27T19:59:51.000Z",
+    database_id: CANONICAL_ROLLOUT_DATABASE.database_id,
+  });
+  const row34 = Object.freeze({
+    name: CANONICAL_PREKEY_MIGRATION,
+    sha256: "2".repeat(64),
+    applied_order: 34,
+    applied_at: "2026-07-27T19:59:52.000Z",
+    database_id: CANONICAL_ROLLOUT_DATABASE.database_id,
+  });
+  const sourceFiles = Object.freeze(
+    CANONICAL_ROLLOUT_SOURCE_PATHS.map((sourcePath) => Object.freeze({
+      path: sourcePath,
+      bytes: 1,
+      sha256: sourcePath.endsWith(`/${CANONICAL_ROLLOUT_MIGRATION}`)
+        ? row33.sha256
+        : sourcePath.endsWith(`/${CANONICAL_PREKEY_MIGRATION}`)
+          ? row34.sha256
+          : "3".repeat(64),
+    })),
+  );
+  const worker = Object.freeze({
+    name: CANONICAL_ROLLOUT_WORKER_NAME,
+    deployed_at: "2026-07-27T19:59:55.000Z",
+    binding: CANONICAL_ROLLOUT_DATABASE.binding,
+    database_id: CANONICAL_ROLLOUT_DATABASE.database_id,
+  });
+
+  test("same-file b46 gate refuses absent 0033/0034 rows", () => {
+    assert.throws(
+      () => validateCanonicalRolloutMigrationGate({
+        migrationRows: [],
+        sourceFiles,
+        worker,
+      }),
+      /0033\/0034 are undeployed/,
+    );
+  });
+
+  test("same-file b46 gate verifies order without authorizing execution", () => {
+    const gate = validateCanonicalRolloutMigrationGate({
+      migrationRows: [row33, row34],
+      sourceFiles,
+      worker,
+    });
+    assert.equal(gate.format, CANONICAL_ROLLOUT_MIGRATION_GATE_FORMAT);
+    assert.equal(gate.migration_order_verified, true);
+    assert.equal(gate.execution_authorized, false);
+    assert.equal(gate.migration_execution_authorized, false);
+    assert.equal(gate.worker_activation_authorized, false);
   });
 }
