@@ -1216,6 +1216,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(foreign_root);
     }
 
+    #[test]
+    fn staging_and_caller_root_must_match_before_plaintext_open() {
+        let caller_root = root("plaintext-caller-root");
+        let attacker_root = root("plaintext-attacker-root");
+        let caller_staging = caller_root.join(STAGING_DIRECTORY);
+        let attacker_staging = attacker_root.join(STAGING_DIRECTORY);
+        std::fs::create_dir_all(&caller_staging).unwrap();
+        std::fs::create_dir_all(&attacker_staging).unwrap();
+        let attacker_plaintext =
+            attacker_staging.join("opened-00112233445566778899aabbccddeeff.oslatt");
+        std::fs::write(&attacker_plaintext, b"foreign plaintext").unwrap();
+
+        let refused = remove_plaintext_with_retries(&caller_root, &attacker_plaintext);
+
+        assert_eq!(refused, Err("staged attachment path is invalid".to_owned()));
+        assert!(
+            attacker_plaintext.exists(),
+            "a caller root mismatch must refuse before deleting or opening plaintext"
+        );
+
+        let caller_plaintext =
+            caller_staging.join("opened-ffeeddccbbaa99887766554433221100.oslatt");
+        std::fs::write(&caller_plaintext, b"same caller plaintext").unwrap();
+        remove_plaintext_with_retries(&caller_root, &caller_plaintext).unwrap();
+        assert!(!caller_plaintext.exists());
+
+        let _ = std::fs::remove_dir_all(caller_root);
+        let _ = std::fs::remove_dir_all(attacker_root);
+    }
+
     fn outbox_key() -> [u8; 32] {
         [0x31u8; 32]
     }
