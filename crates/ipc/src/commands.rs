@@ -10776,6 +10776,21 @@ pub fn cmd_osl_verify_gate_password(
                 crate::main_password::password_lockout_secs_pub(lock.password_failed_attempts);
             lock.password_locked_until = if secs > 0 { Some(now + secs) } else { None };
             let _ = crate::main_password::write_lockout_pub(&dir, &lock);
+            if crate::main_password::wrong_password_attempt_triggers_duress(
+                lock.password_failed_attempts,
+            ) {
+                let report = state
+                    .duress_engine
+                    .lock()
+                    .map_err(|_| "OSL duress engine is unavailable".to_owned())?
+                    .execute()
+                    .map_err(|e| format!("OSL duress execution failed: {e}"))?;
+                tracing::warn!(
+                    failed_steps = report.failed_steps().len(),
+                    skipped_steps = report.skipped_steps().len(),
+                    "OSL: wrong-password threshold triggered local duress wipe"
+                );
+            }
             Ok(GateVerifyDto {
                 result: "wrong".to_string(),
                 lockout_seconds_remaining: secs,

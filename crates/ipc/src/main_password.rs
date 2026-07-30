@@ -59,6 +59,7 @@ const ENC_MAGIC: &[u8; 8] = b"OSL-ENC1";
 pub const PASSWORD_MIN_LEN: usize = 6;
 pub const RECOMMENDED_PASSWORD_LEN: usize = 12;
 pub const PASSWORD_MAX_LEN: usize = 128;
+pub const DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT: u32 = 10;
 const SALT_LEN: usize = 16;
 const ARGON_OUTPUT_LEN: usize = 64; // 32 hash + 32 AES key
 const HASH_LEN: usize = 32;
@@ -309,6 +310,10 @@ pub fn now_unix_secs_pub() -> i64 {
 
 pub fn password_lockout_secs_pub(attempts: u32) -> i64 {
     password_lockout_secs(attempts)
+}
+
+pub fn wrong_password_attempt_triggers_duress(attempts: u32) -> bool {
+    attempts >= DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT
 }
 
 fn read_lockout(dir: &Path) -> LockoutState {
@@ -1507,6 +1512,57 @@ mod password_policy_tests {
         assert_eq!(get_file_storage_key(), None);
 
         set_file_storage_key(None);
+    }
+
+    #[test]
+    fn tenth_wrong_password_attempt_triggers_duress() {
+        struct OverrideReset;
+        impl Drop for OverrideReset {
+            fn drop(&mut self) {
+                set_file_storage_key(None);
+                keystore::set_active_account_dir(None);
+                keystore::set_base_dir_override(None);
+            }
+        }
+
+        set_file_storage_key(None);
+        let dir = tempfile::tempdir().unwrap();
+        let base_dir = dir.path().join("base");
+        let account_dir = dir.path().join("accounts").join("active");
+        std::fs::create_dir_all(&account_dir).unwrap();
+        keystore::set_base_dir_override(Some(base_dir.clone()));
+        keystore::set_active_account_dir(Some(account_dir.clone()));
+        let _reset = OverrideReset;
+
+        let state = AppState::new();
+        let marker = build_marker(
+            "correct-password",
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        )
+        .unwrap();
+        write_marker(&base_dir, &marker).unwrap();
+        std::fs::write(account_dir.join("identity.json"), b"identity").unwrap();
+        std::fs::write(account_dir.join("prekeys.json"), b"prekeys").unwrap();
+        write_lockout(
+            &base_dir,
+            &LockoutState {
+                version: LOCKOUT_VERSION,
+                password_failed_attempts: DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 1,
+                password_locked_until: Some(now_unix_secs() - 1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let result =
+            crate::commands::cmd_osl_verify_gate_password(&state, "wrong-password".to_owned())
+                .unwrap();
+
+        assert_eq!(result.result, "wrong");
+        assert_eq!(result.attempts_used, DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT);
+        assert!(!account_dir.join("identity.json").exists());
+        assert!(!account_dir.join("prekeys.json").exists());
+        assert!(!base_dir.join("password_marker.json").exists());
     }
 
     #[test]
