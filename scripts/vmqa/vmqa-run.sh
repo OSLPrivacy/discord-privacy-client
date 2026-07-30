@@ -701,9 +701,12 @@ is_sha256() { [[ "${1:-}" =~ ^[0-9a-f]{64}$ ]]; }
 
 grade_f1_live_windows_walkthrough_import() {
   local file="$1" overall picker grant import receipt selected rows bytes receipt_rows
-  local grant_bound attended receipt_sha no_secrets
+  local grant_bound attended receipt_sha no_secrets evidence_tier platform vm_name
   [ -f "$file" ] || { echo "F1 INVALID: verdict file is missing" >&2; return 9; }
   overall="$(jq -r '.overall // empty' "$file" 2>/dev/null || true)"
+  evidence_tier="$(jq -r '.evidenceTier // empty' "$file" 2>/dev/null || true)"
+  platform="$(jq -r '(.platform.os // .os // "") | ascii_downcase' "$file" 2>/dev/null || true)"
+  vm_name="$(jq -r '.vmName // empty' "$file" 2>/dev/null || true)"
   picker="$(step_status "$file" picker)"
   grant="$(step_status "$file" grant-ipc)"
   import="$(step_status "$file" import)"
@@ -719,6 +722,11 @@ grade_f1_live_windows_walkthrough_import() {
 
   if [ "$overall" != "pass" ]; then
     echo "F1 FAIL: overall=$overall" >&2
+    return 1
+  fi
+  if [ "$evidence_tier" != "live" ] || [ "$platform" != "windows" ] \
+     || [[ ! "$vm_name" =~ ^[A-Za-z0-9._-]{1,96}$ ]]; then
+    echo "F1 FAIL: walkthrough is not bound to a live Windows VM" >&2
     return 1
   fi
   if [ "$picker" != "pass" ] || [ "$grant" != "pass" ] \
@@ -747,14 +755,22 @@ grade_f1_live_windows_walkthrough_import() {
 }
 
 grade_f2_real_vm_five_frame_walkthrough() {
-  local file="$1" overall frames shape unique_sha
+  local file="$1" overall frames shape unique_sha evidence_tier vm_name authorization_sha
   [ -f "$file" ] || { echo "F2 INVALID: verdict file is missing" >&2; return 9; }
   overall="$(jq -r '.overall // empty' "$file" 2>/dev/null || true)"
+  evidence_tier="$(jq -r '.evidenceTier // empty' "$file" 2>/dev/null || true)"
+  vm_name="$(jq -r '.vmName // empty' "$file" 2>/dev/null || true)"
+  authorization_sha="$(jq -r '.authorizationSha256 // .authorizedGrantSha256 // empty' "$file" 2>/dev/null || true)"
   frames="$(jq -r '[.steps[]? | select(.verb == "frame" and .status == "pass")] | length' "$file" 2>/dev/null || printf '0\n')"
   shape="$(jq -r '[.steps[]? | select(.verb == "frame") | (.id + ":" + ((.facts.frameOrdinal // 0) | tostring))] | join(",")' "$file" 2>/dev/null || true)"
   unique_sha="$(jq -r '[.steps[]? | select(.verb == "frame") | .facts.pngSha256] | unique | length' "$file" 2>/dev/null || printf '0\n')"
   if [ "$overall" != "pass" ]; then
     echo "F2 FAIL: overall=$overall" >&2
+    return 1
+  fi
+  if [ "$evidence_tier" != "live" ] || [[ ! "$vm_name" =~ ^[A-Za-z0-9._-]{1,96}$ ]] \
+     || ! is_sha256 "$authorization_sha"; then
+    echo "F2 FAIL: walkthrough is not bound to an authorized live VM" >&2
     return 1
   fi
   if [ "$frames" -ne 5 ] || [ "$shape" != "F1:1,F2:2,F3:3,F4:4,F5:5" ]; then
@@ -787,7 +803,7 @@ vmqa_named_test_tmpdir() {
 }
 
 f1_live_windows_walkthrough_imports_nonempty_receipt() {
-  local tmp good bad_empty bad_grant bad_receipt bad_source bad_secret
+  local tmp good bad_empty bad_grant bad_receipt bad_source bad_secret bad_simulated
   tmp="$(vmqa_named_test_tmpdir)"
   good="$tmp/f1-good.json"
   bad_empty="$tmp/f1-empty.json"
@@ -795,7 +811,11 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
   bad_receipt="$tmp/f1-bad-receipt.json"
   bad_source="$tmp/f1-bad-source.json"
   bad_secret="$tmp/f1-secret-receipt.json"
+  bad_simulated="$tmp/f1-simulated.json"
   jq -n --arg sha "$(printf receipt | sha256sum | awk '{print $1}')" '{
+    evidenceTier:"live",
+    vmName:"OSL-Azure-Client-1",
+    platform:{os:"windows"},
     overall:"pass",
     steps:[
       {id:"P",verb:"picker",status:"pass",facts:{selectedSource:"edge"}},
@@ -809,6 +829,7 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
     "$good" >"$bad_receipt"
   jq '.steps[0].facts.selectedSource="unbounded-profile-path"' "$good" >"$bad_source"
   jq '.steps[3].facts.containsNoSecrets=false' "$good" >"$bad_secret"
+  jq '.evidenceTier="simulation"' "$good" >"$bad_simulated"
   grade_f1_live_windows_walkthrough_import "$good" >/dev/null \
     || { rm -rf -- "$tmp"; return 1; }
   grade_f1_live_windows_walkthrough_import "$bad_empty" >/dev/null 2>&1 \
@@ -821,19 +842,25 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
     && { rm -rf -- "$tmp"; return 1; }
   grade_f1_live_windows_walkthrough_import "$bad_secret" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_simulated" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
   rm -rf -- "$tmp"
   return 0
 }
 
 f2_real_vm_five_frame_walkthrough() {
-  local tmp good bad_four bad_reused bad_unbound bad_weak_surface
+  local tmp good bad_four bad_reused bad_unbound bad_weak_surface bad_unauthorized
   tmp="$(vmqa_named_test_tmpdir)"
   good="$tmp/f2-good.json"
   bad_four="$tmp/f2-four.json"
   bad_reused="$tmp/f2-reused.json"
   bad_unbound="$tmp/f2-unbound.json"
   bad_weak_surface="$tmp/f2-weak-surface.json"
+  bad_unauthorized="$tmp/f2-unauthorized.json"
   jq -n '{
+      evidenceTier:"live",
+      vmName:"OSL-Azure-Client-1",
+      authorizationSha256:("a" * 64),
       overall:"pass",
       steps:[range(1;6) as $i | {
         id:("F" + ($i|tostring)),
@@ -856,6 +883,7 @@ f2_real_vm_five_frame_walkthrough() {
   jq '.steps[2].facts.foreground=false | .steps[2].facts.requestSha256=""' "$good" >"$bad_unbound"
   jq '.steps[4].facts.surfaceHwnd=0 | .steps[4].facts.captureDistinctColors=1' \
     "$good" >"$bad_weak_surface"
+  jq '.authorizationSha256=""' "$good" >"$bad_unauthorized"
   grade_f2_real_vm_five_frame_walkthrough "$good" >/dev/null \
     || { rm -rf -- "$tmp"; return 1; }
   grade_f2_real_vm_five_frame_walkthrough "$bad_four" >/dev/null 2>&1 \
@@ -865,6 +893,8 @@ f2_real_vm_five_frame_walkthrough() {
   grade_f2_real_vm_five_frame_walkthrough "$bad_unbound" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
   grade_f2_real_vm_five_frame_walkthrough "$bad_weak_surface" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
+  grade_f2_real_vm_five_frame_walkthrough "$bad_unauthorized" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
   rm -rf -- "$tmp"
   return 0
