@@ -30,31 +30,75 @@ function installGlobals(): void {
 describe("autoscrub unattended run contract", () => {
   it("Wire autoscrub-unattended-run.ts + autoscrub-contract.ts as production", async () => {
     installGlobals();
-    const { autoscrubUnattendedProductionRun } = await import("./main");
+    const { autoscrubUnattendedContractGate, autoscrubUnattendedProductionRun } = await import("./main");
+    const nativeInvoke = vi.fn();
 
-    expect(autoscrubUnattendedProductionRun({
+    expect(autoscrubUnattendedContractGate({
       production: false,
       unattendedAllowed: true,
       reviewRequiredEveryBatch: false,
       externalSecurityReviewPassed: true,
     })).toEqual({ state: "refused", reason: "not-production" });
-    expect(autoscrubUnattendedProductionRun({
+    expect(autoscrubUnattendedContractGate({
       production: true,
       unattendedAllowed: false,
       reviewRequiredEveryBatch: false,
       externalSecurityReviewPassed: true,
     })).toEqual({ state: "refused", reason: "unattended-disabled" });
-    expect(autoscrubUnattendedProductionRun({
+    expect(autoscrubUnattendedContractGate({
       production: true,
       unattendedAllowed: true,
       reviewRequiredEveryBatch: true,
       externalSecurityReviewPassed: true,
     })).toEqual({ state: "refused", reason: "review-required" });
-    expect(autoscrubUnattendedProductionRun({
+    expect(autoscrubUnattendedContractGate({
+      production: true,
+      unattendedAllowed: true,
+      reviewRequiredEveryBatch: false,
+      externalSecurityReviewPassed: false,
+    })).toEqual({ state: "refused", reason: "external-review-required" });
+    expect(autoscrubUnattendedContractGate({
       production: true,
       unattendedAllowed: true,
       reviewRequiredEveryBatch: false,
       externalSecurityReviewPassed: true,
     })).toEqual({ state: "ready", command: "autoscrub_unattended_run" });
+
+    await expect(autoscrubUnattendedProductionRun({
+      production: true,
+      reviewRequiredEveryBatch: false,
+      externalSecurityReviewPassed: true,
+    }, nativeInvoke)).resolves.toEqual({ state: "refused", reason: "invalid-contract" });
+    expect(nativeInvoke).not.toHaveBeenCalled();
+
+    nativeInvoke.mockResolvedValueOnce({ runId: "autoscrub-run-0001", working: 1, totalRuns: 1 });
+    await expect(autoscrubUnattendedProductionRun({
+      production: true,
+      unattendedAllowed: true,
+      reviewRequiredEveryBatch: false,
+      externalSecurityReviewPassed: true,
+    }, nativeInvoke)).resolves.toEqual({
+      state: "started",
+      command: "autoscrub_unattended_run",
+      runId: "autoscrub-run-0001",
+      working: 1,
+      totalRuns: 1,
+    });
+    expect(nativeInvoke).toHaveBeenCalledWith("autoscrub_unattended_run", {
+      contract: {
+        production: true,
+        unattendedAllowed: true,
+        reviewRequiredEveryBatch: false,
+        externalSecurityReviewPassed: true,
+      },
+    });
+
+    nativeInvoke.mockResolvedValueOnce({ runId: "autoscrub-run-0002", working: 3, totalRuns: 3 });
+    await expect(autoscrubUnattendedProductionRun({
+      production: true,
+      unattendedAllowed: true,
+      reviewRequiredEveryBatch: false,
+      externalSecurityReviewPassed: true,
+    }, nativeInvoke)).resolves.toEqual({ state: "refused", reason: "native-refused" });
   });
 });
