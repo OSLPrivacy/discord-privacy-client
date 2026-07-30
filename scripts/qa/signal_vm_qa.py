@@ -37,7 +37,12 @@ FORBIDDEN_KEYS = re.compile(
 )
 SAFE_REFERENCE_KEYS: set[str] = set()
 HEX_256 = re.compile(r"[0-9a-fA-F]{64}")
-AUTOMATION_ACTIONS = ("Inventory", "ClaimExactWindow", "CaptureSafeChrome")
+AUTOMATION_ACTIONS = (
+    "Inventory",
+    "ClaimExactWindow",
+    "AlreadyRunningAccessibilityBench",
+    "CaptureSafeChrome",
+)
 
 # This is the complete requested live matrix. It is code-owned so a manifest
 # cannot silently omit a direction or downgrade a security assertion.
@@ -224,6 +229,7 @@ def stage_plan() -> list[dict[str, Any]]:
         {"id": "audit-2", "mode": "parallel", "support": "implemented"},
         {"id": "inventory", "mode": "parallel", "support": "scaffold"},
         {"id": "claim-exact-window", "mode": "parallel", "support": "scaffold"},
+        {"id": "already-running-accessibility-bench", "mode": "parallel", "support": "implemented"},
     ]
     for sender, receiver in DIRECTIONS:
         for case_id, action in QA_CASES:
@@ -297,6 +303,9 @@ def run(manifest_path: Path, receipt_dir: Path) -> Path:
     ))
     execute_stage("parallel-claim-exact-window", lambda alias, _vm: arm_and_poll(
         manifest_path, alias, "ClaimExactWindow", "post-redeploy-claim"
+    ))
+    execute_stage("parallel-already-running-accessibility-bench", lambda alias, _vm: arm_and_poll(
+        manifest_path, alias, "AlreadyRunningAccessibilityBench", "already-running-a11y-bench"
     ))
     execute_stage("parallel-safe-chrome-screenshot", lambda alias, vm: arm_and_poll(
         manifest_path, alias, "CaptureSafeChrome", f"{run_id}-{alias[-1]}-chrome",

@@ -185,7 +185,10 @@ class ManifestTests(unittest.TestCase):
             names = [name for name, _ in calls]
             self.assertEqual(names.count(qa.LEAVES["deploy"]), 4)
             self.assertEqual(names.count(qa.LEAVES["audit"]), 4)
-            self.assertEqual(arm_and_poll.call_count, 6)
+            self.assertEqual(arm_and_poll.call_count, 8)
+            bench_calls = [call for call in arm_and_poll.call_args_list if call.args[2] == "AlreadyRunningAccessibilityBench"]
+            self.assertEqual(len(bench_calls), 2)
+            self.assertTrue(all(call.args[3] == "already-running-a11y-bench" for call in bench_calls))
             screenshot_calls = [call for call in arm_and_poll.call_args_list if call.args[2] == "CaptureSafeChrome"]
             self.assertEqual(len(screenshot_calls), 2)
             self.assertTrue(all(call.args[4].startswith("https://example.invalid/screenshots/") for call in screenshot_calls))
@@ -194,6 +197,33 @@ class ManifestTests(unittest.TestCase):
             stage_names = [stage["name"] for stage in receipt["stages"]]
             self.assertLess(stage_names.index("parallel-exact-build-audit-1"), stage_names.index("parallel-deploy-2-preserve"))
             self.assertLess(stage_names.index("parallel-exact-build-audit-2"), stage_names.index("parallel-claim-exact-window"))
+            self.assertLess(stage_names.index("parallel-claim-exact-window"), stage_names.index("parallel-already-running-accessibility-bench"))
+            self.assertLess(stage_names.index("parallel-already-running-accessibility-bench"), stage_names.index("parallel-safe-chrome-screenshot"))
+
+    def test_run_signal_already_running_accessibility_bench(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest()), encoding="utf-8")
+            leaves = {key: root / filename for key, filename in qa.LEAVES.items()}
+            with mock.patch.object(qa, "preflight", return_value=leaves), mock.patch.object(
+                qa, "_az", return_value={"ok": True}
+            ), mock.patch.object(qa, "arm_and_poll", return_value=None) as arm_and_poll:
+                receipt_path = qa.run(manifest_path, root / "receipts")
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            stage_names = [stage["name"] for stage in receipt["stages"]]
+            self.assertIn("parallel-already-running-accessibility-bench", stage_names)
+            bench_calls = [
+                call for call in arm_and_poll.call_args_list
+                if call.args[2] == "AlreadyRunningAccessibilityBench"
+            ]
+            self.assertEqual(len(bench_calls), 2)
+            self.assertEqual({call.args[1] for call in bench_calls}, set(qa.ALIASES))
+            self.assertTrue(all(call.args[3] == "already-running-a11y-bench" for call in bench_calls))
+            self.assertLess(
+                stage_names.index("parallel-claim-exact-window"),
+                stage_names.index("parallel-already-running-accessibility-bench"),
+            )
 
     def test_bootstrap_rejects_obsolete_identity_import_reference(self) -> None:
         value = manifest()
@@ -212,7 +242,7 @@ class ManifestTests(unittest.TestCase):
 
     def test_plan_covers_every_case_in_both_directions(self) -> None:
         plan = qa.stage_plan()
-        self.assertEqual(len(plan), 35)
+        self.assertEqual(len(plan), 36)
         live = [stage for stage in plan if stage["support"] == "blockedUntilLiveAdapterReviewed"]
         self.assertEqual(len(live), len(qa.QA_CASES) * 2)
         self.assertEqual({(stage["sender"], stage["receiver"]) for stage in live}, set(qa.DIRECTIONS))
@@ -225,6 +255,8 @@ class ManifestTests(unittest.TestCase):
         self.assertLess(ids.index("deploy-1"), ids.index("audit-1"))
         self.assertLess(ids.index("audit-1"), ids.index("deploy-2-preserve"))
         self.assertLess(ids.index("deploy-2-preserve"), ids.index("audit-2"))
+        self.assertLess(ids.index("claim-exact-window"), ids.index("already-running-accessibility-bench"))
+        self.assertLess(ids.index("already-running-accessibility-bench"), ids.index("safe-chrome-screenshots"))
         self.assertIn("safe-chrome-screenshots", ids)
 
 
@@ -286,7 +318,7 @@ class LeafStaticTests(unittest.TestCase):
 
     def test_arm_is_scaffolding_not_message_automation(self) -> None:
         source = self.sources["arm"]
-        self.assertIn("ValidateSet('Inventory','ClaimExactWindow','CaptureSafeChrome')", source)
+        self.assertIn("ValidateSet('Inventory','ClaimExactWindow','AlreadyRunningAccessibilityBench','CaptureSafeChrome')", source)
         for action in ("Send", "InspectInbound", "OpenVerifiedFriend", "PrepareOverlay"):
             self.assertNotIn(f"'{action}'", source)
 
@@ -310,7 +342,7 @@ class LeafStaticTests(unittest.TestCase):
 
     def test_interactive_harness_exposes_only_inventory_and_exact_claim(self) -> None:
         source = (PATH.parent / "osl-vm-signal-uia-harness.ps1").read_text(encoding="utf-8-sig")
-        self.assertIn("ValidateSet('Inventory','ClaimExactWindow','CaptureSafeChrome')", source)
+        self.assertIn("ValidateSet('Inventory','ClaimExactWindow','AlreadyRunningAccessibilityBench','CaptureSafeChrome')", source)
         self.assertIn("Chrome_WidgetWin_1", source)
         self.assertIn("Title -ceq 'Signal'", source)
         self.assertIn("TitleIsExactSignal", source)
@@ -320,6 +352,8 @@ class LeafStaticTests(unittest.TestCase):
         self.assertNotRegex(source, r"(?i)\$pid\s*=")
         self.assertIn("ContentInspected=$false", source)
         self.assertIn("ForegroundChanged=$false", source)
+        self.assertIn("SignalAlreadyRunning=$true", source)
+        self.assertIn("ControlType.ProgrammaticName", source)
         for forbidden in ("SendKeys", "SetForegroundWindow", "ValuePattern", "message text", "ConversationList"):
             self.assertNotIn(forbidden, source)
 

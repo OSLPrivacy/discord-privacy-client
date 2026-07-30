@@ -1,5 +1,5 @@
 param(
-  [Parameter(Mandatory)][ValidateSet('Inventory','ClaimExactWindow','CaptureSafeChrome')][string]$Action,
+  [Parameter(Mandatory)][ValidateSet('Inventory','ClaimExactWindow','AlreadyRunningAccessibilityBench','CaptureSafeChrome')][string]$Action,
   [Parameter(Mandatory)][string]$OslExePath,
   [Parameter(Mandatory)][ValidatePattern('^[0-9a-fA-F]{64}$')][string]$OslExeSha256,
   [Parameter(Mandatory)][ValidateRange(1,128)][int]$SessionId,
@@ -43,6 +43,27 @@ if($Action -ceq 'CaptureSafeChrome'){
     [pscustomobject]@{Ok=$true;Action=$Action;CaseId=$CaseId;Region='osl-titlebar-only';Width=$width;Height=$safeHeight;Sha256=$hash;SignalPixelsIncluded=$false;MessagePixelsIncluded=$false;ContentInspected=$false;ForegroundChanged=$false}|ConvertTo-Json -Compress
     exit 0
   }finally{$bytes=$null;if($safe){$safe.Dispose()};Remove-Item $png -Force -ErrorAction SilentlyContinue}
+}
+if($Action -ceq 'AlreadyRunningAccessibilityBench'){
+  $deadline=[DateTime]::UtcNow.AddSeconds([Math]::Min($TimeoutSeconds,30));$started=[Diagnostics.Stopwatch]::StartNew()
+  $root=[Windows.Automation.AutomationElement]::FromHandle($window.Handle);if(-not $root){throw 'exact Signal accessibility root is unavailable'}
+  $walker=[Windows.Automation.TreeWalker]::RawViewWalker;$queue=New-Object 'System.Collections.Queue';$queue.Enqueue(@($root,0))
+  $nodeCount=0;$maxDepth=0;$truncated=$false;$roleCounts=@{}
+  while($queue.Count -gt 0){
+    if([DateTime]::UtcNow -ge $deadline){$truncated=$true;break}
+    $entry=$queue.Dequeue();$node=$entry[0];$depth=[int]$entry[1];$nodeCount++;if($depth -gt $maxDepth){$maxDepth=$depth}
+    $role=[string]$node.Current.ControlType.ProgrammaticName;if(-not $role){$role='Unknown'};$roleCounts[$role]=1+[int]($roleCounts[$role])
+    if($nodeCount -ge 384){$truncated=$true;break}
+    $child=$walker.GetFirstChild($node)
+    while($child){
+      if($queue.Count -ge 384){$truncated=$true;break}
+      $queue.Enqueue(@($child,$depth+1));$child=$walker.GetNextSibling($child)
+    }
+    if($truncated){break}
+  }
+  $started.Stop()
+  [pscustomobject]@{Ok=$true;Action=$Action;CaseId=$CaseId;ExactSignalWindowCount=1;NodeCount=[int]$nodeCount;MaxDepth=[int]$maxDepth;Truncated=[bool]$truncated;ElapsedMs=[int][Math]::Min($started.ElapsedMilliseconds,[int]::MaxValue);ControlTypeCount=[int]$roleCounts.Count;ContentInspected=$false;ForegroundChanged=$false;SignalAlreadyRunning=$true}|ConvertTo-Json -Compress
+  exit 0
 }
 if($Action -ceq 'ClaimExactWindow'){
   $deadline=[DateTime]::UtcNow.AddSeconds($TimeoutSeconds);$claimed=$false

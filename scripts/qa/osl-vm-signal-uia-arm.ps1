@@ -3,7 +3,7 @@ param(
   [Parameter(Mandatory)][ValidatePattern('^[a-z0-9][a-z0-9-]{7,63}$')][string]$InvocationId,
   [Parameter(Mandatory)][uri]$HarnessUri,
   [Parameter(Mandatory)][ValidatePattern('^[0-9a-fA-F]{64}$')][string]$HarnessSha256,
-  [Parameter(Mandatory)][ValidateSet('Inventory','ClaimExactWindow','CaptureSafeChrome')][string]$Action,
+  [Parameter(Mandatory)][ValidateSet('Inventory','ClaimExactWindow','AlreadyRunningAccessibilityBench','CaptureSafeChrome')][string]$Action,
   [Parameter(Mandatory)][ValidateRange(1,128)][int]$SessionId,
   [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$WindowsUser,
   [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$ProfileRoot,
