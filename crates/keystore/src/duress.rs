@@ -174,6 +174,7 @@ pub struct DuressHandlers {
 #[derive(Default)]
 pub struct ProductionDuressHandlers {
     handlers: DuressHandlers,
+    unregister_remote_identity: Option<WipeFn>,
 }
 
 impl ProductionDuressHandlers {
@@ -187,7 +188,10 @@ impl ProductionDuressHandlers {
     /// that own concrete wipe resources and can prove those resources are
     /// explicitly bound before invoking the duress engine.
     pub fn from_handlers(handlers: DuressHandlers) -> Self {
-        Self { handlers }
+        Self {
+            handlers,
+            unregister_remote_identity: None,
+        }
     }
 
     pub fn with_wipe_local_cache_dir(mut self, handler: WipeFn) -> Self {
@@ -252,6 +256,32 @@ impl ProductionDuressHandlers {
             "OPSEC strip requires at least one explicitly bound path",
         ));
         self
+    }
+
+    /// Wire the production caller's keyserver unregister operation.
+    ///
+    /// This deliberately lives beside, not inside, [`DuressHandlers`]: the
+    /// remote unregister must run while the old identity key still exists, so a
+    /// caller performs it before handing the local wipe handlers to
+    /// [`DuressEngine`]. If no callback is bound, production gets an explicit
+    /// skipped outcome rather than permission inferred from absence.
+    pub fn with_unregister_remote_identity(mut self, handler: WipeFn) -> Self {
+        self.unregister_remote_identity = Some(handler);
+        self
+    }
+
+    pub fn unregister_remote_identity(&self) -> StepOutcome {
+        match self.unregister_remote_identity.as_ref() {
+            Some(handler) => match handler() {
+                Ok(()) => StepOutcome::Wiped,
+                Err(error) => StepOutcome::Failed {
+                    error: error.to_string(),
+                },
+            },
+            None => StepOutcome::Skipped {
+                reason: "remote identity unregister handler not wired — caller must unregister before local identity files are wiped".to_string(),
+            },
+        }
     }
 
     pub fn into_handlers(self) -> DuressHandlers {
@@ -612,6 +642,8 @@ fn map_tpm_evict_result(result: std::result::Result<TpmEvictOutcome, SealerError
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     use tempfile::TempDir;
 
     fn test_paths(dir: &TempDir) -> (DuressPaths, PathBuf) {
@@ -652,6 +684,102 @@ mod tests {
             .find(|(step, _)| *step == target)
             .unwrap_or_else(|| panic!("step {target:?} missing from report"))
             .1
+    }
+
+    fn counted_handler(counter: Arc<AtomicUsize>) -> WipeFn {
+        Box::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn production_duress_handlers_compose_concrete_handlers() {
+        let local_cache = Arc::new(AtomicUsize::new(0));
+        let anonymous = Arc::new(AtomicUsize::new(0));
+        let prekeys = Arc::new(AtomicUsize::new(0));
+        let double_ratchet = Arc::new(AtomicUsize::new(0));
+        let sender_keys = Arc::new(AtomicUsize::new(0));
+        let peer_ratchets = Arc::new(AtomicUsize::new(0));
+        let zeroize = Arc::new(AtomicUsize::new(0));
+        let strip = Arc::new(AtomicUsize::new(0));
+        let unregister = Arc::new(AtomicUsize::new(0));
+
+        let production = ProductionDuressHandlers::new()
+            .with_wipe_local_cache_dir(counted_handler(local_cache.clone()))
+            .with_wipe_anonymous_credentials(counted_handler(anonymous.clone()))
+            .with_wipe_prekeys(counted_handler(prekeys.clone()))
+            .with_wipe_double_ratchet(counted_handler(double_ratchet.clone()))
+            .with_wipe_sender_keys(counted_handler(sender_keys.clone()))
+            .with_wipe_peer_ratchets(counted_handler(peer_ratchets.clone()))
+            .with_zeroize_in_memory(counted_handler(zeroize.clone()))
+            .with_strip_opsec_files(counted_handler(strip.clone()))
+            .with_unregister_remote_identity(counted_handler(unregister.clone()));
+
+        assert_eq!(
+            production.unregister_remote_identity(),
+            StepOutcome::Wiped,
+            "production unregister must be an explicit concrete callback"
+        );
+        let handlers: DuressHandlers = production.into();
+        for (handler, counter) in [
+            (&handlers.wipe_local_cache_dir, local_cache),
+            (&handlers.wipe_anonymous_credentials, anonymous),
+            (&handlers.wipe_prekeys, prekeys),
+            (&handlers.wipe_double_ratchet, double_ratchet),
+            (&handlers.wipe_sender_keys, sender_keys),
+            (&handlers.wipe_peer_ratchets, peer_ratchets),
+            (&handlers.zeroize_in_memory, zeroize),
+            (&handlers.strip_opsec_files, strip),
+        ] {
+            handler.as_ref().expect("handler is composed")().unwrap();
+            assert_eq!(counter.load(Ordering::SeqCst), 1);
+        }
+        assert_eq!(unregister.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn production_duress_wipes_password_hashes_strips_opsec_and_unregisters() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        let password_file = paths.password_file.clone();
+        let strip_file = dir.path().join("injection.js");
+        let strip_dir = dir.path().join("opsec");
+        let anonymous_file = dir.path().join("anonymous-credentials.json");
+        std::fs::write(&password_file, b"password hash record").unwrap();
+        std::fs::write(&strip_file, b"boot script").unwrap();
+        std::fs::create_dir(&strip_dir).unwrap();
+        std::fs::write(strip_dir.join("config.json"), b"{}").unwrap();
+        std::fs::write(&anonymous_file, b"anonymous credential").unwrap();
+        let unregistered = Arc::new(AtomicUsize::new(0));
+
+        let production = ProductionDuressHandlers::new()
+            .with_wipe_anonymous_credentials_paths([anonymous_file.clone()])
+            .with_strip_opsec_file_paths([strip_file.clone(), strip_dir.clone()])
+            .with_unregister_remote_identity(counted_handler(unregistered.clone()));
+
+        assert_eq!(production.unregister_remote_identity(), StepOutcome::Wiped);
+        let report = DuressEngine::new(journal_path, paths, production.into_handlers())
+            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
+            .unwrap();
+
+        assert_eq!(unregistered.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::PasswordHashes),
+            &StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::AnonymousCredentials),
+            &StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::StripOpsecFiles),
+            &StepOutcome::Wiped
+        );
+        assert!(!password_file.exists());
+        assert!(!anonymous_file.exists());
+        assert!(!strip_file.exists());
+        assert!(!strip_dir.exists());
     }
 
     #[cfg(not(windows))]

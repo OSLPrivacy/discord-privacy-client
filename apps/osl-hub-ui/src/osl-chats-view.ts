@@ -13,6 +13,71 @@ export type OslChatDeliveryState = typeof OSL_CHAT_DELIVERY_STATES[number];
 
 export type OslChatMessageDirection = "outgoing" | "incoming";
 
+export const OSL_PRIMARY_DESTINATIONS = [
+  "Home",
+  "Inbox",
+  "People",
+  "Privacy",
+  "Activity",
+  "Connections",
+] as const;
+
+export type OslPrimaryDestination = typeof OSL_PRIMARY_DESTINATIONS[number];
+
+export type FirstPartyOslSurfaceState = "available" | "coming_later" | "unavailable";
+
+export interface FirstPartyOslSurfaceContract {
+  id: "osl-chat" | "osl-circles" | "osl-mail";
+  label: "OSL Chat" | "OSL Circles" | "OSL Mail";
+  destination: "Inbox";
+  state: FirstPartyOslSurfaceState;
+  primaryAction: string;
+  protectionScope: string;
+  externalPlatform: false;
+  requiresConnectedService: false;
+  missingCapability: "unavailable";
+}
+
+export const FIRST_PARTY_OSL_SURFACES: readonly FirstPartyOslSurfaceContract[] = [
+  {
+    id: "osl-chat",
+    label: "OSL Chat",
+    destination: "Inbox",
+    state: "available",
+    primaryAction: "Start a private conversation",
+    protectionScope: "OSL-owned conversations",
+    externalPlatform: false,
+    requiresConnectedService: false,
+    missingCapability: "unavailable",
+  },
+  {
+    id: "osl-circles",
+    label: "OSL Circles",
+    destination: "Inbox",
+    state: "coming_later",
+    primaryAction: "Create a circle",
+    protectionScope: "OSL-owned groups",
+    externalPlatform: false,
+    requiresConnectedService: false,
+    missingCapability: "unavailable",
+  },
+  {
+    id: "osl-mail",
+    label: "OSL Mail",
+    destination: "Inbox",
+    state: "coming_later",
+    primaryAction: "Open mail",
+    protectionScope: "OSL-owned mail",
+    externalPlatform: false,
+    requiresConnectedService: false,
+    missingCapability: "unavailable",
+  },
+] as const;
+
+export function firstPartyOslSurfaceContracts(): readonly FirstPartyOslSurfaceContract[] {
+  return FIRST_PARTY_OSL_SURFACES;
+}
+
 export interface OslChatFriend {
   personId: string;
   nickname: string;
