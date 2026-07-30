@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SecureLocalStore, SecureLocalStoreError, registerSecureLocalStoreTests } from "./secure-local-store";
 
@@ -59,6 +61,10 @@ async function secureStore(storage: Storage): Promise<SecureLocalStore> {
       return bytes;
     },
   });
+}
+
+function readRelative(relativePath: string): string {
+  return readFileSync(fileURLToPath(new URL(relativePath, import.meta.url)), "utf8");
 }
 
 registerSecureLocalStoreTests({ describe, expect, it });
@@ -172,5 +178,42 @@ describe("OSL chat notification secure storage", () => {
     expect([...encrypted.values.values()][0]).not.toContain("New encrypted message");
     await expect((await secureStore(encrypted)).getItem("osl-chat-notifications-v1"))
       .resolves.toBe(JSON.stringify([{ id: "chat-2", title: "OSL Chat", detail: "New encrypted message", createdAt: "Today" }]));
+  });
+});
+
+describe("SecureLocalStore integration contracts", () => {
+  it("routes all OSL Chat metadata migrations through the async SecureLocalStore hook", () => {
+    const main = readRelative("./main.ts");
+
+    expect(main).toContain("type OslChatSecureStore = Pick<SecureLocalStore, \"getItem\" | \"setItem\">");
+    expect(main).toContain("secureOrLegacyOslChatPreference(store, storage, oslChatMutedStorageKey)");
+    expect(main).toContain("secureOrLegacyOslChatPreference(store, storage, oslChatUnreadStorageKey)");
+    expect(main).toContain("secureOrLegacyOslChatPreference(store, storage, oslChatNotificationStorageKey)");
+    expect(main).toContain("migrateOslChatNotificationsToSecureLocalStore");
+    expect(main).toContain("persistSensitiveOslChatJson(oslChatMutedStorageKey");
+    expect(main).toContain("persistSensitiveOslChatJson(oslChatUnreadStorageKey");
+    expect(main).toContain("persistSensitiveOslChatJson(oslChatNotificationStorageKey");
+    expect(main).not.toMatch(/localStorage\.setItem\(\s*oslChat(?:Muted|Unread|Notification)StorageKey/u);
+  });
+
+  it("keeps peer_map and membership in the mandatory encrypted-state sweep", () => {
+    const peerMap = readRelative("../../../crates/ipc/src/peer_map.rs");
+    const membership = readRelative("../../../crates/ipc/src/membership.rs");
+    const reload = readRelative("../../../crates/ipc/src/state_reload.rs");
+    const commands = readRelative("../../../crates/ipc/src/commands.rs");
+
+    expect(peerMap).toContain("crate::main_password::encrypt_at_rest(body.as_bytes(), &key)");
+    expect(peerMap).toContain("peer_map_key_refusal");
+    expect(membership).toContain("membership.json is mandatory-encrypt");
+    expect(membership).toContain("crate::main_password::encrypt_at_rest(&body, &key)");
+    expect(membership).toContain("fn reload_reencrypts_plaintext_membership_when_key_now_present()");
+    expect(reload).toContain('"membership.json"');
+    expect(reload).toContain("report.scope_membership_reencrypted = true");
+    expect(commands).toContain("deferring membership persist");
+  });
+
+  it("does not enable the RN wire-in gate", () => {
+    const wireRn = readRelative("../../../crates/ipc/src/wire_rn.rs");
+    expect(wireRn).toContain("pub const RN_WIRE_IN_ENABLED: bool = false;");
   });
 });

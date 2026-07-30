@@ -134,6 +134,48 @@ const REQUIRED_CONDITIONAL_APP_EVIDENCE = [
     publicClaimName: "Outlook OSL Mail protected support overclaim",
   },
 ];
+const REQUIRED_VERSIONED_PUBLIC_SUPPORT_MATRIX = {
+  schemaVersion: 1,
+  matrixVersion: "E7",
+  entries: [
+    {
+      id: "signal_desktop_public",
+      service: "Signal",
+      publicStatus: "coming_soon",
+      claimAllowed: false,
+      evidenceStatus: "qa_foundations_only",
+      evidence: "docs/design/osl-master-decision-2026-07-26.md:805",
+      requiredBoundary: /\bQA foundations only\b.*\bcomplete adapter contract\b.*\btwo-peer exact-build proof\b/i,
+    },
+    {
+      id: "whatsapp_windows_public",
+      service: "WhatsApp",
+      publicStatus: "coming_soon",
+      claimAllowed: false,
+      evidenceStatus: "separate_qa_required",
+      evidence: "docs/design/osl-master-decision-2026-07-26.md:806",
+      requiredBoundary: /\bneeds its own runtime proof\b.*\bcomplete adapter contract\b.*\btwo-peer exact-build proof\b/i,
+    },
+    {
+      id: "telegram_desktop_public",
+      service: "Telegram",
+      publicStatus: "externally_blocked",
+      claimAllowed: false,
+      evidenceStatus: "externally_blocked",
+      evidence: "docs/reports/telegram-adapter-verdict.md#TelegramSupportVerdict",
+      requiredBoundary: /\bsigned-client UI Automation probe\b.*\bstable, text-exposed message rows\b/i,
+    },
+    {
+      id: "osl_mail_public",
+      service: "OSL Mail",
+      publicStatus: "unsupported",
+      claimAllowed: false,
+      evidenceStatus: "unsupported",
+      evidence: "docs/reports/outlook-osl-mail-verdict.md#OutlookOslMailSupportVerdict",
+      requiredBoundary: /\bOutlook is scoped as OSL Mail\b.*\bnot Outlook chat support\b/i,
+    },
+  ],
+};
 const REQUIRED_VERSIONED_PUBLIC_SUPPORT_ROWS = [
   {
     id: "signal_desktop_public",
@@ -909,6 +951,7 @@ async function validateVersionedPublicSupportMatrix(matrix) {
     failures.push(versionedPublicSupportMatrixFailure("top-level versioned_public_support_matrix object"));
     return failures;
   }
+  failures.push(...validateVersionedPublicSupportEntries(publicMatrix));
   for (const [field, expected] of [
     ["id", "E7"],
     ["status", "current"],
@@ -970,6 +1013,61 @@ async function validateVersionedPublicSupportMatrix(matrix) {
       await readUtf8(path.join(REPO_ROOT, required.evidenceReport));
     } catch {
       failures.push(versionedPublicSupportMatrixFailure(`${required.service}.evidence_report exists`));
+    }
+  }
+  return failures;
+}
+
+function validateVersionedPublicSupportEntries(publicMatrix) {
+  const failures = [];
+  if (publicMatrix.schema_version !== REQUIRED_VERSIONED_PUBLIC_SUPPORT_MATRIX.schemaVersion) {
+    failures.push(versionedPublicSupportMatrixFailure(
+      `versioned_public_support_matrix.schema_version=${REQUIRED_VERSIONED_PUBLIC_SUPPORT_MATRIX.schemaVersion}`,
+    ));
+  }
+  if (publicMatrix.matrix_version !== REQUIRED_VERSIONED_PUBLIC_SUPPORT_MATRIX.matrixVersion) {
+    failures.push(versionedPublicSupportMatrixFailure(
+      `versioned_public_support_matrix.matrix_version=${JSON.stringify(REQUIRED_VERSIONED_PUBLIC_SUPPORT_MATRIX.matrixVersion)}`,
+    ));
+  }
+  if (!Array.isArray(publicMatrix.entries)) {
+    failures.push(versionedPublicSupportMatrixFailure("entries array"));
+    return failures;
+  }
+  const entriesById = new Map();
+  for (const entry of publicMatrix.entries) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry) || typeof entry.id !== "string") {
+      failures.push(versionedPublicSupportMatrixFailure("each entry has an id"));
+      continue;
+    }
+    if (entriesById.has(entry.id)) {
+      failures.push(versionedPublicSupportMatrixFailure(`unique entry ${entry.id}`));
+      continue;
+    }
+    entriesById.set(entry.id, entry);
+  }
+  for (const required of REQUIRED_VERSIONED_PUBLIC_SUPPORT_MATRIX.entries) {
+    const entry = entriesById.get(required.id);
+    if (!entry) {
+      failures.push(versionedPublicSupportMatrixFailure(`entry ${required.id}`));
+      continue;
+    }
+    for (const [field, expected] of [
+      ["service", required.service],
+      ["public_status", required.publicStatus],
+      ["claim_allowed", required.claimAllowed],
+      ["evidence_status", required.evidenceStatus],
+      ["evidence", required.evidence],
+    ]) {
+      if (entry[field] !== expected) {
+        failures.push(versionedPublicSupportMatrixFailure(`${required.id}.${field}=${JSON.stringify(expected)}`));
+      }
+    }
+    if (entry.claim_allowed !== false) {
+      failures.push(versionedPublicSupportMatrixFailure(`${required.id}.claim_allowed=false`));
+    }
+    if (typeof entry.support_boundary !== "string" || !required.requiredBoundary.test(entry.support_boundary)) {
+      failures.push(versionedPublicSupportMatrixFailure(`${required.id}.support_boundary`));
     }
   }
   return failures;
