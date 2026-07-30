@@ -23,7 +23,11 @@
 use crate::burn::{sign_burn, BurnScope};
 use crate::control_inbox::{
     sign_control_inbox_delete, sign_control_inbox_get, sign_control_inbox_get_filtered,
-    sign_control_inbox_post_lane,
+    sign_control_inbox_post_lane, sign_sender_filter_floor_get,
+};
+use crate::sender_filter_rollout::{
+    validate_sender_filter_capability_floor_observation, SenderFilterCapabilityFloor,
+    SenderFilterCapabilityFloorObservation, SENDER_FILTER_CAPABILITY_VERSION,
 };
 use crate::identity::Identity;
 use crate::prekeys::{
@@ -1762,6 +1766,12 @@ impl KeyServerClient {
 struct HttpResponse {
     status: u16,
     body: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ControlInboxSenderFilterCapability {
+    Legacy,
+    Version1,
 }
 
 fn check_2xx(resp: &HttpResponse) -> Result<()> {
