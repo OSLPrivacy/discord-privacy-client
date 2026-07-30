@@ -26,6 +26,7 @@ describe("OSL Mail view", () => {
     expect(settings).toContain("External inbound");
     expect(settings).toContain("ordinary email");
     expect(settings).toContain("Standard email");
+    expect(settings).not.toMatch(/provider|adapter|SMTP|end-to-end encrypted/iu);
   });
 
   it("renders external SMTP mail without end-to-end encrypted labels", () => {
@@ -47,7 +48,7 @@ describe("OSL Mail view", () => {
     expect(html.match(/Standard email/gu)).toHaveLength(2);
     expect(html).not.toContain("OSL protected");
     expect(html).not.toContain("Protected between verified OSL identities");
-    expect(html).not.toMatch(/SMTP|E2EE|end-to-end|encrypted/iu);
+    expect(html).not.toMatch(/SMTP|externalSmtp|E2EE|end-to-end|encrypted/iu);
   });
 
   it("requires device acknowledgment before claiming server deletion", () => {
