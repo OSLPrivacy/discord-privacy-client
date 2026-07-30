@@ -169,6 +169,12 @@ struct AccountBinding {
     owner: PinnedOwner,
 }
 
+impl AccountBinding {
+    fn verifies(&self, owner: PinnedOwner, account: &AccountRef, scope: BindingScope) -> bool {
+        self.owner == owner && self.scope == scope && self.account == *account
+    }
+}
+
 /// Strict identity-binding verifier.
 ///
 /// Pinned to exactly one [`PinnedOwner`] at construction; every binding
@@ -240,9 +246,10 @@ impl IdentityBindingVerifier {
         account: &AccountRef,
         scope: BindingScope,
     ) -> Result<(), IdentityBindingError> {
-        let bound = self.bindings.iter().any(|existing| {
-            existing.owner == self.owner && existing.scope == scope && existing.account == *account
-        });
+        let bound = self
+            .bindings
+            .iter()
+            .any(|existing| existing.verifies(self.owner, account, scope));
         if bound {
             Ok(())
         } else {
@@ -297,9 +304,13 @@ mod tests {
     }
 
     fn account(id: &str) -> AccountRef {
+        account_on("discord", id)
+    }
+
+    fn account_on(service_id: &str, account_id: &str) -> AccountRef {
         AccountRef {
-            service_id: "discord".into(),
-            account_id: id.into(),
+            service_id: service_id.into(),
+            account_id: account_id.into(),
         }
     }
 
@@ -354,6 +365,70 @@ mod tests {
     }
 
     #[test]
+    fn deletion_binding_does_not_authorize_index_scope() {
+        let mut verifier = IdentityBindingVerifier::new(owner(12));
+        verifier
+            .bind(
+                account("account-a"),
+                BindingScope::ScrubDeletion,
+                BindingEvidence::CallerAttested,
+            )
+            .unwrap();
+
+        assert_eq!(
+            verifier.verify(&account("account-a"), BindingScope::ScrubDeletion),
+            Ok(())
+        );
+        assert_eq!(
+            verifier.verify(&account("account-a"), BindingScope::ScrubIndex),
+            Err(IdentityBindingError::NoBinding),
+            "a deletion binding is not a wildcard for every binding scope"
+        );
+    }
+
+    #[test]
+    fn binding_for_service_a_does_not_verify_service_b() {
+        let mut verifier = IdentityBindingVerifier::new(owner(13));
+        verifier
+            .bind(
+                account_on("discord", "account-a"),
+                BindingScope::ScrubDeletion,
+                BindingEvidence::CallerAttested,
+            )
+            .unwrap();
+
+        assert_eq!(
+            verifier.verify(
+                &account_on("telegram", "account-a"),
+                BindingScope::ScrubDeletion
+            ),
+            Err(IdentityBindingError::NoBinding),
+            "the service id is part of the account binding"
+        );
+    }
+
+    #[test]
+    fn account_ids_are_exact_not_prefix_matched() {
+        let mut verifier = IdentityBindingVerifier::new(owner(14));
+        verifier
+            .bind(
+                account("account-a"),
+                BindingScope::ScrubDeletion,
+                BindingEvidence::CallerAttested,
+            )
+            .unwrap();
+
+        assert_eq!(
+            verifier.verify(&account("account-a-extra"), BindingScope::ScrubDeletion),
+            Err(IdentityBindingError::NoBinding)
+        );
+        assert_eq!(
+            verifier.verify(&account("account-"), BindingScope::ScrubDeletion),
+            Err(IdentityBindingError::NoBinding)
+        );
+    }
+
+    #[test]
     fn binding_from_renderer_supplied_evidence_is_refused() {
         let mut verifier = IdentityBindingVerifier::new(owner(4));
         let result = verifier.bind(
@@ -400,6 +475,60 @@ mod tests {
     }
 
     #[test]
+    fn failed_rebind_does_not_remove_existing_attested_binding() {
+        let mut verifier = IdentityBindingVerifier::new(owner(15));
+        verifier
+            .bind(
+                account("account-a"),
+                BindingScope::ScrubDeletion,
+                BindingEvidence::CallerAttested,
+            )
+            .unwrap();
+
+        let result = verifier.bind(
+            account("account-a"),
+            BindingScope::ScrubDeletion,
+            BindingEvidence::RendererSupplied,
+        );
+
+        assert_eq!(result, Err(IdentityBindingError::EvidenceNotAttested));
+        assert_eq!(
+            verifier.verify(&account("account-a"), BindingScope::ScrubDeletion),
+            Ok(()),
+            "a refused replacement attempt must not erase prior caller-attested authority"
+        );
+    }
+
+    #[test]
+    fn failed_bind_after_index_binding_does_not_authorize_deletion() {
+        let mut verifier = IdentityBindingVerifier::new(owner(16));
+        verifier
+            .bind(
+                account("account-a"),
+                BindingScope::ScrubIndex,
+                BindingEvidence::CallerAttested,
+            )
+            .unwrap();
+
+        let result = verifier.bind(
+            account("account-a"),
+            BindingScope::ScrubDeletion,
+            BindingEvidence::UnsignedMetadata,
+        );
+
+        assert_eq!(result, Err(IdentityBindingError::EvidenceNotAttested));
+        assert_eq!(
+            verifier.verify(&account("account-a"), BindingScope::ScrubIndex),
+            Ok(())
+        );
+        assert_eq!(
+            verifier.verify(&account("account-a"), BindingScope::ScrubDeletion),
+            Err(IdentityBindingError::NoBinding),
+            "failed destructive evidence must not be upgraded by an index-only binding"
+        );
+    }
+
+    #[test]
     fn a_binding_never_crosses_to_a_different_pinned_owner() {
         let mut alice = IdentityBindingVerifier::new(owner(7));
         alice
@@ -415,6 +544,22 @@ mod tests {
             bob.verify(&account("account-a"), BindingScope::ScrubDeletion),
             Err(IdentityBindingError::NoBinding),
             "a's binding must not be visible from a verifier pinned to a different owner"
+        );
+    }
+
+    #[test]
+    fn f66_verify_identity_binding_rejects_foreign_owner_binding_on_same_verifier() {
+        let mut verifier = IdentityBindingVerifier::new(owner(17));
+        verifier.bindings.push(AccountBinding {
+            account: account("account-a"),
+            scope: BindingScope::ScrubDeletion,
+            owner: owner(18),
+        });
+
+        assert_eq!(
+            verifier.verify(&account("account-a"), BindingScope::ScrubDeletion),
+            Err(IdentityBindingError::NoBinding),
+            "the owner check is part of the allow decision even for an in-memory binding"
         );
     }
 
@@ -436,6 +581,100 @@ mod tests {
             )
             .unwrap();
         assert_eq!(verifier.bindings.len(), 1);
+    }
+
+    #[test]
+    fn multiple_accounts_can_be_bound_independently() {
+        let mut verifier = IdentityBindingVerifier::new(owner(19));
+        verifier
+            .bind(
+                account("account-a"),
+                BindingScope::ScrubDeletion,
+                BindingEvidence::CallerAttested,
+            )
+            .unwrap();
+        verifier
+            .bind(
+                account("account-b"),
+                BindingScope::ScrubDeletion,
+                BindingEvidence::CallerAttested,
+            )
+            .unwrap();
+
+        assert_eq!(
+            verifier.verify(&account("account-a"), BindingScope::ScrubDeletion),
+            Ok(())
+        );
+        assert_eq!(
+            verifier.verify(&account("account-b"), BindingScope::ScrubDeletion),
+            Ok(())
+        );
+        assert_eq!(verifier.bindings.len(), 2);
+    }
+
+    #[test]
+    fn different_scopes_for_the_same_account_can_coexist() {
+        let mut verifier = IdentityBindingVerifier::new(owner(20));
+        verifier
+            .bind(
+                account("account-a"),
+                BindingScope::ScrubIndex,
+                BindingEvidence::CallerAttested,
+            )
+            .unwrap();
+        verifier
+            .bind(
+                account("account-a"),
+                BindingScope::ScrubDeletion,
+                BindingEvidence::CallerAttested,
+            )
+            .unwrap();
+
+        assert_eq!(
+            verifier.verify(&account("account-a"), BindingScope::ScrubIndex),
+            Ok(())
+        );
+        assert_eq!(
+            verifier.verify(&account("account-a"), BindingScope::ScrubDeletion),
+            Ok(())
+        );
+        assert_eq!(verifier.bindings.len(), 2);
+    }
+
+    #[test]
+    fn rebinding_one_scope_does_not_remove_the_other_scope() {
+        let mut verifier = IdentityBindingVerifier::new(owner(21));
+        verifier
+            .bind(
+                account("account-a"),
+                BindingScope::ScrubIndex,
+                BindingEvidence::CallerAttested,
+            )
+            .unwrap();
+        verifier
+            .bind(
+                account("account-a"),
+                BindingScope::ScrubDeletion,
+                BindingEvidence::CallerAttested,
+            )
+            .unwrap();
+        verifier
+            .bind(
+                account("account-a"),
+                BindingScope::ScrubDeletion,
+                BindingEvidence::CallerAttested,
+            )
+            .unwrap();
+
+        assert_eq!(
+            verifier.verify(&account("account-a"), BindingScope::ScrubIndex),
+            Ok(())
+        );
+        assert_eq!(
+            verifier.verify(&account("account-a"), BindingScope::ScrubDeletion),
+            Ok(())
+        );
+        assert_eq!(verifier.bindings.len(), 2);
     }
 
     #[test]
@@ -483,5 +722,45 @@ mod tests {
         )
         .unwrap();
         assert_eq!(a.owner(), b.owner());
+    }
+
+    #[test]
+    fn same_key_material_with_different_user_ids_pins_same_owner() {
+        let a = keystore::identity_from_entropy([22; 16], "discord-snowflake-a".into());
+        let b = keystore::identity_from_entropy([22; 16], "osl_legacy-routing-id".into());
+
+        assert_eq!(
+            PinnedOwner::from_identity(&a),
+            PinnedOwner::from_identity(&b)
+        );
+    }
+
+    #[test]
+    fn different_key_material_with_same_user_id_pins_different_owner() {
+        let a = keystore::identity_from_entropy([23; 16], "same-user-id".into());
+        let b = keystore::identity_from_entropy([24; 16], "same-user-id".into());
+
+        assert_ne!(
+            PinnedOwner::from_identity(&a),
+            PinnedOwner::from_identity(&b)
+        );
+    }
+
+    #[test]
+    fn error_display_and_debug_are_data_free() {
+        for error in [
+            IdentityBindingError::NoBinding,
+            IdentityBindingError::EvidenceNotAttested,
+        ] {
+            let display = error.to_string();
+            let debug = format!("{error:?}");
+
+            assert!(!display.contains("super-secret-account-id"));
+            assert!(!display.contains("discord"));
+            assert!(!display.contains("osl_"));
+            assert!(!debug.contains("super-secret-account-id"));
+            assert!(!debug.contains("discord"));
+            assert!(!debug.contains("osl_"));
+        }
     }
 }
