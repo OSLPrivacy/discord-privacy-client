@@ -89,6 +89,10 @@ pub struct RegisterRequest {
     /// eligible" and fall through to v=3.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ik_ratchet_initial_pub: Option<String>,
+    /// Signed protocol-capability bitmap. Omitted by legacy request
+    /// builders until a caller signs the extended REG_MSG form.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rn_capabilities: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -704,6 +708,7 @@ impl KeyServerClient {
             registration_sig: STANDARD.encode(sig.as_bytes()),
             rotation: None,
             ik_ratchet_initial_pub,
+            rn_capabilities: None,
         }
     }
 
@@ -766,6 +771,7 @@ impl KeyServerClient {
                 prev_sig: STANDARD.encode(prev_sig.as_bytes()),
             }),
             ik_ratchet_initial_pub: new_ratchet,
+            rn_capabilities: None,
         }
     }
 
