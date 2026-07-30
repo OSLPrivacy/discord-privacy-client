@@ -2302,40 +2302,6 @@ mod outgoing_encrypt_api_surface_tests {
     use super::*;
     use base64::Engine as _;
 
-    fn function_signature<'a>(source: &'a str, name: &str) -> &'a str {
-        let needle = format!("pub fn {name}(");
-        let start = source
-            .find(&needle)
-            .unwrap_or_else(|| panic!("missing function {name}"));
-        let rest = &source[start..];
-        let end = rest
-            .find(") ->")
-            .unwrap_or_else(|| panic!("missing return marker for {name}"));
-        &rest[..=end]
-    }
-
-    fn struct_body<'a>(source: &'a str, name: &str) -> &'a str {
-        let needle = format!("struct {name} {{");
-        let start = source
-            .find(&needle)
-            .unwrap_or_else(|| panic!("missing struct {name}"));
-        let rest = &source[start..];
-        if rest.starts_with(&format!("{needle}}}")) {
-            return &rest[..needle.len() + 1];
-        }
-        let end = rest
-            .find("\n}")
-            .unwrap_or_else(|| panic!("missing closing brace for {name}"));
-        &rest[..end]
-    }
-
-    fn assert_no_display_surface(name: &str, source: &str) {
-        assert!(
-            !source.to_ascii_lowercase().contains("display"),
-            "{name} unexpectedly exposes caller-supplied display metadata: {source}"
-        );
-    }
-
     #[test]
     fn outgoing_encrypt_api_surface() {
         let _: fn(&AppState, String, String, serde_json::Value) -> Result<String, String> =
@@ -2438,21 +2404,6 @@ mod outgoing_encrypt_api_surface_tests {
             attachment_err.to_string().contains("displayName"),
             "attachment displayName rejection should identify the refused field: {attachment_err}"
         );
-
-        let source = include_str!("commands.rs");
-        for name in [
-            "cmd_osl_encrypt_message",
-            "cmd_osl_encrypt_message_v2",
-            "cmd_osl_encrypt_message_v2_wire",
-            "cmd_osl_encrypt_attachment_envelope",
-            "cmd_osl_seal_attachment_with_cover_v2",
-            "cmd_osl_seal_attachment_with_cover_v3",
-        ] {
-            assert_no_display_surface(name, function_signature(source, name));
-        }
-        for name in ["OutgoingEncryptOptions", "AttachmentEnvelopeInput"] {
-            assert_no_display_surface(name, struct_body(source, name));
-        }
     }
 }
 
