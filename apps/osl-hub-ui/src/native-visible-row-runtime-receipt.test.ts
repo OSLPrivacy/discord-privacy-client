@@ -1,5 +1,8 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+
 import { parseNativeVisibleRowRuntimeReceipt } from "./discord-headless-qa-adapter";
 
 const nativeMain = readFileSync(new URL("../../osl-hub/src/main.rs", import.meta.url), "utf8");
@@ -61,17 +64,21 @@ function between(source: string, start: string, end: string): string {
   return source.slice(from, to);
 }
 
+function commandRegistrationSurface(source: string): string {
+  const macroStart = source.indexOf("macro_rules! hub_tauri_commands");
+  const macroEnd = source.indexOf("macro_rules! hub_tauri_generate_handler", macroStart);
+  expect(macroStart, "hub command macro should exist").toBeGreaterThanOrEqual(0);
+  expect(macroEnd, "handler macro should follow command macro").toBeGreaterThan(macroStart);
+  return source.slice(macroStart, macroEnd);
+}
+
 function detect(sources: Sources): RuntimeReceiptGate {
   const command = between(
     sources.nativeMain,
     "#[cfg(feature = \"discord-qa-shell\")]\n#[tauri::command]\nasync fn request_native_discord_visible_row_qa_receipt(",
     "\n#[tauri::command]\nfn send_native_discord_overlay_carrier(",
   );
-  const handlers = between(
-    sources.nativeMain,
-    "tauri::generate_handler![",
-    "\n    ]);",
-  );
+  const handlers = commandRegistrationSurface(sources.nativeMain);
   const probe = between(
     sources.adapter,
     "pub(crate) fn request_native_visible_row_qa_probe(",

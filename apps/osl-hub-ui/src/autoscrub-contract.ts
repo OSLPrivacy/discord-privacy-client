@@ -299,7 +299,7 @@ export function projectAutoScrubFleetStatus(status: AutoScrubFleetStatus | null)
   if (!status) {
     return {
       label: "Unavailable in this build",
-      detail: "Nothing runs until OSL can show a confirmed local list.",
+      detail: "Nothing runs until OSL can show a confirmed local list you approve.",
       tone: "neutral",
       stopAvailable: false,
     };
@@ -331,7 +331,7 @@ export function projectAutoScrubFleetStatus(status: AutoScrubFleetStatus | null)
   if (status.runs.some((run) => run.phase === "running")) {
     return {
       label: `${status.openRunCount} open ${status.openRunCount === 1 ? "run" : "runs"}`,
-      detail: "Only reviewed items can be prepared; every batch still needs confirmation.",
+      detail: "Only selected items can be prepared; every batch still needs confirmation.",
       tone: "working",
       stopAvailable: true,
     };

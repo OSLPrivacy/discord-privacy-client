@@ -3,6 +3,12 @@
 This file is the short user-facing product contract. It deliberately avoids
 internal machinery and names only the promises OSL can make honestly.
 
+## Sending
+
+Sending has three honest outcomes: sent, not sent, or delivery uncertain. OSL
+never treats delivery uncertain as sent, never auto-retries it, and never asks
+the user to resend as if the first attempt certainly failed.
+
 ## Burn
 
 Burn cleans up. Burn does not un-send.
@@ -20,7 +26,7 @@ Burn has five guarantees:
 4. **Exact scope:** A burn applies only to the reviewed and confirmed scope:
    current conversation, linked service account or active OSL identity. Changing
    the scope or options requires confirmation again.
-5. **Honest receipt:** OSL reports what it actually verified. A cleanup request
+5. **Honest result:** OSL reports what it actually verified. A cleanup request
    is never displayed as deletion, and unsupported or unverified work stays
    visibly unsupported or unverified.
 

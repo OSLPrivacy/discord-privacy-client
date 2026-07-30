@@ -740,6 +740,17 @@ OSL-RN remains disabled: `crates/ipc/src/wire_rn.rs` still sets
 
 ## B3 IPC-integration proof status against checklist evidence row
 
+| B3 evidence field | Value |
+| --- | --- |
+| `checklist_row` | `B3` |
+| `historical_archive_ipc_gate` | `blocked_missing_later_ipc_keystore_apis` |
+| `dependency_closure` | `1d8bfa8` |
+| `dependency_closure_passed_cases` | `35` |
+| `evidence_tier` | `test-proven-only` |
+| `path_status` | `implemented-unwired` |
+| `runtime_claim` | `none` |
+| `rn_wire_in_enabled` | `false` |
+
 The checklist's B3 row is now the authority for how this report's ratchet
 evidence is scored. The row splits the evidence into two separate archives:
 

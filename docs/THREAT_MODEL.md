@@ -192,6 +192,17 @@ Verification units:
 }
 ```
 
+| Reconciliation field | Status |
+| --- | --- |
+| `v4_shipping_status` | `retired_due_to_ratchet_desync` |
+| `v5_shipping_status` | `disabled_default_false_uses_stateless_v3` |
+| `sender_keys_enabled_default` | `false` |
+| `default_false_reason` | `account_scoped_sender_key_state_can_desync_across_devices` |
+| `v5_pairwise_dependency` | `no_current_proven_pairwise_distribution_channel` |
+| `ratchet_limit_status` | `planned_until_atomic_state_reset_authority_and_cross_device_tests` |
+| `required_sender_key_remediation` | `bind_chains_to_explicit_physical_device_identity` |
+| `unsupported_group_blast_radius_claims` | `one_hour_500_messages_suspicious_event_current_rotation_only` |
+
 The retired `v=4` pairwise Double Ratchet path and the disabled `v=5`
 sender-key path must be read together. `v=4` is not merely waiting for a UI
 switch; it was removed from the shipping send path because real deployments
