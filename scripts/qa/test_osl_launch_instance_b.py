@@ -4,7 +4,9 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 
@@ -12,6 +14,48 @@ ROOT = Path(__file__).resolve().parents[2]
 LAUNCHER = ROOT / "scripts" / "qa" / "osl-launch-instance-b.ps1"
 BUNDLE_A = "org.oslprivacy.hub"
 BUNDLE_B = "org.oslprivacy.hubqab"
+
+
+class FakeKeyserverHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        self.server.requests.append(self.path)  # type: ignore[attr-defined]
+        if self.path != "/v1/pubkeys/fake-b":
+            self.send_response(404)
+            self.end_headers()
+            return
+        body = json.dumps(
+            {
+                "user_id": "fake-b",
+                "registered_at": "2026-07-30T00:00:00Z",
+                "ik_x25519_pub": "x25519-public",
+                "ik_ed25519_pub": "ed25519-public",
+                "ik_mlkem768_pub": "mlkem-public",
+                "registration_sig": "registration-signature",
+            }
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+def start_fake_keyserver() -> HTTPServer:
+    server = HTTPServer(("127.0.0.1", 0), FakeKeyserverHandler)
+    server.requests = []  # type: ignore[attr-defined]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    server.thread = thread  # type: ignore[attr-defined]
+    return server
+
+
+def stop_fake_keyserver(server: HTTPServer) -> None:
+    server.shutdown()
+    server.server_close()
+    server.thread.join(timeout=5)  # type: ignore[attr-defined]
 
 
 def require_windows_powershell() -> str:
@@ -145,6 +189,7 @@ def write_fake_exe(path: Path) -> None:
             set "ROOT=%APPDATA%\%OSL_LAUNCH_B_FAKE_BUNDLE_B%\osl-core"
             mkdir "%ROOT%" >nul 2>nul
             > "%ROOT%\identity.json" echo fake-instance-b-identity
+            > "%ROOT%\keyserver.json" echo {"base_url":"%OSL_LAUNCH_B_FAKE_KEYSERVER_BASE_URL%"}
             > "%ROOT%\discord-qa-offer.v1.json" echo {"version":1,"friend_code":"OSLFR1.fake","osl_user_id":"fake-b","safety_number":"123456"}
             > "%TEMP%\osl-startup-trace.txt" echo fake-startup
             > "%OSL_LAUNCH_B_FAKE_STATE%\b_started" echo 1
@@ -157,6 +202,8 @@ def write_fake_exe(path: Path) -> None:
 
 
 def prepare_harness(tmp_path: Path) -> dict:
+    keyserver = start_fake_keyserver()
+    keyserver_url = f"http://127.0.0.1:{keyserver.server_port}"
     qa_dir = tmp_path / "qa"
     qa_dir.mkdir(parents=True)
     launcher = qa_dir / "osl-launch-instance-b.ps1"
@@ -188,6 +235,7 @@ def prepare_harness(tmp_path: Path) -> dict:
             "OSL_LAUNCH_B_FAKE_STATE": str(state),
             "OSL_LAUNCH_B_FAKE_BUNDLE_B": BUNDLE_B,
             "OSL_LAUNCH_B_FAKE_EXE_SHA": "b" * 64,
+            "OSL_LAUNCH_B_FAKE_KEYSERVER_BASE_URL": keyserver_url,
         }
     )
     return {
@@ -199,7 +247,12 @@ def prepare_harness(tmp_path: Path) -> dict:
         "temp_b": temp_b,
         "state": state,
         "env": env,
+        "keyserver": keyserver,
     }
+
+
+def cleanup_harness(harness: dict) -> None:
+    stop_fake_keyserver(harness["keyserver"])
 
 
 def run_launcher(pwsh: str, harness: dict, json_out: Path, confirm: bool) -> subprocess.CompletedProcess:
@@ -247,19 +300,25 @@ def instance_b_launcher_uses_private_temp_root_and_preserves_instance_a(tmp_path
     harness = prepare_harness(tmp_path)
     result_path = tmp_path / "launch-result.json"
 
-    result = run_launcher(pwsh, harness, result_path, confirm=True)
+    try:
+        result = run_launcher(pwsh, harness, result_path, confirm=True)
 
-    assert result.returncode == 0, result.stderr
-    payload = read_json(result_path)
-    assert payload["overall"]["verdict"] == "ok"
-    assert step(payload, "temp-isolation")["result"] == "ok"
-    assert step(payload, "assert/temp-redirect")["result"] == "ok"
-    assert step(payload, "assert/instance-a-untouched")["result"] == "ok"
-    assert payload["instanceA"]["tempRoot"] == str(harness["temp_a"])
-    assert payload["instanceB"]["tempRoot"] == str(harness["temp_b"])
-    assert payload["instanceA"]["tempRoot"] != payload["instanceB"]["tempRoot"]
-    assert payload["instanceA"]["identityUnchangedAcrossLaunch"] is True
-    assert (harness["root_a"] / "identity.json").read_text(encoding="utf-8") == "fake-instance-a-identity"
+        assert result.returncode == 0, result.stderr
+        payload = read_json(result_path)
+        assert payload["overall"]["verdict"] == "ok"
+        assert step(payload, "temp-isolation")["result"] == "ok"
+        assert step(payload, "assert/temp-redirect")["result"] == "ok"
+        assert step(payload, "assert/instance-a-untouched")["result"] == "ok"
+        assert step(payload, "identity/keyserver-registration")["result"] == "ok"
+        assert payload["instanceA"]["tempRoot"] == str(harness["temp_a"])
+        assert payload["instanceB"]["tempRoot"] == str(harness["temp_b"])
+        assert payload["instanceB"]["registeredSecondIdentity"] is True
+        assert harness["keyserver"].requests == ["/v1/pubkeys/fake-b"]
+        assert payload["instanceA"]["tempRoot"] != payload["instanceB"]["tempRoot"]
+        assert payload["instanceA"]["identityUnchangedAcrossLaunch"] is True
+        assert (harness["root_a"] / "identity.json").read_text(encoding="utf-8") == "fake-instance-a-identity"
+    finally:
+        cleanup_harness(harness)
 
 
 def instance_b_confirm_creates_identity_registers_second_identity(tmp_path: Path) -> None:
@@ -267,29 +326,39 @@ def instance_b_confirm_creates_identity_registers_second_identity(tmp_path: Path
     refused = prepare_harness(tmp_path / "refused")
     refused_path = tmp_path / "refused.json"
 
-    refused_result = run_launcher(pwsh, refused, refused_path, confirm=False)
+    try:
+        refused_result = run_launcher(pwsh, refused, refused_path, confirm=False)
 
-    assert refused_result.returncode == 2, refused_result.stderr
-    refused_payload = read_json(refused_path)
-    assert refused_payload["overall"]["verdict"] == "blocked"
-    assert step(refused_payload, "gate/consent")["result"] == "failed"
-    assert not (refused["state"] / "b_started").exists()
-    assert not (refused["appdata"] / BUNDLE_B / "osl-core" / "identity.json").exists()
+        assert refused_result.returncode == 2, refused_result.stderr
+        refused_payload = read_json(refused_path)
+        assert refused_payload["overall"]["verdict"] == "blocked"
+        assert step(refused_payload, "gate/consent")["result"] == "failed"
+        assert not (refused["state"] / "b_started").exists()
+        assert not (refused["appdata"] / BUNDLE_B / "osl-core" / "identity.json").exists()
+        assert refused["keyserver"].requests == []
+    finally:
+        cleanup_harness(refused)
 
     confirmed = prepare_harness(tmp_path / "confirmed")
     confirmed_path = tmp_path / "confirmed.json"
-    confirmed_result = run_launcher(pwsh, confirmed, confirmed_path, confirm=True)
+    try:
+        confirmed_result = run_launcher(pwsh, confirmed, confirmed_path, confirm=True)
 
-    assert confirmed_result.returncode == 0, confirmed_result.stderr
-    payload = read_json(confirmed_path)
-    assert payload["overall"]["verdict"] == "ok"
-    assert step(payload, "gate/consent")["result"] == "ok"
-    assert step(payload, "assert/instance-b-identity")["result"] == "ok"
-    identity_b = confirmed["appdata"] / BUNDLE_B / "osl-core" / "identity.json"
-    offer_b = confirmed["appdata"] / BUNDLE_B / "osl-core" / "discord-qa-offer.v1.json"
-    assert identity_b.is_file()
-    assert offer_b.is_file()
-    assert identity_b.read_text(encoding="utf-8") != (confirmed["root_a"] / "identity.json").read_text(encoding="utf-8")
+        assert confirmed_result.returncode == 0, confirmed_result.stderr
+        payload = read_json(confirmed_path)
+        assert payload["overall"]["verdict"] == "ok"
+        assert step(payload, "gate/consent")["result"] == "ok"
+        assert step(payload, "assert/instance-b-identity")["result"] == "ok"
+        assert step(payload, "identity/keyserver-registration")["result"] == "ok"
+        identity_b = confirmed["appdata"] / BUNDLE_B / "osl-core" / "identity.json"
+        offer_b = confirmed["appdata"] / BUNDLE_B / "osl-core" / "discord-qa-offer.v1.json"
+        assert identity_b.is_file()
+        assert offer_b.is_file()
+        assert identity_b.read_text(encoding="utf-8") != (confirmed["root_a"] / "identity.json").read_text(encoding="utf-8")
+        assert payload["instanceB"]["registeredSecondIdentity"] is True
+        assert confirmed["keyserver"].requests == ["/v1/pubkeys/fake-b"]
+    finally:
+        cleanup_harness(confirmed)
 
 
 test_instance_b_launcher_uses_private_temp_root_and_preserves_instance_a = (

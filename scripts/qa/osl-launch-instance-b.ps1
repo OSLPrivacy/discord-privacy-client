@@ -297,6 +297,42 @@ function Add-Step {
     Say ('[{0,-26}] {1,-8} {2}' -f $Name, $Result, $Detail) $col
 }
 
+function Get-KeyserverBaseUrl {
+    param($CoreRoots)
+    foreach ($coreRoot in @($CoreRoots)) {
+        if (-not $coreRoot) { continue }
+        $configPath = Join-Path $coreRoot 'keyserver.json'
+        if (-not (Test-Path -LiteralPath $configPath)) { continue }
+        try {
+            $config = Get-Content -LiteralPath $configPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            if ($config.base_url) {
+                $candidate = ([string]$config.base_url).TrimEnd('/')
+                try { $uri = [System.Uri]::new($candidate) } catch {
+                    throw 'base_url is not an absolute URI'
+                }
+                if (($uri.Scheme -ne 'http' -and $uri.Scheme -ne 'https') -or $uri.UserInfo -or $uri.Query -or $uri.Fragment) {
+                    throw 'base_url must be an http(s) origin without userinfo, query, or fragment'
+                }
+                return $candidate
+            }
+        } catch {
+            Add-Step 'identity/keyserver-registration' 'failed' ('Could not read B keyserver config: {0}' -f $_.Exception.Message)
+            Write-Result 'failed' `
+                'Instance B created a local identity, but its keyserver configuration is malformed, so the launcher cannot prove the identity was registered remotely.' `
+                'Fix B''s keyserver.json in the disposable QA profile and re-run.'
+        }
+    }
+    'https://keyserver.oslprivacy.com'
+}
+
+function Join-KeyserverPath {
+    param([string]$BaseUrl, [string]$Path)
+    $base = $BaseUrl.TrimEnd('/')
+    $suffix = $Path
+    if (-not $suffix.StartsWith('/')) { $suffix = '/' + $suffix }
+    $base + $suffix
+}
+
 $script:DiscordPidsBefore = Get-P2PDiscordPids
 
 function Write-Result {
@@ -791,6 +827,72 @@ if (-not ($offerBAfter -and $offerBAfter.exists)) {
 Add-Step 'assert/instance-b-identity' 'ok' ('B owns a distinct QA identity ({0}) and public offer ({1}). A identity sha256 equal to B: {2}.' -f
     $identityBAfter.path, $offerBAfter.path, $(if ($identityABefore -and $identityABefore.exists) { $identityBAfter.sha256 -eq $identityABefore.sha256 } else { $false }))
 
+# --- 11d. B's public identity resolves from the configured keyserver --------
+# Local files prove profile separation; they do not prove the network write that
+# makes the second identity usable to another instance. Resolve the OSL identity
+# from B's signed public offer through the same keyserver origin the disposable
+# B profile is configured to use. Only booleans and counts are reported; the
+# account identifier and returned public keys stay out of console/JSON output.
+$offerJson = $null
+try {
+    $offerJson = Get-Content -LiteralPath $offerBAfter.path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+} catch {
+    Add-Step 'identity/keyserver-registration' 'failed' ('B public offer is unreadable: {0}' -f $_.Exception.Message)
+    Write-Result 'failed' `
+        'Instance B wrote a public offer, but the launcher could not read it to verify the keyserver registration.' `
+        'Re-run with a fresh disposable QA profile; the public offer must be valid JSON.'
+}
+$bOslUserId = [string]$offerJson.osl_user_id
+if (-not $bOslUserId) {
+    Add-Step 'identity/keyserver-registration' 'failed' 'B public offer has no osl_user_id.'
+    Write-Result 'failed' `
+        'Instance B wrote a public offer without the OSL identity identifier needed to verify its keyserver row.' `
+        'Use a desktop,discord-qa-shell build that exports a complete public offer.'
+}
+$keyserverBaseUrl = Get-KeyserverBaseUrl -CoreRoots $bCoreCandidates
+$pubkeysUrl = Join-KeyserverPath -BaseUrl $keyserverBaseUrl -Path ('/v1/pubkeys/{0}' -f [System.Uri]::EscapeDataString($bOslUserId))
+$pubkeys = $null
+$keyserverStatus = $null
+$registrationDeadline = (Get-Date).AddSeconds([Math]::Max(10, [Math]::Min($WindowWaitSec, 30)))
+while ((Get-Date) -lt $registrationDeadline) {
+    try {
+        $pubkeys = Invoke-RestMethod -Method Get -Uri $pubkeysUrl -TimeoutSec 10 -ErrorAction Stop
+        $keyserverStatus = 'ok'
+        break
+    } catch {
+        try { $keyserverStatus = 'HTTP {0}' -f [int]$_.Exception.Response.StatusCode } catch { $keyserverStatus = 'no usable response' }
+        Start-Sleep -Milliseconds 1000
+    }
+}
+if (-not $pubkeys) {
+    Add-Step 'identity/keyserver-registration' 'failed' ('Keyserver lookup for B identity failed within the registration barrier ({0}).' -f $keyserverStatus)
+    Write-Result 'failed' `
+        'Instance B created a local identity after consent, but the configured keyserver did not return that identity. This is not a registered two-identity rig.' `
+        'Confirm the dedicated QA keyserver is reachable and that B completed startup registration, then re-run.'
+}
+$registeredFields = @(
+    $pubkeys.user_id,
+    $pubkeys.registered_at,
+    $pubkeys.ik_x25519_pub,
+    $pubkeys.ik_ed25519_pub,
+    $pubkeys.ik_mlkem768_pub,
+    $pubkeys.registration_sig
+)
+$registeredSecondIdentity = (
+    ([string]$pubkeys.user_id -eq $bOslUserId) -and
+    (-not (@($registeredFields | Where-Object { -not $_ }).Count))
+)
+if (-not $registeredSecondIdentity) {
+    Add-Step 'identity/keyserver-registration' 'failed' 'Keyserver response did not match B public offer or was missing required public identity fields.'
+    Write-Result 'failed' `
+        'Instance B created a local identity after consent, but the configured keyserver response did not prove the same registered public identity.' `
+        'Do not run the P2P harness until B registration returns the exact public identity row for B.'
+}
+Add-Step 'identity/keyserver-registration' 'ok' 'Configured keyserver returned B''s registered public identity row.' @{
+    resolvedFromPublicOffer = $true
+    requiredPublicFieldsPresent = $true
+}
+
 # --- 12. done --------------------------------------------------------------
 $postBundleList = @($postBundles.Keys | ForEach-Object { [ordered]@{ pid = [int]$_; bundle = $postBundles[$_] } })
 Write-Result 'ok' `
@@ -820,6 +922,7 @@ Write-Result 'ok' `
             startupTrace = $traceBStamp
             identityFile = $identityBAfter
             publicOffer = $offerBAfter
+            registeredSecondIdentity = $true
             family = @($familySeen | Sort-Object)
             relocated = $moved
         }
