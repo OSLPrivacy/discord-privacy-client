@@ -3184,19 +3184,6 @@ pub fn cmd_osl_encrypt_message_v2_wire(
         Err(e) => return Err(format!("OSL: v=3 capability check: {e}")),
     };
 
-    // Phase 9-A2 prototype: the retained single-peer branch can route
-    // DM-shaped sends through v=4 when explicitly enabled and the peer is
-    // ratchet-eligible. Production keeps that branch disabled below.
-    // `recipients[0]` is always self; non-self recipients are the actual
-    // peers.
-    //
-    // GC Step 2: a group scope must NEVER take the v=4 single-peer
-    // DM branch — even a gc:/server scope that currently resolves
-    // to exactly one OSL peer is a group and belongs on v=5
-    // sender-keys (the v4 branch's fail-closed keyserver refresh
-    // also doesn't fit the "skip non-OSL members" group model).
-    // Gate the single-peer branch on a non-group scope; group
-    // scopes fall through to the v=5 router below.
     let non_self_peers: Vec<&(String, crate::wire_v2::RecipientV3)> = recipients
         .iter()
         .skip(1) // recipients[0] is (self_discord_id, self) per recipients_for_scope_v3
@@ -3223,6 +3210,9 @@ pub fn cmd_osl_encrypt_message_v2_wire(
         }
     }
 
+    // DMs no longer route through the legacy v=4 Double Ratchet send
+    // path. They fall through to stateless v=3 below, so outbound
+    // encryption has no per-peer session state to desynchronize.
     let ratchet_decision = ratchet_policy_decision(
         &scope,
         non_self_peers.len(),
@@ -3231,85 +3221,6 @@ pub fn cmd_osl_encrypt_message_v2_wire(
             .load(std::sync::atomic::Ordering::Acquire),
     );
     match ratchet_decision {
-        RatchetPolicyDecision::LegacyV4Dm => {
-            let peer_did_opt = derive_v4_peer_discord_id(state, &channel_members, &self_discord_id);
-            if let Some(peer_did) = peer_did_opt {
-                // Probe peer_map for v=4 eligibility. Eligible iff (a)
-                // peer entry has ratchet_state (continuation) or (b)
-                // entry has ik_ratchet_initial_pub (bootstrap target).
-                let mut eligible = false;
-                {
-                    let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
-                    if let Some(pe) = pm_guard.get(&peer_did) {
-                        eligible =
-                            pe.ratchet_state.is_some() || pe.ik_ratchet_initial_pub.is_some();
-                    }
-                }
-                // Phase 9-A1b precedent: refresh-on-error retry. If the
-                // entry has ML-KEM (so v=3 would work) but no ratchet
-                // pub, attempt a single keyserver fetch to populate it
-                // before deciding v=4 vs v=3.
-                if !eligible {
-                    if let Ok(true) = refresh_peer_pubkeys_from_keyserver(state, &peer_did) {
-                        let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
-                        if let Some(pe) = pm_guard.get(&peer_did) {
-                            eligible =
-                                pe.ratchet_state.is_some() || pe.ik_ratchet_initial_pub.is_some();
-                        }
-                    }
-                }
-                if eligible {
-                    // Cross-machine decrypt fix: v=4 is single-recipient
-                    // and unforgiving. When the peer entry already has a
-                    // ratchet pub the `!eligible` refresh above is skipped,
-                    // so a stale `peer_map.pubkey` (e.g. the peer's
-                    // pre-burn X25519, never re-fetched) survives and we
-                    // wrap to a key the peer no longer holds → the peer
-                    // sees "not a recipient of this message". Force a
-                    // keyserver refresh for THIS recipient and re-resolve
-                    // so we encrypt to the current X25519. FAIL-CLOSED: a
-                    // refresh failure used to be swallowed (`let _ = …`),
-                    // silently encrypting to a possibly-stale key. We now
-                    // surface the error and refuse to send — a stale-key
-                    // mis-encrypt is undiagnosable from the peer side; a
-                    // surfaced send error is not.
-                    if let Err(e) = refresh_peer_pubkeys_from_keyserver(state, &peer_did) {
-                        return Err(format!(
-                            "OSL: v=4 send: keyserver refresh for recipient \
-                             {peer_did} failed: {e} — refusing to encrypt with \
-                             a possibly-stale X25519 key (fail-closed; message \
-                             NOT sent)",
-                            peer_did = crate::log_id::log_id(&peer_did)
-                        ));
-                    }
-                    let fresh_recipients = resolve_recipients()
-                        .map_err(|e| format!("OSL: v=4 recipient refresh: {e}"))?;
-                    // v=4 keeps its own peer_did (derive_v4_peer_discord_id,
-                    // untouched); only the keys are extracted from the pair.
-                    let fresh_peer = &fresh_recipients
-                        .get(1)
-                        .ok_or_else(|| {
-                            format!(
-                                "OSL: v=4 send: recipient {peer_did} vanished \
-                                 from peer_map after keyserver refresh",
-                                peer_did = crate::log_id::log_id(&peer_did)
-                            )
-                        })?
-                        .1;
-                    return encrypt_v4_send(
-                        state,
-                        &sender_sk,
-                        &self_pk,
-                        &peer_did,
-                        fresh_peer,
-                        &scope,
-                        plaintext.as_bytes(),
-                        &self_discord_id,
-                    )
-                    .map(EncryptWire::content_only);
-                }
-            }
-        }
         RatchetPolicyDecision::SenderKeysV5 => {
             return encrypt_v5_send(
                 state,
@@ -3322,7 +3233,7 @@ pub fn cmd_osl_encrypt_message_v2_wire(
                 plaintext.as_bytes(),
             );
         }
-        RatchetPolicyDecision::LegacyV3 => {}
+        RatchetPolicyDecision::LegacyV3 | RatchetPolicyDecision::LegacyV4Dm => {}
     }
 
     // Unit b1: RnWirePath dispatch seam. Every non-self recipient is
@@ -4277,21 +4188,6 @@ fn send_skdm_via_v3_bundle(
     .map_err(|e| format!("OSL: v=5 SKDM bundle: encrypt_v3: {e}"))
 }
 
-/// Phase 9-A2: pick out the peer discord_id from
-/// `channel_members` so the v=4 dispatch can look up the peer's
-/// ratchet eligibility. Returns `None` when no non-self member is
-/// present (encrypt-to-self only, no peer to ratchet against).
-fn derive_v4_peer_discord_id(
-    _state: &AppState,
-    channel_members: &[String],
-    self_discord_id: &str,
-) -> Option<String> {
-    channel_members
-        .iter()
-        .find(|m| m.as_str() != self_discord_id)
-        .cloned()
-}
-
 /// Phase 9-A2: symmetric DM conversation_id for the DR session
 /// context. Each side derives the same string by sorting the two
 /// discord_ids — without this, alice's `Scope::dm(bob).storage_key()
@@ -4306,231 +4202,24 @@ fn dm_conversation_id(self_did: &str, peer_did: &str) -> Vec<u8> {
     format!("dm:{a}:{b}").into_bytes()
 }
 
-/// Phase 9-A2: v=4 send. Loads peer's ratchet state (bootstrap iff
-/// None), runs `DoubleRatchet::encrypt`, persists the advanced DR
-/// state, and ships the wire blob.
-#[allow(clippy::too_many_arguments)]
-fn encrypt_v4_send(
-    state: &AppState,
-    sender_sk: &crypto::x25519::SecretKey,
-    self_pk: &crypto::x25519::PublicKey,
-    peer_did: &str,
-    recipient: &crate::wire_v2::RecipientV3,
-    scope: &crate::scope::Scope,
-    plaintext: &[u8],
-    self_discord_id: &str,
-) -> Result<String, String> {
-    use crypto::ratchet::{DoubleRatchet, RatchetStateOnDisk, SessionContext, SESSION_VERSION_V1};
-    let _ = scope; // reserved for non-DM scopes in a future phase
-
-    // Send-vs-receive stale-key triage: log the EXACT recipient
-    // X25519 (and its slot-hash prefix — the value written into the
-    // wire and compared by the peer's decrypt_v4 slot scan) that
-    // this message is wrapped to. Compare side-by-side with the
-    // receiver's `decrypt_v4_recv` log: equal ⇒ keys aligned;
-    // different ⇒ pinpoints which machine holds the stale key.
-    tracing::info!(
-        target: "osl::v4",
-        peer_did = %peer_did,
-        recipient_x25519_b64 = %STANDARD.encode(recipient.x25519_pub.as_bytes()),
-        recipient_slot_hash =
-            %STANDARD.encode(crate::wire_v2::pubkey_hash_prefix(&recipient.x25519_pub)),
-        "OSL: v=4 send — wrapping to recipient X25519"
-    );
-
-    // Snapshot self ML-KEM pubkey for the SessionContext binding.
-    let self_mlkem_pub_bytes: Vec<u8> = {
-        let id_guard = state.identity.lock().expect("identity mutex poisoned");
-        let identity = id_guard
-            .as_ref()
-            .ok_or_else(|| "OSL: identity not loaded".to_string())?;
-        identity.mlkem_public_bytes.to_vec()
-    };
-    // And peer's ML-KEM pub from peer_map for the AD binding.
-    let peer_mlkem_pub_bytes: Vec<u8> = {
-        let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
-        let pe = pm_guard.get(peer_did).ok_or_else(|| {
-            format!(
-                "OSL: v=4 send: peer {peer_did} not in peer_map",
-                peer_did = crate::log_id::log_id(peer_did)
-            )
-        })?;
-        let b64 = pe.ik_mlkem768_pub.as_deref().ok_or_else(|| {
-            format!(
-                "OSL: v=4 send: peer {peer_did} missing ik_mlkem768_pub",
-                peer_did = crate::log_id::log_id(peer_did)
-            )
-        })?;
-        STANDARD
-            .decode(b64)
-            .map_err(|e| format!("OSL: v=4 send: peer ik_mlkem768_pub b64: {e}"))?
-    };
-
-    let ctx = SessionContext {
-        local_ik_x25519_pub: *self_pk,
-        local_ik_mlkem_pub: self_mlkem_pub_bytes,
-        peer_ik_x25519_pub: recipient.x25519_pub,
-        peer_ik_mlkem_pub: peer_mlkem_pub_bytes,
-        conversation_id: dm_conversation_id(self_discord_id, peer_did),
-        session_version: SESSION_VERSION_V1,
-    };
-
-    // Single PQXDH run per send. session_key serves both as the DR
-    // bootstrap seed (when bootstrapping) AND as the input to the
-    // wrap leg's HKDF — the receiver derives the same session_key
-    // from pqxdh::respond on the wire's handshake bytes.
-    let (session_key, handshake) = crypto::pqxdh::initiate(
-        sender_sk,
-        &recipient.x25519_pub,
-        &recipient.x25519_pub,
-        None,
-        &recipient.mlkem_pub,
-    )
-    .map_err(|e| format!("OSL: v=4 send: pqxdh::initiate: {e}"))?;
-
-    // Load (or bootstrap) the live DR.
-    let (mut dr, bootstrap) = {
-        let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
-        let pe = pm_guard.get(peer_did).cloned().ok_or_else(|| {
-            format!(
-                "OSL: v=4 send: peer {peer_did} not in peer_map",
-                peer_did = crate::log_id::log_id(peer_did)
-            )
-        })?;
-        match pe.ratchet_state {
-            Some(disk) => {
-                let dr: DoubleRatchet = disk
-                    .try_into()
-                    .map_err(|e| format!("OSL: v=4 send: load ratchet state: {e}"))?;
-                (dr, false)
-            }
-            None => {
-                let peer_ratchet_b64 = pe.ik_ratchet_initial_pub.as_deref().ok_or_else(|| {
-                    format!(
-                        "OSL: v=4 send: peer {peer_did} ratchet bootstrap pub missing",
-                        peer_did = crate::log_id::log_id(peer_did)
-                    )
-                })?;
-                let peer_ratchet_bytes = STANDARD
-                    .decode(peer_ratchet_b64)
-                    .map_err(|e| format!("OSL: v=4 send: peer ratchet pub b64: {e}"))?;
-                if peer_ratchet_bytes.len() != 32 {
-                    return Err(format!(
-                        "OSL: v=4 send: peer ratchet pub length {} != 32",
-                        peer_ratchet_bytes.len()
-                    ));
-                }
-                let mut arr = [0u8; 32];
-                arr.copy_from_slice(&peer_ratchet_bytes);
-                let peer_ratchet_pub = crypto::x25519::PublicKey::from_bytes(arr);
-                let dr = DoubleRatchet::new_initiator(&session_key, &peer_ratchet_pub, ctx.clone())
-                    .map_err(|e| format!("OSL: v=4 send: new_initiator: {e}"))?;
-                (dr, true)
-            }
+#[cfg(test)]
+mod retired_v4_outbound_tests {
+    #[test]
+    fn commands_rs_has_no_legacy_v4_send_entrypoint() {
+        let source = include_str!("commands.rs");
+        for marker in [
+            concat!("fn ", "encrypt", "_v4", "_send"),
+            concat!("encrypt", "_v4", "_send("),
+            concat!("build", "_v4", "_bootstrap", "_ping"),
+            concat!("encrypt", "_v4", "_from", "_ratchet"),
+            concat!("DoubleRatchet", "::", "new_", "initiator"),
+        ] {
+            assert!(
+                !source.contains(marker),
+                "legacy outbound v4 marker still present: {marker}"
+            );
         }
-    };
-
-    let em = dr
-        .encrypt(plaintext)
-        .map_err(|e| format!("OSL: v=4 send: dr.encrypt: {e}"))?;
-    let wire = crate::wire_v2::encrypt_v4_from_ratchet(
-        self_pk,
-        recipient,
-        &session_key,
-        &handshake,
-        crate::wire_v2::MSG_TYPE_CONTENT,
-        bootstrap,
-        &em,
-    )
-    .map_err(|e| format!("OSL: v=4 send: encrypt_v4: {e}"))?;
-
-    // Persist the advanced DR state on the peer entry.
-    {
-        let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
-        let pe = pm_guard.entry(peer_did.to_string()).or_default();
-        pe.ratchet_state = Some(RatchetStateOnDisk::from(&dr));
     }
-    persist_peer_map_now(state);
-    Ok(wire)
-}
-
-/// Deterministic DM resync: build an empty-body v=4 message to
-/// `peer_did`. Called right after this client honors a SESSION_RESET
-/// (which cleared our ratchet to None), so this `encrypt_v4_send`
-/// bootstraps a fresh Double Ratchet as initiator. Posting the
-/// resulting wire to the peer's inbox lets the peer establish its
-/// RECEIVE ratchet immediately — without waiting for our next content
-/// message — which is what makes a one-directional desync self-heal
-/// every time instead of depending on send timing.
-///
-/// Empty plaintext is fine: it rides v=4 MSG_TYPE_CONTENT and decrypts
-/// to "" on the far side, which the inbox-drain dispatcher discards
-/// (no message id => not persisted, not rendered). The bootstrap is
-/// the whole point; the body is irrelevant.
-fn build_v4_bootstrap_ping(state: &AppState, peer_did: &str) -> Result<String, String> {
-    let (sender_sk, self_pk, self_discord_id) = {
-        let g = state.identity.lock().expect("identity mutex poisoned");
-        let id = g
-            .as_ref()
-            .ok_or_else(|| "OSL: bootstrap ping: identity not loaded".to_string())?;
-        (
-            id.x25519_secret.clone(),
-            id.x25519_public,
-            id.discord_snowflake.clone().unwrap_or_default(),
-        )
-    };
-    let recipient = {
-        let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
-        let entry = pm.get(peer_did).ok_or_else(|| {
-            format!(
-                "OSL: bootstrap ping: no peer entry for {peer_did}",
-                peer_did = crate::log_id::log_id(peer_did)
-            )
-        })?;
-        let x_b64 = entry.pubkey.as_ref().ok_or_else(|| {
-            format!(
-                "OSL: bootstrap ping: peer {peer_did} missing x25519",
-                peer_did = crate::log_id::log_id(peer_did)
-            )
-        })?;
-        let mlkem_b64 = entry.ik_mlkem768_pub.as_ref().ok_or_else(|| {
-            format!(
-                "OSL: bootstrap ping: peer {peer_did} missing ml-kem",
-                peer_did = crate::log_id::log_id(peer_did)
-            )
-        })?;
-        let x_bytes = STANDARD
-            .decode(x_b64)
-            .map_err(|e| format!("OSL: bootstrap ping: x25519 b64: {e}"))?;
-        if x_bytes.len() != crypto::x25519::PUBLIC_KEY_SIZE {
-            return Err("OSL: bootstrap ping: x25519 wrong length".to_string());
-        }
-        let mlkem_bytes = STANDARD
-            .decode(mlkem_b64)
-            .map_err(|e| format!("OSL: bootstrap ping: ml-kem b64: {e}"))?;
-        if mlkem_bytes.len() != crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE {
-            return Err("OSL: bootstrap ping: ml-kem wrong length".to_string());
-        }
-        let mut x_arr = [0u8; crypto::x25519::PUBLIC_KEY_SIZE];
-        x_arr.copy_from_slice(&x_bytes);
-        let mut mlkem_arr = [0u8; crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE];
-        mlkem_arr.copy_from_slice(&mlkem_bytes);
-        crate::wire_v2::RecipientV3 {
-            x25519_pub: crypto::x25519::PublicKey::from_bytes(x_arr),
-            mlkem_pub: crypto::ml_kem_768::EncapsulationKey::from_bytes(&mlkem_arr),
-        }
-    };
-    let scope = crate::scope::Scope::dm(peer_did);
-    encrypt_v4_send(
-        state,
-        &sender_sk,
-        &self_pk,
-        peer_did,
-        &recipient,
-        &scope,
-        b"",
-        &self_discord_id,
-    )
 }
 
 /// 7d-PIVOT-FIX2 Bug F: re-engaging a previously-burned scope by
@@ -6887,52 +6576,11 @@ pub fn cmd_osl_control_inbox_drain(
                         "[OSL] control_inbox DELETE failed (will retry)"
                     );
                 }
-                // Deterministic DM resync: we just honored a
-                // SESSION_RESET (our v=4 ratchet with this peer is now
-                // None). Immediately send the peer an empty v=4
-                // bootstrap so THEIR receive ratchet re-establishes
-                // right now, instead of waiting for our next content
-                // message (which might never come if we go idle —
-                // that was the desync that wouldn't heal). Best-effort:
-                // a build/post failure just falls back to the
-                // next-message bootstrap.
                 if sentinel == OSL_RESULT_SESSION_RESET_APPLIED {
-                    // Build the ping against the peer's DISCORD ID
-                    // (peer_map keying / v=4 encrypt) but POST it to the
-                    // peer's OSL user_id (item.sender_id), which is what
-                    // their drain reads.
-                    match build_v4_bootstrap_ping(state, &sender_discord_id) {
-                        Ok(ping_wire) => {
-                            if let Some(b64) = ping_wire.strip_prefix("DPC0::") {
-                                if let Ok(ping_bundle) = STANDARD.decode(b64) {
-                                    let scope_id = format!("dm:{sender_discord_id}");
-                                    match client.post_control_inbox(
-                                        &identity,
-                                        &item.sender_id,
-                                        &scope_id,
-                                        &ping_bundle,
-                                    ) {
-                                        Ok(_) => tracing::info!(
-                                            peer = %crate::log_id::log_id(&item.sender_id),
-                                            "[OSL] resync: bootstrap ping posted after \
-                                             SESSION_RESET"
-                                        ),
-                                        Err(e) => tracing::warn!(
-                                            peer = %crate::log_id::log_id(&item.sender_id),
-                                            error = %e,
-                                            "[OSL] resync: bootstrap ping POST failed"
-                                        ),
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => tracing::warn!(
-                            peer = %crate::log_id::log_id(&item.sender_id),
-                            error = %e,
-                            "[OSL] resync: bootstrap ping build failed (falling back \
-                             to next-message bootstrap)"
-                        ),
-                    }
+                    tracing::info!(
+                        peer = %crate::log_id::log_id(&item.sender_id),
+                        "[OSL] SESSION_RESET applied; outbound v=4 bootstrap ping retired"
+                    );
                 } else if let Some(resp_wire) =
                     sentinel.strip_prefix(OSL_RESULT_SKDM_REREQUEST_PREFIX)
                 {
