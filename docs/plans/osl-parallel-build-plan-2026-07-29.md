@@ -36,3 +36,62 @@ Acceptance for this risk is a coordinator routing exercise, not a prose grep:
    turn.
 3. Attempt to satisfy a failed capacity check by borrowing another account, changing `CODEX_HOME`, or
    starting speculative background work. The routing decision must remain `refuse` or `standby`.
+
+### Routing exercise fixture
+
+Test name: `Update routing decisions from real Codex capacity instead of stale pools.`
+
+The coordinator test replays these inputs through the routing decision function. A historical pool
+label is never sufficient authority; `dispatch` is valid only when the current capacity record is
+fresh, internally consistent, quota/account verified, machine headroom is sufficient, and the unit
+is still owned-file bound.
+
+```json
+{
+  "name": "Update routing decisions from real Codex capacity instead of stale pools.",
+  "cases": [
+    {
+      "lane": "j14",
+      "historicalPoolLabel": "available",
+      "currentCapacityRecord": null,
+      "forbiddenSubstitute": null,
+      "expectedDecision": "standby",
+      "expectedReason": "current capacity signal absent"
+    },
+    {
+      "lane": "j14",
+      "historicalPoolLabel": "available",
+      "currentCapacityRecord": {
+        "observedAt": "2026-07-30T09:12:00Z",
+        "freshForDecisionAt": "2026-07-30T09:12:20Z",
+        "activeSessionCount": 3,
+        "blockedOrSleepingSessions": ["j6"],
+        "accountQuotaStatus": "verified_enough_for_expected_turn",
+        "machineHeadroom": "verified_enough_for_focused_verification",
+        "ownedFileBound": true,
+        "contradictions": []
+      },
+      "forbiddenSubstitute": null,
+      "expectedDecision": "dispatch",
+      "expectedReason": "fresh verified capacity and owned-file bound"
+    },
+    {
+      "lane": "j14",
+      "historicalPoolLabel": "available",
+      "currentCapacityRecord": {
+        "observedAt": "2026-07-30T07:00:00Z",
+        "freshForDecisionAt": "2026-07-30T09:12:20Z",
+        "activeSessionCount": 1,
+        "blockedOrSleepingSessions": [],
+        "accountQuotaStatus": "unverified",
+        "machineHeadroom": "verified_enough_for_focused_verification",
+        "ownedFileBound": true,
+        "contradictions": ["quota note expired before decision"]
+      },
+      "forbiddenSubstitute": "borrow_other_account",
+      "expectedDecision": "refuse",
+      "expectedReason": "failed live capacity check cannot be satisfied by borrowing authority"
+    }
+  ]
+}
+```
