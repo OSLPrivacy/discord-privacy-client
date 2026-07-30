@@ -2,8 +2,8 @@
 //!
 //! A profile is accepted only after two independent checks:
 //!
-//! 1. a future envelope verifier proves the canonical profile bytes were signed
-//!    by a trusted release anchor; and
+//! 1. the signed envelope verifier proves the canonical profile bytes were
+//!    signed by a trusted release anchor; and
 //! 2. this module proves the profile's structure grants no capability unless
 //!    consent, binding, and authority are explicit.
 //!
@@ -11,12 +11,19 @@
 //! capabilities, missing consent, missing binding, or missing authority all mean
 //! refusal.
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
+use crypto::ed25519;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fmt;
 use thiserror::Error;
 
 pub const PROFILE_DOC_VERSION: u32 = 1;
+pub const PROFILE_DOC_ENVELOPE_VERSION: u32 = 1;
+pub const PROFILE_DOC_SCHEMA_VERSION: u32 = 1;
+pub const PROFILE_DOC_DOMAIN: &str = "osl/adapter-profile/v1";
+const MIN_CANARY_TTL_SECONDS: u64 = 30;
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -48,6 +55,28 @@ impl fmt::Debug for ProfileDoc {
             .field("surfaces", &self.surfaces)
             .field("capabilities_len", &self.capabilities.len())
             .field("send_outcome", &self.send_outcome)
+            .finish()
+    }
+}
+
+/// Signed profile document transported between release infrastructure
+/// and the client.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SignedProfileDoc {
+    pub envelope_version: u32,
+    pub payload_b64: String,
+    pub signature_b64: String,
+    pub signing_key_b64: String,
+}
+
+impl fmt::Debug for SignedProfileDoc {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SignedProfileDoc")
+            .field("envelope_version", &self.envelope_version)
+            .field("payload_b64_len", &self.payload_b64.len())
+            .field("signature_b64", &"<redacted>")
+            .field("signing_key_b64", &"<redacted>")
             .finish()
     }
 }
@@ -358,6 +387,328 @@ fn require_non_empty(field: &'static str, value: &str) -> Result<(), ProfileVali
     Ok(())
 }
 
+/// Signed profile content. This is intentionally data-only: no
+/// script bodies, shell commands, executable paths, or arbitrary
+/// native hooks can be represented.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProfilePayload {
+    pub domain: String,
+    pub schema_version: u32,
+    pub adapter_id: String,
+    pub app: AppDescriptor,
+    pub revision: ProfileRevision,
+    pub issued_at_unix_seconds: u64,
+    pub expires_at_unix_seconds: u64,
+    pub support: SupportLevel,
+    pub authority: AuthorityRequirements,
+    pub selectors: Vec<TypedSelector>,
+    pub fallbacks: Vec<FallbackStrategy>,
+    pub canary: HarmlessCanary,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AppDescriptor {
+    pub stable_id: String,
+    pub display_name: String,
+    pub service_family: String,
+    pub min_app_version: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileRevision {
+    pub number: u64,
+    pub label: String,
+}
+
+/// Explicit requirements that callers must satisfy before a profile
+/// can be used. Required bool fields are intentional: absence refuses
+/// at deserialization, and `false` refuses at use-validation.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AuthorityRequirements {
+    pub user_consent_required: bool,
+    pub account_binding_required: bool,
+    pub release_authority_required: bool,
+    pub harmless_canary_required: bool,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SupportLevel {
+    Supported,
+    Experimental,
+    ComingSoon,
+    ExternallyBlocked,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TypedSelector {
+    pub kind: SelectorKind,
+    pub strategy: SelectorStrategy,
+    pub required: bool,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectorKind {
+    AppRoot,
+    AccountBadge,
+    ConversationTitle,
+    MessageList,
+    MessageRow,
+    ComposerInput,
+    SendButton,
+    SentState,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SelectorStrategy {
+    Accessibility {
+        role: String,
+        name: Option<String>,
+        automation_id: Option<String>,
+    },
+    Css {
+        selector: String,
+    },
+    TextAnchor {
+        starts_with: String,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FallbackStrategy {
+    pub selector: SelectorKind,
+    pub condition: FallbackCondition,
+    pub replacement: SelectorStrategy,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FallbackCondition {
+    MissingRequiredSelector,
+    AppVersionAtLeast,
+    CanaryMismatch,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HarmlessCanary {
+    pub selector: SelectorKind,
+    pub expected_text: String,
+    pub max_age_seconds: u64,
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ProfileError {
+    #[error("profile envelope version mismatch")]
+    EnvelopeVersion,
+    #[error("profile schema version mismatch")]
+    SchemaVersion,
+    #[error("profile domain mismatch")]
+    Domain,
+    #[error("profile field {field} is empty")]
+    EmptyField { field: &'static str },
+    #[error("profile revision must be nonzero")]
+    EmptyRevision,
+    #[error("profile expiry is not after issue time")]
+    InvalidExpiry,
+    #[error("profile is not yet valid")]
+    Future,
+    #[error("profile has expired")]
+    Expired,
+    #[error("profile support level refuses use")]
+    Unsupported,
+    #[error("profile authority requirement {field} is not explicit")]
+    MissingAuthority { field: &'static str },
+    #[error("profile has no required message row selector")]
+    MissingMessageRowSelector,
+    #[error("profile harmless canary is invalid")]
+    InvalidCanary,
+    #[error("base64 decode error in profile field {field}")]
+    Base64 { field: &'static str },
+    #[error("profile signing key length mismatch")]
+    SigningKeyLength,
+    #[error("profile signature length mismatch")]
+    SignatureLength,
+    #[error("profile signing key mismatch")]
+    SigningKeyMismatch,
+    #[error("profile signature verification failed")]
+    BadSignature,
+    #[error("profile crypto verification failed")]
+    CryptoVerify,
+    #[error("profile JSON error")]
+    Json,
+}
+
+impl ProfilePayload {
+    pub fn validate_document(&self, now_unix_seconds: u64) -> Result<(), ProfileError> {
+        if self.domain != PROFILE_DOC_DOMAIN {
+            return Err(ProfileError::Domain);
+        }
+        if self.schema_version != PROFILE_DOC_SCHEMA_VERSION {
+            return Err(ProfileError::SchemaVersion);
+        }
+        require_nonempty("adapter_id", &self.adapter_id)?;
+        require_nonempty("app.stable_id", &self.app.stable_id)?;
+        require_nonempty("app.display_name", &self.app.display_name)?;
+        require_nonempty("app.service_family", &self.app.service_family)?;
+        require_nonempty("revision.label", &self.revision.label)?;
+        if self.revision.number == 0 {
+            return Err(ProfileError::EmptyRevision);
+        }
+        if self.expires_at_unix_seconds <= self.issued_at_unix_seconds {
+            return Err(ProfileError::InvalidExpiry);
+        }
+        if self.issued_at_unix_seconds > now_unix_seconds {
+            return Err(ProfileError::Future);
+        }
+        if self.expires_at_unix_seconds <= now_unix_seconds {
+            return Err(ProfileError::Expired);
+        }
+        self.validate_canary()?;
+        Ok(())
+    }
+
+    pub fn validate_for_use(&self, now_unix_seconds: u64) -> Result<(), ProfileError> {
+        self.validate_document(now_unix_seconds)?;
+        if !matches!(
+            self.support,
+            SupportLevel::Supported | SupportLevel::Experimental
+        ) {
+            return Err(ProfileError::Unsupported);
+        }
+        self.authority.validate_for_use()?;
+        if !self
+            .selectors
+            .iter()
+            .any(|selector| selector.required && selector.kind == SelectorKind::MessageRow)
+        {
+            return Err(ProfileError::MissingMessageRowSelector);
+        }
+        Ok(())
+    }
+
+    fn validate_canary(&self) -> Result<(), ProfileError> {
+        if self.canary.expected_text.trim().is_empty()
+            || self.canary.max_age_seconds < MIN_CANARY_TTL_SECONDS
+        {
+            return Err(ProfileError::InvalidCanary);
+        }
+        Ok(())
+    }
+}
+
+impl AuthorityRequirements {
+    pub fn validate_for_use(&self) -> Result<(), ProfileError> {
+        if !self.user_consent_required {
+            return Err(ProfileError::MissingAuthority {
+                field: "user_consent_required",
+            });
+        }
+        if !self.account_binding_required {
+            return Err(ProfileError::MissingAuthority {
+                field: "account_binding_required",
+            });
+        }
+        if !self.release_authority_required {
+            return Err(ProfileError::MissingAuthority {
+                field: "release_authority_required",
+            });
+        }
+        if !self.harmless_canary_required {
+            return Err(ProfileError::MissingAuthority {
+                field: "harmless_canary_required",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Canonical bytes signed by the profile authority.
+pub fn canonical_profile_payload_bytes(payload: &ProfilePayload) -> Result<Vec<u8>, ProfileError> {
+    serde_json::to_vec(payload).map_err(|_| ProfileError::Json)
+}
+
+pub fn sign_profile_doc(
+    signer_secret: &ed25519::SecretKey,
+    signer_public: &ed25519::PublicKey,
+    payload: &ProfilePayload,
+) -> Result<SignedProfileDoc, ProfileError> {
+    let bytes = canonical_profile_payload_bytes(payload)?;
+    let signature = ed25519::sign(signer_secret, &bytes);
+    Ok(SignedProfileDoc {
+        envelope_version: PROFILE_DOC_ENVELOPE_VERSION,
+        payload_b64: STANDARD.encode(bytes),
+        signature_b64: STANDARD.encode(signature.as_bytes()),
+        signing_key_b64: STANDARD.encode(signer_public.as_bytes()),
+    })
+}
+
+pub fn verify_profile_doc(
+    doc: &SignedProfileDoc,
+    trusted_signing_key_b64: &str,
+    now_unix_seconds: u64,
+) -> Result<ProfilePayload, ProfileError> {
+    if doc.envelope_version != PROFILE_DOC_ENVELOPE_VERSION {
+        return Err(ProfileError::EnvelopeVersion);
+    }
+    if doc.signing_key_b64 != trusted_signing_key_b64 {
+        return Err(ProfileError::SigningKeyMismatch);
+    }
+
+    let signing_key = decode_b64("signing_key_b64", trusted_signing_key_b64)?;
+    if signing_key.len() != ed25519::PUBLIC_KEY_SIZE {
+        return Err(ProfileError::SigningKeyLength);
+    }
+    let signature = decode_b64("signature_b64", &doc.signature_b64)?;
+    if signature.len() != ed25519::SIGNATURE_SIZE {
+        return Err(ProfileError::SignatureLength);
+    }
+    let payload_bytes = decode_b64("payload_b64", &doc.payload_b64)?;
+
+    let mut signing_key_array = [0u8; ed25519::PUBLIC_KEY_SIZE];
+    signing_key_array.copy_from_slice(&signing_key);
+    let public_key = ed25519::PublicKey::from_bytes(signing_key_array);
+    let mut signature_array = [0u8; ed25519::SIGNATURE_SIZE];
+    signature_array.copy_from_slice(&signature);
+    let signature = ed25519::Signature::from_bytes(signature_array);
+
+    let ok = ed25519::verify(&public_key, &payload_bytes, &signature)
+        .map_err(|_| ProfileError::CryptoVerify)?;
+    if !ok {
+        return Err(ProfileError::BadSignature);
+    }
+
+    let payload: ProfilePayload =
+        serde_json::from_slice(&payload_bytes).map_err(|_| ProfileError::Json)?;
+    let recomputed = canonical_profile_payload_bytes(&payload)?;
+    if recomputed != payload_bytes {
+        return Err(ProfileError::BadSignature);
+    }
+    payload.validate_for_use(now_unix_seconds)?;
+    Ok(payload)
+}
+
+fn decode_b64(field: &'static str, value: &str) -> Result<Vec<u8>, ProfileError> {
+    STANDARD
+        .decode(value)
+        .map_err(|_| ProfileError::Base64 { field })
+}
+
+fn require_nonempty(field: &'static str, value: &str) -> Result<(), ProfileError> {
+    if value.trim().is_empty() {
+        return Err(ProfileError::EmptyField { field });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,6 +754,73 @@ mod tests {
                 auto_retries_unknown: false,
             },
         }
+    }
+
+    const NOW: u64 = 1_780_000_000;
+
+    fn sample_payload() -> ProfilePayload {
+        ProfilePayload {
+            domain: PROFILE_DOC_DOMAIN.to_string(),
+            schema_version: PROFILE_DOC_SCHEMA_VERSION,
+            adapter_id: "discord.desktop".to_string(),
+            app: AppDescriptor {
+                stable_id: "discord.desktop".to_string(),
+                display_name: "Discord".to_string(),
+                service_family: "chat".to_string(),
+                min_app_version: Some("1.0.0".to_string()),
+            },
+            revision: ProfileRevision {
+                number: 1,
+                label: "2026-07-30".to_string(),
+            },
+            issued_at_unix_seconds: NOW - 60,
+            expires_at_unix_seconds: NOW + 3_600,
+            support: SupportLevel::Supported,
+            authority: AuthorityRequirements {
+                user_consent_required: true,
+                account_binding_required: true,
+                release_authority_required: true,
+                harmless_canary_required: true,
+            },
+            selectors: vec![
+                TypedSelector {
+                    kind: SelectorKind::MessageRow,
+                    required: true,
+                    strategy: SelectorStrategy::Accessibility {
+                        role: "listitem".to_string(),
+                        name: None,
+                        automation_id: Some("message-row".to_string()),
+                    },
+                },
+                TypedSelector {
+                    kind: SelectorKind::ComposerInput,
+                    required: true,
+                    strategy: SelectorStrategy::Css {
+                        selector: "[data-slate-editor=true]".to_string(),
+                    },
+                },
+            ],
+            fallbacks: vec![FallbackStrategy {
+                selector: SelectorKind::ComposerInput,
+                condition: FallbackCondition::MissingRequiredSelector,
+                replacement: SelectorStrategy::Accessibility {
+                    role: "textbox".to_string(),
+                    name: None,
+                    automation_id: None,
+                },
+            }],
+            canary: HarmlessCanary {
+                selector: SelectorKind::AppRoot,
+                expected_text: "Friends".to_string(),
+                max_age_seconds: 300,
+            },
+        }
+    }
+
+    fn signer() -> (ed25519::SecretKey, ed25519::PublicKey, String) {
+        let (secret, public) = ed25519::generate_keypair();
+        let trusted = STANDARD.encode(public.as_bytes());
+        (secret, public, trusted)
     }
 
     fn full_evidence() -> ValidationEvidence {
@@ -465,6 +883,83 @@ mod tests {
             Err(ProfileValidationError::ConsentNotRequired(
                 Capability::InspectVisibleComposer
             ))
+        );
+    }
+
+    #[test]
+    fn schema_round_trips_signed_profile_doc() {
+        let payload = sample_payload();
+        let (secret, public, trusted) = signer();
+        let doc = sign_profile_doc(&secret, &public, &payload).unwrap();
+
+        let verified = verify_profile_doc(&doc, &trusted, NOW).unwrap();
+
+        assert_eq!(verified, payload);
+        verified.validate_for_use(NOW).unwrap();
+    }
+
+    #[test]
+    fn schema_rejects_unknown_script_field() {
+        let json = serde_json::json!({
+            "domain": PROFILE_DOC_DOMAIN,
+            "schema_version": PROFILE_DOC_SCHEMA_VERSION,
+            "adapter_id": "discord.desktop",
+            "app": {
+                "stable_id": "discord.desktop",
+                "display_name": "Discord",
+                "service_family": "chat",
+                "min_app_version": null
+            },
+            "revision": { "number": 1, "label": "rev1" },
+            "issued_at_unix_seconds": NOW - 1,
+            "expires_at_unix_seconds": NOW + 1,
+            "support": "supported",
+            "authority": {
+                "user_consent_required": true,
+                "account_binding_required": true,
+                "release_authority_required": true,
+                "harmless_canary_required": true
+            },
+            "selectors": [],
+            "fallbacks": [],
+            "canary": {
+                "selector": "app_root",
+                "expected_text": "Friends",
+                "max_age_seconds": 300
+            },
+            "script": "sh -c echo unsafe"
+        });
+
+        let parsed = serde_json::from_value::<ProfilePayload>(json);
+
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn schema_missing_authority_field_refuses_by_not_deserializing() {
+        let json = serde_json::json!({
+            "user_consent_required": true,
+            "account_binding_required": true,
+            "release_authority_required": true
+        });
+
+        let parsed = serde_json::from_value::<AuthorityRequirements>(json);
+
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn schema_false_authority_field_refuses_use() {
+        let mut payload = sample_payload();
+        payload.authority.account_binding_required = false;
+
+        let err = payload.validate_for_use(NOW).unwrap_err();
+
+        assert_eq!(
+            err,
+            ProfileError::MissingAuthority {
+                field: "account_binding_required"
+            }
         );
     }
 
@@ -556,5 +1051,68 @@ mod tests {
         assert!(rendered.contains("capabilities_len"));
         assert!(!rendered.contains("discord-windows-reviewed-v1"));
         assert!(!rendered.contains("0.0.1"));
+    }
+
+    #[test]
+    fn schema_blocked_profile_is_valid_document_but_not_usable() {
+        let mut payload = sample_payload();
+        payload.support = SupportLevel::ExternallyBlocked;
+
+        payload.validate_document(NOW).unwrap();
+        let err = payload.validate_for_use(NOW).unwrap_err();
+
+        assert_eq!(err, ProfileError::Unsupported);
+    }
+
+    #[test]
+    fn schema_requires_message_row_for_use() {
+        let mut payload = sample_payload();
+        payload
+            .selectors
+            .retain(|selector| selector.kind != SelectorKind::MessageRow);
+
+        let err = payload.validate_for_use(NOW).unwrap_err();
+
+        assert_eq!(err, ProfileError::MissingMessageRowSelector);
+    }
+
+    #[test]
+    fn schema_rejects_tampered_signed_payload() {
+        let payload = sample_payload();
+        let (secret, public, trusted) = signer();
+        let mut doc = sign_profile_doc(&secret, &public, &payload).unwrap();
+        let mut bytes = STANDARD.decode(&doc.payload_b64).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1;
+        doc.payload_b64 = STANDARD.encode(bytes);
+
+        let err = verify_profile_doc(&doc, &trusted, NOW).unwrap_err();
+
+        assert_eq!(err, ProfileError::BadSignature);
+    }
+
+    #[test]
+    fn schema_rejects_wrong_signing_key() {
+        let payload = sample_payload();
+        let (secret, public, _) = signer();
+        let (_, _, wrong_trusted) = signer();
+        let doc = sign_profile_doc(&secret, &public, &payload).unwrap();
+
+        let err = verify_profile_doc(&doc, &wrong_trusted, NOW).unwrap_err();
+
+        assert_eq!(err, ProfileError::SigningKeyMismatch);
+    }
+
+    #[test]
+    fn schema_signed_profile_doc_debug_redacts_signature_and_key() {
+        let payload = sample_payload();
+        let (secret, public, _) = signer();
+        let doc = sign_profile_doc(&secret, &public, &payload).unwrap();
+
+        let printed = format!("{doc:?}");
+
+        assert!(printed.contains("payload_b64_len"));
+        assert!(!printed.contains(&doc.signature_b64));
+        assert!(!printed.contains(&doc.signing_key_b64));
     }
 }
