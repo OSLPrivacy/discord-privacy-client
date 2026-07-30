@@ -2428,7 +2428,7 @@ fn trusted_native_visible_row_qa_caller_identity(
     Err("Native visible-row runtime evidence requires Windows".to_owned())
 }
 
-#[cfg(feature = "discord-qa-shell")]
+#[cfg(any(test, feature = "discord-qa-shell"))]
 struct NativeVisibleRowQaRequestContext {
     owner: String,
     context_epoch: u64,
@@ -2438,7 +2438,7 @@ struct NativeVisibleRowQaRequestContext {
     osl_target_identity_sha256: String,
 }
 
-#[cfg(feature = "discord-qa-shell")]
+#[cfg(any(test, feature = "discord-qa-shell"))]
 fn prepare_native_visible_row_qa_request<
     VerifyCaller,
     RequireLock,
@@ -2486,7 +2486,7 @@ where
     })
 }
 
-#[cfg(feature = "discord-qa-shell")]
+#[cfg(any(test, feature = "discord-qa-shell"))]
 fn finish_native_visible_row_qa_request<RequireLock, RecheckContext, Persist>(
     context: &NativeVisibleRowQaRequestContext,
     receipt: broker::NativeVisibleRowRuntimeReceipt,
@@ -9002,7 +9002,7 @@ mod tauri_command_acl_tests {
     }
 }
 
-#[cfg(all(test, feature = "discord-qa-shell"))]
+#[cfg(test)]
 mod native_visible_row_qa_command_tests {
     use super::{
         canonical_native_visible_row_qa_build_hash, deidentify_prepared_visual_structure,
@@ -9087,10 +9087,12 @@ mod native_visible_row_qa_command_tests {
             .eq(TEST_FLAGTEXT.split_whitespace()));
     }
 
+    #[cfg(feature = "discord-qa-shell")]
     fn registered_commands() -> Vec<String> {
         hub_tauri_commands!(hub_tauri_command_names)
     }
 
+    #[cfg(feature = "discord-qa-shell")]
     fn command_is_registered(command: &str) -> bool {
         registered_commands()
             .iter()
@@ -9143,6 +9145,7 @@ mod native_visible_row_qa_command_tests {
 
     #[test]
     fn native_visible_row_qa_command_is_reachable_only_through_trusted_state() {
+        #[cfg(feature = "discord-qa-shell")]
         assert!(command_is_registered(
             "request_native_discord_visible_row_qa_receipt"
         ));
@@ -9193,6 +9196,7 @@ mod native_visible_row_qa_command_tests {
             context.build_hash,
             "abcdef0123456789abcdef0123456789abcdef01"
         );
+        assert_eq!(context.osl_target_identity_sha256, "b".repeat(64));
 
         let persisted = Cell::new(false);
         let receipt = finish_native_visible_row_qa_request(
