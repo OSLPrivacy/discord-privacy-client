@@ -35,6 +35,7 @@ type RuntimeReceiptGate = {
   capability: boolean;
   caller: boolean;
   producer: boolean;
+  readQualification: boolean;
   broker: boolean;
   peerAnchor: boolean;
   refusals: boolean;
@@ -80,6 +81,16 @@ function detect(sources: Sources): RuntimeReceiptGate {
     sources.adapter,
     "    fn read_visible_message_rows(",
     "\n    /// Run one rehydration read on its own detached thread",
+  );
+  const producerFinalizer = between(
+    sources.adapter,
+    "fn finish_native_visible_rows(",
+    "\n}\n\n/// One row's descendant text plus",
+  );
+  const qualifier = between(
+    sources.adapter,
+    "fn qualify_native_visible_rows(",
+    "\n}\n\n/// Why one rehydration walk stopped.",
   );
   const brokerRequest = between(
     sources.broker,
@@ -140,6 +151,15 @@ function detect(sources: Sources): RuntimeReceiptGate {
       && probe.includes("target.window, target.process_id")
       && windowsRead.includes("native_discord_row_provider_observation(")
       && windowsRead.includes("native_row_attribution_from_provider("),
+    readQualification:
+      qualifier.includes("rows_observed: rows.len()")
+      && qualifier.includes("qualification.proof_some = qualification.proof_some.saturating_add(1)")
+      && qualifier.includes("qualification.proof_none = qualification.proof_none.saturating_add(1)")
+      && qualifier.includes("NativeDiscordRowPoster::SelfAccount")
+      && qualifier.includes("NativeDiscordRowPoster::PeerAccount")
+      && producerFinalizer.includes("let qualification = qualify_native_visible_rows(&visible_rows);")
+      && producerFinalizer.includes("qualification.proof_some == visible_rows.len()")
+      && producerFinalizer.includes("qualification.proof_none == 0"),
     broker:
       brokerRequest.includes("request_native_visible_row_qa_probe(")
       && brokerRequest.includes("evaluate_native_visible_row_runtime_probe(")
@@ -227,6 +247,11 @@ describe("native visible-row Windows runtime receipt", () => {
         "windows::read_visible_message_rows_qa_detached(",
         "windows::read_visible_message_rows_qa_detached_DISABLED(",
       )],
+      ["readQualification", mutate(
+        "adapter",
+        "&& qualification.proof_none == 0",
+        "&& true",
+      )],
       ["broker", mutate(
         "broker",
         "let authenticated = rehydrate_native_discord_overlay_history(",
@@ -244,8 +269,8 @@ describe("native visible-row Windows runtime receipt", () => {
       )],
       ["persistence", mutate(
         "broker",
-        "crate::atomic_file::write_recoverable(\n        path,\n        &encoded,\n        \"Native visible-row QA runtime receipt\",",
-        "crate::atomic_file::write_recoverable_DISABLED(\n        path,\n        &encoded,\n        \"Native visible-row QA runtime receipt\",",
+        'crate::atomic_file::write_recoverable(path, &encoded, "Native visible-row QA runtime receipt")',
+        'crate::atomic_file::write_recoverable_DISABLED(path, &encoded, "Native visible-row QA runtime receipt")',
       )],
     ];
     for (const [stage, sources] of mutations) {
