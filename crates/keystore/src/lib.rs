@@ -50,7 +50,7 @@ pub use client::{
 };
 pub use duress::{
     DuressEngine, DuressError, DuressHandlers, DuressJournal, DuressPaths, DuressReport,
-    StepOutcome, WipeFn, WipeStep,
+    KeyringPurgeFn, StepOutcome, TpmEvictFn, WipeFn, WipeStep,
 };
 pub use identity::{
     generate_identity, generate_native_identity, identity_from_entropy,
@@ -81,8 +81,8 @@ pub use recipients::{
 };
 pub use sealer::{
     evict_tpm_key, select_best_sealer, verify_sealer_round_trip, KeyringSealer, MemorySealer,
-    NoOpSealer, Sealer, SealerError, TpmSealer, METHOD_EPHEMERAL, METHOD_KEYRING, METHOD_MEMORY,
-    METHOD_NOOP, METHOD_TPM,
+    NoOpSealer, Sealer, SealerError, TpmEvictOutcome, TpmSealer, METHOD_EPHEMERAL, METHOD_KEYRING,
+    METHOD_MEMORY, METHOD_NOOP, METHOD_TPM,
 };
 pub use signed_get::{
     canonical_prekey_bundle_get_bytes, canonical_wrapped_key_get_bytes, sign_prekey_bundle_get,
