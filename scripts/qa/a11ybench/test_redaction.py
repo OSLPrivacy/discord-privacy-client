@@ -208,6 +208,13 @@ def _reject_content_bearing_accessibility_bench_artifacts(
     self.assertIn("content-bearing evidence field", reason)
     self.assertNotIn("e" * 64, reason)
 
+    preview = "visible account row text"
+    reason = self.reject(
+        lambda evidence: evidence["artifacts"][0].update(preview=preview)
+    )
+    self.assertIn("artifact metadata is outside the redacted allow-list", reason)
+    self.assertNotIn(preview, reason)
+
 
 def _test_redaction_module_contract(self: AccessibilityBenchRedactionTests) -> None:
     self.assertIsNone(REDACTION.reject_content_fields(positive_evidence()))

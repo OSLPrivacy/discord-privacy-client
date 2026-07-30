@@ -21,6 +21,9 @@ REQUIRED_PRIVACY_TRUE = frozenset(
 REQUIRED_AUTHORITY_FIELDS = frozenset(("collector", "verifier"))
 REQUIRED_BINDING_FIELDS = frozenset(("method", "subjectBindingSha256"))
 ALLOWED_TEXT_KEYS = frozenset(("noRawText",))
+ALLOWED_ARTIFACT_FIELDS = frozenset(
+    ("byteLength", "containsUserContent", "kind", "relativePath", "sha256")
+)
 CONTENT_BEARING_ARTIFACT_KINDS = frozenset(
     (
         "dom",
@@ -210,6 +213,13 @@ def _reject_content_artifacts(evidence: Mapping[str, Any]) -> None:
             _reject("content-bearing artifact is not allowed")
         if _content_bearing_artifact_text(artifact.get("relativePath")):
             _reject("content-bearing artifact is not allowed")
+        for key in set(artifact) - ALLOWED_ARTIFACT_FIELDS:
+            if not isinstance(key, str):
+                _reject("evidence object contains a non-string field")
+            if _content_bearing_key(key):
+                _reject("content-bearing evidence field is not allowed")
+        if set(artifact) - ALLOWED_ARTIFACT_FIELDS:
+            _reject("artifact metadata is outside the redacted allow-list")
 
 
 def reject_content_fields(evidence: Mapping[str, Any]) -> None:
