@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   advanceSendMode,
   canCompleteSetup,
+  formatSendMode,
   makeCapsulePreview,
   needsRiskAcceptance,
   parseRustOnboardingPreferences,
@@ -15,7 +16,17 @@ describe("setup safety", () => {
     expect(needsRiskAcceptance("clipboard")).toBe(false);
   });
 
-  it("requires acceptance for Enter automation", () => {
+  it("labels the four send authority modes", () => {
+    expect(formatSendMode("manual")).toBe("Manual");
+    expect(formatSendMode("clipboard")).toBe("Clipboard");
+    expect(formatSendMode("double")).toBe("Double Enter");
+    expect(formatSendMode("single")).toBe("Single Enter");
+  });
+
+  it("requires matching acceptance for Enter automation", () => {
+    expect(canCompleteSetup({ sendMode: "double", placementMode: "atomic", acceptedRisk: false, acceptedRiskForMode: null })).toBe(false);
+    expect(canCompleteSetup({ sendMode: "double", placementMode: "atomic", acceptedRisk: true, acceptedRiskForMode: "double" })).toBe(true);
+    expect(canCompleteSetup({ sendMode: "double", placementMode: "atomic", acceptedRisk: true, acceptedRiskForMode: "single" })).toBe(false);
     expect(canCompleteSetup({ sendMode: "single", placementMode: "atomic", acceptedRisk: false, acceptedRiskForMode: null })).toBe(false);
     expect(canCompleteSetup({ sendMode: "single", placementMode: "atomic", acceptedRisk: true, acceptedRiskForMode: "single" })).toBe(true);
     expect(canCompleteSetup({ sendMode: "single", placementMode: "atomic", acceptedRisk: true, acceptedRiskForMode: "double" })).toBe(false);
