@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+const adapterSource = readFileSync(new URL("./adapters.ts", import.meta.url), "utf8");
 const nativeSource = readFileSync(new URL("../../osl-hub/src/main.rs", import.meta.url), "utf8");
 const brokerSource = readFileSync(new URL("../../osl-hub/src/broker.rs", import.meta.url), "utf8");
 
@@ -71,6 +72,19 @@ describe("first-party OSL Chat plaintext boundary", () => {
     expect(source).toContain('id="osl-chat-back" type="button" ${oslChatBusy ? "disabled" : ""}');
     expect(source).toContain('state: "sent" as const');
     expect(source).not.toContain('state: "delivered" as const');
+  });
+
+  it("prepares OSL Chat text through the first-party inbox shape only", () => {
+    const start = adapterSource.indexOf("export async function prepareOslChatText");
+    const end = adapterSource.indexOf("export async function openOslChatText", start + 1);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const prepare = adapterSource.slice(start, end);
+    expect(prepare).toContain('invoke<unknown>("prepare_osl_chat_text"');
+    expect(prepare).toContain("parsePreparedOslChatText");
+    expect(prepare).not.toContain("prepare_native_discord_overlay_text");
+    expect(prepare).not.toContain("parseNativeDiscordOverlayPrepared");
+    expect(prepare).not.toContain("flagtext");
   });
 
   it("escapes decrypted friend previews before inserting Home markup", () => {
