@@ -577,16 +577,19 @@ describe("fresh-account continuation", () => {
     expect(passwordBinding.match(/onboardingRoute === "mullvad"\) void refreshMullvadSetup\(\)/g)).toHaveLength(2);
   });
 
-  it("offers guarded sending choices without overstating placement support", () => {
+  it("offers exactly the ordinary sending choices during onboarding", () => {
     const content = functionSource("sendingSetupContent", "coverDraftSetupContent");
     expect(content).toContain("Choose how to send");
     expect(content).toContain("manualSendingAnimationMarkup(selectedMode)");
     expect(source).toContain('step(1, "Write")');
     expect(source).toContain('step(2, "Encrypt")');
     expect(source).toContain('step(4, finalStep)');
-    expect(content).toContain("Never presses Send");
+    expect(content).toContain('option("manual", "Manual"');
+    expect(content).toContain('option("clipboard", "Clipboard"');
     expect(content).toContain('option("double", "Double Enter"');
-    expect(content).toContain('option("single", "Single Enter"');
+    expect(content).not.toContain('option("single", "Single Enter"');
+    expect(content).not.toContain("Highest risk");
+    expect(content).toContain("No mode silently sends");
     expect(content).toContain("If OSL cannot prove the destination");
   });
 
