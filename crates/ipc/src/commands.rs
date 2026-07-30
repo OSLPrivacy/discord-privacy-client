@@ -884,6 +884,14 @@ pub struct FetchPubkeysResponse {
     pub last_rotated_at: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FetchIdentityBundleResponse {
+    pub identity_revision: u64,
+    pub capability_bundle: u32,
+    pub remaining_opk_count: u32,
+    pub consumed_one_time_prekey: bool,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct AeadSealRequest {
     pub key_b64: String,
@@ -1014,6 +1022,46 @@ pub fn cmd_fetch_pubkeys(state: &AppState, user_id: String) -> IpcResult<FetchPu
         ik_mlkem768_pub_b64: resp.ik_mlkem768_pub,
         registered_at: resp.registered_at,
         last_rotated_at: resp.last_rotated_at,
+    })
+}
+
+/// Fetch this device's complete production identity bundle through the IPC
+/// command layer. This uses the keyserver client's atomic
+/// `fetch_identity_bundle` path: `/v1/pubkeys` and `/v1/prekey-bundle` must
+/// agree, the canonical full-bundle proofs must verify, and the merged prekey
+/// material must authenticate before any response is returned.
+pub fn cmd_osl_fetch_identity_bundle(
+    state: &AppState,
+    last_known_revision: Option<u64>,
+) -> Result<FetchIdentityBundleResponse, String> {
+    let identity = state
+        .identity
+        .lock()
+        .expect("identity mutex poisoned")
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "OSL: identity bundle fetch needs a loaded identity".to_string())?;
+    let client = state
+        .keyserver
+        .lock()
+        .expect("keyserver mutex poisoned")
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "OSL: identity bundle fetch needs a key server".to_string())?;
+
+    let merged = match last_known_revision {
+        Some(revision) => {
+            client.fetch_identity_bundle_since(&identity, &identity.user_id, Some(revision))
+        }
+        None => client.fetch_identity_bundle(&identity, &identity.user_id),
+    }
+    .map_err(|_| "OSL: identity bundle fetch refused".to_string())?;
+
+    Ok(FetchIdentityBundleResponse {
+        identity_revision: merged.identity.revision,
+        capability_bundle: merged.identity.capability_bundle,
+        remaining_opk_count: merged.prekey.remaining_opk_count,
+        consumed_one_time_prekey: merged.prekey.opk.is_some(),
     })
 }
 
@@ -8256,6 +8304,10 @@ mod production_identity_bundle_pipeline_tests {
     use keystore::client::{PrekeyBundleOpk, PrekeyBundleResponse, PubkeysResponse};
     use keystore::identity_bundle::{BundleField, BundleMergeError, IdentityBundle};
     use keystore::{Identity, PrekeyConfig, PrekeyState};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     fn fetched_pubkeys(identity: &Identity, capabilities: u32) -> PubkeysResponse {
         let x25519 = STANDARD.encode(identity.x25519_public.as_bytes());
@@ -8334,6 +8386,188 @@ mod production_identity_bundle_pipeline_tests {
             remaining_opk_count,
             ik_ratchet_initial_pub: fetched.ik_ratchet_initial_pub.clone(),
         }
+    }
+
+    fn u32be(value: u32) -> [u8; 4] {
+        value.to_be_bytes()
+    }
+
+    fn lp_extend(buf: &mut Vec<u8>, bytes: &[u8]) {
+        buf.extend_from_slice(&u32be(bytes.len() as u32));
+        buf.extend_from_slice(bytes);
+    }
+
+    fn scheme1_canonical_bytes(
+        identity: &Identity,
+        x25519_b64: &str,
+        ed25519_b64: &str,
+        mlkem768_b64: &str,
+        ratchet_b64: Option<&str>,
+        capability_bundle: u32,
+        revision: u64,
+    ) -> Vec<u8> {
+        let x25519 = STANDARD.decode(x25519_b64).expect("x25519 b64");
+        let ed25519 = STANDARD.decode(ed25519_b64).expect("ed25519 b64");
+        let mlkem768 = STANDARD.decode(mlkem768_b64).expect("mlkem b64");
+        let ratchet = ratchet_b64.map(|value| STANDARD.decode(value).expect("ratchet b64"));
+
+        let mut buf = Vec::new();
+        lp_extend(&mut buf, b"OSL-FULL-IDENTITY-BUNDLE-v1\0");
+        lp_extend(&mut buf, identity.user_id.as_bytes());
+        buf.extend_from_slice(&u32be(1));
+        buf.extend_from_slice(&u32be(1));
+        lp_extend(&mut buf, revision.to_string().as_bytes());
+        lp_extend(&mut buf, identity.ed25519_public.as_bytes());
+        lp_extend(&mut buf, &x25519);
+        lp_extend(&mut buf, &ed25519);
+        lp_extend(&mut buf, &mlkem768);
+        lp_extend(&mut buf, ratchet.as_deref().unwrap_or(&[]));
+        buf.extend_from_slice(&u32be(capability_bundle));
+        buf
+    }
+
+    fn scheme1_pubkeys_json(identity: &Identity, revision: u64, capability_bundle: u32) -> String {
+        let x25519 = STANDARD.encode(identity.x25519_public.as_bytes());
+        let ed25519 = STANDARD.encode(identity.ed25519_public.as_bytes());
+        let mlkem768 = STANDARD.encode(identity.mlkem_public_bytes);
+        let ratchet = identity
+            .ratchet_initial_pub
+            .as_ref()
+            .map(|key| STANDARD.encode(key.as_bytes()));
+        let canonical = scheme1_canonical_bytes(
+            identity,
+            &x25519,
+            &ed25519,
+            &mlkem768,
+            ratchet.as_deref(),
+            capability_bundle,
+            revision,
+        );
+        let proof = crypto::ed25519::sign(&identity.ed25519_secret, &canonical);
+        let proof_b64 = STANDARD.encode(proof.as_bytes());
+
+        serde_json::json!({
+            "user_id": identity.user_id.as_str(),
+            "ik_x25519_pub": x25519,
+            "ik_ed25519_pub": ed25519,
+            "ik_mlkem768_pub": mlkem768,
+            "registered_at": "2026-07-30T00:00:00Z",
+            "last_rotated_at": null,
+            "ik_ratchet_initial_pub": ratchet,
+            "rn_capabilities": capability_bundle,
+            "registration_sig": proof_b64,
+            "identity_scheme": 1,
+            "identity_bundle_version": 1,
+            "identity_revision": revision,
+            "ik_root_ed25519_pub": STANDARD.encode(identity.ed25519_public.as_bytes()),
+            "identity_bundle_proof_sig": proof_b64
+        })
+        .to_string()
+    }
+
+    fn prekey_response_json(
+        identity: &Identity,
+        x25519_override: Option<String>,
+        remaining_opk_count: u32,
+    ) -> String {
+        let prekeys = PrekeyState::new(identity, PrekeyConfig::default(), 1_800_000_000);
+        let opk = prekeys.opk_pool.first().expect("prekey state has OPKs");
+        serde_json::json!({
+            "user_id": identity.user_id.as_str(),
+            "ik_x25519_pub": x25519_override.unwrap_or_else(|| {
+                STANDARD.encode(identity.x25519_public.as_bytes())
+            }),
+            "ik_ed25519_pub": STANDARD.encode(identity.ed25519_public.as_bytes()),
+            "ik_mlkem768_pub": STANDARD.encode(identity.mlkem_public_bytes),
+            "spk_pub": STANDARD.encode(prekeys.current_spk.public),
+            "spk_signature": STANDARD.encode(prekeys.current_spk.signature),
+            "spk_rotated_at": keystore::iso_8601_from_unix_seconds(
+                prekeys.current_spk.rotated_at_unix_seconds,
+            ),
+            "opk": {
+                "id": opk.id,
+                "pub_b64": STANDARD.encode(opk.public),
+            },
+            "remaining_opk_count": remaining_opk_count,
+            "ik_ratchet_initial_pub": identity
+                .ratchet_initial_pub
+                .as_ref()
+                .map(|key| STANDARD.encode(key.as_bytes())),
+        })
+        .to_string()
+    }
+
+    fn http_json_response(body: String) -> Vec<u8> {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .into_bytes()
+    }
+
+    fn read_request(stream: &mut std::net::TcpStream) -> Vec<u8> {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut buf = [0u8; 4096];
+        let mut acc = Vec::new();
+        let header_end = loop {
+            let n = stream.read(&mut buf).unwrap();
+            assert!(n > 0, "request ended before headers");
+            acc.extend_from_slice(&buf[..n]);
+            if let Some(pos) = acc.windows(4).position(|window| window == b"\r\n\r\n") {
+                break pos;
+            }
+        };
+        let headers = std::str::from_utf8(&acc[..header_end]).unwrap();
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim())
+            })
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0);
+        while acc[header_end + 4..].len() < content_length {
+            let n = stream.read(&mut buf).unwrap();
+            assert!(n > 0, "request body ended early");
+            acc.extend_from_slice(&buf[..n]);
+        }
+        acc
+    }
+
+    fn response_server(responses: Vec<Vec<u8>>) -> (String, mpsc::Receiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            for response in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_request(&mut stream);
+                let _ = tx.send(String::from_utf8_lossy(&request).to_string());
+                stream.write_all(&response).unwrap();
+            }
+        });
+        (format!("http://127.0.0.1:{port}"), rx)
+    }
+
+    fn request_target(request: &str) -> String {
+        request
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .expect("request line has target")
+            .to_string()
+    }
+
+    fn query_value(target: &str, key: &str) -> String {
+        let url = reqwest::Url::parse(&format!("http://test{target}")).unwrap();
+        url.query_pairs()
+            .find(|(candidate, _)| candidate == key)
+            .map(|(_, value)| value.into_owned())
+            .unwrap_or_else(|| panic!("missing query key {key}"))
     }
 
     #[test]
@@ -8421,6 +8655,77 @@ mod production_identity_bundle_pipeline_tests {
             state.key_change_alerts.lock().unwrap().is_empty(),
             "first verified fetch must seed TOFU without a false alert"
         );
+    }
+
+    #[test]
+    fn production_ipc_caller_fetch_identity_bundle() {
+        let identity = keystore::generate_identity("ipc-bundle-owner".to_string());
+        assert_eq!(
+            cmd_osl_fetch_identity_bundle(&AppState::new(), None).unwrap_err(),
+            "OSL: identity bundle fetch needs a loaded identity"
+        );
+
+        let state = AppState::new();
+        state.install_identity(identity.clone());
+        assert_eq!(
+            cmd_osl_fetch_identity_bundle(&state, None).unwrap_err(),
+            "OSL: identity bundle fetch needs a key server"
+        );
+
+        let capability_bundle = keystore::client::RN_CAP_WIRE_RN;
+        let revision = 7;
+        let (base_url, rx) = response_server(vec![
+            http_json_response(scheme1_pubkeys_json(&identity, revision, capability_bundle)),
+            http_json_response(prekey_response_json(&identity, None, 23)),
+        ]);
+        *state.keyserver.lock().unwrap() = Some(KeyServerClient::new(base_url).unwrap());
+
+        let fetched = cmd_osl_fetch_identity_bundle(&state, None)
+            .expect("IPC caller fetches and verifies the production identity bundle");
+        assert_eq!(fetched.identity_revision, revision);
+        assert_eq!(fetched.capability_bundle, capability_bundle);
+        assert_eq!(fetched.remaining_opk_count, 23);
+        assert!(fetched.consumed_one_time_prekey);
+
+        let first = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let second = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(
+            request_target(&first),
+            "/v1/pubkeys/ipc-bundle-owner",
+            "IPC caller must use the production pubkeys endpoint"
+        );
+        let second_target = request_target(&second);
+        assert!(
+            second_target.starts_with("/v1/prekey-bundle/ipc-bundle-owner?"),
+            "IPC caller must also fetch the prekey bundle, got {second_target}"
+        );
+        assert_eq!(
+            query_value(&second_target, "requester_id"),
+            "ipc-bundle-owner"
+        );
+        assert_eq!(
+            query_value(&second_target, "recipient_id"),
+            "ipc-bundle-owner"
+        );
+        assert!(!first.to_ascii_lowercase().contains("authorization:"));
+        assert!(!second.to_ascii_lowercase().contains("authorization:"));
+
+        let (base_url, _rx) = response_server(vec![
+            http_json_response(scheme1_pubkeys_json(
+                &identity,
+                revision + 1,
+                capability_bundle,
+            )),
+            http_json_response(prekey_response_json(
+                &identity,
+                Some(STANDARD.encode([0x55u8; crypto::x25519::PUBLIC_KEY_SIZE])),
+                23,
+            )),
+        ]);
+        *state.keyserver.lock().unwrap() = Some(KeyServerClient::new(base_url).unwrap());
+        let err = cmd_osl_fetch_identity_bundle(&state, Some(revision))
+            .expect_err("IPC caller must refuse a prekey bundle bound to different keys");
+        assert_eq!(err, "OSL: identity bundle fetch refused");
     }
 }
 
