@@ -9408,6 +9408,42 @@ mod tests {
         assert!(!encoded.contains("peer-opened-row"));
     }
 
+    #[test]
+    fn view_once_list_appears_on_b() {
+        let batch = OpenedNativeOverlayTextBatch {
+            messages: Vec::new(),
+            pending_view_once: vec![PendingNativeOverlayText {
+                message_id: "peer-0123456789abcdef0123456789abcdef".to_owned(),
+                expires_at: 1_787_000_100,
+                person_to_person_e2ee: true,
+            }],
+            acknowledgments: Vec::new(),
+            fetched: 1,
+            decrypt_display_enabled: true,
+            deferred_rows: 0,
+        };
+
+        let value = serde_json::to_value(batch).expect("B-side batch serializes");
+        let pending = value["pendingViewOnce"]
+            .as_array()
+            .expect("B receives a pending view-once list");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            pending[0]["messageId"],
+            "peer-0123456789abcdef0123456789abcdef"
+        );
+        assert_eq!(pending[0]["personToPersonE2ee"], true);
+        assert_eq!(pending[0]["expiresAt"], 1_787_000_100i64);
+        assert!(
+            pending[0].get("plaintext").is_none(),
+            "the B-side view-once list must not render plaintext before reveal"
+        );
+        assert!(
+            value["messages"].as_array().unwrap().is_empty(),
+            "listing a view-once row must not also open it"
+        );
+    }
+
     /// The correlation handle is routing metadata and stays inside the renderer's
     /// own bound. A cover the renderer would refuse is dropped, because losing the
     /// handle degrades in-place painting while losing the message would not be
