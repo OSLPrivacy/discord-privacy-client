@@ -1129,7 +1129,7 @@ async fn unlock_hub_password_gate(
             startup_gate::enter_stealth_landing(&app.state::<HubCoreState>());
             Ok(HubGateUnlockResult::decoy(verification))
         }
-        VerifiedGateRole::Burn => {
+        VerifiedGateRole::Burn | VerifiedGateRole::Duress => {
             service_host::desktop::shutdown(&app, &app.state::<ServiceHostState>()).await?;
             native_discord_overlay::clear_and_hide(&app);
             let _ = app.state::<NativeWindowHostState>().terminate();
@@ -1154,8 +1154,12 @@ async fn unlock_hub_password_gate(
                 )
             })
             .await
-            .map_err(|_| "OSL burn worker failed".to_owned())??;
-            Ok(HubGateUnlockResult::burned(verification, burn))
+            .map_err(|_| "OSL cleanup worker failed".to_owned())??;
+            match verification.role {
+                VerifiedGateRole::Burn => Ok(HubGateUnlockResult::burned(verification, burn)),
+                VerifiedGateRole::Duress => Ok(HubGateUnlockResult::duress(verification, burn)),
+                _ => unreachable!("cleanup branch only handles burn and duress"),
+            }
         }
     }
 }
@@ -8699,7 +8703,7 @@ fn main() {
             return;
         }
         #[cfg(windows)]
-        if matches!(event, tauri::WindowEvent::Focused(true)) {
+        if matches!(&event, tauri::WindowEvent::Focused(true)) {
             if let Some(webview) = window.app_handle().get_webview_window("main") {
                 protect_main_window_or_hide(&webview);
             }
