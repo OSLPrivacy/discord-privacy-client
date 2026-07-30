@@ -42,6 +42,11 @@ fn fixture_response(x25519_b64: &str, mlkem_b64: &str) -> PubkeysResponse {
         ik_ratchet_initial_pub: None,
         rn_capabilities: None,
         registration_sig: Some(STANDARD.encode(sig.as_bytes())),
+        identity_scheme: None,
+        identity_bundle_version: None,
+        identity_revision: None,
+        ik_root_ed25519_pub: None,
+        identity_bundle_proof_sig: None,
     }
 }
 
@@ -55,6 +60,11 @@ fn fixture_response_carries_valid_registration_proof() {
     );
 
     assert!(keystore::client::verify_peer_bundle(&resp));
+    assert_eq!(resp.identity_scheme, None);
+    assert_eq!(resp.identity_bundle_version, None);
+    assert_eq!(resp.identity_revision, None);
+    assert_eq!(resp.ik_root_ed25519_pub, None);
+    assert_eq!(resp.identity_bundle_proof_sig, None);
 
     resp.ik_x25519_pub = STANDARD.encode([0x42u8; 32]);
     assert!(!keystore::client::verify_peer_bundle(&resp));

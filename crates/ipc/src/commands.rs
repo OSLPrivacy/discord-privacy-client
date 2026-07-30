@@ -7239,6 +7239,11 @@ mod production_identity_bundle_pipeline_tests {
             ik_ratchet_initial_pub: ratchet,
             rn_capabilities: Some(capabilities),
             registration_sig: Some(STANDARD.encode(reg_sig.as_bytes())),
+            identity_scheme: None,
+            identity_bundle_version: None,
+            identity_revision: None,
+            ik_root_ed25519_pub: None,
+            identity_bundle_proof_sig: None,
         }
     }
 
@@ -7293,6 +7298,11 @@ mod production_identity_bundle_pipeline_tests {
         let revision = 1;
         let peer = keystore::generate_identity("pipeline-peer".to_string());
         let fetched = fetched_pubkeys(&peer, capabilities);
+        assert_eq!(fetched.identity_scheme, None);
+        assert_eq!(fetched.identity_bundle_version, None);
+        assert_eq!(fetched.identity_revision, None);
+        assert_eq!(fetched.ik_root_ed25519_pub, None);
+        assert_eq!(fetched.identity_bundle_proof_sig, None);
         let signature = full_identity_bundle_signature(&peer, capabilities, revision);
 
         let verified = verified_identity_bundle_from_fetch_response(
