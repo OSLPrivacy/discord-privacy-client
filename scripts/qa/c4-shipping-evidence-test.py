@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import copy
+import base64
 import hashlib
 import importlib.util
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -44,8 +47,142 @@ class ShippingEvidenceMutationTests(unittest.TestCase):
         os.utime(self.screenshot, ns=(now * 1_000_000, now * 1_000_000))
         run_id = str(uuid.uuid4())
         executable_sha = sha(self.executable.read_bytes())
-        carrier_sha = sha(b"shipping carrier")
-        binding = sha(b"signed Discord process|window|Deckard QA")
+        carrier_bytes = b"shipping carrier"
+        carrier_sha = sha(carrier_bytes)
+        challenge = "1" * 64
+        emitter = {
+            "pid": 4102,
+            "processStartTime100ns": 133_100_000_000_000_000,
+            "sessionId": 2,
+            "executablePath": r"C:\OSL\osl-privacy-hub.exe",
+            "executableSha256": executable_sha,
+            "fileIdentity": {
+                "volumeSerialNumber": 7,
+                "fileIndex": 11,
+                "fileSize": len(self.executable.read_bytes()),
+                "lastWriteTime100ns": 133_100_000_000_000_001,
+            },
+        }
+        discord_sha = sha(b"discord executable")
+        target = {
+            "pid": 7331,
+            "processStartTime100ns": 133_100_000_000_000_100,
+            "sessionId": 2,
+            "executablePath": r"C:\Users\Owner\AppData\Local\Discord\Discord.exe",
+            "executableSha256": discord_sha,
+            "fileIdentity": {
+                "volumeSerialNumber": 7,
+                "fileIndex": 22,
+                "fileSize": 123_456,
+                "lastWriteTime100ns": 133_100_000_000_000_002,
+            },
+            "bindingSha256": "",
+            "hwnd": 0x123456,
+            "rootHwnd": 0x123456,
+            "hostGeneration": 9,
+            "publisher": "Discord Inc.",
+        }
+        target["bindingSha256"] = VERIFIER._target_binding_digest(target)
+        native_binding = target["bindingSha256"]
+        binding = sha(
+            f"{discord_sha}|{target['pid']}|{target['hwnd']}|{self.target}".encode(
+                "utf-8"
+            )
+        )
+        carrier_utf16 = len(carrier_bytes.decode("utf-8").encode("utf-16-le")) // 2
+        native_receipt = {
+            "schema": "osl.c4.native-placement-receipt",
+            "version": 3,
+            "evidenceKind": "native-placement",
+            "challenge": challenge,
+            "emittedAtUnixMs": self.start + 450,
+            "monotonicStagesMs": {
+                "challengeClaimed": 0,
+                "preSendReadback": 100,
+                "sendInjected": 200,
+                "postContextRevalidated": 300,
+                "receiptEmitted": 400,
+            },
+            "emitter": emitter,
+            "build": {
+                "features": ["core", "desktop"],
+                "debugAssertions": False,
+                "targetOs": "windows",
+                "targetArch": "x86_64",
+                "profile": "release",
+            },
+            "target": target,
+            "carrier": {
+                "targetBindingSha256": native_binding,
+                "utf8B64": base64.b64encode(carrier_bytes).decode("ascii"),
+                "sha256": carrier_sha,
+                "byteLength": len(carrier_bytes),
+                "utf16Length": carrier_utf16,
+            },
+            "preSend": {
+                "targetBindingSha256": native_binding,
+                "readback": {
+                    "targetBindingSha256": native_binding,
+                    "classification": "exact",
+                    "complete": True,
+                    "sha256": carrier_sha,
+                    "byteLength": len(carrier_bytes),
+                    "utf16Length": carrier_utf16,
+                },
+                "foreground": {
+                    "targetBindingSha256": native_binding,
+                    "foregroundHwnd": target["hwnd"],
+                    "foregroundRootHwnd": target["rootHwnd"],
+                    "foregroundPid": target["pid"],
+                    "targetRootHwnd": target["rootHwnd"],
+                    "keyboardFocusProven": True,
+                    "targetOwnedByTrustedProcess": True,
+                },
+            },
+            "action": {
+                "targetBindingSha256": native_binding,
+                "mechanism": "sendinput_enter",
+                "attempted": True,
+                "acceptedInputCount": 2,
+                "enterCertainty": "injected_once",
+                "retryPolicy": "never_auto_retry",
+                "actionSequence": 1,
+            },
+            "postSend": {
+                "targetBindingSha256": native_binding,
+                "readback": {
+                    "targetBindingSha256": native_binding,
+                    "classification": "empty",
+                    "complete": True,
+                    "sha256": sha(b""),
+                    "byteLength": 0,
+                    "utf16Length": 0,
+                },
+                "hostRevalidated": True,
+                "overlayContextUnchanged": True,
+                "carrierConsumed": True,
+                "sentRowProven": True,
+                "rowDelta": 1,
+                "status": "sent",
+            },
+            "receiptDigestSha256": "",
+        }
+        native_receipt["receiptDigestSha256"] = VERIFIER._receipt_object_digest(
+            native_receipt
+        )
+        receipt_frame_sha = sha(VERIFIER._canonical_json(native_receipt))
+        ledger = {
+            "version": 2,
+            "challengeSha256": hashlib.sha256(bytes.fromhex(challenge)).hexdigest(),
+            "state": "consumed",
+            "issuedAtUnixMs": self.start + 100,
+            "expiresAtUnixMs": self.start + 60_000,
+            "pipeBindingSha256": VERIFIER._pipe_binding_digest(emitter),
+            "receiptFrameSha256": receipt_frame_sha,
+            "updatedAtUnixMs": self.start + 460,
+            "recordDigestSha256": "",
+        }
+        ledger["recordDigestSha256"] = VERIFIER._ledger_record_digest(ledger)
         self.bundle = {
             "schema": VERIFIER.SCHEMA,
             "runId": run_id,
@@ -139,6 +276,21 @@ class ShippingEvidenceMutationTests(unittest.TestCase):
                     }
                 ],
             },
+            "nativeAuthority": {
+                "receipt": native_receipt,
+                "verificationResult": {
+                    "schema": "osl.c4.native-verification-result",
+                    "version": 3,
+                    "source": "runtime_named_pipe",
+                    "status": "runtime-native-receipt-valid",
+                    "parserCryptoValid": True,
+                    "runtimeReceiptAccepted": True,
+                    "fullC4Success": False,
+                    "pointDelta": 0,
+                    "receiptFrameSha256": receipt_frame_sha,
+                },
+                "ledgerRecord": ledger,
+            },
             "screenshot": {
                 "path": self.screenshot.name,
                 "sha256": sha(self.screenshot.read_bytes()),
@@ -168,12 +320,57 @@ class ShippingEvidenceMutationTests(unittest.TestCase):
         return str(raised.exception)
 
     def test_positive_fixture_reaches_every_required_seam(self) -> None:
-        verdict = VERIFIER.verify_bundle(self.write(), self.target)
+        verdict = VERIFIER.verify_bundle(
+            self.write(),
+            self.target,
+            expected_run_id=self.bundle["runId"],
+            not_before_unix_ms=self.start,
+        )
         self.assertEqual(verdict["verdict"], "pass")
         self.assertEqual(verdict["rowDelta"], 1)
         self.assertEqual(verdict["productionReceipt"], "sent/placed/enterSent")
         self.assertEqual(verdict["preEnterReadback"], "rawExact")
         self.assertEqual(verdict["postEnterComposer"], "empty")
+        self.assertEqual(verdict["nativeReceipt"], "runtime-consumed")
+
+    def test_accept_cli_requires_expected_run_id_and_fresh_window(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(HERE / "c4-shipping-evidence.py"),
+                "--bundle",
+                str(self.write()),
+                "--expected-target",
+                self.target,
+                "--expected-run-id",
+                self.bundle["runId"],
+                "--not-before-unix-ms",
+                str(self.start),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn('"nativeReceipt":"runtime-consumed"', result.stdout)
+
+    def test_wrong_expected_run_id_is_rejected(self) -> None:
+        with self.assertRaisesRegex(VERIFIER.EvidenceError, "runId"):
+            VERIFIER.verify_bundle(
+                self.write(),
+                self.target,
+                expected_run_id=str(uuid.uuid4()),
+                not_before_unix_ms=self.start,
+            )
+
+    def test_not_before_after_run_start_is_rejected(self) -> None:
+        with self.assertRaisesRegex(VERIFIER.EvidenceError, "predates"):
+            VERIFIER.verify_bundle(
+                self.write(),
+                self.target,
+                expected_run_id=self.bundle["runId"],
+                not_before_unix_ms=self.start + 1,
+            )
 
     def test_qa_shell_feature_is_rejected(self) -> None:
         reason = self.reject(lambda value: value["build"].update(qaShell=True))
@@ -272,6 +469,35 @@ class ShippingEvidenceMutationTests(unittest.TestCase):
             )
         )
         self.assertIn("not empty", reason)
+
+    def test_missing_native_authority_is_rejected(self) -> None:
+        reason = self.reject(lambda value: value.pop("nativeAuthority"))
+        self.assertIn("missing=", reason)
+
+    def test_native_challenge_must_be_consumed(self) -> None:
+        reason = self.reject(
+            lambda value: value["nativeAuthority"]["ledgerRecord"].update(
+                state="connected",
+                receiptFrameSha256=None,
+            )
+        )
+        self.assertIn("not consumed", reason)
+
+    def test_native_target_hwnd_must_match_transcript_binding(self) -> None:
+        reason = self.reject(
+            lambda value: value["nativeAuthority"]["receipt"]["target"].update(
+                hwnd=0x999999
+            )
+        )
+        self.assertIn("target binding", reason)
+
+    def test_native_runtime_result_must_name_same_receipt_frame(self) -> None:
+        reason = self.reject(
+            lambda value: value["nativeAuthority"]["verificationResult"].update(
+                receiptFrameSha256="f" * 64
+            )
+        )
+        self.assertIn("another receipt frame", reason)
 
     def test_missing_screenshot_is_rejected(self) -> None:
         self.screenshot.unlink()
