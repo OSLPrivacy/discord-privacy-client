@@ -958,8 +958,13 @@ honest tri-state outcome is a refusal, not a degraded pass.
 - 🧪 **J5 · Telegram `/osl` mode, alerts, hierarchy, progress/ETA, suggestions** — 20 focused tests
   pass and new code is loaded; owner activation and live proof remain, with registry import and UX
   polish deferred. `weight: 4` `earned: 0`
-- 🟨 **J6 · Shared memory/wiki/compact reports/trap ledger** — versioned 36-line memory card and
-  future-deadline/trap rules exist; adoption across every account still requires evidence.
+- ✅ **J6 · Shared memory/wiki/compact reports/trap ledger** — versioned compact memory-card rules,
+  current-window prompts, and the trap ledger maintenance rule are now recorded in the operating
+  docs. After each wave, agents must keep compact reports current, update only durable memory-card
+  fields whose truth changed, store every future-deadline with an absolute date/time zone, and add
+  or retire trap entries only when the short ledger saves real rediscovery cost. Adoption across
+  every active account remains tracked by J23, so this row owns the rule staying current rather than
+  account-by-account rollout evidence.
   `weight: 2` `earned: 2`
 - 🟨 **J7 · Public-claim allowlist** — closes master §24 item 5. Every permitted website/app wording
   is now bound to a status label, `file:line` evidence, and a mandatory limitation, with an explicit
