@@ -73,6 +73,82 @@ export type PlacementMode = "atomic" | "compatibility";
 export type ProtectionMode = "native" | "protected";
 export type ComposerPhase = "idle" | "prepared" | "placed";
 export type ComposerAction = "prepare-manual" | "prepare-clipboard" | "place" | "send";
+export type FirstRunOnboardingStep =
+  | "welcome"
+  | "choose-protection"
+  | "choose-apps"
+  | "choose-send"
+  | "review-defaults"
+  | "secure-recovery";
+
+export interface FirstRunOnboardingStepDefinition {
+  step: FirstRunOnboardingStep;
+  title: string;
+  requiredGuarantees: readonly string[];
+}
+
+export const firstRunOnboardingStepOrder: readonly FirstRunOnboardingStep[] = [
+  "welcome",
+  "choose-protection",
+  "choose-apps",
+  "choose-send",
+  "review-defaults",
+  "secure-recovery",
+];
+
+export const firstRunOnboardingStepContract: readonly FirstRunOnboardingStepDefinition[] = [
+  {
+    step: "welcome",
+    title: "Welcome",
+    requiredGuarantees: [
+      "protects-existing-accounts",
+      "offers-private-osl-communication",
+    ],
+  },
+  {
+    step: "choose-protection",
+    title: "Choose protection",
+    requiredGuarantees: [
+      "basic-balanced-maximum-only",
+      "balanced-recommended",
+    ],
+  },
+  {
+    step: "choose-apps",
+    title: "Choose apps",
+    requiredGuarantees: [
+      "detect-supported-windows-clients",
+      "native-client-sign-in-only",
+      "skippable",
+    ],
+  },
+  {
+    step: "choose-send",
+    title: "Choose how Send works",
+    requiredGuarantees: [
+      "manual-recommended",
+      "ordinary-modes-manual-clipboard-double-enter",
+      "no-silent-send",
+      "no-auto-retry",
+    ],
+  },
+  {
+    step: "review-defaults",
+    title: "Review defaults",
+    requiredGuarantees: [
+      "show-warn-sanitize-retain-delete-effects",
+      "destructive-automation-off",
+    ],
+  },
+  {
+    step: "secure-recovery",
+    title: "Secure recovery",
+    requiredGuarantees: [
+      "establish-recovery-first",
+      "mullvad-or-android-optional",
+    ],
+  },
+];
 
 export interface SetupState {
   sendMode: SendMode;
@@ -113,6 +189,13 @@ export const defaultOnboardingPreferences: OnboardingPreferences = {
 
 const sendModeValues: readonly SendMode[] = ["manual", "clipboard", "double", "single"];
 const placementModeValues: readonly PlacementMode[] = ["atomic", "compatibility"];
+const firstRunOnboardingStepValues: readonly FirstRunOnboardingStep[] = firstRunOnboardingStepOrder;
+
+export function parseFirstRunOnboardingStep(raw: unknown): FirstRunOnboardingStep {
+  return firstRunOnboardingStepValues.includes(raw as FirstRunOnboardingStep)
+    ? raw as FirstRunOnboardingStep
+    : firstRunOnboardingStepOrder[0];
+}
 
 export function parseSetupState(raw: string | null): SetupState {
   if (!raw) return { ...defaultSetup };
