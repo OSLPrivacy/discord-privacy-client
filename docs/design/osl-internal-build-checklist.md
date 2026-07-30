@@ -1053,3 +1053,8 @@ When a task changes intent/status/dependencies:
 6. close the wave with a compact report that records exact changed files, tests/evidence, blockers,
    and trap-ledger disposition (`updated`, `unchanged-no-durable-trap-change`, or `pruned`);
 7. never mark ✅ from agent confidence or unit tests alone.
+
+J24 guard: compact reports and trap-ledger maintenance are live wave-close requirements, not
+optional notes. A wave closure is incomplete unless its compact report names the exact changed
+files, the evidence actually run, remaining blockers, and one of the three trap-ledger dispositions
+above.
