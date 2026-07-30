@@ -45,6 +45,28 @@ describe("native overlay send gestures", () => {
     expect(gesture.keyup(enter(1_223))).toBe("armed");
   });
 
+  it("does not let an untrusted key release arm a trusted key press", () => {
+    const gesture = new OverlaySendGesture();
+    gesture.setMode("double");
+    expect(gesture.keydown(enter(10))).toBe("none");
+    expect(gesture.keyup(enter(11, { isTrusted: false }))).toBe("none");
+    expect(gesture.keyup(enter(12))).toBe("none");
+    expect(gesture.keydown(enter(20))).toBe("none");
+    expect(gesture.keyup(enter(21))).toBe("armed");
+  });
+
+  it("requires a fresh trusted down before the second Enter can send", () => {
+    const gesture = new OverlaySendGesture();
+    gesture.setMode("double");
+    expect(gesture.keydown(enter(10))).toBe("none");
+    expect(gesture.keyup(enter(11))).toBe("armed");
+    expect(gesture.keydown(enter(20))).toBe("none");
+    expect(gesture.keyup(enter(21, { isTrusted: false }))).toBe("none");
+    expect(gesture.keyup(enter(22))).toBe("none");
+    expect(gesture.keydown(enter(30))).toBe("none");
+    expect(gesture.keyup(enter(31))).toBe("send");
+  });
+
   it("resets its armed state whenever mode changes", () => {
     const gesture = new OverlaySendGesture();
     gesture.setMode("double");
