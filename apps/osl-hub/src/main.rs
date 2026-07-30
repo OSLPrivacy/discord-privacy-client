@@ -10,6 +10,13 @@ use osl_privacy_hub::broker::{
 use osl_privacy_hub::browser_companion::{
     BrowserAccountMode, BrowserCompanionAction, BrowserCompanionState, BrowserCompanionStatus,
 };
+use osl_privacy_hub::browser_footprint::{
+    self, BrowserFootprintStore, FootprintObservation, NativeBrowserImportBinding,
+};
+use osl_privacy_hub::browser_profile_scan::{
+    BrowserProfileConsentGrant, BrowserProfileDescriptor, BrowserProfileRoots,
+    BrowserProfileScanReceipt, BrowserProfileScanState,
+};
 use osl_privacy_hub::cleanup::{self, HubFullCleanupResult};
 use osl_privacy_hub::core_bridge::{
     self, CoreFeature, CoreReadiness, HubCoreState, HubLicenseState,
@@ -68,7 +75,7 @@ use osl_privacy_hub::service_scope_index::{ImmutableServiceBurnManifest, Service
 use osl_privacy_hub::services::ServiceRegistryState;
 use osl_privacy_hub::startup_gate::{self, HubGateUnlockResult, VerifiedGateRole};
 use osl_privacy_hub::updates::{bounded_plain_notes, bounded_version, RELEASES_URL};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Mutex,
@@ -1398,6 +1405,256 @@ fn list_browser_imports() -> Vec<BrowserImportStatus> {
 #[tauri::command]
 fn open_browser_import(browser_id: BrowserImportId) -> Result<BrowserImportResult, String> {
     native_apps::open_browser_import(browser_id)
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowserProfileConsentRequest {
+    browser_id: BrowserImportId,
+    profile: String,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowserFootprintConsentRequest {
+    browser_id: BrowserImportId,
+    browser_profile_account: String,
+    browser_profile_id: String,
+    import_run_id: String,
+    consent: bool,
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DetectedBrowserFootprintObservation {
+    browser_id: BrowserImportId,
+    browser_profile_account: String,
+    browser_profile_id: String,
+    import_run_id: String,
+    observed_at_unix_ms: u64,
+}
+
+fn browser_profile_roots() -> BrowserProfileRoots {
+    #[cfg(target_os = "windows")]
+    {
+        let local = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from);
+        let roaming = std::env::var_os("APPDATA").map(std::path::PathBuf::from);
+        BrowserProfileRoots {
+            chrome: local.as_ref().and_then(|root| {
+                existing_browser_profile_root(root.join("Google").join("Chrome").join("User Data"))
+            }),
+            edge: local.as_ref().and_then(|root| {
+                existing_browser_profile_root(root.join("Microsoft").join("Edge").join("User Data"))
+            }),
+            firefox: roaming.as_ref().and_then(|root| {
+                existing_browser_profile_root(root.join("Mozilla").join("Firefox").join("Profiles"))
+            }),
+            brave: local.as_ref().and_then(|root| {
+                existing_browser_profile_root(
+                    root.join("BraveSoftware")
+                        .join("Brave-Browser")
+                        .join("User Data"),
+                )
+            }),
+            opera: roaming.as_ref().and_then(|root| {
+                existing_browser_profile_root(root.join("Opera Software").join("Opera Stable"))
+            }),
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        BrowserProfileRoots::default()
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn existing_browser_profile_root(path: std::path::PathBuf) -> Option<std::path::PathBuf> {
+    path.is_dir().then_some(path)
+}
+
+fn browser_consent_now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn browser_footprint_refusal(error: browser_footprint::BrowserFootprintRefusal) -> String {
+    match error {
+        browser_footprint::BrowserFootprintRefusal::Malformed => {
+            "The browser footprint store is unavailable".to_owned()
+        }
+        browser_footprint::BrowserFootprintRefusal::MissingExplicitConsent => {
+            "Explicit browser footprint consent is required".to_owned()
+        }
+    }
+}
+
+fn valid_browser_footprint_binding_field(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 128 && !value.chars().any(|ch| ch.is_control())
+}
+
+fn checked_browser_footprint_binding(
+    owner: &str,
+    request: &BrowserFootprintConsentRequest,
+    explicit_consent: bool,
+) -> Result<NativeBrowserImportBinding, String> {
+    if !valid_browser_footprint_binding_field(&request.browser_profile_account)
+        || !valid_browser_footprint_binding_field(&request.browser_profile_id)
+        || !valid_browser_footprint_binding_field(&request.import_run_id)
+    {
+        return Err("The browser footprint binding is invalid".to_owned());
+    }
+    Ok(NativeBrowserImportBinding {
+        owner_osl_user_id: owner.to_owned(),
+        browser_id: request.browser_id,
+        browser_profile_account: request.browser_profile_account.clone(),
+        browser_profile_id: request.browser_profile_id.clone(),
+        import_run_id: request.import_run_id.clone(),
+        explicit_consent,
+    })
+}
+
+fn footprint_observation_response(
+    observation: FootprintObservation,
+) -> DetectedBrowserFootprintObservation {
+    DetectedBrowserFootprintObservation {
+        browser_id: observation.browser_id,
+        browser_profile_account: observation.browser_profile_account,
+        browser_profile_id: observation.browser_profile_id,
+        import_run_id: observation.import_run_id,
+        observed_at_unix_ms: observation.observed_at_unix_ms,
+    }
+}
+
+#[tauri::command]
+async fn list_browser_profiles_for_consent(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    scanner: State<'_, Mutex<BrowserProfileScanState>>,
+) -> Result<Vec<BrowserProfileDescriptor>, String> {
+    let _session = session.transition.lock().await;
+    let _owner = active_unlocked_osl_user_id(&core)?;
+    let mut scanner = scanner
+        .lock()
+        .map_err(|_| "The browser profile consent state is unavailable".to_owned())?;
+    scanner.list_profiles(&browser_profile_roots())
+}
+
+#[tauri::command]
+async fn grant_browser_profile_consent(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    scanner: State<'_, Mutex<BrowserProfileScanState>>,
+    request: BrowserProfileConsentRequest,
+) -> Result<BrowserProfileConsentGrant, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let mut scanner = scanner
+        .lock()
+        .map_err(|_| "The browser profile consent state is unavailable".to_owned())?;
+    scanner.grant_profile_consent(
+        &owner,
+        request.browser_id,
+        &request.profile,
+        browser_consent_now_unix_ms(),
+    )
+}
+
+#[tauri::command]
+async fn scan_consented_browser_profile(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    scanner: State<'_, Mutex<BrowserProfileScanState>>,
+    request: BrowserProfileConsentRequest,
+    grant_id: String,
+) -> Result<BrowserProfileScanReceipt, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let mut scanner = scanner
+        .lock()
+        .map_err(|_| "The browser profile consent state is unavailable".to_owned())?;
+    scanner.scan_consented_profile(
+        &owner,
+        &browser_profile_roots(),
+        request.browser_id,
+        &request.profile,
+        &grant_id,
+        browser_consent_now_unix_ms(),
+    )
+}
+
+#[tauri::command]
+async fn load_detected_browser_footprint(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    store: State<'_, Mutex<BrowserFootprintStore>>,
+    consents: Vec<BrowserFootprintConsentRequest>,
+) -> Result<Vec<DetectedBrowserFootprintObservation>, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    if consents.is_empty() {
+        return Err("Explicit browser footprint consent is required".to_owned());
+    }
+    for (index, request) in consents.iter().enumerate() {
+        if !request.consent {
+            return Err("Explicit browser footprint consent is required".to_owned());
+        }
+        if consents.iter().skip(index + 1).any(|other| {
+            other.browser_id == request.browser_id
+                && other.browser_profile_account == request.browser_profile_account
+                && other.browser_profile_id == request.browser_profile_id
+                && other.import_run_id == request.import_run_id
+        }) {
+            return Err("Duplicate browser footprint consent is invalid".to_owned());
+        }
+    }
+    let bindings = consents
+        .iter()
+        .map(|request| checked_browser_footprint_binding(&owner, request, true))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let store = store
+        .lock()
+        .map_err(|_| "The browser footprint store is unavailable".to_owned())?;
+    for binding in bindings {
+        store.grant(binding).map_err(browser_footprint_refusal)?;
+    }
+    let state = store.load().map_err(browser_footprint_refusal)?;
+    let mut observations = Vec::new();
+    for request in &consents {
+        let hydrated = browser_footprint::hydrate_consented_for_owner(
+            &state,
+            &owner,
+            request.browser_id,
+            &request.browser_profile_account,
+            &request.browser_profile_id,
+            &request.import_run_id,
+        )
+        .ok_or_else(|| "Explicit browser footprint consent is required".to_owned())?;
+        observations.extend(hydrated.into_iter().map(footprint_observation_response));
+    }
+    if observations.is_empty() {
+        return Err("Explicit browser footprint consent is required".to_owned());
+    }
+    Ok(observations)
+}
+
+#[tauri::command]
+async fn revoke_detected_browser_footprint(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    store: State<'_, Mutex<BrowserFootprintStore>>,
+    request: BrowserFootprintConsentRequest,
+) -> Result<(), String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let binding = checked_browser_footprint_binding(&owner, &request, false)?;
+    store
+        .lock()
+        .map_err(|_| "The browser footprint store is unavailable".to_owned())?
+        .grant(binding)
+        .map_err(browser_footprint_refusal)
 }
 
 #[tauri::command]
@@ -7625,6 +7882,11 @@ macro_rules! hub_tauri_commands {
             open_mullvad,
             list_browser_imports,
             open_browser_import,
+            list_browser_profiles_for_consent,
+            grant_browser_profile_consent,
+            scan_consented_browser_profile,
+            load_detected_browser_footprint,
+            revoke_detected_browser_footprint,
             get_firefox_status,
             install_firefox,
             begin_browser_account_import,
@@ -8012,6 +8274,14 @@ fn main() {
         startup_breadcrumb("setup_step_34_mullvad_window_host_state_managed"); // STARTUP-TRACE
         app.manage(BrowserCompanionState::default());
         startup_breadcrumb("setup_step_35_browser_companion_state_managed"); // STARTUP-TRACE
+        app.manage(Mutex::new(BrowserProfileScanState::load(
+            local_data_dir.join("browser-profile-snapshots"),
+        )?));
+        startup_breadcrumb("setup_step_35_browser_profile_scan_state_managed"); // STARTUP-TRACE
+        app.manage(Mutex::new(BrowserFootprintStore::at(
+            config_dir.join("browser-footprint.json"),
+        )));
+        startup_breadcrumb("setup_step_35_browser_footprint_store_managed"); // STARTUP-TRACE
         app.manage(HubAccountSessionState::default());
         startup_breadcrumb("setup_step_36_hub_account_session_state_managed"); // STARTUP-TRACE
         app.manage(MainWindowLifecycleState::default());
@@ -8654,6 +8924,83 @@ mod tauri_registration_surface_tests {
             permission_commands(include_str!("../permissions/hub.toml")),
             capability_permissions(include_str!("../capabilities/hub.json")),
         )
+    }
+
+    const BROWSER_CONSENT_COMMANDS: [&str; 5] = [
+        "list_browser_profiles_for_consent",
+        "grant_browser_profile_consent",
+        "scan_consented_browser_profile",
+        "load_detected_browser_footprint",
+        "revoke_detected_browser_footprint",
+    ];
+
+    #[test]
+    fn browser_consent_commands_are_registered_and_acl_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        let expected_permissions = BROWSER_CONSENT_COMMANDS
+            .iter()
+            .map(|command| command_permission(command))
+            .collect::<BTreeSet<_>>();
+
+        for command in BROWSER_CONSENT_COMMANDS {
+            assert_registered_and_granted(&handlers, &permissions, &capability, command);
+        }
+
+        let declared_browser_consent_permissions = permissions
+            .iter()
+            .filter_map(|(permission, command)| {
+                BROWSER_CONSENT_COMMANDS
+                    .contains(&command.as_str())
+                    .then_some(permission.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            declared_browser_consent_permissions, expected_permissions,
+            "the browser-consent command group must use exactly the five fixed permission identifiers"
+        );
+
+        let granted_browser_consent_permissions = capability
+            .intersection(&expected_permissions)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            granted_browser_consent_permissions, expected_permissions,
+            "the main-window capability must grant every fixed browser-consent permission"
+        );
+
+        let mut missing_handler = handlers.clone();
+        missing_handler.remove("scan_consented_browser_profile");
+        assert!(
+            !is_registered_and_granted(
+                &missing_handler,
+                &permissions,
+                &capability,
+                "scan_consented_browser_profile",
+            ),
+            "removing a browser-consent handler entry must make the proof fail"
+        );
+        let mut missing_permission = permissions.clone();
+        missing_permission.remove("allow-load-detected-browser-footprint");
+        assert!(
+            !is_registered_and_granted(
+                &handlers,
+                &missing_permission,
+                &capability,
+                "load_detected_browser_footprint",
+            ),
+            "removing a browser-consent permission declaration must make the proof fail"
+        );
+        let mut missing_capability = capability.clone();
+        missing_capability.remove("allow-revoke-detected-browser-footprint");
+        assert!(
+            !is_registered_and_granted(
+                &handlers,
+                &permissions,
+                &missing_capability,
+                "revoke_detected_browser_footprint",
+            ),
+            "removing a browser-consent capability grant must make the proof fail"
+        );
     }
 
     fn test_checked_host() -> CheckedHost {
