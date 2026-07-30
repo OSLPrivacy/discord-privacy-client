@@ -220,6 +220,14 @@ describe("OSL Mail Worker", () => {
       ciphertext_b64: alicePayload.ciphertext_b64,
       recipient_key_fingerprint: alicePayload.recipient_key_fingerprint,
     });
+
+    expect((await signedPost("/v1/mail/consent", "CONSENT", bob, { sender_user_id: alice.userId, allowed: false })).status).toBe(200);
+    const afterRevoke = await signedPost("/v1/mail/send/osl", "SEND-OSL", alice, oslPayload("bob_m3@oslprivacy.com", "alice after revoke"));
+    expect(afterRevoke.status).toBe(403);
+    const stillOnlyConsentDelivery = await signedPost("/v1/mail/list", "LIST", bob, { limit: 10 }).then((response) => response.json()) as {
+      messages: Array<{ message_id: string }>;
+    };
+    expect(stillOnlyConsentDelivery.messages.map((message) => message.message_id)).toEqual([delivery.message_id]);
   });
 
   it("qualifies the OSL-to-OSL lifecycle from provisioning through burn", async () => {
