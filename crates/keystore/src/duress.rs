@@ -172,6 +172,27 @@ pub struct DuressPaths {
     pub prekey_file: Option<PathBuf>,
 }
 
+/// Filesystem roots used to assemble production duress behavior.
+///
+/// `config_dir` is the active account directory. `password_dir` is the
+/// device-level directory that holds the main-password marker.
+pub struct ProductionDuressConfig {
+    pub config_dir: PathBuf,
+    pub password_dir: PathBuf,
+    pub strip_opsec_files: Vec<PathBuf>,
+}
+
+impl ProductionDuressConfig {
+    pub fn new(config_dir: PathBuf, password_dir: PathBuf) -> Self {
+        let strip_opsec_files = default_strip_opsec_files(&config_dir);
+        Self {
+            config_dir,
+            password_dir,
+            strip_opsec_files,
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum DuressError {
     #[error("io: {0}")]
@@ -219,6 +240,24 @@ pub fn build_partial_duress_handlers(
         strip_opsec_files,
         ..Default::default()
     }
+}
+
+pub fn build_production_duress_paths(config: &ProductionDuressConfig) -> (DuressPaths, PathBuf) {
+    (
+        DuressPaths {
+            identity_file: config.config_dir.join("identity.json"),
+            password_file: config.password_dir.join("password_marker.json"),
+            prekey_file: Some(config.config_dir.join("prekeys.json")),
+        },
+        config.config_dir.join("duress.journal"),
+    )
+}
+
+pub fn build_production_duress_handlers(config: &ProductionDuressConfig) -> DuressHandlers {
+    build_partial_duress_handlers(
+        Some(config.config_dir.join("store")),
+        config.strip_opsec_files.clone(),
+    )
 }
 
 /// On-disk journal of attempted step outcomes. Read when an integration calls
@@ -495,6 +534,12 @@ impl DuressEngine {
     }
 }
 
+pub fn build_production_duress_engine(config: ProductionDuressConfig) -> DuressEngine {
+    let (paths, journal_path) = build_production_duress_paths(&config);
+    let handlers = build_production_duress_handlers(&config);
+    DuressEngine::new(journal_path, paths, handlers)
+}
+
 fn map_tpm_evict_result(result: std::result::Result<TpmEvictOutcome, SealerError>) -> StepOutcome {
     match result {
         Ok(TpmEvictOutcome::Evicted) => StepOutcome::Wiped,
@@ -503,6 +548,19 @@ fn map_tpm_evict_result(result: std::result::Result<TpmEvictOutcome, SealerError
             error: e.to_string(),
         },
     }
+}
+
+fn default_strip_opsec_files(config_dir: &Path) -> Vec<PathBuf> {
+    [
+        "injection.js",
+        "boot.js",
+        "opsec_config.json",
+        "keyserver.json",
+        "channels.json",
+    ]
+    .into_iter()
+    .map(|name| config_dir.join(name))
+    .collect()
 }
 
 fn remove_dir_idempotent(path: &Path) -> std::result::Result<(), DuressError> {

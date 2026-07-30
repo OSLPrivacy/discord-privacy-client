@@ -1,7 +1,7 @@
 use keystore::{
     build_partial_duress_handlers, generate_identity, save_identity, save_password_record,
     save_prekey_state, Argon2Params, DuressEngine, DuressHandlers, DuressPaths, NoOpSealer,
-    PasswordRecord, PrekeyConfig, PrekeyState, StepOutcome, WipeStep,
+    PasswordRecord, PrekeyConfig, PrekeyState, ProductionDuressConfig, StepOutcome, WipeStep,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -267,6 +267,64 @@ fn handlers_run_in_canonical_order() {
         &StepOutcome::Wiped
     );
     assert!(!cache_dir.exists());
+    assert!(!opsec_file.exists());
+    assert!(!opsec_dir.exists());
+}
+
+#[test]
+fn build_production_duress_handlers() {
+    let dir = TempDir::new().unwrap();
+    let config_dir = dir.path().join("account");
+    let password_dir = dir.path().join("device");
+    let opsec_file = config_dir.join("injection.js");
+    let opsec_dir = config_dir.join("opsec");
+    std::fs::create_dir_all(config_dir.join("store")).unwrap();
+    std::fs::create_dir_all(&opsec_dir).unwrap();
+    std::fs::create_dir_all(&password_dir).unwrap();
+    std::fs::write(config_dir.join("store").join("message-cache"), b"cache").unwrap();
+    std::fs::write(&opsec_file, b"opsec").unwrap();
+    std::fs::write(opsec_dir.join("config.json"), b"{}").unwrap();
+
+    let config = ProductionDuressConfig {
+        config_dir: config_dir.clone(),
+        password_dir: password_dir.clone(),
+        strip_opsec_files: vec![opsec_file.clone(), opsec_dir.clone()],
+    };
+    let (paths, journal_path) = keystore::build_production_duress_paths(&config);
+    assert_eq!(paths.identity_file, config_dir.join("identity.json"));
+    assert_eq!(
+        paths.password_file,
+        password_dir.join("password_marker.json")
+    );
+    assert_eq!(paths.prekey_file, Some(config_dir.join("prekeys.json")));
+    assert_eq!(journal_path, config_dir.join("duress.journal"));
+    journal_completed_steps(
+        &journal_path,
+        &[
+            WipeStep::TpmEvict,
+            WipeStep::KeyringPurge,
+            WipeStep::IdentityFile,
+            WipeStep::PasswordHashes,
+            WipeStep::PrekeyFile,
+        ],
+    );
+
+    let handlers = keystore::build_production_duress_handlers(&config);
+    let engine = DuressEngine::new(journal_path, paths, handlers);
+    assert!(engine.handler_wired(WipeStep::LocalCacheDir));
+    assert!(engine.handler_wired(WipeStep::StripOpsecFiles));
+
+    let report = engine.execute().unwrap();
+
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::LocalCacheDir),
+        &StepOutcome::Wiped
+    );
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::StripOpsecFiles),
+        &StepOutcome::Wiped
+    );
+    assert!(!config_dir.join("store").exists());
     assert!(!opsec_file.exists());
     assert!(!opsec_dir.exists());
 }
