@@ -34,8 +34,9 @@ export class OverlaySendGesture {
   }
 
   keyup(event: OverlayEnterGesture): OverlaySendGestureResult {
-    if (!event.isTrusted || event.isComposing || event.repeat || event.key !== "Enter" || event.shiftKey || !this.enterDown) return "none";
+    if (event.key !== "Enter" || !this.enterDown) return "none";
     this.enterDown = false;
+    if (!event.isTrusted || event.isComposing || event.repeat || event.shiftKey) return "none";
     if (this.mode !== "double") return "none";
     if (this.armedUntil >= event.now) {
       this.armedUntil = 0;
