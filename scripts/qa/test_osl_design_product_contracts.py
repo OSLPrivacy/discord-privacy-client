@@ -9,6 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 GUI_PLAN = ROOT / "docs" / "design" / "osl-gui-final-plan.md"
 SIMPLE_SPEC = ROOT / "docs" / "design" / "osl-simple-spec.md"
+SUBJECTIVE_DESIGN_FEEL = ROOT / "docs" / "design" / "osl-subjective-design-feel.md"
 
 
 def _section(markdown: str, heading: str) -> str:
@@ -53,6 +54,22 @@ def _ordered_items(section: str) -> list[tuple[str, str]]:
             current_body.append(line.strip())
     if current_label is not None:
         items.append((current_label, " ".join(current_body)))
+    return items
+
+
+def _unordered_items(section: str) -> list[str]:
+    items: list[str] = []
+    current: list[str] | None = None
+    for line in section.splitlines():
+        if line.startswith("- "):
+            if current is not None:
+                items.append(" ".join(current))
+            current = [line.removeprefix("- ").strip()]
+            continue
+        if current is not None and line.startswith("  "):
+            current.append(line.strip())
+    if current is not None:
+        items.append(" ".join(current))
     return items
 
 
@@ -268,6 +285,151 @@ def _errors_for_browser_and_monetization(markdown: str) -> list[str]:
     return errors
 
 
+def _errors_for_subjective_design_feel(markdown: str) -> list[str]:
+    complexity = _section(markdown, "## Complexity belongs behind the product")
+    frozen = _section(markdown, "## Frozen user-facing contract")
+    normalized_complexity = re.sub(r"\s+", " ", complexity)
+    lower_complexity = normalized_complexity.lower()
+    errors: list[str] = []
+
+    product_match = re.search(
+        r"user-facing model is (.+?)\.", normalized_complexity, flags=re.IGNORECASE
+    )
+    product_nouns = set()
+    if product_match:
+        product_nouns = {
+            item.strip()
+            for item in re.split(
+                r",\s+| and ",
+                product_match.group(1),
+            )
+            if item.strip()
+        }
+    expected_product_nouns = {
+        "protection state",
+        "trusted people",
+        "connected accounts",
+        "private conversations",
+        "cleanup actions",
+        "activity history",
+    }
+    if product_nouns != expected_product_nouns:
+        errors.append("product mental model is not the frozen six nouns")
+
+    machinery_match = re.search(
+        r"Engineering concepts such as (.+?)\s+belong behind",
+        normalized_complexity,
+        flags=re.IGNORECASE,
+    )
+    implementation_terms = set()
+    if machinery_match:
+        implementation_terms = {
+            item.strip().removeprefix("or ")
+            for item in re.split(r",\s+|\s+or\s+", machinery_match.group(1))
+            if item.strip()
+        }
+    expected_implementation_terms = {
+        "keyservers",
+        "ratchets",
+        "receipts",
+        "browser profiles",
+        "provider adapters",
+    }
+    if implementation_terms != expected_implementation_terms:
+        errors.append("implementation machinery is not fully hidden")
+
+    hidden_context_sentence = next(
+        (
+            sentence.lower()
+            for sentence in _sentences(complexity)
+            if sentence.startswith("They must not appear")
+        ),
+        "",
+    )
+    for required in (
+        "navigation",
+        "onboarding choices",
+        "warning labels",
+        "settings names",
+        "status labels",
+        "user-facing concepts",
+    ):
+        if required not in hidden_context_sentence:
+            errors.append(f"hidden machinery context missing: {required}")
+
+    consequence_sentence = next(
+        (
+            sentence.lower()
+            for sentence in _sentences(complexity)
+            if sentence.startswith("When an implementation detail affects")
+        ),
+        "",
+    )
+    if not {"plain consequence", "safe action"}.issubset(
+        set(re.findall(r"[a-z]+(?: [a-z]+)?", consequence_sentence))
+    ):
+        errors.append("implementation details are not translated into outcomes")
+    for forbidden in (
+        "protocol names",
+        "storage layouts",
+        "automation internals",
+        "service-specific plumbing",
+    ):
+        if forbidden not in lower_complexity:
+            errors.append(f"user is not protected from {forbidden}")
+
+    bullets = [_plain(item) for item in _unordered_items(frozen)]
+    if len(bullets) != 4:
+        errors.append("frozen contract must remain four explicit commitments")
+    if not bullets or not all(noun in bullets[0] for noun in expected_product_nouns):
+        errors.append("frozen contract does not speak in product nouns")
+    if len(bullets) < 2 or not all(
+        phrase in bullets[1]
+        for phrase in (
+            "refuses",
+            "implementation machinery",
+            "decision",
+            "understand",
+        )
+    ):
+        errors.append("frozen contract does not refuse machinery-as-decision")
+    if len(bullets) < 3 or not all(
+        phrase in bullets[2]
+        for phrase in (
+            "plain consequence",
+            "next safe action",
+            "explicit unknown state",
+        )
+    ):
+        errors.append("frozen contract does not preserve the unknown-state refusal")
+    if len(bullets) < 4 or not all(
+        phrase in bullets[3]
+        for phrase in (
+            "advanced exports",
+            "implementation fields",
+            "main ui",
+            "product answer",
+            "ordinary language",
+        )
+    ):
+        errors.append("frozen contract does not keep diagnostics behind UI language")
+
+    final_sentence = [sentence.lower() for sentence in _sentences(frozen) if sentence][-1]
+    if not all(
+        phrase in final_sentence
+        for phrase in (
+            "protocol",
+            "storage",
+            "automation",
+            "transport",
+            "service-plumbing",
+            "violates the design feel",
+        )
+    ):
+        errors.append("final contract violation rule is incomplete")
+    return errors
+
+
 def _assert_contract(
     validate: Callable[..., list[str]],
     *documents: str,
@@ -339,6 +501,29 @@ encode_burns_five_guarantees_and_banned_phrases.__name__ = (
 )
 
 
+def freeze_user_facing_complexity_hiding_product_contract() -> None:
+    markdown = SUBJECTIVE_DESIGN_FEEL.read_text(encoding="utf-8")
+    broken = markdown.replace(
+        "protection state, trusted people, connected accounts, private conversations, cleanup actions and activity history",
+        "keyservers, ratchets, receipts, browser profiles, provider adapters and activity history",
+        1,
+    ).replace(
+        "including an explicit unknown state when certainty is unavailable",
+        "including implementation detail when certainty is unavailable",
+        1,
+    )
+    _assert_contract(
+        _errors_for_subjective_design_feel,
+        markdown,
+        broken_documents=(broken,),
+    )
+
+
+freeze_user_facing_complexity_hiding_product_contract.__name__ = (
+    "docs/design/osl-subjective-design-feel.md"
+)
+
+
 def load_tests(
     loader: unittest.TestLoader,
     tests: unittest.TestSuite,
@@ -351,6 +536,7 @@ def load_tests(
         encode_honest_tri_state_sending_and_double_enter_without_auto_retry,
         encode_browser_import_choices_and_noninterrupting_monetization,
         encode_burns_five_guarantees_and_banned_phrases,
+        freeze_user_facing_complexity_hiding_product_contract,
     ):
         suite.addTest(unittest.FunctionTestCase(test))
     return suite
