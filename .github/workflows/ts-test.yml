@@ -17,7 +17,7 @@ jobs:
       # any npm ci: nothing to install and nothing that can fail for unrelated
       # reasons. Ban list is parsed out of docs/design/osl-public-claim-allowlist.md
       # section D, so adding a banned phrase there automatically tightens this.
-      - name: Claim gate - in-app copy and README
+      - name: Claim-gate-in-app-copy-and-README
         run: |
           node scripts/check-app-claims.mjs --self-test
           node scripts/check-app-claims.mjs
