@@ -2468,15 +2468,16 @@ pub fn cmd_osl_decrypt_message_with_id(
         }
     };
 
+    if is_discord_snowflake_shaped(&osl_user_id) {
+        return Err("OSL: Discord identifiers cannot resolve keys".to_string());
+    }
+
     // Pubkey lookup: cache → keyserver → cache-insert. Keyed by
     // OSL user_id (post-resolution) so the cache is stable across
     // peer_map re-edits.
     let sender_pub = if let Some(cached) = state.sender_pubkey_cache.get(&osl_user_id) {
         cached
     } else {
-        if is_discord_snowflake_shaped(&osl_user_id) {
-            return Err("OSL: Discord identifiers cannot resolve keys".to_string());
-        }
         let ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
         let client = ks_guard
             .as_ref()
@@ -8280,11 +8281,11 @@ fn resolve_sender_pubkey(
             }
         )
     })?;
-    if let Some(cached) = state.sender_pubkey_cache.get(&osl_user_id) {
-        return Ok(cached);
-    }
     if is_discord_snowflake_shaped(&osl_user_id) {
         return Err("OSL: Discord identifiers cannot resolve keys".to_string());
+    }
+    if let Some(cached) = state.sender_pubkey_cache.get(&osl_user_id) {
+        return Ok(cached);
     }
     let ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
     let client = ks_guard
@@ -8399,6 +8400,37 @@ mod v3_pinned_sender_command_tests {
         )
         .expect("same wire decrypts when the claimed sender matches the local pin");
         assert_eq!(opened, "forged sender body");
+    }
+}
+
+#[cfg(test)]
+mod resolve_sender_pubkey_tests {
+    use super::*;
+
+    #[test]
+    fn v2_resolve_sender_pubkey_rejects_forged_sender() {
+        let state = AppState::new();
+        let forged_sender_discord_id = "123456789012345678";
+        let (_attacker_secret, attacker_pub) = crypto::x25519::generate_keypair();
+
+        state
+            .sender_pubkey_cache
+            .insert(forged_sender_discord_id.to_string(), attacker_pub);
+        state.peer_map.lock().unwrap().insert(
+            forged_sender_discord_id.to_string(),
+            crate::peer_map::PeerEntry {
+                osl_user_id: Some(forged_sender_discord_id.to_string()),
+                discord_id: Some(forged_sender_discord_id.to_string()),
+                ..Default::default()
+            },
+        );
+
+        let err = resolve_sender_pubkey(&state, forged_sender_discord_id)
+            .expect_err("Discord account ids must not resolve as OSL sender identities");
+        assert!(
+            err.contains("Discord identifiers cannot resolve keys"),
+            "expected forged sender refusal before cache/keyserver fallback, got: {err}"
+        );
     }
 }
 
