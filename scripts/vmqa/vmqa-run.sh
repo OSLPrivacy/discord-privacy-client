@@ -747,12 +747,16 @@ grade_f1_live_windows_walkthrough_import() {
 }
 
 grade_f2_real_vm_five_frame_walkthrough() {
-  local file="$1" overall frames shape unique_sha
+  local file="$1" overall frames shape unique_sha unique_request_sha unique_exe_sha artifact_count unique_artifact
   [ -f "$file" ] || { echo "F2 INVALID: verdict file is missing" >&2; return 9; }
   overall="$(jq -r '.overall // empty' "$file" 2>/dev/null || true)"
   frames="$(jq -r '[.steps[]? | select(.verb == "frame" and .status == "pass")] | length' "$file" 2>/dev/null || printf '0\n')"
   shape="$(jq -r '[.steps[]? | select(.verb == "frame") | (.id + ":" + ((.facts.frameOrdinal // 0) | tostring))] | join(",")' "$file" 2>/dev/null || true)"
   unique_sha="$(jq -r '[.steps[]? | select(.verb == "frame") | .facts.pngSha256] | unique | length' "$file" 2>/dev/null || printf '0\n')"
+  unique_request_sha="$(jq -r '[.steps[]? | select(.verb == "frame") | .facts.requestSha256] | unique | length' "$file" 2>/dev/null || printf '0\n')"
+  unique_exe_sha="$(jq -r '[.steps[]? | select(.verb == "frame") | .facts.exeSha256] | unique | length' "$file" 2>/dev/null || printf '0\n')"
+  artifact_count="$(jq -r '[.steps[]? | select(.verb == "frame") | .artifacts[]?] | length' "$file" 2>/dev/null || printf '0\n')"
+  unique_artifact="$(jq -r '[.steps[]? | select(.verb == "frame") | .artifacts[]?] | unique | length' "$file" 2>/dev/null || printf '0\n')"
   if [ "$overall" != "pass" ]; then
     echo "F2 FAIL: overall=$overall" >&2
     return 1
@@ -761,8 +765,12 @@ grade_f2_real_vm_five_frame_walkthrough() {
     echo "F2 FAIL: expected exact five-frame walkthrough, got '$shape'" >&2
     return 1
   fi
-  if [ "$unique_sha" -ne 5 ]; then
-    echo "F2 FAIL: frame screenshots are absent or reused" >&2
+  if [ "$unique_sha" -ne 5 ] || [ "$artifact_count" -ne 5 ] || [ "$unique_artifact" -ne 5 ]; then
+    echo "F2 FAIL: frame screenshots or retained artifacts are absent or reused" >&2
+    return 1
+  fi
+  if [ "$unique_request_sha" -ne 1 ] || [ "$unique_exe_sha" -ne 1 ]; then
+    echo "F2 FAIL: frames are not bound to one request and one executable" >&2
     return 1
   fi
   if ! jq -e '
@@ -826,11 +834,12 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
 }
 
 f2_real_vm_five_frame_walkthrough() {
-  local tmp good bad_four bad_reused bad_unbound bad_weak_surface
+  local tmp good bad_four bad_reused bad_reused_artifact bad_unbound bad_weak_surface
   tmp="$(vmqa_named_test_tmpdir)"
   good="$tmp/f2-good.json"
   bad_four="$tmp/f2-four.json"
   bad_reused="$tmp/f2-reused.json"
+  bad_reused_artifact="$tmp/f2-reused-artifact.json"
   bad_unbound="$tmp/f2-unbound.json"
   bad_weak_surface="$tmp/f2-weak-surface.json"
   jq -n '{
@@ -848,12 +857,14 @@ f2_real_vm_five_frame_walkthrough() {
           requestSha256:("b" * 64),
           exeSha256:("c" * 64),
           foreground:true
-        }
+        },
+        artifacts:[("artifacts/frame-" + ($i|tostring) + ".png")]
       }]
     }' >"$good"
   jq '.steps=.steps[0:4]' "$good" >"$bad_four"
   jq '(.steps[] | .facts.pngSha256)=("d" * 64)' "$good" >"$bad_reused"
-  jq '.steps[2].facts.foreground=false | .steps[2].facts.requestSha256=""' "$good" >"$bad_unbound"
+  jq '(.steps[] | .artifacts)=["artifacts/frame-reused.png"]' "$good" >"$bad_reused_artifact"
+  jq '.steps[2].facts.foreground=false | .steps[2].facts.requestSha256=("e" * 64)' "$good" >"$bad_unbound"
   jq '.steps[4].facts.surfaceHwnd=0 | .steps[4].facts.captureDistinctColors=1' \
     "$good" >"$bad_weak_surface"
   grade_f2_real_vm_five_frame_walkthrough "$good" >/dev/null \
@@ -861,6 +872,8 @@ f2_real_vm_five_frame_walkthrough() {
   grade_f2_real_vm_five_frame_walkthrough "$bad_four" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
   grade_f2_real_vm_five_frame_walkthrough "$bad_reused" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
+  grade_f2_real_vm_five_frame_walkthrough "$bad_reused_artifact" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
   grade_f2_real_vm_five_frame_walkthrough "$bad_unbound" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
