@@ -9656,6 +9656,39 @@ mod tauri_registration_surface_tests {
         );
     }
 
+    fn assert_each_registration_surface_is_required(
+        handlers: &BTreeSet<String>,
+        permissions: &BTreeMap<String, String>,
+        capability: &BTreeSet<String>,
+        commands: &[&str],
+    ) {
+        for command in commands {
+            let command = *command;
+            let permission = command_permission(command);
+
+            let mut missing_handler = handlers.clone();
+            missing_handler.remove(command);
+            assert!(
+                !is_registered_and_granted(&missing_handler, permissions, capability, command),
+                "removing {command} from generate_handler must fail the registration proof"
+            );
+
+            let mut missing_permission = permissions.clone();
+            missing_permission.remove(&permission);
+            assert!(
+                !is_registered_and_granted(handlers, &missing_permission, capability, command),
+                "removing {permission} from hub.toml must fail the registration proof"
+            );
+
+            let mut missing_capability = capability.clone();
+            missing_capability.remove(&permission);
+            assert!(
+                !is_registered_and_granted(handlers, permissions, &missing_capability, command),
+                "removing {permission} from hub.json must fail the registration proof"
+            );
+        }
+    }
+
     fn registration_inputs() -> (BTreeSet<String>, BTreeMap<String, String>, BTreeSet<String>) {
         (
             handler_commands(),
@@ -9746,6 +9779,12 @@ mod tauri_registration_surface_tests {
         for command in BROWSER_CONSENT_COMMANDS {
             assert_registered_and_granted(&handlers, &permissions, &capability, command);
         }
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &BROWSER_CONSENT_COMMANDS,
+        );
 
         let declared_browser_consent_permissions = permissions
             .iter()
@@ -9767,40 +9806,6 @@ mod tauri_registration_surface_tests {
         assert_eq!(
             granted_browser_consent_permissions, expected_permissions,
             "the main-window capability must grant every fixed browser-consent permission"
-        );
-
-        let mut missing_handler = handlers.clone();
-        missing_handler.remove("scan_consented_browser_profile");
-        assert!(
-            !is_registered_and_granted(
-                &missing_handler,
-                &permissions,
-                &capability,
-                "scan_consented_browser_profile",
-            ),
-            "removing a browser-consent handler entry must make the proof fail"
-        );
-        let mut missing_permission = permissions.clone();
-        missing_permission.remove("allow-load-detected-browser-footprint");
-        assert!(
-            !is_registered_and_granted(
-                &handlers,
-                &missing_permission,
-                &capability,
-                "load_detected_browser_footprint",
-            ),
-            "removing a browser-consent permission declaration must make the proof fail"
-        );
-        let mut missing_capability = capability.clone();
-        missing_capability.remove("allow-revoke-detected-browser-footprint");
-        assert!(
-            !is_registered_and_granted(
-                &handlers,
-                &permissions,
-                &missing_capability,
-                "revoke_detected_browser_footprint",
-            ),
-            "removing a browser-consent capability grant must make the proof fail"
         );
     }
 
@@ -9834,7 +9839,7 @@ mod tauri_registration_surface_tests {
     #[test]
     fn browser_consent_tauri_commands_and_acl_are_registered() {
         let (handlers, permissions, capability) = registration_inputs();
-        for command in [
+        const FINAL_BROWSER_CONSENT_COMMANDS: [&str; 15] = [
             "list_browser_imports",
             "open_browser_import",
             "get_firefox_status",
@@ -9850,9 +9855,16 @@ mod tauri_registration_surface_tests {
             "detach_default_browser_companion",
             "native_app_takeover_requires_consent",
             "host_native_app_window",
-        ] {
+        ];
+        for command in FINAL_BROWSER_CONSENT_COMMANDS {
             assert_registered_and_granted(&handlers, &permissions, &capability, command);
         }
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &FINAL_BROWSER_CONSENT_COMMANDS,
+        );
 
         let mut missing_consent_probe = handlers.clone();
         missing_consent_probe.remove("native_app_takeover_requires_consent");
@@ -9892,13 +9904,20 @@ mod tauri_registration_surface_tests {
     #[test]
     fn hosted_session_scan_commands_are_registered() {
         let (handlers, permissions, capability) = registration_inputs();
-        for command in [
+        const HOSTED_SESSION_SCAN_COMMANDS: [&str; 3] = [
             "open_hosted_session_scan",
             "request_hosted_session_scan",
             "request_hosted_session_scan_command",
-        ] {
+        ];
+        for command in HOSTED_SESSION_SCAN_COMMANDS {
             assert_registered_and_granted(&handlers, &permissions, &capability, command);
         }
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &HOSTED_SESSION_SCAN_COMMANDS,
+        );
         for forbidden in [
             "preview_discord_guided_deletion",
             "request_hosted_session_scan_comman",
@@ -9914,40 +9933,6 @@ mod tauri_registration_surface_tests {
                 "{forbidden} must not be ACL-granted"
             );
         }
-
-        let mut missing_request = handlers.clone();
-        missing_request.remove("request_hosted_session_scan");
-        assert!(
-            !is_registered_and_granted(
-                &missing_request,
-                &permissions,
-                &capability,
-                "request_hosted_session_scan",
-            ),
-            "removing the scan request command must make the proof fail"
-        );
-        let mut missing_permission = permissions.clone();
-        missing_permission.remove("allow-request-hosted-session-scan-command");
-        assert!(
-            !is_registered_and_granted(
-                &handlers,
-                &missing_permission,
-                &capability,
-                "request_hosted_session_scan_command",
-            ),
-            "removing the scan command permission declaration must make the proof fail"
-        );
-        let mut missing_capability = capability.clone();
-        missing_capability.remove("allow-open-hosted-session-scan");
-        assert!(
-            !is_registered_and_granted(
-                &handlers,
-                &permissions,
-                &missing_capability,
-                "open_hosted_session_scan",
-            ),
-            "removing the scan open ACL grant must make the proof fail"
-        );
     }
 
     #[test]
@@ -10225,46 +10210,19 @@ mod tauri_registration_surface_tests {
     #[test]
     fn autoscrub_run_lifecycle_commands_are_registered_and_acl_granted() {
         let (handlers, permissions, capability) = registration_inputs();
-        for command in [
+        const AUTOSCRUB_RUN_LIFECYCLE_COMMANDS: [&str; 3] = [
             "get_autoscrub_run_fl",
             "start_autoscrub_reviewed_run",
             "request_autoscrub_global_stop",
-        ] {
+        ];
+        for command in AUTOSCRUB_RUN_LIFECYCLE_COMMANDS {
             assert_registered_and_granted(&handlers, &permissions, &capability, command);
         }
-
-        let mut missing_start = capability.clone();
-        missing_start.remove("allow-start-autoscrub-reviewed-run");
-        assert!(
-            !is_registered_and_granted(
-                &handlers,
-                &permissions,
-                &missing_start,
-                "start_autoscrub_reviewed_run",
-            ),
-            "removing the start-run ACL grant must make the proof fail"
-        );
-        let mut missing_handler = handlers.clone();
-        missing_handler.remove("request_autoscrub_global_stop");
-        assert!(
-            !is_registered_and_granted(
-                &missing_handler,
-                &permissions,
-                &capability,
-                "request_autoscrub_global_stop",
-            ),
-            "removing the stop command handler must make the proof fail"
-        );
-        let mut missing_permission = permissions.clone();
-        missing_permission.remove("allow-get-autoscrub-run-fl");
-        assert!(
-            !is_registered_and_granted(
-                &handlers,
-                &missing_permission,
-                &capability,
-                "get_autoscrub_run_fl",
-            ),
-            "removing the fleet-status permission declaration must make the proof fail"
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &AUTOSCRUB_RUN_LIFECYCLE_COMMANDS,
         );
     }
 }
