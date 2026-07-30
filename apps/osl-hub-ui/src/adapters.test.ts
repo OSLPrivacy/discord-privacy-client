@@ -40,6 +40,7 @@ import {
   prepareLocalProtectedText,
   preparePeerProseText,
   prepareEncryptedText,
+  supportMatrixPresentation,
   setHubFriendNickname,
   setActiveHubFriendPermission,
   setLocalProtectedSheetOpen,
@@ -82,6 +83,49 @@ describe("optional OSL Privacy adapters", () => {
     expect(parseFriendProfile({ ...profile, friendCode: "bad code", extra: true })).toBeNull();
     expect(parseNotifications([{ id: "1", title: "Update", detail: "Ready", createdAt: "2026-07-16" }])).toHaveLength(1);
     expect(parseNotifications([{ id: "1", title: "<script>", detail: "Ready", createdAt: "now" }])).toBeNull();
+  });
+
+  it("supportMatrixPresentation", () => {
+    expect(supportMatrixPresentation({
+      publicStatus: "available",
+      evidenceStatus: "qualified_profile",
+      claimAllowed: true,
+    })).toEqual({
+      state: "available",
+      label: "Available",
+      detail: "Protected use is available after OSL verifies the app, account and conversation.",
+      action: "Open",
+    });
+
+    expect(supportMatrixPresentation({
+      publicStatus: "coming_soon",
+      evidenceStatus: "qualified_profile",
+      claimAllowed: false,
+    })).toMatchObject({
+      state: "comingSoon",
+      label: "Coming soon",
+      action: "Use OSL Chat",
+    });
+
+    expect(supportMatrixPresentation({
+      publicStatus: "comingSoon",
+      evidenceStatus: "externally_blocked",
+      claimAllowed: false,
+    })).toMatchObject({
+      state: "blocked",
+      label: "Blocked",
+      action: "Use OSL Chat",
+    });
+
+    const visibleCopy = [
+      supportMatrixPresentation({ publicStatus: "available", claimAllowed: true }),
+      supportMatrixPresentation({ publicStatus: "beta", claimAllowed: true }),
+      supportMatrixPresentation({ publicStatus: "comingSoon", evidenceStatus: "qualified_profile", claimAllowed: false }),
+      supportMatrixPresentation({ publicStatus: "externallyBlocked", claimAllowed: false }),
+      supportMatrixPresentation({ publicStatus: "unsupported", claimAllowed: false }),
+    ].flatMap((presentation) => [presentation.label, presentation.detail, presentation.action]).join(" ");
+
+    expect(visibleCopy).not.toMatch(/keyserver|ratchet|receipt|browser profile|provider adapter|adapter|profile|matrix|evidence/iu);
   });
 
   it("copies a friend invite through the argument-free native command", async () => {

@@ -12,6 +12,19 @@ import {
 
 export interface FriendProfile { friendCode: string; oslUserId: string; safetyNumber: string; }
 export interface AppNotification { id: string; title: string; detail: string; createdAt: string; }
+export type SupportMatrixPublicStatus = "available" | "beta" | "coming_soon" | "externally_blocked" | "unsupported";
+export type SupportMatrixEvidenceStatus = "qualified_profile" | "runtime_proven" | "qa_foundations_only" | "separate_qa_required" | "externally_blocked" | "unsupported" | "unknown";
+export interface SupportMatrixPresentationInput {
+  publicStatus: SupportMatrixPublicStatus | "comingSoon" | "externallyBlocked";
+  evidenceStatus?: SupportMatrixEvidenceStatus | string;
+  claimAllowed?: boolean;
+}
+export interface SupportMatrixPresentation {
+  state: "available" | "limited" | "comingSoon" | "blocked" | "unsupported";
+  label: string;
+  detail: string;
+  action: string;
+}
 export interface LocalProtectedText {
   capsule: string;
   localMessageId: string;
@@ -164,6 +177,63 @@ export const HUB_ATTACHMENT_FILENAME_MAX_BYTES = 1_024;
 const HUB_PREPARED_MESSAGE_MAX_ITEMS = 64;
 const HUB_CONTROL_MESSAGE_MAX_ITEMS = 512;
 const HUB_PREPARED_TOTAL_MAX_BYTES = 4 * 1024 * 1024;
+
+export function supportMatrixPresentation(input: SupportMatrixPresentationInput): SupportMatrixPresentation {
+  const publicStatus = normalizeSupportPublicStatus(input.publicStatus);
+  const evidenceStatus = typeof input.evidenceStatus === "string" ? input.evidenceStatus : "unknown";
+  const claimAllowed = input.claimAllowed === true;
+
+  if (publicStatus === "available" && claimAllowed) {
+    return {
+      state: "available",
+      label: "Available",
+      detail: "Protected use is available after OSL verifies the app, account and conversation.",
+      action: "Open",
+    };
+  }
+
+  if (publicStatus === "beta" && claimAllowed) {
+    return {
+      state: "limited",
+      label: "Beta",
+      detail: "Protected use is available with extra checks and visible limits.",
+      action: "Open",
+    };
+  }
+
+  if (publicStatus === "externally_blocked" || evidenceStatus === "externally_blocked") {
+    return {
+      state: "blocked",
+      label: "Blocked",
+      detail: "This app cannot be protected until its visible message area can be verified reliably.",
+      action: "Use OSL Chat",
+    };
+  }
+
+  if (publicStatus === "unsupported" || evidenceStatus === "unsupported") {
+    return {
+      state: "unsupported",
+      label: "Unsupported",
+      detail: "Protected use is not available for this app.",
+      action: "Use OSL Chat",
+    };
+  }
+
+  return {
+    state: "comingSoon",
+    label: "Coming soon",
+    detail: "Not ready for protected use yet. OSL will not send or claim support here.",
+    action: "Use OSL Chat",
+  };
+}
+
+function normalizeSupportPublicStatus(
+  status: SupportMatrixPresentationInput["publicStatus"],
+): SupportMatrixPublicStatus {
+  if (status === "comingSoon") return "coming_soon";
+  if (status === "externallyBlocked") return "externally_blocked";
+  return status;
+}
 
 export function isLocalProtectedPlaintext(value: unknown): value is string {
   return typeof value === "string"
