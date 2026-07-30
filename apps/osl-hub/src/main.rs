@@ -9951,6 +9951,14 @@ mod tauri_registration_surface_tests {
 
     #[test]
     fn request_hosted_session_scan_command_routes_through_checked_host() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "request_hosted_session_scan_command",
+        );
+
         let events = RefCell::new(Vec::<&'static str>::new());
         let scan = checked_hosted_session_scan_flow(
             || {
