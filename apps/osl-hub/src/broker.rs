@@ -6675,7 +6675,6 @@ impl B6ProofOutcome {
         }
     }
 
-    #[cfg(test)]
     fn as_str(self) -> &'static str {
         match self {
             Self::Pass => "pass",
@@ -6714,6 +6713,94 @@ pub struct B6ProofReceipt {
     pub unmeasurable: u8,
     pub blocked: u8,
     pub steps: Vec<B6ProofStep>,
+}
+
+#[cfg(any(feature = "discord-qa-shell", test))]
+const P1_P6_COMBINED_STEP_IDS: [&str; 9] =
+    ["P1", "P2", "P3a", "P3b", "P4a", "P4b", "P4c", "P5", "P6"];
+
+#[cfg(any(feature = "discord-qa-shell", test))]
+#[derive(Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum P1P6CombinedOverall {
+    Pass,
+    Fail,
+    NotPassing,
+}
+
+#[cfg(any(feature = "discord-qa-shell", test))]
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct P1P6CombinedStep {
+    pub id: &'static str,
+    pub status: B6ProofOutcome,
+    pub detail: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub product_change_required: Option<&'static str>,
+}
+
+#[cfg(any(feature = "discord-qa-shell", test))]
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct P1P6CombinedReceipt {
+    pub schema_version: u8,
+    pub kind: &'static str,
+    pub overall: P1P6CombinedOverall,
+    pub passed: u8,
+    pub failed: u8,
+    pub unmeasurable: u8,
+    pub blocked: u8,
+    pub steps: Vec<P1P6CombinedStep>,
+    pub diff_key: String,
+}
+
+#[cfg(any(feature = "discord-qa-shell", test))]
+fn p1_p6_combined_receipt_for(steps: Vec<P1P6CombinedStep>) -> Result<P1P6CombinedReceipt, String> {
+    if steps.len() != P1_P6_COMBINED_STEP_IDS.len() {
+        return Err("OSL P1-P6 receipt is incomplete".to_owned());
+    }
+    for (step, expected_id) in steps.iter().zip(P1_P6_COMBINED_STEP_IDS) {
+        if step.id != expected_id || step.detail.is_empty() {
+            return Err("OSL P1-P6 receipt step order is invalid".to_owned());
+        }
+        if step.status == B6ProofOutcome::Blocked && step.product_change_required.is_none() {
+            return Err("OSL P1-P6 blocked rows must name the required product change".to_owned());
+        }
+    }
+
+    let passed = count_b6_outcome_steps(&steps, B6ProofOutcome::Pass);
+    let failed = count_b6_outcome_steps(&steps, B6ProofOutcome::Fail);
+    let unmeasurable = count_b6_outcome_steps(&steps, B6ProofOutcome::Unmeasurable);
+    let blocked = count_b6_outcome_steps(&steps, B6ProofOutcome::Blocked);
+    let overall = if failed != 0 {
+        P1P6CombinedOverall::Fail
+    } else if usize::from(passed) == steps.len() {
+        P1P6CombinedOverall::Pass
+    } else {
+        P1P6CombinedOverall::NotPassing
+    };
+    let diff_key = steps
+        .iter()
+        .map(|step| format!("{}={}", step.id, step.status.as_str()))
+        .collect::<Vec<_>>()
+        .join(";");
+
+    Ok(P1P6CombinedReceipt {
+        schema_version: 1,
+        kind: "osl.p1-p6.combined-receipt",
+        overall,
+        passed,
+        failed,
+        unmeasurable,
+        blocked,
+        steps,
+        diff_key,
+    })
+}
+
+#[cfg(any(feature = "discord-qa-shell", test))]
+fn count_b6_outcome_steps(steps: &[P1P6CombinedStep], outcome: B6ProofOutcome) -> u8 {
+    steps.iter().filter(|step| step.status == outcome).count() as u8
 }
 
 /// Read-only B6 prerequisite receipt for the disposable QA shell.
@@ -7527,6 +7614,106 @@ mod tests {
             .map(|step| step["outcome"].as_str().expect("outcome is text"))
             .collect();
         assert_eq!(outcomes, vec!["pass", "fail", "unmeasurable", "blocked"]);
+    }
+
+    #[test]
+    fn full_p1_p6_combined_receipt_assembly() {
+        fn step(id: &'static str, status: B6ProofOutcome) -> P1P6CombinedStep {
+            P1P6CombinedStep {
+                id,
+                status,
+                detail: "measured fixed-label evidence",
+                product_change_required: (status == B6ProofOutcome::Blocked)
+                    .then_some("wire the missing P1-P6 measurement"),
+            }
+        }
+
+        let passing = P1_P6_COMBINED_STEP_IDS
+            .iter()
+            .copied()
+            .map(|id| step(id, B6ProofOutcome::Pass))
+            .collect::<Vec<_>>();
+        let receipt = p1_p6_combined_receipt_for(passing).expect("assemble full P1-P6 receipt");
+        assert!(receipt.overall == P1P6CombinedOverall::Pass);
+        assert_eq!(receipt.passed, 9);
+        assert_eq!(receipt.failed, 0);
+        assert_eq!(receipt.unmeasurable, 0);
+        assert_eq!(receipt.blocked, 0);
+        assert_eq!(
+            receipt.diff_key,
+            "P1=pass;P2=pass;P3a=pass;P3b=pass;P4a=pass;P4b=pass;P4c=pass;P5=pass;P6=pass"
+        );
+        let encoded = serde_json::to_value(&receipt).expect("combined receipt serializes");
+        assert_eq!(encoded["kind"], "osl.p1-p6.combined-receipt");
+        assert_eq!(encoded["overall"], "pass");
+        assert_eq!(encoded["diffKey"], receipt.diff_key);
+        let ids = encoded["steps"]
+            .as_array()
+            .expect("steps serialize as an array")
+            .iter()
+            .map(|row| row["id"].as_str().expect("id is text"))
+            .collect::<Vec<_>>();
+        assert_eq!(ids, P1_P6_COMBINED_STEP_IDS);
+        for forbidden in ["plaintext", "account", "credential", "secret", "token"] {
+            assert!(
+                !encoded.to_string().contains(forbidden),
+                "combined receipt must not leak {forbidden}"
+            );
+        }
+
+        let mut blocked = P1_P6_COMBINED_STEP_IDS
+            .iter()
+            .copied()
+            .map(|id| step(id, B6ProofOutcome::Pass))
+            .collect::<Vec<_>>();
+        blocked[7] = step("P5", B6ProofOutcome::Blocked);
+        let blocked_receipt =
+            p1_p6_combined_receipt_for(blocked).expect("assemble blocked P5 receipt");
+        assert!(blocked_receipt.overall == P1P6CombinedOverall::NotPassing);
+        assert_eq!(blocked_receipt.passed, 8);
+        assert_eq!(blocked_receipt.blocked, 1);
+        assert!(blocked_receipt.diff_key.contains("P5=blocked"));
+
+        let mut failed = P1_P6_COMBINED_STEP_IDS
+            .iter()
+            .copied()
+            .map(|id| step(id, B6ProofOutcome::Pass))
+            .collect::<Vec<_>>();
+        failed[1] = step("P2", B6ProofOutcome::Fail);
+        let failed_receipt =
+            p1_p6_combined_receipt_for(failed).expect("assemble failed P2 receipt");
+        assert!(failed_receipt.overall == P1P6CombinedOverall::Fail);
+        assert_eq!(failed_receipt.failed, 1);
+        assert!(failed_receipt.diff_key.contains("P2=fail"));
+
+        let incomplete = P1_P6_COMBINED_STEP_IDS
+            .iter()
+            .take(8)
+            .copied()
+            .map(|id| step(id, B6ProofOutcome::Pass))
+            .collect::<Vec<_>>();
+        assert!(p1_p6_combined_receipt_for(incomplete).is_err());
+
+        let mut reordered = P1_P6_COMBINED_STEP_IDS
+            .iter()
+            .copied()
+            .map(|id| step(id, B6ProofOutcome::Pass))
+            .collect::<Vec<_>>();
+        reordered.swap(0, 1);
+        assert!(p1_p6_combined_receipt_for(reordered).is_err());
+
+        let mut unremedied_block = P1_P6_COMBINED_STEP_IDS
+            .iter()
+            .copied()
+            .map(|id| step(id, B6ProofOutcome::Pass))
+            .collect::<Vec<_>>();
+        unremedied_block[7] = P1P6CombinedStep {
+            id: "P5",
+            status: B6ProofOutcome::Blocked,
+            detail: "measured fixed-label evidence",
+            product_change_required: None,
+        };
+        assert!(p1_p6_combined_receipt_for(unremedied_block).is_err());
     }
 
     #[test]
