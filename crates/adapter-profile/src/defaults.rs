@@ -6,6 +6,10 @@
 
 use crate::schema::{SignedProfileDoc, PROFILE_DOC_ENVELOPE_VERSION};
 
+pub const SIGNAL_DESKTOP_NATIVE_PRIMARY_WINDOW_CLASS: &str = "Chrome_WidgetWin_1";
+pub const SIGNAL_DESKTOP_NATIVE_APP_ROOT_ROLE: &str = "window";
+pub const SIGNAL_DESKTOP_NATIVE_WINDOW_TITLE: &str = "Signal";
+
 const SIGNAL_DEFAULT_SIGNING_KEY_B64: &str = "Qd4FjrF753bcrQTa6u93vhdOGfOJVXnwRj5QgCfK0sk=";
 const SIGNAL_DEFAULT_PAYLOAD_B64: &str = "eyJkb21haW4iOiJvc2wvYWRhcHRlci1wcm9maWxlL3YxIiwic2NoZW1hX3ZlcnNpb24iOjEsImFkYXB0ZXJfaWQiOiJzaWduYWwuZGVza3RvcC5uYXRpdmUiLCJhcHAiOnsic3RhYmxlX2lkIjoic2lnbmFsIiwiZGlzcGxheV9uYW1lIjoiU2lnbmFsIiwic2VydmljZV9mYW1pbHkiOiJtZXNzYWdpbmciLCJtaW5fYXBwX3ZlcnNpb24iOm51bGx9LCJyZXZpc2lvbiI6eyJudW1iZXIiOjEsImxhYmVsIjoiMjAyNi0wNy0zMC1zaWduYWwtbmF0aXZlLXN1cHBvcnRlZC12MSJ9LCJpc3N1ZWRfYXRfdW5peF9zZWNvbmRzIjoxNzg1MzY5NjAwLCJleHBpcmVzX2F0X3VuaXhfc2Vjb25kcyI6MTkyNDk5MjAwMCwic3VwcG9ydCI6InN1cHBvcnRlZCIsImF1dGhvcml0eSI6eyJ1c2VyX2NvbnNlbnRfcmVxdWlyZWQiOnRydWUsImFjY291bnRfYmluZGluZ19yZXF1aXJlZCI6dHJ1ZSwicmVsZWFzZV9hdXRob3JpdHlfcmVxdWlyZWQiOnRydWUsImhhcm1sZXNzX2NhbmFyeV9yZXF1aXJlZCI6dHJ1ZX0sInNlbGVjdG9ycyI6W3sia2luZCI6ImFwcF9yb290Iiwic3RyYXRlZ3kiOnsia2luZCI6ImFjY2Vzc2liaWxpdHkiLCJyb2xlIjoid2luZG93IiwibmFtZSI6IlNpZ25hbCIsImF1dG9tYXRpb25faWQiOm51bGx9LCJyZXF1aXJlZCI6dHJ1ZX0seyJraW5kIjoiY29udmVyc2F0aW9uX3RpdGxlIiwic3RyYXRlZ3kiOnsia2luZCI6ImFjY2Vzc2liaWxpdHkiLCJyb2xlIjoidGV4dCIsIm5hbWUiOm51bGwsImF1dG9tYXRpb25faWQiOm51bGx9LCJyZXF1aXJlZCI6dHJ1ZX0seyJraW5kIjoibWVzc2FnZV9saXN0Iiwic3RyYXRlZ3kiOnsia2luZCI6ImFjY2Vzc2liaWxpdHkiLCJyb2xlIjoibGlzdCIsIm5hbWUiOm51bGwsImF1dG9tYXRpb25faWQiOm51bGx9LCJyZXF1aXJlZCI6dHJ1ZX0seyJraW5kIjoibWVzc2FnZV9yb3ciLCJzdHJhdGVneSI6eyJraW5kIjoiYWNjZXNzaWJpbGl0eSIsInJvbGUiOiJyb3ciLCJuYW1lIjpudWxsLCJhdXRvbWF0aW9uX2lkIjpudWxsfSwicmVxdWlyZWQiOnRydWV9LHsia2luZCI6ImNvbXBvc2VyX2lucHV0Iiwic3RyYXRlZ3kiOnsia2luZCI6ImFjY2Vzc2liaWxpdHkiLCJyb2xlIjoiZWRpdGFibGVfdGV4dCIsIm5hbWUiOm51bGwsImF1dG9tYXRpb25faWQiOm51bGx9LCJyZXF1aXJlZCI6dHJ1ZX0seyJraW5kIjoic2VudF9zdGF0ZSIsInN0cmF0ZWd5Ijp7ImtpbmQiOiJ0ZXh0X2FuY2hvciIsInN0YXJ0c193aXRoIjoiT1NMOiJ9LCJyZXF1aXJlZCI6dHJ1ZX1dLCJmYWxsYmFja3MiOltdLCJjYW5hcnkiOnsic2VsZWN0b3IiOiJhcHBfcm9vdCIsImV4cGVjdGVkX3RleHQiOiJTaWduYWwiLCJtYXhfYWdlX3NlY29uZHMiOjM2MDB9fQ==";
 const SIGNAL_DEFAULT_SIGNATURE_B64: &str =
@@ -58,7 +62,7 @@ mod tests {
 
         assert_eq!(payload.adapter_id, "signal.desktop.native");
         assert_eq!(payload.app.stable_id, "signal");
-        assert_eq!(payload.app.display_name, "Signal");
+        assert_eq!(payload.app.display_name, SIGNAL_DESKTOP_NATIVE_WINDOW_TITLE);
         assert_eq!(payload.support, SupportLevel::Supported);
         assert!(payload.authority.user_consent_required);
         assert!(payload.authority.account_binding_required);
@@ -76,7 +80,17 @@ mod tests {
         assert!(required.contains(&SelectorKind::SentState));
         assert!(payload.fallbacks.is_empty());
         assert_eq!(payload.canary.selector, SelectorKind::AppRoot);
-        assert_eq!(payload.canary.expected_text, "Signal");
+        assert_eq!(
+            payload.canary.expected_text,
+            SIGNAL_DESKTOP_NATIVE_WINDOW_TITLE
+        );
+        assert!(payload.selectors.iter().any(|selector| matches!(
+            &selector.strategy,
+            SelectorStrategy::Accessibility { role, name, .. }
+                if selector.kind == SelectorKind::AppRoot
+                    && role == SIGNAL_DESKTOP_NATIVE_APP_ROOT_ROLE
+                    && name.as_deref() == Some(SIGNAL_DESKTOP_NATIVE_WINDOW_TITLE)
+        )));
         assert!(payload.selectors.iter().any(|selector| matches!(
             &selector.strategy,
             SelectorStrategy::TextAnchor { starts_with } if starts_with == "OSL:"

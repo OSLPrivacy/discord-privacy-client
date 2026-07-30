@@ -71,9 +71,10 @@ fn existing_session_launch_arguments(id: NativeAppId) -> &'static [&'static str]
 #[cfg(any(target_os = "windows", test))]
 const DISCORD_PRIMARY_WINDOW_CLASS: &str = "Chrome_WidgetWin_1";
 #[cfg(any(target_os = "windows", test))]
-const SIGNAL_PRIMARY_WINDOW_CLASS: &str = "Chrome_WidgetWin_1";
+const SIGNAL_PRIMARY_WINDOW_CLASS: &str =
+    adapter_profile::SIGNAL_DESKTOP_NATIVE_PRIMARY_WINDOW_CLASS;
 #[cfg(any(target_os = "windows", test))]
-const SIGNAL_PRIMARY_WINDOW_TITLE: &str = "Signal";
+const SIGNAL_PRIMARY_WINDOW_TITLE: &str = adapter_profile::SIGNAL_DESKTOP_NATIVE_WINDOW_TITLE;
 #[cfg(any(target_os = "windows", test))]
 const WHATSAPP_PRIMARY_WINDOW_CLASS: &str = "WinUIDesktopWin32WindowClass";
 #[cfg(any(target_os = "windows", test))]
@@ -9453,6 +9454,53 @@ mod tests {
         assert!(!secondary_instance_verified(NativeAppId::Signal));
         assert!(!secondary_instance_verified(NativeAppId::Whatsapp));
         assert!(!secondary_instance_verified(NativeAppId::Outlook));
+    }
+
+    #[test]
+    fn signal() {
+        const PROFILE_TEST_NOW: u64 = 1_800_000_000;
+        let profile = adapter_profile::signal_default_profile();
+        let payload = adapter_profile::verify_profile_doc(
+            &profile,
+            adapter_profile::signal_default_trusted_signing_key_b64(),
+            PROFILE_TEST_NOW,
+        )
+        .expect("compiled Signal adapter profile must verify");
+
+        assert_eq!(
+            SIGNAL_PRIMARY_WINDOW_CLASS,
+            adapter_profile::SIGNAL_DESKTOP_NATIVE_PRIMARY_WINDOW_CLASS
+        );
+        assert_eq!(
+            SIGNAL_PRIMARY_WINDOW_TITLE,
+            adapter_profile::SIGNAL_DESKTOP_NATIVE_WINDOW_TITLE
+        );
+        assert_eq!(payload.app.stable_id, "signal");
+        assert_eq!(payload.canary.expected_text, SIGNAL_PRIMARY_WINDOW_TITLE);
+        assert!(payload.selectors.iter().any(|selector| matches!(
+            &selector.strategy,
+            adapter_profile::SelectorStrategy::Accessibility { role, name, .. }
+                if selector.kind == adapter_profile::SelectorKind::AppRoot
+                    && role == adapter_profile::SIGNAL_DESKTOP_NATIVE_APP_ROOT_ROLE
+                    && name.as_deref() == Some(SIGNAL_PRIMARY_WINDOW_TITLE)
+        )));
+
+        assert!(dedicated_window_class_allowed(
+            NativeAppId::Signal,
+            SIGNAL_PRIMARY_WINDOW_CLASS,
+        ));
+        assert!(existing_window_identity_allowed(
+            NativeAppId::Signal,
+            false,
+            SIGNAL_PRIMARY_WINDOW_CLASS,
+            SIGNAL_PRIMARY_WINDOW_TITLE,
+        ));
+        assert!(!existing_window_identity_allowed(
+            NativeAppId::Signal,
+            true,
+            SIGNAL_PRIMARY_WINDOW_CLASS,
+            "Signal error",
+        ));
     }
 
     #[test]
