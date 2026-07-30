@@ -15,6 +15,9 @@ use osl_privacy_hub::core_bridge::{
     self, CoreFeature, CoreReadiness, HubCoreState, HubLicenseState,
 };
 use osl_privacy_hub::discord_carrier_geometry::CarrierDecision;
+use osl_privacy_hub::identity_binding_verifier::{
+    AccountRef, BindingScope, IdentityBindingVerifier, PinnedOwner,
+};
 use osl_privacy_hub::identity_registry::{
     self, HubIdentityBurnResult, HubIdentityRegistryState, HubIdentitySlotCreation,
     HubIdentitySlotDto, HubIdentitySwitchResult,
@@ -560,7 +563,9 @@ impl CheckedHost {
         let owner_osl_user_id = active_unlocked_osl_user_id(&app.state::<HubCoreState>())?;
         let (context_epoch, active) = require_overlay_context_snapshot(app)?;
         if active.service_id != "discord" {
-            return Err("Hosted session scans require the active native Discord context".to_owned());
+            return Err(
+                "Hosted session scans require the active native Discord context".to_owned(),
+            );
         }
         let scope_binding = native_discord_scope_binding(app)?;
         Ok(Self {
@@ -577,6 +582,86 @@ impl CheckedHost {
     }
 }
 
+fn run_checked_hosted_session_scan(
+    app: tauri::AppHandle,
+) -> Result<osl_privacy_hub::native_discord_adapter::guided_deletion::DeletionScan, String> {
+    checked_hosted_session_scan_flow(
+        || CheckedHost::for_hosted_session_scan(&app),
+        |checked| checked.attended_operator_names(),
+        |checked, operator_names| {
+            osl_privacy_hub::native_discord_adapter::scan_own_messages_for_deletion(
+                &app.state::<NativeWindowHostState>(),
+                &checked.owner_osl_user_id,
+                &checked.scope_binding,
+                checked.active.generation,
+                operator_names,
+            )
+        },
+        |checked| require_same_overlay_context(&app, checked.context_epoch, &checked.active),
+    )
+}
+
+fn checked_hosted_session_scan_flow<BuildChecked, BindOperators, Scan, Recheck>(
+    build_checked: BuildChecked,
+    bind_operators: BindOperators,
+    scan: Scan,
+    recheck: Recheck,
+) -> Result<osl_privacy_hub::native_discord_adapter::guided_deletion::DeletionScan, String>
+where
+    BuildChecked: FnOnce() -> Result<CheckedHost, String>,
+    BindOperators: FnOnce(&CheckedHost) -> Result<Vec<String>, String>,
+    Scan: FnOnce(
+        &CheckedHost,
+        &[String],
+    ) -> Result<
+        osl_privacy_hub::native_discord_adapter::guided_deletion::DeletionScan,
+        String,
+    >,
+    Recheck: FnOnce(&CheckedHost) -> Result<(), String>,
+{
+    let checked = build_checked()?;
+    let operator_names = bind_operators(&checked)?;
+    let scan = scan(&checked, &operator_names)?;
+    recheck(&checked)?;
+    Ok(scan)
+}
+
+/// Open the hosted-session scan surface only after proving the same native
+/// authority the scan command requires. There is no preview, delete, navigation,
+/// credential, profile, URL, path, conversation, row, or plan input.
+#[tauri::command]
+async fn open_hosted_session_scan(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<(), String> {
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let checked = CheckedHost::for_hosted_session_scan(&app)?;
+        let _operator_names = checked.attended_operator_names()?;
+        require_same_overlay_context(&app, checked.context_epoch, &checked.active)?;
+        Ok(())
+    })
+    .await
+    .map_err(|_| "Hosted session scan open worker was interrupted".to_owned())?
+}
+
+/// Scan the exact checked native-hosted Discord context.
+///
+/// The renderer supplies no account, handle, credential, profile, path, URL,
+/// conversation, row, selector, or deletion input. Until native code can derive
+/// the attended operator-name binding, the checked route refuses instead of
+/// interpreting an empty binding as permission.
+#[tauri::command]
+async fn request_hosted_session_scan(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<osl_privacy_hub::native_discord_adapter::guided_deletion::DeletionScan, String> {
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || run_checked_hosted_session_scan(app))
+        .await
+        .map_err(|_| "Hosted session scan worker was interrupted".to_owned())?
+}
+
 /// Scan the exact checked native-hosted Discord context.
 ///
 /// The renderer supplies no account, handle, credential, profile, path, URL,
@@ -589,21 +674,9 @@ async fn request_hosted_session_scan_command(
     session: State<'_, HubAccountSessionState>,
 ) -> Result<osl_privacy_hub::native_discord_adapter::guided_deletion::DeletionScan, String> {
     let _session = session.transition.lock().await;
-    tauri::async_runtime::spawn_blocking(move || {
-        let checked = CheckedHost::for_hosted_session_scan(&app)?;
-        let operator_names = checked.attended_operator_names()?;
-        let scan = osl_privacy_hub::native_discord_adapter::scan_own_messages_for_deletion(
-            &app.state::<NativeWindowHostState>(),
-            &checked.owner_osl_user_id,
-            &checked.scope_binding,
-            checked.active.generation,
-            &operator_names,
-        )?;
-        require_same_overlay_context(&app, checked.context_epoch, &checked.active)?;
-        Ok(scan)
-    })
-    .await
-    .map_err(|_| "Hosted session scan worker was interrupted".to_owned())?
+    tauri::async_runtime::spawn_blocking(move || run_checked_hosted_session_scan(app))
+        .await
+        .map_err(|_| "Hosted session scan worker was interrupted".to_owned())?
 }
 
 fn active_unlocked_osl_user_id(core: &HubCoreState) -> Result<String, String> {
@@ -896,12 +969,42 @@ fn get_autoscrub_run_fl(state: State<'_, HubCoreState>) -> Result<AutoScrubFleet
     autoscrub_run::fleet_status(&state.osl)
 }
 
+fn require_review_ui_identity_binding(
+    core: &HubCoreState,
+    request: &AutoScrubReviewedRunRequest,
+) -> Result<(), String> {
+    let identity = core
+        .osl
+        .identity
+        .lock()
+        .map_err(|_| "OSL identity state is unavailable".to_owned())?
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "Unlock an OSL identity before starting AutoScrub".to_owned())?;
+    let verifier = IdentityBindingVerifier::new(PinnedOwner::from_identity(&identity));
+    let account = AccountRef {
+        service_id: service_kind_id(request.service_id).to_owned(),
+        account_id: request.account_id.clone(),
+    };
+    verifier
+        .verify(&account, BindingScope::ScrubDeletion)
+        .map_err(|_| "A reviewed identity binding is required before starting AutoScrub".to_owned())
+}
+
 #[tauri::command]
 fn start_autoscrub_reviewed_run(
     state: State<'_, HubCoreState>,
     request: AutoScrubReviewedRunRequest,
 ) -> Result<AutoScrubFleetStatus, String> {
-    autoscrub_run::start_reviewed_run(&state.osl, request)
+    start_autoscrub_reviewed_run_inner(&state, request)
+}
+
+fn start_autoscrub_reviewed_run_inner(
+    core: &HubCoreState,
+    request: AutoScrubReviewedRunRequest,
+) -> Result<AutoScrubFleetStatus, String> {
+    require_review_ui_identity_binding(core, &request)?;
+    autoscrub_run::start_reviewed_run(&core.osl, request)
 }
 
 #[tauri::command]
@@ -1541,8 +1644,7 @@ fn native_app_takeover_requires_consent(app: tauri::AppHandle, app_id: NativeApp
 /// the renderer's fail-safe display default applies only until this call settles.
 #[tauri::command]
 fn discord_marker_available(app: tauri::AppHandle) -> bool {
-    app.state::<NativeDiscordComposerState>()
-        .marker_available()
+    app.state::<NativeDiscordComposerState>().marker_available()
 }
 
 #[tauri::command]
@@ -1879,11 +1981,9 @@ fn require_native_discord_product_send_authority(
     if plan.decision != CarrierDecision::RowOverlay {
         return Err("The protected message is not ready to send; nothing was placed".to_owned());
     }
-    let carrier = plan
-        .cover_text()
-        .ok_or_else(|| {
-            "The protected message is not ready to send; nothing was placed".to_owned()
-        })?;
+    let carrier = plan.cover_text().ok_or_else(|| {
+        "The protected message is not ready to send; nothing was placed".to_owned()
+    })?;
     Ok(NativeDiscordProductSendAuthority { carrier })
 }
 
@@ -1934,17 +2034,17 @@ async fn request_native_discord_visible_row_qa_receipt(
     caller: tauri::WebviewWindow,
 ) -> Result<broker::NativeVisibleRowRuntimeReceipt, String> {
     if caller.label() != "main" {
-        return Err("Only the trusted OSL Privacy window may request native QA evidence".to_owned());
+        return Err(
+            "Only the trusted OSL Privacy window may request native QA evidence".to_owned(),
+        );
     }
     require_engaged_lock(&app)?;
     let owner = active_unlocked_osl_user_id(&app.state::<HubCoreState>())?;
     let (epoch, context_host) = require_overlay_context_snapshot(&app)?;
     let scope_binding = native_discord_scope_binding(&app)?;
     require_same_overlay_context(&app, epoch, &context_host)?;
-    let build_hash =
-        canonical_native_visible_row_qa_build_hash(option_env!("OSL_SOURCE_COMMIT"))?;
-    let osl_target_identity_sha256 =
-        trusted_native_visible_row_qa_caller_identity(&caller)?;
+    let build_hash = canonical_native_visible_row_qa_build_hash(option_env!("OSL_SOURCE_COMMIT"))?;
+    let osl_target_identity_sha256 = trusted_native_visible_row_qa_caller_identity(&caller)?;
 
     let read_app = app.clone();
     let receipt = tauri::async_runtime::spawn_blocking(move || {
@@ -5275,12 +5375,12 @@ async fn burn_active_hub_context(
 #[cfg(feature = "discord-qa-shell")]
 mod qa_selftest {
     use super::*;
+    use osl_privacy_hub::native_window_host::NativeWindowHostStatus;
     use osl_privacy_hub::qa_selftest_request::{
         instance_file_token, not_ready_refusal, parse_request, readiness_criterion_is_graded,
         DrainReport, HostAction, HostReport, ParsedRequest, RehydrateReport, RevealReport,
         RevealTarget, SelftestRequest, Verb,
     };
-    use osl_privacy_hub::native_window_host::NativeWindowHostStatus;
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -7236,6 +7336,168 @@ fn spawn_lifecycle_tick(app: tauri::AppHandle, local_data_dir: std::path::PathBu
         });
 }
 
+macro_rules! hub_tauri_commands {
+    ($callback:ident) => {
+        $callback! {
+            get_onboarding_preferences,
+            list_hub_app_notifications,
+            set_hub_notifications_enabled,
+            set_hub_screenshot_protection,
+            save_onboarding_preferences,
+            scan_local_privacy,
+            open_hosted_session_scan,
+            request_hosted_session_scan,
+            initialize_scrub_index,
+            append_scrub_index_chunk,
+            get_scrub_index_status,
+            pause_scrub_index,
+            resume_scrub_index,
+            cancel_scrub_index,
+            list_linked_services,
+            get_core_readiness,
+            list_core_features,
+            get_hub_license_state,
+            get_mass_cleanup_capabilities,
+            discover_mass_cleanup_targets,
+            execute_mass_cleanup_batch,
+            get_autoscrub_run_fl,
+            start_autoscrub_reviewed_run,
+            request_autoscrub_global_stop,
+            validate_hub_activation_code,
+            clear_hub_activation_code,
+            unlock_hub_password_gate,
+            create_hub_osl_identity,
+            import_hub_osl_identity_phrase,
+            setup_hub_main_password,
+            get_hub_password_role_status,
+            set_hub_stealth_password,
+            remove_hub_stealth_password,
+            set_hub_burn_password,
+            remove_hub_burn_password,
+            check_hub_for_updates,
+            install_hub_update,
+            open_hub_releases_page,
+            list_native_apps,
+            install_native_app,
+            get_mullvad_status,
+            install_mullvad,
+            open_mullvad,
+            list_browser_imports,
+            open_browser_import,
+            get_firefox_status,
+            install_firefox,
+            begin_browser_account_import,
+            begin_protected_browser_import,
+            finish_protected_browser_import,
+            launch_firefox_service,
+            get_default_browser_companion_status,
+            host_default_browser_companion,
+            resize_default_browser_companion,
+            focus_default_browser_companion,
+            detach_default_browser_companion,
+            host_native_app_window,
+            native_app_takeover_requires_consent,
+            discord_marker_available,
+            resize_native_app_window,
+            focus_native_app_window,
+            detach_native_app_window,
+            set_native_discord_protected_overlay_open,
+            get_native_discord_overlay_state,
+            prepare_native_discord_overlay_text,
+            #[cfg(feature = "discord-qa-shell")]
+            send_native_discord_qa_atomic_text,
+            #[cfg(feature = "discord-qa-shell")]
+            record_native_discord_qa_send_stage,
+            #[cfg(feature = "discord-qa-shell")]
+            send_native_discord_qa_probe,
+            #[cfg(feature = "discord-qa-shell")]
+            request_native_discord_visible_row_qa_receipt,
+            #[cfg(feature = "discord-qa-shell")]
+            run_native_discord_headless_qa,
+            #[cfg(feature = "discord-qa-shell")]
+            poll_native_discord_headless_qa,
+            prepare_osl_chat_text,
+            send_native_discord_overlay_carrier,
+            open_native_discord_overlay_text,
+            rehydrate_native_discord_overlay_history,
+            reveal_native_discord_overlay_view_once,
+            open_osl_chat_text,
+            list_osl_chat_history,
+            select_osl_chat_attachment,
+            list_osl_chat_attachments,
+            open_osl_chat_attachment,
+            select_native_discord_overlay_attachment,
+            list_native_discord_overlay_attachments,
+            open_native_discord_overlay_attachment,
+            burn_native_discord_overlay_chat,
+            set_native_discord_overlay_security,
+            set_native_discord_covertext_enabled,
+            host_mullvad_window,
+            resize_mullvad_window,
+            focus_mullvad_window,
+            restore_mullvad_window,
+            create_service_account,
+            open_service_host,
+            request_hosted_session_scan_command,
+            close_service_host,
+            set_local_protected_sheet_open,
+            remove_service_account,
+            activate_local_loopback_context,
+            activate_manual_peer_context,
+            activate_native_manual_peer_context,
+            activate_osl_chat_context,
+            close_osl_chat_context,
+            prepare_encrypted_text,
+            decrypt_hub_capsule,
+            prepare_peer_prose_text,
+            open_peer_prose_text,
+            prepare_local_protected_text_with_policy,
+            decrypt_local_protected_capsule,
+            prepare_hub_attachment,
+            open_hub_attachment,
+            export_hub_friend_code,
+            copy_hub_friend_invite,
+            add_hub_friend,
+            verify_hub_friend_safety_number,
+            remove_hub_friend,
+            list_hub_people,
+            set_hub_friend_nickname,
+            set_active_hub_friend_permission,
+            set_active_hub_friend_reach,
+            revoke_active_hub_friend_scope,
+            get_active_hub_context_security,
+            set_active_hub_context_security,
+            list_hub_identities,
+            create_hub_identity_slot,
+            recover_hub_identity_slot,
+            switch_hub_identity,
+            burn_active_hub_identity,
+            execute_hub_full_cleanup,
+            get_hub_service_burn_readiness,
+            burn_hub_service_account,
+            burn_active_hub_context
+        }
+    };
+}
+
+macro_rules! hub_tauri_generate_handler {
+    ($($(#[$meta:meta])* $command:ident),* $(,)?) => {
+        tauri::generate_handler![$($(#[$meta])* $command,)*]
+    };
+}
+
+#[cfg(test)]
+macro_rules! hub_tauri_command_names {
+    ($($(#[$meta:meta])* $command:ident),* $(,)?) => {{
+        let mut commands = ::std::vec::Vec::new();
+        $(
+            $(#[$meta])*
+            commands.push(stringify!($command).to_owned());
+        )*
+        commands
+    }};
+}
+
 fn main() {
     #[cfg(feature = "discord-qa-shell")]
     {
@@ -7561,143 +7823,7 @@ fn main() {
         startup_breadcrumb("setup_done"); // STARTUP-TRACE
         Ok(())
     });
-    let builder = builder.invoke_handler(tauri::generate_handler![
-        get_onboarding_preferences,
-        list_hub_app_notifications,
-        set_hub_notifications_enabled,
-        set_hub_screenshot_protection,
-        save_onboarding_preferences,
-        scan_local_privacy,
-        initialize_scrub_index,
-        append_scrub_index_chunk,
-        get_scrub_index_status,
-        pause_scrub_index,
-        resume_scrub_index,
-        cancel_scrub_index,
-        list_linked_services,
-        get_core_readiness,
-        list_core_features,
-        get_hub_license_state,
-        get_mass_cleanup_capabilities,
-        discover_mass_cleanup_targets,
-        execute_mass_cleanup_batch,
-        get_autoscrub_run_fl,
-        start_autoscrub_reviewed_run,
-        request_autoscrub_global_stop,
-        validate_hub_activation_code,
-        clear_hub_activation_code,
-        unlock_hub_password_gate,
-        create_hub_osl_identity,
-        import_hub_osl_identity_phrase,
-        setup_hub_main_password,
-        get_hub_password_role_status,
-        set_hub_stealth_password,
-        remove_hub_stealth_password,
-        set_hub_burn_password,
-        remove_hub_burn_password,
-        check_hub_for_updates,
-        install_hub_update,
-        open_hub_releases_page,
-        list_native_apps,
-        install_native_app,
-        get_mullvad_status,
-        install_mullvad,
-        open_mullvad,
-        list_browser_imports,
-        open_browser_import,
-        get_firefox_status,
-        install_firefox,
-        begin_browser_account_import,
-        begin_protected_browser_import,
-        finish_protected_browser_import,
-        launch_firefox_service,
-        get_default_browser_companion_status,
-        host_default_browser_companion,
-        resize_default_browser_companion,
-        focus_default_browser_companion,
-        detach_default_browser_companion,
-        host_native_app_window,
-        native_app_takeover_requires_consent,
-        discord_marker_available,
-        resize_native_app_window,
-        focus_native_app_window,
-        detach_native_app_window,
-        set_native_discord_protected_overlay_open,
-        get_native_discord_overlay_state,
-        prepare_native_discord_overlay_text,
-        #[cfg(feature = "discord-qa-shell")]
-            send_native_discord_qa_atomic_text,
-        #[cfg(feature = "discord-qa-shell")]
-        record_native_discord_qa_send_stage,
-        #[cfg(feature = "discord-qa-shell")]
-            send_native_discord_qa_probe,
-        #[cfg(feature = "discord-qa-shell")]
-            request_native_discord_visible_row_qa_receipt,
-        #[cfg(feature = "discord-qa-shell")]
-        run_native_discord_headless_qa,
-        #[cfg(feature = "discord-qa-shell")]
-        poll_native_discord_headless_qa,
-        prepare_osl_chat_text,
-        send_native_discord_overlay_carrier,
-        open_native_discord_overlay_text,
-        rehydrate_native_discord_overlay_history,
-        reveal_native_discord_overlay_view_once,
-        open_osl_chat_text,
-        list_osl_chat_history,
-        select_osl_chat_attachment,
-        list_osl_chat_attachments,
-        open_osl_chat_attachment,
-        select_native_discord_overlay_attachment,
-        list_native_discord_overlay_attachments,
-        open_native_discord_overlay_attachment,
-        burn_native_discord_overlay_chat,
-        set_native_discord_overlay_security,
-        set_native_discord_covertext_enabled,
-        host_mullvad_window,
-        resize_mullvad_window,
-        focus_mullvad_window,
-        restore_mullvad_window,
-        create_service_account,
-        open_service_host,
-        request_hosted_session_scan_command,
-        close_service_host,
-        set_local_protected_sheet_open,
-        remove_service_account,
-        activate_local_loopback_context,
-        activate_manual_peer_context,
-        activate_native_manual_peer_context,
-        activate_osl_chat_context,
-        close_osl_chat_context,
-        prepare_encrypted_text,
-        decrypt_hub_capsule,
-        prepare_peer_prose_text,
-        open_peer_prose_text,
-        prepare_local_protected_text_with_policy,
-        decrypt_local_protected_capsule,
-        prepare_hub_attachment,
-        open_hub_attachment,
-        export_hub_friend_code,
-        copy_hub_friend_invite,
-        add_hub_friend,
-        verify_hub_friend_safety_number,
-        remove_hub_friend,
-        list_hub_people,
-        set_hub_friend_nickname,
-        set_active_hub_friend_permission,
-            set_active_hub_friend_reach,
-            revoke_active_hub_friend_scope,
-        get_active_hub_context_security,
-        set_active_hub_context_security,
-        list_hub_identities,
-        create_hub_identity_slot,
-        recover_hub_identity_slot,
-        switch_hub_identity,
-        burn_active_hub_identity,
-        execute_hub_full_cleanup,
-        get_hub_service_burn_readiness,
-        burn_hub_service_account,
-        burn_active_hub_context
-    ]);
+    let builder = builder.invoke_handler(hub_tauri_commands!(hub_tauri_generate_handler));
     startup_breadcrumb("run_before"); // STARTUP-TRACE
     let app = builder
         .build(tauri::generate_context!())
@@ -7783,7 +7909,7 @@ mod b6_startup_gate_tests {
         let setup = between(
             source,
             "fn main()",
-            "let builder = builder.invoke_handler(tauri::generate_handler![",
+            "let builder = builder.invoke_handler(hub_tauri_commands!(hub_tauri_generate_handler));",
         );
         let broker_managed = setup
             .find("app.manage(HubBrokerState::default());")
@@ -7807,8 +7933,12 @@ mod b6_startup_gate_tests {
         let poll = &source[poll_start..poll_end];
         assert!(poll.contains("\"Only the trusted Discord QA shell may poll headless QA\""));
         assert!(
-            !between(poll, "async fn poll_native_discord_headless_qa(", ") -> Result<")
-                .contains("context_token"),
+            !between(
+                poll,
+                "async fn poll_native_discord_headless_qa(",
+                ") -> Result<"
+            )
+            .contains("context_token"),
             "a restart proof must not accept a renderer-provided stale context token"
         );
         let active_token = poll
@@ -7840,7 +7970,10 @@ mod b6_startup_gate_tests {
             "acknowledgment_count: opened.acknowledgments.len()",
             "fetched: opened.fetched",
         ] {
-            assert!(poll.contains(count), "poll receipt must expose only counts: {count}");
+            assert!(
+                poll.contains(count),
+                "poll receipt must expose only counts: {count}"
+            );
         }
 
         let selftest = between(source, "mod qa_selftest {", "/// Wake-up channel");
@@ -7979,8 +8112,7 @@ mod native_visible_row_qa_command_tests {
         NativeDiscordComposerState,
     };
 
-    const TEST_FLAGTEXT: &str =
-        "ok i will weekend again with you get what i was thinking usual";
+    const TEST_FLAGTEXT: &str = "ok i will weekend again with you get what i was thinking usual";
 
     fn measured_layout() -> DiscordCarrierLayout {
         DiscordCarrierLayout {
@@ -7994,21 +8126,22 @@ mod native_visible_row_qa_command_tests {
         }
     }
 
-    fn command_is_registered(source: &str) -> bool {
-        let Some(handler_start) = source.find("tauri::generate_handler![") else {
-            return false;
-        };
-        let Some(handler_end) = source[handler_start..].find("]);") else {
-            return false;
-        };
-        source[handler_start..handler_start + handler_end]
-            .contains("request_native_discord_visible_row_qa_receipt,")
+    fn registered_commands() -> Vec<String> {
+        hub_tauri_commands!(hub_tauri_command_names)
+    }
+
+    fn command_is_registered(command: &str) -> bool {
+        registered_commands()
+            .iter()
+            .any(|registered| registered == command)
     }
 
     #[test]
     fn native_visible_row_qa_command_is_reachable_only_through_trusted_state() {
         let source = include_str!("main.rs");
-        assert!(command_is_registered(source));
+        assert!(command_is_registered(
+            "request_native_discord_visible_row_qa_receipt"
+        ));
         let start = source
             .find(
                 "#[cfg(feature = \"discord-qa-shell\")]\n#[tauri::command]\nasync fn request_native_discord_visible_row_qa_receipt(",
@@ -8033,7 +8166,10 @@ mod native_visible_row_qa_command_tests {
             "broker::persist_native_visible_row_runtime_receipt(&receipt)?;",
             "MAX_VISIBLE_CARRIER_ROWS",
         ] {
-            assert!(command.contains(required), "missing command gate: {required}");
+            assert!(
+                command.contains(required),
+                "missing command gate: {required}"
+            );
         }
         assert_eq!(
             command.matches("require_engaged_lock(&app)?").count(),
@@ -8054,13 +8190,13 @@ mod native_visible_row_qa_command_tests {
         assert!(!signature.contains("u64"));
         assert!(!signature.contains("usize"));
 
-        let registration_removed = source.replacen(
-            "            request_native_discord_visible_row_qa_receipt,",
-            "",
-            1,
-        );
+        let mut registration_removed = registered_commands();
+        registration_removed
+            .retain(|command| command != "request_native_discord_visible_row_qa_receipt");
         assert!(
-            !command_is_registered(&registration_removed),
+            !registration_removed
+                .iter()
+                .any(|command| command == "request_native_discord_visible_row_qa_receipt"),
             "removing the real handler registration must fail reachability"
         );
 
@@ -8163,12 +8299,322 @@ mod native_visible_row_qa_command_tests {
             Some(measured_layout()),
         )
         .expect("same-scope prepared carrier authorizes one send");
-        assert!(authority.carrier.split_whitespace().eq(TEST_FLAGTEXT.split_whitespace()));
+        assert!(authority
+            .carrier
+            .split_whitespace()
+            .eq(TEST_FLAGTEXT.split_whitespace()));
         assert!(require_native_discord_product_send_authority(
             &state,
             "scope-a",
             Some(measured_layout())
         )
         .is_err());
+    }
+}
+
+#[cfg(test)]
+mod tauri_registration_surface_tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn handler_commands() -> BTreeSet<String> {
+        hub_tauri_commands!(hub_tauri_command_names)
+            .into_iter()
+            .collect()
+    }
+
+    fn permission_commands(source: &str) -> BTreeMap<String, String> {
+        let mut current_identifier = None::<String>;
+        let mut permissions = BTreeMap::new();
+        for line in source.lines().map(str::trim) {
+            if let Some(value) = line
+                .strip_prefix("identifier = \"")
+                .and_then(|tail| tail.strip_suffix('"'))
+            {
+                current_identifier = Some(value.to_owned());
+                continue;
+            }
+            if let Some(command) = line
+                .strip_prefix("commands.allow = [\"")
+                .and_then(|tail| tail.strip_suffix("\"]"))
+            {
+                let identifier = current_identifier
+                    .take()
+                    .expect("command permission has an identifier");
+                permissions.insert(identifier, command.to_owned());
+            }
+        }
+        permissions
+    }
+
+    fn capability_permissions(source: &str) -> BTreeSet<String> {
+        let value: serde_json::Value = serde_json::from_str(source).expect("capability JSON");
+        value["permissions"]
+            .as_array()
+            .expect("permissions array")
+            .iter()
+            .map(|permission| {
+                permission
+                    .as_str()
+                    .expect("permission is a string")
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    fn command_permission(command: &str) -> String {
+        format!("allow-{}", command.replace('_', "-"))
+    }
+
+    fn is_registered_and_granted(
+        handlers: &BTreeSet<String>,
+        permissions: &BTreeMap<String, String>,
+        capability: &BTreeSet<String>,
+        command: &str,
+    ) -> bool {
+        let permission = command_permission(command);
+        handlers.contains(command)
+            && permissions
+                .get(&permission)
+                .is_some_and(|allowed| allowed == command)
+            && capability.contains(&permission)
+    }
+
+    fn assert_registered_and_granted(
+        handlers: &BTreeSet<String>,
+        permissions: &BTreeMap<String, String>,
+        capability: &BTreeSet<String>,
+        command: &str,
+    ) {
+        assert!(
+            is_registered_and_granted(handlers, permissions, capability, command),
+            "{command} must be registered in generate_handler, declared in hub.toml, and granted by hub.json"
+        );
+    }
+
+    fn registration_inputs() -> (BTreeSet<String>, BTreeMap<String, String>, BTreeSet<String>) {
+        (
+            handler_commands(),
+            permission_commands(include_str!("../permissions/hub.toml")),
+            capability_permissions(include_str!("../capabilities/hub.json")),
+        )
+    }
+
+    fn test_checked_host() -> CheckedHost {
+        CheckedHost {
+            context_epoch: 42,
+            active: ActiveServiceHost {
+                service_id: "discord".to_owned(),
+                account_id: "acct-1".to_owned(),
+                generation: 9,
+                owner_namespace: "owner-ns".to_owned(),
+            },
+            owner_osl_user_id: "owner-1".to_owned(),
+            scope_binding: "scope-binding".to_owned(),
+        }
+    }
+
+    fn test_deletion_scan() -> osl_privacy_hub::native_discord_adapter::guided_deletion::DeletionScan
+    {
+        osl_privacy_hub::native_discord_adapter::guided_deletion::DeletionScan {
+            scope_binding_hash: "scan-hash".to_owned(),
+            generation: 9,
+            rows_seen: 1,
+            rows_unreadable: 0,
+            walk:
+                osl_privacy_hub::native_discord_adapter::guided_deletion::WalkCompleteness::Complete,
+            candidates: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn browser_consent_tauri_commands_and_acl_are_registered() {
+        let (handlers, permissions, capability) = registration_inputs();
+        for command in [
+            "list_browser_imports",
+            "open_browser_import",
+            "get_firefox_status",
+            "install_firefox",
+            "begin_browser_account_import",
+            "begin_protected_browser_import",
+            "finish_protected_browser_import",
+            "launch_firefox_service",
+            "get_default_browser_companion_status",
+            "host_default_browser_companion",
+            "resize_default_browser_companion",
+            "focus_default_browser_companion",
+            "detach_default_browser_companion",
+            "native_app_takeover_requires_consent",
+            "host_native_app_window",
+        ] {
+            assert_registered_and_granted(&handlers, &permissions, &capability, command);
+        }
+
+        let mut missing_consent_probe = handlers.clone();
+        missing_consent_probe.remove("native_app_takeover_requires_consent");
+        assert!(
+            !is_registered_and_granted(
+                &missing_consent_probe,
+                &permissions,
+                &capability,
+                "native_app_takeover_requires_consent",
+            ),
+            "removing the consent probe must make the proof fail"
+        );
+    }
+
+    #[test]
+    fn hosted_session_scan_commands_are_registered() {
+        let (handlers, permissions, capability) = registration_inputs();
+        for command in [
+            "open_hosted_session_scan",
+            "request_hosted_session_scan",
+            "request_hosted_session_scan_command",
+        ] {
+            assert_registered_and_granted(&handlers, &permissions, &capability, command);
+        }
+        for forbidden in [
+            "preview_discord_guided_deletion",
+            "execute_discord_guided_deletion",
+            "delete_own_item",
+        ] {
+            assert!(
+                !handlers.contains(forbidden),
+                "{forbidden} must not be registered"
+            );
+            assert!(
+                !permissions.values().any(|command| command == forbidden),
+                "{forbidden} must not be ACL-granted"
+            );
+        }
+
+        let mut missing_request = handlers.clone();
+        missing_request.remove("request_hosted_session_scan");
+        assert!(
+            !is_registered_and_granted(
+                &missing_request,
+                &permissions,
+                &capability,
+                "request_hosted_session_scan",
+            ),
+            "removing the scan request command must make the proof fail"
+        );
+    }
+
+    #[test]
+    fn request_hosted_session_scan_command_routes_through_checked_host() {
+        let events = RefCell::new(Vec::<&'static str>::new());
+        let scan = checked_hosted_session_scan_flow(
+            || {
+                events.borrow_mut().push("checked-host");
+                Ok(test_checked_host())
+            },
+            |checked| {
+                events.borrow_mut().push("attended-binding");
+                assert_eq!(checked.active.service_id, "discord");
+                Ok(vec!["operator".to_owned()])
+            },
+            |checked, operator_names| {
+                events.borrow_mut().push("native-scan");
+                assert_eq!(checked.scope_binding, "scope-binding");
+                assert_eq!(operator_names, ["operator".to_owned()]);
+                Ok(test_deletion_scan())
+            },
+            |checked| {
+                events.borrow_mut().push("context-recheck");
+                assert_eq!(checked.context_epoch, 42);
+                Ok(())
+            },
+        )
+        .expect("checked scan succeeds only after every gate");
+        assert_eq!(scan.generation, 9);
+        assert_eq!(
+            events.into_inner(),
+            [
+                "checked-host",
+                "attended-binding",
+                "native-scan",
+                "context-recheck"
+            ],
+            "scan must be checked host -> attended binding -> native scan -> context recheck"
+        );
+
+        let refusal_events = RefCell::new(Vec::<&'static str>::new());
+        let refused = checked_hosted_session_scan_flow(
+            || {
+                refusal_events.borrow_mut().push("checked-host");
+                Ok(test_checked_host())
+            },
+            |_checked| {
+                refusal_events.borrow_mut().push("attended-binding");
+                Err("missing attended binding".to_owned())
+            },
+            |_checked, _operator_names| {
+                refusal_events.borrow_mut().push("native-scan");
+                Ok(test_deletion_scan())
+            },
+            |_checked| {
+                refusal_events.borrow_mut().push("context-recheck");
+                Ok(())
+            },
+        );
+        match refused {
+            Err(error) => assert_eq!(error, "missing attended binding"),
+            Ok(_) => panic!("missing attended binding must refuse"),
+        }
+        assert_eq!(
+            refusal_events.into_inner(),
+            ["checked-host", "attended-binding"],
+            "absence of attended binding must refuse before scan or post-scan success"
+        );
+    }
+
+    #[test]
+    fn identity_binding_verifier_is_wired_as_review_ui_production_caller() {
+        let state = HubCoreState::default();
+        state.osl.install_identity(keystore::identity_from_entropy(
+            [77; 16],
+            "owner".to_owned(),
+        ));
+        let request = AutoScrubReviewedRunRequest {
+            service_id: ServiceKind::Discord,
+            account_id: "acct-1".to_owned(),
+            review_token: "review-token".to_owned(),
+            plan_digest: "a".repeat(64),
+            reviewed_item_count: 1,
+            consent: autoscrub_run::AutoScrubRunConsent::ReviewedBatchOnly,
+        };
+        match start_autoscrub_reviewed_run_inner(&state, request) {
+            Err(error) => assert_eq!(
+                error, "A reviewed identity binding is required before starting AutoScrub",
+                "the reviewed-run production path must refuse before starting without an exact binding"
+            ),
+            Ok(_) => panic!("reviewed AutoScrub must not start without an exact identity binding"),
+        }
+    }
+
+    #[test]
+    fn autoscrub_run_lifecycle_commands_are_registered_and_acl_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        for command in [
+            "get_autoscrub_run_fl",
+            "start_autoscrub_reviewed_run",
+            "request_autoscrub_global_stop",
+        ] {
+            assert_registered_and_granted(&handlers, &permissions, &capability, command);
+        }
+
+        let mut missing_start = capability.clone();
+        missing_start.remove("allow-start-autoscrub-reviewed-run");
+        assert!(
+            !is_registered_and_granted(
+                &handlers,
+                &permissions,
+                &missing_start,
+                "start_autoscrub_reviewed_run",
+            ),
+            "removing the start-run ACL grant must make the proof fail"
+        );
     }
 }
