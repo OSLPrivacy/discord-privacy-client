@@ -542,6 +542,64 @@ async fn scan_local_privacy(
         .map_err(|_| "The local privacy scan was interrupted".to_owned())
 }
 
+struct CheckedHost {
+    context_epoch: u64,
+    active: ActiveServiceHost,
+    owner_osl_user_id: String,
+    scope_binding: String,
+}
+
+impl CheckedHost {
+    fn for_hosted_session_scan(app: &tauri::AppHandle) -> Result<Self, String> {
+        let owner_osl_user_id = active_unlocked_osl_user_id(&app.state::<HubCoreState>())?;
+        let (context_epoch, active) = require_overlay_context_snapshot(app)?;
+        if active.service_id != "discord" {
+            return Err("Hosted session scans require the active native Discord context".to_owned());
+        }
+        let scope_binding = native_discord_scope_binding(app)?;
+        Ok(Self {
+            context_epoch,
+            active,
+            owner_osl_user_id,
+            scope_binding,
+        })
+    }
+
+    fn attended_operator_names(&self) -> Result<Vec<String>, String> {
+        let _ = self;
+        Err("Hosted session scan requires a reviewed attended operator-name binding".to_owned())
+    }
+}
+
+/// Scan the exact checked native-hosted Discord context.
+///
+/// The renderer supplies no account, handle, credential, profile, path, URL,
+/// conversation, row, selector, or deletion input. Until native code can derive
+/// the attended operator-name binding, the checked route refuses instead of
+/// interpreting an empty binding as permission.
+#[tauri::command]
+async fn request_hosted_session_scan_command(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<osl_privacy_hub::native_discord_adapter::guided_deletion::DeletionScan, String> {
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let checked = CheckedHost::for_hosted_session_scan(&app)?;
+        let operator_names = checked.attended_operator_names()?;
+        let scan = osl_privacy_hub::native_discord_adapter::scan_own_messages_for_deletion(
+            &app.state::<NativeWindowHostState>(),
+            &checked.owner_osl_user_id,
+            &checked.scope_binding,
+            checked.active.generation,
+            &operator_names,
+        )?;
+        require_same_overlay_context(&app, checked.context_epoch, &checked.active)?;
+        Ok(scan)
+    })
+    .await
+    .map_err(|_| "Hosted session scan worker was interrupted".to_owned())?
+}
+
 fn active_unlocked_osl_user_id(core: &HubCoreState) -> Result<String, String> {
     core_bridge::readiness(core)
         .active_osl_user_id
@@ -7484,6 +7542,7 @@ fn main() {
         restore_mullvad_window,
         create_service_account,
         open_service_host,
+        request_hosted_session_scan_command,
         close_service_host,
         set_local_protected_sheet_open,
         remove_service_account,
