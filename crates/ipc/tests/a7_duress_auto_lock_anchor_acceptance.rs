@@ -23,7 +23,7 @@ use store::{AnchorRecord, MessageStore, MonotonicAnchor, StoreError, StoredMessa
 use tempfile::TempDir;
 
 const LOCAL_STORE_KEY: [u8; 32] = [0xA7; 32];
-const STORE_SECRET: &[u8; 32] = b"a7-anchored-store-secret-32byte";
+const STORE_SECRET: &[u8; 32] = b"a7-anchored-store-secret-32bytes";
 const SCOPE: &str = "gc:a7-full-acceptance";
 const ALICE_DISCORD_ID: &str = "a7-alice";
 const BOB_DISCORD_ID: &str = "a7-bob";
