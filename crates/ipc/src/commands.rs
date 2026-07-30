@@ -5586,8 +5586,9 @@ fn decrypt_v4_recv(
         Err(e) => {
             // Act-on-symptom evidence: this peer's v=4 traffic failed
             // to decrypt (e.g. "header AEAD failed" ratchet desync).
-            // Recorded so a subsequent SESSION_RESET from this peer is
-            // honored only when backed by a real local failure.
+            // Recorded for SESSION_RESET forensics. Authenticated,
+            // fresh, non-replayed resets no longer require this
+            // symptom to self-heal one-directional desyncs.
             state
                 .recovery_guard
                 .lock()
@@ -5977,6 +5978,64 @@ fn apply_session_reset_recv(
         );
     }
     Ok(OSL_RESULT_SESSION_RESET_APPLIED.to_string())
+}
+
+#[cfg(test)]
+mod unit_b20_independent_review_remediation {
+    use super::*;
+
+    const PEER: &str = "900000000000000020";
+
+    fn session_reset_payload(requested_at: i64, nonce: [u8; 16]) -> Vec<u8> {
+        crate::control_messages::serialize_session_reset(&crate::control_messages::SessionReset {
+            requested_at,
+            nonce,
+        })
+        .expect("serialize SESSION_RESET")
+    }
+
+    #[test]
+    fn remediate_independent_review_findings() {
+        let state = AppState::new();
+        state
+            .peer_map
+            .lock()
+            .expect("peer_map mutex poisoned")
+            .insert(PEER.to_string(), crate::peer_map::PeerEntry::default());
+        let now = now_unix_secs();
+        assert!(
+            !state
+                .recovery_guard
+                .lock()
+                .expect("recovery_guard mutex poisoned")
+                .had_recent_v4_failure(PEER, now),
+            "test precondition: no local v4 decrypt symptom was recorded"
+        );
+
+        let applied =
+            apply_session_reset_recv(&state, PEER, &session_reset_payload(now, [0x20; 16]))
+                .expect("fresh authenticated reset should be handled");
+        assert_eq!(applied, OSL_RESULT_SESSION_RESET_APPLIED);
+
+        let replay =
+            apply_session_reset_recv(&state, PEER, &session_reset_payload(now, [0x20; 16]))
+                .expect("replayed reset should be classified, not thrown as plaintext");
+        assert_eq!(replay, OSL_RESULT_RECOVERY_IGNORED);
+
+        let stale_requested_at = now - crate::recovery::RECOVERY_FRESHNESS_SECS - 1;
+        let stale = apply_session_reset_recv(
+            &state,
+            PEER,
+            &session_reset_payload(stale_requested_at, [0x21; 16]),
+        )
+        .expect("stale reset should be classified, not thrown as plaintext");
+        assert_eq!(stale, OSL_RESULT_RECOVERY_IGNORED);
+
+        assert!(
+            !crate::wire_rn::RN_WIRE_IN_ENABLED,
+            "b20 remediation must not enable the RN wire-in gate"
+        );
+    }
 }
 
 /// Phase 9-A3: install or rotate a peer's `ReceiverChain` for the
