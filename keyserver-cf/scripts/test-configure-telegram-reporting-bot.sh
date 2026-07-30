@@ -6,6 +6,7 @@ umask 077
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT="${SCRIPT_DIR}/configure-telegram-reporting-bot.sh"
 readonly LEGACY_SCRIPT="${SCRIPT_DIR}/configure-telegram-operators.py"
+readonly TEST_NAME='Rotate Telegram credentials without changing operator allowlists.'
 TEST_DIR=''
 
 cleanup() {
@@ -192,4 +193,4 @@ set -e
 [[ "${XTRACE_STATUS}" -eq 64 ]] || fail 'xtrace invocation was not refused before prompting'
 grep -Fq 'Refusing to handle secrets while shell tracing' "${XTRACE_OUTPUT}" || fail 'xtrace refusal is not explicit'
 
-printf '%s\n' 'Telegram reporting-bot rotation tests passed.'
+printf 'PASS %s\n' "${TEST_NAME}"
