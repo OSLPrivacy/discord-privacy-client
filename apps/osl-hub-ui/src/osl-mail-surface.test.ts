@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { oslMailStage, oslMailStages } from "./desktop-service-policy";
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
@@ -38,5 +39,18 @@ describe("OSL Mail surface", () => {
     expect(guide).toContain("mailComposerEncryptionScope(selectedApp ?? activeHomeApp())");
     expect(guide.indexOf("${mailScope}")).toBeLessThan(guide.indexOf("<footer"));
     expect(styles).toContain(".mail-composer-encryption-scope");
+  });
+
+  it("models OSL Mail product stages as a client-protection-first contract", () => {
+    expect(oslMailStages.map((stage) => stage.id)).toEqual(["stageA", "stageB", "stageC"]);
+    expect(oslMailStage("stageA")).toMatchObject({
+      availability: "available",
+      externalEmailScope: "ordinaryExternalEmailUnlessSeparatelySupported",
+    });
+    expect(oslMailStage("stageA").boundary).toContain("explicitly authorizes");
+    expect(oslMailStage("stageA").excludes).toContain("OSL-operated mailbox");
+    expect(oslMailStage("stageB").availability).toBe("comingLater");
+    expect(oslMailStage("stageC").availability).toBe("comingLater");
+    expect(JSON.stringify(oslMailStages)).not.toMatch(/ordinary external email is OSL end-to-end encrypted|universal encrypted delivery available/i);
   });
 });

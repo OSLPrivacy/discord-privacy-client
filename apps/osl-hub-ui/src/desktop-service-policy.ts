@@ -57,6 +57,66 @@ export interface DesktopServicePolicy {
   }[];
 }
 
+export type OslMailStageId = "stageA" | "stageB" | "stageC";
+
+export interface OslMailStage {
+  id: OslMailStageId;
+  label: string;
+  availability: "available" | "comingLater";
+  boundary: string;
+  includes: readonly string[];
+  excludes: readonly string[];
+  externalEmailScope: "ordinaryExternalEmailUnlessSeparatelySupported";
+}
+
+export const oslMailStages: readonly OslMailStage[] = [
+  {
+    id: "stageA",
+    label: "Stage A - private email client",
+    availability: "available",
+    boundary: "Client-side protection for mailboxes the user explicitly authorizes.",
+    includes: [
+      "connect existing mailbox after authorization",
+      "warn before send",
+      "sanitize links and attachments",
+      "organize retention",
+      "label protection scope honestly",
+    ],
+    excludes: [
+      "OSL-operated mailbox",
+      "custom domain hosting",
+      "universal encrypted delivery",
+      "silent mailbox import",
+      "server-side mail operations",
+    ],
+    externalEmailScope: "ordinaryExternalEmailUnlessSeparatelySupported",
+  },
+  {
+    id: "stageB",
+    label: "Stage B - OSL aliases and relay",
+    availability: "comingLater",
+    boundary: "Aliases and relay only after abuse, deliverability, reply routing, recovery and support gates pass.",
+    includes: ["disposable aliases", "reply relay", "breach isolation"],
+    excludes: ["complete OSL mailbox", "custom domain hosting", "universal encrypted delivery"],
+    externalEmailScope: "ordinaryExternalEmailUnlessSeparatelySupported",
+  },
+  {
+    id: "stageC",
+    label: "Stage C - OSL mailbox",
+    availability: "comingLater",
+    boundary: "Full mailbox only after a separate mail operations review.",
+    includes: ["optional OSL address", "custom domains", "calendar", "encrypted storage"],
+    excludes: ["available by default", "bundled by default", "beta by default"],
+    externalEmailScope: "ordinaryExternalEmailUnlessSeparatelySupported",
+  },
+] as const;
+
+export function oslMailStage(id: OslMailStageId): OslMailStage {
+  const stage = oslMailStages.find((entry) => entry.id === id);
+  if (!stage) throw new Error("unknown OSL Mail stage");
+  return stage;
+}
+
 const policy = (
   id: DesktopServiceId,
   surface: WindowsDesktopSurface,
