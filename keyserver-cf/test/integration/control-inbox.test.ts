@@ -92,15 +92,24 @@ describe("POST /v1/control-inbox hardening", () => {
 
     const first = await post(body);
     expect(first.status).toBe(201);
-    const firstJson = (await first.json()) as { id: string };
+    const firstJson = (await first.json()) as {
+      id: string;
+      inbox_eviction_count: number;
+    };
+    expect(firstJson.inbox_eviction_count).toBe(0);
 
     const retry = await post(body);
     expect(retry.status).toBe(200);
     const retryJson = (await retry.json()) as {
       id: string;
       replayed: boolean;
+      inbox_eviction_count: number;
     };
-    expect(retryJson).toMatchObject({ id: firstJson.id, replayed: true });
+    expect(retryJson).toMatchObject({
+      id: firstJson.id,
+      replayed: true,
+      inbox_eviction_count: 0,
+    });
 
     const count = await env.DB.prepare(
       "SELECT COUNT(*) AS count FROM control_inbox WHERE recipient_id = ?",
@@ -235,6 +244,61 @@ describe("POST /v1/control-inbox hardening", () => {
       await signedPostBody(legitimateId, recipientId, legitimate.signingKey),
     );
     expect(admitted.status).toBe(201);
+  });
+
+  it("reports same-sender inbox eviction count on success and replay", async () => {
+    const senderId = userId("sender");
+    const recipientId = userId("recipient");
+    const sender = await registerTestUser(SELF, senderId);
+    await registerTestUser(SELF, recipientId);
+    const now = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(
+      `WITH RECURSIVE cnt(x) AS (
+         VALUES(1) UNION ALL SELECT x + 1 FROM cnt WHERE x < 32
+       )
+       INSERT INTO control_inbox
+         (id, recipient_id, sender_id, scope_id, bundle, expires_at, created_at)
+       SELECT randomblob(16), ?, ?, 'pair-recycle-signal', x'01', ?, ? + x FROM cnt`,
+    )
+      .bind(recipientId, senderId, now + 3600, now)
+      .run();
+
+    const body = await signedPostBody(
+      senderId,
+      recipientId,
+      sender.signingKey,
+    );
+    const first = await post(body);
+    expect(first.status).toBe(201);
+    const firstJson = (await first.json()) as {
+      id: string;
+      inbox_eviction_count: number;
+    };
+    expect(firstJson.inbox_eviction_count).toBe(1);
+
+    const retry = await post(body);
+    expect(retry.status).toBe(200);
+    expect(await retry.json()).toMatchObject({
+      id: firstJson.id,
+      replayed: true,
+      inbox_eviction_count: 1,
+    });
+
+    const receipt = await env.DB.prepare(
+      `SELECT inbox_eviction_count FROM control_inbox_requests
+        WHERE sender_id = ?`,
+    )
+      .bind(senderId)
+      .first<{ inbox_eviction_count: number }>();
+    expect(receipt?.inbox_eviction_count).toBe(1);
+
+    const held = await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM control_inbox
+        WHERE recipient_id = ? AND sender_id = ?`,
+    )
+      .bind(recipientId, senderId)
+      .first<{ count: number }>();
+    expect(held?.count).toBe(32);
   });
 });
 

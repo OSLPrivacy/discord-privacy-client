@@ -8,6 +8,7 @@ describe("GET /v1/healthz", () => {
     expect(await res.json()).toEqual({
       ok: true,
       capabilities: {
+        control_inbox_eviction_signal: 1,
         control_inbox_sender_disposition: 1,
       },
     });
