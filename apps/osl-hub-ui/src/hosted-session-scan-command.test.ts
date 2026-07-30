@@ -14,11 +14,19 @@ function sourceBetween(source: string, startNeedle: string, endNeedle: string): 
   return source.slice(start, end);
 }
 
+function commandSurface(source: string): string {
+  return sourceBetween(
+    source,
+    "macro_rules! hub_tauri_commands",
+    "macro_rules! hub_tauri_generate_handler",
+  );
+}
+
 describe("hosted session scan command handler", () => {
   const main = readRelative("../../osl-hub/src/main.rs");
 
   it("registers and grants only the scan command", () => {
-    const handler = sourceBetween(main, "tauri::generate_handler![", "\n    ]);");
+    const handler = commandSurface(main);
     const permissions = readRelative("../../osl-hub/permissions/hub.toml");
     const capability = JSON.parse(readRelative("../../osl-hub/capabilities/hub.json")) as {
       permissions: string[];
@@ -39,11 +47,17 @@ describe("hosted session scan command handler", () => {
       "async fn request_hosted_session_scan_command(",
       "\nfn active_unlocked_osl_user_id(",
     );
-    const checkIndex = command.indexOf("let checked = CheckedHost::for_hosted_session_scan(&app)?;");
-    const bindingIndex = command.indexOf("let operator_names = checked.attended_operator_names()?;");
-    const scanIndex = command.indexOf("scan_own_messages_for_deletion(");
-    const recheckIndex = command.indexOf("require_same_overlay_context(&app, checked.context_epoch, &checked.active)?;");
+    const helper = sourceBetween(
+      main,
+      "fn checked_hosted_session_scan_flow",
+      "\n/// Open the hosted-session scan surface",
+    );
+    const checkIndex = helper.indexOf("let checked = build_checked()?;");
+    const bindingIndex = helper.indexOf("let operator_names = bind_operators(&checked)?;");
+    const scanIndex = helper.indexOf("let scan = scan(&checked, &operator_names)?;");
+    const recheckIndex = helper.indexOf("recheck(&checked)?;");
 
+    expect(command).toContain("run_checked_hosted_session_scan(app)");
     expect(checkIndex).toBeGreaterThan(-1);
     expect(bindingIndex).toBeGreaterThan(checkIndex);
     expect(scanIndex).toBeGreaterThan(bindingIndex);

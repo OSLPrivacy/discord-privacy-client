@@ -46,6 +46,15 @@ function rustProductionPrefix(source: string): string {
     .replace(/\/\/[^\n]*/gu, "");
 }
 
+function tauriCommandSurface(source: string): string {
+  const macroStart = source.indexOf("macro_rules! hub_tauri_commands");
+  if (macroStart >= 0) {
+    const macroEnd = source.indexOf("macro_rules! hub_tauri_generate_handler", macroStart);
+    if (macroEnd >= 0) return source.slice(macroStart, macroEnd);
+  }
+  return source.slice(source.indexOf("tauri::generate_handler!["));
+}
+
 function classifyMessagingProductionPath(
   main: string,
   broker: string,
@@ -75,7 +84,7 @@ function classifyMessagingProductionPath(
     stateProduction,
     rustProductionPrefix(extraProductionRust),
   ].join("\n");
-  const handler = mainProduction.slice(mainProduction.indexOf("tauri::generate_handler!["));
+  const handler = tauriCommandSurface(mainProduction);
 
   return {
     registeredPrepareCommand: handler.includes("prepare_encrypted_text,"),
@@ -170,6 +179,9 @@ describe("bundled preview security boundary", () => {
       "allow-pause-scrub-index",
       "allow-resume-scrub-index",
       "allow-cancel-scrub-index",
+      "allow-get-autoscrub-run-fl",
+      "allow-start-autoscrub-reviewed-run",
+      "allow-request-autoscrub-global-stop",
       "allow-list-linked-services",
       "allow-get-core-readiness",
       "allow-list-core-features",
@@ -219,6 +231,8 @@ describe("bundled preview security boundary", () => {
       "allow-resize-native-app-window",
       "allow-focus-native-app-window",
       "allow-detach-native-app-window",
+      "allow-open-hosted-session-scan",
+      "allow-request-hosted-session-scan",
       "allow-activate-native-manual-peer-context",
       "allow-activate-osl-chat-context",
       "allow-close-osl-chat-context",
@@ -286,7 +300,7 @@ describe("bundled preview security boundary", () => {
     );
 
     const hubMain = readRelative("../../osl-hub/src/main.rs");
-    const handler = hubMain.slice(hubMain.indexOf("tauri::generate_handler!["));
+    const handler = tauriCommandSurface(hubMain);
     const permissions = readRelative("../../osl-hub/permissions/hub.toml");
     for (const [permission, command] of [
       ["allow-get-firefox-status", "get_firefox_status"],
@@ -706,9 +720,7 @@ describe("bundled preview security boundary", () => {
       const mainProduction = rustProductionPrefix(mainSource);
       const securityProduction = rustProductionPrefix(securitySource);
       const commandProduction = rustProductionPrefix(commandSource);
-      const handler = mainProduction.slice(
-        mainProduction.indexOf("tauri::generate_handler!["),
-      );
+      const handler = tauriCommandSurface(mainProduction);
       return {
         registered: handler.includes("burn_active_hub_context"),
         mainCallsSecurity: mainProduction.includes("security::burn_scope("),
@@ -891,9 +903,7 @@ describe("bundled preview security boundary", () => {
 
     // Positive controls for the separate reachable product burn.
     const mainProduction = rustProductionPrefix(main);
-    const handler = mainProduction.slice(
-      mainProduction.indexOf("tauri::generate_handler!["),
-    );
+    const handler = tauriCommandSurface(mainProduction);
     expect(handler).toContain("burn_active_hub_context");
     expect(mainProduction).toContain("security::burn_scope(");
     expect(rustProductionPrefix(security)).toContain(
@@ -1436,9 +1446,7 @@ describe("bundled preview security boundary", () => {
 
     // Positive controls for the separate, reachable Hub implementation.
     const mainProduction = rustProductionPrefix(main);
-    const handler = mainProduction.slice(
-      mainProduction.indexOf("tauri::generate_handler!["),
-    );
+    const handler = tauriCommandSurface(mainProduction);
     expect(handler).toContain("unlock_hub_password_gate,");
     expect(mainProduction).toContain(
       "startup_gate::verify_password_role(&verify_app.state::<HubCoreState>(), password)",

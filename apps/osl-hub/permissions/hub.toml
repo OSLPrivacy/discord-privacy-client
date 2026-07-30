@@ -189,6 +189,21 @@ description = "Cancel and remove only the active identity's fixed encrypted Scru
 commands.allow = ["cancel_scrub_index"]
 
 [[permission]]
+identifier = "allow-get-autoscrub-run-fl"
+description = "Read the bounded local AutoScrub run fleet status; returns review state only and grants no mutation authority."
+commands.allow = ["get_autoscrub_run_fl"]
+
+[[permission]]
+identifier = "allow-start-autoscrub-reviewed-run"
+description = "Start one explicitly reviewed local AutoScrub run only after native entitlement, reviewed-batch consent, and identity binding checks."
+commands.allow = ["start_autoscrub_reviewed_run"]
+
+[[permission]]
+identifier = "allow-request-autoscrub-global-stop"
+description = "Request a global stop for local AutoScrub runs; the native run state remains responsible for bounded halt progress."
+commands.allow = ["request_autoscrub_global_stop"]
+
+[[permission]]
 identifier = "allow-list-linked-services"
 description = "Read the static demo service and account registry."
 commands.allow = ["list_linked_services"]
@@ -442,6 +457,16 @@ commands.allow = ["focus_native_app_window"]
 identifier = "allow-detach-native-app-window"
 description = "Restore ownership, styles, and bounds only for the exact OSL-spawned native client window."
 commands.allow = ["detach_native_app_window"]
+
+[[permission]]
+identifier = "allow-open-hosted-session-scan"
+description = "Open the trusted hosted-session scan surface for the exact active native-hosted context; grants no preview, confirmation, deletion, navigation, credential, profile, process, path, URL, conversation, row, or network authority."
+commands.allow = ["open_hosted_session_scan"]
+
+[[permission]]
+identifier = "allow-request-hosted-session-scan"
+description = "Request one read-only scan of the exact active native-hosted context using only native-held owner, scope, generation, and attended binding state; returns content-free row shape metadata and grants no preview, confirmation, deletion, navigation, credential, profile, process, path, URL, conversation, row, or network authority."
+commands.allow = ["request_hosted_session_scan"]
 
 [[permission]]
 identifier = "allow-open-service-host"
