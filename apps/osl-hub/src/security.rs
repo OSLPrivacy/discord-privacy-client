@@ -4245,6 +4245,144 @@ mod tests {
     }
 
     #[test]
+    fn scoped_trust_acceptance_friend_request_grant_roundtrip() {
+        let harness = FileBackedSecurityHarness::new("scoped-trust-friend-request");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        install_self_identity(&core);
+
+        let friend = keystore::generate_native_identity();
+        let added = add_friend_code(&core, &security, friend_code_for_identity(&friend), None)
+            .expect("signed friend request code imports");
+        assert_eq!(added.disposition, AddFriendDisposition::Added);
+        assert!(
+            !added.safety_number_verified,
+            "a friend request import must not imply ceremony verification"
+        );
+        assert_eq!(
+            manual_peer_binding(&core, added.person_id.clone()).unwrap_err(),
+            "Verify this friend's safety number before enabling encryption"
+        );
+
+        let verified = verify_friend_safety_number(
+            &core,
+            &security,
+            added.person_id.clone(),
+            added.safety_number.clone(),
+        )
+        .expect("friend request safety-number ceremony verifies");
+        assert!(verified.safety_number_verified);
+        assert_eq!(verified.whitelist_count, 0);
+
+        let binding = manual_peer_binding(&core, added.person_id.clone())
+            .expect("verified friend resolves to a manual peer binding");
+        let scope_id = manual_peer_scope_id("osl-chat", "osl-main", &added.person_id).unwrap();
+        let scope_input = dm_scope_input(scope_id.clone());
+        assert_eq!(
+            ScopedTrustGrant::for_manual_peer(
+                &binding,
+                "osl-chat",
+                "osl-main",
+                scope_input.clone(),
+                ScopedTrustConsent::Absent,
+            )
+            .unwrap_err(),
+            "OSL scoped trust requires explicit approval"
+        );
+        assert_eq!(
+            require_manual_peer_scope_approved(
+                &core,
+                "osl-chat",
+                "osl-main",
+                added.person_id.clone(),
+                scope_input.clone(),
+            )
+            .unwrap_err(),
+            "Approve encryption for this friend before continuing"
+        );
+
+        let grant = ScopedTrustGrant::for_manual_peer(
+            &binding,
+            "osl-chat",
+            "osl-main",
+            scope_input.clone(),
+            ScopedTrustConsent::ExplicitUserAction,
+        )
+        .expect("explicit consent mints the exact scoped trust grant");
+        grant.require_binding(Some(&binding)).unwrap();
+        assert_eq!(grant.person_id(), added.person_id.as_str());
+        assert_eq!(grant.service_id(), "osl-chat");
+        assert_eq!(grant.account_id(), "osl-main");
+        assert_eq!(grant.storage_key(), format!("dm:{scope_id}"));
+
+        set_manual_peer_scope_permission(
+            &core,
+            &security,
+            "osl-chat",
+            "osl-main",
+            added.person_id.clone(),
+            scope_input.clone(),
+            true,
+        )
+        .expect("accepted friend request persists the scoped grant");
+
+        let approved_binding = require_manual_peer_scope_approved(
+            &core,
+            "osl-chat",
+            "osl-main",
+            added.person_id.clone(),
+            scope_input.clone(),
+        )
+        .expect("persisted grant authorizes only the verified friend binding");
+        assert_eq!(approved_binding, binding);
+        assert!(manual_peer_scope_approved(
+            &core,
+            "osl-chat",
+            "osl-main",
+            added.person_id.clone(),
+            scope_input.clone()
+        )
+        .unwrap());
+        assert_eq!(
+            manual_peer_scope_approved(
+                &core,
+                "osl-chat",
+                "osl-main",
+                added.person_id.clone(),
+                dm_scope_input("manual-scope-other".to_owned())
+            )
+            .unwrap_err(),
+            "OSL manual peer scope is invalid"
+        );
+
+        let stored: SecurityPreferences =
+            load_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE)).unwrap();
+        assert!(stored.manual_approved_scopes.contains(grant.storage_key()));
+        assert_eq!(
+            stored
+                .manual_approved_scope_people
+                .get(grant.storage_key())
+                .map(String::as_str),
+            Some(added.person_id.as_str()),
+            "manual approval must remain attributed to the accepted friend"
+        );
+
+        let people = list_people(&core).unwrap();
+        let friend_row = people
+            .iter()
+            .find(|person| person.person_id.as_str() == added.person_id.as_str())
+            .expect("accepted friend remains on the roster");
+        assert_eq!(friend_row.whitelist_count, 1);
+        assert_eq!(friend_row.whitelisted_scopes.len(), 1);
+        assert_eq!(
+            friend_row.whitelisted_scopes[0].storage_key,
+            grant.storage_key()
+        );
+        assert!(friend_row.whitelisted_scopes[0].user_specific);
+        assert!(!friend_row.reach_broadened);
+    }
+
+    #[test]
     fn friend_code_import_refuses_snowflake_identity_without_writing_state() {
         let harness = FileBackedSecurityHarness::new("snowflake-refused");
         let core = HubCoreState::default();
