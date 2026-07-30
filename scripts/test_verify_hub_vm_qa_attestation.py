@@ -113,7 +113,7 @@ class HubVmQaAttestationTests(unittest.TestCase):
             document = json.loads(attestation.read_text(encoding="utf-8"))
             document["packageReproducedBySecondSession"] = False
             attestation.write_text(json.dumps(document), encoding="utf-8")
-            with self.assertRaises(SystemExit):
+            with self.assertRaisesRegex(SystemExit, "second session"):
                 verify("hub-v0.1.0", root, attestation)
 
     def test_rejects_same_session_final_approver(self) -> None:
@@ -123,7 +123,7 @@ class HubVmQaAttestationTests(unittest.TestCase):
             document = json.loads(attestation.read_text(encoding="utf-8"))
             document["finalApprover"] = document["operator"]
             attestation.write_text(json.dumps(document), encoding="utf-8")
-            with self.assertRaises(SystemExit):
+            with self.assertRaisesRegex(SystemExit, "different session"):
                 verify("hub-v0.1.0", root, attestation)
 
     def test_rejects_non_manual_captcha_handling(self) -> None:
@@ -155,145 +155,6 @@ class HubVmQaAttestationTests(unittest.TestCase):
             attestation.write_text(json.dumps(document), encoding="utf-8")
             with self.assertRaises(SystemExit):
                 verify("hub-v0.1.0", root, attestation)
-
-    def test_rejects_same_session_final_approver(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            _, attestation = self.candidate(root)
-            document = json.loads(attestation.read_text(encoding="utf-8"))
-            document["finalApprover"] = document["operator"]
-            attestation.write_text(json.dumps(document), encoding="utf-8")
-            with self.assertRaisesRegex(SystemExit, "different session"):
-                verify("hub-v0.1.0", root, attestation)
-
-    def test_rejects_missing_second_session_reproduction(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            _, attestation = self.candidate(root)
-            document = json.loads(attestation.read_text(encoding="utf-8"))
-            document["packageReproducedBySecondSession"] = False
-            attestation.write_text(json.dumps(document), encoding="utf-8")
-            with self.assertRaisesRegex(SystemExit, "second session"):
-                verify("hub-v0.1.0", root, attestation)
-
-
-def freeze_the_exact_signed_candidate_vm_attestation_contract() -> None:
-    testcase = HubVmQaAttestationTests()
-    with tempfile.TemporaryDirectory() as temporary:
-        root = Path(temporary)
-        _, attestation = testcase.candidate(root)
-        verify("hub-v0.1.0", root, attestation)
-
-        document = json.loads(attestation.read_text(encoding="utf-8"))
-        document["candidateTag"] = "hub-v0.1.1"
-        attestation.write_text(json.dumps(document), encoding="utf-8")
-        with testcase.assertRaises(SystemExit):
-            verify("hub-v0.1.0", root, attestation)
-
-        _, attestation = testcase.candidate(root)
-        document = json.loads(attestation.read_text(encoding="utf-8"))
-        document["finalApprover"] = document["operator"]
-        attestation.write_text(json.dumps(document), encoding="utf-8")
-        with testcase.assertRaises(SystemExit):
-            verify("hub-v0.1.0", root, attestation)
-
-        _, attestation = testcase.candidate(root)
-        document = json.loads(attestation.read_text(encoding="utf-8"))
-        document["packageReproducedBySecondSession"] = False
-        attestation.write_text(json.dumps(document), encoding="utf-8")
-        with testcase.assertRaises(SystemExit):
-            verify("hub-v0.1.0", root, attestation)
-
-
-freeze_the_exact_signed_candidate_vm_attestation_contract.__name__ = (
-    "Freeze the exact signed-candidate VM attestation contract."
-)
-
-
-def load_tests(
-    loader: unittest.TestLoader,
-    tests: unittest.TestSuite,
-    pattern: str | None,
-) -> unittest.TestSuite:
-    del loader, pattern
-    suite = unittest.TestSuite()
-    suite.addTests(tests)
-    suite.addTest(unittest.FunctionTestCase(
-        freeze_the_exact_signed_candidate_vm_attestation_contract,
-    ))
-    return suite
-
-
-def freeze_the_exact_signed_candidate_vm_attestation_contract() -> None:
-    testcase = unittest.TestCase()
-    with tempfile.TemporaryDirectory() as temporary:
-        root = Path(temporary)
-        installer, attestation = HubVmQaAttestationTests().candidate(root)
-
-        verify("hub-v0.1.0", root, attestation)
-
-        document = json.loads(attestation.read_text(encoding="utf-8"))
-
-        bad_hash = dict(document)
-        bad_hash["candidateSha256"] = hashlib.sha256(b"untested installer").hexdigest()
-        attestation.write_text(json.dumps(bad_hash), encoding="utf-8")
-        with testcase.assertRaises(SystemExit):
-            verify("hub-v0.1.0", root, attestation)
-
-        bad_manifest = dict(document)
-        attestation.write_text(json.dumps(bad_manifest), encoding="utf-8")
-        manifest_path = root / "latest.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        manifest["platforms"]["windows-x86_64"]["url"] = (
-            "https://github.com/OSLPrivacy/discord-privacy-client/"
-            "releases/download/hub-latest/"
-            f"{installer.name}"
-        )
-        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-        with testcase.assertRaises(SystemExit):
-            verify("hub-v0.1.0", root, attestation)
-
-        HubVmQaAttestationTests().candidate(root)
-        document = json.loads(attestation.read_text(encoding="utf-8"))
-        bad_vm = dict(document)
-        bad_vm["vms"] = [
-            {"name": "A", "goldenSnapshotId": "signed-a", "cleanRestore": True},
-        ]
-        attestation.write_text(json.dumps(bad_vm), encoding="utf-8")
-        with testcase.assertRaises(SystemExit):
-            verify("hub-v0.1.0", root, attestation)
-
-        bad_session = dict(document)
-        bad_session["finalApprover"] = bad_session["operator"]
-        attestation.write_text(json.dumps(bad_session), encoding="utf-8")
-        with testcase.assertRaises(SystemExit):
-            verify("hub-v0.1.0", root, attestation)
-
-        bad_matrix = dict(document)
-        bad_matrix["cases"] = dict(document["cases"])
-        bad_matrix["cases"]["fullCleanup"] = False
-        attestation.write_text(json.dumps(bad_matrix), encoding="utf-8")
-        with testcase.assertRaises(SystemExit):
-            verify("hub-v0.1.0", root, attestation)
-
-
-freeze_the_exact_signed_candidate_vm_attestation_contract.__name__ = (
-    "Freeze the exact signed-candidate VM attestation contract."
-)
-
-
-def load_tests(
-    loader: unittest.TestLoader,
-    tests: unittest.TestSuite,
-    pattern: str | None,
-) -> unittest.TestSuite:
-    del tests, pattern
-    suite = unittest.TestSuite()
-    suite.addTests(loader.loadTestsFromTestCase(HubVmQaAttestationTests))
-    suite.addTest(unittest.FunctionTestCase(
-        freeze_the_exact_signed_candidate_vm_attestation_contract,
-    ))
-    return suite
 
 
 def freeze_the_exact_signed_candidate_vm_attestation_contract() -> None:
@@ -346,15 +207,12 @@ def load_tests(
     tests: unittest.TestSuite,
     pattern: str | None,
 ) -> unittest.TestSuite:
-    del loader, tests, pattern
+    del tests, pattern
     suite = unittest.TestSuite()
-    for test in (
-        HubVmQaAttestationTests("test_accepts_exact_candidate_and_complete_two_vm_gate"),
-        HubVmQaAttestationTests("test_rejects_installer_changed_after_qa"),
-        HubVmQaAttestationTests("test_rejects_incomplete_test_matrix"),
-        unittest.FunctionTestCase(freeze_the_exact_signed_candidate_vm_attestation_contract),
-    ):
-        suite.addTest(test)
+    suite.addTests(loader.loadTestsFromTestCase(HubVmQaAttestationTests))
+    suite.addTest(unittest.FunctionTestCase(
+        freeze_the_exact_signed_candidate_vm_attestation_contract,
+    ))
     return suite
 
 
