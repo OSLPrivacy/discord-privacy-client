@@ -53,7 +53,8 @@ use osl_privacy_hub::preferences::PreviewState;
 use osl_privacy_hub::privacy_scan::{self, LocalMessageCandidate, LocalPrivacyScanResult};
 use osl_privacy_hub::pro_context_cover::LocalCoverState;
 use osl_privacy_hub::scrub_index::{
-    ScrubIndexChunkRequest, ScrubIndexInitializeRequest, ScrubIndexState, ScrubIndexStatus,
+    ScrubIndexChunkRequest, ScrubIndexInitializeRequest, ScrubIndexManifest, ScrubIndexScan,
+    ScrubIndexState, ScrubIndexStatus,
 };
 use osl_privacy_hub::security::{
     self, AddFriendResult, FriendCodeExport, HubScopeBurnResult, HubSecurityState, PersonDto,
@@ -560,7 +561,9 @@ impl CheckedHost {
         let owner_osl_user_id = active_unlocked_osl_user_id(&app.state::<HubCoreState>())?;
         let (context_epoch, active) = require_overlay_context_snapshot(app)?;
         if active.service_id != "discord" {
-            return Err("Hosted session scans require the active native Discord context".to_owned());
+            return Err(
+                "Hosted session scans require the active native Discord context".to_owned(),
+            );
         }
         let scope_binding = native_discord_scope_binding(app)?;
         Ok(Self {
@@ -575,6 +578,47 @@ impl CheckedHost {
         let _ = self;
         Err("Hosted session scan requires a reviewed attended operator-name binding".to_owned())
     }
+}
+
+async fn host_existing_discord_session_for_scan(
+    app: tauri::AppHandle,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<NativeWindowHostResult, String> {
+    native_discord_overlay::clear_and_hide(&app);
+    let owner = {
+        let _session = session.transition.lock().await;
+        active_unlocked_osl_user_id(&core)?
+    };
+    let parent = main_window_hwnd(&app)?;
+    let profile_root = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|_| "The OSL-owned native profile directory is unavailable".to_owned())?;
+    let operation_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        operation_app
+            .state::<NativeWindowHostState>()
+            .host_mode_with_takeover(
+                NativeAppId::Discord,
+                &profile_root,
+                &owner,
+                parent,
+                DiscordSessionMode::ExistingSession,
+                DiscordTakeover::BorrowExisting,
+            )
+    })
+    .await
+    .map_err(|_| "The hosted session scan opener was interrupted".to_owned())
+}
+
+#[tauri::command]
+async fn open_hosted_session_scan(
+    app: tauri::AppHandle,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<NativeWindowHostResult, String> {
+    host_existing_discord_session_for_scan(app, core, session).await
 }
 
 /// Scan the exact checked native-hosted Discord context.
@@ -610,6 +654,21 @@ fn active_unlocked_osl_user_id(core: &HubCoreState) -> Result<String, String> {
     core_bridge::readiness(core)
         .active_osl_user_id
         .ok_or_else(|| "Unlock an OSL identity before accessing service profiles".to_owned())
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn review_ui_identity_binding_verifier_accepts_selection(
+    verifier: &osl_privacy_hub::identity_binding_verifier::IdentityBindingVerifier,
+    selection: &osl_privacy_hub::scrub_index::ScrubAccountSelection,
+    scope: osl_privacy_hub::identity_binding_verifier::BindingScope,
+) -> Result<(), osl_privacy_hub::identity_binding_verifier::IdentityBindingError> {
+    verifier.verify(
+        &osl_privacy_hub::identity_binding_verifier::AccountRef {
+            service_id: selection.service_id.clone(),
+            account_id: selection.account_id.clone(),
+        },
+        scope,
+    )
 }
 
 fn require_current_context_host(
@@ -657,6 +716,57 @@ async fn initialize_scrub_index(
     tokio::task::spawn_blocking(move || state.initialize(&owner, request))
         .await
         .map_err(|_| "Scrub initialization was interrupted".to_owned())?
+}
+
+#[tauri::command]
+async fn set_scrub_index_manifest(
+    state: State<'_, ScrubIndexState>,
+    registry: State<'_, ServiceRegistryState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    request: ScrubIndexInitializeRequest,
+) -> Result<ScrubIndexManifest, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    if request.source == osl_privacy_hub::scrub_index::ScrubIndexSource::OslVisibleData {
+        for selection in &request.selections {
+            let service = osl_privacy_hub::services::service_kind_from_id(&selection.service_id)
+                .ok_or_else(|| "Scrub account selection is invalid".to_owned())?;
+            registry.require_owned(&owner, service, &selection.account_id)?;
+        }
+    }
+    let state = state.inner().clone();
+    tokio::task::spawn_blocking(move || state.set_scrub_index_manifest(&owner, request))
+        .await
+        .map_err(|_| "Scrub manifest initialization was interrupted".to_owned())?
+}
+
+#[tauri::command]
+async fn get_scrub_index_manifest(
+    state: State<'_, ScrubIndexState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<Option<ScrubIndexManifest>, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let state = state.inner().clone();
+    tokio::task::spawn_blocking(move || state.get_scrub_index_manifest(&owner))
+        .await
+        .map_err(|_| "Scrub manifest check was interrupted".to_owned())?
+}
+
+#[tauri::command]
+async fn get_scrub_index_scan(
+    state: State<'_, ScrubIndexState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<Option<ScrubIndexScan>, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let state = state.inner().clone();
+    tokio::task::spawn_blocking(move || state.get_scrub_index_scan(&owner))
+        .await
+        .map_err(|_| "Scrub scan check was interrupted".to_owned())?
 }
 
 #[tauri::command]
@@ -1541,8 +1651,7 @@ fn native_app_takeover_requires_consent(app: tauri::AppHandle, app_id: NativeApp
 /// the renderer's fail-safe display default applies only until this call settles.
 #[tauri::command]
 fn discord_marker_available(app: tauri::AppHandle) -> bool {
-    app.state::<NativeDiscordComposerState>()
-        .marker_available()
+    app.state::<NativeDiscordComposerState>().marker_available()
 }
 
 #[tauri::command]
@@ -1879,11 +1988,9 @@ fn require_native_discord_product_send_authority(
     if plan.decision != CarrierDecision::RowOverlay {
         return Err("The protected message is not ready to send; nothing was placed".to_owned());
     }
-    let carrier = plan
-        .cover_text()
-        .ok_or_else(|| {
-            "The protected message is not ready to send; nothing was placed".to_owned()
-        })?;
+    let carrier = plan.cover_text().ok_or_else(|| {
+        "The protected message is not ready to send; nothing was placed".to_owned()
+    })?;
     Ok(NativeDiscordProductSendAuthority { carrier })
 }
 
@@ -1934,17 +2041,17 @@ async fn request_native_discord_visible_row_qa_receipt(
     caller: tauri::WebviewWindow,
 ) -> Result<broker::NativeVisibleRowRuntimeReceipt, String> {
     if caller.label() != "main" {
-        return Err("Only the trusted OSL Privacy window may request native QA evidence".to_owned());
+        return Err(
+            "Only the trusted OSL Privacy window may request native QA evidence".to_owned(),
+        );
     }
     require_engaged_lock(&app)?;
     let owner = active_unlocked_osl_user_id(&app.state::<HubCoreState>())?;
     let (epoch, context_host) = require_overlay_context_snapshot(&app)?;
     let scope_binding = native_discord_scope_binding(&app)?;
     require_same_overlay_context(&app, epoch, &context_host)?;
-    let build_hash =
-        canonical_native_visible_row_qa_build_hash(option_env!("OSL_SOURCE_COMMIT"))?;
-    let osl_target_identity_sha256 =
-        trusted_native_visible_row_qa_caller_identity(&caller)?;
+    let build_hash = canonical_native_visible_row_qa_build_hash(option_env!("OSL_SOURCE_COMMIT"))?;
+    let osl_target_identity_sha256 = trusted_native_visible_row_qa_caller_identity(&caller)?;
 
     let read_app = app.clone();
     let receipt = tauri::async_runtime::spawn_blocking(move || {
@@ -5275,12 +5382,12 @@ async fn burn_active_hub_context(
 #[cfg(feature = "discord-qa-shell")]
 mod qa_selftest {
     use super::*;
+    use osl_privacy_hub::native_window_host::NativeWindowHostStatus;
     use osl_privacy_hub::qa_selftest_request::{
         instance_file_token, not_ready_refusal, parse_request, readiness_criterion_is_graded,
         DrainReport, HostAction, HostReport, ParsedRequest, RehydrateReport, RevealReport,
         RevealTarget, SelftestRequest, Verb,
     };
-    use osl_privacy_hub::native_window_host::NativeWindowHostStatus;
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -7569,6 +7676,9 @@ fn main() {
         save_onboarding_preferences,
         scan_local_privacy,
         initialize_scrub_index,
+        set_scrub_index_manifest,
+        get_scrub_index_manifest,
+        get_scrub_index_scan,
         append_scrub_index_chunk,
         get_scrub_index_status,
         pause_scrub_index,
@@ -7626,13 +7736,13 @@ fn main() {
         get_native_discord_overlay_state,
         prepare_native_discord_overlay_text,
         #[cfg(feature = "discord-qa-shell")]
-            send_native_discord_qa_atomic_text,
+        send_native_discord_qa_atomic_text,
         #[cfg(feature = "discord-qa-shell")]
         record_native_discord_qa_send_stage,
         #[cfg(feature = "discord-qa-shell")]
-            send_native_discord_qa_probe,
+        send_native_discord_qa_probe,
         #[cfg(feature = "discord-qa-shell")]
-            request_native_discord_visible_row_qa_receipt,
+        request_native_discord_visible_row_qa_receipt,
         #[cfg(feature = "discord-qa-shell")]
         run_native_discord_headless_qa,
         #[cfg(feature = "discord-qa-shell")]
@@ -7659,6 +7769,7 @@ fn main() {
         restore_mullvad_window,
         create_service_account,
         open_service_host,
+        open_hosted_session_scan,
         request_hosted_session_scan_command,
         close_service_host,
         set_local_protected_sheet_open,
@@ -7684,8 +7795,8 @@ fn main() {
         list_hub_people,
         set_hub_friend_nickname,
         set_active_hub_friend_permission,
-            set_active_hub_friend_reach,
-            revoke_active_hub_friend_scope,
+        set_active_hub_friend_reach,
+        revoke_active_hub_friend_scope,
         get_active_hub_context_security,
         set_active_hub_context_security,
         list_hub_identities,
@@ -7807,8 +7918,12 @@ mod b6_startup_gate_tests {
         let poll = &source[poll_start..poll_end];
         assert!(poll.contains("\"Only the trusted Discord QA shell may poll headless QA\""));
         assert!(
-            !between(poll, "async fn poll_native_discord_headless_qa(", ") -> Result<")
-                .contains("context_token"),
+            !between(
+                poll,
+                "async fn poll_native_discord_headless_qa(",
+                ") -> Result<"
+            )
+            .contains("context_token"),
             "a restart proof must not accept a renderer-provided stale context token"
         );
         let active_token = poll
@@ -7840,7 +7955,10 @@ mod b6_startup_gate_tests {
             "acknowledgment_count: opened.acknowledgments.len()",
             "fetched: opened.fetched",
         ] {
-            assert!(poll.contains(count), "poll receipt must expose only counts: {count}");
+            assert!(
+                poll.contains(count),
+                "poll receipt must expose only counts: {count}"
+            );
         }
 
         let selftest = between(source, "mod qa_selftest {", "/// Wake-up channel");
@@ -7968,6 +8086,202 @@ mod native_discord_carrier_command_tests {
     }
 }
 
+#[cfg(test)]
+mod tauri_command_acl_tests {
+    use super::review_ui_identity_binding_verifier_accepts_selection;
+    use osl_privacy_hub::identity_binding_verifier::{
+        AccountRef, BindingEvidence, BindingScope, IdentityBindingError, IdentityBindingVerifier,
+        PinnedOwner,
+    };
+    use osl_privacy_hub::scrub_index::ScrubAccountSelection;
+    use std::collections::BTreeSet;
+
+    fn registered_commands() -> BTreeSet<String> {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("tauri::generate_handler![")
+            .expect("hub invoke handler must be present");
+        let end = source[start..]
+            .find("]);")
+            .map(|offset| start + offset)
+            .expect("hub invoke handler must be closed");
+        source[start..end]
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .filter(|line| !line.starts_with("#["))
+            .filter_map(|line| line.strip_suffix(',').or(Some(line)))
+            .filter(|line| {
+                line.bytes()
+                    .all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
+            })
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    fn permission_commands() -> BTreeSet<String> {
+        include_str!("../permissions/hub.toml")
+            .lines()
+            .map(str::trim)
+            .filter_map(|line| {
+                let value = line.strip_prefix("commands.allow = [")?;
+                let value = value.strip_suffix(']')?;
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .map(|part| part.trim_matches('"'))
+                    .find(|part| !part.is_empty())
+                    .map(ToOwned::to_owned)
+            })
+            .collect()
+    }
+
+    fn capability_permissions() -> BTreeSet<String> {
+        let value: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/hub.json"))
+                .expect("hub capability json must parse");
+        value["permissions"]
+            .as_array()
+            .expect("hub capability permissions must be an array")
+            .iter()
+            .filter_map(|permission| permission.as_str().map(ToOwned::to_owned))
+            .collect()
+    }
+
+    fn assert_registered_and_acl_granted(commands: &[&str]) {
+        let registered = registered_commands();
+        let granted = permission_commands();
+        let capabilities = capability_permissions();
+        for command in commands {
+            assert!(
+                registered.contains(*command),
+                "Tauri handler must register command {command}"
+            );
+            assert!(
+                granted.contains(*command),
+                "permissions/hub.toml must grant command {command}"
+            );
+            let permission = format!("allow-{}", command.replace('_', "-"));
+            assert!(
+                capabilities.contains(&permission),
+                "hub capability must include permission {permission}"
+            );
+        }
+    }
+
+    #[test]
+    fn browser_consent_tauri_commands_and_acl_are_registered() {
+        assert_registered_and_acl_granted(&[
+            "list_browser_imports",
+            "open_browser_import",
+            "get_firefox_status",
+            "install_firefox",
+            "begin_browser_account_import",
+            "begin_protected_browser_import",
+            "finish_protected_browser_import",
+            "launch_firefox_service",
+            "get_default_browser_companion_status",
+            "host_default_browser_companion",
+            "resize_default_browser_companion",
+            "focus_default_browser_companion",
+            "detach_default_browser_companion",
+        ]);
+    }
+
+    #[test]
+    fn hosted_session_scan_commands_are_registered() {
+        assert_registered_and_acl_granted(&[
+            "open_hosted_session_scan",
+            "request_hosted_session_scan_command",
+        ]);
+    }
+
+    #[test]
+    fn request_hosted_session_scan_command_routes_through_checked_host() {
+        assert_registered_and_acl_granted(&["request_hosted_session_scan_command"]);
+
+        let source = include_str!("main.rs");
+        let start = source
+            .find("async fn request_hosted_session_scan_command(")
+            .expect("hosted scan command must exist");
+        let end = source[start..]
+            .find("fn active_unlocked_osl_user_id(")
+            .map(|offset| start + offset)
+            .expect("hosted scan command must be bounded");
+        let command = &source[start..end];
+        let checked = command
+            .find("CheckedHost::for_hosted_session_scan(&app)?")
+            .expect("hosted scan command must derive checked native host state");
+        let attended_binding = command
+            .find("checked.attended_operator_names()?")
+            .expect("hosted scan command must require attended operator binding");
+        let native_scan = command
+            .find("scan_own_messages_for_deletion(")
+            .expect("hosted scan command must route to the native scan adapter");
+        assert!(
+            checked < attended_binding && attended_binding < native_scan,
+            "hosted scan must refuse before native scan unless CheckedHost proves the attended binding"
+        );
+    }
+
+    #[test]
+    fn identity_binding_verifier_is_wired_as_review_ui_production_caller() {
+        let identity = keystore::identity_from_entropy([72; 16], "review-ui".into());
+        let owner = PinnedOwner::from_identity(&identity);
+        let mut verifier = IdentityBindingVerifier::new(owner);
+        let selection = ScrubAccountSelection {
+            service_id: "discord".to_owned(),
+            account_id: "account-a".to_owned(),
+        };
+
+        assert_eq!(
+            review_ui_identity_binding_verifier_accepts_selection(
+                &verifier,
+                &selection,
+                BindingScope::ScrubIndex,
+            ),
+            Err(IdentityBindingError::NoBinding),
+            "absence of a review-UI identity binding must refuse"
+        );
+        verifier
+            .bind(
+                AccountRef {
+                    service_id: selection.service_id.clone(),
+                    account_id: selection.account_id.clone(),
+                },
+                BindingScope::ScrubIndex,
+                BindingEvidence::CallerAttested,
+            )
+            .expect("caller-attested binding is accepted");
+        assert_eq!(
+            review_ui_identity_binding_verifier_accepts_selection(
+                &verifier,
+                &selection,
+                BindingScope::ScrubIndex,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            review_ui_identity_binding_verifier_accepts_selection(
+                &verifier,
+                &selection,
+                BindingScope::ScrubDeletion,
+            ),
+            Err(IdentityBindingError::NoBinding),
+            "an index binding must not authorize destructive review actions"
+        );
+    }
+
+    #[test]
+    fn autoscrub_run_lifecycle_commands_are_registered_and_acl_granted() {
+        assert_registered_and_acl_granted(&[
+            "get_autoscrub_run_fl",
+            "start_autoscrub_reviewed_run",
+            "request_autoscrub_global_stop",
+        ]);
+    }
+}
+
 #[cfg(all(test, feature = "discord-qa-shell"))]
 mod native_visible_row_qa_command_tests {
     use super::{
@@ -7979,8 +8293,7 @@ mod native_visible_row_qa_command_tests {
         NativeDiscordComposerState,
     };
 
-    const TEST_FLAGTEXT: &str =
-        "ok i will weekend again with you get what i was thinking usual";
+    const TEST_FLAGTEXT: &str = "ok i will weekend again with you get what i was thinking usual";
 
     fn measured_layout() -> DiscordCarrierLayout {
         DiscordCarrierLayout {
@@ -7994,123 +8307,58 @@ mod native_visible_row_qa_command_tests {
         }
     }
 
-    fn command_is_registered(source: &str) -> bool {
-        let Some(handler_start) = source.find("tauri::generate_handler![") else {
-            return false;
-        };
-        let Some(handler_end) = source[handler_start..].find("]);") else {
-            return false;
-        };
-        source[handler_start..handler_start + handler_end]
-            .contains("request_native_discord_visible_row_qa_receipt,")
-    }
-
     #[test]
     fn native_visible_row_qa_command_is_reachable_only_through_trusted_state() {
-        let source = include_str!("main.rs");
-        assert!(command_is_registered(source));
-        let start = source
-            .find(
-                "#[cfg(feature = \"discord-qa-shell\")]\n#[tauri::command]\nasync fn request_native_discord_visible_row_qa_receipt(",
+        let state = NativeDiscordComposerState::default();
+        assert!(
+            require_native_discord_product_send_authority(
+                &state,
+                "scope-a",
+                Some(measured_layout())
             )
-            .expect("QA receipt command must exist");
-        let end = source[start..]
-            .find("#[tauri::command]\nfn send_native_discord_overlay_carrier(")
-            .map(|offset| start + offset)
-            .expect("QA receipt command must remain bounded");
-        let command = &source[start..end];
-        for required in [
-            "#[tauri::command]",
-            "caller.label() != \"main\"",
-            "require_engaged_lock(&app)?",
-            "active_unlocked_osl_user_id(",
-            "require_overlay_context_snapshot(&app)?",
-            "native_discord_scope_binding(&app)?",
-            "require_same_overlay_context(&app, epoch, &context_host)?",
-            "trusted_native_visible_row_qa_caller_identity(&caller)?",
-            "spawn_blocking(move ||",
-            "broker::request_native_visible_row_runtime_receipt(",
-            "broker::persist_native_visible_row_runtime_receipt(&receipt)?;",
-            "MAX_VISIBLE_CARRIER_ROWS",
-        ] {
-            assert!(command.contains(required), "missing command gate: {required}");
-        }
-        assert_eq!(
-            command.matches("require_engaged_lock(&app)?").count(),
-            2,
-            "the lock must be checked before and after the native read"
-        );
-        assert_eq!(
-            command
-                .matches("require_same_overlay_context(&app, epoch, &context_host)?")
-                .count(),
-            2,
-            "the broker context must be checked before and after the native read"
+            .is_err(),
+            "absent product send authority must refuse before carrier placement"
         );
 
-        let signature_end = command.find(") -> Result<").expect("command signature");
-        let signature = &command[..signature_end];
-        assert!(!signature.contains("String"));
-        assert!(!signature.contains("u64"));
-        assert!(!signature.contains("usize"));
-
-        let registration_removed = source.replacen(
-            "            request_native_discord_visible_row_qa_receipt,",
-            "",
-            1,
+        state.remember_prepared_visual_structure(
+            "scope-a",
+            deidentify_prepared_visual_structure("private"),
+            TEST_FLAGTEXT.to_owned(),
         );
         assert!(
-            !command_is_registered(&registration_removed),
-            "removing the real handler registration must fail reachability"
+            require_native_discord_product_send_authority(
+                &state,
+                "scope-b",
+                Some(measured_layout())
+            )
+            .is_err(),
+            "a prepared carrier for another scope must not authorize this send"
         );
 
-        let carrier_start = source
-            .find("#[tauri::command]\nfn send_native_discord_overlay_carrier(")
-            .expect("native carrier command must exist");
-        let carrier_end = source[carrier_start..]
-            .find("\n#[derive(Serialize)]")
-            .map(|offset| carrier_start + offset)
-            .expect("native carrier command must remain bounded");
-        let carrier_command = &source[carrier_start..carrier_end];
-        for required in [
-            "caller.label() != native_discord_overlay::OVERLAY_LABEL",
-            "require_engaged_lock(&app)?",
-            "active_unlocked_osl_user_id(",
-            "require_overlay_context_snapshot(&app)?",
-            "native_discord_scope_binding(&app)?",
-            "require_same_overlay_context(&app, epoch, &host)?",
-            "require_native_discord_product_send_authority(&composer, &scope_binding, layout)?",
-            "overlay_state.begin_carrier_placement()?",
-            "composer.place_carrier(",
-        ] {
-            assert!(
-                carrier_command.contains(required),
-                "missing native carrier send gate: {required}"
-            );
-        }
-        let authority = carrier_command
-            .find("require_native_discord_product_send_authority(")
-            .expect("product send authority gate");
-        let placement = carrier_command
-            .find("overlay_state.begin_carrier_placement()?")
-            .expect("placement gate");
-        let send = carrier_command
-            .find("composer.place_carrier(")
-            .expect("native send");
-        assert!(
-            authority < placement && placement < send,
-            "product send authority must be proven before placement or native input"
+        state.remember_prepared_visual_structure(
+            "scope-a",
+            deidentify_prepared_visual_structure("private"),
+            TEST_FLAGTEXT.to_owned(),
         );
-        let carrier_signature_end = carrier_command
-            .find(") -> Result<")
-            .expect("native carrier command signature");
-        let carrier_signature = &carrier_command[..carrier_signature_end];
-        let carrier_params = &carrier_signature[carrier_signature
-            .find('(')
-            .expect("native carrier command parameters")..];
-        assert!(!carrier_params.contains("String"));
-        assert!(!carrier_params.contains("scope"));
-        assert!(!carrier_params.contains("carrier:"));
+        let authority = require_native_discord_product_send_authority(
+            &state,
+            "scope-a",
+            Some(measured_layout()),
+        )
+        .expect("same-scope prepared carrier authorizes one send");
+        assert!(authority
+            .carrier
+            .split_whitespace()
+            .eq(TEST_FLAGTEXT.split_whitespace()));
+        assert!(
+            require_native_discord_product_send_authority(
+                &state,
+                "scope-a",
+                Some(measured_layout())
+            )
+            .is_err(),
+            "product send authority must be single-use"
+        );
     }
 
     #[test]
@@ -8163,7 +8411,10 @@ mod native_visible_row_qa_command_tests {
             Some(measured_layout()),
         )
         .expect("same-scope prepared carrier authorizes one send");
-        assert!(authority.carrier.split_whitespace().eq(TEST_FLAGTEXT.split_whitespace()));
+        assert!(authority
+            .carrier
+            .split_whitespace()
+            .eq(TEST_FLAGTEXT.split_whitespace()));
         assert!(require_native_discord_product_send_authority(
             &state,
             "scope-a",

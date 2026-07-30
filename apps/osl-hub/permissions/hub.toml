@@ -164,6 +164,21 @@ description = "Initialize one bounded encrypted local-only Scrub index for expli
 commands.allow = ["initialize_scrub_index"]
 
 [[permission]]
+identifier = "allow-set-scrub-index-manifest"
+description = "Initialize and return the active identity's bounded encrypted Scrub manifest for explicitly selected profiles owned by that identity."
+commands.allow = ["set_scrub_index_manifest"]
+
+[[permission]]
+identifier = "allow-get-scrub-index-manifest"
+description = "Read only the active identity's bounded encrypted Scrub manifest metadata."
+commands.allow = ["get_scrub_index_manifest"]
+
+[[permission]]
+identifier = "allow-get-scrub-index-scan"
+description = "Read only the active identity's bounded local Scrub scan summary; grants no deletion or service access."
+commands.allow = ["get_scrub_index_scan"]
+
+[[permission]]
 identifier = "allow-append-scrub-index-chunk"
 description = "Append one bounded caller-provided export or OSL-visible-data chunk to the authenticated local Scrub index; provides no discovery, network, or deletion authority."
 commands.allow = ["append_scrub_index_chunk"]
@@ -232,6 +247,21 @@ commands.allow = ["discover_mass_cleanup_targets"]
 identifier = "allow-execute-mass-cleanup-batch"
 description = "Pro-gated Mass Cleanup execution seam; it has no mutation adapter and always fails closed in this build."
 commands.allow = ["execute_mass_cleanup_batch"]
+
+[[permission]]
+identifier = "allow-get-autoscrub-run-fl"
+description = "Read bounded AutoScrub run lifecycle status for the active local OSL identity."
+commands.allow = ["get_autoscrub_run_fl"]
+
+[[permission]]
+identifier = "allow-start-autoscrub-reviewed-run"
+description = "Start only a reviewed AutoScrub run whose request carries the bounded reviewed-batch consent contract."
+commands.allow = ["start_autoscrub_reviewed_run"]
+
+[[permission]]
+identifier = "allow-request-autoscrub-global-stop"
+description = "Request a cooperative stop for the active AutoScrub run; grants no service deletion authority by itself."
+commands.allow = ["request_autoscrub_global_stop"]
 
 [[permission]]
 identifier = "allow-validate-hub-activation-code"
@@ -447,6 +477,11 @@ commands.allow = ["detach_native_app_window"]
 identifier = "allow-open-service-host"
 description = "Open one explicitly allowlisted service in an isolated per-account child webview."
 commands.allow = ["open_service_host"]
+
+[[permission]]
+identifier = "allow-open-hosted-session-scan"
+description = "Borrow only the current native Discord session for a reviewed hosted-session scan; accepts no URL, profile, account, handle, credential, row, or takeover authority."
+commands.allow = ["open_hosted_session_scan"]
 
 [[permission]]
 identifier = "allow-request-hosted-session-scan-command"
