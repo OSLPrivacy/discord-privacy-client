@@ -391,6 +391,8 @@ fn state_export_import_survives_an_interleaved_run() {
     let mut restart_replays = 0u32;
     let mut delayed_replays = 0u32;
     let mut max_inflight = 0usize;
+    let mut delivered_to_bob = 0u32;
+    let mut delivered_to_alice = 0u32;
 
     for i in 0..180u32 {
         // Bursts create same-chain gaps; mixed directions create DH
@@ -427,6 +429,11 @@ fn state_export_import_survives_an_interleaved_run() {
             let msg = inflight.remove(idx);
             deliver(&mut alice, &mut bob, &mut rng, &msg).expect("deliver after restore");
             delivered += 1;
+            if msg.to_bob {
+                delivered_to_bob += 1;
+            } else {
+                delivered_to_alice += 1;
+            }
 
             assert!(
                 deliver(&mut alice, &mut bob, &mut rng, &msg).is_err(),
@@ -464,6 +471,11 @@ fn state_export_import_survives_an_interleaved_run() {
         let msg = inflight.remove(idx);
         deliver(&mut alice, &mut bob, &mut rng, &msg).expect("drain after restore");
         delivered += 1;
+        if msg.to_bob {
+            delivered_to_bob += 1;
+        } else {
+            delivered_to_alice += 1;
+        }
         assert!(
             deliver(&mut alice, &mut bob, &mut rng, &msg).is_err(),
             "drained message replay must be rejected"
@@ -493,6 +505,14 @@ fn state_export_import_survives_an_interleaved_run() {
     );
 
     assert!(delivered > 180, "too few interleaved deliveries");
+    assert!(
+        delivered_to_bob > 80,
+        "too few post-restore deliveries into Bob's receive chains"
+    );
+    assert!(
+        delivered_to_alice > 80,
+        "too few post-restore deliveries into Alice's receive chains"
+    );
     assert!(
         max_inflight > 20,
         "run did not keep enough messages in flight"
