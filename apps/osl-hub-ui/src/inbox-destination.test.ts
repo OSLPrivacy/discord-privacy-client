@@ -27,7 +27,8 @@ describe("Inbox destination content", () => {
     expect(inbox).toContain("OSL Chat");
     expect(inbox).toContain("OSL Circles");
     expect(inbox).toContain("OSL Mail");
-    expect(inbox).toContain("End-to-end encrypted");
+    expect(inbox).toContain("Protected OSL messages");
+    expect(inbox).toContain("OSL Chat · Protected OSL message");
     expect(inbox).toContain("External recipients are not OSL E2EE");
     expect(inbox).toContain("External recipient, not OSL E2EE");
     expect(inbox).toContain("OSL overlay active when a conversation is verified");

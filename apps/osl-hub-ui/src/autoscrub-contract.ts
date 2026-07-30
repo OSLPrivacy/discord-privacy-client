@@ -230,7 +230,7 @@ export function projectAutoScrubFleetStatus(status: AutoScrubFleetStatus | null)
   if (!status) {
     return {
       label: "Unavailable in this build",
-      detail: "Nothing runs until OSL can show a reviewed local list.",
+      detail: "Nothing runs until OSL can show a local list you approve.",
       tone: "neutral",
       stopAvailable: false,
     };
