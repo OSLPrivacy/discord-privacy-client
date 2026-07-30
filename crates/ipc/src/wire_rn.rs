@@ -505,7 +505,7 @@ pub fn initiator_binding(
     if peer_mlkem768_ek.len() != MLKEM_EK {
         return Err(RnError::BadPeerKemKey);
     }
-    Negotiation::for_rn(
+    rn_negotiation(
         peer_identity_x25519,
         peer_mlkem768_ek,
         own_identity_x25519,
@@ -532,7 +532,7 @@ pub fn responder_binding(
     if own_mlkem768_ek.len() != MLKEM_EK {
         return Err(RnError::BadPeerKemKey);
     }
-    Negotiation::for_rn(
+    rn_negotiation(
         own_identity_x25519,
         own_mlkem768_ek,
         initiator_identity_x25519,
@@ -540,6 +540,22 @@ pub fn responder_binding(
     )
     .digest()
     .map_err(RnError::from)
+}
+
+fn rn_negotiation<'a>(
+    responder_identity_x25519: &'a [u8; 32],
+    responder_mlkem768_ek: &'a [u8],
+    initiator_identity_x25519: &'a [u8; 32],
+    context: &'a [u8],
+) -> Negotiation<'a> {
+    let mut negotiation = Negotiation::for_rn(
+        responder_identity_x25519,
+        responder_mlkem768_ek,
+        initiator_identity_x25519,
+        context,
+    );
+    negotiation.min_acceptable_version = WIRE_VERSION_RN;
+    negotiation
 }
 
 // ---------------------------------------------------------------
@@ -1518,6 +1534,105 @@ mod tests {
             request.starts_with("GET /v1/prekey-bundle/bob-fetch-rn?"),
             "first contact must fetch the recipient's prekey bundle"
         );
+    }
+
+    #[test]
+    fn negotiation_digest_uses_real_capability_floor_end_to_end() {
+        let alice_id = b5_identity(53, "alice-b30");
+        let bob_id = b5_identity(54, "bob-b30");
+        let bob_state = keystore::PrekeyState::new(&bob_id, keystore::PrekeyConfig::default(), 70);
+        let bob_identity_bundle = b5_identity_bundle(&bob_id, RN_CAP_WIRE_RN, 9);
+        let response = b5_response(&bob_id, &bob_state, Some(0));
+        let (base_url, _rx) = one_shot_prekey_server(prekey_response_json(&response));
+        let client = keystore::KeyServerClient::new(base_url).expect("client");
+        let (_alice_dir, alice_store) = fresh_store();
+        let (_bob_dir, bob_store) = fresh_store();
+        let sealer = MemorySealer::new();
+
+        let mut first_contact = fetch_prekey_bundle_and_initiate_first_contact(
+            &client,
+            &alice_store,
+            &sealer,
+            &alice_id,
+            &bob_id.user_id,
+            &bob_identity_bundle,
+            &bob_id.ed25519_public,
+            None,
+            RnPolicy::Opportunistic,
+            CTX,
+            SessionParams::default(),
+        )
+        .expect("first contact uses authenticated RN capability");
+
+        let pin = alice_store
+            .load_pin(bob_id.x25519_public.as_bytes())
+            .expect("load pin");
+        assert_eq!(
+            select_wire_version(
+                &pin,
+                PeerCapabilities::Verified(bob_identity_bundle.capability_bundle),
+                RnPolicy::Opportunistic,
+            )
+            .expect("select"),
+            SelectedVersion::Rn
+        );
+        assert_eq!(
+            pin.min_wire_version(),
+            WIRE_VERSION_RN,
+            "the selected first-contact floor must be the real RN wire floor"
+        );
+
+        let mut direct = Negotiation::for_rn(
+            &bob_identity_bundle.x25519_identity_pub,
+            &bob_identity_bundle.mlkem768_identity_pub,
+            alice_id.x25519_public.as_bytes(),
+            CTX,
+        );
+        direct.min_acceptable_version = pin.min_wire_version();
+        assert_eq!(
+            initiator_binding(
+                &bob_identity_bundle.x25519_identity_pub,
+                &bob_identity_bundle.mlkem768_identity_pub,
+                alice_id.x25519_public.as_bytes(),
+                CTX,
+            )
+            .expect("ipc binding"),
+            direct.digest().expect("direct binding"),
+            "IPC must use the ratchet negotiation digest with the selected capability floor"
+        );
+
+        let mut rng = seeded_rng(0xB30);
+        let wire = first_contact
+            .session
+            .encrypt(21, b"b30 bound bootstrap", &mut rng)
+            .expect("encrypt bootstrap");
+        let bob_local = local_prekeys_from_b5(&bob_id, &bob_state).expect("bob local prekeys");
+
+        assert!(
+            matches!(
+                Session::accept(&bob_local, &wire, SessionParams::default(), &mut rng),
+                Err(osl_ratchet_next::Error::AuthFailed)
+            ),
+            "a responder that omits the negotiation digest must fail closed"
+        );
+
+        let (_bob_session, opened) = accept_and_persist_with_sealer(
+            &bob_store,
+            &sealer,
+            &bob_local,
+            bob_id.x25519_public.as_bytes(),
+            &bob_id.mlkem_public_bytes,
+            &wire,
+            CTX,
+            SessionParams::default(),
+        )
+        .expect("bound responder accepts");
+        assert_eq!(opened.msg_type, 21);
+        assert_eq!(opened.plaintext, b"b30 bound bootstrap");
+        assert!(bob_store
+            .load_pin(alice_id.x25519_public.as_bytes())
+            .expect("load responder pin")
+            .is_pinned_to_rn());
     }
 
     #[test]
