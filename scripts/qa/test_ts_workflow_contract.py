@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import copy
+import os
 import re
+import subprocess
 import unittest
 from pathlib import Path
 from typing import Any
@@ -9,6 +11,22 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "ts-test.yml"
+REQUIRED_SUCCESS_LANES = {
+    "test": ("TEST_RESULT", "TypeScript workflow"),
+    "selector-check": ("SELECTOR_CHECK_RESULT", "Selector check"),
+    "telegram-reporting-bot": (
+        "TELEGRAM_REPORTING_BOT_RESULT",
+        "Telegram reporting bot script check",
+    ),
+    "public-audit": ("PUBLIC_AUDIT_RESULT", "Public audit"),
+}
+
+
+def _yaml_scalar(value: str) -> str:
+    raw = value.strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {"'", '"'}:
+        return raw[1:-1]
+    return raw
 
 
 def _workflow() -> dict[str, Any]:
@@ -16,6 +34,7 @@ def _workflow() -> dict[str, Any]:
     current_job: dict[str, Any] | None = None
     in_needs = False
     in_steps = False
+    in_step_env = False
     current_step: dict[str, Any] | None = None
     run_indent: int | None = None
     run_lines: list[str] = []
@@ -41,6 +60,7 @@ def _workflow() -> dict[str, Any]:
             jobs[job_match.group(1)] = current_job
             in_needs = False
             in_steps = False
+            in_step_env = False
             current_step = None
             continue
 
@@ -51,6 +71,7 @@ def _workflow() -> dict[str, Any]:
             current_job["needs"] = []
             in_needs = True
             in_steps = False
+            in_step_env = False
             current_step = None
             continue
         if in_needs:
@@ -62,12 +83,13 @@ def _workflow() -> dict[str, Any]:
 
         if raw_line == "    steps:":
             in_steps = True
+            in_step_env = False
             current_step = None
             continue
 
         job_field = re.fullmatch(r"    ([A-Za-z_-]+): (.+)", raw_line)
         if job_field and not in_steps:
-            current_job[job_field.group(1)] = job_field.group(2).strip('"')
+            current_job[job_field.group(1)] = _yaml_scalar(job_field.group(2))
             continue
 
         if not in_steps:
@@ -75,17 +97,31 @@ def _workflow() -> dict[str, Any]:
 
         step_start = re.fullmatch(r"      - ([A-Za-z_-]+): ?(.*)", raw_line)
         if step_start:
-            current_step = {step_start.group(1): step_start.group(2).strip("'\"")}
+            current_step = {step_start.group(1): _yaml_scalar(step_start.group(2))}
             current_job["steps"].append(current_step)
+            in_step_env = False
             continue
+        if in_step_env and current_step is not None:
+            env_field = re.fullmatch(r"          ([A-Za-z0-9_]+): (.+)", raw_line)
+            if env_field:
+                env = current_step.setdefault("env", {})
+                assert isinstance(env, dict)
+                env[env_field.group(1)] = _yaml_scalar(env_field.group(2))
+                continue
+            in_step_env = False
         step_field = re.fullmatch(r"        ([A-Za-z_-]+): ?(.*)", raw_line)
         if step_field and current_step is not None:
             key, value = step_field.group(1), step_field.group(2)
             if key == "run" and value == "|":
                 run_indent = 10
                 run_lines = []
+                in_step_env = False
+            elif key == "env" and value == "":
+                current_step["env"] = {}
+                in_step_env = True
             else:
-                current_step[key] = value.strip("'\"")
+                current_step[key] = _yaml_scalar(value)
+                in_step_env = False
 
     finish_run()
     return {"jobs": jobs}
@@ -114,25 +150,76 @@ def _step_commands(step: dict[str, Any]) -> list[str]:
     return [line.strip() for line in run.splitlines() if line.strip()]
 
 
-def _guarded_needs(success_job: dict[str, Any]) -> set[str]:
-    guarded: set[str] = set()
-    for step in success_job.get("steps", []):
-        if not isinstance(step, dict):
-            continue
-        for command in _step_commands(step):
-            match = re.fullmatch(
-                r"if \[ '\$\{\{ needs\.([A-Za-z0-9_-]+)\.result \}\}' != 'success' \]; then",
-                command,
+def _success_step(workflow: dict[str, Any]) -> dict[str, Any]:
+    steps = _job(workflow, "success").get("steps", [])
+    matches = [
+        step
+        for step in steps
+        if isinstance(step, dict) and step.get("name") == "success'"
+    ]
+    if len(matches) != 1:
+        raise AssertionError("success job must have exactly one success' step")
+    return matches[0]
+
+
+def _run_success_step(
+    step: dict[str, Any],
+    results: dict[str, str],
+) -> subprocess.CompletedProcess[str]:
+    run = step.get("run")
+    if not isinstance(run, str) or not run.strip():
+        raise AssertionError("success' step must have a shell run block")
+    env = os.environ.copy()
+    for job_id, result in results.items():
+        env_name, _label = REQUIRED_SUCCESS_LANES[job_id]
+        env[env_name] = result
+    return subprocess.run(
+        ["bash", "-e", "-c", run],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _audit_success_step_behavior(workflow: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    step = _success_step(workflow)
+    green_results = {job_id: "success" for job_id in REQUIRED_SUCCESS_LANES}
+    green = _run_success_step(step, green_results)
+    if green.returncode != 0:
+        errors.append(
+            "success job must accept an all-green required-check set"
+            f" (stdout={green.stdout!r}, stderr={green.stderr!r})"
+        )
+
+    failing_cases = {
+        "test": "failure",
+        "selector-check": "cancelled",
+        "telegram-reporting-bot": "skipped",
+        "public-audit": "failure",
+    }
+    for job_id, result in failing_cases.items():
+        results = dict(green_results)
+        results[job_id] = result
+        completed = _run_success_step(step, results)
+        _env_name, label = REQUIRED_SUCCESS_LANES[job_id]
+        expected = f"{label} failed with result: {result}"
+        if completed.returncode == 0:
+            errors.append(f"success job must fail closed when {job_id} is {result}")
+        if completed.stdout.strip() != expected:
+            errors.append(
+                f"success job must report the failed {job_id} result"
+                f" (expected={expected!r}, stdout={completed.stdout!r})"
             )
-            if match:
-                guarded.add(match.group(1))
-    return guarded
+    return errors
 
 
 def _audit_success_gate(workflow: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     success = _job(workflow, "success")
-    required = {"test", "selector-check", "telegram-reporting-bot", "public-audit"}
+    required = set(REQUIRED_SUCCESS_LANES)
 
     if success.get("name") != "success'":
         errors.append("success job must keep the exact aggregate check name")
@@ -140,19 +227,25 @@ def _audit_success_gate(workflow: dict[str, Any]) -> list[str]:
         errors.append("success job must run even after a dependency fails")
     if not required.issubset(_needs(success)):
         errors.append("success job must depend on every TypeScript, selector, and audit lane")
-    if not required.issubset(_guarded_needs(success)):
-        errors.append("success job must fail closed on every required lane result")
+    try:
+        step = _success_step(workflow)
+    except AssertionError as exc:
+        errors.append(str(exc))
+        return errors
 
-    steps = success.get("steps", [])
-    exit_commands = [
-        command
-        for step in steps
-        if isinstance(step, dict)
-        for command in _step_commands(step)
-        if command.startswith("exit ")
-    ]
-    if exit_commands != ['exit "$failed"']:
-        errors.append("success job must exit with the accumulated failure state")
+    env = step.get("env", {})
+    if not isinstance(env, dict):
+        env = {}
+    expected_env = {
+        env_name: f"${{{{ needs.{job_id}.result }}}}"
+        for job_id, (env_name, _label) in REQUIRED_SUCCESS_LANES.items()
+    }
+    for env_name, expression in expected_env.items():
+        if env.get(env_name) != expression:
+            errors.append("success job must bind every required lane result into the aggregate gate")
+            break
+
+    errors.extend(_audit_success_step_behavior(workflow))
 
     return errors
 
@@ -217,14 +310,22 @@ def ts_success_gate_contract() -> None:
         _audit_success_gate(missing_public_audit),
     )
 
+    missing_public_audit_binding = copy.deepcopy(workflow)
+    env = missing_public_audit_binding["jobs"]["success"]["steps"][0]["env"]
+    del env["PUBLIC_AUDIT_RESULT"]
+    testcase.assertIn(
+        "success job must bind every required lane result into the aggregate gate",
+        _audit_success_gate(missing_public_audit_binding),
+    )
+
     permissive_selector_check = copy.deepcopy(workflow)
     run = permissive_selector_check["jobs"]["success"]["steps"][0]["run"]
     permissive_selector_check["jobs"]["success"]["steps"][0]["run"] = run.replace(
-        "needs.selector-check.result }}' != 'success'",
-        "needs.selector-check.result }}' == 'success'",
+        '"Selector check=$SELECTOR_CHECK_RESULT"',
+        '"Selector check=success"',
     )
     testcase.assertIn(
-        "success job must fail closed on every required lane result",
+        "success job must fail closed when selector-check is cancelled",
         _audit_success_gate(permissive_selector_check),
     )
 
