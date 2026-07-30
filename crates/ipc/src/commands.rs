@@ -2793,37 +2793,55 @@ fn rn_session_store_from_config_dir() -> Result<crate::wire_rn::RnSessionStore, 
     Ok(crate::wire_rn::RnSessionStore::new(dir.join("rn")))
 }
 
-fn ensure_legacy_send_allowed_by_rn_pin(
+fn select_rn_wire_path_for_send(
     store: &crate::wire_rn::RnSessionStore,
     peer_discord_id: &str,
     peer_identity_x25519: &[u8; 32],
-) -> Result<(), String> {
-    use crate::wire_rn::{select_wire_version, RnPolicy, SelectedVersion};
-
+) -> Result<RnWirePath, String> {
     let pin = store.load_pin(peer_identity_x25519).map_err(|e| {
         format!(
             "OSL: send refused for peer {peer}: OSL-RN version pin could not be read: {e}",
             peer = crate::log_id::log_id(peer_discord_id)
         )
     })?;
-    match select_wire_version(
+
+    select_rn_wire_path(
         &pin,
         // The send dispatcher has no signed RN capability record in
         // peer_map. Treat that absence as no capability; a stored RN
         // pin still turns it into a refusal instead of permission.
         keystore::client::PeerCapabilities::Absent,
-        RnPolicy::Opportunistic,
-    ) {
-        Ok(SelectedVersion::LegacyV3) => Ok(()),
-        Ok(SelectedVersion::Rn) => Err(format!(
-            "OSL: send refused for peer {peer}: OSL-RN is selected but wire-in is disabled",
-            peer = crate::log_id::log_id(peer_discord_id)
-        )),
-        Err(e) => Err(format!(
+        crate::wire_rn::RnPolicy::Opportunistic,
+    )
+    .map_err(|e| {
+        format!(
             "OSL: send refused for peer {peer}: {e}",
             peer = crate::log_id::log_id(peer_discord_id)
-        )),
-    }
+        )
+    })
+}
+
+fn encrypt_rn_content_send(
+    store: &crate::wire_rn::RnSessionStore,
+    sealer: &dyn keystore::sealer::Sealer,
+    peer_discord_id: &str,
+    peer_identity_x25519: &[u8; 32],
+    plaintext: &[u8],
+) -> Result<EncryptWire, String> {
+    crate::wire_rn::send_rn(
+        store,
+        sealer,
+        peer_identity_x25519,
+        crate::wire_v2::MSG_TYPE_CONTENT,
+        plaintext,
+    )
+    .map(EncryptWire::content_only)
+    .map_err(|e| {
+        format!(
+            "OSL: RN send refused for peer {peer}: {e}",
+            peer = crate::log_id::log_id(peer_discord_id)
+        )
+    })
 }
 
 #[cfg(all(test))]
@@ -2836,8 +2854,11 @@ mod rn_send_selection_tests {
         let store = crate::wire_rn::RnSessionStore::new(dir.path().join("rn"));
         let peer = [17u8; 32];
 
-        ensure_legacy_send_allowed_by_rn_pin(&store, "123456789012345678", &peer)
-            .expect("absent pin should allow existing legacy send path");
+        assert_eq!(
+            select_rn_wire_path_for_send(&store, "123456789012345678", &peer),
+            Ok(RnWirePath::LegacyV3),
+            "absent pin should allow existing legacy send path"
+        );
     }
 
     #[test]
@@ -2847,12 +2868,38 @@ mod rn_send_selection_tests {
         let peer = [18u8; 32];
         store.raise_pin_to_rn(&peer).expect("raise pin");
 
-        let err = ensure_legacy_send_allowed_by_rn_pin(&store, "123456789012345678", &peer)
+        let err = select_rn_wire_path_for_send(&store, "123456789012345678", &peer)
             .expect_err("pinned peer must not use the legacy send path");
 
         assert!(
             err.contains("refusing to send a legacy v=3 message"),
             "unexpected refusal: {err}"
+        );
+    }
+
+    #[test]
+    fn unit_b59_rn_wire_path_calls_send_rn_and_keeps_gate_disabled() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let store = crate::wire_rn::RnSessionStore::new(dir.path().join("rn"));
+        let sealer = keystore::sealer::MemorySealer::new();
+        let peer = [59u8; 32];
+
+        let err = encrypt_rn_content_send(
+            &store,
+            &sealer,
+            "123456789012345678",
+            &peer,
+            b"b59 plaintext must not escape while RN wire-in is disabled",
+        )
+        .expect_err("RN call site must refuse through wire_rn::send_rn while the gate is false");
+
+        assert!(
+            err.contains("OSL-RN wire-in is disabled"),
+            "unexpected RN refusal: {err}"
+        );
+        assert!(
+            !crate::wire_rn::RN_WIRE_IN_ENABLED,
+            "unit b59 must not enable the OSL-RN wire-in gate"
         );
     }
 }
@@ -3178,11 +3225,30 @@ pub fn cmd_osl_encrypt_message_v2_wire(
     if !non_self_peers.is_empty() {
         let rn_store = rn_session_store_from_config_dir()?;
         for (peer_did, recipient) in &non_self_peers {
-            ensure_legacy_send_allowed_by_rn_pin(
+            match select_rn_wire_path_for_send(
                 &rn_store,
                 peer_did,
                 recipient.x25519_pub.as_bytes(),
-            )?;
+            )? {
+                RnWirePath::LegacyV3 => {}
+                RnWirePath::Rn => {
+                    if non_self_peers.len() != 1 {
+                        return Err(
+                            "OSL: RN send selected for a multi-recipient scope; refusing \
+                             to fan out a one-peer ratchet message"
+                                .to_string(),
+                        );
+                    }
+                    let sealer = select_best_sealer();
+                    return encrypt_rn_content_send(
+                        &rn_store,
+                        sealer.as_ref(),
+                        peer_did,
+                        recipient.x25519_pub.as_bytes(),
+                        plaintext.as_bytes(),
+                    );
+                }
+            }
         }
     }
 
@@ -3210,45 +3276,6 @@ pub fn cmd_osl_encrypt_message_v2_wire(
             );
         }
         RatchetPolicyDecision::LegacyV3 | RatchetPolicyDecision::LegacyV4Dm => {}
-    }
-
-    // Unit b1: RnWirePath dispatch seam. Every non-self recipient is
-    // checked against the sticky OSL-RN version pin before the v=3
-    // path below is allowed to run. `select_rn_wire_path` is a real
-    // decision through `wire_rn::select_wire_version`, not a
-    // hardcoded v=3 choice, and structurally cannot let a peer pinned
-    // to OSL-RN fall through to a v=3 send.
-    //
-    // Capability advertisement is documented as absent end-to-end
-    // (crates/osl-ratchet-next/MIGRATION.md, "Capability advertisement
-    // is absent end-to-end") — no code path in this build populates a
-    // signed rn_capabilities bitmap for any peer, so every recipient
-    // is checked with PeerCapabilities::Absent, the honest value
-    // today.
-    //
-    // The pin IS real: read from the sealed per-peer pin store
-    // wire_rn::RnSessionStore already ships. Nothing in this build
-    // ever raises a pin (RN_WIRE_IN_ENABLED is false and
-    // initiate_and_persist/accept_and_persist have zero production
-    // callers), so every peer resolves to RnPeerPin::UNKNOWN today —
-    // this loop is inert in production, not decorative: the day
-    // something upstream starts raising pins, this refuses instead of
-    // silently downgrading, with no further change to this call site.
-    let rn_pin_store = crate::wire_rn::RnSessionStore::new(
-        keystore::osl_config_dir()
-            .map_err(|e| format!("OSL: cannot resolve config dir for RN pin check: {e}"))?
-            .join("rn_state"),
-    );
-    for (_, recipient) in non_self_peers.iter() {
-        let peer_id = *recipient.x25519_pub.as_bytes();
-        let pin = rn_pin_store
-            .load_pin(&peer_id)
-            .map_err(|e| format!("OSL: RN pin check: {e}"))?;
-        select_rn_wire_path(
-            &pin,
-            keystore::client::PeerCapabilities::Absent,
-            crate::wire_rn::RnPolicy::default(),
-        )?;
     }
 
     // 7d-PIVOT: encrypt_toggle is no longer coupled to having a
