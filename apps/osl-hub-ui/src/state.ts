@@ -1,3 +1,73 @@
+export const oslPrimaryDestinationValues = [
+  "home",
+  "inbox",
+  "people",
+  "privacy",
+  "activity",
+  "connections",
+] as const;
+
+export type OslPrimaryDestination = typeof oslPrimaryDestinationValues[number];
+
+export interface OslPrimaryDestinationDefinition {
+  id: OslPrimaryDestination;
+  label: string;
+  userQuestion: string;
+  mainContent: string;
+  primaryAction: string;
+}
+
+export const oslPrimaryDestinations = [
+  {
+    id: "home",
+    label: "Home",
+    userQuestion: "Am I protected, and what needs attention?",
+    mainContent: "Overall state, one recommended action, connected-service health, and recent protection.",
+    primaryAction: "Fix the most important issue",
+  },
+  {
+    id: "inbox",
+    label: "Inbox",
+    userQuestion: "Where are my conversations?",
+    mainContent: "Conversations across OSL Chat, OSL Circles, OSL Mail, and supported connected-account views.",
+    primaryAction: "Start a private conversation",
+  },
+  {
+    id: "people",
+    label: "People",
+    userQuestion: "Who do I trust and where do I know them?",
+    mainContent: "Verified OSL contacts, platform identities, groups, audiences, and approval policy.",
+    primaryAction: "Add or verify a person",
+  },
+  {
+    id: "privacy",
+    label: "Privacy",
+    userQuestion: "What will OSL do for me?",
+    mainContent: "Preset, global policy, platform exceptions, cleanup, and solo privacy tools.",
+    primaryAction: "Review or change protection",
+  },
+  {
+    id: "activity",
+    label: "Activity",
+    userQuestion: "What did OSL actually do?",
+    mainContent: "Warnings, scheduled jobs, deletion verification, connection failures, and recent outcomes.",
+    primaryAction: "Review an item needing attention",
+  },
+  {
+    id: "connections",
+    label: "Connections",
+    userQuestion: "Which accounts and devices are connected?",
+    mainContent: "Platform accounts, OSL services, Mullvad, and Android Workspace.",
+    primaryAction: "Connect a service",
+  },
+] as const satisfies readonly OslPrimaryDestinationDefinition[];
+
+export const oslSettingsDestination = "settings" as const;
+
+export function isOslPrimaryDestination(value: unknown): value is OslPrimaryDestination {
+  return typeof value === "string" && oslPrimaryDestinationValues.includes(value as OslPrimaryDestination);
+}
+
 export type SendMode = "manual" | "clipboard" | "double" | "single";
 export type PlacementMode = "atomic" | "compatibility";
 export type ProtectionMode = "native" | "protected";
