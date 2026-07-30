@@ -60,15 +60,21 @@ describe("OSL Mail strict adapter", () => {
     await expect(loadOslMailStatus()).resolves.toBeNull();
   });
 
-  it("strictly parses retrieved thread and message responses", () => {
+  it("Parse OSL Mail thread and message responses strictly", () => {
     const valid = { threadId: id, retrievalId: `${id}x`, expiresAt: 100, messages: [{ messageId: `${id}m`, from: "a@example.com", to: ["liam@oslprivacy.com"], subject: "Hello", body: "Body", receivedAt: 90, transit: "externalSmtp" }] };
-    expect(parseOslMailRetrievedThread(valid)?.messages).toHaveLength(1);
+    expect(parseOslMailRetrievedThread(valid)).toEqual(valid);
     expect(parseOslMailRetrievedThread({ ...valid, messages: [] })).toBeNull();
     expect(parseOslMailRetrievedThread({ ...valid, messages: [{ ...valid.messages[0], body: "bad\0body" }] })).toBeNull();
+    expect(parseOslMailRetrievedThread({ ...valid, messages: [{ ...valid.messages[0], from: "bad\0from@example.com" }] })).toBeNull();
     expect(parseOslMailRetrievedThread({ ...valid, messages: [{ ...valid.messages[0], to: [] }] })).toBeNull();
     expect(parseOslMailRetrievedThread({ ...valid, messages: [{ ...valid.messages[0], transit: "smtp" }] })).toBeNull();
     expect(parseOslMailRetrievedThread({ ...valid, messages: [{ ...valid.messages[0], unexpected: true }] })).toBeNull();
     expect(parseOslMailRetrievedThread({ ...valid, unexpected: true })).toBeNull();
+    const sparseMessages = Array(1) as unknown[];
+    expect(parseOslMailRetrievedThread({ ...valid, messages: sparseMessages })).toBeNull();
+    const messagesWithExpando = [{ ...valid.messages[0] }] as unknown[] & { hidden?: boolean };
+    messagesWithExpando.hidden = true;
+    expect(parseOslMailRetrievedThread({ ...valid, messages: messagesWithExpando })).toBeNull();
   });
 
   it("requires an explicit positive server deletion receipt", () => {

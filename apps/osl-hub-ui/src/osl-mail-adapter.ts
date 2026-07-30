@@ -110,7 +110,7 @@ function transit(value: unknown): value is OslMailTransit {
 }
 
 function emailAddress(value: unknown): value is string {
-  return typeof value === "string" && value.length <= 254 && /^[^\s@]+@[^\s@]+$/u.test(value);
+  return typeof value === "string" && value.length <= 254 && /^[^\s@]+@[^\s@]+$/u.test(value) && !/[\u0000-\u001f\u007f]/u.test(value);
 }
 
 function retentionSeconds(value: unknown): value is OslMailRetentionSeconds {
@@ -163,8 +163,19 @@ export function parseOslMailRetrievedThread(value: unknown): OslMailRetrievedThr
     || typeof value.threadId !== "string" || !OSL_MAIL_ID.test(value.threadId)
     || typeof value.retrievalId !== "string" || !OSL_MAIL_ID.test(value.retrievalId)
     || !timestamp(value.expiresAt) || !Array.isArray(value.messages) || value.messages.length < 1 || value.messages.length > 200) return null;
-  const messages = value.messages.map(parseMessage);
-  return messages.some((message) => message === null) ? null : { ...value, messages } as OslMailRetrievedThread;
+  if (Object.keys(value.messages).length !== value.messages.length) return null;
+  const messages: OslMailThreadMessage[] = [];
+  for (const message of value.messages) {
+    const parsed = parseMessage(message);
+    if (!parsed) return null;
+    messages.push(parsed);
+  }
+  return {
+    threadId: value.threadId,
+    retrievalId: value.retrievalId,
+    expiresAt: value.expiresAt,
+    messages,
+  };
 }
 
 export function parseOslMailDeleteReceipt(value: unknown): OslMailDeleteReceipt | null {
