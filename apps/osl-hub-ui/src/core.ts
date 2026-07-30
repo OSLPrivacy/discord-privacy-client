@@ -37,6 +37,12 @@ export interface HubIdentitySetupResult {
   passwordSetupRequired: boolean;
 }
 
+export interface HubIdentityCreationOwnerSignoff {
+  ownerPresent: true;
+  reviewedNoExistingIdentityReplacement: true;
+  acceptsRecoveryPhraseResponsibility: true;
+}
+
 export type IdentityProtectionState = "protected" | "not-secure";
 
 export interface IdentityProtectionStatus {
@@ -206,7 +212,12 @@ export async function removeHubAlternatePassword(role: "stealth" | "burn", curre
 
 export async function createHubOslIdentity(): Promise<HubIdentitySetupResult> {
   if (!isTauriRuntime()) throw new Error("identity creation unavailable");
-  return parseIdentitySetupResult(await invoke<unknown>("create_hub_osl_identity"));
+  const ownerAuthorizationSignoff: HubIdentityCreationOwnerSignoff = {
+    ownerPresent: true,
+    reviewedNoExistingIdentityReplacement: true,
+    acceptsRecoveryPhraseResponsibility: true,
+  };
+  return parseIdentitySetupResult(await invoke<unknown>("create_hub_osl_identity", { ownerAuthorizationSignoff }));
 }
 
 export async function importHubOslIdentityPhrase(recoveryPhrase: string): Promise<HubIdentitySetupResult> {

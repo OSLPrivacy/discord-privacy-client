@@ -248,7 +248,10 @@ pub fn ensure_disposable_identity(core: &HubCoreState) -> Result<(), String> {
     if crate::password_lifecycle::readiness(core).identity_loaded {
         return Ok(());
     }
-    let result = crate::password_lifecycle::create_native_identity(core)?;
+    let result = crate::password_lifecycle::create_native_identity_with_owner_authorization_signoff(
+        core,
+        crate::password_lifecycle::HubIdentityCreationOwnerSignoff::owner_authorized_for_new_identity(),
+    )?;
     drop(result);
     Ok(())
 }

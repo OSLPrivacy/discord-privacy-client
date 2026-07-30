@@ -299,6 +299,23 @@ mod tests {
     }
 
     #[test]
+    fn keystore_backed_anchor_load_reads_last_recorded_generation_and_digest() {
+        let backend = InMemoryKeyring::default();
+        let store_id = [0x42u8; 32];
+        let writer = anchor_on(backend.clone());
+        writer
+            .compare_and_advance(store_id, None, record(7, 0x71))
+            .unwrap();
+        writer
+            .compare_and_advance(store_id, Some(record(7, 0x71)), record(8, 0x82))
+            .unwrap();
+
+        let reader = anchor_on(backend);
+        assert_eq!(reader.load(store_id).unwrap(), Some(record(8, 0x82)));
+        assert_ne!(reader.load(store_id).unwrap(), Some(record(7, 0x71)));
+    }
+
+    #[test]
     fn stale_expected_generation_is_refused() {
         let anchor = anchor_on(InMemoryKeyring::default());
         let store_id = [9u8; 32];

@@ -10,7 +10,7 @@ use std::path::Path;
 use bip39::{Language, Mnemonic};
 use ipc::AppState;
 use keystore::{Identity, Sealer};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::core_bridge::HubCoreState;
@@ -55,6 +55,41 @@ pub struct HubIdentitySetupResult {
     pub identity_recovery_phrase: Option<String>,
     pub storage_method: String,
     pub password_setup_required: bool,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubIdentityCreationOwnerSignoff {
+    pub owner_present: bool,
+    pub reviewed_no_existing_identity_replacement: bool,
+    pub accepts_recovery_phrase_responsibility: bool,
+}
+
+impl std::fmt::Debug for HubIdentityCreationOwnerSignoff {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HubIdentityCreationOwnerSignoff")
+            .field("owner_present", &self.owner_present)
+            .field(
+                "reviewed_no_existing_identity_replacement",
+                &self.reviewed_no_existing_identity_replacement,
+            )
+            .field(
+                "accepts_recovery_phrase_responsibility",
+                &self.accepts_recovery_phrase_responsibility,
+            )
+            .finish()
+    }
+}
+
+impl HubIdentityCreationOwnerSignoff {
+    pub fn owner_authorized_for_new_identity() -> Self {
+        Self {
+            owner_present: true,
+            reviewed_no_existing_identity_replacement: true,
+            accepts_recovery_phrase_responsibility: true,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -147,34 +182,66 @@ fn unavailable_readiness(identity_loaded: bool) -> HubPasswordReadiness {
     }
 }
 
-pub fn create_native_identity(state: &HubCoreState) -> Result<HubIdentitySetupResult, String> {
+pub fn create_native_identity_with_owner_authorization_signoff(
+    state: &HubCoreState,
+    owner_authorization_signoff: HubIdentityCreationOwnerSignoff,
+) -> Result<HubIdentitySetupResult, String> {
     let _lifecycle = state
         .lifecycle_lock
         .lock()
         .map_err(|_| "OSL account lifecycle is unavailable".to_owned())?;
     let current = readiness(state);
+    let dir = isolated_account_dir()?;
+    let sealer = persistent_sealer()?;
+    let result = create_native_identity_after_owner_authorization_signoff_using(
+        state,
+        &current,
+        &dir,
+        sealer.as_ref(),
+        owner_authorization_signoff,
+    )?;
+    initialise_keyserver(&state.osl, &dir);
+    Ok(result)
+}
+
+fn create_native_identity_after_owner_authorization_signoff_using(
+    state: &HubCoreState,
+    current: &HubPasswordReadiness,
+    dir: &Path,
+    sealer: &dyn Sealer,
+    owner_authorization_signoff: HubIdentityCreationOwnerSignoff,
+) -> Result<HubIdentitySetupResult, String> {
+    require_identity_creation_owner_authorization_signoff(owner_authorization_signoff)?;
     if !current.can_create_identity {
         return Err(
             "OSL identity creation is not available in the current access state".to_owned(),
         );
     }
-    let dir = isolated_account_dir()?;
-    ensure_empty_identity_slot(&state.osl, &dir)?;
-    let sealer = persistent_sealer()?;
-
+    ensure_empty_identity_slot(&state.osl, dir)?;
     let mut identity = keystore::generate_identity("osl-pending".to_owned());
     identity.user_id = native_user_id(&identity);
     let phrase = identity_recovery_phrase(&identity)?;
     let result = install_identity(
         &state.osl,
         identity,
-        &dir,
-        sealer.as_ref(),
+        dir,
+        sealer,
         Some(phrase),
         !current.main_password_set,
     )?;
-    initialise_keyserver(&state.osl, &dir);
     Ok(result)
+}
+
+fn require_identity_creation_owner_authorization_signoff(
+    signoff: HubIdentityCreationOwnerSignoff,
+) -> Result<(), String> {
+    if signoff.owner_present
+        && signoff.reviewed_no_existing_identity_replacement
+        && signoff.accepts_recovery_phrase_responsibility
+    {
+        return Ok(());
+    }
+    Err("OSL identity creation requires owner authorization sign-off".to_owned())
 }
 
 pub fn import_native_identity_phrase(
@@ -536,6 +603,56 @@ mod tests {
             user_id
         );
         assert!(ensure_empty_identity_slot(&AppState::new(), &dir).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn identity_creation_requires_owner_authorization_signoff() {
+        let dir = temp_dir("identity-signoff");
+        let state = HubCoreState::default();
+        let current = readiness_from(false, false, true, 0, 0);
+        let sealer = keystore::MemorySealer::new();
+
+        let missing_owner = HubIdentityCreationOwnerSignoff {
+            owner_present: false,
+            reviewed_no_existing_identity_replacement: true,
+            accepts_recovery_phrase_responsibility: true,
+        };
+        let error = match create_native_identity_after_owner_authorization_signoff_using(
+            &state,
+            &current,
+            &dir,
+            &sealer,
+            missing_owner,
+        ) {
+            Ok(_) => panic!("identity creation must refuse without owner sign-off"),
+            Err(error) => error,
+        };
+        assert!(error.contains("owner authorization sign-off"));
+        assert!(!dir.join("identity.json").exists());
+        assert!(state.osl.identity.lock().unwrap().is_none());
+
+        let result = create_native_identity_after_owner_authorization_signoff_using(
+            &state,
+            &current,
+            &dir,
+            &sealer,
+            HubIdentityCreationOwnerSignoff::owner_authorized_for_new_identity(),
+        )
+        .unwrap();
+        assert!(result.user_id.starts_with("osl_"));
+        assert_eq!(
+            result
+                .identity_recovery_phrase
+                .as_deref()
+                .unwrap()
+                .split_whitespace()
+                .count(),
+            12
+        );
+        assert!(dir.join("identity.json").exists());
+        assert!(state.osl.identity.lock().unwrap().is_some());
+
         let _ = std::fs::remove_dir_all(dir);
     }
 
