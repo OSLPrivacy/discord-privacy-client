@@ -650,6 +650,39 @@ class SignalVmQaSelfTests(unittest.TestCase):
             invocations = [parameters["InvocationId"] for _name, parameters in calls if "InvocationId" in parameters]
             self.assertEqual(len(invocations), len(set(invocations)))
 
+    def test_run_signal_already_running_accessibility_bench(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(json.dumps(_test_manifest()), encoding="utf-8")
+            leaves = {key: root / filename for key, filename in LEAVES.items()}
+            with (
+                mock.patch.object(sys.modules[__name__], "preflight", return_value=leaves),
+                mock.patch.object(sys.modules[__name__], "_az", return_value={"ok": True}),
+                mock.patch.object(sys.modules[__name__], "arm_and_poll", return_value=None) as arm,
+            ):
+                receipt_path = run(manifest_path, root / "receipts")
+
+            receipt = json.loads(receipt_path.read_text(encoding="ascii"))
+            stage_names = [stage["name"] for stage in receipt["stages"]]
+            self.assertIn("parallel-already-running-accessibility-bench", stage_names)
+            bench_calls = [
+                call
+                for call in arm.call_args_list
+                if call.args[2] == "AlreadyRunningAccessibilityBench"
+            ]
+            self.assertEqual(len(bench_calls), 2)
+            self.assertEqual({call.args[1] for call in bench_calls}, set(ALIASES))
+            self.assertTrue(all(call.args[3] == "already-running-a11y-bench" for call in bench_calls))
+            self.assertLess(
+                stage_names.index("parallel-claim-exact-window"),
+                stage_names.index("parallel-already-running-accessibility-bench"),
+            )
+            self.assertLess(
+                stage_names.index("parallel-already-running-accessibility-bench"),
+                stage_names.index("parallel-safe-chrome-screenshot"),
+            )
+
     def test_leaf_sources_expose_only_allowed_interactive_actions(self) -> None:
         arm_source = (HERE / LEAVES["arm"]).read_text(encoding="utf-8-sig")
         harness_source = (HERE / "osl-vm-signal-uia-harness.ps1").read_text(encoding="utf-8-sig")
