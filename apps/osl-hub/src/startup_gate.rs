@@ -373,8 +373,7 @@ mod tests {
         assert_eq!(threshold_result.outcome, "duress");
         assert!(threshold_result.burn.is_none());
 
-        let (burn_config, burn_local, burn_core, burn_profiles, _) =
-            populate_cleanup_roots("burn");
+        let (burn_config, burn_local, burn_core, burn_profiles, _) = populate_cleanup_roots("burn");
         keystore::set_base_dir_override(Some(burn_core.clone()));
         let burn_result = gate_result_for_verification(
             &state,
@@ -390,6 +389,122 @@ mod tests {
         assert_cleanup_result_removed(&burn_result, "burned", "service_profiles", &burn_profiles);
         assert_eq!(burn_result.outcome, "burned");
 
+        let _ = std::fs::remove_dir_all(burn_config);
+        let _ = std::fs::remove_dir_all(burn_local);
+    }
+
+    #[test]
+    fn duress_pin_and_wrong_password_threshold_share_burn_path() {
+        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _reset = KeystoreGlobalReset;
+
+        let explicit_duress_dir = temp_dir("explicit-duress");
+        std::fs::create_dir_all(&explicit_duress_dir).unwrap();
+        keystore::set_active_account_dir(None);
+        keystore::set_base_dir_override(Some(explicit_duress_dir.clone()));
+        let explicit_duress_state = HubCoreState::default();
+        *explicit_duress_state.osl.identity.lock().unwrap() = Some(
+            keystore::identity_from_entropy([41; 16], "osl_test_explicit_duress".to_owned()),
+        );
+        std::fs::write(explicit_duress_dir.join("identity.json"), b"identity").unwrap();
+        std::fs::write(explicit_duress_dir.join("prekeys.json"), b"prekeys").unwrap();
+        ipc::main_password::set_main_password(&explicit_duress_dir, "main-pin-7421").unwrap();
+        ipc::main_password::set_duress_password(
+            &explicit_duress_dir,
+            "main-pin-7421",
+            "duress-pin-9381",
+        )
+        .unwrap();
+        ipc::main_password::set_file_storage_key(Some([0x41; 32]));
+
+        let explicit_duress =
+            verify_duress_pin(&explicit_duress_state, "duress-pin-9381".to_owned()).unwrap();
+        assert_eq!(explicit_duress.role, VerifiedGateRole::Duress);
+        assert_eq!(explicit_duress.attempts_used, 0);
+        let explicit_result = HubGateUnlockResult::duress(explicit_duress);
+        assert_eq!(explicit_result.outcome, "duress");
+        assert!(explicit_result.readiness.is_none());
+        assert!(
+            explicit_result.burn.is_none(),
+            "the duress password must not be routed through the full burn report"
+        );
+        assert!(ipc::main_password::get_file_storage_key().is_none());
+        assert!(!explicit_duress_dir.join("identity.json").exists());
+        assert!(!explicit_duress_dir.join("prekeys.json").exists());
+        assert!(!explicit_duress_dir.join("password_marker.json").exists());
+
+        let threshold_dir = temp_dir("threshold-duress");
+        std::fs::create_dir_all(&threshold_dir).unwrap();
+        keystore::set_active_account_dir(None);
+        keystore::set_base_dir_override(Some(threshold_dir.clone()));
+        let threshold_state = HubCoreState::default();
+        *threshold_state.osl.identity.lock().unwrap() = Some(keystore::identity_from_entropy(
+            [42; 16],
+            "osl_test_threshold_duress".to_owned(),
+        ));
+        std::fs::write(threshold_dir.join("identity.json"), b"identity").unwrap();
+        std::fs::write(threshold_dir.join("prekeys.json"), b"prekeys").unwrap();
+        ipc::main_password::set_main_password(&threshold_dir, "main-pin-8421").unwrap();
+        ipc::main_password::write_lockout_pub(
+            &threshold_dir,
+            &ipc::main_password::LockoutState {
+                password_failed_attempts: ipc::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT
+                    - 1,
+                password_locked_until: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        ipc::main_password::set_file_storage_key(Some([0x42; 32]));
+
+        let threshold =
+            verify_duress_pin(&threshold_state, "wrong-threshold-pin-8421".to_owned()).unwrap();
+        assert_eq!(threshold.role, VerifiedGateRole::Duress);
+        assert_eq!(
+            threshold.attempts_used,
+            ipc::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT
+        );
+        assert_eq!(threshold.lockout_seconds_remaining, 0);
+        let threshold_result = HubGateUnlockResult::duress(threshold);
+        assert_eq!(threshold_result.outcome, "duress");
+        assert!(threshold_result.readiness.is_none());
+        assert!(
+            threshold_result.burn.is_none(),
+            "wrong-password duress threshold must not be reported as the burn-password path"
+        );
+        assert!(ipc::main_password::get_file_storage_key().is_none());
+        assert!(!threshold_dir.join("identity.json").exists());
+        assert!(!threshold_dir.join("prekeys.json").exists());
+        assert!(!threshold_dir.join("password_marker.json").exists());
+
+        let (burn_config, burn_local, burn_core, burn_profiles, burn_native_profiles) =
+            populate_cleanup_roots("shared-burn-path");
+        keystore::set_active_account_dir(None);
+        keystore::set_base_dir_override(Some(burn_core.clone()));
+        let burn_state = HubCoreState::default();
+        let burn_result = gate_result_for_verification(
+            &burn_state,
+            GatePasswordVerification {
+                role: VerifiedGateRole::Burn,
+                lockout_seconds_remaining: 0,
+                attempts_used: 0,
+            },
+            &burn_config,
+            &burn_local,
+        );
+        assert_cleanup_result_removed(&burn_result, "burned", "hub_core", &burn_core);
+        assert_cleanup_result_removed(&burn_result, "burned", "service_profiles", &burn_profiles);
+        assert_cleanup_result_removed(
+            &burn_result,
+            "burned",
+            "native_profiles",
+            &burn_native_profiles,
+        );
+        assert_eq!(burn_result.outcome, "burned");
+        assert!(burn_result.burn.is_some());
+
+        let _ = std::fs::remove_dir_all(explicit_duress_dir);
+        let _ = std::fs::remove_dir_all(threshold_dir);
         let _ = std::fs::remove_dir_all(burn_config);
         let _ = std::fs::remove_dir_all(burn_local);
     }
