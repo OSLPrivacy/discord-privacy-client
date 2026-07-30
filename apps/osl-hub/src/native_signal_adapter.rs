@@ -269,6 +269,9 @@ pub fn signal_paint_geometry(
     let mut paint_bounds: Option<SignalRect> = None;
     let mut accepted = Vec::new();
     for node_index in authenticated_node_indices {
+        if accepted.contains(node_index) {
+            return Err(SignalSelectorError::Invalid);
+        }
         let Some(candidate) = candidates
             .iter()
             .find(|candidate| candidate.node_index == *node_index)
@@ -614,11 +617,20 @@ mod tests {
             .expect("authenticated body rectangles should union");
         assert_eq!(paired.paint_bounds, rect(500, 245, 980, 326));
         assert_eq!(paired.authenticated_node_indices, vec![10, 12]);
+        assert!(
+            paired.paint_bounds.right < candidates[1].body_bounds.right,
+            "unauthenticated body rectangles must not widen paint geometry"
+        );
 
         assert_eq!(
             signal_paint_geometry(row_bounds, &candidates, &[11])
                 .map(|geometry| geometry.paint_bounds),
             Ok(rect(440, 272, 1120, 296))
+        );
+        assert_eq!(
+            signal_paint_geometry(row_bounds, &candidates, &[10, 10])
+                .map(|geometry| geometry.paint_bounds),
+            Err(SignalSelectorError::Invalid)
         );
         assert_eq!(
             signal_paint_geometry(row_bounds, &candidates, &[99])
