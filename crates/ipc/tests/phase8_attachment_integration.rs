@@ -607,7 +607,7 @@ fn v2_open_without_legacy_key_fails_on_v1_bundle() {
     )
     .unwrap_err();
     assert!(
-        err.contains("V1 file with no legacy att_key supplied"),
+        err.contains("V1 file with no local attachment key supplied"),
         "expected legacy-key-required error, got: {err}"
     );
 
