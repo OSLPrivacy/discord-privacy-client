@@ -1062,22 +1062,6 @@ fn get_autoscrub_run_fl(state: State<'_, HubCoreState>) -> Result<AutoScrubFleet
     autoscrub_run::fleet_status(&state.osl)
 }
 
-fn require_review_ui_identity_binding(
-    core: &HubCoreState,
-    request: &AutoScrubReviewedRunRequest,
-) -> Result<(), String> {
-    let identity = core
-        .osl
-        .identity
-        .lock()
-        .map_err(|_| "OSL identity state is unavailable".to_owned())?
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| "Unlock an OSL identity before starting AutoScrub".to_owned())?;
-    let verifier = IdentityBindingVerifier::new(PinnedOwner::from_identity(&identity));
-    require_review_ui_identity_binding_from_verifier(&verifier, request)
-}
-
 fn require_review_ui_identity_binding_from_verifier(
     verifier: &IdentityBindingVerifier,
     request: &AutoScrubReviewedRunRequest,
@@ -1089,6 +1073,18 @@ fn require_review_ui_identity_binding_from_verifier(
     verifier
         .verify(&account, BindingScope::ScrubDeletion)
         .map_err(|_| "A reviewed identity binding is required before starting AutoScrub".to_owned())
+}
+
+fn start_autoscrub_reviewed_run_after_review_ui_binding<T, Start>(
+    verifier: &IdentityBindingVerifier,
+    request: AutoScrubReviewedRunRequest,
+    start: Start,
+) -> Result<T, String>
+where
+    Start: FnOnce(AutoScrubReviewedRunRequest) -> Result<T, String>,
+{
+    require_review_ui_identity_binding_from_verifier(verifier, &request)?;
+    start(request)
 }
 
 #[tauri::command]
@@ -1103,8 +1099,18 @@ fn start_autoscrub_reviewed_run_inner(
     core: &HubCoreState,
     request: AutoScrubReviewedRunRequest,
 ) -> Result<AutoScrubFleetStatus, String> {
-    require_review_ui_identity_binding(core, &request)?;
-    autoscrub_run::start_reviewed_run(&core.osl, request)
+    let identity = core
+        .osl
+        .identity
+        .lock()
+        .map_err(|_| "OSL identity state is unavailable".to_owned())?
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "Unlock an OSL identity before starting AutoScrub".to_owned())?;
+    let verifier = IdentityBindingVerifier::new(PinnedOwner::from_identity(&identity));
+    start_autoscrub_reviewed_run_after_review_ui_binding(&verifier, request, |request| {
+        autoscrub_run::start_reviewed_run(&core.osl, request)
+    })
 }
 
 #[tauri::command]
@@ -7842,6 +7848,26 @@ mod qa_selftest {
             );
             assert_eq!(refused.outcome, "busy");
             assert!(!refused.pass, "a busy restart proof must not pass green");
+
+            let verdict_path = std::env::temp_dir().join(format!(
+                "osl-p5-offline-queue-restart-proof-{}.json",
+                std::process::id()
+            ));
+            std::fs::write(&verdict_path, br#"{"pass":true,"outcome":"completed"}"#)
+                .expect("seed stale verdict");
+            write_verdict(&refused, &verdict_path);
+            let durable: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&verdict_path).expect("read verdict"))
+                    .expect("durable verdict JSON");
+            assert_eq!(durable["instance"], instance_b);
+            assert_eq!(durable["verb"], "drain");
+            assert_eq!(durable["outcome"], "busy");
+            assert_eq!(durable["pass"], false);
+            assert_eq!(
+                durable["criteria"]["send_completed"]["pass"], false,
+                "a restarted B that is still draining must replace stale green evidence"
+            );
+            let _ = std::fs::remove_file(&verdict_path);
         }
     }
 }
@@ -8822,13 +8848,44 @@ mod native_discord_carrier_command_tests {
 
 #[cfg(test)]
 mod tauri_command_acl_tests {
-    use super::review_ui_identity_binding_verifier_accepts_selection;
+    use super::{
+        checked_hosted_session_scan_flow, review_ui_identity_binding_verifier_accepts_selection,
+        ActiveServiceHost, CheckedHost,
+    };
     use osl_privacy_hub::identity_binding_verifier::{
         AccountRef, BindingEvidence, BindingScope, IdentityBindingError, IdentityBindingVerifier,
         PinnedOwner,
     };
     use osl_privacy_hub::scrub_index::ScrubAccountSelection;
+    use std::cell::RefCell;
     use std::collections::BTreeSet;
+
+    fn test_checked_host() -> CheckedHost {
+        CheckedHost {
+            context_epoch: 42,
+            active: ActiveServiceHost {
+                service_id: "discord".to_owned(),
+                account_id: "acct-1".to_owned(),
+                generation: 9,
+                owner_namespace: "owner-ns".to_owned(),
+            },
+            owner_osl_user_id: "owner-1".to_owned(),
+            scope_binding: "scope-binding".to_owned(),
+        }
+    }
+
+    fn test_deletion_scan() -> osl_privacy_hub::native_discord_adapter::guided_deletion::DeletionScan
+    {
+        osl_privacy_hub::native_discord_adapter::guided_deletion::DeletionScan {
+            scope_binding_hash: "scan-hash".to_owned(),
+            generation: 9,
+            rows_seen: 1,
+            rows_unreadable: 0,
+            walk:
+                osl_privacy_hub::native_discord_adapter::guided_deletion::WalkCompleteness::Complete,
+            candidates: Vec::new(),
+        }
+    }
 
     fn registered_commands() -> BTreeSet<String> {
         hub_tauri_commands!(hub_tauri_command_names)
@@ -8920,27 +8977,69 @@ mod tauri_command_acl_tests {
     fn pw3_request_hosted_session_scan_command_routes_through_checked_host() {
         assert_registered_and_acl_granted(&["request_hosted_session_scan_command"]);
 
-        let source = include_str!("main.rs");
-        let start = source
-            .find("async fn request_hosted_session_scan_command(")
-            .expect("hosted scan command must exist");
-        let end = source[start..]
-            .find("fn active_unlocked_osl_user_id(")
-            .map(|offset| start + offset)
-            .expect("hosted scan command must be bounded");
-        let command = &source[start..end];
-        let checked = command
-            .find("CheckedHost::for_hosted_session_scan(&app)?")
-            .expect("hosted scan command must derive checked native host state");
-        let attended_binding = command
-            .find("checked.attended_operator_names()?")
-            .expect("hosted scan command must require attended operator binding");
-        let native_scan = command
-            .find("scan_own_messages_for_deletion(")
-            .expect("hosted scan command must route to the native scan adapter");
-        assert!(
-            checked < attended_binding && attended_binding < native_scan,
-            "hosted scan must refuse before native scan unless CheckedHost proves the attended binding"
+        let events = RefCell::new(Vec::<&'static str>::new());
+        let scan = checked_hosted_session_scan_flow(
+            || {
+                events.borrow_mut().push("checked-host");
+                Ok(test_checked_host())
+            },
+            |checked| {
+                events.borrow_mut().push("attended-binding");
+                assert_eq!(checked.active.service_id, "discord");
+                Ok(vec!["operator".to_owned()])
+            },
+            |checked, operator_names| {
+                events.borrow_mut().push("native-scan");
+                assert_eq!(checked.owner_osl_user_id, "owner-1");
+                assert_eq!(checked.scope_binding, "scope-binding");
+                assert_eq!(operator_names, ["operator".to_owned()]);
+                Ok(test_deletion_scan())
+            },
+            |checked| {
+                events.borrow_mut().push("context-recheck");
+                assert_eq!(checked.context_epoch, 42);
+                Ok(())
+            },
+        )
+        .expect("checked hosted scan succeeds only after all gates");
+        assert_eq!(scan.generation, 9);
+        assert_eq!(
+            events.into_inner(),
+            [
+                "checked-host",
+                "attended-binding",
+                "native-scan",
+                "context-recheck"
+            ]
+        );
+
+        let refused_events = RefCell::new(Vec::<&'static str>::new());
+        let refused = checked_hosted_session_scan_flow(
+            || {
+                refused_events.borrow_mut().push("checked-host");
+                Ok(test_checked_host())
+            },
+            |_checked| {
+                refused_events.borrow_mut().push("attended-binding");
+                Err("missing attended binding".to_owned())
+            },
+            |_checked, _operator_names| {
+                refused_events.borrow_mut().push("native-scan");
+                Ok(test_deletion_scan())
+            },
+            |_checked| {
+                refused_events.borrow_mut().push("context-recheck");
+                Ok(())
+            },
+        );
+        match refused {
+            Err(error) => assert_eq!(error, "missing attended binding"),
+            Ok(_) => panic!("missing attended binding must refuse"),
+        }
+        assert_eq!(
+            refused_events.into_inner(),
+            ["checked-host", "attended-binding"],
+            "missing attended binding must refuse before native scan"
         );
     }
 
@@ -9479,7 +9578,7 @@ mod native_visible_row_qa_command_tests {
 mod tauri_registration_surface_tests {
     use super::*;
     use osl_privacy_hub::identity_binding_verifier::BindingEvidence;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::collections::{BTreeMap, BTreeSet};
 
     fn handler_commands() -> BTreeSet<String> {
@@ -10035,6 +10134,43 @@ mod tauri_registration_surface_tests {
             Ok(()),
             "the review UI production helper must accept only the exact ScrubDeletion binding"
         );
+
+        let started_without_binding = Cell::new(false);
+        let unbound_verifier = IdentityBindingVerifier::new(PinnedOwner::from_identity(
+            &owner_identity,
+        ));
+        match start_autoscrub_reviewed_run_after_review_ui_binding(
+            &unbound_verifier,
+            request.clone(),
+            |_| {
+                started_without_binding.set(true);
+                Ok(())
+            },
+        ) {
+            Err(error) => assert_eq!(
+                error, "A reviewed identity binding is required before starting AutoScrub"
+            ),
+            Ok(_) => panic!("missing review binding must refuse before start"),
+        }
+        assert!(
+            !started_without_binding.get(),
+            "the reviewed run start closure must be unreachable without the binding"
+        );
+
+        let start_events = RefCell::new(Vec::<&'static str>::new());
+        let started = start_autoscrub_reviewed_run_after_review_ui_binding(
+            &verifier,
+            request.clone(),
+            |started_request| {
+                start_events.borrow_mut().push("start");
+                assert_eq!(started_request.account_id, "acct-1");
+                Ok(started_request.reviewed_item_count)
+            },
+        )
+        .expect("exact review binding allows the production start step to run");
+        assert_eq!(started, 1);
+        assert_eq!(start_events.into_inner(), ["start"]);
+
         match start_autoscrub_reviewed_run_inner(&state, request) {
             Err(error) => assert_eq!(
                 error, "A reviewed identity binding is required before starting AutoScrub",
