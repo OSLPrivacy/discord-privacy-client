@@ -1454,6 +1454,10 @@ function proSetupContent(): string {
 }
 
 function tutorialContent(): string {
+  return chooseAppsOnboardingContent();
+}
+
+function chooseAppsOnboardingContent(): string {
   const apps = homeAppsFromServices(services)
     .filter((app) => app.visibility === "launch" && app.launchState === "available");
   const detectedIds = new Set(apps.filter((app) => {
@@ -1467,7 +1471,11 @@ function tutorialContent(): string {
   const choices = (items: HomeAppCatalogEntry[], label: string) => items.length
     ? `<div class="onboarding-app-grid onboarding-app-choices" role="group" aria-label="${label}">${items.map((app) => `<button type="button" class="onboarding-app ${selectedOnboardingApps.has(app.id) ? "selected" : ""}" data-onboarding-app-choice="${app.id}" aria-pressed="${selectedOnboardingApps.has(app.id)}"><span class="app-logo-plate">${homeAppLogo(app)}</span><strong>${escapeHtml(app.displayName)}</strong></button>`).join("")}</div>`
     : `<p class="saved-account-truth">None</p>`;
-  return `<h1 id="route-heading" tabindex="-1">Choose apps</h1><p class="compact-lead onboarding-centered-copy">Choose what appears on Home. Nothing opens during setup.</p><section class="onboarding-app-section"><h2>Detected</h2>${choices(detected, "Detected apps")}</section><section class="onboarding-app-section"><h2>Other apps</h2>${choices(other, "Other apps")}</section><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-app-choice" type="button" ${nativeCatalogBusy ? "disabled" : ""}>${nativeCatalogBusy ? "Checking Windows…" : "Continue"}</button></div>`;
+  const defaultContinueLabel = nativeCatalogBusy ? "Checking Windows…" : "Continue";
+  const continueLabel = nativeCatalogBusy
+    ? defaultContinueLabel
+    : selectedOnboardingApps.size > 0 ? defaultContinueLabel : "Skip apps";
+  return `<h1 id="route-heading" tabindex="-1">Choose apps</h1><p class="compact-lead onboarding-centered-copy">Pick reviewed apps for Home, or skip this for now. Nothing opens during setup.</p><section class="onboarding-app-section"><h2>Detected</h2>${choices(detected, "Detected apps")}</section><section class="onboarding-app-section"><h2>Other apps</h2>${choices(other, "Other apps")}</section><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-app-choice" type="button" ${nativeCatalogBusy ? "disabled" : ""}>${continueLabel}</button></div>`;
 }
 
 async function enterCombinedAppChoice(): Promise<void> {
