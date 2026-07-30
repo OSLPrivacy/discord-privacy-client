@@ -40,6 +40,7 @@ use crate::{Error, Result};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::time::Duration;
 
 /// Rotation proof for an authenticated key change (register
@@ -214,6 +215,45 @@ impl PeerCapabilities {
     }
 }
 
+/// Typed failure for validating a fetched identity key bundle.
+///
+/// The variants intentionally carry no response fields. Bundle responses
+/// include account identifiers and public-key material, so diagnostics stay
+/// categorical and do not echo caller- or server-supplied values.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum IdentityBundleError {
+    MissingRegistrationSignature,
+    MalformedEd25519PublicKey,
+    MalformedRegistrationSignature,
+    UnsupportedCapabilityBitmap,
+    SignatureMismatch,
+}
+
+impl fmt::Display for IdentityBundleError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            IdentityBundleError::MissingRegistrationSignature => {
+                "identity bundle is missing its registration signature"
+            }
+            IdentityBundleError::MalformedEd25519PublicKey => {
+                "identity bundle Ed25519 public key is malformed"
+            }
+            IdentityBundleError::MalformedRegistrationSignature => {
+                "identity bundle registration signature is malformed"
+            }
+            IdentityBundleError::UnsupportedCapabilityBitmap => {
+                "identity bundle capability bitmap is unsupported"
+            }
+            IdentityBundleError::SignatureMismatch => {
+                "identity bundle registration signature does not verify"
+            }
+        };
+        f.write_str(message)
+    }
+}
+
+impl std::error::Error for IdentityBundleError {}
+
 /// Verify the signature over every public key in a fetched identity
 /// record. This is required independently of capability negotiation:
 /// the keyserver is a carrier for the bundle, not its integrity
@@ -223,27 +263,29 @@ impl PeerCapabilities {
 /// legacy clients omitted the field, while newer clients signed an
 /// explicit `0`. Both bind the same key bundle and advertise no
 /// capability, so either signature is accepted for zero only.
-pub fn verify_peer_bundle(resp: &PubkeysResponse) -> bool {
+pub fn validate_peer_bundle(
+    resp: &PubkeysResponse,
+) -> core::result::Result<(), IdentityBundleError> {
     let Some(sig_b64) = resp.registration_sig.as_deref() else {
-        return false;
+        return Err(IdentityBundleError::MissingRegistrationSignature);
     };
-    let Ok(pub_bytes) = STANDARD.decode(&resp.ik_ed25519_pub) else {
-        return false;
-    };
-    let Ok(sig_bytes) = STANDARD.decode(sig_b64) else {
-        return false;
-    };
+    let pub_bytes = STANDARD
+        .decode(&resp.ik_ed25519_pub)
+        .map_err(|_| IdentityBundleError::MalformedEd25519PublicKey)?;
+    let sig_bytes = STANDARD
+        .decode(sig_b64)
+        .map_err(|_| IdentityBundleError::MalformedRegistrationSignature)?;
     let Ok(pub_arr) = <[u8; 32]>::try_from(pub_bytes.as_slice()) else {
-        return false;
+        return Err(IdentityBundleError::MalformedEd25519PublicKey);
     };
     let Ok(sig_arr) = <[u8; 64]>::try_from(sig_bytes.as_slice()) else {
-        return false;
+        return Err(IdentityBundleError::MalformedRegistrationSignature);
     };
     let verifying = crypto::ed25519::PublicKey::from_bytes(pub_arr);
     let signature = crypto::ed25519::Signature::from_bytes(sig_arr);
     let capabilities = resp.rn_capabilities.unwrap_or(0);
     if capabilities > RN_CAP_MAX {
-        return false;
+        return Err(IdentityBundleError::UnsupportedCapabilityBitmap);
     }
     let extended = reg_msg_with_capabilities(
         &resp.user_id,
@@ -257,10 +299,10 @@ pub fn verify_peer_bundle(resp: &PubkeysResponse) -> bool {
         crypto::ed25519::verify(&verifying, &extended, &signature),
         Ok(true)
     ) {
-        return true;
+        return Ok(());
     }
     if capabilities != 0 {
-        return false;
+        return Err(IdentityBundleError::SignatureMismatch);
     }
     let legacy = reg_msg(
         &resp.user_id,
@@ -269,10 +311,20 @@ pub fn verify_peer_bundle(resp: &PubkeysResponse) -> bool {
         &resp.ik_mlkem768_pub,
         resp.ik_ratchet_initial_pub.as_deref(),
     );
-    matches!(
+    if matches!(
         crypto::ed25519::verify(&verifying, &legacy, &signature),
         Ok(true)
-    )
+    ) {
+        Ok(())
+    } else {
+        Err(IdentityBundleError::SignatureMismatch)
+    }
+}
+
+/// Compatibility wrapper for existing callers that only need a fail-closed
+/// boolean.
+pub fn verify_peer_bundle(resp: &PubkeysResponse) -> bool {
+    validate_peer_bundle(resp).is_ok()
 }
 
 /// Verify a peer's advertised capability bitmap against the signature
@@ -1666,4 +1718,118 @@ struct ControlInboxDeleteBody<'a> {
     user_id: &'a str,
     timestamp_ms: i64,
     signature_b64: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::{generate_identity, Identity};
+
+    fn bundle_response(
+        identity: &Identity,
+        served_capabilities: Option<u32>,
+        signed_capabilities: Option<u32>,
+    ) -> PubkeysResponse {
+        let ik_x25519_pub = STANDARD.encode(identity.x25519_public.as_bytes());
+        let ik_ed25519_pub = STANDARD.encode(identity.ed25519_public.as_bytes());
+        let ik_mlkem768_pub = STANDARD.encode(&identity.mlkem_public_bytes[..]);
+        let signed_message = match signed_capabilities {
+            Some(capabilities) => reg_msg_with_capabilities(
+                &identity.user_id,
+                &ik_x25519_pub,
+                &ik_ed25519_pub,
+                &ik_mlkem768_pub,
+                None,
+                capabilities,
+            ),
+            None => reg_msg(
+                &identity.user_id,
+                &ik_x25519_pub,
+                &ik_ed25519_pub,
+                &ik_mlkem768_pub,
+                None,
+            ),
+        };
+        let signature = crypto::ed25519::sign(&identity.ed25519_secret, &signed_message);
+
+        PubkeysResponse {
+            user_id: identity.user_id.clone(),
+            ik_x25519_pub,
+            ik_ed25519_pub,
+            ik_mlkem768_pub,
+            registered_at: "2026-01-01T00:00:00.000Z".to_owned(),
+            last_rotated_at: None,
+            ik_ratchet_initial_pub: None,
+            rn_capabilities: served_capabilities,
+            registration_sig: Some(STANDARD.encode(signature.as_bytes())),
+        }
+    }
+
+    #[test]
+    fn validate_peer_bundle_accepts_signed_legacy_and_zero_capability_forms() {
+        let identity = generate_identity("peer".to_owned());
+
+        let legacy = bundle_response(&identity, None, None);
+        assert_eq!(validate_peer_bundle(&legacy), Ok(()));
+        assert!(verify_peer_bundle(&legacy));
+
+        let explicit_zero = bundle_response(&identity, Some(0), Some(0));
+        assert_eq!(validate_peer_bundle(&explicit_zero), Ok(()));
+        assert!(verify_peer_bundle(&explicit_zero));
+    }
+
+    #[test]
+    fn validate_peer_bundle_reports_missing_or_malformed_signature_material() {
+        let identity = generate_identity("peer".to_owned());
+
+        let mut missing_signature = bundle_response(&identity, None, None);
+        missing_signature.registration_sig = None;
+        assert_eq!(
+            validate_peer_bundle(&missing_signature),
+            Err(IdentityBundleError::MissingRegistrationSignature)
+        );
+
+        let mut malformed_key = bundle_response(&identity, None, None);
+        malformed_key.ik_ed25519_pub = "not base64".to_owned();
+        assert_eq!(
+            validate_peer_bundle(&malformed_key),
+            Err(IdentityBundleError::MalformedEd25519PublicKey)
+        );
+
+        let mut malformed_signature = bundle_response(&identity, None, None);
+        malformed_signature.registration_sig = Some(STANDARD.encode([0x42u8; 63]));
+        assert_eq!(
+            validate_peer_bundle(&malformed_signature),
+            Err(IdentityBundleError::MalformedRegistrationSignature)
+        );
+    }
+
+    #[test]
+    fn validate_peer_bundle_reports_capability_and_signature_failures() {
+        let identity = generate_identity("peer".to_owned());
+
+        let mut unsupported_capability = bundle_response(&identity, Some(RN_CAP_WIRE_RN), Some(0));
+        unsupported_capability.rn_capabilities = Some(RN_CAP_MAX + 1);
+        assert_eq!(
+            validate_peer_bundle(&unsupported_capability),
+            Err(IdentityBundleError::UnsupportedCapabilityBitmap)
+        );
+
+        let tampered_capability = bundle_response(&identity, Some(RN_CAP_WIRE_RN), Some(0));
+        assert_eq!(
+            validate_peer_bundle(&tampered_capability),
+            Err(IdentityBundleError::SignatureMismatch)
+        );
+        assert!(!verify_peer_bundle(&tampered_capability));
+    }
+
+    #[test]
+    fn identity_bundle_error_text_does_not_echo_sensitive_values() {
+        let text = IdentityBundleError::SignatureMismatch.to_string();
+
+        assert!(text.contains("signature"));
+        assert!(!text.contains("peer"));
+        assert!(!text.contains("alice"));
+        assert!(!text.contains('@'));
+    }
 }

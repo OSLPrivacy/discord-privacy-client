@@ -48,9 +48,10 @@ pub use account_ownership_error::AccountOwnershipError;
 pub use burn::{canonical_burn_bytes, sign_burn, BurnScope, BURN_DOMAIN};
 pub use burn_alert::{sign_burn_alert, verify_burn_alert, BurnAlertPayload, BURN_ALERT_DOMAIN};
 pub use client::{
-    BurnResponse, ControlInboxItem, ControlInboxPostResponse, KeyServerClient,
-    LicenseValidateResponse, PrekeyBundleOpk, PrekeyBundleResponse, PubkeysResponse,
-    RegisterResponse, ReplenishResponse, WrappedKeyPostResponse, WrappedKeyResponse,
+    validate_peer_bundle, BurnResponse, ControlInboxItem, ControlInboxPostResponse,
+    IdentityBundleError, KeyServerClient, LicenseValidateResponse, PrekeyBundleOpk,
+    PrekeyBundleResponse, PubkeysResponse, RegisterResponse, ReplenishResponse,
+    WrappedKeyPostResponse, WrappedKeyResponse,
 };
 pub use duress::{
     DuressEngine, DuressError, DuressHandlers, DuressJournal, DuressPaths, DuressReport,
