@@ -18,6 +18,7 @@ use crate::whitelist_state::WhitelistState;
 use crypto::x25519;
 use keystore::{Identity, KeyServerClient};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -184,6 +185,12 @@ pub struct AppState {
     /// refuse prekey-dependent work rather than manufacturing authority.
     pub prekey_state: Mutex<Option<keystore::PrekeyState>>,
     pub keyserver: Mutex<Option<KeyServerClient>>,
+    /// Production duress wipe engine for this launch. It is constructed from
+    /// the active account directory plus the device-level password directory
+    /// during AppState setup, then invoked by password-gate paths that detect
+    /// a duress condition.
+    pub duress_engine: Mutex<keystore::DuressEngine>,
+    pub duress_journal_path: PathBuf,
 
     /// Latest confirmed outcome of this process's remote public-key
     /// registration. This is deliberately launch-local: every launch retries
@@ -383,11 +390,14 @@ pub struct AppState {
 
 impl Default for AppState {
     fn default() -> Self {
+        let (duress_engine, duress_journal_path) = default_production_duress_engine();
         Self {
             account_switch_lock: Mutex::new(()),
             identity: Mutex::new(None),
             prekey_state: Mutex::new(None),
             keyserver: Mutex::new(None),
+            duress_engine: Mutex::new(duress_engine),
+            duress_journal_path,
             cloud_registration_state: AtomicU8::new(CloudRegistrationState::NotAttempted as u8),
             identity_regenerated_this_launch: AtomicBool::new(false),
             registration_alert: Mutex::new(None),
@@ -540,12 +550,78 @@ mod tests {
         state.set_rn_wire_in_enabled(false);
         assert!(!state.rn_wire_in_enabled());
     }
+
+    #[test]
+    fn app_state_constructs_production_duress_engine() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let account_dir = temp.path().join("account");
+        let password_dir = temp.path().join("base");
+        std::fs::create_dir_all(account_dir.join("store")).unwrap();
+        std::fs::create_dir_all(&password_dir).unwrap();
+        std::fs::write(account_dir.join("identity.json"), b"identity").unwrap();
+        std::fs::write(account_dir.join("prekeys.json"), b"prekeys").unwrap();
+        std::fs::write(account_dir.join("store").join("messages.sqlite"), b"cache").unwrap();
+        std::fs::write(password_dir.join("password_marker.json"), b"marker").unwrap();
+
+        let mut config =
+            keystore::ProductionDuressConfig::new(account_dir.clone(), password_dir.clone());
+        config.purge_keyring = Some(Box::new(|| Ok(())));
+        config.wipe_prekeys = Some(Box::new(|| Ok(())));
+        config.wipe_double_ratchet = Some(Box::new(|| Ok(())));
+        config.wipe_sender_keys = Some(Box::new(|| Ok(())));
+        config.wipe_peer_ratchets = Some(Box::new(|| Ok(())));
+        config.zeroize_in_memory = Some(Box::new(|| Ok(())));
+        let parts = keystore::build_production_duress_handlers(config);
+
+        let mut state = AppState::new();
+        state.duress_journal_path = parts.journal_path.clone();
+        *state
+            .duress_engine
+            .lock()
+            .expect("duress_engine mutex poisoned") =
+            keystore::DuressEngine::new(parts.journal_path, parts.paths, parts.handlers);
+
+        assert_eq!(
+            state.duress_journal_path,
+            account_dir.join("duress.journal")
+        );
+        let report = state
+            .duress_engine
+            .lock()
+            .expect("duress_engine mutex poisoned")
+            .execute()
+            .expect("state-held duress engine runs");
+
+        assert!(report.completed);
+        assert!(report.failed_steps().is_empty());
+        assert!(report.skipped_steps().is_empty());
+        assert!(!account_dir.join("identity.json").exists());
+        assert!(!account_dir.join("prekeys.json").exists());
+        assert!(!account_dir.join("store").exists());
+        assert!(!password_dir.join("password_marker.json").exists());
+        assert!(!state.duress_journal_path.exists());
+    }
 }
 
 fn default_rn_session_store() -> crate::wire_rn::RnSessionStore {
     let dir = keystore::osl_config_dir()
         .unwrap_or_else(|_| std::env::temp_dir().join("osl-rn-session-store-unconfigured"));
     crate::wire_rn::RnSessionStore::new(dir.join("rn_sessions"))
+}
+
+fn default_production_duress_engine() -> (keystore::DuressEngine, PathBuf) {
+    let account_dir = keystore::osl_config_dir()
+        .unwrap_or_else(|_| std::env::temp_dir().join("osl-duress-account-unconfigured"));
+    let password_dir = keystore::osl_base_dir().unwrap_or_else(|_| account_dir.clone());
+    let parts = keystore::build_production_duress_handlers(keystore::ProductionDuressConfig::new(
+        account_dir,
+        password_dir,
+    ));
+    let journal_path = parts.journal_path.clone();
+    (
+        keystore::DuressEngine::new(parts.journal_path, parts.paths, parts.handlers),
+        journal_path,
+    )
 }
 
 fn current_unix_seconds() -> u64 {
