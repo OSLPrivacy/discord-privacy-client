@@ -11,6 +11,8 @@
 //! Skipped automatically if `node` isn't on PATH or `npm install`
 //! hasn't been run for the keyserver.
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use keystore::{
     generate_identity, identity_bundle::BundleMergeError, identity_bundle::BundleVerifyPolicy,
     identity_bundle::IdentityBundle, KeyServerClient, PrekeyConfig, PrekeyState,
@@ -133,6 +135,20 @@ fn identity_bundle_for(identity: &keystore::Identity, revision: u64) -> Identity
     bundle
 }
 
+fn decode_prekey_pub(pub_b64: &str) -> [u8; 32] {
+    let bytes = STANDARD.decode(pub_b64).expect("prekey pub is base64");
+    bytes.try_into().expect("prekey pub is exactly 32 bytes")
+}
+
+fn state_opk_public(state: &PrekeyState, id: u32) -> [u8; 32] {
+    state
+        .opk_pool
+        .iter()
+        .find(|entry| entry.id == id)
+        .expect("server returned an OPK id from the published state")
+        .public
+}
+
 #[test]
 fn prekey_round_trip_through_real_keyserver() {
     if skip_if_keyserver_unavailable() {
@@ -149,7 +165,18 @@ fn prekey_round_trip_through_real_keyserver() {
     assert_eq!(alice_resp.user_id, "alice");
     assert_eq!(bob_resp.user_id, "bob");
 
-    // 2. Generate Bob's prekeys + replenish.
+    // 2. Generate independent Alice and Bob prekeys + replenish both.
+    let alice_state = PrekeyState::new(&alice, PrekeyConfig::default(), 1_700_000_000);
+    let alice_replenish_resp = client
+        .replenish_prekeys(
+            &alice,
+            Some(&alice_state.current_spk),
+            &alice_state.opk_pool,
+        )
+        .expect("replenish alice");
+    assert_eq!(alice_replenish_resp.user_id, "alice");
+    assert_eq!(alice_replenish_resp.opks_added, 100);
+
     let mut bob_state = PrekeyState::new(&bob, PrekeyConfig::default(), 1_700_000_000);
     let replenish_resp = client
         .replenish_prekeys(&bob, Some(&bob_state.current_spk), &bob_state.opk_pool)
@@ -167,10 +194,16 @@ fn prekey_round_trip_through_real_keyserver() {
         .fetch_prekey_bundle(&alice, "bob")
         .expect("alice fetches bob bundle");
     assert_eq!(bundle.user_id, "bob");
+    assert_eq!(
+        decode_prekey_pub(&bundle.spk_pub),
+        bob_state.current_spk.public
+    );
     assert_eq!(bundle.remaining_opk_count, 99);
     let opk = bundle.opk.expect("opk should be present");
-    // Server-popped OPK ID should be in the range we generated.
-    assert!(opk.id < 100, "server popped an unknown OPK id: {}", opk.id);
+    assert_eq!(
+        decode_prekey_pub(&opk.pub_b64),
+        state_opk_public(&bob_state, opk.id)
+    );
 
     // 4. Fetch a few more — counts decrement, distinct IDs.
     let bundle2 = client
@@ -179,6 +212,10 @@ fn prekey_round_trip_through_real_keyserver() {
     assert_eq!(bundle2.remaining_opk_count, 98);
     let opk2 = bundle2.opk.unwrap();
     assert_ne!(opk.id, opk2.id);
+    assert_eq!(
+        decode_prekey_pub(&opk2.pub_b64),
+        state_opk_public(&bob_state, opk2.id)
+    );
 
     // 5. Drain Bob below threshold, then replenish through the stateful
     // path. This proves the live server's remaining count can drive
@@ -200,7 +237,28 @@ fn prekey_round_trip_through_real_keyserver() {
         .fetch_prekey_bundle(&alice, "bob")
         .expect("alice fetches bob after top up");
     assert_eq!(replenished.user_id, "bob");
+    assert_eq!(
+        decode_prekey_pub(&replenished.spk_pub),
+        bob_state.current_spk.public
+    );
     assert_eq!(replenished.remaining_opk_count, 99);
+
+    // Alice's pool is separate: Bob's drain and top-up must not mutate
+    // Alice's server-side OPK count or publish Bob's SPK under Alice.
+    let alice_bundle = client
+        .fetch_prekey_bundle(&bob, "alice")
+        .expect("bob fetches alice after bob was replenished");
+    assert_eq!(alice_bundle.user_id, "alice");
+    assert_eq!(
+        decode_prekey_pub(&alice_bundle.spk_pub),
+        alice_state.current_spk.public
+    );
+    assert_eq!(alice_bundle.remaining_opk_count, 99);
+    let alice_opk = alice_bundle.opk.expect("alice OPK should be present");
+    assert_eq!(
+        decode_prekey_pub(&alice_opk.pub_b64),
+        state_opk_public(&alice_state, alice_opk.id)
+    );
 }
 
 #[test]
