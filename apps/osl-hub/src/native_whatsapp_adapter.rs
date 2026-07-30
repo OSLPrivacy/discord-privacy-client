@@ -148,6 +148,59 @@ pub fn discover_whatsapp_pair(
     }
 }
 
+pub fn extract_whatsapp_body_candidates(
+    nodes: &[WhatsAppNode],
+    row_index: usize,
+    max_candidates: usize,
+    max_text_bytes: usize,
+) -> Result<Vec<WhatsAppBodyCandidate>, WhatsAppSelectorError> {
+    let Some(row) = nodes.get(row_index) else {
+        return Err(WhatsAppSelectorError::Missing);
+    };
+    if row.role != WhatsAppRole::Row
+        || !row.visible
+        || !row.bounds.valid()
+        || max_candidates == 0
+        || max_text_bytes == 0
+    {
+        return Err(WhatsAppSelectorError::Invalid);
+    }
+
+    let mut candidates = Vec::new();
+    for index in descendants(nodes, row_index)? {
+        let node = &nodes[index];
+        match node.evidence {
+            WhatsAppNodeEvidence::None => continue,
+            WhatsAppNodeEvidence::AmbiguousBody => return Err(WhatsAppSelectorError::Unsupported),
+            WhatsAppNodeEvidence::ExactBody => {
+                let Some(text) = node.text.as_ref() else {
+                    return Err(WhatsAppSelectorError::Unsupported);
+                };
+                if node.role != WhatsAppRole::Text
+                    || !node.visible
+                    || !node.bounds.contained_by(row.bounds)
+                    || !valid_candidate_text(text, max_text_bytes)
+                {
+                    return Err(WhatsAppSelectorError::Invalid);
+                }
+                if candidates.len() >= max_candidates {
+                    return Err(WhatsAppSelectorError::LimitExceeded);
+                }
+                candidates.push(WhatsAppBodyCandidate {
+                    node_index: index,
+                    text: text.clone(),
+                    body_bounds: node.bounds,
+                });
+            }
+        }
+    }
+
+    if candidates.is_empty() {
+        return Err(WhatsAppSelectorError::Unsupported);
+    }
+    Ok(candidates)
+}
+
 fn whatsapp_composer_candidate(node: &WhatsAppNode, window_bounds: WhatsAppRect) -> bool {
     let conversation_left = window_bounds.left.saturating_add(window_bounds.width() / 3);
     let composer_band_top = window_bounds
@@ -235,6 +288,20 @@ mod tests {
         node
     }
 
+    fn body_text(bounds: WhatsAppRect, text: &str) -> WhatsAppNode {
+        let mut node = WhatsAppNode::structural(WhatsAppRole::Text, bounds);
+        node.evidence = WhatsAppNodeEvidence::ExactBody;
+        node.text = Some(text.to_owned());
+        node
+    }
+
+    fn ambiguous_body(bounds: WhatsAppRect, text: &str) -> WhatsAppNode {
+        let mut node = WhatsAppNode::structural(WhatsAppRole::Text, bounds);
+        node.evidence = WhatsAppNodeEvidence::AmbiguousBody;
+        node.text = Some(text.to_owned());
+        node
+    }
+
     #[test]
     fn whatsapp_pair() {
         let window = rect(0, 0, 1280, 900);
@@ -280,6 +347,63 @@ mod tests {
         assert_eq!(
             discover_whatsapp_pair(&missing, window),
             Err(WhatsAppSelectorError::Missing)
+        );
+    }
+
+    #[test]
+    fn whatsapp_body_candidates() {
+        let mut row = WhatsAppNode::structural(WhatsAppRole::Row, rect(430, 210, 1210, 330));
+        row.children = vec![1, 2, 3, 4];
+        let mut nested = WhatsAppNode::structural(WhatsAppRole::Pane, rect(500, 276, 1000, 322));
+        nested.children = vec![5];
+        let nodes = vec![
+            row,
+            body_text(rect(510, 226, 970, 252), "first exact body"),
+            {
+                let mut timestamp =
+                    WhatsAppNode::structural(WhatsAppRole::Text, rect(1120, 254, 1180, 274));
+                timestamp.text = Some("10:42".to_owned());
+                timestamp
+            },
+            WhatsAppNode::structural(WhatsAppRole::Button, rect(470, 226, 498, 252)),
+            nested,
+            body_text(rect(510, 286, 990, 314), "second exact body"),
+        ];
+
+        let candidates = extract_whatsapp_body_candidates(&nodes, 0, 4, 128)
+            .expect("exact WhatsApp body evidence should be extracted");
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].node_index, 1);
+        assert_eq!(candidates[0].text, "first exact body");
+        assert_eq!(candidates[0].body_bounds, rect(510, 226, 970, 252));
+        assert_eq!(candidates[1].node_index, 5);
+        assert_eq!(candidates[1].text, "second exact body");
+
+        let mut ambiguous = nodes.clone();
+        ambiguous[1] = ambiguous_body(rect(510, 226, 970, 252), "looks like a body");
+        assert_eq!(
+            extract_whatsapp_body_candidates(&ambiguous, 0, 4, 128).map(|value| value.len()),
+            Err(WhatsAppSelectorError::Unsupported)
+        );
+
+        let mut no_exact = nodes.clone();
+        no_exact[1].evidence = WhatsAppNodeEvidence::None;
+        no_exact[5].evidence = WhatsAppNodeEvidence::None;
+        assert_eq!(
+            extract_whatsapp_body_candidates(&no_exact, 0, 4, 128).map(|value| value.len()),
+            Err(WhatsAppSelectorError::Unsupported)
+        );
+
+        let mut invalid = nodes.clone();
+        invalid[5].text = Some("bad\u{0008}body".to_owned());
+        assert_eq!(
+            extract_whatsapp_body_candidates(&invalid, 0, 4, 128).map(|value| value.len()),
+            Err(WhatsAppSelectorError::Invalid)
+        );
+
+        assert_eq!(
+            extract_whatsapp_body_candidates(&nodes, 0, 1, 128).map(|value| value.len()),
+            Err(WhatsAppSelectorError::LimitExceeded)
         );
     }
 }
