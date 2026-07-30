@@ -78,6 +78,48 @@ const REQUIRED_CONDITIONAL_APP_EVIDENCE = [
     reportVerdict: /Outlook inline-reply support as OSL Mail is `unsupported`/i,
   },
 ];
+const REQUIRED_VERSIONED_PUBLIC_SUPPORT_MATRIX = {
+  schemaVersion: 1,
+  matrixVersion: "E7",
+  entries: [
+    {
+      id: "signal_desktop_public",
+      service: "Signal",
+      publicStatus: "coming_soon",
+      claimAllowed: false,
+      evidenceStatus: "qa_foundations_only",
+      evidence: "docs/design/osl-master-decision-2026-07-26.md:805",
+      requiredBoundary: /\bQA foundations only\b.*\bcomplete adapter contract\b.*\btwo-peer exact-build proof\b/i,
+    },
+    {
+      id: "whatsapp_windows_public",
+      service: "WhatsApp",
+      publicStatus: "coming_soon",
+      claimAllowed: false,
+      evidenceStatus: "separate_qa_required",
+      evidence: "docs/design/osl-master-decision-2026-07-26.md:806",
+      requiredBoundary: /\bneeds its own runtime proof\b.*\bcomplete adapter contract\b.*\btwo-peer exact-build proof\b/i,
+    },
+    {
+      id: "telegram_desktop_public",
+      service: "Telegram",
+      publicStatus: "externally_blocked",
+      claimAllowed: false,
+      evidenceStatus: "externally_blocked",
+      evidence: "docs/reports/telegram-adapter-verdict.md#TelegramSupportVerdict",
+      requiredBoundary: /\bsigned-client UI Automation probe\b.*\bstable, text-exposed message rows\b/i,
+    },
+    {
+      id: "osl_mail_public",
+      service: "OSL Mail",
+      publicStatus: "unsupported",
+      claimAllowed: false,
+      evidenceStatus: "unsupported",
+      evidence: "docs/reports/outlook-osl-mail-verdict.md#OutlookOslMailSupportVerdict",
+      requiredBoundary: /\bOutlook is scoped as OSL Mail\b.*\bnot Outlook chat support\b/i,
+    },
+  ],
+};
 
 function repoRelative(filePath) {
   return path.relative(REPO_ROOT, filePath).split(path.sep).join("/");
@@ -95,6 +137,93 @@ function supportMatrixFailure(message) {
   };
 }
 
+function publicSupportMatrixFailure(message) {
+  return {
+    name: "versioned_public_support_matrix",
+    expected: message,
+    actual: "invalid support matrix",
+  };
+}
+
+function validateVersionedPublicSupportMatrix(matrix) {
+  const failures = [];
+  const publicMatrix = matrix.versioned_public_support_matrix;
+
+  if (!publicMatrix || typeof publicMatrix !== "object" || Array.isArray(publicMatrix)) {
+    failures.push(publicSupportMatrixFailure("versioned_public_support_matrix object"));
+    return failures;
+  }
+
+  if (publicMatrix.schema_version !== REQUIRED_VERSIONED_PUBLIC_SUPPORT_MATRIX.schemaVersion) {
+    failures.push(
+      publicSupportMatrixFailure(
+        `versioned_public_support_matrix.schema_version=${REQUIRED_VERSIONED_PUBLIC_SUPPORT_MATRIX.schemaVersion}`,
+      ),
+    );
+  }
+
+  if (publicMatrix.matrix_version !== REQUIRED_VERSIONED_PUBLIC_SUPPORT_MATRIX.matrixVersion) {
+    failures.push(
+      publicSupportMatrixFailure(
+        `versioned_public_support_matrix.matrix_version=${JSON.stringify(REQUIRED_VERSIONED_PUBLIC_SUPPORT_MATRIX.matrixVersion)}`,
+      ),
+    );
+  }
+
+  if (!Array.isArray(publicMatrix.entries)) {
+    failures.push(publicSupportMatrixFailure("versioned_public_support_matrix.entries array"));
+    return failures;
+  }
+
+  const entriesById = new Map();
+  for (const row of publicMatrix.entries) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) {
+      failures.push(publicSupportMatrixFailure("each versioned public matrix row is an object"));
+      continue;
+    }
+    if (typeof row.id !== "string" || row.id.length === 0) {
+      failures.push(publicSupportMatrixFailure("each versioned public matrix row has a non-empty id"));
+      continue;
+    }
+    if (entriesById.has(row.id)) {
+      failures.push(publicSupportMatrixFailure(`unique versioned public matrix id ${row.id}`));
+      continue;
+    }
+    entriesById.set(row.id, row);
+  }
+
+  for (const required of REQUIRED_VERSIONED_PUBLIC_SUPPORT_MATRIX.entries) {
+    const row = entriesById.get(required.id);
+    if (!row) {
+      failures.push(publicSupportMatrixFailure(`row ${required.id}`));
+      continue;
+    }
+
+    for (const [field, expected] of [
+      ["service", required.service],
+      ["public_status", required.publicStatus],
+      ["claim_allowed", required.claimAllowed],
+      ["evidence_status", required.evidenceStatus],
+      ["evidence", required.evidence],
+    ]) {
+      if (row[field] !== expected) {
+        failures.push(
+          publicSupportMatrixFailure(`${required.id}.${field}=${JSON.stringify(expected)}`),
+        );
+      }
+    }
+
+    if (
+      typeof row.support_boundary !== "string" ||
+      !required.requiredBoundary.test(row.support_boundary)
+    ) {
+      failures.push(publicSupportMatrixFailure(`${required.id}.support_boundary matches public scope`));
+    }
+  }
+
+  return failures;
+}
+
 async function validateSupportMatrix() {
   const failures = [];
   let matrix;
@@ -110,6 +239,8 @@ async function validateSupportMatrix() {
     failures.push(supportMatrixFailure("top-level support matrix object"));
     return failures;
   }
+
+  failures.push(...validateVersionedPublicSupportMatrix(matrix));
 
   if (!Array.isArray(matrix.conditional_app_evidence)) {
     failures.push(supportMatrixFailure("conditional_app_evidence array"));
@@ -2518,6 +2649,9 @@ async function runSelfTest() {
         + "## D · NOT ELIGIBLE — these phrases may not appear anywhere\n\n"
         + "| Forbidden phrase | Why it is forbidden |\n|---|---|\n"
         + `${allowlist.slice(sectionEnd + 1)}`;
+  const productionSupportMatrix = JSON.parse(await readUtf8(SUPPORT_MATRIX_PATH));
+  const supportMatrixWithoutPublic = JSON.parse(JSON.stringify(productionSupportMatrix));
+  delete supportMatrixWithoutPublic.versioned_public_support_matrix;
   const inputCases = [
     {
       name: "real docs allowlist supplies every required attachment ban",
@@ -2567,6 +2701,14 @@ async function runSelfTest() {
       passed:
         parseBannedPhrases(starvedSection).length === 0
         && bannedPhraseInputFailures(parseBannedPhrases(starvedSection)).length > 0,
+    },
+    {
+      name: "versioned_public_support_matrix",
+      passed:
+        validateVersionedPublicSupportMatrix(productionSupportMatrix).length === 0
+        && validateVersionedPublicSupportMatrix(supportMatrixWithoutPublic).some(
+          (failure) => failure.name === "versioned_public_support_matrix",
+        ),
     },
   ];
   for (const inputCase of inputCases) {

@@ -3235,7 +3235,7 @@ function activeHomeApp(): HomeAppCatalogEntry | null {
 
 function mailComposerEncryptionScope(app: HomeAppCatalogEntry | null): string {
   if (app?.serviceId !== "email" || app.provider === null) return "";
-  return `<aside class="mail-composer-encryption-scope" data-mail-composer-encryption-scope="${app.id}" role="note" aria-label="Email protection scope"><strong>Before you send</strong><small>${escapeHtml(app.displayName)} protects this app account. Ordinary external email is not OSL end-to-end encrypted. Use OSL Chat for verified friends.</small></aside>`;
+  return `<aside class="mail-composer-encryption-scope" data-mail-composer-encryption-scope="${app.id}" role="note" aria-label="Email protection scope"><strong>Before you send</strong><small>${escapeHtml(app.displayName)} protects this app account. Ordinary external email stays ordinary interoperable email. Use OSL Chat for verified friends.</small></aside>`;
 }
 
 function activeHomeAppName(): string {
