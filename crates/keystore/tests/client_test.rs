@@ -685,6 +685,11 @@ fn signed_pubkeys_response(
         registration_sig: caps
             .filter(|c| *c != 0)
             .map(|_| STANDARD.encode(sig.as_bytes())),
+        identity_scheme: None,
+        identity_bundle_version: None,
+        identity_revision: None,
+        ik_root_ed25519_pub: None,
+        identity_bundle_proof_sig: None,
     }
 }
 

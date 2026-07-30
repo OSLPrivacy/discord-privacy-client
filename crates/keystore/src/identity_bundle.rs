@@ -42,24 +42,31 @@
 //!
 //! ## Scope
 //!
-//! This module defines the policy/contract only:
+//! This module defines the construction and policy contract:
 //! - [`IdentityBundle`] — the authenticated unit (all four fields
 //!   travel together under one signature; there is no way to
 //!   construct one that authenticates only a subset).
 //! - [`BundleField`] — names which fields the policy requires
 //!   authenticated, matching the A2 requirement exactly.
+//! - [`IdentityBundle::from_identity_and_pubkeys_response`] — builds
+//!   this client's local full bundle from a local identity and a
+//!   scheme-1 fetched pubkeys response, refusing absent authority or
+//!   mismatched public fields.
 //! - [`BundleVerifyPolicy`] — the verifier.
 //!
-//! It performs no network I/O and is not wired into `client.rs`, the
-//! TOFU store, or any caller. It also does not reuse
-//! `client::PubkeysResponse` directly (a wire DTO with server-shaped
-//! optionality) — a later wiring unit builds an [`IdentityBundle`]
-//! from either a locally-held [`crate::identity::Identity`] or a
-//! fetched bundle response.
+//! It performs no network I/O and is not wired into the TOFU store or
+//! fetch path here; callers provide the fetched
+//! [`crate::client::PubkeysResponse`] explicitly.
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use crypto::ed25519;
+use std::fmt;
+
+const CANONICAL_IDENTITY_SCHEME: u32 = 1;
+const CANONICAL_IDENTITY_BUNDLE_VERSION: u32 = 1;
+const JS_MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+const FULL_BUNDLE_DOMAIN: &[u8] = b"OSL-FULL-IDENTITY-BUNDLE-v1\0";
 
 /// Fields of a full identity bundle that MUST be covered by the one
 /// authenticating signature before any of them is used. This is the
@@ -95,10 +102,10 @@ impl BundleField {
 ///
 /// Key fields are raw fixed-size bytes (matching how
 /// `identity::Identity` and `client::PubkeysResponse` already carry
-/// them) rather than the typed `crypto::*` wrappers, so a later
-/// wiring unit can build one of these from either side without
-/// re-deriving anything here.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// them) rather than the typed `crypto::*` wrappers, so construction
+/// from local identity state and fetched response data never re-derives
+/// public keys.
+#[derive(Clone, PartialEq, Eq)]
 pub struct IdentityBundle {
     pub ed25519_identity_pub: [u8; ed25519::PUBLIC_KEY_SIZE],
     pub x25519_identity_pub: [u8; 32],
@@ -116,6 +123,19 @@ pub struct IdentityBundle {
     /// produced by the bundle owner's OWN identity-signing secret —
     /// never the keyserver's.
     pub signature: [u8; ed25519::SIGNATURE_SIZE],
+}
+
+impl fmt::Debug for IdentityBundle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IdentityBundle")
+            .field("ed25519_identity_pub", &"<redacted>")
+            .field("x25519_identity_pub", &"<redacted>")
+            .field("mlkem768_identity_pub", &"<redacted>")
+            .field("capability_bundle", &self.capability_bundle)
+            .field("revision", &self.revision)
+            .field("signature", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Domain-separation + version tag for the bytes [`IdentityBundle`]
@@ -144,6 +164,304 @@ impl IdentityBundle {
         buf.extend_from_slice(&self.capability_bundle.to_be_bytes());
         buf.extend_from_slice(&self.revision.to_be_bytes());
         buf
+    }
+}
+
+/// Why [`IdentityBundle::from_identity_and_pubkeys_response`] refused
+/// to construct a local full bundle.
+///
+/// Variants intentionally carry no account identifiers, key material,
+/// signatures, or caller-supplied strings. A full-bundle construction
+/// failure is actionable by category; echoing identity values in
+/// `Debug`/`Display` would widen the diagnostic surface for no benefit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum IdentityBundleConstructionError {
+    #[error("pubkeys response account identifier does not match the local identity")]
+    LocalUserIdMismatch,
+    #[error("pubkeys response is missing canonical identity authority fields")]
+    MissingCanonicalAuthority,
+    #[error("pubkeys response declares an unsupported identity scheme")]
+    UnsupportedIdentityScheme,
+    #[error("pubkeys response declares an unsupported identity bundle version")]
+    UnsupportedIdentityBundleVersion,
+    #[error("pubkeys response identity revision is invalid")]
+    InvalidIdentityRevision,
+    #[error("pubkeys response is missing the signed capability bundle")]
+    MissingCapabilityBundle,
+    #[error("pubkeys response capability bundle is unsupported")]
+    UnsupportedCapabilityBundle,
+    #[error("pubkeys response identity field {field:?} is malformed")]
+    MalformedField { field: BundleField },
+    #[error("pubkeys response ratchet bootstrap key is malformed")]
+    MalformedRatchetInitialKey,
+    #[error("pubkeys response root identity key is malformed")]
+    MalformedRootIdentityKey,
+    #[error("pubkeys response proof signature is malformed")]
+    MalformedProofSignature,
+    #[error("pubkeys response identity field {field:?} does not match the local identity")]
+    LocalIdentityMismatch { field: BundleField },
+    #[error("pubkeys response ratchet bootstrap key does not match the local identity")]
+    LocalRatchetMismatch,
+    #[error("pubkeys response root identity proof does not verify")]
+    RootProofInvalid,
+    #[error("pubkeys response current identity proof does not verify")]
+    CurrentProofInvalid,
+}
+
+fn u32be(value: u32) -> [u8; 4] {
+    value.to_be_bytes()
+}
+
+fn lp_extend(buf: &mut Vec<u8>, bytes: &[u8]) {
+    buf.extend_from_slice(&u32be(bytes.len() as u32));
+    buf.extend_from_slice(bytes);
+}
+
+fn canonical_scheme1_bundle_bytes(
+    resp: &crate::client::PubkeysResponse,
+    root_ed25519_pub: &[u8; ed25519::PUBLIC_KEY_SIZE],
+    x25519_identity_pub: &[u8; 32],
+    ed25519_identity_pub: &[u8; ed25519::PUBLIC_KEY_SIZE],
+    mlkem768_identity_pub: &[u8; crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE],
+    ratchet_initial_pub: Option<&[u8; 32]>,
+    capability_bundle: u32,
+    revision: u64,
+) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(
+        4 + FULL_BUNDLE_DOMAIN.len()
+            + 4
+            + resp.user_id.len()
+            + 4
+            + 4
+            + 4
+            + revision.to_string().len()
+            + 4
+            + ed25519::PUBLIC_KEY_SIZE
+            + 4
+            + 32
+            + 4
+            + ed25519::PUBLIC_KEY_SIZE
+            + 4
+            + crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE
+            + 4
+            + ratchet_initial_pub.map_or(0, |_| 32)
+            + 4,
+    );
+    lp_extend(&mut buf, FULL_BUNDLE_DOMAIN);
+    lp_extend(&mut buf, resp.user_id.as_bytes());
+    buf.extend_from_slice(&u32be(CANONICAL_IDENTITY_SCHEME));
+    buf.extend_from_slice(&u32be(CANONICAL_IDENTITY_BUNDLE_VERSION));
+    lp_extend(&mut buf, revision.to_string().as_bytes());
+    lp_extend(&mut buf, root_ed25519_pub);
+    lp_extend(&mut buf, x25519_identity_pub);
+    lp_extend(&mut buf, ed25519_identity_pub);
+    lp_extend(&mut buf, mlkem768_identity_pub);
+    match ratchet_initial_pub {
+        Some(key) => lp_extend(&mut buf, key),
+        None => lp_extend(&mut buf, &[]),
+    }
+    buf.extend_from_slice(&u32be(capability_bundle));
+    buf
+}
+
+fn decode_canonical_fixed<const N: usize>(
+    value: &str,
+    field: BundleField,
+) -> Result<[u8; N], IdentityBundleConstructionError> {
+    let bytes = STANDARD
+        .decode(value)
+        .map_err(|_| IdentityBundleConstructionError::MalformedField { field })?;
+    if STANDARD.encode(&bytes) != value {
+        return Err(IdentityBundleConstructionError::MalformedField { field });
+    }
+    <[u8; N]>::try_from(bytes.as_slice())
+        .map_err(|_| IdentityBundleConstructionError::MalformedField { field })
+}
+
+fn decode_canonical_root(
+    value: &str,
+) -> Result<[u8; ed25519::PUBLIC_KEY_SIZE], IdentityBundleConstructionError> {
+    let bytes = STANDARD
+        .decode(value)
+        .map_err(|_| IdentityBundleConstructionError::MalformedRootIdentityKey)?;
+    if STANDARD.encode(&bytes) != value {
+        return Err(IdentityBundleConstructionError::MalformedRootIdentityKey);
+    }
+    <[u8; ed25519::PUBLIC_KEY_SIZE]>::try_from(bytes.as_slice())
+        .map_err(|_| IdentityBundleConstructionError::MalformedRootIdentityKey)
+}
+
+fn decode_canonical_signature(
+    value: &str,
+) -> Result<[u8; ed25519::SIGNATURE_SIZE], IdentityBundleConstructionError> {
+    let bytes = STANDARD
+        .decode(value)
+        .map_err(|_| IdentityBundleConstructionError::MalformedProofSignature)?;
+    if STANDARD.encode(&bytes) != value {
+        return Err(IdentityBundleConstructionError::MalformedProofSignature);
+    }
+    <[u8; ed25519::SIGNATURE_SIZE]>::try_from(bytes.as_slice())
+        .map_err(|_| IdentityBundleConstructionError::MalformedProofSignature)
+}
+
+fn decode_canonical_ratchet(value: &str) -> Result<[u8; 32], IdentityBundleConstructionError> {
+    let bytes = STANDARD
+        .decode(value)
+        .map_err(|_| IdentityBundleConstructionError::MalformedRatchetInitialKey)?;
+    if STANDARD.encode(&bytes) != value {
+        return Err(IdentityBundleConstructionError::MalformedRatchetInitialKey);
+    }
+    <[u8; 32]>::try_from(bytes.as_slice())
+        .map_err(|_| IdentityBundleConstructionError::MalformedRatchetInitialKey)
+}
+
+fn verify_signature(
+    public_key: [u8; ed25519::PUBLIC_KEY_SIZE],
+    message: &[u8],
+    signature: [u8; ed25519::SIGNATURE_SIZE],
+) -> bool {
+    let public_key = ed25519::PublicKey::from_bytes(public_key);
+    let signature = ed25519::Signature::from_bytes(signature);
+    matches!(ed25519::verify(&public_key, message, &signature), Ok(true))
+}
+
+impl IdentityBundle {
+    /// Construct this client's local full identity bundle from the
+    /// local secret-bearing [`crate::identity::Identity`] and the
+    /// canonical scheme-1 `/v1/pubkeys` response fetched back from the
+    /// keyserver.
+    ///
+    /// The fetched response is not trusted as authority by itself:
+    /// this constructor requires the scheme-1 root proof and current
+    /// key proof over the Worker's canonical full-bundle bytes, then
+    /// requires every public key in the response to byte-match the
+    /// local identity. Missing scheme, revision, capability bitmap, or
+    /// proof material is a refusal, never a legacy permission. The
+    /// returned [`IdentityBundle`] is finally signed with the local
+    /// Ed25519 secret over this crate's [`IdentityBundle::signed_bytes`]
+    /// format so [`BundleVerifyPolicy`] can verify it later.
+    pub fn from_identity_and_pubkeys_response(
+        identity: &crate::identity::Identity,
+        resp: &crate::client::PubkeysResponse,
+    ) -> Result<Self, IdentityBundleConstructionError> {
+        Self::from_identity_and_pubkeys_resp(identity, resp)
+    }
+
+    /// Short alias retained for the unit-level construction pipeline
+    /// name used in acceptance tests.
+    pub fn from_identity_and_pubkeys_resp(
+        identity: &crate::identity::Identity,
+        resp: &crate::client::PubkeysResponse,
+    ) -> Result<Self, IdentityBundleConstructionError> {
+        if resp.user_id != identity.user_id {
+            return Err(IdentityBundleConstructionError::LocalUserIdMismatch);
+        }
+        match resp.identity_scheme {
+            Some(CANONICAL_IDENTITY_SCHEME) => {}
+            Some(_) => return Err(IdentityBundleConstructionError::UnsupportedIdentityScheme),
+            None => return Err(IdentityBundleConstructionError::MissingCanonicalAuthority),
+        }
+        match resp.identity_bundle_version {
+            Some(CANONICAL_IDENTITY_BUNDLE_VERSION) => {}
+            Some(_) => {
+                return Err(IdentityBundleConstructionError::UnsupportedIdentityBundleVersion)
+            }
+            None => return Err(IdentityBundleConstructionError::MissingCanonicalAuthority),
+        }
+        let revision = resp
+            .identity_revision
+            .ok_or(IdentityBundleConstructionError::MissingCanonicalAuthority)?;
+        if revision == 0 || revision > JS_MAX_SAFE_INTEGER {
+            return Err(IdentityBundleConstructionError::InvalidIdentityRevision);
+        }
+        let capability_bundle = resp
+            .rn_capabilities
+            .ok_or(IdentityBundleConstructionError::MissingCapabilityBundle)?;
+        if capability_bundle > crate::client::RN_CAP_MAX {
+            return Err(IdentityBundleConstructionError::UnsupportedCapabilityBundle);
+        }
+
+        let root_b64 = resp
+            .ik_root_ed25519_pub
+            .as_deref()
+            .ok_or(IdentityBundleConstructionError::MissingCanonicalAuthority)?;
+        let root_ed25519_pub = decode_canonical_root(root_b64)?;
+        let root_proof_b64 = resp
+            .identity_bundle_proof_sig
+            .as_deref()
+            .ok_or(IdentityBundleConstructionError::MissingCanonicalAuthority)?;
+        let root_proof = decode_canonical_signature(root_proof_b64)?;
+        let current_proof_b64 = resp
+            .registration_sig
+            .as_deref()
+            .ok_or(IdentityBundleConstructionError::MissingCanonicalAuthority)?;
+        let current_proof = decode_canonical_signature(current_proof_b64)?;
+
+        let x25519_identity_pub =
+            decode_canonical_fixed::<32>(&resp.ik_x25519_pub, BundleField::X25519IdentityKey)?;
+        let ed25519_identity_pub = decode_canonical_fixed::<{ ed25519::PUBLIC_KEY_SIZE }>(
+            &resp.ik_ed25519_pub,
+            BundleField::Ed25519IdentityKey,
+        )?;
+        let mlkem768_identity_pub = decode_canonical_fixed::<
+            { crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE },
+        >(
+            &resp.ik_mlkem768_pub, BundleField::MlKem768IdentityKey
+        )?;
+        let ratchet_initial_pub = resp
+            .ik_ratchet_initial_pub
+            .as_deref()
+            .map(decode_canonical_ratchet)
+            .transpose()?;
+
+        let canonical = canonical_scheme1_bundle_bytes(
+            resp,
+            &root_ed25519_pub,
+            &x25519_identity_pub,
+            &ed25519_identity_pub,
+            &mlkem768_identity_pub,
+            ratchet_initial_pub.as_ref(),
+            capability_bundle,
+            revision,
+        );
+        if !verify_signature(root_ed25519_pub, &canonical, root_proof) {
+            return Err(IdentityBundleConstructionError::RootProofInvalid);
+        }
+        if !verify_signature(ed25519_identity_pub, &canonical, current_proof) {
+            return Err(IdentityBundleConstructionError::CurrentProofInvalid);
+        }
+
+        if x25519_identity_pub != *identity.x25519_public.as_bytes() {
+            return Err(IdentityBundleConstructionError::LocalIdentityMismatch {
+                field: BundleField::X25519IdentityKey,
+            });
+        }
+        if ed25519_identity_pub != *identity.ed25519_public.as_bytes() {
+            return Err(IdentityBundleConstructionError::LocalIdentityMismatch {
+                field: BundleField::Ed25519IdentityKey,
+            });
+        }
+        if mlkem768_identity_pub != identity.mlkem_public_bytes {
+            return Err(IdentityBundleConstructionError::LocalIdentityMismatch {
+                field: BundleField::MlKem768IdentityKey,
+            });
+        }
+        let local_ratchet_pub = identity.ratchet_initial_pub.map(|key| *key.as_bytes());
+        if ratchet_initial_pub != local_ratchet_pub {
+            return Err(IdentityBundleConstructionError::LocalRatchetMismatch);
+        }
+
+        let mut bundle = IdentityBundle {
+            ed25519_identity_pub,
+            x25519_identity_pub,
+            mlkem768_identity_pub,
+            capability_bundle,
+            revision,
+            signature: [0u8; ed25519::SIGNATURE_SIZE],
+        };
+        let signature = ed25519::sign(&identity.ed25519_secret, &bundle.signed_bytes());
+        bundle.signature = *signature.as_bytes();
+        Ok(bundle)
     }
 }
 
@@ -275,7 +593,10 @@ pub enum BundleMergeError {
         "cannot merge prekey material into identity bundle revision {bundle_revision} — caller \
          has already accepted revision {last_known} or newer"
     )]
-    StaleBundleRevision { bundle_revision: u64, last_known: u64 },
+    StaleBundleRevision {
+        bundle_revision: u64,
+        last_known: u64,
+    },
     /// A response identity-key field is not valid base64, or does not
     /// decode to the expected fixed length.
     #[error("prekey-bundle response {field:?} is malformed (not valid fixed-length base64)")]
@@ -355,9 +676,9 @@ impl IdentityBundle {
                 field: BundleField::Ed25519IdentityKey,
             });
         };
-        let Ok(resp_ed25519_arr) = <[u8; ed25519::PUBLIC_KEY_SIZE]>::try_from(
-            resp_ed25519_bytes.as_slice(),
-        ) else {
+        let Ok(resp_ed25519_arr) =
+            <[u8; ed25519::PUBLIC_KEY_SIZE]>::try_from(resp_ed25519_bytes.as_slice())
+        else {
             return Err(BundleMergeError::MalformedField {
                 field: BundleField::Ed25519IdentityKey,
             });
@@ -417,8 +738,7 @@ impl IdentityBundle {
         let Ok(spk_sig_bytes) = STANDARD.decode(&response.spk_signature) else {
             return Err(BundleMergeError::MalformedSpk);
         };
-        let Ok(spk_sig_arr) =
-            <[u8; ed25519::SIGNATURE_SIZE]>::try_from(spk_sig_bytes.as_slice())
+        let Ok(spk_sig_arr) = <[u8; ed25519::SIGNATURE_SIZE]>::try_from(spk_sig_bytes.as_slice())
         else {
             return Err(BundleMergeError::MalformedSpk);
         };
@@ -480,6 +800,135 @@ mod tests {
         let sig = ed25519::sign(signer_secret, &bundle.signed_bytes());
         bundle.signature = *sig.as_bytes();
         bundle
+    }
+
+    fn scheme1_pubkeys_response(
+        identity: &crate::identity::Identity,
+        revision: u64,
+        capability_bundle: u32,
+    ) -> crate::client::PubkeysResponse {
+        let mut resp = crate::client::PubkeysResponse {
+            user_id: identity.user_id.clone(),
+            ik_x25519_pub: STANDARD.encode(identity.x25519_public.as_bytes()),
+            ik_ed25519_pub: STANDARD.encode(identity.ed25519_public.as_bytes()),
+            ik_mlkem768_pub: STANDARD.encode(identity.mlkem_public_bytes),
+            registered_at: "2026-07-29T00:00:00.000Z".to_string(),
+            last_rotated_at: None,
+            ik_ratchet_initial_pub: identity
+                .ratchet_initial_pub
+                .map(|key| STANDARD.encode(key.as_bytes())),
+            rn_capabilities: Some(capability_bundle),
+            registration_sig: None,
+            identity_scheme: Some(CANONICAL_IDENTITY_SCHEME),
+            identity_bundle_version: Some(CANONICAL_IDENTITY_BUNDLE_VERSION),
+            identity_revision: Some(revision),
+            ik_root_ed25519_pub: Some(STANDARD.encode(identity.ed25519_public.as_bytes())),
+            identity_bundle_proof_sig: None,
+        };
+        sign_scheme1_pubkeys_response(identity, &mut resp);
+        resp
+    }
+
+    fn sign_scheme1_pubkeys_response(
+        signer: &crate::identity::Identity,
+        resp: &mut crate::client::PubkeysResponse,
+    ) {
+        let root = decode_canonical_root(resp.ik_root_ed25519_pub.as_deref().unwrap()).unwrap();
+        let x25519 =
+            decode_canonical_fixed::<32>(&resp.ik_x25519_pub, BundleField::X25519IdentityKey)
+                .unwrap();
+        let current_ed25519 = decode_canonical_fixed::<{ ed25519::PUBLIC_KEY_SIZE }>(
+            &resp.ik_ed25519_pub,
+            BundleField::Ed25519IdentityKey,
+        )
+        .unwrap();
+        let mlkem = decode_canonical_fixed::<{ crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE }>(
+            &resp.ik_mlkem768_pub,
+            BundleField::MlKem768IdentityKey,
+        )
+        .unwrap();
+        let ratchet = resp
+            .ik_ratchet_initial_pub
+            .as_deref()
+            .map(decode_canonical_ratchet)
+            .transpose()
+            .unwrap();
+        let canonical = canonical_scheme1_bundle_bytes(
+            resp,
+            &root,
+            &x25519,
+            &current_ed25519,
+            &mlkem,
+            ratchet.as_ref(),
+            resp.rn_capabilities.unwrap(),
+            resp.identity_revision.unwrap(),
+        );
+        let sig = ed25519::sign(&signer.ed25519_secret, &canonical);
+        let sig_b64 = STANDARD.encode(sig.as_bytes());
+        resp.registration_sig = Some(sig_b64.clone());
+        resp.identity_bundle_proof_sig = Some(sig_b64);
+    }
+
+    #[test]
+    fn constructs_identity_bundle_from_local_identity_and_pubkeys_response() {
+        let identity = crate::identity::generate_identity("local-identity".to_string());
+        let response = scheme1_pubkeys_response(&identity, 7, crate::client::RN_CAP_WIRE_RN);
+
+        let bundle = IdentityBundle::from_identity_and_pubkeys_resp(&identity, &response)
+            .expect("scheme-1 response matching local identity must construct");
+
+        assert_eq!(
+            bundle.ed25519_identity_pub,
+            *identity.ed25519_public.as_bytes()
+        );
+        assert_eq!(
+            bundle.x25519_identity_pub,
+            *identity.x25519_public.as_bytes()
+        );
+        assert_eq!(bundle.mlkem768_identity_pub, identity.mlkem_public_bytes);
+        assert_eq!(bundle.capability_bundle, crate::client::RN_CAP_WIRE_RN);
+        assert_eq!(bundle.revision, 7);
+        assert_eq!(
+            BundleVerifyPolicy::new().verify(&bundle, &identity.ed25519_public, None),
+            Ok(7)
+        );
+    }
+
+    #[test]
+    fn construction_refuses_substituted_fetched_identity_field() {
+        let identity = crate::identity::generate_identity("local-identity".to_string());
+        let mut response = scheme1_pubkeys_response(&identity, 7, crate::client::RN_CAP_WIRE_RN);
+        response.ik_x25519_pub = STANDARD.encode([0x55u8; 32]);
+        sign_scheme1_pubkeys_response(&identity, &mut response);
+
+        let result = IdentityBundle::from_identity_and_pubkeys_response(&identity, &response);
+
+        assert_eq!(
+            result,
+            Err(IdentityBundleConstructionError::LocalIdentityMismatch {
+                field: BundleField::X25519IdentityKey,
+            })
+        );
+    }
+
+    #[test]
+    fn construction_requires_canonical_authority_and_capability_binding() {
+        let identity = crate::identity::generate_identity("local-identity".to_string());
+        let mut missing_authority =
+            scheme1_pubkeys_response(&identity, 7, crate::client::RN_CAP_WIRE_RN);
+        missing_authority.identity_bundle_proof_sig = None;
+        assert_eq!(
+            IdentityBundle::from_identity_and_pubkeys_resp(&identity, &missing_authority),
+            Err(IdentityBundleConstructionError::MissingCanonicalAuthority)
+        );
+
+        let mut missing_capability =
+            scheme1_pubkeys_response(&identity, 7, crate::client::RN_CAP_WIRE_RN);
+        missing_capability.rn_capabilities = None;
+        assert_eq!(
+            IdentityBundle::from_identity_and_pubkeys_resp(&identity, &missing_capability),
+            Err(IdentityBundleConstructionError::MissingCapabilityBundle)
+        );
     }
 
     #[test]
@@ -658,8 +1107,7 @@ mod tests {
         // onto it would make the stale bundle look current again.
         let stale_bundle = signed_bundle(&owner_secret, &owner_pub, 3);
         let spk_pub = [0x33; 32];
-        let response =
-            matching_prekey_response(&stale_bundle, &owner_secret, spk_pub, None, 10);
+        let response = matching_prekey_response(&stale_bundle, &owner_secret, spk_pub, None, 10);
 
         let result = stale_bundle.merge_prekey_bundle_response(&response, Some(5));
 

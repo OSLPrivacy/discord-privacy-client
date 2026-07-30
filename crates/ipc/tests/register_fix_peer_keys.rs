@@ -71,6 +71,11 @@ fn peer_pubkeys_response() -> PubkeysResponse {
         // `PeerCapabilities::Absent`.
         rn_capabilities: None,
         registration_sig: Some(STANDARD.encode(sig.as_bytes())),
+        identity_scheme: None,
+        identity_bundle_version: None,
+        identity_revision: None,
+        ik_root_ed25519_pub: None,
+        identity_bundle_proof_sig: None,
     }
 }
 

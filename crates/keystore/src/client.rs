@@ -416,7 +416,7 @@ pub fn rot_msg(
     .into_bytes()
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct PubkeysResponse {
     pub user_id: String,
     pub ik_x25519_pub: String,
@@ -441,14 +441,70 @@ pub struct PubkeysResponse {
     /// assume capable".
     #[serde(default)]
     pub rn_capabilities: Option<u32>,
-    /// Ed25519 signature over the REG_MSG this record reconstructs to,
-    /// served only when `rn_capabilities` is non-zero.
+    /// Ed25519 signature for this fetched record. Legacy scheme-0
+    /// records use REG_MSG. Canonical scheme-1 records use the
+    /// current key's proof over the full canonical identity bundle.
     ///
-    /// Never trust `rn_capabilities` without checking this. Pass the
-    /// whole response to [`verify_peer_capabilities`] rather than
-    /// reading either field directly.
+    /// Never trust `rn_capabilities` without checking the signature.
+    /// For scheme-0 records use [`verify_peer_capabilities`]; for
+    /// scheme-1 records use
+    /// [`crate::identity_bundle::IdentityBundle::from_identity_and_pubkeys_response`].
     #[serde(default)]
     pub registration_sig: Option<String>,
+    /// Canonical identity rollout scheme. Absent for legacy scheme-0
+    /// identities.
+    #[serde(default)]
+    pub identity_scheme: Option<u32>,
+    /// Version of the root-authenticated full identity bundle. Absent
+    /// for legacy scheme-0 identities.
+    #[serde(default)]
+    pub identity_bundle_version: Option<u32>,
+    /// Monotonic full-bundle revision. Absent for legacy scheme-0
+    /// identities.
+    #[serde(default)]
+    pub identity_revision: Option<u64>,
+    /// Immutable root Ed25519 public key for scheme-1 identities.
+    #[serde(default)]
+    pub ik_root_ed25519_pub: Option<String>,
+    /// Root Ed25519 signature over the canonical scheme-1 bundle.
+    #[serde(default)]
+    pub identity_bundle_proof_sig: Option<String>,
+}
+
+impl fmt::Debug for PubkeysResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PubkeysResponse")
+            .field("user_id", &"<redacted>")
+            .field("ik_x25519_pub", &"<redacted>")
+            .field("ik_ed25519_pub", &"<redacted>")
+            .field("ik_mlkem768_pub", &"<redacted>")
+            .field("registered_at", &self.registered_at)
+            .field("last_rotated_at", &self.last_rotated_at)
+            .field(
+                "ik_ratchet_initial_pub",
+                &self.ik_ratchet_initial_pub.as_ref().map(|_| "<redacted>"),
+            )
+            .field("rn_capabilities", &self.rn_capabilities)
+            .field(
+                "registration_sig",
+                &self.registration_sig.as_ref().map(|_| "<redacted>"),
+            )
+            .field("identity_scheme", &self.identity_scheme)
+            .field("identity_bundle_version", &self.identity_bundle_version)
+            .field("identity_revision", &self.identity_revision)
+            .field(
+                "ik_root_ed25519_pub",
+                &self.ik_root_ed25519_pub.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "identity_bundle_proof_sig",
+                &self
+                    .identity_bundle_proof_sig
+                    .as_ref()
+                    .map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 /// One-time prekey returned by `/v1/prekey-bundle/:user_id`. `None`
@@ -1762,6 +1818,11 @@ mod tests {
             ik_ratchet_initial_pub: None,
             rn_capabilities: served_capabilities,
             registration_sig: Some(STANDARD.encode(signature.as_bytes())),
+            identity_scheme: None,
+            identity_bundle_version: None,
+            identity_revision: None,
+            ik_root_ed25519_pub: None,
+            identity_bundle_proof_sig: None,
         }
     }
 
