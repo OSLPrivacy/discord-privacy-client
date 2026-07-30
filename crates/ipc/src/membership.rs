@@ -455,7 +455,7 @@ mod tests {
         let mut m = ScopeMembership::new();
         m.note_server_channel_member(SRV, CH1, A);
 
-        write_scope_membership(&path, &m).unwrap();
+        super::write_scope_membership(&path, &m).unwrap();
 
         let raw = std::fs::read(&path).unwrap();
         assert!(crate::main_password::has_enc_magic(&raw));
@@ -473,14 +473,14 @@ mod tests {
         let path = dir.path().join("membership.json");
         let mut m = ScopeMembership::new();
         m.note_server_channel_member(SRV, CH1, A);
-        write_scope_membership(&path, &m).unwrap();
+        super::write_scope_membership(&path, &m).unwrap();
         let encrypted = std::fs::read(&path).unwrap();
         assert!(crate::main_password::has_enc_magic(&encrypted));
 
         crate::main_password::set_file_storage_key(None);
         let mut replacement = ScopeMembership::new();
         replacement.note_gc_member(GC, B);
-        let result = write_scope_membership(&path, &replacement);
+        let result = super::write_scope_membership(&path, &replacement);
 
         assert!(result.is_err());
         assert_eq!(
