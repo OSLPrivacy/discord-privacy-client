@@ -4,6 +4,10 @@ import { fileURLToPath } from "node:url";
 const runsKeyserverCfSpec = process.argv.some((arg) =>
   arg.includes("keyserver-cf/") || arg.includes("keyserver-cf\\")
 );
+const runsKeyserverCfScriptSpec = process.argv.some((arg) =>
+  arg.includes("keyserver-cf/scripts/") ||
+  arg.includes("keyserver-cf\\scripts\\")
+);
 const repoRoot = path.dirname(fileURLToPath(import.meta.url));
 
 function runnerVitestRoot(): string {
@@ -19,6 +23,15 @@ function runnerVitestRoot(): string {
 
 export default async function config() {
   if (!runsKeyserverCfSpec) return {};
+  if (runsKeyserverCfScriptSpec) {
+    return {
+      root: path.join(repoRoot, "keyserver-cf"),
+      test: {
+        environment: "node",
+        include: ["scripts/**/*.test.ts"],
+      },
+    };
+  }
 
   const workersPoolUrl = new URL(
     "./keyserver-cf/node_modules/@cloudflare/vitest-pool-workers/dist/pool/index.mjs",
