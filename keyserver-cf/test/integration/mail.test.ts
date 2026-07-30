@@ -179,6 +179,42 @@ describe("OSL Mail Worker", () => {
     expect(response.status).toBe(404);
   });
 
+  it("m3 sends OSL-to-OSL Mail with recipient consent", async () => {
+    const alice = await createIdentity("alice-m3-id", "alice_m3");
+    const bob = await createIdentity("bob-m3-id", "bob_m3");
+    const carol = await createIdentity("carol-m3-id", "carol_m3");
+    expect((await signedPost("/v1/mail/address", "PROVISION", alice, { username: "alice_m3", rotate: false })).status).toBe(201);
+    expect((await signedPost("/v1/mail/address", "PROVISION", bob, { username: "bob_m3", rotate: false })).status).toBe(201);
+    expect((await signedPost("/v1/mail/address", "PROVISION", carol, { username: "carol_m3", rotate: false })).status).toBe(201);
+
+    const carolPayload = oslPayload("bob_m3@oslprivacy.com", "carol ciphertext");
+    expect((await signedPost("/v1/mail/send/osl", "SEND-OSL", carol, carolPayload)).status).toBe(403);
+    expect((await signedPost("/v1/mail/list", "LIST", bob, { limit: 10 }).then((response) => response.json()) as { messages: unknown[] }).messages)
+      .toHaveLength(0);
+
+    expect((await signedPost("/v1/mail/consent", "CONSENT", bob, { sender_user_id: alice.userId, allowed: true })).status).toBe(200);
+    const alicePayload = oslPayload("bob_m3@oslprivacy.com", "alice ciphertext");
+    const delivered = await signedPost("/v1/mail/send/osl", "SEND-OSL", alice, alicePayload);
+    expect(delivered.status).toBe(200);
+    const delivery = await delivered.json() as { message_id: string; accepted: boolean; replay: boolean };
+    expect(delivery).toMatchObject({ accepted: true, replay: false });
+
+    const listed = await signedPost("/v1/mail/list", "LIST", bob, { limit: 10 }).then((response) => response.json()) as {
+      messages: Array<{ message_id: string; sender_user_id: string; kind: string }>;
+    };
+    expect(listed.messages).toHaveLength(1);
+    expect(listed.messages[0]).toMatchObject({
+      message_id: delivery.message_id,
+      sender_user_id: alice.userId,
+      kind: "osl_e2ee",
+    });
+    const fetched = await signedPost("/v1/mail/fetch", "FETCH", bob, { message_id: delivery.message_id });
+    expect(await fetched.json()).toMatchObject({
+      ciphertext_b64: alicePayload.ciphertext_b64,
+      recipient_key_fingerprint: alicePayload.recipient_key_fingerprint,
+    });
+  });
+
   it("qualifies the OSL-to-OSL lifecycle from provisioning through burn", async () => {
     const alice = await createIdentity("alice-life-id", "alice_life");
     const bob = await createIdentity("bob-life-id", "bob_life");
@@ -427,6 +463,16 @@ async function replaceUsername(userId: string, username: string): Promise<void> 
 async function mailEpochCount(): Promise<number> {
   const row = await env.DB.prepare("SELECT COUNT(*) count FROM mail_address_epochs").first<{ count: number }>();
   return row?.count ?? 0;
+}
+
+function oslPayload(recipientAddress: string, plaintextMarker: string): Record<string, unknown> {
+  return {
+    recipient_address: recipientAddress,
+    opaque_thread_token: `thread${base64Encode(new TextEncoder().encode(plaintextMarker)).replaceAll(/[^A-Za-z0-9]/g, "").slice(0, 24)}`,
+    ciphertext_b64: base64Encode(new TextEncoder().encode(plaintextMarker)),
+    envelope: { version: 1, nonce_b64: "bm9uY2U=" },
+    recipient_key_fingerprint: `fingerprint-${plaintextMarker.replaceAll(/[^a-z0-9]/gi, "-").toLowerCase()}`,
+  };
 }
 
 async function signedPost(
