@@ -7,6 +7,7 @@ receipt fields never substitute for them.
 
 from __future__ import annotations
 
+import base64
 import copy
 from dataclasses import dataclass
 import hashlib
@@ -15,6 +16,7 @@ from os import PathLike
 import os
 import re
 from typing import Any, Literal
+import unittest
 
 from ledger import LedgerError, OneShotLedger, pipe_binding_digest
 from schema import (
@@ -25,7 +27,9 @@ from schema import (
     TARGET_KEYS,
     canonical_json,
     parse_receipt,
+    seal_receipt,
     sha256_hex,
+    target_binding_digest,
     validate_process_binding,
     validate_target,
 )
@@ -801,3 +805,234 @@ def verify_receipt(
         point_delta=0,
         receipt_frame_sha256=raw_digest,
     )
+
+
+SELFTEST_NOW = 1_800_000_000_000
+SELFTEST_CHALLENGE = "11" * 32
+
+
+def _selftest_process(
+    pid: int,
+    start: int,
+    path: str,
+    digest_byte: str,
+) -> dict[str, Any]:
+    return {
+        "pid": pid,
+        "processStartTime100ns": start,
+        "sessionId": 2,
+        "executablePath": path,
+        "executableSha256": digest_byte * 64,
+        "fileIdentity": {
+            "volumeSerialNumber": 7,
+            "fileIndex": pid * 10,
+            "fileSize": 5_000_000 + pid,
+            "lastWriteTime100ns": 133_000_000_000_000_000 + pid,
+        },
+    }
+
+
+def _selftest_receipt() -> dict[str, Any]:
+    emitter = _selftest_process(
+        4242,
+        133_100_000_000_000_000,
+        r"C:\Program Files\OSL\osl-privacy-hub.exe",
+        "a",
+    )
+    target = {
+        **_selftest_process(
+            7331,
+            133_100_000_000_000_100,
+            r"C:\Users\Owner\AppData\Local\Discord\app-1.2.3\Discord.exe",
+            "b",
+        ),
+        "bindingSha256": "",
+        "hwnd": 0x123456,
+        "rootHwnd": 0x123456,
+        "hostGeneration": 9,
+        "publisher": "Discord Inc.",
+    }
+    target["bindingSha256"] = target_binding_digest(target)
+    binding = target["bindingSha256"]
+    carrier_bytes = b"ordinary cover text\nsecond line"
+    carrier_digest = sha256_hex(carrier_bytes)
+    carrier_utf16_len = len(carrier_bytes.decode("utf-8").encode("utf-16-le")) // 2
+    empty_digest = sha256_hex(b"")
+    receipt = {
+        "schema": "osl.c4.native-placement-receipt",
+        "version": 3,
+        "evidenceKind": "native-placement",
+        "challenge": SELFTEST_CHALLENGE,
+        "emittedAtUnixMs": SELFTEST_NOW + 1_500,
+        "monotonicStagesMs": {
+            "challengeClaimed": 0,
+            "preSendReadback": 300,
+            "sendInjected": 500,
+            "postContextRevalidated": 900,
+            "receiptEmitted": 1_000,
+        },
+        "emitter": emitter,
+        "build": {
+            "features": ["core", "desktop"],
+            "debugAssertions": False,
+            "targetOs": "windows",
+            "targetArch": "x86_64",
+            "profile": "release",
+        },
+        "target": target,
+        "carrier": {
+            "targetBindingSha256": binding,
+            "utf8B64": base64.b64encode(carrier_bytes).decode("ascii"),
+            "sha256": carrier_digest,
+            "byteLength": len(carrier_bytes),
+            "utf16Length": carrier_utf16_len,
+        },
+        "preSend": {
+            "targetBindingSha256": binding,
+            "readback": {
+                "targetBindingSha256": binding,
+                "classification": "exact",
+                "complete": True,
+                "sha256": carrier_digest,
+                "byteLength": len(carrier_bytes),
+                "utf16Length": carrier_utf16_len,
+            },
+            "foreground": {
+                "targetBindingSha256": binding,
+                "foregroundHwnd": target["hwnd"],
+                "foregroundRootHwnd": target["rootHwnd"],
+                "foregroundPid": target["pid"],
+                "targetRootHwnd": target["rootHwnd"],
+                "keyboardFocusProven": True,
+                "targetOwnedByTrustedProcess": True,
+            },
+        },
+        "action": {
+            "targetBindingSha256": binding,
+            "mechanism": "sendinput_enter",
+            "attempted": True,
+            "acceptedInputCount": 2,
+            "enterCertainty": "injected_once",
+            "retryPolicy": "never_auto_retry",
+            "actionSequence": 1,
+        },
+        "postSend": {
+            "targetBindingSha256": binding,
+            "readback": {
+                "targetBindingSha256": binding,
+                "classification": "empty",
+                "complete": True,
+                "sha256": empty_digest,
+                "byteLength": 0,
+                "utf16Length": 0,
+            },
+            "hostRevalidated": True,
+            "overlayContextUnchanged": True,
+            "carrierConsumed": True,
+            "sentRowProven": True,
+            "rowDelta": 1,
+            "status": "sent",
+        },
+        "receiptDigestSha256": "",
+    }
+    return seal_receipt(receipt)
+
+
+def _selftest_context(receipt: dict[str, Any]) -> VerificationContext:
+    return VerificationContext(
+        challenge=SELFTEST_CHALLENGE,
+        issued_at_unix_ms=SELFTEST_NOW,
+        now_unix_ms=SELFTEST_NOW + 2_000,
+        expires_at_unix_ms=SELFTEST_NOW + 60_000,
+        source="synthetic",
+        expected_emitter=copy.deepcopy(receipt["emitter"]),
+        pipe_client=copy.deepcopy(receipt["emitter"]),
+        expected_target=copy.deepcopy(receipt["target"]),
+        pipe_first_instance=True,
+        pipe_remote_clients_rejected=True,
+        pipe_acl_exact_user=True,
+    )
+
+
+class _VerifySelfTests(unittest.TestCase):
+    def context(self) -> None:
+        receipt = _selftest_receipt()
+        encoded = canonical_json(receipt)
+        good_context = _selftest_context(receipt)
+        verdict = verify_receipt(encoded, good_context)
+        self.assertTrue(verdict.parser_crypto_valid)
+
+        cases: dict[str, dict[str, Any]] = {
+            "missing expected emitter": {
+                **good_context.__dict__,
+                "expected_emitter": None,
+            },
+            "missing pipe client": {
+                **good_context.__dict__,
+                "pipe_client": None,
+            },
+            "missing expected target": {
+                **good_context.__dict__,
+                "expected_target": None,
+            },
+        }
+        mismatched_emitter = copy.deepcopy(good_context.expected_emitter)
+        mismatched_emitter["pid"] += 1
+        cases["receipt emitter differs from expected emitter"] = {
+            **good_context.__dict__,
+            "expected_emitter": mismatched_emitter,
+        }
+        mismatched_pipe_client = copy.deepcopy(good_context.pipe_client)
+        mismatched_pipe_client["processStartTime100ns"] += 1
+        cases["pipe client differs from expected emitter"] = {
+            **good_context.__dict__,
+            "pipe_client": mismatched_pipe_client,
+        }
+        mismatched_target = copy.deepcopy(good_context.expected_target)
+        mismatched_target["hwnd"] += 1
+        cases["Discord target differs from expected target"] = {
+            **good_context.__dict__,
+            "expected_target": mismatched_target,
+        }
+
+        for name, fields in cases.items():
+            with self.subTest(name):
+                with self.assertRaises(VerificationError):
+                    verify_receipt(encoded, VerificationContext(**fields))
+
+    def synthetic(self) -> None:
+        receipt = _selftest_receipt()
+        encoded = canonical_json(receipt)
+        synthetic_context = _selftest_context(receipt)
+
+        verdict = verify_receipt(encoded, synthetic_context)
+        self.assertEqual(verdict.status, "synthetic-parser-crypto-valid")
+        self.assertTrue(verdict.parser_crypto_valid)
+        self.assertFalse(verdict.runtime_receipt_accepted)
+        self.assertFalse(verdict.full_c4_success)
+        self.assertEqual(verdict.point_delta, 0)
+
+        with self.assertRaises(VerificationError):
+            verify_receipt(encoded, synthetic_context, ledger=object())  # type: ignore[arg-type]
+        with self.assertRaises(VerificationError):
+            verify_receipt(
+                encoded,
+                synthetic_context,
+                filesystem_authority_verifier=object(),  # type: ignore[arg-type]
+            )
+
+
+def load_tests(
+    loader: unittest.TestLoader,
+    tests: unittest.TestSuite,
+    pattern: str | None,
+) -> unittest.TestSuite:
+    del loader, tests, pattern
+    suite = unittest.TestSuite()
+    suite.addTest(_VerifySelfTests("context"))
+    suite.addTest(_VerifySelfTests("synthetic"))
+    return suite
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
