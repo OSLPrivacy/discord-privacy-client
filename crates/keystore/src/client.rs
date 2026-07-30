@@ -25,15 +25,15 @@ use crate::control_inbox::{
     sign_control_inbox_delete, sign_control_inbox_get, sign_control_inbox_get_filtered,
     sign_control_inbox_post_lane, sign_sender_filter_floor_get,
 };
-use crate::sender_filter_rollout::{
-    validate_sender_filter_capability_floor_observation, SenderFilterCapabilityFloor,
-    SenderFilterCapabilityFloorObservation, SENDER_FILTER_CAPABILITY_VERSION,
-};
 use crate::identity::Identity;
 use crate::prekeys::{
     sign_replenish_batch, OpkEntry, PrekeyState, ReplenishOpk, ReplenishSpk, SpkEntry,
 };
 use crate::proof_challenge::{ProofChallenge, PROOF_CHALLENGE_NONCE_BYTES};
+use crate::sender_filter_rollout::{
+    validate_sender_filter_capability_floor_observation, SenderFilterCapabilityFloor,
+    SenderFilterCapabilityFloorObservation, SENDER_FILTER_CAPABILITY_VERSION,
+};
 use crate::signed_get::{sign_prekey_bundle_get, sign_wrapped_key_get};
 use crate::unregister::sign_unregister;
 use crate::wrapped_key::{sign_wrapped_key_post, WrappedKeyUpload};
@@ -1508,23 +1508,25 @@ impl KeyServerClient {
         &self,
     ) -> Result<ControlInboxSenderFilterCapability> {
         let response = self.send_request("GET", "/v1/healthz", None)?;
-        let value: serde_json::Value = serde_json::from_slice(&response.body).map_err(|_| {
-            Error::Transport("control-inbox capability response is not exact JSON".into())
-        })?;
-        if response.status == 200 && value == serde_json::json!({ "ok": true }) {
-            return Ok(ControlInboxSenderFilterCapability::Legacy);
-        }
+        let value: HealthzCapabilityResponse =
+            serde_json::from_slice(&response.body).map_err(|_| {
+                Error::Transport("control-inbox capability response is not exact JSON".into())
+            })?;
         if response.status == 200
-            && value
-                == serde_json::json!({
-                    "ok": true,
-                    "capabilities": {
-                        "control_inbox_sender_disposition":
-                            SENDER_FILTER_CAPABILITY_VERSION
-                    }
-                })
+            && value.ok
+            && value.capabilities.control_inbox_sender_disposition
+                == Some(SENDER_FILTER_CAPABILITY_VERSION)
         {
             return Ok(ControlInboxSenderFilterCapability::Version1);
+        }
+        if response.status == 200
+            && value.ok
+            && value
+                .capabilities
+                .control_inbox_sender_disposition
+                .is_none()
+        {
+            return Ok(ControlInboxSenderFilterCapability::Legacy);
         }
         Err(Error::Transport(
             "control-inbox sender-filter capability is unavailable, malformed, or transitional"
@@ -1772,6 +1774,19 @@ struct HttpResponse {
 enum ControlInboxSenderFilterCapability {
     Legacy,
     Version1,
+}
+
+#[derive(Deserialize, Default)]
+struct HealthzCapabilities {
+    #[serde(default)]
+    control_inbox_sender_disposition: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct HealthzCapabilityResponse {
+    ok: bool,
+    #[serde(default)]
+    capabilities: HealthzCapabilities,
 }
 
 fn check_2xx(resp: &HttpResponse) -> Result<()> {

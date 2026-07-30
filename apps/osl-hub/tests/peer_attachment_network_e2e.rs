@@ -1107,6 +1107,16 @@ fn serve_legacy_request(
     now: i64,
 ) -> Vec<u8> {
     match (method, path) {
+        ("GET", "/v1/healthz") => json_response(
+            200,
+            json!({
+                "ok": true,
+                "capabilities": {
+                    "control_inbox_sender_disposition": 1,
+                    "control_inbox_eviction_signal": 1,
+                },
+            }),
+        ),
         ("POST", "/v1/blob") => {
             let id = state.next_hex(8);
             let fetch_token = headers

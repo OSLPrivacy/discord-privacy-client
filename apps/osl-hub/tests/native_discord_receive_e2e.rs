@@ -324,6 +324,16 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
     let path_without_query = path.split('?').next().unwrap_or(&path);
     let now = now_secs();
     let response = match (method.as_str(), path_without_query) {
+        ("GET", "/v1/healthz") => json_response(
+            200,
+            json!({
+                "ok": true,
+                "capabilities": {
+                    "control_inbox_sender_disposition": 1,
+                    "control_inbox_eviction_signal": 1,
+                },
+            }),
+        ),
         ("POST", "/v1/blob") => {
             let mut state = state.lock().unwrap();
             state.next_id += 1;

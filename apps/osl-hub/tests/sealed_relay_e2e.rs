@@ -196,6 +196,16 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
     let path_without_query = path.split('?').next().unwrap_or(&path);
     let now = now_secs();
     let response = match (method.as_str(), path_without_query) {
+        ("GET", "/v1/healthz") => json_response(
+            200,
+            json!({
+                "ok": true,
+                "capabilities": {
+                    "control_inbox_sender_disposition": 1,
+                    "control_inbox_eviction_signal": 1,
+                },
+            }),
+        ),
         ("POST", "/v1/blob") => {
             let mut state = state.lock().unwrap();
             state.next_id += 1;
@@ -254,13 +264,23 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
             state.inbox.push(row.clone());
             json_response(200, json!({ "id": row.id, "expires_at": now + 3600 }))
         }
-        ("GET", path) if path.starts_with("/v1/control-inbox/") => {
-            let recipient = path.trim_start_matches("/v1/control-inbox/");
+        ("GET", route) if route.starts_with("/v1/control-inbox/") => {
+            let target = url::Url::parse(&format!("http://relay.invalid{path}"))
+                .expect("parse control-inbox request target");
+            let recipient = target.path().trim_start_matches("/v1/control-inbox/");
+            let sender = target
+                .query_pairs()
+                .find_map(|(key, value)| (key == "sender").then(|| value.into_owned()));
             let state = state.lock().unwrap();
             let items = state
                 .inbox
                 .iter()
                 .filter(|row| row.recipient_id == recipient)
+                .filter(|row| {
+                    sender
+                        .as_deref()
+                        .is_none_or(|requested| row.sender_id == requested)
+                })
                 .map(|row| {
                     json!({
                         "id": row.id,
@@ -271,7 +291,22 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
                     })
                 })
                 .collect::<Vec<_>>();
-            json_response(200, json!({ "items": items }))
+            match sender {
+                Some(sender) => json_response(
+                    200,
+                    json!({
+                        "items": items,
+                        "filtered_sender_id": sender,
+                        "filtered_sender_delivery": {
+                            "live": items.len(),
+                            "retryable": 0,
+                            "quarantined": 0,
+                            "retired": 0,
+                        },
+                    }),
+                ),
+                None => json_response(200, json!({ "items": items })),
+            }
         }
         ("DELETE", path) if path.starts_with("/v1/control-inbox/") => {
             let id = path.trim_start_matches("/v1/control-inbox/");
