@@ -302,6 +302,15 @@ const SUPPORT_MATRIX_PUBLIC_PROOF_NAME = "Gate public claims against exact suppo
 const PUBLIC_SUPPORT_LIMITATION_RE =
   /\b(?:coming\s+(?:soon|later)|externally\s+blocked|blocked|unavailable|unsupported|not\s+(?:available|supported|ready|proved|proven|qualified)|not\s+yet|cannot|can't|must\s+refuse|refuses?|planned|future|later|until|requires?\s+(?:a\s+)?(?:future|separate|new|verified)|no\s+(?:current|release)\s+support)\b/i;
 const PUBLIC_SUPPORT_ALLOWED_STATUSES = new Set(["supported", "verified_live"]);
+const IMPLEMENTATION_CONCEPT_PATTERNS = [
+  /\bkey\s*server\b/i,
+  /\bkeyserver\b/i,
+  /\bratchets?\b/i,
+  /\bbrowser\s+profiles?\b/i,
+  /\bprovider\s+adapters?\b/i,
+];
+const PUBLIC_HTML_FRAGMENT_RE =
+  /<\s*(?:a|button|details|div|fieldset|footer|form|h[1-6]|header|label|li|main|nav|option|p|section|select|small|span|strong|summary|textarea)\b|data-public-claim\s*=/i;
 
 const CHAT_APP_EVIDENCE_SCHEMA = "osl-chat-app-evidence-v1";
 const SUPPORT_MATRIX_SCHEMA = "osl-support-matrix-v1";
@@ -2357,6 +2366,23 @@ function validateSupportMatrixClaims(file, fragments, publicClaimServices) {
   return violations;
 }
 
+function semanticImplementationConceptSpans(source, normalized) {
+  if (!PUBLIC_HTML_FRAGMENT_RE.test(source)) {
+    return [];
+  }
+
+  const spans = [];
+  for (const pattern of IMPLEMENTATION_CONCEPT_PATTERNS) {
+    for (const match of normalized.matchAll(new RegExp(pattern.source, "gi"))) {
+      spans.push({
+        start: match.index ?? 0,
+        end: (match.index ?? 0) + match[0].length,
+      });
+    }
+  }
+  return spans;
+}
+
 function countNewlinesBefore(text, index) {
   let count = 0;
   for (let i = 0; i < index; i += 1) {
@@ -2503,6 +2529,20 @@ function analyseFragments(file, fragments, bannedPhrases, publicClaimServices = 
         file,
         line: fragment.line + countNewlinesBefore(fragment.text, sourceIndex),
         phrase: "Scrub capability overclaim",
+        excerpt: excerptAround(
+          fragment.text,
+          sourceIndex,
+          Math.max(1, span.end - span.start),
+        ),
+      });
+    }
+
+    for (const span of semanticImplementationConceptSpans(fragment.text, lower)) {
+      const sourceIndex = normalized.sourceIndexes[span.start] ?? 0;
+      violations.push({
+        file,
+        line: fragment.line + countNewlinesBefore(fragment.text, sourceIndex),
+        phrase: "implementation concept in public copy",
         excerpt: excerptAround(
           fragment.text,
           sourceIndex,
@@ -4122,6 +4162,13 @@ async function runSelfTest() {
         + "| Forbidden phrase | Why it is forbidden |\n|---|---|\n"
         + `${allowlist.slice(sectionEnd + 1)}`;
   const productionSupportMatrix = JSON.parse(await readUtf8(SUPPORT_MATRIX_PATH));
+  const productionConditionalRows = new Map(
+    Array.isArray(productionSupportMatrix.conditional_app_evidence)
+      ? productionSupportMatrix.conditional_app_evidence
+        .filter((row) => row && typeof row === "object" && typeof row.id === "string")
+        .map((row) => [row.id, row])
+      : [],
+  );
   const supportMatrixWithoutPublic = JSON.parse(JSON.stringify(productionSupportMatrix));
   delete supportMatrixWithoutPublic.versioned_public_support_matrix;
   const supportMatrixWithoutChatEvidence = JSON.parse(JSON.stringify(productionSupportMatrix));
@@ -4129,11 +4176,84 @@ async function runSelfTest() {
   const supportMatrixWithForgedPublicClaim = JSON.parse(JSON.stringify(productionSupportMatrix));
   supportMatrixWithForgedPublicClaim.versioned_public_support_matrix.rows
     .find((row) => row.id === "signal_desktop_public").claim_allowed = true;
+  const claimGateWorkflowWithoutSelfTest = tsTestWorkflow.replace(
+    /\n\s+node scripts\/check-app-claims\.mjs --self-test\n/,
+    "\n",
+  );
   const claimGateWorkflowWithoutScan = tsTestWorkflow.replace(
     /\n\s+node scripts\/check-app-claims\.mjs\n/,
     "\n",
   );
+  const minimalForbiddenPhraseAllowlist = [
+    "# Fixture",
+    "## D · NOT ELIGIBLE — these phrases may not appear anywhere",
+    "",
+    "| Forbidden phrase | Why it is forbidden |",
+    "|---|---|",
+    '| **"Cryptographic burn" / "permanent ciphertext"** | unearned burn wording |',
+    "",
+    "## E · Status mapping",
+  ].join("\n");
+  const minimalForbiddenPhrases = parseBannedPhrases(minimalForbiddenPhraseAllowlist);
   const inputCases = [
+    {
+      name: "Gate public claims through the allowlist self-test before release.",
+      passed:
+        validateClaimGateWorkflow(tsTestWorkflow).length === 0
+        && validateClaimGateWorkflow(claimGateWorkflowWithoutSelfTest).some(
+          (failure) => failure.includes("self-test"),
+        )
+        && validateClaimGateWorkflow(claimGateWorkflowWithoutScan).some(
+          (failure) => failure.includes("repository scan"),
+        ),
+    },
+    {
+      name: "Bind banned public phrases into the app-claim parser.",
+      passed:
+        minimalForbiddenPhrases.some((phrase) => phrase.normalized === "cryptographic burn")
+        && minimalForbiddenPhrases.some((phrase) => phrase.normalized === "permanent ciphertext")
+        && analyseFragments(
+          "self-test/minimal-forbidden-phrases",
+          [{ text: "This build offers cryptographic burn.", line: 1 }],
+          minimalForbiddenPhrases,
+        ).some((violation) => violation.phrase === "Cryptographic burn")
+        && analyseFragments(
+          "self-test/minimal-forbidden-phrases",
+          [{ text: "This build offers local deletion.", line: 1 }],
+          minimalForbiddenPhrases,
+        ).length === 0,
+    },
+    {
+      name: "Scan repository copy without exposing implementation concepts to users.",
+      passed:
+        analyseFragments(
+          "self-test/public-copy",
+          [{ text: '<button data-public-claim="Open keyserver settings">Keyserver settings</button>', line: 1 }],
+          bannedPhrases,
+        ).some((violation) => violation.phrase === "implementation concept in public copy")
+        && analyseFragments(
+          "self-test/public-copy",
+          [{ text: "<button>Open protected messages</button>", line: 1 }],
+          bannedPhrases,
+        ).length === 0
+        && extractTypeScriptStrings('import secret from "keyserver";\n// "ratchet"\nconst label = "<button>Open protected messages</button>";')
+          .every((fragment) => !/\b(?:keyserver|ratchet)\b/i.test(fragment.text)),
+    },
+    {
+      name: SUPPORT_MATRIX_PUBLIC_PROOF_NAME,
+      passed:
+        supportMatrixPublicClaimProofFailures(productionConditionalRows).length === 0
+        && validateSupportMatrixClaims(
+          "self-test/exact-support-evidence",
+          [{ text: "Signal is supported for protected messaging.", line: 1 }],
+          new Set(),
+        ).some((violation) => violation.phrase.includes("Signal support claim"))
+        && validateSupportMatrixClaims(
+          "self-test/exact-support-evidence",
+          [{ text: "Signal is supported for protected messaging.", line: 1 }],
+          new Set(["Signal"]),
+        ).length === 0,
+    },
     {
       name: "Claim-gate-in-app-copy-and-README",
       passed:

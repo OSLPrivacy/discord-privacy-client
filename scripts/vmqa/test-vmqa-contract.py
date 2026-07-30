@@ -1258,5 +1258,62 @@ class CleanupContractTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
 
+def _freeze_the_retained_vmqa_evidence_schema(
+    self: CleanupContractTests,
+) -> None:
+    retained = {
+        "request.json": self.root / "request.json",
+        "verdict.json": self.root / "verdict.json",
+    }
+    clean_bytes = {name: path.read_bytes() for name, path in retained.items()}
+
+    def restore() -> None:
+        for name, payload in clean_bytes.items():
+            retained[name].write_bytes(payload)
+
+    self.assertEqual(self._verify().returncode, 0)
+
+    request = json.loads(clean_bytes["request.json"].decode("utf-8"))
+    request["operatorEmail"] = "schema-test@example.invalid"
+    self._write("request.json", request)
+    result = self._verify()
+    self.assertEqual(result.returncode, 9, result.stderr)
+    self.assertIn("request fields are not exact", result.stderr)
+    self.assertNotIn("schema-test@example.invalid", result.stderr)
+    restore()
+
+    verdict = json.loads(clean_bytes["verdict.json"].decode("utf-8"))
+    del verdict["agentSha"]
+    self._write("verdict.json", verdict)
+    result = self._verify()
+    self.assertEqual(result.returncode, 9, result.stderr)
+    self.assertIn("verdict fields are not exact", result.stderr)
+    restore()
+
+    verdict = json.loads(clean_bytes["verdict.json"].decode("utf-8"))
+    verdict["steps"][0]["facts"]["rawText"] = "private VMQA row text"
+    self._write("verdict.json", verdict)
+    result = self._verify()
+    self.assertEqual(result.returncode, 9, result.stderr)
+    self.assertIn("verdict.steps[0].facts fields are not exact", result.stderr)
+    self.assertNotIn("private VMQA row text", result.stderr)
+
+
+setattr(
+    CleanupContractTests,
+    "Freeze the retained VMQA evidence schema",
+    _freeze_the_retained_vmqa_evidence_schema,
+)
+
+
+def load_tests(
+    loader: unittest.TestLoader,
+    tests: unittest.TestSuite,
+    pattern: str | None,
+) -> unittest.TestSuite:
+    tests.addTest(CleanupContractTests("Freeze the retained VMQA evidence schema"))
+    return tests
+
+
 if __name__ == "__main__":
     unittest.main()

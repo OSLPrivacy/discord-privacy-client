@@ -163,5 +163,49 @@ class AccessibilityBenchRedactionTests(unittest.TestCase):
         self.assertIn("authority evidence is incomplete", authority_reason)
 
 
+def _reject_content_bearing_accessibility_bench_artifacts(
+    self: AccessibilityBenchRedactionTests,
+) -> None:
+    self.assertIsNone(REDACTION.reject_content_fields(positive_evidence()))
+
+    content_text = "user-visible row text must not survive"
+    reason = self.reject(
+        lambda evidence: evidence["artifacts"][0].update(
+            containsUserContent=True,
+            transcriptText=content_text,
+        )
+    )
+    self.assertIn("containsUserContent", reason)
+    self.assertNotIn(content_text, reason)
+
+    reason = self.reject(
+        lambda evidence: evidence["artifacts"][0].update(
+            messageContentSha256="e" * 64
+        )
+    )
+    self.assertIn("content-bearing evidence field", reason)
+    self.assertNotIn("e" * 64, reason)
+
+
+setattr(
+    AccessibilityBenchRedactionTests,
+    "Reject content-bearing accessibility bench artifacts",
+    _reject_content_bearing_accessibility_bench_artifacts,
+)
+
+
+def load_tests(
+    loader: unittest.TestLoader,
+    tests: unittest.TestSuite,
+    pattern: str | None,
+) -> unittest.TestSuite:
+    tests.addTest(
+        AccessibilityBenchRedactionTests(
+            "Reject content-bearing accessibility bench artifacts"
+        )
+    )
+    return tests
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
