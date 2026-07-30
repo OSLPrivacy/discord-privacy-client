@@ -923,7 +923,7 @@ pub fn mark_inactivity_timer_activity() {
     mark_inactivity_timer_activity_at(Instant::now());
 }
 
-fn mark_inactivity_timer_activity_at(now: Instant) {
+pub(crate) fn mark_inactivity_timer_activity_at(now: Instant) {
     if let Some(timer) = inactivity_auto_lock_slot()
         .lock()
         .expect("inactivity_auto_lock mutex poisoned")
@@ -937,7 +937,7 @@ pub fn run_inactivity_auto_lock_timer() -> bool {
     run_inactivity_auto_lock_timer_at(Instant::now())
 }
 
-fn run_inactivity_auto_lock_timer_at(now: Instant) -> bool {
+pub(crate) fn run_inactivity_auto_lock_timer_at(now: Instant) -> bool {
     let should_lock = {
         let mut timer = inactivity_auto_lock_slot()
             .lock()
