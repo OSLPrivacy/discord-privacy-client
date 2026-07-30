@@ -9,13 +9,13 @@
 //! nonces, and signatures never spill into logs.
 
 use crate::account_ownership_error::AccountOwnershipError;
+use crate::{Identity, ProofChallenge};
 use core::fmt;
 use crypto::ed25519;
 use serde::{Deserialize, Serialize};
 
 pub const ACCOUNT_OWNERSHIP_PROOF_DOMAIN: &str = "OSL-ACCOUNT-OWNERSHIP-PROOF-v1\0";
-pub const ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1: &str =
-    "ed25519_identity_challenge_v1";
+pub const ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1: &str = "ed25519_identity_challenge_v1";
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountOwnershipEvidence {
@@ -86,6 +86,51 @@ impl AccountOwnershipProof {
             &self.e.nonce_b64,
             self.e.issued_at_unix_seconds,
             self.e.expires_at_unix_seconds,
+        )
+    }
+
+    pub fn from_challenge(
+        identity: &Identity,
+        challenge: &mut ProofChallenge,
+        now_unix_seconds: u64,
+    ) -> Result<Self, AccountOwnershipError> {
+        if !challenge.binds(challenge.service_account_id(), &identity.user_id) {
+            return Err(AccountOwnershipError::ProofForDifferentOwner);
+        }
+        if challenge.is_expired(now_unix_seconds) {
+            return Err(AccountOwnershipError::ProofStale);
+        }
+        if !challenge.spend() {
+            return Err(AccountOwnershipError::ProofReplayed);
+        }
+
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine as _;
+
+        let nonce_b64 = STANDARD.encode(challenge.nonce());
+        let evidence_without_signature = AccountOwnershipEvidence {
+            owner_user_id: identity.user_id.clone(),
+            nonce_b64,
+            issued_at_unix_seconds: challenge.issued_at_unix_seconds(),
+            expires_at_unix_seconds: challenge.expires_at_unix_seconds(),
+            signature_b64: String::new(),
+        };
+        let canonical = canonical_account_ownership_proof_bytes(
+            ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1,
+            challenge.service_account_id(),
+            &evidence_without_signature.owner_user_id,
+            &evidence_without_signature.nonce_b64,
+            evidence_without_signature.issued_at_unix_seconds,
+            evidence_without_signature.expires_at_unix_seconds,
+        )?;
+        let signature = ed25519::sign(&identity.ed25519_secret, &canonical);
+        AccountOwnershipProof::new(
+            challenge.service_account_id(),
+            ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1,
+            AccountOwnershipEvidence {
+                signature_b64: STANDARD.encode(signature.as_bytes()),
+                ..evidence_without_signature
+            },
         )
     }
 }
@@ -186,12 +231,10 @@ mod tests {
         assert_eq!(proof.e.owner_user_id, "owner-osl-id");
 
         let canonical = proof.canonical_bytes().expect("canonical bytes");
-        assert!(canonical.starts_with(
-            &(ACCOUNT_OWNERSHIP_PROOF_DOMAIN.len() as u32).to_be_bytes()
-        ));
-        assert!(canonical.windows("platform-account-123".len()).any(
-            |window| window == b"platform-account-123"
-        ));
+        assert!(canonical.starts_with(&(ACCOUNT_OWNERSHIP_PROOF_DOMAIN.len() as u32).to_be_bytes()));
+        assert!(canonical
+            .windows("platform-account-123".len())
+            .any(|window| window == b"platform-account-123"));
 
         let debug = format!("{proof:?}");
         let display = format!("{proof}");
@@ -221,5 +264,94 @@ mod tests {
         )
         .expect_err("malformed nonce must fail closed");
         assert_eq!(err, AccountOwnershipError::ProofMalformed);
+    }
+
+    #[test]
+    fn account_ownership_proof_from_challenge_is_bound_and_single_use() {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine as _;
+
+        let identity = crate::generate_identity("owner-osl-id".to_owned());
+        let mut challenge = ProofChallenge::new(
+            [0x51; crate::PROOF_CHALLENGE_NONCE_BYTES],
+            "platform-account-123",
+            &identity.user_id,
+            1_000,
+            1_060,
+        )
+        .expect("valid challenge");
+
+        let proof = AccountOwnershipProof::from_challenge(&identity, &mut challenge, 1_030)
+            .expect("owner can satisfy fresh challenge once");
+        assert!(challenge.is_spent());
+        assert_eq!(proof.platform_id, "platform-account-123");
+        assert_eq!(proof.e.owner_user_id, identity.user_id);
+        assert_eq!(proof.e.issued_at_unix_seconds, 1_000);
+        assert_eq!(proof.e.expires_at_unix_seconds, 1_060);
+        assert_eq!(
+            STANDARD.decode(&proof.e.nonce_b64).expect("nonce b64"),
+            [0x51; crate::PROOF_CHALLENGE_NONCE_BYTES]
+        );
+
+        let signature_bytes = STANDARD
+            .decode(&proof.e.signature_b64)
+            .expect("signature b64");
+        let signature = ed25519::Signature::from_bytes(
+            signature_bytes
+                .try_into()
+                .expect("signature is exactly 64 bytes"),
+        );
+        assert!(
+            ed25519::verify(
+                &identity.ed25519_public,
+                &proof.canonical_bytes().expect("canonical proof bytes"),
+                &signature,
+            )
+            .expect("verification runs"),
+            "proof must verify under the owner identity key"
+        );
+
+        let mut swapped = proof.clone();
+        swapped.platform_id = "other-platform-account".to_owned();
+        assert!(
+            !ed25519::verify(
+                &identity.ed25519_public,
+                &swapped.canonical_bytes().expect("canonical swapped bytes"),
+                &signature,
+            )
+            .expect("verification runs"),
+            "signature must be bound to the challenged platform account"
+        );
+
+        let replay = AccountOwnershipProof::from_challenge(&identity, &mut challenge, 1_031)
+            .expect_err("the same challenge cannot mint a second proof");
+        assert_eq!(replay, AccountOwnershipError::ProofReplayed);
+
+        let other_identity = crate::generate_identity("other-owner".to_owned());
+        let mut wrong_owner = ProofChallenge::new(
+            [0x52; crate::PROOF_CHALLENGE_NONCE_BYTES],
+            "platform-account-123",
+            &other_identity.user_id,
+            1_000,
+            1_060,
+        )
+        .expect("valid challenge");
+        let err = AccountOwnershipProof::from_challenge(&identity, &mut wrong_owner, 1_030)
+            .expect_err("wrong owner must be refused");
+        assert_eq!(err, AccountOwnershipError::ProofForDifferentOwner);
+        assert!(!wrong_owner.is_spent());
+
+        let mut expired = ProofChallenge::new(
+            [0x53; crate::PROOF_CHALLENGE_NONCE_BYTES],
+            "platform-account-123",
+            &identity.user_id,
+            1_000,
+            1_060,
+        )
+        .expect("valid challenge");
+        let err = AccountOwnershipProof::from_challenge(&identity, &mut expired, 1_060)
+            .expect_err("expired challenge must be refused");
+        assert_eq!(err, AccountOwnershipError::ProofStale);
+        assert!(!expired.is_spent());
     }
 }
