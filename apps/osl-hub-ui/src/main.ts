@@ -112,6 +112,7 @@ import { defaultScrubSignalGroups, enabledScrubFindings, parseScrubSignalGroups,
 import { loadMassCleanupCapabilities, type MassCleanupCapabilityManifest } from "./mass-cleanup";
 import { projectAutoScrubFleetStatus, type AutoScrubFleetStatus } from "./autoscrub-contract";
 import { loadAutoScrubRunFleetStatus, requestAutoScrubGlobalStop } from "./autoscrub-unattended-run";
+import { oslMailStage, type OslMailStage } from "./desktop-service-policy";
 export {
   autoscrubUnattendedContractGate,
   autoscrubUnattendedProductionRun,
@@ -3240,6 +3241,56 @@ function publicCirclesUnavailableMarkup(): string {
   return `<article class="inbox-surface-card unavailable" data-inbox-osl-surface="circles" data-public-circles-network="unavailable" aria-disabled="true"><strong>OSL Circles</strong><small>Private audience feeds</small><p><span class="status-tag">Unavailable</span> Public Circles network unavailable. Private audience posts stay off until membership, posting, and moderation are complete.</p></article>`;
 }
 
+type OslMailboxStageCReview = {
+  mailOperationsReviewAccepted: boolean;
+  explicitConsentBound: boolean;
+  mailboxBindingReviewed: boolean;
+  accountAuthorityReviewed: boolean;
+};
+
+type OslMailboxStageCGateResult = {
+  operationsAllowed: boolean;
+  label: "Coming later" | "Unavailable" | "Reviewed";
+  reason: "stage-c-coming-later" | "separate-mail-operations-review-required" | "mailbox-consent-binding-authority-required" | null;
+  detail: string;
+};
+
+export function oslMailboxStageCGate(
+  review: OslMailboxStageCReview | null = null,
+  stage: OslMailStage = oslMailStage("stageC"),
+): OslMailboxStageCGateResult {
+  if (stage.id !== "stageC" || stage.availability !== "available") {
+    return {
+      operationsAllowed: false,
+      label: "Coming later",
+      reason: "stage-c-coming-later",
+      detail: "Full OSL mailbox is coming later. Mailbox operations stay off until a separate mail operations review accepts it.",
+    };
+  }
+  if (review?.mailOperationsReviewAccepted !== true) {
+    return {
+      operationsAllowed: false,
+      label: "Unavailable",
+      reason: "separate-mail-operations-review-required",
+      detail: "Full OSL mailbox operations require a separate mail operations review.",
+    };
+  }
+  if (review.explicitConsentBound !== true || review.mailboxBindingReviewed !== true || review.accountAuthorityReviewed !== true) {
+    return {
+      operationsAllowed: false,
+      label: "Unavailable",
+      reason: "mailbox-consent-binding-authority-required",
+      detail: "Full OSL mailbox operations need explicit consent, reviewed mailbox access, and reviewed account authority.",
+    };
+  }
+  return {
+    operationsAllowed: true,
+    label: "Reviewed",
+    reason: null,
+    detail: "Full OSL mailbox operations are available only for this reviewed mailbox.",
+  };
+}
+
 function inboxDestinationContent(): string {
   const verifiedPeople = hubPeople.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange);
   const requests = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange);
@@ -3266,7 +3317,14 @@ function inboxDestinationContent(): string {
     ["circles", "OSL Circles", "Private audience feeds", "Coming after small-group review"],
     ["mail", "OSL Mail", "Client protection", "External recipients are not OSL E2EE"],
   ] as const;
-  const surfaceCards = oslSurfaces.map(([id, label, protection, detail]) => id === "circles" ? publicCirclesUnavailableMarkup() : `<article class="inbox-surface-card" data-inbox-osl-surface="${id}"><strong>${label}</strong><small>${protection}</small><p>${detail}</p></article>`).join("");
+  const mailboxGate = oslMailboxStageCGate();
+  const surfaceCards = oslSurfaces.map(([id, label, protection, detail]) => {
+    if (id === "circles") return publicCirclesUnavailableMarkup();
+    if (id === "mail") {
+      return `<article class="inbox-surface-card ${mailboxGate.operationsAllowed ? "" : "unavailable"}" data-inbox-osl-surface="mail" data-osl-mailbox-stage-c-gate="${mailboxGate.reason ?? "reviewed"}" data-mailbox-operations="${mailboxGate.operationsAllowed ? "allowed" : "refused"}" aria-disabled="${mailboxGate.operationsAllowed ? "false" : "true"}"><strong>OSL Mail</strong><small>Client protection</small><p><span class="status-tag">${mailboxGate.label}</span> ${escapeHtml(mailboxGate.detail)}</p></article>`;
+    }
+    return `<article class="inbox-surface-card" data-inbox-osl-surface="${id}"><strong>${label}</strong><small>${protection}</small><p>${detail}</p></article>`;
+  }).join("");
   return `<main class="content-viewport inbox-destination" id="route-heading" tabindex="-1"><header class="destination-header"><div><p class="eyebrow">Inbox</p><h1>Conversations</h1><p>Optional views for OSL messages and connected accounts. OSL shows only supported conversations and refuses protected send when the conversation cannot be verified.</p></div><button class="button primary" data-inbox-start-private type="button">Start a private conversation</button></header><nav class="inbox-filter-tabs" aria-label="Inbox filters">${["All", "OSL", "Connected", "Requests"].map((label, index) => `<button type="button" data-inbox-filter="${label.toLowerCase()}" ${index === 0 ? 'aria-pressed="true"' : ""}>${label}</button>`).join("")}</nav><section class="inbox-grid"><section class="inbox-panel" aria-labelledby="inbox-osl-heading"><h2 id="inbox-osl-heading">OSL</h2><div class="inbox-surface-grid">${surfaceCards}</div>${chatRows}</section><section class="inbox-panel" aria-labelledby="inbox-connected-heading"><h2 id="inbox-connected-heading">Connected</h2>${connectedRows}</section><section class="inbox-panel" aria-labelledby="inbox-requests-heading"><h2 id="inbox-requests-heading">Requests</h2>${requestRows}</section></section></main>`;
 }
 
