@@ -2,6 +2,9 @@
 //!
 //! This module only models consent and the external security-review gate. It
 //! does not send data, select providers, or offer a path to enable cloud work.
+//! Cloud AutoScrub is treated as a high-sensitivity flow: ordinary scope
+//! consent is not enough unless the user has acknowledged the plain privacy
+//! warning for the exact scope and finding set.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -15,6 +18,19 @@ const GRANT_DOMAIN: &[u8] = b"OSL/cloud-autoscrub-grant/v1";
 const SCOPE_DOMAIN: &[u8] = b"OSL/cloud-autoscrub-scope/v1";
 const MAX_SCOPE_BINDING_BYTES: usize = 256;
 const MAX_EXPLICIT_SCOPE_CONSENTS: usize = 128;
+const HIGH_SENSITIVITY_REQUIRED_ACKNOWLEDGEMENT_COUNT: usize = 5;
+
+pub const CLOUD_AUTOSCRUB_HIGH_SENSITIVITY_TITLE: &str = "Cloud AutoScrub needs separate consent";
+pub const CLOUD_AUTOSCRUB_HIGH_SENSITIVITY_WARNING: &str =
+    "OSL temporarily receives sensitive credentials/data for this operation.";
+pub const CLOUD_AUTOSCRUB_HIGH_SENSITIVITY_NOT_PRIVATE_WARNING: &str =
+    "This operation is not fully end-to-end private.";
+pub const CLOUD_AUTOSCRUB_HIGH_SENSITIVITY_RETENTION_WARNING: &str =
+    "Temporary data is minimized, isolated, expired, wiped after completion, and followed by a deletion receipt.";
+pub const CLOUD_AUTOSCRUB_HIGH_SENSITIVITY_REVOCATION_WARNING: &str =
+    "OSL recommends revoking temporary credentials after the run.";
+pub const CLOUD_AUTOSCRUB_HIGH_SENSITIVITY_SCOPE_WARNING: &str =
+    "Consent applies only to this reviewed cleanup area and the findings shown.";
 
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct CloudAutoScrubScope {
@@ -78,6 +94,86 @@ pub enum CloudAutoScrubSecurityReviewGate {
 pub enum CloudAutoScrubScopeConsent {
     Explicit,
     Refused,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct CloudAutoScrubHighSensitivityConsentPrompt {
+    scope: CloudAutoScrubScope,
+    finding_set: CloudAutoScrubFindingSet,
+}
+
+impl CloudAutoScrubHighSensitivityConsentPrompt {
+    pub fn new(scope: CloudAutoScrubScope, finding_set: CloudAutoScrubFindingSet) -> Self {
+        Self { scope, finding_set }
+    }
+
+    pub fn title(&self) -> &'static str {
+        CLOUD_AUTOSCRUB_HIGH_SENSITIVITY_TITLE
+    }
+
+    pub fn warnings(&self) -> [&'static str; HIGH_SENSITIVITY_REQUIRED_ACKNOWLEDGEMENT_COUNT] {
+        [
+            CLOUD_AUTOSCRUB_HIGH_SENSITIVITY_WARNING,
+            CLOUD_AUTOSCRUB_HIGH_SENSITIVITY_NOT_PRIVATE_WARNING,
+            CLOUD_AUTOSCRUB_HIGH_SENSITIVITY_RETENTION_WARNING,
+            CLOUD_AUTOSCRUB_HIGH_SENSITIVITY_REVOCATION_WARNING,
+            CLOUD_AUTOSCRUB_HIGH_SENSITIVITY_SCOPE_WARNING,
+        ]
+    }
+
+    pub fn required_acknowledgement_count(&self) -> usize {
+        HIGH_SENSITIVITY_REQUIRED_ACKNOWLEDGEMENT_COUNT
+    }
+
+    pub fn scope_commitment(&self) -> [u8; 32] {
+        self.scope.commitment()
+    }
+
+    pub fn finding_set_commitment(&self) -> [u8; 32] {
+        self.finding_set.commitment()
+    }
+}
+
+impl fmt::Debug for CloudAutoScrubHighSensitivityConsentPrompt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CloudAutoScrubHighSensitivityConsentPrompt")
+            .field("scope_commitment", &"<redacted>")
+            .field("finding_set_commitment", &"<redacted>")
+            .field(
+                "required_acknowledgement_count",
+                &HIGH_SENSITIVITY_REQUIRED_ACKNOWLEDGEMENT_COUNT,
+            )
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CloudAutoScrubHighSensitivityAcknowledgement {
+    pub sensitive_credentials_or_data_leave_device: bool,
+    pub not_fully_end_to_end_private: bool,
+    pub retention_wipe_and_receipt: bool,
+    pub revoke_temporary_credentials_after_run: bool,
+    pub exact_scope_and_findings_only: bool,
+}
+
+impl CloudAutoScrubHighSensitivityAcknowledgement {
+    pub const fn all() -> Self {
+        Self {
+            sensitive_credentials_or_data_leave_device: true,
+            not_fully_end_to_end_private: true,
+            retention_wipe_and_receipt: true,
+            revoke_temporary_credentials_after_run: true,
+            exact_scope_and_findings_only: true,
+        }
+    }
+
+    pub fn all_required_acknowledged(&self) -> bool {
+        self.sensitive_credentials_or_data_leave_device
+            && self.not_fully_end_to_end_private
+            && self.retention_wipe_and_receipt
+            && self.revoke_temporary_credentials_after_run
+            && self.exact_scope_and_findings_only
+    }
 }
 
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -195,6 +291,7 @@ pub struct CloudAutoScrubConsentTier {
     explicit_scope_consents: BTreeSet<CloudAutoScrubScope>,
     security_review_gate: CloudAutoScrubSecurityReviewGate,
     live_auth_epoch: Option<u64>,
+    high_sensitivity_acknowledgements: BTreeSet<CloudAutoScrubGrantKey>,
     capability_grants: BTreeSet<CloudAutoScrubGrantKey>,
     run_grants: BTreeSet<CloudAutoScrubGrantKey>,
     attended_grants: BTreeSet<CloudAutoScrubGrantKey>,
@@ -206,6 +303,7 @@ impl Default for CloudAutoScrubConsentTier {
             explicit_scope_consents: BTreeSet::new(),
             security_review_gate: CloudAutoScrubSecurityReviewGate::Unmet,
             live_auth_epoch: None,
+            high_sensitivity_acknowledgements: BTreeSet::new(),
             capability_grants: BTreeSet::new(),
             run_grants: BTreeSet::new(),
             attended_grants: BTreeSet::new(),
@@ -222,6 +320,10 @@ impl fmt::Debug for CloudAutoScrubConsentTier {
             )
             .field("security_review_gate", &self.security_review_gate)
             .field("live_auth_epoch", &self.live_auth_epoch)
+            .field(
+                "high_sensitivity_acknowledgement_count",
+                &self.high_sensitivity_acknowledgements.len(),
+            )
             .field("capability_grant_count", &self.capability_grants.len())
             .field("run_grant_count", &self.run_grants.len())
             .field("attended_grant_count", &self.attended_grants.len())
@@ -238,8 +340,20 @@ impl CloudAutoScrubConsentTier {
         self.explicit_scope_consents.len()
     }
 
+    pub fn high_sensitivity_acknowledgement_count(&self) -> usize {
+        self.high_sensitivity_acknowledgements.len()
+    }
+
     pub fn live_auth_epoch(&self) -> Option<u64> {
         self.live_auth_epoch
+    }
+
+    pub fn high_sensitivity_consent_prompt(
+        &self,
+        scope: CloudAutoScrubScope,
+        finding_set: CloudAutoScrubFindingSet,
+    ) -> CloudAutoScrubHighSensitivityConsentPrompt {
+        CloudAutoScrubHighSensitivityConsentPrompt::new(scope, finding_set)
     }
 
     pub fn consent_for_scope(&self, scope: CloudAutoScrubScope) -> CloudAutoScrubScopeConsent {
@@ -266,6 +380,45 @@ impl CloudAutoScrubConsentTier {
         let removed_consent = self.explicit_scope_consents.remove(&scope);
         let removed_grants = self.revoke_scope(scope);
         removed_consent || removed_grants
+    }
+
+    pub fn record_high_sensitivity_acknowledgement(
+        &mut self,
+        scope: CloudAutoScrubScope,
+        finding_set: CloudAutoScrubFindingSet,
+        acknowledgement: CloudAutoScrubHighSensitivityAcknowledgement,
+    ) -> Result<bool, CloudAutoScrubConsentError> {
+        if !acknowledgement.all_required_acknowledged() {
+            return Err(CloudAutoScrubConsentError::HighSensitivityAcknowledgementRequired);
+        }
+        self.record_explicit_scope_consent(scope)?;
+        Ok(self
+            .high_sensitivity_acknowledgements
+            .insert(CloudAutoScrubGrantKey::new(
+                scope,
+                finding_set,
+                CloudAutoScrubAuthority::Capability,
+            )))
+    }
+
+    pub fn require_high_sensitivity_acknowledgement(
+        &self,
+        scope: CloudAutoScrubScope,
+        finding_set: CloudAutoScrubFindingSet,
+    ) -> Result<(), CloudAutoScrubConsentError> {
+        if self.consent_for_scope(scope) == CloudAutoScrubScopeConsent::Explicit
+            && self
+                .high_sensitivity_acknowledgements
+                .contains(&CloudAutoScrubGrantKey::new(
+                    scope,
+                    finding_set,
+                    CloudAutoScrubAuthority::Capability,
+                ))
+        {
+            Ok(())
+        } else {
+            Err(CloudAutoScrubConsentError::HighSensitivityAcknowledgementRequired)
+        }
     }
 
     pub fn require_cloud_processing_scope(
@@ -309,7 +462,7 @@ impl CloudAutoScrubConsentTier {
         let auth_epoch = self
             .live_auth_epoch
             .ok_or(CloudAutoScrubConsentError::LiveAuthEpochRequired)?;
-        self.record_explicit_scope_consent(scope)?;
+        self.require_high_sensitivity_acknowledgement(scope, finding_set)?;
         let grant =
             CloudAutoScrubGrantKey::new(scope, finding_set, CloudAutoScrubAuthority::Capability);
         self.capability_grants.insert(grant);
@@ -398,15 +551,19 @@ impl CloudAutoScrubConsentTier {
 
     pub fn revoke_scope(&mut self, scope: CloudAutoScrubScope) -> bool {
         let before = (
+            self.high_sensitivity_acknowledgements.len(),
             self.capability_grants.len(),
             self.run_grants.len(),
             self.attended_grants.len(),
         );
+        self.high_sensitivity_acknowledgements
+            .retain(|grant| grant.scope != scope);
         self.capability_grants.retain(|grant| grant.scope != scope);
         self.run_grants.retain(|grant| grant.scope != scope);
         self.attended_grants.retain(|grant| grant.scope != scope);
         before
             != (
+                self.high_sensitivity_acknowledgements.len(),
                 self.capability_grants.len(),
                 self.run_grants.len(),
                 self.attended_grants.len(),
@@ -425,6 +582,7 @@ impl CloudAutoScrubConsentTier {
         removed |= self.explicit_scope_consents.len() != consent_count;
 
         for grants in [
+            &mut self.high_sensitivity_acknowledgements,
             &mut self.capability_grants,
             &mut self.run_grants,
             &mut self.attended_grants,
@@ -438,10 +596,12 @@ impl CloudAutoScrubConsentTier {
 
     pub fn revoke_all(&mut self) -> bool {
         let removed = !self.explicit_scope_consents.is_empty()
+            || !self.high_sensitivity_acknowledgements.is_empty()
             || !self.capability_grants.is_empty()
             || !self.run_grants.is_empty()
             || !self.attended_grants.is_empty();
         self.explicit_scope_consents.clear();
+        self.high_sensitivity_acknowledgements.clear();
         self.capability_grants.clear();
         self.run_grants.clear();
         self.attended_grants.clear();
@@ -506,6 +666,7 @@ pub enum CloudAutoScrubConsentError {
     InvalidFindingSet,
     TooManyScopes,
     ExplicitScopeConsentRequired,
+    HighSensitivityAcknowledgementRequired,
     ExternalSecurityReviewRequired,
     LiveAuthEpochRequired,
     CapabilityRequired,
@@ -520,6 +681,9 @@ impl fmt::Display for CloudAutoScrubConsentError {
             Self::TooManyScopes => "cloud AutoScrub has too many explicit scope consents",
             Self::ExplicitScopeConsentRequired => {
                 "explicit per-scope cloud AutoScrub consent is required"
+            }
+            Self::HighSensitivityAcknowledgementRequired => {
+                "explicit cloud AutoScrub high-sensitivity acknowledgement is required"
             }
             Self::ExternalSecurityReviewRequired => {
                 "external cloud AutoScrub security review is required"
@@ -572,6 +736,21 @@ mod tests {
             .map(|value| value.as_bytes())
             .collect::<Vec<_>>();
         CloudAutoScrubFindingSet::derive(&bindings).unwrap()
+    }
+
+    fn acknowledge_high_sensitivity(
+        tier: &mut CloudAutoScrubConsentTier,
+        target: CloudAutoScrubScope,
+        finding_set: CloudAutoScrubFindingSet,
+    ) {
+        assert_eq!(
+            tier.record_high_sensitivity_acknowledgement(
+                target,
+                finding_set,
+                CloudAutoScrubHighSensitivityAcknowledgement::all(),
+            ),
+            Ok(true)
+        );
     }
 
     #[test]
@@ -651,6 +830,72 @@ mod tests {
     }
 
     #[test]
+    fn high_sensitivity_consent_requires_explicit_acknowledgement() {
+        let mut tier = CloudAutoScrubConsentTier::default();
+        let target = scope(b"account-one", b"hosted-scan-only");
+        let finding_set = findings(&["credential", "precise-location"]);
+        let prompt = tier.high_sensitivity_consent_prompt(target, finding_set);
+
+        assert_eq!(prompt.title(), CLOUD_AUTOSCRUB_HIGH_SENSITIVITY_TITLE);
+        assert_eq!(prompt.required_acknowledgement_count(), 5);
+        assert!(prompt
+            .warnings()
+            .contains(&CLOUD_AUTOSCRUB_HIGH_SENSITIVITY_WARNING));
+        assert!(prompt
+            .warnings()
+            .contains(&CLOUD_AUTOSCRUB_HIGH_SENSITIVITY_NOT_PRIVATE_WARNING));
+        assert!(prompt
+            .warnings()
+            .contains(&CLOUD_AUTOSCRUB_HIGH_SENSITIVITY_RETENTION_WARNING));
+        assert!(prompt
+            .warnings()
+            .contains(&CLOUD_AUTOSCRUB_HIGH_SENSITIVITY_REVOCATION_WARNING));
+        assert!(prompt
+            .warnings()
+            .contains(&CLOUD_AUTOSCRUB_HIGH_SENSITIVITY_SCOPE_WARNING));
+        assert!(!format!("{:?}", prompt).contains("account-one"));
+
+        assert_eq!(
+            tier.record_high_sensitivity_acknowledgement(
+                target,
+                finding_set,
+                CloudAutoScrubHighSensitivityAcknowledgement {
+                    not_fully_end_to_end_private: true,
+                    ..CloudAutoScrubHighSensitivityAcknowledgement::default()
+                },
+            ),
+            Err(CloudAutoScrubConsentError::HighSensitivityAcknowledgementRequired)
+        );
+        assert_eq!(
+            tier.require_high_sensitivity_acknowledgement(target, finding_set),
+            Err(CloudAutoScrubConsentError::HighSensitivityAcknowledgementRequired)
+        );
+
+        tier.reauthenticate(42).unwrap();
+        tier.record_explicit_scope_consent(target).unwrap();
+        assert_eq!(
+            tier.configure_cloud_autoscrub_capability(target, finding_set),
+            Err(CloudAutoScrubConsentError::HighSensitivityAcknowledgementRequired)
+        );
+
+        assert_eq!(
+            tier.record_high_sensitivity_acknowledgement(
+                target,
+                finding_set,
+                CloudAutoScrubHighSensitivityAcknowledgement::all(),
+            ),
+            Ok(true)
+        );
+        let capability = tier
+            .configure_cloud_autoscrub_capability(target, finding_set)
+            .unwrap();
+        assert_eq!(
+            tier.require_cloud_autoscrub_capability(capability, target, finding_set, 42),
+            Ok(())
+        );
+    }
+
+    #[test]
     fn cloud_autoscrub_configure_capability_requires_live_auth_epoch_and_reauthenticates() {
         let mut tier = CloudAutoScrubConsentTier::default();
         let target = scope(b"account-one", b"osl-visible-data");
@@ -662,6 +907,7 @@ mod tests {
         );
 
         tier.reauthenticate(1).unwrap();
+        acknowledge_high_sensitivity(&mut tier, target, finding_set);
         let capability = tier
             .configure_cloud_autoscrub_capability(target, finding_set)
             .unwrap();
@@ -682,6 +928,14 @@ mod tests {
             Err(CloudAutoScrubConsentError::LiveAuthEpochRequired)
         );
 
+        assert_eq!(
+            tier.record_high_sensitivity_acknowledgement(
+                target,
+                finding_set,
+                CloudAutoScrubHighSensitivityAcknowledgement::all(),
+            ),
+            Ok(false)
+        );
         let renewed = tier
             .configure_cloud_autoscrub_capability(target, finding_set)
             .unwrap();
@@ -705,6 +959,7 @@ mod tests {
         let other_account = scope(b"account-two", b"osl-visible-data");
         let finding_set = findings(&["work-secret"]);
 
+        acknowledge_high_sensitivity(&mut tier, target, finding_set);
         let capability = tier
             .configure_cloud_autoscrub_capability(target, finding_set)
             .unwrap();
@@ -744,6 +999,7 @@ mod tests {
             Err(CloudAutoScrubConsentError::CapabilityRequired)
         );
 
+        acknowledge_high_sensitivity(&mut tier, same_account_other_scope, finding_set);
         let account_capability = tier
             .configure_cloud_autoscrub_capability(same_account_other_scope, finding_set)
             .unwrap();
@@ -759,6 +1015,7 @@ mod tests {
             Err(CloudAutoScrubConsentError::AuthorityRequired)
         );
 
+        acknowledge_high_sensitivity(&mut tier, other_account, finding_set);
         let other_capability = tier
             .configure_cloud_autoscrub_capability(other_account, finding_set)
             .unwrap();
@@ -793,6 +1050,7 @@ mod tests {
         let granted_findings = findings(&["precise-location", "credential"]);
         let changed_findings = findings(&["precise-location", "credential", "payment-card"]);
 
+        acknowledge_high_sensitivity(&mut tier, granted_scope, granted_findings);
         let capability = tier
             .configure_cloud_autoscrub_capability(granted_scope, granted_findings)
             .unwrap();
@@ -839,6 +1097,7 @@ mod tests {
         }
 
         tier.reauthenticate(9).unwrap();
+        acknowledge_high_sensitivity(&mut tier, scan_only_scope, scan_findings);
         let scan_capability = tier
             .configure_cloud_autoscrub_capability(scan_only_scope, scan_findings)
             .unwrap();
@@ -867,6 +1126,7 @@ mod tests {
             Err(CloudAutoScrubConsentError::CapabilityRequired)
         );
 
+        acknowledge_high_sensitivity(&mut tier, generic_scope, generic_findings);
         let generic_capability = tier
             .configure_cloud_autoscrub_capability(generic_scope, generic_findings)
             .unwrap();
