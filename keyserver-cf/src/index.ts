@@ -90,6 +90,9 @@ import {
 import { sweepExpiredControlInboxRows } from "./lib/control-inbox-sweep.js";
 
 const MAX_MUTATION_BODY_BYTES = 1024 * 1024;
+const PUBLIC_GET_INGRESS_MAX_PER_MINUTE = 1200;
+const PUBLIC_GET_INGRESS_BUCKET = "public-get-ingress";
+const PUBLIC_GET_INGRESS_EXEMPT_PATHS = new Set(["/v1/healthz"]);
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -243,6 +246,22 @@ async function dispatch(
   env: Env,
   ctx: ExecutionContext,
 ): Promise<Response> {
+  const url = new URL(request.url);
+  const path = url.pathname;
+  const method = request.method;
+
+  if (method === "GET" && !PUBLIC_GET_INGRESS_EXEMPT_PATHS.has(path)) {
+    // Public read routes still rely on signatures, opaque IDs, D1 transactions
+    // or client verification for trust. This is an abuse-cost guard only.
+    const ingress = await checkRateLimit(
+      env,
+      callerIp(request),
+      PUBLIC_GET_INGRESS_MAX_PER_MINUTE,
+      PUBLIC_GET_INGRESS_BUCKET,
+    );
+    if (!ingress.ok) return tooMany(ingress.retryAfter);
+  }
+
   if (["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) {
     // Reject abusive mutation floods before reading their bodies. Endpoint
     // limits below remain stricter; this is the coarse memory/CPU guard.
@@ -257,9 +276,6 @@ async function dispatch(
     if (bounded instanceof Response) return bounded;
     request = bounded;
   }
-  const url = new URL(request.url);
-  const path = url.pathname;
-  const method = request.method;
 
   // CORS preflight — only explicitly browser-callable commerce endpoints.
   if (method === "OPTIONS") {
