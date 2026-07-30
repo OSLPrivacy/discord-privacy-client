@@ -50,7 +50,7 @@ mod cipher;
 mod error;
 mod schema;
 
-pub use anchor::{AnchorRecord, MonotonicAnchor};
+pub use anchor::{AnchorKeystore, AnchorRecord, KeystoreBackedAnchor, MonotonicAnchor};
 pub use error::StoreError;
 
 use cipher::{AttachmentMeta, MessageMeta};

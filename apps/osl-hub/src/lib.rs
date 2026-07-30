@@ -6,6 +6,7 @@ pub mod attachment_formats;
 pub mod browser_companion;
 pub mod burn_contract;
 pub mod cloud_autoscrub_consent;
+pub mod cloud_autoscrub_envelope;
 pub mod control_contract;
 pub mod discord_carrier_geometry;
 pub mod external_overlay;
@@ -68,6 +69,7 @@ pub mod password_lifecycle;
 pub mod qa_selftest_request;
 #[cfg(feature = "core")]
 pub mod scrub_index;
+pub mod scrub_imap;
 #[cfg(feature = "core")]
 pub mod security;
 #[cfg(feature = "core")]
