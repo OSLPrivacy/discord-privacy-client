@@ -584,7 +584,6 @@ mod tests {
         assert!(!state.rn_wire_in_enabled());
     }
 
-
     #[test]
     fn app_state_constructs_production_duress_engine() {
         let temp = tempfile::TempDir::new().expect("tempdir");
@@ -605,6 +604,7 @@ mod tests {
         config.wipe_sender_keys = Some(Box::new(|| Ok(())));
         config.wipe_peer_ratchets = Some(Box::new(|| Ok(())));
         config.zeroize_in_memory = Some(Box::new(|| Ok(())));
+        config.unregister_account = Some(Box::new(|| Ok(())));
         let parts = keystore::build_production_duress_handlers(config);
 
         let mut state = AppState::new();
@@ -634,7 +634,6 @@ mod tests {
         assert!(!account_dir.join("store").exists());
         assert!(!password_dir.join("password_marker.json").exists());
         assert!(!state.duress_journal_path.exists());
-
     }
 }
 

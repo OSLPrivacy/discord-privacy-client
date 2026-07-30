@@ -1,6 +1,4 @@
-
 //! Duress-engine primitives.
-
 //!
 //! Spec: `docs/design/unlock-and-duress.md` "Duress flow — full
 //! specification" + `docs/design/build-order.md` Layer B3.
@@ -35,7 +33,9 @@
 //!
 //! ## Wipe set status (v1 alpha)
 //!
-//! Implemented inside this engine when it is explicitly invoked:
+//! Implemented inside this engine when explicitly wired by
+//! [`DuressHandlers::platform_sealer_handlers`] or equivalent test
+//! callbacks:
 //! - TPM key eviction (B1's `evict_tpm_key`).
 //! - Keyring purge (B1's `KeyringSealer::purge_keyring_entry`).
 //! - Identity-blob file deletion.
@@ -156,14 +156,23 @@ pub enum StepOutcome {
 /// thread.
 pub type WipeFn = Box<dyn Fn() -> std::result::Result<(), DuressError> + Send + Sync + 'static>;
 
+/// Callback shape for deleting a persisted TPM identity key.
+pub type TpmEvictFn =
+    Box<dyn Fn() -> std::result::Result<TpmEvictOutcome, SealerError> + Send + Sync + 'static>;
+
+/// Callback shape for deleting the keyring fallback identity-data key.
+pub type KeyringPurgeFn =
+    Box<dyn Fn() -> std::result::Result<(), SealerError> + Send + Sync + 'static>;
+
 /// Optional handlers and overrides for wipe steps. Deferred steps
-/// become `Skipped` when their handler is unset; the keyring purge
-/// override falls back to the production [`KeyringSealer`] purge.
+/// become `Skipped` when their handler is unset. Destructive
+/// platform operations are opt-in: callers must use
+/// [`Self::platform_sealer_handlers`] or set the platform fields
+/// themselves.
 #[derive(Default)]
 pub struct DuressHandlers {
-    /// Override for Step 2. When unset, the engine purges the
-    /// production OS keyring entry through [`KeyringSealer`].
-    pub purge_keyring: Option<WipeFn>,
+    pub evict_tpm_key: Option<TpmEvictFn>,
+    pub purge_keyring_entry: Option<KeyringPurgeFn>,
     pub wipe_local_cache_dir: Option<WipeFn>,
     pub wipe_anonymous_credentials: Option<WipeFn>,
     pub wipe_prekeys: Option<WipeFn>,
@@ -205,8 +214,8 @@ impl ProductionDuressHandlers {
         }
     }
 
-    pub fn with_purge_keyring(mut self, handler: WipeFn) -> Self {
-        self.handlers.purge_keyring = Some(handler);
+    pub fn with_purge_keyring(mut self, handler: KeyringPurgeFn) -> Self {
+        self.handlers.purge_keyring_entry = Some(handler);
         self
     }
 
@@ -353,6 +362,25 @@ fn remove_bound_paths(
     Ok(())
 }
 
+impl DuressHandlers {
+    /// Assemble the currently implemented platform-backed wipe
+    /// handlers. This is intentionally separate from [`Default`] so
+    /// constructing a handler set without explicit opt-in cannot
+    /// delete platform-protected material.
+    pub fn platform_sealer_handlers() -> Self {
+        Self::default().with_platform_sealer_handlers()
+    }
+
+    /// Add the real TPM-evict and keyring-purge callbacks to an
+    /// existing handler set without disturbing any caller-supplied
+    /// higher-layer callbacks.
+    pub fn with_platform_sealer_handlers(mut self) -> Self {
+        self.evict_tpm_key = Some(Box::new(evict_tpm_key));
+        self.purge_keyring_entry = Some(Box::new(KeyringSealer::purge_keyring_entry));
+        self
+    }
+}
+
 /// On-disk paths the engine deletes directly.
 pub struct DuressPaths {
     pub identity_file: PathBuf,
@@ -373,12 +401,13 @@ pub struct ProductionDuressConfig {
     pub local_cache_dir: PathBuf,
     pub anonymous_credentials_paths: Vec<PathBuf>,
     pub opsec_paths: Vec<PathBuf>,
-    pub purge_keyring: Option<WipeFn>,
+    pub purge_keyring: Option<KeyringPurgeFn>,
     pub wipe_prekeys: Option<WipeFn>,
     pub wipe_double_ratchet: Option<WipeFn>,
     pub wipe_sender_keys: Option<WipeFn>,
     pub wipe_peer_ratchets: Option<WipeFn>,
     pub zeroize_in_memory: Option<WipeFn>,
+    pub unregister_account: Option<WipeFn>,
 }
 
 impl ProductionDuressConfig {
@@ -399,6 +428,7 @@ impl ProductionDuressConfig {
             wipe_sender_keys: None,
             wipe_peer_ratchets: None,
             zeroize_in_memory: None,
+            unregister_account: None,
         }
     }
 }
@@ -413,6 +443,22 @@ pub fn build_production_duress_handlers(config: ProductionDuressConfig) -> Produ
     let local_cache_dir = config.local_cache_dir;
     let anonymous_credentials_paths = config.anonymous_credentials_paths;
     let opsec_paths = config.opsec_paths;
+    let mut handlers = DuressHandlers::platform_sealer_handlers();
+    if let Some(purge_keyring) = config.purge_keyring {
+        handlers.purge_keyring_entry = Some(purge_keyring);
+    }
+    handlers.wipe_local_cache_dir =
+        Some(Box::new(move || remove_path_idempotent(&local_cache_dir)));
+    handlers.wipe_anonymous_credentials = Some(Box::new(move || {
+        remove_paths_idempotent(&anonymous_credentials_paths)
+    }));
+    handlers.wipe_prekeys = config.wipe_prekeys;
+    handlers.wipe_double_ratchet = config.wipe_double_ratchet;
+    handlers.wipe_sender_keys = config.wipe_sender_keys;
+    handlers.wipe_peer_ratchets = config.wipe_peer_ratchets;
+    handlers.zeroize_in_memory = config.zeroize_in_memory;
+    handlers.unregister_account = config.unregister_account;
+    handlers.strip_opsec_files = Some(Box::new(move || remove_paths_idempotent(&opsec_paths)));
 
     ProductionDuressParts {
         journal_path: config.journal_path,
@@ -421,19 +467,7 @@ pub fn build_production_duress_handlers(config: ProductionDuressConfig) -> Produ
             password_file: config.password_dir.join("password_marker.json"),
             prekey_file: Some(config.account_dir.join("prekeys.json")),
         },
-        handlers: DuressHandlers {
-            purge_keyring: config.purge_keyring,
-            wipe_local_cache_dir: Some(Box::new(move || remove_path_idempotent(&local_cache_dir))),
-            wipe_anonymous_credentials: Some(Box::new(move || {
-                remove_paths_idempotent(&anonymous_credentials_paths)
-            })),
-            wipe_prekeys: config.wipe_prekeys,
-            wipe_double_ratchet: config.wipe_double_ratchet,
-            wipe_sender_keys: config.wipe_sender_keys,
-            wipe_peer_ratchets: config.wipe_peer_ratchets,
-            zeroize_in_memory: config.zeroize_in_memory,
-            strip_opsec_files: Some(Box::new(move || remove_paths_idempotent(&opsec_paths))),
-        },
+        handlers,
     }
 }
 
@@ -524,13 +558,20 @@ impl DuressEngine {
     /// (every step finished) or every remaining step has logged a
     /// failure outcome.
     pub fn execute(&self) -> Result<DuressReport> {
-        self.execute_with_tpm_evict(evict_tpm_key)
+        self.execute_inner(None)
     }
 
     fn execute_with_tpm_evict<F>(&self, tpm_evict: F) -> Result<DuressReport>
     where
         F: Fn() -> std::result::Result<TpmEvictOutcome, SealerError>,
     {
+        self.execute_inner(Some(&tpm_evict))
+    }
+
+    fn execute_inner(
+        &self,
+        tpm_evict: Option<&dyn Fn() -> std::result::Result<TpmEvictOutcome, SealerError>>,
+    ) -> Result<DuressReport> {
         let mut journal = self.read_or_init_journal()?;
         let already_done: std::collections::HashSet<WipeStep> =
             journal.completed.iter().map(|(s, _)| *s).collect();
@@ -540,7 +581,7 @@ impl DuressEngine {
             if already_done.contains(&step) {
                 continue;
             }
-            let outcome = self.run_step(step, &tpm_evict);
+            let outcome = self.run_step(step, tpm_evict);
             report_steps.push((step, outcome.clone()));
             journal.completed.push((step, outcome));
             self.write_journal(&journal)?;
@@ -580,13 +621,17 @@ impl DuressEngine {
         Ok(Some(self.execute()?))
     }
 
-    fn run_step<F>(&self, step: WipeStep, tpm_evict: &F) -> StepOutcome
-    where
-        F: Fn() -> std::result::Result<TpmEvictOutcome, SealerError>,
-    {
+    fn run_step(
+        &self,
+        step: WipeStep,
+        tpm_evict: Option<&dyn Fn() -> std::result::Result<TpmEvictOutcome, SealerError>>,
+    ) -> StepOutcome {
         match step {
-            WipeStep::TpmEvict => map_tpm_evict_result(tpm_evict()),
-            WipeStep::KeyringPurge => self.run_keyring_purge(),
+            WipeStep::TpmEvict => match tpm_evict {
+                Some(f) => map_tpm_evict_result(f()),
+                None => self.run_tpm_evict_handler(),
+            },
+            WipeStep::KeyringPurge => self.run_keyring_purge_handler(),
             WipeStep::IdentityFile => self.delete_file_idempotent(&self.paths.identity_file),
             WipeStep::PasswordHashes => self.delete_file_idempotent(&self.paths.password_file),
             WipeStep::UnregisterAccount => self.run_handler(
@@ -651,19 +696,31 @@ impl DuressEngine {
         }
     }
 
-    fn run_keyring_purge(&self) -> StepOutcome {
-        match self.handlers.purge_keyring.as_ref() {
-            Some(handler) => match handler() {
-                Ok(_) => StepOutcome::Wiped,
-                Err(e) => StepOutcome::Failed {
-                    error: e.to_string(),
-                },
+    fn run_tpm_evict_handler(&self) -> StepOutcome {
+        match self.handlers.evict_tpm_key.as_ref() {
+            Some(f) => map_tpm_evict_result(f()),
+            None => StepOutcome::Skipped {
+                reason: "TPM key eviction handler not wired — caller must opt in via \
+                         DuressHandlers::platform_sealer_handlers or provide \
+                         DuressHandlers::evict_tpm_key"
+                    .to_string(),
             },
-            None => KeyringSealer::purge_keyring_entry()
+        }
+    }
+
+    fn run_keyring_purge_handler(&self) -> StepOutcome {
+        match self.handlers.purge_keyring_entry.as_ref() {
+            Some(f) => f()
                 .map(|_| StepOutcome::Wiped)
                 .unwrap_or_else(|e| StepOutcome::Failed {
                     error: e.to_string(),
                 }),
+            None => StepOutcome::Skipped {
+                reason: "keyring purge handler not wired — caller must opt in via \
+                         DuressHandlers::platform_sealer_handlers or provide \
+                         DuressHandlers::purge_keyring_entry"
+                    .to_string(),
+            },
         }
     }
 
@@ -817,6 +874,16 @@ mod tests {
         })
     }
 
+    fn record_keyring_handler(
+        calls: Arc<Mutex<Vec<&'static str>>>,
+        label: &'static str,
+    ) -> KeyringPurgeFn {
+        Box::new(move || {
+            calls.lock().unwrap().push(label);
+            Ok(())
+        })
+    }
+
     #[test]
     fn production_duress_handlers_compose_concrete_handlers() {
         let dir = TempDir::new().unwrap();
@@ -835,7 +902,7 @@ mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let production = ProductionDuressHandlers::new()
             .with_unregister_remote_identity(counted_handler(remote_unregister.clone()))
-            .with_purge_keyring(record_handler(Arc::clone(&calls), "purge_keyring"))
+            .with_purge_keyring(record_keyring_handler(Arc::clone(&calls), "purge_keyring"))
             .with_wipe_local_cache_dir(record_handler(Arc::clone(&calls), "local_cache"))
             .with_wipe_anonymous_credentials_paths([anonymous_store.clone()])
             .with_wipe_prekeys(record_handler(Arc::clone(&calls), "prekeys"))
@@ -1055,12 +1122,24 @@ mod tests {
     }
 
     #[test]
+    fn platform_sealer_handlers_assembles_tpm_and_keyring_callbacks() {
+        let handlers = DuressHandlers::platform_sealer_handlers();
+
+        assert!(handlers.evict_tpm_key.is_some());
+        assert!(handlers.purge_keyring_entry.is_some());
+    }
+
+    #[test]
     fn duress_tpm_no_tpm_nothing_to_evict_completes_and_removes_journal() {
         let dir = TempDir::new().unwrap();
         let (paths, journal_path) = test_paths(&dir);
         write_journal_with_all_steps_except(&journal_path, WipeStep::TpmEvict);
 
-        let engine = DuressEngine::new(journal_path.clone(), paths, DuressHandlers::default());
+        let handlers = DuressHandlers {
+            evict_tpm_key: Some(Box::new(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))),
+            ..Default::default()
+        };
+        let engine = DuressEngine::new(journal_path.clone(), paths, handlers);
         let report = engine.execute().unwrap();
 
         assert!(report.completed);
@@ -1080,10 +1159,14 @@ mod tests {
         let (paths, journal_path) = test_paths(&dir);
         write_journal_with_all_steps_except(&journal_path, WipeStep::TpmEvict);
 
-        let engine = DuressEngine::new(journal_path.clone(), paths, DuressHandlers::default());
-        let report = engine
-            .execute_with_tpm_evict(|| Err(SealerError::Tpm("DeleteKey: access denied".into())))
-            .unwrap();
+        let handlers = DuressHandlers {
+            evict_tpm_key: Some(Box::new(|| {
+                Err(SealerError::Tpm("DeleteKey: access denied".into()))
+            })),
+            ..Default::default()
+        };
+        let engine = DuressEngine::new(journal_path.clone(), paths, handlers);
+        let report = engine.execute().unwrap();
 
         assert!(report.completed);
         assert!(matches!(
@@ -1102,10 +1185,12 @@ mod tests {
         let (paths, journal_path) = test_paths(&dir);
         write_journal_with_all_steps_except(&journal_path, WipeStep::TpmEvict);
 
-        let engine = DuressEngine::new(journal_path, paths, DuressHandlers::default());
-        let report = engine
-            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
-            .unwrap();
+        let handlers = DuressHandlers {
+            evict_tpm_key: Some(Box::new(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))),
+            ..Default::default()
+        };
+        let engine = DuressEngine::new(journal_path, paths, handlers);
+        let report = engine.execute().unwrap();
         let tpm_outcome = outcome_for(&report.steps, WipeStep::TpmEvict);
 
         assert_eq!(tpm_outcome, &StepOutcome::AlreadyClean);
@@ -1144,12 +1229,13 @@ mod tests {
         };
 
         let mut config = ProductionDuressConfig::new(account_dir.clone(), password_dir.clone());
-        config.purge_keyring = Some(callback("keyring"));
+        config.purge_keyring = Some(record_keyring_handler(Arc::clone(&calls), "keyring"));
         config.wipe_prekeys = Some(callback("prekeys"));
         config.wipe_double_ratchet = Some(callback("double_ratchet"));
         config.wipe_sender_keys = Some(callback("sender_keys"));
         config.wipe_peer_ratchets = Some(callback("peer_ratchets"));
         config.zeroize_in_memory = Some(callback("zeroize"));
+        config.unregister_account = Some(callback("unregister"));
         config.opsec_paths = vec![opsec_script.clone(), opsec_config.clone()];
 
         let parts = super::build_production_duress_handlers(config);
@@ -1189,6 +1275,7 @@ mod tests {
             calls.lock().unwrap().as_slice(),
             [
                 "keyring",
+                "unregister",
                 "prekeys",
                 "double_ratchet",
                 "sender_keys",
@@ -1196,5 +1283,22 @@ mod tests {
                 "zeroize",
             ]
         );
+    }
+
+    #[test]
+    fn missing_platform_handlers_refuse_by_skipping_destructive_steps() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        let engine = DuressEngine::new(journal_path, paths, DuressHandlers::default());
+        let report = engine.execute().unwrap();
+
+        assert!(matches!(
+            outcome_for(&report.steps, WipeStep::TpmEvict),
+            StepOutcome::Skipped { reason } if reason.contains("DuressHandlers::evict_tpm_key")
+        ));
+        assert!(matches!(
+            outcome_for(&report.steps, WipeStep::KeyringPurge),
+            StepOutcome::Skipped { reason } if reason.contains("DuressHandlers::purge_keyring_entry")
+        ));
     }
 }

@@ -1,7 +1,7 @@
 use keystore::{
     generate_identity, save_identity, save_password_record, save_prekey_state, Argon2Params,
     DuressEngine, DuressHandlers, DuressJournal, DuressPaths, NoOpSealer, PasswordRecord,
-    PrekeyConfig, PrekeyState, StepOutcome, WipeStep,
+    PrekeyConfig, PrekeyState, StepOutcome, TpmEvictOutcome, WipeStep,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -236,7 +236,8 @@ fn handlers_run_in_canonical_order() {
     };
 
     let handlers = DuressHandlers {
-        purge_keyring: Some(mk_handler("keyring")),
+        evict_tpm_key: Some(mk_tpm_evict_handler("tpm_evict", calls.clone())),
+        purge_keyring_entry: Some(mk_keyring_purge_handler("keyring_purge", calls.clone())),
         wipe_local_cache_dir: Some(mk_handler("local_cache")),
         wipe_anonymous_credentials: Some(mk_handler("creds")),
         wipe_prekeys: Some(mk_handler("prekeys")),
@@ -258,7 +259,8 @@ fn handlers_run_in_canonical_order() {
     assert_eq!(
         *calls,
         vec![
-            "keyring",
+            "tpm_evict",
+            "keyring_purge",
             "unregister",
             "local_cache",
             "creds",
@@ -273,7 +275,7 @@ fn handlers_run_in_canonical_order() {
 }
 
 #[test]
-fn keyring_purge_handler() {
+fn keyring_purge_entry_handler_runs_for_pending_keyring_step() {
     let dir = TempDir::new().unwrap();
     let (paths, journal_path) = build_paths(&dir);
     write_journal_with_all_steps_except(&journal_path, WipeStep::KeyringPurge);
@@ -281,7 +283,7 @@ fn keyring_purge_handler() {
     let calls = Arc::new(AtomicUsize::new(0));
     let calls_for_cb = calls.clone();
     let handlers = DuressHandlers {
-        purge_keyring: Some(Box::new(move || {
+        purge_keyring_entry: Some(Box::new(move || {
             calls_for_cb.fetch_add(1, Ordering::SeqCst);
             Ok(())
         })),
@@ -294,7 +296,7 @@ fn keyring_purge_handler() {
     assert_eq!(
         calls.load(Ordering::SeqCst),
         1,
-        "KeyringPurge must call DuressHandlers::purge_keyring"
+        "KeyringPurge must call DuressHandlers::purge_keyring_entry"
     );
     assert_eq!(
         outcome_for(&report.steps, WipeStep::KeyringPurge),
@@ -304,6 +306,38 @@ fn keyring_purge_handler() {
         !journal_path.exists(),
         "successful keyring purge handler run must clear the journal"
     );
+}
+
+#[test]
+fn tpm_evict_and_keyring_purge_handlers_compose() {
+    let dir = TempDir::new().unwrap();
+    let (paths, journal_path) = build_paths(&dir);
+
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let handlers = DuressHandlers {
+        evict_tpm_key: Some(mk_tpm_evict_handler("tpm_evict", calls.clone())),
+        purge_keyring_entry: Some(mk_keyring_purge_handler("keyring_purge", calls.clone())),
+        ..Default::default()
+    };
+
+    let engine = DuressEngine::new(journal_path, paths, handlers);
+    let report = engine.execute().unwrap();
+
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::TpmEvict),
+        &StepOutcome::Wiped
+    );
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::KeyringPurge),
+        &StepOutcome::Wiped
+    );
+    assert!(
+        report.failed_steps().is_empty(),
+        "composed platform handlers must not record failures"
+    );
+
+    let calls = calls.lock().unwrap();
+    assert_eq!(*calls, vec!["tpm_evict", "keyring_purge"]);
 }
 
 #[test]
@@ -441,7 +475,8 @@ fn crash_mid_wipe_resume() {
     assert!(prekey_file.exists());
 
     let handlers = DuressHandlers {
-        purge_keyring: Some(Box::new(|| Ok(()))),
+        evict_tpm_key: Some(Box::new(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))),
+        purge_keyring_entry: Some(Box::new(|| Ok(()))),
         wipe_local_cache_dir: Some(Box::new(|| Ok(()))),
         wipe_anonymous_credentials: Some(Box::new(|| Ok(()))),
         wipe_prekeys: Some(Box::new(|| Ok(()))),
@@ -483,7 +518,8 @@ fn successful_run_removes_journal() {
     let dir = TempDir::new().unwrap();
     let (paths, journal_path) = build_paths(&dir);
     let handlers = DuressHandlers {
-        purge_keyring: Some(Box::new(|| Ok(()))),
+        evict_tpm_key: Some(Box::new(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))),
+        purge_keyring_entry: Some(Box::new(|| Ok(()))),
         wipe_local_cache_dir: Some(Box::new(|| Ok(()))),
         wipe_anonymous_credentials: Some(Box::new(|| Ok(()))),
         wipe_prekeys: Some(Box::new(|| Ok(()))),
@@ -569,4 +605,24 @@ fn outcome_for(steps: &[(WipeStep, StepOutcome)], target: WipeStep) -> &StepOutc
         .find(|(s, _)| *s == target)
         .unwrap_or_else(|| panic!("step {target:?} missing from report"))
         .1
+}
+
+fn mk_tpm_evict_handler(
+    name: &'static str,
+    calls: Arc<std::sync::Mutex<Vec<&'static str>>>,
+) -> keystore::TpmEvictFn {
+    Box::new(move || {
+        calls.lock().unwrap().push(name);
+        Ok(TpmEvictOutcome::Evicted)
+    })
+}
+
+fn mk_keyring_purge_handler(
+    name: &'static str,
+    calls: Arc<std::sync::Mutex<Vec<&'static str>>>,
+) -> keystore::KeyringPurgeFn {
+    Box::new(move || {
+        calls.lock().unwrap().push(name);
+        Ok(())
+    })
 }
