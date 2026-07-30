@@ -18,7 +18,7 @@ use crate::whitelist_state::WhitelistState;
 use crypto::x25519;
 use keystore::{Identity, KeyServerClient};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use store::MessageStore;
@@ -173,7 +173,6 @@ pub struct KeyChangeAlert {
     pub pending_bundle: crate::tofu::KeyBundle,
 }
 
-#[derive(Default)]
 pub struct AppState {
     /// Serializes in-process Discord-account switches. The active account
     /// directory is process-global, so two concurrent switch commands must
@@ -228,6 +227,12 @@ pub struct AppState {
     /// `crates/store` for the on-disk crypto + schema posture.
     pub message_store: Mutex<Option<MessageStore>>,
 
+    /// Sealed OSL-RN session and pin store for the active account. The sealer
+    /// is process-local and selected with the same best-available policy as
+    /// identity storage; callers must not construct ad hoc plaintext RN stores.
+    pub rn_session_store: crate::wire_rn::RnSessionStore,
+    pub rn_session_sealer: Box<dyn keystore::Sealer>,
+
     /// Per-scope whitelist + encryption-toggle state, mirroring
     /// `<config_dir>/whitelist_state.json`. Empty by default —
     /// 7b's send-path queries this every encrypt to decide whether
@@ -276,12 +281,10 @@ pub struct AppState {
     /// per-(scope, sender) receiver chain.
     pub sender_key_state: Mutex<crate::sender_key_state::SenderKeyStateFile>,
 
-    /// Temporary compatibility kill-switch for v=5 group sender chains.
-    /// Defaults false in production because the current chain key omits a
-    /// physical device id and therefore desynchronizes when one Discord
-    /// account is active on two machines. Protocol-focused tests may enable
-    /// it explicitly while the v5 implementation remains covered.
-    pub sender_keys_enabled: std::sync::atomic::AtomicBool,
+    /// Owner go/no-go switch for v=5 group sender chains. Defaults enabled so
+    /// group/server sends take the sender-key path unless a caller explicitly
+    /// disables it for compatibility testing.
+    pub sender_keys_enabled: AtomicBool,
 
     /// Phase 9-A3: in-memory cache of the current channel-member set
     /// per channel_id. Populated by `osl_membership_update` (boot.js
@@ -369,6 +372,42 @@ pub struct AppState {
     // model) are removed. The new model has unlimited free text
     // encryption + paid-only attachments; no clocks, no unlocks.
     // The license_state mutex above is the sole tier surface.
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            account_switch_lock: Mutex::new(()),
+            identity: Mutex::new(None),
+            prekey_state: Mutex::new(None),
+            keyserver: Mutex::new(None),
+            cloud_registration_state: AtomicU8::new(CloudRegistrationState::NotAttempted as u8),
+            identity_regenerated_this_launch: AtomicBool::new(false),
+            registration_alert: Mutex::new(None),
+            key_change_alerts: Mutex::new(HashMap::new()),
+            sender_pubkey_cache: SenderPubkeyCache::default(),
+            peer_map: Mutex::new(PeerMap::default()),
+            message_store: Mutex::new(None),
+            rn_session_store: default_rn_session_store(),
+            rn_session_sealer: keystore::select_best_sealer(),
+            whitelist_state: Mutex::new(WhitelistState::default()),
+            recovery_token: Mutex::new(None),
+            stealth_active: Mutex::new(false),
+            burned_scopes: Mutex::new(crate::burned_scopes_file::BurnedScopesFile::default()),
+            sender_key_state: Mutex::new(crate::sender_key_state::SenderKeyStateFile::default()),
+            sender_keys_enabled: AtomicBool::new(true),
+            channel_members: Mutex::new(HashMap::new()),
+            app_preferences: Mutex::new(crate::app_preferences::AppPreferences::default()),
+            mode1_reassembly: Mutex::new(HashMap::new()),
+            friend_ids: Mutex::new(Vec::new()),
+            guild_list: Mutex::new(Vec::new()),
+            server_defaults: Mutex::new(HashMap::new()),
+            last_persist_error: Mutex::new(None),
+            license_state: Mutex::new(keystore::LicenseStateDto::default()),
+            recovery_guard: Mutex::new(crate::recovery::RecoveryGuard::default()),
+            scope_membership: Mutex::new(crate::membership::ScopeMembership::default()),
+        }
+    }
 }
 
 impl AppState {
@@ -463,6 +502,12 @@ impl AppState {
     }
 }
 
+fn default_rn_session_store() -> crate::wire_rn::RnSessionStore {
+    let dir = keystore::osl_config_dir()
+        .unwrap_or_else(|_| std::env::temp_dir().join("osl-rn-session-store-unconfigured"));
+    crate::wire_rn::RnSessionStore::new(dir.join("rn_sessions"))
+}
+
 fn current_unix_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -514,5 +559,39 @@ mod tests {
 
         assert!(!state.has_identity());
         assert!(!state.has_prekey_state());
+    }
+
+    #[test]
+    fn app_state_constructs_rn_session_store_with_sealer() {
+        let state = AppState::new();
+        let peer = [0x42u8; 32];
+
+        let absent_pin = state
+            .rn_session_store
+            .load_pin(&peer)
+            .expect("fresh RN store reads an absent pin");
+
+        assert_eq!(absent_pin, crate::wire_rn::RnPeerPin::UNKNOWN);
+        assert!(
+            !state.rn_session_sealer.requires_insecure_banner(),
+            "AppState RN sealer must not be a plaintext sealer"
+        );
+        assert_ne!(
+            state.rn_session_sealer.method_label(),
+            keystore::METHOD_NOOP
+        );
+    }
+
+    #[test]
+    fn sender_keys_enabled_defaults_to_enabled_after_owner_go() {
+        let state = AppState::new();
+
+        assert!(state.sender_keys_enabled.load(Ordering::Acquire));
+
+        state.sender_keys_enabled.store(false, Ordering::Release);
+        assert!(
+            !state.sender_keys_enabled.load(Ordering::Acquire),
+            "the test must exercise the AppState default, not a hardwired accessor"
+        );
     }
 }

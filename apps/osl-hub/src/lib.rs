@@ -5,6 +5,7 @@
 pub mod attachment_formats;
 pub mod browser_companion;
 pub mod burn_contract;
+pub mod cloud_autoscrub_authority;
 pub mod cloud_autoscrub_consent;
 pub mod control_contract;
 pub mod discord_carrier_geometry;
@@ -16,13 +17,14 @@ pub mod native_apps;
 pub mod native_attachment_jobs;
 pub mod native_discord_adapter;
 pub mod native_window_host;
-pub mod proprietary_module_boundary;
+pub mod owner_presence;
 #[cfg(feature = "core")]
 pub mod peer_attachment_io;
 pub mod preferences;
 pub mod privacy_scan;
 #[cfg(feature = "core")]
 pub mod pro_context_cover;
+pub mod proprietary_module_boundary;
 pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;

@@ -54,6 +54,7 @@ import { handleSelectorManifest } from "./endpoints/selector-manifest.js";
 import { handleStripeWebhook } from "./endpoints/stripe-webhook.js";
 import { handleTelegramWebhook } from "./endpoints/telegram.js";
 import { handleUnregister } from "./endpoints/unregister.js";
+import { handleUsernameCoverage } from "./endpoints/username-coverage.js";
 import {
   handleControlInboxDelete,
   handleControlInboxGet,
@@ -267,7 +268,8 @@ async function dispatch(
       path === "/v1/crypto/quote" ||
       path === "/v1/crypto/status" ||
       path === "/v1/donations/crypto/quote" ||
-      path === "/v1/donations/crypto/status"
+      path === "/v1/donations/crypto/status" ||
+      path === "/v1/username-coverage"
     ) {
       return corsPreflight("POST, OPTIONS", request);
     }
@@ -374,6 +376,9 @@ async function dispatch(
     }
     if (path === "/v1/crypto/status") {
       return withCors(await handleCryptoStatus(request, env), request);
+    }
+    if (path === "/v1/username-coverage") {
+      return withCors(await handleUsernameCoverage(request), request);
     }
     if (path === "/v1/donations/crypto/quote") {
       return withCors(await handleCryptoDonationQuote(request, env), request);
