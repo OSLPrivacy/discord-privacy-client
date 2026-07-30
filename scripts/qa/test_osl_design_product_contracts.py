@@ -9,6 +9,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 GUI_PLAN = ROOT / "docs" / "design" / "osl-gui-final-plan.md"
 SIMPLE_SPEC = ROOT / "docs" / "design" / "osl-simple-spec.md"
+CURRENT_WINDOW_PROMPTS = (
+    ROOT / "docs" / "design" / "osl-current-window-prompts-2026-07-26.md"
+)
 
 
 def _section(markdown: str, heading: str) -> str:
@@ -268,6 +271,61 @@ def _errors_for_browser_and_monetization(markdown: str) -> list[str]:
     return errors
 
 
+def _errors_for_current_window_prompt_rollout(markdown: str) -> list[str]:
+    layout = _section(markdown, "## Recommended live layout")
+    adoption = _section(markdown, "## Shared memory-card adoption contract")
+    update = _section(markdown, "## One update prompt for every active OSL tab")
+    rows = _table_rows(adoption, "Active account/window")
+    errors: list[str] = []
+    expected_windows = [
+        "Existing OSL Hub/UI window",
+        "Existing two-way Opus test window",
+        "Existing Scrub window",
+        "Existing Discord testing window",
+        "New website/head-developer lane",
+        "Coordinating Telegram `/osl` lane",
+    ]
+    observed_windows = [row["Active account/window"] for row in rows]
+    if observed_windows != expected_windows:
+        errors.append("active account/window rollout list is not exact")
+
+    layout_items = re.findall(r"^\d+\.\s+(.+)$", layout, flags=re.MULTILINE)
+    if len(layout_items) != len(expected_windows):
+        errors.append("recommended live layout does not cover six active windows")
+    layout_words = " ".join(layout_items).lower()
+    for required in ("hub/ui", "opus", "scrub", "discord", "website", "telegram"):
+        if required not in layout_words:
+            errors.append(f"recommended live layout omits {required}")
+
+    for row in rows:
+        route = row.get("Memory-card route", "").lower()
+        prompt_source = row.get("Prompt source", "").lower()
+        volatile_rule = row.get("Volatile-status rule", "").lower()
+        if "never copy the full master spec or volatile status into memory" != volatile_rule:
+            errors.append(f"volatile-status rule is not uniform for {row['Active account/window']}")
+        if (
+            "common update" in prompt_source
+            and "common update is sent before" not in route
+            and "current lane receives the shared update" not in route
+        ):
+            errors.append(f"common update is not first for {row['Active account/window']}")
+        if "bootstrap" in prompt_source and "loads the compact memory card before" not in route:
+            errors.append(f"bootstrap does not preload memory card for {row['Active account/window']}")
+        if "memory-card" not in route and "memory card" not in route:
+            errors.append(f"memory-card route is missing for {row['Active account/window']}")
+
+    update_plain = _plain(update)
+    for required in (
+        "if this ai/account has never read it, read it fully once",
+        "save the compact memory card",
+        "read only the revision digest, active deadlines, and task-linked sections/reports",
+        "never copy the giant spec or volatile status into memory",
+    ):
+        if required not in update_plain:
+            errors.append(f"common update prompt is missing memory-card rule: {required}")
+    return errors
+
+
 def _assert_contract(
     validate: Callable[..., list[str]],
     *documents: str,
@@ -339,6 +397,33 @@ encode_burns_five_guarantees_and_banned_phrases.__name__ = (
 )
 
 
+def adopt_shared_memory_cards_across_every_active_account() -> None:
+    markdown = CURRENT_WINDOW_PROMPTS.read_text(encoding="utf-8")
+    broken = markdown.replace(
+        "| Existing Discord testing window | Common update plus Prompt B | Common update is sent before Prompt B and supplies the shared memory-card rule for this active account | Never copy the full master spec or volatile status into memory |\n",
+        "",
+    )
+    _assert_contract(
+        _errors_for_current_window_prompt_rollout,
+        markdown,
+        broken_documents=(broken,),
+    )
+    broken_route = markdown.replace(
+        "Common update is sent before Prompt A; Prompt A repeats first-encounter versus returning-account memory-card handling",
+        "Prompt A is sent directly",
+    )
+    testcase = unittest.TestCase()
+    testcase.assertNotEqual(
+        _errors_for_current_window_prompt_rollout(broken_route),
+        [],
+    )
+
+
+adopt_shared_memory_cards_across_every_active_account.__name__ = (
+    "docs/design/osl-current-window-prompts-2026-07-26.md"
+)
+
+
 def load_tests(
     loader: unittest.TestLoader,
     tests: unittest.TestSuite,
@@ -351,6 +436,7 @@ def load_tests(
         encode_honest_tri_state_sending_and_double_enter_without_auto_retry,
         encode_browser_import_choices_and_noninterrupting_monetization,
         encode_burns_five_guarantees_and_banned_phrases,
+        adopt_shared_memory_cards_across_every_active_account,
     ):
         suite.addTest(unittest.FunctionTestCase(test))
     return suite
