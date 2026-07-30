@@ -7,6 +7,7 @@ import json
 import re
 import subprocess
 import sys
+import unittest
 from pathlib import Path
 from typing import Any
 
@@ -425,6 +426,53 @@ def audit_public_release_claims_self_test(errors: list[str]) -> None:
     for bad in (bad_tag, bad_hash):
         if not release_identity_mismatch_violations(bad, release_identity):
             errors.append(f"{exact_release_test}: stale release identity was not caught")
+
+
+class PublicReleaseAuditBehaviourTests(unittest.TestCase):
+    def release_identity(self) -> dict[str, Any]:
+        return {
+            "schemaVersion": 1,
+            "releaseTag": "v1.2.3",
+            "sourceCommit": "c" * 40,
+            "sourceTree": "d" * 40,
+            "binarySha256": "a" * 64,
+            "binarySizeBytes": 123,
+            "claimProfile": "release-proven",
+        }
+
+    def test_reconcile_public_docs_and_site_claims_against_the_exact_released_binary(self) -> None:
+        identity = self.release_identity()
+
+        self.assertEqual(
+            release_claim_violations(
+                (
+                    f"Release v1.2.3 binary SHA-256 {'a' * 64} is release-proven. "
+                    f"The source commit {'c' * 40} and source tree {'d' * 40} match the app."
+                ),
+                identity,
+            ),
+            [],
+        )
+        self.assertEqual(
+            release_identity_mismatch_violations(
+                f"Release v9.9.9 binary SHA-256 {'a' * 64} is release-proven.",
+                identity,
+            ),
+            [(1, "release claim references a different released binary identity")],
+        )
+        self.assertEqual(
+            release_identity_mismatch_violations(
+                f"Release v1.2.3 binary SHA-256 {'b' * 64} is release-proven.",
+                identity,
+            ),
+            [(1, "release claim references a different released binary identity")],
+        )
+        self.assertTrue(
+            release_claim_violations(
+                "This release build proves encrypted messages send through Discord.",
+                None,
+            )
+        )
 
 
 def main() -> int:
