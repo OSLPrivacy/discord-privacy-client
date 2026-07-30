@@ -257,6 +257,16 @@ fn a_restored_session_cannot_reuse_a_consumed_message_key() {
 
     let mut restored = Session::import_state(&after).expect("import");
     assert_eq!(restored.decrypt(&w, &mut rng), Err(Error::AuthFailed));
+    let fresh = alice
+        .encrypt(0, b"after consumed replay", &mut rng)
+        .expect("fresh send");
+    assert_eq!(
+        restored
+            .decrypt(&fresh, &mut rng)
+            .expect("restored session remains usable")
+            .plaintext,
+        b"after consumed replay"
+    );
 
     let (mut alice, mut bob, mut rng) = established_pair(313);
     let first = alice.encrypt(0, b"first skipped", &mut rng).expect("first");
@@ -287,6 +297,14 @@ fn a_restored_session_cannot_reuse_a_consumed_message_key() {
             .expect("unconsumed skipped key must survive restart")
             .plaintext,
         b"second skipped"
+    );
+    let fourth = alice.encrypt(0, b"after skipped replay", &mut rng).expect("fourth");
+    assert_eq!(
+        restored
+            .decrypt(&fourth, &mut rng)
+            .expect("restored skipped session remains usable")
+            .plaintext,
+        b"after skipped replay"
     );
 }
 

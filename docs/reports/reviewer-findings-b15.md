@@ -13,6 +13,13 @@ Scope: independent review of the ratchet lane remediation surface, with the foll
 | b20_recovery_result_observability | medium | open | b20 | ratchet-lane-review | Return an explicit applied-versus-ignored sentinel from SESSION_RESET handling so callers cannot mistake a refused recovery control message for user plaintext. | no |
 | b36_requires_re_review_signoff | medium | pending_re_review | b36 | dependency-chain | Re-review the b20 command-surface remediation and record sign-off only after the named IPC acceptance test exists and exercises the closed behavior. | no |
 
+Acceptance test: `reviewer_produces_findings_report`
+
+The report is valid only if the Findings table preserves all three review findings with concrete
+owners, open or pending-review status, remediation text that can drive follow-up work, and `rn_enabled`
+set to `no` for every row. Removing a finding, changing a row to authorize RN, or weakening the
+fail-closed binding language must make the test fail.
+
 ## Reviewer basis
 
 The independent review found that a one-directional v4 desync can deadlock if the receiver of a

@@ -4171,11 +4171,49 @@ async function runSelfTest() {
   );
   const supportMatrixWithoutPublic = JSON.parse(JSON.stringify(productionSupportMatrix));
   delete supportMatrixWithoutPublic.versioned_public_support_matrix;
+  const supportMatrixWithPublicSchemaDrift = JSON.parse(JSON.stringify(productionSupportMatrix));
+  supportMatrixWithPublicSchemaDrift.versioned_public_support_matrix.schema_version = 2;
   const supportMatrixWithoutChatEvidence = JSON.parse(JSON.stringify(productionSupportMatrix));
   delete supportMatrixWithoutChatEvidence.chat_app_evidence;
+  const supportMatrixWithoutSignalEvidence = JSON.parse(JSON.stringify(productionSupportMatrix));
+  supportMatrixWithoutSignalEvidence.chat_app_evidence =
+    supportMatrixWithoutSignalEvidence.chat_app_evidence.filter(
+      (row) => row.id !== "signal_desktop_native",
+    );
+  const supportMatrixWithPromotedChatEvidence = JSON.parse(JSON.stringify(productionSupportMatrix));
+  supportMatrixWithPromotedChatEvidence.chat_app_evidence
+    .find((row) => row.id === "signal_desktop_native").status = "supported";
+  const supportMatrixWithoutTelegramVerdict = JSON.parse(JSON.stringify(productionSupportMatrix));
+  supportMatrixWithoutTelegramVerdict.conditional_app_evidence =
+    supportMatrixWithoutTelegramVerdict.conditional_app_evidence.filter(
+      (row) => row.id !== "telegram_desktop_native",
+    );
+  const supportMatrixWithPromotedTelegramVerdict = JSON.parse(JSON.stringify(productionSupportMatrix));
+  supportMatrixWithPromotedTelegramVerdict.conditional_app_evidence
+    .find((row) => row.id === "telegram_desktop_native").status = "supported";
+  const supportMatrixWithPromotedMailClaim = JSON.parse(JSON.stringify(productionSupportMatrix));
+  supportMatrixWithPromotedMailClaim.versioned_public_support_matrix.rows
+    .find((row) => row.id === "osl_mail_public").claim_allowed = true;
   const supportMatrixWithForgedPublicClaim = JSON.parse(JSON.stringify(productionSupportMatrix));
   supportMatrixWithForgedPublicClaim.versioned_public_support_matrix.rows
     .find((row) => row.id === "signal_desktop_public").claim_allowed = true;
+  const telegramMailPublicProof = await validateSupportMatrixPublicFragments([
+    {
+      file: "self-test/telegram-mail-verdicts",
+      text: "Telegram Desktop protected messaging is supported.",
+      line: 1,
+    },
+    {
+      file: "self-test/telegram-mail-verdicts",
+      text: "OSL Mail works with Outlook protected replies.",
+      line: 2,
+    },
+    {
+      file: "self-test/telegram-mail-verdicts",
+      text: "Telegram Desktop protected messaging is externally blocked until stable message rows are proved.",
+      line: 3,
+    },
+  ]);
   const claimGateWorkflowWithoutSelfTest = tsTestWorkflow.replace(
     /\n\s+node scripts\/check-app-claims\.mjs --self-test\n/,
     "\n",
@@ -4334,6 +4372,58 @@ async function runSelfTest() {
       passed:
         parseBannedPhrases(starvedSection).length === 0
         && bannedPhraseInputFailures(parseBannedPhrases(starvedSection)).length > 0,
+    },
+    {
+      name: "Define the versioned public support matrix schema",
+      passed:
+        (await validateVersionedPublicSupportMatrix(productionSupportMatrix)).length === 0
+        && (await validateVersionedPublicSupportMatrix(supportMatrixWithoutPublic)).some(
+          (failure) => failure.name === "versioned_public_support_matrix",
+        )
+        && (await validateVersionedPublicSupportMatrix(supportMatrixWithPublicSchemaDrift)).some(
+          (failure) => failure.expected.includes("schema_version=1"),
+        )
+        && (await validateVersionedPublicSupportMatrix(supportMatrixWithForgedPublicClaim)).some(
+          (failure) => failure.expected.includes("Signal.claim_allowed=false"),
+        ),
+    },
+    {
+      name: "Ingest qualified chat-app evidence into the matrix",
+      passed:
+        (await validateChatAppEvidence(productionSupportMatrix)).length === 0
+        && validateSupportMatrixEvidenceLinks(productionSupportMatrix).length === 0
+        && (await validateChatAppEvidence(supportMatrixWithoutChatEvidence)).some(
+          (failure) => failure.name === "chat_app_evidence",
+        )
+        && (await validateChatAppEvidence(supportMatrixWithoutSignalEvidence)).some(
+          (failure) => failure.expected === "row signal_desktop_native",
+        )
+        && (await validateChatAppEvidence(supportMatrixWithPromotedChatEvidence)).some(
+          (failure) => failure.expected.includes("signal_desktop_native.status=\"qualified_profile\""),
+        ),
+    },
+    {
+      name: "Ingest Telegram and Mail verdicts into the matrix",
+      passed:
+        telegramMailPublicProof.failures.length === 0
+        && telegramMailPublicProof.violations.some(
+          (violation) => violation.phrase === "Telegram protected support overclaim",
+        )
+        && telegramMailPublicProof.violations.some(
+          (violation) => violation.phrase === "Outlook OSL Mail protected support overclaim",
+        )
+        && !telegramMailPublicProof.violations.some(
+          (violation) => violation.line === 3,
+        )
+        && validateSupportMatrixEvidenceLinks(supportMatrixWithoutTelegramVerdict).some(
+          (failure) => failure.expected === "evidence row conditional_app_evidence.telegram_desktop_native",
+        )
+        && validateSupportMatrixEvidenceLinks(supportMatrixWithPromotedTelegramVerdict).some(
+          (failure) => failure.expected.includes("telegram_desktop_native.status=\"externally_blocked\""),
+        )
+        && validateSupportMatrixEvidenceLinks(supportMatrixWithPromotedMailClaim).some(
+          (failure) => failure.expected.includes("osl_mail_public.claim_allowed=false"),
+        ),
     },
     {
       name: "versioned_public_support_matrix",
