@@ -5480,14 +5480,52 @@ fn accept_rn_bootstrap_inbound_unknown(
         return Err("OSL: secure message format is not available".to_string());
     }
 
-    let sealer = select_best_sealer();
-    accept_rn_bootstrap_inbound_unknown_with_sealer(
+    accept_rn_bootstrap_inbound_unknown_with_selected_sealer(
         state,
         content,
         config_dir,
-        sealer.as_ref(),
         rn_wire_in_enabled,
     )
+}
+
+fn accept_rn_bootstrap_inbound_unknown_with_selected_sealer(
+    state: &AppState,
+    content: &str,
+    config_dir: Option<&Path>,
+    rn_wire_in_enabled: bool,
+) -> Result<InboundOpened, String> {
+    if !rn_wire_in_enabled {
+        return Err("OSL: secure message format is not available".to_string());
+    }
+
+    let (local, own_identity_public, own_mlkem768_ek) = {
+        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let identity = id_guard
+            .as_ref()
+            .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+        (
+            local_rn_prekeys_from_identity(identity)?,
+            *identity.x25519_public.as_bytes(),
+            identity.mlkem_public_bytes,
+        )
+    };
+
+    let store = rn_session_store(config_dir)?;
+    let (_session, opened) = crate::wire_rn::accept_and_persist(
+        &store,
+        &local,
+        &own_identity_public,
+        &own_mlkem768_ek,
+        content,
+        crate::wire_rn::RN_CONTEXT_DISCORD_MANUAL,
+        osl_ratchet_next::SessionParams::default(),
+    )
+    .map_err(|_| "OSL: secure message could not be opened".to_string())?;
+
+    Ok(InboundOpened {
+        msg_type: opened.msg_type,
+        plaintext: opened.plaintext,
+    })
 }
 
 fn accept_rn_bootstrap_inbound_unknown_with_sealer(
@@ -5514,7 +5552,7 @@ fn accept_rn_bootstrap_inbound_unknown_with_sealer(
     };
 
     let store = rn_session_store(config_dir)?;
-    let (_session, opened) = crate::wire_rn::accept_and_persist(
+    let (_session, opened) = crate::wire_rn::accept_and_persist_with_sealer(
         &store,
         sealer,
         &local,
@@ -5648,7 +5686,7 @@ mod rn_inbound_unknown_tests {
 
         let store = crate::wire_rn::RnSessionStore::new(dir.path().join(RN_SESSION_DIR_NAME));
         assert!(store
-            .load_session(&peer_identity, &sealer)
+            .load_session_with_sealer(&peer_identity, &sealer)
             .expect("load session")
             .is_some());
         assert!(store
