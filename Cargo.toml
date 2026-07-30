@@ -2,8 +2,8 @@
 resolver = "2"
 members = [
     "src-tauri",
-    "crates/cover-draft",
     "crates/adapter-profile",
+    "crates/cover-draft",
     "crates/crypto",
     "crates/stego",
     "crates/transport",
