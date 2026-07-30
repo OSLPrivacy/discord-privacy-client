@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from audit_reproducible_build import audit_workflow as audit_reproducible_build_workflow
+
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "osl-hub-release.yml"
@@ -79,6 +81,9 @@ def audit_release_policy(
             "Only the promotion workflow may publish the attested draft")
     require("gh release upload hub-latest candidate/latest.json --clobber" in promotion,
             "Only verified promotion may move the app updater feed")
+    repro_errors = audit_reproducible_build_workflow()
+    require(not repro_errors,
+            "OSL Privacy reproducible-build workflow drifted: " + "; ".join(repro_errors))
 
     hub_plugins = require_object(hub.get("plugins"), "OSL Privacy plugin config must be an object")
     updater = require_object(hub_plugins.get("updater"), "OSL Privacy updater config must be an object")
