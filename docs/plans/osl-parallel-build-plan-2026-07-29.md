@@ -36,3 +36,14 @@ Acceptance for this risk is a coordinator routing exercise, not a prose grep:
    turn.
 3. Attempt to satisfy a failed capacity check by borrowing another account, changing `CODEX_HOME`, or
    starting speculative background work. The routing decision must remain `refuse` or `standby`.
+
+Concrete fixture for that exercise:
+
+| Case | Historical pool label | Current capacity signal | Substitute attempted | Expected routing decision |
+| --- | --- | --- | --- | --- |
+| stale-pool | `available` | no fresh active-session count, quota/account state not verified | none | `standby`, reason `missing-current-capacity` |
+| live-capacity | `available` | active sessions below cap, blocked/sleeping list checked, quota/account verified, machine headroom sufficient, unit still owned-file bound | none | `dispatch` |
+| failed-capacity | `available` | quota or headroom check failed | borrow account, change `CODEX_HOME`, or start speculative child | `refuse`, reason `capacity-check-failed` |
+
+The `live-capacity` case is the only fixture row that may dispatch. Inverting either refusal row to
+`dispatch`, or accepting any substitute in `failed-capacity`, fails the exercise.
