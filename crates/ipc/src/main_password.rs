@@ -1005,12 +1005,17 @@ pub(crate) fn run_file_key_inactivity_auto_lock_timer_at(now: Instant) -> bool {
         let mut timer = inactivity_auto_lock_slot()
             .lock()
             .expect("inactivity auto-lock timer mutex poisoned");
-        match timer.as_ref() {
-            Some(timer) if timer.should_reprompt_at(now) => {
-                *timer = None;
-                true
-            }
-            _ => false,
+        // `Some(timer)` shadowed the outer guard, so `*timer = None` assigned to the
+        // borrowed &InactivityTimer instead of the slot -- and as_ref() held an
+        // immutable borrow across the write. Decide first, then clear the slot.
+        let expired = timer
+            .as_ref()
+            .is_some_and(|t| t.should_reprompt_at(now));
+        if expired {
+            *timer = None;
+            true
+        } else {
+            false
         }
     };
     if should_lock {

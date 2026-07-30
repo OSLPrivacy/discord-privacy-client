@@ -55,6 +55,16 @@ fn required_contract_check_outcomes() -> Vec<CheckOutcome> {
         .collect()
 }
 
+pub const REQUIRED_SELF_TEST_PROBES: [SelfTestProbe; 7] = [
+    SelfTestProbe::new(Subsystem::Composer, Predicate::ComposerDiscovery),
+    SelfTestProbe::new(Subsystem::Transcript, Predicate::TranscriptDiscovery),
+    SelfTestProbe::new(Subsystem::RowText, Predicate::RowTextExtraction),
+    SelfTestProbe::new(Subsystem::WriteProof, Predicate::WritePrefixProof),
+    SelfTestProbe::new(Subsystem::Consent, Predicate::OperatorConsent),
+    SelfTestProbe::new(Subsystem::Binding, Predicate::ScopeBinding),
+    SelfTestProbe::new(Subsystem::Authority, Predicate::HostAuthority),
+];
+
 /// The protected subsystem a self-test check covers.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -95,6 +105,22 @@ pub enum Predicate {
     OperatorConsent,
     ScopeBinding,
     HostAuthority,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelfTestProbe {
+    pub subsystem: Subsystem,
+    pub predicate: Predicate,
+}
+
+impl SelfTestProbe {
+    pub const fn new(subsystem: Subsystem, predicate: Predicate) -> Self {
+        Self {
+            subsystem,
+            predicate,
+        }
+    }
 }
 
 impl Predicate {
@@ -290,6 +316,25 @@ impl fmt::Debug for SelfTestReport {
 }
 
 impl SelfTestReport {
+    pub fn run_contract_self_test(
+        mut probe: impl FnMut(SelfTestProbe) -> CheckOutcome,
+    ) -> Result<Self, ReportError> {
+        let mut checks = Vec::with_capacity(REQUIRED_SELF_TEST_PROBES.len());
+        for expected in REQUIRED_SELF_TEST_PROBES {
+            let check = probe(expected);
+            if check.subsystem != expected.subsystem || check.predicate != expected.predicate {
+                return Err(ReportError::ProbeMismatch {
+                    expected_subsystem: expected.subsystem,
+                    expected_predicate: expected.predicate,
+                    got_subsystem: check.subsystem,
+                    got_predicate: check.predicate,
+                });
+            }
+            checks.push(check);
+        }
+        Self::from_checks(checks)
+    }
+
     pub fn from_checks(checks: Vec<CheckOutcome>) -> Result<Self, ReportError> {
         validate_checks(&checks)?;
         let verdict = classify(&checks);
@@ -382,6 +427,12 @@ pub enum ReportError {
         got: &'static str,
         expected: &'static str,
     },
+    ProbeMismatch {
+        expected_subsystem: Subsystem,
+        expected_predicate: Predicate,
+        got_subsystem: Subsystem,
+        got_predicate: Predicate,
+    },
 }
 
 impl fmt::Display for ReportError {
@@ -413,6 +464,19 @@ impl fmt::Display for ReportError {
             Self::VerdictMismatch { got, expected } => {
                 write!(f, "self-test verdict {got} did not match {expected}")
             }
+            Self::ProbeMismatch {
+                expected_subsystem,
+                expected_predicate,
+                got_subsystem,
+                got_predicate,
+            } => write!(
+                f,
+                "self-test probe {} / {} returned {} / {}",
+                expected_subsystem.label(),
+                expected_predicate.label(),
+                got_subsystem.label(),
+                got_predicate.label()
+            ),
         }
     }
 }
@@ -659,6 +723,74 @@ mod tests {
                 })
             }));
         }
+    }
+
+    #[test]
+    fn run_contract_self_test_with_required_probes() {
+        let mut visited = Vec::new();
+        let report = SelfTestReport::run_contract_self_test(|probe| {
+            visited.push(probe);
+            if probe.subsystem == Subsystem::Transcript {
+                CheckOutcome::failed(
+                    probe.subsystem,
+                    probe.predicate,
+                    UnverifiedCause::TimedOut,
+                    0,
+                    1,
+                )
+            } else {
+                CheckOutcome::passed(probe.subsystem, probe.predicate)
+            }
+        })
+        .unwrap();
+
+        assert_eq!(visited.as_slice(), REQUIRED_SELF_TEST_PROBES.as_slice());
+        assert_eq!(
+            report.verdict(),
+            ContractVerdict::Degraded {
+                failed_subsystem: Subsystem::Transcript,
+                failed_predicate: Predicate::TranscriptDiscovery,
+                cause: UnverifiedCause::TimedOut,
+            }
+        );
+        assert_eq!(report.checks().len(), REQUIRED_SELF_TEST_PROBES.len());
+
+        let mismatch = SelfTestReport::run_contract_self_test(|probe| {
+            if probe.subsystem == Subsystem::Composer {
+                CheckOutcome::passed(Subsystem::Authority, Predicate::HostAuthority)
+            } else {
+                CheckOutcome::passed(probe.subsystem, probe.predicate)
+            }
+        })
+        .unwrap_err();
+        assert_eq!(
+            mismatch,
+            ReportError::ProbeMismatch {
+                expected_subsystem: Subsystem::Composer,
+                expected_predicate: Predicate::ComposerDiscovery,
+                got_subsystem: Subsystem::Authority,
+                got_predicate: Predicate::HostAuthority,
+            }
+        );
+    }
+
+    #[test]
+    fn permits_protected_path() {
+        assert!(ContractVerdict::Verified.permits_protected_path());
+
+        let degraded = ContractVerdict::Degraded {
+            failed_subsystem: Subsystem::Transcript,
+            failed_predicate: Predicate::TranscriptDiscovery,
+            cause: UnverifiedCause::Ambiguous,
+        };
+        assert!(!degraded.permits_protected_path());
+
+        let refused = ContractVerdict::Refused {
+            failed_subsystem: Subsystem::Authority,
+            failed_predicate: Predicate::HostAuthority,
+            cause: UnverifiedCause::MissingAuthority,
+        };
+        assert!(!refused.permits_protected_path());
     }
 
     #[test]
