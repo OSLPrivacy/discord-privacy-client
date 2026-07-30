@@ -244,8 +244,8 @@ describe("native visible-row Windows runtime receipt", () => {
       )],
       ["persistence", mutate(
         "broker",
-        "crate::atomic_file::write_recoverable(\n        path,\n        &encoded,\n        \"Native visible-row QA runtime receipt\",",
-        "crate::atomic_file::write_recoverable_DISABLED(\n        path,\n        &encoded,\n        \"Native visible-row QA runtime receipt\",",
+        'crate::atomic_file::write_recoverable(path, &encoded, "Native visible-row QA runtime receipt")',
+        'crate::atomic_file::write_recoverable_DISABLED(path, &encoded, "Native visible-row QA runtime receipt")',
       )],
     ];
     for (const [stage, sources] of mutations) {

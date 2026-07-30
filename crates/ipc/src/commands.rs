@@ -4337,89 +4337,14 @@ pub fn cmd_osl_seal_attachment_with_cover_v3(
     })
 }
 
-fn fetch_wrapped_attachment_key_for_open(
-    state: &AppState,
-    content_id: &str,
-    sender_ref: &str,
-) -> Result<[u8; 32], String> {
-    if content_id.is_empty() {
-        return Err("OSL: wrapped-key open needs a content id".to_string());
-    }
-    if sender_ref.is_empty() {
-        return Err("OSL: wrapped-key open needs a sender binding".to_string());
-    }
-
-    let identity = state
-        .identity
-        .lock()
-        .expect("identity mutex poisoned")
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| "OSL: wrapped-key open needs a loaded identity".to_string())?;
-    let client = state
-        .keyserver
-        .lock()
-        .expect("keyserver mutex poisoned")
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| "OSL: wrapped-key open needs a key server".to_string())?;
-
-    let expected_sender_osl_id = {
-        let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
-        pm.get(sender_ref)
-            .and_then(|entry| entry.osl_user_id.clone())
-            .or_else(|| {
-                pm.values()
-                    .any(|entry| entry.osl_user_id.as_deref() == Some(sender_ref))
-                    .then(|| sender_ref.to_string())
-            })
-            .or_else(|| {
-                if sender_ref == identity.user_id.as_str() {
-                    Some(identity.user_id.clone())
-                } else if identity.discord_snowflake.as_deref() == Some(sender_ref) {
-                    Some(identity.user_id.clone())
-                } else {
-                    None
-                }
-            })
-    }
-    .ok_or_else(|| "OSL: wrapped-key open sender is not bound".to_string())?;
-
-    let wrapped = client
-        .fetch_wrapped_key(&identity, content_id)
-        .map_err(|_| "OSL: wrapped-key open fetch refused".to_string())?;
-
-    if wrapped.content_id.as_str() != content_id
-        || wrapped.content_type.as_str() != "attachment"
-        || wrapped.system_message_kind.is_some()
-        || wrapped.sender_id.as_str() != expected_sender_osl_id.as_str()
-        || wrapped.recipient_id.as_str() != identity.user_id.as_str()
-        || wrapped.session_version != 1
-        || wrapped.blob_version != 1
-        || wrapped.share_index != 0
-    {
-        return Err("OSL: wrapped-key open response did not match this attachment".to_string());
-    }
-
-    let key_bytes = STANDARD
-        .decode(&wrapped.wrapped_share_blob)
-        .map_err(|_| "OSL: wrapped-key open key blob is malformed".to_string())?;
-    if key_bytes.len() != 32 {
-        return Err("OSL: wrapped-key open key blob has the wrong length".to_string());
-    }
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&key_bytes);
-    Ok(key)
-}
-
 /// Phase 8d: one-shot open. Splits the file into (cover, filename,
 /// payload), decrypts the cover via the existing v=2 path, recovers
 /// the per-attachment AEAD key from the envelope, then decrypts the
 /// payload. Backwards-compatible with V1 files (signaled by the
 /// empty cover from `open_attachment_v2_split`) — falls back to the
 /// caller-supplied legacy `att_key_b64` argument for V1 only. If
-/// that legacy local key is absent, the V1 branch consumes the
-/// authenticated server wrapped-key row for `discord_message_id`.
+/// that legacy local key is absent, the V1 branch refuses; the server
+/// wrapped-key fetch lifecycle is implemented-unwired in this build.
 ///
 /// Phase 8e: open path now chains V3 → V2 → V1 magic detection via
 /// `open_attachment_v3_split`. JS callers don't need to know which
@@ -4549,11 +4474,8 @@ pub fn cmd_osl_open_attachment_v2(
             k.copy_from_slice(&key_bytes);
             k
         } else {
-            let content_id = match discord_message_id.as_deref() {
-                Some(content_id) => content_id,
-                None => return Err("OSL: V1 file with no legacy att_key supplied".to_string()),
-            };
-            fetch_wrapped_attachment_key_for_open(state, content_id, &sender_discord_id)?
+            let _ = discord_message_id;
+            return Err("OSL: V1 file with no local attachment key supplied".to_string());
         }
     };
     let file_key = crypto::aead::Key::from_bytes(att_key_arr);
@@ -4611,7 +4533,7 @@ mod wrapped_key_open_tests {
     }
 
     #[test]
-    fn v1_attachment_open_fetches_wrapped_key_when_local_key_absent() {
+    fn v1_attachment_open_refuses_remote_wrapped_key_when_local_key_absent() {
         let key = [9u8; 32];
         let sealed = crate::attachment_wire::seal_attachment(
             crypto::aead::Key::from_bytes(key),
@@ -4643,7 +4565,7 @@ mod wrapped_key_open_tests {
             crate::peer_map::legacy_entry("sender-osl"),
         );
 
-        let opened = cmd_osl_open_attachment_v2(
+        let err = cmd_osl_open_attachment_v2(
             &state,
             "sender-discord".to_string(),
             None,
@@ -4651,17 +4573,10 @@ mod wrapped_key_open_tests {
             None,
             Some("content-1".to_string()),
         )
-        .unwrap();
+        .unwrap_err();
 
-        assert_eq!(
-            STANDARD.decode(opened.plaintext_b64).unwrap(),
-            b"wrapped-key plaintext"
-        );
-        assert_eq!(opened.original_filename, "wrapped.png");
-        let request = rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        assert!(request.starts_with("GET /v1/wrapped-keys/content-1?"));
-        assert!(request.contains("requester_id=recipient-osl"));
-        assert!(request.contains("recipient_id=recipient-osl"));
+        assert_eq!(err, "OSL: V1 file with no local attachment key supplied");
+        assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
     }
 
     #[test]

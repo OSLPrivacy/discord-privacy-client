@@ -659,7 +659,9 @@ describe("trusted composer overlay", () => {
       source.indexOf("result = atomic.prepared;"),
     );
     expect(source).toContain("if (result && discordMarkerAvailable && coverTextEnabled)");
-    expect(source).toContain("await sendNativeDiscordOverlayCarrier(requestedPlacement, charsPerSecond, measuredCarrierLayout())");
+    expect(source).toMatch(
+      /sendNativeDiscordOverlayCarrier\(\s*requestedPlacement,\s*charsPerSecond,\s*measuredCarrierLayout\(\),\s*\)/u,
+    );
     expect(source).toContain('padding: "shapeMatched"');
     expect(source).toContain("Sent privately through OSL only. No Discord marker was attempted.");
     expect(source).toContain("Ready for OSL-only messages. Discord marker placement is unavailable.");
@@ -887,15 +889,17 @@ describe("trusted composer overlay", () => {
     // A row is painted only when OSL can decrypt it, place it, and carry the
     // backend's complete native-row/crypto agreement. Any missing half means
     // OSL owns no pixel there and Discord's own row shows through.
-    expect(apply).toContain(
-      "if (row.plaintext === null || row.row === null\n      || row.orientation === null || row.attribution === null) continue;",
+    expect(apply).toContain("const visible = projectNativeDiscordVisibleRow(row);");
+    expect(apply).toContain("if (visible === null) continue;");
+    const projection = readRelative("./discord-row-attribution.ts");
+    expect(projection).toContain(
+      "if (plaintext === null || orientation === null || attribution === null || row === null)",
     );
     expect(apply).toContain(
-      'author: row.orientation === "outgoing" ? localIdentity : verifiedFriendIdentity',
+      'author: visible.author === "self" ? localIdentity : verifiedFriendIdentity',
     );
-    expect(apply).toContain(
-      "const key = `decoded-${row.attribution.nativeLocatorSha256}`",
-    );
+    expect(apply).toContain("const key = visible.key");
+    expect(projection).toContain("key: `decoded-${attribution.nativeLocatorSha256}`");
 
     // Rebuilt wholesale from one read, never accumulated: a row kept from an
     // earlier read is decrypted text sitting over whatever Discord has since
@@ -932,7 +936,10 @@ describe("trusted composer overlay", () => {
     // call textually: the blunt ban is what left `rehydrateBusy` unbounded, so a
     // single never-settling invoke latched the eye off for the whole session in
     // silence.
-    const settled = run.slice(run.indexOf("const result = await rehydrateNativeDiscordOverlayHistory"));
+    const settled = run.slice(
+      run.indexOf("const result = await rehydrateNativeDiscordOverlayHistory"),
+      run.indexOf("} finally"),
+    );
     expect(settled).not.toContain("scheduleTranscriptRehydrate(");
     // And the watchdog is a per-request timeout, not a poll: armed by a read that
     // started, cleared by that read finishing, never re-arming itself.
@@ -949,7 +956,7 @@ describe("trusted composer overlay", () => {
     // watchdog gave up on it, and painting it would be decrypted text over
     // whatever Discord has since scrolled into place.
     expect(run).toContain("if (abandoned) return;");
-    expect(run).toContain("if (!abandoned) rehydrateBusy = false;");
+    expect(run).toMatch(/if \(!abandoned\) \{\s*rehydrateBusy = false;/u);
 
     // A pending read is always replaced, never queued behind itself.
     expect(schedule).toContain("if (rehydrateTimer !== undefined) window.clearTimeout(rehydrateTimer);");

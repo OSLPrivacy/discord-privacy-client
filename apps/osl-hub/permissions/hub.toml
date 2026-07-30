@@ -314,6 +314,11 @@ description = "Start one fixed silent winget or Microsoft Store background insta
 commands.allow = ["install_native_app"]
 
 [[permission]]
+identifier = "allow-discord-marker-available"
+description = "Read only whether the current verified native Discord composer can accept OSL's fixed local carrier marker; performs no focus, placement, send, path, or account mutation."
+commands.allow = ["discord_marker_available"]
+
+[[permission]]
 identifier = "allow-get-mullvad-status"
 description = "Report only whether Mullvad exists in one of two fixed standard Windows locations; never reads VPN account, tunnel, traffic, or configuration state."
 commands.allow = ["get_mullvad_status"]

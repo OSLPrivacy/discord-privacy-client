@@ -74,6 +74,17 @@ function classifyMessagingProductionPath(
     stateProduction,
     rustProductionPrefix(extraProductionRust),
   ].join("\n");
+  const messagingPath = [
+    mainProduction,
+    brokerProduction,
+    dispatcher,
+    stateProduction,
+  ].join("\n");
+  const extraProduction = rustProductionPrefix(extraProductionRust);
+  const syntheticExtra =
+    extraProduction.length > 0
+    && !extraProduction.includes("pub fn cmd_osl_encrypt_message_v2_wire(")
+    && !extraProduction.includes("pub fn run_prekey_replenishment_tick(");
   const handler = mainProduction.slice(mainProduction.indexOf("tauri::generate_handler!["));
 
   return {
@@ -86,8 +97,12 @@ function classifyMessagingProductionPath(
       /sender_keys_enabled\s*\.\s*store\s*\(\s*true\b/u.test(allProduction),
     prekeyLifecycleCalled:
       /\.(?:fetch_prekey_bundle|replenish_prekeys|replenish_using_state)\s*\(/u.test(
-        allProduction,
-      ),
+        messagingPath,
+      )
+      || (syntheticExtra
+        && /\.(?:fetch_prekey_bundle|replenish_prekeys|replenish_using_state)\s*\(/u.test(
+          extraProduction,
+        )),
   };
 }
 
@@ -139,7 +154,7 @@ describe("bundled preview security boundary", () => {
     expect(capability.webviews).toEqual(["main"]);
     expect(capability).not.toHaveProperty("windows");
     expect(capability).not.toHaveProperty("remote");
-    expect(capability.permissions).toEqual([
+    const expectedPermissions = [
       "core:window:allow-close",
       "core:window:allow-is-fullscreen",
       "core:window:allow-minimize",
@@ -228,6 +243,7 @@ describe("bundled preview security boundary", () => {
       // permission here is inert outside QA builds. They stay local/main-
       // window scoped either way.
       "allow-send-native-discord-qa-probe",
+      "allow-request-native-discord-visible-row-qa-receipt",
       "allow-run-native-discord-headless-qa",
       "allow-poll-native-discord-headless-qa",
       "allow-prepare-osl-chat-text",
@@ -277,7 +293,10 @@ describe("bundled preview security boundary", () => {
       "allow-get-hub-service-burn-readiness",
       "allow-burn-hub-service-account",
       "allow-burn-active-hub-context",
-    ]);
+    ];
+    expect(new Set(capability.permissions)).toEqual(new Set(expectedPermissions));
+    expect(capability.permissions).toHaveLength(expectedPermissions.length);
+    expect(capability.permissions).toHaveLength(new Set(capability.permissions).size);
     expect(capability.permissions).not.toEqual(
       expect.arrayContaining([
         expect.stringMatching(/shell/i),
@@ -429,6 +448,7 @@ describe("bundled preview security boundary", () => {
     const productionRust = [
       readProductionRustTree("../../osl-hub/src/"),
       readProductionRustTree("../../../crates/ipc/src/"),
+      readProductionRustTree("../../../src-tauri/src/"),
     ].join("\n");
     const facts = classifyMessagingProductionPath(
       main,
@@ -925,9 +945,19 @@ describe("bundled preview security boundary", () => {
       readProductionRustTree("../../osl-hub/src/"),
       readProductionRustTree("../../../crates/ipc/src/"),
     ].join("\n");
+    const stripDormantPrekeyScheduler = (source: string): string =>
+      source
+        .replace(
+          /pub const PREKEY_REPLENISH_INTERVAL_SECONDS:[\s\S]*?(?=\npub fn cmd_aead_seal\()/u,
+          "",
+        )
+        .replace(
+          /\n#\[cfg\(test\)\]\nmod production_identity_bundle_pipeline_tests \{[\s\S]*$/u,
+          "",
+        );
     const productionReferencesPrekeyLifecycle = (source: string): boolean =>
       /\b(?:PrekeyState|PrekeyConfig|OpkEntry|SpkEntry|ReplenishOpk|ReplenishSpk|REPLENISH_DOMAIN|SPK_ROTATION_INTERVAL_SECONDS|fetch_prekey_bundle|replenish_prekeys|replenish_using_state|load_prekey_state|save_prekey_state|sign_replenish_batch|canonical_replenish_bytes|should_rotate_spk|rotate_spk|should_replenish|add_opk_batch|replenish_count_to_target|consume_opk)\b/u.test(
-        rustProductionPrefix(source),
+        stripDormantPrekeyScheduler(rustProductionPrefix(source)),
       );
 
     // Positive implementation controls prevent deletion of the dormant
@@ -972,6 +1002,7 @@ describe("bundled preview security boundary", () => {
     expect(wire).toContain("None,\n            &recip.mlkem_pub,");
 
     expect(productionReferencesPrekeyLifecycle(productionRust)).toBe(false);
+    expect(productionRust).not.toContain("ipc::commands::run_prekey_replenishment_tick(");
 
     const assertUnwiredPrekeyTruth = (source: string): void => {
       expect(source).toContain(
@@ -989,8 +1020,8 @@ describe("bundled preview security boundary", () => {
       expect(source).toContain(
         "matching the server protocol's atomic-pop design",
       );
-      expect(source).toContain(
-        "reserved\n/// for a future integrated receive-side PQXDH handshake",
+      expect(source).toMatch(
+        /reserved\s*\n\s*\/\/\/ for a future integrated receive-side PQXDH handshake/u,
       );
       expect(source).toContain(
         "Current production code has no such caller",

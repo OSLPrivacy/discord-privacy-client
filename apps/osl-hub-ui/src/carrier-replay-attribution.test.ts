@@ -14,6 +14,10 @@ const proseToken = readFileSync(
 const overlay = readFileSync(new URL("./overlay.ts", import.meta.url), "utf8");
 const uiProof = readFileSync(new URL("./discord-row-attribution.ts", import.meta.url), "utf8");
 
+function occurrenceCount(source: string, needle: string): number {
+  return source.split(needle).length - 1;
+}
+
 function between(source: string, start: string, end: string): string {
   const startIndex = source.indexOf(start);
   const endIndex = source.indexOf(end, startIndex + start.length);
@@ -298,7 +302,9 @@ function detectAttributionGate(
       && producerBatch.includes("let Some(evidence) = row.attribution.as_ref() else")
       && producerBatch.includes("evidence.row_index == row_index")
       && producerBatch.includes("evidence.window_generation == window_generation")
-      && producerBatch.includes("evidence.scope_binding_sha256 == expected_scope")
+      && /evidence\.scope_binding_sha256(?:\.as_str\(\))?\s*==\s*expected_scope(?:\.as_str\(\))?/u.test(
+        producerBatch,
+      )
       && producerBatch.includes("evidence.native_locator_sha256 == row.locator_sha256")
       && producerBatch.includes("matching_carriers == 1")
       && producerBatch.includes("message_ids.insert(evidence.discord_message_id.clone())")
@@ -316,7 +322,7 @@ function detectAttributionGate(
       publicRead.includes("Ok(windows::read_visible_message_rows_detached(")
       && detachedRead.includes("Some(read_visible_message_rows(")
       && producer.includes("native_discord_row_provider_observation(")
-      && producer.includes("native_row_attribution_from_provider(")
+      && occurrenceCount(producer, "native_row_attribution_from_provider(") === 2
       && producer.includes("finish_native_visible_rows(")
       && command.includes("native_discord_adapter::read_visible_message_rows(")
       && command.includes(
@@ -337,10 +343,10 @@ function detectAttributionGate(
       && rehydrate.includes("rows: unproven_rehydrated_rows(rows)"),
     scopeAndGenerationAgree:
       nativeValidation.includes("evidence.window_generation == window_generation")
-      && nativeValidation.includes(
-        "evidence.scope_binding_sha256.as_str() == expected_scope.as_str()",
+      && /evidence\.scope_binding_sha256(?:\.as_str\(\))?\s*==\s*expected_scope(?:\.as_str\(\))?/u.test(
+        nativeValidation,
       )
-      && nativeValidation.includes("if window_generation == 0"),
+      && /if\s+(?:rows\.is_empty\(\)\s*\|\|\s*)?window_generation == 0/u.test(nativeValidation),
     rowAndCarrierAgree:
       nativeValidation.includes(
         "evidence.native_locator_sha256.as_str() == row.locator_sha256.as_str()",
@@ -382,8 +388,8 @@ function detectAttributionGate(
       && /msg:\s*&str/u.test(tokenArguments)
       && !/\b(?:row|poster|discord_message_id)\b/iu.test(tokenArguments),
     posterAndWireOrientationAgree:
-      rehydrate.includes(
-        "&[PeerWireOrientation::PeerToSelf, PeerWireOrientation::SelfToPeer]",
+      /&\[\s*PeerWireOrientation::PeerToSelf,\s*PeerWireOrientation::SelfToPeer,\s*\]/u.test(
+        rehydrate,
       )
       && /NativeDiscordRowPoster::SelfAccount,\s+PeerWireOrientation::SelfToPeer/u
         .test(bindAuthenticated)
