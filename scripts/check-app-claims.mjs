@@ -78,6 +78,12 @@ const REQUIRED_CONDITIONAL_APP_EVIDENCE = [
     reportVerdict: /Outlook inline-reply support as OSL Mail is `unsupported`/i,
   },
 ];
+const SUPPORT_CLAIM_TARGETS = [
+  { service: "Signal", pattern: /\bsignal\b/i },
+  { service: "WhatsApp", pattern: /\bwhats\s*app\b/i },
+  { service: "Telegram", pattern: /\btelegram\b/i },
+  { service: "OSL Mail", pattern: /\bosl\s+mail\b|\boutlook\b/i },
+];
 
 function repoRelative(filePath) {
   return path.relative(REPO_ROOT, filePath).split(path.sep).join("/");
@@ -187,6 +193,38 @@ async function validateSupportMatrix() {
   }
 
   return failures;
+}
+
+function normalizeSupportMatrixStatus(value) {
+  return typeof value === "string" ? value.replace(/-/g, "_") : "";
+}
+
+function supportEvidenceRows(matrix) {
+  if (!matrix || typeof matrix !== "object" || Array.isArray(matrix)) {
+    return [];
+  }
+  return [
+    ...(Array.isArray(matrix.public_support_matrix) ? matrix.public_support_matrix : []),
+    ...(Array.isArray(matrix.conditional_app_evidence) ? matrix.conditional_app_evidence : []),
+  ].filter((row) => row && typeof row === "object" && !Array.isArray(row));
+}
+
+function supportMatrixPublicClaimServices(matrix) {
+  const allowed = new Set();
+  for (const row of supportEvidenceRows(matrix)) {
+    const status = normalizeSupportMatrixStatus(row.status);
+    const service =
+      row.service === "Outlook" && row.claim_scope === "osl_mail"
+        ? "OSL Mail"
+        : row.service;
+    if (
+      typeof service === "string" &&
+      (row.public_claim_allowed === true || status === "supported" || status === "verified_live")
+    ) {
+      allowed.add(service);
+    }
+  }
+  return allowed;
 }
 
 function decodeClaimEntity(entity) {
@@ -1381,6 +1419,63 @@ function semanticScrubClaimSpans(text) {
   return spans;
 }
 
+function supportClaimLimitationGoverns(text, start, end) {
+  const bounds = sentenceBounds(text, start, end);
+  const sentence = text.slice(bounds.start, bounds.end);
+  return /\b(?:planned|coming\s+(?:soon|later)|unavailable|unsupported|not\s+(?:available|supported|ready|proved|proven)|not\s+yet\s+(?:available|supported|ready|proved|proven)|externally\s+blocked|blocked|experimental|beta|qa\s+builds?|testing\s+only|future|roadmap|does\s+not\s+(?:support|protect|cover|claim)|cannot\s+(?:support|protect|cover|claim)|no\s+(?:support|claim))\b/i.test(sentence);
+}
+
+function semanticSupportMatrixClaimSpans(text, publicClaimServices) {
+  const spans = [];
+  const claimPattern =
+    /\b(?:supports?|supported|support\s+for|available\s+(?:for|on|with)|works?\s+(?:with|on|in|for)|protects?|protected\s+(?:use|mode|send|receive|replies?|delivery)|compatible\s+with|ready\s+(?:for|on|with))\b/i;
+
+  for (const sentenceMatch of text.matchAll(/[^.!?;\n]+[.!?;]?/g)) {
+    const sentence = sentenceMatch[0];
+    if (!claimPattern.test(sentence) || /\bsupported\s+connected-account\s+views\b/i.test(sentence)) {
+      continue;
+    }
+    const sentenceStart = sentenceMatch.index ?? 0;
+    const sentenceEnd = sentenceStart + sentence.length;
+    const blockedServices = SUPPORT_CLAIM_TARGETS
+      .filter(({ service, pattern }) => pattern.test(sentence) && !publicClaimServices.has(service));
+    if (blockedServices.length === 0) {
+      continue;
+    }
+    if (supportClaimLimitationGoverns(text, sentenceStart, sentenceEnd)) {
+      continue;
+    }
+    spans.push({
+      start: sentenceStart,
+      end: sentenceEnd,
+      service: blockedServices.map(({ service }) => service).join(", "),
+    });
+  }
+
+  return spans;
+}
+
+function validateSupportMatrixClaims(file, fragments, publicClaimServices) {
+  const violations = [];
+  for (const fragment of fragments) {
+    const normalized = normalizedClaimTextWithSourceMap(fragment.text);
+    for (const span of semanticSupportMatrixClaimSpans(normalized.text, publicClaimServices)) {
+      const sourceIndex = normalized.sourceIndexes[span.start] ?? 0;
+      violations.push({
+        file,
+        line: fragment.line + countNewlinesBefore(fragment.text, sourceIndex),
+        phrase: `validateSupportMatrixClaims: ${span.service} support claim without exact matrix evidence`,
+        excerpt: excerptAround(
+          fragment.text,
+          sourceIndex,
+          Math.max(1, span.end - span.start),
+        ),
+      });
+    }
+  }
+  return violations;
+}
+
 function countNewlinesBefore(text, index) {
   let count = 0;
   for (let i = 0; i < index; i += 1) {
@@ -1412,7 +1507,7 @@ function inSecurityContext(text, index, length) {
   return SECURITY_CONTEXT_RE.test(before) || SECURITY_CONTEXT_RE.test(after);
 }
 
-function analyseFragments(file, fragments, bannedPhrases) {
+function analyseFragments(file, fragments, bannedPhrases, publicClaimServices = new Set()) {
   const violations = [];
 
   for (const fragment of fragments) {
@@ -1495,6 +1590,8 @@ function analyseFragments(file, fragments, bannedPhrases) {
         ),
       });
     }
+
+    violations.push(...validateSupportMatrixClaims(file, [fragment], publicClaimServices));
   }
 
   return violations;
@@ -1583,6 +1680,13 @@ function bannedPhraseInputFailures(bannedPhrases) {
 
 async function scanRepository() {
   const bannedPhrases = await loadBannedPhrases();
+  let supportMatrix = null;
+  try {
+    supportMatrix = JSON.parse(await readUtf8(SUPPORT_MATRIX_PATH));
+  } catch {
+    supportMatrix = null;
+  }
+  const publicClaimServices = supportMatrixPublicClaimServices(supportMatrix);
   const supportMatrixFailures = await validateSupportMatrix();
   const rows = [];
   const allViolations = [];
@@ -1599,7 +1703,7 @@ async function scanRepository() {
     const source = await readUtf8(filePath);
     const fragments = extractTypeScriptStrings(source);
     const file = repoRelative(filePath);
-    const violations = analyseFragments(file, fragments, bannedPhrases);
+    const violations = analyseFragments(file, fragments, bannedPhrases, publicClaimServices);
 
     tsStringCount += fragments.length;
     allViolations.push(...violations);
@@ -1615,7 +1719,7 @@ async function scanRepository() {
     const source = await readUtf8(filePath);
     const fragments = extractRustStrings(source);
     const file = repoRelative(filePath);
-    const violations = analyseFragments(file, fragments, bannedPhrases);
+    const violations = analyseFragments(file, fragments, bannedPhrases, publicClaimServices);
 
     rustStringCount += fragments.length;
     allViolations.push(...violations);
@@ -1637,7 +1741,7 @@ async function scanRepository() {
   }
 
   const readmeFragments = readmeText ? [{ text: readmeText, line: 1 }] : [];
-  const readmeViolations = analyseFragments("README.md", readmeFragments, bannedPhrases);
+  const readmeViolations = analyseFragments("README.md", readmeFragments, bannedPhrases, publicClaimServices);
   allViolations.push(...readmeViolations);
   rows.push({
     file: "README.md",
@@ -2515,6 +2619,45 @@ async function runSelfTest() {
     );
   }
 
+  const supportClaimFixtures = [
+    {
+      name: "validateSupportMatrixClaims",
+      text: "Telegram is supported for protected native messaging.",
+      shouldFlag: true,
+    },
+    {
+      name: "validateSupportMatrixClaims passes exact supported evidence",
+      text: "Signal is supported for protected messaging.",
+      shouldFlag: false,
+      publicClaimServices: new Set(["Signal"]),
+    },
+    {
+      name: "validateSupportMatrixClaims passes honest blocked wording",
+      text: "Telegram is externally blocked for protected messaging.",
+      shouldFlag: false,
+    },
+    {
+      name: "validateSupportMatrixClaims catches Outlook OSL Mail overclaim",
+      text: "OSL Mail works with Outlook protected replies.",
+      shouldFlag: true,
+    },
+  ];
+  for (const fixture of supportClaimFixtures) {
+    const violations = validateSupportMatrixClaims(
+      `self-test/${fixture.name}`,
+      [{ text: fixture.text, line: 1 }],
+      fixture.publicClaimServices ?? new Set(),
+    );
+    const flagged = violations.length > 0;
+    const ok = flagged === fixture.shouldFlag;
+    if (!ok) {
+      failures += 1;
+    }
+    console.log(
+      `${ok ? "PASS" : "FAIL"} ${fixture.name}: expected ${fixture.shouldFlag ? "flag" : "pass"}, actual ${flagged ? "flag" : "pass"}`,
+    );
+  }
+
   for (const fixture of fixtures) {
     const violations = analyseFragments(
       `self-test/${fixture.name}`,
@@ -2596,7 +2739,7 @@ async function runSelfTest() {
   );
 
   console.log(
-    `Self-test: phrases parsed=${bannedPhrases.length}, fixtures=${fixtures.length + rustFixtures.length + inputCases.length + 2}, failures=${failures}`,
+    `Self-test: phrases parsed=${bannedPhrases.length}, fixtures=${fixtures.length + rustFixtures.length + inputCases.length + supportClaimFixtures.length + 2}, failures=${failures}`,
   );
 
   return failures === 0 ? 0 : 1;
