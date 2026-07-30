@@ -13,6 +13,7 @@ pub const PROPRIETARY_MODULE_CONTRACT_VERSION: u16 = 1;
 pub const MAX_EXPLICIT_PLAINTEXT_BYTES: usize = 16 * 1024;
 pub const MAX_PROPRIETARY_MODULE_ID_BYTES: usize = 64;
 pub const MAX_PROPRIETARY_MODULE_NAME_BYTES: usize = 96;
+pub const MAX_BROKERED_NETWORK_BODY_BYTES: usize = 8 * 1024;
 
 const PERMISSION_LOCAL_RISK_ADVICE: u16 = 1 << 0;
 const PERMISSION_SERVICE_LAYOUT_ADVICE: u16 = 1 << 1;
@@ -134,6 +135,123 @@ impl fmt::Debug for ProprietaryNetworkPolicy {
             Self::NoNetwork => "ProprietaryNetworkPolicy::NoNetwork",
             Self::BrokeredHttpsOnly => "ProprietaryNetworkPolicy::BrokeredHttpsOnly",
         })
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProprietaryNetworkEndpoint {
+    PackageInstall,
+    LicenseCheck,
+    PackageUninstall,
+}
+
+impl fmt::Debug for ProprietaryNetworkEndpoint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::PackageInstall => "ProprietaryNetworkEndpoint::PackageInstall",
+            Self::LicenseCheck => "ProprietaryNetworkEndpoint::LicenseCheck",
+            Self::PackageUninstall => "ProprietaryNetworkEndpoint::PackageUninstall",
+        })
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct BrokeredNetworkBinding {
+    broker_origin_digest: [u8; 32],
+    authority_revision: NonZeroU64,
+}
+
+impl BrokeredNetworkBinding {
+    pub fn new(
+        broker_origin_digest: [u8; 32],
+        authority_revision: NonZeroU64,
+    ) -> Result<Self, BoundaryError> {
+        if all_zero(&broker_origin_digest) {
+            return Err(BoundaryError::MissingBinding);
+        }
+        Ok(Self {
+            broker_origin_digest,
+            authority_revision,
+        })
+    }
+
+    pub fn broker_origin_digest(&self) -> [u8; 32] {
+        self.broker_origin_digest
+    }
+
+    pub fn authority_revision(&self) -> NonZeroU64 {
+        self.authority_revision
+    }
+}
+
+impl fmt::Debug for BrokeredNetworkBinding {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BrokeredNetworkBinding")
+            .field("broker_origin_digest", &"[redacted; sha256]")
+            .field("authority_revision", &"[redacted]")
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct ProprietaryNetworkEgressRequest {
+    endpoint: ProprietaryNetworkEndpoint,
+    network_policy: ProprietaryNetworkPolicy,
+    binding: BrokeredNetworkBinding,
+    max_body_bytes: usize,
+}
+
+impl ProprietaryNetworkEgressRequest {
+    pub fn brokered_https(
+        access: &VerifiedOptionalModuleAccess,
+        endpoint: ProprietaryNetworkEndpoint,
+        binding: BrokeredNetworkBinding,
+    ) -> Result<Self, BoundaryError> {
+        let network_policy = access.manifest().network_policy();
+        if network_policy != ProprietaryNetworkPolicy::BrokeredHttpsOnly {
+            return Err(BoundaryError::NetworkPolicyRefused);
+        }
+        Ok(Self {
+            endpoint,
+            network_policy,
+            binding,
+            max_body_bytes: MAX_BROKERED_NETWORK_BODY_BYTES,
+        })
+    }
+
+    pub fn contract_version(&self) -> u16 {
+        PROPRIETARY_MODULE_CONTRACT_VERSION
+    }
+
+    pub fn endpoint(&self) -> ProprietaryNetworkEndpoint {
+        self.endpoint
+    }
+
+    pub fn network_policy(&self) -> ProprietaryNetworkPolicy {
+        self.network_policy
+    }
+
+    pub fn binding(&self) -> BrokeredNetworkBinding {
+        self.binding
+    }
+
+    pub fn max_body_bytes(&self) -> usize {
+        self.max_body_bytes
+    }
+}
+
+impl fmt::Debug for ProprietaryNetworkEgressRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProprietaryNetworkEgressRequest")
+            .field("contract_version", &self.contract_version())
+            .field("endpoint", &self.endpoint)
+            .field("network_policy", &self.network_policy)
+            .field("binding", &self.binding)
+            .field("max_body_bytes", &self.max_body_bytes)
+            .finish()
     }
 }
 
@@ -763,6 +881,7 @@ pub enum BoundaryError {
     MissingConsent,
     MissingBinding,
     MissingAuthority,
+    NetworkPolicyRefused,
     PermissionRefused,
     PlaintextTooLarge,
 }
@@ -775,6 +894,7 @@ impl fmt::Debug for BoundaryError {
             Self::MissingConsent => "BoundaryError::MissingConsent",
             Self::MissingBinding => "BoundaryError::MissingBinding",
             Self::MissingAuthority => "BoundaryError::MissingAuthority",
+            Self::NetworkPolicyRefused => "BoundaryError::NetworkPolicyRefused",
             Self::PermissionRefused => "BoundaryError::PermissionRefused",
             Self::PlaintextTooLarge => "BoundaryError::PlaintextTooLarge",
         })
@@ -789,6 +909,7 @@ impl fmt::Display for BoundaryError {
             Self::MissingConsent => "consent is absent",
             Self::MissingBinding => "binding is absent",
             Self::MissingAuthority => "authority is absent",
+            Self::NetworkPolicyRefused => "network egress is refused by policy",
             Self::PermissionRefused => "permission is refused",
             Self::PlaintextTooLarge => "explicit plaintext exceeds the boundary limit",
         })
@@ -882,11 +1003,17 @@ mod tests {
     }
 
     fn manifest() -> ProprietaryModuleManifest {
+        manifest_with_network_policy(ProprietaryNetworkPolicy::NoNetwork)
+    }
+
+    fn manifest_with_network_policy(
+        network_policy: ProprietaryNetworkPolicy,
+    ) -> ProprietaryModuleManifest {
         ProprietaryModuleManifest::new(
             "risk-advice.module",
             "Risk Advice Module",
             ProprietaryLicenseTier::Pro,
-            ProprietaryNetworkPolicy::NoNetwork,
+            network_policy,
             OpenPermissionSet::from_verified_permissions(&[OpenPermission::LocalRiskAdvice]),
         )
         .expect("manifest is valid")
@@ -1215,5 +1342,94 @@ mod tests {
             slot.is_absent(),
             "base app must not install the module by default"
         );
+    }
+
+    #[test]
+    fn proprietary_module_network_egress_is_enumerated_and_bound() {
+        let broker_binding = BrokeredNetworkBinding::new([0xB0; 32], nonzero_revision(11))
+            .expect("broker binding is verified");
+        let brokered_manifest =
+            manifest_with_network_policy(ProprietaryNetworkPolicy::BrokeredHttpsOnly);
+        let brokered_access = VerifiedOptionalModuleAccess::authorize(
+            OptionalModuleInstallGrant::Installed {
+                manifest: brokered_manifest,
+            },
+            ConsentGrant::Present {
+                revision: nonzero_revision(2),
+            },
+            BindingGrant::Bound { digest: [0x22; 32] },
+            AuthorityGrant::Verified {
+                revision: nonzero_revision(3),
+            },
+        )
+        .expect("installed module with consent, binding, and authority is authorized");
+
+        let egress = ProprietaryNetworkEgressRequest::brokered_https(
+            &brokered_access,
+            ProprietaryNetworkEndpoint::LicenseCheck,
+            broker_binding,
+        )
+        .expect("brokered HTTPS egress is allowed for an enumerated endpoint");
+
+        assert_eq!(
+            egress.contract_version(),
+            PROPRIETARY_MODULE_CONTRACT_VERSION
+        );
+        assert_eq!(egress.endpoint(), ProprietaryNetworkEndpoint::LicenseCheck);
+        assert_eq!(
+            egress.network_policy(),
+            ProprietaryNetworkPolicy::BrokeredHttpsOnly
+        );
+        assert_eq!(egress.binding().broker_origin_digest(), [0xB0; 32]);
+        assert_eq!(egress.binding().authority_revision(), nonzero_revision(11));
+        assert_eq!(egress.max_body_bytes(), MAX_BROKERED_NETWORK_BODY_BYTES);
+
+        let no_network_access = VerifiedOptionalModuleAccess::authorize(
+            OptionalModuleInstallGrant::Installed {
+                manifest: manifest(),
+            },
+            ConsentGrant::Present {
+                revision: nonzero_revision(2),
+            },
+            BindingGrant::Bound { digest: [0x22; 32] },
+            AuthorityGrant::Verified {
+                revision: nonzero_revision(3),
+            },
+        )
+        .expect("no-network module still has local access");
+        assert_eq!(
+            ProprietaryNetworkEgressRequest::brokered_https(
+                &no_network_access,
+                ProprietaryNetworkEndpoint::LicenseCheck,
+                broker_binding,
+            ),
+            Err(BoundaryError::NetworkPolicyRefused)
+        );
+        assert_eq!(
+            BrokeredNetworkBinding::new([0; 32], nonzero_revision(11)),
+            Err(BoundaryError::MissingBinding)
+        );
+        assert_eq!(
+            VerifiedOptionalModuleAccess::authorize(
+                OptionalModuleInstallGrant::Installed {
+                    manifest: manifest_with_network_policy(
+                        ProprietaryNetworkPolicy::BrokeredHttpsOnly
+                    ),
+                },
+                ConsentGrant::Absent,
+                BindingGrant::Bound { digest: [0x22; 32] },
+                AuthorityGrant::Verified {
+                    revision: nonzero_revision(3),
+                },
+            ),
+            Err(BoundaryError::MissingConsent)
+        );
+
+        let rendered = format!("{egress:?}");
+        assert!(rendered.contains("ProprietaryNetworkEndpoint::LicenseCheck"));
+        assert!(rendered.contains("ProprietaryNetworkPolicy::BrokeredHttpsOnly"));
+        assert!(!rendered.contains("https://"));
+        assert!(!rendered.contains("B0B0"));
+        assert!(rendered.contains("[redacted; sha256]"));
     }
 }
