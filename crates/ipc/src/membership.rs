@@ -190,10 +190,11 @@ impl ScopeMembership {
 
 // ---- Persistence (membership.json) ----
 //
-// Mirrors the whitelist_state writer: atomic tempfile+rename, at-rest
-// encryption via `maybe_encrypt` when a main password is set. A
-// missing file is non-fatal (NotFound) — the store just starts empty
-// and re-accrues from gateway events.
+// Mirrors the whitelist_state writer: atomic tempfile+rename. Unlike
+// optional-at-rest files, membership.json is mandatory-encrypt: absence
+// of the file-storage key refuses the write instead of falling back to
+// plaintext. A missing file is non-fatal (NotFound) — the store just
+// starts empty and re-accrues from gateway events.
 
 #[derive(Debug, thiserror::Error)]
 pub enum ScopeMembershipError {
@@ -239,10 +240,18 @@ pub fn load_scope_membership_from_path(
 }
 
 /// Serialize + atomically write `m` to `path` (tempfile + rename;
-/// at-rest-encrypted when a main password key is in the slot).
+/// mandatory at-rest encryption; no plaintext fallback).
 pub fn write_scope_membership(path: &Path, m: &ScopeMembership) -> std::io::Result<()> {
+    let key = crate::main_password::get_file_storage_key().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "OSL: refusing to write plaintext membership.json — file_storage_key not in slot \
+             (password not yet entered)",
+        )
+    })?;
     let body = serde_json::to_vec_pretty(m).map_err(std::io::Error::other)?;
-    let out_bytes = crate::main_password::maybe_encrypt(&body).map_err(std::io::Error::other)?;
+    let out_bytes =
+        crate::main_password::encrypt_at_rest(&body, &key).map_err(std::io::Error::other)?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, &out_bytes)?;
     std::fs::rename(&tmp, path)?;
@@ -252,7 +261,10 @@ pub fn write_scope_membership(path: &Path, m: &ScopeMembership) -> std::io::Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::main_password::{has_enc_magic, set_file_storage_key};
     use crate::scope::Scope;
+    use std::sync::Mutex;
+    use tempfile::tempdir;
 
     const A: &str = "111111111111111111";
     const B: &str = "222222222222222222";
@@ -261,6 +273,7 @@ mod tests {
     const CH1: &str = "900000000000000010";
     const CH2: &str = "900000000000000011";
     const GC: &str = "900000000000000099";
+    static KEY_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn channel_observation_rolls_up_to_server() {
@@ -345,6 +358,8 @@ mod tests {
 
     #[test]
     fn file_round_trip_and_missing_is_notfound() {
+        let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_file_storage_key(Some([0x44; 32]));
         let dir = std::env::temp_dir().join(format!("osl_mem_test_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("membership.json");
@@ -357,10 +372,62 @@ mod tests {
         let mut m = ScopeMembership::new();
         m.note_server_channel_member(SRV, CH1, A);
         m.note_gc_member(GC, B);
-        write_scope_membership(&path, &m).unwrap();
+        super::write_scope_membership(&path, &m).unwrap();
         let back = load_scope_membership_from_path(&path).unwrap();
         assert_eq!(m, back);
+        assert!(has_enc_magic(&std::fs::read(&path).unwrap()));
         let _ = std::fs::remove_file(&path);
+        set_file_storage_key(None);
+    }
+
+    #[test]
+    fn write_scope_membership() {
+        let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_file_storage_key(None);
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("membership.json");
+        let mut membership = ScopeMembership::new();
+        membership.note_server_channel_member(SRV, CH1, A);
+
+        let no_key_result = super::write_scope_membership(&path, &membership);
+        assert_eq!(
+            no_key_result.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "membership.json is mandatory-encrypt: no key must refuse rather than create plaintext"
+        );
+        assert!(
+            !path.exists(),
+            "no-key membership write must not create a plaintext file"
+        );
+
+        set_file_storage_key(Some([0x72; 32]));
+        super::write_scope_membership(&path, &membership).unwrap();
+        let encrypted_blob = std::fs::read(&path).unwrap();
+        assert!(
+            has_enc_magic(&encrypted_blob),
+            "membership.json must be written as an OSL-ENC1 envelope"
+        );
+
+        set_file_storage_key(None);
+        let mut clobber = ScopeMembership::new();
+        clobber.note_gc_member(GC, B);
+        let clobber_result = super::write_scope_membership(&path, &clobber);
+        assert_eq!(
+            clobber_result.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "no-key rewrite must refuse instead of clobbering encrypted membership.json"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            encrypted_blob,
+            "encrypted membership.json must survive a refused no-key rewrite byte-for-byte"
+        );
+
+        set_file_storage_key(Some([0x72; 32]));
+        let reloaded = load_scope_membership_from_path(&path).unwrap();
+        assert_eq!(reloaded, membership);
+        set_file_storage_key(None);
     }
 
     #[test]
