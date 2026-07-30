@@ -42,10 +42,14 @@ describe("OSL Mail strict adapter", () => {
     await expect(loadOslMailStatus()).resolves.toBeNull();
   });
 
-  it("rejects malformed retrieved plaintext and unknown fields", () => {
+  it("strictly parses retrieved thread and message responses", () => {
     const valid = { threadId: id, retrievalId: `${id}x`, expiresAt: 100, messages: [{ messageId: `${id}m`, from: "a@example.com", to: ["liam@oslprivacy.com"], subject: "Hello", body: "Body", receivedAt: 90, transit: "externalSmtp" }] };
     expect(parseOslMailRetrievedThread(valid)?.messages).toHaveLength(1);
+    expect(parseOslMailRetrievedThread({ ...valid, messages: [] })).toBeNull();
     expect(parseOslMailRetrievedThread({ ...valid, messages: [{ ...valid.messages[0], body: "bad\0body" }] })).toBeNull();
+    expect(parseOslMailRetrievedThread({ ...valid, messages: [{ ...valid.messages[0], to: [] }] })).toBeNull();
+    expect(parseOslMailRetrievedThread({ ...valid, messages: [{ ...valid.messages[0], transit: "smtp" }] })).toBeNull();
+    expect(parseOslMailRetrievedThread({ ...valid, messages: [{ ...valid.messages[0], unexpected: true }] })).toBeNull();
     expect(parseOslMailRetrievedThread({ ...valid, unexpected: true })).toBeNull();
   });
 

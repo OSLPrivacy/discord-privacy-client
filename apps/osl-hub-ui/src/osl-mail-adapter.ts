@@ -127,7 +127,7 @@ export function parseOslMailRetrievedThread(value: unknown): OslMailRetrievedThr
   if (!record(value) || !exact(value, ["threadId", "retrievalId", "expiresAt", "messages"])
     || typeof value.threadId !== "string" || !ID.test(value.threadId)
     || typeof value.retrievalId !== "string" || !ID.test(value.retrievalId)
-    || !timestamp(value.expiresAt) || !Array.isArray(value.messages) || value.messages.length > 200) return null;
+    || !timestamp(value.expiresAt) || !Array.isArray(value.messages) || value.messages.length < 1 || value.messages.length > 200) return null;
   const messages = value.messages.map(parseMessage);
   return messages.some((message) => message === null) ? null : { ...value, messages } as OslMailRetrievedThread;
 }
