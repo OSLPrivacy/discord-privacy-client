@@ -1,5 +1,9 @@
 use crypto::{ed25519, ml_kem_768, x25519};
-use ipc::wire_v2::{decrypt_v3_for_sender, encrypt_v3, RecipientV3, V2Error, MSG_TYPE_CONTENT};
+use ipc::commands::{decrypt_osl_phase4_cover, encrypt_osl_phase4_to_pubkeys};
+use ipc::wire_v2::{
+    decrypt_v2, decrypt_v3_for_sender, encrypt_v2, encrypt_v3, RecipientV3, V2Error,
+    MSG_TYPE_CONTENT,
+};
 use keystore::identity_bundle::{BundleVerifyError, BundleVerifyPolicy, IdentityBundle};
 use keystore::{AccountOwnershipError, ProofChallenge, PROOF_CHALLENGE_NONCE_BYTES};
 
@@ -21,6 +25,84 @@ fn signed_bundle(
     let signature = ed25519::sign(signer_secret, &bundle.signed_bytes());
     bundle.signature = *signature.as_bytes();
     bundle
+}
+
+#[derive(Clone, Copy)]
+enum ForgedSenderFixture {
+    LegacyV1,
+    WireV2,
+}
+
+impl ForgedSenderFixture {
+    fn label(self) -> &'static str {
+        match self {
+            Self::LegacyV1 => "legacy v1",
+            Self::WireV2 => "wire v2",
+        }
+    }
+}
+
+#[test]
+fn v1_v2_forged_sender_matrix() {
+    for fixture in [ForgedSenderFixture::LegacyV1, ForgedSenderFixture::WireV2] {
+        let (honest_sender_secret, honest_sender_pub) = x25519::generate_keypair();
+        let (_, forged_sender_pub) = x25519::generate_keypair();
+        let (recipient_secret, recipient_pub) = x25519::generate_keypair();
+        let plaintext = format!("{} sender attribution proof", fixture.label());
+
+        assert!(
+            honest_sender_pub != forged_sender_pub,
+            "{} fixture needs distinct sender keys",
+            fixture.label()
+        );
+
+        match fixture {
+            ForgedSenderFixture::LegacyV1 => {
+                let wire = encrypt_osl_phase4_to_pubkeys(
+                    &honest_sender_secret,
+                    &[recipient_pub],
+                    &plaintext,
+                )
+                .expect("legacy v1 fixture should encrypt");
+
+                let opened = decrypt_osl_phase4_cover(&recipient_secret, &honest_sender_pub, &wire)
+                    .expect("legacy v1 honest sender pin should decrypt");
+                assert_eq!(opened.as_slice(), plaintext.as_bytes());
+
+                let forged = decrypt_osl_phase4_cover(&recipient_secret, &forged_sender_pub, &wire);
+                assert!(
+                    forged.is_err(),
+                    "legacy v1 must refuse a wire attributed to a forged sender key"
+                );
+            }
+            ForgedSenderFixture::WireV2 => {
+                let wire = encrypt_v2(
+                    plaintext.as_bytes(),
+                    &[recipient_pub],
+                    MSG_TYPE_CONTENT,
+                    &honest_sender_secret,
+                )
+                .expect("wire v2 fixture should encrypt");
+
+                let opened = decrypt_v2(&wire, &recipient_secret, &honest_sender_pub)
+                    .expect("wire v2 honest sender pin should decrypt");
+                assert_eq!(opened.msg_type, MSG_TYPE_CONTENT);
+                assert_eq!(opened.plaintext.as_slice(), plaintext.as_bytes());
+
+                let forged = decrypt_v2(&wire, &recipient_secret, &forged_sender_pub);
+                match forged {
+                    Err(V2Error::NoMatchingSlot) => {}
+                    Err(error) => panic!(
+                        "wire v2 forged sender should fail at sender-bound slot unwrap, got {error:?}"
+                    ),
+                    Ok(opened) => panic!(
+                        "wire v2 must refuse a wire attributed to a forged sender key, opened {} bytes",
+                        opened.plaintext.len()
+                    ),
+                }
+            }
+        }
+    }
 }
 
 #[test]
