@@ -524,15 +524,9 @@ Say ('run started {0}' -f $script:RunStartIso) 'DarkGray'
 # by each exact QA-shell executable before profile resolution, identity
 # creation, registration, plugins, or networking. A stale/legacy shell that
 # exposes b6Preflight only through its later status verb cannot pass this gate.
-function Read-B6StartupReceipt {
-    param([Parameter(Mandatory)][string]$TempRoot, [Parameter(Mandatory)][string]$Side)
-    $path = Join-Path $TempRoot 'osl-discord-qa-b6-preflight.v2.json'
-    try {
-        $receipt = Get-Content -LiteralPath $path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-    } catch {
-        return [pscustomobject]@{ Ok = $false; Detail = ('{0}: no readable startup receipt at {1}: {2}' -f $Side, $path, $_.Exception.Message); Path = $path; Receipt = $null }
-    }
-    $b6 = $receipt.b6Preflight
+function Test-B6StartupReceiptBinding {
+    param([Parameter(Mandatory)]$Receipt, [Parameter(Mandatory)][string]$Side, [Parameter(Mandatory)][string]$Path)
+    $b6 = $Receipt.b6Preflight
     $runtimeNames = @($b6.runtime.PSObject.Properties.Name)
     $requiredRuntime = @(
         'distinctIdentityAndKeystoreRoots',
@@ -546,7 +540,7 @@ function Read-B6StartupReceipt {
     $runtimeComplete = (@($requiredRuntime | Where-Object { $runtimeNames -notcontains $_ }).Count -eq 0)
     $startupBlockers = @($b6.startupBlockers)
     $ok = (
-        $receipt.schemaVersion -eq 2 -and
+        $Receipt.schemaVersion -eq 2 -and
         $b6.schemaVersion -eq 2 -and
         $b6.startupAllowed -eq $true -and
         $startupBlockers.Count -eq 0 -and
@@ -560,14 +554,80 @@ function Read-B6StartupReceipt {
     [pscustomobject]@{
         Ok = $ok
         Detail = ('{0}: startupAllowed={1}; schema={2}/{3}; sourceCommit={4}; binarySha256={5}; deployment={6}; startupBlockers=[{7}]; allEightFactsRepresented={8}' -f
-            $Side, $b6.startupAllowed, $receipt.schemaVersion, $b6.schemaVersion,
+            $Side, $b6.startupAllowed, $Receipt.schemaVersion, $b6.schemaVersion,
             $(if ($b6.sourceCommit) { $b6.sourceCommit } else { '<absent>' }),
             $(if ($b6.binarySha256) { $b6.binarySha256 } else { '<absent>' }),
             $(if ($b6.serverDeploymentIdentity) { $b6.serverDeploymentIdentity } else { '<absent>' }),
             ($startupBlockers -join ','), $runtimeComplete)
-        Path = $path
-        Receipt = $receipt
+        Path = $Path
+        Receipt = $Receipt
     }
+}
+
+function New-B6StartupReceiptSelftestFixture {
+    param([string[]]$RuntimeFacts, [bool]$StartupAllowed = $true, [string[]]$StartupBlockers = @())
+    $runtime = [ordered]@{}
+    foreach ($fact in $RuntimeFacts) { $runtime[$fact] = $true }
+    [pscustomobject]@{
+        schemaVersion = 2
+        b6Preflight = [pscustomobject]@{
+            schemaVersion = 2
+            startupAllowed = $StartupAllowed
+            startupBlockers = $StartupBlockers
+            sourceCommit = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+            binarySha256 = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+            serverDeploymentIdentity = 'qa-deployment'
+            runtime = [pscustomobject]$runtime
+            identityPublicFingerprintsSha256 = @('identity-public-fingerprint')
+            identityKeystoreRootFingerprintsSha256 = @('identity-keystore-root')
+        }
+    }
+}
+
+function b6_controllers_read_the_retained_preflight_before_consent_or_drive {
+    $allFacts = @(
+        'distinctIdentityAndKeystoreRoots',
+        'bidirectionalCiphertextAndPlaintext',
+        'offlineEnqueueAndDelivery',
+        'persistedRatchetRestart',
+        'exactlyOnceDrain',
+        'independentPeerAttribution',
+        'negativeCrossPeerIsolation'
+    )
+    $accepted = Test-B6StartupReceiptBinding `
+        -Receipt (New-B6StartupReceiptSelftestFixture -RuntimeFacts $allFacts) `
+        -Side 'A' `
+        -Path 'selftest-a'
+    if (-not $accepted.Ok) {
+        throw 'complete retained B6 startup receipt should pass the pre-consent gate'
+    }
+
+    $missingCrossPeer = Test-B6StartupReceiptBinding `
+        -Receipt (New-B6StartupReceiptSelftestFixture -RuntimeFacts ($allFacts | Where-Object { $_ -ne 'negativeCrossPeerIsolation' })) `
+        -Side 'B' `
+        -Path 'selftest-b'
+    if ($missingCrossPeer.Ok) {
+        throw 'retained B6 startup receipt without negativeCrossPeerIsolation must refuse before consent or drive'
+    }
+
+    $blocked = Test-B6StartupReceiptBinding `
+        -Receipt (New-B6StartupReceiptSelftestFixture -RuntimeFacts $allFacts -StartupAllowed $false -StartupBlockers @('identity-root-reused')) `
+        -Side 'B' `
+        -Path 'selftest-b'
+    if ($blocked.Ok) {
+        throw 'retained B6 startup receipt with startup blockers must refuse before consent or drive'
+    }
+}
+
+function Read-B6StartupReceipt {
+    param([Parameter(Mandatory)][string]$TempRoot, [Parameter(Mandatory)][string]$Side)
+    $path = Join-Path $TempRoot 'osl-discord-qa-b6-preflight.v2.json'
+    try {
+        $receipt = Get-Content -LiteralPath $path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        return [pscustomobject]@{ Ok = $false; Detail = ('{0}: no readable startup receipt at {1}: {2}' -f $Side, $path, $_.Exception.Message); Path = $path; Receipt = $null }
+    }
+    Test-B6StartupReceiptBinding -Receipt $receipt -Side $Side -Path $path
 }
 
 $b6A = Read-B6StartupReceipt -TempRoot $TempRootA -Side 'A'

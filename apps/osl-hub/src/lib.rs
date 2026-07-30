@@ -83,6 +83,7 @@ pub mod password_lifecycle;
 pub mod qa_selftest_request;
 #[cfg(feature = "core")]
 pub mod scrub_index;
+pub mod scrub_evidence_manifest;
 pub mod scrub_imap;
 #[cfg(feature = "core")]
 pub mod security;
