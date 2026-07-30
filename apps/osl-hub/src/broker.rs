@@ -9723,6 +9723,208 @@ mod tests {
     }
 
     #[test]
+    fn received_then_opened_ordering_proof() {
+        fn production(source: &str) -> &str {
+            source
+                .split_once("\n#[cfg(test)]\nmod tests")
+                .map(|(production, _)| production)
+                .unwrap_or(source)
+        }
+
+        fn view_once_received_before_open_gate(source: &str) -> bool {
+            let Some(drain) = production(source)
+                .split_once("fn drain_peer_inbox_text(")
+                .and_then(|(_, tail)| tail.split_once("fn begin_peer_attachment("))
+                .map(|(body, _)| body)
+            else {
+                return false;
+            };
+            let listing_phase = |marker| {
+                drain
+                    .split_once(marker)
+                    .and_then(|(_, tail)| tail.split_once("if reveal_view_once != Some("))
+                    .map(|(listing_phase, _)| listing_phase)
+            };
+            [
+                "if payload.view_once && two_phase_view_once {",
+                "if group.template.view_once && two_phase_view_once {",
+            ]
+            .into_iter()
+            .all(|marker| {
+                let Some(listing_phase) = listing_phase(marker) else {
+                    return false;
+                };
+                let stages = [
+                    listing_phase.find(".view_once_received_was_sent("),
+                    listing_phase.find("send_native_overlay_received_acknowledgment("),
+                    listing_phase.find(".record_view_once_received("),
+                    listing_phase.find("pending_view_once.push("),
+                    listing_phase.rfind("continue;"),
+                ];
+                let ordered = stages
+                    .into_iter()
+                    .collect::<Option<Vec<_>>>()
+                    .is_some_and(|stages| stages.windows(2).all(|pair| pair[0] < pair[1]));
+                ordered && !listing_phase.contains("messages.push(OpenedNativeOverlayText")
+            })
+        }
+
+        let source = include_str!("broker.rs");
+        assert!(
+            view_once_received_before_open_gate(source),
+            "view-once receive drains must send and remember Received before any reveal can open"
+        );
+
+        let mutations = [
+            source.replacen(
+                "send_native_overlay_received_acknowledgment(",
+                "send_native_overlay_received_acknowledgment_DISABLED(",
+                1,
+            ),
+            source.replacen(
+                ".record_view_once_received(",
+                ".record_view_once_received_DISABLED(",
+                1,
+            ),
+            source.replacen(
+                "pending_view_once.push(",
+                "messages.push(OpenedNativeOverlayText_DISABLED(",
+                1,
+            ),
+        ];
+        for (index, mutated) in mutations.into_iter().enumerate() {
+            assert_ne!(mutated, source, "mutation {index} must alter broker source");
+            assert!(
+                !view_once_received_before_open_gate(&mutated),
+                "mutation {index} must break the received-before-open source gate"
+            );
+        }
+
+        let acknowledgment = |message_id: &str, status| NativeOverlayAcknowledgment {
+            message_id: message_id.to_owned(),
+            status,
+            acknowledged_at: 1_700_000_000,
+        };
+        let batch =
+            |statuses: Vec<NativeOverlayAcknowledgmentStatus>| OpenedNativeOverlayTextBatch {
+                messages: Vec::new(),
+                pending_view_once: Vec::new(),
+                acknowledgments: statuses
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, status)| acknowledgment(&format!("peer-receipt-{index}"), status))
+                    .collect(),
+                fetched: 0,
+                decrypt_display_enabled: true,
+                deferred_rows: 0,
+            };
+        let labels = |batch: &OpenedNativeOverlayTextBatch| {
+            batch
+                .acknowledgments
+                .iter()
+                .map(|ack| match ack.status {
+                    NativeOverlayAcknowledgmentStatus::Received => "received",
+                    NativeOverlayAcknowledgmentStatus::Opened => "opened",
+                })
+                .collect::<Vec<_>>()
+        };
+        let received_then_opened = batch(vec![
+            NativeOverlayAcknowledgmentStatus::Received,
+            NativeOverlayAcknowledgmentStatus::Opened,
+        ]);
+        let opened_then_received = batch(vec![
+            NativeOverlayAcknowledgmentStatus::Opened,
+            NativeOverlayAcknowledgmentStatus::Received,
+        ]);
+
+        assert_eq!(labels(&received_then_opened), ["received", "opened"]);
+        assert_eq!(labels(&opened_then_received), ["opened", "received"]);
+        assert_ne!(labels(&received_then_opened), labels(&opened_then_received));
+        assert_eq!(
+            received_then_opened.acknowledgment_counters(),
+            opened_then_received.acknowledgment_counters(),
+            "split counters alone cannot prove ordering"
+        );
+
+        let context = context("discord-personal", "dm-receipt-ordering");
+        let manual = ManualPeerContext {
+            service_id: context.service_id.clone(),
+            account_id: context.account_id.clone(),
+            person_id: "friend-receipt-ordering".to_owned(),
+            peer_osl_user_id: "osl-peer-receipt-ordering".to_owned(),
+            scope: ScopeInput {
+                kind: ScopeKind::Dm,
+                id: "scope-receipt-ordering".to_owned(),
+                server_id: None,
+                channel_id: Some(context.conversation_id.clone()),
+            },
+        };
+        let mut ledger = NativeOverlayReceiptLedger {
+            version: NATIVE_OVERLAY_ACK_VERSION,
+            records: BTreeMap::from([(
+                "msg-receipt-ordering".to_owned(),
+                NativeOverlayReceiptRecord {
+                    service_id: manual.service_id.clone(),
+                    conversation_binding: context.conversation_id.clone(),
+                    peer_osl_user_id: manual.peer_osl_user_id.clone(),
+                    expires_at: 1_700_003_600,
+                    status: NativeOverlayReceiptStatus::Sent,
+                    acknowledged_at: 0,
+                    device_bound_qa: false,
+                },
+            )]),
+        };
+        let received = NativeOverlayAcknowledgmentPayload {
+            version: NATIVE_OVERLAY_ACK_VERSION,
+            domain: NATIVE_OVERLAY_ACK_DOMAIN.to_owned(),
+            message_id: "msg-receipt-ordering".to_owned(),
+            status: NativeOverlayAcknowledgmentStatus::Received,
+            acknowledged_at: 1_700_000_010,
+            expires_at: 1_700_003_600,
+            service_id: manual.service_id.clone(),
+            conversation_binding: context.conversation_id.clone(),
+            sender_osl_user_id: manual.peer_osl_user_id.clone(),
+            recipient_osl_user_id: context.self_osl_id.clone(),
+        };
+        let opened = NativeOverlayAcknowledgmentPayload {
+            version: NATIVE_OVERLAY_ACK_VERSION,
+            domain: NATIVE_OVERLAY_ACK_DOMAIN.to_owned(),
+            message_id: "msg-receipt-ordering".to_owned(),
+            status: NativeOverlayAcknowledgmentStatus::Opened,
+            acknowledged_at: 1_700_000_010,
+            expires_at: 1_700_003_600,
+            service_id: manual.service_id.clone(),
+            conversation_binding: context.conversation_id.clone(),
+            sender_osl_user_id: manual.peer_osl_user_id.clone(),
+            recipient_osl_user_id: context.self_osl_id.clone(),
+        };
+
+        assert!(
+            apply_native_overlay_acknowledgment_record(
+                &mut ledger,
+                &context,
+                &manual,
+                &opened,
+                false,
+            )
+            .is_err(),
+            "Opened cannot be admitted before the mutual-consent gate exists"
+        );
+        assert!(ledger.records["msg-receipt-ordering"].status == NativeOverlayReceiptStatus::Sent);
+        apply_native_overlay_acknowledgment_record(
+            &mut ledger,
+            &context,
+            &manual,
+            &received,
+            false,
+        )
+        .expect("Received is the first admissible receipt state");
+        assert!(
+            ledger.records["msg-receipt-ordering"].status == NativeOverlayReceiptStatus::Received
+        );
+    }
+
+    #[test]
     fn view_once_list_appears_on_b() {
         let batch = OpenedNativeOverlayTextBatch {
             messages: Vec::new(),
