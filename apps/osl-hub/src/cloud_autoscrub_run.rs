@@ -80,7 +80,12 @@ mod tests {
             "acknowledgedAt": now_ms() - 1000,
             "tosCaveatAcknowledged": true,
             "unattendedAcknowledged": true,
-            "estimatedItemCount": 1
+            "estimatedItemCount": 1,
+            "batches": [{
+                "planFingerprint": "plan-a",
+                "findingsFingerprint": "findings-a",
+                "itemCount": 1
+            }]
         })
     }
 
