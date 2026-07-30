@@ -146,10 +146,11 @@ successor, but the scheme-1 server contract itself may not silently move.
 
 Both receipts explicitly set every execution authorization to `false`. They
 are necessary input for a future independently reviewed release selector, not
-permission to call Wrangler. The registry is intentionally empty and the
-production migration/deploy package commands remain unconditional refusals.
-Therefore 0033/0034 and scheme-1 Worker activation are still blocked even
-after a local preflight receipt can be produced in an injected test registry.
+permission to call Wrangler. The scheme-1 Rust-client producer registry
+contains only committed public verifier metadata, and the production
+migration/deploy package commands remain unconditional refusals. Therefore
+0033/0034 and scheme-1 Worker activation are still blocked even after a local
+preflight receipt can be produced from trusted client evidence.
 
 1. Freeze and record the full Worker commit, repository tree, and
    `keyserver-cf` tree. The checkout must still have that commit at `HEAD`.
