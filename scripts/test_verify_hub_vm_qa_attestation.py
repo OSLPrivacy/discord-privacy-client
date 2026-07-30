@@ -70,11 +70,79 @@ class HubVmQaAttestationTests(unittest.TestCase):
             _, attestation = self.candidate(root)
             verify("hub-v0.1.0", root, attestation)
 
+    def test_rejects_stable_feed_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, attestation = self.candidate(root)
+            manifest_path = root / "latest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["platforms"]["windows-x86_64"]["url"] = (
+                "https://github.com/OSLPrivacy/discord-privacy-client/"
+                "releases/download/hub-latest/osl-hub-0.1.0-x64-nsis.exe"
+            )
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                verify("hub-v0.1.0", root, attestation)
+
+    def test_rejects_manifest_for_untested_installer_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, attestation = self.candidate(root)
+            manifest_path = root / "latest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["platforms"]["windows-x86_64"]["url"] = (
+                "https://github.com/OSLPrivacy/discord-privacy-client/"
+                "releases/download/hub-v0.1.0/other-installer.exe"
+            )
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                verify("hub-v0.1.0", root, attestation)
+
     def test_rejects_installer_changed_after_qa(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             installer, attestation = self.candidate(root)
             installer.write_bytes(b"different candidate")
+            with self.assertRaises(SystemExit):
+                verify("hub-v0.1.0", root, attestation)
+
+    def test_rejects_missing_second_session_reproduction(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, attestation = self.candidate(root)
+            document = json.loads(attestation.read_text(encoding="utf-8"))
+            document["packageReproducedBySecondSession"] = False
+            attestation.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                verify("hub-v0.1.0", root, attestation)
+
+    def test_rejects_same_session_final_approver(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, attestation = self.candidate(root)
+            document = json.loads(attestation.read_text(encoding="utf-8"))
+            document["finalApprover"] = document["operator"]
+            attestation.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                verify("hub-v0.1.0", root, attestation)
+
+    def test_rejects_non_manual_captcha_handling(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, attestation = self.candidate(root)
+            document = json.loads(attestation.read_text(encoding="utf-8"))
+            document["captchaHandling"] = "automated"
+            attestation.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                verify("hub-v0.1.0", root, attestation)
+
+    def test_rejects_reused_vm_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, attestation = self.candidate(root)
+            document = json.loads(attestation.read_text(encoding="utf-8"))
+            document["vms"][1]["goldenSnapshotId"] = document["vms"][0]["goldenSnapshotId"]
+            attestation.write_text(json.dumps(document), encoding="utf-8")
             with self.assertRaises(SystemExit):
                 verify("hub-v0.1.0", root, attestation)
 
