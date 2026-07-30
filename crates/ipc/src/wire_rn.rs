@@ -62,8 +62,8 @@
 //! export is zeroized on every path, including error paths.
 
 use osl_ratchet_next::{
-    negotiate::Negotiation, LocalPrekeys, Opened, PeerBundle, SecureSession, Session,
-    SessionParams, MLKEM_EK, WIRE_VERSION_RN,
+    negotiate::Negotiation, KemPublic, KemSecret, LocalPrekeys, Opened, PeerBundle, SecureSession,
+    Session, SessionParams, XPublic, XSecret, MLKEM_EK, WIRE_VERSION_RN,
 };
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -170,6 +170,11 @@ pub enum RnError {
     #[error("peer ML-KEM-768 encapsulation key has wrong length")]
     BadPeerKemKey,
 
+    /// B5 prekey state or a fetched B5 prekey bundle could not be
+    /// adapted into the already-authenticated OSL-RN handshake shape.
+    #[error("B5 prekey supply cannot be adapted to OSL-RN: {0}")]
+    PrekeyAdapter(&'static str),
+
     /// The protocol layer rejected something.
     #[error("OSL-RN protocol error: {0}")]
     Protocol(String),
@@ -221,6 +226,134 @@ thread_local! {
 #[cfg(test)]
 fn wire_in_enabled() -> bool {
     RN_WIRE_IN_TEST_OVERRIDE.with(|enabled| enabled.get().unwrap_or(RN_WIRE_IN_ENABLED))
+}
+
+// ---------------------------------------------------------------
+// B5 prekey supply adapters
+// ---------------------------------------------------------------
+
+/// Adapt local B5 prekey state into the OSL-RN receive-side handshake
+/// shape.
+///
+/// The adapter validates that every public half in the B5 state is
+/// actually bound to the corresponding local secret before it is handed
+/// to the ratchet. A mismatch is a refusal, never permission to proceed
+/// with a weaker or unbound handshake.
+pub fn local_prekeys_from_b5(
+    identity: &keystore::Identity,
+    prekeys: &keystore::PrekeyState,
+) -> Result<LocalPrekeys, RnError> {
+    if crypto::x25519::derive_public(&identity.x25519_secret) != identity.x25519_public {
+        return Err(RnError::PrekeyAdapter(
+            "local identity X25519 public key does not match the secret key",
+        ));
+    }
+    if !verify_spk_signature(
+        identity.ed25519_public.as_bytes(),
+        &prekeys.current_spk.public,
+        &prekeys.current_spk.signature,
+    )? {
+        return Err(RnError::PrekeyAdapter(
+            "local signed prekey signature is invalid",
+        ));
+    }
+    if derived_x25519_public(prekeys.current_spk.secret) != prekeys.current_spk.public {
+        return Err(RnError::PrekeyAdapter(
+            "local signed prekey public key does not match the secret key",
+        ));
+    }
+
+    let mut one_time_prekeys = Vec::with_capacity(prekeys.opk_pool.len());
+    for opk in &prekeys.opk_pool {
+        if derived_x25519_public(opk.secret) != opk.public {
+            return Err(RnError::PrekeyAdapter(
+                "local one-time prekey public key does not match the secret key",
+            ));
+        }
+        let rn_id = b5_opk_id_to_rn(opk.id)?;
+        one_time_prekeys.push((rn_id, XSecret::from_bytes(opk.secret)));
+    }
+
+    Ok(LocalPrekeys {
+        identity: XSecret::from_bytes(*identity.x25519_secret.as_bytes()),
+        signed_prekey: XSecret::from_bytes(prekeys.current_spk.secret),
+        one_time_prekeys,
+        pq_prekey: KemSecret::from_bytes(identity.mlkem_secret_bytes())
+            .map_err(|_| RnError::PrekeyAdapter("local ML-KEM decapsulation key is malformed"))?,
+    })
+}
+
+/// Adapt a fetched B5 prekey bundle into the OSL-RN initiator-side
+/// handshake shape.
+///
+/// This verifies the signed prekey binding carried by the B5 supply.
+/// Whole-record identity authentication still belongs to the caller's
+/// TOFU / platform-binding layer, matching `osl_ratchet_next`'s
+/// `PeerBundle` trust boundary.
+pub fn peer_bundle_from_b5(
+    bundle: &keystore::client::PrekeyBundleResponse,
+) -> Result<PeerBundle, RnError> {
+    let identity = decode_b64_array::<32>(&bundle.ik_x25519_pub, "peer identity X25519 key")?;
+    let ed25519 = decode_b64_array::<32>(&bundle.ik_ed25519_pub, "peer Ed25519 key")?;
+    let signed_prekey = decode_b64_array::<32>(&bundle.spk_pub, "peer signed prekey")?;
+    let spk_signature =
+        decode_b64_array::<64>(&bundle.spk_signature, "peer signed prekey signature")?;
+    if !verify_spk_signature(&ed25519, &signed_prekey, &spk_signature)? {
+        return Err(RnError::PrekeyAdapter(
+            "peer signed prekey signature is invalid",
+        ));
+    }
+
+    let pq = decode_b64_array::<MLKEM_EK>(&bundle.ik_mlkem768_pub, "peer ML-KEM key")?;
+    let one_time_prekey = match &bundle.opk {
+        Some(opk) => {
+            let opk_public = decode_b64_array::<32>(&opk.pub_b64, "peer one-time prekey")?;
+            Some((b5_opk_id_to_rn(opk.id)?, XPublic::from_bytes(opk_public)))
+        }
+        None => None,
+    };
+
+    Ok(PeerBundle {
+        identity: XPublic::from_bytes(identity),
+        signed_prekey: XPublic::from_bytes(signed_prekey),
+        one_time_prekey,
+        pq_prekey: KemPublic::from_bytes(&pq)
+            .map_err(|_| RnError::PrekeyAdapter("peer ML-KEM key is malformed"))?,
+    })
+}
+
+fn verify_spk_signature(
+    ed25519_public: &[u8; 32],
+    spk_public: &[u8; 32],
+    signature: &[u8; 64],
+) -> Result<bool, RnError> {
+    let public = crypto::ed25519::PublicKey::from_bytes(*ed25519_public);
+    let signature = crypto::ed25519::Signature::from_bytes(*signature);
+    crypto::ed25519::verify(&public, spk_public, &signature)
+        .map_err(|_| RnError::PrekeyAdapter("signed prekey signature is malformed"))
+}
+
+fn derived_x25519_public(secret: [u8; 32]) -> [u8; 32] {
+    let secret = crypto::x25519::SecretKey::from_bytes(secret);
+    *crypto::x25519::derive_public(&secret).as_bytes()
+}
+
+fn decode_b64_array<const N: usize>(value: &str, field: &'static str) -> Result<[u8; N], RnError> {
+    use base64::Engine as _;
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(value)
+        .map_err(|_| RnError::PrekeyAdapter("prekey bundle field is not base64"))?;
+    bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| RnError::PrekeyAdapter(field))
+}
+
+fn b5_opk_id_to_rn(id: u32) -> Result<u32, RnError> {
+    id.checked_add(1).ok_or(RnError::PrekeyAdapter(
+        "one-time prekey id cannot be represented on RN wire",
+    ))
 }
 
 // ---------------------------------------------------------------
@@ -848,13 +981,193 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), RnError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keystore::client::{PeerCapabilities, RN_CAP_WIRE_RN};
+    use keystore::client::{
+        PeerCapabilities, PrekeyBundleOpk, PrekeyBundleResponse, RN_CAP_WIRE_RN,
+    };
     use keystore::sealer::{MemorySealer, NoOpSealer};
     use osl_ratchet_next::primitives::x25519_keypair;
     use osl_ratchet_next::test_support::{fresh_bundle, seeded_rng};
     use tempfile::TempDir;
 
     const CTX: &[u8] = b"ipc/tests/wire_rn/v1";
+
+    // ---- B5 prekey supply adapters ----
+
+    fn b5_identity(seed: u8, user_id: &str) -> keystore::Identity {
+        keystore::identity_from_entropy([seed; 16], user_id.to_owned())
+    }
+
+    fn b5_response(
+        identity: &keystore::Identity,
+        prekeys: &keystore::PrekeyState,
+        opk_index: Option<usize>,
+    ) -> PrekeyBundleResponse {
+        use base64::Engine as _;
+
+        let opk = opk_index.map(|idx| {
+            let opk = &prekeys.opk_pool[idx];
+            PrekeyBundleOpk {
+                id: opk.id,
+                pub_b64: base64::engine::general_purpose::STANDARD.encode(opk.public),
+            }
+        });
+        PrekeyBundleResponse {
+            user_id: identity.user_id.clone(),
+            ik_x25519_pub: base64::engine::general_purpose::STANDARD
+                .encode(identity.x25519_public.as_bytes()),
+            ik_ed25519_pub: base64::engine::general_purpose::STANDARD
+                .encode(identity.ed25519_public.as_bytes()),
+            ik_mlkem768_pub: base64::engine::general_purpose::STANDARD
+                .encode(identity.mlkem_public_bytes),
+            spk_pub: base64::engine::general_purpose::STANDARD.encode(prekeys.current_spk.public),
+            spk_signature: base64::engine::general_purpose::STANDARD
+                .encode(prekeys.current_spk.signature),
+            spk_rotated_at: keystore::iso_8601_from_unix_seconds(
+                prekeys.current_spk.rotated_at_unix_seconds,
+            ),
+            opk,
+            remaining_opk_count: prekeys.opk_pool.len() as u32,
+            ik_ratchet_initial_pub: None,
+        }
+    }
+
+    #[test]
+    fn rn_wire_in_flag_remains_hard_false() {
+        assert!(
+            !RN_WIRE_IN_ENABLED,
+            "this unit must not enable the OSL-RN wire-in gate"
+        );
+    }
+
+    #[test]
+    fn b5_prekey_supply_adapts_to_an_rn_handshake_with_opk_zero_renumbered() {
+        let bob_id = b5_identity(41, "bob-b5-rn");
+        let bob_state = keystore::PrekeyState::new(&bob_id, keystore::PrekeyConfig::default(), 10);
+        assert_eq!(
+            bob_state.opk_pool[0].id, 0,
+            "B5 starts its OPK pool at id zero"
+        );
+        let bob_response = b5_response(&bob_id, &bob_state, Some(0));
+        let bob_peer = peer_bundle_from_b5(&bob_response).expect("peer bundle");
+        let bob_local = local_prekeys_from_b5(&bob_id, &bob_state).expect("local prekeys");
+
+        assert_eq!(
+            bob_peer.one_time_prekey.as_ref().expect("peer opk").0,
+            1,
+            "B5 id zero must be remapped away from RN's no-OPK sentinel"
+        );
+        assert!(
+            bob_local.one_time_prekeys.iter().any(|(id, _)| *id == 1),
+            "local prekeys must use the same remapped RN OPK id"
+        );
+        assert!(
+            !bob_local.one_time_prekeys.iter().any(|(id, _)| *id == 0),
+            "RN local prekeys must never contain the no-OPK sentinel"
+        );
+
+        let (_d, store) = fresh_store();
+        let sealer = MemorySealer::new();
+        let alice_id = b5_identity(42, "alice-b5-rn");
+        let alice_secret = XSecret::from_bytes(*alice_id.x25519_secret.as_bytes());
+        let mut rng = seeded_rng(41);
+        let mut alice = initiate_and_persist(
+            &store,
+            &sealer,
+            &alice_secret,
+            alice_id.x25519_public.as_bytes(),
+            &bob_peer,
+            PeerCapabilities::Verified(RN_CAP_WIRE_RN),
+            &bob_id.mlkem_public_bytes,
+            CTX,
+            SessionParams::default(),
+        )
+        .expect("initiate");
+        assert!(
+            store
+                .load_pin(bob_peer.identity.as_bytes())
+                .expect("load pin")
+                .is_pinned_to_rn(),
+            "verified B5 initiation must pin the peer to RN"
+        );
+
+        let wire = alice.encrypt(0, b"from b5", &mut rng).expect("encrypt");
+
+        let (_d2, bob_store) = fresh_store();
+        let (_bob, opened) = accept_and_persist(
+            &bob_store,
+            &sealer,
+            &bob_local,
+            bob_id.x25519_public.as_bytes(),
+            &bob_id.mlkem_public_bytes,
+            &wire,
+            CTX,
+            SessionParams::default(),
+        )
+        .expect("accept");
+        assert_eq!(opened.plaintext, b"from b5");
+        assert!(
+            bob_store
+                .load_pin(alice_id.x25519_public.as_bytes())
+                .expect("load pin")
+                .is_pinned_to_rn(),
+            "accepted B5-backed RN bootstrap must pin the authenticated initiator"
+        );
+    }
+
+    #[test]
+    fn peer_b5_bundle_with_an_invalid_spk_signature_is_refused() {
+        use base64::Engine as _;
+
+        let bob_id = b5_identity(43, "bob-sensitive-handle");
+        let bob_state = keystore::PrekeyState::new(&bob_id, keystore::PrekeyConfig::default(), 20);
+        let mut response = b5_response(&bob_id, &bob_state, Some(0));
+        let mut sig = base64::engine::general_purpose::STANDARD
+            .decode(&response.spk_signature)
+            .expect("decode signature");
+        sig[0] ^= 0x01;
+        response.spk_signature = base64::engine::general_purpose::STANDARD.encode(sig);
+
+        let err = peer_bundle_from_b5(&response).expect_err("invalid signature must refuse");
+        assert!(matches!(
+            err,
+            RnError::PrekeyAdapter("peer signed prekey signature is invalid")
+        ));
+        let display = err.to_string();
+        let debug = format!("{err:?}");
+        assert!(!display.contains("bob-sensitive-handle"));
+        assert!(!debug.contains("bob-sensitive-handle"));
+        assert!(!display.contains(&response.ik_x25519_pub));
+        assert!(!debug.contains(&response.ik_x25519_pub));
+    }
+
+    #[test]
+    fn local_b5_prekeys_with_an_unbound_opk_are_refused() {
+        let id = b5_identity(44, "local-b5-rn");
+        let mut state = keystore::PrekeyState::new(&id, keystore::PrekeyConfig::default(), 30);
+        state.opk_pool[0].public[0] ^= 0x01;
+
+        assert!(matches!(
+            local_prekeys_from_b5(&id, &state),
+            Err(RnError::PrekeyAdapter(
+                "local one-time prekey public key does not match the secret key"
+            ))
+        ));
+    }
+
+    #[test]
+    fn b5_opk_id_overflow_is_refused_before_entering_rn() {
+        let bob_id = b5_identity(45, "bob-opk-overflow");
+        let bob_state = keystore::PrekeyState::new(&bob_id, keystore::PrekeyConfig::default(), 40);
+        let mut response = b5_response(&bob_id, &bob_state, Some(0));
+        response.opk.as_mut().expect("opk").id = u32::MAX;
+
+        assert!(matches!(
+            peer_bundle_from_b5(&response),
+            Err(RnError::PrekeyAdapter(
+                "one-time prekey id cannot be represented on RN wire"
+            ))
+        ));
+    }
 
     // ---- version selection / downgrade ----
 
@@ -975,10 +1288,7 @@ mod tests {
     #[test]
     fn verified_zero_bitmap_does_not_read_as_capable() {
         let caps = PeerCapabilities::Verified(0);
-        assert!(
-            !caps.supports_rn(),
-            "Verified(0) must not support OSL-RN"
-        );
+        assert!(!caps.supports_rn(), "Verified(0) must not support OSL-RN");
         assert_eq!(
             select_wire_version(&RnPeerPin::UNKNOWN, caps, RnPolicy::Opportunistic)
                 .expect("select opportunistic"),
@@ -1013,7 +1323,10 @@ mod tests {
             for (caps_name, caps) in [
                 ("Absent", PeerCapabilities::Absent),
                 ("Unverified", PeerCapabilities::Unverified),
-                ("Verified(RN_CAP_WIRE_RN)", PeerCapabilities::Verified(RN_CAP_WIRE_RN)),
+                (
+                    "Verified(RN_CAP_WIRE_RN)",
+                    PeerCapabilities::Verified(RN_CAP_WIRE_RN),
+                ),
             ] {
                 for policy in [RnPolicy::Opportunistic, RnPolicy::Required] {
                     let got = select_wire_version(&pin, caps, policy);
@@ -1143,7 +1456,10 @@ mod tests {
             ))
         }
 
-        fn unseal(&self, ciphertext: &[u8]) -> keystore::sealer::Result<zeroize::Zeroizing<Vec<u8>>> {
+        fn unseal(
+            &self,
+            ciphertext: &[u8],
+        ) -> keystore::sealer::Result<zeroize::Zeroizing<Vec<u8>>> {
             self.loader.unseal(ciphertext)
         }
     }
@@ -1758,14 +2074,14 @@ mod tests {
         store.delete_session(&peer).expect("delete session");
 
         assert!(
-            store.load_session(&peer, &sealer).expect("load session").is_none(),
+            store
+                .load_session(&peer, &sealer)
+                .expect("load session")
+                .is_none(),
             "session deletion must leave no persisted session"
         );
         assert!(
-            store
-                .load_pin(&peer)
-                .expect("load pin")
-                .is_pinned_to_rn(),
+            store.load_pin(&peer).expect("load pin").is_pinned_to_rn(),
             "verified initiation pin must survive session deletion"
         );
     }
