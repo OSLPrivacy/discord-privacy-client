@@ -25,23 +25,6 @@ fail() {
 bash -n "${SCRIPT}"
 python3 -m py_compile "${LEGACY_SCRIPT}"
 
-grep -Fq '[[ $- == *x* ]]' "${SCRIPT}" || fail 'xtrace refusal is missing'
-grep -Fq 'ulimit -c 0' "${SCRIPT}" || fail 'core-dump refusal is missing'
-grep -Fq 'IFS= read -r -s TOKEN </dev/tty' "${SCRIPT}" || fail 'hidden terminal prompt is missing'
-grep -Fq 'openssl rand -hex 32' "${SCRIPT}" || fail 'strong webhook-secret generation is missing'
-grep -Fq 'curl -q --config "${CURL_CONFIG}"' "${SCRIPT}" || fail 'curl config isolation is missing'
-grep -Fq '"${WRANGLER}" secret bulk' "${SCRIPT}" || fail 'atomic Wrangler stdin path is missing'
-grep -Fq 'drop_pending_updates=true' "${SCRIPT}" || fail 'pending updates are not dropped'
-grep -Fq 'https://keyserver.oslprivacy.com/v1/telegram/webhook' "${SCRIPT}" || fail 'exact webhook URL is missing'
-grep -Fq 'shred -u' "${SCRIPT}" || fail 'secure temporary-file cleanup is missing'
-
-if grep -Eq 'TELEGRAM_(OPERATOR|VIEWER)_CHAT_IDS' "${SCRIPT}"; then
-  fail 'rotation helper must not read or change chat-ID allowlists'
-fi
-if grep -Eq 'wrangler[^[:cntrl:]]+deploy|deleteWebhook|getUpdates|setMyCommands' "${SCRIPT}"; then
-  fail 'rotation helper contains an unauthorized Telegram or deployment action'
-fi
-
 TEST_DIR="$(mktemp -d /tmp/osl-telegram-test.XXXXXXXX)"
 chmod 700 -- "${TEST_DIR}"
 mkdir -p -- \

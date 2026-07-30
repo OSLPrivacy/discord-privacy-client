@@ -5983,8 +5983,8 @@ where
 /// payload. Backwards-compatible with V1 files (signaled by the
 /// empty cover from `open_attachment_v2_split`) — falls back to the
 /// caller-supplied legacy `att_key_b64` argument for V1 only. If
-/// that legacy local key is absent, the V1 branch refuses; the server
-/// wrapped-key fetch lifecycle is implemented-unwired in this build.
+/// that legacy local key is absent, the V1 branch fetches the
+/// sender/recipient/content-bound wrapped key from the keyserver.
 ///
 /// Phase 8e: open path now chains V3 → V2 → V1 magic detection via
 /// `open_attachment_v3_split`. JS callers don't need to know which
@@ -6115,21 +6115,10 @@ pub fn cmd_osl_open_attachment_v2(
             k.copy_from_slice(&key_bytes);
             k
         } else {
-            if discord_message_id.is_some() {
-                let identity = state
-                    .identity
-                    .lock()
-                    .expect("identity mutex poisoned")
-                    .as_ref()
-                    .cloned()
-                    .ok_or_else(|| "OSL: wrapped-key open needs a loaded identity".to_string())?;
-                let _ = expected_wrapped_attachment_sender_osl_id(
-                    state,
-                    &identity,
-                    &sender_discord_id,
-                )?;
-            }
-            return Err("OSL: V1 file with no local attachment key supplied".to_string());
+            let content_id = discord_message_id
+                .as_deref()
+                .ok_or_else(|| "OSL: V1 file with no local attachment key supplied".to_string())?;
+            fetch_wrapped_attachment_key_for_open(state, content_id, &sender_discord_id)?
         }
     };
     let file_key = crypto::aead::Key::from_bytes(att_key_arr);
@@ -6224,7 +6213,7 @@ mod wrapped_key_open_tests {
     }
 
     #[test]
-    fn v1_attachment_open_refuses_remote_wrapped_key_when_local_key_absent() {
+    fn v1_attachment_open_fetches_wrapped_key_when_local_key_absent() {
         let key = [9u8; 32];
         let sealed = crate::attachment_wire::seal_attachment(
             crypto::aead::Key::from_bytes(key),
@@ -6256,7 +6245,7 @@ mod wrapped_key_open_tests {
             crate::peer_map::legacy_entry("sender-osl"),
         );
 
-        let err = cmd_osl_open_attachment_v2(
+        let opened = cmd_osl_open_attachment_v2(
             &state,
             "sender-discord".to_string(),
             None,
@@ -6264,10 +6253,17 @@ mod wrapped_key_open_tests {
             None,
             Some("content-1".to_string()),
         )
-        .unwrap_err();
+        .expect("V1 attachment should open with the fetched wrapped key");
 
-        assert_eq!(err, "OSL: V1 file with no local attachment key supplied");
-        assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
+        assert_eq!(opened.plaintext_b64, STANDARD.encode(b"wrapped-key plaintext"));
+        assert_eq!(opened.original_filename, "wrapped.png");
+        assert_eq!(opened.mime_type, "image/png");
+        let request = rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("missing local V1 key must fetch the wrapped key");
+        assert!(request.starts_with("GET /v1/wrapped-keys/content-1?"));
+        assert!(request.contains("requester_id=recipient-osl"));
+        assert!(request.contains("recipient_id=recipient-osl"));
     }
 
     #[test]
@@ -6313,7 +6309,7 @@ mod wrapped_key_open_tests {
     }
 
     #[test]
-    fn view_once_send_posts_real_wrapped_key_before_delivering_link() {
+    fn view_once_send_posts_wrapped_key_before_delivering_link() {
         let sender = keystore::generate_identity("view-once-sender".to_string());
         let response_body = serde_json::json!({ "content_id": "view-once-content" }).to_string();
         let (state, rx) = state_with_wrapped_key_server(sender, response_body);
@@ -9066,7 +9062,7 @@ mod sender_pubkey_resolution_tests {
     }
 
     #[test]
-    fn v2_decrypt_rejects_forged_sender_attribution_cross_version_fixture() {
+    fn v2_resolve_sender_pubkey_rejects_forged_sender() {
         let state = AppState::new();
         let forged_sender_discord_id = "123456789012345678";
         let (_attacker_secret, attacker_pub) = crypto::x25519::generate_keypair();
@@ -11116,7 +11112,7 @@ mod friend_request_acceptance_tests {
     }
 
     #[test]
-    fn cmd_osl_send_friend_request_refuses_untrusted_then_persists_authority_bound_pending() {
+    fn cmd_osl_send_friend_request_creates_and_persists_pending_friend_request() {
         let dir = tempfile::tempdir().unwrap();
         let state = AppState::new();
         state.install_identity(keystore::generate_identity("requester-osl".to_string()));
@@ -13603,7 +13599,7 @@ mod inactivity_command_activity_tests {
     static INACTIVITY_COMMAND_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
-    fn record_activity_on_every_command_extends_file_key_timer_window() {
+    fn record_activity_on_every_command_marks_inactivity_timer() {
         let _guard = INACTIVITY_COMMAND_TEST_LOCK.lock().unwrap();
         crate::main_password::set_file_storage_key(None);
         let t0 = Instant::now();
