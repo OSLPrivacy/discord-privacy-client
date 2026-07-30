@@ -1,30 +1,162 @@
 //! Type-only friend-request trust model.
 //!
-//! A scope grant is a capability value, not a renderer claim. It can only be
-//! minted from a complete TOFU-trusted key bundle, and a request without that
-//! grant is a refusal. Legacy friend-code payloads, `osl_` routing labels,
-//! unsigned metadata, renderer DTOs and `safety_number_verified` booleans have
-//! no constructor path into [`FriendScopeGrant`].
+//! Friend requests fail closed: a missing consent decision, verified
+//! relationship, request authority, or exact scope grant is a refusal, never an
+//! implicit permission. A scope grant is a capability value, not a renderer
+//! claim. It can only be minted from a complete TOFU-trusted key bundle.
+//! Legacy friend-code payloads, `osl_` routing labels, unsigned metadata,
+//! renderer DTOs and `safety_number_verified` booleans have no constructor path
+//! into [`FriendScopeGrant`].
 
 use crate::scope::Scope;
 use crate::tofu::KeyBundle;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 
 const FRIEND_AUTHORITY_DOMAIN: &[u8] = b"OSL-FRIEND-AUTHORITY-v1";
 
-/// Errors for constructing or admitting a typed friend request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+/// Errors that can reject a friend-request operation.
+///
+/// Variants are payload-free so formatting can never expose secrets, account
+/// identifiers, handles, credentials, or local file paths. Callers that need
+/// diagnostics should log their own bounded context separately from the value
+/// returned to UI/IPC boundaries.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FriendRequestError {
-    #[error("friend request refused")]
+    /// The user has not explicitly approved the operation.
+    ConsentMissing,
+    /// The request is not tied to a verified relationship on this device.
+    BindingMissing,
+    /// The request is not backed by trusted local authority.
+    AuthorityMissing,
+    /// The requested conversation is not covered by an exact grant.
+    ScopeNotGranted,
+    /// A typed request was attempted without an authenticated scope grant.
     GrantAbsent,
-    #[error("friend request authority is not authenticated")]
+    /// The request authority is not authenticated by trusted local state.
     UnauthenticatedAuthority,
-    #[error("friend request scope grant does not match its parties")]
+    /// The grant does not bind the same requester and target as the request.
     GrantPartyMismatch,
-    #[error("friend request trust object is incomplete")]
+    /// The trusted object is missing required key material.
     IncompleteTrustObject,
+    /// The request is not in the pending set.
+    RequestNotPending,
+    /// The request's validity window has passed.
+    RequestExpired,
+    /// The request was previously revoked or declined.
+    RequestRevoked,
+    /// An equivalent pending request already exists.
+    DuplicateRequest,
+    /// The request shape or state transition is invalid.
+    InvalidRequest,
+    /// Durable friend-request state could not be read or written.
+    StorageUnavailable,
 }
+
+impl FriendRequestError {
+    pub const ALL: [Self; 14] = [
+        Self::ConsentMissing,
+        Self::BindingMissing,
+        Self::AuthorityMissing,
+        Self::ScopeNotGranted,
+        Self::GrantAbsent,
+        Self::UnauthenticatedAuthority,
+        Self::GrantPartyMismatch,
+        Self::IncompleteTrustObject,
+        Self::RequestNotPending,
+        Self::RequestExpired,
+        Self::RequestRevoked,
+        Self::DuplicateRequest,
+        Self::InvalidRequest,
+        Self::StorageUnavailable,
+    ];
+
+    /// Stable machine-readable code for IPC or persisted refusal records.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::ConsentMissing => "consent_missing",
+            Self::BindingMissing => "binding_missing",
+            Self::AuthorityMissing => "authority_missing",
+            Self::ScopeNotGranted => "scope_not_granted",
+            Self::GrantAbsent => "grant_absent",
+            Self::UnauthenticatedAuthority => "unauthenticated_authority",
+            Self::GrantPartyMismatch => "grant_party_mismatch",
+            Self::IncompleteTrustObject => "incomplete_trust_object",
+            Self::RequestNotPending => "request_not_pending",
+            Self::RequestExpired => "request_expired",
+            Self::RequestRevoked => "request_revoked",
+            Self::DuplicateRequest => "duplicate_request",
+            Self::InvalidRequest => "invalid_request",
+            Self::StorageUnavailable => "storage_unavailable",
+        }
+    }
+
+    /// Friend-request errors are fail-closed; none authorizes a scope grant.
+    pub const fn grants_scope(self) -> bool {
+        false
+    }
+
+    pub const fn is_missing_authority(self) -> bool {
+        matches!(
+            self,
+            Self::ConsentMissing
+                | Self::BindingMissing
+                | Self::AuthorityMissing
+                | Self::ScopeNotGranted
+                | Self::GrantAbsent
+                | Self::UnauthenticatedAuthority
+                | Self::GrantPartyMismatch
+                | Self::IncompleteTrustObject
+        )
+    }
+}
+
+impl fmt::Debug for FriendRequestError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("FriendRequestError::")?;
+        f.write_str(match self {
+            Self::ConsentMissing => "ConsentMissing",
+            Self::BindingMissing => "BindingMissing",
+            Self::AuthorityMissing => "AuthorityMissing",
+            Self::ScopeNotGranted => "ScopeNotGranted",
+            Self::GrantAbsent => "GrantAbsent",
+            Self::UnauthenticatedAuthority => "UnauthenticatedAuthority",
+            Self::GrantPartyMismatch => "GrantPartyMismatch",
+            Self::IncompleteTrustObject => "IncompleteTrustObject",
+            Self::RequestNotPending => "RequestNotPending",
+            Self::RequestExpired => "RequestExpired",
+            Self::RequestRevoked => "RequestRevoked",
+            Self::DuplicateRequest => "DuplicateRequest",
+            Self::InvalidRequest => "InvalidRequest",
+            Self::StorageUnavailable => "StorageUnavailable",
+        })
+    }
+}
+
+impl fmt::Display for FriendRequestError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::ConsentMissing => "friend request consent is missing",
+            Self::BindingMissing => "friend request verification is missing",
+            Self::AuthorityMissing => "friend request authority is missing",
+            Self::ScopeNotGranted => "friend request scope was not granted",
+            Self::GrantAbsent => "friend request refused",
+            Self::UnauthenticatedAuthority => "friend request authority is not authenticated",
+            Self::GrantPartyMismatch => "friend request scope grant does not match its parties",
+            Self::IncompleteTrustObject => "friend request trust object is incomplete",
+            Self::RequestNotPending => "friend request is not pending",
+            Self::RequestExpired => "friend request expired",
+            Self::RequestRevoked => "friend request was revoked",
+            Self::DuplicateRequest => "friend request already exists",
+            Self::InvalidRequest => "friend request is invalid",
+            Self::StorageUnavailable => "friend request storage is unavailable",
+        })
+    }
+}
+
+impl std::error::Error for FriendRequestError {}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct FriendAuthorityFingerprint([u8; 32]);
@@ -291,6 +423,35 @@ mod tests {
     }
 
     #[test]
+    fn stable_codes_match_wire_names() {
+        for error in FriendRequestError::ALL {
+            let encoded = serde_json::to_string(&error).unwrap();
+            assert_eq!(encoded, format!("\"{}\"", error.code()));
+            assert_eq!(
+                serde_json::from_str::<FriendRequestError>(&encoded).unwrap(),
+                error
+            );
+        }
+    }
+
+    #[test]
+    fn absence_of_consent_binding_authority_or_scope_is_refusal() {
+        for error in [
+            FriendRequestError::ConsentMissing,
+            FriendRequestError::BindingMissing,
+            FriendRequestError::AuthorityMissing,
+            FriendRequestError::ScopeNotGranted,
+        ] {
+            assert!(error.is_missing_authority());
+            assert!(!error.grants_scope());
+        }
+
+        for error in FriendRequestError::ALL {
+            assert!(!error.grants_scope());
+        }
+    }
+
+    #[test]
     fn absence_of_scope_grant_refuses() {
         let requester = peer(authority("requester"));
         let target = peer(authority("target"));
@@ -418,5 +579,34 @@ mod tests {
             FriendRequestError::GrantAbsent.to_string(),
             "friend request refused"
         );
+    }
+
+    #[test]
+    fn formatting_is_payload_free_and_hides_internal_machinery() {
+        let forbidden = [
+            "123456789012345678",
+            "alice@example.com",
+            "@alice",
+            "password",
+            "token",
+            "secret",
+            "credential",
+            "keyserver",
+            "ratchet",
+            "receipt",
+            "browser profile",
+            "provider adapter",
+        ];
+
+        for error in FriendRequestError::ALL {
+            let debug = format!("{error:?}");
+            let display = error.to_string();
+            assert!(debug.starts_with("FriendRequestError::"));
+            assert!(!display.is_empty());
+            for term in forbidden {
+                assert!(!debug.contains(term), "debug leaked {term}: {debug}");
+                assert!(!display.contains(term), "display leaked {term}: {display}");
+            }
+        }
     }
 }
