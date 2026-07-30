@@ -1007,8 +1007,9 @@ honest tri-state outcome is a refusal, not a degraded pass.
   or retire trap entries only when the short ledger saves real rediscovery cost. Adoption across
   every active account remains tracked by J23, so this row owns the rule staying current rather than
   account-by-account rollout evidence. J24 acceptance guard: a wave is not closed until its compact
-  report says what changed, what evidence was run, what remains blocked, and whether the trap ledger
-  was updated, left unchanged because no durable trap changed, or intentionally pruned.
+  report is current for that wave and says what changed, what evidence was run, what remains
+  blocked, and whether the trap ledger was updated, left unchanged because no durable trap changed,
+  or intentionally pruned.
   `weight: 2` `earned: 2`
 - 🟨 **J7 · Public-claim allowlist** — closes master §24 item 5. Every permitted website/app wording
   is now bound to a status label, `file:line` evidence, and a mandatory limitation, with an explicit
@@ -1050,6 +1051,7 @@ When a task changes intent/status/dependencies:
 3. update the layman spec only if the user-facing explanation changed;
 4. update the Telegram `/osl` projection and recompute progress/ETA;
 5. link the detailed report/evidence;
-6. close the wave with a compact report that records exact changed files, tests/evidence, blockers,
-   and trap-ledger disposition (`updated`, `unchanged-no-durable-trap-change`, or `pruned`);
+6. close each wave only after its compact report is current and records exact changed files,
+   tests/evidence, blockers, and trap-ledger disposition (`updated`,
+   `unchanged-no-durable-trap-change`, or `pruned`);
 7. never mark ✅ from agent confidence or unit tests alone.

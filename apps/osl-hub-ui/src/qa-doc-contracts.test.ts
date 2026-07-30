@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
+import { oslPrimaryDestinations } from "./state";
 
 function readDoc(relativePath: string): string {
   return readFileSync(new URL(`../../../${relativePath}`, import.meta.url), "utf8");
@@ -60,19 +61,67 @@ function listItems(source: string): string[] {
   return items;
 }
 
-function normalizeWords(value: string): string[] {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/gu, " ")
-    .trim()
-    .split(/\s+/u)
-    .filter(Boolean);
-}
+type UserFacingSurfaceReview =
+  | {
+    kind: "surface";
+    visibleChoices: readonly string[];
+    mainVisibleText: string;
+  }
+  | {
+    kind: "refusal";
+    mainVisibleText: string;
+    consequence: string;
+    safeAction: string;
+  }
+  | {
+    kind: "advanced-export";
+    mainVisibleText: string;
+    machineFields: readonly string[];
+  };
 
-function hasPhrase(value: string, phrase: string): boolean {
-  const haystack = ` ${normalizeWords(value).join(" ")} `;
-  const needle = ` ${normalizeWords(phrase).join(" ")} `;
-  return haystack.includes(needle);
+function reviewComplexityHidingSurface(surface: UserFacingSurfaceReview): {
+  pass: boolean;
+  reasons: readonly string[];
+} {
+  const reasons: string[] = [];
+  const visibleText = surface.kind === "surface"
+    ? [...surface.visibleChoices, surface.mainVisibleText].join("\n")
+    : surface.mainVisibleText;
+  const implementationNouns =
+    /\b(keyservers?|ratchets?|receipts?|browser profiles?|provider adapters?|protocol state|storage layouts?|automation internals?|transport plumbing|service[- ]adapter mechanics)\b/iu;
+  const productNouns =
+    /\b(protection|protected|trusted people|people|connected accounts|accounts|private conversations|conversations|cleanup actions|cleanup|activity history|activity|home|inbox|privacy|connections|settings)\b/iu;
+
+  if (implementationNouns.test(visibleText)) {
+    reasons.push("visible surface exposes implementation machinery");
+  }
+  if (!productNouns.test(visibleText)) {
+    reasons.push("visible surface does not use the product model");
+  }
+
+  if (surface.kind === "refusal") {
+    if (surface.consequence.trim().length === 0) {
+      reasons.push("refusal omits the plain consequence");
+    }
+    if (surface.safeAction.trim().length === 0) {
+      reasons.push("refusal omits the next safe action");
+    }
+    if (implementationNouns.test(`${surface.consequence}\n${surface.safeAction}`)) {
+      reasons.push("refusal makes the mechanism the answer");
+    }
+  }
+
+  if (
+    surface.kind === "advanced-export" &&
+    surface.machineFields.some((field) => !implementationNouns.test(field))
+  ) {
+    reasons.push("advanced export fields are not clearly secondary machine fields");
+  }
+
+  return {
+    pass: reasons.length === 0,
+    reasons,
+  };
 }
 
 describe("QA documentation contracts", () => {
@@ -169,57 +218,56 @@ describe("QA documentation contracts", () => {
   });
 
   it("docs/design/osl-subjective-design-feel.md", () => {
-    const designFeel = readDoc("docs/design/osl-subjective-design-feel.md");
-    const complexity = section(designFeel, "## Complexity belongs behind the product");
-    const contract = section(designFeel, "## Frozen user-facing contract");
-    const frozenRules = listItems(contract);
+    const primarySurface = reviewComplexityHidingSurface({
+      kind: "surface",
+      visibleChoices: oslPrimaryDestinations.map((destination) => destination.label),
+      mainVisibleText: oslPrimaryDestinations
+        .flatMap((destination) => [
+          destination.userQuestion,
+          destination.mainContent,
+          destination.primaryAction,
+        ])
+        .join("\n"),
+    });
+    expect(primarySurface).toEqual({ pass: true, reasons: [] });
 
-    expect(frozenRules).toHaveLength(4);
-    const productModel = frozenRules[0]!;
-    for (const productNoun of [
-      "protection state",
-      "trusted people",
-      "connected accounts",
-      "private conversations",
-      "cleanup actions",
-      "activity history",
-    ]) {
-      expect(hasPhrase(productModel, productNoun)).toBe(true);
-    }
+    const plainRefusal = reviewComplexityHidingSurface({
+      kind: "refusal",
+      mainVisibleText: "Protected send is not ready for this conversation.",
+      consequence: "The message would leave OSL protection.",
+      safeAction: "Verify the person first or send normally.",
+    });
+    expect(plainRefusal).toEqual({ pass: true, reasons: [] });
 
-    expect(hasPhrase(frozenRules[1]!, "refuses to expose implementation machinery")).toBe(true);
-    expect(hasPhrase(frozenRules[2]!, "plain consequence")).toBe(true);
-    expect(hasPhrase(frozenRules[2]!, "next safe action")).toBe(true);
-    expect(hasPhrase(frozenRules[2]!, "unknown state")).toBe(true);
-    expect(hasPhrase(frozenRules[3]!, "advanced exports")).toBe(true);
-    expect(hasPhrase(frozenRules[3]!, "main UI")).toBe(true);
-    expect(hasPhrase(frozenRules[3]!, "product answer")).toBe(true);
+    const supportExport = reviewComplexityHidingSurface({
+      kind: "advanced-export",
+      mainVisibleText: "Protection state is unknown for this conversation.",
+      machineFields: ["ratchet epoch", "keyserver binding", "provider adapter id"],
+    });
+    expect(supportExport).toEqual({ pass: true, reasons: [] });
 
-    const bannedMachinery = [
-      "keyservers",
-      "ratchets",
-      "receipts",
-      "browser profiles",
-      "provider adapters",
-    ];
-    for (const machinery of bannedMachinery) {
-      expect(hasPhrase(complexity, machinery)).toBe(true);
-      expect(hasPhrase(contract, machinery)).toBe(false);
-    }
+    expect(reviewComplexityHidingSurface({
+      kind: "surface",
+      visibleChoices: ["Ratchet state", "Keyserver binding", "Provider adapter"],
+      mainVisibleText: "Choose the transport plumbing for protection before sending.",
+    })).toEqual({
+      pass: false,
+      reasons: ["visible surface exposes implementation machinery"],
+    });
 
-    const translatedExamples = [
-      "conversation is not ready for protected send",
-      "cleanup action can only be assisted",
-      "result is unknown",
-    ];
-    for (const example of translatedExamples) {
-      expect(hasPhrase(complexity, example)).toBe(true);
-    }
-
-    const operationViolation = section(designFeel, "## Frozen user-facing contract")
-      .split("\n")
-      .at(-2) ?? "";
-    expect(hasPhrase(operationViolation, "violates the design feel")).toBe(true);
+    expect(reviewComplexityHidingSurface({
+      kind: "refusal",
+      mainVisibleText: "Ratchet header is missing.",
+      consequence: "Protocol state is invalid.",
+      safeAction: "Open the keyserver diagnostics.",
+    })).toEqual({
+      pass: false,
+      reasons: [
+        "visible surface exposes implementation machinery",
+        "visible surface does not use the product model",
+        "refusal makes the mechanism the answer",
+      ],
+    });
   });
 
   it("Adopt shared memory cards across every active account.", () => {

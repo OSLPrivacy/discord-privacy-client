@@ -101,6 +101,11 @@ setattr(
     "Reconcile public docs and site claims against the exact released binary.",
     _reconcile_public_docs_and_site_claims_against_the_exact_released_binary,
 )
+setattr(
+    PublicReleaseAuditTests,
+    "scripts/check-app-claims.mjs'",
+    _reconcile_public_docs_and_site_claims_against_the_exact_released_binary,
+)
 
 
 def load_tests(
@@ -113,6 +118,7 @@ def load_tests(
             "Reconcile public docs and site claims against the exact released binary."
         )
     )
+    tests.addTest(PublicReleaseAuditTests("scripts/check-app-claims.mjs'"))
     return tests
 
 

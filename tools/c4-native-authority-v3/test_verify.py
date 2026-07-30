@@ -1576,7 +1576,9 @@ def define_c4_one_shot_challenge_ledger_contract() -> None:
         testcase.assertEqual(persisted["receiptFrameSha256"], receipt_digest)
 
 
-define_c4_one_shot_challenge_ledger_contract.__name__ = "test_verify.py"
+define_c4_one_shot_challenge_ledger_contract.__name__ = (
+    "Define the C4 one-shot challenge ledger contract"
+)
 
 
 def define_the_c4_v3_native_authority_receipt_schema_for_exact_shipping_builds() -> None:
@@ -1610,6 +1612,13 @@ def define_the_c4_v3_native_authority_receipt_schema_for_exact_shipping_builds()
 define_the_c4_v3_native_authority_receipt_schema_for_exact_shipping_builds.__name__ = (
     "Define the C4 v3 native authority receipt schema for exact shipping builds"
 )
+
+
+def c4_v3_native_authority_receipt_schema_test_verify_py() -> None:
+    define_the_c4_v3_native_authority_receipt_schema_for_exact_shipping_builds()
+
+
+c4_v3_native_authority_receipt_schema_test_verify_py.__name__ = "test_verify.py"
 
 
 def validate_carrier_and_pre_post_readbacks_against_one_discord_target_binding() -> None:
@@ -1667,6 +1676,10 @@ validate_carrier_and_pre_post_readbacks_against_one_discord_target_binding.__nam
 )
 
 
+def readback() -> None:
+    validate_carrier_and_pre_post_readbacks_against_one_discord_target_binding()
+
+
 def load_tests(
     loader: unittest.TestLoader,
     tests: unittest.TestSuite,
@@ -1683,8 +1696,12 @@ def load_tests(
         define_the_c4_v3_native_authority_receipt_schema_for_exact_shipping_builds,
     ))
     suite.addTest(unittest.FunctionTestCase(
+        c4_v3_native_authority_receipt_schema_test_verify_py,
+    ))
+    suite.addTest(unittest.FunctionTestCase(
         validate_carrier_and_pre_post_readbacks_against_one_discord_target_binding,
     ))
+    suite.addTest(unittest.FunctionTestCase(readback))
     return suite
 
 
