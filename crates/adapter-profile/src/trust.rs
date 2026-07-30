@@ -275,4 +275,35 @@ mod tests {
         assert!(printed.contains("[redacted]"));
         assert!(!printed.contains("7be8f375"));
     }
+
+    mod loader {
+        use super::*;
+
+        #[test]
+        fn publishes_reviewed_adapter_profile_signing_anchor_and_rollback_floor_for_discord_profile_updates(
+        ) {
+            let discord_anchor = SHIPPED_ANCHOR_KEYS
+                .iter()
+                .find(|anchor| anchor.key_id == "adapter-profile-discord-2026-07")
+                .expect("reviewed Discord adapter-profile anchor must be shipped");
+
+            assert_eq!(
+                discord_anchor.rollback_floor,
+                DISCORD_PROFILE_ROLLBACK_FLOOR
+            );
+            assert_eq!(DISCORD_PROFILE_ROLLBACK_FLOOR, 7);
+            assert!(
+                discord_anchor.public_key.iter().any(|byte| *byte != 0),
+                "a shipped anchor must publish real Ed25519 verification bytes"
+            );
+            assert_eq!(
+                TrustError::RollbackBelowFloor {
+                    revision: DISCORD_PROFILE_ROLLBACK_FLOOR - 1,
+                    floor: DISCORD_PROFILE_ROLLBACK_FLOOR,
+                }
+                .to_string(),
+                "adapter profile revision is below the shipped rollback floor"
+            );
+        }
+    }
 }
