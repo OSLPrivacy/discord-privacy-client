@@ -216,11 +216,7 @@ describe("Telegram operator webhook route", () => {
       fetcher,
     );
 
-    expect(response.status).toBe(200);
-    await expect(responseJson(response)).resolves.toEqual({
-      ok: true,
-      result: "accepted",
-    });
+    await expectNeutralTelegramAck(response);
     const calls = vi.mocked(fetcher).mock.calls;
     expect(calls).toHaveLength(1);
     expect(String(calls[0]?.[0])).toContain("api.telegram.org");
@@ -239,11 +235,7 @@ describe("Telegram operator webhook route", () => {
       fetcher,
     );
 
-    expect(response.status).toBe(200);
-    await expect(responseJson(response)).resolves.toEqual({
-      ok: true,
-      result: "accepted",
-    });
+    await expectNeutralTelegramAck(response);
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(String(vi.mocked(fetcher).mock.calls[0]?.[0])).toBe(
       "https://api.stripe.com/v1/balance",
@@ -449,11 +441,7 @@ describe("Telegram operator webhook route", () => {
       fetcher,
     );
 
-    expect(response.status).toBe(200);
-    await expect(responseJson(response)).resolves.toEqual({
-      ok: true,
-      result: "accepted",
-    });
+    await expectNeutralTelegramAck(response);
     expect(fetcher).toHaveBeenCalledTimes(1);
     const telegramBody = JSON.parse(
       String(vi.mocked(fetcher).mock.calls[0]?.[1]?.body),
@@ -474,11 +462,7 @@ describe("Telegram operator webhook route", () => {
       fetcher,
     );
 
-    expect(response.status).toBe(200);
-    await expect(responseJson(response)).resolves.toEqual({
-      ok: true,
-      result: "accepted",
-    });
+    await expectNeutralTelegramAck(response);
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(String(vi.mocked(fetcher).mock.calls[0]?.[0])).toBe(
       "https://api.stripe.com/v1/balance",
