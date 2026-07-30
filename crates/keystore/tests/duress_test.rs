@@ -1,7 +1,7 @@
 use keystore::{
-    generate_identity, save_identity, save_password_record, save_prekey_state, Argon2Params,
-    DuressEngine, DuressHandlers, DuressPaths, NoOpSealer, PasswordRecord, PrekeyConfig,
-    PrekeyState, StepOutcome, WipeStep,
+    build_partial_duress_handlers, generate_identity, save_identity, save_password_record,
+    save_prekey_state, Argon2Params, DuressEngine, DuressHandlers, DuressPaths, NoOpSealer,
+    PasswordRecord, PrekeyConfig, PrekeyState, StepOutcome, WipeStep,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -38,6 +38,26 @@ fn build_paths_without_prekey(dir: &TempDir) -> (DuressPaths, std::path::PathBuf
         },
         journal_file,
     )
+}
+
+fn journal_completed_steps(journal_path: &std::path::Path, completed_steps: &[WipeStep]) {
+    let completed = completed_steps
+        .iter()
+        .copied()
+        .map(|step| {
+            (
+                step,
+                StepOutcome::Skipped {
+                    reason: "prefilled test step".to_owned(),
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    let journal = keystore::DuressJournal {
+        completed,
+        started_at_unix_seconds: 0,
+    };
+    std::fs::write(journal_path, serde_json::to_vec_pretty(&journal).unwrap()).unwrap();
 }
 
 #[test]
@@ -187,47 +207,68 @@ fn missing_files_yield_already_clean_not_failure() {
 fn handlers_run_in_canonical_order() {
     let dir = TempDir::new().unwrap();
     let (paths, journal_path) = build_paths(&dir);
+    journal_completed_steps(
+        &journal_path,
+        &[
+            WipeStep::TpmEvict,
+            WipeStep::KeyringPurge,
+            WipeStep::IdentityFile,
+            WipeStep::PasswordHashes,
+            WipeStep::PrekeyFile,
+        ],
+    );
+    let cache_dir = dir.path().join("store");
+    let opsec_file = dir.path().join("injection.js");
+    let opsec_dir = dir.path().join("opsec");
+    std::fs::create_dir_all(&cache_dir).unwrap();
+    std::fs::create_dir_all(&opsec_dir).unwrap();
+    std::fs::write(cache_dir.join("message-cache"), b"cache").unwrap();
+    std::fs::write(&opsec_file, b"opsec").unwrap();
+    std::fs::write(opsec_dir.join("config.json"), b"{}").unwrap();
 
-    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let mk_handler = |name: &'static str| {
-        let calls = calls.clone();
-        Box::new(move || {
-            calls.lock().unwrap().push(name);
-            Ok(())
-        }) as keystore::WipeFn
-    };
-
-    let handlers = DuressHandlers {
-        wipe_local_cache_dir: Some(mk_handler("local_cache")),
-        wipe_anonymous_credentials: Some(mk_handler("creds")),
-        wipe_prekeys: Some(mk_handler("prekeys")),
-        wipe_double_ratchet: Some(mk_handler("ratchet")),
-        wipe_sender_keys: Some(mk_handler("sender_keys")),
-        wipe_peer_ratchets: Some(mk_handler("peer_ratchets")),
-        zeroize_in_memory: Some(mk_handler("zeroize")),
-        strip_opsec_files: Some(mk_handler("strip")),
-    };
-
+    let handlers = build_partial_duress_handlers(
+        Some(cache_dir.clone()),
+        vec![opsec_file.clone(), opsec_dir.clone()],
+    );
     let engine = DuressEngine::new(journal_path, paths, handlers);
+    assert!(engine.handler_wired(WipeStep::LocalCacheDir));
+    assert!(engine.handler_wired(WipeStep::StripOpsecFiles));
+    assert!(!engine.handler_wired(WipeStep::Prekeys));
+
     let report = engine.execute().unwrap();
     assert!(report.completed);
     assert!(report.failed_steps().is_empty());
-    assert!(report.skipped_steps().is_empty());
 
-    let calls = calls.lock().unwrap();
+    let got_order: Vec<WipeStep> = report.steps.iter().map(|(step, _)| *step).collect();
     assert_eq!(
-        *calls,
+        got_order,
         vec![
-            "local_cache",
-            "creds",
-            "prekeys",
-            "ratchet",
-            "sender_keys",
-            "peer_ratchets",
-            "zeroize",
-            "strip",
+            WipeStep::TpmEvict,
+            WipeStep::KeyringPurge,
+            WipeStep::IdentityFile,
+            WipeStep::PasswordHashes,
+            WipeStep::PrekeyFile,
+            WipeStep::LocalCacheDir,
+            WipeStep::AnonymousCredentials,
+            WipeStep::Prekeys,
+            WipeStep::DoubleRatchet,
+            WipeStep::SenderKeys,
+            WipeStep::PeerRatchets,
+            WipeStep::InMemoryZeroize,
+            WipeStep::StripOpsecFiles,
         ]
     );
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::LocalCacheDir),
+        &StepOutcome::Wiped
+    );
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::StripOpsecFiles),
+        &StepOutcome::Wiped
+    );
+    assert!(!cache_dir.exists());
+    assert!(!opsec_file.exists());
+    assert!(!opsec_dir.exists());
 }
 
 #[test]
