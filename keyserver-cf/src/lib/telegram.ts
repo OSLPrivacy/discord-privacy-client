@@ -383,6 +383,69 @@ export async function handleTelegramCommand(
   env: Env,
   fetcher: typeof fetch = fetch,
 ): Promise<"accepted" | "ignored"> {
+  const progressBlock = (): string => {
+    const updated = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+    return [
+      "OSL progress  unavailable",
+      "Verified work: unavailable until the checklist source is connected",
+      "Velocity: unavailable",
+      "ETA: unknown",
+      "Critical path: unavailable",
+      "Blocked/excluded: project coordination is not active here",
+      `Updated: ${updated}`,
+    ].join("\n");
+  };
+  const withProgress = (body: string): string => `${body}\n\n${progressBlock()}`;
+  const hierarchyHelp = (): string => withProgress([
+    "OSL operator commands",
+    "/osl status: current coordination state",
+    "/osl progress: project progress block",
+    "/osl stats: live commerce summary",
+    "/osl payments: Stripe and Pro license summary",
+    "/osl downloads: download requests",
+    "/osl on|off|quiet|bind|unbind: coordination controls when owner binding is active",
+  ].join("\n"));
+  const unavailableCoordinationMessage = (isOperatorChat: boolean): string => withProgress(
+    isOperatorChat
+      ? "Cannot change /osl coordination state here. Owner binding is required before coordination controls can run.\nTry /osl status, /osl progress, /osl stats, /osl payments, or /osl downloads."
+      : "Cannot change /osl coordination state from this chat.\nTry /osl status, /osl progress, /osl stats, /osl payments, or /osl downloads.",
+  );
+  const editDistance = (left: string, right: string): number => {
+    const previous = Array.from({ length: right.length + 1 }, (_unused, index) => index);
+    for (let leftIndex = 0; leftIndex < left.length; leftIndex += 1) {
+      const current = [leftIndex + 1];
+      for (let rightIndex = 0; rightIndex < right.length; rightIndex += 1) {
+        const cost = left[leftIndex] === right[rightIndex] ? 0 : 1;
+        current.push(Math.min(
+          current[rightIndex]! + 1,
+          previous[rightIndex + 1]! + 1,
+          previous[rightIndex]! + cost,
+        ));
+      }
+      previous.splice(0, previous.length, ...current);
+    }
+    return previous[right.length]!;
+  };
+  const commandSuggestion = (subcommand: string): string => {
+    const supported = [
+      "status",
+      "progress",
+      "stats",
+      "payments",
+      "downloads",
+      "help",
+      "on",
+      "off",
+      "quiet",
+      "bind",
+      "unbind",
+    ];
+    const closest = supported
+      .map((candidate) => ({ candidate, distance: editDistance(subcommand, candidate) }))
+      .sort((left, right) => left.distance - right.distance)[0];
+    if (!closest || closest.distance > 3) return "Try /osl for available commands.";
+    return `Suggestion: /osl ${closest.candidate}`;
+  };
   const configuration = telegramChatConfiguration(env);
   if (
     !env.TELEGRAM_WEBHOOK_SECRET ||
@@ -396,18 +459,56 @@ export async function handleTelegramCommand(
   }
   const update = (await request.json()) as TelegramUpdate;
   const chatId = update.message?.chat?.id;
-  const authorizedChatId = await authorizedTelegramChatId(chatId, configuration.chatIds);
+  const authorizedChatId = await authorizedTelegramChatId(chatId, [...configuration.chatIds]);
   if (authorizedChatId === null) return "ignored";
   const isOperator = configuration.chatRoles[authorizedChatId] === "operator";
-  const command = update.message?.text?.trim().split(/\s+/, 1)[0]?.split("@", 1)[0] ?? "";
+  const words = update.message?.text?.trim().split(/\s+/) ?? [];
+  const command = words[0]?.split("@", 1)[0]?.toLowerCase() ?? "";
+  const oslSubcommand = command === "/osl" ? words[1]?.toLowerCase() ?? "" : "";
   let message: string;
   if (command === "/stats" || command === "/payments") {
     message = await telegramStatsMessage(env, isOperator, fetcher);
   } else if (command === "/downloads") {
     const summary = await getCommerceSummary(env.DB);
     message = `OSL download requests\nAll time: ${summary.download_starts}\nLast 24h: ${summary.download_starts_24h}`;
+  } else if (command === "/osl") {
+    if (oslSubcommand === "" || oslSubcommand === "help" || oslSubcommand === "commands") {
+      message = hierarchyHelp();
+    } else if (oslSubcommand === "status") {
+      message = withProgress([
+        "OSL coordination status",
+        "Mode: not active here",
+        `Authorized chat role: ${isOperator ? "operator" : "viewer"}`,
+        "Reports available: stats, payments, downloads",
+        "Coordination controls: unavailable until owner binding is active",
+        "Suggestion: /osl progress",
+      ].join("\n"));
+    } else if (oslSubcommand === "progress") {
+      message = progressBlock();
+    } else if (oslSubcommand === "stats" || oslSubcommand === "payments") {
+      message = withProgress(await telegramStatsMessage(env, isOperator, fetcher));
+    } else if (oslSubcommand === "downloads") {
+      const summary = await getCommerceSummary(env.DB);
+      message = withProgress(
+        `OSL download requests\nAll time: ${summary.download_starts}\nLast 24h: ${summary.download_starts_24h}`,
+      );
+    } else if (
+      oslSubcommand === "on" ||
+      oslSubcommand === "off" ||
+      oslSubcommand === "quiet" ||
+      oslSubcommand === "bind" ||
+      oslSubcommand === "unbind"
+    ) {
+      message = unavailableCoordinationMessage(isOperator);
+    } else {
+      message = withProgress([
+        "Unknown /osl command.",
+        commandSuggestion(oslSubcommand),
+        "Try /osl for available commands.",
+      ].join("\n"));
+    }
   } else {
-    message = "OSL operator commands\n/stats: live commerce summary\n/payments: Stripe and Pro license summary\n/downloads: download requests";
+    message = "OSL operator commands\n/osl: command hierarchy\n/stats: live commerce summary\n/payments: Stripe and Pro license summary\n/downloads: download requests";
   }
   await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, authorizedChatId, message, fetcher);
   return "accepted";

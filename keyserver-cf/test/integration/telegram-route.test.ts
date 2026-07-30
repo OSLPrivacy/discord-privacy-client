@@ -446,4 +446,90 @@ describe("Telegram operator webhook route", () => {
     expect(telegramBody.text).toContain("All time:");
     expect(telegramBody.text).toContain("Last 24h:");
   });
+
+  it("serves the /osl hierarchy with honest progress and suggestions", async () => {
+    const fetcher = outboundFetcher();
+    const response = await handleTelegramWebhook(
+      commandRequest("/osl"),
+      configuredEnv(),
+      fetcher,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(responseJson(response)).resolves.toEqual({
+      ok: true,
+      result: "accepted",
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    const telegramBody = JSON.parse(
+      String(vi.mocked(fetcher).mock.calls[0]?.[1]?.body),
+    ) as { text: string };
+    expect(telegramBody.text).toContain("/osl status: current coordination state");
+    expect(telegramBody.text).toContain("/osl progress: project progress block");
+    expect(telegramBody.text).toContain("/osl payments: Stripe and Pro license summary");
+    expect(telegramBody.text).toContain("OSL progress  unavailable");
+    expect(telegramBody.text).toContain("ETA: unknown");
+    expect(telegramBody.text).toContain("Updated:");
+  });
+
+  it("maps /osl report subcommands to existing reports and appends progress", async () => {
+    const fetcher = outboundFetcher();
+    const response = await handleTelegramWebhook(
+      commandRequest("/osl payments"),
+      configuredEnv(),
+      fetcher,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(responseJson(response)).resolves.toEqual({
+      ok: true,
+      result: "accepted",
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(String(vi.mocked(fetcher).mock.calls[0]?.[0])).toBe(
+      "https://api.stripe.com/v1/balance",
+    );
+    const telegramBody = JSON.parse(
+      String(vi.mocked(fetcher).mock.calls[1]?.[1]?.body),
+    ) as { text: string };
+    expect(telegramBody.text).toContain("Payments:");
+    expect(telegramBody.text).toContain("Stripe available: $12.50");
+    expect(telegramBody.text).toContain("OSL progress  unavailable");
+  });
+
+  it("suggests the closest safe /osl command without echoing unknown text", async () => {
+    const fetcher = outboundFetcher();
+    const response = await handleTelegramWebhook(
+      commandRequest("/osl paymnts secret-extra"),
+      configuredEnv(),
+      fetcher,
+    );
+
+    expect(response.status).toBe(200);
+    const telegramBody = JSON.parse(
+      String(vi.mocked(fetcher).mock.calls[0]?.[1]?.body),
+    ) as { text: string };
+    expect(telegramBody.text).toContain("Unknown /osl command.");
+    expect(telegramBody.text).toContain("Suggestion: /osl payments");
+    expect(telegramBody.text).not.toContain("paymnts");
+    expect(telegramBody.text).not.toContain("secret-extra");
+  });
+
+  it("refuses /osl coordination controls when owner binding is unavailable", async () => {
+    const fetcher = outboundFetcher();
+    const response = await handleTelegramWebhook(
+      commandRequest("/osl bind tab-7"),
+      configuredEnv(),
+      fetcher,
+    );
+
+    expect(response.status).toBe(200);
+    const telegramBody = JSON.parse(
+      String(vi.mocked(fetcher).mock.calls[0]?.[1]?.body),
+    ) as { text: string };
+    expect(telegramBody.text).toContain("Cannot change /osl coordination state here.");
+    expect(telegramBody.text).toContain("Owner binding is required");
+    expect(telegramBody.text).not.toContain("tab-7");
+    expect(telegramBody.text).toContain("OSL progress  unavailable");
+  });
 });
