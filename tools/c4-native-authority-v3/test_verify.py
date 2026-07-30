@@ -41,6 +41,7 @@ from schema import (
     FILE_IDENTITY_KEYS,
     PROCESS_KEYS,
     READBACK_KEYS,
+    SchemaError,
     SCHEMA_NAME,
     SCHEMA_VERSION,
     TARGET_KEYS,
@@ -48,6 +49,7 @@ from schema import (
     seal_receipt,
     sha256_hex,
     target_binding_digest,
+    validate_receipt,
 )
 from verify import (
     FilesystemAuthorityVerifier,
@@ -1563,6 +1565,94 @@ def define_c4_one_shot_challenge_ledger_contract() -> None:
 define_c4_one_shot_challenge_ledger_contract.__name__ = "test_verify.py"
 
 
+def define_the_c4_v3_native_authority_receipt_schema_for_exact_shipping_builds() -> None:
+    testcase = unittest.TestCase()
+    receipt = make_receipt()
+
+    validate_receipt(receipt)
+    testcase.assertEqual(receipt["schema"], SCHEMA_NAME)
+    testcase.assertEqual(receipt["version"], SCHEMA_VERSION)
+    testcase.assertEqual(receipt["build"]["features"], EXACT_SHIPPING_FEATURES)
+
+    non_shipping_features = copy.deepcopy(receipt)
+    non_shipping_features["build"]["features"] = ["desktop", "core"]
+    non_shipping_features = reseal(non_shipping_features)
+    with testcase.assertRaisesRegex(SchemaError, "exact shipping set"):
+        validate_receipt(non_shipping_features)
+
+    debug_build = copy.deepcopy(receipt)
+    debug_build["build"]["debugAssertions"] = True
+    debug_build = reseal(debug_build)
+    with testcase.assertRaisesRegex(SchemaError, "debugAssertions"):
+        validate_receipt(debug_build)
+
+    wrong_os = copy.deepcopy(receipt)
+    wrong_os["build"]["targetOs"] = "linux"
+    wrong_os = reseal(wrong_os)
+    with testcase.assertRaisesRegex(SchemaError, "targetOs"):
+        validate_receipt(wrong_os)
+
+
+define_the_c4_v3_native_authority_receipt_schema_for_exact_shipping_builds.__name__ = (
+    "Define the C4 v3 native authority receipt schema for exact shipping builds"
+)
+
+
+def validate_carrier_and_pre_post_readbacks_against_one_discord_target_binding() -> None:
+    testcase = unittest.TestCase()
+    receipt = make_receipt()
+    binding = receipt["target"]["bindingSha256"]
+
+    validate_receipt(receipt)
+    testcase.assertEqual(receipt["carrier"]["targetBindingSha256"], binding)
+    testcase.assertEqual(receipt["preSend"]["targetBindingSha256"], binding)
+    testcase.assertEqual(receipt["preSend"]["readback"]["targetBindingSha256"], binding)
+    testcase.assertEqual(receipt["postSend"]["targetBindingSha256"], binding)
+    testcase.assertEqual(receipt["postSend"]["readback"]["targetBindingSha256"], binding)
+
+    wrong_binding = "f" * 64
+    for path, mutate in {
+        "carrier": lambda value: value["carrier"].__setitem__(
+            "targetBindingSha256", wrong_binding
+        ),
+        "preSend": lambda value: value["preSend"].__setitem__(
+            "targetBindingSha256", wrong_binding
+        ),
+        "preSend.readback": lambda value: value["preSend"]["readback"].__setitem__(
+            "targetBindingSha256", wrong_binding
+        ),
+        "postSend": lambda value: value["postSend"].__setitem__(
+            "targetBindingSha256", wrong_binding
+        ),
+        "postSend.readback": lambda value: value["postSend"]["readback"].__setitem__(
+            "targetBindingSha256", wrong_binding
+        ),
+    }.items():
+        with testcase.subTest(path=path):
+            mutated = copy.deepcopy(receipt)
+            mutate(mutated)
+            mutated = reseal(mutated)
+            with testcase.assertRaisesRegex(SchemaError, "target binding"):
+                validate_receipt(mutated)
+
+    wrong_pre_readback = copy.deepcopy(receipt)
+    wrong_pre_readback["preSend"]["readback"]["sha256"] = sha256_hex(b"different")
+    wrong_pre_readback = reseal(wrong_pre_readback)
+    with testcase.assertRaisesRegex(SchemaError, "preSend.readback digest"):
+        validate_receipt(wrong_pre_readback)
+
+    wrong_post_readback = copy.deepcopy(receipt)
+    wrong_post_readback["postSend"]["readback"]["byteLength"] = 1
+    wrong_post_readback = reseal(wrong_post_readback)
+    with testcase.assertRaisesRegex(SchemaError, "postSend.readback byte length"):
+        validate_receipt(wrong_post_readback)
+
+
+validate_carrier_and_pre_post_readbacks_against_one_discord_target_binding.__name__ = (
+    "Validate carrier and pre/post readbacks against one Discord target binding"
+)
+
+
 def load_tests(
     loader: unittest.TestLoader,
     tests: unittest.TestSuite,
@@ -1574,6 +1664,12 @@ def load_tests(
     suite.addTest(unittest.FunctionTestCase(ledger))
     suite.addTest(unittest.FunctionTestCase(
         define_c4_one_shot_challenge_ledger_contract,
+    ))
+    suite.addTest(unittest.FunctionTestCase(
+        define_the_c4_v3_native_authority_receipt_schema_for_exact_shipping_builds,
+    ))
+    suite.addTest(unittest.FunctionTestCase(
+        validate_carrier_and_pre_post_readbacks_against_one_discord_target_binding,
     ))
     return suite
 
