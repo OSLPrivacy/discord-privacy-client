@@ -64,6 +64,7 @@ const ARGON_OUTPUT_LEN: usize = 64; // 32 hash + 32 AES key
 const HASH_LEN: usize = 32;
 const KEY_LEN: usize = 32;
 const NONCE_LEN: usize = 12;
+const DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD: u32 = 10;
 
 const ARGON_MEMORY_KB: u32 = 65_536; // 64 MiB
 const ARGON_ITERATIONS: u32 = 3;
@@ -1167,6 +1168,20 @@ pub enum GateMatch {
     Wrong,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum GatePasswordAttemptResult {
+    Main([u8; 32]), // also returns derived file_storage_key
+    Stealth,
+    Burn,
+    Wrong {
+        attempts_used: u32,
+        lockout_seconds_remaining: i64,
+    },
+    Duress {
+        attempts_used: u32,
+    },
+}
+
 pub fn verify_gate_password_with_marker(
     marker: &PasswordMarker,
     password: &str,
@@ -1220,6 +1235,73 @@ pub fn verify_gate_password_with_marker(
         return Ok(GateMatch::Burn);
     }
     Ok(GateMatch::Wrong)
+}
+
+/// Gate-side password verification with the shared persisted failure
+/// counter. The tenth consecutive wrong entry triggers duress immediately.
+pub fn verify_gate_password_attempt(
+    dir: &Path,
+    password: &str,
+) -> Result<GatePasswordAttemptResult, String> {
+    let mut lock = read_lockout(dir);
+    lock.version = LOCKOUT_VERSION;
+    let now = now_unix_secs();
+    if let Some(until) = lock.password_locked_until {
+        if now < until {
+            return Ok(GatePasswordAttemptResult::Wrong {
+                attempts_used: lock.password_failed_attempts,
+                lockout_seconds_remaining: until - now,
+            });
+        }
+    }
+
+    let marker = read_marker(dir)?;
+    match verify_gate_password_with_marker(&marker, password)? {
+        GateMatch::Main(file_key) => {
+            set_file_storage_key(Some(file_key));
+            lock.password_failed_attempts = 0;
+            lock.password_locked_until = None;
+            let _ = write_lockout(dir, &lock);
+            Ok(GatePasswordAttemptResult::Main(file_key))
+        }
+        GateMatch::Stealth => {
+            lock.password_failed_attempts = 0;
+            lock.password_locked_until = None;
+            let _ = write_lockout(dir, &lock);
+            Ok(GatePasswordAttemptResult::Stealth)
+        }
+        GateMatch::Burn => {
+            lock.password_failed_attempts = 0;
+            lock.password_locked_until = None;
+            let _ = write_lockout(dir, &lock);
+            Ok(GatePasswordAttemptResult::Burn)
+        }
+        GateMatch::Wrong => record_wrong_gate_password_attempt(dir, &mut lock, now),
+    }
+}
+
+fn record_wrong_gate_password_attempt(
+    dir: &Path,
+    lock: &mut LockoutState,
+    now: i64,
+) -> Result<GatePasswordAttemptResult, String> {
+    lock.password_failed_attempts = lock.password_failed_attempts.saturating_add(1);
+    let attempts_used = lock.password_failed_attempts;
+    if attempts_used >= DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD {
+        lock.password_locked_until = None;
+        let _ = write_lockout(dir, lock);
+        set_file_storage_key(None);
+        burn_wipe_all(dir)?;
+        return Ok(GatePasswordAttemptResult::Duress { attempts_used });
+    }
+
+    let secs = password_lockout_secs(attempts_used);
+    lock.password_locked_until = if secs > 0 { Some(now + secs) } else { None };
+    let _ = write_lockout(dir, lock);
+    Ok(GatePasswordAttemptResult::Wrong {
+        attempts_used,
+        lockout_seconds_remaining: secs,
+    })
 }
 
 /// Set or rotate the stealth password. Verifies `current_main`
@@ -1423,6 +1505,42 @@ pub fn burn_wipe_all(dir: &Path) -> Result<(), String> {
 mod password_policy_tests {
     use super::*;
 
+    const TEST_MAIN_PASSWORD: &str = "main-secret";
+    const TEST_PHRASE: &str =
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+    fn build_fast_test_marker(password: &str) -> PasswordMarker {
+        let salt = [7u8; SALT_LEN];
+        let params = Argon2ParamsDto {
+            memory_kb: 32,
+            iterations: 1,
+            parallelism: 1,
+        };
+        let derived = derive(password, &salt, &params).unwrap();
+        let (hash, key_slice) = derived.split_at(HASH_LEN);
+        let mut key = Zeroizing::new([0u8; KEY_LEN]);
+        key.copy_from_slice(key_slice);
+        let (ct, nonce) = encrypt_phrase(TEST_PHRASE, &key).unwrap();
+        let phrase_derived = derive(TEST_PHRASE, &salt, &params).unwrap();
+        PasswordMarker {
+            version: MARKER_VERSION,
+            salt_b64: STANDARD.encode(salt),
+            params,
+            password_hash_b64: STANDARD.encode(hash),
+            phrase_encrypted_b64: STANDARD.encode(&ct),
+            phrase_nonce_b64: STANDARD.encode(nonce),
+            phrase_hash_b64: Some(STANDARD.encode(&phrase_derived[..HASH_LEN])),
+            stealth_password_hash_b64: None,
+            burn_password_hash_b64: None,
+        }
+    }
+
+    fn clear_password_lockout_window(dir: &Path) {
+        let mut lock = read_lockout(dir);
+        lock.password_locked_until = None;
+        write_lockout(dir, &lock).unwrap();
+    }
+
     #[test]
     fn six_character_passwords_can_be_created_and_unlocked() {
         assert!(validate_password("aB3!z9").is_ok());
@@ -1476,6 +1594,43 @@ mod password_policy_tests {
         assert!(
             ensure_device_bound_fallback_file_storage_key_with_sealer(dir.path(), &sealer).is_err(),
             "main-password installs must not also mint fallback authority"
+        );
+        set_file_storage_key(None);
+    }
+
+    #[test]
+    fn tenth_wrong_password_attempt_triggers_duress() {
+        set_file_storage_key(None);
+        let dir = tempfile::tempdir().unwrap();
+        write_marker(dir.path(), &build_fast_test_marker(TEST_MAIN_PASSWORD)).unwrap();
+
+        for expected_attempt in 1..DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD {
+            match verify_gate_password_attempt(dir.path(), "wrong-password").unwrap() {
+                GatePasswordAttemptResult::Wrong { attempts_used, .. } => {
+                    assert_eq!(attempts_used, expected_attempt);
+                }
+                _ => panic!("wrong password must not trigger duress before attempt 10"),
+            }
+            assert!(
+                marker_path(dir.path()).exists(),
+                "marker must survive attempts before the threshold"
+            );
+            clear_password_lockout_window(dir.path());
+        }
+
+        match verify_gate_password_attempt(dir.path(), "wrong-password").unwrap() {
+            GatePasswordAttemptResult::Duress { attempts_used } => {
+                assert_eq!(attempts_used, DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD);
+            }
+            _ => panic!("the tenth wrong password attempt must trigger duress"),
+        }
+        assert!(
+            !marker_path(dir.path()).exists(),
+            "duress threshold must wipe the password marker"
+        );
+        assert!(
+            !lockout_path(dir.path()).exists(),
+            "duress threshold must wipe the persisted lockout state"
         );
         set_file_storage_key(None);
     }
