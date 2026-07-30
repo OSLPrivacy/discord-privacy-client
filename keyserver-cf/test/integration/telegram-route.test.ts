@@ -193,6 +193,54 @@ describe("Telegram operator webhook route", () => {
     expect(body.text).not.toContain("Stripe pending");
   });
 
+  it("keeps viewer payments reports aggregate-only without Stripe balance authority", async () => {
+    const viewerChatId = "8876204092";
+    const fetcher = outboundFetcher();
+    const response = await handleTelegramWebhook(
+      commandRequest("/payments", viewerChatId),
+      configuredEnv({ TELEGRAM_VIEWER_CHAT_IDS: viewerChatId }),
+      fetcher,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(responseJson(response)).resolves.toEqual({
+      ok: true,
+      result: "accepted",
+    });
+    const calls = vi.mocked(fetcher).mock.calls;
+    expect(calls).toHaveLength(1);
+    expect(String(calls[0]?.[0])).toContain("api.telegram.org");
+    const body = JSON.parse(String(calls[0]?.[1]?.body)) as { text: string };
+    expect(body.text).toContain("OSL live commerce");
+    expect(body.text).toContain("Payments:");
+    expect(body.text).not.toContain("Stripe available");
+    expect(body.text).not.toContain("Stripe pending");
+  });
+
+  it("keeps an operator role when the same chat is also listed as a viewer", async () => {
+    const fetcher = outboundFetcher();
+    const response = await handleTelegramWebhook(
+      commandRequest("/stats", PRIVATE_CHAT_ONE),
+      configuredEnv({ TELEGRAM_VIEWER_CHAT_IDS: PRIVATE_CHAT_ONE }),
+      fetcher,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(responseJson(response)).resolves.toEqual({
+      ok: true,
+      result: "accepted",
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(String(vi.mocked(fetcher).mock.calls[0]?.[0])).toBe(
+      "https://api.stripe.com/v1/balance",
+    );
+    const body = JSON.parse(
+      String(vi.mocked(fetcher).mock.calls[1]?.[1]?.body),
+    ) as { chat_id: string; text: string };
+    expect(body.chat_id).toBe(PRIVATE_CHAT_ONE);
+    expect(body.text).toContain("Stripe available: $12.50");
+  });
+
   it("fails closed when the additive viewer allowlist is malformed", async () => {
     for (const malformed of ["", "8876204092,", "@coworker", "-1001234567890"]) {
       const fetcher = outboundFetcher();
