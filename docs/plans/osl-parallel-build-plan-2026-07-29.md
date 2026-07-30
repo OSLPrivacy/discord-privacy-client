@@ -36,3 +36,59 @@ Acceptance for this risk is a coordinator routing exercise, not a prose grep:
    turn.
 3. Attempt to satisfy a failed capacity check by borrowing another account, changing `CODEX_HOME`, or
    starting speculative background work. The routing decision must remain `refuse` or `standby`.
+
+## routing-fixtures
+
+These fixtures are the acceptance test named `docs/plans/osl-parallel-build-plan-2026-07-29.md`.
+They intentionally separate the historical pool label from the current capacity record, so a router
+that dispatches from stale pool state or forbidden substitutes fails the exercise.
+
+```json
+{
+  "test_name": "docs/plans/osl-parallel-build-plan-2026-07-29.md",
+  "cases": [
+    {
+      "name": "stale_available_pool_refuses",
+      "historical_pool_label": "available",
+      "current_capacity_record": {
+        "observed_at_unix_seconds": null,
+        "active_session_count": null,
+        "blocked_or_sleeping_sessions": null,
+        "quota_account_status": "unverified",
+        "machine_headroom": "unknown",
+        "owned_file_bound": true
+      },
+      "forbidden_substitute_attempted": null,
+      "expected_decisions": ["refuse", "standby"]
+    },
+    {
+      "name": "fresh_owned_capacity_may_dispatch",
+      "historical_pool_label": "available",
+      "current_capacity_record": {
+        "observed_at_unix_seconds": 1785369600,
+        "active_session_count": 2,
+        "blocked_or_sleeping_sessions": [],
+        "quota_account_status": "verified_enough_for_expected_turn",
+        "machine_headroom": "enough_for_focused_verification",
+        "owned_file_bound": true
+      },
+      "forbidden_substitute_attempted": null,
+      "expected_decisions": ["dispatch"]
+    },
+    {
+      "name": "failed_capacity_cannot_be_repaired_by_substitute",
+      "historical_pool_label": "available",
+      "current_capacity_record": {
+        "observed_at_unix_seconds": 1785369600,
+        "active_session_count": 9,
+        "blocked_or_sleeping_sessions": ["lane-b"],
+        "quota_account_status": "verified_insufficient_for_expected_turn",
+        "machine_headroom": "insufficient",
+        "owned_file_bound": true
+      },
+      "forbidden_substitute_attempted": "changed_CODEX_HOME",
+      "expected_decisions": ["refuse", "standby"]
+    }
+  ]
+}
+```
