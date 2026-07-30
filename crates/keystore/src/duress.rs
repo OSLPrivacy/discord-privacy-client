@@ -381,6 +381,27 @@ pub struct DuressPaths {
     pub prekey_file: Option<PathBuf>,
 }
 
+/// Filesystem roots used to assemble production duress behavior.
+///
+/// `config_dir` is the active account directory. `password_dir` is the
+/// device-level directory that holds the main-password marker.
+pub struct ProductionDuressConfig {
+    pub config_dir: PathBuf,
+    pub password_dir: PathBuf,
+    pub strip_opsec_files: Vec<PathBuf>,
+}
+
+impl ProductionDuressConfig {
+    pub fn new(config_dir: PathBuf, password_dir: PathBuf) -> Self {
+        let strip_opsec_files = default_strip_opsec_files(&config_dir);
+        Self {
+            config_dir,
+            password_dir,
+            strip_opsec_files,
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum DuressError {
     #[error("io: {0}")]
@@ -406,6 +427,46 @@ impl From<DuressError> for KeystoreError {
     fn from(e: DuressError) -> Self {
         KeystoreError::Transport(format!("duress: {e}"))
     }
+}
+
+pub fn build_partial_duress_handlers(
+    local_cache_dir: Option<PathBuf>,
+    strip_opsec_files: Vec<PathBuf>,
+) -> DuressHandlers {
+    let wipe_local_cache_dir =
+        local_cache_dir.map(|path| Box::new(move || remove_dir_idempotent(&path)) as WipeFn);
+    let strip_opsec_files = (!strip_opsec_files.is_empty()).then(|| {
+        Box::new(move || {
+            for path in &strip_opsec_files {
+                remove_path_idempotent(path)?;
+            }
+            Ok(())
+        }) as WipeFn
+    });
+
+    DuressHandlers {
+        wipe_local_cache_dir,
+        strip_opsec_files,
+        ..Default::default()
+    }
+}
+
+pub fn build_production_duress_paths(config: &ProductionDuressConfig) -> (DuressPaths, PathBuf) {
+    (
+        DuressPaths {
+            identity_file: config.config_dir.join("identity.json"),
+            password_file: config.password_dir.join("password_marker.json"),
+            prekey_file: Some(config.config_dir.join("prekeys.json")),
+        },
+        config.config_dir.join("duress.journal"),
+    )
+}
+
+pub fn build_production_duress_config_handlers(config: &ProductionDuressConfig) -> DuressHandlers {
+    build_partial_duress_handlers(
+        Some(config.config_dir.join("store")),
+        config.strip_opsec_files.clone(),
+    )
 }
 
 /// On-disk journal of attempted step outcomes. Read when an integration calls
@@ -524,6 +585,33 @@ impl DuressEngine {
         Ok(Some(self.execute()?))
     }
 
+    pub fn journal_path(&self) -> &Path {
+        &self.journal_path
+    }
+
+    pub fn paths(&self) -> &DuressPaths {
+        &self.paths
+    }
+
+    pub fn handler_wired(&self, step: WipeStep) -> bool {
+        match step {
+            WipeStep::LocalCacheDir => self.handlers.wipe_local_cache_dir.is_some(),
+            WipeStep::AnonymousCredentials => self.handlers.wipe_anonymous_credentials.is_some(),
+            WipeStep::Prekeys => self.handlers.wipe_prekeys.is_some(),
+            WipeStep::DoubleRatchet => self.handlers.wipe_double_ratchet.is_some(),
+            WipeStep::SenderKeys => self.handlers.wipe_sender_keys.is_some(),
+            WipeStep::PeerRatchets => self.handlers.wipe_peer_ratchets.is_some(),
+            WipeStep::InMemoryZeroize => self.handlers.zeroize_in_memory.is_some(),
+            WipeStep::StripOpsecFiles => self.handlers.strip_opsec_files.is_some(),
+            WipeStep::UnregisterAccount => self.handlers.unregister_account.is_some(),
+            WipeStep::TpmEvict
+            | WipeStep::KeyringPurge
+            | WipeStep::IdentityFile
+            | WipeStep::PasswordHashes
+            | WipeStep::PrekeyFile => true,
+        }
+    }
+
     fn run_step<F>(&self, step: WipeStep, tpm_evict: &F) -> StepOutcome
     where
         F: Fn() -> std::result::Result<TpmEvictOutcome, SealerError>,
@@ -630,7 +718,7 @@ impl DuressEngine {
             Ok(_) => StepOutcome::Wiped,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => StepOutcome::AlreadyClean,
             Err(e) => StepOutcome::Failed {
-                error: format!("remove_file {}: {e}", path.display()),
+                error: format!("remove_file failed: {e}"),
             },
         }
     }
@@ -674,6 +762,12 @@ impl DuressEngine {
     }
 }
 
+pub fn build_production_duress_engine(config: ProductionDuressConfig) -> DuressEngine {
+    let (paths, journal_path) = build_production_duress_paths(&config);
+    let handlers = build_production_duress_config_handlers(&config);
+    DuressEngine::new(journal_path, paths, handlers)
+}
+
 fn map_tpm_evict_result(result: std::result::Result<TpmEvictOutcome, SealerError>) -> StepOutcome {
     match result {
         Ok(TpmEvictOutcome::Evicted) => StepOutcome::Wiped,
@@ -681,6 +775,45 @@ fn map_tpm_evict_result(result: std::result::Result<TpmEvictOutcome, SealerError
         Err(e) => StepOutcome::Failed {
             error: e.to_string(),
         },
+    }
+}
+
+fn default_strip_opsec_files(config_dir: &Path) -> Vec<PathBuf> {
+    [
+        "injection.js",
+        "boot.js",
+        "opsec_config.json",
+        "keyserver.json",
+        "channels.json",
+    ]
+    .into_iter()
+    .map(|name| config_dir.join(name))
+    .collect()
+}
+
+fn remove_dir_idempotent(path: &Path) -> std::result::Result<(), DuressError> {
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(DuressError::Io(format!("remove_dir_all failed: {e}"))),
+    }
+}
+
+fn remove_path_idempotent(path: &Path) -> std::result::Result<(), DuressError> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(DuressError::Io(format!("metadata failed: {e}"))),
+    };
+
+    if metadata.file_type().is_dir() {
+        remove_dir_idempotent(path)
+    } else {
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(DuressError::Io(format!("remove_file failed: {e}"))),
+        }
     }
 }
 

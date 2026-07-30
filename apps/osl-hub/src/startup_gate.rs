@@ -13,6 +13,7 @@ pub enum VerifiedGateRole {
     Main,
     Stealth,
     Burn,
+    Duress,
     Wrong,
 }
 
@@ -26,7 +27,7 @@ pub struct GatePasswordVerification {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HubGateUnlockResult {
-    /// `unlocked`, `decoy`, `burned`, or `wrong`.
+    /// `unlocked`, `decoy`, `burned`, `duress`, or `wrong`.
     pub outcome: &'static str,
     pub lockout_seconds_remaining: i64,
     pub attempts_used: u32,
@@ -77,6 +78,19 @@ impl HubGateUnlockResult {
             burn: Some(burn),
         }
     }
+
+    pub fn duress(
+        verification: GatePasswordVerification,
+        burn: crate::cleanup::HubFullCleanupResult,
+    ) -> Self {
+        Self {
+            outcome: "duress",
+            lockout_seconds_remaining: verification.lockout_seconds_remaining,
+            attempts_used: verification.attempts_used,
+            readiness: None,
+            burn: Some(burn),
+        }
+    }
 }
 
 pub fn verify_password_role(
@@ -88,25 +102,15 @@ pub fn verify_password_role(
         "main" => VerifiedGateRole::Main,
         "stealth" => VerifiedGateRole::Stealth,
         "burn" => VerifiedGateRole::Burn,
+        "duress" => VerifiedGateRole::Duress,
         "wrong" => VerifiedGateRole::Wrong,
         _ => return Err("OSL password gate returned an invalid role".to_owned()),
     };
-    let role = role_after_auto_burn_threshold(parsed_role, result.attempts_used);
     Ok(GatePasswordVerification {
-        role,
+        role: parsed_role,
         lockout_seconds_remaining: result.lockout_seconds_remaining,
         attempts_used: result.attempts_used,
     })
-}
-
-fn role_after_auto_burn_threshold(role: VerifiedGateRole, attempts_used: u32) -> VerifiedGateRole {
-    if role == VerifiedGateRole::Wrong
-        && attempts_used >= keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD
-    {
-        VerifiedGateRole::Burn
-    } else {
-        role
-    }
 }
 
 pub fn readiness_after_main(state: &HubCoreState) -> CoreReadiness {
@@ -188,6 +192,16 @@ mod tests {
                 .unwrap();
                 HubGateUnlockResult::burned(verification, burn)
             }
+            VerifiedGateRole::Duress => {
+                let burn = crate::cleanup::execute_verified_gate_burn(
+                    state,
+                    config_dir,
+                    local_data_dir,
+                    true,
+                )
+                .unwrap();
+                HubGateUnlockResult::duress(verification, burn)
+            }
             VerifiedGateRole::Wrong => HubGateUnlockResult::wrong(verification),
             VerifiedGateRole::Main | VerifiedGateRole::Stealth => {
                 panic!("test only routes burn and wrong gate roles")
@@ -195,12 +209,13 @@ mod tests {
         }
     }
 
-    fn assert_burned_result_removed(
+    fn assert_cleanup_result_removed(
         result: &HubGateUnlockResult,
+        expected_outcome: &str,
         target: &str,
         removed_path: &std::path::Path,
     ) {
-        assert_eq!(result.outcome, "burned");
+        assert_eq!(result.outcome, expected_outcome);
         assert!(result.readiness.is_none());
         let burn = result.burn.as_ref().expect("burn result is present");
         assert!(burn.local_cleanup_complete);
@@ -225,12 +240,19 @@ mod tests {
             (VerifiedGateRole::Main, "unlocked"),
             (VerifiedGateRole::Stealth, "decoy"),
             (VerifiedGateRole::Burn, "burned"),
+            (VerifiedGateRole::Duress, "duress"),
             (VerifiedGateRole::Wrong, "wrong"),
         ];
-        assert_eq!(actions.len(), 4);
-        assert_ne!(actions[0].1, actions[1].1);
-        assert_ne!(actions[0].1, actions[2].1);
-        assert_ne!(actions[1].1, actions[2].1);
+        assert_eq!(actions.len(), 5);
+        for (index, (_, outcome)) in actions.iter().enumerate() {
+            assert!(
+                actions
+                    .iter()
+                    .enumerate()
+                    .all(|(candidate, (_, other))| candidate == index || other != outcome),
+                "gate outcome {outcome} must stay distinct"
+            );
+        }
     }
 
     #[test]
@@ -252,12 +274,9 @@ mod tests {
         let state = HubCoreState::default();
 
         let below_threshold = GatePasswordVerification {
-            role: role_after_auto_burn_threshold(
-                VerifiedGateRole::Wrong,
-                keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD - 1,
-            ),
+            role: VerifiedGateRole::Wrong,
             lockout_seconds_remaining: 3600,
-            attempts_used: keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD - 1,
+            attempts_used: ipc::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 1,
         };
         let below_result = HubGateUnlockResult::wrong(below_threshold);
         assert_eq!(below_result.outcome, "wrong");
@@ -267,22 +286,24 @@ mod tests {
             populate_cleanup_roots("threshold");
         keystore::set_base_dir_override(Some(threshold_core.clone()));
         let threshold_verification = GatePasswordVerification {
-            role: role_after_auto_burn_threshold(
-                VerifiedGateRole::Wrong,
-                keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD,
-            ),
+            role: VerifiedGateRole::Duress,
             lockout_seconds_remaining: 3600,
-            attempts_used: keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD,
+            attempts_used: ipc::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT,
         };
-        assert_eq!(threshold_verification.role, VerifiedGateRole::Burn);
+        assert_eq!(threshold_verification.role, VerifiedGateRole::Duress);
         let threshold_result = gate_result_for_verification(
             &state,
             threshold_verification,
             &threshold_config,
             &threshold_local,
         );
-        assert_burned_result_removed(&threshold_result, "hub_core", &threshold_core);
-        assert_burned_result_removed(&threshold_result, "service_profiles", &threshold_profiles);
+        assert_cleanup_result_removed(&threshold_result, "duress", "hub_core", &threshold_core);
+        assert_cleanup_result_removed(
+            &threshold_result,
+            "duress",
+            "service_profiles",
+            &threshold_profiles,
+        );
 
         let (duress_config, duress_local, duress_core, duress_profiles, _) =
             populate_cleanup_roots("duress");
@@ -290,17 +311,23 @@ mod tests {
         let duress_result = gate_result_for_verification(
             &state,
             GatePasswordVerification {
-                role: role_after_auto_burn_threshold(VerifiedGateRole::Burn, 0),
+                role: VerifiedGateRole::Burn,
                 lockout_seconds_remaining: 0,
                 attempts_used: 0,
             },
             &duress_config,
             &duress_local,
         );
-        assert_burned_result_removed(&duress_result, "hub_core", &duress_core);
-        assert_burned_result_removed(&duress_result, "service_profiles", &duress_profiles);
+        assert_cleanup_result_removed(&duress_result, "burned", "hub_core", &duress_core);
+        assert_cleanup_result_removed(
+            &duress_result,
+            "burned",
+            "service_profiles",
+            &duress_profiles,
+        );
 
-        assert_eq!(threshold_result.outcome, duress_result.outcome);
+        assert_eq!(threshold_result.outcome, "duress");
+        assert_eq!(duress_result.outcome, "burned");
         assert_eq!(
             threshold_result.burn.as_ref().unwrap().restart_required,
             duress_result.burn.as_ref().unwrap().restart_required

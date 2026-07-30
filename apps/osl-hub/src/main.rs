@@ -1086,7 +1086,7 @@ async fn unlock_hub_password_gate(
             startup_gate::enter_stealth_landing(&app.state::<HubCoreState>());
             Ok(HubGateUnlockResult::decoy(verification))
         }
-        VerifiedGateRole::Burn => {
+        VerifiedGateRole::Burn | VerifiedGateRole::Duress => {
             service_host::desktop::shutdown(&app, &app.state::<ServiceHostState>()).await?;
             native_discord_overlay::clear_and_hide(&app);
             let _ = app.state::<NativeWindowHostState>().terminate();
@@ -1112,7 +1112,11 @@ async fn unlock_hub_password_gate(
             })
             .await
             .map_err(|_| "OSL burn worker failed".to_owned())??;
-            Ok(HubGateUnlockResult::burned(verification, burn))
+            match verification.role {
+                VerifiedGateRole::Burn => Ok(HubGateUnlockResult::burned(verification, burn)),
+                VerifiedGateRole::Duress => Ok(HubGateUnlockResult::duress(verification, burn)),
+                _ => unreachable!("matched burn/duress role above"),
+            }
         }
     }
 }

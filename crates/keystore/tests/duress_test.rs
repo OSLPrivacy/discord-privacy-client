@@ -1,7 +1,10 @@
 use keystore::{
+    build_partial_duress_handlers, build_production_duress_config_handlers,
+    build_production_duress_paths,
     generate_identity, save_identity, save_password_record, save_prekey_state, Argon2Params,
     DuressEngine, DuressHandlers, DuressJournal, DuressPaths, NoOpSealer, PasswordRecord,
     PrekeyConfig, PrekeyState, ProductionDuressHandlers, StepOutcome, WipeStep,
+    ProductionDuressConfig,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -57,6 +60,26 @@ fn write_journal_with_all_steps_except(journal_path: &std::path::Path, except: W
             )
         })
         .collect();
+    let journal = DuressJournal {
+        completed,
+        started_at_unix_seconds: 0,
+    };
+    std::fs::write(journal_path, serde_json::to_vec_pretty(&journal).unwrap()).unwrap();
+}
+
+fn journal_completed_steps(journal_path: &std::path::Path, completed_steps: &[WipeStep]) {
+    let completed = completed_steps
+        .iter()
+        .copied()
+        .map(|step| {
+            (
+                step,
+                StepOutcome::Skipped {
+                    reason: "prefilled test step".to_owned(),
+                },
+            )
+        })
+        .collect::<Vec<_>>();
     let journal = DuressJournal {
         completed,
         started_at_unix_seconds: 0,
@@ -313,28 +336,17 @@ fn handlers_run_in_canonical_order() {
         .into_handlers();
 
     let engine = DuressEngine::new(journal_path, paths, handlers);
+    assert!(engine.handler_wired(WipeStep::LocalCacheDir));
+    assert!(engine.handler_wired(WipeStep::StripOpsecFiles));
+    assert!(engine.handler_wired(WipeStep::Prekeys));
+
     let report = engine.execute().unwrap();
     assert!(report.completed);
     assert!(report.failed_steps().is_empty());
     assert!(report.skipped_steps().is_empty());
     assert_eq!(
         report.steps.iter().map(|(step, _)| *step).collect::<Vec<_>>(),
-        vec![
-            WipeStep::TpmEvict,
-            WipeStep::KeyringPurge,
-            WipeStep::IdentityFile,
-            WipeStep::PasswordHashes,
-            WipeStep::UnregisterAccount,
-            WipeStep::PrekeyFile,
-            WipeStep::LocalCacheDir,
-            WipeStep::AnonymousCredentials,
-            WipeStep::Prekeys,
-            WipeStep::DoubleRatchet,
-            WipeStep::SenderKeys,
-            WipeStep::PeerRatchets,
-            WipeStep::InMemoryZeroize,
-            WipeStep::StripOpsecFiles,
-        ]
+        WipeStep::ordered().to_vec()
     );
 
     let calls = calls.lock().unwrap();
@@ -391,6 +403,119 @@ fn keyring_purge_handler() {
         !journal_path.exists(),
         "successful keyring purge handler run must clear the journal"
     );
+}
+
+#[test]
+fn partial_duress_handlers_wipe_bound_cache_and_opsec_paths() {
+    let dir = TempDir::new().unwrap();
+    let (paths, journal_path) = build_paths(&dir);
+    journal_completed_steps(
+        &journal_path,
+        &[
+            WipeStep::TpmEvict,
+            WipeStep::KeyringPurge,
+            WipeStep::IdentityFile,
+            WipeStep::PasswordHashes,
+            WipeStep::UnregisterAccount,
+            WipeStep::PrekeyFile,
+        ],
+    );
+    let cache_dir = dir.path().join("store");
+    let opsec_file = dir.path().join("injection.js");
+    let opsec_dir = dir.path().join("opsec");
+    std::fs::create_dir_all(&cache_dir).unwrap();
+    std::fs::create_dir_all(&opsec_dir).unwrap();
+    std::fs::write(cache_dir.join("message-cache"), b"cache").unwrap();
+    std::fs::write(&opsec_file, b"opsec").unwrap();
+    std::fs::write(opsec_dir.join("config.json"), b"{}").unwrap();
+
+    let handlers = build_partial_duress_handlers(
+        Some(cache_dir.clone()),
+        vec![opsec_file.clone(), opsec_dir.clone()],
+    );
+    let engine = DuressEngine::new(journal_path, paths, handlers);
+    assert!(engine.handler_wired(WipeStep::LocalCacheDir));
+    assert!(engine.handler_wired(WipeStep::StripOpsecFiles));
+    assert!(!engine.handler_wired(WipeStep::Prekeys));
+
+    let report = engine.execute().unwrap();
+    assert!(report.completed);
+    assert!(report.failed_steps().is_empty());
+
+    assert_eq!(
+        report.steps.iter().map(|(step, _)| *step).collect::<Vec<_>>(),
+        WipeStep::ordered().to_vec()
+    );
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::LocalCacheDir),
+        &StepOutcome::Wiped
+    );
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::StripOpsecFiles),
+        &StepOutcome::Wiped
+    );
+    assert!(!cache_dir.exists());
+    assert!(!opsec_file.exists());
+    assert!(!opsec_dir.exists());
+}
+
+#[test]
+fn build_production_duress_config_handlers_wipes_bound_paths() {
+    let dir = TempDir::new().unwrap();
+    let config_dir = dir.path().join("account");
+    let password_dir = dir.path().join("device");
+    let opsec_file = config_dir.join("injection.js");
+    let opsec_dir = config_dir.join("opsec");
+    std::fs::create_dir_all(config_dir.join("store")).unwrap();
+    std::fs::create_dir_all(&opsec_dir).unwrap();
+    std::fs::create_dir_all(&password_dir).unwrap();
+    std::fs::write(config_dir.join("store").join("message-cache"), b"cache").unwrap();
+    std::fs::write(&opsec_file, b"opsec").unwrap();
+    std::fs::write(opsec_dir.join("config.json"), b"{}").unwrap();
+
+    let config = ProductionDuressConfig {
+        config_dir: config_dir.clone(),
+        password_dir: password_dir.clone(),
+        strip_opsec_files: vec![opsec_file.clone(), opsec_dir.clone()],
+    };
+    let (paths, journal_path) = build_production_duress_paths(&config);
+    assert_eq!(paths.identity_file, config_dir.join("identity.json"));
+    assert_eq!(
+        paths.password_file,
+        password_dir.join("password_marker.json")
+    );
+    assert_eq!(paths.prekey_file, Some(config_dir.join("prekeys.json")));
+    assert_eq!(journal_path, config_dir.join("duress.journal"));
+    journal_completed_steps(
+        &journal_path,
+        &[
+            WipeStep::TpmEvict,
+            WipeStep::KeyringPurge,
+            WipeStep::IdentityFile,
+            WipeStep::PasswordHashes,
+            WipeStep::UnregisterAccount,
+            WipeStep::PrekeyFile,
+        ],
+    );
+
+    let handlers = build_production_duress_config_handlers(&config);
+    let engine = DuressEngine::new(journal_path, paths, handlers);
+    assert!(engine.handler_wired(WipeStep::LocalCacheDir));
+    assert!(engine.handler_wired(WipeStep::StripOpsecFiles));
+
+    let report = engine.execute().unwrap();
+
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::LocalCacheDir),
+        &StepOutcome::Wiped
+    );
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::StripOpsecFiles),
+        &StepOutcome::Wiped
+    );
+    assert!(!config_dir.join("store").exists());
+    assert!(!opsec_file.exists());
+    assert!(!opsec_dir.exists());
 }
 
 #[test]

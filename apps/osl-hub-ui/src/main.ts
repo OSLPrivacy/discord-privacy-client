@@ -2689,7 +2689,7 @@ async function checkUnlockScreenCredential(secret: string): Promise<Awaited<Retu
 }
 
 function unlockScreenDuressPinTriggeredWipe(gate: Awaited<ReturnType<typeof unlockHubPasswordGate>>): boolean {
-  return gate.outcome === "burned" && gate.burn !== null;
+  return (gate.outcome === "burned" || gate.outcome === "duress") && gate.burn !== null;
 }
 
 function bindImportForm(): void {

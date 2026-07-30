@@ -1443,7 +1443,7 @@ describe("bundled preview security boundary", () => {
     expect(mainProduction).toContain(
       "startup_gate::verify_password_role(&verify_app.state::<HubCoreState>(), password)",
     );
-    expect(mainProduction).toContain("VerifiedGateRole::Burn => {");
+    expect(mainProduction).toContain("VerifiedGateRole::Burn | VerifiedGateRole::Duress => {");
     expect(mainProduction).toContain("cleanup::execute_verified_gate_burn(");
 
     const assertLegacyDuressTruth = (
