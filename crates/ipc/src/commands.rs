@@ -3477,22 +3477,29 @@ fn encrypt_v5_send(
             .set_last_known_members(members_bytes);
     }
 
-    let (chain_id, rotation_root) = {
+    let (chain_id, rotation_root, physical_device_id) = {
         let s = sks
             .sender_chain()
             .ok_or_else(|| "OSL: v=5 send: missing sender chain after install".to_string())?;
-        (s.current_chain_id(), s.rotation_root_bytes())
+        (
+            s.current_chain_id(),
+            s.rotation_root_bytes(),
+            s.physical_device_id(),
+        )
     };
 
     // Self-loopback: install/rotate a self-receiver chain seeded
     // from the same rotation_root so self-decrypts work uniformly.
     if send_skdm {
         let self_bytes = self_discord_id.as_bytes().to_vec();
-        if sks.receiver_chain(&self_bytes).is_some() {
-            sks.rotate_receiver(&self_bytes, chain_id, &rotation_root)
+        if sks
+            .receiver_chain_for_physical_device(&self_bytes, physical_device_id)
+            .is_some()
+        {
+            sks.rotate_receiver(&self_bytes, chain_id, &rotation_root, physical_device_id)
                 .map_err(|e| format!("OSL: v=5 send: rotate_receiver(self): {e}"))?;
         } else {
-            sks.install_receiver(self_bytes, chain_id, &rotation_root)
+            sks.install_receiver(self_bytes, chain_id, &rotation_root, physical_device_id)
                 .map_err(|e| format!("OSL: v=5 send: install_receiver(self): {e}"))?;
         }
     }
@@ -3603,6 +3610,7 @@ fn encrypt_v5_send(
             &scope_key,
             chain_id,
             &rotation_root,
+            physical_device_id.as_bytes(),
         ) {
             Ok(skdm_wire) => {
                 skdm_wires.push(skdm_wire);
@@ -3674,11 +3682,13 @@ fn send_skdm_via_v3_bundle(
     scope_storage_key: &str,
     chain_id: u32,
     rotation_root: &[u8; 32],
+    physical_device_id: &[u8; 32],
 ) -> Result<String, String> {
     let payload = crate::control_messages::SenderKeyDistribution {
         scope_storage_key: scope_storage_key.to_string(),
         chain_id,
         rotation_root: *rotation_root,
+        physical_device_id: *physical_device_id,
         sent_at: now_unix_secs(),
     };
     let body = crate::control_messages::serialize_sender_key_distribution(&payload)
@@ -5410,7 +5420,7 @@ fn apply_skdm_request_recv(
     // no sender chain for this scope we are not a v=5 sender here —
     // benign no-op (the requester is asking the wrong peer, or the
     // scope was never keyed).
-    let (chain_id, rotation_root) = {
+    let (chain_id, rotation_root, physical_device_id) = {
         use crypto::sender_keys::SenderKeyState;
         let g = state
             .sender_key_state
@@ -5432,7 +5442,11 @@ fn apply_skdm_request_recv(
             .try_into()
             .map_err(|e| format!("OSL: SKDM_REQUEST: load sender_key_state: {e}"))?;
         match sks.sender_chain() {
-            Some(c) => (c.current_chain_id(), c.rotation_root_bytes()),
+            Some(c) => (
+                c.current_chain_id(),
+                c.rotation_root_bytes(),
+                c.physical_device_id(),
+            ),
             None => {
                 tracing::warn!(
                     requester = %crate::log_id::log_id(requester_discord_id),
@@ -5587,6 +5601,7 @@ fn apply_skdm_request_recv(
         &scope_key,
         chain_id,
         &rotation_root,
+        physical_device_id.as_bytes(),
     )?;
     tracing::info!(
         requester = %crate::log_id::log_id(requester_discord_id),
@@ -5686,7 +5701,7 @@ fn apply_skdm_recv(
     sender_discord_id: &str,
     payload_bytes: &[u8],
 ) -> Result<String, String> {
-    use crypto::sender_keys::{SenderKeyState, SenderKeyStateOnDisk};
+    use crypto::sender_keys::{PhysicalDeviceId, SenderKeyState, SenderKeyStateOnDisk};
     let payload = crate::control_messages::deserialize_sender_key_distribution(payload_bytes)
         .map_err(|e| format!("OSL: SKDM: deserialize: {e}"))?;
 
@@ -5712,12 +5727,27 @@ fn apply_skdm_recv(
             .try_into()
             .map_err(|e| format!("OSL: SKDM: load existing state: {e}"))?;
         let peer_bytes = sender_discord_id.as_bytes().to_vec();
-        if live.receiver_chain(&peer_bytes).is_some() {
-            live.rotate_receiver(&peer_bytes, payload.chain_id, &payload.rotation_root)
-                .map_err(|e| format!("OSL: SKDM: rotate_receiver: {e}"))?;
+        let physical_device_id = PhysicalDeviceId::from_bytes(payload.physical_device_id)
+            .map_err(|e| format!("OSL: SKDM: physical_device_id binding invalid or absent: {e}"))?;
+        if live
+            .receiver_chain_for_physical_device(&peer_bytes, physical_device_id)
+            .is_some()
+        {
+            live.rotate_receiver(
+                &peer_bytes,
+                payload.chain_id,
+                &payload.rotation_root,
+                physical_device_id,
+            )
+            .map_err(|e| format!("OSL: SKDM: rotate_receiver: {e}"))?;
         } else {
-            live.install_receiver(peer_bytes, payload.chain_id, &payload.rotation_root)
-                .map_err(|e| format!("OSL: SKDM: install_receiver: {e}"))?;
+            live.install_receiver(
+                peer_bytes,
+                payload.chain_id,
+                &payload.rotation_root,
+                physical_device_id,
+            )
+            .map_err(|e| format!("OSL: SKDM: install_receiver: {e}"))?;
         }
         *entry = SenderKeyStateOnDisk::from(&live);
         g.version = 1;

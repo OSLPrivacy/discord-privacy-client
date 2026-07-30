@@ -299,9 +299,9 @@ pub const V5_GLOBAL_HEADER_BYTES: usize = 1 + 1 + 32 + 1;
 pub const V5_FLAG_RESERVED_MASK: u8 = 0xFF;
 
 /// v=5 sender-keys header on the wire:
-/// `header_nonce(24) || enc_header(16-byte Header + 16-byte AEAD tag = 32)`.
-/// Total 56 bytes.
-pub const V5_SENDER_KEYS_HEADER_BYTES: usize = 24 + (16 + 16);
+/// `header_nonce(24) || enc_header(48-byte Header + 16-byte AEAD tag = 64)`.
+/// Total 88 bytes.
+pub const V5_SENDER_KEYS_HEADER_BYTES: usize = 24 + (48 + 16);
 
 /// v=4 global header size: version(1) + msg_type(1) + flags(1) +
 /// sender_ik_x25519_pub(32) + N(1) = 36 bytes.
@@ -1299,8 +1299,8 @@ impl std::fmt::Debug for ParsedV5 {
 /// ```text
 ///   global header (35 bytes):
 ///     [ version(1)=0x05 | msg_type(1) | sender_ik_x25519_pub(32) | flags(1) ]
-///   sender-keys header (56 bytes):
-///     [ header_nonce(24) | enc_header(32 = 16 header_bytes + 16 AEAD tag) ]
+///   sender-keys header (88 bytes):
+///     [ header_nonce(24) | enc_header(64 = 48 header_bytes + 16 AEAD tag) ]
 ///   trailer:
 ///     [ message_nonce(24) | ciphertext + 16B AEAD tag ]
 /// ```
@@ -1308,7 +1308,7 @@ impl std::fmt::Debug for ParsedV5 {
 /// The body AEAD's AAD inside `sender_keys::SenderChain::encrypt`
 /// is `canonical_ad_sender_keys(...) || enc_header`. The wire-layer
 /// adds no extra AAD — the canonical AD already binds sender_ik +
-/// group_id + chain_id + n, and the global header's bytes are
+/// group_id + physical_device_id + chain_id + n, and the global header's bytes are
 /// implicitly authenticated via `sender_ik_x25519_pub` (any tamper
 /// on that field selects the wrong ReceiverChain on decode and the
 /// AEAD fails).
@@ -1323,10 +1323,12 @@ pub fn encrypt_v5(
             "v=5 encode: reserved flags bits set in 0x{flags:02x}"
         )));
     }
-    if em.enc_header.len() != 32 {
+    let expected_enc_header = crypto::sender_keys::HEADER_BYTES + 16;
+    if em.enc_header.len() != expected_enc_header {
         return Err(V2Error::Crypto(format!(
-            "v=5 encode: enc_header length {} != expected 32",
-            em.enc_header.len()
+            "v=5 encode: enc_header length {} != expected {}",
+            em.enc_header.len(),
+            expected_enc_header
         )));
     }
 

@@ -28,8 +28,12 @@ fn ctx(seed: u8, group_id: &[u8]) -> SenderContext {
 
 fn pair() -> (SenderChain, ReceiverChain, SenderContext) {
     let sender = SenderChain::new().unwrap();
-    let receiver =
-        ReceiverChain::install(sender.current_chain_id(), &sender.rotation_root_bytes()).unwrap();
+    let receiver = ReceiverChain::install(
+        sender.current_chain_id(),
+        &sender.rotation_root_bytes(),
+        sender.physical_device_id(),
+    )
+    .unwrap();
     let ctx = ctx(0xab, b"phase-a3-persist");
     (sender, receiver, ctx)
 }
@@ -50,8 +54,9 @@ fn mirror_roundtrip_preserves_send_decrypt_pairing() {
     state.install_sender().unwrap();
     let s_chain_id = state.sender_chain().unwrap().current_chain_id();
     let s_root = state.sender_chain().unwrap().rotation_root_bytes();
+    let s_device = state.sender_chain().unwrap().physical_device_id();
     state
-        .install_receiver(b"peer-x".to_vec(), s_chain_id, &s_root)
+        .install_receiver(b"peer-x".to_vec(), s_chain_id, &s_root, s_device)
         .unwrap();
 
     // Send one through the orchestrator to bump state.
@@ -89,8 +94,9 @@ fn mirror_roundtrip_preserves_skipped_keys() {
     state.install_sender().unwrap();
     let s_chain_id = state.sender_chain().unwrap().current_chain_id();
     let s_root = state.sender_chain().unwrap().rotation_root_bytes();
+    let s_device = state.sender_chain().unwrap().physical_device_id();
     state
-        .install_receiver(b"peer-x".to_vec(), s_chain_id, &s_root)
+        .install_receiver(b"peer-x".to_vec(), s_chain_id, &s_root, s_device)
         .unwrap();
     // Replace peer-x's receiver chain with the one that has cached
     // skipped keys (no public swap API; we mimic by re-installing).
@@ -162,8 +168,9 @@ fn mirror_serde_json_roundtrip() {
     state.install_sender().unwrap();
     let chain_id = state.sender_chain().unwrap().current_chain_id();
     let root = state.sender_chain().unwrap().rotation_root_bytes();
+    let device = state.sender_chain().unwrap().physical_device_id();
     state
-        .install_receiver(b"peer-1".to_vec(), chain_id, &root)
+        .install_receiver(b"peer-1".to_vec(), chain_id, &root, device)
         .unwrap();
     let disk = SenderKeyStateOnDisk::from(&state);
     let json = serde_json::to_string(&disk).expect("serialize");
@@ -176,7 +183,7 @@ fn mirror_version_byte_present_and_correct() {
     let state = SenderKeyState::new();
     let disk = SenderKeyStateOnDisk::from(&state);
     assert_eq!(disk.version, SENDER_KEY_STATE_ON_DISK_VERSION);
-    assert_eq!(disk.version, 0x01);
+    assert_eq!(disk.version, 0x02);
 }
 
 #[test]

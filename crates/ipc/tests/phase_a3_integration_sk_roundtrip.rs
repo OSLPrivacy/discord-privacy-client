@@ -199,25 +199,32 @@ fn deliver_skdm_synthetically(
     receiver_state: &AppState,
     scope_key: &str,
 ) {
-    // Read sender's chain_id + rotation_root.
-    let (chain_id, root) = {
+    // Read sender's chain_id + rotation_root + physical-device binding.
+    let (chain_id, root, physical_device_id) = {
         let g = sender_state.sender_key_state.lock().unwrap();
         let dump =
             crypto::sender_keys::SenderKeyState::try_from(g.states.get(scope_key).unwrap().clone())
                 .unwrap();
         let s = dump.sender_chain().unwrap();
-        (s.current_chain_id(), s.rotation_root_bytes())
+        (
+            s.current_chain_id(),
+            s.rotation_root_bytes(),
+            s.physical_device_id(),
+        )
     };
     // Install/rotate receiver on the peer's side.
     let mut g = receiver_state.sender_key_state.lock().unwrap();
     let entry = g.states.entry(scope_key.to_string()).or_default();
     let mut live = crypto::sender_keys::SenderKeyState::try_from(entry.clone()).unwrap();
     let sender_bytes = sender_did.as_bytes().to_vec();
-    if live.receiver_chain(&sender_bytes).is_some() {
-        live.rotate_receiver(&sender_bytes, chain_id, &root)
+    if live
+        .receiver_chain_for_physical_device(&sender_bytes, physical_device_id)
+        .is_some()
+    {
+        live.rotate_receiver(&sender_bytes, chain_id, &root, physical_device_id)
             .unwrap();
     } else {
-        live.install_receiver(sender_bytes, chain_id, &root)
+        live.install_receiver(sender_bytes, chain_id, &root, physical_device_id)
             .unwrap();
     }
     *entry = crypto::sender_keys::SenderKeyStateOnDisk::from(&live);

@@ -59,12 +59,13 @@
 //! # Wire format
 //!
 //! ```text
-//! header_plaintext = u32_be(chain_id)
+//! header_plaintext = physical_device_id             // 32 bytes
+//!                 || u32_be(chain_id)
 //!                 || u32_be(n)
 //!                 || u32_be(prev_chain_length)
-//!                 || u32_be(session_version)        // 16 bytes
+//!                 || u32_be(session_version)        // 48 bytes total
 //! enc_header       = AEAD-encrypt(HK_n, header_nonce, "", header_plaintext)
-//! AD               = canonical_ad_sender_keys(sender_ik..., group_id, ...)
+//! AD               = canonical_ad_sender_keys(sender_ik..., physical_device_id, group_id, ...)
 //! ciphertext       = AEAD-encrypt(MK_n, message_nonce, AD || enc_header, plaintext)
 //! ```
 //!
@@ -125,6 +126,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use zeroize::ZeroizeOnDrop;
 
@@ -153,9 +155,51 @@ pub const MAX_SKIPPED_PER_CHAIN: usize = 1000;
 /// TTL for cached skipped message keys.
 pub const SKIPPED_KEY_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
-/// Plaintext header layout: u32_be(chain_id) || u32_be(n) ||
-/// u32_be(prev_chain_length) || u32_be(session_version).
-pub const HEADER_BYTES: usize = 16;
+/// Physical sender-device binding size.
+pub const PHYSICAL_DEVICE_ID_BYTES: usize = 32;
+
+/// Plaintext header layout:
+/// `physical_device_id(32) || u32_be(chain_id) || u32_be(n) ||
+/// u32_be(prev_chain_length) || u32_be(session_version)`.
+pub const HEADER_BYTES: usize = PHYSICAL_DEVICE_ID_BYTES + 16;
+
+/// Opaque physical-device binding for sender-key chains.
+///
+/// This is an identifier, so Debug deliberately reports only structure.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PhysicalDeviceId([u8; PHYSICAL_DEVICE_ID_BYTES]);
+
+impl PhysicalDeviceId {
+    pub fn random() -> Self {
+        loop {
+            let bytes = random::random_bytes(PHYSICAL_DEVICE_ID_BYTES);
+            let mut out = [0u8; PHYSICAL_DEVICE_ID_BYTES];
+            out.copy_from_slice(&bytes);
+            if out.iter().any(|b| *b != 0) {
+                return PhysicalDeviceId(out);
+            }
+        }
+    }
+
+    pub fn from_bytes(bytes: [u8; PHYSICAL_DEVICE_ID_BYTES]) -> Result<Self> {
+        if bytes.iter().all(|b| *b == 0) {
+            return Err(Error::Internal(
+                "sender keys: physical_device_id binding absent".into(),
+            ));
+        }
+        Ok(PhysicalDeviceId(bytes))
+    }
+
+    pub fn as_bytes(&self) -> &[u8; PHYSICAL_DEVICE_ID_BYTES] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for PhysicalDeviceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("PhysicalDeviceId([REDACTED])")
+    }
+}
 
 /// 32-byte sender-keys chain key. One-way HKDF advance, separate
 /// derivations for `MK` and `HK`. Zeroizes on drop.
@@ -224,6 +268,7 @@ fn derive_ck_0(root: &RotationRoot, chain_id: u32) -> Result<SenderChainKey> {
 /// `enc_header` has been opened in tests or diagnostic tooling.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Header {
+    pub physical_device_id: PhysicalDeviceId,
     pub chain_id: u32,
     pub n: u32,
     pub prev_chain_length: u32,
@@ -231,19 +276,20 @@ pub struct Header {
 }
 
 impl Header {
-    /// Fixed 16-byte serialization:
-    /// `u32_be(chain_id) || u32_be(n) || u32_be(prev_chain_length)
-    ///  || u32_be(session_version)`.
+    /// Fixed serialization:
+    /// `physical_device_id(32) || u32_be(chain_id) || u32_be(n) ||
+    /// u32_be(prev_chain_length) || u32_be(session_version)`.
     pub fn to_bytes(&self) -> [u8; HEADER_BYTES] {
         let mut out = [0u8; HEADER_BYTES];
-        out[..4].copy_from_slice(&self.chain_id.to_be_bytes());
-        out[4..8].copy_from_slice(&self.n.to_be_bytes());
-        out[8..12].copy_from_slice(&self.prev_chain_length.to_be_bytes());
-        out[12..16].copy_from_slice(&self.session_version.to_be_bytes());
+        out[..PHYSICAL_DEVICE_ID_BYTES].copy_from_slice(self.physical_device_id.as_bytes());
+        out[32..36].copy_from_slice(&self.chain_id.to_be_bytes());
+        out[36..40].copy_from_slice(&self.n.to_be_bytes());
+        out[40..44].copy_from_slice(&self.prev_chain_length.to_be_bytes());
+        out[44..48].copy_from_slice(&self.session_version.to_be_bytes());
         out
     }
 
-    /// Parse 16 fixed bytes back into a [`Header`].
+    /// Parse fixed bytes back into a [`Header`].
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() != HEADER_BYTES {
             return Err(Error::Internal(format!(
@@ -252,11 +298,14 @@ impl Header {
                 HEADER_BYTES
             )));
         }
+        let mut device_bytes = [0u8; PHYSICAL_DEVICE_ID_BYTES];
+        device_bytes.copy_from_slice(&bytes[..PHYSICAL_DEVICE_ID_BYTES]);
         Ok(Header {
-            chain_id: u32::from_be_bytes(bytes[..4].try_into().unwrap()),
-            n: u32::from_be_bytes(bytes[4..8].try_into().unwrap()),
-            prev_chain_length: u32::from_be_bytes(bytes[8..12].try_into().unwrap()),
-            session_version: u32::from_be_bytes(bytes[12..16].try_into().unwrap()),
+            physical_device_id: PhysicalDeviceId::from_bytes(device_bytes)?,
+            chain_id: u32::from_be_bytes(bytes[32..36].try_into().unwrap()),
+            n: u32::from_be_bytes(bytes[36..40].try_into().unwrap()),
+            prev_chain_length: u32::from_be_bytes(bytes[40..44].try_into().unwrap()),
+            session_version: u32::from_be_bytes(bytes[44..48].try_into().unwrap()),
         })
     }
 }
@@ -271,6 +320,7 @@ fn write_lp(buf: &mut Vec<u8>, bytes: &[u8]) {
 ///
 /// ```text
 /// AD = LP(sender_ik_x25519_pub) || LP(sender_ik_mlkem_pub)
+///    || LP(physical_device_id)
 ///    || LP(group_id)
 ///    || LP(u32_be(chain_id)) || LP(u32_be(n))
 ///    || LP(u32_be(prev_chain_length))
@@ -282,6 +332,7 @@ fn write_lp(buf: &mut Vec<u8>, bytes: &[u8]) {
 pub fn canonical_ad_sender_keys(
     sender_ik_x25519_pub: &[u8; 32],
     sender_ik_mlkem_pub: &[u8],
+    physical_device_id: &PhysicalDeviceId,
     group_id: &[u8],
     chain_id: u32,
     n: u32,
@@ -291,6 +342,7 @@ pub fn canonical_ad_sender_keys(
     let mut buf = Vec::new();
     write_lp(&mut buf, sender_ik_x25519_pub);
     write_lp(&mut buf, sender_ik_mlkem_pub);
+    write_lp(&mut buf, physical_device_id.as_bytes());
     write_lp(&mut buf, group_id);
     write_lp(&mut buf, &chain_id.to_be_bytes());
     write_lp(&mut buf, &n.to_be_bytes());
@@ -361,6 +413,7 @@ impl SkippedKeyCache {
 /// Sender side of the sender-keys construction. Owns the rotation
 /// root, current chain id, current `CK_n`, and the running counter.
 pub struct SenderChain {
+    physical_device_id: PhysicalDeviceId,
     rotation_root: RotationRoot,
     chain_id: u32,
     ck_n: SenderChainKey,
@@ -388,12 +441,21 @@ pub struct SenderChain {
 
 impl SenderChain {
     /// Create a fresh sender chain at `chain_id = 0` with a CSPRNG
-    /// rotation root.
+    /// rotation root and a fresh local physical-device binding.
     pub fn new() -> Result<Self> {
+        Self::new_for_physical_device(PhysicalDeviceId::random())
+    }
+
+    /// Create a fresh sender chain bound to a caller-provided
+    /// physical-device id. A zero/absent binding is refused by
+    /// [`PhysicalDeviceId::from_bytes`] before this constructor is
+    /// reachable.
+    pub fn new_for_physical_device(physical_device_id: PhysicalDeviceId) -> Result<Self> {
         let rotation_root = RotationRoot::random();
         let ck_0 = derive_ck_0(&rotation_root, 0)?;
         let now = now_unix_secs();
         Ok(SenderChain {
+            physical_device_id,
             rotation_root,
             chain_id: 0,
             ck_n: ck_0,
@@ -475,6 +537,14 @@ impl SenderChain {
         self.prev_chain_length
     }
 
+    /// Physical-device binding for this sender chain. Distribution
+    /// layers must carry this beside `(chain_id, rotation_root)` so a
+    /// receiver never collapses two devices for the same account into
+    /// one mutable chain.
+    pub fn physical_device_id(&self) -> PhysicalDeviceId {
+        self.physical_device_id
+    }
+
     /// Current rotation root bytes. The caller is responsible for
     /// distributing `(chain_id, rotation_root)` to receivers via the
     /// pairwise ratchet (out of scope for this crate).
@@ -500,6 +570,7 @@ impl SenderChain {
             .ok_or_else(|| Error::Internal("sender keys: n overflow".into()))?;
 
         let header = Header {
+            physical_device_id: self.physical_device_id,
             chain_id: self.chain_id,
             n,
             prev_chain_length: self.prev_chain_length,
@@ -513,6 +584,7 @@ impl SenderChain {
         let mut full_ad = canonical_ad_sender_keys(
             ctx.sender_ik_x25519_pub.as_bytes(),
             &ctx.sender_ik_mlkem_pub,
+            &self.physical_device_id,
             &ctx.group_id,
             self.chain_id,
             n,
@@ -535,6 +607,7 @@ impl SenderChain {
 /// in a group. Tracks the current chain state and a skipped-key cache
 /// keyed by `(chain_id, n)` that survives rotations.
 pub struct ReceiverChain {
+    physical_device_id: PhysicalDeviceId,
     chain_id: u32,
     ck_n: SenderChainKey,
     n: u32,
@@ -545,10 +618,15 @@ impl ReceiverChain {
     /// Install a fresh chain for a peer-sender. The
     /// `(chain_id, rotation_root)` tuple comes from the pairwise
     /// ratchet (delivery is out-of-scope for this crate).
-    pub fn install(chain_id: u32, rotation_root: &[u8; 32]) -> Result<Self> {
+    pub fn install(
+        chain_id: u32,
+        rotation_root: &[u8; 32],
+        physical_device_id: PhysicalDeviceId,
+    ) -> Result<Self> {
         let root = RotationRoot::from_bytes(*rotation_root);
         let ck_0 = derive_ck_0(&root, chain_id)?;
         Ok(ReceiverChain {
+            physical_device_id,
             chain_id,
             ck_n: ck_0,
             n: 0,
@@ -574,6 +652,10 @@ impl ReceiverChain {
 
     pub fn current_n(&self) -> u32 {
         self.n
+    }
+
+    pub fn physical_device_id(&self) -> PhysicalDeviceId {
+        self.physical_device_id
     }
 
     pub fn skipped_count(&self) -> usize {
@@ -614,6 +696,11 @@ impl ReceiverChain {
                              (header={}, expected={})",
                             header.session_version, ctx.session_version
                         )));
+                    }
+                    if header.physical_device_id != self.physical_device_id {
+                        return Err(Error::Internal(
+                            "sender keys decrypt: physical_device_id binding mismatch".into(),
+                        ));
                     }
                     if header.chain_id != self.chain_id {
                         return Err(Error::Internal(format!(
@@ -662,6 +749,7 @@ impl ReceiverChain {
         let mut full_ad = canonical_ad_sender_keys(
             ctx.sender_ik_x25519_pub.as_bytes(),
             &ctx.sender_ik_mlkem_pub,
+            &self.physical_device_id,
             &ctx.group_id,
             header.chain_id,
             header.n,
@@ -714,11 +802,17 @@ impl ReceiverChain {
                 header.session_version, ctx.session_version
             )));
         }
+        if header.physical_device_id != self.physical_device_id {
+            return Err(Error::Internal(
+                "sender keys decrypt: physical_device_id binding mismatch".into(),
+            ));
+        }
 
         let mk = self.skipped.keys[idx].mk.clone();
         let mut full_ad = canonical_ad_sender_keys(
             ctx.sender_ik_x25519_pub.as_bytes(),
             &ctx.sender_ik_mlkem_pub,
+            &self.physical_device_id,
             &ctx.group_id,
             header.chain_id,
             header.n,
@@ -738,7 +832,7 @@ impl ReceiverChain {
 /// `peer_id → ReceiverChain` for incoming senders.
 pub struct SenderKeyState {
     sender: Option<SenderChain>,
-    receivers: HashMap<Vec<u8>, ReceiverChain>,
+    receivers: HashMap<Vec<u8>, Vec<ReceiverChain>>,
 }
 
 impl Default for SenderKeyState {
@@ -758,6 +852,14 @@ impl SenderKeyState {
     /// Create + install a fresh outgoing sender chain.
     pub fn install_sender(&mut self) -> Result<()> {
         self.sender = Some(SenderChain::new()?);
+        Ok(())
+    }
+
+    pub fn install_sender_for_physical_device(
+        &mut self,
+        physical_device_id: PhysicalDeviceId,
+    ) -> Result<()> {
+        self.sender = Some(SenderChain::new_for_physical_device(physical_device_id)?);
         Ok(())
     }
 
@@ -785,9 +887,18 @@ impl SenderKeyState {
         peer_id: Vec<u8>,
         chain_id: u32,
         rotation_root: &[u8; 32],
+        physical_device_id: PhysicalDeviceId,
     ) -> Result<()> {
-        let chain = ReceiverChain::install(chain_id, rotation_root)?;
-        self.receivers.insert(peer_id, chain);
+        let chain = ReceiverChain::install(chain_id, rotation_root, physical_device_id)?;
+        let chains = self.receivers.entry(peer_id).or_default();
+        if let Some(existing) = chains
+            .iter_mut()
+            .find(|c| c.physical_device_id == physical_device_id)
+        {
+            *existing = chain;
+        } else {
+            chains.push(chain);
+        }
         Ok(())
     }
 
@@ -799,20 +910,44 @@ impl SenderKeyState {
         peer_id: &[u8],
         chain_id: u32,
         rotation_root: &[u8; 32],
+        physical_device_id: PhysicalDeviceId,
     ) -> Result<()> {
         let chain = self
             .receivers
             .get_mut(peer_id)
-            .ok_or_else(|| Error::Internal("sender keys: no receiver chain for peer".into()))?;
+            .and_then(|chains| {
+                chains
+                    .iter_mut()
+                    .find(|c| c.physical_device_id == physical_device_id)
+            })
+            .ok_or_else(|| {
+                Error::Internal("sender keys: no receiver chain for peer physical_device_id".into())
+            })?;
         chain.rotate_to(chain_id, rotation_root)
     }
 
     pub fn receiver_chain(&self, peer_id: &[u8]) -> Option<&ReceiverChain> {
-        self.receivers.get(peer_id)
+        self.receivers
+            .get(peer_id)
+            .and_then(|chains| chains.first())
+    }
+
+    pub fn receiver_chain_for_physical_device(
+        &self,
+        peer_id: &[u8],
+        physical_device_id: PhysicalDeviceId,
+    ) -> Option<&ReceiverChain> {
+        self.receivers.get(peer_id).and_then(|chains| {
+            chains
+                .iter()
+                .find(|c| c.physical_device_id == physical_device_id)
+        })
     }
 
     pub fn receiver_chain_mut(&mut self, peer_id: &[u8]) -> Option<&mut ReceiverChain> {
-        self.receivers.get_mut(peer_id)
+        self.receivers
+            .get_mut(peer_id)
+            .and_then(|chains| chains.first_mut())
     }
 
     pub fn encrypt(&mut self, plaintext: &[u8], ctx: &SenderContext) -> Result<EncryptedMessage> {
@@ -833,7 +968,15 @@ impl SenderKeyState {
             .receivers
             .get_mut(peer_id)
             .ok_or_else(|| Error::Internal("sender keys: no receiver chain for peer".into()))?;
-        chain.decrypt(msg, ctx)
+        let mut last_err = None;
+        for candidate in chain {
+            match candidate.decrypt(msg, ctx) {
+                Ok(plaintext) => return Ok(plaintext),
+                Err(err) => last_err = Some(err),
+            }
+        }
+        Err(last_err
+            .unwrap_or_else(|| Error::Internal("sender keys: no receiver chain for peer".into())))
     }
 }
 
@@ -843,7 +986,7 @@ impl SenderKeyState {
 
 /// On-disk version byte for [`SenderKeyStateOnDisk`]. Bump on any
 /// shape change to force a clean reject of stale-format records.
-pub const SENDER_KEY_STATE_ON_DISK_VERSION: u8 = 0x01;
+pub const SENDER_KEY_STATE_ON_DISK_VERSION: u8 = 0x02;
 
 /// Errors raised when reconstructing live state from a persisted
 /// [`SenderKeyStateOnDisk`].
@@ -863,11 +1006,13 @@ pub enum SenderKeyPersistError {
         got: usize,
         want: usize,
     },
+    #[error("sender-key state on-disk: physical_device_id binding absent")]
+    MissingPhysicalDeviceId,
 }
 
 /// Persistable mirror of [`SenderKeyState`]. Inner byte arrays are
 /// base64 strings (matching peer_map.json / ratchet_state convention).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SenderKeyStateOnDisk {
     pub version: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -890,8 +1035,10 @@ impl Default for SenderKeyStateOnDisk {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SenderChainOnDisk {
+    #[serde(default)]
+    pub physical_device_id_b64: String,
     pub rotation_root_b64: String,
     pub chain_id: u32,
     pub ck_n_b64: String,
@@ -911,8 +1058,10 @@ pub struct SenderChainOnDisk {
     pub last_skdm_emit_at: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReceiverChainOnDisk {
+    #[serde(default)]
+    pub physical_device_id_b64: String,
     pub chain_id: u32,
     pub ck_n_b64: String,
     pub n: u32,
@@ -920,7 +1069,7 @@ pub struct ReceiverChainOnDisk {
     pub skipped: Vec<SkippedKeyOnDisk>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SkippedKeyOnDisk {
     pub chain_id: u32,
     pub n: u32,
@@ -937,8 +1086,10 @@ impl From<&SenderKeyState> for SenderKeyStateOnDisk {
             receivers: s
                 .receivers
                 .iter()
-                .map(|(peer_id, chain)| {
-                    (STANDARD.encode(peer_id), ReceiverChainOnDisk::from(chain))
+                .flat_map(|(peer_id, chains)| {
+                    chains
+                        .iter()
+                        .map(|chain| (STANDARD.encode(peer_id), ReceiverChainOnDisk::from(chain)))
                 })
                 .collect(),
         }
@@ -948,6 +1099,7 @@ impl From<&SenderKeyState> for SenderKeyStateOnDisk {
 impl From<&SenderChain> for SenderChainOnDisk {
     fn from(c: &SenderChain) -> Self {
         SenderChainOnDisk {
+            physical_device_id_b64: STANDARD.encode(c.physical_device_id.as_bytes()),
             rotation_root_b64: STANDARD.encode(c.rotation_root.as_bytes()),
             chain_id: c.chain_id,
             ck_n_b64: STANDARD.encode(c.ck_n.as_bytes()),
@@ -967,6 +1119,7 @@ impl From<&SenderChain> for SenderChainOnDisk {
 impl From<&ReceiverChain> for ReceiverChainOnDisk {
     fn from(c: &ReceiverChain) -> Self {
         ReceiverChainOnDisk {
+            physical_device_id_b64: STANDARD.encode(c.physical_device_id.as_bytes()),
             chain_id: c.chain_id,
             ck_n_b64: STANDARD.encode(c.ck_n.as_bytes()),
             n: c.n,
@@ -1014,7 +1167,7 @@ impl TryFrom<SenderKeyStateOnDisk> for SenderKeyState {
                         source,
                     })?;
             let chain: ReceiverChain = chain_disk.try_into()?;
-            receivers.insert(peer_bytes, chain);
+            receivers.entry(peer_bytes).or_default().push(chain);
         }
         Ok(SenderKeyState { sender, receivers })
     }
@@ -1024,6 +1177,7 @@ impl TryFrom<SenderChainOnDisk> for SenderChain {
     type Error = SenderKeyPersistError;
 
     fn try_from(d: SenderChainOnDisk) -> std::result::Result<Self, Self::Error> {
+        let physical_device_id = decode_physical_device_id(&d.physical_device_id_b64)?;
         let rotation_root =
             RotationRoot::from_bytes(decode_32(&d.rotation_root_b64, "rotation_root")?);
         let ck_n = SenderChainKey::from_bytes(decode_32(&d.ck_n_b64, "ck_n")?);
@@ -1040,6 +1194,7 @@ impl TryFrom<SenderChainOnDisk> for SenderChain {
             last_known_members.push(m);
         }
         Ok(SenderChain {
+            physical_device_id,
             rotation_root,
             chain_id: d.chain_id,
             ck_n,
@@ -1056,6 +1211,7 @@ impl TryFrom<ReceiverChainOnDisk> for ReceiverChain {
     type Error = SenderKeyPersistError;
 
     fn try_from(d: ReceiverChainOnDisk) -> std::result::Result<Self, Self::Error> {
+        let physical_device_id = decode_physical_device_id(&d.physical_device_id_b64)?;
         let ck_n = SenderChainKey::from_bytes(decode_32(&d.ck_n_b64, "receiver.ck_n")?);
         let mut skipped_keys: Vec<SkippedKey> = Vec::with_capacity(d.skipped.len());
         for entry in d.skipped {
@@ -1068,11 +1224,193 @@ impl TryFrom<ReceiverChainOnDisk> for ReceiverChain {
             });
         }
         Ok(ReceiverChain {
+            physical_device_id,
             chain_id: d.chain_id,
             ck_n,
             n: d.n,
             skipped: SkippedKeyCache { keys: skipped_keys },
         })
+    }
+}
+
+fn decode_physical_device_id(
+    s: &str,
+) -> std::result::Result<PhysicalDeviceId, SenderKeyPersistError> {
+    let bytes = decode_32(s, "physical_device_id")?;
+    PhysicalDeviceId::from_bytes(bytes).map_err(|_| SenderKeyPersistError::MissingPhysicalDeviceId)
+}
+
+impl fmt::Debug for SenderKeyStateOnDisk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SenderKeyStateOnDisk")
+            .field("version", &self.version)
+            .field("sender", &self.sender.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "receivers",
+                &format_args!("[REDACTED; {} entries]", self.receivers.len()),
+            )
+            .finish()
+    }
+}
+
+impl fmt::Debug for SenderChainOnDisk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SenderChainOnDisk")
+            .field("physical_device_id_b64", &"[REDACTED]")
+            .field("rotation_root_b64", &"[REDACTED]")
+            .field("chain_id", &self.chain_id)
+            .field("ck_n_b64", &"[REDACTED]")
+            .field("n", &self.n)
+            .field("prev_chain_length", &self.prev_chain_length)
+            .field("chain_started_at", &self.chain_started_at)
+            .field(
+                "last_known_members_b64",
+                &format_args!("[REDACTED; {} entries]", self.last_known_members_b64.len()),
+            )
+            .field("last_skdm_emit_at", &self.last_skdm_emit_at)
+            .finish()
+    }
+}
+
+impl fmt::Debug for ReceiverChainOnDisk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReceiverChainOnDisk")
+            .field("physical_device_id_b64", &"[REDACTED]")
+            .field("chain_id", &self.chain_id)
+            .field("ck_n_b64", &"[REDACTED]")
+            .field("n", &self.n)
+            .field(
+                "skipped",
+                &format_args!("[REDACTED; {} entries]", self.skipped.len()),
+            )
+            .finish()
+    }
+}
+
+impl fmt::Debug for SkippedKeyOnDisk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SkippedKeyOnDisk")
+            .field("chain_id", &self.chain_id)
+            .field("n", &self.n)
+            .field("hk_b64", &"[REDACTED]")
+            .field("mk_b64", &"[REDACTED]")
+            .field("added_at_unix_secs", &self.added_at_unix_secs)
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx(seed: u8) -> SenderContext {
+        SenderContext {
+            sender_ik_x25519_pub: x25519::PublicKey::from_bytes([seed; 32]),
+            sender_ik_mlkem_pub: vec![seed; 32],
+            group_id: b"sender-keys-device-binding-test".to_vec(),
+            session_version: SESSION_VERSION_V1,
+        }
+    }
+
+    fn device(seed: u8) -> PhysicalDeviceId {
+        PhysicalDeviceId::from_bytes([seed; PHYSICAL_DEVICE_ID_BYTES]).unwrap()
+    }
+
+    #[test]
+    fn receiver_refuses_wrong_physical_device_binding() {
+        let mut sender = SenderChain::new_for_physical_device(device(0x11)).unwrap();
+        let mut receiver = ReceiverChain::install(
+            sender.current_chain_id(),
+            &sender.rotation_root_bytes(),
+            device(0x22),
+        )
+        .unwrap();
+        let c = ctx(0xaa);
+        let msg = sender.encrypt(b"bound", &c).unwrap();
+        let err = receiver.decrypt(&msg, &c).unwrap_err();
+        assert!(format!("{err}").contains("physical_device_id binding mismatch"));
+        assert_eq!(receiver.current_n(), 0, "refusal must not advance state");
+    }
+
+    #[test]
+    fn persisted_sender_chain_without_physical_device_binding_is_refused() {
+        let sender = SenderChain::new().unwrap();
+        let mut disk = SenderChainOnDisk::from(&sender);
+        disk.physical_device_id_b64.clear();
+        let err = match SenderChain::try_from(disk) {
+            Ok(_) => panic!("missing physical_device_id must be refused"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err,
+            SenderKeyPersistError::BadLength {
+                field: "physical_device_id",
+                got: 0,
+                want: PHYSICAL_DEVICE_ID_BYTES
+            }
+        ));
+    }
+
+    #[test]
+    fn sender_key_state_routes_same_peer_by_physical_device_binding() {
+        let mut device_a = SenderChain::new_for_physical_device(device(0xa1)).unwrap();
+        let mut device_b = SenderChain::new_for_physical_device(device(0xb2)).unwrap();
+        let c = ctx(0xcc);
+        let mut state = SenderKeyState::new();
+        state
+            .install_receiver(
+                b"same-account".to_vec(),
+                device_a.current_chain_id(),
+                &device_a.rotation_root_bytes(),
+                device_a.physical_device_id(),
+            )
+            .unwrap();
+        state
+            .install_receiver(
+                b"same-account".to_vec(),
+                device_b.current_chain_id(),
+                &device_b.rotation_root_bytes(),
+                device_b.physical_device_id(),
+            )
+            .unwrap();
+
+        let msg_b = device_b.encrypt(b"from device b", &c).unwrap();
+        assert_eq!(
+            state.decrypt_from(b"same-account", &msg_b, &c).unwrap(),
+            b"from device b"
+        );
+        let msg_a = device_a.encrypt(b"from device a", &c).unwrap();
+        assert_eq!(
+            state.decrypt_from(b"same-account", &msg_a, &c).unwrap(),
+            b"from device a"
+        );
+    }
+
+    #[test]
+    fn sender_key_persistence_debug_redacts_keys_and_identifiers() {
+        let mut state = SenderKeyState::new();
+        state
+            .install_sender_for_physical_device(device(0x44))
+            .unwrap();
+        state
+            .sender_chain_mut()
+            .unwrap()
+            .set_last_known_members(vec![b"member-canary".to_vec()]);
+        let chain_id = state.sender_chain().unwrap().current_chain_id();
+        let root = state.sender_chain().unwrap().rotation_root_bytes();
+        let physical_device_id = state.sender_chain().unwrap().physical_device_id();
+        state
+            .install_receiver(b"peer-canary".to_vec(), chain_id, &root, physical_device_id)
+            .unwrap();
+
+        let disk = SenderKeyStateOnDisk::from(&state);
+        let debug = format!("{disk:?}");
+        for canary in ["member-canary", "peer-canary"] {
+            assert!(!debug.contains(canary), "debug leaked {canary}");
+        }
+        assert!(!debug.contains(&disk.sender.as_ref().unwrap().rotation_root_b64));
+        assert!(!debug.contains(&disk.sender.as_ref().unwrap().ck_n_b64));
+        assert!(!debug.contains(&disk.sender.as_ref().unwrap().physical_device_id_b64));
     }
 }
 
