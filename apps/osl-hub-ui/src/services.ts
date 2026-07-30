@@ -17,6 +17,71 @@ export type NativeDiscordTakeover = "borrowExisting" | "quitAndRelaunch";
 export type BrowserImportId = "chrome" | "edge" | "firefox" | "brave" | "opera" | "duckduckgo";
 export type BrowserAccountMode = "existingBrowser" | "isolatedOsl";
 
+export interface BrowserProfileDescriptor {
+  browserId: BrowserImportId;
+  profile: string;
+  displayName: string;
+}
+
+export interface BrowserProfileConsentGrant {
+  grantId: string;
+  browserId: BrowserImportId;
+  profile: string;
+  expiresAtUnixMs: number;
+}
+
+export interface BrowserFootprintObservation {
+  service: string | null;
+  site: string;
+  observedHandle: string | null;
+  sourceBrowser: BrowserImportId;
+  sourceProfile: string;
+  sourceAccount: string;
+  confidence: "savedlogin" | "autofill" | "history";
+}
+
+export interface NativeBrowserImportReceipt {
+  schemaVersion: 1;
+  authority: "native-owner-bound-encrypted-store";
+  ownerBindingSha256: string;
+  browserId: BrowserImportId;
+  profile: string;
+  account: string;
+  scope: "browser-profile-import";
+  runId: string;
+  buildSha256: string;
+  generation: number;
+  persistedCount: number;
+  immediateRereadCount: number;
+  observationsSha256: string;
+  sealedSha256: string;
+  rollbackStatus: "unproven";
+}
+
+export interface BrowserFootprintHydration {
+  schemaVersion: 1;
+  ownerBindingSha256: string;
+  generation: number;
+  imports: NativeBrowserImportReceipt[];
+  observations: BrowserFootprintObservation[];
+  rollbackStatus: "unproven";
+}
+
+export interface BrowserFootprintRevokeReceipt {
+  schemaVersion: 1;
+  authority: "native-owner-bound-encrypted-store";
+  ownerBindingSha256: string;
+  browserId: BrowserImportId;
+  profile: string;
+  account: string;
+  scope: "browser-profile-import";
+  generation: number;
+  removedCount: number;
+  immediateRereadCount: 0;
+  sealedSha256: string;
+  rollbackStatus: "unproven";
+}
+
 export interface BrowserImportStatus {
   id: BrowserImportId;
   displayName: string;
@@ -427,6 +492,251 @@ function isAndroidWorkspace(value: unknown): boolean {
 function parseMullvadAction(raw: unknown): MullvadAction {
   if (!isExactRecord(raw, ["started"]) || raw.started !== true) throw new Error("invalid Mullvad action");
   return raw as unknown as MullvadAction;
+}
+
+const sha256Pattern = /^[0-9a-f]{64}$/u;
+const boundedReceiptText = (value: unknown, max: number): value is string =>
+  typeof value === "string"
+  && value.length >= 1
+  && value.length <= max
+  && value.trim() === value
+  && !/[\u0000-\u001f\u007f]/u.test(value);
+
+function parseNativeBrowserImportReceipt(raw: unknown): NativeBrowserImportReceipt {
+  if (!isExactRecord(raw, [
+    "schemaVersion", "authority", "ownerBindingSha256", "browserId", "profile",
+    "account", "scope", "runId", "buildSha256", "generation", "persistedCount",
+    "immediateRereadCount", "observationsSha256", "sealedSha256", "rollbackStatus",
+  ])
+    || raw.schemaVersion !== 1
+    || raw.authority !== "native-owner-bound-encrypted-store"
+    || typeof raw.ownerBindingSha256 !== "string"
+    || !sha256Pattern.test(raw.ownerBindingSha256)
+    || !browserImportIds.includes(raw.browserId as BrowserImportId)
+    || !boundedReceiptText(raw.profile, 120)
+    || !boundedReceiptText(raw.account, 254)
+    || raw.scope !== "browser-profile-import"
+    || !boundedReceiptText(raw.runId, 96)
+    || typeof raw.buildSha256 !== "string"
+    || !sha256Pattern.test(raw.buildSha256)
+    || !Number.isSafeInteger(raw.generation)
+    || Number(raw.generation) < 1
+    || !Number.isSafeInteger(raw.persistedCount)
+    || Number(raw.persistedCount) < 1
+    || Number(raw.persistedCount) > 2_000
+    || raw.immediateRereadCount !== raw.persistedCount
+    || typeof raw.observationsSha256 !== "string"
+    || !sha256Pattern.test(raw.observationsSha256)
+    || typeof raw.sealedSha256 !== "string"
+    || !sha256Pattern.test(raw.sealedSha256)
+    || raw.rollbackStatus !== "unproven") {
+    throw new Error("invalid native browser import receipt");
+  }
+  return raw as unknown as NativeBrowserImportReceipt;
+}
+
+function parseBrowserFootprintObservation(raw: unknown): BrowserFootprintObservation {
+  if (!isExactRecord(raw, [
+    "service", "site", "observedHandle", "sourceBrowser", "sourceProfile", "sourceAccount", "confidence",
+  ])
+    || (raw.service !== null && !boundedReceiptText(raw.service, 40))
+    || !boundedReceiptText(raw.site, 253)
+    || (raw.observedHandle !== null && !boundedReceiptText(raw.observedHandle, 254))
+    || !browserImportIds.includes(raw.sourceBrowser as BrowserImportId)
+    || !boundedReceiptText(raw.sourceProfile, 120)
+    || !boundedReceiptText(raw.sourceAccount, 254)
+    || !["savedlogin", "autofill", "history"].includes(String(raw.confidence))) {
+    throw new Error("invalid browser footprint observation");
+  }
+  return raw as unknown as BrowserFootprintObservation;
+}
+
+export function parseBrowserFootprintHydration(raw: unknown): BrowserFootprintHydration {
+  if (!isExactRecord(raw, ["schemaVersion", "ownerBindingSha256", "generation", "imports", "observations", "rollbackStatus"])
+    || raw.schemaVersion !== 1
+    || typeof raw.ownerBindingSha256 !== "string"
+    || !sha256Pattern.test(raw.ownerBindingSha256)
+    || !Number.isSafeInteger(raw.generation)
+    || Number(raw.generation) < 0
+    || !Array.isArray(raw.imports)
+    || raw.imports.length > 128
+    || !Array.isArray(raw.observations)
+    || raw.observations.length > 2_000 * Math.max(1, raw.imports.length)
+    || raw.rollbackStatus !== "unproven") {
+    throw new Error("invalid browser footprint hydration");
+  }
+  const imports = raw.imports.map(parseNativeBrowserImportReceipt);
+  const observations = raw.observations.map(parseBrowserFootprintObservation);
+  const observedCount = imports.reduce((sum, receipt) => sum + receipt.persistedCount, 0);
+  const importKeys = new Set<string>();
+  const observationCounts = new Map<string, number>();
+  observations.forEach((observation) => {
+    const key = `${observation.sourceBrowser}\0${observation.sourceProfile}\0${observation.sourceAccount}`;
+    observationCounts.set(key, (observationCounts.get(key) ?? 0) + 1);
+  });
+  if (observedCount !== observations.length
+    || imports.some((receipt) =>
+      receipt.ownerBindingSha256 !== raw.ownerBindingSha256
+      || receipt.generation !== raw.generation
+      || (() => {
+        const key = `${receipt.browserId}\0${receipt.profile}\0${receipt.account}`;
+        if (importKeys.has(key) || observationCounts.get(key) !== receipt.persistedCount) return true;
+        importKeys.add(key);
+        return false;
+      })())
+    || observationCounts.size !== imports.length) {
+    throw new Error("invalid browser footprint hydration");
+  }
+  return {
+    schemaVersion: 1,
+    ownerBindingSha256: raw.ownerBindingSha256,
+    generation: Number(raw.generation),
+    imports,
+    observations,
+    rollbackStatus: "unproven",
+  };
+}
+
+export async function loadDetectedBrowserFootprint(
+  receipts: readonly NativeBrowserImportReceipt[],
+): Promise<BrowserFootprintHydration> {
+  if (!isTauriRuntime() || receipts.length < 1 || receipts.length > 128) {
+    throw new Error("native browser footprint consent unavailable");
+  }
+  const seen = new Set<string>();
+  const profileConsents = receipts.map((receipt) => {
+    const parsed = parseNativeBrowserImportReceipt(receipt);
+    const key = `${parsed.browserId}\0${parsed.profile}\0${parsed.account}\0${parsed.runId}`;
+    if (seen.has(key)) throw new Error("duplicate browser footprint consent");
+    seen.add(key);
+    return {
+      browserId: parsed.browserId,
+      profile: parsed.profile,
+      account: parsed.account,
+      runId: parsed.runId,
+      consent: true,
+    };
+  });
+  const hydration = parseBrowserFootprintHydration(await invoke<unknown>(
+    "load_detected_browser_footprint",
+    { profileConsents },
+  ));
+  const returned = new Set(hydration.imports.map((receipt) =>
+    `${receipt.browserId}\0${receipt.profile}\0${receipt.account}\0${receipt.runId}`));
+  if (returned.size !== seen.size || [...seen].some((key) => !returned.has(key))) {
+    throw new Error("native browser footprint hydration returned the wrong consent scope");
+  }
+  return hydration;
+}
+
+export async function listBrowserProfilesForConsent(): Promise<BrowserProfileDescriptor[]> {
+  if (!isTauriRuntime()) throw new Error("native browser profile inventory unavailable");
+  const raw = await invoke<unknown>("list_browser_profiles_for_consent");
+  if (!Array.isArray(raw) || raw.length > 640) {
+    throw new Error("invalid browser profile inventory");
+  }
+  const seen = new Set<string>();
+  return raw.map((candidate) => {
+    if (!isExactRecord(candidate, ["browserId", "profile", "displayName"])
+      || !browserImportIds.includes(candidate.browserId as BrowserImportId)
+      || !boundedReceiptText(candidate.profile, 120)
+      || !boundedReceiptText(candidate.displayName, 120)) {
+      throw new Error("invalid browser profile inventory");
+    }
+    const key = `${candidate.browserId}\0${candidate.profile}`;
+    if (seen.has(key)) throw new Error("duplicate browser profile inventory");
+    seen.add(key);
+    return candidate as unknown as BrowserProfileDescriptor;
+  });
+}
+
+export async function grantBrowserProfileConsent(
+  browserId: BrowserImportId,
+  profile: string,
+): Promise<BrowserProfileConsentGrant> {
+  if (!isTauriRuntime()
+    || !browserImportIds.includes(browserId)
+    || !boundedReceiptText(profile, 120)) {
+    throw new Error("native browser profile consent unavailable");
+  }
+  const raw = await invoke<unknown>("grant_browser_profile_consent", { browserId, profile });
+  if (!isExactRecord(raw, ["grantId", "browserId", "profile", "expiresAtUnixMs"])
+    || typeof raw.grantId !== "string"
+    || !sha256Pattern.test(raw.grantId)
+    || raw.browserId !== browserId
+    || raw.profile !== profile
+    || !Number.isSafeInteger(raw.expiresAtUnixMs)
+    || Number(raw.expiresAtUnixMs) <= Date.now()
+    || Number(raw.expiresAtUnixMs) > Date.now() + 65_000) {
+    throw new Error("invalid native browser profile consent grant");
+  }
+  return raw as unknown as BrowserProfileConsentGrant;
+}
+
+export async function scanConsentedBrowserProfile(
+  browserId: BrowserImportId,
+  profile: string,
+  grantId: string,
+): Promise<NativeBrowserImportReceipt> {
+  if (!isTauriRuntime()
+    || !browserImportIds.includes(browserId)
+    || !boundedReceiptText(profile, 120)
+    || !sha256Pattern.test(grantId)) {
+    throw new Error("native browser profile scan unavailable");
+  }
+  const receipt = parseNativeBrowserImportReceipt(await invoke<unknown>(
+    "scan_consented_browser_profile",
+    { browserId, profile, grantId },
+  ));
+  if (receipt.browserId !== browserId
+    || receipt.profile !== profile
+    || receipt.account !== "history-footprint") {
+    throw new Error("native browser profile scan returned the wrong scope");
+  }
+  return receipt;
+}
+
+export async function revokeDetectedBrowserFootprint(
+  browserId: BrowserImportId,
+  profile: string,
+  account: string,
+): Promise<BrowserFootprintRevokeReceipt> {
+  if (!isTauriRuntime()
+    || !browserImportIds.includes(browserId)
+    || !boundedReceiptText(profile, 120)
+    || !boundedReceiptText(account, 254)) {
+    throw new Error("native browser footprint revocation unavailable");
+  }
+  const raw = await invoke<unknown>("revoke_detected_browser_footprint", {
+    browserId,
+    profile,
+    account,
+    scope: "browser-profile-import",
+  });
+  if (!isExactRecord(raw, [
+    "schemaVersion", "authority", "ownerBindingSha256", "browserId", "profile",
+    "account", "scope", "generation", "removedCount", "immediateRereadCount",
+    "sealedSha256", "rollbackStatus",
+  ])
+    || raw.schemaVersion !== 1
+    || raw.authority !== "native-owner-bound-encrypted-store"
+    || typeof raw.ownerBindingSha256 !== "string"
+    || !sha256Pattern.test(raw.ownerBindingSha256)
+    || raw.browserId !== browserId
+    || raw.profile !== profile
+    || raw.account !== account
+    || raw.scope !== "browser-profile-import"
+    || !Number.isSafeInteger(raw.generation)
+    || Number(raw.generation) < 1
+    || !Number.isSafeInteger(raw.removedCount)
+    || Number(raw.removedCount) < 1
+    || raw.immediateRereadCount !== 0
+    || typeof raw.sealedSha256 !== "string"
+    || !sha256Pattern.test(raw.sealedSha256)
+    || raw.rollbackStatus !== "unproven") {
+    throw new Error("invalid native browser footprint revocation");
+  }
+  return raw as unknown as BrowserFootprintRevokeReceipt;
 }
 
 export async function loadBrowserImports(): Promise<BrowserImportStatus[]> {
