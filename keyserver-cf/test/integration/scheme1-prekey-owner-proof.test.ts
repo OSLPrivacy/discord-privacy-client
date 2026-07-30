@@ -406,7 +406,7 @@ describe("scheme-1 prekey owner proofs through the shipping Worker and D1", () =
     });
   });
 
-  it("test/integration/scheme1-prekey-owner-proof.test.ts", async () => {
+  it("spends only true owner challenges and refuses mutated owner bindings", async () => {
     const owner = await createScheme1Identity();
     const other = await createScheme1Identity();
     const trueOwnerAccount = await makeOwnershipAccount({
@@ -461,6 +461,42 @@ describe("scheme-1 prekey owner proofs through the shipping Worker and D1", () =
       error: "proof_for_different_owner",
     });
     expect(mutatedBinding.proof_challenge.spent).toBe(false);
+  });
+
+  it("refuses same-platform proof replay for a different owner", async () => {
+    const owner = await createScheme1Identity();
+    const other = await createScheme1Identity();
+    const account = await makeOwnershipAccount({
+      identity: owner.identity,
+      signingKey: owner.currentSigningKey,
+      platformId: "platform-account-id-short-title",
+      fill: 0x74,
+    });
+
+    await expect(
+      verifyScheme1AccountOwnershipProof({
+        identity: owner.identity,
+        account,
+        now_unix_seconds: ACCOUNT_PROOF_NOW,
+      }),
+    ).resolves.toEqual({ ok: true });
+
+    const differentOwnerAccount = await makeOwnershipAccount({
+      identity: owner.identity,
+      signingKey: owner.currentSigningKey,
+      platformId: "platform-account-id-short-title",
+      fill: 0x75,
+    });
+    await expect(
+      verifyScheme1AccountOwnershipProof({
+        identity: other.identity,
+        account: differentOwnerAccount,
+        now_unix_seconds: ACCOUNT_PROOF_NOW,
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: "proof_for_different_owner",
+    });
   });
 
   it("keeps legacy registration tagless and refuses stripped or ambiguous scheme-1 registration", async () => {
