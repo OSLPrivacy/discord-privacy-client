@@ -4,6 +4,8 @@
 #[cfg(feature = "core")]
 pub mod attachment_formats;
 pub mod browser_companion;
+#[cfg(feature = "core")]
+pub mod browser_profile_scan;
 pub mod burn_contract;
 pub mod cloud_autoscrub_consent;
 pub mod control_contract;
