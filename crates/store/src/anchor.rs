@@ -785,8 +785,8 @@ mod tests {
         )
         .unwrap();
         let conn = Connection::open(tmp.path().join("messages.sqlite")).unwrap();
-        let error =
-            validate_restored_backup_against_anchor(&conn, SECRET, provider.clone()).unwrap_err();
+        let error = super::validate_restored_backup_against_anchor(&conn, SECRET, provider.clone())
+            .unwrap_err();
         assert!(
             matches!(error, StoreError::Anchor(message) if message.contains("behind external anchor")),
             "wrong restored-backup refusal: {error}"
@@ -989,6 +989,47 @@ mod tests {
             .query_map([], |row| row.get::<_, String>(1))
             .unwrap()
             .any(|name| name.unwrap() == "burned_at"));
+
+        let provider = Arc::new(Provider::new());
+        let tmp = anchored_v7(provider.clone());
+        provider.fault(Fault::Before(1));
+        assert!(MessageStore::open_anchored(tmp.path(), SECRET, provider.clone()).is_err());
+        provider.fault(Fault::None);
+        let conn = Connection::open(tmp.path().join("messages.sqlite")).unwrap();
+        let mut journal = conn
+            .query_row(
+                "SELECT value FROM _meta WHERE key = ?1",
+                params![MIGRATION_JOURNAL_KEY],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .unwrap();
+        // Fixed encoding offsets: store id begins at 5 and plan at 45.
+        journal[45] ^= 1;
+        conn.execute(
+            "UPDATE _meta SET value = ?1 WHERE key = ?2",
+            params![journal, MIGRATION_JOURNAL_KEY],
+        )
+        .unwrap();
+        let (store_id, digest_key) = cipher::derive_anchor_material(SECRET).unwrap();
+        let record = AnchorRecord {
+            generation: 2,
+            digest: digest(&conn, &digest_key).unwrap(),
+        };
+        let tx = conn.unchecked_transaction().unwrap();
+        write_record(&tx, &record).unwrap();
+        tx.commit().unwrap();
+        provider.records.lock().unwrap().insert(store_id, record);
+        drop(conn);
+
+        let error = match MessageStore::open_anchored(tmp.path(), SECRET, provider.clone()) {
+            Ok(_) => panic!("wrong migration plan was accepted"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, StoreError::Anchor(message) if message.contains("journal store, version, or plan"))
+        );
+        let conn = Connection::open(tmp.path().join("messages.sqlite")).unwrap();
+        assert_eq!(schema::inspect_schema_version(&conn).unwrap(), Some(7));
     }
 
     #[test]
