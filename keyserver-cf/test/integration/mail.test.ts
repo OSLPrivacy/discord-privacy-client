@@ -95,6 +95,61 @@ describe("OSL Mail Worker", () => {
     expect(response.status).toBe(404);
   });
 
+  it("qualifies the OSL-to-OSL lifecycle from provisioning through burn", async () => {
+    const alice = await createIdentity("alice-life-id", "alice_life");
+    const bob = await createIdentity("bob-life-id", "bob_life");
+    expect((await signedPost("/v1/mail/address", "PROVISION", alice, { username: "alice_life", rotate: false })).status).toBe(201);
+    expect((await signedPost("/v1/mail/address", "PROVISION", bob, { username: "bob_life", rotate: false })).status).toBe(201);
+    expect((await signedPost("/v1/mail/consent", "CONSENT", bob, { sender_user_id: alice.userId, allowed: true })).status).toBe(200);
+
+    const sendRequestId = randomRequestId();
+    const payload = {
+      request_id: sendRequestId,
+      recipient_address: "bob_life@oslprivacy.com",
+      opaque_thread_token: "threadtokenlifecycle",
+      ciphertext_b64: base64Encode(new TextEncoder().encode("sealed lifecycle payload")),
+      envelope: { version: 1, nonce_b64: "bm9uY2U=" },
+      recipient_key_fingerprint: "fingerprint",
+    };
+    let response = await signedPost("/v1/mail/send/osl", "SEND-OSL", alice, payload);
+    expect(response.status).toBe(200);
+    const sent = await response.json() as { message_id: string; accepted: boolean; replay: boolean };
+    expect(sent.accepted).toBe(true);
+    expect(sent.replay).toBe(false);
+
+    response = await signedPost("/v1/mail/send/osl", "SEND-OSL", alice, payload);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ message_id: sent.message_id, accepted: true, replay: true });
+
+    response = await signedPost("/v1/mail/list", "LIST", bob, { limit: 10 });
+    const listText = await response.text();
+    expect(listText).not.toContain("sealed lifecycle payload");
+    const listed = JSON.parse(listText) as { messages: Array<{ message_id: string; kind: string }> };
+    expect(listed.messages).toHaveLength(1);
+    expect(listed.messages[0]).toMatchObject({ message_id: sent.message_id, kind: "osl_e2ee" });
+
+    response = await signedPost("/v1/mail/fetch", "FETCH", bob, { message_id: sent.message_id });
+    expect(await response.json()).toMatchObject({
+      message_id: sent.message_id,
+      ciphertext_b64: payload.ciphertext_b64,
+      sender_user_id: alice.userId,
+      opaque_thread_token: payload.opaque_thread_token,
+    });
+
+    response = await signedPost("/v1/mail/ack", "ACK", bob, { message_id: sent.message_id });
+    expect(await response.json()).toMatchObject({ deleted: true, replay: false });
+    response = await signedPost("/v1/mail/list", "LIST", bob, { limit: 10 });
+    expect((await response.json() as { messages: unknown[] }).messages).toHaveLength(0);
+
+    response = await signedPost("/v1/mail/burn", "BURN", bob, {});
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ deleted: 0, address_tombstoned: true, replay: false });
+    response = await signedPost("/v1/mail/list", "LIST", bob, { limit: 10 });
+    expect(response.status).toBe(404);
+    const row = await env.DB.prepare("SELECT state FROM mail_address_epochs WHERE address='bob_life@oslprivacy.com'").first<{ state: string }>();
+    expect(row?.state).toBe("tombstoned");
+  });
+
   it("refuses OSL-to-OSL delivery after recipient revokes sender consent", async () => {
     const alice = await createIdentity("alice-id", "alice");
     const bob = await createIdentity("bob-id", "bob");
