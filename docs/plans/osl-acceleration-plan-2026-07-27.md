@@ -37,6 +37,19 @@ attended deletion → F10 exact-build capture`
 Defer broader provider parsing, cloud AutoScrub, and new harness architecture unless they block this
 chain. Use the seeded local IMAP fixture; do not imply live-provider deletion.
 
+Behavioral receipt test to add before promoting F4:
+`seeded_windows_imap_receipt_package_positive_and_negative`.
+
+Pass condition: the receipt package names the exact immutable Windows executable, run id, fixture
+mailbox, reviewed manifest, positive seeded message locator, and at least one negative-control
+locator. It must show the attended IMAP authority deleting the seeded positive, then independently
+re-reading the mailbox and finding the positive absent while every negative-control message remains
+present.
+
+Fail condition: the package is rejected if deletion is inferred from a UI transition, lacks the
+post-delete IMAP re-read, has no retained negative control, is not tied to the exact executable/run,
+or describes live-provider/account-wide deletion beyond the seeded fixture.
+
 ### Messaging
 
 `A2 recovery-derived full-bundle identity → scheme-1 prekey client/server → A3 attribution and A4

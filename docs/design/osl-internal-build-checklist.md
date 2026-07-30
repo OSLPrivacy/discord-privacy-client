@@ -754,6 +754,16 @@ honest tri-state outcome is a refusal, not a degraded pass.
   credential revocation. `needs: F6,security review` `weight: 3` `earned: 0`
 - 🧪 **F9 · Website username-only hook** — Worker scaffold and research exist; deployment/demo and
   calibrated discriminators remain. `needs: website contract` `weight: 3` `earned: 1`
+  Required scaffold test: `test/integration/username-only-worker-scaffold.test.ts`.
+  Behavioral name: `test/integration/username-only-worker-scaffold.test.ts`.
+  Pass condition: the website repo is located unambiguously, the username-only Worker entrypoint is
+  present, the public request contract accepts only a username/handle-shaped input, and the response
+  matches the frozen F9 schema with honest coverage/status fields and no invented account-wide
+  results. Negative controls must refuse missing username, credential-like input, unsupported
+  provider/account bindings, and any response fixture that reports deletion, private mailbox access,
+  browser-profile access, or calibrated risk percentages without supporting evidence.
+  Fail condition: a marketing-only page, mock-only JSON, unlocated repo, unbound Worker route,
+  permissive credential input, or schema drift counts as unimplemented, not partial proof.
 - 🟨 **F10 · Scrub tests/receipts/status projection** — many tests exist; full real-account,
   challenge/stop/restart matrix and simple reporting remain. `needs: F1-F9` `weight: 3`
   `earned: 1`
