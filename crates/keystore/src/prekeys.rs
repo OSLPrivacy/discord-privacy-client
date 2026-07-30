@@ -10,10 +10,6 @@
 //! after that handshake leg succeeds. IPC also owns server-count-driven
 //! replenish scheduling; broader receive-side product lifecycle work remains
 //! future integration work.
-//! Current Hub/IPC production code does not yet establish the full prekey
-//! fetch/replenish lifecycle. This module implements state, persistence,
-//! canonical signing, rotation helpers, and the responder-side PQXDH path that
-//! removes a local OPK only after that handshake leg succeeds.
 //!
 //! Holds:
 //! - The current SPK keypair (X25519) + its Ed25519 signature + the
@@ -39,6 +35,7 @@
 //! [`PrekeyState::should_rotate_spk`] with the current time, and on
 //! `true` calls [`PrekeyState::rotate_spk`]. The previous SPK is
 //! kept on `previous_spk` for one rotation period.
+//! Current production code has no such caller.
 //!
 //! ## Canonical replenish encoding
 //!
@@ -189,7 +186,8 @@ impl PrekeyState {
 
     /// Complete the responder side of a PQXDH handshake and consume the named
     /// local OPK after, and only after, the caller authenticates the derived
-    /// session key against the enclosing wire leg.
+    /// session key against the enclosing wire leg. This is reserved
+    /// for a future integrated receive-side PQXDH handshake.
     ///
     /// Absence is refusal: if the handshake says an OPK was used but this
     /// state no longer holds that id, the method returns [`Error::PrekeyMissing`]

@@ -11,6 +11,10 @@ const mainSource = readFileSync(
   fileURLToPath(new URL("./main.ts", import.meta.url)),
   "utf8",
 );
+const behaviorSource = readFileSync(
+  fileURLToPath(new URL("./ui-behavior.ts", import.meta.url)),
+  "utf8",
+);
 
 function between(source: string, start: string, end: string): string {
   const from = source.indexOf(start);
@@ -101,8 +105,12 @@ describe("native Discord composite tether", () => {
     expect(mainSource).toContain(
       "desktopWindow.onResized(scheduleNativeHostRealignment)",
     );
-    expect(mainSource).toMatch(
-      /desktopWindow\.onFocusChanged\(\(\{ payload \}\) => \{\s*if \(payload\) scheduleNativeHostRealignment\(\);/,
+    expect(mainSource).toContain("(handler) => desktopWindow.onFocusChanged(handler)");
+    expect(behaviorSource).toContain(
+      "return register(({ payload }) => dispatchMainWindowFocusChanged(payload, actions));",
+    );
+    expect(behaviorSource).toMatch(
+      /if \(focused\) \{\s*actions\.scheduleNativeHostRealignment\(\);/,
     );
 
     const validate = between(
@@ -167,7 +175,7 @@ describe("native Discord composite tether", () => {
     const paint = between(
       nativeSource,
       "unsafe fn paint_borrowed_control_shield",
-      "#[derive(Debug)]",
+      "pub(super) enum TrustedWindowExecutable",
     );
     expect(paint).toContain("GetWindowDC(target)");
     expect(paint).toContain("GetPixel(target_dc");

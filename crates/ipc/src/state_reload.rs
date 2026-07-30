@@ -41,6 +41,8 @@ pub struct ReloadReport {
     pub sender_keys_loaded: bool,
     pub sender_keys_count: usize,
     pub app_prefs_loaded: bool,
+    pub scope_membership_loaded: bool,
+    pub scope_membership_observations: usize,
     pub errors: Vec<String>,
     /// 9-PEER-MAP-ENC: tracks the retroactive re-encryption sweep.
     /// `true` if a plaintext-on-disk file was rewritten as OSL-ENC1
@@ -48,6 +50,7 @@ pub struct ReloadReport {
     /// every file has the magic, this stays `false` on subsequent
     /// reloads.
     pub peer_map_reencrypted: bool,
+    pub scope_membership_reencrypted: bool,
     pub self_entry_repaired_post_gate: bool,
 }
 
@@ -230,6 +233,23 @@ pub fn reload_encrypted_state_after_unlock(
             .expect("sender_key_state mutex poisoned") = sk;
     }
 
+    // membership.json — dynamic recipient observations. Same encrypted-at-rest
+    // family as peer_map and sender keys; reload it after unlock so the
+    // pre-gate default does not survive for the whole session.
+    let membership_path = config_dir.join("membership.json");
+    match crate::membership::load_scope_membership_from_path(&membership_path) {
+        Ok(membership) => {
+            report.scope_membership_observations = membership.observed_member_count();
+            report.scope_membership_loaded = true;
+            *state
+                .scope_membership
+                .lock()
+                .expect("scope_membership mutex poisoned") = membership;
+        }
+        Err(crate::membership::ScopeMembershipError::NotFound(_)) => {}
+        Err(e) => report.errors.push(format!("membership: {e}")),
+    }
+
     // app_preferences.json — holds tour resume state, stego mode,
     // and the VPN-warning dismissal. DEVICE-level: lives at the base
     // dir (multi-account), NOT the per-account `config_dir`, matching
@@ -268,6 +288,28 @@ pub fn reload_encrypted_state_after_unlock(
                         tracing::info!("OSL: retroactively re-encrypted plaintext peer_map.json");
                     }
                     Err(e) => report.errors.push(format!("peer_map re-encrypt: {e}")),
+                }
+            }
+        }
+    }
+
+    // Same retroactive sweep for membership.json. A plaintext membership file is
+    // tolerated on read for migration, but once unlock supplies a file key, the
+    // next write must restore the OSL-ENC1 envelope instead of leaving accrued
+    // observations readable on disk.
+    if membership_path.exists() {
+        if let Ok(blob) = std::fs::read(&membership_path) {
+            if !crate::main_password::has_enc_magic(&blob) {
+                let membership = state
+                    .scope_membership
+                    .lock()
+                    .expect("scope_membership mutex poisoned");
+                match crate::membership::write_scope_membership(&membership_path, &membership) {
+                    Ok(()) => {
+                        report.scope_membership_reencrypted = true;
+                        tracing::info!("OSL: retroactively re-encrypted plaintext membership.json");
+                    }
+                    Err(e) => report.errors.push(format!("membership re-encrypt: {e}")),
                 }
             }
         }

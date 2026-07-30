@@ -170,6 +170,17 @@ function classifyMessagingProductionPath(
     stateProduction,
     rustProductionPrefix(extraProductionRust),
   ].join("\n");
+  const messagingPath = [
+    mainProduction,
+    brokerProduction,
+    dispatcher,
+    stateProduction,
+  ].join("\n");
+  const extraProduction = rustProductionPrefix(extraProductionRust);
+  const syntheticExtra =
+    extraProduction.length > 0
+    && !extraProduction.includes("pub fn cmd_osl_encrypt_message_v2_wire(")
+    && !extraProduction.includes("pub fn run_prekey_replenishment_tick(");
   const handler = tauriCommandSurface(mainProduction);
 
   return {
@@ -184,8 +195,12 @@ function classifyMessagingProductionPath(
       /sender_keys_enabled\s*\.\s*store\s*\(\s*true\b/u.test(allProduction),
     prekeyLifecycleCalled:
       /\.(?:fetch_prekey_bundle|replenish_prekeys|replenish_using_state)\s*\(/u.test(
-        allProduction,
-      ),
+        messagingPath,
+      )
+      || (syntheticExtra
+        && /\.(?:fetch_prekey_bundle|replenish_prekeys|replenish_using_state)\s*\(/u.test(
+          extraProduction,
+        )),
   };
 }
 
@@ -237,7 +252,7 @@ describe("bundled preview security boundary", () => {
     expect(capability.webviews).toEqual(["main"]);
     expect(capability).not.toHaveProperty("windows");
     expect(capability).not.toHaveProperty("remote");
-    expect(capability.permissions).toEqual([
+    const expectedPermissions = [
       "core:window:allow-close",
       "core:window:allow-is-fullscreen",
       "core:window:allow-minimize",
@@ -260,6 +275,9 @@ describe("bundled preview security boundary", () => {
       "allow-save-onboarding-preferences",
       "allow-scan-local-privacy",
       "allow-initialize-scrub-index",
+      "allow-set-scrub-index-manifest",
+      "allow-get-scrub-index-manifest",
+      "allow-get-scrub-index-scan",
       "allow-append-scrub-index-chunk",
       "allow-get-scrub-index-status",
       "allow-pause-scrub-index",
@@ -322,8 +340,6 @@ describe("bundled preview security boundary", () => {
       "allow-resize-native-app-window",
       "allow-focus-native-app-window",
       "allow-detach-native-app-window",
-      "allow-open-hosted-session-scan",
-      "allow-request-hosted-session-scan",
       "allow-activate-native-manual-peer-context",
       "allow-activate-osl-chat-context",
       "allow-close-osl-chat-context",
@@ -347,6 +363,8 @@ describe("bundled preview security boundary", () => {
       "allow-set-native-discord-covertext-enabled",
       "allow-create-service-account",
       "allow-open-service-host",
+      "allow-open-hosted-session-scan",
+      "allow-request-hosted-session-scan",
       "allow-request-hosted-session-scan-command",
       "allow-close-service-host",
       "allow-set-local-protected-sheet-open",
@@ -381,8 +399,10 @@ describe("bundled preview security boundary", () => {
       "allow-get-hub-service-burn-readiness",
       "allow-burn-hub-service-account",
       "allow-burn-active-hub-context",
-    ]);
-    expect(new Set(capability.permissions).size).toBe(capability.permissions.length);
+    ];
+    expect(new Set(capability.permissions)).toEqual(new Set(expectedPermissions));
+    expect(capability.permissions).toHaveLength(expectedPermissions.length);
+    expect(capability.permissions).toHaveLength(new Set(capability.permissions).size);
     expect(capability.permissions).not.toEqual(
       expect.arrayContaining([
         expect.stringMatching(/shell/i),
@@ -536,6 +556,7 @@ describe("bundled preview security boundary", () => {
     const productionRust = [
       readProductionRustTree("../../osl-hub/src/"),
       readProductionRustTree("../../../crates/ipc/src/"),
+      readProductionRustTree("../../../src-tauri/src/"),
     ].join("\n");
     const facts = classifyMessagingProductionPath(
       main,
@@ -1242,9 +1263,19 @@ describe("bundled preview security boundary", () => {
       readProductionRustTree("../../osl-hub/src/"),
       readProductionRustTree("../../../crates/ipc/src/"),
     ].join("\n");
+    const stripDormantPrekeyScheduler = (source: string): string =>
+      source
+        .replace(
+          /pub const PREKEY_REPLENISH_INTERVAL_SECONDS:[\s\S]*?(?=\npub fn cmd_aead_seal\()/u,
+          "",
+        )
+        .replace(
+          /\n#\[cfg\(test\)\]\nmod production_identity_bundle_pipeline_tests \{[\s\S]*$/u,
+          "",
+        );
     const productionReferencesPrekeyLifecycle = (source: string): boolean =>
       /\b(?:PrekeyState|PrekeyConfig|OpkEntry|SpkEntry|ReplenishOpk|ReplenishSpk|REPLENISH_DOMAIN|SPK_ROTATION_INTERVAL_SECONDS|fetch_prekey_bundle|replenish_prekeys|replenish_using_state|load_prekey_state|save_prekey_state|sign_replenish_batch|canonical_replenish_bytes|should_rotate_spk|rotate_spk|should_replenish|add_opk_batch|replenish_count_to_target|consume_opk)\b/u.test(
-        rustProductionPrefix(source),
+        stripDormantPrekeyScheduler(rustProductionPrefix(source)),
       );
 
     // Positive implementation controls prevent deletion of the dormant
@@ -1306,6 +1337,7 @@ describe("bundled preview security boundary", () => {
       "accept_b5_prekey_state_and_persist_with_sealer",
     );
     expect(wireRnProduction).toContain("pub const RN_WIRE_IN_ENABLED: bool = false;");
+    expect(rustProductionPrefix(productionRust)).toMatch(/\bconsume_opk\s*\(/u);
 
     const assertWiredPrekeyTruth = (source: string): void => {
       expect(source).toContain(
@@ -1325,6 +1357,12 @@ describe("bundled preview security boundary", () => {
       );
       expect(source).toContain(
         "broader receive-side product lifecycle work remains\n//! future integration work",
+      );
+      expect(source).toMatch(
+        /reserved\s*\n\s*\/\/\/ for a future integrated receive-side PQXDH handshake/u,
+      );
+      expect(source).toContain(
+        "Current production code has no such caller",
       );
     };
     assertWiredPrekeyTruth(prekeys);
@@ -1656,7 +1694,7 @@ describe("bundled preview security boundary", () => {
     ).toBe(false);
   });
 
-  it("separates legacy duress primitives from the reachable Hub burn password", () => {
+  it("binds the duress engine to a distinct reachable gate outcome", () => {
     const duress = readRelative("../../../crates/keystore/src/duress.rs");
     const password = readRelative("../../../crates/keystore/src/password.rs");
     const keystoreLib = readRelative("../../../crates/keystore/src/lib.rs");
@@ -1706,9 +1744,16 @@ describe("bundled preview security boundary", () => {
     ]) {
       expect(password).toContain(implementationSymbol);
     }
-    expect(keystoreLib).toContain(
-      "DuressEngine, DuressError, DuressHandlers, DuressJournal, DuressPaths, DuressReport",
-    );
+    for (const exportedSymbol of [
+      "DuressEngine",
+      "DuressError",
+      "DuressHandlers",
+      "DuressJournal",
+      "DuressPaths",
+      "DuressReport",
+    ]) {
+      expect(keystoreLib).toContain(exportedSymbol);
+    }
     expect(keystoreLib).toContain(
       "verify_against_record, Argon2Params, InactivityTimer",
     );
@@ -1717,6 +1762,11 @@ describe("bundled preview security boundary", () => {
 
     // Positive controls for the separate, reachable Hub password gate and the
     // now-live production duress engine.
+    expect(productionRust).toContain("pub duress_engine: Mutex<keystore::DuressEngine>");
+    expect(productionRust).toContain("record_wrong_password_attempt_or_duress(");
+    expect(productionRust).toContain("WrongPasswordAttemptAction::DuressTriggered");
+    expect(productionRust).toContain("DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT");
+
     const mainProduction = rustProductionPrefix(main);
     const stateProduction = rustProductionPrefix(state);
     const mainPasswordProduction = rustProductionPrefix(mainPassword);
@@ -1725,6 +1775,9 @@ describe("bundled preview security boundary", () => {
     expect(mainProduction).toContain(
       "startup_gate::verify_password_role(&verify_app.state::<HubCoreState>(), password)",
     );
+    expect(mainProduction).toContain("startup_gate::verify_duress_pin");
+    expect(mainProduction).toContain("VerifiedGateRole::Duress => {");
+    expect(mainProduction).toContain("HubGateUnlockResult::duress(verification)");
     expect(mainProduction).toContain("VerifiedGateRole::Burn => {");
     expect(mainProduction).toContain("cleanup::execute_verified_gate_burn(");
     const assertLiveDuressEngineTruth = (

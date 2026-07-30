@@ -2,6 +2,8 @@ name: Reproducible Build
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "hub-v*"
   workflow_dispatch:
@@ -141,7 +143,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           if ($env:RELEASED_EXE_SHA256 -cne $env:REBUILT_EXE_SHA256) {
-            throw "released executable bytes do not reproduce from exact source"
+            throw "released executable bytes do not reproduce from exact source: released sha256=$env:RELEASED_EXE_SHA256 rebuilt sha256=$env:REBUILT_EXE_SHA256"
           }
           $installerHash = (Get-FileHash $env:RELEASE_INSTALLER -Algorithm SHA256).Hash.ToLowerInvariant()
           $proof = [ordered]@{
