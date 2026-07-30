@@ -299,13 +299,27 @@ function disposable_discord_accounts_load_from_key_vault_without_logging_secrets
     throw 'unexpected secret request'
   }
 
-  $output = @(
-    Invoke-OslDisposableDiscordAccountLoad `
-      -VaultName $vault `
-      -ClientNumber 1 `
-      -AccessToken 'fixture-token' `
-      -SecretFetcher $fetcher
-  )
+  $oldVerbosePreference = $VerbosePreference
+  $oldDebugPreference = $DebugPreference
+  $oldInformationPreference = $InformationPreference
+  $VerbosePreference = 'Continue'
+  $DebugPreference = 'Continue'
+  $InformationPreference = 'Continue'
+  try {
+    $output = @(
+      & {
+        Invoke-OslDisposableDiscordAccountLoad `
+          -VaultName $vault `
+          -ClientNumber 1 `
+          -AccessToken 'fixture-token' `
+          -SecretFetcher $fetcher
+      } *>&1
+    )
+  } finally {
+    $VerbosePreference = $oldVerbosePreference
+    $DebugPreference = $oldDebugPreference
+    $InformationPreference = $oldInformationPreference
+  }
   $public = $output | ConvertTo-Json -Compress -Depth 8
   if (($requested -join '|') -cne 'osl-test-account-manifest|osl-test-discord-02') {
     throw 'disposable Discord account loader did not use the manifest-selected Key Vault secret'
