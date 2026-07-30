@@ -223,13 +223,23 @@ export async function activateNativeManualPeerContext(personId: string): Promise
 /** Bind one verified friend to the fixed first-party OSL Chat context. */
 export async function activateOslChatContext(personId: string): Promise<ManualPeerContext | null> {
   if (!isTauriRuntime() || !safe(personId, 180)) return null;
+  const person = await verifiedStableOslChatPerson(personId);
+  if (!person) return null;
   try {
     const parsed = parseManualPeerContext(await invoke<unknown>("activate_osl_chat_context", { personId }));
     return checkedBackendResponse("activate_osl_chat_context", parsed?.serviceId === "osl-chat"
       && parsed.accountId === "osl-main"
-      && parsed.personId === personId ? parsed : null,
+      && parsed.personId === personId
+      && parsed.peerOslUserId === person.oslUserId ? parsed : null,
       "the activated context did not match the requested one");
   } catch (error) { recordBackendFailure("activate_osl_chat_context", error); return null; }
+}
+
+async function verifiedStableOslChatPerson(personId: string): Promise<HubPerson | null> {
+  const people = await listHubPeople();
+  if (!people) return null;
+  const person = people.find((candidate) => candidate.personId === personId) ?? null;
+  return person?.safetyNumberVerified && !person.pendingKeyChange ? person : null;
 }
 
 export async function closeOslChatContext(): Promise<boolean> {

@@ -10,11 +10,29 @@ vi.mock("./preferences", () => ({ isTauriRuntime: mocks.isTauriRuntime }));
 
 import { activateOslChatContext, closeOslChatContext, listOslChatHistory, openOslChatText, prepareOslChatText } from "./adapters";
 
+function personRow(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+  return {
+    personId: "person-a",
+    oslUserId: "peer-a",
+    alias: "Ada",
+    safetyNumber: "1234 5678",
+    safetyNumberVerified: true,
+    whitelistCount: 0,
+    whitelistedScopes: [],
+    whitelistedScopesTruncated: false,
+    pendingKeyChange: false,
+    reachBroadened: false,
+    reachBroadenedAt: null,
+    reachNarrowedScopes: [],
+    ...overrides,
+  };
+}
+
 describe("first-party OSL Chat IPC", () => {
   beforeEach(() => mocks.invoke.mockReset());
 
   it("accepts only the fixed Rust-owned OSL chat scope", async () => {
-    mocks.invoke.mockResolvedValueOnce({
+    mocks.invoke.mockResolvedValueOnce([personRow()]).mockResolvedValueOnce({
       contextToken: "context-token-1234567890",
       serviceId: "osl-chat",
       accountId: "osl-main",
@@ -23,15 +41,40 @@ describe("first-party OSL Chat IPC", () => {
       scopeApproved: false,
     });
     await expect(activateOslChatContext("person-a")).resolves.toMatchObject({ serviceId: "osl-chat", accountId: "osl-main" });
-    expect(mocks.invoke).toHaveBeenCalledWith("activate_osl_chat_context", { personId: "person-a" });
+    expect(mocks.invoke.mock.calls).toEqual([
+      ["list_hub_people"],
+      ["activate_osl_chat_context", { personId: "person-a" }],
+    ]);
 
-    mocks.invoke.mockResolvedValueOnce({
+    mocks.invoke.mockResolvedValueOnce([personRow()]).mockResolvedValueOnce({
       contextToken: "context-token-1234567890",
       serviceId: "discord",
       accountId: "osl-main",
       personId: "person-a",
       peerOslUserId: "peer-a",
       scopeApproved: true,
+    });
+    await expect(activateOslChatContext("person-a")).resolves.toBeNull();
+  });
+
+  it("opens only through the exact verified stable People record", async () => {
+    mocks.invoke.mockResolvedValueOnce([personRow({ safetyNumberVerified: false })]);
+    await expect(activateOslChatContext("person-a")).resolves.toBeNull();
+    expect(mocks.invoke.mock.calls).toEqual([["list_hub_people"]]);
+
+    mocks.invoke.mockReset();
+    mocks.invoke.mockResolvedValueOnce([personRow({ pendingKeyChange: true })]);
+    await expect(activateOslChatContext("person-a")).resolves.toBeNull();
+    expect(mocks.invoke.mock.calls).toEqual([["list_hub_people"]]);
+
+    mocks.invoke.mockReset();
+    mocks.invoke.mockResolvedValueOnce([personRow()]).mockResolvedValueOnce({
+      contextToken: "context-token-1234567890",
+      serviceId: "osl-chat",
+      accountId: "osl-main",
+      personId: "person-a",
+      peerOslUserId: "different-peer",
+      scopeApproved: false,
     });
     await expect(activateOslChatContext("person-a")).resolves.toBeNull();
   });
