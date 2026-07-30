@@ -329,7 +329,10 @@ def _validate_carrier(value: Any, binding: str) -> tuple[str, int, int]:
         text = raw.decode("utf-8", errors="strict")
     except UnicodeDecodeError as error:
         raise SchemaError("carrier is not strict UTF-8") from error
-    if any(ord(character) < 0x20 and character != "\n" for character in text):
+    if any(
+        (ord(character) < 0x20 and character != "\n") or ord(character) == 0x7F
+        for character in text
+    ):
         raise SchemaError("carrier contains a forbidden control character")
     digest = sha256_hex(raw)
     utf16_length = len(text.encode("utf-16-le")) // 2
