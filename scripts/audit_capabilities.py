@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """TD1.2: Tauri 2 capability artifact audit.
 
-For every `#[tauri::command]` in `src-tauri/src/main.rs`, verify the
+For every `#[tauri::command]` in `src-tauri/src/*.rs`, verify the
 five artifacts required for the command to be reachable from a
 webview:
 
@@ -34,7 +34,8 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-MAIN_RS = REPO_ROOT / "src-tauri" / "src" / "main.rs"
+TAURI_SRC_DIR = REPO_ROOT / "src-tauri" / "src"
+MAIN_RS = TAURI_SRC_DIR / "main.rs"
 PERMISSIONS_DIR = REPO_ROOT / "src-tauri" / "permissions"
 CAPABILITIES_DIR = REPO_ROOT / "src-tauri" / "capabilities"
 
@@ -89,25 +90,27 @@ ALLOWLIST_NO_PERMISSION: dict[str, str] = {
     "stego_decode": "v1 dev primitive; no JS callers",
     "x25519_diffie_hellman": "v1 dev primitive; no JS callers",
     "set_screenshot_protection": "main.rs setup-only path; not exposed to webviews",
+    "get_information_architecture_destinations": "read-only IA contract helper; no JS callers",
 }
 
 
 def extract_tauri_commands() -> list[tuple[str, int]]:
     """Return [(fn_name, line_no)] for every `#[tauri::command]` fn
-    in main.rs. Catches both `async fn` and `fn`."""
-    text = MAIN_RS.read_text()
+    in Tauri source modules. Catches both `async fn` and `fn`."""
     out: list[tuple[str, int]] = []
-    lines = text.splitlines()
-    for i, line in enumerate(lines):
-        if "#[tauri::command]" not in line:
-            continue
-        # Walk forward to the fn declaration (allow blank lines /
-        # attribute stacks in between).
-        for j in range(i + 1, min(i + 8, len(lines))):
-            m = re.match(r"\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)", lines[j])
-            if m:
-                out.append((m.group(1), j + 1))
-                break
+    for path in sorted(TAURI_SRC_DIR.glob("*.rs")):
+        text = path.read_text()
+        lines = text.splitlines()
+        for i, line in enumerate(lines):
+            if "#[tauri::command]" not in line:
+                continue
+            # Walk forward to the fn declaration (allow blank lines /
+            # attribute stacks in between).
+            for j in range(i + 1, min(i + 8, len(lines))):
+                m = re.match(r"\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)", lines[j])
+                if m:
+                    out.append((m.group(1), j + 1))
+                    break
     return out
 
 
@@ -236,12 +239,12 @@ def cross_window_check(commands: list[tuple[str, int]]) -> list[str]:
             continue
         for cmd in sorted(extract_invoke_calls(REPO_ROOT / rel)):
         # Skip invokes of names that aren't actually declared as
-        # tauri::command in main.rs — those are caught by the
+        # tauri::command in src-tauri/src — those are caught by the
         # generate_handler cross-check elsewhere or are typos. Surface
         # as a separate error so the audit fails loudly either way.
             if cmd not in declared:
                 errors.append(
-                    f"{cmd}: invoked from {rel} but no #[tauri::command] fn in main.rs"
+                    f"{cmd}: invoked from {rel} but no #[tauri::command] fn in src-tauri/src"
                 )
                 continue
             permission_id = f"allow-{cmd.replace('_', '-')}"
@@ -259,7 +262,7 @@ def audit() -> int:
     handler_entries = extract_generate_handler_entries()
 
     if not commands:
-        print("error: no #[tauri::command] declarations found in main.rs", file=sys.stderr)
+        print("error: no #[tauri::command] declarations found in src-tauri/src", file=sys.stderr)
         return 2
 
     missing: dict[str, list[str]] = {}

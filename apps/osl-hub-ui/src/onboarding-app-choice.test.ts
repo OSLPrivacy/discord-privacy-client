@@ -12,12 +12,12 @@ function functionSource(name: string, nextName: string): string {
 }
 
 describe("onboarding app choice", () => {
-  it("renders reviewed app choices with an explicit empty-selection skip", () => {
+  it("renders available app choices with an explicit empty-selection skip", () => {
     const content = functionSource("chooseAppsOnboardingContent", "enterCombinedAppChoice");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
 
     expect(content).toContain("Choose apps");
-    expect(content).toContain("Pick reviewed apps for Home, or skip this for now.");
+    expect(content).toContain("Pick available apps for Home, or skip this for now.");
     expect(content).toContain("Detected");
     expect(content).toContain("Other apps");
     expect(content).toContain('data-onboarding-app-choice="${app.id}"');
@@ -26,7 +26,7 @@ describe("onboarding app choice", () => {
     expect(binding).toMatch(/#continue-app-choice[\s\S]*?ensureNativeCatalogForAppChoice\(\)[\s\S]*?persistCombinedHomeChoices\(\)[\s\S]*?completeOnboarding\(\)/);
   });
 
-  it("keeps the legacy tutorial route as a wrapper around the reviewed chooser", () => {
+  it("keeps the legacy tutorial route as a wrapper around the app chooser", () => {
     const wrapper = functionSource("tutorialContent", "chooseAppsOnboardingContent");
 
     expect(wrapper).toContain("return chooseAppsOnboardingContent()");
