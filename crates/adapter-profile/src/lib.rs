@@ -11,3 +11,10 @@ pub use schema::{
     BindingRequirement, Capability, CapabilityGrant, ProfileDoc, ProfileValidationError,
     SendOutcomeContract, ValidatedProfile, ValidationEvidence, PROFILE_DOC_VERSION,
 };
+pub use schema::{
+    canonical_profile_payload_bytes, sign_profile_doc, verify_profile_doc, AppDescriptor,
+    AuthorityRequirements, FallbackCondition, FallbackStrategy, HarmlessCanary, ProfileError,
+    ProfilePayload, ProfileRevision, SelectorKind, SelectorStrategy, SignedProfileDoc,
+    SupportLevel, TypedSelector, PROFILE_DOC_DOMAIN, PROFILE_DOC_ENVELOPE_VERSION,
+    PROFILE_DOC_SCHEMA_VERSION,
+};
