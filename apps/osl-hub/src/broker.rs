@@ -2093,6 +2093,20 @@ pub struct RehydratedNativeDiscordRowDto {
     row: Option<NativeDiscordRowRectDto>,
 }
 
+impl RehydratedNativeDiscordRowDto {
+    /// The binary only ever asks whether a row decoded, never for the text. Keep
+    /// `plaintext` private and expose presence: making the field public to satisfy
+    /// the Windows build would widen access to decrypted message content for no
+    /// reason the callers actually need.
+    pub fn has_plaintext(&self) -> bool {
+        self.plaintext.is_some()
+    }
+
+    pub fn has_row_rect(&self) -> bool {
+        self.row.is_some()
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeDiscordRowRectDto {

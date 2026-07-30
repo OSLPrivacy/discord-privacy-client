@@ -7916,7 +7916,7 @@ mod qa_selftest {
                     let rows: Vec<(bool, bool)> = transcript
                         .rows
                         .iter()
-                        .map(|row| (row.plaintext.is_some(), row.row.is_some()))
+                        .map(|row| (row.has_plaintext(), row.has_row_rect()))
                         .collect();
                     outcome_detail.rehydrate = Some(RehydrateReport::tally(
                         transcript.read,
