@@ -22,6 +22,7 @@ pub mod native_apps;
 pub mod native_attachment_jobs;
 pub mod native_discord_adapter;
 pub mod native_signal_adapter;
+pub mod native_whatsapp_adapter;
 pub mod native_window_host;
 pub mod proprietary_module_boundary;
 pub mod proprietary_module_lifecycle;
