@@ -35,7 +35,7 @@ use osl_privacy_hub::native_discord_adapter::{compatibility_delay_ms, VerifiedSe
 use osl_privacy_hub::native_discord_adapter::{
     deidentify_prepared_visual_structure, AccessibilityBounds, DiscordCarrierLayout,
     DiscordCarrierMode, DiscordCarrierReceipt, DiscordCarrierStatus, NativeDiscordComposerState,
-    MAX_VISIBLE_CARRIER_ROWS,
+    NativeDiscordPlacementContext, MAX_VISIBLE_CARRIER_ROWS,
 };
 use osl_privacy_hub::native_window_host::{
     DiscordSessionMode, DiscordTakeover, NativeWindowHostReason, NativeWindowHostResult,
@@ -1891,10 +1891,19 @@ fn send_native_discord_overlay_carrier(
     })?;
     let overlay_state = app.state::<OverlaySessionState>();
     let carrier_placement = overlay_state.begin_carrier_placement()?;
+    require_engaged_lock(&app)?;
+    let placement_scope_binding = native_discord_scope_binding(&app)?;
+    if placement_scope_binding != scope_binding {
+        drop(carrier_placement);
+        return Err("The native Discord friend context changed before placement".to_owned());
+    }
+    require_same_overlay_context(&app, epoch, &host)?;
+    let placement_context = NativeDiscordPlacementContext::new(&placement_scope_binding, mode);
     let receipt = composer.place_carrier(
         &app.state::<NativeWindowHostState>(),
         &owner,
-        &scope_binding,
+        &placement_scope_binding,
+        Some(&placement_context),
         mode,
         chars_per_second,
         &carrier,
@@ -2533,11 +2542,70 @@ async fn send_native_discord_qa_atomic_text(
                 visible_carrier_row: None,
             });
         };
+        if let Err(error) = require_engaged_lock(&app) {
+            drop(carrier_placement);
+            qa_discord_send_stage("send_refused_lock_disengaged");
+            qa_atomic_send_receipt(
+                &registration,
+                "permission",
+                "error",
+                Some(&error),
+                Some("lock_disengaged"),
+                None,
+            );
+            qa_discord_send_stage("send_receipt_written");
+            return Ok(NativeDiscordQaAtomicText {
+                prepared: broker::PreparedNativeDiscordOverlayText { prepared, flagtext },
+                carrier: failed_carrier(),
+                visible_carrier_row: None,
+            });
+        }
+        let placement_scope_binding = match native_discord_scope_binding(&app) {
+            Ok(current) if current == scope_binding => current,
+            _ => {
+                drop(carrier_placement);
+                qa_discord_send_stage("send_pre_placement_context_changed");
+                qa_atomic_send_receipt(
+                    &registration,
+                    "post",
+                    "error",
+                    Some("The native Discord overlay context changed"),
+                    Some("overlay_context_changed"),
+                    None,
+                );
+                qa_discord_send_stage("send_receipt_written");
+                return Ok(NativeDiscordQaAtomicText {
+                    prepared: broker::PreparedNativeDiscordOverlayText { prepared, flagtext },
+                    carrier: failed_carrier(),
+                    visible_carrier_row: None,
+                });
+            }
+        };
+        if require_same_overlay_context(&app, context_epoch, &host).is_err() {
+            drop(carrier_placement);
+            qa_discord_send_stage("send_pre_placement_context_changed");
+            qa_atomic_send_receipt(
+                &registration,
+                "post",
+                "error",
+                Some("The native Discord overlay context changed"),
+                Some("overlay_context_changed"),
+                None,
+            );
+            qa_discord_send_stage("send_receipt_written");
+            return Ok(NativeDiscordQaAtomicText {
+                prepared: broker::PreparedNativeDiscordOverlayText { prepared, flagtext },
+                carrier: failed_carrier(),
+                visible_carrier_row: None,
+            });
+        }
+        let placement_context = NativeDiscordPlacementContext::new(&placement_scope_binding, mode);
         qa_discord_send_stage("send_place_carrier_called");
         let mut carrier = composer.place_carrier(
             &app.state::<NativeWindowHostState>(),
             &owner,
-            &scope_binding,
+            &placement_scope_binding,
+            Some(&placement_context),
             mode,
             chars_per_second,
             &carrier_text,
@@ -7588,6 +7656,70 @@ mod b6_startup_gate_tests {
         assert!(
             controller.contains("'negativeCrossPeerIsolation'"),
             "the retained receipt gate must bind the eighth starvation fact"
+        );
+    }
+}
+
+#[cfg(test)]
+mod native_discord_carrier_command_tests {
+    fn function_body(source: &'static str, signature: &str, following: &str) -> &'static str {
+        let start = source.find(signature).expect("function must exist");
+        let end = source[start..]
+            .find(following)
+            .map(|offset| start + offset)
+            .expect("function must be bounded");
+        &source[start..end]
+    }
+
+    #[test]
+    fn native_carrier_command_reproves_product_context_immediately_before_placement() {
+        let source = include_str!("main.rs");
+        let command = function_body(
+            source,
+            "#[tauri::command]\nfn send_native_discord_overlay_carrier(",
+            "#[derive(Serialize)]\nstruct NativeDiscordOverlayStateDto",
+        );
+        let latch = command
+            .find("let carrier_placement = overlay_state.begin_carrier_placement()?;")
+            .expect("placement latch must be acquired");
+        let lock = command[latch..]
+            .find("require_engaged_lock(&app)?;")
+            .map(|offset| latch + offset)
+            .expect("lock must be re-proven after the latch");
+        let fresh_scope = command
+            .find("let placement_scope_binding = native_discord_scope_binding(&app)?;")
+            .expect("scope must be re-read after the latch");
+        let context_check = command
+            .find("if placement_scope_binding != scope_binding")
+            .expect("scope drift must refuse");
+        let overlay_reproof = command[context_check..]
+            .find("require_same_overlay_context(&app, epoch, &host)?;")
+            .map(|offset| context_check + offset)
+            .expect("overlay context must be re-proven");
+        let authority = command
+            .find("let placement_context = NativeDiscordPlacementContext::new(&placement_scope_binding, mode);")
+            .expect("placement authority must be minted from the fresh scope");
+        let call = command
+            .find("let receipt = composer.place_carrier(")
+            .expect("carrier placement must remain");
+        assert!(
+            latch < lock
+                && lock < fresh_scope
+                && fresh_scope < context_check
+                && context_check < overlay_reproof
+                && overlay_reproof < authority
+                && authority < call,
+            "the last native gates before placement must be lock, scope, overlay context and authority"
+        );
+        let call_block = &command[call..];
+        assert!(call_block.contains("&placement_scope_binding,"));
+        assert!(call_block.contains("Some(&placement_context),"));
+        assert!(
+            call_block
+                .find("Some(&placement_context),")
+                .expect("context argument")
+                < call_block.find("mode,").expect("mode argument"),
+            "the adapter must verify context before it sees the mode-specific placement path"
         );
     }
 }

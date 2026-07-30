@@ -186,6 +186,37 @@ pub struct DiscordCarrierReceipt {
     pub compatibility_delay_ms: u16,
 }
 
+/// Product-context authority for one native carrier placement.
+///
+/// The source binding commits to the service, account, conversation and
+/// recipient set that the broker approved. Only the hash is retained here, and
+/// this type deliberately has no `Debug`/`Display`, so those identifiers cannot
+/// be formatted by accident.
+#[derive(Clone, Eq, PartialEq)]
+pub struct NativeDiscordPlacementContext {
+    service_account_conversation_recipients_binding_hash: String,
+    mode: DiscordCarrierMode,
+}
+
+impl NativeDiscordPlacementContext {
+    pub fn new(scope_binding: &str, mode: DiscordCarrierMode) -> Self {
+        Self {
+            service_account_conversation_recipients_binding_hash: stable_hash(
+                "discord-native-placement-context",
+                scope_binding,
+            ),
+            mode,
+        }
+    }
+
+    fn authorizes(&self, scope_binding: &str, mode: DiscordCarrierMode) -> bool {
+        !scope_binding.is_empty()
+            && self.mode == mode
+            && self.service_account_conversation_recipients_binding_hash
+                == stable_hash("discord-native-placement-context", scope_binding)
+    }
+}
+
 /// Content-free typography and line-box proof for the exact native composer.
 /// Bounds are screen-space pixels inside the verified editable role-42 node.
 /// Optional font fields are published only when one converted TextPattern
@@ -1170,11 +1201,17 @@ impl NativeDiscordComposerState {
         host: &crate::native_window_host::NativeWindowHostState,
         owner_osl_user_id: &str,
         scope_binding: &str,
+        placement_context: Option<&NativeDiscordPlacementContext>,
         mode: DiscordCarrierMode,
         chars_per_second: u16,
         carrier: &str,
     ) -> DiscordCarrierReceipt {
         let delay = compatibility_delay_ms(chars_per_second);
+        if !placement_context.is_some_and(|context| context.authorizes(scope_binding, mode)) {
+            #[cfg(target_os = "windows")]
+            windows::qa_place_stage("place_refused_product_context");
+            return carrier_failure(mode, delay, DiscordCarrierStatus::PlacementRejected);
+        }
         if !valid_cover(carrier) {
             #[cfg(target_os = "windows")]
             windows::qa_place_stage("place_refused_invalid_cover");
@@ -24119,6 +24156,48 @@ mod tests {
         assert!(!receipt.placed);
         assert!(!receipt.enter_sent);
         assert_eq!(receipt.status, DiscordCarrierStatus::ContextChanged);
+    }
+
+    #[test]
+    fn native_placement_context_binds_scope_and_mode_without_debug_output() {
+        let atomic = NativeDiscordPlacementContext::new("scope-a", DiscordCarrierMode::Atomic);
+        assert!(atomic.authorizes("scope-a", DiscordCarrierMode::Atomic));
+        assert!(!atomic.authorizes("scope-b", DiscordCarrierMode::Atomic));
+        assert!(!atomic.authorizes("scope-a", DiscordCarrierMode::Compatibility));
+        assert!(!atomic.authorizes("", DiscordCarrierMode::Atomic));
+
+        let source = adapter_source();
+        let context = source
+            .split("pub struct NativeDiscordPlacementContext")
+            .nth(1)
+            .expect("placement context exists")
+            .split("impl NativeDiscordPlacementContext")
+            .next()
+            .expect("context body exists");
+        assert!(!context.contains("Debug"));
+        assert!(!context.contains("Display"));
+        assert!(context.contains("service_account_conversation_recipients_binding_hash"));
+    }
+
+    #[test]
+    fn place_carrier_refuses_missing_or_mismatched_product_context_before_placement() {
+        let source = adapter_source();
+        let place = nested_function_body(source, "pub fn place_carrier(");
+        let context_gate = place
+            .find("placement_context.is_some_and(|context| context.authorizes(scope_binding, mode))")
+            .expect("placement must require native product context");
+        let cover_gate = place
+            .find("valid_cover(carrier)")
+            .expect("cover gate must remain");
+        let windows_hop = place
+            .find("with_current_discord_accessibility_target")
+            .expect("native placement hop must remain");
+        assert!(
+            context_gate < cover_gate && cover_gate < windows_hop,
+            "missing authority must refuse before any native placement attempt"
+        );
+        assert!(place.contains("place_refused_product_context"));
+        assert!(place.contains("DiscordCarrierStatus::PlacementRejected"));
     }
 
     #[test]
