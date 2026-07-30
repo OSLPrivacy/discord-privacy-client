@@ -1686,11 +1686,21 @@ fn manual_peer_channel_id_is_allowed(scope_id: &str, channel_id: Option<&str>) -
     }
 }
 
+/// Length of the canonical manual-DM binding suffix.
+///
+/// broker::manual_dm_channel_id builds it with short_hex(), which hex-encodes the
+/// FIRST 16 BYTES of a domain-separated SHA-256 over the sorted identity pair, i.e.
+/// 32 hex characters. This guard originally required 64 -- an assumption that
+/// matched no producer -- so it rejected every scope production actually creates and
+/// took the whole native-Discord receive path down with it. Derive the length from
+/// the producer rather than restating it.
+const MANUAL_DM_BINDING_HEX_LEN: usize = 32;
+
 fn valid_manual_dm_channel_binding(channel_id: &str) -> bool {
     let Some(suffix) = channel_id.strip_prefix("manual-dm-") else {
         return false;
     };
-    suffix.len() == 64
+    suffix.len() == MANUAL_DM_BINDING_HEX_LEN
         && suffix
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
@@ -4177,7 +4187,7 @@ mod tests {
             kind: ScopeKind::Dm,
             id: scope_id.clone(),
             server_id: None,
-            channel_id: Some(format!("manual-dm-{}", "a".repeat(64))),
+            channel_id: Some(format!("manual-dm-{}", "a".repeat(MANUAL_DM_BINDING_HEX_LEN))),
         };
 
         ScopedTrustGrant::for_manual_peer(
