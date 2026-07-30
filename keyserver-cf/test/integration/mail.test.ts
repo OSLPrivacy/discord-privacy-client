@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { env, SELF } from "cloudflare:test";
-import { base64Encode, mailSignedMessage, randomRequestId } from "../../src/mail/protocol.js";
+import { base64Decode, base64Encode, mailSignedMessage, randomRequestId } from "../../src/mail/protocol.js";
 import { handleInboundEmail } from "../../src/mail/inbound.js";
 
 interface Identity {
   userId: string;
   username: string;
   signingKey: CryptoKey;
+  x25519PrivateKey: CryptoKey;
 }
 
 beforeEach(async () => {
@@ -203,7 +204,47 @@ describe("OSL Mail Worker", () => {
     const fetched = await signedPost("/v1/mail/fetch", "FETCH", bob, { message_id: listing.messages[0]!.message_id });
     const fetchedText = await fetched.text();
     expect(fetchedText).not.toContain("secret external body");
-    expect(fetchedText).toContain("X25519-HKDF-SHA256-AES-256-GCM");
+    const fetchedBody = JSON.parse(fetchedText) as {
+      ciphertext_b64: string;
+      envelope_json: string;
+      kind: string;
+    };
+    expect(fetchedBody.kind).toBe("external_envelope");
+    const envelope = JSON.parse(fetchedBody.envelope_json) as {
+      algorithm: string;
+      ephemeral_public_key_b64: string;
+      salt_b64: string;
+      nonce_b64: string;
+      aad_b64: string;
+    };
+    expect(envelope.algorithm).toBe("X25519-HKDF-SHA256-AES-256-GCM");
+    const ciphertext = base64Decode(fetchedBody.ciphertext_b64);
+    expect(new TextDecoder().decode(ciphertext)).not.toContain("secret external body");
+    const ephemeral = await crypto.subtle.importKey("raw", base64Decode(envelope.ephemeral_public_key_b64), { name: "X25519" }, false, []);
+    const shared = await crypto.subtle.deriveBits(
+      { name: "X25519", public: ephemeral } as unknown as SubtleCryptoDeriveKeyAlgorithm,
+      bob.x25519PrivateKey,
+      256,
+    );
+    const hkdf = await crypto.subtle.importKey("raw", shared, "HKDF", false, ["deriveKey"]);
+    const aes = await crypto.subtle.deriveKey(
+      { name: "HKDF", hash: "SHA-256", salt: base64Decode(envelope.salt_b64), info: new TextEncoder().encode("OSL external inbound v1") },
+      hkdf,
+      { name: "AES-GCM", length: 256 },
+      false,
+      ["decrypt"],
+    );
+    const plaintext = await crypto.subtle.decrypt(
+      {
+        name: "AES-GCM",
+        iv: base64Decode(envelope.nonce_b64),
+        additionalData: base64Decode(envelope.aad_b64),
+        tagLength: 128,
+      },
+      aes,
+      ciphertext,
+    );
+    expect(new TextDecoder().decode(plaintext)).toBe(mime);
   });
 
   it("rejects every non-OSL recipient on the internal E2EE route", async () => {
@@ -233,7 +274,7 @@ async function createIdentity(userId: string, username: string): Promise<Identit
   await env.DB.prepare(
     "INSERT INTO username_directory(username,user_id,friend_code,claimed_at,updated_at) VALUES (?,?,?,?,?)",
   ).bind(username, userId, "friend-code-placeholder", now, now).run();
-  return { userId, username, signingKey: ed.privateKey };
+  return { userId, username, signingKey: ed.privateKey, x25519PrivateKey: x.privateKey };
 }
 
 async function signedPost(
