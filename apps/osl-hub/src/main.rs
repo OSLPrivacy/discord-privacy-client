@@ -31,7 +31,9 @@ use osl_privacy_hub::native_apps::{
     ProtectedBrowserImportResult,
 };
 #[cfg(feature = "discord-qa-shell")]
-use osl_privacy_hub::native_discord_adapter::{compatibility_delay_ms, VerifiedSentCarrierRow};
+use osl_privacy_hub::native_discord_adapter::{
+    compatibility_delay_ms, DiscordProtectedSendOutcome, VerifiedSentCarrierRow,
+};
 use osl_privacy_hub::native_discord_adapter::{
     deidentify_prepared_visual_structure, AccessibilityBounds, DiscordCarrierLayout,
     DiscordCarrierMode, DiscordCarrierReceipt, DiscordCarrierStatus, NativeDiscordComposerState,
@@ -394,10 +396,12 @@ fn qa_discord_send_stage(stage: &'static str) {
 /// `&'static str` is what gets written, so renderer-supplied text is never
 /// persisted even if the QA WebView is compromised.
 #[cfg(feature = "discord-qa-shell")]
-const QA_RENDERER_SEND_STAGES: [&str; 17] = [
+const QA_RENDERER_SEND_STAGES: [&str; 19] = [
     "renderer_keydown_observed",
     "renderer_enter_recognised",
     "renderer_enter_refocused_draft",
+    "renderer_double_enter_handoff_keydown",
+    "renderer_double_enter_handoff_keyup",
     "renderer_send_refused_not_ready",
     "renderer_send_refused_busy",
     "renderer_send_refused_empty_draft",
@@ -2556,10 +2560,11 @@ async fn send_native_discord_qa_atomic_text(
             "send_enter_not_injected"
         });
         let context_unchanged = require_same_overlay_context(&app, context_epoch, &host).is_ok();
-        let carrier_sent = context_unchanged
-            && carrier.status == DiscordCarrierStatus::Sent
-            && carrier.placed
-            && carrier.enter_sent;
+        let carrier_outcome = carrier
+            .status
+            .protected_send_outcome(carrier.placed, carrier.enter_sent);
+        let carrier_sent =
+            context_unchanged && carrier_outcome == DiscordProtectedSendOutcome::Sent;
         qa_discord_send_stage(if carrier_sent {
             "send_proof_confirmed"
         } else {
