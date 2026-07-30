@@ -3352,6 +3352,11 @@ mod tests {
         assert_eq!(ticks.load(Ordering::SeqCst), 3);
         let fired_at = fired_at.lock().unwrap();
         assert_eq!(fired_at.len(), 3);
+        let total_periodic_wait = fired_at[2].duration_since(fired_at[0]);
+        assert!(
+            total_periodic_wait >= Duration::from_millis(16),
+            "the two post-launch replenish ticks must be separated by two real timer intervals"
+        );
         assert!(
             fired_at[1].duration_since(fired_at[0]) >= Duration::from_millis(8),
             "the first periodic replenish tick must wait for the real interval"

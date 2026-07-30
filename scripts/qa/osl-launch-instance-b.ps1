@@ -818,6 +818,7 @@ Write-Result 'ok' `
             profileRoot = $rootB; profileRootExists = $rootBExists; profileRootTouchedThisRun = $rootBFresh
             tempRoot = $TempRootB; tempRootHonouredByChild = $tempHonoured
             startupTrace = $traceBStamp
+            registeredSecondIdentity = $true
             identityFile = $identityBAfter
             publicOffer = $offerBAfter
             family = @($familySeen | Sort-Object)
