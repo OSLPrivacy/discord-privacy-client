@@ -3,6 +3,14 @@ import { describe, expect, it } from "vitest";
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 
+function functionSource(name: string, nextName: string): string {
+  const start = source.indexOf(`function ${name}`);
+  const end = source.indexOf(`function ${nextName}`, start + 1);
+  expect(start, `${name} should exist`).toBeGreaterThanOrEqual(0);
+  expect(end, `${nextName} should follow ${name}`).toBeGreaterThan(start);
+  return source.slice(start, end);
+}
+
 describe("first-party OSL Chats integration", () => {
   it("keeps chat plaintext behind capture resistance and the fixed OSL context", () => {
     const open = source.slice(source.indexOf("async function openOslChat"), source.indexOf("async function approveOslChat"));
@@ -76,6 +84,22 @@ describe("first-party OSL Chats integration", () => {
     expect(source).toContain('id="notification-security-activity"');
     expect(source).toContain("function visibleAppNotifications()");
     expect(source).toContain('item.detail === "New encrypted message" ? notificationChatActivity : notificationSecurityActivity');
+  });
+
+  it("owns the OSL Chat notification settings surface and keeps previews local", () => {
+    const content = functionSource("notificationSettingsContent", "oslChatNotificationSettings");
+    const chatSettings = functionSource("oslChatNotificationSettings", "visibleAppNotifications");
+    const binding = functionSource("bindWorkspace", "ttlSeconds");
+
+    expect(content).toContain("oslChatNotificationSettings()");
+    expect(chatSettings).toContain('class="settings-list osl-chat-notification-settings"');
+    expect(chatSettings).toContain('id="notification-chat-activity"');
+    expect(chatSettings).toContain('id="osl-chat-preview-toggle"');
+    expect(chatSettings).toContain("Preview hiding is available with Pro.");
+    expect(chatSettings).toContain("Hide message previews on this device.");
+    expect(chatSettings).toContain('data-osl-chat-unmute="${escapeHtml(personId)}"');
+    expect(chatSettings).not.toMatch(/keyserver|ratchet|receipt|browser profile|provider adapter/iu);
+    expect(binding).toContain("localStorage.setItem(oslChatPreviewStorageKey, String(oslChatPreviewsVisible))");
   });
 
   it("labels provider server capabilities as unavailable instead of faking support", () => {
