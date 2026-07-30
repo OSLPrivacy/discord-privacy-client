@@ -706,6 +706,7 @@ grade_selftest() {
 }
 
 is_sha256() { [[ "${1:-}" =~ ^[0-9a-f]{64}$ ]]; }
+is_positive_int() { [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]; }
 
 grade_f1_live_windows_walkthrough_import() {
   local file="$1" overall shape steps picker grant import revoke restart reread receipt selected
@@ -775,6 +776,11 @@ grade_f1_live_windows_walkthrough_import() {
     echo "F1 FAIL: grant IPC is not bound to a run and attended operator" >&2
     return 1
   fi
+  if ! is_positive_int "$rows" || ! is_positive_int "$bytes" \
+     || ! is_positive_int "$reread_rows" || ! is_positive_int "$receipt_rows"; then
+    echo "F1 FAIL: import/reread/receipt counts are not positive integers" >&2
+    return 1
+  fi
   if [ "$rows" -le 0 ] || [ "$bytes" -le 0 ] || [ "$receipt_rows" -ne "$rows" ]; then
     echo "F1 FAIL: import/receipt is empty or row counts differ" >&2
     return 1
@@ -840,7 +846,7 @@ vmqa_named_test_tmpdir() {
 
 f1_live_windows_walkthrough_imports_nonempty_receipt() {
   local tmp good bad_empty bad_grant bad_receipt bad_source bad_secret bad_revoke
-  local bad_restart bad_reread bad_live_binding request_sha exe_sha agent_sha win32_sha receipt_sha
+  local bad_restart bad_reread bad_live_binding bad_nonnumeric request_sha exe_sha agent_sha win32_sha receipt_sha
   tmp="$(vmqa_named_test_tmpdir)"
   good="$tmp/f1-good.json"
   bad_empty="$tmp/f1-empty.json"
@@ -852,6 +858,7 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
   bad_restart="$tmp/f1-bad-restart.json"
   bad_reread="$tmp/f1-bad-reread.json"
   bad_live_binding="$tmp/f1-bad-live-binding.json"
+  bad_nonnumeric="$tmp/f1-bad-nonnumeric.json"
   request_sha="$(printf f1-request | sha256sum | awk '{print $1}')"
   exe_sha="$(printf f1-exe | sha256sum | awk '{print $1}')"
   agent_sha="$(printf f1-agent | sha256sum | awk '{print $1}')"
@@ -888,6 +895,8 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
     "$good" >"$bad_reread"
   jq '.win32Sha="" | .steps[6].facts.requestSha256=("0" * 64)' \
     "$good" >"$bad_live_binding"
+  jq '.steps[2].facts.importedRows="two" | .steps[5].facts.importedRows="two" | .steps[6].facts.importedRows="two"' \
+    "$good" >"$bad_nonnumeric"
   grade_f1_live_windows_walkthrough_import "$good" >/dev/null \
     || { rm -rf -- "$tmp"; return 1; }
   grade_f1_live_windows_walkthrough_import "$bad_empty" >/dev/null 2>&1 \
@@ -907,6 +916,8 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
   grade_f1_live_windows_walkthrough_import "$bad_reread" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
   grade_f1_live_windows_walkthrough_import "$bad_live_binding" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_nonnumeric" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
   rm -rf -- "$tmp"
   return 0

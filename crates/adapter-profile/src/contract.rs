@@ -644,6 +644,10 @@ mod tests {
         assert_eq!(verified.verdict(), ContractVerdict::Verified);
         assert_eq!(verified.verdict().label(), "contract_verified");
         assert!(verified.verdict().permits_protected_path());
+        assert_eq!(
+            serde_json::to_value(verified.verdict()).unwrap(),
+            Value::String("verified".to_owned())
+        );
 
         let mut degraded_checks = required_checks();
         degraded_checks[1] = CheckOutcome::failed(
@@ -664,6 +668,16 @@ mod tests {
         );
         assert_eq!(degraded.verdict().label(), "contract_degraded");
         assert!(!degraded.verdict().permits_protected_path());
+        assert_eq!(
+            serde_json::to_value(degraded.verdict()).unwrap(),
+            serde_json::json!({
+                "degraded": {
+                    "failedSubsystem": "transcript",
+                    "failedPredicate": "transcriptDiscovery",
+                    "cause": "ambiguous"
+                }
+            })
+        );
 
         let mut refused_checks = required_checks();
         refused_checks[5] = CheckOutcome::failed(
@@ -684,6 +698,16 @@ mod tests {
         );
         assert_eq!(refused.verdict().label(), "contract_refused");
         assert!(!refused.verdict().permits_protected_path());
+        assert_eq!(
+            serde_json::to_value(refused.verdict()).unwrap(),
+            serde_json::json!({
+                "refused": {
+                    "failedSubsystem": "binding",
+                    "failedPredicate": "scopeBinding",
+                    "cause": "missingBinding"
+                }
+            })
+        );
 
         assert!(!UnverifiedCause::NotObserved.requires_refusal());
         assert!(!UnverifiedCause::Ambiguous.requires_refusal());
@@ -883,6 +907,13 @@ mod tests {
                     "authority",
                     "hostAuthority",
                 ]
+            );
+            assert!(
+                !fixed_string_values.iter().any(|value| value.contains('@')
+                    || value.contains('/')
+                    || value.contains("token")
+                    || value.contains("secret")),
+                "local contract self-test must expose only fixed labels"
             );
 
             let round_tripped: SelfTestReport = serde_json::from_value(json).unwrap();

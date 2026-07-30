@@ -173,6 +173,9 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $proof = Get-Content reproducible-build-proof.json -Raw | ConvertFrom-Json
+          if ($proof.schemaVersion -ne 1) {
+            throw "reproducibility proof has unsupported schema"
+          }
           $releasedHash = (Get-FileHash $env:RELEASED_EXE -Algorithm SHA256).Hash.ToLowerInvariant()
           $rebuiltHash = (Get-FileHash $env:REBUILT_EXE -Algorithm SHA256).Hash.ToLowerInvariant()
           $installerHash = (Get-FileHash $env:RELEASE_INSTALLER -Algorithm SHA256).Hash.ToLowerInvariant()
