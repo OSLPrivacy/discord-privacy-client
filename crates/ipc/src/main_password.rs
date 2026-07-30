@@ -50,8 +50,10 @@ use zeroize::{Zeroize, Zeroizing};
 
 const MARKER_FILENAME: &str = "password_marker.json";
 const LOCKOUT_FILENAME: &str = "lockout_state.json";
+const DEVICE_BOUND_FALLBACK_KEY_FILENAME: &str = "file_storage_key_fallback.json";
 const MARKER_VERSION: u32 = 2;
 const LOCKOUT_VERSION: u32 = 1;
+const DEVICE_BOUND_FALLBACK_KEY_VERSION: u32 = 1;
 const ENC_MAGIC: &[u8; 8] = b"OSL-ENC1";
 
 pub const PASSWORD_MIN_LEN: usize = 6;
@@ -136,6 +138,13 @@ pub struct LockoutState {
     pub phrase_failed_attempts: u32,
     #[serde(default)]
     pub phrase_locked_until: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceBoundFallbackStorageKey {
+    pub version: u32,
+    pub sealer_method: String,
+    pub sealed_key_b64: String,
 }
 
 // =====================================================================
@@ -235,6 +244,10 @@ fn lockout_path(dir: &Path) -> PathBuf {
     dir.join(LOCKOUT_FILENAME)
 }
 
+fn device_bound_fallback_key_path(dir: &Path) -> PathBuf {
+    dir.join(DEVICE_BOUND_FALLBACK_KEY_FILENAME)
+}
+
 /// Reports whether a main password is configured (the marker file
 /// exists). Does not validate the file's contents.
 pub fn marker_exists(dir: &Path) -> bool {
@@ -318,6 +331,33 @@ fn write_lockout(dir: &Path, state: &LockoutState) -> Result<(), String> {
     let path = lockout_path(dir);
     let bytes =
         serde_json::to_vec_pretty(state).map_err(|e| format!("OSL: serialize lockout: {e}"))?;
+    std::fs::write(&path, &bytes).map_err(|e| format!("OSL: write {}: {e}", path.display()))
+}
+
+fn read_device_bound_fallback_key(dir: &Path) -> Result<DeviceBoundFallbackStorageKey, String> {
+    let path = device_bound_fallback_key_path(dir);
+    let bytes = std::fs::read(&path).map_err(|e| format!("OSL: read {}: {e}", path.display()))?;
+    let dto: DeviceBoundFallbackStorageKey = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("OSL: parse file_storage_key_fallback.json: {e}"))?;
+    if dto.version != DEVICE_BOUND_FALLBACK_KEY_VERSION {
+        return Err(format!(
+            "OSL: file_storage_key_fallback.json version mismatch (got {}, want {DEVICE_BOUND_FALLBACK_KEY_VERSION})",
+            dto.version
+        ));
+    }
+    Ok(dto)
+}
+
+fn write_device_bound_fallback_key(
+    dir: &Path,
+    dto: &DeviceBoundFallbackStorageKey,
+) -> Result<(), String> {
+    if !dir.exists() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("OSL: mkdir {}: {e}", dir.display()))?;
+    }
+    let path = device_bound_fallback_key_path(dir);
+    let bytes = serde_json::to_vec_pretty(dto)
+        .map_err(|e| format!("OSL: serialize file_storage_key_fallback: {e}"))?;
     std::fs::write(&path, &bytes).map_err(|e| format!("OSL: write {}: {e}", path.display()))
 }
 
@@ -862,6 +902,71 @@ pub fn set_file_storage_key(key: Option<[u8; 32]>) {
     }
 }
 
+/// Ensure this no-main-password install still has an encrypted
+/// `file_storage_key` rather than falling back to protected plaintext.
+///
+/// The fallback key is generated once, sealed with the existing device sealer
+/// stack, written under the OSL config dir, and installed in the process slot.
+/// It is available only when no main password marker exists; if the user has a
+/// main password, that password-derived key remains the only authority.
+pub fn ensure_device_bound_fallback_file_storage_key(dir: &Path) -> Result<[u8; 32], String> {
+    let sealer = keystore::select_best_sealer();
+    ensure_device_bound_fallback_file_storage_key_with_sealer(dir, sealer.as_ref())
+}
+
+pub fn ensure_device_bound_fallback_file_storage_key_with_sealer(
+    dir: &Path,
+    sealer: &dyn keystore::Sealer,
+) -> Result<[u8; 32], String> {
+    if marker_exists(dir) {
+        return Err(
+            "OSL: main password marker exists; refusing device-bound fallback storage key"
+                .to_owned(),
+        );
+    }
+
+    let key = if device_bound_fallback_key_path(dir).exists() {
+        let dto = read_device_bound_fallback_key(dir)?;
+        if dto.sealer_method != sealer.method_label() {
+            return Err(
+                "OSL: file_storage_key_fallback.json was sealed by a different device backend"
+                    .to_owned(),
+            );
+        }
+        let sealed = STANDARD
+            .decode(&dto.sealed_key_b64)
+            .map_err(|e| format!("OSL: fallback storage key b64: {e}"))?;
+        let opened = sealer
+            .unseal(&sealed)
+            .map_err(|e| format!("OSL: unseal fallback storage key: {e}"))?;
+        if opened.len() != KEY_LEN {
+            return Err("OSL: fallback storage key wrong length".to_owned());
+        }
+        let mut out = [0u8; KEY_LEN];
+        out.copy_from_slice(&opened[..KEY_LEN]);
+        out
+    } else {
+        let random = random_bytes(KEY_LEN);
+        let mut out = [0u8; KEY_LEN];
+        out.copy_from_slice(&random);
+        let sealed = sealer
+            .seal(&out)
+            .map_err(|e| format!("OSL: seal fallback storage key: {e}"))?;
+        write_device_bound_fallback_key(
+            dir,
+            &DeviceBoundFallbackStorageKey {
+                version: DEVICE_BOUND_FALLBACK_KEY_VERSION,
+                sealer_method: sealer.method_label().to_owned(),
+                sealed_key_b64: STANDARD.encode(sealed),
+            },
+        )?;
+        out
+    };
+
+    set_file_storage_key(Some(key));
+    Ok(key)
+}
+
 /// HKDF-Expand-SHA256 single-block expansion. Input `prk` is the
 /// pseudo-random key (the 32-byte tail of argon2id output);
 /// `info` is the context string. Output is 32 bytes (single HMAC
@@ -1330,5 +1435,48 @@ mod password_policy_tests {
         assert!(validate_new_password("short").is_err());
         assert!(validate_new_password(&"x".repeat(PASSWORD_MAX_LEN + 1)).is_err());
         assert!(validate_new_password("twelve\nchars").is_err());
+    }
+
+    #[test]
+    fn device_bound_fallback_file_storage_key_round_trips_without_main_password() {
+        set_file_storage_key(None);
+        let dir = tempfile::tempdir().unwrap();
+        let sealer = keystore::MemorySealer::new();
+
+        let first = ensure_device_bound_fallback_file_storage_key_with_sealer(dir.path(), &sealer)
+            .expect("no marker: fallback key can be created");
+        assert_eq!(get_file_storage_key(), Some(first));
+
+        let fallback_path = device_bound_fallback_key_path(dir.path());
+        let raw = std::fs::read(&fallback_path).unwrap();
+        assert!(
+            !raw.windows(first.len())
+                .any(|window| window == first.as_slice()),
+            "sealed fallback artifact must not contain the raw storage key"
+        );
+
+        let sealed = maybe_encrypt(br#"{"protected":true}"#).unwrap();
+        assert!(has_enc_magic(&sealed));
+
+        set_file_storage_key(None);
+        assert!(maybe_decrypt(&sealed).is_err());
+
+        let reopened =
+            ensure_device_bound_fallback_file_storage_key_with_sealer(dir.path(), &sealer)
+                .expect("same device sealer can reopen fallback key");
+        assert_eq!(reopened, first);
+        assert_eq!(maybe_decrypt(&sealed).unwrap(), br#"{"protected":true}"#);
+
+        let marker = build_marker(
+            "main-secret",
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        )
+        .unwrap();
+        write_marker(dir.path(), &marker).unwrap();
+        assert!(
+            ensure_device_bound_fallback_file_storage_key_with_sealer(dir.path(), &sealer).is_err(),
+            "main-password installs must not also mint fallback authority"
+        );
+        set_file_storage_key(None);
     }
 }

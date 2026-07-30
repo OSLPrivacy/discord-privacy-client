@@ -62,6 +62,8 @@ use ipc::commands::{
 use ipc::scope::ScopeInput;
 use ipc::{AppState, IpcError, IpcResult};
 use runtime::ScreenshotProtection;
+use std::future::Future;
+use std::time::Duration;
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 // Phase F0: deep-link plugin extension trait. Brings the
 // `.deep_link()` method into scope on `&AppHandle`, returning the
@@ -161,6 +163,35 @@ async fn set_screenshot_protection(app: tauri::AppHandle, enabled: bool) -> IpcR
         ScreenshotProtection::Off
     };
     screenshot::apply_to_window(&window, protection)
+}
+
+async fn drive_prekey_replenishment_timer<F, Fut>(
+    interval: Duration,
+    max_ticks: Option<usize>,
+    mut tick: F,
+) where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let mut fired = 0usize;
+    tick().await;
+    fired += 1;
+    if max_ticks == Some(fired) {
+        return;
+    }
+
+    let mut iv = tokio::time::interval(interval);
+    // Consume tokio interval's immediate first tick. The explicit tick above is
+    // the launch-time run; periodic runs should start after one full interval.
+    iv.tick().await;
+    loop {
+        iv.tick().await;
+        tick().await;
+        fired += 1;
+        if max_ticks == Some(fired) {
+            return;
+        }
+    }
 }
 
 /// Layer 10 / Phase 4 entry point. The injected boot script (see
@@ -2962,34 +2993,28 @@ fn main() {
             // OPK depletion.
             let prekey_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                use std::time::Duration;
-
-                let h = prekey_handle.clone();
-                let _ = tauri::async_runtime::spawn_blocking(move || {
-                    let s = h.state::<AppState>();
-                    if let Ok(dir) = keystore::osl_config_dir() {
-                        let _ =
-                            ipc::commands::run_prekey_replenishment_tick(s.inner(), &dir, None);
-                    }
-                })
-                .await;
-
-                let mut iv = tokio::time::interval(Duration::from_secs(
-                    ipc::commands::PREKEY_REPLENISH_INTERVAL_SECONDS,
-                ));
-                iv.tick().await;
-                loop {
-                    iv.tick().await;
-                    let h = prekey_handle.clone();
-                    let _ = tauri::async_runtime::spawn_blocking(move || {
-                        let s = h.state::<AppState>();
-                        if let Ok(dir) = keystore::osl_config_dir() {
-                            let _ =
-                                ipc::commands::run_prekey_replenishment_tick(s.inner(), &dir, None);
+                drive_prekey_replenishment_timer(
+                    Duration::from_secs(ipc::commands::PREKEY_REPLENISH_INTERVAL_SECONDS),
+                    None,
+                    move || {
+                        let prekey_handle = prekey_handle.clone();
+                        async move {
+                            let h = prekey_handle.clone();
+                            let _ = tauri::async_runtime::spawn_blocking(move || {
+                                let s = h.state::<AppState>();
+                                if let Ok(dir) = keystore::osl_config_dir() {
+                                    let _ = ipc::commands::run_prekey_replenishment_tick(
+                                        s.inner(),
+                                        &dir,
+                                        None,
+                                    );
+                                }
+                            })
+                            .await;
                         }
-                    })
-                    .await;
-                }
+                    },
+                )
+                .await;
             });
 
             // F2.4: license-refresh task. `run_autostart` did the
@@ -3267,4 +3292,37 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running discord-privacy-client tauri app");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    #[tokio::test]
+    async fn prekey_replenishment_real_timer_driver() {
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let started = Instant::now();
+        let ticks_for_driver = ticks.clone();
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            drive_prekey_replenishment_timer(Duration::from_millis(10), Some(3), move || {
+                let ticks_for_tick = ticks_for_driver.clone();
+                async move {
+                    ticks_for_tick.fetch_add(1, Ordering::SeqCst);
+                }
+            }),
+        )
+        .await
+        .expect("driver should complete three ticks on a real timer");
+
+        assert_eq!(ticks.load(Ordering::SeqCst), 3);
+        assert!(
+            started.elapsed() >= Duration::from_millis(15),
+            "after the launch tick, two periodic ticks must be separated by the real interval"
+        );
+    }
 }
