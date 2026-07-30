@@ -67,6 +67,48 @@ pub(crate) struct NativeSurfaceKey {
     pub(crate) host_generation: u64,
 }
 
+#[cfg(feature = "discord-qa-shell")]
+fn qa_record_native_surface_matrix(
+    width_px: u32,
+    height_px: u32,
+    input_width_px: u32,
+    input_height_px: u32,
+    typography_present: bool,
+) {
+    use std::io::Write as _;
+
+    let path = std::env::temp_dir().join("osl-discord-qa-native-surface.txt");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        // Content-free QA evidence only: dimensions and booleans, never pixels,
+        // text, handles, account identifiers, or the sampled colour value.
+        let _ = writeln!(
+            file,
+            "surface_capture width_px={width_px} height_px={height_px} \
+             input_width_px={input_width_px} input_height_px={input_height_px} \
+             theme_sample=present nitro_sample=present typography={}",
+            if typography_present {
+                "present"
+            } else {
+                "absent"
+            }
+        );
+    }
+}
+
+#[cfg(not(feature = "discord-qa-shell"))]
+fn qa_record_native_surface_matrix(
+    _width_px: u32,
+    _height_px: u32,
+    _input_width_px: u32,
+    _input_height_px: u32,
+    _typography_present: bool,
+) {
+}
+
 impl NativeSurfaceCaptureState {
     pub(crate) fn replace(
         &self,
@@ -501,6 +543,13 @@ pub(crate) fn capture_verified_surface(
             f64::from(presentation.line_height_milli_px?) / 1_000.0,
         ))
     });
+    qa_record_native_surface_matrix(
+        u32::try_from(captured_width).unwrap_or(0),
+        u32::try_from(captured_height).unwrap_or(0),
+        input_width as u32,
+        input_height as u32,
+        typography_values.is_some(),
+    );
 
     let file_size = 14usize
         .checked_add(40)

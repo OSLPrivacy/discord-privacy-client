@@ -248,6 +248,17 @@ function Test-QaLogContains([string]$Name, [string]$Pattern) {
   return [bool](Select-String -LiteralPath $path -Pattern $Pattern -CaseSensitive -Quiet)
 }
 
+function Test-QaLogAdvancedContains([string]$Name, [int]$PreviousLineCount, [string]$Pattern) {
+  $path = Get-QaTempPath $Name
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
+  $lines = @(Get-Content -LiteralPath $path -ErrorAction Stop)
+  if ($lines.Count -le $PreviousLineCount) { return $false }
+  foreach ($line in @($lines | Select-Object -Skip $PreviousLineCount)) {
+    if ([string]$line -cmatch $Pattern) { return $true }
+  }
+  return $false
+}
+
 function Test-SameRuntimeId([Windows.Automation.AutomationElement]$Left, [Windows.Automation.AutomationElement]$Right) {
   try {
     $leftId = @($Left.GetRuntimeId())
@@ -742,11 +753,14 @@ function Invoke-OverlayScrollProbe {
       $after.LineCount -gt $before.LineCount -or
       $after.LastWriteUtcTicks -gt $before.LastWriteUtcTicks
     )
+    $rehydrateEdge = Test-QaLogAdvancedContains 'osl-discord-qa-rehydrate.txt' `
+      $before.LineCount '^rehydrate_(entered|rows_placed|rows_unplaceable|shipped)(?:\s|$)'
     [pscustomobject]@{
-      Satisfied=$advanced
-      Key='scroll|' + $after.LineCount + '|' + $after.LastWriteUtcTicks
+      Satisfied=($advanced -and $rehydrateEdge)
+      Key='scroll|' + $after.LineCount + '|' + $after.LastWriteUtcTicks + '|' + $rehydrateEdge
       BeforeLines=$before.LineCount
       AfterLines=$after.LineCount
+      RehydrateEdge=$rehydrateEdge
     }
   } 'protected transcript scroll edge rehydration' 2
 }
@@ -779,23 +793,31 @@ function Get-OverlayVisualMatrixState {
   $stageLog = Get-QaLogState 'osl-discord-qa-overlay-stage.txt'
   $styleLog = Get-QaLogState 'osl-discord-qa-overlay-style.txt'
   $zOrderLog = Get-QaLogState 'osl-discord-qa-composer-zorder.txt'
+  $nativeSurfaceLog = Get-QaLogState 'osl-discord-qa-native-surface.txt'
   $nativeSurfaceCaptured = Test-QaLogContains 'osl-discord-qa-overlay-stage.txt' '^native_surface_captured$'
+  $themeSampleBound = Test-QaLogContains 'osl-discord-qa-native-surface.txt' `
+    'surface_capture .*theme_sample=present'
+  $nitroSampleBound = Test-QaLogContains 'osl-discord-qa-native-surface.txt' `
+    'surface_capture .*nitro_sample=present'
+  $typographyBound = Test-QaLogContains 'osl-discord-qa-native-surface.txt' `
+    'surface_capture .*typography=present'
   $framelessStyleProven = Test-QaLogContains 'osl-discord-qa-overlay-style.txt' 'style_after=0x[0-9A-F]{8}.*ex_after=0x[0-9A-F]{8}'
   $zOrderProven = Test-QaLogContains 'osl-discord-qa-composer-zorder.txt' 'composer_zorder=above-discord visible=true'
   [pscustomobject]@{
     Satisfied = $draftBounds.Width -gt 0 -and $draftBounds.Height -gt 0 -and
       $overlayDpi -ge 72 -and $overlayDpi -le 480 -and
-      $nativeSurfaceCaptured -and $framelessStyleProven -and $zOrderProven
-    Key = $surface.Fingerprint + '|' + $overlayDpi + '|' + $stageLog.LastWriteUtcTicks + '|' + $styleLog.LastWriteUtcTicks + '|' + $zOrderLog.LastWriteUtcTicks
+      $nativeSurfaceCaptured -and $themeSampleBound -and $nitroSampleBound -and
+      $typographyBound -and $framelessStyleProven -and $zOrderProven
+    Key = $surface.Fingerprint + '|' + $overlayDpi + '|' + $stageLog.LastWriteUtcTicks + '|' + $styleLog.LastWriteUtcTicks + '|' + $zOrderLog.LastWriteUtcTicks + '|' + $nativeSurfaceLog.LastWriteUtcTicks
     OverlayPresent = $true
     DraftPresent = $draft.Element.Current.IsEnabled
     SendPresent = $send.Element.Current.ControlType.ProgrammaticName -ceq 'ControlType.Button'
     EyeControlPresent = $display.Element.Current.ControlType.ProgrammaticName -ceq 'ControlType.CheckBox'
     Dpi = $overlayDpi
     NativeSurfaceCaptured = $nativeSurfaceCaptured
-    ThemeSampleBound = $nativeSurfaceCaptured
-    NitroSampleBound = $nativeSurfaceCaptured
-    TypographyBound = $nativeSurfaceCaptured
+    ThemeSampleBound = $themeSampleBound
+    NitroSampleBound = $nitroSampleBound
+    TypographyBound = $typographyBound
     FramelessStyleProven = $framelessStyleProven
     ZOrderProven = $zOrderProven
   }
@@ -1245,7 +1267,8 @@ try {
           Set-QaProtectedComposerOpen $true | Out-Null
         }
       }
-      $null = Wait-SemanticPostcondition { Get-OverlayReadyState } 'protected overlay adopted for lifecycle matrix' 2
+      $adopted = Wait-SemanticPostcondition { Get-OverlayReadyState } 'protected overlay adopted for lifecycle matrix' 2
+      $evidence += [pscustomobject]@{ Phase='overlayAdopted'; Visible=$true; Parent=$true; Above=$true; OverlayFingerprint=$adopted.Fingerprint }
       Set-DecryptVisibility 'On'
       $visualInitial = Wait-SemanticPostcondition { Get-WindowLifecycleState $false $true } 'initial overlay visual matrix' 2
       $visualEvidence += [pscustomobject]@{
@@ -1266,9 +1289,9 @@ try {
       }
 
       $closed = Set-QaProtectedComposerOpen $false
-      if (-not $closed.Satisfied) { throw 'protected overlay close was not verified' }
+      if (-not $closed.Satisfied -or -not $closed.Changed) { throw 'protected overlay close was not verified' }
       $reopened = Set-QaProtectedComposerOpen $true
-      if (-not $reopened.Satisfied) { throw 'protected overlay reopen was not verified' }
+      if (-not $reopened.Satisfied -or -not $reopened.Changed) { throw 'protected overlay reopen was not verified' }
       $reopenedVisual = Wait-SemanticPostcondition { Get-WindowLifecycleState $false $true } 'reopened overlay visual matrix' 2
       Set-DecryptVisibility 'On'
       $scroll = Invoke-OverlayScrollProbe
@@ -1320,9 +1343,9 @@ try {
       $evidence += [pscustomobject]@{ Phase='sessionRecovery'; Visible=$recovered.Visible; Parent=$recovered.ParentStable; Above=$recovered.StackedAboveOslBackground }
 
       $matrix = [ordered]@{
-        Adoption=$initial.Satisfied
+        Adoption=($initial.Satisfied -and $adopted.Satisfied)
         Focus=(@($evidence | Where-Object { $_.Phase -like 'headerFocus*' }).Count -eq 3)
-        CloseReopen=($closed.Satisfied -and $reopened.Satisfied)
+        CloseReopen=($closed.Satisfied -and $closed.Changed -and $reopened.Satisfied -and $reopened.Changed)
         Scroll=$scroll.Satisfied
         Resize=$afterTransform.Satisfied
         Dpi=(@($visualEvidence | Where-Object { $_.Dpi -ge 72 -and $_.Dpi -le 480 }).Count -ge 3)
