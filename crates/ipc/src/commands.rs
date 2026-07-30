@@ -7947,6 +7947,190 @@ pub fn cmd_osl_apply_burn(
 // / `apply_invitation_decision` removed alongside the invitation
 // handshake.
 
+/// Accept a typed friend request and adopt its exact scoped grant.
+///
+/// The request itself must already be a [`crate::friend_request::FriendRequest`],
+/// which means the grant was minted from complete TOFU-trusted key bundles and
+/// matched to the request parties. This command still requires an explicit
+/// local peer binding because the typed trust object deliberately carries no
+/// Discord map key.
+pub fn cmd_osl_accept_friend_request(
+    state: &AppState,
+    requester_discord_id: String,
+    request: crate::friend_request::FriendRequest,
+) -> Result<(), String> {
+    guard_friend_request_peer_binding(state, &requester_discord_id)?;
+
+    let scope = request.scope_grant.scope().clone();
+    adopt_friend_request_scope(state, &requester_discord_id, &scope)?;
+
+    let scope_kind_str = match scope.kind {
+        crate::scope::ScopeKind::Dm => "dm",
+        crate::scope::ScopeKind::Gc => "gc_full",
+        crate::scope::ScopeKind::ServerChannel => "server_channel_full",
+        crate::scope::ScopeKind::ServerFull => "server_full",
+    };
+    let _ = cmd_osl_unburn_scope(state, scope_kind_str.to_string(), scope.id);
+
+    Ok(())
+}
+
+fn guard_friend_request_peer_binding(
+    state: &AppState,
+    requester_discord_id: &str,
+) -> Result<(), String> {
+    if requester_discord_id.trim().is_empty() {
+        return Err("OSL: friend request peer binding is missing".to_string());
+    }
+
+    let g = state.identity.lock().expect("identity mutex poisoned");
+    if let Some(id) = g.as_ref() {
+        if id
+            .discord_snowflake
+            .as_deref()
+            .is_some_and(|self_sf| self_sf == requester_discord_id)
+        {
+            return Err("OSL: refusing friend request for local self binding".to_string());
+        }
+    }
+
+    Ok(())
+}
+
+fn adopt_friend_request_scope(
+    state: &AppState,
+    requester_discord_id: &str,
+    scope: &crate::scope::Scope,
+) -> Result<(), String> {
+    let enabled_at_iso = format_iso8601_secs(now_unix_secs()).unwrap_or_else(|| "?".to_string());
+
+    {
+        let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let pe = pm_guard
+            .entry(requester_discord_id.to_string())
+            .or_default();
+        pe.discord_id
+            .get_or_insert_with(|| requester_discord_id.to_string());
+        pe.outgoing_whitelists
+            .retain(|w| !whitelist_entry_matches(w, scope));
+        let new_entry = match scope.kind {
+            crate::scope::ScopeKind::Dm => crate::peer_map::WhitelistEntry::Dm {
+                broadened: false,
+                enabled_at: Some(enabled_at_iso),
+            },
+            crate::scope::ScopeKind::Gc => crate::peer_map::WhitelistEntry::Gc {
+                id: scope.id.clone(),
+                user_specific: true,
+            },
+            crate::scope::ScopeKind::ServerChannel => {
+                crate::peer_map::WhitelistEntry::ServerChannel {
+                    server_id: scope.server_id.clone().unwrap_or_default(),
+                    channel_id: scope.channel_id.clone().unwrap_or_default(),
+                    user_specific: true,
+                }
+            }
+            crate::scope::ScopeKind::ServerFull => crate::peer_map::WhitelistEntry::ServerFull {
+                server_id: scope.server_id.clone().unwrap_or_default(),
+                user_specific: true,
+            },
+        };
+        pe.outgoing_whitelists.push(new_entry);
+        pe.burned_scopes.retain(|b| !burn_matches_scope(b, scope));
+    }
+
+    {
+        let mut ws_guard = state
+            .whitelist_state
+            .lock()
+            .expect("whitelist_state mutex poisoned");
+        let ws = ws_guard.entry(scope.storage_key()).or_default();
+        ws.encrypt_toggle = true;
+        ws.auto_enabled = true;
+    }
+
+    persist_peer_map_now(state);
+    persist_whitelist_state_now(state);
+    Ok(())
+}
+
+#[cfg(test)]
+mod friend_request_acceptance_tests {
+    use super::cmd_osl_accept_friend_request;
+    use crate::friend_request::{
+        FriendPeer, FriendRequest, FriendScopeGrant, VerifiedFriendAuthority,
+    };
+    use crate::peer_map::WhitelistEntry;
+    use crate::scope::Scope;
+    use crate::tofu::KeyBundle;
+    use crate::AppState;
+
+    const REQUESTER_DID: &str = "900000000000000001";
+
+    fn bundle(label: &str) -> KeyBundle {
+        KeyBundle {
+            ed25519_pub: format!("{label}-ed25519"),
+            x25519_pub: format!("{label}-x25519"),
+            mlkem768_pub: format!("{label}-mlkem768"),
+            ratchet_initial_pub: Some(format!("{label}-ratchet")),
+        }
+    }
+
+    fn authority(label: &str) -> VerifiedFriendAuthority {
+        VerifiedFriendAuthority::from_tofu_trusted_key_bundle(&bundle(label)).unwrap()
+    }
+
+    fn request_for(scope: Scope) -> FriendRequest {
+        let requester_authority = authority("requester");
+        let target_authority = authority("target");
+        let grant = FriendScopeGrant::new(&requester_authority, &target_authority, scope);
+        FriendRequest::new(
+            FriendPeer::from_authority(requester_authority),
+            FriendPeer::from_authority(target_authority),
+            Some(grant),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn cmd_osl_accept_friend_request_accepts_request_and_adopts_scoped_trust() {
+        let state = AppState::new();
+        let scope = Scope::gc("friend-gc");
+        let request = request_for(scope.clone());
+
+        cmd_osl_accept_friend_request(&state, REQUESTER_DID.to_string(), request).unwrap();
+
+        let pm = state.peer_map.lock().unwrap();
+        let peer = pm.get(REQUESTER_DID).unwrap();
+        assert_eq!(peer.discord_id.as_deref(), Some(REQUESTER_DID));
+        assert_eq!(peer.outgoing_whitelists.len(), 1);
+        assert!(matches!(
+            &peer.outgoing_whitelists[0],
+            WhitelistEntry::Gc {
+                id,
+                user_specific: true,
+            } if id == "friend-gc"
+        ));
+        drop(pm);
+
+        let ws = state.whitelist_state.lock().unwrap();
+        let adopted = ws.get(&scope.storage_key()).unwrap();
+        assert!(adopted.encrypt_toggle);
+        assert!(adopted.auto_enabled);
+    }
+
+    #[test]
+    fn cmd_osl_accept_friend_request_refuses_missing_peer_binding() {
+        let state = AppState::new();
+        let request = request_for(Scope::dm(REQUESTER_DID));
+
+        let err = cmd_osl_accept_friend_request(&state, " ".to_string(), request).unwrap_err();
+
+        assert_eq!(err, "OSL: friend request peer binding is missing");
+        assert!(state.peer_map.lock().unwrap().is_empty());
+        assert!(state.whitelist_state.lock().unwrap().is_empty());
+    }
+}
+
 /// Remove a whitelist entry for `peer` in `scope`. Returns the
 /// wire-format burn marker the caller must send through Discord's
 /// API so the peer's client records its own local burn/refusal state.
