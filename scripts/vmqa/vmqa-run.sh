@@ -698,6 +698,7 @@ grade_selftest() {
 }
 
 is_sha256() { [[ "${1:-}" =~ ^[0-9a-f]{64}$ ]]; }
+is_positive_integer() { [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]; }
 
 grade_f1_live_windows_walkthrough_import() {
   local file="$1" overall picker grant import receipt selected rows bytes receipt_rows
@@ -735,7 +736,8 @@ grade_f1_live_windows_walkthrough_import() {
     echo "F1 FAIL: grant IPC is not bound to a run and attended operator" >&2
     return 1
   fi
-  if [ "$rows" -le 0 ] || [ "$bytes" -le 0 ] || [ "$receipt_rows" -ne "$rows" ]; then
+  if ! is_positive_integer "$rows" || ! is_positive_integer "$bytes" \
+     || ! is_positive_integer "$receipt_rows" || [ "$receipt_rows" -ne "$rows" ]; then
     echo "F1 FAIL: import/receipt is empty or row counts differ" >&2
     return 1
   fi
@@ -787,11 +789,15 @@ vmqa_named_test_tmpdir() {
 }
 
 f1_live_windows_walkthrough_imports_nonempty_receipt() {
-  local tmp good bad_empty bad_grant
+  local tmp good bad_empty bad_grant bad_receipt bad_source bad_status bad_nonnumeric
   tmp="$(vmqa_named_test_tmpdir)"
   good="$tmp/f1-good.json"
   bad_empty="$tmp/f1-empty.json"
   bad_grant="$tmp/f1-unbound.json"
+  bad_receipt="$tmp/f1-secret-receipt.json"
+  bad_source="$tmp/f1-unbounded-source.json"
+  bad_status="$tmp/f1-skipped-picker.json"
+  bad_nonnumeric="$tmp/f1-nonnumeric-import.json"
   jq -n --arg sha "$(printf receipt | sha256sum | awk '{print $1}')" '{
     overall:"pass",
     steps:[
@@ -802,11 +808,23 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
     ]}' >"$good"
   jq '.steps[2].facts.importedRows=0 | .steps[3].facts.importedRows=0' "$good" >"$bad_empty"
   jq '.steps[1].facts.grantBoundToRun=false' "$good" >"$bad_grant"
+  jq '.steps[3].facts.containsNoSecrets=false' "$good" >"$bad_receipt"
+  jq '.steps[0].facts.selectedSource="password-manager-export"' "$good" >"$bad_source"
+  jq '.steps[0].status="blocked"' "$good" >"$bad_status"
+  jq '.steps[2].facts.importedRows="two" | .steps[3].facts.importedRows="two"' "$good" >"$bad_nonnumeric"
   grade_f1_live_windows_walkthrough_import "$good" >/dev/null \
     || { rm -rf -- "$tmp"; return 1; }
   grade_f1_live_windows_walkthrough_import "$bad_empty" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
   grade_f1_live_windows_walkthrough_import "$bad_grant" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_receipt" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_source" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_status" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_nonnumeric" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
   rm -rf -- "$tmp"
   return 0
