@@ -715,3 +715,25 @@ carried.
 Reviewer verdict: the listed remediations are closed for this report's scope;
 the remaining deployment decision is still blocked on external cryptographic
 review and the disabled wire-in gate.
+
+## Reviewer Sign-Off: b15-b20 Findings Closed
+
+This re-review covers the dependency-chain findings introduced in
+`docs/reports/reviewer-findings-b15.md` and remediated in
+`crates/ipc/src/commands.rs`. It does not modify the earlier ratchet-lane
+acceptance table above.
+
+| finding_id | b15_status_before | remediation_unit | acceptance_test | reviewer_status | closed | enables_rn |
+| --- | --- | --- | --- | --- | --- | --- |
+| b20_session_reset_symptom_deadlock | open | b20 | remediate_independent_review_findings | signed_off | yes | no |
+| b20_recovery_result_observability | open | b20 | remediate_independent_review_findings | signed_off | yes | no |
+
+Re-review basis: `remediate_independent_review_findings` exercises the
+commands-layer SESSION_RESET remediation directly. A fresh authenticated reset
+from a bound peer is classified as applied even when no local v4 decrypt symptom
+was recorded, while replayed and stale resets are classified as ignored. That
+closes the one-directional desync deadlock without turning absence of binding,
+freshness or replay authority into permission.
+
+OSL-RN remains disabled: `crates/ipc/src/wire_rn.rs` still sets
+`RN_WIRE_IN_ENABLED` to false.
