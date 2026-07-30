@@ -121,6 +121,7 @@ export {
 } from "./autoscrub-unattended-run";
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
 import { oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
+import { parseCircleAudience, type CircleAudience } from "./osl-collab";
 import { bindFriendRemovalControls, bindMainWindowFocusChanges, friendRemovalButtonMarkup, friendTrustAction, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat } from "./ui-behavior";
 import { BurnGuaranteeCopy, type BurnGuaranteeState } from "./two-step-burn";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
@@ -3284,6 +3285,43 @@ function workspaceContent(): string {
   return `<main id="home-navigation" class="content-viewport home-dashboard ${homeEditMode ? "editing" : ""}"><section class="home-primary">${homeDestinationContent()}<section class="home-apps" aria-labelledby="route-heading"><div class="home-app-groups">${oslSection}${socialTiles ? `<section class="home-app-section"><header><h2>Social</h2>${organizeButton("social apps")}</header><div class="app-grid" aria-label="Social apps">${socialTiles}</div></section>` : ""}${emailTiles ? `<section class="home-app-section"><header><h2>Email</h2>${organizeButton("email apps")}</header><div class="app-grid" aria-label="Email apps">${emailTiles}</div></section>` : ""}</div></section></section><button class="home-profile-dock" data-route="settings" data-profile-settings type="button" aria-label="Open your OSL profile" title="${escapeHtml(profileName)}"><span aria-hidden="true">${escapeHtml(profileInitial)}</span><strong>${escapeHtml(profileName)}</strong></button></main>`;
 }
 
+const privateCircleAudienceRecords = [
+  { audienceId: "c".repeat(32), name: "Close friends", memberCount: 3, membershipVisibility: "visible", visibleMembers: [{ memberId: "1".repeat(32), name: "Maya", verified: true }, { memberId: "2".repeat(32), name: "Theo", verified: true }, { memberId: "3".repeat(32), name: "Rina", verified: true }], consentGranted: true, boundToCurrentCircle: true, postingAuthorized: true },
+  { audienceId: "f".repeat(32), name: "Family", memberCount: 5, membershipVisibility: "visible", visibleMembers: [{ memberId: "4".repeat(32), name: "Ari", verified: true }, { memberId: "5".repeat(32), name: "Sam", verified: false }], consentGranted: false, boundToCurrentCircle: true, postingAuthorized: true },
+  { audienceId: "b".repeat(32), name: "Book club", memberCount: 8, membershipVisibility: "count-only", visibleMembers: [], consentGranted: true, boundToCurrentCircle: false, postingAuthorized: true },
+  { audienceId: "w".repeat(32), name: "Work", memberCount: 4, membershipVisibility: "count-only", visibleMembers: [], consentGranted: true, boundToCurrentCircle: true, postingAuthorized: true },
+  { audienceId: "n".repeat(32), name: "Neighborhood", memberCount: 12, membershipVisibility: "hidden", visibleMembers: [], consentGranted: true, boundToCurrentCircle: true, postingAuthorized: false },
+] as const;
+
+const privateCircleAudiences: CircleAudience[] = privateCircleAudienceRecords
+  .map((record) => parseCircleAudience(record))
+  .filter((audience): audience is CircleAudience => audience !== null);
+
+function circleAudienceMembershipDetail(audience: CircleAudience): string {
+  if (audience.membershipVisibility === "visible") {
+    const names = audience.visibleMembers.map((member) => `${member.name}${member.verified ? " verified" : " needs review"}`).join(", ");
+    return names ? `${audience.memberCount.toLocaleString("en-US")} people: ${names}` : `${audience.memberCount.toLocaleString("en-US")} people. Members are shown before posting.`;
+  }
+  if (audience.membershipVisibility === "count-only") return `${audience.memberCount.toLocaleString("en-US")} people. Names are shown during the final audience review before posting.`;
+  return "Membership is hidden here. Posting stays refused until the audience is shown for review.";
+}
+
+function circleAudienceStatus(audience: CircleAudience): { label: "Ready" | "Refused"; detail: string } {
+  if (audience.canPost) return { label: "Ready", detail: "Posts and comments are encrypted for the selected audience." };
+  if (audience.refusal === "consent") return { label: "Refused", detail: "Review and approve this audience on this device before posting." };
+  if (audience.refusal === "binding") return { label: "Refused", detail: "Choose the Circle for this audience before posting." };
+  return { label: "Refused", detail: "This account is not allowed to post to that audience." };
+}
+
+function circlesDestinationContent(): string {
+  const audienceCards = privateCircleAudiences.map((audience) => {
+    const status = circleAudienceStatus(audience);
+    return `<article class="setting-line circle-audience-card ${audience.canPost ? "" : "unavailable"}" data-circle-audience="${escapeHtml(audience.audienceId)}" data-circle-posting="${audience.canPost ? "ready" : "refused"}" data-circle-refusal="${audience.refusal ?? "none"}" aria-disabled="${audience.canPost ? "false" : "true"}"><span><strong>${escapeHtml(audience.name)}</strong><small>${escapeHtml(circleAudienceMembershipDetail(audience))}</small></span><span class="status-tag">${status.label}</span><p>${escapeHtml(status.detail)}</p></article>`;
+  }).join("");
+  const feedItems = privateCircleAudiences.filter((audience) => audience.canPost).map((audience, index) => `<article class="inbox-row circle-feed-item" data-circle-feed-item="${index}" data-circle-feed-order="chronological" data-circle-audience="${escapeHtml(audience.audienceId)}"><span class="source-mark">${homeModuleIcon("osl-chats")}</span><div><strong>${escapeHtml(audience.name)}</strong><small>Chronological private feed · ${audience.memberCount.toLocaleString("en-US")} people · no ranking or behavioral advertising</small></div><span class="status-tag">Encrypted</span></article>`).join("");
+  return `<section class="inbox-surface-card circles-destination" data-inbox-osl-surface="circles" data-circle-feeds="private-audiences"><strong>OSL Circles</strong><small>Private audience feeds</small><p><span class="status-tag">Private</span> Posts and comments are encrypted for the selected audience. Audience membership is shown before posting.</p><div class="settings-list circle-audience-list" aria-label="Private Circle audiences">${audienceCards}</div><div class="circle-feed-list" aria-label="Chronological private Circle feeds">${feedItems}</div>${publicCirclesUnavailableMarkup()}</section>`;
+}
+
 function publicCirclesUnavailableMarkup(): string {
   return `<article class="inbox-surface-card unavailable" data-inbox-osl-surface="circles" data-public-circles-network="unavailable" aria-disabled="true"><strong>OSL Circles</strong><small>Private audience feeds</small><p><span class="status-tag">Unavailable</span> Public Circles network unavailable. Private audience posts stay off until membership, posting, and moderation are complete.</p></article>`;
 }
@@ -3338,6 +3376,22 @@ export function oslMailboxStageCGate(
   };
 }
 
+export function oslMailStageAContent(
+  stage: OslMailStage = oslMailStage("stageA"),
+  mailboxGate: OslMailboxStageCGateResult = oslMailboxStageCGate(),
+): string {
+  if (stage.id !== "stageA" || stage.availability !== "available") {
+    return `<article class="inbox-surface-card unavailable" data-inbox-osl-surface="mail" data-osl-mail-stage-a="unavailable" data-osl-mail-protection="private-client" data-osl-mailbox-stage-c-gate="${mailboxGate.reason ?? "reviewed"}" data-mailbox-operations="refused" aria-disabled="true"><strong>OSL Mail</strong><small>Private client protection</small><p><span class="status-tag">Coming later</span> OSL Mail client protection is unavailable until Stage A review accepts it.</p></article>`;
+  }
+  const capabilities = [
+    "Connect an existing mailbox only after authorization",
+    "Warn before send and label the protection scope",
+    "Sanitize selected links and attachments",
+    "Organize retention on this device",
+  ];
+  return `<article class="inbox-surface-card" data-inbox-osl-surface="mail" data-osl-mail-stage-a="available" data-osl-mail-protection="private-client" data-osl-mailbox-stage-c-gate="${mailboxGate.reason ?? "reviewed"}" data-mailbox-operations="${mailboxGate.operationsAllowed ? "allowed" : "refused"}" aria-disabled="false"><strong>OSL Mail</strong><small>Private client protection</small><p><span class="status-tag">Available</span> Protect mailboxes you already control after explicit authorization.</p><ul>${capabilities.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul><p><span class="status-tag">${mailboxGate.label}</span> ${escapeHtml(mailboxGate.detail)} External email remains ordinary email unless a supported encrypted path is selected before send.</p></article>`;
+}
+
 function inboxDestinationContent(): string {
   const verifiedPeople = hubPeople.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange);
   const requests = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange);
@@ -3366,9 +3420,9 @@ function inboxDestinationContent(): string {
   ] as const;
   const mailboxGate = oslMailboxStageCGate();
   const surfaceCards = oslSurfaces.map(([id, label, protection, detail]) => {
-    if (id === "circles") return publicCirclesUnavailableMarkup();
+    if (id === "circles") return circlesDestinationContent();
     if (id === "mail") {
-      return `<article class="inbox-surface-card ${mailboxGate.operationsAllowed ? "" : "unavailable"}" data-inbox-osl-surface="mail" data-osl-mailbox-stage-c-gate="${mailboxGate.reason ?? "reviewed"}" data-mailbox-operations="${mailboxGate.operationsAllowed ? "allowed" : "refused"}" aria-disabled="${mailboxGate.operationsAllowed ? "false" : "true"}"><strong>OSL Mail</strong><small>Client protection</small><p><span class="status-tag">${mailboxGate.label}</span> ${escapeHtml(mailboxGate.detail)}</p></article>`;
+      return oslMailStageAContent(oslMailStage("stageA"), mailboxGate);
     }
     return `<article class="inbox-surface-card" data-inbox-osl-surface="${id}"><strong>${label}</strong><small>${protection}</small><p>${detail}</p></article>`;
   }).join("");
