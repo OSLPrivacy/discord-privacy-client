@@ -206,6 +206,23 @@ def freeze_the_exact_signed_candidate_vm_attestation_contract() -> None:
         document["finalApprover"] = "qa-final-approver-second-session"
         test_case.write_document(attestation, document)
 
+        vms = document["vms"]
+        original_second_snapshot = vms[1]["goldenSnapshotId"]
+        vms[1]["goldenSnapshotId"] = vms[0]["goldenSnapshotId"]
+        test_case.write_document(attestation, document)
+        with test_case.assertRaises(SystemExit):
+            verify("hub-v0.1.0", root, attestation)
+        vms[1]["goldenSnapshotId"] = original_second_snapshot
+        test_case.write_document(attestation, document)
+
+        cases = document["cases"]
+        original_full_cleanup = cases.pop("fullCleanup")
+        test_case.write_document(attestation, document)
+        with test_case.assertRaises(SystemExit):
+            verify("hub-v0.1.0", root, attestation)
+        cases["fullCleanup"] = original_full_cleanup
+        test_case.write_document(attestation, document)
+
         manifest["platforms"]["windows-x86_64"]["url"] = (
             "https://github.com/OSLPrivacy/discord-privacy-client/"
             "releases/download/hub-latest/osl-hub-0.1.0-x64-nsis.exe"
