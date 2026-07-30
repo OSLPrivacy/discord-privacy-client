@@ -215,6 +215,7 @@ def _test_redaction_module_contract(self: AccessibilityBenchRedactionTests) -> N
     for key, value, expected in (
         ("rawText", "visible message text", "content-bearing evidence field"),
         ("accountIdentifier", "user@example.test", "content-bearing evidence field"),
+        ("utf8B64", "dXNlci12aXNpYmxlIHJvdyB0ZXh0", "content-bearing evidence field"),
         ("containsUserContent", True, "containsUserContent"),
     ):
         with self.subTest(key=key):
