@@ -38,9 +38,10 @@
 [CmdletBinding()]
 param(
     [string]$BundleA = 'org.oslprivacy.hub',
-    [Parameter(Mandatory = $true)][string]$BundleB,
+    [string]$BundleB = '',
     [string]$JsonOut = (Join-Path $env:TEMP 'osl-p2p-pair.json'),
-    [switch]$Quiet
+    [switch]$Quiet,
+    [switch]$RunScriptSelfTests
 )
 
 $ErrorActionPreference = 'Stop'
@@ -75,6 +76,59 @@ function Finish {
     if ($Verdict -eq 'ok') { exit 0 } elseif ($Verdict -eq 'failed') { exit 1 } else { exit 2 }
 }
 
+function Assert-SelfTest {
+    param([bool]$Condition, [string]$Message)
+    if (-not $Condition) { throw $Message }
+}
+
+function osl_p2p_pair_refuses_same_osl_user_id {
+    $root = Join-Path ([IO.Path]::GetTempPath()) ('osl-p2p-pair-selftest-' + [Guid]::NewGuid().ToString('N'))
+    $appdata = Join-Path $root 'appdata'
+    $bundleAForTest = 'org.oslprivacy.selftest.a'
+    $bundleBForTest = 'org.oslprivacy.selftest.b'
+    $rootA = Join-Path (Join-Path $appdata $bundleAForTest) 'osl-core'
+    $rootB = Join-Path (Join-Path $appdata $bundleBForTest) 'osl-core'
+    $json = Join-Path $root 'pair-result.json'
+
+    try {
+        New-Item -ItemType Directory -Path $rootA -Force | Out-Null
+        New-Item -ItemType Directory -Path $rootB -Force | Out-Null
+        $offer = [ordered]@{ schemaVersion = 1; osl_user_id = 'same-opaque-osl-user' }
+        $offer | ConvertTo-Json -Depth 4 | Out-File -LiteralPath (Join-Path $rootA 'discord-qa-offer.v1.json') -Encoding utf8
+        $offer | ConvertTo-Json -Depth 4 | Out-File -LiteralPath (Join-Path $rootB 'discord-qa-offer.v1.json') -Encoding utf8
+
+        $oldAppData = $env:APPDATA
+        $self = $PSCommandPath
+        $hostExe = (Get-Process -Id $PID).Path
+        try {
+            $env:APPDATA = $appdata
+            & $hostExe -NoProfile -ExecutionPolicy Bypass -File $self `
+                -BundleA $bundleAForTest `
+                -BundleB $bundleBForTest `
+                -JsonOut $json `
+                -Quiet | Out-Null
+            $rc = $LASTEXITCODE
+        } finally {
+            $env:APPDATA = $oldAppData
+        }
+
+        Assert-SelfTest ($rc -eq 1) ('expected same osl_user_id refusal exit 1, got {0}' -f $rc)
+        Assert-SelfTest (Test-Path -LiteralPath $json) 'pair refusal did not write a JSON receipt'
+        $payload = Get-Content -LiteralPath $json -Raw | ConvertFrom-Json
+        $stepsForTest = @($payload.steps)
+        $lastStep = $stepsForTest[$stepsForTest.Count - 1]
+        Assert-SelfTest ($payload.overall.verdict -eq 'failed') ('expected failed verdict, got {0}' -f $payload.overall.verdict)
+        Assert-SelfTest ($lastStep.step -eq 'gate/two-identities') ('expected gate/two-identities as final step, got {0}' -f $lastStep.step)
+        Assert-SelfTest ($lastStep.result -eq 'failed') ('expected gate/two-identities failure, got {0}' -f $lastStep.result)
+        Assert-SelfTest (-not (Test-Path -LiteralPath (Join-Path $rootA 'discord-qa-peer-offer.v1.json'))) 'same-user refusal still copied B offer into A'
+        Assert-SelfTest (-not (Test-Path -LiteralPath (Join-Path $rootB 'discord-qa-peer-offer.v1.json'))) 'same-user refusal still copied A offer into B'
+    } finally {
+        if (Test-Path -LiteralPath $root) {
+            Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Resolve-Root {
     param([string]$Bundle, [string]$Side)
     $base = Join-Path $env:APPDATA $Bundle
@@ -92,6 +146,16 @@ function Resolve-Root {
 }
 
 Say '=== OSL QA pairing: offer exchange ===' 'Cyan'
+
+if ($RunScriptSelfTests) {
+    osl_p2p_pair_refuses_same_osl_user_id
+    exit 0
+}
+
+if ([string]::IsNullOrWhiteSpace($BundleB)) {
+    Add-S 'gate/distinct' 'failed' 'BundleB was not provided.'
+    Finish 'blocked' 'Instance B identifier is required, so there is no second identity to pair.' 'Pass -BundleB with the second QA build identifier.'
+}
 
 if ($BundleA -eq $BundleB) {
     Add-S 'gate/distinct' 'failed' ('Both bundles are "{0}".' -f $BundleA)
