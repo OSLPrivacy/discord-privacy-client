@@ -11,7 +11,9 @@ const MAX_FINDING_CATEGORIES = 64;
 
 export async function computeScopeFingerprint(input: ScrubScopeFingerprintInput): Promise<string> {
   const encoded = encodeScopeFingerprintInput(input);
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", encoded);
+  const data = new ArrayBuffer(encoded.byteLength);
+  new Uint8Array(data).set(encoded);
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", data);
   return [...new Uint8Array(digest)]
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");

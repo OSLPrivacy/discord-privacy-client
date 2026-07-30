@@ -1488,7 +1488,7 @@ function chooseAppsOnboardingContent(): string {
   const continueLabel = nativeCatalogBusy
     ? defaultContinueLabel
     : selectedOnboardingApps.size > 0 ? defaultContinueLabel : "Skip apps";
-  return `<h1 id="route-heading" tabindex="-1">Choose apps</h1><p class="compact-lead onboarding-centered-copy">Pick reviewed apps for Home, or skip this for now. Nothing opens during setup.</p><section class="onboarding-app-section"><h2>Detected</h2>${choices(detected, "Detected apps")}</section><section class="onboarding-app-section"><h2>Other apps</h2>${choices(other, "Other apps")}</section><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-app-choice" type="button" ${nativeCatalogBusy ? "disabled" : ""}>${continueLabel}</button></div>`;
+  return `<h1 id="route-heading" tabindex="-1">Choose apps</h1><p class="compact-lead onboarding-centered-copy">Pick available apps for Home, or skip this for now. Nothing opens during setup.</p><section class="onboarding-app-section"><h2>Detected</h2>${choices(detected, "Detected apps")}</section><section class="onboarding-app-section"><h2>Other apps</h2>${choices(other, "Other apps")}</section><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-app-choice" type="button" ${nativeCatalogBusy ? "disabled" : ""}>${continueLabel}</button></div>`;
 }
 
 async function enterCombinedAppChoice(): Promise<void> {
@@ -1728,7 +1728,7 @@ function onboardingAppsContent(): string {
   const apps = onboardingConnectionApps().filter((app) => !handledOnboardingConnectApps.has(app.id));
   const choices = apps.length
     ? `<div class="onboarding-app-grid" role="radiogroup" aria-label="Apps left to connect">${apps.map((app) => `<button type="button" role="radio" class="onboarding-app ${onboardingConnectAppId === app.id ? "selected" : ""}" data-connect-app-choice="${app.id}" aria-checked="${onboardingConnectAppId === app.id}"><span class="app-logo-plate">${homeAppLogo(app)}</span><strong>${escapeHtml(app.displayName)}</strong></button>`).join("")}</div>`
-    : `<div class="empty-state"><strong>Selected apps reviewed</strong><p>Finish setup.</p></div>`;
+    : `<div class="empty-state"><strong>Selected apps ready</strong><p>Finish setup.</p></div>`;
   return `<h1 id="route-heading" tabindex="-1">Connect your apps</h1><p class="compact-lead onboarding-centered-copy">Open each selected app, or skip it for now.</p>${choices}<div class="setup-footer onboarding-actions"><button class="button primary" id="continue-connect-app" type="button" ${onboardingConnectAppId ? "" : "disabled"}>Open selected app</button><button class="browser-import-skip" id="skip-connect-app" type="button">${onboardingConnectAppId ? "Not now" : "Continue"}</button></div>`;
 }
 
@@ -2063,7 +2063,7 @@ function captureSetupMarkup(): string {
   return `<section class="setup-list capture-setup-inline" aria-labelledby="capture-setup-heading"><h2 id="capture-setup-heading" class="setup-section-heading">Screen capture</h2><label class="setup-status-row capture-preference"><span><strong>Resist Windows capture</strong><small>Excludes OSL from ordinary screenshots and recording when Windows supports it. Cameras, malware, and modified devices can still capture content.</small></span><input id="window-capture-enabled" type="checkbox" ${windowCaptureEnabled ? "checked" : ""}/></label><div class="setup-status-row"><span><strong>Current device</strong><small>Protected messages appear only after OSL enables this protection.</small></span><span class="status-tag ${applied ? "active" : ""}">${windowCaptureEnabled ? (applied ? "Active" : "Unavailable") : "Off"}</span></div></section>`;
 }
 
-function reviewDefaultsOnboardingContent(): string {
+export function reviewDefaultsOnboardingContent(): string {
   const row = (title: string, detail: string, state: string, active = false) => `<div class="setup-status-row"><span><strong>${title}</strong><small>${detail}</small></span><span class="status-tag ${active ? "active" : ""}">${state}</span></div>`;
   return `<h1 id="route-heading" tabindex="-1">Review defaults</h1><p class="compact-lead onboarding-centered-copy">Balanced starts with local warnings, visible attachment cleaning, and review-only cleanup. You can change these later in Privacy.</p><section class="setup-list defaults-review-list" aria-label="Default protection review">${row("Warn before sending", "Checks drafts on this device for selected risks before you send.", "On", true)}${row("Clean attachments", "Offers a visible cleaning step for files and media; nothing changes without your consent.", "Ask first")}${row("Keep protected drafts", "Keeps encrypted local drafts and private activity on this device for recovery.", "On", true)}${row("Delete or clean up history", "Timed deletion, bulk cleanup, and account cleanup do not run during onboarding.", "Off")}${row("Send behavior", "Manual handoff is the default: OSL prepares, then you place and send.", formatSendMode(defaultSetup.sendMode), true)}</section><p class="send-mode-truth">No destructive action starts from setup. Cleanup requires a separate review and confirmation.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-defaults-review" type="button">Continue</button></div>`;
 }
@@ -3235,7 +3235,7 @@ function publicCirclesUnavailableMarkup(): string {
   return `<article class="inbox-surface-card unavailable" data-inbox-osl-surface="circles" data-public-circles-network="unavailable" aria-disabled="true"><strong>OSL Circles</strong><small>Private audience feeds</small><p><span class="status-tag">Unavailable</span> Public Circles network unavailable. Private audience posts stay off until membership, posting, and moderation are complete.</p></article>`;
 }
 
-function inboxDestinationContent(): string {
+export function inboxDestinationContent(): string {
   const verifiedPeople = hubPeople.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange);
   const requests = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange);
   const connectedApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch" && app.linked);
@@ -3250,14 +3250,14 @@ function inboxDestinationContent(): string {
   const chatRows = verifiedPeople.length
     ? verifiedPeople.slice(0, 8).map((person) => {
         const last = oslChatMessages.get(person.personId)?.at(-1);
-        return `<article class="inbox-row osl-chat-source"><span class="source-mark">${homeModuleIcon("osl-chats")}</span><button class="inbox-conversation-open" data-osl-chat-open="${escapeHtml(person.personId)}" type="button"><strong>${escapeHtml(person.alias ?? "Verified friend")}</strong><small>OSL Chat · Encrypted for verified friends${last?.body ? ` · ${escapeHtml(last.body)}` : ""}</small></button></article>`;
+        return `<article class="inbox-row osl-chat-source"><span class="source-mark">${homeModuleIcon("osl-chats")}</span><button class="inbox-conversation-open" data-osl-chat-open="${escapeHtml(person.personId)}" type="button"><strong>${escapeHtml(person.alias ?? "Verified friend")}</strong><small>OSL Chat · Private with verified friends${last?.body ? ` · ${escapeHtml(last.body)}` : ""}</small></button></article>`;
       }).join("")
     : `<div class="empty-state"><strong>No private chats yet</strong><p>Verify a friend before starting an encrypted OSL chat.</p></div>`;
   const requestRows = requests.length
     ? requests.slice(0, 8).map((person) => `<article class="inbox-row request-source"><span class="source-mark">${homeCommandIcon("friends")}</span><div><strong>${escapeHtml(person.alias ?? "Friend request")}</strong><small>${person.pendingKeyChange ? "Security change needs review" : "Verification needed before protected chat"}</small></div><button class="button compact" data-open-friends type="button">Review</button></article>`).join("")
     : `<div class="empty-state"><strong>No requests</strong><p>New friend requests and key reviews appear here.</p></div>`;
   const oslSurfaces = [
-    ["chat", "OSL Chat", "Encrypted for verified friends", "Ready for verified friends"],
+    ["chat", "OSL Chat", "Private with verified friends", "Ready for verified friends"],
     ["circles", "OSL Circles", "Private audience feeds", "Coming after small-group review"],
     ["mail", "OSL Mail", "Client protection", "External recipients are not OSL E2EE"],
   ] as const;
@@ -3777,7 +3777,7 @@ function massCleanupActionLabel(action: string): string {
 function massCleanupSettingsContent(): string {
   const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
   if (!pro) {
-    return `<h2>Mass cleanup</h2><section class="cleanup-lock"><span>PRO</span><strong>Organize many chats at once</strong><p>Every batch is reviewed and confirmed before anything changes.</p></section>`;
+    return `<h2>Mass cleanup</h2><section class="cleanup-lock"><span>PRO</span><strong>Organize many chats at once</strong><p>Every batch is shown and confirmed before anything changes.</p></section>`;
   }
   if (massCleanupLoading) return `<h2>Mass cleanup</h2><div class="settings-unavailable"><strong>Checking this device…</strong></div>`;
   if (!massCleanupCapabilities) {

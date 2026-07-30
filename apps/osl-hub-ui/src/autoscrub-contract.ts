@@ -167,7 +167,7 @@ function boundedText(value: unknown, max: number): value is string {
 }
 
 function boundedCount(value: unknown, max: number): value is number {
-  return Number.isInteger(value) && value >= 0 && value <= max;
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= max;
 }
 
 function opaqueIdentifier(value: unknown, max: number): value is string {
@@ -280,7 +280,7 @@ export function projectAutoScrubFleetStatus(status: AutoScrubFleetStatus | null)
   if (!status) {
     return {
       label: "Unavailable in this build",
-      detail: "Nothing runs until OSL can show a reviewed local list.",
+      detail: "Nothing runs until OSL can show a local item list.",
       tone: "neutral",
       stopAvailable: false,
     };
@@ -312,7 +312,7 @@ export function projectAutoScrubFleetStatus(status: AutoScrubFleetStatus | null)
   if (status.runs.some((run) => run.phase === "running")) {
     return {
       label: `${status.openRunCount} open ${status.openRunCount === 1 ? "run" : "runs"}`,
-      detail: "Only reviewed items can be prepared; every batch still needs confirmation.",
+      detail: "Only selected items can be prepared; every batch still needs confirmation.",
       tone: "working",
       stopAvailable: true,
     };
