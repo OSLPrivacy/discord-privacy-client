@@ -140,6 +140,26 @@ pub struct PlacedWhatsAppCarrier {
     pub row_proof: WhatsAppCarrierRowProof,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub enum WhatsAppLinkPreviewBlockReason {
+    InvalidCarrier,
+    ExactBodyUnavailable,
+    PreviewFragmentsAreNotExactBody,
+    MissingCarrierRowProof,
+    AmbiguousCarrierRowProof,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum WhatsAppLinkPreviewCapability {
+    SupportedWithoutPreview {
+        row_id: String,
+        carrier_sha256_label: String,
+    },
+    Blocked {
+        reason: WhatsAppLinkPreviewBlockReason,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WhatsAppAdapterRefusal {
     MissingExactAppRoot,
@@ -309,6 +329,63 @@ pub fn place_whatsapp_carrier(
             bounds: proof_candidate.bounds,
         },
     })
+}
+
+pub fn whatsapp_link_preview_capability(
+    pair: &DiscoveredWhatsAppPair,
+    carrier_payload: &str,
+    rows_after_write: &[WhatsAppTranscriptRow],
+) -> WhatsAppLinkPreviewCapability {
+    if rows_after_write
+        .iter()
+        .filter(|row| {
+            row.transcript_node_id == pair.transcript.node_id
+                && !row.offscreen
+                && row.bounds.map_or(false, WhatsAppBounds::is_positive)
+        })
+        .flat_map(|row| &row.fragments)
+        .any(|fragment| {
+            !canonical_whatsapp_body(&fragment.text).is_empty()
+                && matches!(
+                    fragment.role,
+                    WhatsAppTextFragmentRole::LinkPreviewTitle
+                        | WhatsAppTextFragmentRole::LinkPreviewDescription
+                )
+        })
+    {
+        return WhatsAppLinkPreviewCapability::Blocked {
+            reason: WhatsAppLinkPreviewBlockReason::PreviewFragmentsAreNotExactBody,
+        };
+    }
+
+    match place_whatsapp_carrier(pair, carrier_payload, rows_after_write) {
+        Ok(placed) => WhatsAppLinkPreviewCapability::SupportedWithoutPreview {
+            row_id: placed.row_proof.row_id,
+            carrier_sha256_label: placed.row_proof.carrier_sha256_label,
+        },
+        Err(WhatsAppAdapterRefusal::InvalidCarrier) => WhatsAppLinkPreviewCapability::Blocked {
+            reason: WhatsAppLinkPreviewBlockReason::InvalidCarrier,
+        },
+        Err(WhatsAppAdapterRefusal::MissingExactBodyCandidate)
+        | Err(WhatsAppAdapterRefusal::BodyCandidateSupportBlocked) => {
+            WhatsAppLinkPreviewCapability::Blocked {
+                reason: WhatsAppLinkPreviewBlockReason::ExactBodyUnavailable,
+            }
+        }
+        Err(WhatsAppAdapterRefusal::MissingCarrierRowProof) => {
+            WhatsAppLinkPreviewCapability::Blocked {
+                reason: WhatsAppLinkPreviewBlockReason::MissingCarrierRowProof,
+            }
+        }
+        Err(WhatsAppAdapterRefusal::AmbiguousCarrierRowProof) => {
+            WhatsAppLinkPreviewCapability::Blocked {
+                reason: WhatsAppLinkPreviewBlockReason::AmbiguousCarrierRowProof,
+            }
+        }
+        Err(_) => WhatsAppLinkPreviewCapability::Blocked {
+            reason: WhatsAppLinkPreviewBlockReason::ExactBodyUnavailable,
+        },
+    }
 }
 
 fn trusted_webview_ancestor_id(
@@ -575,6 +652,19 @@ mod tests {
         row(row_id, WhatsAppTextFragmentRole::ExactBody, text)
     }
 
+    fn exact_body_row_with_preview(
+        row_id: &str,
+        body: &str,
+        preview: &str,
+    ) -> WhatsAppTranscriptRow {
+        let mut row = exact_body_row(row_id, body);
+        row.fragments.push(WhatsAppTextFragment {
+            role: WhatsAppTextFragmentRole::LinkPreviewTitle,
+            text: preview.to_owned(),
+        });
+        row
+    }
+
     #[test]
     fn whatsapp_content_root_trusts_only_webview2_descendant_of_exact_whatsapp_root() {
         let root = app_root();
@@ -749,6 +839,51 @@ mod tests {
         assert!(matches!(
             place_whatsapp_carrier(&pair, "has spaces", &[]),
             Err(WhatsAppAdapterRefusal::InvalidCarrier)
+        ));
+    }
+
+    #[test]
+    fn whatsapp_link_preview_reports_blocked_for_preview_fragments_without_guessing() {
+        let pair = discovered_pair();
+        let plain_rows = vec![exact_body_row("carrier-row", "OSL1.WA.publiccover")];
+        match whatsapp_link_preview_capability(&pair, "publiccover", &plain_rows) {
+            WhatsAppLinkPreviewCapability::SupportedWithoutPreview {
+                row_id,
+                carrier_sha256_label,
+            } => {
+                assert_eq!(row_id, "carrier-row");
+                assert!(carrier_sha256_label.starts_with("sha256:"));
+            }
+            WhatsAppLinkPreviewCapability::Blocked { .. } => {
+                panic!("plain exact carrier row should remain supported")
+            }
+        }
+
+        let preview_rows = vec![exact_body_row_with_preview(
+            "carrier-row",
+            "OSL1.WA.publiccover",
+            "Example Domain",
+        )];
+        assert!(matches!(
+            whatsapp_link_preview_capability(&pair, "publiccover", &preview_rows),
+            WhatsAppLinkPreviewCapability::Blocked {
+                reason: WhatsAppLinkPreviewBlockReason::PreviewFragmentsAreNotExactBody
+            }
+        ));
+
+        let missing_proof = vec![exact_body_row("other-row", "OSL1.WA.different")];
+        assert!(matches!(
+            whatsapp_link_preview_capability(&pair, "publiccover", &missing_proof),
+            WhatsAppLinkPreviewCapability::Blocked {
+                reason: WhatsAppLinkPreviewBlockReason::MissingCarrierRowProof
+            }
+        ));
+
+        assert!(matches!(
+            whatsapp_link_preview_capability(&pair, "has spaces", &plain_rows),
+            WhatsAppLinkPreviewCapability::Blocked {
+                reason: WhatsAppLinkPreviewBlockReason::InvalidCarrier
+            }
         ));
     }
 }
