@@ -18929,28 +18929,43 @@ mod tests {
         // The rectangle travelling WITH the row is the whole placement path: the
         // capture shield's cache knowing where the rows are, while the renderer that
         // has to paint over them does not, is the defect this replaced.
-        let source = adapter_source();
-        let read = nested_function_body(source, "fn read_visible_message_rows(\n        target:");
-        assert!(read.contains("record_rehydrated_row_rects(scope_binding, target.generation, rects)"));
-        assert!(read.contains("bounds: row\n                    .bounds"));
-        let collect = function_body_at(source, "fn rehydrate_collect_rows<T>(");
-        assert!(collect.contains("let bounds = (readers.bounds_of)(&child);"));
-        assert!(collect.contains(
-            "            line,\n            candidates: text.candidates,\n            bounds,\n        });"
-        ));
-    }
+        let mut first = fake_row(MSAA_ROLE_SYSTEM_LISTITEM, "first visible row");
+        first.bounds = Some([10, 20, 300, 44]);
+        let mut second = fake_row(MSAA_ROLE_SYSTEM_LISTITEM, "second visible row");
+        second.bounds = Some([12, 48, 320, 72]);
+        let mut unplaceable = fake_row(MSAA_ROLE_SYSTEM_LISTITEM, "row without geometry");
+        unplaceable.bounds = None;
 
-    /// A top-level (module-scope) function body, for the parts of the read path
-    /// that live outside `mod windows`.
-    fn function_body_at(source: &'static str, signature: &str) -> &'static str {
-        let start = source
-            .find(signature)
-            .unwrap_or_else(|| panic!("{signature} is missing"));
-        let body = &source[start..];
-        let end = body
-            .find("\n}\n")
-            .unwrap_or_else(|| panic!("{signature} is unterminated"));
-        &body[..end]
+        let (read, _) = walk(
+            vec![first, second, unplaceable],
+            MAX_VISIBLE_CARRIER_ROWS,
+            REHYDRATE_MAX_NODES,
+            usize::MAX,
+        );
+        assert_eq!(
+            read.rows
+                .iter()
+                .map(|row| row.bounds)
+                .collect::<Vec<_>>(),
+            vec![
+                Some([10, 20, 300, 44]),
+                Some([12, 48, 320, 72]),
+                None,
+            ]
+        );
+
+        let visible = finish_native_visible_rows(read, "scope-binding", 7, true);
+        assert_eq!(
+            visible
+                .iter()
+                .map(|row| row.bounds)
+                .collect::<Vec<_>>(),
+            vec![
+                Some([10, 20, 300, 44]),
+                Some([12, 48, 320, 72]),
+                None,
+            ]
+        );
     }
 
     #[test]

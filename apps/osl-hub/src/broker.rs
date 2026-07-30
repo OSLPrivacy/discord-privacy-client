@@ -11920,9 +11920,35 @@ ok i will weekend again with you",
         assert!(body.contains(".expect(\"batch validation required exactly one bound carrier\")"));
         // The authenticated answer keeps all crypto correlation identifiers and
         // its wire orientation for the native-poster agreement.
-        assert!(body.contains("blob_id: authenticated.blob_id"));
-        assert!(body.contains("ciphertext_sha256: authenticated.ciphertext_sha256"));
-        assert!(body.contains("payload_id: authenticated.payload.message_id.clone()"));
+        let peer = crate::native_discord_adapter::native_row_attribution_from_provider(
+            matrix_native_observation(
+                "555555555555555555",
+                "222222222222222222",
+                "the winter garden waits beside the silver morning",
+                30,
+            ),
+            &["the winter garden waits beside the silver morning".to_owned()],
+            "trusted-scope",
+            7,
+            0,
+        )
+        .expect("native peer evidence is valid");
+        let authenticated = matrix_authenticated(
+            PeerWireOrientation::PeerToSelf,
+            "payload-authenticated",
+            "authenticated plaintext",
+            'f',
+        );
+        let expected_blob_id = authenticated.blob_id.clone();
+        let expected_ciphertext_sha256 = authenticated.ciphertext_sha256.clone();
+        let expected_payload_id = authenticated.payload.message_id.clone();
+        let (_, orientation, attribution) =
+            bind_authenticated_native_row(&peer, authenticated)
+                .expect("matching native and wire orientations bind");
+        assert_eq!(orientation, RehydratedRowOrientation::Incoming);
+        assert_eq!(attribution.blob_id, expected_blob_id);
+        assert_eq!(attribution.ciphertext_sha256, expected_ciphertext_sha256);
+        assert_eq!(attribution.payload_id, expected_payload_id);
     }
 
     /// A display feature that paints nothing must say why, and every reason must
