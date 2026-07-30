@@ -112,16 +112,13 @@ describe("native overlay narrow adapter", () => {
     await expect(sendNativeDiscordOverlayCarrier("atomic", 121)).resolves.toBeNull();
   });
 
-  it("derives the send-proof tri-state from native receipt evidence and never backend text", async () => {
+  it("Parse native carrier receipts into the honest tri-state instead of renderer success text", async () => {
     const notSent = {
       placed: true,
       enterSent: false,
       status: "carrierUnconfirmed",
       mode: "atomic",
       compatibilityDelayMs: 167,
-      sendOutcome: "sent",
-      automaticRetryAfterUncertain: true,
-      uiStatusText: "Sent privately through OSL.",
     };
     const uncertain = {
       ...notSent,
@@ -149,6 +146,14 @@ describe("native overlay narrow adapter", () => {
       sendOutcome: "deliveryUncertain",
       automaticRetryAfterUncertain: false,
     });
+
+    mocks.invoke.mockResolvedValueOnce({
+      ...notSent,
+      sendOutcome: "sent",
+      automaticRetryAfterUncertain: true,
+      uiStatusText: "Sent privately through OSL.",
+    });
+    await expect(sendNativeDiscordOverlayCarrier("atomic", 6)).resolves.toBeNull();
   });
 
   it("accepts a committed QA result and parses its exact carrier-row binding", async () => {
