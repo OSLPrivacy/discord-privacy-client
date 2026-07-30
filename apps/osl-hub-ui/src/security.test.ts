@@ -228,6 +228,7 @@ describe("bundled preview security boundary", () => {
       // permission here is inert outside QA builds. They stay local/main-
       // window scoped either way.
       "allow-send-native-discord-qa-probe",
+      "allow-request-native-discord-visible-row-qa-receipt",
       "allow-run-native-discord-headless-qa",
       "allow-poll-native-discord-headless-qa",
       "allow-prepare-osl-chat-text",

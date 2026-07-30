@@ -309,6 +309,16 @@ description = "Report installed status for the four fixed Windows-native messagi
 commands.allow = ["list_native_apps"]
 
 [[permission]]
+identifier = "allow-native-app-takeover-requires-consent"
+description = "Read-only probe for whether borrowing an existing native app window would require explicit local consent; it grants no launch, quit, or takeover authority."
+commands.allow = ["native_app_takeover_requires_consent"]
+
+[[permission]]
+identifier = "allow-discord-marker-available"
+description = "Read-only probe for whether the trusted native Discord composer marker is available; it grants no send, edit, or cross-app authority."
+commands.allow = ["discord_marker_available"]
+
+[[permission]]
 identifier = "allow-install-native-app"
 description = "Start one fixed silent winget or Microsoft Store background install after an explicit trusted-UI click, without shell input or automatic elevation."
 commands.allow = ["install_native_app"]
@@ -532,6 +542,11 @@ commands.allow = ["add_hub_friend"]
 identifier = "allow-verify-hub-friend-safety-number"
 description = "Record explicit out-of-band verification of one friend's safety number."
 commands.allow = ["verify_hub_friend_safety_number"]
+
+[[permission]]
+identifier = "allow-remove-hub-friend"
+description = "Remove one verified friend from encrypted local People state and queue only local revocation notices; it grants no remote account or provider authority."
+commands.allow = ["remove_hub_friend"]
 
 [[permission]]
 identifier = "allow-list-hub-people"
