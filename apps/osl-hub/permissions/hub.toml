@@ -429,11 +429,6 @@ description = "Experimentally launch only a verified isolated secondary instance
 commands.allow = ["host_native_app_window"]
 
 [[permission]]
-identifier = "allow-native-app-takeover-requires-consent"
-description = "Read whether hosting one fixed native app would require explicit takeover consent; performs no launch, quit, focus, or window mutation."
-commands.allow = ["native_app_takeover_requires_consent"]
-
-[[permission]]
 identifier = "allow-resize-native-app-window"
 description = "Realign only the exact OSL-spawned native client window to the trusted OSL content bounds."
 commands.allow = ["resize_native_app_window"]
