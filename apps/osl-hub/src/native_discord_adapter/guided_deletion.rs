@@ -39,7 +39,8 @@
 
 use std::fmt;
 
-use serde::Serialize;
+use serde::ser::SerializeStruct;
+use serde::{Serialize, Serializer};
 
 use super::stable_hash;
 
@@ -589,6 +590,40 @@ pub enum RemovalVerdict {
     Unreadable(&'static str),
 }
 
+/// Stable category for deletion receipts, shared by attended local execution
+/// and any cloud runner that can only report the post-delete verification result.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeletionReceiptCategory {
+    VerifiedGone,
+    StillPresent,
+    Unknown,
+}
+
+impl DeletionReceiptCategory {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::VerifiedGone => "verified_gone",
+            Self::StillPresent => "still_present",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Map the verification verdict into the only receipt categories a cloud run may
+/// emit. Ambiguous and unreadable outcomes deliberately collapse to `unknown`.
+pub const fn receipt_category_for_removal_verdict(
+    verdict: RemovalVerdict,
+) -> DeletionReceiptCategory {
+    match verdict {
+        RemovalVerdict::Proven => DeletionReceiptCategory::VerifiedGone,
+        RemovalVerdict::StillPresent => DeletionReceiptCategory::StillPresent,
+        RemovalVerdict::Ambiguous(_) | RemovalVerdict::Unreadable(_) => {
+            DeletionReceiptCategory::Unknown
+        }
+    }
+}
+
 /// Decide whether the target row is provably gone.
 ///
 /// Fail-closed by construction. Every branch that is not "this row went, from a
@@ -713,8 +748,7 @@ pub fn classify_removal(before: RowCensus, after: RowCensus) -> RemovalVerdict {
 }
 
 /// One row's outcome. `state` is one of the six, `stage` is a fixed label.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct RowOutcome {
     pub scan_ordinal: usize,
     pub text_len: usize,
@@ -752,6 +786,26 @@ impl RowOutcome {
         match self.state {
             ActivityState::Verified => self.request_posted && self.rewalk_proved_absent,
             _ => !self.rewalk_proved_absent,
+        }
+    }
+
+    /// The evidence category serialized into receipts.
+    ///
+    /// This intentionally does not treat every `Failed` row alike: a post-delete
+    /// re-walk that positively saw the row is `still_present`; an unreadable or
+    /// ambiguous re-walk remains `unknown`.
+    pub fn receipt_category(&self) -> DeletionReceiptCategory {
+        if self.state == ActivityState::Verified && self.request_posted && self.rewalk_proved_absent
+        {
+            DeletionReceiptCategory::VerifiedGone
+        } else if self.state == ActivityState::Failed
+            && self.request_posted
+            && !self.rewalk_proved_absent
+            && self.stage == "row_is_still_in_the_transcript"
+        {
+            DeletionReceiptCategory::StillPresent
+        } else {
+            DeletionReceiptCategory::Unknown
         }
     }
 
@@ -797,6 +851,23 @@ impl RowOutcome {
             request_posted: true,
             rewalk_proved_absent: true,
         }
+    }
+}
+
+impl Serialize for RowOutcome {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut row = serializer.serialize_struct("RowOutcome", 7)?;
+        row.serialize_field("scanOrdinal", &self.scan_ordinal)?;
+        row.serialize_field("textLen", &self.text_len)?;
+        row.serialize_field("state", &self.state)?;
+        row.serialize_field("stage", &self.stage)?;
+        row.serialize_field("requestPosted", &self.request_posted)?;
+        row.serialize_field("rewalkProvedAbsent", &self.rewalk_proved_absent)?;
+        row.serialize_field("receiptCategory", &self.receipt_category())?;
+        row.end()
     }
 }
 
@@ -1689,6 +1760,55 @@ mod tests {
     }
 
     #[test]
+    fn cloud_autoscrub_receipt_categories_match_local() {
+        let plan = confirmed(vec![owned_row(1)]);
+        let before = complete_census(9, 1, 1);
+        let local_receipt = |after| {
+            let mut surface = FakeSurface::happy();
+            surface.censuses = vec![before, after];
+            execute_confirmed_plan(&plan, &mut surface)
+        };
+        let verified = local_receipt(complete_census(8, 0, 0));
+        let still_present = local_receipt(complete_census(9, 1, 1));
+        let unknown = local_receipt(RowCensus {
+            walk: WalkCompleteness::Truncated,
+            ..complete_census(8, 0, 0)
+        });
+
+        let local = [
+            verified.rows[0].receipt_category(),
+            still_present.rows[0].receipt_category(),
+            unknown.rows[0].receipt_category(),
+        ];
+        let cloud = [
+            receipt_category_for_removal_verdict(RemovalVerdict::Proven),
+            receipt_category_for_removal_verdict(RemovalVerdict::StillPresent),
+            receipt_category_for_removal_verdict(RemovalVerdict::Ambiguous(
+                "verify_walk_truncated",
+            )),
+        ];
+
+        assert_eq!(
+            local.map(DeletionReceiptCategory::label),
+            ["verified_gone", "still_present", "unknown"]
+        );
+        assert_eq!(cloud, local);
+        let emitted = [verified, still_present, unknown].map(|receipt| {
+            serde_json::to_value(receipt).expect("receipt json")["rows"][0]["receiptCategory"]
+                .as_str()
+                .expect("receipt category")
+                .to_owned()
+        });
+        assert_eq!(emitted, ["verified_gone", "still_present", "unknown"]);
+        assert_eq!(
+            receipt_category_for_removal_verdict(RemovalVerdict::Unreadable(
+                "verify_surface_identity_changed",
+            )),
+            DeletionReceiptCategory::Unknown
+        );
+    }
+
+    #[test]
     fn the_receipt_carries_lengths_and_counts_only() {
         let plan = confirmed(vec![owned_row(1)]);
         let mut surface = FakeSurface::happy();
@@ -2250,6 +2370,7 @@ mod tests {
         assert_eq!(
             row_keys,
             [
+                "receiptCategory",
                 "requestPosted",
                 "rewalkProvedAbsent",
                 "scanOrdinal",
@@ -2260,6 +2381,7 @@ mod tests {
         );
         assert_eq!(row["state"], serde_json::json!("verified"));
         assert_eq!(row["rewalkProvedAbsent"], serde_json::json!(true));
+        assert_eq!(row["receiptCategory"], serde_json::json!("verified_gone"));
     }
 
     #[test]
