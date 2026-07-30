@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  OSL_CHAT_DELIVERY_STATES,
   OSL_CHAT_MAX_DRAFT_BYTES,
   oslChatDraftBytes,
   oslChatsViewMarkup,
-  type OslChatDeliveryState,
   type OslChatFriend,
   type OslChatsViewModel,
 } from "./osl-chats-view";
@@ -69,11 +69,11 @@ describe("OSL chats view", () => {
   });
 
   it("shows every honest delivery tag without inferring another state", () => {
-    const states: readonly OslChatDeliveryState[] = ["sent", "delivered", "received", "opened", "expired", "failed"];
     const markup = oslChatsViewMarkup(model({
-      messages: states.map((state) => ({ messageId: state, direction: state === "received" ? "incoming" : "outgoing", body: state, state, timestampLabel: "Now" })),
+      messages: OSL_CHAT_DELIVERY_STATES.map((state) => ({ messageId: state, direction: state === "received" ? "incoming" : "outgoing", body: state, state, timestampLabel: "Now" })),
     }));
-    for (const state of states) {
+    expect(OSL_CHAT_DELIVERY_STATES).toEqual(["sent", "delivered", "received", "opened", "expired", "failed"]);
+    for (const state of OSL_CHAT_DELIVERY_STATES) {
       const label = state[0].toUpperCase() + state.slice(1);
       expect(markup).toContain(`class="osl-chat-message-state is-${state}">${label}</span>`);
     }
@@ -87,11 +87,11 @@ describe("OSL chats view", () => {
     expect(empty).toContain("No messages yet");
   });
 
-  it("offers view-once with exact relay and history semantics", () => {
+  it("offers view-once with exact open-and-history semantics", () => {
     const markup = oslChatsViewMarkup(model({ viewOnce: true }));
     expect(markup).toContain('id="osl-chat-view-once"');
-    expect(markup).toContain("Removed from the relay when opened");
-    expect(markup).toContain("never added to OSL history");
+    expect(markup).toContain("Removed after it is opened");
+    expect(markup).toContain("kept out of OSL history");
     expect(markup).toMatch(/id="osl-chat-view-once" type="checkbox" checked/u);
   });
 
@@ -115,6 +115,6 @@ describe("OSL chats view", () => {
   it("renders no external history, scripts, or backend capability claims", () => {
     const markup = oslChatsViewMarkup(model());
     expect(markup).not.toContain("<script");
-    expect(markup).not.toMatch(/Discord|Signal|Telegram|Snapchat|encrypted|end-to-end|server|group/iu);
+    expect(markup).not.toMatch(/Discord|Signal|Telegram|Snapchat|encrypted|end-to-end|server|group|keyserver|ratchet|receipt|browser profile|provider adapter|relay/iu);
   });
 });
