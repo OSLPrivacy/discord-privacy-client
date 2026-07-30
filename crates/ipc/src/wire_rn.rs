@@ -228,6 +228,10 @@ fn wire_in_enabled() -> bool {
     RN_WIRE_IN_TEST_OVERRIDE.with(|enabled| enabled.get().unwrap_or(RN_WIRE_IN_ENABLED))
 }
 
+pub fn app_state_wire_in_enabled(state: &crate::AppState) -> bool {
+    state.rn_wire_in_enabled()
+}
+
 // ---------------------------------------------------------------
 // B5 prekey supply adapters
 // ---------------------------------------------------------------
@@ -851,6 +855,32 @@ pub fn send_rn(
         return Err(RnError::WireInDisabled);
     }
 
+    send_rn_after_gate(store, sealer, peer_identity_x25519, msg_type, plaintext)
+}
+
+/// Encrypt with a persisted OSL-RN session, gated by [`crate::AppState`].
+pub fn send_rn_for_state(
+    state: &crate::AppState,
+    store: &RnSessionStore,
+    sealer: &dyn keystore::sealer::Sealer,
+    peer_identity_x25519: &[u8; 32],
+    msg_type: u8,
+    plaintext: &[u8],
+) -> Result<String, RnError> {
+    if !app_state_wire_in_enabled(state) {
+        return Err(RnError::WireInDisabled);
+    }
+
+    send_rn_after_gate(store, sealer, peer_identity_x25519, msg_type, plaintext)
+}
+
+fn send_rn_after_gate(
+    store: &RnSessionStore,
+    sealer: &dyn keystore::sealer::Sealer,
+    peer_identity_x25519: &[u8; 32],
+    msg_type: u8,
+    plaintext: &[u8],
+) -> Result<String, RnError> {
     let mut session = store
         .load_session(peer_identity_x25519, sealer)?
         .ok_or_else(|| RnError::Protocol("no OSL-RN session on file".into()))?;
@@ -875,6 +905,30 @@ pub fn receive_rn(
         return Err(RnError::WireInDisabled);
     }
 
+    receive_rn_after_gate(store, sealer, peer_identity_x25519, wire)
+}
+
+/// Decrypt with a persisted OSL-RN session, gated by [`crate::AppState`].
+pub fn receive_rn_for_state(
+    state: &crate::AppState,
+    store: &RnSessionStore,
+    sealer: &dyn keystore::sealer::Sealer,
+    peer_identity_x25519: &[u8; 32],
+    wire: &str,
+) -> Result<Opened, RnError> {
+    if !app_state_wire_in_enabled(state) {
+        return Err(RnError::WireInDisabled);
+    }
+
+    receive_rn_after_gate(store, sealer, peer_identity_x25519, wire)
+}
+
+fn receive_rn_after_gate(
+    store: &RnSessionStore,
+    sealer: &dyn keystore::sealer::Sealer,
+    peer_identity_x25519: &[u8; 32],
+    wire: &str,
+) -> Result<Opened, RnError> {
     let mut session = store
         .load_session(peer_identity_x25519, sealer)?
         .ok_or_else(|| RnError::Protocol("no OSL-RN session on file".into()))?;
@@ -1487,6 +1541,69 @@ mod tests {
             before,
             "disabled send/receive must not create or modify store files"
         );
+    }
+
+    #[test]
+    fn app_state_runtime_gate_is_separate_from_the_compile_time_fuse() {
+        let state = crate::AppState::new();
+
+        assert!(
+            !RN_WIRE_IN_ENABLED,
+            "the build fuse must remain off in this unit"
+        );
+        assert!(!app_state_wire_in_enabled(&state));
+
+        state.set_rn_wire_in_enabled(true);
+        assert!(
+            app_state_wire_in_enabled(&state),
+            "the state-aware gate is controlled by AppState"
+        );
+    }
+
+    #[test]
+    fn app_state_runtime_gate_refuses_state_aware_send_and_receive_by_default() {
+        let state = crate::AppState::new();
+        let (_d, store) = fresh_store();
+        std::fs::create_dir_all(&store.dir).expect("mkdir");
+        std::fs::write(store.dir.join("sentinel"), b"unchanged").expect("sentinel");
+        let before = snapshot_files(&store.dir);
+        let sealer = MemorySealer::new();
+        let peer = [32u8; 32];
+
+        assert!(matches!(
+            send_rn_for_state(&state, &store, &sealer, &peer, 7, b"blocked"),
+            Err(RnError::WireInDisabled)
+        ));
+        assert!(matches!(
+            receive_rn_for_state(&state, &store, &sealer, &peer, "not touched"),
+            Err(RnError::WireInDisabled)
+        ));
+
+        assert_eq!(
+            snapshot_files(&store.dir),
+            before,
+            "state-gated disabled send/receive must not touch store files"
+        );
+    }
+
+    #[test]
+    fn app_state_runtime_gate_allows_state_aware_send_when_enabled() {
+        let state = crate::AppState::new();
+        state.set_rn_wire_in_enabled(true);
+        let (_d, store) = fresh_store();
+        let sealer = MemorySealer::new();
+        let mut rng = seeded_rng(38);
+        let (_prekeys, bundle) = fresh_bundle(&mut rng);
+        let (ik, _) = x25519_keypair(&mut rng);
+        let session =
+            Session::initiate(&ik, &bundle, SessionParams::default(), &mut rng).expect("initiate");
+        let peer = *bundle.identity.as_bytes();
+        store.save_session(&peer, &session, &sealer).expect("save");
+
+        let wire = send_rn_for_state(&state, &store, &sealer, &peer, 7, b"state enabled")
+            .expect("state-enabled send");
+
+        assert!(!wire.is_empty());
     }
 
     #[test]

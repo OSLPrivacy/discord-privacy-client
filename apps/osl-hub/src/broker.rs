@@ -7101,7 +7101,7 @@ fn b6_preflight_for(inputs: B6PreflightInputs) -> DiscordQaB6Preflight {
     }
 }
 
-#[cfg(feature = "discord-qa-shell")]
+#[cfg(any(feature = "discord-qa-shell", test))]
 fn b6_current_executable_sha256() -> Option<String> {
     use std::io::Read as _;
 
@@ -7121,10 +7121,11 @@ fn b6_current_executable_sha256() -> Option<String> {
 
 /// Evaluate the startup gate without loading or creating an identity and
 /// without contacting any server.
-#[cfg(feature = "discord-qa-shell")]
+#[cfg(any(feature = "discord-qa-shell", test))]
 pub fn discord_qa_b6_startup_preflight() -> DiscordQaB6Preflight {
+    let state = ipc::AppState::new();
     b6_preflight_for(B6PreflightInputs {
-        ratchet_wire_in_enabled: ipc::wire_rn::RN_WIRE_IN_ENABLED,
+        ratchet_wire_in_enabled: state.rn_wire_in_enabled(),
         broker_relay_uses_persisted_ratchet: B6_BROKER_RELAY_USES_PERSISTED_RATCHET,
         // Do not inspect an owner profile merely to decide whether a disposable
         // QA process may start. No dedicated QA deployment is compiled in, so
@@ -7141,7 +7142,7 @@ pub fn discord_qa_b6_startup_preflight() -> DiscordQaB6Preflight {
 
 /// Inspect only current in-memory/public configuration. No identity is created,
 /// no server is contacted, and no ratchet or ledger state is read or changed.
-#[cfg(feature = "discord-qa-shell")]
+#[cfg(any(feature = "discord-qa-shell", test))]
 pub fn discord_qa_b6_preflight(core: &HubCoreState) -> DiscordQaB6Preflight {
     let identity_public_fingerprint_sha256 = core
         .osl
@@ -7153,7 +7154,7 @@ pub fn discord_qa_b6_preflight(core: &HubCoreState) -> DiscordQaB6Preflight {
         .map(|dir| ipc::commands::resolve_keyserver_base_url(&dir))
         .unwrap_or_default();
     b6_preflight_for(B6PreflightInputs {
-        ratchet_wire_in_enabled: ipc::wire_rn::RN_WIRE_IN_ENABLED,
+        ratchet_wire_in_enabled: core.osl.rn_wire_in_enabled(),
         broker_relay_uses_persisted_ratchet: B6_BROKER_RELAY_USES_PERSISTED_RATCHET,
         keyserver_origin: b6_keyserver_origin(&base_url),
         source_commit: option_env!("OSL_SOURCE_COMMIT").map(str::to_owned),
@@ -7479,8 +7480,9 @@ mod tests {
 
     #[test]
     fn b6_preflight_names_every_current_runtime_blocker_without_network_or_state_mutation() {
+        let state = ipc::AppState::new();
         let receipt = b6_preflight_for(B6PreflightInputs {
-            ratchet_wire_in_enabled: ipc::wire_rn::RN_WIRE_IN_ENABLED,
+            ratchet_wire_in_enabled: state.rn_wire_in_enabled(),
             broker_relay_uses_persisted_ratchet: B6_BROKER_RELAY_USES_PERSISTED_RATCHET,
             keyserver_origin: "production",
             source_commit: None,
@@ -7630,6 +7632,17 @@ mod tests {
             .expect("one measured row fails");
         assert_eq!(failed.id, "runtime-distinct-identities");
         assert_eq!(failed.outcome.as_str(), "fail");
+    }
+
+    #[test]
+    fn b6_preflight_reads_rn_wire_gate_from_app_state() {
+        let core = HubCoreState::default();
+        core.osl.set_rn_wire_in_enabled(true);
+
+        let receipt = discord_qa_b6_preflight(&core);
+
+        assert!(receipt.ratchet_wire_in_enabled);
+        assert!(!receipt.startup_blockers.contains(&"rn_wire_in_disabled"));
     }
 
     #[test]
