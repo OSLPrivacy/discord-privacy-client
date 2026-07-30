@@ -66,11 +66,36 @@ pub struct TrustedWhatsAppContentRoot {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WhatsAppComposerBinding {
+    pub node_id: String,
+    pub runtime_hash: String,
+    pub bounds: WhatsAppBounds,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WhatsAppTranscriptBinding {
+    pub node_id: String,
+    pub runtime_hash: String,
+    pub bounds: WhatsAppBounds,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscoveredWhatsAppPair {
+    pub content_root: TrustedWhatsAppContentRoot,
+    pub composer: WhatsAppComposerBinding,
+    pub transcript: WhatsAppTranscriptBinding,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WhatsAppAdapterRefusal {
     MissingExactAppRoot,
     AmbiguousAppRoot,
     MissingWebView2ContentRoot,
     AmbiguousWebView2ContentRoot,
+    MissingComposer,
+    AmbiguousComposer,
+    MissingTranscript,
+    AmbiguousTranscript,
 }
 
 pub fn trusted_whatsapp_content_root(
@@ -117,6 +142,40 @@ pub fn trusted_whatsapp_content_root(
     }
 }
 
+pub fn discover_whatsapp_pair(
+    nodes: &[WhatsAppStructuralNode],
+) -> Result<DiscoveredWhatsAppPair, WhatsAppAdapterRefusal> {
+    let content_root = trusted_whatsapp_content_root(nodes)?;
+    let composer_candidates: Vec<WhatsAppComposerBinding> = nodes
+        .iter()
+        .filter(|node| descendant_of(nodes, node, &content_root.content_root_id))
+        .filter_map(composer_binding)
+        .collect();
+    let transcript_candidates: Vec<WhatsAppTranscriptBinding> = nodes
+        .iter()
+        .filter(|node| descendant_of(nodes, node, &content_root.content_root_id))
+        .filter(|node| node.structural_id != content_root.content_root_id)
+        .filter_map(transcript_binding)
+        .collect();
+
+    let composer = match composer_candidates.as_slice() {
+        [composer] => composer.clone(),
+        [] => return Err(WhatsAppAdapterRefusal::MissingComposer),
+        _ => return Err(WhatsAppAdapterRefusal::AmbiguousComposer),
+    };
+    let transcript = match transcript_candidates.as_slice() {
+        [transcript] => transcript.clone(),
+        [] => return Err(WhatsAppAdapterRefusal::MissingTranscript),
+        _ => return Err(WhatsAppAdapterRefusal::AmbiguousTranscript),
+    };
+
+    Ok(DiscoveredWhatsAppPair {
+        content_root,
+        composer,
+        transcript,
+    })
+}
+
 fn trusted_webview_ancestor_id(
     nodes: &[WhatsAppStructuralNode],
     app_root: &WhatsAppStructuralNode,
@@ -148,16 +207,91 @@ fn trusted_webview_ancestor_id(
     None
 }
 
+fn descendant_of(
+    nodes: &[WhatsAppStructuralNode],
+    node: &WhatsAppStructuralNode,
+    ancestor_id: &str,
+) -> bool {
+    let mut cursor = Some(node);
+    let mut depth = 0usize;
+    while let Some(current) = cursor {
+        if depth > 32 {
+            return false;
+        }
+        if current.structural_id == ancestor_id {
+            return true;
+        }
+        cursor = current
+            .parent_structural_id
+            .as_deref()
+            .and_then(|parent_id| {
+                nodes
+                    .iter()
+                    .find(|candidate| candidate.structural_id == parent_id)
+            });
+        depth += 1;
+    }
+    false
+}
+
+fn composer_binding(node: &WhatsAppStructuralNode) -> Option<WhatsAppComposerBinding> {
+    if node.control_type != WhatsAppControlType::Edit || !visible_structural_node(node) {
+        return None;
+    }
+    let has_composer_hint = token_contains(&node.automation_id, &["composer", "input", "message"])
+        || token_contains(
+            &node.class_name,
+            &["composer", "input", "editable", "textbox"],
+        );
+    if !has_composer_hint {
+        return None;
+    }
+    Some(WhatsAppComposerBinding {
+        node_id: node.structural_id.clone(),
+        runtime_hash: node.runtime_hash.clone()?,
+        bounds: node.bounds?,
+    })
+}
+
+fn transcript_binding(node: &WhatsAppStructuralNode) -> Option<WhatsAppTranscriptBinding> {
+    if !matches!(
+        node.control_type,
+        WhatsAppControlType::List | WhatsAppControlType::Document
+    ) || !visible_structural_node(node)
+    {
+        return None;
+    }
+    let has_transcript_hint = token_contains(
+        &node.automation_id,
+        &["message-list", "messages", "conversation", "transcript"],
+    ) || token_contains(
+        &node.class_name,
+        &["message-list", "conversation", "transcript"],
+    );
+    if !has_transcript_hint {
+        return None;
+    }
+    Some(WhatsAppTranscriptBinding {
+        node_id: node.structural_id.clone(),
+        runtime_hash: node.runtime_hash.clone()?,
+        bounds: node.bounds?,
+    })
+}
+
 fn is_content_root_candidate(node: &WhatsAppStructuralNode) -> bool {
-    node.enabled
-        && !node.offscreen
-        && node.bounds.map_or(false, WhatsAppBounds::is_positive)
-        && node.runtime_hash.is_some()
+    visible_structural_node(node)
         && matches!(
             node.control_type,
             WhatsAppControlType::Document | WhatsAppControlType::List
         )
         && is_webview2_lineage_node(node)
+}
+
+fn visible_structural_node(node: &WhatsAppStructuralNode) -> bool {
+    node.enabled
+        && !node.offscreen
+        && node.bounds.map_or(false, WhatsAppBounds::is_positive)
+        && node.runtime_hash.is_some()
 }
 
 fn is_webview2_lineage_node(node: &WhatsAppStructuralNode) -> bool {
@@ -167,6 +301,13 @@ fn is_webview2_lineage_node(node: &WhatsAppStructuralNode) -> bool {
     node.class_name.as_deref().map_or(false, |class_name| {
         class_name.contains("Chrome_WidgetWin") || class_name.contains("WebView2")
     }) || node.framework_id.as_deref() == Some("Chrome")
+}
+
+fn token_contains(token: &Option<String>, needles: &[&str]) -> bool {
+    token.as_deref().map_or(false, |value| {
+        let value = value.to_ascii_lowercase();
+        needles.iter().any(|needle| value.contains(needle))
+    })
 }
 
 #[cfg(test)]
@@ -229,6 +370,21 @@ mod tests {
         node
     }
 
+    fn trusted_nodes_with_pair() -> Vec<WhatsAppStructuralNode> {
+        let root = app_root();
+        let bridge = webview("webview", "app-root");
+        let mut content = webview("content", "webview");
+        content.control_type = WhatsAppControlType::Document;
+        content.runtime_hash = Some("runtime-content".to_owned());
+        let mut transcript = node("transcript", Some("content"), WhatsAppControlType::List);
+        transcript.automation_id = Some("message-list".to_owned());
+        transcript.runtime_hash = Some("runtime-transcript".to_owned());
+        let mut composer = node("composer", Some("content"), WhatsAppControlType::Edit);
+        composer.automation_id = Some("main-composer-input".to_owned());
+        composer.runtime_hash = Some("runtime-composer".to_owned());
+        vec![root, bridge, content, transcript, composer]
+    }
+
     #[test]
     fn whatsapp_content_root_trusts_only_webview2_descendant_of_exact_whatsapp_root() {
         let root = app_root();
@@ -272,6 +428,44 @@ mod tests {
         assert_eq!(
             trusted_whatsapp_content_root(&[root, bridge, content, second_content]),
             Err(WhatsAppAdapterRefusal::AmbiguousWebView2ContentRoot)
+        );
+    }
+
+    #[test]
+    fn whatsapp_pair_discovers_composer_and_transcript_only_as_one_pair() {
+        let nodes = trusted_nodes_with_pair();
+        let pair = discover_whatsapp_pair(&nodes).expect("exact pair should be discovered");
+        assert_eq!(pair.content_root.content_root_id, "content");
+        assert_eq!(pair.composer.node_id, "composer");
+        assert_eq!(pair.composer.runtime_hash, "runtime-composer");
+        assert_eq!(pair.transcript.node_id, "transcript");
+        assert_eq!(pair.transcript.runtime_hash, "runtime-transcript");
+
+        let mut missing_transcript = nodes.clone();
+        missing_transcript.retain(|node| node.structural_id != "transcript");
+        assert_eq!(
+            discover_whatsapp_pair(&missing_transcript),
+            Err(WhatsAppAdapterRefusal::MissingTranscript)
+        );
+
+        let mut missing_composer = nodes.clone();
+        missing_composer.retain(|node| node.structural_id != "composer");
+        assert_eq!(
+            discover_whatsapp_pair(&missing_composer),
+            Err(WhatsAppAdapterRefusal::MissingComposer)
+        );
+
+        let mut ambiguous_composer = nodes.clone();
+        let mut second = node(
+            "second-composer",
+            Some("content"),
+            WhatsAppControlType::Edit,
+        );
+        second.automation_id = Some("composer-input".to_owned());
+        ambiguous_composer.push(second);
+        assert_eq!(
+            discover_whatsapp_pair(&ambiguous_composer),
+            Err(WhatsAppAdapterRefusal::AmbiguousComposer)
         );
     }
 }
