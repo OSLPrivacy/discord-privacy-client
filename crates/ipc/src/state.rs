@@ -413,6 +413,9 @@ impl Default for AppState {
             license_state: Mutex::new(keystore::LicenseStateDto::default()),
             recovery_guard: Mutex::new(crate::recovery::RecoveryGuard::default()),
             scope_membership: Mutex::new(crate::membership::ScopeMembership::default()),
+            // RN starts unwired. wire_rn::RN_WIRE_IN_ENABLED is the compile-time
+            // fuse; this runtime flag must never default to a more permissive value.
+            rn_wire_in_enabled: AtomicBool::new(false),
         }
     }
 }
@@ -553,7 +556,7 @@ fn current_unix_seconds() -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
+mod prekey_authority_tests {
     use super::*;
 
     #[test]
