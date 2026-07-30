@@ -1045,9 +1045,14 @@ function Invoke-Step {
                     -Detail "marker image path '$($subject.ExePath)' did not match staged exe '$canonicalExePath'" `
                     -Facts $startedFacts
             }
+            if ($subject.ExeSha256 -cne $exeSha) {
+                return New-StepResult -Id $stepId -Verb $verb -Status 'fail' `
+                    -Detail "marker image sha '$($subject.ExeSha256)' did not match requested exe sha '$exeSha'" `
+                    -Facts $startedFacts
+            }
             # Pin from here on. This is the only place a subject's identity is established by
             # something stronger than a window class: we started the process ourselves and matched
-            # both its pid and its image path.
+            # its pid, image path, and executable bytes.
             $script:VmqaPinnedPid = $subject.Pid
             return New-StepResult -Id $stepId -Verb $verb -Status 'pass' `
                 -Detail "pid=$($subject.Pid); exe=$($subject.ExePath)" `

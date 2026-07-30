@@ -105,8 +105,16 @@ def verify(tag: str, candidate_dir: Path, attestation_path: Path) -> None:
 
     require(isinstance(document.get("completedAtUtc"), str) and document["completedAtUtc"].endswith("Z"),
             "QA attestation needs a UTC completion timestamp")
-    require(isinstance(document.get("operator"), str) and document["operator"].strip(),
+    operator = document.get("operator")
+    require(isinstance(operator, str) and operator.strip(),
             "QA attestation needs an accountable operator")
+    final_approver = document.get("finalApprover")
+    require(isinstance(final_approver, str) and final_approver.strip(),
+            "QA attestation needs a second-session final approver")
+    require(final_approver.strip() != operator.strip(),
+            "QA attestation final approver must be a different session")
+    require(document.get("packageReproducedBySecondSession") is True,
+            "QA attestation must reproduce the package from a second session")
     require(document.get("captchaHandling") == "paused_for_manual_completion",
             "CAPTCHA handling must explicitly pause for the operator")
 
@@ -163,6 +171,8 @@ class HubVmQaAttestationVerifierTests(unittest.TestCase):
                     "candidateSha256": hashlib.sha256(installer.read_bytes()).hexdigest(),
                     "completedAtUtc": "2026-07-17T23:00:00Z",
                     "operator": "qa-reviewer",
+                    "finalApprover": "qa-final-approver-second-session",
+                    "packageReproducedBySecondSession": True,
                     "captchaHandling": "paused_for_manual_completion",
                     "vms": [
                         {"name": "A", "goldenSnapshotId": "signed-a", "cleanRestore": True},
@@ -202,6 +212,26 @@ class HubVmQaAttestationVerifierTests(unittest.TestCase):
                 "releases/download/hub-v0.1.1/osl-hub-0.1.0-x64-nsis.exe"
             )
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                verify("hub-v0.1.0", root, attestation)
+
+    def test_rejects_missing_second_session_reproduction(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, attestation = self.candidate(root)
+            document = json.loads(attestation.read_text(encoding="utf-8"))
+            document["packageReproducedBySecondSession"] = False
+            attestation.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                verify("hub-v0.1.0", root, attestation)
+
+    def test_rejects_same_session_final_approver(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, attestation = self.candidate(root)
+            document = json.loads(attestation.read_text(encoding="utf-8"))
+            document["finalApprover"] = document["operator"]
+            attestation.write_text(json.dumps(document), encoding="utf-8")
             with self.assertRaises(SystemExit):
                 verify("hub-v0.1.0", root, attestation)
 

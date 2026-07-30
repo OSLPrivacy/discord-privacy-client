@@ -40,6 +40,11 @@ package is a refusal. Do not approve the environment and do not attach a
 replacement attestation until the second session reproduces the package from the
 draft release assets.
 
+The verifier treats `finalApprover` and
+`packageReproducedBySecondSession: true` as release blockers, not notes. A blank
+final approver, a reused owner session, or a false reproduction flag means the
+draft remains unpromoted.
+
 Use this bounded attestation shape:
 
 ```json
