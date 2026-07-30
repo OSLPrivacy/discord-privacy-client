@@ -126,7 +126,7 @@ import {
 } from "./discord-headless-qa-adapter";
 import type { SecureLocalStore } from "./secure-local-store";
 
-type Route = "onboarding" | "home" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-servers";
+type Route = "onboarding" | "home" | "people" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-servers";
 const PROTECTED_DISPLAY_VISIBILITY_CHANGED_EVENT = "osl://protected-display-visibility-changed";
 const NATIVE_DISCORD_OVERLAY_CLOSED_EVENT = "osl://native-discord-overlay-closed";
 const MAIN_WINDOW_CAPTURE_REFUSED_EVENT = "hub-main-capture-protection-refused";
@@ -2861,7 +2861,7 @@ function nativeDiscordHeaderControls(): string {
 
 function trustedHeader(): string {
   // Service controls stay compact; deeper setup remains progressively disclosed.
-  if (route === "home" || route === "osl-chat") return homeHeader();
+  if (route === "home" || route === "people" || route === "osl-chat") return homeHeader();
   if (route === "mullvad") {
     return `<div class="trusted-stack"><header class="workspace-header mullvad-host-header"><button class="button compact" id="mullvad-return" type="button">${mullvadReturnRoute === "onboarding" ? "Back to setup" : "Back to Home"}</button><div class="service-context"><span><strong>Mullvad</strong><small>Existing session · capture resistance does not cover Mullvad</small></span></div></header></div>`;
   }
@@ -2964,6 +2964,7 @@ function homeDestinationContent(): string {
 
 function workspaceContent(): string {
   if (route === "mullvad") return `<main class="content-viewport host-viewport native-host-open" id="route-heading" tabindex="-1" aria-label="Your existing Mullvad window is open inside OSL"><span class="sr-only">Mullvad remains a separate foreign application. OSL does not read its account or VPN state.</span></main>`;
+  if (route === "people") return peopleDestinationContent();
   if (route === "osl-chat") return oslChatContent();
   if (route === "osl-servers") return oslServersContent();
   if (route === "settings") return settingsContent();
@@ -3154,6 +3155,29 @@ function peopleListMarkup(mode: PeopleListMode, limit?: number, offset = 0): str
     const management = `<details class="friend-management"><summary>Manage</summary><div>${nicknameForm}<div class="friend-approvals"><span>Approved chats</span><div>${scopes}</div>${truncated}</div><details class="friend-security"><summary>Security details</summary><div><span>OSL ID</span><code>${escapeHtml(identity)}</code><span>Verification code</span><code>${escapeHtml(person.safetyNumber)}</code></div></details>${removeControl}</div></details>`;
     return `<article class="person-row person-profile"><header><div><strong>${escapeHtml(nickname)}</strong>${person.pendingKeyChange ? `<small>Security change needs review</small>` : `<small>${person.safetyNumberVerified ? "Verified" : "Request pending"}</small>`}</div>${action}</header>${management}</article>`;
   }).join("");
+}
+
+function peopleDestinationContent(): string {
+  const verified = hubPeople.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange);
+  const needsReview = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange);
+  const approvedChats = verified.reduce((total, person) => total + person.whitelistCount, 0);
+  const broaderReach = verified.filter((person) => person.reachBroadened).length;
+  const reviewRows = needsReview.length
+    ? needsReview.slice(0, 4).map((person) => {
+      const nickname = person.alias ?? "Unnamed friend";
+      const detail = person.pendingKeyChange
+        ? "Verification changed. Protected sends stay off until you review it."
+        : "Not trusted yet. Protected sends stay off until you verify.";
+      return `<article class="people-review-row"><div><strong>${escapeHtml(nickname)}</strong><small>${detail}</small></div><button class="button compact" type="button" data-verify-person="${escapeHtml(person.personId)}">${person.pendingKeyChange ? "Review change" : "Verify"}</button></article>`;
+    }).join("")
+    : `<div class="empty-state compact"><strong>No people need review</strong><p>New people and changed verification appear here before OSL trusts them.</p></div>`;
+  const peopleRows = hubPeople.length
+    ? peopleListMarkup("manage")
+    : `<div class="empty-state"><strong>No trusted people yet</strong><p>Add someone, compare verification another way, then approve each chat you want to protect.</p></div>`;
+  const invite = friendCode && friendDisplayId
+    ? `<section class="friend-invite people-invite" aria-labelledby="people-friend-id-label"><div><span id="people-friend-id-label">Your friend ID</span><code>${escapeHtml(compactFriendId(friendDisplayId))}</code></div><button class="button" id="copy-friend-code" type="button">Copy invite</button><p>Send the invite to someone you trust so they can add you.</p></section>`
+    : `<div class="empty-inline friend-code-unavailable">Your invite appears after OSL is unlocked.</div>`;
+  return `<main class="content-viewport people-destination" aria-labelledby="route-heading"><header class="people-destination-header"><button class="text-button" data-route="home" type="button">Back</button><div><h1 id="route-heading" tabindex="-1">People</h1><p>Trusted people, the places you know them, and which chats OSL may protect.</p></div></header><section class="people-summary-grid" aria-label="People trust summary"><article><strong>${verified.length.toLocaleString("en-US")}</strong><span>Trusted people</span></article><article><strong>${needsReview.length.toLocaleString("en-US")}</strong><span>Need review</span></article><article><strong>${approvedChats.toLocaleString("en-US")}</strong><span>Approved chats</span></article><article><strong>${broaderReach.toLocaleString("en-US")}</strong><span>Extended reach</span></article></section><section class="people-rule-panel" aria-label="Trust rules"><h2>How trust works</h2><ul><li>No approval means OSL refuses protected sends for that chat.</li><li>Verifying a person does not approve every chat with them.</li><li>Each approval stays separate.</li><li>Groups and audiences never inherit trust from a similar name.</li><li>A changed verification returns the person to review before OSL protects new messages.</li></ul></section><section class="people-add-section" aria-labelledby="people-add-title"><div><h2 id="people-add-title">Add or verify a person</h2><p>Adding someone records the request only on this device. Private chats stay off until you compare the verification code another way and approve a chat.</p></div><form id="add-friend-form" class="friend-add-form people-add-form"><label for="friend-code-input"><span>Paste their invite</span><input id="friend-code-input" placeholder="OSL invite" autocomplete="off" autocapitalize="none" spellcheck="false"/></label><label for="friend-nickname-input"><span>Name them on this device</span><input id="friend-nickname-input" maxlength="48" placeholder="Nickname (optional)" autocomplete="off" spellcheck="false"/></label><button class="button primary">Add person</button></form><p class="form-status" id="friend-form-status" role="status"></p></section><section class="people-review-panel" aria-labelledby="people-review-title"><header><h2 id="people-review-title">Needs review</h2></header><div class="people-review-list">${reviewRows}</div></section>${invite}<section class="people-list-panel" aria-labelledby="people-list-title"><header><h2 id="people-list-title">People you know</h2><p>Nicknames stay on this device. Open Manage on a person to edit trust for approved chats.</p></header><div class="people-list people-destination-list">${peopleRows}</div></section></main>`;
 }
 
 function peopleDialogMarkup(): string {
@@ -5154,7 +5178,8 @@ function bindWorkspace(): void {
   );
   document.querySelectorAll<HTMLButtonElement>("[data-allow-person]").forEach((button) => button.addEventListener("click", () => void allowPersonHere(button.dataset.allowPerson ?? "")));
   document.querySelectorAll<HTMLElement>("[data-open-friends]").forEach((button) => button.addEventListener("click", () => {
-    friendsDialogOpen = true;
+    route = "people";
+    friendsDialogOpen = false;
     friendsDialogPage = 0;
     render();
   }));
