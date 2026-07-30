@@ -49,7 +49,12 @@ from schema import (
     sha256_hex,
     target_binding_digest,
 )
-from verify import VerificationContext, VerificationError, verify_receipt
+from verify import (
+    FilesystemAuthorityVerifier,
+    VerificationContext,
+    VerificationError,
+    verify_receipt,
+)
 
 
 NOW = 1_800_000_000_000
@@ -282,6 +287,42 @@ class FakeFilesystemAuthorityVerifier:
     def verify_filesystem_authority(self, **kwargs: object) -> object:
         self.calls += 1
         return self.result
+
+
+class FakeNativeFilesystemApi:
+    def __init__(
+        self,
+        *,
+        root_identity: dict[str, int] | None = None,
+        dacl_sha256: str = "d" * 64,
+        owner_sid_sha256: str = "e" * 64,
+        current_user_sid_sha256: str = "e" * 64,
+        dacl_protected: bool = True,
+        record_is_regular_child: bool = True,
+    ) -> None:
+        self.root_identity = root_identity or {
+            "volumeSerialNumber": 7,
+            "fileIndex": 99,
+        }
+        self.dacl_sha256 = dacl_sha256
+        self.owner_sid_sha256 = owner_sid_sha256
+        self.current_sid_sha256 = current_user_sid_sha256
+        self.dacl_protected = dacl_protected
+        self.record_child = record_is_regular_child
+        self.identity_calls: list[tuple[str, bool]] = []
+
+    def file_identity(self, path: str, *, directory: bool) -> dict[str, int]:
+        self.identity_calls.append((path, directory))
+        return copy.deepcopy(self.root_identity)
+
+    def record_is_regular_child(self, root: str, record_path: str) -> bool:
+        return self.record_child
+
+    def security_hashes(self, path: str) -> tuple[str, str, bool]:
+        return self.dacl_sha256, self.owner_sid_sha256, self.dacl_protected
+
+    def current_user_sid_sha256(self) -> str:
+        return self.current_sid_sha256
 
 
 def reseal(receipt: dict) -> dict:
@@ -561,6 +602,112 @@ class NativeAuthorityV3Tests(unittest.TestCase):
                     )
                 self.assertEqual(authority.calls, 0)
                 self.assertEqual(ledger.consume_calls, 0)
+
+    def test_filesystem_authority_verifier_requires_native_proof(self) -> None:
+        receipt = make_receipt()
+        ctx = runtime_context(receipt)
+        attestation = copy.deepcopy(ctx.filesystem_authority_attestation)
+        verifier = FilesystemAuthorityVerifier(
+            native_api=FakeNativeFilesystemApi()
+        )
+
+        self.assertTrue(
+            verifier.verify_filesystem_authority(
+                ledger_root=attestation["ledgerRoot"],
+                ledger_record_path=attestation["ledgerRecordPath"],
+                attestation=attestation,
+                challenge=CHALLENGE,
+                expected_emitter=receipt["emitter"],
+                now_unix_ms=NOW + 2_000,
+            )
+        )
+
+    def test_filesystem_authority_verifier_fails_closed_without_windows_api(
+        self,
+    ) -> None:
+        receipt = make_receipt()
+        ctx = runtime_context(receipt)
+        attestation = copy.deepcopy(ctx.filesystem_authority_attestation)
+        verifier = FilesystemAuthorityVerifier()
+
+        self.assertFalse(
+            verifier.verify_filesystem_authority(
+                ledger_root=attestation["ledgerRoot"],
+                ledger_record_path=attestation["ledgerRecordPath"],
+                attestation=attestation,
+                challenge=CHALLENGE,
+                expected_emitter=receipt["emitter"],
+                now_unix_ms=NOW + 2_000,
+            )
+        )
+
+    def test_filesystem_authority_verifier_rejects_native_mismatches(
+        self,
+    ) -> None:
+        receipt = make_receipt()
+        ctx = runtime_context(receipt)
+        attestation = copy.deepcopy(ctx.filesystem_authority_attestation)
+        cases = {
+            "root-identity": FakeNativeFilesystemApi(
+                root_identity={"volumeSerialNumber": 7, "fileIndex": 100}
+            ),
+            "record-child": FakeNativeFilesystemApi(
+                record_is_regular_child=False
+            ),
+            "dacl": FakeNativeFilesystemApi(dacl_sha256="f" * 64),
+            "owner": FakeNativeFilesystemApi(owner_sid_sha256="f" * 64),
+            "current-user": FakeNativeFilesystemApi(
+                current_user_sid_sha256="f" * 64
+            ),
+            "inherited-dacl": FakeNativeFilesystemApi(dacl_protected=False),
+        }
+
+        for name, native_api in cases.items():
+            with self.subTest(mismatch=name):
+                verifier = FilesystemAuthorityVerifier(native_api=native_api)
+                self.assertFalse(
+                    verifier.verify_filesystem_authority(
+                        ledger_root=attestation["ledgerRoot"],
+                        ledger_record_path=attestation["ledgerRecordPath"],
+                        attestation=attestation,
+                        challenge=CHALLENGE,
+                        expected_emitter=receipt["emitter"],
+                        now_unix_ms=NOW + 2_000,
+                    )
+                )
+
+    def test_filesystem_authority_verifier_rejects_caller_path_claims(
+        self,
+    ) -> None:
+        receipt = make_receipt()
+        ctx = runtime_context(receipt)
+        attestation = copy.deepcopy(ctx.filesystem_authority_attestation)
+        verifier = FilesystemAuthorityVerifier(
+            native_api=FakeNativeFilesystemApi()
+        )
+
+        for name, changes in {
+            "other-root": {"ledgerRoot": r"C:\ProgramData\OSL\C4\other"},
+            "other-record": {
+                "ledgerRecordPath": (
+                    "C:\\ProgramData\\OSL\\C4\\ledger\\" + "f" * 64 + ".json"
+                )
+            },
+            "future-check": {"checkedAtUnixMs": NOW + 2_001},
+        }.items():
+            with self.subTest(claim=name):
+                mutated = copy.deepcopy(attestation)
+                mutated.update(changes)
+                self.assertFalse(
+                    verifier.verify_filesystem_authority(
+                        ledger_root=attestation["ledgerRoot"],
+                        ledger_record_path=attestation["ledgerRecordPath"],
+                        attestation=mutated,
+                        challenge=CHALLENGE,
+                        expected_emitter=receipt["emitter"],
+                        now_unix_ms=NOW + 2_000,
+                    )
+                )
 
 
 class CrossLanguageConformanceTests(unittest.TestCase):
