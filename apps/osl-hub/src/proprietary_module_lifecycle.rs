@@ -256,6 +256,14 @@ mod tests {
             Err(ProprietaryModuleLifecycleError::ModuleNotInstalled)
         );
         assert_eq!(
+            lifecycle.license_check(network_binding()),
+            Err(ProprietaryModuleLifecycleError::ModuleNotInstalled)
+        );
+        assert_eq!(
+            lifecycle.uninstall(network_binding()),
+            Err(ProprietaryModuleLifecycleError::ModuleNotInstalled)
+        );
+        assert_eq!(
             lifecycle.install(
                 OptionalModuleInstallGrant::Absent,
                 consent(),
