@@ -5,6 +5,7 @@
 //! This keeps the launcher useful without turning a Tauri command into a
 //! general process-execution primitive.
 
+use adapter_profile::{AdapterService, AdapterSurface, SupportLevel};
 use serde::{Deserialize, Serialize};
 
 use crate::windows_executable_trust::ExecutablePublisher;
@@ -250,10 +251,13 @@ struct ExecutableCandidate {
     relative_path: &'static str,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 struct NativeAppManifest {
     id: NativeAppId,
     display_name: &'static str,
+    adapter_service: AdapterService,
+    adapter_surface: AdapterSurface,
+    adapter_support: SupportLevel,
     package_id: &'static str,
     package_source: &'static str,
     candidates: &'static [ExecutableCandidate],
@@ -431,6 +435,9 @@ const NATIVE_APPS: &[NativeAppManifest] = &[
     NativeAppManifest {
         id: NativeAppId::Discord,
         display_name: "Discord",
+        adapter_service: AdapterService::Discord,
+        adapter_surface: AdapterSurface::InstalledNativeClient,
+        adapter_support: SupportLevel::Experimental,
         package_id: "Discord.Discord",
         package_source: "winget",
         candidates: DISCORD_CANDIDATES,
@@ -439,6 +446,9 @@ const NATIVE_APPS: &[NativeAppManifest] = &[
     NativeAppManifest {
         id: NativeAppId::Telegram,
         display_name: "Telegram",
+        adapter_service: AdapterService::Telegram,
+        adapter_surface: AdapterSurface::InstalledNativeClient,
+        adapter_support: SupportLevel::ComingSoon,
         package_id: "Telegram.TelegramDesktop",
         package_source: "winget",
         candidates: TELEGRAM_CANDIDATES,
@@ -447,6 +457,9 @@ const NATIVE_APPS: &[NativeAppManifest] = &[
     NativeAppManifest {
         id: NativeAppId::Signal,
         display_name: "Signal",
+        adapter_service: AdapterService::Signal,
+        adapter_surface: AdapterSurface::InstalledNativeClient,
+        adapter_support: SupportLevel::ComingSoon,
         package_id: "OpenWhisperSystems.Signal",
         package_source: "winget",
         candidates: SIGNAL_CANDIDATES,
@@ -455,6 +468,9 @@ const NATIVE_APPS: &[NativeAppManifest] = &[
     NativeAppManifest {
         id: NativeAppId::Whatsapp,
         display_name: "WhatsApp",
+        adapter_service: AdapterService::Whatsapp,
+        adapter_surface: AdapterSurface::InstalledNativeClient,
+        adapter_support: SupportLevel::ComingSoon,
         package_id: "9NKSQGP7F2NH",
         package_source: "msstore",
         candidates: WHATSAPP_CANDIDATES,
@@ -463,6 +479,9 @@ const NATIVE_APPS: &[NativeAppManifest] = &[
     NativeAppManifest {
         id: NativeAppId::Outlook,
         display_name: "Outlook",
+        adapter_service: AdapterService::Outlook,
+        adapter_surface: AdapterSurface::InstalledNativeClient,
+        adapter_support: SupportLevel::ComingSoon,
         // Outlook is commonly provisioned with Microsoft 365 rather than as
         // an independently safe winget action. Missing Outlook remains
         // unavailable instead of exposing a guessed installer command.
@@ -674,12 +693,10 @@ fn isolated_native_profile_available(id: NativeAppId) -> bool {
 }
 
 fn native_app_support_status(id: NativeAppId) -> NativeAppSupportStatus {
-    match id {
-        NativeAppId::Discord => NativeAppSupportStatus::Beta,
-        NativeAppId::Telegram
-        | NativeAppId::Signal
-        | NativeAppId::Whatsapp
-        | NativeAppId::Outlook => NativeAppSupportStatus::ComingSoon,
+    match manifest(id).adapter_support {
+        SupportLevel::Supported | SupportLevel::Experimental => NativeAppSupportStatus::Beta,
+        SupportLevel::ComingSoon => NativeAppSupportStatus::ComingSoon,
+        SupportLevel::ExternallyBlocked => NativeAppSupportStatus::ExternallyBlocked,
     }
 }
 
@@ -2393,6 +2410,22 @@ mod tests {
         assert_eq!(NATIVE_APPS.len(), 5);
         for (index, app) in NATIVE_APPS.iter().enumerate() {
             assert!(!app.display_name.is_empty());
+            assert_eq!(
+                app.adapter_surface,
+                AdapterSurface::InstalledNativeClient,
+                "{:?} native inventory must bind to installed native adapter surface",
+                app.id
+            );
+            assert_eq!(
+                native_app_support_status(app.id),
+                match app.adapter_support {
+                    SupportLevel::Supported | SupportLevel::Experimental => {
+                        NativeAppSupportStatus::Beta
+                    }
+                    SupportLevel::ComingSoon => NativeAppSupportStatus::ComingSoon,
+                    SupportLevel::ExternallyBlocked => NativeAppSupportStatus::ExternallyBlocked,
+                }
+            );
             if app.id == NativeAppId::Outlook {
                 assert!(app.package_id.is_empty());
                 assert_eq!(app.package_source, "unavailable");
@@ -2433,6 +2466,26 @@ mod tests {
                 r"DiscordCanary\Update.exe",
             ]
         );
+        assert_eq!(
+            &manifest(NativeAppId::Discord).adapter_service,
+            &AdapterService::Discord
+        );
+        assert_eq!(
+            &manifest(NativeAppId::Telegram).adapter_service,
+            &AdapterService::Telegram
+        );
+        assert_eq!(
+            &manifest(NativeAppId::Signal).adapter_service,
+            &AdapterService::Signal
+        );
+        assert_eq!(
+            &manifest(NativeAppId::Whatsapp).adapter_service,
+            &AdapterService::Whatsapp
+        );
+        assert_eq!(
+            &manifest(NativeAppId::Outlook).adapter_service,
+            &AdapterService::Outlook
+        );
         assert_eq!(manifest(NativeAppId::Whatsapp).package_source, "msstore");
         assert_eq!(
             native_app_publisher(NativeAppId::Discord),
@@ -2456,6 +2509,45 @@ mod tests {
         assert!(!isolated_native_profile_available(NativeAppId::Signal));
         assert!(!isolated_native_profile_available(NativeAppId::Whatsapp));
         assert!(!isolated_native_profile_available(NativeAppId::Outlook));
+    }
+
+    #[test]
+    fn telegram() {
+        let telegram = manifest(NativeAppId::Telegram);
+
+        assert_eq!(telegram.id, NativeAppId::Telegram);
+        assert_eq!(telegram.display_name, "Telegram");
+        assert_eq!(&telegram.adapter_service, &AdapterService::Telegram);
+        assert_eq!(
+            telegram.adapter_surface,
+            AdapterSurface::InstalledNativeClient
+        );
+        assert_eq!(telegram.adapter_support, SupportLevel::ComingSoon);
+        assert_eq!(telegram.package_id, "Telegram.TelegramDesktop");
+        assert_eq!(telegram.package_source, "winget");
+        assert_eq!(telegram.publisher, Some(ExecutablePublisher::Telegram));
+        assert_eq!(
+            telegram.candidates,
+            &[
+                ExecutableCandidate {
+                    folder: KnownFolder::Roaming,
+                    relative_path: r"Telegram Desktop\Telegram.exe",
+                },
+                ExecutableCandidate {
+                    folder: KnownFolder::Local,
+                    relative_path: r"Programs\Telegram Desktop\Telegram.exe",
+                },
+            ]
+        );
+        assert_eq!(
+            native_app_support_status(NativeAppId::Telegram),
+            NativeAppSupportStatus::ComingSoon
+        );
+        assert_eq!(
+            native_app_protected_mode(NativeAppId::Telegram),
+            NativeAppProtectedMode::Unavailable
+        );
+        assert!(isolated_native_profile_available(NativeAppId::Telegram));
     }
 
     #[test]
