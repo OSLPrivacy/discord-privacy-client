@@ -273,7 +273,10 @@ pub fn enter_duress_pin_for_full_wipe_report(
         ipc::main_password::GateMatch::Wrong => {
             return Err("OSL duress PIN was rejected".to_owned())
         }
-        ipc::main_password::GateMatch::Main | ipc::main_password::GateMatch::Stealth => {
+        // GateMatch::Main now carries the derived file_storage_key. This is a
+        // refusal path, so bind it with `_` and let it drop immediately: a main
+        // password must not yield usable key material on the duress route.
+        ipc::main_password::GateMatch::Main(_) | ipc::main_password::GateMatch::Stealth => {
             return Err("OSL duress action requires the burn password".to_owned())
         }
     }
@@ -628,7 +631,7 @@ mod tests {
             "service_scope_index",
             "preview_preferences",
         ] {
-            assert_removed_target(report, target);
+            assert_removed_target(&report, target);
         }
         assert!(!core_dir.exists());
         assert!(!service_profiles.exists());
