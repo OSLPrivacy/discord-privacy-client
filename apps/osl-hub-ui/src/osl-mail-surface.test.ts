@@ -1,9 +1,23 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { oslMailStage, oslMailStages } from "./desktop-service-policy";
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+
+async function loadUi() {
+  vi.resetModules();
+  const store = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => { store.set(key, value); },
+    removeItem: (key: string) => { store.delete(key); },
+    clear: () => { store.clear(); },
+  });
+  vi.stubGlobal("requestAnimationFrame", () => 1);
+  vi.stubGlobal("cancelAnimationFrame", () => undefined);
+  return import("./main");
+}
 
 function functionSource(name: string, nextName: string): string {
   const start = source.indexOf(`function ${name}`);
@@ -15,6 +29,10 @@ function functionSource(name: string, nextName: string): string {
 
 describe("OSL Mail surface", () => {
   const scope = functionSource("mailComposerEncryptionScope", "activeHomeAppName");
+
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
 
   it("Show external email encryption scope before send", () => {
     expect(scope).toContain('app?.serviceId !== "email"');
@@ -39,6 +57,31 @@ describe("OSL Mail surface", () => {
     expect(guide).toContain("mailComposerEncryptionScope(selectedApp ?? activeHomeApp())");
     expect(guide.indexOf("${mailScope}")).toBeLessThan(guide.indexOf("<footer"));
     expect(styles).toContain(".mail-composer-encryption-scope");
+  });
+
+  it("renders OSL Mail Stage A as private client protection", async () => {
+    const { __oslHubUiTest, oslMailStageAContent } = await loadUi();
+    __oslHubUiTest.reset({ route: "inbox" });
+
+    const card = oslMailStageAContent();
+    const html = __oslHubUiTest.renderWorkspaceContent("inbox");
+
+    for (const rendered of [card, html]) {
+      expect(rendered).toContain('data-inbox-osl-surface="mail"');
+      expect(rendered).toContain('data-osl-mail-stage-a="available"');
+      expect(rendered).toContain('data-osl-mail-protection="private-client"');
+      expect(rendered).toContain('data-mailbox-operations="refused"');
+      expect(rendered).toContain('data-osl-mailbox-stage-c-gate="stage-c-coming-later"');
+      expect(rendered).toContain("<small>Private client protection</small>");
+      expect(rendered).toContain("Protect mailboxes you already control after explicit authorization.");
+      expect(rendered).toContain("Connect an existing mailbox only after authorization");
+      expect(rendered).toContain("Warn before send and label the protection scope");
+      expect(rendered).toContain("Full OSL mailbox is coming later.");
+      expect(rendered).toContain("External email remains ordinary email unless a supported encrypted path is selected before send.");
+      expect(rendered).not.toMatch(/ordinary external email is OSL end-to-end encrypted|universal encrypted delivery|silent mailbox import|auto.?retry|retry automatically/i);
+      expect(rendered).not.toMatch(/keyservers?|ratchets?|receipts?|browser profiles?|provider adapters?/i);
+    }
+    expect(html).not.toContain('class="inbox-surface-card unavailable" data-inbox-osl-surface="mail"');
   });
 
   it("models OSL Mail product stages as a client-protection-first contract", () => {

@@ -3299,6 +3299,22 @@ export function oslMailboxStageCGate(
   };
 }
 
+export function oslMailStageAContent(
+  stage: OslMailStage = oslMailStage("stageA"),
+  mailboxGate: OslMailboxStageCGateResult = oslMailboxStageCGate(),
+): string {
+  if (stage.id !== "stageA" || stage.availability !== "available") {
+    return `<article class="inbox-surface-card unavailable" data-inbox-osl-surface="mail" data-osl-mail-stage-a="unavailable" data-osl-mail-protection="private-client" data-osl-mailbox-stage-c-gate="${mailboxGate.reason ?? "reviewed"}" data-mailbox-operations="refused" aria-disabled="true"><strong>OSL Mail</strong><small>Private client protection</small><p><span class="status-tag">Coming later</span> OSL Mail client protection is unavailable until Stage A review accepts it.</p></article>`;
+  }
+  const capabilities = [
+    "Connect an existing mailbox only after authorization",
+    "Warn before send and label the protection scope",
+    "Sanitize selected links and attachments",
+    "Organize retention on this device",
+  ];
+  return `<article class="inbox-surface-card" data-inbox-osl-surface="mail" data-osl-mail-stage-a="available" data-osl-mail-protection="private-client" data-osl-mailbox-stage-c-gate="${mailboxGate.reason ?? "reviewed"}" data-mailbox-operations="${mailboxGate.operationsAllowed ? "allowed" : "refused"}" aria-disabled="false"><strong>OSL Mail</strong><small>Private client protection</small><p><span class="status-tag">Available</span> Protect mailboxes you already control after explicit authorization.</p><ul>${capabilities.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul><p><span class="status-tag">${mailboxGate.label}</span> ${escapeHtml(mailboxGate.detail)} External email remains ordinary email unless a supported encrypted path is selected before send.</p></article>`;
+}
+
 function inboxDestinationContent(): string {
   const verifiedPeople = hubPeople.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange);
   const requests = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange);
@@ -3329,7 +3345,7 @@ function inboxDestinationContent(): string {
   const surfaceCards = oslSurfaces.map(([id, label, protection, detail]) => {
     if (id === "circles") return publicCirclesUnavailableMarkup();
     if (id === "mail") {
-      return `<article class="inbox-surface-card ${mailboxGate.operationsAllowed ? "" : "unavailable"}" data-inbox-osl-surface="mail" data-osl-mailbox-stage-c-gate="${mailboxGate.reason ?? "reviewed"}" data-mailbox-operations="${mailboxGate.operationsAllowed ? "allowed" : "refused"}" aria-disabled="${mailboxGate.operationsAllowed ? "false" : "true"}"><strong>OSL Mail</strong><small>Client protection</small><p><span class="status-tag">${mailboxGate.label}</span> ${escapeHtml(mailboxGate.detail)}</p></article>`;
+      return oslMailStageAContent(oslMailStage("stageA"), mailboxGate);
     }
     return `<article class="inbox-surface-card" data-inbox-osl-surface="${id}"><strong>${label}</strong><small>${protection}</small><p>${detail}</p></article>`;
   }).join("");
