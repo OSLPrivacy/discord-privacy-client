@@ -70,6 +70,7 @@ pub mod scope_ttl_file;
 // any caller yet (`apps/osl-hub-ui/src/main.ts` localStorage call sites and
 // `main_password::maybe_encrypt` are separate, later units).
 pub mod secure_local_store;
+pub mod sender_attribution_proof;
 pub mod sender_key_state;
 pub mod state;
 pub mod state_reload;
