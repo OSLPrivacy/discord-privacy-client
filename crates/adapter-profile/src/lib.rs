@@ -4,7 +4,14 @@
 //! reviewed profile document that later loader/envelope/contract units can
 //! verify and select, but it does not wire any adapter into the runtime.
 
+pub mod envelope;
 pub mod schema;
+
+pub use envelope::{
+    canonical_profile_digest, EnvelopeError, SignedProfile, ADAPTER_PROFILE_ENVELOPE_DOMAIN,
+    ADAPTER_PROFILE_ENVELOPE_VERSION, ED25519_PUBLIC_KEY_LEN, ED25519_SIGNATURE_LEN,
+    MAX_PROFILE_BYTES, MAX_SIGNER_KEY_ID_BYTES, SHA256_DIGEST_LEN,
+};
 
 pub use schema::{
     canonical_profile_bytes, parse_profile_doc, ActionLevel, AdapterAuthority, AdapterSurface,
