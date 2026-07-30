@@ -32,7 +32,7 @@ Send this once to each existing tab before its individual prompt/addendum:
 
 ```text
 OSL coordination update. Current authority is:
-/home/liamw/discord-privacy-client/docs/design/osl-master-decision-2026-07-26.md
+<repo>/docs/design/osl-master-decision-2026-07-26.md
 revision OSL-MASTER-2026-07-26-r3.
 
 If this AI/account has never read it, read it fully once and save the compact memory card in
@@ -57,17 +57,16 @@ next discriminating gate, and whether your ETA threatens the deadline.
 ## Prompt A — current Scrub window
 
 ```text
-You are the OSL Scrub coordinator/executor in:
-/home/liamw/osl-newest-integration
+You are the OSL Scrub coordinator/executor in the Scrub integration worktree.
 
 FIRST read completely:
-/home/liamw/discord-privacy-client/docs/design/osl-master-decision-2026-07-26.md
+<repo>/docs/design/osl-master-decision-2026-07-26.md
 
 Then read:
-/home/liamw/discord-privacy-client/docs/design/osl-internal-build-checklist.md
-/home/liamw/osl-newest-integration/docs/plans/scrub-to-spec-plan.md
-/home/liamw/osl-newest-integration/docs/plans/scrub-autoscrub-architecture.md
-/home/liamw/osl-newest-integration/docs/plans/scrub-detection-opus5-plan.md
+<repo>/docs/design/osl-internal-build-checklist.md
+<scrub-worktree>/docs/plans/scrub-to-spec-plan.md
+<scrub-worktree>/docs/plans/scrub-autoscrub-architecture.md
+<scrub-worktree>/docs/plans/scrub-detection-opus5-plan.md
 
 On first encounter, save the compact versioned memory card required by master 11.1.1–11.1.2.
 Returning accounts compare the saved revision and read only deltas/relevant sections. Do not copy
@@ -120,11 +119,10 @@ first test that can fail against the current defect.
 ## Prompt B — current Discord testing window
 
 ```text
-You are the OSL Discord evidence and fault-isolation lane in:
-/home/liamw/discord-privacy-client
+You are the OSL Discord evidence and fault-isolation lane in the product repository.
 
 FIRST read completely:
-/home/liamw/discord-privacy-client/docs/design/osl-master-decision-2026-07-26.md
+<repo>/docs/design/osl-master-decision-2026-07-26.md
 
 Then read only:
 docs/design/osl-internal-build-checklist.md
@@ -175,18 +173,17 @@ self-test result, first failing invariant, and which implementation tab/file own
 ## Prompt C — new website/head-developer lane
 
 ```text
-You own the OSL website lane only:
-/mnt/c/Users/liamw/projects/oslprivacy-web
+You own the OSL website lane only in the website repository.
 
 FIRST read completely:
-/home/liamw/discord-privacy-client/docs/design/osl-master-decision-2026-07-26.md
+<repo>/docs/design/osl-master-decision-2026-07-26.md
 
 Focus on sections 7.6–7.7, 8, 15.6, 20, and the H rows in:
-/home/liamw/discord-privacy-client/docs/design/osl-internal-build-checklist.md
+<repo>/docs/design/osl-internal-build-checklist.md
 
 Also read:
-/home/liamw/discord-privacy-client/docs/design/osl-simple-spec.md
-/home/liamw/discord-privacy-client/docs/design/osl-subjective-design-feel.md
+<repo>/docs/design/osl-simple-spec.md
+<repo>/docs/design/osl-subjective-design-feel.md
 
 Goal: turn the website into one truthful, responsive, testable presentation and build the small
 username-only Scrub experience without inventing product results.
@@ -227,11 +224,10 @@ and the exact owner decisions still required.
 ## Prompt D — Telegram `/osl` follow-up/handoff lane
 
 ```text
-You own the Telegram terminal-mirror infrastructure lane:
-/home/liamw/claude-bridge
+You own the Telegram terminal-mirror infrastructure lane in the terminal bridge worktree.
 
 FIRST read completely:
-/home/liamw/discord-privacy-client/docs/design/osl-master-decision-2026-07-26.md
+<repo>/docs/design/osl-master-decision-2026-07-26.md
 
 Focus on sections 13, 15, 16, 18, 20, and 24. Read the local shared memories
 mirror-bot-telegram.md and tmux-tg-bridge.md as historical evidence. Current source wins.
@@ -291,7 +287,7 @@ Paste this into the existing Hub/UI and two-way Opus windows without replacing t
 
 ```text
 Coordination update: read
-/home/liamw/discord-privacy-client/docs/design/osl-master-decision-2026-07-26.md
+<repo>/docs/design/osl-master-decision-2026-07-26.md
 completely and follow its authority, file-ownership, evidence, off-screen testing, compact reporting,
 and three-view update rules. On first encounter save its compact versioned memory card; on return
 read only revision deltas, active deadlines, and linked task context. Announce your exclusive

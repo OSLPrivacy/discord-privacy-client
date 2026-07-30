@@ -21,7 +21,11 @@ def require(condition: bool, message: str, errors: list[str]) -> None:
 
 def audit_text(text: str) -> list[str]:
     errors: list[str] = []
-    require("tags:\n      - \"hub-v*\"" in text, "workflow must run only for hub-v* tags", errors)
+    require(
+        "push:\n    branches:\n      - main\n    tags:\n      - \"hub-v*\"" in text,
+        "workflow must run on main pushes and hub-v* tags",
+        errors,
+    )
     require("candidate_tag:" in text, "manual dispatch must accept an explicit candidate tag", errors)
     require("permissions:\n  contents: read" in text, "workflow permissions must be read-only", errors)
     require("fetch-depth: 0" in text, "workflow must fetch the full tag graph", errors)
@@ -83,8 +87,9 @@ def audit_text(text: str) -> list[str]:
     )
     require(
         "$env:RELEASED_EXE_SHA256 -cne $env:REBUILT_EXE_SHA256" in text
-        and "released executable bytes do not reproduce from exact source" in text,
-        "workflow must compare released and rebuilt bytes by digest",
+        and "released executable bytes do not reproduce from exact source" in text
+        and "released sha256=$env:RELEASED_EXE_SHA256 rebuilt sha256=$env:REBUILT_EXE_SHA256" in text,
+        "workflow must compare released and rebuilt bytes by digest and report both digests",
         errors,
     )
     require(
@@ -143,7 +148,10 @@ jobs:
 """
         errors = audit_text(legacy)
         self.assertIn("workflow must not use the stale legacy executable proof", errors)
-        self.assertIn("workflow must compare released and rebuilt bytes by digest", errors)
+        self.assertIn(
+            "workflow must compare released and rebuilt bytes by digest and report both digests",
+            errors,
+        )
 
     def test_refuses_missing_release_download(self) -> None:
         mutant = self.workflow().replace(

@@ -11429,11 +11429,9 @@ fn cmd_osl_recover_account_from_export_with_dir(
     }
 
     let _store_pause = MessageStorePause::new(state, dir)?;
-    if let Err(e) = commit_staged_account_import(dir, &stage, &files) {
-        // Keep the stage on every commit failure. It may contain the only
-        // remaining rollback copy if Windows/AV held a destination file.
-        return Err(e);
-    }
+    // Keep the stage on every commit failure. It may contain the only
+    // remaining rollback copy if Windows/AV held a destination file.
+    commit_staged_account_import(dir, &stage, &files)?;
     let _ = std::fs::remove_dir_all(&stage);
     state.install_identity(id);
     Ok(())

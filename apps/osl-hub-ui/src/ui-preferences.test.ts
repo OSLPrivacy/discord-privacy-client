@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ emitTo: mocks.emitTo, listen: mocks.listen }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: mocks.getCurrentWindow }));
-vi.mock("@fontsource-variable/inter/wght.css", () => ({}), { virtual: true });
+vi.mock("@fontsource-variable/inter/wght.css", () => ({}));
 vi.mock("./logos", () => ({
   browserLogo: vi.fn(() => ""),
   providerLogo: vi.fn(() => ""),
