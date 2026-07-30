@@ -932,6 +932,8 @@ main() {
     selftest) cmd_selftest "$@" ;;
     f1_live_windows_walkthrough_imports_nonempty_receipt)
       f1_live_windows_walkthrough_imports_nonempty_receipt "$@" ;;
+    f2_real_vm_five_frame_walkthrough)
+      f2_real_vm_five_frame_walkthrough "$@" ;;
     *) die_usage "unknown subcommand: $cmd" ;;
   esac
 }
