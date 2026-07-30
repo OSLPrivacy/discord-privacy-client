@@ -69,6 +69,18 @@ describe("home workspace hierarchy", () => {
     expect(strip).not.toContain("nativeApps.filter");
   });
 
+  it("identity-protection-status wires account protection into the header without exposing storage methods", () => {
+    const status = functionSource(source, "simpleDeviceStatusMarkup", "nativeDiscordComposerUnreachableNotice");
+    expect(status).toContain("identityProtectionStatus(core.readiness.storageMethod)");
+    expect(status).toContain('data-identity-protection="${protection.state}"');
+    expect(status).toContain('"not-secure"');
+    expect(status).toContain("escapeHtml(label)");
+    expect(status).toContain("escapeHtml(detail)");
+    expect(status).not.toContain("tpm-pcp");
+    expect(status).not.toContain("keyring");
+    expect(status).not.toContain("noop-insecure");
+  });
+
   it("forces hard corners across OSL-owned surfaces", () => {
     expect(styles).toContain("* { border-radius: 0 !important; }");
   });
