@@ -737,3 +737,25 @@ freshness or replay authority into permission.
 
 OSL-RN remains disabled: `crates/ipc/src/wire_rn.rs` still sets
 `RN_WIRE_IN_ENABLED` to false.
+
+## B3 IPC-integration proof status against checklist evidence row
+
+The checklist's B3 row is now the authority for how this report's ratchet
+evidence is scored. The row splits the evidence into two separate archives:
+
+- historical `86f1d0e` proves the self-contained ratchet-crate boundary:
+  sealed persistence plus replay, reorder, skipped-key, eviction, rollback
+  and restart behaviour with negative controls;
+- dependency closure `1d8bfa8` proves the later IPC integration boundary:
+  35 `wire_rn` tests pass, including sealed save/load, persist-before-return,
+  save-failure refusal and crash-reload non-reuse.
+
+That split matters. The historical archive's IPC integration gate is blocked
+by missing later IPC/keystore APIs, so it is not integration proof. The later
+dependency closure is integration proof only for the local `wire_rn` adapter
+and remains `test-proven-only` on an `implemented-unwired` path.
+
+B3 therefore stays exactly where the checklist places it: +1 at the structural
+boundary, with no real traffic, two-identity proof, runtime proof, or B6 point
+implied. This b11 documentation record does not enable RN; the production fuse
+remains `RN_WIRE_IN_ENABLED = false`.
