@@ -234,10 +234,7 @@ impl<B: RawBackend> SealedStore<B> {
     /// which is deliberate: it keeps "do we have a key" a construction-time
     /// fact instead of mutable state a bug could flip silently.
     pub fn without_key(backend: B) -> Self {
-        SealedStore {
-            key: None,
-            backend,
-        }
+        SealedStore { key: None, backend }
     }
 }
 
@@ -321,7 +318,7 @@ pub fn open_record(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mandatory_storage_key_policy::MandatoryStorageKeyPolicy;
+    use crate::mandatory_storage_key_policy::{MandatoryStorageKeyPolicy, StorageClass};
     use crate::wire_rn::{RnError, RnSessionStore};
     use keystore::sealer::NoOpSealer;
     use osl_ratchet_next::primitives::x25519_keypair;
@@ -510,9 +507,15 @@ mod tests {
     fn mandatory_file_storage_key_and_ui_session_storage_share_no_plaintext_fallback() {
         let policy = MandatoryStorageKeyPolicy::new();
         let file_secret = br#"{"peer":"must not be plaintext"}"#;
-        assert!(
-            policy.authorize_write("peer_map.json", false).is_err(),
-            "mandatory file storage must refuse without a file-storage key"
+        let file_refusal = policy
+            .authorize_write("peer_map.json", false)
+            .expect_err("mandatory IPC file writes must refuse when no key is available");
+        assert_eq!(file_refusal.file_id(), "peer_map.json");
+        assert_eq!(
+            policy
+                .authorize_write("peer_map.json", true)
+                .expect("keyed mandatory IPC file write is authorized"),
+            StorageClass::MandatoryEncrypt
         );
 
         let ui_store = SealedStore::without_key(InMemoryBackend::default());
@@ -524,6 +527,50 @@ mod tests {
         assert!(
             ui_store.backend.blobs.lock().unwrap().is_empty(),
             "UI store must not write plaintext when constructed without a key"
+        );
+
+        let unkeyed_store = SealedStore::without_key(InMemoryBackend::default());
+        let session_id = RecordId::new("ui-session", "active-discord-account");
+        let session_plaintext = b"session token, unread state, and notification metadata";
+
+        let session_result = unkeyed_store.put(&session_id, session_plaintext);
+
+        assert!(matches!(session_result, Err(SecureLocalStoreError::NoKey)));
+        assert_eq!(
+            *unkeyed_store.backend.write_calls.lock().unwrap(),
+            0,
+            "unkeyed UI-session storage must not reach the backend"
+        );
+        assert!(
+            unkeyed_store.backend.blobs.lock().unwrap().is_empty(),
+            "unkeyed UI-session storage must not persist plaintext fallback bytes"
+        );
+
+        let keyed_store = SealedStore::new(test_key(), InMemoryBackend::default());
+        keyed_store
+            .put(&session_id, session_plaintext)
+            .expect("keyed UI-session storage should seal and persist");
+        let stored_blob = keyed_store
+            .backend
+            .read_blob(&session_id.storage_key())
+            .unwrap()
+            .expect("keyed write should persist one sealed blob");
+
+        assert_ne!(
+            stored_blob, session_plaintext,
+            "successful UI-session storage must persist sealed bytes, not plaintext"
+        );
+        assert!(
+            !stored_blob
+                .windows(session_plaintext.len())
+                .any(|window| window == session_plaintext),
+            "sealed UI-session blob must not contain the plaintext as a contiguous slice"
+        );
+        assert_eq!(
+            keyed_store
+                .get(&session_id)
+                .expect("sealed UI-session blob should round-trip"),
+            session_plaintext
         );
 
         let dir = TempDir::new().expect("tempdir");

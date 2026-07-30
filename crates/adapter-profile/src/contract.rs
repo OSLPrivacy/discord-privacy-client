@@ -351,8 +351,12 @@ impl SelfTestReport {
 /// The report is deliberately made from the shared fixed predicate vocabulary:
 /// no host text, account identifiers, handles, credentials, paths, profile
 /// names, or adapter-local diagnostic strings can enter the returned shape.
-pub fn run_local_fixed_label_profile_self_test() -> Result<SelfTestReport, ReportError> {
+pub fn run_contract_self_test() -> Result<SelfTestReport, ReportError> {
     SelfTestReport::from_checks(required_contract_check_outcomes())
+}
+
+pub fn run_local_fixed_label_profile_self_test() -> Result<SelfTestReport, ReportError> {
+    run_contract_self_test()
 }
 
 /// Structural refusal for malformed reports. These variants contain no secret
@@ -568,8 +572,8 @@ mod tests {
         use super::*;
 
         #[test]
-        fn run_the_profile_self_test_as_a_local_fixed_label_contract_without_telemetry() {
-            let report = run_local_fixed_label_profile_self_test().unwrap();
+        fn run_contract_self_test() {
+            let report = super::super::run_contract_self_test().unwrap();
 
             assert_eq!(report.version(), CONTRACT_VERSION);
             assert_eq!(report.verdict(), ContractVerdict::Verified);
