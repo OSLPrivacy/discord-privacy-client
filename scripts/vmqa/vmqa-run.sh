@@ -11,6 +11,8 @@ DEFAULT_IDENTIFIER="org.oslprivacy.hubqa"
 NEGATIVE_IDENTIFIER="org.oslprivacy.doesnotexist"
 DEFAULT_TIMEOUT=300
 EXPECTED_SELFTEST_SURFACE_CLASS="Tauri Window"
+EXPECTED_SELFTEST_STEP_SHAPE="S0:stage,S1:launch,S2:ping,S3:shot,S4:click,S5:type,S6:key,S7:wait,S8:kill"
+EXPECTED_SELFTEST_STEP_COUNT=9
 BIN_NAME="osl-privacy-hub"
 SELFTEST_STEPS="$SCRIPT_DIR/steps/selftest.json"
 PNG_FACTS="$SCRIPT_DIR/png-facts.py"
@@ -381,7 +383,7 @@ grade_selftest() {
   local expected_evidence_dir="${11:-}"
   local internal_test_seal="${12:-}" internal_test_fixture="${13:-false}"
   local fixture_args=()
-  local pos neg markers neg_markers colors launch_neg shot_neg neg_steps neg_ping result
+  local pos neg markers neg_markers colors launch_neg shot_neg click_neg type_neg key_neg wait_neg neg_steps neg_ping result
   local launch_pid neg_launch_pid surface_pid surface_width surface_height foreground_pre foreground_post
   local raw_surface_width raw_surface_height bounds_source surface_class post_surface_class
   local raw_left raw_top raw_right raw_bottom raw_width raw_height
@@ -430,6 +432,10 @@ grade_selftest() {
   neg_markers="$(metric_from_step "$neg_file" ping markerWindowsTotal)"
   launch_neg="$(step_status "$neg_file" launch)"
   shot_neg="$(step_status "$neg_file" shot)"
+  click_neg="$(step_status "$neg_file" click)"
+  type_neg="$(step_status "$neg_file" type)"
+  key_neg="$(step_status "$neg_file" key)"
+  wait_neg="$(step_status "$neg_file" wait)"
   neg_steps="$(step_count "$neg_file")"
   neg_ping="$(step_status "$neg_file" ping)"
   launch_pid="$(metric_from_step "$pos_file" launch launchedPid)"
@@ -570,17 +576,19 @@ grade_selftest() {
     # good negative control. That let a TRANSPORT failure on the negative half validate the
     # harness. A control that never ran is not a control.
     echo "NEGATIVE CONTROL VACUOUS: verdict is '$neg' with 0 executed steps; it never attempted subject resolution" >&2
-  elif [ "$neg_steps" -ne 5 ] \
-       || [ "$neg_shape" != "S0:stage,S1:launch,S2:ping,S3:shot,S4:kill" ]; then
-    echo "NEGATIVE CONTROL VACUOUS: expected exact five-step stage/launch/ping/shot/kill control, got '$neg_shape'" >&2
+  elif [ "$neg_steps" -ne "$EXPECTED_SELFTEST_STEP_COUNT" ] \
+       || [ "$neg_shape" != "$EXPECTED_SELFTEST_STEP_SHAPE" ]; then
+    echo "NEGATIVE CONTROL VACUOUS: expected exact self-test control '$EXPECTED_SELFTEST_STEP_SHAPE', got '$neg_shape'" >&2
   elif [ "$neg" != "blocked" ] || [ "$neg_stage" != "pass" ] \
        || [ "$launch_neg" != "blocked" ] || [ "$neg_ping" != "pass" ] \
-       || [ "$shot_neg" != "blocked" ] || [ "$neg_kill" != "pass" ] \
+       || [ "$shot_neg" != "blocked" ] || [ "$click_neg" != "blocked" ] \
+       || [ "$type_neg" != "blocked" ] || [ "$key_neg" != "blocked" ] \
+       || [ "$wait_neg" != "pass" ] || [ "$neg_kill" != "pass" ] \
        || [ "$neg_markers" -ne 1 ]; then
     # Every status and the exact marker census are part of the control. Merely
     # checking "not pass" accepts transport failures, early exits, or a cleanup
     # step that never removed the deliberately started negative process.
-    echo "NEGATIVE CONTROL INVALID: expected overall=blocked statuses=pass,blocked,pass,blocked,pass markers=1; got overall=$neg statuses=$neg_stage,$launch_neg,$neg_ping,$shot_neg,$neg_kill markers=$neg_markers" >&2
+    echo "NEGATIVE CONTROL INVALID: expected overall=blocked statuses=pass,blocked,pass,blocked,blocked,blocked,blocked,pass,pass markers=1; got overall=$neg statuses=$neg_stage,$launch_neg,$neg_ping,$shot_neg,$click_neg,$type_neg,$key_neg,$wait_neg,$neg_kill markers=$neg_markers" >&2
   elif [ ! -f "$pos_file" ] || [ ! -f "$neg_file" ]; then
     # Both halves must have produced an actual verdict file. Without this, a negative run that
     # never returned anything is read by overall_or_rc as "blocked" from its exit code alone, and
@@ -627,6 +635,8 @@ grade_selftest() {
        && [ "$artifact_ok" = "true" ] \
        && [ "$neg_stage" = "pass" ] && [ "$launch_neg" = "blocked" ] \
        && [ "$neg_ping" = "pass" ] && [ "$shot_neg" = "blocked" ] \
+       && [ "$click_neg" = "blocked" ] && [ "$type_neg" = "blocked" ] \
+       && [ "$key_neg" = "blocked" ] && [ "$wait_neg" = "pass" ] \
        && [ "$neg_kill" = "pass" ] && [ "$neg_markers" -eq 1 ]; then
     result="PASS"
   fi
@@ -676,11 +686,13 @@ grade_selftest() {
   if [ "$neg" = "pass" ] \
      || { [ "$neg" = "unmeasurable" ] && [ "$neg_markers" -eq 0 ]; } \
      || [ "${neg_steps:-0}" -lt 1 ] \
-     || [ "${neg_steps:-0}" -ne 5 ] \
-     || [ "$neg_shape" != "S0:stage,S1:launch,S2:ping,S3:shot,S4:kill" ] \
+     || [ "${neg_steps:-0}" -ne "$EXPECTED_SELFTEST_STEP_COUNT" ] \
+     || [ "$neg_shape" != "$EXPECTED_SELFTEST_STEP_SHAPE" ] \
      || [ "$neg" != "blocked" ] || [ "$neg_stage" != "pass" ] \
      || [ "$launch_neg" != "blocked" ] || [ "$neg_ping" != "pass" ] \
-     || [ "$shot_neg" != "blocked" ] || [ "$neg_kill" != "pass" ] \
+     || [ "$shot_neg" != "blocked" ] || [ "$click_neg" != "blocked" ] \
+     || [ "$type_neg" != "blocked" ] || [ "$key_neg" != "blocked" ] \
+     || [ "$wait_neg" != "pass" ] || [ "$neg_kill" != "pass" ] \
      || [ "$neg_markers" -ne 1 ]; then return 9; fi
   return 1
 }

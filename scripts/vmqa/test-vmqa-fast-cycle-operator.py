@@ -141,13 +141,14 @@ class FastCycleOperatorTests(unittest.TestCase):
         account.assert_called_once_with()
         return result
 
-    def test_nonempty_exact_five_step_reset_retry_candidate_is_plus_zero(self):
+    def test_nonempty_exact_selftest_matrix_reset_retry_candidate_is_plus_zero(self):
         result = self.validate()
         self.assertEqual(result["status"], "validated-minimal-live-readiness")
         self.assertEqual(result["acceptanceDelta"], 0)
         self.assertFalse(result["runtimeProofAwarded"])
         self.assertEqual(
-            self.receipt["attemptTwo"]["positive"]["stepsExecuted"], 5
+            self.receipt["attemptTwo"]["positive"]["stepsExecuted"],
+            operator.cycle.SELFTEST_STEP_COUNT,
         )
         self.assertGreater(
             self.receipt["attemptTwo"]["positive"]["sizeBytes"], 0

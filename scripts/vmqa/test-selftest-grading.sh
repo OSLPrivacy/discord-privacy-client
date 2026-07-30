@@ -170,7 +170,11 @@ mkjson() {
           {id:"S1",verb:"launch",args:{exeSha256:$exe,timeoutSeconds:45}},
           {id:"S2",verb:"ping",args:{}},
           {id:"S3",verb:"shot",args:{name:"selftest",expectedSurfaceClass:"Tauri Window"}},
-          {id:"S4",verb:"kill",args:{}}
+          {id:"S4",verb:"click",args:{winX:24,winY:24,settleMs:150}},
+          {id:"S5",verb:"type",args:{text:"vmqa-selftest",settleMs:150}},
+          {id:"S6",verb:"key",args:{key:"{ESC}",settleMs:150}},
+          {id:"S7",verb:"wait",args:{ms:100}},
+          {id:"S8",verb:"kill",args:{}}
         ]
       }' >"$dir/request.json"
   request_sha="$(sha256sum "$dir/request.json" | awk '{print $1}')"
@@ -219,18 +223,26 @@ GOOD_POS="$(jq -nc --argjson colors "$PNG_COLORS" '{
       boundsWithinVirtualDesktop:true,coversVirtualDesktop:false,surfaceDpi:96,
       foregroundPre:true,foregroundPost:true,sampleGridPre:true,sampleGridPost:true,
       unoccludedPre:true,unoccludedPost:true,rectStable:true}},
-    {id:"S4",verb:"kill",status:"pass",facts:{cleanupPid:101,cleanupOutcome:"stopped"}}
+    {id:"S4",verb:"click",status:"pass"},
+    {id:"S5",verb:"type",status:"pass"},
+    {id:"S6",verb:"key",status:"pass"},
+    {id:"S7",verb:"wait",status:"pass"},
+    {id:"S8",verb:"kill",status:"pass",facts:{cleanupPid:101,cleanupOutcome:"stopped"}}
   ]}')"
 
-# A genuine negative control: all five steps ran, the wrong identifier was refused, one real
-# marker proved the apparatus was alive, and the exact process started by the failed launch was
-# still removed by PID and executable path.
+# A genuine negative control: the full self-test matrix ran, the wrong identifier was refused,
+# one real marker proved the apparatus was alive, and the exact process started by the failed
+# launch was still removed by PID and executable path.
 GOOD_NEG='{"runId":"n","requestSha256":"bb","overall":"blocked","steps":[
   {"id":"S0","verb":"stage","status":"pass"},
   {"id":"S1","verb":"launch","status":"blocked","facts":{"launchedPid":202,"launchProcessStarted":true}},
   {"id":"S2","verb":"ping","status":"pass","facts":{"markerWindowsTotal":1}},
   {"id":"S3","verb":"shot","status":"blocked"},
-  {"id":"S4","verb":"kill","status":"pass","facts":{"cleanupPid":202,"cleanupOutcome":"stopped"}}]}'
+  {"id":"S4","verb":"click","status":"blocked"},
+  {"id":"S5","verb":"type","status":"blocked"},
+  {"id":"S6","verb":"key","status":"blocked"},
+  {"id":"S7","verb":"wait","status":"pass"},
+  {"id":"S8","verb":"kill","status":"pass","facts":{"cleanupPid":202,"cleanupOutcome":"stopped"}}]}'
 
 check() {
   local name="$1" want="$2" posf="$3" negf="$4" posrc="${5:-0}" negrc="${6:-3}" got out
@@ -631,12 +643,16 @@ do
       "(.steps[] | select(.verb==\"kill\").facts) |= ($field_filter)")"
 done
 
-# The negative is an exact five-step state machine, not a bag of non-passes.
+# The negative is an exact self-test state machine, not a bag of non-passes.
 for mutation in \
   '(.steps[] | select(.verb=="stage").status)="fail"' \
   '(.steps[] | select(.verb=="launch").status)="unmeasurable"' \
   '(.steps[] | select(.verb=="ping").status)="fail"' \
   '(.steps[] | select(.verb=="shot").status)="unmeasurable"' \
+  '(.steps[] | select(.verb=="click").status)="pass"' \
+  '(.steps[] | select(.verb=="type").status)="pass"' \
+  '(.steps[] | select(.verb=="key").status)="pass"' \
+  '(.steps[] | select(.verb=="wait").status)="blocked"' \
   '(.steps[] | select(.verb=="kill").status)="blocked"'
 do
   label="$(printf '%s' "$mutation" | sha256sum | cut -c1-10)"
@@ -646,10 +662,10 @@ do
 done
 check "negative marker count 0 -> INVALID" 9 \
   "$(mkjson pos_neg_markers0 "$GOOD_POS")" \
-  "$(mutate_json neg_markers0 "$GOOD_NEG" '(.steps[] | select(.verb=="ping").markerWindowsTotal)=0')"
+  "$(mutate_json neg_markers0 "$GOOD_NEG" '(.steps[] | select(.verb=="ping").facts.markerWindowsTotal)=0')"
 check "negative marker count 2 -> INVALID" 9 \
   "$(mkjson pos_neg_markers2 "$GOOD_POS")" \
-  "$(mutate_json neg_markers2 "$GOOD_NEG" '(.steps[] | select(.verb=="ping").markerWindowsTotal)=2')"
+  "$(mutate_json neg_markers2 "$GOOD_NEG" '(.steps[] | select(.verb=="ping").facts.markerWindowsTotal)=2')"
 
 # A missing verdict file must never be read as a legitimate outcome via its exit code alone.
 check "absent negative verdict file -> INVALID" 9 \

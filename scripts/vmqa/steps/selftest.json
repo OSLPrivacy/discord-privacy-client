@@ -5,5 +5,9 @@
     "name": "selftest",
     "expectedSurfaceClass": "Tauri Window"
   } },
-  { "id": "S4", "verb": "kill",   "args": {} }
+  { "id": "S4", "verb": "click",  "args": { "winX": 24, "winY": 24, "settleMs": 150 } },
+  { "id": "S5", "verb": "type",   "args": { "text": "vmqa-selftest", "settleMs": 150 } },
+  { "id": "S6", "verb": "key",    "args": { "key": "{ESC}", "settleMs": 150 } },
+  { "id": "S7", "verb": "wait",   "args": { "ms": 100 } },
+  { "id": "S8", "verb": "kill",   "args": {} }
 ]
