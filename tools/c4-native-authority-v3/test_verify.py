@@ -424,6 +424,38 @@ class NativeAuthorityV3Tests(unittest.TestCase):
                 with self.assertRaises(VerificationError):
                     verify_receipt(encode(receipt), context(make_receipt()))
 
+    def test_readback_carrier_and_send_stages_share_one_target_binding(self) -> None:
+        mutations = {
+            "carrier_binding": lambda value: value["carrier"].__setitem__(
+                "targetBindingSha256", "f" * 64
+            ),
+            "pre_send_binding": lambda value: value["preSend"].__setitem__(
+                "targetBindingSha256", "f" * 64
+            ),
+            "pre_send_readback_binding": lambda value: value["preSend"][
+                "readback"
+            ].__setitem__("targetBindingSha256", "f" * 64),
+            "foreground_binding": lambda value: value["preSend"][
+                "foreground"
+            ].__setitem__("targetBindingSha256", "f" * 64),
+            "action_binding": lambda value: value["action"].__setitem__(
+                "targetBindingSha256", "f" * 64
+            ),
+            "post_send_binding": lambda value: value["postSend"].__setitem__(
+                "targetBindingSha256", "f" * 64
+            ),
+            "post_send_readback_binding": lambda value: value["postSend"][
+                "readback"
+            ].__setitem__("targetBindingSha256", "f" * 64),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(mutation=name):
+                receipt = make_receipt()
+                mutate(receipt)
+                receipt = reseal(receipt)
+                with self.assertRaises(VerificationError):
+                    verify_receipt(encode(receipt), context(make_receipt()))
+
     def test_receipt_digest_mutation_is_rejected(self) -> None:
         receipt = make_receipt()
         receipt["emittedAtUnixMs"] += 1
