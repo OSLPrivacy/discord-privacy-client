@@ -814,4 +814,85 @@ mod tests {
             CloudAutoScrubScopeConsent::Refused
         );
     }
+
+    #[test]
+    fn scan_only_and_generic_cloud_autoscrub_fixture() {
+        let mut tier = CloudAutoScrubConsentTier::default();
+        let scan_only_scope = scope(b"account-one", b"hosted-scan-only");
+        let generic_scope = scope(b"account-one", b"generic-cloud-autoscrub");
+        let scan_findings = findings(&["credential", "precise-location"]);
+        let generic_findings = findings(&["payment-card"]);
+
+        for target in [scan_only_scope, generic_scope] {
+            assert_eq!(
+                tier.require_cloud_processing_scope(target),
+                Err(CloudAutoScrubConsentError::ExplicitScopeConsentRequired)
+            );
+            assert_eq!(
+                tier.require_attended_authority(target, scan_findings, 9),
+                Err(CloudAutoScrubConsentError::LiveAuthEpochRequired)
+            );
+            assert_eq!(
+                tier.require_run_authority(target, generic_findings, 9),
+                Err(CloudAutoScrubConsentError::LiveAuthEpochRequired)
+            );
+        }
+
+        tier.reauthenticate(9).unwrap();
+        let scan_capability = tier
+            .configure_cloud_autoscrub_capability(scan_only_scope, scan_findings)
+            .unwrap();
+        tier.grant_attended_authority(scan_capability, scan_only_scope, scan_findings, 9)
+            .unwrap();
+
+        assert_eq!(
+            tier.require_attended_authority(scan_only_scope, scan_findings, 9),
+            Ok(())
+        );
+        assert_eq!(
+            tier.require_run_authority(scan_only_scope, scan_findings, 9),
+            Err(CloudAutoScrubConsentError::AuthorityRequired)
+        );
+        assert_eq!(
+            tier.require_attended_authority(generic_scope, scan_findings, 9),
+            Err(CloudAutoScrubConsentError::AuthorityRequired)
+        );
+
+        let generic_capability = tier
+            .configure_cloud_autoscrub_capability(generic_scope, generic_findings)
+            .unwrap();
+        tier.grant_run_authority(generic_capability, generic_scope, generic_findings, 9)
+            .unwrap();
+
+        assert_eq!(
+            tier.require_run_authority(generic_scope, generic_findings, 9),
+            Ok(())
+        );
+        assert_eq!(
+            tier.require_attended_authority(generic_scope, generic_findings, 9),
+            Err(CloudAutoScrubConsentError::AuthorityRequired)
+        );
+        assert_eq!(
+            tier.require_run_authority(scan_only_scope, generic_findings, 9),
+            Err(CloudAutoScrubConsentError::AuthorityRequired)
+        );
+        assert_eq!(
+            tier.require_cloud_processing_scope(scan_only_scope),
+            Err(CloudAutoScrubConsentError::ExternalSecurityReviewRequired)
+        );
+        assert_eq!(
+            tier.require_cloud_processing_scope(generic_scope),
+            Err(CloudAutoScrubConsentError::ExternalSecurityReviewRequired)
+        );
+
+        assert!(tier.revoke_scope_consent(scan_only_scope));
+        assert_eq!(
+            tier.require_attended_authority(scan_only_scope, scan_findings, 9),
+            Err(CloudAutoScrubConsentError::AuthorityRequired)
+        );
+        assert_eq!(
+            tier.require_run_authority(generic_scope, generic_findings, 9),
+            Ok(())
+        );
+    }
 }
