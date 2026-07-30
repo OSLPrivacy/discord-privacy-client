@@ -747,6 +747,14 @@ mod tests {
         assert_eq!(restored.width_px, capture.width_px);
         assert_eq!(restored.height_px, capture.height_px);
         assert_eq!(restored.presentation_insets, capture.presentation_insets);
+        let mut mutated_restored = restored;
+        mutated_restored.width_px = 999;
+        assert_eq!(mutated_restored.width_px, 999);
+        assert_eq!(
+            state.current(key).expect("stored capture remains intact").width_px,
+            capture.width_px,
+            "callers must not be able to mutate the capture held for the exact key"
+        );
         assert!(state
             .current(NativeSurfaceKey {
                 session_epoch: 8,

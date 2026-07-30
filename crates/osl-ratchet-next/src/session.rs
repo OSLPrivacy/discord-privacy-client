@@ -1198,6 +1198,7 @@ mod tests {
         assert_eq!(alice.receiving_counter(), alice_receiving_counter);
         assert_eq!(bob.sending_counter(), bob_sending_counter);
         assert_eq!(bob.receiving_counter(), bob_receiving_counter);
+        assert_eq!(alice.skip_params(), skip);
         assert_eq!(bob.skip_params(), skip);
         assert_eq!(bob.skip_params(), bob_skip_params);
         assert_eq!(bob.skipped_key_count(), 3);

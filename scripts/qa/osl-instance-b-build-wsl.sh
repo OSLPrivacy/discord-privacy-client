@@ -33,7 +33,7 @@ set -uo pipefail
 
 if [ "${1:-}" = "--self-test" ]; then
   instance_b_build_requires_distinct_identifier() {
-    local tmp json log out rc repo fake_bin stage temp_root dll cargo_args cargo_cwd
+    local tmp json log out rc repo fake_bin stage temp_root dll cargo_args cargo_cwd tauri_config
     tmp="$(mktemp -d)"
     json="$tmp/result.json"
     log="$tmp/build.log"
@@ -64,6 +64,7 @@ PY
     dll="$tmp/WebView2Loader.dll"
     cargo_args="$tmp/cargo-args.txt"
     cargo_cwd="$tmp/cargo-cwd.txt"
+    tauri_config="$tmp/tauri-config.json"
     mkdir -p "$repo/apps/osl-hub" "$repo/apps/osl-hub-ui/src" \
       "$repo/apps/osl-hub-ui/dist" "$fake_bin" "$stage" "$temp_root"
     printf '{}\n' >"$repo/apps/osl-hub/tauri.conf.json"
@@ -79,8 +80,10 @@ PY
 set -eu
 : "${FAKE_CARGO_ARGS:?}"
 : "${FAKE_CARGO_CWD:?}"
+: "${FAKE_TAURI_CONFIG:?}"
 printf '%s\n' "$PWD" > "$FAKE_CARGO_CWD"
 printf '%s\n' "$@" > "$FAKE_CARGO_ARGS"
+printf '%s\n' "${TAURI_CONFIG:-}" > "$FAKE_TAURI_CONFIG"
 mkdir -p target/x86_64-pc-windows-gnu/debug
 printf '%s\n' "${TAURI_CONFIG:-}" \
   > target/x86_64-pc-windows-gnu/debug/osl-privacy-hub.exe
@@ -93,6 +96,7 @@ SH
     REPO="$repo" JSON_OUT="$json" LOG="$log" STAGE="$stage" \
       OSL_WIN_TEMP_ROOT="$temp_root" DLL_SRC="$dll" \
       FAKE_CARGO_ARGS="$cargo_args" FAKE_CARGO_CWD="$cargo_cwd" \
+      FAKE_TAURI_CONFIG="$tauri_config" \
       PATH="$fake_bin:$PATH" bash "$0" "org.oslprivacy.hubqab" \
       >"$out" 2>&1
     rc=$?
@@ -120,6 +124,12 @@ expected = [
     "x86_64-pc-windows-gnu",
 ]
 assert args == expected, args
+PY
+    python3 - "$tauri_config" <<'PY' || return 1
+import json, sys
+overlay = json.load(open(sys.argv[1], "r", encoding="utf-8"))
+assert overlay == {"identifier": "org.oslprivacy.hubqab"}, overlay
+assert overlay["identifier"] != "org.oslprivacy.hub"
 PY
     python3 - "$json" <<'PY' || return 1
 import json, sys
