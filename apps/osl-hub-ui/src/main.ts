@@ -105,6 +105,8 @@ import { CoalescedRealignment, NativeCallGate } from "./native-realignment";
 import { FrameRenderScheduler } from "./render-scheduler";
 import { defaultScrubSignalGroups, enabledScrubFindings, parseScrubSignalGroups, scrubSignalDefinitions, scrubSignalGroupFor, type ScrubSignalGroup } from "./scrub";
 import { loadMassCleanupCapabilities, type MassCleanupCapabilityManifest } from "./mass-cleanup";
+import { projectAutoScrubFleetStatus, type AutoScrubFleetStatus } from "./autoscrub-contract";
+import { loadAutoScrubRunFleetStatus, requestAutoScrubGlobalStop } from "./autoscrub-unattended-run";
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
 import { oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
 import { bindFriendRemovalControls, bindMainWindowFocusChanges, friendRemovalButtonMarkup, friendTrustAction, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat } from "./ui-behavior";
@@ -182,6 +184,9 @@ let core: CoreIntegration = structuredClone(unavailableCoreIntegration);
 let licenseState: HubLicenseState = structuredClone(unconfiguredLicenseState);
 let massCleanupCapabilities: MassCleanupCapabilityManifest | null = null;
 let massCleanupLoading = false;
+let autoScrubFleetStatus: AutoScrubFleetStatus | null = null;
+let autoScrubStatusLoading = false;
+let autoScrubStopPending = false;
 let passwordRoleStatus: HubPasswordRoleStatus | null = null;
 let setup: SetupState = parseSetupState(null);
 let route: Route = "onboarding";
@@ -3037,6 +3042,40 @@ async function refreshMassCleanupCapabilities(): Promise<void> {
   }
 }
 
+async function refreshAutoScrubFleetStatus(): Promise<void> {
+  if (autoScrubStatusLoading) return;
+  const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
+  if (!pro) {
+    autoScrubFleetStatus = null;
+    return;
+  }
+  autoScrubStatusLoading = true;
+  render();
+  try {
+    autoScrubFleetStatus = await withNativeDeadline(loadAutoScrubRunFleetStatus(), "Load AutoScrub", 2_000);
+  } catch {
+    autoScrubFleetStatus = null;
+  } finally {
+    autoScrubStatusLoading = false;
+    if (route === "settings" && settingsSection === "scrub") render();
+  }
+}
+
+async function stopAutoScrubFleet(): Promise<void> {
+  if (autoScrubStopPending) return;
+  autoScrubStopPending = true;
+  render();
+  try {
+    autoScrubFleetStatus = await withNativeDeadline(requestAutoScrubGlobalStop(), "Stop AutoScrub", 2_000);
+    showToast("AutoScrub stop requested");
+  } catch {
+    showToast("AutoScrub did not change");
+  } finally {
+    autoScrubStopPending = false;
+    render();
+  }
+}
+
 function settingsDivider(): string {
   return `<hr class="settings-divider"/>`;
 }
@@ -3170,8 +3209,16 @@ async function changeSendingMode(mode: SendMode): Promise<void> {
 function privacySettingsContent(): string {
   const proActive = licenseState.access === "pro" || licenseState.access === "offlineGrace";
   const scanActions = `<div class="privacy-scan-actions"><label class="button primary ${privacyScanBusy ? "disabled" : ""}" for="privacy-export-input">${privacyScanBusy ? "Scanning…" : "Choose export"}</label><input id="privacy-export-input" class="sr-only" type="file" accept=".txt,.json,.csv,text/plain,application/json,text/csv" ${privacyScanBusy ? "disabled" : ""}/>${privacyScanResult ? `<button class="button" id="clear-privacy-scan" type="button">Clear results</button>` : ""}</div>`;
+  return `<h2>Scrub</h2><p class="scrub-local-promise"><strong>Your messages never leave this device.</strong> Every scan and review stays local.</p><section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup()}${privacyScanResultsMarkup()}${autoScrubAssistantMarkup(proActive)}<details class="safety-disclosure scrub-safety"><summary>Before deleting anything</summary><div><p><strong>Use at your own risk.</strong> Suggestions can be wrong. Check every message first.</p><p>Deletion can be irreversible. Apps, people, providers, exports, and backups may retain copies.</p><p>This build only gives manual directions. It does not delete app messages. Check the original app and delete each message yourself.</p></div></details><details class="privacy-technical settings-disclosure"><summary>Privacy and technical details</summary><div class="setting-line"><span>Default key expiry</span><strong>${timer}</strong></div><div class="setting-line"><span>Remote app access</span><strong>Blocked</strong></div><div class="setting-line"><span><strong>Windows capture resistance</strong><small>Always applied to OSL’s own window. Cameras, malware, and modified recipients can still capture content.</small></span><strong>${screenshotProtectionEnabled ? "Active" : "Unavailable"}</strong></div></details>`;
+}
+
+function autoScrubAssistantMarkup(proActive: boolean): string {
   const autoScrubPlan = proActive ? "PRO ACTIVE · COMING SOON" : "PRO · COMING SOON";
-  return `<h2>Scrub</h2><p class="scrub-local-promise"><strong>Your messages never leave this device.</strong> Every scan and review stays local.</p><section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup()}${privacyScanResultsMarkup()}<details class="settings-disclosure autoscrub-disclosure"><summary><span><strong>AutoScrub assistant</strong><small>${autoScrubPlan}</small></span></summary><section class="autoscrub-card" aria-disabled="true"><p>Coming soon. It schedules local scans and prepares an editable list. Nothing happens until you review and confirm every batch.</p><details><summary>Automation risks</summary><p>Future paced actions must stop on limits, challenges, changed content, or failed checks. Automation may break an app’s rules or restrict an account. Treat removal as unconfirmed until the app shows it is gone.</p></details><button class="button compact" type="button" disabled>Unavailable in this build</button></section></details><details class="safety-disclosure scrub-safety"><summary>Before deleting anything</summary><div><p><strong>Use at your own risk.</strong> Suggestions can be wrong. Check every message first.</p><p>Deletion can be irreversible. Apps, people, providers, exports, and backups may retain copies.</p><p>This build only gives manual directions. It does not delete app messages. Check the original app and delete each message yourself.</p></div></details><details class="privacy-technical settings-disclosure"><summary>Privacy and technical details</summary><div class="setting-line"><span>Default key expiry</span><strong>${timer}</strong></div><div class="setting-line"><span>Remote app access</span><strong>Blocked</strong></div><div class="setting-line"><span><strong>Windows capture resistance</strong><small>Always applied to OSL’s own window. Cameras, malware, and modified recipients can still capture content.</small></span><strong>${screenshotProtectionEnabled ? "Active" : "Unavailable"}</strong></div></details>`;
+  const status = projectAutoScrubFleetStatus(autoScrubFleetStatus);
+  const actions = status.stopAvailable
+    ? `<button class="button compact" id="autoscrub-stop" type="button" ${autoScrubStopPending ? "disabled" : ""}>${autoScrubStopPending ? "Stopping…" : "Stop"}</button>`
+    : `<button class="button compact" id="autoscrub-refresh" type="button" ${autoScrubStatusLoading ? "disabled" : ""}>${autoScrubStatusLoading ? "Checking…" : status.label}</button>`;
+  return `<details class="settings-disclosure autoscrub-disclosure"><summary><span><strong>AutoScrub assistant</strong><small>${autoScrubPlan}</small></span></summary><section class="autoscrub-card autoscrub-status-${status.tone}" aria-disabled="${status.stopAvailable ? "false" : "true"}"><header><div><span class="privacy-local-mark">LOCAL REVIEW</span><h3>${escapeHtml(status.label)}</h3></div>${actions}</header><p>${escapeHtml(status.detail)} Nothing happens until you review and confirm every batch.</p><details><summary>Automation risks</summary><p>Future paced actions must stop on limits, challenges, changed content, or failed checks. Automation may break an app’s rules or restrict an account. Treat removal as unconfirmed until the app shows it is gone.</p></details></section></details>`;
 }
 
 function clearPrivacyScanState(): void {
@@ -3295,6 +3342,8 @@ function bindScrubControls(): void {
     scrubReviewOpen = false;
     render();
   });
+  document.querySelector<HTMLButtonElement>("#autoscrub-refresh")?.addEventListener("click", () => void refreshAutoScrubFleetStatus());
+  document.querySelector<HTMLButtonElement>("#autoscrub-stop")?.addEventListener("click", () => void stopAutoScrubFleet());
 }
 
 function notificationSettingsContent(): string {
@@ -4505,6 +4554,7 @@ function bindWorkspace(): void {
     if (settingsSection === "account" && next !== "account") newIdentityRecoveryPhrase = null;
     settingsSection = next;
     render();
+    if (next === "scrub") void refreshAutoScrubFleetStatus();
     if (next === "cleanup") void refreshMassCleanupCapabilities();
   }));
   document.querySelectorAll<HTMLButtonElement>("[data-settings-send-mode]").forEach((button) => button.addEventListener("click", () => {
