@@ -10049,6 +10049,41 @@ mod tauri_registration_surface_tests {
             ],
             "a stale context after native scan must refuse before the result is returned"
         );
+
+        let missing_checked_host_events = RefCell::new(Vec::<&'static str>::new());
+        let missing_checked_host = checked_hosted_session_scan_flow(
+            || {
+                missing_checked_host_events
+                    .borrow_mut()
+                    .push("checked-host");
+                Err("missing checked host".to_owned())
+            },
+            |_checked| {
+                missing_checked_host_events
+                    .borrow_mut()
+                    .push("attended-binding");
+                Ok(vec!["operator".to_owned()])
+            },
+            |_checked, _operator_names| {
+                missing_checked_host_events.borrow_mut().push("native-scan");
+                Ok(test_deletion_scan())
+            },
+            |_checked| {
+                missing_checked_host_events
+                    .borrow_mut()
+                    .push("context-recheck");
+                Ok(())
+            },
+        );
+        match missing_checked_host {
+            Err(error) => assert_eq!(error, "missing checked host"),
+            Ok(_) => panic!("missing checked host must refuse the hosted scan request"),
+        }
+        assert_eq!(
+            missing_checked_host_events.into_inner(),
+            ["checked-host"],
+            "the hosted scan route must build CheckedHost before binding, scanning, or returning success"
+        );
     }
 
     #[test]
