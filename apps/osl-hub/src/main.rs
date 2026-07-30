@@ -9905,6 +9905,7 @@ mod tauri_registration_surface_tests {
             "execute_discord_guided_deletion",
             "delete_own_item",
         ] {
+            let forbidden_permission = command_permission(forbidden);
             assert!(
                 !handlers.contains(forbidden),
                 "{forbidden} must not be registered"
@@ -9912,6 +9913,10 @@ mod tauri_registration_surface_tests {
             assert!(
                 !permissions.values().any(|command| command == forbidden),
                 "{forbidden} must not be ACL-granted"
+            );
+            assert!(
+                !capability.contains(&forbidden_permission),
+                "{forbidden} must not have a capability grant"
             );
         }
 
