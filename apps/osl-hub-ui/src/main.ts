@@ -2837,13 +2837,9 @@ function workspaceProtectedSheetMarkup(): string {
   return `${protectedSheet}${nativeDiscordProtectPickerMarkup()}${whitelistRosterMarkup()}${peopleDialogMarkup()}${friendsDialogMarkup()}${scrubReviewDialogMarkup()}${burnDialogMarkup()}${ownedConfirmationMarkup()}${updateDialogMarkup()}`;
 }
 
-function workspaceShellMarkup(): string {
-  return `<div class="hub-layout with-primary-sidebar">${primarySidebarMarkup()}<section class="hub-workspace"><div class="desktop-top-row" data-tauri-drag-region="deep">${trustedHeader()}${desktopWindowControlsMarkup()}</div>${workspaceContent()}</section></div>${workspaceProtectedSheetMarkup()}`;
-}
-
 function renderWorkspace(): void {
   lastOnboardingMarkup = null;
-  const markup = `<div class="hub-layout with-primary-sidebar">${primarySidebarMarkup()}<section class="hub-workspace"><div class="desktop-top-row" data-tauri-drag-region="deep">${trustedHeader()}${desktopWindowControlsMarkup()}</div>${workspaceContent()}</section></div>${workspaceProtectedSheetMarkup()}`;
+  const markup = workspaceShellMarkup();
   let surface = root.querySelector<HTMLElement>("#workspace-render-surface");
   if (!surface) {
     // No separate 44px desktop titlebar row here: the drag region and window
@@ -2879,6 +2875,10 @@ function renderWorkspace(): void {
       if (dialog && !dialog.open) dialog.showModal();
     }
   });
+}
+
+function workspaceShellMarkup(): string {
+  return `<div class="hub-layout with-primary-sidebar">${primarySidebarMarkup()}<section class="hub-workspace"><div class="desktop-top-row" data-tauri-drag-region="deep">${trustedHeader()}${desktopWindowControlsMarkup()}</div>${workspaceContent()}</section></div>${workspaceProtectedSheetMarkup()}`;
 }
 
 function primarySidebarMarkup(): string {
@@ -3392,10 +3392,6 @@ function circlesDestinationContent(): string {
   return `<section class="inbox-surface-card circles-destination" data-inbox-osl-surface="circles" data-circle-feeds="private-audiences"><strong>OSL Circles</strong><small>Private audience feeds</small><p><span class="status-tag">Private</span> Posts and comments are encrypted for the selected audience. Audience membership is shown before posting.</p><div class="settings-list circle-audience-list" aria-label="Private Circle audiences">${audienceCards}</div><div class="circle-feed-list" aria-label="Chronological private Circle feeds">${feedItems}</div>${publicCirclesUnavailableMarkup()}</section>`;
 }
 
-function publicCirclesUnavailableMarkup(): string {
-  return `<article class="inbox-surface-card unavailable" data-inbox-osl-surface="circles" data-public-circles-network="unavailable" aria-disabled="true"><strong>OSL Circles</strong><small>Private audience feeds</small><p><span class="status-tag">Unavailable</span> Public Circles network unavailable. Private audience posts stay off until membership, posting, and moderation are complete.</p></article>`;
-}
-
 type OslMailboxStageCReview = {
   mailOperationsReviewAccepted: boolean;
   explicitConsentBound: boolean;
@@ -3479,6 +3475,10 @@ export function oslMailStageBContent(
   return `<article class="inbox-surface-card mail-stage-card" data-inbox-osl-surface="mail" data-osl-mail-stage-b="${state}" data-osl-mail-stage-b-after="client-protection" data-osl-mail-aliases="${ready ? "available" : "refused"}" data-osl-mail-relay="${ready ? "available" : "refused"}" aria-disabled="${ready ? "false" : "true"}"><strong>Aliases and relay</strong><small>After client protection</small><p><span class="status-tag">${label}</span> ${escapeHtml(detail)}</p><ul>${capabilities.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul><p>External email remains ordinary email unless a supported encrypted path is selected before send.</p></article>`;
 }
 
+function publicCirclesUnavailableMarkup(): string {
+  return `<article class="inbox-surface-card unavailable" data-inbox-osl-surface="circles" data-public-circles-network="unavailable" aria-disabled="true"><strong>OSL Circles</strong><small>Private audience feeds</small><p><span class="status-tag">Unavailable</span> Public Circles network unavailable. Private audience posts stay off until membership, posting, and moderation are complete.</p></article>`;
+}
+
 function inboxDestinationContent(): string {
   const verifiedPeople = hubPeople.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange);
   const requests = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange);
@@ -3501,7 +3501,7 @@ function inboxDestinationContent(): string {
     ? requests.slice(0, 8).map((person) => `<article class="inbox-row request-source"><span class="source-mark">${homeCommandIcon("friends")}</span><div><strong>${escapeHtml(person.alias ?? "Friend request")}</strong><small>${person.pendingKeyChange ? "Security change needs review" : "Verification needed before protected chat"}</small></div><button class="button compact" data-open-friends type="button">Review</button></article>`).join("")
     : `<div class="empty-state"><strong>No requests</strong><p>New friend requests and key reviews appear here.</p></div>`;
   const oslSurfaces = [
-    ["chat", "OSL Chat", "Verified friend chat", "Ready for verified friends"],
+    ["chat", "OSL Chat", "Verified friend chat", "Encrypted for verified friends"],
     ["circles", "OSL Circles", "Private audience feeds", "Coming after small-group review"],
     ["mail", "OSL Mail", "Client protection", "External recipients are not OSL E2EE"],
   ] as const;
@@ -3531,6 +3531,17 @@ function publicPostGuardCarrierPreviewMarkup(): string {
   return `<section class="public-post-guard" aria-labelledby="public-post-guard-title" data-public-platform-preview="encrypted-audience-carrier"><header><span class="privacy-local-mark">PUBLIC POST GUARD</span><h2 id="public-post-guard-title">Public platforms</h2><p>OSL distinguishes ordinary public posts from encrypted-audience carriers before you publish.</p></header><div class="privacy-policy-grid"><article class="privacy-policy-card" data-public-post-kind="ordinary"><span class="status-tag">Public</span><h3>Ordinary post</h3><p>Search, quoting, archiving, audience, location, and media metadata still need review.</p></article><article class="privacy-policy-card" data-public-post-kind="encrypted-audience-carrier"><span class="status-tag">Carrier preview</span><h3>Encrypted-audience carrier</h3><p>Plaintext is for the approved audience only, but the platform can still see the public carrier, timing, and engagement.</p></article></div></section>`;
 }
 
+function androidWorkspaceConnectionCard(surface: AndroidSurface): string {
+  if (surface.surface === "companion") {
+    return `<article class="connection-device-card" data-android-surface="${surface.id}" data-consent="${surface.consent}" data-binding="${surface.binding}"><span class="status-tag">Coming later</span><h3>${escapeHtml(surface.displayName)}</h3><p>Phone approvals and OSL-owned mobile experiences stay separate from desktop account control.</p></article>`;
+  }
+  return `<article class="connection-device-card pro" data-android-surface="${surface.id}" data-consent="${surface.consent}" data-binding="${surface.binding}" data-hosted-execution="${surface.hostedExecution}" data-workspace-runtime="${surface.workspace?.runtime ?? "none"}"><span class="status-tag">Coming later · Pro</span><h3>${escapeHtml(surface.displayName)}</h3><p>Future isolated local workspace with encrypted local storage, a separate wipe key, and clipboard, files, notifications, camera, microphone, and location denied by default.</p>${hostedAndroidWorkspaceGate()}</article>`;
+}
+
+function hostedAndroidWorkspaceGate(): string {
+  return `<p>Hosted workspace is unavailable here; it requires a separate threat model, explicit consent, and a new audit before any claim changes.</p>`;
+}
+
 export function privacyPrimaryAction(): void {
   route = "privacy";
   privacyProtectionReviewOpen = true;
@@ -3553,12 +3564,7 @@ function connectionsDestinationContent(): string {
     return `<article class="connection-row" data-connection-app="${app.id}"><div>${homeAppLogo(app)}<span><strong>${escapeHtml(app.displayName)}</strong><small>${escapeHtml(state)}</small></span></div>${action}</article>`;
   }).join("");
   const mullvadLabel = mullvadStatus.availability === "installed" ? "Available" : mullvadStatus.availability === "installable" ? "Installable" : "Unavailable";
-  const androidCards = AndroidSurface.preview().map((surface) => {
-    if (surface.surface === "companion") {
-      return `<article class="connection-device-card" data-android-surface="${surface.id}" data-consent="${surface.consent}" data-binding="${surface.binding}"><span class="status-tag">Coming later</span><h3>${escapeHtml(surface.displayName)}</h3><p>Phone approvals and OSL-owned mobile experiences stay separate from desktop account control.</p></article>`;
-    }
-    return `<article class="connection-device-card pro" data-android-surface="${surface.id}" data-consent="${surface.consent}" data-binding="${surface.binding}" data-hosted-execution="${surface.hostedExecution}" data-workspace-runtime="${surface.workspace?.runtime ?? "none"}"><span class="status-tag">Coming later · Pro</span><h3>${escapeHtml(surface.displayName)}</h3><p>Future isolated local workspace with a separate wipe key. Clipboard, files, notifications, camera, microphone, and location are denied by default.</p><p>Hosted workspace is unavailable here; it requires a separate threat model, explicit consent, and a new audit before any claim changes.</p></article>`;
-  }).join("");
+  const androidCards = AndroidSurface.preview().map((surface) => androidWorkspaceConnectionCard(surface)).join("");
   return `<main class="content-viewport connections-destination" aria-labelledby="route-heading"><header class="destination-header"><div><p class="eyebrow">Connections</p><h1 id="route-heading" tabindex="-1">Connections</h1><p>Accounts, devices, network status, and future workspaces connected to this OSL identity.</p></div><button class="button primary" data-connections-primary-action type="button">Connect a service</button></header><section class="settings-list connections-accounts" aria-labelledby="connections-accounts-title"><header><h2 id="connections-accounts-title">Accounts</h2><p>Each account opens through its own supported app surface; protected actions still require exact verification.</p></header>${appRows}</section><section class="settings-list connections-devices" aria-labelledby="connections-devices-title"><header><h2 id="connections-devices-title">Devices and network</h2><p>Optional device and network integrations never grant send, delete, or account authority by themselves.</p></header><article class="connection-device-card" data-connection-card="mullvad" data-privacy-scope="networkOnly" data-connection-state="${mullvadStatus.availability}"><span class="status-tag">${mullvadLabel}</span><h3>Mullvad</h3><p>Network privacy signal only. Platforms and recipients can still see ordinary content you send there.</p><button class="button compact" data-route="mullvad" type="button" ${mullvadStatus.availability === "installed" ? "" : "disabled"}>Use existing session</button></article>${androidCards}</section></main>`;
 }
 
