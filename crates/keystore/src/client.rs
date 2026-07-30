@@ -2602,7 +2602,7 @@ mod tests {
     }
 
     #[test]
-    fn register_request_carries_nonzero_rn_capabilities() {
+    fn register_request_carries_signed_rn_capability_floor() {
         let identity = generate_identity("rn-advertiser".to_owned());
         let request = KeyServerClient::build_register_request(&identity);
 
@@ -2649,7 +2649,7 @@ mod tests {
     }
 
     #[test]
-    fn client_rotation_never_lowers_rn_capabilities() {
+    fn client_rotation_preserves_signed_rn_capability_floor() {
         let old_identity = generate_identity("rotating-owner".to_owned());
         let new_identity = generate_identity("rotating-owner".to_owned());
         let fresh = KeyServerClient::build_register_request(&new_identity);
@@ -2685,7 +2685,7 @@ mod tests {
     }
 
     #[test]
-    fn request_ownership_challenge_round_trips_through_mock_server() {
+    fn request_ownership_challenge_round_trips_with_response_server() {
         let nonce = [0x5au8; PROOF_CHALLENGE_NONCE_BYTES];
         let response_body = serde_json::json!({
             "nonce_b64": STANDARD.encode(nonce),
@@ -2723,7 +2723,7 @@ mod tests {
     }
 
     #[test]
-    fn fetch_identity_bundle_atomically_fetches_pubkeys_and_prekey_bundle() {
+    fn fetch_identity_bundle_validates_matching_pubkeys_and_prekey_bundle() {
         let identity = generate_identity("bundle-owner".to_owned());
         let pubkeys_body = signed_pubkeys_json(&identity);
         let prekey_body = prekey_bundle_json(&identity, None);

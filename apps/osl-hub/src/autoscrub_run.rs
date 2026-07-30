@@ -2165,7 +2165,7 @@ mod production_fleet_tests {
     }
 
     #[test]
-    fn full_autoscrub_native_authority_acceptance() {
+    fn production_full_autoscrub_native_authority_acceptance() {
         let _guard = crate::GLOBAL_KEYSTORE_TEST_LOCK
             .lock()
             .expect("global keystore test lock");
