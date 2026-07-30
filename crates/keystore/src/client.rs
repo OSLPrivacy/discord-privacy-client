@@ -1167,10 +1167,7 @@ impl KeyServerClient {
             // adds latency to a refusal that is already certain.
             let inbox_full = resp.status == 429
                 && String::from_utf8_lossy(&resp.body).contains("recipient_inbox_full");
-            if resp.status != 429
-                || inbox_full
-                || attempt >= RATE_LIMIT_RETRY_BACKOFF_MS.len()
-            {
+            if resp.status != 429 || inbox_full || attempt >= RATE_LIMIT_RETRY_BACKOFF_MS.len() {
                 break resp;
             }
             std::thread::sleep(std::time::Duration::from_millis(
@@ -1211,15 +1208,14 @@ impl KeyServerClient {
 
     /// Shipping Worker/client rollout boundary for one active peer.
     ///
-    /// This method, rather than the broker, owns both live observations:
+    /// This method, rather than the broker, owns the live `/v1/healthz`
+    /// capability observation and the durable local downgrade floor derived
+    /// from it.
     ///
-    /// - `/v1/healthz` must advertise the exact capability.
-    /// - The identity-authenticated D1 authority route must return a fresh,
-    ///   request-bound, immutable version-1 floor derived from migration 0031.
-    ///
-    /// The filtered drain is the only live tail. A legacy Worker, Artifact A,
-    /// pre-0031 Artifact B, missing migration 0032, malformed authority
-    /// evidence, or capability disappearance all fail closed.
+    /// Before this account has ever observed the sender-filter capability, a
+    /// legacy Worker is still usable through the old page with a local sender
+    /// filter. Once the capability is observed, the durable floor is raised and
+    /// any later legacy observation is refused as a downgrade.
     pub fn get_control_inbox_compatible_from(
         &self,
         identity: &Identity,
@@ -1236,32 +1232,58 @@ impl KeyServerClient {
             ));
         }
         let capability = self.probe_control_inbox_sender_filter_capability()?;
-        let measured_floor = self.observe_sender_filter_capability_floor(identity)?;
-        match (capability, measured_floor) {
-            (
-                ControlInboxSenderFilterCapability::Version1,
-                SenderFilterCapabilityFloor::Version1,
-            ) => self.get_control_inbox_from(identity, sender_id),
-            (ControlInboxSenderFilterCapability::Legacy, SenderFilterCapabilityFloor::Version1) => {
-                Err(Error::Transport(
-                    "control-inbox sender-filter capability downgrade refused".into(),
-                ))
+        let floor_observed = match capability {
+            ControlInboxSenderFilterCapability::Legacy => {
+                sender_filter_capability_floor_was_observed()?
+            }
+            ControlInboxSenderFilterCapability::Version1 => false,
+        };
+        match capability {
+            ControlInboxSenderFilterCapability::Version1 => {
+                record_sender_filter_capability_floor()?;
+                self.get_control_inbox_from(identity, sender_id)
+            }
+            ControlInboxSenderFilterCapability::Legacy if floor_observed => Err(Error::Transport(
+                "control-inbox sender-filter capability downgrade refused".into(),
+            )),
+            ControlInboxSenderFilterCapability::Legacy => {
+                self.get_control_inbox_legacy_filtered(identity, sender_id)
             }
         }
+    }
+
+    fn get_control_inbox_legacy_filtered(
+        &self,
+        identity: &Identity,
+        sender_id: &str,
+    ) -> Result<FilteredControlInbox> {
+        let items: Vec<ControlInboxItem> = self
+            .get_control_inbox(identity)?
+            .into_iter()
+            .filter(|item| item.sender_id == sender_id)
+            .collect();
+        let live = u64::try_from(items.len()).map_err(|_| {
+            Error::Transport("control-inbox live disposition count is invalid".into())
+        })?;
+        Ok(FilteredControlInbox {
+            items,
+            delivery: ControlInboxDeliveryDisposition {
+                live,
+                retryable: 0,
+                quarantined: 0,
+                retired: 0,
+            },
+        })
     }
 
     fn probe_control_inbox_sender_filter_capability(
         &self,
     ) -> Result<ControlInboxSenderFilterCapability> {
         let response = self.send_request("GET", "/v1/healthz", None)?;
-        let value: serde_json::Value =
-            serde_json::from_slice(&response.body).map_err(|_| {
-                Error::Transport(
-                    "control-inbox capability response is not exact JSON".into(),
-                )
-            })?;
-        if response.status == 200 && value == serde_json::json!({ "ok": true })
-        {
+        let value: serde_json::Value = serde_json::from_slice(&response.body).map_err(|_| {
+            Error::Transport("control-inbox capability response is not exact JSON".into())
+        })?;
+        if response.status == 200 && value == serde_json::json!({ "ok": true }) {
             return Ok(ControlInboxSenderFilterCapability::Legacy);
         }
         if response.status == 200
@@ -1382,16 +1404,11 @@ impl KeyServerClient {
                 // touch, and this genuinely is "the server's answer was
                 // not usable".
                 return Err(Error::Transport(
-                    "control-inbox drain did not confirm the sender filter it was asked for"
-                        .into(),
-                ))
+                    "control-inbox drain did not confirm the sender filter it was asked for".into(),
+                ));
             }
         }
-        if parsed
-            .items
-            .iter()
-            .any(|item| item.sender_id != sender_id)
-        {
+        if parsed.items.iter().any(|item| item.sender_id != sender_id) {
             return Err(Error::Transport(
                 "control-inbox drain returned a row outside its sender filter".into(),
             ));
@@ -1590,6 +1607,40 @@ fn valid_control_inbox_sender_id(value: &str) -> bool {
 
 fn fresh_request_id() -> String {
     URL_SAFE_NO_PAD.encode(crypto::random::random_bytes(32))
+}
+
+const SENDER_FILTER_CAPABILITY_FLOOR_FILE: &str = "sender-filter-capability-floor.json";
+const SENDER_FILTER_CAPABILITY_FLOOR_JSON: &[u8] = br#"{"control_inbox_sender_disposition":1}"#;
+
+fn sender_filter_capability_floor_path() -> Result<std::path::PathBuf> {
+    let mut path = crate::recipients::osl_config_dir()
+        .map_err(|_| Error::Transport("control-inbox sender-filter floor is unavailable".into()))?;
+    path.push(SENDER_FILTER_CAPABILITY_FLOOR_FILE);
+    Ok(path)
+}
+
+fn sender_filter_capability_floor_was_observed() -> Result<bool> {
+    let path = sender_filter_capability_floor_path()?;
+    match std::fs::read(path) {
+        Ok(bytes) if bytes == SENDER_FILTER_CAPABILITY_FLOOR_JSON => Ok(true),
+        Ok(_) => Err(Error::Transport(
+            "control-inbox sender-filter floor is malformed".into(),
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(Error::Io(error)),
+    }
+}
+
+fn record_sender_filter_capability_floor() -> Result<()> {
+    let path = sender_filter_capability_floor_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if sender_filter_capability_floor_was_observed()? {
+        return Ok(());
+    }
+    std::fs::write(path, SENDER_FILTER_CAPABILITY_FLOOR_JSON)?;
+    Ok(())
 }
 
 // ---- Phase 6.4 control-inbox payload shapes (used by post_control_inbox /

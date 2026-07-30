@@ -185,9 +185,7 @@ fn prune_second_reveal_refusals(
     refusals: &mut BTreeMap<String, ViewOnceSecondRevealTrace>,
     now: i64,
 ) {
-    refusals.retain(|_, trace| {
-        now.saturating_sub(trace.refused_at) <= MAX_PEER_LIFETIME_SECONDS
-    });
+    refusals.retain(|_, trace| now.saturating_sub(trace.refused_at) <= MAX_PEER_LIFETIME_SECONDS);
 }
 
 impl HubBrokerState {
@@ -860,9 +858,7 @@ impl OpenedNativeOverlayTextBatch {
     }
 }
 
-pub fn native_overlay_acknowledgment_counters<I>(
-    statuses: I,
-) -> NativeOverlayAcknowledgmentCounters
+pub fn native_overlay_acknowledgment_counters<I>(statuses: I) -> NativeOverlayAcknowledgmentCounters
 where
     I: IntoIterator<Item = NativeOverlayAcknowledgmentStatus>,
 {
@@ -1821,14 +1817,15 @@ pub fn rehydrated_native_discord_row_dto(
         row.orientation = None;
         row.attribution = None;
     }
-    let row_rect = relative_rect.map(
-        |[left_px, top_px, width_px, height_px]| NativeDiscordRowRectDto {
-            left_px,
-            top_px,
-            width_px,
-            height_px,
-        },
-    );
+    let row_rect =
+        relative_rect.map(
+            |[left_px, top_px, width_px, height_px]| NativeDiscordRowRectDto {
+                left_px,
+                top_px,
+                width_px,
+                height_px,
+            },
+        );
     RehydratedNativeDiscordRowDto {
         flagtext: row.flagtext,
         plaintext: row.plaintext,
@@ -2019,8 +2016,7 @@ fn native_row_evidence_batch_is_valid(
         };
         let poster_identity_agrees = match evidence.poster {
             crate::native_discord_adapter::NativeDiscordRowPoster::SelfAccount => {
-                if peer_poster_identity.as_deref()
-                    == Some(evidence.poster_identity_sha256.as_str())
+                if peer_poster_identity.as_deref() == Some(evidence.poster_identity_sha256.as_str())
                 {
                     false
                 } else {
@@ -2031,8 +2027,7 @@ fn native_row_evidence_batch_is_valid(
                 }
             }
             crate::native_discord_adapter::NativeDiscordRowPoster::PeerAccount => {
-                if self_poster_identity.as_deref()
-                    == Some(evidence.poster_identity_sha256.as_str())
+                if self_poster_identity.as_deref() == Some(evidence.poster_identity_sha256.as_str())
                 {
                     false
                 } else {
@@ -2133,11 +2128,7 @@ pub fn rehydrate_native_discord_overlay_history(
         rows: rows.len(),
         ..RehydrateDecodeCounts::default()
     };
-    if !native_row_evidence_batch_is_valid(
-        &rows,
-        scope_binding,
-        window_generation,
-    ) {
+    if !native_row_evidence_batch_is_valid(&rows, scope_binding, window_generation) {
         counts.refused = rows.len();
         return Ok(RehydratedNativeDiscordTranscript {
             rows: unproven_rehydrated_rows(rows),
@@ -2164,14 +2155,8 @@ pub fn rehydrate_native_discord_overlay_history(
     // and no row is consumed -- the next edge reads again from scratch.
     let decode_deadline = Instant::now() + Duration::from_millis(REHYDRATE_DECODE_BUDGET_MS);
     let rows = rehydrated_rows(
-        rows.into_iter().map(|row| {
-            (
-                row.line,
-                row.decode_candidates,
-                row.bounds,
-                row.attribution,
-            )
-        }),
+        rows.into_iter()
+            .map(|row| (row.line, row.decode_candidates, row.bounds, row.attribution)),
         |candidates, evidence| {
             if !decrypt_display_enabled {
                 counts.display_off += 1;
@@ -2197,21 +2182,30 @@ pub fn rehydrate_native_discord_overlay_history(
                 &context_token,
                 &manual.person_id,
                 candidate,
-                &[PeerWireOrientation::PeerToSelf, PeerWireOrientation::SelfToPeer],
+                &[
+                    PeerWireOrientation::PeerToSelf,
+                    PeerWireOrientation::SelfToPeer,
+                ],
             ) {
                 Ok(authenticated) => authenticated,
                 Err(failure) => {
                     match failure {
-                        PeerProsePointerError::Pointer(PeerProsePointerFailure::NotAToken) => {
+                        PeerProsePointerError::Pointer(
+                            PeerProsePointerFailure::NotAToken,
+                        ) => {
                             counts.pointer_absent += 1
                         }
                         PeerProsePointerError::Pointer(
                             PeerProsePointerFailure::PointerBlobGone,
                         ) => counts.pointer_blob_gone += 1,
-                        PeerProsePointerError::Pointer(PeerProsePointerFailure::Transport) => {
+                        PeerProsePointerError::Pointer(
+                            PeerProsePointerFailure::Transport,
+                        ) => {
                             counts.store_unreachable += 1
                         }
-                        PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected)
+                        PeerProsePointerError::Pointer(
+                            PeerProsePointerFailure::Rejected,
+                        )
                         | PeerProsePointerError::Local(_) => counts.refused += 1,
                     }
                     return None;
@@ -2302,11 +2296,7 @@ fn write_native_visible_row_runtime_receipt_at(
     if encoded.is_empty() || encoded.len() > MAX_NATIVE_VISIBLE_ROW_RUNTIME_RECEIPT_BYTES {
         return Err("Native visible-row QA receipt exceeds its storage limit".to_owned());
     }
-    crate::atomic_file::write_recoverable(
-        path,
-        &encoded,
-        "Native visible-row QA runtime receipt",
-    )
+    crate::atomic_file::write_recoverable(path, &encoded, "Native visible-row QA runtime receipt")
 }
 
 #[cfg(all(feature = "core", feature = "discord-qa-shell"))]
@@ -2316,9 +2306,7 @@ fn evaluate_native_visible_row_runtime_probe(
     scope_binding: &str,
     probe: crate::native_discord_adapter::NativeVisibleRowQaProbe,
 ) -> Result<NativeVisibleRowRuntimeReceipt, String> {
-    use crate::native_discord_adapter::{
-        NativeDiscordRowPoster, NativeVisibleRowQaTriState,
-    };
+    use crate::native_discord_adapter::{NativeDiscordRowPoster, NativeVisibleRowQaTriState};
 
     if !matches!(probe.build_hash.len(), 40 | 64)
         || !probe
@@ -2329,9 +2317,7 @@ fn evaluate_native_visible_row_runtime_probe(
         || !canonical_hex(&probe.discord_target_identity_sha256, 64)
         || !canonical_hex(&probe.scope_binding_sha256, 64)
         || probe.scope_binding_sha256
-            != crate::native_discord_adapter::native_row_attribution_scope_sha256(
-                scope_binding,
-            )
+            != crate::native_discord_adapter::native_row_attribution_scope_sha256(scope_binding)
         || probe.window_generation == 0
     {
         return Err("Native visible-row QA authority binding is invalid".to_owned());
@@ -2363,11 +2349,7 @@ fn evaluate_native_visible_row_runtime_probe(
 
     let zero_rows = native_visible_row_negative_outcome(
         true,
-        native_row_evidence_batch_is_valid(
-            &[],
-            scope_binding,
-            probe.window_generation,
-        ),
+        native_row_evidence_batch_is_valid(&[], scope_binding, probe.window_generation),
     );
 
     let mut missing = source_rows.clone();
@@ -2379,30 +2361,24 @@ fn evaluate_native_visible_row_runtime_probe(
     let missing_proof = native_visible_row_negative_outcome(
         missing_exercised,
         missing_exercised
-            && native_row_evidence_batch_is_valid(
-                &missing,
-                scope_binding,
-                probe.window_generation,
-            ),
+            && native_row_evidence_batch_is_valid(&missing, scope_binding, probe.window_generation),
     );
 
     let mut mixed = source_rows.clone();
-    let mixed_exercised = mixed.iter_mut().find_map(|row| row.attribution.as_mut()).map(
-        |evidence| {
+    let mixed_exercised = mixed
+        .iter_mut()
+        .find_map(|row| row.attribution.as_mut())
+        .map(|evidence| {
             evidence.scope_binding_sha256 =
                 crate::native_discord_adapter::native_row_attribution_scope_sha256(
                     "qa-mutated-mixed-scope",
                 );
-        },
-    ).is_some();
+        })
+        .is_some();
     let mixed_scope = native_visible_row_negative_outcome(
         mixed_exercised,
         mixed_exercised
-            && native_row_evidence_batch_is_valid(
-                &mixed,
-                scope_binding,
-                probe.window_generation,
-            ),
+            && native_row_evidence_batch_is_valid(&mixed, scope_binding, probe.window_generation),
     );
 
     let mut replayed = source_rows.clone();
@@ -2472,8 +2448,7 @@ fn evaluate_native_visible_row_runtime_probe(
             })
         })
         .count();
-    let own_outgoing =
-        native_visible_row_positive_outcome(source_own, authenticated_own_outgoing);
+    let own_outgoing = native_visible_row_positive_outcome(source_own, authenticated_own_outgoing);
     let peer_incoming =
         native_visible_row_positive_outcome(source_peer, authenticated_peer_incoming);
     let outcomes = NativeVisibleRowRuntimeOutcomes {
@@ -2596,11 +2571,11 @@ fn rehydrated_rows(
             // Text, direction and the complete proof are one indivisible answer.
             let (plaintext, orientation, attribution) =
                 match decoded(&candidates, evidence.as_ref()) {
-                Some((plaintext, orientation, attribution)) => {
-                    (Some(plaintext), Some(orientation), Some(attribution))
-                }
-                None => (None, None, None),
-            };
+                    Some((plaintext, orientation, attribution)) => {
+                        (Some(plaintext), Some(orientation), Some(attribution))
+                    }
+                    None => (None, None, None),
+                };
             RehydratedNativeDiscordRow {
                 flagtext,
                 plaintext,
@@ -3322,13 +3297,8 @@ pub fn reveal_native_discord_overlay_view_once(
     let context_token = broker.active_native_manual_context_token()?;
     let manual = broker.manual_peer_for(&context_token)?;
     let now = ipc::main_password::now_unix_secs_pub();
-    if security::peer_message_was_consumed(
-        security_state,
-        manual.scope.clone(),
-        message_id,
-        now,
-    )
-    .unwrap_or(false)
+    if security::peer_message_was_consumed(security_state, manual.scope.clone(), message_id, now)
+        .unwrap_or(false)
     {
         let _ = broker.record_view_once_second_reveal_refusal(message_id, now);
         return Err(VIEW_ONCE_UNAVAILABLE.to_owned());
@@ -4737,9 +4707,7 @@ fn validate_native_overlay_acknowledgment(
     context: &HubConversationContext,
     now: i64,
 ) -> Result<(), ()> {
-    if !native_overlay_acknowledgment_is_admissible_without_mutual_consent(
-        acknowledgment.status,
-    )
+    if !native_overlay_acknowledgment_is_admissible_without_mutual_consent(acknowledgment.status)
         || acknowledgment.version != NATIVE_OVERLAY_ACK_VERSION
         || acknowledgment.domain != NATIVE_OVERLAY_ACK_DOMAIN
         || acknowledgment.message_id.is_empty()
@@ -5767,7 +5735,9 @@ fn decode_revocation_wire(
     control: InboundRevocationControl,
 ) -> Result<Vec<u8>, String> {
     const ERROR: &str = "OSL could not deliver the burn notice";
-    let body = wire.strip_prefix("DPC0::").ok_or_else(|| ERROR.to_owned())?;
+    let body = wire
+        .strip_prefix("DPC0::")
+        .ok_or_else(|| ERROR.to_owned())?;
     let bundle = STANDARD.decode(body).map_err(|_| ERROR.to_owned())?;
     let framed = match control {
         InboundRevocationControl::Notice => ipc::wire_v2::is_revocation_bundle(&bundle),
@@ -6784,10 +6754,10 @@ impl DiscordQaB6Preflight {
         let distinct_public_fingerprints = self.identity_public_fingerprints_sha256.len() == 2
             && self.identity_public_fingerprints_sha256[0]
                 != self.identity_public_fingerprints_sha256[1];
-        let distinct_keystore_fingerprints =
-            self.identity_keystore_root_fingerprints_sha256.len() == 2
-                && self.identity_keystore_root_fingerprints_sha256[0]
-                    != self.identity_keystore_root_fingerprints_sha256[1];
+        let distinct_keystore_fingerprints = self.identity_keystore_root_fingerprints_sha256.len()
+            == 2
+            && self.identity_keystore_root_fingerprints_sha256[0]
+                != self.identity_keystore_root_fingerprints_sha256[1];
 
         let mut steps = vec![
             B6ProofStep {
@@ -8052,9 +8022,8 @@ mod tests {
                 && classified.contains("&mut control_inbox")
                 && ordered
                 && !notice.contains("security::apply_peer_revocation")
-                && ack.contains(
-                    "match security::record_revocation_ack(security_state, &body_b64) {",
-                )
+                && ack
+                    .contains("match security::record_revocation_ack(security_state, &body_b64) {")
                 && broker.contains("matches!(self, Self::Applied | Self::Unappliable)")
                 && retirement.contains("let (outcome, ack_b64) = apply_row(control)")
                 && retirement.contains("outcome.retires_row()")
@@ -8154,9 +8123,11 @@ mod tests {
         // all three links: each production drain calls the shared boundary,
         // and only that boundary calls the shipping compatibility method that
         // owns both the live capability probe and durable downgrade floor.
-        let shared_call =
-            ["fetch_peer_control_", "inbox(&identity, &client, &manual.peer_osl_user_id)"]
-                .concat();
+        let shared_call = [
+            "fetch_peer_control_",
+            "inbox(&identity, &client, &manual.peer_osl_user_id)",
+        ]
+        .concat();
         let compatible = [
             ".get_control_inbox_compatible",
             "_from(identity, peer_osl_user_id)",
@@ -8232,9 +8203,11 @@ mod tests {
             "Ok(ControlInboxDrainReport {",
         );
 
-        let shared_boundary_call =
-            ["fetch_peer_control_", "inbox(&identity, &client, &manual.peer_osl_user_id)"]
-                .concat();
+        let shared_boundary_call = [
+            "fetch_peer_control_",
+            "inbox(&identity, &client, &manual.peer_osl_user_id)",
+        ]
+        .concat();
         let compatible_call = [
             "client.get_control_inbox_compatible",
             "_from(identity, peer_osl_user_id)",
@@ -8305,11 +8278,7 @@ mod tests {
         );
     }
 
-    fn control_inbox_test_row(
-        id: &str,
-        sender_id: &str,
-        message_type: u8,
-    ) -> serde_json::Value {
+    fn control_inbox_test_row(id: &str, sender_id: &str, message_type: u8) -> serde_json::Value {
         serde_json::json!({
             "id": id,
             "sender_id": sender_id,
@@ -8423,8 +8392,7 @@ mod tests {
             "osl-broker-sender-filter-{label}-{}-{nonce}",
             std::process::id(),
         ));
-        std::fs::create_dir_all(&directory)
-            .expect("create isolated sender-filter account");
+        std::fs::create_dir_all(&directory).expect("create isolated sender-filter account");
         keystore::set_active_account_dir(Some(directory.clone()));
         directory
     }
@@ -8532,16 +8500,12 @@ mod tests {
         assert_eq!(b_rows.len(), 1, "B's row remains untouched by A's fetch");
         assert_eq!(b_rows[0].sender_id, sender_b);
 
-        assert_health_request(
-            &requests.recv().expect("capture A capability request"),
-        );
+        assert_health_request(&requests.recv().expect("capture A capability request"));
         assert_filtered_request(
             &requests.recv().expect("capture A's production request"),
             sender_a,
         );
-        assert_health_request(
-            &requests.recv().expect("capture B capability request"),
-        );
+        assert_health_request(&requests.recv().expect("capture B capability request"));
         assert_filtered_request(
             &requests.recv().expect("capture B's production request"),
             sender_b,
@@ -8637,9 +8601,7 @@ mod tests {
                 error.to_string().contains(expected_error),
                 "{label} must fail through its specific closed-path verdict"
             );
-            assert_health_request(
-                &requests.recv().expect("capture capability request"),
-            );
+            assert_health_request(&requests.recv().expect("capture capability request"));
             assert_filtered_request(
                 &requests.recv().expect("capture refused production request"),
                 sender_a,
@@ -8657,66 +8619,57 @@ mod tests {
         let sender_a = "peer-a";
         let sender_b = "peer-b";
 
-        let (legacy_url, legacy_requests, legacy_server) =
-            spawn_control_inbox_test_server(vec![
-                serde_json::json!({ "ok": true }),
-                serde_json::json!({
-                    "items": [
-                        control_inbox_test_row(
-                            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                            sender_a,
-                            ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
-                        ),
-                        control_inbox_test_row(
-                            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                            sender_b,
-                            ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
-                        ),
-                    ],
-                }),
-            ]);
-        let legacy_client =
-            keystore::KeyServerClient::new(&legacy_url).expect("legacy client");
-        let legacy_page =
-            fetch_peer_control_inbox(&identity, &legacy_client, sender_a)
-                .expect("legacy Worker remains available before capability");
+        let (legacy_url, legacy_requests, legacy_server) = spawn_control_inbox_test_server(vec![
+            serde_json::json!({ "ok": true }),
+            serde_json::json!({
+                "items": [
+                    control_inbox_test_row(
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        sender_a,
+                        ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
+                    ),
+                    control_inbox_test_row(
+                        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        sender_b,
+                        ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
+                    ),
+                ],
+            }),
+        ]);
+        let legacy_client = keystore::KeyServerClient::new(&legacy_url).expect("legacy client");
+        let legacy_page = fetch_peer_control_inbox(&identity, &legacy_client, sender_a)
+            .expect("legacy Worker remains available before capability");
         assert_eq!(legacy_page.items.len(), 1);
         assert_eq!(legacy_page.items[0].sender_id, sender_a);
-        assert_health_request(
-            &legacy_requests.recv().expect("capture legacy health"),
-        );
+        assert_health_request(&legacy_requests.recv().expect("capture legacy health"));
         let legacy_get = legacy_requests.recv().expect("capture legacy GET");
         let legacy_line = legacy_get.lines().next().expect("legacy request line");
         assert!(legacy_line.starts_with("GET /v1/control-inbox/"));
         assert!(!legacy_line.contains("&sender="));
         legacy_server.join().expect("legacy server exits");
 
-        let (final_url, final_requests, final_server) =
-            spawn_control_inbox_test_server(vec![
-                serde_json::json!({
-                    "ok": true,
-                    "capabilities": {
-                        "control_inbox_sender_disposition": 1,
-                    },
-                }),
-                serde_json::json!({
-                    "items": [],
-                    "filtered_sender_id": sender_a,
-                    "filtered_sender_delivery": {
-                        "live": 0,
-                        "retryable": 0,
-                        "quarantined": 0,
-                        "retired": 0,
-                    },
-                }),
-            ]);
-        let final_client =
-            keystore::KeyServerClient::new(&final_url).expect("final client");
+        let (final_url, final_requests, final_server) = spawn_control_inbox_test_server(vec![
+            serde_json::json!({
+                "ok": true,
+                "capabilities": {
+                    "control_inbox_sender_disposition": 1,
+                },
+            }),
+            serde_json::json!({
+                "items": [],
+                "filtered_sender_id": sender_a,
+                "filtered_sender_delivery": {
+                    "live": 0,
+                    "retryable": 0,
+                    "quarantined": 0,
+                    "retired": 0,
+                },
+            }),
+        ]);
+        let final_client = keystore::KeyServerClient::new(&final_url).expect("final client");
         fetch_peer_control_inbox(&identity, &final_client, sender_a)
             .expect("final Worker raises the durable capability floor");
-        assert_health_request(
-            &final_requests.recv().expect("capture final health"),
-        );
+        assert_health_request(&final_requests.recv().expect("capture final health"));
         assert_filtered_request(
             &final_requests.recv().expect("capture final filtered GET"),
             sender_a,
@@ -8725,18 +8678,15 @@ mod tests {
 
         let (rolled_back_url, rollback_requests, rollback_server) =
             spawn_control_inbox_test_server(vec![serde_json::json!({ "ok": true })]);
-        let restarted_client = keystore::KeyServerClient::new(&rolled_back_url)
-            .expect("fresh client after restart");
-        let error =
-            fetch_peer_control_inbox(&identity, &restarted_client, sender_a)
-                .expect_err("a fresh client must retain the downgrade floor");
+        let restarted_client =
+            keystore::KeyServerClient::new(&rolled_back_url).expect("fresh client after restart");
+        let error = fetch_peer_control_inbox(&identity, &restarted_client, sender_a)
+            .expect_err("a fresh client must retain the downgrade floor");
         assert!(
             error.to_string().contains("capability downgrade refused"),
             "rollback is refused by durable client state"
         );
-        assert_health_request(
-            &rollback_requests.recv().expect("capture rollback health"),
-        );
+        assert_health_request(&rollback_requests.recv().expect("capture rollback health"));
         rollback_server.join().expect("rollback server exits");
         remove_sender_filter_test_account(&account_dir);
     }
@@ -8761,11 +8711,9 @@ mod tests {
             }
         );
         assert_eq!(retained_control_inbox_refusal(facts), None);
-        assert!(
-            retained_attachment_control_inbox_refusal(facts)
-                .expect("attachments fail closed even when the same page has live rows")
-                .contains("untrusted")
-        );
+        assert!(retained_attachment_control_inbox_refusal(facts)
+            .expect("attachments fail closed even when the same page has live rows")
+            .contains("untrusted"));
 
         for (disposition, expected) in [
             (
@@ -10020,12 +9968,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            relaunched_process.active_native_manual_context_token().unwrap(),
+            relaunched_process
+                .active_native_manual_context_token()
+                .unwrap(),
             second_native.lease.context_token
         );
         assert_ne!(
-            first_native.lease.context_token,
-            second_native.lease.context_token,
+            first_native.lease.context_token, second_native.lease.context_token,
             "a relaunched native host generation must not reuse the stale drain token"
         );
         assert_eq!(
@@ -11434,7 +11383,10 @@ ok i will weekend again with you",
         // did not decode carries no orientation, so the renderer has nothing to
         // attribute and leaves Discord's own row alone.
         assert_eq!(rows[0].orientation, None);
-        assert_eq!(rows[1].orientation, Some(RehydratedRowOrientation::Incoming));
+        assert_eq!(
+            rows[1].orientation,
+            Some(RehydratedRowOrientation::Incoming)
+        );
         assert_eq!(rows[2].orientation, None);
         assert_eq!(
             rows[1]
@@ -11585,12 +11537,7 @@ ok i will weekend again with you",
         const OWN_CARRIER: &str = "the quiet harbour keeps every lantern burning tonight";
         const PEER_CARRIER: &str = "the winter garden waits beside the silver morning";
         let own = native_row_attribution_from_provider(
-            matrix_native_observation(
-                "333333333333333333",
-                "111111111111111111",
-                OWN_CARRIER,
-                10,
-            ),
+            matrix_native_observation("333333333333333333", "111111111111111111", OWN_CARRIER, 10),
             &[OWN_CARRIER.to_owned()],
             "trusted-scope",
             7,
@@ -11598,12 +11545,7 @@ ok i will weekend again with you",
         )
         .expect("native self authority produces own evidence");
         let peer = native_row_attribution_from_provider(
-            matrix_native_observation(
-                "444444444444444444",
-                "222222222222222222",
-                PEER_CARRIER,
-                20,
-            ),
+            matrix_native_observation("444444444444444444", "222222222222222222", PEER_CARRIER, 20),
             &[PEER_CARRIER.to_owned()],
             "trusted-scope",
             7,
@@ -11656,8 +11598,14 @@ ok i will weekend again with you",
             },
         );
         assert!(rehydrated_attribution_ids_are_unique(&opened));
-        assert_eq!(opened[0].orientation, Some(RehydratedRowOrientation::Outgoing));
-        assert_eq!(opened[1].orientation, Some(RehydratedRowOrientation::Incoming));
+        assert_eq!(
+            opened[0].orientation,
+            Some(RehydratedRowOrientation::Outgoing)
+        );
+        assert_eq!(
+            opened[1].orientation,
+            Some(RehydratedRowOrientation::Incoming)
+        );
         let dto = opened
             .into_iter()
             .enumerate()
@@ -11695,11 +11643,7 @@ ok i will weekend again with you",
             7
         ));
         let mut replay = rows.clone();
-        replay[1]
-            .attribution
-            .as_mut()
-            .unwrap()
-            .discord_message_id = own.discord_message_id.clone();
+        replay[1].attribution.as_mut().unwrap().discord_message_id = own.discord_message_id.clone();
         assert!(!native_row_evidence_batch_is_valid(
             &replay,
             "trusted-scope",
@@ -11734,11 +11678,7 @@ ok i will weekend again with you",
             "trusted-scope",
             7
         ));
-        assert!(!native_row_evidence_batch_is_valid(
-            &rows,
-            "other-scope",
-            7
-        ));
+        assert!(!native_row_evidence_batch_is_valid(&rows, "other-scope", 7));
         assert!(!native_row_evidence_batch_is_valid(
             &rows,
             "trusted-scope",
@@ -11755,12 +11695,8 @@ ok i will weekend again with you",
         );
         assert!(wrong_poster.is_none());
 
-        let foreign = matrix_native_observation(
-            "555555555555555555",
-            "999999999999999999",
-            PEER_CARRIER,
-            30,
-        );
+        let foreign =
+            matrix_native_observation("555555555555555555", "999999999999999999", PEER_CARRIER, 30);
         assert_ne!(foreign.poster_identity, foreign.self_identity);
         assert_ne!(foreign.poster_identity, foreign.expected_peer_identity);
         assert!(native_row_attribution_from_provider(
@@ -11772,18 +11708,17 @@ ok i will weekend again with you",
         )
         .is_none());
 
-        let replayed_crypto_attribution =
-            bind_authenticated_native_row(
-                &peer,
-                matrix_authenticated(
-                    PeerWireOrientation::PeerToSelf,
-                    "payload-own",
-                    "replayed plaintext",
-                    'a',
-                ),
-            )
-            .expect("individual proof is structurally valid")
-            .2;
+        let replayed_crypto_attribution = bind_authenticated_native_row(
+            &peer,
+            matrix_authenticated(
+                PeerWireOrientation::PeerToSelf,
+                "payload-own",
+                "replayed plaintext",
+                'a',
+            ),
+        )
+        .expect("individual proof is structurally valid")
+        .2;
         let crypto_replay = vec![
             RehydratedNativeDiscordRow {
                 flagtext: OWN_CARRIER.to_owned(),
@@ -11845,9 +11780,7 @@ ok i will weekend again with you",
 
     #[cfg(feature = "discord-qa-shell")]
     fn runtime_receipt_fixture() -> NativeVisibleRowRuntimeReceipt {
-        use crate::native_discord_adapter::NativeVisibleRowQaTriState::{
-            Accepted, Refused,
-        };
+        use crate::native_discord_adapter::NativeVisibleRowQaTriState::{Accepted, Refused};
         NativeVisibleRowRuntimeReceipt {
             schema_version: 2,
             observed_at_unix_ms: 1,
@@ -11885,20 +11818,16 @@ ok i will weekend again with you",
         use crate::native_discord_adapter::NativeVisibleRowQaTriState::{
             Accepted, NotObserved, Refused,
         };
-        assert_eq!(
-            native_visible_row_positive_outcome(0, 0),
-            NotObserved
-        );
+        assert_eq!(native_visible_row_positive_outcome(0, 0), NotObserved);
         assert_eq!(native_visible_row_positive_outcome(1, 0), Refused);
         assert_eq!(native_visible_row_positive_outcome(1, 1), Accepted);
-        assert_eq!(native_visible_row_negative_outcome(false, false), NotObserved);
+        assert_eq!(
+            native_visible_row_negative_outcome(false, false),
+            NotObserved
+        );
         assert_eq!(native_visible_row_negative_outcome(true, false), Refused);
         assert_eq!(native_visible_row_negative_outcome(true, true), Accepted);
-        assert!(!native_row_evidence_batch_is_valid(
-            &[],
-            "trusted-scope",
-            7
-        ));
+        assert!(!native_row_evidence_batch_is_valid(&[], "trusted-scope", 7));
 
         let receipt = runtime_receipt_fixture();
         let encoded = serde_json::to_string(&receipt).unwrap();
@@ -11988,9 +11917,7 @@ ok i will weekend again with you",
             .find("native_row_attribution_carrier_sha256(candidate)")
             .expect("native proof selects its exact carrier");
         assert!(selection < decrypt);
-        assert!(body.contains(
-            ".expect(\"batch validation required exactly one bound carrier\")"
-        ));
+        assert!(body.contains(".expect(\"batch validation required exactly one bound carrier\")"));
         // The authenticated answer keeps all crypto correlation identifiers and
         // its wire orientation for the native-poster agreement.
         assert!(body.contains("blob_id: authenticated.blob_id"));

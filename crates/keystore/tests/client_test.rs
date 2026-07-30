@@ -8,6 +8,7 @@ use keystore::{generate_identity, Error, KeyServerClient, WrappedKeyUpload};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::mpsc;
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 
 #[test]
@@ -199,6 +200,38 @@ fn one_shot_server(response: Vec<u8>) -> (u16, mpsc::Receiver<Vec<u8>>) {
         // Close the stream by dropping it.
     });
     (port, rx)
+}
+
+fn multi_response_server(responses: Vec<Vec<u8>>) -> (u16, mpsc::Receiver<Vec<u8>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        for response in responses {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut buf = [0u8; 4096];
+            let mut acc = Vec::new();
+            loop {
+                let n = stream.read(&mut buf).unwrap();
+                assert!(n > 0, "request ended before headers");
+                acc.extend_from_slice(&buf[..n]);
+                if acc.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let _ = tx.send(acc);
+            stream.write_all(&response).unwrap();
+        }
+    });
+    (port, rx)
+}
+
+fn active_account_test_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 #[test]
@@ -647,8 +680,7 @@ fn reg_msg_with_capabilities_byte_format_is_pinned_and_mirrored() {
         Some("cmF0Y2g="),
         1,
     );
-    let expected =
-        "OSL-REGISTER-v1\n900000000000000001\nWdsAAA==\nZWQyNTUx\nbWxrZW0=\ncmF0Y2g=\n1";
+    let expected = "OSL-REGISTER-v1\n900000000000000001\nWdsAAA==\nZWQyNTUx\nbWxrZW0=\ncmF0Y2g=\n1";
     assert_eq!(String::from_utf8(msg).unwrap(), expected);
 
     // The legacy form is a strict prefix of the extended one, and the
@@ -657,7 +689,10 @@ fn reg_msg_with_capabilities_byte_format_is_pinned_and_mirrored() {
     let legacy = keystore::client::reg_msg("u", "x", "e", "m", None);
     let extended = keystore::client::reg_msg_with_capabilities("u", "x", "e", "m", None, 0);
     assert_ne!(legacy, extended);
-    assert_eq!(String::from_utf8(extended).unwrap(), "OSL-REGISTER-v1\nu\nx\ne\nm\n\n0");
+    assert_eq!(
+        String::from_utf8(extended).unwrap(),
+        "OSL-REGISTER-v1\nu\nx\ne\nm\n\n0"
+    );
 }
 
 /// Build a `PubkeysResponse` for `caps`, signed by `id`.
@@ -769,8 +804,8 @@ fn tampering_with_a_served_record_is_detected() {
 
     // Signature from a different identity.
     let mut swapped = signed_pubkeys_response(&id, Some(RN_CAP_WIRE_RN));
-    swapped.registration_sig = signed_pubkeys_response(&other, Some(RN_CAP_WIRE_RN))
-        .registration_sig;
+    swapped.registration_sig =
+        signed_pubkeys_response(&other, Some(RN_CAP_WIRE_RN)).registration_sig;
     assert_eq!(
         keystore::client::verify_peer_capabilities(&swapped),
         PeerCapabilities::Unverified
@@ -830,6 +865,28 @@ fn control_inbox_response(filtered_sender: Option<&str>, senders: &[&str]) -> Ve
     control_inbox_json_response(body)
 }
 
+fn legacy_control_inbox_response(senders: &[&str]) -> Vec<u8> {
+    let items: Vec<serde_json::Value> = senders
+        .iter()
+        .enumerate()
+        .map(|(index, sender)| {
+            serde_json::json!({
+                "id": format!("inbox-{index:02}"),
+                "sender_id": sender,
+                "scope_id": "scope-a",
+                "bundle_b64": "AQ==",
+                "created_at": 1_700_000_000 + index as i64,
+                "kind": "",
+            })
+        })
+        .collect();
+    control_inbox_json_response(serde_json::json!({ "items": items }))
+}
+
+fn health_response(value: serde_json::Value) -> Vec<u8> {
+    control_inbox_json_response(value)
+}
+
 fn control_inbox_json_response(body: serde_json::Value) -> Vec<u8> {
     let body = serde_json::to_vec(&body).unwrap();
     let mut response = Vec::new();
@@ -848,6 +905,94 @@ fn request_target(request: &[u8]) -> &str {
         .split_whitespace()
         .nth(1)
         .unwrap()
+}
+
+#[test]
+fn compatible_control_inbox_preserves_legacy_before_capability() {
+    let _serial = active_account_test_lock().lock().unwrap();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "osl-keystore-sender-filter-legacy-{}-{nonce}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    keystore::set_active_account_dir(Some(dir.clone()));
+
+    let (port, requests) = multi_response_server(vec![
+        health_response(serde_json::json!({ "ok": true })),
+        legacy_control_inbox_response(&["peer-b", "peer-a"]),
+    ]);
+    let identity = generate_identity("recipient".to_owned());
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+
+    let page = client
+        .get_control_inbox_compatible_from(&identity, "peer-a")
+        .unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].sender_id, "peer-a");
+    assert_eq!(page.delivery.live, 1);
+    assert_eq!(request_target(&requests.recv().unwrap()), "/v1/healthz");
+    let legacy_get = request_target(&requests.recv().unwrap()).to_owned();
+    assert!(legacy_get.starts_with(&format!("/v1/control-inbox/{}?", identity.user_id)));
+    assert!(!legacy_get.contains("&sender="));
+
+    keystore::set_active_account_dir(None);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn compatible_control_inbox_refuses_legacy_after_observed_capability() {
+    let _serial = active_account_test_lock().lock().unwrap();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "osl-keystore-sender-filter-downgrade-{}-{nonce}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    keystore::set_active_account_dir(Some(dir.clone()));
+
+    let identity = generate_identity("recipient".to_owned());
+    let (final_port, final_requests) = multi_response_server(vec![
+        health_response(serde_json::json!({
+            "ok": true,
+            "capabilities": {
+                "control_inbox_sender_disposition": 1,
+            },
+        })),
+        control_inbox_response(Some("peer-a"), &[]),
+    ]);
+    let final_client = KeyServerClient::new(format!("http://127.0.0.1:{final_port}")).unwrap();
+    final_client
+        .get_control_inbox_compatible_from(&identity, "peer-a")
+        .unwrap();
+    assert_eq!(
+        request_target(&final_requests.recv().unwrap()),
+        "/v1/healthz"
+    );
+    assert!(request_target(&final_requests.recv().unwrap()).contains("&sender=peer-a"));
+
+    let (rollback_port, rollback_requests) =
+        multi_response_server(vec![health_response(serde_json::json!({ "ok": true }))]);
+    let restarted_client =
+        KeyServerClient::new(format!("http://127.0.0.1:{rollback_port}")).unwrap();
+    assert!(matches!(
+        restarted_client.get_control_inbox_compatible_from(&identity, "peer-a"),
+        Err(Error::Transport(message))
+            if message.contains("capability downgrade refused")
+    ));
+    assert_eq!(
+        request_target(&rollback_requests.recv().unwrap()),
+        "/v1/healthz"
+    );
+
+    keystore::set_active_account_dir(None);
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
