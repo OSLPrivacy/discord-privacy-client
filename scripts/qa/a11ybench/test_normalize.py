@@ -88,7 +88,7 @@ def normalize_provider_fingerprints_for_signed_profiles() -> None:
 
 
 normalize_provider_fingerprints_for_signed_profiles.__name__ = (
-    "scripts/qa/a11ybench/test_normalize.py"
+    "Normalize provider fingerprints for signed profiles"
 )
 
 
