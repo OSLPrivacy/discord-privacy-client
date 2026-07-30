@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -55,8 +55,8 @@ pub fn require_protected_attachment_viewer(mime_type: &str) -> Result<(), String
     Ok(())
 }
 
-#[derive(Debug)]
 pub struct StagedAttachment {
+    root: PathBuf,
     path: PathBuf,
     original_filename: String,
     mime_type: &'static str,
@@ -66,6 +66,10 @@ pub struct StagedAttachment {
 impl StagedAttachment {
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
     }
 
     pub fn original_filename(&self) -> &str {
@@ -165,6 +169,7 @@ pub fn encrypt_file(
     std::mem::forget(cleanup);
 
     Ok(StagedAttachment {
+        root: app_local_data_dir.to_owned(),
         path: final_path,
         original_filename: original_filename.to_owned(),
         mime_type,
@@ -245,6 +250,7 @@ pub fn decrypt_file(
     std::mem::forget(cleanup);
 
     Ok(StagedPlaintext::new(StagedAttachment {
+        root: app_local_data_dir.to_owned(),
         path: final_path,
         original_filename: original_filename.to_owned(),
         mime_type,
@@ -333,7 +339,7 @@ pub fn decrypt_file_to_memory(
 /// absent file is success, so a duplicate removal cannot be mistaken for a
 /// staging leak.
 pub fn remove_staged_file(staged: StagedAttachment) -> Result<(), String> {
-    remove_staging_path(&staged.path)
+    remove_staging_path_in_root(&staged.root, &staged.path)
 }
 
 // ---------------------------------------------------------------------------
@@ -379,10 +385,14 @@ impl StagedPlaintext {
         self.staged.as_ref().map(StagedAttachment::path)
     }
 
+    pub fn root(&self) -> Option<&Path> {
+        self.staged.as_ref().map(StagedAttachment::root)
+    }
+
     /// Remove the decrypted file now and surface a failure to the caller.
     pub fn remove_now(mut self) -> Result<(), String> {
         match self.staged.take() {
-            Some(staged) => remove_plaintext_with_retries(&staged.path),
+            Some(staged) => remove_plaintext_with_retries(&staged.root, &staged.path),
             None => Ok(()),
         }
     }
@@ -398,7 +408,7 @@ impl StagedPlaintext {
 impl Drop for StagedPlaintext {
     fn drop(&mut self) {
         if let Some(staged) = self.staged.take() {
-            if remove_plaintext_with_retries(&staged.path).is_err() {
+            if remove_plaintext_with_retries(&staged.root, &staged.path).is_err() {
                 note_unremoved_plaintext_file();
             }
         }
@@ -421,10 +431,10 @@ pub fn note_unremoved_plaintext_file() {
 
 /// Remove a decrypted staging file with bounded retries. A Windows reader that
 /// still holds the file briefly must not turn into a permanent plaintext leak.
-pub fn remove_plaintext_with_retries(path: &Path) -> Result<(), String> {
+pub fn remove_plaintext_with_retries(root: &Path, path: &Path) -> Result<(), String> {
     let mut attempt = 0u32;
     loop {
-        match remove_staging_path(path) {
+        match remove_staging_path_in_root(root, path) {
             Ok(()) => return Ok(()),
             Err(error) => {
                 attempt = attempt.saturating_add(1);
@@ -860,23 +870,8 @@ pub fn create_download_file(app_local_data_dir: &Path) -> Result<(PathBuf, File)
     Ok((temporary, file))
 }
 
-pub fn remove_staging_path(path: &Path) -> Result<(), String> {
-    let filename = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("");
-    if path
-        .parent()
-        .and_then(Path::file_name)
-        .and_then(|value| value.to_str())
-        != Some(STAGING_DIRECTORY)
-        || !(filename.starts_with("download-")
-            || filename.starts_with("sealed-")
-            || filename.starts_with("opened-"))
-        || !(filename.ends_with(".part") || filename.ends_with(".oslatt"))
-    {
-        return Err("staged attachment path is invalid".to_owned());
-    }
+pub fn remove_staging_path_in_root(root: &Path, path: &Path) -> Result<(), String> {
+    validate_staging_path_in_root(root, path)?;
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -884,11 +879,30 @@ pub fn remove_staging_path(path: &Path) -> Result<(), String> {
     }
 }
 
+fn validate_staging_path_in_root(root: &Path, path: &Path) -> Result<(), String> {
+    let staging = staging_directory_for_root(root)?;
+    if path.parent() != Some(staging.as_path()) {
+        return Err("staged attachment path is invalid".to_owned());
+    }
+    let filename = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    if !(filename.starts_with("download-")
+        || filename.starts_with("sealed-")
+        || filename.starts_with("opened-"))
+        || !(filename.ends_with(".part") || filename.ends_with(".oslatt"))
+    {
+        return Err("staged attachment path is invalid".to_owned());
+    }
+    Ok(())
+}
+
 /// Remove every abandoned sealed, download, and plaintext staging file before
 /// an identity can unlock. Unknown files or links fail closed rather than
 /// being followed or silently retained.
 pub fn scavenge_staging_on_startup(app_local_data_dir: &Path) -> Result<(), String> {
-    let staging = app_local_data_dir.join(STAGING_DIRECTORY);
+    let staging = staging_directory_for_root(app_local_data_dir)?;
     let metadata = match std::fs::symlink_metadata(&staging) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -907,7 +921,7 @@ pub fn scavenge_staging_on_startup(app_local_data_dir: &Path) -> Result<(), Stri
         if !file_type.is_file() {
             return Err("OSL attachment staging contains an unsafe entry".to_owned());
         }
-        remove_staging_path(&entry.path())?;
+        remove_staging_path_in_root(app_local_data_dir, &entry.path())?;
     }
     Ok(())
 }
@@ -934,10 +948,7 @@ fn validate_metadata(filename: &str, declared_mime: &str) -> Result<&'static str
 }
 
 fn create_output(root: &Path, kind: &str) -> Result<(PathBuf, PathBuf, File), String> {
-    if !root.is_absolute() || root.parent().is_none() {
-        return Err("OSL attachment root is invalid".to_owned());
-    }
-    let staging = root.join(STAGING_DIRECTORY);
+    let staging = staging_directory_for_root(root)?;
     std::fs::create_dir_all(&staging)
         .map_err(|_| "OSL attachment staging directory could not be created".to_owned())?;
     let metadata = std::fs::symlink_metadata(&staging)
@@ -962,6 +973,18 @@ fn create_output(root: &Path, kind: &str) -> Result<(PathBuf, PathBuf, File), St
         }
     }
     Err("OSL attachment staging name could not be allocated".to_owned())
+}
+
+fn staging_directory_for_root(root: &Path) -> Result<PathBuf, String> {
+    if !root.is_absolute()
+        || root.parent().is_none()
+        || root
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
+        return Err("OSL attachment root is invalid".to_owned());
+    }
+    Ok(root.join(STAGING_DIRECTORY))
 }
 
 #[cfg(test)]
@@ -1150,8 +1173,47 @@ mod tests {
         let (hash, size) = sha256_file(&path).unwrap();
         assert_eq!(size, 12);
         assert_ne!(hash, [0u8; 32]);
-        remove_staging_path(&path).unwrap();
+        remove_staging_path_in_root(&root, &path).unwrap();
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn staging_cleanup_combines_caller_root_with_the_staging_directory() {
+        let caller_root = root("caller-root");
+        let foreign_root = root("foreign-root");
+        let caller_staging = caller_root.join(STAGING_DIRECTORY);
+        let foreign_staging = foreign_root.join(STAGING_DIRECTORY);
+        std::fs::create_dir_all(&caller_staging).unwrap();
+        std::fs::create_dir_all(&foreign_staging).unwrap();
+        let foreign_path = foreign_staging.join("opened-00112233445566778899aabbccddeeff.oslatt");
+        std::fs::write(&foreign_path, b"not this caller's staging file").unwrap();
+
+        assert_eq!(
+            remove_staging_path_in_root(&caller_root, &foreign_path),
+            Err("staged attachment path is invalid".to_owned())
+        );
+        assert!(
+            foreign_path.exists(),
+            "a matching staging filename under a different caller root is refused, not removed"
+        );
+
+        let caller_path = caller_staging.join("opened-ffeeddccbbaa99887766554433221100.oslatt");
+        std::fs::write(&caller_path, b"this caller's staging file").unwrap();
+        remove_staging_path_in_root(&caller_root, &caller_path).unwrap();
+        assert!(!caller_path.exists());
+
+        let dotted_root = caller_root.join("..").join(
+            caller_root
+                .file_name()
+                .expect("test root has a final component"),
+        );
+        assert_eq!(
+            create_download_file(&dotted_root).map(|_| ()),
+            Err("OSL attachment root is invalid".to_owned())
+        );
+
+        let _ = std::fs::remove_dir_all(caller_root);
+        let _ = std::fs::remove_dir_all(foreign_root);
     }
 
     fn outbox_key() -> [u8; 32] {
@@ -1264,6 +1326,7 @@ mod tests {
         std::fs::create_dir(&blocked).unwrap();
         let before = unremoved_plaintext_files();
         drop(StagedPlaintext::new(StagedAttachment {
+            root: root.clone(),
             path: blocked.clone(),
             original_filename: "notes.txt".to_owned(),
             mime_type: "text/plain",
@@ -1284,6 +1347,7 @@ mod tests {
         let path = staging.join("opened-ffeeddccbbaa99887766554433221100.oslatt");
         std::fs::write(&path, b"external reader bytes").unwrap();
         let guard = StagedPlaintext::new(StagedAttachment {
+            root: root.clone(),
             path: path.clone(),
             original_filename: "notes.txt".to_owned(),
             mime_type: "text/plain",
@@ -1294,7 +1358,7 @@ mod tests {
         remove_staged_file(released).unwrap();
         assert!(!path.exists());
         // A second removal of the same staging path is success, not a leak.
-        assert!(remove_staging_path(&path).is_ok());
+        assert!(remove_staging_path_in_root(&root, &path).is_ok());
         let _ = std::fs::remove_dir_all(root);
     }
 
