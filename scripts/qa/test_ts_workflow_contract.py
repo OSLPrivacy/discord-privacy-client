@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import importlib.util
 import re
 import unittest
 from pathlib import Path
@@ -9,6 +10,18 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "ts-test.yml"
+
+
+def _audit_public_release_module() -> Any:
+    spec = importlib.util.spec_from_file_location(
+        "audit_public_release_contract",
+        ROOT / "scripts" / "audit_public_release.py",
+    )
+    if spec is None or spec.loader is None:
+        raise AssertionError("could not load scripts/audit_public_release.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _workflow() -> dict[str, Any]:
@@ -256,6 +269,47 @@ def app_claim_gate_workflow_contract() -> None:
     testcase.assertIn(
         "app-claim gate must run before dependency installation",
         _audit_claim_gate(delayed_gate),
+    )
+
+    audit = _audit_public_release_module()
+    release_identity = {
+        "schemaVersion": 1,
+        "releaseTag": "v1.2.3",
+        "sourceCommit": "c" * 40,
+        "sourceTree": "d" * 40,
+        "binarySha256": "a" * 64,
+        "binarySizeBytes": 123,
+        "claimProfile": "release-proven",
+    }
+    testcase.assertEqual(
+        audit.release_claim_violations(
+            (
+                f"Release v1.2.3 binary SHA-256 {'a' * 64} is release-proven. "
+                f"The source commit {'c' * 40} and source tree {'d' * 40} match the app."
+            ),
+            release_identity,
+        ),
+        [],
+    )
+    testcase.assertEqual(
+        audit.release_identity_mismatch_violations(
+            f"Release v9.9.9 binary SHA-256 {'a' * 64} is release-proven.",
+            release_identity,
+        ),
+        [(1, "release claim references a different released binary identity")],
+    )
+    testcase.assertEqual(
+        audit.release_identity_mismatch_violations(
+            f"Release v1.2.3 binary SHA-256 {'b' * 64} is release-proven.",
+            release_identity,
+        ),
+        [(1, "release claim references a different released binary identity")],
+    )
+    testcase.assertTrue(
+        audit.release_claim_violations(
+            "This release build proves encrypted messages send through Discord.",
+            None,
+        )
     )
 
 
