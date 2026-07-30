@@ -56,6 +56,10 @@ try {
 if ($VmqaAllowedVms -notcontains $VmqaImdsName) {
     throw "VMQA_WRONG_MACHINE: IMDS reports '$VmqaImdsName', which is not in the QA fleet allow-list. Refusing to run the VMQA agent."
 }
+$VmqaAgentSessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
+if ($VmqaAgentSessionId -eq 0 -or -not [Environment]::UserInteractive) {
+    throw "VMQA_NOT_INTERACTIVE: IMDS reports an allowlisted QA VM, but the VMQA agent is not running in an interactive logon session. Refusing to synthesize input."
+}
 
 . $Win32ModulePath
 
