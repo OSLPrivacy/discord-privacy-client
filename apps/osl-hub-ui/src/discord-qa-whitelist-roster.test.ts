@@ -9,6 +9,8 @@ const hubBroker = fs.readFileSync(new URL("../../osl-hub/src/broker.rs", import.
 const hubSecurity = fs.readFileSync(new URL("../../osl-hub/src/security.rs", import.meta.url), "utf8");
 const hubPermissions = fs.readFileSync(new URL("../../osl-hub/permissions/hub.toml", import.meta.url), "utf8");
 const hubCapability = fs.readFileSync(new URL("../../osl-hub/capabilities/hub.json", import.meta.url), "utf8");
+const settingsWindow = fs.readFileSync(new URL("../../../src-tauri/assets/settings_window.html", import.meta.url), "utf8");
+const ipcCommands = fs.readFileSync(new URL("../../../crates/ipc/src/commands.rs", import.meta.url), "utf8");
 
 function body(startNeedle: string, endNeedle: string, text = source): string {
   const start = text.indexOf(startNeedle);
@@ -93,6 +95,45 @@ describe("whitelist roster", () => {
     expect(adapters).toContain('export async function revokeActiveHubFriendScope(contextToken: string, personId: string, storageKey: string)');
     expect(adapters).toContain('"reachBroadened", "reachBroadenedAt", "reachNarrowedScopes"');
     expect(adapters).toContain('exact(raw, ["kind", "contextId", "storageKey", "userSpecific"])');
+  });
+
+  it("proves a revoked friend request is reflected in the Bulk Whitelist", () => {
+    const friendRequestRevoke = body(
+      "pub fn cmd_osl_decline_or_revoke_friend_request(",
+      "/// 9-C2: boot.js pushes the user's guild-list snapshot here",
+      ipcCommands,
+    );
+    expect(friendRequestRevoke).toContain("let accepted_grant_exists = {");
+    expect(friendRequestRevoke).toContain(".any(|w| whitelist_entry_matches(w, &scope))");
+    expect(friendRequestRevoke).toContain("decision: FriendRequestDecision::RevokedAcceptedGrant");
+    expect(friendRequestRevoke).toContain("local_unwhitelist_apply(\n        state,\n        peer_discord_id,\n        crate::scope::ScopeInput::from(&scope),\n        revoke_broadened,\n        /* wipe_local_decrypt */ false,\n    )?;");
+
+    const whitelistRows = body(
+      "pub fn cmd_osl_list_all_whitelists(",
+      "// =====================================================================\n// Phase 7d-B1",
+      ipcCommands,
+    );
+    expect(whitelistRows).toContain("for w in &entry.outgoing_whitelists");
+    expect(whitelistRows).toContain("crate::peer_map::WhitelistEntry::Dm { broadened, .. }");
+    expect(whitelistRows).toContain("out.push(WhitelistRowDto {");
+
+    const bulkApply = body(
+      "pub fn cmd_osl_bulk_set_dm_whitelist(",
+      "// ---- Phase 9-C3: server-wide channel-encryption defaults ----",
+      ipcCommands,
+    );
+    expect(bulkApply).toContain("let pe = pm_guard.entry(did.clone()).or_default();");
+    expect(bulkApply).toContain(".any(|w| matches!(w, crate::peer_map::WhitelistEntry::Dm { .. }))");
+    expect(bulkApply).toContain("affected += 1;");
+
+    const renderWhitelist = body("async function renderWhitelist()", "function wlToggle", settingsWindow);
+    expect(renderWhitelist).toContain('const result = await oslInvoke("osl_list_all_whitelists", {});');
+    expect(renderWhitelist).toContain('if (wlTab === "by_user") body.appendChild(renderWlByUser(wlData));');
+    expect(renderWhitelist).toContain("else body.appendChild(renderWlByScope(wlData));");
+
+    const bulkModal = body("function oslBulkWhitelistModal()", "// 9-C3: Server Defaults modal.", settingsWindow);
+    expect(bulkModal).toContain('r = await oslInvoke("osl_bulk_set_dm_whitelist", {');
+    expect(bulkModal).toContain("wlData = null;\n    renderWhitelist();");
   });
 
   it("keeps broadening a separate, verified, recorded backend action", () => {
