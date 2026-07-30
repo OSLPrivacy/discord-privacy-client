@@ -406,6 +406,63 @@ describe("scheme-1 prekey owner proofs through the shipping Worker and D1", () =
     });
   });
 
+  it("test/integration/scheme1-prekey-owner-proof.test.ts", async () => {
+    const owner = await createScheme1Identity();
+    const other = await createScheme1Identity();
+    const trueOwnerAccount = await makeOwnershipAccount({
+      identity: owner.identity,
+      signingKey: owner.currentSigningKey,
+      platformId: "scheme1-exact-owner-platform",
+      fill: 0x31,
+    });
+
+    await expect(
+      verifyScheme1AccountOwnershipProof({
+        identity: owner.identity,
+        account: trueOwnerAccount,
+        now_unix_seconds: ACCOUNT_PROOF_NOW,
+      }),
+    ).resolves.toEqual({ ok: true });
+    expect(trueOwnerAccount.proof_challenge.spent).toBe(true);
+
+    const differentOwnerAccount = await makeOwnershipAccount({
+      identity: owner.identity,
+      signingKey: owner.currentSigningKey,
+      platformId: "scheme1-foreign-owner-platform",
+      fill: 0x32,
+    });
+    await expect(
+      verifyScheme1AccountOwnershipProof({
+        identity: other.identity,
+        account: differentOwnerAccount,
+        now_unix_seconds: ACCOUNT_PROOF_NOW,
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: "proof_for_different_owner",
+    });
+    expect(differentOwnerAccount.proof_challenge.spent).toBe(false);
+
+    const mutatedBinding = await makeOwnershipAccount({
+      identity: owner.identity,
+      signingKey: owner.currentSigningKey,
+      platformId: "scheme1-mutated-platform",
+      fill: 0x33,
+    });
+    mutatedBinding.owner_ed25519_pub_b64 = other.identity.ik_ed25519_pub;
+    await expect(
+      verifyScheme1AccountOwnershipProof({
+        identity: owner.identity,
+        account: mutatedBinding,
+        now_unix_seconds: ACCOUNT_PROOF_NOW,
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: "proof_for_different_owner",
+    });
+    expect(mutatedBinding.proof_challenge.spent).toBe(false);
+  });
+
   it("keeps legacy registration tagless and refuses stripped or ambiguous scheme-1 registration", async () => {
     const legacyPair = await generateEd25519Pair();
     const legacyBody = await signedRegisterBody(
