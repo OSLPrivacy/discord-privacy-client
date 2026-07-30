@@ -612,12 +612,12 @@ class SignalVmQaSelfTests(unittest.TestCase):
         plan = stage_plan()
         live = [stage for stage in plan if stage["support"] == "blockedUntilLiveAdapterReviewed"]
         expected = {
-            (sender, receiver, action)
+            (f"{sender}-to-{receiver}-{case_id}", sender, receiver, action)
             for sender, receiver in DIRECTIONS
-            for _case_id, action in QA_CASES
+            for case_id, action in QA_CASES
         }
         actual = {
-            (stage.get("sender"), stage.get("receiver"), stage.get("action"))
+            (stage.get("id"), stage.get("sender"), stage.get("receiver"), stage.get("action"))
             for stage in live
         }
         self.assertEqual(tuple(sorted(ALIASES)), ("signal-qa-1", "signal-qa-2"))
@@ -626,6 +626,13 @@ class SignalVmQaSelfTests(unittest.TestCase):
         self.assertEqual(len(live), 28)
         self.assertEqual(actual, expected)
         self.assertTrue(all(stage["mode"] == "ordered" for stage in live))
+        for alias in ALIASES:
+            self.assertEqual(sum(1 for stage in live if stage["sender"] == alias), len(QA_CASES))
+            self.assertEqual(sum(1 for stage in live if stage["receiver"] == alias), len(QA_CASES))
+        self.assertEqual(
+            {stage["id"] for stage in live},
+            {item[0] for item in expected},
+        )
 
     def test_successful_run_records_preflight_only_then_blocked_matrix(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
