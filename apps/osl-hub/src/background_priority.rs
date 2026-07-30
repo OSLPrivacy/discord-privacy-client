@@ -253,6 +253,8 @@ mod tests {
         let sync = Tracked::new("sync-account");
         let upload = Tracked::new("upload-preview");
 
+        assert_eq!(format!("{sync:?}"), "Tracked(<redacted>)");
+        assert!(!format!("{sync:?}").contains(sync.id()));
         assert_eq!(priority.mode(), BackgroundMode::Idle);
         assert_eq!(priority.tracked_count(), 0);
 
