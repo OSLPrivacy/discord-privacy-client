@@ -5873,6 +5873,10 @@ fn fetch_wrapped_attachment_key_for_open(
         .as_ref()
         .cloned()
         .ok_or_else(|| "OSL: wrapped-key open needs a loaded identity".to_string())?;
+
+    let expected_sender_osl_id =
+        expected_wrapped_attachment_sender_osl_id(state, &identity, sender_ref)?;
+
     let client = state
         .keyserver
         .lock()
@@ -5880,27 +5884,6 @@ fn fetch_wrapped_attachment_key_for_open(
         .as_ref()
         .cloned()
         .ok_or_else(|| "OSL: wrapped-key open needs a key server".to_string())?;
-
-    let expected_sender_osl_id = {
-        let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
-        pm.get(sender_ref)
-            .and_then(|entry| entry.osl_user_id.clone())
-            .or_else(|| {
-                pm.values()
-                    .any(|entry| entry.osl_user_id.as_deref() == Some(sender_ref))
-                    .then(|| sender_ref.to_string())
-            })
-            .or_else(|| {
-                if sender_ref == identity.user_id.as_str() {
-                    Some(identity.user_id.clone())
-                } else if identity.discord_snowflake.as_deref() == Some(sender_ref) {
-                    Some(identity.user_id.clone())
-                } else {
-                    None
-                }
-            })
-    }
-    .ok_or_else(|| "OSL: wrapped-key open sender is not bound".to_string())?;
 
     let wrapped = client
         .fetch_wrapped_key(&identity, content_id)
@@ -5927,6 +5910,31 @@ fn fetch_wrapped_attachment_key_for_open(
     let mut key = [0u8; 32];
     key.copy_from_slice(&key_bytes);
     Ok(key)
+}
+
+fn expected_wrapped_attachment_sender_osl_id(
+    state: &AppState,
+    identity: &keystore::Identity,
+    sender_ref: &str,
+) -> Result<String, String> {
+    let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+    pm.get(sender_ref)
+        .and_then(|entry| entry.osl_user_id.clone())
+        .or_else(|| {
+            pm.values()
+                .any(|entry| entry.osl_user_id.as_deref() == Some(sender_ref))
+                .then(|| sender_ref.to_string())
+        })
+        .or_else(|| {
+            if sender_ref == identity.user_id.as_str() {
+                Some(identity.user_id.clone())
+            } else if identity.discord_snowflake.as_deref() == Some(sender_ref) {
+                Some(identity.user_id.clone())
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| "OSL: wrapped-key open sender is not bound".to_string())
 }
 
 fn post_wrapped_key_before_producing_link<F>(
@@ -6107,7 +6115,20 @@ pub fn cmd_osl_open_attachment_v2(
             k.copy_from_slice(&key_bytes);
             k
         } else {
-            let _ = discord_message_id;
+            if discord_message_id.is_some() {
+                let identity = state
+                    .identity
+                    .lock()
+                    .expect("identity mutex poisoned")
+                    .as_ref()
+                    .cloned()
+                    .ok_or_else(|| "OSL: wrapped-key open needs a loaded identity".to_string())?;
+                let _ = expected_wrapped_attachment_sender_osl_id(
+                    state,
+                    &identity,
+                    &sender_discord_id,
+                )?;
+            }
             return Err("OSL: V1 file with no local attachment key supplied".to_string());
         }
     };
@@ -8570,8 +8591,18 @@ mod control_inbox_dead_letter_policy_tests {
     };
     use std::cell::Cell;
 
+    struct FileKeyReset;
+
+    impl Drop for FileKeyReset {
+        fn drop(&mut self) {
+            crate::main_password::set_file_storage_key(None);
+        }
+    }
+
     #[test]
     fn snowflake_sender_dead_letters_before_retirement_and_is_not_retried() {
+        let _reset = FileKeyReset;
+        crate::main_password::set_file_storage_key(Some([0x4d; 32]));
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("control_inbox_dead_letter.json");
         let mut ledger = ControlInboxDeadLetterFile::default();
@@ -14500,6 +14531,14 @@ mod account_transfer_tests {
     static FILE_KEY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     static PRODUCTION_STORE_OPEN_HOOK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    struct FileKeyReset;
+
+    impl Drop for FileKeyReset {
+        fn drop(&mut self) {
+            crate::main_password::set_file_storage_key(None);
+        }
+    }
+
     struct ProductionStoreOpenHookReset;
 
     impl Drop for ProductionStoreOpenHookReset {
@@ -14584,6 +14623,7 @@ mod account_transfer_tests {
     #[test]
     fn encrypted_export_is_normalized_to_plaintext_inside_outer_aead() {
         let _guard = FILE_KEY_TEST_LOCK.lock().unwrap();
+        let _reset = FileKeyReset;
         let dir = TempDir::new().unwrap();
         let entropy = [7; 16];
         let key = [3; 32];
@@ -14604,6 +14644,7 @@ mod account_transfer_tests {
     #[test]
     fn locked_export_of_encrypted_state_fails() {
         let _guard = FILE_KEY_TEST_LOCK.lock().unwrap();
+        let _reset = FileKeyReset;
         let dir = TempDir::new().unwrap();
         std::fs::write(
             dir.path().join("peer_map.json"),
@@ -14619,6 +14660,7 @@ mod account_transfer_tests {
     #[test]
     fn import_reencrypts_state_json_for_destination_key() {
         let _guard = FILE_KEY_TEST_LOCK.lock().unwrap();
+        let _reset = FileKeyReset;
         crate::main_password::set_file_storage_key(Some([9; 32]));
         let mut files = serde_json::Map::new();
         files.insert(
@@ -14638,6 +14680,7 @@ mod account_transfer_tests {
     #[test]
     fn guard_backup_destination_refuses_unencrypted_store_backup() {
         let _guard = FILE_KEY_TEST_LOCK.lock().unwrap();
+        let _reset = FileKeyReset;
         crate::main_password::set_file_storage_key(None);
         let dir = TempDir::new().unwrap();
         let stage = dir.path().join("stage");
@@ -14814,8 +14857,8 @@ mod duress_gate_tests {
             &base_dir,
             &crate::main_password::LockoutState {
                 version: 1,
-                password_failed_attempts:
-                    crate::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 1,
+                password_failed_attempts: crate::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT
+                    - 1,
                 password_locked_until: None,
                 phrase_failed_attempts: 0,
                 phrase_locked_until: None,
@@ -17007,8 +17050,8 @@ mod unit_a_sender_attribution_chain {
         )
         .unwrap_err();
         assert!(
-            err.contains("decrypt_from"),
-            "v5 must reject a sender-keys message under a forged sender_discord_id, got: {err}"
+            err.contains("v5 authenticated sender refused"),
+            "v5 must reject a sender-keys message under a forged sender_discord_id before decrypt, got: {err}"
         );
     }
 }
