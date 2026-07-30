@@ -59,6 +59,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use zeroize::Zeroizing;
 
 /// One peer's full v=2 record per `docs/phase-7-design.md` §5.1.
 ///
@@ -395,39 +396,64 @@ fn retire_legacy_v4_sessions(map: &mut PeerMap) -> usize {
 /// rename, so a crash mid-write doesn't truncate the existing
 /// file).
 ///
-/// 9-PEER-MAP-ENC defense-in-depth: refuse to overwrite an existing
-/// encrypted file with plaintext when `file_storage_key` is absent.
-/// Pre-fix, bootstrap's `verify_and_persist_peer_map_self_entry`
-/// fired BEFORE the password gate (key=None), failed to decrypt the
-/// existing file (so state defaulted to empty), then "repaired" the
-/// missing self-entry and persisted — overwriting the encrypted
-/// peer_map with a 1-entry plaintext stub on every launch. This
-/// guard makes the destructive path Err out rather than clobber:
-/// callers see the failure and can defer the persist to after the
-/// gate has installed the key.
+/// 9-PEER-MAP-ENC defense-in-depth: writes always encrypt. Existing
+/// plaintext files are upgraded in place; existing encrypted files require
+/// either the in-memory main-password key or a device-bound fallback key that
+/// can open the old envelope before replacement.
 pub fn write_peer_map(path: &Path, map: &PeerMap) -> Result<(), std::io::Error> {
-    if crate::main_password::get_file_storage_key().is_none() && path.exists() {
-        if let Ok(existing) = std::fs::read(path) {
-            if crate::main_password::has_enc_magic(&existing) {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "OSL: refusing to write plaintext peer_map over encrypted file \
-                     — file_storage_key not in slot (password not yet entered)",
-                ));
-            }
-        }
-    }
+    let existing = std::fs::read(path).ok();
+    let key = peer_map_write_key(path, existing.as_deref())?;
 
     let body = serde_json::to_string_pretty(map)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    // 7d-B4 (scoped): if a file_storage_key is installed (main
-    // password active), encrypt before write. Plain JSON otherwise.
-    let out_bytes = crate::main_password::maybe_encrypt(body.as_bytes())
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let out_bytes = crate::main_password::encrypt_at_rest(body.as_bytes(), &key)
+        .map_err(std::io::Error::other)?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, &out_bytes)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
+}
+
+fn peer_map_write_key(
+    path: &Path,
+    existing: Option<&[u8]>,
+) -> Result<Zeroizing<[u8; 32]>, std::io::Error> {
+    if let Some(key) = crate::main_password::get_file_storage_key() {
+        return Ok(Zeroizing::new(key));
+    }
+
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let existing_is_encrypted = existing
+        .map(crate::main_password::has_enc_magic)
+        .unwrap_or(false);
+    let fallback_path = dir.join("file_storage_key_fallback.json");
+    if existing_is_encrypted && !fallback_path.exists() {
+        return Err(peer_map_key_refusal(
+            "OSL: refusing to replace encrypted peer_map.json without a storage key",
+        ));
+    }
+
+    let key =
+        crate::main_password::ensure_device_bound_fallback_file_storage_key(dir).map_err(|e| {
+            peer_map_key_refusal(format!(
+                "OSL: refusing to write peer_map.json without storage-key authority: {e}"
+            ))
+        })?;
+    let key = Zeroizing::new(key);
+
+    if let Some(existing) = existing.filter(|blob| crate::main_password::has_enc_magic(blob)) {
+        crate::main_password::decrypt_at_rest(existing, &key).map_err(|_| {
+            peer_map_key_refusal(
+                "OSL: refusing to replace encrypted peer_map.json; storage key cannot open it",
+            )
+        })?;
+    }
+
+    Ok(key)
+}
+
+fn peer_map_key_refusal(message: impl Into<String>) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::PermissionDenied, message.into())
 }
 
 /// Resolve the OS-default `peer_map.json` path
@@ -461,7 +487,12 @@ mod tests {
     use crypto::ratchet::{DoubleRatchet, RatchetStateOnDisk, SessionContext, SESSION_VERSION_V1};
     use crypto::{ml_kem_768, pqxdh, x25519};
     use std::fs;
+    use std::sync::Mutex;
     use tempfile::tempdir;
+
+    use crate::main_password::{has_enc_magic, maybe_decrypt, set_file_storage_key};
+
+    static KEY_LOCK: Mutex<()> = Mutex::new(());
 
     fn build_test_ratchet_state() -> RatchetStateOnDisk {
         let (alice_ik_sk, alice_ik_pub) = x25519::generate_keypair();
@@ -503,6 +534,9 @@ mod tests {
 
     #[test]
     fn legacy_string_values_upgrade_in_place() {
+        let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_file_storage_key(Some([0x21; 32]));
+
         let dir = tempdir().unwrap();
         let path = dir.path().join("peer_map.json");
         fs::write(
@@ -515,7 +549,9 @@ mod tests {
         assert_eq!(osl_user_id_for(&map, "900000000000000003"), Some("liam"));
         assert_eq!(osl_user_id_for(&map, "900000000000000001"), Some("henry"));
         // File should now be in v=2 format with object values.
-        let after = fs::read_to_string(&path).unwrap();
+        let after_raw = fs::read(&path).unwrap();
+        assert!(has_enc_magic(&after_raw));
+        let after = String::from_utf8(maybe_decrypt(&after_raw).unwrap()).unwrap();
         assert!(
             after.contains("\"osl_user_id\""),
             "expected upgrade write-back to add osl_user_id field, got: {after}"
@@ -523,6 +559,8 @@ mod tests {
         // Second load on the upgraded file: no rewrite, modern parse.
         let map2 = load_peer_map_from_path(&path).expect("second load");
         assert_eq!(map2, map);
+
+        set_file_storage_key(None);
     }
 
     #[test]
@@ -561,6 +599,9 @@ mod tests {
 
     #[test]
     fn b80_legacy_v4_ratchet_state_is_retired_on_load_and_written_back() {
+        let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_file_storage_key(Some([0x80; 32]));
+
         let dir = tempdir().unwrap();
         let path = dir.path().join("peer_map.json");
         let mut map = PeerMap::new();
@@ -576,10 +617,11 @@ mod tests {
             },
         );
         write_peer_map(&path, &map).expect("seed legacy v4 state");
+        let raw = fs::read(&path).expect("read seeded peer map");
+        assert!(has_enc_magic(&raw));
+        let raw = String::from_utf8(maybe_decrypt(&raw).unwrap()).unwrap();
         assert!(
-            fs::read_to_string(&path)
-                .expect("read seeded peer map")
-                .contains("ratchet_state"),
+            raw.contains("ratchet_state"),
             "test fixture must contain legacy at-rest v4 state"
         );
 
@@ -595,7 +637,9 @@ mod tests {
             "bootstrap material stays so any remaining v4 path must re-handshake"
         );
 
-        let rewritten = fs::read_to_string(&path).expect("read retired peer map");
+        let rewritten_raw = fs::read(&path).expect("read retired peer map");
+        assert!(has_enc_magic(&rewritten_raw));
+        let rewritten = String::from_utf8(maybe_decrypt(&rewritten_raw).unwrap()).unwrap();
         assert!(
             !rewritten.contains("ratchet_state"),
             "retirement must be durable on disk"
@@ -604,6 +648,8 @@ mod tests {
             rewritten.contains("ik_ratchet_initial_pub"),
             "retirement must not erase bootstrap material"
         );
+
+        set_file_storage_key(None);
     }
 
     #[test]

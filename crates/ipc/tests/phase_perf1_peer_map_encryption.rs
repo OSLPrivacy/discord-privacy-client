@@ -4,7 +4,7 @@
 //! plaintext-clobber bug:
 //!
 //! 1. `write_peer_map` refuses to overwrite an existing OSL-ENC1
-//!    file with plaintext when no `file_storage_key` is in slot.
+//!    file when no matching storage key is available.
 //!    Pre-fix, bootstrap's `verify_and_persist_peer_map_self_entry`
 //!    fired before the password gate, found an empty in-memory map,
 //!    "repaired" the self-entry, and persisted — clobbering the
@@ -17,7 +17,7 @@
 //!    upgraded on the next gate verify.
 
 use ipc::main_password::{
-    get_file_storage_key, has_enc_magic, maybe_encrypt, set_file_storage_key,
+    get_file_storage_key, has_enc_magic, maybe_decrypt, maybe_encrypt, set_file_storage_key,
 };
 use ipc::membership::{load_scope_membership_from_path, write_scope_membership, ScopeMembership};
 use ipc::peer_map::{legacy_entry, write_peer_map, PeerMap};
@@ -148,7 +148,7 @@ fn peer_map_and_membership_are_always_encrypted() {
 }
 
 #[test]
-fn peer_map_writes_are_plaintext_when_key_absent_and_no_existing_file() {
+fn peer_map_writes_are_encrypted_when_key_absent_and_no_existing_file() {
     let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     set_file_storage_key(None);
 
@@ -160,15 +160,24 @@ fn peer_map_writes_are_plaintext_when_key_absent_and_no_existing_file() {
 
     let raw = std::fs::read(&path).unwrap();
     assert!(
-        !has_enc_magic(&raw),
-        "first-time write with no key in slot is plaintext (no encrypted file to protect)"
+        has_enc_magic(&raw),
+        "first-time write with no key in slot must use the device-bound fallback key"
     );
+    assert!(
+        dir.path().join("file_storage_key_fallback.json").exists(),
+        "device-bound fallback key must be sealed next to peer_map.json"
+    );
+    let reloaded = ipc::peer_map::load_peer_map_from_path(&path).unwrap();
+    assert_eq!(reloaded.len(), 1);
+    assert!(reloaded.contains_key("11111"));
+
+    set_file_storage_key(None);
 }
 
 /// The core regression: bootstrap's pre-gate verify_and_persist
-/// would clobber an encrypted file with plaintext. The write_peer_map
-/// guard now refuses that path with PermissionDenied so callers can
-/// no-op (their tracing::warn-and-continue pattern survives).
+/// would clobber an encrypted file without the key that sealed it. The
+/// write_peer_map guard now refuses that path with PermissionDenied so
+/// callers can no-op (their tracing::warn-and-continue pattern survives).
 #[test]
 fn write_peer_map_refuses_to_clobber_encrypted_with_plaintext() {
     let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -189,8 +198,9 @@ fn write_peer_map_refuses_to_clobber_encrypted_with_plaintext() {
     set_file_storage_key(None);
 
     // Step 3: bootstrap's repair builds a 1-entry "self-only" map
-    // and calls write_peer_map. With the new guard, this MUST be
-    // refused so the encrypted file survives.
+    // and calls write_peer_map. With the key absent and no matching
+    // fallback artifact available, this MUST be refused so the encrypted
+    // file survives.
     let mut stub_map: PeerMap = HashMap::new();
     stub_map.insert("99999".to_string(), legacy_entry("self_user"));
     let result = write_peer_map(&path, &stub_map);
@@ -209,11 +219,10 @@ fn write_peer_map_refuses_to_clobber_encrypted_with_plaintext() {
 }
 
 /// Defense-in-depth coverage: even when key absence is a legitimate
-/// state (e.g. very first launch, no password ever set), the guard
-/// only triggers when an encrypted file EXISTS on disk. Otherwise
-/// plaintext writes proceed normally.
+/// state (e.g. very first launch, no password ever set), writes still
+/// encrypt with a device-bound fallback key.
 #[test]
-fn write_peer_map_allows_plaintext_when_no_existing_file() {
+fn write_peer_map_encrypts_when_no_existing_file() {
     let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     set_file_storage_key(None);
 
@@ -223,16 +232,17 @@ fn write_peer_map_allows_plaintext_when_no_existing_file() {
 
     let mut map: PeerMap = HashMap::new();
     map.insert("11111".to_string(), legacy_entry("henry"));
-    write_peer_map(&path, &map).expect("plaintext write to fresh path is allowed");
+    write_peer_map(&path, &map).expect("fresh no-password write is encrypted");
     assert!(path.exists());
+    assert!(has_enc_magic(&std::fs::read(&path).unwrap()));
+
+    set_file_storage_key(None);
 }
 
-/// Same guard semantics: an EXISTING plaintext file (e.g. on a fresh
-/// install before the user has set a password) does NOT block
-/// rewrites with the key still absent. The guard only fires on
-/// encrypted-existing-plus-no-key.
+/// Same guard semantics: an EXISTING plaintext file is migratable even with
+/// the key slot initially absent. The rewrite must produce an encrypted file.
 #[test]
-fn write_peer_map_allows_overwriting_existing_plaintext_when_key_absent() {
+fn write_peer_map_migrates_existing_plaintext_when_key_absent() {
     let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     set_file_storage_key(None);
 
@@ -242,7 +252,19 @@ fn write_peer_map_allows_overwriting_existing_plaintext_when_key_absent() {
 
     let mut map: PeerMap = HashMap::new();
     map.insert("11111".to_string(), legacy_entry("henry"));
-    write_peer_map(&path, &map).expect("plaintext-over-plaintext write is allowed");
+    write_peer_map(&path, &map).expect("plaintext peer_map is migratable");
+    let raw = std::fs::read(&path).unwrap();
+    assert!(has_enc_magic(&raw));
+    assert!(
+        !String::from_utf8_lossy(&raw).contains("henry"),
+        "migrated peer_map must not expose plaintext peer identifiers"
+    );
+    let plain = maybe_decrypt(&raw).unwrap();
+    let reloaded: PeerMap = serde_json::from_slice(&plain).unwrap();
+    assert_eq!(reloaded.len(), 1);
+    assert!(reloaded.contains_key("11111"));
+
+    set_file_storage_key(None);
 }
 
 /// Retroactive migration: a user on the pre-fix build has a
@@ -256,13 +278,13 @@ fn reload_reencrypts_plaintext_peer_map_when_key_now_present() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("peer_map.json");
 
-    // Step 1: write a plaintext peer_map (simulates the pre-fix
+    // Step 1: seed a plaintext peer_map (simulates the pre-fix
     // bootstrap-clobbered state on the user's install).
     set_file_storage_key(None);
     let mut map: PeerMap = HashMap::new();
     map.insert("11111".to_string(), legacy_entry("henry"));
     map.insert("22222".to_string(), legacy_entry("alice"));
-    write_peer_map(&path, &map).unwrap();
+    std::fs::write(&path, serde_json::to_vec_pretty(&map).unwrap()).unwrap();
     let raw_plain = std::fs::read(&path).unwrap();
     assert!(
         !has_enc_magic(&raw_plain),
