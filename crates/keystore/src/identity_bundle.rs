@@ -125,6 +125,64 @@ pub struct IdentityBundle {
 pub const IDENTITY_BUNDLE_DOMAIN: &[u8] = b"OSL-IDENTITY-BUNDLE-v1";
 
 impl IdentityBundle {
+    /// Build a locally-authored [`IdentityBundle`] from this device's
+    /// identity plus the public fields just fetched from the keyserver.
+    ///
+    /// The keyserver response is data, not authority: every public key in it
+    /// must byte-match `identity`, and the returned bundle is signed locally by
+    /// `identity.ed25519_secret`. `revision` is caller-supplied because the
+    /// legacy `PubkeysResponse` wire shape has no bundle revision field.
+    pub fn from_local_identity_and_fetched_pubkeys_response(
+        identity: &crate::identity::Identity,
+        response: &crate::client::PubkeysResponse,
+        revision: u64,
+    ) -> Result<Self, BundleConstructionError> {
+        let ed25519_identity_pub = decode_fixed::<{ ed25519::PUBLIC_KEY_SIZE }>(
+            &response.ik_ed25519_pub,
+            BundleField::Ed25519IdentityKey,
+        )?;
+        if ed25519_identity_pub != *identity.ed25519_public.as_bytes() {
+            return Err(BundleConstructionError::IdentityKeyMismatch {
+                field: BundleField::Ed25519IdentityKey,
+            });
+        }
+
+        let x25519_identity_pub =
+            decode_fixed::<32>(&response.ik_x25519_pub, BundleField::X25519IdentityKey)?;
+        if x25519_identity_pub != *identity.x25519_public.as_bytes() {
+            return Err(BundleConstructionError::IdentityKeyMismatch {
+                field: BundleField::X25519IdentityKey,
+            });
+        }
+
+        let mlkem768_identity_pub = decode_fixed::<{ crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE }>(
+            &response.ik_mlkem768_pub,
+            BundleField::MlKem768IdentityKey,
+        )?;
+        if mlkem768_identity_pub != identity.mlkem_public_bytes {
+            return Err(BundleConstructionError::IdentityKeyMismatch {
+                field: BundleField::MlKem768IdentityKey,
+            });
+        }
+
+        let capability_bundle = response.rn_capabilities.unwrap_or(0);
+        if capability_bundle > crate::client::RN_CAP_MAX {
+            return Err(BundleConstructionError::UnsupportedCapabilityBitmap);
+        }
+
+        let mut bundle = IdentityBundle {
+            ed25519_identity_pub,
+            x25519_identity_pub,
+            mlkem768_identity_pub,
+            capability_bundle,
+            revision,
+            signature: [0u8; ed25519::SIGNATURE_SIZE],
+        };
+        let signature = ed25519::sign(&identity.ed25519_secret, &bundle.signed_bytes());
+        bundle.signature = *signature.as_bytes();
+        Ok(bundle)
+    }
+
     /// Canonical bytes the signature is computed over. Covers every
     /// field in [`BundleField::ALL`] plus the revision counter — a
     /// signature can't be produced (or verified) over a subset.
@@ -145,6 +203,46 @@ impl IdentityBundle {
         buf.extend_from_slice(&self.revision.to_be_bytes());
         buf
     }
+
+    /// Verify the owner-signed identity bundle and then compose the prekey
+    /// response checks onto it. This is the one-call contract for callers that
+    /// need a fully usable bundle: Ed25519 binding, revision monotonicity,
+    /// identity-field matching, and SPK signature verification all have to pass.
+    pub fn verify_full(
+        &self,
+        prekey_response: &crate::client::PrekeyBundleResponse,
+        pinned_signer: &ed25519::PublicKey,
+        last_known_revision: Option<u64>,
+    ) -> Result<MergedIdentityBundle, BundleFullVerifyError> {
+        BundleVerifyPolicy::new()
+            .verify(self, pinned_signer, last_known_revision)
+            .map_err(BundleFullVerifyError::Identity)?;
+        self.merge_prekey_bundle_response(prekey_response, last_known_revision)
+            .map_err(BundleFullVerifyError::Prekey)
+    }
+}
+
+fn decode_fixed<const N: usize>(
+    value: &str,
+    field: BundleField,
+) -> Result<[u8; N], BundleConstructionError> {
+    let bytes = STANDARD
+        .decode(value)
+        .map_err(|_| BundleConstructionError::MalformedField { field })?;
+    <[u8; N]>::try_from(bytes.as_slice())
+        .map_err(|_| BundleConstructionError::MalformedField { field })
+}
+
+/// Why [`IdentityBundle::from_local_identity_and_fetched_pubkeys_response`]
+/// refused construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum BundleConstructionError {
+    #[error("fetched {field:?} is malformed (not valid fixed-length base64)")]
+    MalformedField { field: BundleField },
+    #[error("fetched {field:?} does not match the local identity")]
+    IdentityKeyMismatch { field: BundleField },
+    #[error("fetched capability bitmap is outside the supported range")]
+    UnsupportedCapabilityBitmap,
 }
 
 /// Why [`BundleVerifyPolicy::verify`] refused a bundle.
@@ -167,6 +265,15 @@ pub enum BundleVerifyError {
          {last_known} — refusing stale/regressed bundle"
     )]
     RevisionNotMonotonic { got: u64, last_known: u64 },
+}
+
+/// Why [`IdentityBundle::verify_full`] refused a full identity + prekey bundle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum BundleFullVerifyError {
+    #[error(transparent)]
+    Identity(#[from] BundleVerifyError),
+    #[error(transparent)]
+    Prekey(#[from] BundleMergeError),
 }
 
 /// The verification contract for a full OSL identity bundle.
@@ -275,7 +382,10 @@ pub enum BundleMergeError {
         "cannot merge prekey material into identity bundle revision {bundle_revision} — caller \
          has already accepted revision {last_known} or newer"
     )]
-    StaleBundleRevision { bundle_revision: u64, last_known: u64 },
+    StaleBundleRevision {
+        bundle_revision: u64,
+        last_known: u64,
+    },
     /// A response identity-key field is not valid base64, or does not
     /// decode to the expected fixed length.
     #[error("prekey-bundle response {field:?} is malformed (not valid fixed-length base64)")]
@@ -355,9 +465,9 @@ impl IdentityBundle {
                 field: BundleField::Ed25519IdentityKey,
             });
         };
-        let Ok(resp_ed25519_arr) = <[u8; ed25519::PUBLIC_KEY_SIZE]>::try_from(
-            resp_ed25519_bytes.as_slice(),
-        ) else {
+        let Ok(resp_ed25519_arr) =
+            <[u8; ed25519::PUBLIC_KEY_SIZE]>::try_from(resp_ed25519_bytes.as_slice())
+        else {
             return Err(BundleMergeError::MalformedField {
                 field: BundleField::Ed25519IdentityKey,
             });
@@ -417,8 +527,7 @@ impl IdentityBundle {
         let Ok(spk_sig_bytes) = STANDARD.decode(&response.spk_signature) else {
             return Err(BundleMergeError::MalformedSpk);
         };
-        let Ok(spk_sig_arr) =
-            <[u8; ed25519::SIGNATURE_SIZE]>::try_from(spk_sig_bytes.as_slice())
+        let Ok(spk_sig_arr) = <[u8; ed25519::SIGNATURE_SIZE]>::try_from(spk_sig_bytes.as_slice())
         else {
             return Err(BundleMergeError::MalformedSpk);
         };
@@ -458,6 +567,24 @@ impl IdentityBundle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::identity::{generate_identity, Identity};
+
+    fn pubkeys_response_from_identity(
+        identity: &Identity,
+        capabilities: Option<u32>,
+    ) -> crate::client::PubkeysResponse {
+        crate::client::PubkeysResponse {
+            user_id: identity.user_id.clone(),
+            ik_x25519_pub: STANDARD.encode(identity.x25519_public.as_bytes()),
+            ik_ed25519_pub: STANDARD.encode(identity.ed25519_public.as_bytes()),
+            ik_mlkem768_pub: STANDARD.encode(identity.mlkem_public_bytes),
+            registered_at: "2026-07-30T00:00:00.000Z".to_owned(),
+            last_rotated_at: None,
+            ik_ratchet_initial_pub: None,
+            rn_capabilities: capabilities,
+            registration_sig: None,
+        }
+    }
 
     fn signed_bundle(
         signer_secret: &ed25519::SecretKey,
@@ -480,6 +607,46 @@ mod tests {
         let sig = ed25519::sign(signer_secret, &bundle.signed_bytes());
         bundle.signature = *sig.as_bytes();
         bundle
+    }
+
+    #[test]
+    fn identity_bundle_from_local_identity_and_fetched_pubkeys_response() {
+        let identity = generate_identity("peer".to_owned());
+        let fetched = pubkeys_response_from_identity(&identity, Some(3));
+
+        let bundle = IdentityBundle::from_local_identity_and_fetched_pubkeys_response(
+            &identity, &fetched, 17,
+        )
+        .expect("matching fetched public keys are locally signable");
+
+        assert_eq!(
+            bundle.ed25519_identity_pub,
+            *identity.ed25519_public.as_bytes()
+        );
+        assert_eq!(
+            bundle.x25519_identity_pub,
+            *identity.x25519_public.as_bytes()
+        );
+        assert_eq!(bundle.mlkem768_identity_pub, identity.mlkem_public_bytes);
+        assert_eq!(bundle.capability_bundle, 3);
+        assert_eq!(
+            BundleVerifyPolicy::new().verify(&bundle, &identity.ed25519_public, None),
+            Ok(17)
+        );
+
+        let attacker = generate_identity("attacker".to_owned());
+        let mut mismatched = pubkeys_response_from_identity(&identity, Some(3));
+        mismatched.ik_x25519_pub = STANDARD.encode(attacker.x25519_public.as_bytes());
+        assert_eq!(
+            IdentityBundle::from_local_identity_and_fetched_pubkeys_response(
+                &identity,
+                &mismatched,
+                18,
+            ),
+            Err(BundleConstructionError::IdentityKeyMismatch {
+                field: BundleField::X25519IdentityKey
+            })
+        );
     }
 
     #[test]
@@ -658,8 +825,7 @@ mod tests {
         // onto it would make the stale bundle look current again.
         let stale_bundle = signed_bundle(&owner_secret, &owner_pub, 3);
         let spk_pub = [0x33; 32];
-        let response =
-            matching_prekey_response(&stale_bundle, &owner_secret, spk_pub, None, 10);
+        let response = matching_prekey_response(&stale_bundle, &owner_secret, spk_pub, None, 10);
 
         let result = stale_bundle.merge_prekey_bundle_response(&response, Some(5));
 
@@ -711,5 +877,48 @@ mod tests {
         let result = bundle.merge_prekey_bundle_response(&response, None);
 
         assert_eq!(result, Err(BundleMergeError::SpkSignatureInvalid));
+    }
+
+    #[test]
+    fn identity_bundle_verify_full_composes_signature_and_prekey_checks() {
+        let (owner_secret, owner_pub) = ed25519::generate_keypair();
+        let bundle = signed_bundle(&owner_secret, &owner_pub, 9);
+        let response =
+            matching_prekey_response(&bundle, &owner_secret, [0x33; 32], Some((7, [0x44; 32])), 8);
+
+        let merged = bundle
+            .verify_full(&response, &owner_pub, Some(8))
+            .expect("valid identity signature plus valid prekey material");
+        assert_eq!(merged.identity, bundle);
+        assert_eq!(merged.prekey.opk, Some((7, [0x44; 32])));
+
+        let mut stale = bundle.clone();
+        assert_eq!(
+            stale.verify_full(&response, &owner_pub, Some(9)),
+            Err(BundleFullVerifyError::Identity(
+                BundleVerifyError::RevisionNotMonotonic {
+                    got: 9,
+                    last_known: 9,
+                }
+            ))
+        );
+
+        stale.revision = 10;
+        assert_eq!(
+            stale.verify_full(&response, &owner_pub, Some(9)),
+            Err(BundleFullVerifyError::Identity(
+                BundleVerifyError::SignatureInvalid
+            ))
+        );
+
+        let (forger_secret, _) = ed25519::generate_keypair();
+        let forged_response =
+            matching_prekey_response(&bundle, &forger_secret, [0x55; 32], None, 8);
+        assert_eq!(
+            bundle.verify_full(&forged_response, &owner_pub, Some(8)),
+            Err(BundleFullVerifyError::Prekey(
+                BundleMergeError::SpkSignatureInvalid
+            ))
+        );
     }
 }

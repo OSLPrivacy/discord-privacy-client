@@ -145,6 +145,44 @@ previously claimed, it is restated below as `Planned` with the reason.
   caller-supplied identity (master §2 P0-2, §10 finding 2). Until fixed,
   "who sent this" is not a cryptographic answer.
 
+### v4/v5 reconciliation and remediation
+
+Verification units:
+`v5_sender_keys_enabled_default_false_rationale_is_documented`,
+`threat_model_reconciles_v4_retirement_and_v5_ratchet_limits`.
+
+The retired `v=4` pairwise Double Ratchet path and the disabled `v=5`
+sender-key path must be read together. `v=4` is not merely waiting for a UI
+switch; it was removed from the shipping send path because real deployments
+hit recurring ratchet desynchronization failures. That retirement means `v=5`
+cannot inherit a proven pairwise distribution channel from the current
+product. Sender-key setup and rotation messages may exist in source, but the
+shipping route remains stateless `v=3`.
+
+`sender_keys_enabled` therefore defaults false as a safety property, not as a
+feature flag awaiting marketing approval. The current sender-key state is
+account-scoped rather than bound to a distinct physical device, so one account
+used on two machines can advance or receive chain state in an order the other
+machine cannot prove. Enabling it by default would trade the known
+stateless-v3 limitation for a harder-to-debug group desynchronization and
+misdelivery class.
+
+Remediation before changing any threat-model row from `Planned`:
+
+- Reintroduce a pairwise ratchet only behind a state format with atomic commit,
+  skipped-key bounds, reset authority, and cross-device tests that prove no
+  stale session silently decrypts or encrypts.
+- Bind sender-key chains to an explicit physical-device identity and prove
+  multi-device send/receive ordering, rotation, and recovery across two live
+  devices for the same account.
+- Add sender-key rotation triggers beyond the implemented 24-hour and
+  membership-change paths if the product wants to claim a smaller blast radius;
+  until then, do not claim one-hour, 500-message, suspicious-event, or
+  current-rotation-only limits.
+- Re-run the threat model against the actual default configuration after the
+  switch is enabled. Source presence alone is not evidence that the property
+  ships.
+
 ### Revocability ("burn") — what it destroys and what it does not
 
 Burn is **policy and state deletion, not destruction of decryption
