@@ -78,7 +78,7 @@ async function roundTripAccount(): Promise<Account> {
 }
 
 describe("account ownership proof challenge round trip", () => {
-  it("combines the challenge round trip and proof verification into one account ownership proof", async () => {
+  it("keyserver-cf/test/integration/account-ownership-proof.test.ts", async () => {
     const account = await roundTripAccount();
 
     await expect(verify_ownership_proof(account, NOW)).resolves.toEqual({
