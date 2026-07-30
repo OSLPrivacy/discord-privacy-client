@@ -1,7 +1,7 @@
 use keystore::{
     generate_identity, save_identity, save_password_record, save_prekey_state, Argon2Params,
-    DuressEngine, DuressHandlers, DuressPaths, NoOpSealer, PasswordRecord, PrekeyConfig,
-    PrekeyState, StepOutcome, WipeStep,
+    DuressEngine, DuressHandlers, DuressJournal, DuressPaths, NoOpSealer, PasswordRecord,
+    PrekeyConfig, PrekeyState, StepOutcome, WipeStep,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -38,6 +38,27 @@ fn build_paths_without_prekey(dir: &TempDir) -> (DuressPaths, std::path::PathBuf
         },
         journal_file,
     )
+}
+
+fn write_journal_with_all_steps_except(journal_path: &std::path::Path, except: WipeStep) {
+    let completed = WipeStep::ordered()
+        .iter()
+        .copied()
+        .filter(|step| *step != except)
+        .map(|step| {
+            (
+                step,
+                StepOutcome::Skipped {
+                    reason: "prefilled test step".to_string(),
+                },
+            )
+        })
+        .collect();
+    let journal = DuressJournal {
+        completed,
+        started_at_unix_seconds: 0,
+    };
+    std::fs::write(journal_path, serde_json::to_vec_pretty(&journal).unwrap()).unwrap();
 }
 
 #[test]
@@ -198,6 +219,7 @@ fn handlers_run_in_canonical_order() {
     };
 
     let handlers = DuressHandlers {
+        purge_keyring: Some(mk_handler("keyring")),
         wipe_local_cache_dir: Some(mk_handler("local_cache")),
         wipe_anonymous_credentials: Some(mk_handler("creds")),
         wipe_prekeys: Some(mk_handler("prekeys")),
@@ -218,6 +240,7 @@ fn handlers_run_in_canonical_order() {
     assert_eq!(
         *calls,
         vec![
+            "keyring",
             "local_cache",
             "creds",
             "prekeys",
@@ -227,6 +250,40 @@ fn handlers_run_in_canonical_order() {
             "zeroize",
             "strip",
         ]
+    );
+}
+
+#[test]
+fn keyring_purge_handler() {
+    let dir = TempDir::new().unwrap();
+    let (paths, journal_path) = build_paths(&dir);
+    write_journal_with_all_steps_except(&journal_path, WipeStep::KeyringPurge);
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_for_cb = calls.clone();
+    let handlers = DuressHandlers {
+        purge_keyring: Some(Box::new(move || {
+            calls_for_cb.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })),
+        ..Default::default()
+    };
+
+    let engine = DuressEngine::new(journal_path.clone(), paths, handlers);
+    let report = engine.execute().unwrap();
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "KeyringPurge must call DuressHandlers::purge_keyring"
+    );
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::KeyringPurge),
+        &StepOutcome::Wiped
+    );
+    assert!(
+        !journal_path.exists(),
+        "successful keyring purge handler run must clear the journal"
     );
 }
 
@@ -332,6 +389,7 @@ fn successful_run_removes_journal() {
     let dir = TempDir::new().unwrap();
     let (paths, journal_path) = build_paths(&dir);
     let handlers = DuressHandlers {
+        purge_keyring: Some(Box::new(|| Ok(()))),
         wipe_local_cache_dir: Some(Box::new(|| Ok(()))),
         wipe_anonymous_credentials: Some(Box::new(|| Ok(()))),
         wipe_prekeys: Some(Box::new(|| Ok(()))),
