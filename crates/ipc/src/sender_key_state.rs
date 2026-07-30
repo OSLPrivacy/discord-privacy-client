@@ -60,6 +60,14 @@ mod tests {
     use crypto::x25519;
     use tempfile::tempdir;
 
+    struct FileKeyReset;
+
+    impl Drop for FileKeyReset {
+        fn drop(&mut self) {
+            crate::main_password::set_file_storage_key(None);
+        }
+    }
+
     fn device(byte: u8) -> PhysicalDeviceId {
         PhysicalDeviceId::from_bytes([byte; 32]).unwrap()
     }
@@ -75,6 +83,8 @@ mod tests {
 
     #[test]
     fn v5_device_bound_sender_keys_do_not_desync_across_two_devices() {
+        let _reset = FileKeyReset;
+        crate::main_password::set_file_storage_key(Some([0x51; 32]));
         let peer = b"same-peer-account".to_vec();
         let mut device_a = SenderKeyState::new();
         let mut device_b = SenderKeyState::new();
