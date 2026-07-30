@@ -1536,7 +1536,7 @@ function chooseAppsOnboardingContent(): string {
   const continueLabel = nativeCatalogBusy
     ? defaultContinueLabel
     : selectedOnboardingApps.size > 0 ? defaultContinueLabel : "Skip apps";
-  return `<h1 id="route-heading" tabindex="-1">Choose apps</h1><p class="compact-lead onboarding-centered-copy">Pick reviewed apps for Home, or skip this for now. Nothing opens during setup.</p><section class="onboarding-app-section"><h2>Detected</h2>${choices(detected, "Detected apps")}</section><section class="onboarding-app-section"><h2>Other apps</h2>${choices(other, "Other apps")}</section><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-app-choice" type="button" ${nativeCatalogBusy ? "disabled" : ""}>${continueLabel}</button></div>`;
+  return `<h1 id="route-heading" tabindex="-1">Choose apps</h1><p class="compact-lead onboarding-centered-copy">Pick available apps for Home, or skip this for now. Nothing opens during setup.</p><section class="onboarding-app-section"><h2>Detected</h2>${choices(detected, "Detected apps")}</section><section class="onboarding-app-section"><h2>Other apps</h2>${choices(other, "Other apps")}</section><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-app-choice" type="button" ${nativeCatalogBusy ? "disabled" : ""}>${continueLabel}</button></div>`;
 }
 
 async function enterCombinedAppChoice(): Promise<void> {
@@ -1776,7 +1776,7 @@ function onboardingAppsContent(): string {
   const apps = onboardingConnectionApps().filter((app) => !handledOnboardingConnectApps.has(app.id));
   const choices = apps.length
     ? `<div class="onboarding-app-grid" role="radiogroup" aria-label="Apps left to connect">${apps.map((app) => `<button type="button" role="radio" class="onboarding-app ${onboardingConnectAppId === app.id ? "selected" : ""}" data-connect-app-choice="${app.id}" aria-checked="${onboardingConnectAppId === app.id}"><span class="app-logo-plate">${homeAppLogo(app)}</span><strong>${escapeHtml(app.displayName)}</strong></button>`).join("")}</div>`
-    : `<div class="empty-state"><strong>Selected apps reviewed</strong><p>Finish setup.</p></div>`;
+    : `<div class="empty-state"><strong>Selected apps ready</strong><p>Finish setup.</p></div>`;
   return `<h1 id="route-heading" tabindex="-1">Connect your apps</h1><p class="compact-lead onboarding-centered-copy">Open each selected app, or skip it for now.</p>${choices}<div class="setup-footer onboarding-actions"><button class="button primary" id="continue-connect-app" type="button" ${onboardingConnectAppId ? "" : "disabled"}>Open selected app</button><button class="browser-import-skip" id="skip-connect-app" type="button">${onboardingConnectAppId ? "Not now" : "Continue"}</button></div>`;
 }
 
@@ -2968,8 +2968,8 @@ function simpleDeviceStatusMarkup(): string {
   const coreReady = isCoreProtectionReady(core.readiness);
   const protection = identityProtectionStatus(core.readiness.storageMethod);
   const ready = coreReady && protection.state === "protected";
-  const label = coreReady ? protection.label : "Needs attention";
-  const detail = coreReady ? protection.detail : coreReadinessLabel(core.readiness);
+  const label = ready ? "Ready" : "Needs attention";
+  const detail = label;
   return `<div class="trust-state ${ready ? "ready" : "pending"} ${coreReady && !ready ? "not-secure" : ""}" role="status" data-identity-protection="${protection.state}"><span class="dot"></span><span><strong>${escapeHtml(label)}</strong><small>${escapeHtml(detail)}</small></span></div>`;
 }
 
@@ -3224,7 +3224,7 @@ export function homePrimaryActionPlan(input: HomePrimaryActionInput): HomePrimar
   if (!input.storageProtected) {
     return {
       issue: "local-storage",
-      title: "Review local storage",
+      title: "Review device storage",
       detail: input.storageDetail,
       label: "Review device",
       target: { kind: "route", route: "settings", settingsSection: "account", profileSettings: true },
@@ -3552,7 +3552,7 @@ export function publicPostGuardCarrierPreviewMarkup(platform = "Public platforms
   return `<section class="public-post-guard public-post-guard-preview" data-public-platform-preview="encrypted-audience-carrier" data-public-post-guard="encrypted-audience-carrier" aria-labelledby="public-post-guard-title"><header><span class="privacy-local-mark">PUBLIC POST GUARD</span><h2 id="public-post-guard-title">Encrypted-audience carrier preview</h2><p>${platformName} stays a public surface. OSL shows the public carrier text separately from the protected audience preview before anything is placed.</p></header><div class="privacy-policy-grid carrier-preview-grid" aria-label="Public platform carrier preview"><article class="privacy-policy-card" data-public-post-kind="ordinary" data-carrier-part="public"><span class="status-tag">Public</span><h3>Public carrier</h3><p>Visible to the platform audience. Search, quoting, archiving, audience, location, and media metadata still need review. Visible carrier text stays visible and does not contain the protected message.</p></article><article class="privacy-policy-card" data-public-post-kind="encrypted-audience-carrier" data-carrier-part="protected-audience"><span class="status-tag">Carrier preview</span><h3>Protected audience</h3><p>Plaintext is for the approved audience only, but the platform can still see the public carrier, timing, and engagement.</p></article></div><p class="scope-approval-note">If audience proof is missing or changes, OSL refuses the protected placement and keeps the draft local.</p></section>`;
 }
 
-function inboxDestinationContent(): string {
+export function inboxDestinationContent(): string {
   const verifiedPeople = hubPeople.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange);
   const requests = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange);
   const connectedApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch" && app.linked);
@@ -3567,14 +3567,14 @@ function inboxDestinationContent(): string {
   const chatRows = verifiedPeople.length
     ? verifiedPeople.slice(0, 8).map((person) => {
         const last = oslChatMessages.get(person.personId)?.at(-1);
-        return `<article class="inbox-row osl-chat-source"><span class="source-mark">${homeModuleIcon("osl-chats")}</span><button class="inbox-conversation-open" data-osl-chat-open="${escapeHtml(person.personId)}" type="button"><strong>${escapeHtml(person.alias ?? "Verified friend")}</strong><small>OSL Chat · Verified friend${last?.body ? ` · ${escapeHtml(last.body)}` : ""}</small></button></article>`;
+        return `<article class="inbox-row osl-chat-source"><span class="source-mark">${homeModuleIcon("osl-chats")}</span><button class="inbox-conversation-open" data-osl-chat-open="${escapeHtml(person.personId)}" type="button"><strong>${escapeHtml(person.alias ?? "Verified friend")}</strong><small>OSL Chat · Protected OSL message${last?.body ? ` · ${escapeHtml(last.body)}` : ""}</small></button></article>`;
       }).join("")
     : `<div class="empty-state"><strong>No private chats yet</strong><p>Verify a friend before starting an encrypted OSL chat.</p></div>`;
   const requestRows = requests.length
     ? requests.slice(0, 8).map((person) => `<article class="inbox-row request-source"><span class="source-mark">${homeCommandIcon("friends")}</span><div><strong>${escapeHtml(person.alias ?? "Friend request")}</strong><small>${person.pendingKeyChange ? "Security change needs review" : "Verification needed before protected chat"}</small></div><button class="button compact" data-open-friends type="button">Review</button></article>`).join("")
     : `<div class="empty-state"><strong>No requests</strong><p>New friend requests and key reviews appear here.</p></div>`;
   const oslSurfaces = [
-    ["chat", "OSL Chat", "Verified friend chat", "Encrypted for verified friends"],
+    ["chat", "OSL Chat", "Protected OSL messages", "Ready for verified friends"],
     ["circles", "OSL Circles", "Private audience feeds", "Coming after small-group review"],
     ["mail", "OSL Mail", "Client protection", "External recipients are not OSL E2EE"],
   ] as const;
@@ -4194,7 +4194,7 @@ function massCleanupActionLabel(action: string): string {
 function massCleanupSettingsContent(): string {
   const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
   if (!pro) {
-    return `<h2>Mass cleanup</h2><section class="cleanup-lock"><span>PRO</span><strong>Organize many chats at once</strong><p>Every batch is reviewed and confirmed before anything changes.</p></section>`;
+    return `<h2>Mass cleanup</h2><section class="cleanup-lock"><span>PRO</span><strong>Organize many chats at once</strong><p>Every batch is shown and confirmed before anything changes.</p></section>`;
   }
   if (massCleanupLoading) return `<h2>Mass cleanup</h2><div class="settings-unavailable"><strong>Checking this device…</strong></div>`;
   if (!massCleanupCapabilities) {
@@ -7749,10 +7749,10 @@ async function requestDiscordQaVisibleRowRuntimeReceipt(): Promise<void> {
       : "refused";
   render();
   showToast(receipt?.accepted
-    ? "Native row proof receipt saved"
+    ? "Native row proof saved"
     : receipt === null
       ? "Native row proof was unavailable"
-      : "Native row proof refused; receipt saved");
+      : "Native row proof refused; proof saved");
 }
 
 async function runDiscordQaOneClick(): Promise<void> {
@@ -7772,7 +7772,7 @@ async function runDiscordQaOneClick(): Promise<void> {
       || !qaProbe.personToPersonE2ee
       || qaProbe.viewOnce
       || !qaProbe.deliveredToOslInbox) {
-      throw new Error("The fixed encrypted probe did not produce an authenticated send receipt");
+      throw new Error("The fixed encrypted probe did not produce authenticated send proof");
     }
     void startDiscordQaVisualOverlayAttempt();
     let receivedPeerProbe = false;

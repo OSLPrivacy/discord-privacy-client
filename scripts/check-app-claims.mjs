@@ -4299,7 +4299,7 @@ async function runSelfTest() {
   );
 
   const productionMain = await readUtf8(path.join(APP_SRC_ROOT, "main.ts"));
-  const scrubMarker = "<h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review. Nothing is deleted by this build.</p>";
+  const scrubMarker = "<span class=\"privacy-local-mark\">FREE · THIS DEVICE ONLY</span><h2>Recommended action</h2><h3>Review an export</h3>";
   const scrubMarkerOccurrences = productionMain.split(scrubMarker).length - 1;
   const mutatedMain = productionMain.replace(
     scrubMarker,

@@ -1,7 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { LatestOnlyRunner } from "./latest";
 
 describe("latest-only native work", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("coalesces a burst of 100 requests into the active and latest run", async () => {
     const runner = new LatestOnlyRunner();
     let release: (() => void) | undefined;
@@ -42,6 +46,25 @@ describe("latest-only native work", () => {
     rejectActive?.(new Error("native work failed"));
 
     await expect(first).rejects.toThrow("native work failed");
+    expect(runs).toEqual(["active", "latest"]);
+  });
+
+  it("coalesces queued native work for one short scheduling window", async () => {
+    vi.useFakeTimers();
+    const runner = new LatestOnlyRunner(4);
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const runs: string[] = [];
+    const first = runner.request(async () => { runs.push("active"); await gate; });
+    void runner.request(async () => { runs.push("stale"); });
+
+    release?.();
+    await vi.advanceTimersByTimeAsync(3);
+    expect(runs).toEqual(["active"]);
+
+    void runner.request(async () => { runs.push("latest"); });
+    await vi.advanceTimersByTimeAsync(1);
+    await first;
     expect(runs).toEqual(["active", "latest"]);
   });
 

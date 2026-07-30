@@ -344,14 +344,14 @@ description = "Read-only probe for whether borrowing an existing native app wind
 commands.allow = ["native_app_takeover_requires_consent"]
 
 [[permission]]
-identifier = "allow-discord-marker-available"
-description = "Read-only probe for whether the trusted native Discord composer marker is available; it grants no send, edit, or cross-app authority."
-commands.allow = ["discord_marker_available"]
-
-[[permission]]
 identifier = "allow-install-native-app"
 description = "Start one fixed silent winget or Microsoft Store background install after an explicit trusted-UI click, without shell input or automatic elevation."
 commands.allow = ["install_native_app"]
+
+[[permission]]
+identifier = "allow-discord-marker-available"
+description = "Read only whether the current verified native Discord composer can accept OSL's fixed local carrier marker; performs no focus, placement, send, path, or account mutation."
+commands.allow = ["discord_marker_available"]
 
 [[permission]]
 identifier = "allow-get-mullvad-status"
