@@ -2017,4 +2017,142 @@ mod tests {
         assert!(!rendered.contains("B0B0"));
         assert!(rendered.contains("[redacted; sha256]"));
     }
+
+    #[test]
+    fn proprietary_module_lifecycle_proof() {
+        use crate::proprietary_module_lifecycle::{
+            ProprietaryModuleLifecycle, ProprietaryModuleLifecycleError,
+            ProprietaryModuleLifecyclePhase,
+        };
+
+        struct LifecycleProbe;
+
+        impl ProprietaryModule for LifecycleProbe {
+            fn evaluate(
+                &self,
+                request: ProprietaryModuleRequest<'_>,
+            ) -> Result<ProprietaryModuleAdvice, ProprietaryModuleError> {
+                assert_eq!(request.operation(), BoundaryOperation::LocalRiskAdvice);
+                assert_eq!(request.context().service(), BoundaryService::Discord);
+                assert_eq!(request.ciphertext_digest(), [0xC7; 32]);
+                assert_eq!(request.explicit_plaintext(), None);
+                assert!(request
+                    .permissions()
+                    .allows(OpenPermission::LocalRiskAdvice));
+                ProprietaryModuleAdvice::new(AdvisoryDisposition::SuggestManualReview, 61, 4)
+            }
+        }
+
+        let mut lifecycle = ProprietaryModuleLifecycle::new();
+        let install = OptionalModuleInstallGrant::Installed {
+            manifest: manifest_with_network_policy(ProprietaryNetworkPolicy::BrokeredHttpsOnly),
+        };
+        let consent = ConsentGrant::Present {
+            revision: nonzero_revision(21),
+        };
+        let binding = BindingGrant::Bound { digest: [0x22; 32] };
+        let authority = AuthorityGrant::Verified {
+            revision: nonzero_revision(23),
+        };
+        let network_binding = BrokeredNetworkBinding::new([0xB0; 32], nonzero_revision(25))
+            .expect("broker binding is verified");
+
+        assert_eq!(
+            lifecycle.phase(),
+            ProprietaryModuleLifecyclePhase::BaseAppOnly
+        );
+        assert!(lifecycle.base_app_available());
+        assert_eq!(
+            lifecycle.module_access(),
+            Err(ProprietaryModuleLifecycleError::ModuleNotInstalled)
+        );
+        assert_eq!(
+            VerifiedOptionalModuleAccess::authorize(
+                OptionalModuleInstallGrant::Absent,
+                consent,
+                binding,
+                authority,
+            ),
+            Err(BoundaryError::ModuleNotInstalled)
+        );
+        assert_eq!(
+            VerifiedOptionalModuleAccess::authorize(
+                install.clone(),
+                ConsentGrant::Absent,
+                binding,
+                authority,
+            ),
+            Err(BoundaryError::MissingConsent)
+        );
+
+        let install_request = lifecycle
+            .install(install, consent, binding, authority, network_binding)
+            .expect("installed module with consent can request package egress");
+        assert_eq!(
+            install_request.endpoint(),
+            ProprietaryNetworkEndpoint::PackageInstall
+        );
+        assert_eq!(
+            lifecycle.phase(),
+            ProprietaryModuleLifecyclePhase::InstalledAwaitingLicenseCheck
+        );
+        assert_eq!(
+            lifecycle.module_access(),
+            Err(ProprietaryModuleLifecycleError::LicenseCheckRequired)
+        );
+
+        let license_request = lifecycle
+            .license_check(network_binding)
+            .expect("installed module can request license check egress");
+        assert_eq!(
+            license_request.endpoint(),
+            ProprietaryNetworkEndpoint::LicenseCheck
+        );
+        assert_eq!(lifecycle.phase(), ProprietaryModuleLifecyclePhase::Licensed);
+
+        let access = lifecycle
+            .module_access()
+            .expect("license check unlocks typed module access");
+        let request = ProprietaryModuleRequest::sealed_only(
+            BoundaryOperation::LocalRiskAdvice,
+            context(),
+            access.access(),
+            [0xC7; 32],
+        )
+        .expect("licensed lifecycle access can form a boundary request");
+        let expected_advice =
+            ProprietaryModuleAdvice::new(AdvisoryDisposition::SuggestManualReview, 61, 4).unwrap();
+        assert_eq!(
+            ProprietaryModuleSlot::present(LifecycleProbe).evaluate(request),
+            Ok(BoundaryOutcome::Advice(expected_advice))
+        );
+
+        let uninstall_request = lifecycle
+            .uninstall(network_binding)
+            .expect("installed module can request uninstall egress");
+        assert_eq!(
+            uninstall_request.endpoint(),
+            ProprietaryNetworkEndpoint::PackageUninstall
+        );
+        assert_eq!(
+            lifecycle.phase(),
+            ProprietaryModuleLifecyclePhase::Uninstalled
+        );
+        assert!(lifecycle.base_app_available());
+        assert_eq!(
+            lifecycle.module_access(),
+            Err(ProprietaryModuleLifecycleError::ModuleNotInstalled)
+        );
+
+        let rendered = format!(
+            "{lifecycle:?}\n{install_request:?}\n{license_request:?}\n{uninstall_request:?}"
+        );
+        assert!(!rendered.contains("risk-advice.module"));
+        assert!(!rendered.contains("Risk Advice Module"));
+        assert!(!rendered.contains("https://"));
+        assert!(!rendered.contains("B0B0"));
+        assert!(rendered.contains("ProprietaryNetworkEndpoint::PackageInstall"));
+        assert!(rendered.contains("ProprietaryNetworkEndpoint::LicenseCheck"));
+        assert!(rendered.contains("ProprietaryNetworkEndpoint::PackageUninstall"));
+    }
 }
