@@ -676,6 +676,87 @@ fn active_profile_matches(
     })
 }
 
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum HostedOpenMode {
+    DeleteCapable,
+    ScanOnly,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+struct HostedOpenAuthority<'a> {
+    run_id: Option<&'a str>,
+    attended_operator_authority: bool,
+}
+
+#[cfg(test)]
+fn hosted_delete_capable_authority_bound(
+    authority: HostedOpenAuthority<'_>,
+) -> Result<(), ServiceHostError> {
+    if authority.attended_operator_authority {
+        return Ok(());
+    }
+    let Some(run_id) = authority.run_id else {
+        return Err(ServiceHostError::Runtime(
+            "delete-capable hosted port requires run or attended authority".to_owned(),
+        ));
+    };
+    if run_id.is_empty()
+        || run_id.len() > 128
+        || run_id
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte == b'/' || byte == b'\\')
+    {
+        return Err(ServiceHostError::Runtime(
+            "delete-capable hosted port requires a bounded run authority".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn open_with_mode<R>(
+    mode: HostedOpenMode,
+    authority: HostedOpenAuthority<'_>,
+    delete_capable: impl FnOnce() -> Result<R, ServiceHostError>,
+    scan_only: impl FnOnce() -> Result<R, ServiceHostError>,
+) -> Result<R, ServiceHostError> {
+    match mode {
+        HostedOpenMode::DeleteCapable => {
+            hosted_delete_capable_authority_bound(authority)?;
+            delete_capable()
+        }
+        HostedOpenMode::ScanOnly => scan_only(),
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum SessionKind {
+    Dedicated,
+    SessionReuse,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+struct PresenceIdleGate {
+    session_kind: SessionKind,
+    session_reuse_surface: bool,
+    native_attached: bool,
+    native_visible: bool,
+    idle_ms: u64,
+    max_idle_ms: u64,
+}
+
+#[cfg(test)]
+fn presence_idle_gate_allows(gate: PresenceIdleGate) -> bool {
+    if gate.session_kind == SessionKind::SessionReuse && !gate.session_reuse_surface {
+        return false;
+    }
+    gate.native_attached && gate.native_visible && gate.idle_ms <= gate.max_idle_ms
+}
+
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ServiceHostPhase {
@@ -2093,6 +2174,135 @@ mod tests {
             "discord",
             "acct-rose"
         ));
+    }
+
+    #[test]
+    fn delete_capable_hosted_port_requires_run_or_attended_authority() {
+        let absent = HostedOpenAuthority {
+            run_id: None,
+            attended_operator_authority: false,
+        };
+        assert!(hosted_delete_capable_authority_bound(absent).is_err());
+
+        let malformed_run = HostedOpenAuthority {
+            run_id: Some("../run"),
+            attended_operator_authority: false,
+        };
+        assert!(hosted_delete_capable_authority_bound(malformed_run).is_err());
+
+        let run_bound = HostedOpenAuthority {
+            run_id: Some("run-20260730-001"),
+            attended_operator_authority: false,
+        };
+        assert!(hosted_delete_capable_authority_bound(run_bound).is_ok());
+
+        let attended = HostedOpenAuthority {
+            run_id: None,
+            attended_operator_authority: true,
+        };
+        assert!(hosted_delete_capable_authority_bound(attended).is_ok());
+
+        let mut delete_invoked = false;
+        let refused = open_with_mode(
+            HostedOpenMode::DeleteCapable,
+            absent,
+            || {
+                delete_invoked = true;
+                Ok("delete")
+            },
+            || Ok("scan"),
+        );
+        assert!(refused.is_err());
+        assert!(
+            !delete_invoked,
+            "refusal must happen before delete authority runs"
+        );
+    }
+
+    #[test]
+    fn open_with_mode_dispatches_delete_capable_and_scan_only_paths() {
+        let mut delete_calls = 0;
+        let mut scan_calls = 0;
+        let authority = HostedOpenAuthority {
+            run_id: Some("delete-run-001"),
+            attended_operator_authority: false,
+        };
+
+        let delete = open_with_mode(
+            HostedOpenMode::DeleteCapable,
+            authority,
+            || {
+                delete_calls += 1;
+                Ok("delete-capable")
+            },
+            || {
+                scan_calls += 1;
+                Ok("scan-only")
+            },
+        )
+        .unwrap();
+        assert_eq!(delete, "delete-capable");
+        assert_eq!(delete_calls, 1);
+        assert_eq!(scan_calls, 0);
+
+        let scan = open_with_mode(
+            HostedOpenMode::ScanOnly,
+            HostedOpenAuthority {
+                run_id: None,
+                attended_operator_authority: false,
+            },
+            || {
+                delete_calls += 1;
+                Ok("delete-capable")
+            },
+            || {
+                scan_calls += 1;
+                Ok("scan-only")
+            },
+        )
+        .unwrap();
+        assert_eq!(scan, "scan-only");
+        assert_eq!(delete_calls, 1);
+        assert_eq!(scan_calls, 1);
+    }
+
+    #[test]
+    fn presence_idle_gate_checks_session_reuse_surface_and_native_state() {
+        let reuse_ready = PresenceIdleGate {
+            session_kind: SessionKind::SessionReuse,
+            session_reuse_surface: true,
+            native_attached: true,
+            native_visible: true,
+            idle_ms: 4_000,
+            max_idle_ms: 5_000,
+        };
+        assert!(presence_idle_gate_allows(reuse_ready));
+
+        assert!(!presence_idle_gate_allows(PresenceIdleGate {
+            session_reuse_surface: false,
+            ..reuse_ready
+        }));
+        assert!(!presence_idle_gate_allows(PresenceIdleGate {
+            native_attached: false,
+            ..reuse_ready
+        }));
+        assert!(!presence_idle_gate_allows(PresenceIdleGate {
+            native_visible: false,
+            ..reuse_ready
+        }));
+        assert!(!presence_idle_gate_allows(PresenceIdleGate {
+            idle_ms: 5_001,
+            ..reuse_ready
+        }));
+
+        assert!(presence_idle_gate_allows(PresenceIdleGate {
+            session_kind: SessionKind::Dedicated,
+            session_reuse_surface: false,
+            native_attached: true,
+            native_visible: true,
+            idle_ms: 0,
+            max_idle_ms: 0,
+        }));
     }
 
     #[cfg(unix)]

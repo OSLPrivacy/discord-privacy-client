@@ -685,6 +685,151 @@ grade_selftest() {
   return 1
 }
 
+is_sha256() { [[ "${1:-}" =~ ^[0-9a-f]{64}$ ]]; }
+
+grade_f1_live_windows_walkthrough_import() {
+  local file="$1" overall picker grant import receipt selected rows bytes receipt_rows
+  local grant_bound attended receipt_sha no_secrets
+  [ -f "$file" ] || { echo "F1 INVALID: verdict file is missing" >&2; return 9; }
+  overall="$(jq -r '.overall // empty' "$file" 2>/dev/null || true)"
+  picker="$(step_status "$file" picker)"
+  grant="$(step_status "$file" grant-ipc)"
+  import="$(step_status "$file" import)"
+  receipt="$(step_status "$file" receipt)"
+  selected="$(fact_from_step "$file" picker selectedSource)"
+  grant_bound="$(fact_from_step "$file" grant-ipc grantBoundToRun)"
+  attended="$(fact_from_step "$file" grant-ipc attendedOperator)"
+  rows="$(metric_from_step "$file" import importedRows)"
+  bytes="$(metric_from_step "$file" import importedBytes)"
+  receipt_rows="$(metric_from_step "$file" receipt importedRows)"
+  receipt_sha="$(fact_from_step "$file" receipt receiptSha256)"
+  no_secrets="$(fact_from_step "$file" receipt containsNoSecrets)"
+
+  if [ "$overall" != "pass" ]; then
+    echo "F1 FAIL: overall=$overall" >&2
+    return 1
+  fi
+  if [ "$picker" != "pass" ] || [ "$grant" != "pass" ] \
+     || [ "$import" != "pass" ] || [ "$receipt" != "pass" ]; then
+    echo "F1 FAIL: expected picker/grant/import/receipt pass statuses, got $picker/$grant/$import/$receipt" >&2
+    return 1
+  fi
+  case "$selected" in chrome|edge|firefox|brave|opera|duckduckgo) ;; *)
+    echo "F1 FAIL: selected source is not a bounded browser id" >&2
+    return 1
+    ;;
+  esac
+  if [ "$grant_bound" != "true" ] || [ "$attended" != "true" ]; then
+    echo "F1 FAIL: grant IPC is not bound to a run and attended operator" >&2
+    return 1
+  fi
+  if [ "$rows" -le 0 ] || [ "$bytes" -le 0 ] || [ "$receipt_rows" -ne "$rows" ]; then
+    echo "F1 FAIL: import/receipt is empty or row counts differ" >&2
+    return 1
+  fi
+  if ! is_sha256 "$receipt_sha" || [ "$no_secrets" != "true" ]; then
+    echo "F1 FAIL: receipt is missing digest binding or secret redaction" >&2
+    return 1
+  fi
+  return 0
+}
+
+grade_f2_real_vm_five_frame_walkthrough() {
+  local file="$1" overall frames shape unique_sha
+  [ -f "$file" ] || { echo "F2 INVALID: verdict file is missing" >&2; return 9; }
+  overall="$(jq -r '.overall // empty' "$file" 2>/dev/null || true)"
+  frames="$(jq -r '[.steps[]? | select(.verb == "frame" and .status == "pass")] | length' "$file" 2>/dev/null || printf '0\n')"
+  shape="$(jq -r '[.steps[]? | select(.verb == "frame") | (.id + ":" + ((.facts.frameOrdinal // 0) | tostring))] | join(",")' "$file" 2>/dev/null || true)"
+  unique_sha="$(jq -r '[.steps[]? | select(.verb == "frame") | .facts.pngSha256] | unique | length' "$file" 2>/dev/null || printf '0\n')"
+  if [ "$overall" != "pass" ]; then
+    echo "F2 FAIL: overall=$overall" >&2
+    return 1
+  fi
+  if [ "$frames" -ne 5 ] || [ "$shape" != "F1:1,F2:2,F3:3,F4:4,F5:5" ]; then
+    echo "F2 FAIL: expected exact five-frame walkthrough, got '$shape'" >&2
+    return 1
+  fi
+  if [ "$unique_sha" -ne 5 ]; then
+    echo "F2 FAIL: frame screenshots are absent or reused" >&2
+    return 1
+  fi
+  if ! jq -e '
+    [.steps[]? | select(.verb == "frame")] | all(
+      (.facts.surfaceHwnd | type == "number" and . > 0)
+      and (.facts.surfacePid | type == "number" and . > 0)
+      and (.facts.captureDistinctColors | type == "number" and . >= 16)
+      and (.facts.pngSha256 | type == "string" and test("^[0-9a-f]{64}$"))
+      and (.facts.requestSha256 | type == "string" and test("^[0-9a-f]{64}$"))
+      and (.facts.exeSha256 | type == "string" and test("^[0-9a-f]{64}$"))
+      and (.facts.foreground | type == "boolean" and .)
+    )
+  ' "$file" >/dev/null; then
+    echo "F2 FAIL: one or more frames lack VM surface, pixel, request, or executable binding" >&2
+    return 1
+  fi
+  return 0
+}
+
+vmqa_named_test_tmpdir() {
+  mktemp -d "${TMPDIR:-/tmp}/osl-vmqa-named-test.XXXXXX"
+}
+
+f1_live_windows_walkthrough_imports_nonempty_receipt() {
+  local tmp good bad_empty bad_grant
+  tmp="$(vmqa_named_test_tmpdir)"
+  trap 'rm -rf -- "$tmp"' RETURN
+  good="$tmp/f1-good.json"
+  bad_empty="$tmp/f1-empty.json"
+  bad_grant="$tmp/f1-unbound.json"
+  jq -n --arg sha "$(printf receipt | sha256sum | awk '{print $1}')" '{
+    overall:"pass",
+    steps:[
+      {id:"P",verb:"picker",status:"pass",facts:{selectedSource:"edge"}},
+      {id:"G",verb:"grant-ipc",status:"pass",facts:{grantBoundToRun:true,attendedOperator:true}},
+      {id:"I",verb:"import",status:"pass",facts:{importedRows:2,importedBytes:256}},
+      {id:"R",verb:"receipt",status:"pass",facts:{importedRows:2,receiptSha256:$sha,containsNoSecrets:true}}
+    ]}' >"$good"
+  jq '.steps[2].facts.importedRows=0 | .steps[3].facts.importedRows=0' "$good" >"$bad_empty"
+  jq '.steps[1].facts.grantBoundToRun=false' "$good" >"$bad_grant"
+  grade_f1_live_windows_walkthrough_import "$good" >/dev/null || return 1
+  grade_f1_live_windows_walkthrough_import "$bad_empty" >/dev/null 2>&1 && return 1
+  grade_f1_live_windows_walkthrough_import "$bad_grant" >/dev/null 2>&1 && return 1
+  return 0
+}
+
+f2_real_vm_five_frame_walkthrough() {
+  local tmp good bad_four bad_reused
+  tmp="$(vmqa_named_test_tmpdir)"
+  trap 'rm -rf -- "$tmp"' RETURN
+  good="$tmp/f2-good.json"
+  bad_four="$tmp/f2-four.json"
+  bad_reused="$tmp/f2-reused.json"
+  jq -n '{
+      overall:"pass",
+      steps:[range(1;6) as $i | {
+        id:("F" + ($i|tostring)),
+        verb:"frame",
+        status:"pass",
+        facts:{
+          frameOrdinal:$i,
+          surfaceHwnd:(900 + $i),
+          surfacePid:4242,
+          captureDistinctColors:32,
+          pngSha256:(($i|tostring) * 64),
+          requestSha256:("b" * 64),
+          exeSha256:("c" * 64),
+          foreground:true
+        }
+      }]
+    }' >"$good"
+  jq '.steps=.steps[0:4]' "$good" >"$bad_four"
+  jq '(.steps[] | .facts.pngSha256)=("d" * 64)' "$good" >"$bad_reused"
+  grade_f2_real_vm_five_frame_walkthrough "$good" >/dev/null || return 1
+  grade_f2_real_vm_five_frame_walkthrough "$bad_four" >/dev/null 2>&1 && return 1
+  grade_f2_real_vm_five_frame_walkthrough "$bad_reused" >/dev/null 2>&1 && return 1
+  return 0
+}
+
 cmd_selftest() {
   local vm="$DEFAULT_VM" identifier="$DEFAULT_IDENTIFIER" timeout="$DEFAULT_TIMEOUT"
   local pos_id neg_id pos_file neg_file pos_rc neg_rc pos neg markers neg_markers colors launch_neg shot_neg result
