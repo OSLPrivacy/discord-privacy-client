@@ -2,9 +2,9 @@ use keystore::{
     build_partial_duress_handlers, build_production_duress_config_handlers,
     build_production_duress_paths,
     generate_identity, save_identity, save_password_record, save_prekey_state, Argon2Params,
-    DuressEngine, DuressHandlers, DuressJournal, DuressPaths, NoOpSealer, PasswordRecord,
-    PrekeyConfig, PrekeyState, ProductionDuressHandlers, StepOutcome, WipeStep,
-    ProductionDuressConfig,
+    DuressEngine, DuressError, DuressHandlers, DuressJournal, DuressPaths, NoOpSealer,
+    PasswordRecord, PrekeyConfig, PrekeyState, ProductionDuressConfig, ProductionDuressHandlers,
+    StepOutcome, WipeStep,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -632,6 +632,14 @@ fn crash_mid_wipe_resume() {
     let identity_file = paths.identity_file.clone();
     let password_file = paths.password_file.clone();
     let prekey_file = paths.prekey_file.clone().unwrap();
+    let local_cache = dir.path().join("local-cache");
+    let anonymous_store = dir.path().join("anonymous-credential.token");
+    let opsec_file = dir.path().join("injection-config.js");
+    std::fs::create_dir_all(&local_cache).unwrap();
+    std::fs::write(local_cache.join("message-cache"), b"ciphertext").unwrap();
+    std::fs::write(&anonymous_store, b"token").unwrap();
+    std::fs::write(&opsec_file, b"config").unwrap();
+
     let status = std::process::Command::new(std::env::current_exe().unwrap())
         .arg("--exact")
         .arg("crash_mid_wipe_resume")
@@ -652,16 +660,33 @@ fn crash_mid_wipe_resume() {
     assert!(password_file.exists());
     assert!(prekey_file.exists());
 
+    let remove_path = |path: std::path::PathBuf| {
+        Box::new(move || match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_dir() => {
+                std::fs::remove_dir_all(&path).map_err(|e| DuressError::Io(e.to_string()))
+            }
+            Ok(_) => std::fs::remove_file(&path).map_err(|e| DuressError::Io(e.to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(DuressError::Io(e.to_string())),
+        }) as keystore::WipeFn
+    };
+    let callbacks = Arc::new(AtomicUsize::new(0));
+    let counted = |callbacks: Arc<AtomicUsize>| {
+        Box::new(move || {
+            callbacks.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }) as keystore::WipeFn
+    };
     let handlers = DuressHandlers {
         purge_keyring: Some(Box::new(|| Ok(()))),
-        wipe_local_cache_dir: Some(Box::new(|| Ok(()))),
-        wipe_anonymous_credentials: Some(Box::new(|| Ok(()))),
-        wipe_prekeys: Some(Box::new(|| Ok(()))),
-        wipe_double_ratchet: Some(Box::new(|| Ok(()))),
-        wipe_sender_keys: Some(Box::new(|| Ok(()))),
-        wipe_peer_ratchets: Some(Box::new(|| Ok(()))),
-        zeroize_in_memory: Some(Box::new(|| Ok(()))),
-        strip_opsec_files: Some(Box::new(|| Ok(()))),
+        wipe_local_cache_dir: Some(remove_path(local_cache.clone())),
+        wipe_anonymous_credentials: Some(remove_path(anonymous_store.clone())),
+        wipe_prekeys: Some(counted(callbacks.clone())),
+        wipe_double_ratchet: Some(counted(callbacks.clone())),
+        wipe_sender_keys: Some(counted(callbacks.clone())),
+        wipe_peer_ratchets: Some(counted(callbacks.clone())),
+        zeroize_in_memory: Some(counted(callbacks.clone())),
+        strip_opsec_files: Some(remove_path(opsec_file.clone())),
         unregister_account: Some(Box::new(|| Ok(()))),
     };
     let engine = DuressEngine::new(journal_path.clone(), paths, handlers);
@@ -681,9 +706,25 @@ fn crash_mid_wipe_resume() {
         outcome_for(&report.steps, WipeStep::PrekeyFile),
         &StepOutcome::Wiped
     );
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::LocalCacheDir),
+        &StepOutcome::Wiped
+    );
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::AnonymousCredentials),
+        &StepOutcome::Wiped
+    );
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::StripOpsecFiles),
+        &StepOutcome::Wiped
+    );
+    assert_eq!(callbacks.load(Ordering::SeqCst), 5);
     assert!(!identity_file.exists());
     assert!(!password_file.exists());
     assert!(!prekey_file.exists());
+    assert!(!local_cache.exists());
+    assert!(!anonymous_store.exists());
+    assert!(!opsec_file.exists());
     assert!(
         !journal_path.exists(),
         "successful crash recovery must clear the pending journal"
