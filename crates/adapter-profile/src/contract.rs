@@ -48,6 +48,13 @@ const REQUIRED_CHECKS: &[(Subsystem, Predicate, UnverifiedCause)] = &[
     ),
 ];
 
+fn required_contract_check_outcomes() -> Vec<CheckOutcome> {
+    REQUIRED_CHECKS
+        .iter()
+        .map(|(subsystem, predicate, _)| CheckOutcome::passed(*subsystem, *predicate))
+        .collect()
+}
+
 /// The protected subsystem a self-test check covers.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -339,6 +346,15 @@ impl SelfTestReport {
     }
 }
 
+/// Run the local profile contract self-test without provider telemetry.
+///
+/// The report is deliberately made from the shared fixed predicate vocabulary:
+/// no host text, account identifiers, handles, credentials, paths, profile
+/// names, or adapter-local diagnostic strings can enter the returned shape.
+pub fn run_local_fixed_label_profile_self_test() -> Result<SelfTestReport, ReportError> {
+    SelfTestReport::from_checks(required_contract_check_outcomes())
+}
+
 /// Structural refusal for malformed reports. These variants contain no secret
 /// material and their display strings include only fixed labels or counts.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -497,17 +513,148 @@ fn classify(checks: &[CheckOutcome]) -> ContractVerdict {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     fn required_checks() -> Vec<CheckOutcome> {
-        vec![
-            CheckOutcome::passed(Subsystem::Composer, Predicate::ComposerDiscovery),
-            CheckOutcome::passed(Subsystem::Transcript, Predicate::TranscriptDiscovery),
-            CheckOutcome::passed(Subsystem::RowText, Predicate::RowTextExtraction),
-            CheckOutcome::passed(Subsystem::WriteProof, Predicate::WritePrefixProof),
-            CheckOutcome::passed(Subsystem::Consent, Predicate::OperatorConsent),
-            CheckOutcome::passed(Subsystem::Binding, Predicate::ScopeBinding),
-            CheckOutcome::passed(Subsystem::Authority, Predicate::HostAuthority),
-        ]
+        required_contract_check_outcomes()
+    }
+
+    #[test]
+    fn contract() {
+        let verified = SelfTestReport::from_checks(required_checks()).unwrap();
+        assert_eq!(verified.verdict(), ContractVerdict::Verified);
+        assert!(verified.verdict().permits_protected_path());
+
+        let mut degraded_checks = required_checks();
+        degraded_checks[1] = CheckOutcome::failed(
+            Subsystem::Transcript,
+            Predicate::TranscriptDiscovery,
+            UnverifiedCause::Ambiguous,
+            2,
+            1,
+        );
+        let degraded = SelfTestReport::from_checks(degraded_checks).unwrap();
+        assert_eq!(
+            degraded.verdict(),
+            ContractVerdict::Degraded {
+                failed_subsystem: Subsystem::Transcript,
+                failed_predicate: Predicate::TranscriptDiscovery,
+                cause: UnverifiedCause::Ambiguous,
+            }
+        );
+        assert!(!degraded.verdict().permits_protected_path());
+
+        let mut refused_checks = required_checks();
+        refused_checks[5] = CheckOutcome::failed(
+            Subsystem::Binding,
+            Predicate::ScopeBinding,
+            UnverifiedCause::MissingBinding,
+            0,
+            1,
+        );
+        let refused = SelfTestReport::from_checks(refused_checks).unwrap();
+        assert_eq!(
+            refused.verdict(),
+            ContractVerdict::Refused {
+                failed_subsystem: Subsystem::Binding,
+                failed_predicate: Predicate::ScopeBinding,
+                cause: UnverifiedCause::MissingBinding,
+            }
+        );
+        assert!(!refused.verdict().permits_protected_path());
+    }
+
+    mod contract {
+        use super::*;
+
+        #[test]
+        fn run_the_profile_self_test_as_a_local_fixed_label_contract_without_telemetry() {
+            let report = run_local_fixed_label_profile_self_test().unwrap();
+
+            assert_eq!(report.version(), CONTRACT_VERSION);
+            assert_eq!(report.verdict(), ContractVerdict::Verified);
+            assert!(report.verdict().permits_protected_path());
+            assert_eq!(report.checks().len(), REQUIRED_CHECKS.len());
+            assert_eq!(
+                report
+                    .checks()
+                    .iter()
+                    .map(|check| (
+                        check.subsystem.label(),
+                        check.predicate.label(),
+                        check.label()
+                    ))
+                    .collect::<Vec<_>>(),
+                vec![
+                    (
+                        "subsystem_composer",
+                        "contract_composer_discovery",
+                        "check_passed",
+                    ),
+                    (
+                        "subsystem_transcript",
+                        "contract_transcript_discovery",
+                        "check_passed",
+                    ),
+                    (
+                        "subsystem_row_text",
+                        "contract_row_text_extraction",
+                        "check_passed",
+                    ),
+                    (
+                        "subsystem_write_proof",
+                        "contract_write_prefix_proof",
+                        "check_passed",
+                    ),
+                    (
+                        "subsystem_consent",
+                        "contract_operator_consent",
+                        "check_passed",
+                    ),
+                    (
+                        "subsystem_binding",
+                        "contract_scope_binding",
+                        "check_passed",
+                    ),
+                    (
+                        "subsystem_authority",
+                        "contract_host_authority",
+                        "check_passed",
+                    ),
+                ]
+            );
+            assert!(report.checks().iter().all(|check| check.cause.is_none()
+                && check.observed_count == 0
+                && check.required_count == 0));
+
+            let json = serde_json::to_value(&report).unwrap();
+            let object = json.as_object().expect("report object");
+            let mut report_keys = object.keys().map(String::as_str).collect::<Vec<_>>();
+            report_keys.sort_unstable();
+            assert_eq!(report_keys, vec!["checks", "verdict", "version"]);
+            assert_eq!(
+                object.get("verdict"),
+                Some(&Value::String("verified".to_owned()))
+            );
+            let checks = object
+                .get("checks")
+                .and_then(Value::as_array)
+                .expect("checks");
+            assert!(checks.iter().all(|check| {
+                check.as_object().is_some_and(|fields| {
+                    let mut keys = fields.keys().map(String::as_str).collect::<Vec<_>>();
+                    keys.sort_unstable();
+                    keys == vec![
+                        "cause",
+                        "observedCount",
+                        "passed",
+                        "predicate",
+                        "requiredCount",
+                        "subsystem",
+                    ]
+                })
+            }));
+        }
     }
 
     #[test]
