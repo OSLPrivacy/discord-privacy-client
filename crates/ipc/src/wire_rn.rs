@@ -2122,6 +2122,89 @@ mod tests {
     }
 
     #[test]
+    fn b93_delayed_out_of_order_receive_rn_uses_persisted_skipped_keys() {
+        let (_alice_dir, alice_store) = fresh_store();
+        let (bob_dir, bob_store) = fresh_store();
+        let sealer = MemorySealer::new();
+        let mut rng = seeded_rng(93);
+        let (bob_prekeys, bob_bundle) = fresh_bundle(&mut rng);
+        let (alice_ik, alice_ik_pub) = x25519_keypair(&mut rng);
+        let bob_ek = bob_bundle.pq_prekey.to_bytes();
+        let bob_peer = *bob_bundle.identity.as_bytes();
+        let alice_peer = *alice_ik_pub.as_bytes();
+
+        initiate_and_persist(
+            &alice_store,
+            &sealer,
+            &alice_ik,
+            alice_ik_pub.as_bytes(),
+            &bob_bundle,
+            PeerCapabilities::Verified(RN_CAP_WIRE_RN),
+            &bob_ek,
+            CTX,
+            SessionParams::default(),
+        )
+        .expect("alice initiates persisted RN session");
+
+        let bootstrap_wire = with_wire_in_enabled_for_test(true, || {
+            send_rn(&alice_store, &sealer, &bob_peer, 10, b"rn-bootstrap")
+                .expect("alice sends bootstrap")
+        });
+        let (_bob_session, opened_bootstrap) = accept_and_persist(
+            &bob_store,
+            &sealer,
+            &bob_prekeys,
+            bob_prekeys.identity.public().as_bytes(),
+            &bob_ek,
+            &bootstrap_wire,
+            CTX,
+            SessionParams::default(),
+        )
+        .expect("bob accepts bootstrap");
+        assert_eq!(opened_bootstrap.msg_type, 10);
+        assert_eq!(opened_bootstrap.plaintext, b"rn-bootstrap");
+
+        let wire_1 = with_wire_in_enabled_for_test(true, || {
+            send_rn(&alice_store, &sealer, &bob_peer, 11, b"rn-delayed-1").expect("alice sends m1")
+        });
+        let wire_2 = with_wire_in_enabled_for_test(true, || {
+            send_rn(&alice_store, &sealer, &bob_peer, 12, b"rn-delayed-2").expect("alice sends m2")
+        });
+        let wire_3 = with_wire_in_enabled_for_test(true, || {
+            send_rn(&alice_store, &sealer, &bob_peer, 13, b"rn-delivered-first")
+                .expect("alice sends m3")
+        });
+
+        let delivered_first = with_wire_in_enabled_for_test(true, || {
+            receive_rn(&bob_store, &sealer, &alice_peer, &wire_3).expect("bob receives m3 first")
+        });
+        assert_eq!(delivered_first.msg_type, 13);
+        assert_eq!(delivered_first.plaintext, b"rn-delivered-first");
+
+        let reloaded_bob_store = RnSessionStore::new(bob_dir.path().join("rn"));
+        let delayed_1 = with_wire_in_enabled_for_test(true, || {
+            receive_rn(&reloaded_bob_store, &sealer, &alice_peer, &wire_1)
+                .expect("bob receives delayed m1 from persisted skipped cache")
+        });
+        let delayed_2 = with_wire_in_enabled_for_test(true, || {
+            receive_rn(&reloaded_bob_store, &sealer, &alice_peer, &wire_2)
+                .expect("bob receives delayed m2 from persisted skipped cache")
+        });
+        assert_eq!(delayed_1.msg_type, 11);
+        assert_eq!(delayed_1.plaintext, b"rn-delayed-1");
+        assert_eq!(delayed_2.msg_type, 12);
+        assert_eq!(delayed_2.plaintext, b"rn-delayed-2");
+
+        assert!(
+            with_wire_in_enabled_for_test(true, || {
+                receive_rn(&reloaded_bob_store, &sealer, &alice_peer, &wire_3)
+            })
+            .is_err(),
+            "a previously opened RN message must not replay after delayed delivery"
+        );
+    }
+
+    #[test]
     fn a_plaintext_sealer_is_refused() {
         let (_d, store) = fresh_store();
         let mut rng = seeded_rng(11);
