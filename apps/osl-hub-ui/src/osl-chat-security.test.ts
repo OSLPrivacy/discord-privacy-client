@@ -20,6 +20,16 @@ describe("first-party OSL Chat plaintext boundary", () => {
     expect(open).toContain("if (context.scopeApproved)");
   });
 
+  it("does not publish a newly opened chat when capture protection is refused", () => {
+    const open = functionBody("openOslChat", "approveOslChat");
+    const captureRefusal = open.indexOf("if (!captureReady || epoch !== oslChatOperationEpoch)");
+    expect(captureRefusal).toBeGreaterThanOrEqual(0);
+    expect(open.indexOf("activeOslChatPersonId = personId")).toBeGreaterThan(captureRefusal);
+    expect(open.indexOf('route = "osl-chat"')).toBeGreaterThan(captureRefusal);
+    expect(open.indexOf("oslChatUnread.delete(personId)")).toBeGreaterThan(captureRefusal);
+    expect(open).not.toContain("activeOslChatPersonId !== personId");
+  });
+
   it("also enforces capture resistance at the native history IPC boundary", () => {
     const start = nativeSource.indexOf("async fn list_osl_chat_history");
     const end = nativeSource.indexOf("async fn select_osl_chat_attachment", start + 1);
