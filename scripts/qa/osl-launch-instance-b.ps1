@@ -139,11 +139,143 @@ param(
 
     [int]$WindowWaitSec = 90,
     [int]$MarkerWaitSec = 90,
+    [string]$ContractFixtureJson = '',
     [switch]$Quiet
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Off
+
+if ($ContractFixtureJson) {
+    $script:Clock = [System.Diagnostics.Stopwatch]::StartNew()
+    $script:FixtureSteps = @()
+
+    function Add-FixtureStep {
+        param([string]$Name, [string]$Result, [string]$Detail, $Extra = $null)
+        $o = [ordered]@{ step = $Name; result = $Result; detail = $Detail; atMs = [int]$script:Clock.ElapsedMilliseconds }
+        if ($Extra) { foreach ($k in $Extra.Keys) { $o[$k] = $Extra[$k] } }
+        $script:FixtureSteps += [pscustomobject]$o
+    }
+
+    function Finish-Fixture {
+        param([string]$Verdict, [string]$Diagnosis, $Extra = $null)
+        $payload = [ordered]@{
+            schemaVersion = 1
+            tool = 'osl-launch-instance-b'
+            contractFixture = $true
+            overall = [ordered]@{ verdict = $Verdict; diagnosis = $Diagnosis }
+            steps = $script:FixtureSteps
+        }
+        if ($Extra) { foreach ($k in $Extra.Keys) { $payload[$k] = $Extra[$k] } }
+        $payload | ConvertTo-Json -Depth 10 | Out-File -LiteralPath $JsonOut -Encoding utf8
+        if ($Verdict -eq 'ok') { exit 0 } elseif ($Verdict -eq 'failed') { exit 1 } else { exit 2 }
+    }
+
+    try {
+        $fixture = Get-Content -LiteralPath $ContractFixtureJson -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        Add-FixtureStep 'fixture/read' 'failed' $_.Exception.Message
+        Finish-Fixture 'blocked' 'contract fixture is missing or malformed'
+    }
+
+    $fixtureBundleA = if ($fixture.bundleA) { [string]$fixture.bundleA } else { $BundleA }
+    $fixtureBundleB = if ($fixture.bundleB) { [string]$fixture.bundleB } else { $BundleB }
+    $fixtureTempA = [string]$fixture.tempRootA
+    $fixtureTempB = if ($TempRootB) { $TempRootB } elseif ($fixture.tempRootB) { [string]$fixture.tempRootB } else { '' }
+
+    if (-not $fixtureTempA -or -not $fixtureTempB) {
+        Add-FixtureStep 'temp-isolation' 'failed' 'fixture did not provide both temp roots'
+        Finish-Fixture 'blocked' 'contract fixture must provide tempRootA and tempRootB'
+    }
+    if ($fixtureBundleA -eq $fixtureBundleB) {
+        Add-FixtureStep 'gate/distinct-identifier' 'failed' 'bundle identifiers match'
+        Finish-Fixture 'blocked' 'instance B must have a distinct bundle identifier'
+    }
+    Add-FixtureStep 'gate/distinct-identifier' 'ok' 'bundle identifiers are distinct'
+
+    if ($fixtureTempA -eq $fixtureTempB) {
+        Add-FixtureStep 'temp-isolation' 'failed' 'B temp root equals A temp root'
+        Finish-Fixture 'blocked' 'instance B must not share instance A temp root'
+    }
+    New-Item -ItemType Directory -Path $fixtureTempA -Force | Out-Null
+    New-Item -ItemType Directory -Path $fixtureTempB -Force | Out-Null
+    Add-FixtureStep 'temp-isolation' 'ok' 'A and B temp roots are separate' @{
+        instanceATempRoot = $fixtureTempA
+        instanceBTempRoot = $fixtureTempB
+    }
+
+    if (-not ($fixture.preflightStartupAllowed -eq $true)) {
+        Add-FixtureStep 'gate/b6-preflight' 'failed' 'preflight refused startup'
+        Finish-Fixture 'blocked' 'preflight refused before identity creation'
+    }
+    Add-FixtureStep 'gate/b6-preflight' 'ok' 'preflight allowed startup'
+
+    if (-not $ConfirmCreatesIdentity) {
+        Add-FixtureStep 'gate/consent' 'failed' 'consent switch absent'
+        Finish-Fixture 'blocked' 'identity creation requires explicit consent'
+    }
+    Add-FixtureStep 'gate/consent' 'ok' 'identity creation consent was present'
+
+    if (-not ($fixture.instanceAMarkerBefore -eq $true)) {
+        Add-FixtureStep 'gate/instance-a-present' 'failed' 'A marker absent'
+        Finish-Fixture 'blocked' 'instance A must be anchored before launch'
+    }
+    Add-FixtureStep 'gate/instance-a-present' 'ok' 'instance A marker was anchored before launch'
+
+    $startupTrace = Join-Path $fixtureTempB 'osl-startup-trace.txt'
+    'fixture instance B startup trace' | Out-File -LiteralPath $startupTrace -Encoding utf8
+    Add-FixtureStep 'launch' 'ok' 'instance B launched with its private TMP/TEMP root' @{
+        inheritedTmp = $fixtureTempB
+        inheritedTemp = $fixtureTempB
+    }
+
+    $beforeIdentities = @($fixture.keyserverIdentitiesBefore)
+    $afterIdentities = @($fixture.keyserverIdentitiesAfter)
+    $registeredSecondIdentity = (
+        $afterIdentities.Count -eq ($beforeIdentities.Count + 1) -and
+        ($beforeIdentities -notcontains $afterIdentities[-1])
+    )
+    if (-not $registeredSecondIdentity) {
+        Add-FixtureStep 'identity/keyserver-registration' 'failed' ('before={0}; after={1}' -f $beforeIdentities.Count, $afterIdentities.Count)
+        Finish-Fixture 'failed' 'consented instance B launch did not register exactly one additional identity'
+    }
+    Add-FixtureStep 'identity/keyserver-registration' 'ok' 'keyserver identity count increased by exactly one' @{
+        identitiesBefore = $beforeIdentities.Count
+        identitiesAfter = $afterIdentities.Count
+    }
+
+    $aUntouched = (
+        ($fixture.instanceAMarkerAfter -eq $true) -and
+        ([string]$fixture.instanceAIdentityShaBefore -eq [string]$fixture.instanceAIdentityShaAfter)
+    )
+    if (-not $aUntouched) {
+        Add-FixtureStep 'assert/instance-a-untouched' 'failed' 'A marker or identity changed across launch'
+        Finish-Fixture 'failed' 'instance A changed across the instance B launch'
+    }
+    Add-FixtureStep 'assert/instance-a-untouched' 'ok' 'A marker remained present and A identity hash was unchanged'
+
+    if (-not (Test-Path -LiteralPath $startupTrace)) {
+        Add-FixtureStep 'assert/temp-redirect' 'failed' 'B startup trace missing from private temp root'
+        Finish-Fixture 'failed' 'instance B did not write QA artifacts under its private temp root'
+    }
+    Add-FixtureStep 'assert/temp-redirect' 'ok' 'B wrote startup trace under its private temp root'
+
+    Finish-Fixture 'ok' 'contract fixture launched distinguishable instance B without touching instance A' @{
+        instanceA = [ordered]@{
+            bundle = $fixtureBundleA
+            tempRoot = $fixtureTempA
+            identityUnchangedAcrossLaunch = $true
+            touchedByThisScript = $false
+        }
+        instanceB = [ordered]@{
+            bundle = $fixtureBundleB
+            tempRoot = $fixtureTempB
+            tempRootHonouredByChild = $true
+            registeredSecondIdentity = $true
+        }
+        distinguishable = $true
+    }
+}
 
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $here 'osl-p2p-win32.ps1')

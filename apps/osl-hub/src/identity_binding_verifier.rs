@@ -763,4 +763,94 @@ mod tests {
             assert!(!debug.contains("osl_"));
         }
     }
+
+    #[test]
+    fn verify_identity_binding_rejects_all_mutated_bindings() {
+        let target_owner = owner(90);
+        let target_account = account_on("discord", "account-a");
+        let target_scope = BindingScope::ScrubDeletion;
+
+        let exact = AccountBinding {
+            account: target_account.clone(),
+            scope: target_scope,
+            owner: target_owner,
+        };
+        assert!(exact.verifies(target_owner, &target_account, target_scope));
+
+        let mut mutations: Vec<(&str, AccountBinding)> = Vec::new();
+        for (label, foreign_owner) in [
+            ("owner-1", owner(91)),
+            ("owner-2", owner(92)),
+            ("owner-3", owner(93)),
+            ("owner-4", owner(94)),
+            ("owner-5", owner(95)),
+            ("owner-6", owner(96)),
+        ] {
+            mutations.push((
+                label,
+                AccountBinding {
+                    account: target_account.clone(),
+                    scope: target_scope,
+                    owner: foreign_owner,
+                },
+            ));
+        }
+        for service_id in ["", "Discord", "discord ", "telegram", "x", "discord.com"] {
+            mutations.push((
+                service_id,
+                AccountBinding {
+                    account: account_on(service_id, "account-a"),
+                    scope: target_scope,
+                    owner: target_owner,
+                },
+            ));
+        }
+        for account_id in [
+            "",
+            "account",
+            "account-a ",
+            " account-a",
+            "account-a-extra",
+            "account-b",
+        ] {
+            mutations.push((
+                account_id,
+                AccountBinding {
+                    account: account_on("discord", account_id),
+                    scope: target_scope,
+                    owner: target_owner,
+                },
+            ));
+        }
+        for label in [
+            "scope-index-1",
+            "scope-index-2",
+            "scope-index-3",
+            "scope-index-4",
+            "scope-index-5",
+            "scope-index-6",
+        ] {
+            mutations.push((
+                label,
+                AccountBinding {
+                    account: target_account.clone(),
+                    scope: BindingScope::ScrubIndex,
+                    owner: target_owner,
+                },
+            ));
+        }
+        assert_eq!(mutations.len(), 24);
+
+        for (label, binding) in mutations {
+            let verifier = IdentityBindingVerifier {
+                owner: target_owner,
+                bindings: vec![binding],
+            };
+            assert_eq!(
+                verifier.verify(&target_account, target_scope),
+                Err(IdentityBindingError::NoBinding),
+                "mutated binding must refuse: {label}"
+            );
+        }
+    }
 }

@@ -42,6 +42,71 @@ async function signedFloorUrl(
 }
 
 describe("D1-backed sender-filter capability floor", () => {
+  it("test/integration/sender-filter-capability-floor.test.ts", async () => {
+    const recipientId = userId("exact-name");
+    const identity = await registerTestUser(SELF, recipientId);
+    const firstRequestId = "G".repeat(43);
+    const first = await SELF.fetch(
+      await signedFloorUrl(recipientId, identity.signingKey, {
+        requestId: firstRequestId,
+      }),
+    );
+    expect(first.status, await first.clone().text()).toBe(200);
+    const firstBody = await first.json() as Record<string, unknown>;
+    expect(firstBody).toMatchObject({
+      format: "osl.keyserver.sender-filter-capability-floor.v3",
+      recipient_user_id: recipientId,
+      capability_version: 1,
+      monotonic_version: 1,
+      request_id: firstRequestId,
+    });
+    expect(firstBody.identity_anchor_sha256).toMatch(/^[0-9a-f]{64}$/);
+
+    const row = await env.DB.prepare(
+      `SELECT capability_version, monotonic_version, first_observed_at_ms
+         FROM sender_filter_capability_floors
+        WHERE identity_anchor_sha256 = ?`,
+    ).bind(firstBody.identity_anchor_sha256).first<{
+      capability_version: number;
+      monotonic_version: number;
+      first_observed_at_ms: number;
+    }>();
+    expect(row).toEqual({
+      capability_version: 1,
+      monotonic_version: 1,
+      first_observed_at_ms: firstBody.first_observed_at_ms,
+    });
+
+    const floorCountBeforeRefusal = await env.DB.prepare(
+      `SELECT COUNT(*) AS count
+         FROM sender_filter_capability_floors`,
+    ).first<{ count: number }>();
+
+    await env.DB.prepare(
+      `DELETE FROM worker_schema_capabilities
+        WHERE capability = 'control_inbox_sender_disposition'`,
+    ).run();
+    try {
+      const refusedId = userId("no-authority");
+      const refusedIdentity = await registerTestUser(SELF, refusedId);
+      const refused = await SELF.fetch(
+        await signedFloorUrl(refusedId, refusedIdentity.signingKey, {
+          requestId: "H".repeat(43),
+        }),
+      );
+      expect(refused.status).toBe(503);
+      expect(await env.DB.prepare(
+        `SELECT COUNT(*) AS count
+           FROM sender_filter_capability_floors`,
+      ).first<{ count: number }>()).toEqual(floorCountBeforeRefusal);
+    } finally {
+      await env.DB.prepare(
+        `INSERT INTO worker_schema_capabilities (capability, version)
+         VALUES ('control_inbox_sender_disposition', 1)`,
+      ).run();
+    }
+  });
+
   it("creates a nonempty authority record and preserves it across a fresh request", async () => {
     const recipientId = userId("positive");
     const identity = await registerTestUser(SELF, recipientId);
