@@ -3037,7 +3037,7 @@ function homeDestinationContent(): string {
       }
     : protection.state !== "protected"
       ? {
-          title: "Protect local storage",
+          title: "Review local storage",
           detail: protection.detail,
           action: `<button class="button primary compact" data-route="settings" data-profile-settings type="button">Review device</button>`,
         }
@@ -3150,14 +3150,14 @@ function inboxDestinationContent(): string {
   const chatRows = verifiedPeople.length
     ? verifiedPeople.slice(0, 8).map((person) => {
         const last = oslChatMessages.get(person.personId)?.at(-1);
-        return `<article class="inbox-row osl-chat-source"><span class="source-mark">${homeModuleIcon("osl-chats")}</span><button class="inbox-conversation-open" data-osl-chat-open="${escapeHtml(person.personId)}" type="button"><strong>${escapeHtml(person.alias ?? "Verified friend")}</strong><small>OSL Chat · End-to-end encrypted${last?.body ? ` · ${escapeHtml(last.body)}` : ""}</small></button></article>`;
+        return `<article class="inbox-row osl-chat-source"><span class="source-mark">${homeModuleIcon("osl-chats")}</span><button class="inbox-conversation-open" data-osl-chat-open="${escapeHtml(person.personId)}" type="button"><strong>${escapeHtml(person.alias ?? "Verified friend")}</strong><small>OSL Chat · Encrypted for verified friends${last?.body ? ` · ${escapeHtml(last.body)}` : ""}</small></button></article>`;
       }).join("")
     : `<div class="empty-state"><strong>No private chats yet</strong><p>Verify a friend before starting an encrypted OSL chat.</p></div>`;
   const requestRows = requests.length
     ? requests.slice(0, 8).map((person) => `<article class="inbox-row request-source"><span class="source-mark">${homeCommandIcon("friends")}</span><div><strong>${escapeHtml(person.alias ?? "Friend request")}</strong><small>${person.pendingKeyChange ? "Security change needs review" : "Verification needed before protected chat"}</small></div><button class="button compact" data-open-friends type="button">Review</button></article>`).join("")
     : `<div class="empty-state"><strong>No requests</strong><p>New friend requests and key reviews appear here.</p></div>`;
   const oslSurfaces = [
-    ["chat", "OSL Chat", "End-to-end encrypted", "Ready for verified friends"],
+    ["chat", "OSL Chat", "Encrypted for verified friends", "Ready for verified friends"],
     ["circles", "OSL Circles", "Private audience feeds", "Coming after small-group review"],
     ["mail", "OSL Mail", "Client protection", "External recipients are not OSL E2EE"],
   ] as const;

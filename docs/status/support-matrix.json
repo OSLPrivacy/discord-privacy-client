@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "generated_from": "manual-verdict-ingest",
+  "updated": "2026-07-30",
+  "conditional_app_evidence": [
+    {
+      "id": "telegram_desktop_native",
+      "service": "Telegram",
+      "surface": "Telegram Desktop native Windows adapter",
+      "claim_scope": "protected_native_adapter",
+      "status": "externally_blocked",
+      "evidence_report": "docs/reports/telegram-adapter-verdict.md",
+      "evidence_anchor": "TelegramSupportVerdict",
+      "verdict_recorded": "2026-07-30",
+      "support_boundary": "Cannot be listed as supported until a signed-client UI Automation probe proves stable, text-exposed message rows on an actual conversation surface."
+    },
+    {
+      "id": "outlook_osl_mail",
+      "service": "Outlook",
+      "surface": "OSL Mail for Outlook-connected mailboxes",
+      "claim_scope": "osl_mail",
+      "status": "unsupported",
+      "evidence_report": "docs/reports/outlook-osl-mail-verdict.md",
+      "evidence_anchor": "OutlookOslMailSupportVerdict",
+      "verdict_recorded": "2026-07-30",
+      "support_boundary": "Outlook is scoped as OSL Mail, not Outlook chat support; protected inline replies must refuse until a separate OSL Mail gate proves mailbox binding, recipient authority, safe send behavior, draft handling, and runtime support."
+    }
+  ]
+}

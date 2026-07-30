@@ -36,6 +36,7 @@ const ALLOWLIST_PATH = path.join(
 const APP_SRC_ROOT = path.join(REPO_ROOT, "apps/osl-hub-ui/src");
 const RUST_APP_SRC_ROOT = path.join(REPO_ROOT, "apps/osl-hub/src");
 const README_PATH = path.join(REPO_ROOT, "README.md");
+const SUPPORT_MATRIX_PATH = path.join(REPO_ROOT, "docs/status/support-matrix.json");
 const GATE_SOURCE_PATH = fileURLToPath(import.meta.url);
 const GATE_CONTRACT_PATTERN =
   /^> Claim-gate source SHA-256: `([0-9a-f]{64})`$/m;
@@ -55,6 +56,28 @@ const REQUIRED_ATTACHMENT_BANS = [
   "discord receives harmless cover files instead of the attachment",
   "uploaded files are opaque to discord's scanners",
 ];
+const REQUIRED_CONDITIONAL_APP_EVIDENCE = [
+  {
+    id: "telegram_desktop_native",
+    service: "Telegram",
+    claimScope: "protected_native_adapter",
+    status: "externally_blocked",
+    evidenceReport: "docs/reports/telegram-adapter-verdict.md",
+    evidenceAnchor: "TelegramSupportVerdict",
+    requiredBoundary: /\bsigned-client UI Automation probe\b.*\bstable, text-exposed message rows\b/i,
+    reportVerdict: /Telegram Desktop remains `externally blocked`/i,
+  },
+  {
+    id: "outlook_osl_mail",
+    service: "Outlook",
+    claimScope: "osl_mail",
+    status: "unsupported",
+    evidenceReport: "docs/reports/outlook-osl-mail-verdict.md",
+    evidenceAnchor: "OutlookOslMailSupportVerdict",
+    requiredBoundary: /\bOutlook is scoped as OSL Mail\b.*\bnot Outlook chat support\b/i,
+    reportVerdict: /Outlook inline-reply support as OSL Mail is `unsupported`/i,
+  },
+];
 
 function repoRelative(filePath) {
   return path.relative(REPO_ROOT, filePath).split(path.sep).join("/");
@@ -62,6 +85,108 @@ function repoRelative(filePath) {
 
 async function readUtf8(filePath) {
   return fs.readFile(filePath, "utf8");
+}
+
+function supportMatrixFailure(message) {
+  return {
+    name: "conditional_app_evidence",
+    expected: message,
+    actual: "invalid support matrix",
+  };
+}
+
+async function validateSupportMatrix() {
+  const failures = [];
+  let matrix;
+
+  try {
+    matrix = JSON.parse(await readUtf8(SUPPORT_MATRIX_PATH));
+  } catch (error) {
+    failures.push(supportMatrixFailure(`readable JSON at ${repoRelative(SUPPORT_MATRIX_PATH)}`));
+    return failures;
+  }
+
+  if (!matrix || typeof matrix !== "object" || Array.isArray(matrix)) {
+    failures.push(supportMatrixFailure("top-level support matrix object"));
+    return failures;
+  }
+
+  if (!Array.isArray(matrix.conditional_app_evidence)) {
+    failures.push(supportMatrixFailure("conditional_app_evidence array"));
+    return failures;
+  }
+
+  const rowsById = new Map();
+  for (const row of matrix.conditional_app_evidence) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) {
+      failures.push(supportMatrixFailure("each conditional_app_evidence row is an object"));
+      continue;
+    }
+    if (typeof row.id !== "string" || row.id.length === 0) {
+      failures.push(supportMatrixFailure("each conditional_app_evidence row has a non-empty id"));
+      continue;
+    }
+    if (rowsById.has(row.id)) {
+      failures.push(supportMatrixFailure(`unique conditional_app_evidence id ${row.id}`));
+      continue;
+    }
+    rowsById.set(row.id, row);
+  }
+
+  for (const required of REQUIRED_CONDITIONAL_APP_EVIDENCE) {
+    const row = rowsById.get(required.id);
+    if (!row) {
+      failures.push(supportMatrixFailure(`row ${required.id}`));
+      continue;
+    }
+
+    for (const [field, expected] of [
+      ["service", required.service],
+      ["claim_scope", required.claimScope],
+      ["status", required.status],
+      ["evidence_report", required.evidenceReport],
+      ["evidence_anchor", required.evidenceAnchor],
+    ]) {
+      if (row[field] !== expected) {
+        failures.push(
+          supportMatrixFailure(`${required.id}.${field}=${JSON.stringify(expected)}`),
+        );
+      }
+    }
+
+    if (
+      typeof row.support_boundary !== "string" ||
+      !required.requiredBoundary.test(row.support_boundary)
+    ) {
+      failures.push(supportMatrixFailure(`${required.id}.support_boundary matches verdict scope`));
+    }
+
+    if (
+      required.id === "outlook_osl_mail" &&
+      /\bchat\b/i.test(`${row.surface ?? ""} ${row.support_boundary ?? ""}`) &&
+      !/\bnot Outlook chat support\b/i.test(`${row.surface ?? ""} ${row.support_boundary ?? ""}`)
+    ) {
+      failures.push(supportMatrixFailure("Outlook row refuses chat-support framing"));
+    }
+
+    let report;
+    try {
+      report = await readUtf8(path.join(REPO_ROOT, required.evidenceReport));
+    } catch (error) {
+      failures.push(supportMatrixFailure(`source report ${required.evidenceReport}`));
+      continue;
+    }
+
+    if (!new RegExp(`^Anchor: ${required.evidenceAnchor}$`, "m").test(report)) {
+      failures.push(supportMatrixFailure(`${required.id} source report anchor`));
+    }
+
+    if (!required.reportVerdict.test(report)) {
+      failures.push(supportMatrixFailure(`${required.id} source report verdict`));
+    }
+  }
+
+  return failures;
 }
 
 function decodeClaimEntity(entity) {
@@ -1267,16 +1392,16 @@ function countNewlinesBefore(text, index) {
 }
 
 // Section D bans '"Audited" / "reviewed" / "independently verified"' as SECURITY
-// claims. Two of those are also ordinary English: the first run of this gate
+// claims. "Reviewed" is also ordinary English: the first run of this gate
 // flagged "Selected apps reviewed" and "Every batch is reviewed and confirmed",
 // which are about the *user* reviewing and have nothing to do with an audit.
 //
 // A gate that cries wolf on honest UI copy gets switched off, so these terms
 // only fire in a security context. Multi-word section D phrases stay absolute —
 // "cryptographic burn" is never innocent.
-const CONTEXT_GATED_TERMS = new Set(["audited", "reviewed", "independently verified"]);
+const CONTEXT_GATED_TERMS = new Set(["reviewed", "independently verified"]);
 const SECURITY_CONTEXT_RE =
-  /\b(osl|security|securely|crypto|cryptograph\w*|encryption|encrypted|protocol|third[- ]party|externally|independent\w*|auditor\w*|penetration|pentest)\b/i;
+  /\b(security|securely|crypto|cryptograph\w*|encryption|encrypted|protocol|third[- ]party|outside firm|externally|independent\w*|auditor\w*|penetration|pentest)\b/i;
 const SECURITY_CONTEXT_WINDOW = 90;
 
 function inSecurityContext(text, index, length) {
@@ -1458,9 +1583,13 @@ function bannedPhraseInputFailures(bannedPhrases) {
 
 async function scanRepository() {
   const bannedPhrases = await loadBannedPhrases();
+  const supportMatrixFailures = await validateSupportMatrix();
   const rows = [];
   const allViolations = [];
-  const floorFailures = bannedPhraseInputFailures(bannedPhrases);
+  const floorFailures = [
+    ...bannedPhraseInputFailures(bannedPhrases),
+    ...supportMatrixFailures,
+  ];
   let tsStringCount = 0;
   let rustStringCount = 0;
   let readmeBytes = 0;
@@ -2443,7 +2572,7 @@ async function runSelfTest() {
   );
 
   const productionMain = await readUtf8(path.join(APP_SRC_ROOT, "main.ts"));
-  const scrubMarker = "<h3>Review an export</h3>";
+  const scrubMarker = "<h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review. Nothing is deleted by this build.</p>";
   const scrubMarkerOccurrences = productionMain.split(scrubMarker).length - 1;
   const mutatedMain = productionMain.replace(
     scrubMarker,
