@@ -568,7 +568,7 @@ pub fn set_main_password(dir: &Path, password: &str) -> Result<String, String> {
     let derived = derive(password, &salt, &marker.params)?;
     let file_key = Zeroizing::new(derive_file_storage_key(&derived[HASH_LEN..]));
     encrypt_existing_state_files(dir, &file_key)?;
-    set_file_storage_key(Some(*file_key));
+    set_file_storage_key_after_main_password_unlock(*file_key);
     Ok(phrase)
 }
 
@@ -596,7 +596,7 @@ pub fn change_main_password(dir: &Path, current: &str, new: &str) -> Result<Stri
     // in a consistent (old-marker, old-key-encrypted) state.
     rotate_state_files(dir, &old_file_key, &new_file_key)?;
     write_marker(dir, &new_marker)?;
-    set_file_storage_key(Some(*new_file_key));
+    set_file_storage_key_after_main_password_unlock(*new_file_key);
     let _ = reset_password_lockout(dir);
     let _ = reset_phrase_lockout(dir);
     Ok(new_phrase)
@@ -679,7 +679,7 @@ pub fn verify_main_password(dir: &Path, password: &str) -> Result<(), String> {
                 .map_err(|e| format!("OSL: salt b64: {e}"))?;
             let derived = derive(password, &salt, &marker.params)?;
             let file_key = Zeroizing::new(derive_file_storage_key(&derived[HASH_LEN..]));
-            set_file_storage_key(Some(*file_key));
+            set_file_storage_key_after_main_password_unlock(*file_key);
             state.password_failed_attempts = 0;
             state.password_locked_until = None;
             let _ = write_lockout(dir, &state);
@@ -945,15 +945,96 @@ fn marker_phrase_hash(marker: &PasswordMarker) -> Option<String> {
 use std::sync::{Mutex, OnceLock};
 
 static FILE_STORAGE_KEY: OnceLock<Mutex<Option<[u8; 32]>>> = OnceLock::new();
+static INACTIVITY_AUTO_LOCK_TIMER: OnceLock<Mutex<Option<keystore::InactivityTimer>>> =
+    OnceLock::new();
 
 fn file_storage_slot() -> &'static Mutex<Option<[u8; 32]>> {
     FILE_STORAGE_KEY.get_or_init(|| Mutex::new(None))
+}
+
+fn inactivity_auto_lock_slot() -> &'static Mutex<Option<keystore::InactivityTimer>> {
+    INACTIVITY_AUTO_LOCK_TIMER.get_or_init(|| Mutex::new(None))
+}
+
+fn arm_inactivity_auto_lock_timer_at(now: Instant) {
+    let mut slot = inactivity_auto_lock_slot()
+        .lock()
+        .expect("inactivity auto-lock timer mutex poisoned");
+    *slot = Some(keystore::InactivityTimer::with_last_activity(
+        keystore::DEFAULT_INACTIVITY_SECONDS,
+        now,
+    ));
+}
+
+fn disarm_inactivity_auto_lock_timer() {
+    let mut slot = inactivity_auto_lock_slot()
+        .lock()
+        .expect("inactivity auto-lock timer mutex poisoned");
+    *slot = None;
+}
+
+fn set_file_storage_key_after_main_password_unlock_at(key: [u8; 32], now: Instant) {
+    set_file_storage_key(Some(key));
+    arm_inactivity_auto_lock_timer_at(now);
+}
+
+/// Install a password-derived file storage key and arm the 15-minute
+/// inactivity auto-lock timer for this unlocked session.
+pub fn set_file_storage_key_after_main_password_unlock(key: [u8; 32]) {
+    set_file_storage_key_after_main_password_unlock_at(key, Instant::now());
+}
+
+/// Clear the unlocked file key after 15 idle minutes. Returns true when this
+/// invocation transitioned the password gate from unlocked to locked.
+pub fn run_file_key_inactivity_auto_lock_timer() -> bool {
+    run_file_key_inactivity_auto_lock_timer_at(Instant::now())
+}
+
+pub(crate) fn run_file_key_inactivity_auto_lock_timer_at(now: Instant) -> bool {
+    let should_lock = {
+        let mut timer = inactivity_auto_lock_slot()
+            .lock()
+            .expect("inactivity auto-lock timer mutex poisoned");
+        match timer.as_ref() {
+            Some(timer) if timer.should_reprompt_at(now) => {
+                *timer = None;
+                true
+            }
+            _ => false,
+        }
+    };
+    if should_lock {
+        set_file_storage_key(None);
+    }
+    should_lock
+}
+
+/// Record user activity for the current unlocked session. If the timer has
+/// already fired, the file key is cleared and this activity does not re-open it.
+pub fn mark_activity_for_inactivity_auto_lock() -> bool {
+    mark_activity_for_inactivity_auto_lock_at(Instant::now())
+}
+
+pub(crate) fn mark_activity_for_inactivity_auto_lock_at(now: Instant) -> bool {
+    if run_file_key_inactivity_auto_lock_timer_at(now) {
+        return false;
+    }
+    let mut timer = inactivity_auto_lock_slot()
+        .lock()
+        .expect("inactivity auto-lock timer mutex poisoned");
+    if let Some(timer) = timer.as_mut() {
+        timer.mark_activity_at(now);
+        true
+    } else {
+        false
+    }
 }
 
 /// Public accessor used by peer_map / whitelist_state /
 /// pending_invitations loaders + writers to decide whether to
 /// encrypt-on-write or accept an encrypted-on-disk file.
 pub fn get_file_storage_key() -> Option<[u8; 32]> {
+    run_file_key_inactivity_auto_lock_timer();
     *file_storage_slot()
         .lock()
         .expect("file_storage_key mutex poisoned")
@@ -970,6 +1051,9 @@ pub fn set_file_storage_key(key: Option<[u8; 32]>) {
     }
     *slot = key;
     drop(slot);
+    if !is_some {
+        disarm_inactivity_auto_lock_timer();
+    }
     if is_some && !was_some {
         eprintln!("[OSL][crypto] file_storage_key populated");
     } else if !is_some && was_some {
@@ -1524,6 +1608,8 @@ mod password_policy_tests {
         ConfigDirOverrideGuard
     }
 
+    static INACTIVITY_AUTO_LOCK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn six_character_passwords_can_be_created_and_unlocked() {
         assert!(validate_password("aB3!z9").is_ok());
@@ -1531,7 +1617,7 @@ mod password_policy_tests {
     }
 
     #[test]
-    fn run_inactivity_auto_lock_timer() {
+    fn stateful_inactivity_auto_lock_timer_clears_session() {
         set_file_storage_key(None);
         let state = AppState::new();
         state.install_identity(keystore::generate_identity("idle-lock-owner".to_owned()));
@@ -1802,6 +1888,43 @@ mod password_policy_tests {
         assert_eq!(after_next_failure.password_attempts_used, 1);
         assert_eq!(after_next_failure.password_locked_until, None);
 
+        set_file_storage_key(None);
+    }
+
+    #[test]
+    fn file_key_inactivity_auto_lock_timer_clears_key_at_threshold() {
+        let _guard = INACTIVITY_AUTO_LOCK_TEST_LOCK.lock().unwrap();
+        set_file_storage_key(None);
+        let t0 = Instant::now();
+        let key = [0xA5; 32];
+        set_file_storage_key_after_main_password_unlock_at(key, t0);
+
+        assert_eq!(get_file_storage_key(), Some(key));
+        assert!(
+            !run_file_key_inactivity_auto_lock_timer_at(
+                t0 + std::time::Duration::from_secs(keystore::DEFAULT_INACTIVITY_SECONDS - 1)
+            ),
+            "timer must not lock before the full inactivity window"
+        );
+        assert_eq!(get_file_storage_key(), Some(key));
+
+        assert!(
+            run_file_key_inactivity_auto_lock_timer_at(
+                t0 + std::time::Duration::from_secs(keystore::DEFAULT_INACTIVITY_SECONDS)
+            ),
+            "timer must lock exactly at the configured inactivity threshold"
+        );
+        assert_eq!(
+            get_file_storage_key(),
+            None,
+            "auto-lock must clear the unlocked file storage key"
+        );
+        assert!(
+            !run_file_key_inactivity_auto_lock_timer_at(
+                t0 + std::time::Duration::from_secs(keystore::DEFAULT_INACTIVITY_SECONDS * 2)
+            ),
+            "a disarmed timer must not repeatedly report fresh lock transitions"
+        );
         set_file_storage_key(None);
     }
 }
