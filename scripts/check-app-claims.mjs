@@ -56,6 +56,23 @@ const REQUIRED_ATTACHMENT_BANS = [
   "discord receives harmless cover files instead of the attachment",
   "uploaded files are opaque to discord's scanners",
 ];
+const REQUIRED_BURN_BANS = [
+  "cryptographic burn",
+  "destroys keys, not messages",
+  "burn makes messages unrecoverable",
+  "burn removes recipient copies",
+];
+const REQUIRED_SUPPORT_BANS = [
+  "works on signal",
+  "works on whatsapp",
+  "works on telegram",
+  "works on outlook",
+  "signal support",
+  "whatsapp support",
+  "telegram support",
+  "outlook support",
+  "osl mail support",
+];
 const REQUIRED_CONDITIONAL_APP_EVIDENCE = [
   {
     id: "telegram_desktop_native",
@@ -1675,6 +1692,22 @@ function bannedPhraseInputFailures(bannedPhrases) {
       actual: attachmentBanCount,
     });
   }
+  const burnBanCount = REQUIRED_BURN_BANS.filter((phrase) => present.has(phrase)).length;
+  if (burnBanCount < REQUIRED_BURN_BANS.length) {
+    failures.push({
+      name: "burn bans parsed from section D",
+      expected: REQUIRED_BURN_BANS.length,
+      actual: burnBanCount,
+    });
+  }
+  const supportBanCount = REQUIRED_SUPPORT_BANS.filter((phrase) => present.has(phrase)).length;
+  if (supportBanCount < REQUIRED_SUPPORT_BANS.length) {
+    failures.push({
+      name: "forbidden_support_phrases",
+      expected: REQUIRED_SUPPORT_BANS.length,
+      actual: supportBanCount,
+    });
+  }
   return failures;
 }
 
@@ -1803,6 +1836,16 @@ async function runSelfTest() {
     {
       name: "catches cryptographic burn",
       text: "The app offers cryptographic burn for sensitive notes.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches burn recipient-copy overclaim",
+      text: "Burn removes recipient copies.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches forbidden support phrase",
+      text: "Telegram support is available today.",
       shouldFlag: true,
     },
     {
@@ -2596,6 +2639,11 @@ async function runSelfTest() {
         "malware detection",
         "protection score",
       ].every((phrase) => bannedPhrases.some((parsed) => parsed.normalized === phrase)),
+    },
+    {
+      name: "forbidden_support_phrases",
+      passed: REQUIRED_SUPPORT_BANS.every((phrase) => bannedPhrases.some((parsed) => parsed.normalized === phrase))
+        && REQUIRED_BURN_BANS.every((phrase) => bannedPhrases.some((parsed) => parsed.normalized === phrase)),
     },
     {
       name: "renamed section D fails the production phrase floor",
