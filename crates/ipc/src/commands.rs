@@ -4259,6 +4259,13 @@ pub const OSL_RESULT_MODE1_CONFLICT: &str = "__OSL_CONTROL_MODE1_CONFLICT__";
 /// (it's just innocuous English) and logs the rejection.
 pub const OSL_RESULT_MODE1_INVALID: &str = "__OSL_CONTROL_MODE1_INVALID__";
 
+const RN_SESSION_DIR_NAME: &str = "rn_sessions";
+
+struct InboundOpened {
+    msg_type: u8,
+    plaintext: Vec<u8>,
+}
+
 /// Phase 7b recv-path entry point. Peeks the wire's version byte
 /// after base64 decode and dispatches:
 ///
@@ -4270,6 +4277,8 @@ pub const OSL_RESULT_MODE1_INVALID: &str = "__OSL_CONTROL_MODE1_INVALID__";
 ///     `OSL_RESULT_LEGACY_HANDSHAKE_IGNORED` (9-C1).
 ///   - 0x04 attachment envelope: return `OSL_RESULT_ATTACHMENT_PREFIX|<json>`.
 /// - v=3 / v=4 / v=5: dispatch to their dedicated decrypt fns above.
+/// - v=0x10: OSL-RN bootstrap responder. The branch is wired here but
+///   remains compile-time disabled until RN receive is explicitly enabled.
 ///
 /// `scope_input` is optional and currently unused by the gate-free
 /// content paths; kept in the signature for the burn / attachment
@@ -4358,8 +4367,9 @@ pub fn cmd_osl_decrypt_message_v2(
 
     // Peek the wire version byte (first byte after DPC0:: base64
     // decode). Routes v=1 → legacy path, v=2 → existing decrypt_v2,
-    // v=3 → Phase 9-A1 PQ-hybrid decrypt_v3. Anything else falls
-    // through to the legacy v=1 path which surfaces its own errors.
+    // v=3 → Phase 9-A1 PQ-hybrid decrypt_v3, and 0x10 → the gated
+    // OSL-RN bootstrap responder. Anything else falls through to the
+    // legacy v=1 path which surfaces its own errors.
     let version = peek_wire_version(&content);
 
     // 9-A1c: burn kill list defense-in-depth. If this specific
@@ -4391,8 +4401,12 @@ pub fn cmd_osl_decrypt_message_v2(
             // pubkey-hash prefix.
             let sender_pub = resolve_sender_pubkey(state, &sender_discord_id)?;
             tracing::debug!(wire_version = "v2", "v=2 decode dispatched");
-            crate::wire_v2::decrypt_v2(&content, &our_sk, &sender_pub)
-                .map_err(|e| format!("OSL: {e}"))?
+            let opened = crate::wire_v2::decrypt_v2(&content, &our_sk, &sender_pub)
+                .map_err(|e| format!("OSL: {e}"))?;
+            InboundOpened {
+                msg_type: opened.msg_type,
+                plaintext: opened.plaintext,
+            }
         }
         Some(crate::wire_v2::WIRE_VERSION_V3) => {
             // v=3 path — PQ-hybrid wrap. The wire carries the sender
@@ -4408,13 +4422,17 @@ pub fn cmd_osl_decrypt_message_v2(
             let our_mlkem_sk = identity.mlkem_decapsulation_key();
             drop(id_guard);
             tracing::debug!(wire_version = "v3", "v=3 decode dispatched");
-            crate::wire_v2::decrypt_v3_for_sender(
+            let opened = crate::wire_v2::decrypt_v3_for_sender(
                 &content,
                 &our_sk,
                 &our_mlkem_sk,
                 &expected_sender,
             )
-            .map_err(|_| "OSL: v3 authenticated sender refused".to_string())?
+            .map_err(|_| "OSL: v3 authenticated sender refused".to_string())?;
+            InboundOpened {
+                msg_type: opened.msg_type,
+                plaintext: opened.plaintext,
+            }
         }
         Some(crate::wire_v2::WIRE_VERSION_V4) => {
             // Phase 9-A2: v=4 ratcheted single-recipient decode.
@@ -4457,6 +4475,15 @@ pub fn cmd_osl_decrypt_message_v2(
                 &result,
             );
             return Ok(result);
+        }
+        Some(osl_ratchet_next::WIRE_VERSION_RN) => {
+            tracing::debug!(wire_version = "rn", "OSL-RN bootstrap decode dispatched");
+            accept_rn_bootstrap_inbound_unknown(
+                state,
+                &content,
+                config_dir.as_deref(),
+                crate::wire_rn::RN_WIRE_IN_ENABLED,
+            )?
         }
         _ => {
             // v=1 or unknown: preserve the existing Phase 5 path.
@@ -4567,6 +4594,221 @@ fn peek_wire_version(cover: &str) -> Option<u8> {
     let body = cover.strip_prefix("DPC0::")?;
     let bytes = STANDARD.decode(body).ok()?;
     bytes.first().copied()
+}
+
+fn rn_session_store(config_dir: Option<&Path>) -> Result<crate::wire_rn::RnSessionStore, String> {
+    let dir = match config_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => keystore::osl_config_dir()
+            .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?,
+    };
+    Ok(crate::wire_rn::RnSessionStore::new(
+        dir.join(RN_SESSION_DIR_NAME),
+    ))
+}
+
+fn local_rn_prekeys_from_identity(
+    identity: &keystore::Identity,
+) -> Result<osl_ratchet_next::LocalPrekeys, String> {
+    let signed_prekey = identity.ratchet_initial_secret.as_ref().ok_or_else(|| {
+        "OSL: secure message identity is not ready".to_string()
+    })?;
+    let pq_prekey = osl_ratchet_next::KemSecret::from_bytes(identity.mlkem_secret_bytes())
+        .map_err(|_| "OSL: secure message identity is not ready".to_string())?;
+    Ok(osl_ratchet_next::LocalPrekeys {
+        identity: osl_ratchet_next::XSecret::from_bytes(*identity.x25519_secret.as_bytes()),
+        signed_prekey: osl_ratchet_next::XSecret::from_bytes(*signed_prekey.as_bytes()),
+        one_time_prekeys: Vec::new(),
+        pq_prekey,
+    })
+}
+
+fn accept_rn_bootstrap_inbound_unknown(
+    state: &AppState,
+    content: &str,
+    config_dir: Option<&Path>,
+    rn_wire_in_enabled: bool,
+) -> Result<InboundOpened, String> {
+    if !rn_wire_in_enabled {
+        return Err("OSL: secure message format is not available".to_string());
+    }
+
+    let sealer = select_best_sealer();
+    accept_rn_bootstrap_inbound_unknown_with_sealer(
+        state,
+        content,
+        config_dir,
+        sealer.as_ref(),
+        rn_wire_in_enabled,
+    )
+}
+
+fn accept_rn_bootstrap_inbound_unknown_with_sealer(
+    state: &AppState,
+    content: &str,
+    config_dir: Option<&Path>,
+    sealer: &dyn keystore::sealer::Sealer,
+    rn_wire_in_enabled: bool,
+) -> Result<InboundOpened, String> {
+    if !rn_wire_in_enabled {
+        return Err("OSL: secure message format is not available".to_string());
+    }
+
+    let (local, own_identity_public, own_mlkem768_ek) = {
+        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let identity = id_guard
+            .as_ref()
+            .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+        (
+            local_rn_prekeys_from_identity(identity)?,
+            *identity.x25519_public.as_bytes(),
+            identity.mlkem_public_bytes,
+        )
+    };
+
+    let store = rn_session_store(config_dir)?;
+    let (_session, opened) = crate::wire_rn::accept_and_persist(
+        &store,
+        sealer,
+        &local,
+        &own_identity_public,
+        &own_mlkem768_ek,
+        content,
+        crate::wire_rn::RN_CONTEXT_DISCORD_MANUAL,
+        osl_ratchet_next::SessionParams::default(),
+    )
+    .map_err(|_| "OSL: secure message could not be opened".to_string())?;
+
+    Ok(InboundOpened {
+        msg_type: opened.msg_type,
+        plaintext: opened.plaintext,
+    })
+}
+
+#[cfg(test)]
+mod rn_inbound_unknown_tests {
+    use super::*;
+    use keystore::sealer::MemorySealer;
+    use osl_ratchet_next::test_support::{fresh_bundle, seeded_rng};
+    use tempfile::TempDir;
+
+    fn identity_from_rn_prekeys(
+        user_id: &str,
+        local: &osl_ratchet_next::LocalPrekeys,
+        bundle: &osl_ratchet_next::PeerBundle,
+    ) -> keystore::Identity {
+        let (ed_secret, ed_public) = crypto::ed25519::generate_keypair();
+        let mut identity = keystore::Identity::from_bytes(
+            user_id.to_string(),
+            *local.identity.as_bytes(),
+            *local.identity.public().as_bytes(),
+            *ed_secret.as_bytes(),
+            *ed_public.as_bytes(),
+            local.pq_prekey.to_bytes(),
+            bundle.pq_prekey.to_bytes(),
+        );
+        identity.ratchet_initial_secret = Some(crypto::x25519::SecretKey::from_bytes(
+            *local.signed_prekey.as_bytes(),
+        ));
+        identity.ratchet_initial_pub = Some(crypto::x25519::PublicKey::from_bytes(
+            *bundle.signed_prekey.as_bytes(),
+        ));
+        identity
+    }
+
+    fn rn_bootstrap_fixture() -> (
+        AppState,
+        TempDir,
+        String,
+        [u8; 32],
+        keystore::sealer::MemorySealer,
+    ) {
+        let mut rng = seeded_rng(0xB62);
+        let (bob_prekeys, bob_bundle) = fresh_bundle(&mut rng);
+        let (alice_identity, alice_identity_pub) =
+            osl_ratchet_next::primitives::x25519_keypair(&mut rng);
+        let binding = osl_ratchet_next::Negotiation::for_rn(
+            bob_bundle.identity.as_bytes(),
+            &bob_bundle.pq_prekey.to_bytes(),
+            alice_identity_pub.as_bytes(),
+            crate::wire_rn::RN_CONTEXT_DISCORD_MANUAL,
+        )
+        .digest()
+        .expect("negotiation binding");
+        let mut alice = osl_ratchet_next::Session::initiate_bound(
+            &alice_identity,
+            &bob_bundle,
+            Some(&binding),
+            osl_ratchet_next::SessionParams::default(),
+            &mut rng,
+        )
+        .expect("initiate");
+        let wire = alice
+            .encrypt(crate::wire_v2::MSG_TYPE_CONTENT, b"rn hello", &mut rng)
+            .expect("encrypt");
+
+        let state = AppState::new();
+        *state.identity.lock().expect("identity mutex poisoned") =
+            Some(identity_from_rn_prekeys("bob", &bob_prekeys, &bob_bundle));
+        (
+            state,
+            TempDir::new().expect("tempdir"),
+            wire,
+            *alice_identity_pub.as_bytes(),
+            MemorySealer::new(),
+        )
+    }
+
+    #[test]
+    fn rn_wire_version_is_recognized_but_refused_while_compile_gate_is_false() {
+        let (state, dir, wire, _peer, _sealer) = rn_bootstrap_fixture();
+
+        let err = cmd_osl_decrypt_message_v2(
+            &state,
+            Some("msg-rn-disabled".to_string()),
+            "channel-rn-disabled".to_string(),
+            "sender-rn-disabled".to_string(),
+            wire,
+            None,
+            Some(dir.path().to_path_buf()),
+        )
+        .expect_err("production command must not accept RN while hard gate is false");
+
+        assert!(
+            err.contains("secure message format is not available"),
+            "{err}"
+        );
+        assert!(
+            !dir.path().join(RN_SESSION_DIR_NAME).exists(),
+            "disabled RN branch must refuse before creating responder state"
+        );
+    }
+
+    #[test]
+    fn enabled_test_helper_accepts_bootstrap_and_persists_responder_state() {
+        let (state, dir, wire, peer_identity, sealer) = rn_bootstrap_fixture();
+        let opened = accept_rn_bootstrap_inbound_unknown_with_sealer(
+            &state,
+            &wire,
+            Some(dir.path()),
+            &sealer,
+            true,
+        )
+        .expect("accept RN bootstrap");
+
+        assert_eq!(opened.msg_type, crate::wire_v2::MSG_TYPE_CONTENT);
+        assert_eq!(opened.plaintext, b"rn hello".to_vec());
+
+        let store = crate::wire_rn::RnSessionStore::new(dir.path().join(RN_SESSION_DIR_NAME));
+        assert!(store
+            .load_session(&peer_identity, &sealer)
+            .expect("load session")
+            .is_some());
+        assert!(store
+            .load_pin(&peer_identity)
+            .expect("load pin")
+            .is_pinned_to_rn());
+    }
 }
 
 /// Phase 9-A2: receive-side v=4 dispatch. Returns the message-type
