@@ -98,6 +98,26 @@ mod tests {
     }
 
     #[test]
+    fn send_modes_refuse_absent_or_unknown_authority() {
+        for raw in ["\"enter\"", "\"Double\"", "\"manual \"", "\"\"", "null"] {
+            assert!(
+                serde_json::from_str::<SendMode>(raw).is_err(),
+                "accepted invalid send mode {raw}"
+            );
+        }
+
+        let missing_send_mode = r#"{
+            "onboardingComplete": true,
+            "placementMode": "atomic",
+            "showPlaintextPreview": true,
+            "windowCaptureEnabled": true,
+            "acknowledgeExperimentalSendRisk": true
+        }"#;
+
+        assert!(serde_json::from_str::<OnboardingPreferences>(missing_send_mode).is_err());
+    }
+
+    #[test]
     fn experimental_modes_cannot_skip_risk_setup() {
         let preferences = OnboardingPreferences {
             onboarding_complete: true,
