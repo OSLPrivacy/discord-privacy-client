@@ -123,6 +123,82 @@ afterEach(async () => {
 });
 
 describe("migration 0031 control-inbox sender retention", () => {
+  it("verify deployed migration 0031 control_inbox_sender_retention behaves", async () => {
+    const db = await pre0031Db();
+    await seedUser(db, "disabled-retained-sender", 0);
+    const retained = payload(60);
+    await oldWorkerInsert(
+      db,
+      id(6),
+      "recipient",
+      "disabled-retained-sender",
+      retained,
+      1_000_000_000,
+    );
+
+    await applyMigration(db, "0031_control_inbox_sender_retention.sql");
+
+    const capability = await db.prepare(
+      `SELECT version FROM worker_schema_capabilities
+        WHERE capability = 'control_inbox_sender_disposition'`,
+    ).first<number>("version");
+    expect(capability).toBe(1);
+
+    const oldExpiryDelete = await db.prepare(
+      "DELETE FROM control_inbox WHERE expires_at < ?",
+    ).bind(1_900_000_000).run();
+    expect(oldExpiryDelete.meta?.changes ?? 0).toBe(0);
+    expect(
+      asBytes(
+        (await db.prepare(
+          "SELECT bundle FROM control_inbox WHERE id = ?",
+        ).bind(id(6)).first<{ bundle: unknown }>())?.bundle,
+      ),
+    ).toEqual(retained);
+
+    await expect(
+      db.prepare(
+        `UPDATE control_inbox
+            SET delivery_status = 'retryable',
+                delivery_reason = NULL,
+                delivery_attempts = 1,
+                sender_disabled_first_seen_at = 1900000000,
+                delivery_next_retry_at = 1900000060,
+                delivery_retain_until = 2504800000
+          WHERE id = ?`,
+      ).bind(id(6)).run(),
+    ).rejects.toThrow("control inbox delivery state is inconsistent");
+
+    await applyMigration(db, "0035_control_inbox_eviction_signal.sql");
+    const reconciled = await reconcileControlInboxSenderStates(db, 1_900_000_000);
+    expect(reconciled.retryable).toBe(1);
+    const classified = await db.prepare(
+      `SELECT delivery_status,
+              delivery_reason,
+              delivery_attempts,
+              sender_disabled_first_seen_at,
+              delivery_next_retry_at,
+              delivery_retain_until
+         FROM control_inbox WHERE id = ?`,
+    ).bind(id(6)).first<Record<string, unknown>>();
+    expect(classified).toMatchObject({
+      delivery_status: "retryable",
+      delivery_reason: "sender_lookup_disabled",
+      delivery_attempts: 1,
+      sender_disabled_first_seen_at: 1_900_000_000,
+      delivery_next_retry_at: 1_900_003_600,
+      delivery_retain_until: 1_900_604_800,
+    });
+
+    const statusAwareDrain = await db.prepare(
+      `SELECT COUNT(*) AS count FROM control_inbox
+        WHERE recipient_id = 'recipient'
+          AND delivery_status = 'live'
+          AND expires_at >= 1900000000`,
+    ).first<number>("count");
+    expect(statusAwareDrain).toBe(0);
+  });
+
   it("backfills legacy rows and keeps old-worker insert/update/select byte-compatible", async () => {
     const db = await pre0031Db();
     await seedUser(db, "legacy-disabled", 0);
@@ -254,17 +330,25 @@ describe("migration 0031 control-inbox sender retention", () => {
     }
     expect(await refused[3]!.json()).toEqual({
       ok: false,
-      capabilities: { control_inbox_sender_disposition: 0 },
+      capabilities: {
+        control_inbox_sender_disposition: 0,
+        control_inbox_eviction_signal: 0,
+      },
     });
     expect(await controlInboxDispositionSchemaReady(db)).toBe(false);
 
     await applyMigration(db, "0031_control_inbox_sender_retention.sql");
+    expect(await controlInboxDispositionSchemaReady(db)).toBe(false);
+    await applyMigration(db, "0035_control_inbox_eviction_signal.sql");
     expect(await controlInboxDispositionSchemaReady(db)).toBe(true);
     const healthy = await handleHealthz(env);
     expect(healthy.status).toBe(200);
     expect(await healthy.json()).toEqual({
       ok: true,
-      capabilities: { control_inbox_sender_disposition: 1 },
+      capabilities: {
+        control_inbox_sender_disposition: 1,
+        control_inbox_eviction_signal: 1,
+      },
     });
 
     // The capability gate is no longer the reason for refusal: ordinary input
@@ -317,7 +401,10 @@ describe("migration 0031 control-inbox sender retention", () => {
     expect(markerOnly.status).toBe(503);
     expect(await markerOnly.json()).toEqual({
       ok: false,
-      capabilities: { control_inbox_sender_disposition: 0 },
+      capabilities: {
+        control_inbox_sender_disposition: 0,
+        control_inbox_eviction_signal: 0,
+      },
     });
 
     await db.prepare(
@@ -341,6 +428,7 @@ describe("migration 0031 control-inbox sender retention", () => {
       2_000_000_000,
     );
     await applyMigration(db, "0031_control_inbox_sender_retention.sql");
+    await applyMigration(db, "0035_control_inbox_eviction_signal.sql");
 
     expect(
       (await reconcileControlInboxSenderStates(db, 1_900_000_000)).retryable,
@@ -387,6 +475,7 @@ describe("migration 0031 control-inbox sender retention", () => {
       2_000_000_000,
     );
     await applyMigration(db, "0031_control_inbox_sender_retention.sql");
+    await applyMigration(db, "0035_control_inbox_eviction_signal.sql");
     await db.prepare(
       `CREATE TRIGGER reject_reconciliation_marker
        BEFORE INSERT ON worker_schema_capabilities

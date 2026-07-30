@@ -8,7 +8,7 @@ function decodeBase64Url(value: string): Uint8Array {
 }
 
 describe("POST /v1/proof-challenge", () => {
-  it("test/integration/proof-challenge.test.ts", async () => {
+  it("Worker endpoint issuing ProofChallenge for a claimed Discord sno", async () => {
     const serviceAccountId = "900000000000000001";
     const ownerUserId = `owner-${crypto.randomUUID()}`;
 
