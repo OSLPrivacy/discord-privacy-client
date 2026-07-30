@@ -917,6 +917,11 @@ mod tests {
             ik_ratchet_initial_pub: None,
             rn_capabilities: capabilities,
             registration_sig: None,
+            identity_scheme: None,
+            identity_bundle_version: None,
+            identity_revision: None,
+            ik_root_ed25519_pub: None,
+            identity_bundle_proof_sig: None,
         }
     }
 
@@ -1076,6 +1081,11 @@ mod tests {
     fn identity_bundle_from_local_identity_and_fetched_pubkeys_response() {
         let identity = generate_identity("peer".to_owned());
         let fetched = pubkeys_response_from_identity(&identity, Some(3));
+        assert_eq!(fetched.identity_scheme, None);
+        assert_eq!(fetched.identity_bundle_version, None);
+        assert_eq!(fetched.identity_revision, None);
+        assert_eq!(fetched.ik_root_ed25519_pub, None);
+        assert_eq!(fetched.identity_bundle_proof_sig, None);
 
         let bundle = IdentityBundle::from_local_identity_and_fetched_pubkeys_response(
             &identity, &fetched, 17,
