@@ -249,6 +249,16 @@ let toastTimer: number | undefined;
 let updateStatus: UpdateStatus = { state: "unavailable" };
 let recoveryBundle: { userId: string; identityPhrase: string | null; passwordPhrase: string } | null = null;
 let recoverySavedAcknowledged = false;
+// Unit a11: at-rest storage protection for the ACTIVE identity, known only
+// when this session itself created, imported, or switched into it (the
+// backend never echoes it back on a plain unlock). Fail honest: `null`
+// renders as "unknown", which is treated as NOT secure — never assume
+// hardware backing just because nothing contradicts it.
+let identityStorageMethod: string | null = null;
+// Slot id -> storage method learned this session for identities created or
+// recovered via the multi-identity flow, which does not switch to them
+// automatically. Consulted only when the user later switches into that slot.
+const knownIdentityStorageMethods = new Map<string, string>();
 let decryptDisplay = true;
 let themeChoice: ThemeChoice = initializeThemePreference(localStorage);
 let sidebarOrder: string[] = [];
@@ -2097,6 +2107,7 @@ function bindPasswordForm(): void {
     try {
       if (setupMode) {
         const identity = core.readiness.identityLoaded ? null : await createHubOslIdentity();
+        if (identity) identityStorageMethod = identity.storageMethod;
         const passwordResult = await setupHubMainPassword(secret);
         core = await loadCoreIntegration();
         // The locked bootstrap intentionally cannot read the encrypted
@@ -2127,6 +2138,7 @@ function bindPasswordForm(): void {
           return;
         }
         if (gate.outcome === "decoy") {
+          identityStorageMethod = null;
           core = structuredClone(unavailableCoreIntegration);
           services = [];
           passwordRoleStatus = null;
@@ -2136,6 +2148,7 @@ function bindPasswordForm(): void {
           return;
         }
         if (gate.outcome === "burned") {
+          identityStorageMethod = null;
           localStorage.clear();
           onboardingComplete = false;
           setup = parseSetupState(null);
@@ -2259,6 +2272,7 @@ function bindImportForm(): void {
     submit.disabled = true;
     try {
       const identity = await importHubOslIdentityPhrase(phraseSecret);
+      identityStorageMethod = identity.storageMethod;
       phraseSecret = "";
       const passwordResult = await setupHubMainPassword(passwordSecret);
       passwordSecret = "";
@@ -3295,6 +3309,39 @@ function visibleAppNotifications(): AppNotification[] {
   return (appNotifications ?? []).filter((item) => item.detail === "New encrypted message" ? notificationChatActivity : notificationSecurityActivity);
 }
 
+type IdentityStorageProtection = "hardware" | "fallback" | "unknown";
+
+/**
+ * Classify a raw sealer method label (see the METHOD_* constants in
+ * crates/keystore/src/sealer.rs — "tpm-pcp", "keyring", "noop-insecure",
+ * "memory-ephemeral", "memory-test") into the three states the UI can
+ * honestly show.
+ *
+ * Fail honest, not optimistic: only the two known hardware-backed labels
+ * count as "hardware". Every other non-null label — a known software
+ * fallback, or a future label OSL does not recognize yet — is "fallback",
+ * never silently treated as secure. `null` (nothing learned this session,
+ * e.g. a plain unlock of a pre-existing identity, which the backend does
+ * not echo a method for) is "unknown", which the UI renders with the same
+ * not-secure weight as "fallback" — an unverified state must never render
+ * as secure.
+ */
+function classifyIdentityStorageProtection(method: string | null): IdentityStorageProtection {
+  if (method === null) return "unknown";
+  if (method === "tpm-pcp" || method === "keyring") return "hardware";
+  return "fallback";
+}
+
+function identityStorageProtectionMarkup(protection: IdentityStorageProtection): string {
+  if (protection === "hardware") {
+    return `<div class="storage-protection-status secure" role="status"><strong>Hardware-protected</strong><small>Your identity key is sealed by this device's TPM or OS credential store.</small></div>`;
+  }
+  if (protection === "fallback") {
+    return `<div class="storage-protection-status insecure" role="alert"><strong>Software fallback storage</strong><small>Hardware protection is unavailable on this device. Your identity key is protected by software only and will not survive a restart.</small></div>`;
+  }
+  return `<div class="storage-protection-status insecure" role="alert"><strong>Storage protection unknown</strong><small>OSL has not verified hardware-backed storage for this identity in this session. Treat it as not securely stored until verified.</small></div>`;
+}
+
 function identitySettingsContent(): string {
   const identities = hubIdentities.length
     ? hubIdentities.map((identity) => `<article class="identity-row"><div><strong>${escapeHtml(identity.label)}</strong><small>${escapeHtml(identity.oslUserId)} · ${escapeHtml(identity.safetyNumber)}</small></div>${identity.active ? `<span class="status-tag">Active</span>` : `<button class="button compact" data-switch-identity="${escapeHtml(identity.slotId)}">Switch</button>`}</article>`).join("")
@@ -3304,7 +3351,7 @@ function identitySettingsContent(): string {
       ? `<div class="warning recovery-secret"><strong>Save the new identity recovery phrase now</strong><code>${escapeHtml(newIdentityRecoveryPhrase)}</code><p>Visible only on this page. It clears if you leave or hide OSL.</p></div>`
       : `<div class="warning recovery-secret" role="alert"><strong>Recovery phrase hidden</strong><p>${RECOVERY_PROTECTION_REFUSAL}.</p><button class="button compact" id="retry-recovery-protection" type="button">Retry protection</button></div>`
     : "";
-  return `<h2>Account</h2><p>One active identity on this device.</p><div class="identity-list">${identities}</div>${recovery}<form class="inline-form identity-create-form" id="identity-slot-form"><input id="identity-slot-label" maxlength="80" placeholder="New identity label" required/><button class="button primary">Create identity</button></form><details class="recovery-import settings-disclosure"><summary>Recover another identity</summary><form id="identity-recover-form" class="setup-surface"><input id="identity-recover-label" maxlength="80" placeholder="Identity label" required/><textarea id="identity-recover-phrase" rows="3" placeholder="12-word recovery phrase" required></textarea><button class="button">Recover identity</button></form></details>${activationSettingsContent()}`;
+  return `<h2>Account</h2><p>One active identity on this device.</p>${identityStorageProtectionMarkup(classifyIdentityStorageProtection(identityStorageMethod))}<div class="identity-list">${identities}</div>${recovery}<form class="inline-form identity-create-form" id="identity-slot-form"><input id="identity-slot-label" maxlength="80" placeholder="New identity label" required/><button class="button primary">Create identity</button></form><details class="recovery-import settings-disclosure"><summary>Recover another identity</summary><form id="identity-recover-form" class="setup-surface"><input id="identity-recover-label" maxlength="80" placeholder="Identity label" required/><textarea id="identity-recover-phrase" rows="3" placeholder="12-word recovery phrase" required></textarea><button class="button">Recover identity</button></form></details>${activationSettingsContent()}`;
 }
 
 function activationSettingsContent(): string {
@@ -5691,6 +5738,10 @@ async function createAdditionalIdentity(event: SubmitEvent): Promise<void> {
     showToast(RECOVERY_PROTECTION_REFUSAL);
     return;
   }
+  // The new slot is not switched to automatically (identity_registry.rs
+  // creates it inactive), so this must not overwrite the ACTIVE
+  // identity's status. Remember it for when/if the user switches in.
+  knownIdentityStorageMethods.set(created.identity.slotId, created.storageMethod);
   newIdentityRecoveryPhrase = created.identityRecoveryPhrase;
   core = await loadCoreIntegration();
   await refreshIdentitySlots();
@@ -5707,6 +5758,9 @@ async function recoverAdditionalIdentity(event: SubmitEvent): Promise<void> {
   const recovered = await recoverHubIdentitySlot(label, phrase);
   if (phraseInput) phraseInput.value = "";
   if (!recovered) { showToast("Identity recovery failed closed"); return; }
+  // Same reasoning as createAdditionalIdentity: recovering a slot does not
+  // switch to it, so only remember its method for a later switch.
+  knownIdentityStorageMethods.set(recovered.identity.slotId, recovered.storageMethod);
   newIdentityRecoveryPhrase = null;
   core = await loadCoreIntegration();
   await refreshIdentitySlots();
@@ -5715,6 +5769,11 @@ async function recoverAdditionalIdentity(event: SubmitEvent): Promise<void> {
 
 async function switchIdentity(slotId: string): Promise<void> {
   if (!(await switchHubIdentity(slotId))) { showToast("Identity switch failed closed"); return; }
+  // The switch result does not echo a storage method. Only claim a known
+  // status if this session itself created/recovered that exact slot;
+  // otherwise fail honest and report unknown rather than carrying over the
+  // previously active identity's status onto a different one.
+  identityStorageMethod = knownIdentityStorageMethods.get(slotId) ?? null;
   newIdentityRecoveryPhrase = null;
   await refreshIdentityScopedState();
   render();
@@ -5797,6 +5856,8 @@ async function executeBurn(event: SubmitEvent): Promise<void> {
     return;
   }
   localStorage.clear();
+  identityStorageMethod = null;
+  knownIdentityStorageMethods.clear();
   newIdentityRecoveryPhrase = null;
   recoveryBundle = null;
   recoverySavedAcknowledged = false;
