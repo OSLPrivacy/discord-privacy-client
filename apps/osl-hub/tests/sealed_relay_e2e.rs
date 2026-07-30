@@ -44,6 +44,26 @@ struct RelayState {
     inbox: Vec<InboxRow>,
     posted: Vec<InboxRow>,
     blobs: BTreeMap<String, BlobRow>,
+    wrapped_keys: BTreeMap<String, WrappedKeyRow>,
+}
+
+/// One uploaded wrapped share. A share is readable ONLY by its recipient, and a
+/// single-use share is consumed by its first successful fetch -- both properties
+/// the replay-rejection and view-once assertions depend on.
+struct WrappedKeyRow {
+    sender_id: String,
+    recipient_id: String,
+    content_type: String,
+    system_message_kind: Option<String>,
+    session_version: u64,
+    share_index: u64,
+    wrapped_share_blob: String,
+    blob_version: u64,
+    single_use: bool,
+    display_duration_seconds: Option<u64>,
+    expires_at: String,
+    created_at: String,
+    consumed: bool,
 }
 
 struct RelayServer {
@@ -206,6 +226,113 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
                 },
             }),
         ),
+        ("POST", "/v1/wrapped-keys") => match serde_json::from_slice::<Value>(&body) {
+            Err(_) => json_response(400, json!({ "error": "bad json" })),
+            Ok(parsed) => {
+                let field = |name: &str| -> String {
+                    parsed
+                        .get(name)
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned()
+                };
+                let content_id = field("content_id");
+                if content_id.is_empty() {
+                    json_response(400, json!({ "error": "content_id required" }))
+                } else {
+                    let mut state = state.lock().unwrap();
+                    state.wrapped_keys.insert(
+                        content_id.clone(),
+                        WrappedKeyRow {
+                            sender_id: field("sender_id"),
+                            recipient_id: field("recipient_id"),
+                            content_type: field("content_type"),
+                            system_message_kind: parsed
+                                .get("system_message_kind")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                            session_version: parsed
+                                .get("session_version")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(0),
+                            share_index: parsed
+                                .get("share_index")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(0),
+                            wrapped_share_blob: field("wrapped_share_blob"),
+                            blob_version: parsed
+                                .get("blob_version")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(0),
+                            single_use: parsed
+                                .get("single_use")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false),
+                            display_duration_seconds: parsed
+                                .get("display_duration_seconds")
+                                .and_then(Value::as_u64),
+                            expires_at: field("expires_at"),
+                            created_at: format!("{now}"),
+                            consumed: false,
+                        },
+                    );
+                    json_response(200, json!({ "content_id": content_id }))
+                }
+            }
+        },
+        ("GET", route) if route.starts_with("/v1/wrapped-keys/") => {
+            let content_id = route.trim_start_matches("/v1/wrapped-keys/").to_owned();
+            let requester = path
+                .split_once('?')
+                .map(|(_, query)| query)
+                .unwrap_or_default()
+                .split('&')
+                .find_map(|pair| pair.strip_prefix("recipient_id="))
+                .unwrap_or_default()
+                .replace("%3A", ":");
+            let mut state = state.lock().unwrap();
+            match state.wrapped_keys.get_mut(&content_id) {
+                None => json_response(404, json!({ "error": "not found" })),
+                Some(row) if row.recipient_id != requester => {
+                    json_response(403, json!({ "error": "recipient mismatch" }))
+                }
+                Some(row) if row.single_use && row.consumed => {
+                    json_response(410, json!({ "error": "already consumed" }))
+                }
+                Some(row) => {
+                    if row.single_use {
+                        row.consumed = true;
+                    }
+                    json_response(
+                        200,
+                        json!({
+                            "content_id": content_id,
+                            "content_type": row.content_type,
+                            "system_message_kind": row.system_message_kind,
+                            "sender_id": row.sender_id,
+                            "recipient_id": row.recipient_id,
+                            "session_version": row.session_version,
+                            "share_index": row.share_index,
+                            "wrapped_share_blob": row.wrapped_share_blob,
+                            "blob_version": row.blob_version,
+                            "single_use": row.single_use,
+                            "display_duration_seconds": row.display_duration_seconds,
+                            "expires_at": row.expires_at,
+                            "created_at": row.created_at,
+                        }),
+                    )
+                }
+            }
+        }
+        ("DELETE", route) if route.starts_with("/v1/wrapped-keys") => {
+            let content_id = route
+                .trim_start_matches("/v1/wrapped-keys")
+                .trim_start_matches('/')
+                .to_owned();
+            let mut state = state.lock().unwrap();
+            let removed = state.wrapped_keys.remove(&content_id).is_some();
+            json_response(200, json!({ "burned": removed }))
+        }
         ("POST", "/v1/blob") => {
             let mut state = state.lock().unwrap();
             state.next_id += 1;
@@ -548,10 +675,25 @@ fn two_verified_identities_complete_sealed_relay_open_ack_and_replay_rejection()
     let receipt = drain_osl_chat_text(&alice, &alice_security, &alice_broker, true).unwrap();
     assert_eq!(receipt.acknowledgments.len(), 1);
     assert_eq!(receipt.acknowledgments[0].message_id, prepared.message_id);
+    // Received, NOT Opened. An Opened receipt discloses that the recipient actually
+    // read the message, so production admits it only under durable signed mutual
+    // consent -- a feature that is not built yet.
+    // broker::native_overlay_acknowledgment_is_admissible_without_mutual_consent
+    // permits Received alone, both call sites refuse Opened, and
+    // "an authenticated Opened frame remains inadmissible without mutual consent"
+    // is asserted in broker.rs. This test previously expected Opened, contradicting
+    // all of that; asserting the shipped contract keeps it a real gate.
     assert!(matches!(
         receipt.acknowledgments[0].status,
-        NativeOverlayAcknowledgmentStatus::Opened
+        NativeOverlayAcknowledgmentStatus::Received
     ));
+    assert!(
+        !matches!(
+            receipt.acknowledgments[0].status,
+            NativeOverlayAcknowledgmentStatus::Opened
+        ),
+        "an Opened receipt must not be emitted without durable mutual consent"
+    );
     let receipt_bytes = fs::read(alice_dir.join("hub_native_overlay_receipts.json")).unwrap();
     assert!(ipc::main_password::has_enc_magic(&receipt_bytes));
     assert!(!receipt_bytes
@@ -576,7 +718,7 @@ fn two_verified_identities_complete_sealed_relay_open_ack_and_replay_rejection()
     );
     assert!(matches!(
         replay_receipt.acknowledgments[0].status,
-        NativeOverlayAcknowledgmentStatus::Opened
+        NativeOverlayAcknowledgmentStatus::Received
     ));
 
     // A later broker activation invalidates the old lease before encryption,

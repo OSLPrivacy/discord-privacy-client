@@ -2546,10 +2546,21 @@ mod tests {
                 ),
             ]);
             let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
-            assert!(matches!(
-                client.fetch_own_identity_bundle_since(&identity, None),
-                Err(Error::PeerBundleProofInvalid)
-            ));
+            // A bundle whose prekey half is signed by a DIFFERENT identity must be
+            // refused. It is now caught earlier and more specifically, as an
+            // endpoint key-binding mismatch, rather than reaching the proof check
+            // and surfacing as PeerBundleProofInvalid. Assert the refusal and the
+            // reason, so this still fails if the mismatch is ever accepted.
+            let outcome = client.fetch_own_identity_bundle_since(&identity, None);
+            match outcome {
+                Err(Error::PeerBundleProofInvalid) => {}
+                Err(Error::Transport(ref reason))
+                    if reason.contains("key binding mismatch") => {}
+                other => panic!(
+                    "a bundle signed by another identity must be refused, got {:?}",
+                    other.err()
+                ),
+            }
         }
     }
 
