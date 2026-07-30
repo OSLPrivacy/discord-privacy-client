@@ -11072,6 +11072,82 @@ pub fn cmd_osl_lockout_status() -> Result<LockoutStatusDto, String> {
     Ok(crate::main_password::lockout_status(&dir))
 }
 
+#[cfg(test)]
+mod duress_gate_tests {
+    use super::*;
+
+    struct OslDirOverrideGuard;
+
+    impl Drop for OslDirOverrideGuard {
+        fn drop(&mut self) {
+            keystore::set_active_account_dir(None);
+            keystore::set_base_dir_override(None);
+            crate::main_password::set_file_storage_key(None);
+        }
+    }
+
+    #[test]
+    fn tenth_wrong_password_attempt_triggers_duress() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let base_dir = temp.path().join("base");
+        let account_dir = temp.path().join("account");
+        std::fs::create_dir_all(account_dir.join("store")).unwrap();
+        std::fs::create_dir_all(&base_dir).unwrap();
+        let _guard = OslDirOverrideGuard;
+        keystore::set_base_dir_override(Some(base_dir.clone()));
+        keystore::set_active_account_dir(Some(account_dir.clone()));
+
+        crate::main_password::set_main_password(&base_dir, "correct-password").unwrap();
+        crate::main_password::write_lockout_pub(
+            &base_dir,
+            &crate::main_password::LockoutState {
+                version: 1,
+                password_failed_attempts: crate::main_password::DURESS_FAILED_ATTEMPT_THRESHOLD - 1,
+                password_locked_until: None,
+                phrase_failed_attempts: 0,
+                phrase_locked_until: None,
+            },
+        )
+        .unwrap();
+        std::fs::write(account_dir.join("identity.json"), b"identity").unwrap();
+        std::fs::write(account_dir.join("prekeys.json"), b"prekeys").unwrap();
+        std::fs::write(account_dir.join("store").join("messages.sqlite"), b"cache").unwrap();
+
+        let mut config =
+            keystore::ProductionDuressConfig::new(account_dir.clone(), base_dir.clone());
+        config.purge_keyring = Some(Box::new(|| Ok(())));
+        config.wipe_prekeys = Some(Box::new(|| Ok(())));
+        config.wipe_double_ratchet = Some(Box::new(|| Ok(())));
+        config.wipe_sender_keys = Some(Box::new(|| Ok(())));
+        config.wipe_peer_ratchets = Some(Box::new(|| Ok(())));
+        config.zeroize_in_memory = Some(Box::new(|| Ok(())));
+        let parts = keystore::build_production_duress_handlers(config);
+
+        let mut state = AppState::new();
+        state.duress_journal_path = parts.journal_path.clone();
+        *state
+            .duress_engine
+            .lock()
+            .expect("duress_engine mutex poisoned") =
+            keystore::DuressEngine::new(parts.journal_path, parts.paths, parts.handlers);
+
+        let result = cmd_osl_verify_gate_password(&state, "wrong-password".to_owned()).unwrap();
+
+        assert_eq!(result.result, "duress");
+        assert_eq!(
+            result.attempts_used,
+            crate::main_password::DURESS_FAILED_ATTEMPT_THRESHOLD
+        );
+        assert_eq!(result.lockout_seconds_remaining, 0);
+        assert!(!account_dir.join("identity.json").exists());
+        assert!(!account_dir.join("prekeys.json").exists());
+        assert!(!account_dir.join("store").exists());
+        assert!(!base_dir.join("password_marker.json").exists());
+        assert!(!state.duress_journal_path.exists());
+        assert_eq!(crate::main_password::get_file_storage_key(), None);
+    }
+}
+
 // =====================================================================
 // Phase 7d-B2: stealth password operations.
 // =====================================================================
@@ -11231,6 +11307,14 @@ pub fn cmd_osl_verify_gate_password(
                 attempts_used: 0,
             })
         }
+        GateMatch::Duress => {
+            crate::main_password::execute_gate_duress(state)?;
+            Ok(GateVerifyDto {
+                result: "duress".to_string(),
+                lockout_seconds_remaining: 0,
+                attempts_used: lock.password_failed_attempts,
+            })
+        }
         GateMatch::Burn => {
             lock.password_failed_attempts = 0;
             lock.password_locked_until = None;
@@ -11243,6 +11327,18 @@ pub fn cmd_osl_verify_gate_password(
         }
         GateMatch::Wrong => {
             lock.password_failed_attempts = lock.password_failed_attempts.saturating_add(1);
+            if lock.password_failed_attempts
+                >= crate::main_password::DURESS_FAILED_ATTEMPT_THRESHOLD
+            {
+                lock.password_locked_until = None;
+                let _ = crate::main_password::write_lockout_pub(&dir, &lock);
+                crate::main_password::execute_gate_duress(state)?;
+                return Ok(GateVerifyDto {
+                    result: "duress".to_string(),
+                    lockout_seconds_remaining: 0,
+                    attempts_used: lock.password_failed_attempts,
+                });
+            }
             let secs =
                 crate::main_password::password_lockout_secs_pub(lock.password_failed_attempts);
             lock.password_locked_until = if secs > 0 { Some(now + secs) } else { None };

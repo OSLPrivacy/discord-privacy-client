@@ -1,12 +1,11 @@
-//! Legacy duress-engine primitives (implemented-unwired).
+//! Duress-engine primitives.
 //!
 //! Spec: `docs/design/unlock-and-duress.md` "Duress flow — full
 //! specification" + `docs/design/build-order.md` Layer B3.
 //!
-//! Current Hub/IPC and legacy Tauri production sources neither construct a
-//! [`DuressEngine`] nor call its execute/resume methods. The current Hub's
-//! separately implemented burn-password path uses `startup_gate` and
-//! `cleanup`, not this engine.
+//! IPC constructs a production [`DuressEngine`] in application state and the
+//! Hub password gate invokes it for duress outcomes. The separate burn-password
+//! path still uses `startup_gate` and `cleanup`, not this engine.
 //!
 //! The engine contract, when explicitly driven, has four phases:
 //!
@@ -26,8 +25,8 @@
 //! `Skipped`, or `Failed` outcome in the on-disk journal. When an integration
 //! explicitly calls
 //! [`DuressEngine::resume_if_pending`], the engine reads the journal and
-//! re-runs steps not yet completed. No production startup path currently
-//! makes that call.
+//! re-runs steps not yet completed. Startup resume remains a caller
+//! responsibility.
 //!
 //! ## Wipe set status (v1 alpha)
 //!

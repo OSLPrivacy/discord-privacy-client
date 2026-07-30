@@ -71,6 +71,7 @@ const ARGON_MEMORY_KB: u32 = 65_536; // 64 MiB
 const ARGON_ITERATIONS: u32 = 3;
 const ARGON_PARALLELISM: u32 = 1;
 pub const INACTIVITY_AUTO_LOCK_SECONDS: u64 = 15 * 60;
+pub const DURESS_FAILED_ATTEMPT_THRESHOLD: u32 = 10;
 
 // =====================================================================
 // On-disk schemas.
@@ -127,6 +128,10 @@ pub struct PasswordMarker {
     /// Same salt + params as main. Absent on v=1 markers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub burn_password_hash_b64: Option<String>,
+    /// Distinct duress credential. Matching this at the unlock gate runs the
+    /// journaled DuressEngine path, separate from the full-account burn role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duress_password_hash_b64: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -488,6 +493,7 @@ fn build_marker(password: &str, phrase: &str) -> Result<PasswordMarker, String> 
         phrase_hash_b64: Some(phrase_hash_b64),
         stealth_password_hash_b64: None,
         burn_password_hash_b64: None,
+        duress_password_hash_b64: None,
     })
 }
 
@@ -1229,6 +1235,7 @@ pub fn rotate_state_files(
 pub enum GateMatch {
     Main([u8; 32]), // also returns derived file_storage_key
     Stealth,
+    Duress,
     Burn,
     Wrong,
 }
@@ -1263,8 +1270,16 @@ pub fn verify_gate_password_with_marker(
         ),
         None => None,
     };
+    let duress_hash = match marker.duress_password_hash_b64.as_ref() {
+        Some(s) => Some(
+            STANDARD
+                .decode(s)
+                .map_err(|e| format!("OSL: duress hash b64: {e}"))?,
+        ),
+        None => None,
+    };
     let candidate = &derived[..HASH_LEN];
-    // Constant-time: run all three comparisons regardless of
+    // Constant-time: run all role comparisons regardless of
     // early match. The bool ORs at the end pick the first match.
     let m_main = ct_eq(candidate, &main_hash);
     let m_stealth = stealth_hash
@@ -1275,12 +1290,19 @@ pub fn verify_gate_password_with_marker(
         .as_deref()
         .map(|h| ct_eq(candidate, h))
         .unwrap_or(false);
+    let m_duress = duress_hash
+        .as_deref()
+        .map(|h| ct_eq(candidate, h))
+        .unwrap_or(false);
     if m_main {
         let file_key = derive_file_storage_key(&derived[HASH_LEN..]);
         return Ok(GateMatch::Main(file_key));
     }
     if m_stealth {
         return Ok(GateMatch::Stealth);
+    }
+    if m_duress {
+        return Ok(GateMatch::Duress);
     }
     if m_burn {
         return Ok(GateMatch::Burn);
@@ -1315,6 +1337,18 @@ pub fn set_stealth_password(
             .map_err(|e| format!("OSL: burn b64: {e}"))?;
         if ct_eq(&derived[..HASH_LEN], &burn) {
             return Err("OSL: stealth and burn passwords must be different".to_string());
+        }
+    }
+    if let Some(duress_b64) = marker.duress_password_hash_b64.as_ref() {
+        let salt = STANDARD
+            .decode(&marker.salt_b64)
+            .map_err(|e| format!("OSL: salt b64: {e}"))?;
+        let derived = derive(new_stealth, &salt, &marker.params)?;
+        let duress = STANDARD
+            .decode(duress_b64)
+            .map_err(|e| format!("OSL: duress b64: {e}"))?;
+        if ct_eq(&derived[..HASH_LEN], &duress) {
+            return Err("OSL: stealth and duress passwords must be different".to_string());
         }
     }
     let salt = STANDARD
@@ -1355,6 +1389,18 @@ pub fn set_burn_password(dir: &Path, current_main: &str, new_burn: &str) -> Resu
             return Err("OSL: stealth and burn passwords must be different".to_string());
         }
     }
+    if let Some(duress_b64) = marker.duress_password_hash_b64.as_ref() {
+        let salt = STANDARD
+            .decode(&marker.salt_b64)
+            .map_err(|e| format!("OSL: salt b64: {e}"))?;
+        let derived = derive(new_burn, &salt, &marker.params)?;
+        let duress = STANDARD
+            .decode(duress_b64)
+            .map_err(|e| format!("OSL: duress b64: {e}"))?;
+        if ct_eq(&derived[..HASH_LEN], &duress) {
+            return Err("OSL: burn and duress passwords must be different".to_string());
+        }
+    }
     let salt = STANDARD
         .decode(&marker.salt_b64)
         .map_err(|e| format!("OSL: salt b64: {e}"))?;
@@ -1383,6 +1429,71 @@ pub fn burn_password_status(dir: &Path) -> bool {
     read_marker(dir)
         .map(|m| m.burn_password_hash_b64.is_some())
         .unwrap_or(false)
+}
+
+pub fn set_duress_password(dir: &Path, current_main: &str, new_duress: &str) -> Result<(), String> {
+    validate_password(new_duress)?;
+    let mut marker = read_marker(dir)?;
+    let _ = verify_with_marker(&marker, current_main)
+        .map_err(|_| "OSL: current main password incorrect".to_string())?;
+    if current_main == new_duress {
+        return Err("OSL: duress password must be different from your main password".to_string());
+    }
+    let salt = STANDARD
+        .decode(&marker.salt_b64)
+        .map_err(|e| format!("OSL: salt b64: {e}"))?;
+    let derived = derive(new_duress, &salt, &marker.params)?;
+    if let Some(stealth_b64) = marker.stealth_password_hash_b64.as_ref() {
+        let stealth = STANDARD
+            .decode(stealth_b64)
+            .map_err(|e| format!("OSL: stealth b64: {e}"))?;
+        if ct_eq(&derived[..HASH_LEN], &stealth) {
+            return Err("OSL: stealth and duress passwords must be different".to_string());
+        }
+    }
+    if let Some(burn_b64) = marker.burn_password_hash_b64.as_ref() {
+        let burn = STANDARD
+            .decode(burn_b64)
+            .map_err(|e| format!("OSL: burn b64: {e}"))?;
+        if ct_eq(&derived[..HASH_LEN], &burn) {
+            return Err("OSL: burn and duress passwords must be different".to_string());
+        }
+    }
+    marker.duress_password_hash_b64 = Some(STANDARD.encode(&derived[..HASH_LEN]));
+    marker.version = MARKER_VERSION;
+    write_marker(dir, &marker)
+}
+
+pub fn remove_duress_password(dir: &Path, current_main: &str) -> Result<(), String> {
+    let mut marker = read_marker(dir)?;
+    let _ = verify_with_marker(&marker, current_main)
+        .map_err(|_| "OSL: current main password incorrect".to_string())?;
+    marker.duress_password_hash_b64 = None;
+    marker.version = MARKER_VERSION;
+    write_marker(dir, &marker)
+}
+
+pub fn duress_password_status(dir: &Path) -> bool {
+    read_marker(dir)
+        .map(|m| m.duress_password_hash_b64.is_some())
+        .unwrap_or(false)
+}
+
+pub fn execute_gate_duress(state: &AppState) -> Result<(), String> {
+    let report = state
+        .duress_engine
+        .lock()
+        .expect("duress_engine mutex poisoned")
+        .execute()
+        .map_err(|e| format!("OSL: duress wipe failed before it could be journaled: {e}"))?;
+    if !report.failed_steps().is_empty() {
+        tracing::warn!(
+            failed_steps = ?report.failed_steps(),
+            "OSL: duress wipe completed with failed steps; journal retained for resume"
+        );
+    }
+    set_file_storage_key(None);
+    Ok(())
 }
 
 // =====================================================================
