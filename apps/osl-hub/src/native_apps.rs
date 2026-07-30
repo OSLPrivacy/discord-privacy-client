@@ -2970,6 +2970,35 @@ mod tests {
     }
 
     #[test]
+    fn list_native_apps_reports_statuses_without_overlay_support() {
+        let statuses = list_native_apps_with_installer_probe(|| true);
+
+        assert_eq!(statuses.len(), NATIVE_APPS.len());
+        for (status, manifest) in statuses.iter().zip(NATIVE_APPS) {
+            assert_eq!(status.id, manifest.id);
+            assert_eq!(status.display_name, manifest.display_name);
+            assert_eq!(
+                status.isolated_profile_available,
+                isolated_native_profile_available(manifest.id)
+            );
+            assert!(
+                !status.supports_overlay,
+                "{:?} must not imply native overlay support",
+                status.id
+            );
+        }
+
+        let json = serde_json::to_value(&statuses).unwrap();
+        let rows = json
+            .as_array()
+            .expect("native app statuses serialize as rows");
+        assert!(rows.iter().all(|row| row["supportsOverlay"] == false));
+        assert!(rows
+            .iter()
+            .any(|row| row["isolatedProfileAvailable"] == true));
+    }
+
+    #[test]
     fn listing_probe_coalesces_failure_briefly_then_caches_success() {
         assert_eq!(INSTALLER_FAILURE_RETRY_DELAY, Duration::from_millis(250));
         let cache = Mutex::new(InstallerAvailabilityCache::default());
