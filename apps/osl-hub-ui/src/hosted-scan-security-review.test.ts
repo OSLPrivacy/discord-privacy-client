@@ -10,12 +10,71 @@ type HostedScanReviewRow = {
   refusal_without_authority: "refuse" | "permit";
 };
 
+const expectedRows: readonly HostedScanReviewRow[] = [
+  {
+    check_id: "hosted_identity_unlock",
+    boundary: "unlocked OSL owner identity",
+    authority_source: "native_state",
+    renderer_supplied: "no",
+    deletion_authority: "no",
+    refusal_without_authority: "refuse",
+  },
+  {
+    check_id: "hosted_active_context",
+    boundary: "current service host generation",
+    authority_source: "native_state",
+    renderer_supplied: "no",
+    deletion_authority: "no",
+    refusal_without_authority: "refuse",
+  },
+  {
+    check_id: "hosted_scope_binding",
+    boundary: "active hosted scope binding",
+    authority_source: "native_state",
+    renderer_supplied: "no",
+    deletion_authority: "no",
+    refusal_without_authority: "refuse",
+  },
+  {
+    check_id: "hosted_operator_binding",
+    boundary: "attended operator-name binding",
+    authority_source: "native_state",
+    renderer_supplied: "no",
+    deletion_authority: "no",
+    refusal_without_authority: "refuse",
+  },
+  {
+    check_id: "hosted_credential_handling",
+    boundary: "hosted credential and profile material",
+    authority_source: "unavailable_to_command",
+    renderer_supplied: "no",
+    deletion_authority: "no",
+    refusal_without_authority: "refuse",
+  },
+  {
+    check_id: "hosted_delete_boundary",
+    boundary: "delete-own-item authority",
+    authority_source: "not_present_in_scan_port",
+    renderer_supplied: "no",
+    deletion_authority: "no",
+    refusal_without_authority: "refuse",
+  },
+];
+
 function section(source: string, heading: string): string {
-  const marker = `## ${heading}`;
-  const start = source.split("\n").findIndex((line) => line.trim() === marker);
-  expect(start, `missing section ${heading}`).toBeGreaterThanOrEqual(0);
   const lines = source.split("\n");
-  const end = lines.findIndex((line, index) => index > start && line.startsWith("## "));
+  const start = lines.findIndex((line) => {
+    const trimmed = line.trim();
+    return trimmed === `## ${heading}` || trimmed === `### ${heading}`;
+  });
+  expect(start, `missing section ${heading}`).toBeGreaterThanOrEqual(0);
+  const currentDepth = lines[start]!.trim().startsWith("### ") ? 3 : 2;
+  const end = lines.findIndex((line, index) => {
+    if (index <= start) return false;
+    const trimmed = line.trim();
+    return (currentDepth === 2 && trimmed.startsWith("## "))
+      || (currentDepth === 3 && (trimmed.startsWith("## ") || trimmed.startsWith("### ")));
+  });
   return lines.slice(start + 1, end < 0 ? undefined : end).join("\n");
 }
 
@@ -56,15 +115,9 @@ describe("hosted scan security review", () => {
 
   it("hosted_scan_isolation_boundary_security_checklist", () => {
     const byId = new Map(rows.map((row) => [row.check_id, row]));
-    for (const required of [
-      "hosted_identity_unlock",
-      "hosted_active_context",
-      "hosted_scope_binding",
-      "hosted_operator_binding",
-      "hosted_credential_handling",
-      "hosted_delete_boundary",
-    ]) {
-      expect(byId.get(required)?.refusal_without_authority, required).toBe("refuse");
+    expect(rows).toEqual(expectedRows);
+    for (const expected of expectedRows) {
+      expect(byId.get(expected.check_id), expected.check_id).toEqual(expected);
     }
     expect(rows.every((row) => row.renderer_supplied === "no")).toBe(true);
     expect(rows.every((row) => row.deletion_authority === "no")).toBe(true);
@@ -89,5 +142,18 @@ describe("hosted scan security review", () => {
       deletion_authority: "no",
       refusal_without_authority: "refuse",
     });
+  });
+
+  it("records the f78 independent review as fail-closed and scan-only", () => {
+    const review = section(plan, "Independent Review Pass f78");
+    const compact = review.replace(/\s+/gu, " ");
+    expect(compact).toContain("Verdict: pass");
+    expect(compact).toContain("registration stays limited to");
+    expect(compact).toContain("renderer can request reachability only");
+    expect(compact).toContain("remains a refusal");
+    expect(compact).toContain("must not be mapped to an empty scan");
+    expect(compact).toContain("content-free shape metadata");
+    expect(compact).toContain("not row locators");
+    expect(review).not.toMatch(/\bpreview_discord_guided_deletion\b|\bexecute_discord_guided_deletion\b|\bexecute_mass_cleanup_batch\b/u);
   });
 });

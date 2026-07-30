@@ -3398,6 +3398,23 @@ export function oslMailStageAContent(
   return `<article class="inbox-surface-card" data-inbox-osl-surface="mail" data-osl-mail-stage-a="available" data-osl-mail-protection="private-client" data-osl-mailbox-stage-c-gate="${mailboxGate.reason ?? "reviewed"}" data-mailbox-operations="${mailboxGate.operationsAllowed ? "allowed" : "refused"}" aria-disabled="false"><strong>OSL Mail</strong><small>Private client protection</small><p><span class="status-tag">Available</span> Protect mailboxes you already control after explicit authorization.</p><ul>${capabilities.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul><p><span class="status-tag">${mailboxGate.label}</span> ${escapeHtml(mailboxGate.detail)} External email remains ordinary email unless a supported encrypted path is selected before send.</p></article>`;
 }
 
+export function oslMailStageBContent(
+  stage: OslMailStage = oslMailStage("stageB"),
+): string {
+  const capabilities = [
+    "Aliases for signups and breach isolation",
+    "Reply routing for messages sent to an alias",
+    "Relay behavior only after abuse handling, deliverability, recovery, and support gates pass",
+  ];
+  const ready = stage.id === "stageB" && stage.availability === "available";
+  const label = ready ? "Reviewed" : "Coming later";
+  const state = ready ? "available" : "coming-later";
+  const detail = ready
+    ? "Aliases and reply routing are available only for this reviewed mail setup."
+    : "Aliases and relay come after client protection, once abuse handling, deliverability, reply routing, account recovery, and support operations pass review.";
+  return `<article class="inbox-surface-card mail-stage-card" data-inbox-osl-surface="mail" data-osl-mail-stage-b="${state}" data-osl-mail-stage-b-after="client-protection" data-osl-mail-aliases="${ready ? "available" : "refused"}" data-osl-mail-relay="${ready ? "available" : "refused"}" aria-disabled="${ready ? "false" : "true"}"><strong>Aliases and relay</strong><small>After client protection</small><p><span class="status-tag">${label}</span> ${escapeHtml(detail)}</p><ul>${capabilities.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul><p>External email remains ordinary email unless a supported encrypted path is selected before send.</p></article>`;
+}
+
 function inboxDestinationContent(): string {
   const verifiedPeople = hubPeople.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange);
   const requests = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange);
@@ -3428,7 +3445,7 @@ function inboxDestinationContent(): string {
   const surfaceCards = oslSurfaces.map(([id, label, protection, detail]) => {
     if (id === "circles") return circlesDestinationContent();
     if (id === "mail") {
-      return oslMailStageAContent(oslMailStage("stageA"), mailboxGate);
+      return `${oslMailStageAContent(oslMailStage("stageA"), mailboxGate)}${oslMailStageBContent(oslMailStage("stageB"))}`;
     }
     return `<article class="inbox-surface-card" data-inbox-osl-surface="${id}"><strong>${label}</strong><small>${protection}</small><p>${detail}</p></article>`;
   }).join("");
