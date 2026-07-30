@@ -1667,6 +1667,10 @@ validate_carrier_and_pre_post_readbacks_against_one_discord_target_binding.__nam
 )
 
 
+def readback() -> None:
+    validate_carrier_and_pre_post_readbacks_against_one_discord_target_binding()
+
+
 def load_tests(
     loader: unittest.TestLoader,
     tests: unittest.TestSuite,
@@ -1685,6 +1689,7 @@ def load_tests(
     suite.addTest(unittest.FunctionTestCase(
         validate_carrier_and_pre_post_readbacks_against_one_discord_target_binding,
     ))
+    suite.addTest(unittest.FunctionTestCase(readback))
     return suite
 
 
