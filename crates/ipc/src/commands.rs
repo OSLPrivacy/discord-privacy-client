@@ -7142,6 +7142,78 @@ fn resolve_pinned_sender_pubkey(
     lookup_peer_pubkey(&pm, sender_discord_id).map_err(|_| "OSL: v3 sender identity is not pinned")
 }
 
+#[cfg(test)]
+mod v3_pinned_sender_command_tests {
+    use super::*;
+
+    fn pin_peer_x25519(state: &AppState, discord_id: &str, pubkey: crypto::x25519::PublicKey) {
+        let mut pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let peer = pm.entry(discord_id.to_string()).or_default();
+        peer.pubkey = Some(STANDARD.encode(pubkey.as_bytes()));
+        peer.discord_id = Some(discord_id.to_string());
+    }
+
+    #[test]
+    fn v3_pinned_sender_rejects_forged_sender() {
+        const ALICE_DID: &str = "900000000000000101";
+        const MALLORY_DID: &str = "900000000000000102";
+        const CHANNEL_ID: &str = "900000000000000199";
+
+        let state = AppState::new();
+        let bob = generate_identity("bob-a85".to_string());
+        let bob_recipient = crate::wire_v2::RecipientV3 {
+            x25519_pub: bob.x25519_public,
+            mlkem_pub: bob.mlkem_encapsulation_key(),
+        };
+        state.install_identity(bob);
+
+        let alice = generate_identity("alice-a85".to_string());
+        let mallory = generate_identity("mallory-a85".to_string());
+        pin_peer_x25519(&state, ALICE_DID, alice.x25519_public);
+
+        let wire = crate::wire_v2::encrypt_v3(
+            &mallory.x25519_secret,
+            &mallory.x25519_public,
+            &[bob_recipient],
+            crate::wire_v2::MSG_TYPE_CONTENT,
+            b"forged sender body",
+        )
+        .expect("forge a syntactically valid v3 wire for Bob");
+
+        let err = cmd_osl_decrypt_message_v2(
+            &state,
+            None,
+            CHANNEL_ID.to_string(),
+            ALICE_DID.to_string(),
+            wire.clone(),
+            None,
+            None,
+        )
+        .expect_err("claimed Alice sender must not authenticate Mallory's in-band v3 sender key");
+        assert!(
+            err.contains("v3 authenticated sender refused"),
+            "expected authenticated sender refusal, got {err}"
+        );
+        assert!(
+            !err.contains("not pinned"),
+            "Alice was pinned; the refusal must come from sender-key mismatch, got {err}"
+        );
+
+        pin_peer_x25519(&state, MALLORY_DID, mallory.x25519_public);
+        let opened = cmd_osl_decrypt_message_v2(
+            &state,
+            None,
+            CHANNEL_ID.to_string(),
+            MALLORY_DID.to_string(),
+            wire,
+            None,
+            None,
+        )
+        .expect("same wire decrypts when the claimed sender matches the local pin");
+        assert_eq!(opened, "forged sender body");
+    }
+}
+
 /// Populate a peer from a signed keyserver bundle. The response proof
 /// and complete key shapes are checked before any live key is changed.
 /// Separated from HTTP so tests can exercise the mutation boundary.
