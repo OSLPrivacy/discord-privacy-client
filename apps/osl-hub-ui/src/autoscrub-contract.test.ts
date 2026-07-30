@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
+
 import {
   AUTOSCRUB_BASE_CONTRACT,
+  AUTOSCRUB_UNATTENDED_BASE_CONTRACT,
   autoscrubUnattendedContractGate,
+  createAutoscrubUnattendedContract,
   parseAutoScrubFleetStatus,
   parseAutoscrubUnattendedContract,
 } from "./autoscrub-contract";
@@ -35,13 +38,38 @@ const fleetStatus = {
   }],
 } as const;
 
-describe("autoscrub contract hardening", () => {
-  it("autoscrub-contract.ts frozen base contract + deep-freeze hardening of", () => {
-    expect(Object.isFrozen(AUTOSCRUB_BASE_CONTRACT)).toBe(true);
+describe("autoscrub-contract.ts", () => {
+  it("keeps unattended cleanup contracts refused by default and deeply frozen after parsing", () => {
+    expect(AUTOSCRUB_UNATTENDED_BASE_CONTRACT).toEqual({
+      production: true,
+      unattendedAllowed: false,
+      reviewRequiredEveryBatch: true,
+      externalSecurityReviewPassed: false,
+    });
+    expect(AUTOSCRUB_BASE_CONTRACT).toBe(AUTOSCRUB_UNATTENDED_BASE_CONTRACT);
+    expect(Object.isFrozen(AUTOSCRUB_UNATTENDED_BASE_CONTRACT)).toBe(true);
     expect(autoscrubUnattendedContractGate(AUTOSCRUB_BASE_CONTRACT)).toEqual({
       state: "refused",
       reason: "unattended-disabled",
     });
+    expect(() => {
+      (AUTOSCRUB_UNATTENDED_BASE_CONTRACT as { unattendedAllowed: boolean }).unattendedAllowed = true;
+    }).toThrow(TypeError);
+
+    const ready = createAutoscrubUnattendedContract({
+      unattendedAllowed: true,
+      reviewRequiredEveryBatch: false,
+      externalSecurityReviewPassed: true,
+    });
+    expect(ready).toEqual(readyContract);
+    expect(Object.isFrozen(ready)).toBe(true);
+    expect(autoscrubUnattendedContractGate(ready)).toEqual({
+      state: "ready",
+      command: "autoscrub_unattended_run",
+    });
+    expect(() => {
+      (ready as { reviewRequiredEveryBatch: boolean }).reviewRequiredEveryBatch = true;
+    }).toThrow(TypeError);
 
     const raw = { ...readyContract };
     const parsed = parseAutoscrubUnattendedContract(raw);
@@ -55,24 +83,20 @@ describe("autoscrub contract hardening", () => {
     });
     expect(() => {
       (parsed as { unattendedAllowed: boolean }).unattendedAllowed = false;
-    }).toThrow();
-    expect(autoscrubUnattendedContractGate(parsed)).toEqual({
-      state: "ready",
-      command: "autoscrub_unattended_run",
-    });
+    }).toThrow(TypeError);
 
-    const status = parseAutoScrubFleetStatus(fleetStatus);
-    expect(Object.isFrozen(status)).toBe(true);
-    expect(Object.isFrozen(status.quitGuard)).toBe(true);
-    expect(Object.isFrozen(status.runs)).toBe(true);
-    expect(Object.isFrozen(status.runs[0])).toBe(true);
+    const parsedFleet = parseAutoScrubFleetStatus(fleetStatus);
+    expect(Object.isFrozen(parsedFleet)).toBe(true);
+    expect(Object.isFrozen(parsedFleet.quitGuard)).toBe(true);
+    expect(Object.isFrozen(parsedFleet.runs)).toBe(true);
+    expect(Object.isFrozen(parsedFleet.runs[0])).toBe(true);
     expect(() => {
-      (status.runs as unknown[]).push({ ...fleetStatus.runs[0], runId: "run-002" });
-    }).toThrow();
+      (parsedFleet.runs as unknown[]).push({ ...fleetStatus.runs[0], runId: "run-002" });
+    }).toThrow(TypeError);
     expect(() => {
-      (status.runs[0] as { mutationAllowed: boolean }).mutationAllowed = true;
-    }).toThrow();
-    expect(status.runs).toHaveLength(1);
-    expect(status.runs[0].mutationAllowed).toBe(false);
+      (parsedFleet.runs[0] as { mutationAllowed: boolean }).mutationAllowed = true;
+    }).toThrow(TypeError);
+    expect(parsedFleet.runs).toHaveLength(1);
+    expect(parsedFleet.runs[0].mutationAllowed).toBe(false);
   });
 });

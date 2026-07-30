@@ -124,6 +124,7 @@ fn execute_with_no_handlers_walks_every_step() {
 
     // Each deferred handler step is `Skipped` with a non-empty reason.
     for s in [
+        WipeStep::UnregisterAccount,
         WipeStep::LocalCacheDir,
         WipeStep::AnonymousCredentials,
         WipeStep::Prekeys,
@@ -244,6 +245,7 @@ fn handlers_run_in_canonical_order() {
         wipe_peer_ratchets: Some(mk_handler("peer_ratchets")),
         zeroize_in_memory: Some(mk_handler("zeroize")),
         strip_opsec_files: Some(mk_handler("strip")),
+        unregister_account: Some(mk_handler("unregister")),
     };
 
     let engine = DuressEngine::new(journal_path, paths, handlers);
@@ -257,6 +259,7 @@ fn handlers_run_in_canonical_order() {
         *calls,
         vec![
             "keyring",
+            "unregister",
             "local_cache",
             "creds",
             "prekeys",
@@ -447,6 +450,7 @@ fn crash_mid_wipe_resume() {
         wipe_peer_ratchets: Some(Box::new(|| Ok(()))),
         zeroize_in_memory: Some(Box::new(|| Ok(()))),
         strip_opsec_files: Some(Box::new(|| Ok(()))),
+        unregister_account: Some(Box::new(|| Ok(()))),
     };
     let engine = DuressEngine::new(journal_path.clone(), paths, handlers);
     let report = engine.resume_if_pending().unwrap().expect("resume ran");
@@ -488,6 +492,7 @@ fn successful_run_removes_journal() {
         wipe_peer_ratchets: Some(Box::new(|| Ok(()))),
         zeroize_in_memory: Some(Box::new(|| Ok(()))),
         strip_opsec_files: Some(Box::new(|| Ok(()))),
+        unregister_account: Some(Box::new(|| Ok(()))),
     };
     let engine = DuressEngine::new(journal_path.clone(), paths, handlers);
     engine.execute().unwrap();
@@ -524,6 +529,7 @@ fn report_helpers_classify_outcomes() {
     let engine = DuressEngine::new(journal_path, paths, DuressHandlers::default());
     let report = engine.execute().unwrap();
     let skipped = report.skipped_steps();
+    assert!(skipped.contains(&WipeStep::UnregisterAccount));
     assert!(skipped.contains(&WipeStep::Prekeys));
     assert!(skipped.contains(&WipeStep::DoubleRatchet));
     assert!(skipped.contains(&WipeStep::SenderKeys));
@@ -540,6 +546,7 @@ fn wipe_step_ordered_covers_all_variants() {
         WipeStep::KeyringPurge,
         WipeStep::IdentityFile,
         WipeStep::PasswordHashes,
+        WipeStep::UnregisterAccount,
         WipeStep::PrekeyFile,
         WipeStep::LocalCacheDir,
         WipeStep::AnonymousCredentials,

@@ -302,6 +302,7 @@ fn full_a7_duress_auto_lock_anchor_replay() {
         wipe_peer_ratchets: Some(set_flag_handler(peer_ratchets_wiped.clone())),
         zeroize_in_memory: Some(set_flag_handler(zeroized.clone())),
         strip_opsec_files: Some(remove_file_handler(opsec_file.clone())),
+        unregister_account: Some(Box::new(|| Ok(()))),
     })
     .into_handlers();
     let report = DuressEngine::new(
@@ -318,6 +319,7 @@ fn full_a7_duress_auto_lock_anchor_replay() {
     assert!(report.completed, "duress flow must reach a terminal report");
     assert_step(&report, WipeStep::IdentityFile, StepOutcome::Wiped);
     assert_step(&report, WipeStep::PasswordHashes, StepOutcome::Wiped);
+    assert_step(&report, WipeStep::UnregisterAccount, StepOutcome::Wiped);
     assert_step(&report, WipeStep::PrekeyFile, StepOutcome::Wiped);
     assert_step(&report, WipeStep::LocalCacheDir, StepOutcome::Wiped);
     assert_step(&report, WipeStep::AnonymousCredentials, StepOutcome::Wiped);
