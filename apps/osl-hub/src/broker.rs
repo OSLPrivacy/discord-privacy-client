@@ -8208,6 +8208,116 @@ mod tests {
         );
     }
 
+    #[test]
+    fn ack_delete_ordering_after_restart_drain() {
+        use std::cell::{Cell, RefCell};
+        use std::rc::Rc;
+
+        struct FakeControlInboxClient {
+            events: Rc<RefCell<Vec<&'static str>>>,
+            restarted_queue_ack_persisted: Rc<Cell<bool>>,
+        }
+
+        impl RevocationControlInboxClient for FakeControlInboxClient {
+            fn post_ack(&mut self, _ack_b64: &str) {
+                panic!("an inbound revocation ack must never be acknowledged again");
+            }
+
+            fn delete_row(&mut self) {
+                assert!(
+                    self.restarted_queue_ack_persisted.get(),
+                    "restart drain deleted the ack row before the sender queue recorded it"
+                );
+                self.events.borrow_mut().push("delete_row");
+            }
+        }
+
+        let burn_id = [0x42; 32];
+        let burn_id_hex = hex(&burn_id);
+        let outbox = Rc::new(RefCell::new(ipc::revocation::RevocationOutbox {
+            version: 1,
+            entries: vec![ipc::revocation::RevocationOutboxEntry {
+                recipient_id: "osl-peer-b".to_owned(),
+                scope_id_label: "scope-label".to_owned(),
+                storage_key: "dm:restart-drain".to_owned(),
+                burn_id_hex: burn_id_hex.clone(),
+                collapse_key_hex: hex(&[0x55; 32]),
+                burn_epoch: 1,
+                burn_upto_seq: 7,
+                notice_b64: STANDARD.encode([0x0a]),
+                attempts: 1,
+                next_attempt_at: 1_700_000_100,
+                acknowledged: false,
+                created_at: 1_700_000_000,
+            }],
+        }));
+        let events = Rc::new(RefCell::new(Vec::<&'static str>::new()));
+        let restarted_queue_ack_persisted = Rc::new(Cell::new(false));
+        let mut deferred_rows = 0;
+        let mut control_inbox = FakeControlInboxClient {
+            events: Rc::clone(&events),
+            restarted_queue_ack_persisted: Rc::clone(&restarted_queue_ack_persisted),
+        };
+
+        drain_inbound_revocation_row(
+            InboundRevocationControl::Ack,
+            &mut deferred_rows,
+            {
+                let events = Rc::clone(&events);
+                let outbox = Rc::clone(&outbox);
+                let persisted = Rc::clone(&restarted_queue_ack_persisted);
+                let burn_id_hex = burn_id_hex.clone();
+                move |control| {
+                    assert_eq!(control, InboundRevocationControl::Ack);
+                    events.borrow_mut().push("load_restarted_outbox");
+                    let mut outbox = outbox.borrow_mut();
+                    assert_eq!(outbox.unacknowledged(), 1);
+                    assert_eq!(outbox.due(i64::MAX).len(), 1);
+                    outbox.record_acknowledged(&burn_id_hex);
+                    assert_eq!(
+                        outbox.status(&burn_id_hex),
+                        ipc::revocation::STATUS_ACKNOWLEDGED
+                    );
+                    assert_eq!(outbox.unacknowledged(), 0);
+                    assert!(outbox.due(i64::MAX).is_empty());
+                    persisted.set(true);
+                    events.borrow_mut().push("persist_ack");
+                    (RevocationRowOutcome::Applied, None)
+                }
+            },
+            &mut control_inbox,
+        );
+
+        assert_eq!(deferred_rows, 0);
+        assert_eq!(
+            events.borrow().as_slice(),
+            ["load_restarted_outbox", "persist_ack", "delete_row"]
+        );
+
+        events.borrow_mut().clear();
+        restarted_queue_ack_persisted.set(false);
+        let mut control_inbox = FakeControlInboxClient {
+            events: Rc::clone(&events),
+            restarted_queue_ack_persisted,
+        };
+        drain_inbound_revocation_row(
+            InboundRevocationControl::Ack,
+            &mut deferred_rows,
+            {
+                let events = Rc::clone(&events);
+                move |control| {
+                    assert_eq!(control, InboundRevocationControl::Ack);
+                    events.borrow_mut().push("load_restarted_outbox_failed");
+                    (RevocationRowOutcome::Deferred, None)
+                }
+            },
+            &mut control_inbox,
+        );
+
+        assert_eq!(deferred_rows, 1);
+        assert_eq!(events.borrow().as_slice(), ["load_restarted_outbox_failed"]);
+    }
+
     /// A peer notice must not be acknowledged merely because its dormant floor
     /// contract can be written. Production content still carries no authenticated
     /// sequence/commitment and calls no admission gate, so the only honest
