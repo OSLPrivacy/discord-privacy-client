@@ -421,7 +421,8 @@ fn ownership_challenge_http_status_error_redacts_response_body() {
     let response_body = br#"{"error":"account 123456789012345678 belongs to osl1_owner"}"#;
     let mut response = Vec::new();
     response.extend_from_slice(b"HTTP/1.1 409 Conflict\r\n");
-    response.extend_from_slice(format!("Content-Length: {}\r\n\r\n", response_body.len()).as_bytes());
+    response
+        .extend_from_slice(format!("Content-Length: {}\r\n\r\n", response_body.len()).as_bytes());
     response.extend_from_slice(response_body);
     let (port, _rx) = one_shot_server(response);
 
@@ -1059,7 +1060,7 @@ fn request_target(request: &[u8]) -> &str {
 }
 
 #[test]
-fn compatible_control_inbox_preserves_legacy_before_capability() {
+fn compatible_control_inbox_uses_signed_sender_filter_after_capability_probe() {
     let _serial = active_account_test_lock().lock().unwrap();
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1073,8 +1074,13 @@ fn compatible_control_inbox_preserves_legacy_before_capability() {
     keystore::set_active_account_dir(Some(dir.clone()));
 
     let (port, requests) = multi_response_server(vec![
-        health_response(serde_json::json!({ "ok": true })),
-        legacy_control_inbox_response(&["peer-b", "peer-a"]),
+        health_response(serde_json::json!({
+            "ok": true,
+            "capabilities": {
+                "control_inbox_sender_disposition": 1,
+            },
+        })),
+        control_inbox_response(Some("peer-a"), &["peer-a"]),
     ]);
     let identity = generate_identity("recipient".to_owned());
     let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
@@ -1086,16 +1092,16 @@ fn compatible_control_inbox_preserves_legacy_before_capability() {
     assert_eq!(page.items[0].sender_id, "peer-a");
     assert_eq!(page.delivery.live, 1);
     assert_eq!(request_target(&requests.recv().unwrap()), "/v1/healthz");
-    let legacy_get = request_target(&requests.recv().unwrap()).to_owned();
-    assert!(legacy_get.starts_with(&format!("/v1/control-inbox/{}?", identity.user_id)));
-    assert!(!legacy_get.contains("&sender="));
+    let filtered_get = request_target(&requests.recv().unwrap()).to_owned();
+    assert!(filtered_get.starts_with(&format!("/v1/control-inbox/{}?", identity.user_id)));
+    assert_eq!(query_value(&filtered_get, "sender"), "peer-a");
 
     keystore::set_active_account_dir(None);
     let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
-fn compatible_control_inbox_refuses_legacy_after_observed_capability() {
+fn compatible_control_inbox_refuses_legacy_shape_after_capability_probe() {
     let _serial = active_account_test_lock().lock().unwrap();
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1109,38 +1115,23 @@ fn compatible_control_inbox_refuses_legacy_after_observed_capability() {
     keystore::set_active_account_dir(Some(dir.clone()));
 
     let identity = generate_identity("recipient".to_owned());
-    let (final_port, final_requests) = multi_response_server(vec![
+    let (port, requests) = multi_response_server(vec![
         health_response(serde_json::json!({
             "ok": true,
             "capabilities": {
                 "control_inbox_sender_disposition": 1,
             },
         })),
-        control_inbox_response(Some("peer-a"), &[]),
+        legacy_control_inbox_response(&["peer-b", "peer-a"]),
     ]);
-    let final_client = KeyServerClient::new(format!("http://127.0.0.1:{final_port}")).unwrap();
-    final_client
-        .get_control_inbox_compatible_from(&identity, "peer-a")
-        .unwrap();
-    assert_eq!(
-        request_target(&final_requests.recv().unwrap()),
-        "/v1/healthz"
-    );
-    assert!(request_target(&final_requests.recv().unwrap()).contains("&sender=peer-a"));
-
-    let (rollback_port, rollback_requests) =
-        multi_response_server(vec![health_response(serde_json::json!({ "ok": true }))]);
-    let restarted_client =
-        KeyServerClient::new(format!("http://127.0.0.1:{rollback_port}")).unwrap();
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
     assert!(matches!(
-        restarted_client.get_control_inbox_compatible_from(&identity, "peer-a"),
+        client.get_control_inbox_compatible_from(&identity, "peer-a"),
         Err(Error::Transport(message))
-            if message.contains("capability downgrade refused")
+            if message.contains("did not confirm the sender filter")
     ));
-    assert_eq!(
-        request_target(&rollback_requests.recv().unwrap()),
-        "/v1/healthz"
-    );
+    assert_eq!(request_target(&requests.recv().unwrap()), "/v1/healthz");
+    assert!(request_target(&requests.recv().unwrap()).contains("&sender=peer-a"));
 
     keystore::set_active_account_dir(None);
     let _ = std::fs::remove_dir_all(dir);

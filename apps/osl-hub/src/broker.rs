@@ -8701,7 +8701,7 @@ mod tests {
         let client_compat = between(
             client,
             "pub fn get_control_inbox_compatible_from(",
-            "fn probe_control_inbox_sender_filter_capability(",
+            "/// Drain only the rows one specific peer sent.",
         );
         let ipc_all_row_dispatcher = between(
             ipc_commands,
@@ -9216,9 +9216,8 @@ mod tests {
         let identity = keystore::generate_identity("recipient".to_owned());
         let sender_a = "peer-a";
 
-        let (legacy_url, legacy_requests, legacy_server) = spawn_control_inbox_test_server(vec![
-            serde_json::json!({ "ok": true }),
-        ]);
+        let (legacy_url, legacy_requests, legacy_server) =
+            spawn_control_inbox_test_server(vec![serde_json::json!({ "ok": true })]);
         let legacy_client = keystore::KeyServerClient::new(&legacy_url).expect("legacy client");
         let legacy_error = fetch_peer_control_inbox(&identity, &legacy_client, sender_a)
             .expect_err("legacy Worker must not widen to an unfiltered page");
@@ -9273,6 +9272,54 @@ mod tests {
         );
         assert_health_request(&rollback_requests.recv().expect("capture rollback health"));
         rollback_server.join().expect("rollback server exits");
+        remove_sender_filter_test_account(&account_dir);
+    }
+
+    #[test]
+    fn shipping_receive_boundary_refuses_legacy_worker_shape_without_widening() {
+        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let account_dir = install_sender_filter_test_account("legacy-shape-refused");
+        let identity = keystore::generate_identity("recipient".to_owned());
+        let sender_a = "peer-a";
+        let sender_b = "peer-b";
+
+        let (legacy_url, legacy_requests, legacy_server) = spawn_control_inbox_test_server(vec![
+            serde_json::json!({
+                "ok": true,
+                "capabilities": {
+                    "control_inbox_sender_disposition": 1,
+                },
+            }),
+            serde_json::json!({
+                "items": [
+                    control_inbox_test_row(
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        sender_a,
+                        ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
+                    ),
+                    control_inbox_test_row(
+                        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        sender_b,
+                        ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
+                    ),
+                ],
+            }),
+        ]);
+        let legacy_client = keystore::KeyServerClient::new(&legacy_url).expect("legacy client");
+        let error = fetch_peer_control_inbox(&identity, &legacy_client, sender_a)
+            .expect_err("legacy shape without sender echo must be refused");
+        assert!(
+            error
+                .to_string()
+                .contains("did not confirm the sender filter"),
+            "legacy shape is refused by the exact echo requirement"
+        );
+        assert_health_request(&legacy_requests.recv().expect("capture legacy health"));
+        assert_filtered_request(
+            &legacy_requests.recv().expect("capture legacy filtered GET"),
+            sender_a,
+        );
+        legacy_server.join().expect("legacy server exits");
         remove_sender_filter_test_account(&account_dir);
     }
 
@@ -12759,6 +12806,30 @@ ok i will weekend again with you",
         let _ = std::fs::remove_dir(dir);
     }
 
+    fn source_function_body<'a>(source: &'a str, signature: &str) -> &'a str {
+        let start = source
+            .find(signature)
+            .unwrap_or_else(|| panic!("{signature} exists"));
+        let body_start = source[start..]
+            .find('{')
+            .map(|offset| start + offset)
+            .unwrap_or_else(|| panic!("{signature} has a body"));
+        let mut depth = 0usize;
+        for (offset, character) in source[body_start..].char_indices() {
+            match character {
+                '{' => depth = depth.saturating_add(1),
+                '}' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return &source[start..body_start + offset + character.len_utf8()];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("{signature} body is terminated");
+    }
+
     #[test]
     fn the_decode_leg_of_one_rehydration_is_bounded_in_wall_clock() {
         // The accessibility read that produces these rows is bounded; the decode
@@ -12775,14 +12846,7 @@ ok i will weekend again with you",
         // the way the decrypted-display switch does, so an exhausted budget answers
         // `None` -- a first-class answer here -- rather than dropping the row.
         let source = include_str!("broker.rs");
-        let start = source
-            .find("pub fn rehydrate_native_discord_overlay_history(")
-            .expect("the rehydrate entry point exists");
-        let body = &source[start
-            ..start
-                + source[start..]
-                    .find("\n}\n")
-                    .expect("the rehydrate entry point is terminated")];
+        let body = source_function_body(source, "pub fn rehydrate_native_discord_overlay_history(");
         assert!(body.contains(
             "let decode_deadline = Instant::now() + Duration::from_millis(REHYDRATE_DECODE_BUDGET_MS);"
         ));
@@ -12806,7 +12870,7 @@ ok i will weekend again with you",
         assert!(body.contains("counts.budget_exhausted += 1;"));
         // Still one row out per row in: the budget may only turn a plaintext into
         // `None`, never remove a row from the transcript.
-        assert!(body.contains("row.line,\n                row.decode_candidates,"));
+        assert!(body.contains("row.line, row.decode_candidates, row.bounds, row.attribution"));
         // Native evidence selects exactly one committed carrier before any
         // pointer is opened. The decrypt therefore cannot roam across the other
         // accessible names in the row.
@@ -12884,14 +12948,7 @@ ok i will weekend again with you",
         }
 
         let source = include_str!("broker.rs");
-        let start = source
-            .find("pub fn rehydrate_native_discord_overlay_history(")
-            .expect("the rehydrate entry point exists");
-        let body = &source[start
-            ..start
-                + source[start..]
-                    .find("\n}\n")
-                    .expect("the rehydrate entry point is terminated")];
+        let body = source_function_body(source, "pub fn rehydrate_native_discord_overlay_history(");
         // Every row that goes in is tallied, before any early return can skip it.
         let rows_counted = body
             .find("rows: rows.len(),")
@@ -12939,7 +12996,7 @@ ok i will weekend again with you",
         // row is not absent until every node has said so.
         for (variant, counter) in [
             (
-                "PeerProsePointerFailure::NotAToken,",
+                "PeerProsePointerFailure::NotAToken)",
                 "counts.pointer_absent += 1",
             ),
             (
@@ -12950,7 +13007,7 @@ ok i will weekend again with you",
                 "PeerProsePointerFailure::Transport,",
                 "counts.store_unreachable += 1",
             ),
-            ("PeerProsePointerFailure::Rejected", "counts.refused += 1"),
+            ("PeerProsePointerFailure::Rejected)", "counts.refused += 1"),
         ] {
             let arm = body
                 .find(variant)
