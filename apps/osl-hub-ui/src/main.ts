@@ -2996,7 +2996,8 @@ function trustedHeader(): string {
   const localProtection = route === "service" && (activeEmbeddedHost || activeNativeHostId === "discord")
     ? `<button class="local-protected-toggle" id="local-protected-toggle" type="button" aria-expanded="${localProtectedSheet.open || peerProtectedSheet.open || nativeDiscordProtectionActive}">Protect</button>`
     : "";
-  const serviceControls = route === "service" && activeService ? `<div class="service-context"><span class="service-context-logo">${serviceLogo(activeService.id)}</span><span><strong>${escapeHtml(activeHomeAppName())}</strong><small>${activeEmbeddedHost ? "Isolated OSL profile" : activeDefaultBrowserCompanion ? "Default-browser companion · unprotected" : activeNativeHostMode === "existingSession" ? "Native companion" : activeNativeHostId ? "OSL app window" : "Needs setup"}</small></span>${localProtection}</div>` : "";
+  const mailScope = route === "service" ? mailComposerEncryptionScope(activeHomeApp()) : "";
+  const serviceControls = route === "service" && activeService ? `<div class="service-context"><span class="service-context-logo">${serviceLogo(activeService.id)}</span><span><strong>${escapeHtml(activeHomeAppName())}</strong><small>${activeEmbeddedHost ? "Isolated OSL profile" : activeDefaultBrowserCompanion ? "Default-browser companion · unprotected" : activeNativeHostMode === "existingSession" ? "Native companion" : activeNativeHostId ? "OSL app window" : "Needs setup"}</small></span>${mailScope}${localProtection}</div>` : "";
   const onboardingContinue = route === "service" && onboardingServiceSetup && (activeEmbeddedHost || activeNativeHostId || activeDefaultBrowserCompanion)
     ? `<button class="button compact primary" id="onboarding-service-continue">Continue setup</button>`
     : "";
@@ -3224,8 +3225,17 @@ function homeModuleIcon(id: "osl-chats" | "osl-servers" | "scrub" | "activity" |
   return `<svg viewBox="0 0 24 24"><path d="M6 3.5h9l3 3V20H6V3.5Z"/><path d="M14.5 3.5V7H18M9 11h6M9 14h6M9 17h4"/></svg>`;
 }
 
+function activeHomeApp(): HomeAppCatalogEntry | null {
+  return homeAppsFromServices(services).find((app) => app.id === activeHomeAppId) ?? null;
+}
+
+function mailComposerEncryptionScope(app: HomeAppCatalogEntry | null): string {
+  if (app?.serviceId !== "email" || app.provider === null) return "";
+  return `<aside class="mail-composer-encryption-scope" data-mail-composer-encryption-scope="${app.id}" role="note" aria-label="Email protection scope"><strong>Before you send</strong><small>${escapeHtml(app.displayName)} protects this app account. Ordinary external email is not OSL end-to-end encrypted. Use OSL Chat for verified friends.</small></aside>`;
+}
+
 function activeHomeAppName(): string {
-  return homeAppsFromServices(services).find((app) => app.id === activeHomeAppId)?.displayName
+  return activeHomeApp()?.displayName
     ?? activeService?.displayName
     ?? "App";
 }
@@ -3499,6 +3509,7 @@ function ownedConfirmationMarkup(): string {
 
 function serviceContent(): string {
   const name = escapeHtml(activeHomeAppName());
+  const mailScope = mailComposerEncryptionScope(activeHomeApp());
   if (activeService && serviceGuideStep !== null) return serviceGuideContent(activeService, serviceGuideStep);
   if (activeNativeHostId && activeNativeHostMode === "existingSession") {
     const protectionFailure = nativeProtectFailureNotice
@@ -3513,7 +3524,7 @@ function serviceContent(): string {
   if (activeService && activeHomeAppId && ["telegram", "signal", "whatsapp"].includes(activeHomeAppId) && activeNativeApp()?.availability === "installed") {
     return serviceGuideContent(activeService, 0);
   }
-  return `<main class="content-viewport native-app-page" id="route-heading" tabindex="-1"><section class="native-app-card"><span class="service-icon large">${activeService ? serviceLogo(activeService.id) : ""}</span><h1>${name}</h1><p>Open a separate OSL profile. Your normal app stays open.</p><button class="button primary native-app-action" id="embedded-service-setup" ${nativeActionBusy ? "disabled" : ""}>${nativeActionBusy ? "Opening…" : `Open ${name}`}</button><div class="native-app-secondary"><button class="text-back" id="native-app-back">← Apps</button><button class="text-button" id="burn-button" data-open-burn="app">Burn…</button></div></section></main>`;
+  return `<main class="content-viewport native-app-page" id="route-heading" tabindex="-1"><section class="native-app-card"><span class="service-icon large">${activeService ? serviceLogo(activeService.id) : ""}</span><h1>${name}</h1><p>Open a separate OSL profile. Your normal app stays open.</p>${mailScope}<button class="button primary native-app-action" id="embedded-service-setup" ${nativeActionBusy ? "disabled" : ""}>${nativeActionBusy ? "Opening…" : `Open ${name}`}</button><div class="native-app-secondary"><button class="text-back" id="native-app-back">← Apps</button><button class="text-button" id="burn-button" data-open-burn="app">Burn…</button></div></section></main>`;
 }
 
 function activeNativeApp(): NativeApp | null {
@@ -3558,7 +3569,8 @@ function serviceGuideContent(service: LinkedService, step: ServiceGuideStep): st
   const nativeFailure = nativeHostFailureNotice
     ? `<p class="form-status" role="status">${escapeHtml(nativeHostFailureNotice)}</p>`
     : "";
-  return `<main class="content-viewport service-guide" id="route-heading" tabindex="-1"><section class="guide-card guide-card-simple"><header><button class="text-back" id="service-guide-exit">← Apps</button></header><div class="guide-hero"><span class="guide-logo" data-guide-service="${service.id}">${serviceLogo(service.id)}</span><h1>${directNativeAccountChoice || directBrowserAccountChoice ? "Open" : "Connect"} ${name}</h1></div>${discordQaHostStatusMarkup()}${sessionChoices}${openAction || installedAction ? `<footer class="guide-actions">${openAction}${installedAction}</footer>` : ""}${nativeFailure}</section>${onboardingServiceSetup ? '<button class="onboarding-skip-dock" id="service-guide-skip">Skip · manual setup</button>' : ""}</main>`;
+  const mailScope = mailComposerEncryptionScope(selectedApp ?? activeHomeApp());
+  return `<main class="content-viewport service-guide" id="route-heading" tabindex="-1"><section class="guide-card guide-card-simple"><header><button class="text-back" id="service-guide-exit">← Apps</button></header><div class="guide-hero"><span class="guide-logo" data-guide-service="${service.id}">${serviceLogo(service.id)}</span><h1>${directNativeAccountChoice || directBrowserAccountChoice ? "Open" : "Connect"} ${name}</h1></div>${discordQaHostStatusMarkup()}${sessionChoices}${mailScope}${openAction || installedAction ? `<footer class="guide-actions">${openAction}${installedAction}</footer>` : ""}${nativeFailure}</section>${onboardingServiceSetup ? '<button class="onboarding-skip-dock" id="service-guide-skip">Skip · manual setup</button>' : ""}</main>`;
 }
 
 function settingsContent(): string {
