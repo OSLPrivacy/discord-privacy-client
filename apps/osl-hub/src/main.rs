@@ -49,7 +49,7 @@ use osl_privacy_hub::native_window_host::{
     NativeWindowHostState,
 };
 use osl_privacy_hub::password_lifecycle::{
-    self, HubIdentitySetupResult, HubMainPasswordSetupResult,
+    self, HubIdentityCreationOwnerSignoff, HubIdentitySetupResult, HubMainPasswordSetupResult,
 };
 use osl_privacy_hub::peer_attachment_io;
 use osl_privacy_hub::preferences::PreviewState;
@@ -1111,10 +1111,16 @@ async fn unlock_hub_password_gate(
 }
 
 #[tauri::command]
-async fn create_hub_osl_identity(app: tauri::AppHandle) -> Result<HubIdentitySetupResult, String> {
+async fn create_hub_osl_identity(
+    app: tauri::AppHandle,
+    owner_authorization_signoff: HubIdentityCreationOwnerSignoff,
+) -> Result<HubIdentitySetupResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<HubCoreState>();
-        password_lifecycle::create_native_identity(&state)
+        password_lifecycle::create_native_identity_with_owner_authorization_signoff(
+            &state,
+            owner_authorization_signoff,
+        )
     })
     .await
     .map_err(|_| "OSL identity setup worker failed".to_string())?

@@ -22,6 +22,30 @@ function nativeAuthority(overrides: Record<string, unknown> = {}) {
 }
 
 describe("cloud AutoScrub authority admission", () => {
+  it("Cloud worker consumes F6's native run/attended authority and mints no", async () => {
+    const accepted = await handleCloudAutoScrub(
+      request({ native_run_authority: nativeAuthority() }),
+    );
+    expect(accepted.status).toBe(200);
+    await expect(accepted.json()).resolves.toEqual({
+      status: "accepted",
+      native_run_id: "11111111-2222-4333-8444-555555555555",
+      scope_commitment_b64: scopeCommitment,
+      cloud_authority_minted: false,
+    });
+
+    const cloudMintAttempt = await handleCloudAutoScrub(
+      request({
+        native_run_authority: nativeAuthority(),
+        cloud_authority_minted: true,
+      }),
+    );
+    expect(cloudMintAttempt.status).toBe(400);
+    await expect(cloudMintAttempt.json()).resolves.toMatchObject({
+      error: "cloud AutoScrub cannot mint or accept cloud authority",
+    });
+  });
+
   it("test/integration/cloud-autoscrub.test.ts", async () => {
     const accepted = await handleCloudAutoScrub(
       request({ native_run_authority: nativeAuthority() }),
