@@ -12063,6 +12063,45 @@ mod unit_a_sender_attribution_chain {
             "forged v3 sender label must fail at the pinned-sender check, got: {err}"
         );
     }
+
+    #[test]
+    fn legacy_v1_decrypt_fails_closed_under_forged_sender() {
+        let f = attribution_fixture();
+        f.bob_state
+            .sender_pubkey_cache
+            .insert("alice-osl".to_string(), f.alice.x25519_public);
+        f.bob_state
+            .sender_pubkey_cache
+            .insert("mallory-osl".to_string(), f.mallory.x25519_public);
+
+        let wire = encrypt_osl_phase4_to_pubkeys(
+            &f.mallory.x25519_secret,
+            &[f.bob.x25519_public],
+            "legacy honest mallory",
+        )
+        .unwrap();
+
+        let honest = cmd_osl_decrypt_message(
+            &f.bob_state,
+            CHANNEL_ID.to_string(),
+            MALLORY_DID.to_string(),
+            wire.clone(),
+        )
+        .unwrap();
+        assert_eq!(honest, "legacy honest mallory");
+
+        let err = cmd_osl_decrypt_message(
+            &f.bob_state,
+            CHANNEL_ID.to_string(),
+            ALICE_DID.to_string(),
+            wire,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("not a recipient") || err.contains("wrap slot opened"),
+            "legacy v1 must not decrypt a Mallory wire attributed to Alice, got: {err}"
+        );
+    }
 }
 
 #[cfg(test)]
