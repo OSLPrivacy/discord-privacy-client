@@ -970,11 +970,12 @@ async fn osl_get_self_user_id(app: tauri::AppHandle) -> Result<String, String> {
 async fn osl_register_self_snowflake(
     app: tauri::AppHandle,
     snowflake: String,
+    ownership_proof: Option<keystore::AccountOwnershipProof>,
 ) -> Result<(), String> {
     let app_handle = app.clone();
     let result: Result<(), String> = tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
-        cmd_osl_register_self_snowflake(state.inner(), snowflake)
+        cmd_osl_register_self_snowflake(state.inner(), snowflake, ownership_proof)
     })
     .await
     .map_err(|e| format!("OSL: join error: {e}"))?;

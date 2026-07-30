@@ -10,7 +10,7 @@ use crate::state::AppState;
 use crate::{IpcError, IpcResult};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use crypto::{aead, hkdf, random, x25519};
+use crypto::{aead, ed25519, hkdf, random, x25519};
 use keystore::{generate_identity, select_best_sealer, KeyServerClient};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -506,16 +506,20 @@ pub fn cmd_osl_recover_peer_identity(state: &AppState, discord_id: String) -> Re
 }
 
 /// 7d-FIX3b: persist a Discord snowflake on the loaded identity and
-/// repair the peer_map self-entry to match. Called from boot.js
-/// the first time the runtime exposes the local user's snowflake.
+/// repair the peer_map self-entry to match.
 ///
-/// Validates 17-20 digit format. Rejects mismatch against an
-/// existing recorded snowflake (account-change refusal). Idempotent
-/// for matching re-registrations (just runs verify).
-pub fn cmd_osl_register_self_snowflake(state: &AppState, snowflake: String) -> Result<(), String> {
+/// Validates 17-20 digit format and requires a signed account-ownership
+/// proof bound to the loaded identity before any stamp or disk write.
+/// Rejects mismatch against an existing recorded snowflake (account-change
+/// refusal). Idempotent for matching re-registrations (just runs verify).
+pub fn cmd_osl_register_self_snowflake(
+    state: &AppState,
+    snowflake: String,
+    ownership_proof: Option<keystore::AccountOwnershipProof>,
+) -> Result<(), String> {
     let dir = keystore::osl_config_dir()
         .map_err(|e| format!("OSL: register_self_snowflake: config dir: {e}"))?;
-    cmd_osl_register_self_snowflake_with_dir(state, snowflake, &dir)
+    cmd_osl_register_self_snowflake_with_dir(state, snowflake, ownership_proof, &dir)
 }
 
 /// Test seam: same as [`cmd_osl_register_self_snowflake`] but takes
@@ -525,6 +529,7 @@ pub fn cmd_osl_register_self_snowflake(state: &AppState, snowflake: String) -> R
 pub fn cmd_osl_register_self_snowflake_with_dir(
     state: &AppState,
     snowflake: String,
+    ownership_proof: Option<keystore::AccountOwnershipProof>,
     dir: &std::path::Path,
 ) -> Result<(), String> {
     osl_trace!("[F0-FIX3-TRACE] cmd_osl_register_self_snowflake entered");
@@ -535,99 +540,7 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
             snowflake.len()
         ));
     }
-
-    // 9-F0-FIX2: V2 clean-install path.
-    //
-    // Pre-FIX2, this command required `state.identity` to already be
-    // populated (bootstrap's `load_or_generate_identity` did the
-    // creation, gated on `keyserver.json` being present). V2 retired
-    // `keyserver.json`, so bootstrap never auto-creates the identity,
-    // and `cmd_osl_set_main_password` doesn't either (it has no
-    // user_id to seed with). The first moment we DO have a stable
-    // carrier account is when boot.js extracts the Discord snowflake
-    // from the React runtime and calls THIS command. The OSL routing
-    // id is independently generated from the key material.
-    //
-    // If `state.identity` is None at entry, generate a fresh native
-    // identity, stamp `discord_snowflake`,
-    // persist to disk via the configured sealer (TPM / Keyring /
-    // NoOp — identity at-rest protection lives in the sealer layer,
-    // not the file_storage_key envelope), then fall through to the
-    // existing peer_map self-entry repair via run_verify.
-    let needs_generation = {
-        let guard = state.identity.lock().expect("identity mutex poisoned");
-        guard.is_none()
-    };
-    if needs_generation {
-        osl_trace!("[F0-FIX3-TRACE] F0-FIX2 auto-gen path entered (state.identity was None)");
-        // Finding 3b: regenerates an identity WITHOUT burn_wipe_all,
-        // orphaning any store/ DB sealed by the old x25519_secret;
-        // reconciliation deliberately relies on bootstrap's
-        // open_message_store quarantine self-heal — do NOT add a
-        // wipe here without flagging it as a separate proposal.
-        let identity = keystore::generate_native_identity();
-        let mut snapshot = keystore::Identity::from_bytes(
-            identity.user_id.clone(),
-            *identity.x25519_secret.as_bytes(),
-            *identity.x25519_public.as_bytes(),
-            *identity.ed25519_secret.as_bytes(),
-            *identity.ed25519_public.as_bytes(),
-            *identity.mlkem_secret_bytes(),
-            identity.mlkem_public_bytes,
-        );
-        snapshot.discord_snowflake = Some(snowflake.clone());
-        snapshot.ratchet_initial_secret = identity.ratchet_initial_secret.clone();
-        snapshot.ratchet_initial_pub = identity.ratchet_initial_pub;
-        // Preserve the recovery-phrase entropy through the from_bytes
-        // copy so the new account is transferable (the phrase is
-        // revealable in Settings).
-        snapshot.recovery_entropy = identity.recovery_entropy;
-
-        let path = dir.join("identity.json");
-        let sealer = keystore::select_best_sealer();
-        osl_trace!(
-            "[F0-FIX3-TRACE] save_identity target path={} sealer={}",
-            path.display(),
-            sealer.method_label()
-        );
-        // Ensure the parent dir exists — bootstrap's create_dir_all
-        // covers this for the production path, but tests pass in a
-        // tempdir that may or may not have the leaf created yet.
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        match keystore::save_identity(&path, &snapshot, sealer.as_ref()) {
-            Ok(()) => {
-                osl_trace!("[F0-FIX3-TRACE] identity saved successfully");
-            }
-            Err(e) => {
-                osl_trace!("[F0-FIX3-TRACE] save_identity ERROR: {e}");
-                return Err(format!("OSL: save_identity (first-time): {e}"));
-            }
-        }
-
-        state.install_identity(snapshot);
-        // Finding 3b companion: this is a non-burn local identity
-        // regen. Any ratchet_state in peer_map was derived from the
-        // OLD local identity's SessionContext and is now
-        // undecryptable for every peer — drop them all so the next
-        // v=4 re-handshakes (burn would have wiped peer_map entirely;
-        // this path doesn't).
-        clear_all_peer_ratchet_state(state);
-        // REGISTER-FIX: this is the V2 clean-install moment the
-        // identity first comes into existence. Bootstrap could not
-        // register at boot (no identity.json yet) and the password
-        // gate fired before this (so its post-unlock hook saw no
-        // identity). Without registering HERE, the machine never
-        // reaches POST /v1/register until a *second* relaunch. The
-        // call is idempotent (upsert) and non-fatal.
-        ensure_keyserver_registered(
-            state,
-            &resolve_keyserver_base_url(dir),
-            read_keyserver_client_token(dir),
-        );
-        return run_verify(state);
-    }
+    verify_register_self_snowflake_ownership_proof(state, &snowflake, ownership_proof.as_ref())?;
 
     enum Step {
         Save(Box<keystore::Identity>),
@@ -718,6 +631,65 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
         read_keyserver_client_token(dir),
     );
     run_verify(state)
+}
+
+fn verify_register_self_snowflake_ownership_proof(
+    state: &AppState,
+    snowflake: &str,
+    ownership_proof: Option<&keystore::AccountOwnershipProof>,
+) -> Result<(), String> {
+    let proof = ownership_proof.ok_or_else(|| {
+        "OSL: register_self_snowflake: account ownership proof required".to_string()
+    })?;
+    let identity = {
+        let guard = state.identity.lock().expect("identity mutex poisoned");
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "OSL: register_self_snowflake: identity not loaded".to_string())?
+    };
+    proof.validate_shape().map_err(|_| {
+        "OSL: register_self_snowflake: account ownership proof malformed".to_string()
+    })?;
+    if proof.platform_id != snowflake {
+        return Err(
+            "OSL: register_self_snowflake: account ownership proof does not match account"
+                .to_string(),
+        );
+    }
+    if proof.e.owner_user_id != identity.user_id {
+        return Err(
+            "OSL: register_self_snowflake: account ownership proof is not bound to this identity"
+                .to_string(),
+        );
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "OSL: register_self_snowflake: system clock before Unix epoch".to_string())?
+        .as_secs();
+    if now >= proof.e.expires_at_unix_seconds {
+        return Err("OSL: register_self_snowflake: account ownership proof expired".to_string());
+    }
+    let canonical = proof.canonical_bytes().map_err(|_| {
+        "OSL: register_self_snowflake: account ownership proof malformed".to_string()
+    })?;
+    let signature_bytes = STANDARD.decode(&proof.e.signature_b64).map_err(|_| {
+        "OSL: register_self_snowflake: account ownership proof malformed".to_string()
+    })?;
+    let signature_array: [u8; ed25519::SIGNATURE_SIZE] =
+        signature_bytes.try_into().map_err(|_| {
+            "OSL: register_self_snowflake: account ownership proof malformed".to_string()
+        })?;
+    let signature = ed25519::Signature::from_bytes(signature_array);
+    let ok = ed25519::verify(&identity.ed25519_public, &canonical, &signature).map_err(|_| {
+        "OSL: register_self_snowflake: account ownership proof malformed".to_string()
+    })?;
+    if !ok {
+        return Err(
+            "OSL: register_self_snowflake: account ownership proof signature invalid".to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn run_verify(state: &AppState) -> Result<(), String> {
