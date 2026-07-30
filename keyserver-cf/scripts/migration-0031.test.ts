@@ -10,6 +10,7 @@ import {
 import { handleHealthz } from "../src/endpoints/healthz.js";
 import type { Env } from "../src/env.js";
 import {
+  CONTROL_INBOX_EVICTION_SIGNAL_CAPABILITY,
   CONTROL_INBOX_RECONCILIATION_STARTED_CAPABILITY,
   controlInboxDispositionSchemaReady,
   reconcileControlInboxSenderStates,
@@ -113,6 +114,13 @@ function workerEnv(db: D1Database): Env {
     RATE_LIMIT_1200: allow,
     RATE_LIMIT_3600: allow,
   } as unknown as Env;
+}
+
+function healthCapabilities(ready: 0 | 1) {
+  return {
+    control_inbox_sender_disposition: ready,
+    [CONTROL_INBOX_EVICTION_SIGNAL_CAPABILITY]: ready,
+  };
 }
 
 afterEach(async () => {
@@ -254,17 +262,20 @@ describe("migration 0031 control-inbox sender retention", () => {
     }
     expect(await refused[3]!.json()).toEqual({
       ok: false,
-      capabilities: { control_inbox_sender_disposition: 0 },
+      capabilities: healthCapabilities(0),
     });
     expect(await controlInboxDispositionSchemaReady(db)).toBe(false);
 
     await applyMigration(db, "0031_control_inbox_sender_retention.sql");
+    expect(await controlInboxDispositionSchemaReady(db)).toBe(false);
+
+    await applyMigration(db, "0035_control_inbox_eviction_signal.sql");
     expect(await controlInboxDispositionSchemaReady(db)).toBe(true);
     const healthy = await handleHealthz(env);
     expect(healthy.status).toBe(200);
     expect(await healthy.json()).toEqual({
       ok: true,
-      capabilities: { control_inbox_sender_disposition: 1 },
+      capabilities: healthCapabilities(1),
     });
 
     // The capability gate is no longer the reason for refusal: ordinary input
@@ -317,7 +328,7 @@ describe("migration 0031 control-inbox sender retention", () => {
     expect(markerOnly.status).toBe(503);
     expect(await markerOnly.json()).toEqual({
       ok: false,
-      capabilities: { control_inbox_sender_disposition: 0 },
+      capabilities: healthCapabilities(0),
     });
 
     await db.prepare(
@@ -341,6 +352,7 @@ describe("migration 0031 control-inbox sender retention", () => {
       2_000_000_000,
     );
     await applyMigration(db, "0031_control_inbox_sender_retention.sql");
+    await applyMigration(db, "0035_control_inbox_eviction_signal.sql");
 
     expect(
       (await reconcileControlInboxSenderStates(db, 1_900_000_000)).retryable,
@@ -387,6 +399,7 @@ describe("migration 0031 control-inbox sender retention", () => {
       2_000_000_000,
     );
     await applyMigration(db, "0031_control_inbox_sender_retention.sql");
+    await applyMigration(db, "0035_control_inbox_eviction_signal.sql");
     await db.prepare(
       `CREATE TRIGGER reject_reconciliation_marker
        BEFORE INSERT ON worker_schema_capabilities

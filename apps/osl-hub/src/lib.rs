@@ -6,6 +6,7 @@ pub mod attachment_formats;
 #[cfg(feature = "core")]
 pub mod autoscrub_run;
 pub mod attended_imap;
+pub mod background_priority;
 pub mod browser_companion;
 #[cfg(feature = "core")]
 pub mod browser_profile_scan;
