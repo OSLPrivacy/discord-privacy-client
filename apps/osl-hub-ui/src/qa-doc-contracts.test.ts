@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
 function readDoc(relativePath: string): string {
@@ -44,6 +45,34 @@ function parseTable<T extends Record<string, string>>(
 
 function fencedTextBlocks(source: string): string[] {
   return [...source.matchAll(/```text\n([\s\S]*?)\n```/gu)].map((match) => match[1]!);
+}
+
+function listItems(source: string): string[] {
+  const items: string[] = [];
+  for (const line of source.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("- ")) {
+      items.push(trimmed.slice(2).trim());
+    } else if (/^\s+\S/u.test(line) && trimmed.length > 0 && items.length > 0) {
+      items[items.length - 1] = `${items[items.length - 1]} ${trimmed}`;
+    }
+  }
+  return items;
+}
+
+function normalizeWords(value: string): string[] {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, " ")
+    .trim()
+    .split(/\s+/u)
+    .filter(Boolean);
+}
+
+function hasPhrase(value: string, phrase: string): boolean {
+  const haystack = ` ${normalizeWords(value).join(" ")} `;
+  const needle = ` ${normalizeWords(phrase).join(" ")} `;
+  return haystack.includes(needle);
 }
 
 describe("QA documentation contracts", () => {
@@ -120,6 +149,77 @@ describe("QA documentation contracts", () => {
       ["docs/design/build-order.md", "f83"],
       ["apps/osl-hub/src/cloud_autoscrub_envelope.rs", "f149"],
     ]));
+  });
+
+  it("frontend_dist_is_embedded_after_frontend_build", () => {
+    const output = execFileSync("bash", [
+      "scripts/qa/osl-instance-b-build-wsl.sh",
+      "--self-test",
+    ], {
+      cwd: new URL("../../../", import.meta.url),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        BUNDLE_A: "org.oslprivacy.hub",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    expect(output).toBe("");
+  });
+
+  it("docs/design/osl-subjective-design-feel.md", () => {
+    const designFeel = readDoc("docs/design/osl-subjective-design-feel.md");
+    const complexity = section(designFeel, "## Complexity belongs behind the product");
+    const contract = section(designFeel, "## Frozen user-facing contract");
+    const frozenRules = listItems(contract);
+
+    expect(frozenRules).toHaveLength(4);
+    const productModel = frozenRules[0]!;
+    for (const productNoun of [
+      "protection state",
+      "trusted people",
+      "connected accounts",
+      "private conversations",
+      "cleanup actions",
+      "activity history",
+    ]) {
+      expect(hasPhrase(productModel, productNoun)).toBe(true);
+    }
+
+    expect(hasPhrase(frozenRules[1]!, "refuses to expose implementation machinery")).toBe(true);
+    expect(hasPhrase(frozenRules[2]!, "plain consequence")).toBe(true);
+    expect(hasPhrase(frozenRules[2]!, "next safe action")).toBe(true);
+    expect(hasPhrase(frozenRules[2]!, "unknown state")).toBe(true);
+    expect(hasPhrase(frozenRules[3]!, "advanced exports")).toBe(true);
+    expect(hasPhrase(frozenRules[3]!, "main UI")).toBe(true);
+    expect(hasPhrase(frozenRules[3]!, "product answer")).toBe(true);
+
+    const bannedMachinery = [
+      "keyservers",
+      "ratchets",
+      "receipts",
+      "browser profiles",
+      "provider adapters",
+    ];
+    for (const machinery of bannedMachinery) {
+      expect(hasPhrase(complexity, machinery)).toBe(true);
+      expect(hasPhrase(contract, machinery)).toBe(false);
+    }
+
+    const translatedExamples = [
+      "conversation is not ready for protected send",
+      "cleanup action can only be assisted",
+      "result is unknown",
+    ];
+    for (const example of translatedExamples) {
+      expect(hasPhrase(complexity, example)).toBe(true);
+    }
+
+    const operationViolation = section(designFeel, "## Frozen user-facing contract")
+      .split("\n")
+      .at(-2) ?? "";
+    expect(hasPhrase(operationViolation, "violates the design feel")).toBe(true);
   });
 
   it("Adopt shared memory cards across every active account.", () => {
