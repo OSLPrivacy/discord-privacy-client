@@ -846,6 +846,19 @@ code {
 .recovery-kit-item code { display: block; }
 .recovery-kit-item code { margin-top: 7px; overflow-wrap: anywhere; user-select: all; }
 .recovery-kit-item p { margin: 5px 0 0; font-size: 11px; }
+.secure-recovery-next-steps {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.secure-recovery-next-steps article {
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+}
+.secure-recovery-next-steps strong,
+.secure-recovery-next-steps small { display: block; }
+.secure-recovery-next-steps small { margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.45; }
 .recovery-account-details summary { min-height: 38px; display: flex; align-items: center; color: var(--muted); cursor: pointer; font-size: 11px; }
 .recovery-account-details code { display: block; padding: 8px; overflow-wrap: anywhere; background: var(--bg); }
 
