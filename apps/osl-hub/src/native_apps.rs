@@ -262,6 +262,7 @@ struct NativeAppManifest {
     package_source: &'static str,
     candidates: &'static [ExecutableCandidate],
     publisher: Option<ExecutablePublisher>,
+    store_package_family_name: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -352,8 +353,8 @@ const WHATSAPP_PACKAGE_NAME: &str = "5319275A.WhatsAppDesktop";
 #[cfg(any(target_os = "windows", test))]
 const WHATSAPP_PACKAGE_PUBLISHER_ID: &str = "cv1g1gvanyjgm";
 
-#[cfg(any(target_os = "windows", test))]
-const WHATSAPP_PACKAGE_FAMILY_NAME: &str = "5319275A.WhatsAppDesktop_cv1g1gvanyjgm";
+pub(crate) const WHATSAPP_PACKAGE_FAMILY_NAME: &str =
+    "5319275A.WhatsAppDesktop_cv1g1gvanyjgm";
 
 #[cfg(target_os = "windows")]
 const MAX_WHATSAPP_PACKAGE_COUNT: u32 = 32;
@@ -442,6 +443,7 @@ const NATIVE_APPS: &[NativeAppManifest] = &[
         package_source: "winget",
         candidates: DISCORD_CANDIDATES,
         publisher: Some(ExecutablePublisher::Discord),
+        store_package_family_name: None,
     },
     NativeAppManifest {
         id: NativeAppId::Telegram,
@@ -453,6 +455,7 @@ const NATIVE_APPS: &[NativeAppManifest] = &[
         package_source: "winget",
         candidates: TELEGRAM_CANDIDATES,
         publisher: Some(ExecutablePublisher::Telegram),
+        store_package_family_name: None,
     },
     NativeAppManifest {
         id: NativeAppId::Signal,
@@ -464,6 +467,7 @@ const NATIVE_APPS: &[NativeAppManifest] = &[
         package_source: "winget",
         candidates: SIGNAL_CANDIDATES,
         publisher: Some(ExecutablePublisher::Signal),
+        store_package_family_name: None,
     },
     NativeAppManifest {
         id: NativeAppId::Whatsapp,
@@ -475,6 +479,7 @@ const NATIVE_APPS: &[NativeAppManifest] = &[
         package_source: "msstore",
         candidates: WHATSAPP_CANDIDATES,
         publisher: None,
+        store_package_family_name: Some(WHATSAPP_PACKAGE_FAMILY_NAME),
     },
     NativeAppManifest {
         id: NativeAppId::Outlook,
@@ -489,6 +494,7 @@ const NATIVE_APPS: &[NativeAppManifest] = &[
         package_source: "unavailable",
         candidates: OUTLOOK_CLASSIC_CANDIDATES,
         publisher: Some(ExecutablePublisher::Microsoft),
+        store_package_family_name: None,
     },
 ];
 
@@ -673,7 +679,6 @@ const FIREFOX_SERVICES: &[(FirefoxServiceId, &str)] = &[
     (FirefoxServiceId::Icloud, "https://www.icloud.com/mail/"),
 ];
 
-#[cfg(any(target_os = "windows", test))]
 fn manifest(id: NativeAppId) -> &'static NativeAppManifest {
     // Exhaustive enum input and a static manifest make this infallible. Avoid
     // accepting a service name string and accidentally widening the boundary.
@@ -681,6 +686,12 @@ fn manifest(id: NativeAppId) -> &'static NativeAppManifest {
         .iter()
         .find(|manifest| manifest.id == id)
         .expect("every native app enum has a fixed manifest")
+}
+
+pub(crate) fn whatsapp_store_package_family_name() -> &'static str {
+    manifest(NativeAppId::Whatsapp)
+        .store_package_family_name
+        .expect("WhatsApp manifest must bind a Store package family")
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -1686,7 +1697,7 @@ fn whatsapp_store_package_root() -> Option<PathBuf> {
     use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS};
     use windows_sys::Win32::Storage::Packaging::Appx::GetPackagesByPackageFamily;
 
-    let family = std::ffi::OsStr::new(WHATSAPP_PACKAGE_FAMILY_NAME)
+    let family = std::ffi::OsStr::new(whatsapp_store_package_family_name())
         .encode_wide()
         .chain(std::iter::once(0))
         .collect::<Vec<_>>();
@@ -2930,6 +2941,14 @@ mod tests {
 
     #[test]
     fn whatsapp_store_identity_is_exact_and_rejects_non_application_packages() {
+        assert_eq!(
+            whatsapp_store_package_family_name(),
+            WHATSAPP_PACKAGE_FAMILY_NAME
+        );
+        assert_eq!(
+            manifest(NativeAppId::Whatsapp).store_package_family_name,
+            Some(WHATSAPP_PACKAGE_FAMILY_NAME)
+        );
         assert_eq!(
             WHATSAPP_PACKAGE_FAMILY_NAME,
             "5319275A.WhatsAppDesktop_cv1g1gvanyjgm"
