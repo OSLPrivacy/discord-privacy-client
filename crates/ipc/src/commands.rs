@@ -10918,6 +10918,86 @@ pub fn cmd_osl_get_friend_ids(state: &AppState) -> Result<Vec<String>, String> {
     Ok(g.clone())
 }
 
+/// Outcome for [`cmd_osl_decline_or_revoke_friend_request`].
+///
+/// Deliberately carries no peer id, account id, storage key, handle or
+/// credential. Callers already know which request they acted on; the IPC
+/// response only says whether local authority was removed.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum FriendRequestDecision {
+    DeclinedPending,
+    RevokedAcceptedGrant,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendRequestDecisionResult {
+    pub decision: FriendRequestDecision,
+    pub revoked_grant: bool,
+}
+
+/// Decline a pending friend request or revoke a previously accepted one.
+///
+/// This command never treats absence as permission. If there is no existing
+/// scoped grant for `peer_discord_id` and `scope_input`, the operation is a
+/// closed no-op decline: no peer_map entry is created, no whitelist is written,
+/// and no burn marker is inferred. If an accepted scoped grant exists, the
+/// command removes exactly that grant through the same local unwhitelist path
+/// used by the rest of the whitelist surface.
+pub fn cmd_osl_decline_or_revoke_friend_request(
+    state: &AppState,
+    peer_discord_id: String,
+    scope_input: crate::scope::ScopeInput,
+    revoke_broadened: bool,
+) -> Result<FriendRequestDecisionResult, String> {
+    if peer_discord_id.trim().is_empty() {
+        return Err("OSL: friend request peer is missing".to_string());
+    }
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+    let scope_binds_peer = scope.kind != crate::scope::ScopeKind::Dm || scope.id == peer_discord_id;
+    if !scope_binds_peer {
+        return Ok(FriendRequestDecisionResult {
+            decision: FriendRequestDecision::DeclinedPending,
+            revoked_grant: false,
+        });
+    }
+
+    let accepted_grant_exists = {
+        let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        pm_guard
+            .get(&peer_discord_id)
+            .map(|pe| {
+                pe.outgoing_whitelists
+                    .iter()
+                    .any(|w| whitelist_entry_matches(w, &scope))
+            })
+            .unwrap_or(false)
+    };
+
+    if !accepted_grant_exists {
+        return Ok(FriendRequestDecisionResult {
+            decision: FriendRequestDecision::DeclinedPending,
+            revoked_grant: false,
+        });
+    }
+
+    local_unwhitelist_apply(
+        state,
+        peer_discord_id,
+        crate::scope::ScopeInput::from(&scope),
+        revoke_broadened,
+        /* wipe_local_decrypt */ false,
+    )?;
+
+    Ok(FriendRequestDecisionResult {
+        decision: FriendRequestDecision::RevokedAcceptedGrant,
+        revoked_grant: true,
+    })
+}
+
 /// 9-C2: boot.js pushes the user's guild-list snapshot here on
 /// each GUILD_CREATE. Ephemeral. Read via [`cmd_osl_get_guild_list`].
 pub fn cmd_osl_set_guild_list(state: &AppState, guilds: Vec<GuildDto>) -> Result<(), String> {
