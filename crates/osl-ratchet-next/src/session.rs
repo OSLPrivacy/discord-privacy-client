@@ -1145,7 +1145,18 @@ mod tests {
 
     #[test]
     fn state_export_import_survives_an_interleaved_run() {
-        let (mut alice, mut bob, mut rng) = established_pair(44);
+        let skip = SkipParams {
+            max_skip_per_message: 3,
+            max_keys_per_chain: 3,
+            max_total_keys: 3,
+            max_chains: 2,
+            max_age: 100,
+        };
+        let params = SessionParams {
+            skip,
+            ..SessionParams::default()
+        };
+        let (mut alice, mut bob, mut rng) = established_pair_with_params(44, params);
 
         let a0 = alice.encrypt(0, b"alice gap 0", &mut rng).expect("a0");
         let a1 = alice.encrypt(0, b"alice gap 1", &mut rng).expect("a1");
@@ -1186,8 +1197,10 @@ mod tests {
         assert_eq!(alice.receiving_counter(), alice_receiving_counter);
         assert_eq!(bob.sending_counter(), bob_sending_counter);
         assert_eq!(bob.receiving_counter(), bob_receiving_counter);
+        assert_eq!(bob.skip_params(), skip);
         assert_eq!(bob.skip_params(), bob_skip_params);
         assert_eq!(bob.skipped_key_count(), 3);
+        assert!(bob.skipped_key_count() <= bob.skip_params().max_total_keys);
 
         assert_eq!(
             bob.decrypt(&a1, &mut rng)

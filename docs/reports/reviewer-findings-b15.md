@@ -33,6 +33,15 @@ This is not permission to loosen consent, binding or authority checks. A control
 does not authenticate, is stale, replays a nonce, or trips the honor throttle must still be
 ignored. Absence of a valid binding remains refusal.
 
+## Authority guardrails
+
+| guardrail_id | absent_or_invalid_condition | required_outcome | rn_enabled |
+| --- | --- | --- | --- |
+| authenticated_control_missing | SESSION_RESET authentication | ignore_control | no |
+| freshness_or_replay_invalid | fresh timestamp or unused nonce | ignore_control | no |
+| binding_absent | valid local peer binding | refuse_recovery | no |
+| honor_throttle_exceeded | recovery honor budget | ignore_control | no |
+
 ## Non-goals
 
 - Do not enable OSL-RN. `RN_WIRE_IN_ENABLED` remains false.
