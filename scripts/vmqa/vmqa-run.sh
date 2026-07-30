@@ -845,20 +845,35 @@ vmqa_named_test_tmpdir() {
 }
 
 f1_live_windows_walkthrough_imports_nonempty_receipt() {
-  local tmp good bad_empty bad_grant bad_receipt bad_source bad_secret bad_revoke
-  local bad_restart bad_reread bad_live_binding bad_nonnumeric request_sha exe_sha agent_sha win32_sha receipt_sha
+  local tmp good bad_empty bad_zero_bytes bad_grant bad_unattended bad_receipt bad_receipt_rows
+  local bad_receipt_request bad_receipt_exe bad_source bad_secret bad_revoke bad_revoke_bound
+  local bad_revoked_source bad_restart bad_reread bad_reread_mismatch bad_persist
+  local bad_live_binding bad_nonnumeric bad_shape bad_status bad_overall
+  local request_sha exe_sha agent_sha win32_sha receipt_sha
   tmp="$(vmqa_named_test_tmpdir)"
   good="$tmp/f1-good.json"
   bad_empty="$tmp/f1-empty.json"
+  bad_zero_bytes="$tmp/f1-zero-bytes.json"
   bad_grant="$tmp/f1-unbound.json"
+  bad_unattended="$tmp/f1-unattended.json"
   bad_receipt="$tmp/f1-bad-receipt.json"
+  bad_receipt_rows="$tmp/f1-bad-receipt-rows.json"
+  bad_receipt_request="$tmp/f1-bad-receipt-request.json"
+  bad_receipt_exe="$tmp/f1-bad-receipt-exe.json"
   bad_source="$tmp/f1-bad-source.json"
   bad_secret="$tmp/f1-secret-receipt.json"
   bad_revoke="$tmp/f1-bad-revoke.json"
+  bad_revoke_bound="$tmp/f1-bad-revoke-bound.json"
+  bad_revoked_source="$tmp/f1-bad-revoked-source.json"
   bad_restart="$tmp/f1-bad-restart.json"
   bad_reread="$tmp/f1-bad-reread.json"
+  bad_reread_mismatch="$tmp/f1-bad-reread-mismatch.json"
+  bad_persist="$tmp/f1-bad-persist.json"
   bad_live_binding="$tmp/f1-bad-live-binding.json"
   bad_nonnumeric="$tmp/f1-bad-nonnumeric.json"
+  bad_shape="$tmp/f1-bad-shape.json"
+  bad_status="$tmp/f1-bad-status.json"
+  bad_overall="$tmp/f1-bad-overall.json"
   request_sha="$(printf f1-request | sha256sum | awk '{print $1}')"
   exe_sha="$(printf f1-exe | sha256sum | awk '{print $1}')"
   agent_sha="$(printf f1-agent | sha256sum | awk '{print $1}')"
@@ -884,26 +899,46 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
       {id:"R",verb:"receipt",status:"pass",facts:{importedRows:2,receiptSha256:$receipt,containsNoSecrets:true,requestSha256:$request,exeSha256:$exe}}
     ]}' >"$good"
   jq '.steps[2].facts.importedRows=0 | .steps[2].facts.importedBytes=0 | .steps[5].facts.importedRows=0 | .steps[6].facts.importedRows=0' "$good" >"$bad_empty"
+  jq '.steps[2].facts.importedBytes=0' "$good" >"$bad_zero_bytes"
   jq '.steps[1].facts.grantBoundToRun=false' "$good" >"$bad_grant"
-  jq '.steps[6].facts.importedRows=1 | .steps[6].facts.receiptSha256="not-a-sha256"' \
-    "$good" >"$bad_receipt"
+  jq '.steps[1].facts.attendedOperator=false' "$good" >"$bad_unattended"
+  jq '.steps[6].facts.receiptSha256="not-a-sha256"' "$good" >"$bad_receipt"
+  jq '.steps[6].facts.importedRows=1' "$good" >"$bad_receipt_rows"
+  jq '.steps[6].facts.requestSha256=("0" * 64)' "$good" >"$bad_receipt_request"
+  jq '.steps[6].facts.exeSha256=("0" * 64)' "$good" >"$bad_receipt_exe"
   jq '.steps[0].facts.selectedSource="unbounded-profile-path"' "$good" >"$bad_source"
   jq '.steps[6].facts.containsNoSecrets=false' "$good" >"$bad_secret"
   jq '.steps[3].facts.grantRevoked=false' "$good" >"$bad_revoke"
+  jq '.steps[3].facts.revokeBoundToRun=false' "$good" >"$bad_revoke_bound"
+  jq '.steps[3].facts.revokedSource="chrome"' "$good" >"$bad_revoked_source"
   jq '.steps[4].facts.restartedProcess=false' "$good" >"$bad_restart"
   jq '.steps[5].facts.importedRows=0 | .steps[5].facts.persistedAfterRestart=false' \
     "$good" >"$bad_reread"
-  jq '.win32Sha="" | .steps[6].facts.requestSha256=("0" * 64)' \
-    "$good" >"$bad_live_binding"
+  jq '.steps[5].facts.importedRows=1' "$good" >"$bad_reread_mismatch"
+  jq '.steps[5].facts.persistedAfterRestart=false' "$good" >"$bad_persist"
+  jq '.win32Sha=""' "$good" >"$bad_live_binding"
   jq '.steps[2].facts.importedRows="two" | .steps[5].facts.importedRows="two" | .steps[6].facts.importedRows="two"' \
     "$good" >"$bad_nonnumeric"
+  jq '.steps[2].id="X"' "$good" >"$bad_shape"
+  jq '.steps[2].status="blocked"' "$good" >"$bad_status"
+  jq '.overall="fail"' "$good" >"$bad_overall"
   grade_f1_live_windows_walkthrough_import "$good" >/dev/null \
     || { rm -rf -- "$tmp"; return 1; }
   grade_f1_live_windows_walkthrough_import "$bad_empty" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_zero_bytes" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
   grade_f1_live_windows_walkthrough_import "$bad_grant" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_unattended" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
   grade_f1_live_windows_walkthrough_import "$bad_receipt" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_receipt_rows" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_receipt_request" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_receipt_exe" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
   grade_f1_live_windows_walkthrough_import "$bad_source" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
@@ -911,13 +946,27 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
     && { rm -rf -- "$tmp"; return 1; }
   grade_f1_live_windows_walkthrough_import "$bad_revoke" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_revoke_bound" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_revoked_source" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
   grade_f1_live_windows_walkthrough_import "$bad_restart" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
   grade_f1_live_windows_walkthrough_import "$bad_reread" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_reread_mismatch" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_persist" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
   grade_f1_live_windows_walkthrough_import "$bad_live_binding" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
   grade_f1_live_windows_walkthrough_import "$bad_nonnumeric" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_shape" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_status" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_overall" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
   rm -rf -- "$tmp"
   return 0
