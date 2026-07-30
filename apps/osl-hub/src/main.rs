@@ -1993,6 +1993,20 @@ fn require_native_discord_product_send_authority(
     Ok(NativeDiscordProductSendAuthority { carrier })
 }
 
+fn with_native_discord_product_send_authority<T, Place>(
+    composer: &NativeDiscordComposerState,
+    scope_binding: &str,
+    layout: Option<DiscordCarrierLayout>,
+    place: Place,
+) -> Result<T, String>
+where
+    Place: FnOnce(NativeDiscordProductSendAuthority) -> Result<T, String>,
+{
+    let product_send_authority =
+        require_native_discord_product_send_authority(composer, scope_binding, layout)?;
+    place(product_send_authority)
+}
+
 #[cfg(any(test, feature = "discord-qa-shell"))]
 fn canonical_native_visible_row_qa_build_hash(value: Option<&str>) -> Result<String, String> {
     let value = value.ok_or_else(|| "The QA build hash is unavailable".to_owned())?;
@@ -2000,6 +2014,23 @@ fn canonical_native_visible_row_qa_build_hash(value: Option<&str>) -> Result<Str
         return Err("The QA build hash is unavailable".to_owned());
     }
     Ok(value.to_ascii_lowercase())
+}
+
+#[cfg(any(test, feature = "discord-qa-shell"))]
+fn recorded_executable_hash_matches_rebuild(
+    recorded: &str,
+    rebuilt: &str,
+) -> Result<String, String> {
+    let recorded = canonical_native_visible_row_qa_build_hash(Some(recorded))?;
+    let rebuilt = canonical_native_visible_row_qa_build_hash(Some(rebuilt))?;
+    if recorded == rebuilt {
+        Ok(rebuilt)
+    } else {
+        Err(
+            "The rebuilt QA executable hash does not match the recorded first-session hash"
+                .to_owned(),
+        )
+    }
 }
 
 #[cfg(all(feature = "discord-qa-shell", target_os = "windows"))]
@@ -2024,6 +2055,83 @@ fn trusted_native_visible_row_qa_caller_identity(
     Err("Native visible-row runtime evidence requires Windows".to_owned())
 }
 
+#[cfg(feature = "discord-qa-shell")]
+struct NativeVisibleRowQaRequestContext {
+    owner: String,
+    context_epoch: u64,
+    context_host: ActiveServiceHost,
+    scope_binding: String,
+    build_hash: String,
+    osl_target_identity_sha256: String,
+}
+
+#[cfg(feature = "discord-qa-shell")]
+fn prepare_native_visible_row_qa_request<
+    VerifyCaller,
+    RequireLock,
+    LoadOwner,
+    SnapshotContext,
+    BindScope,
+    RecheckContext,
+    BuildHash,
+    TargetIdentity,
+>(
+    verify_caller: VerifyCaller,
+    require_lock: RequireLock,
+    load_owner: LoadOwner,
+    snapshot_context: SnapshotContext,
+    bind_scope: BindScope,
+    mut recheck_context: RecheckContext,
+    build_hash: BuildHash,
+    target_identity: TargetIdentity,
+) -> Result<NativeVisibleRowQaRequestContext, String>
+where
+    VerifyCaller: FnOnce() -> Result<(), String>,
+    RequireLock: FnOnce() -> Result<(), String>,
+    LoadOwner: FnOnce() -> Result<String, String>,
+    SnapshotContext: FnOnce() -> Result<(u64, ActiveServiceHost), String>,
+    BindScope: FnOnce() -> Result<String, String>,
+    RecheckContext: FnMut(u64, &ActiveServiceHost) -> Result<(), String>,
+    BuildHash: FnOnce() -> Result<String, String>,
+    TargetIdentity: FnOnce() -> Result<String, String>,
+{
+    verify_caller()?;
+    require_lock()?;
+    let owner = load_owner()?;
+    let (context_epoch, context_host) = snapshot_context()?;
+    let scope_binding = bind_scope()?;
+    recheck_context(context_epoch, &context_host)?;
+    let build_hash = build_hash()?;
+    let osl_target_identity_sha256 = target_identity()?;
+    Ok(NativeVisibleRowQaRequestContext {
+        owner,
+        context_epoch,
+        context_host,
+        scope_binding,
+        build_hash,
+        osl_target_identity_sha256,
+    })
+}
+
+#[cfg(feature = "discord-qa-shell")]
+fn finish_native_visible_row_qa_request<RequireLock, RecheckContext, Persist>(
+    context: &NativeVisibleRowQaRequestContext,
+    receipt: broker::NativeVisibleRowRuntimeReceipt,
+    require_lock: RequireLock,
+    mut recheck_context: RecheckContext,
+    persist: Persist,
+) -> Result<broker::NativeVisibleRowRuntimeReceipt, String>
+where
+    RequireLock: FnOnce() -> Result<(), String>,
+    RecheckContext: FnMut(u64, &ActiveServiceHost) -> Result<(), String>,
+    Persist: FnOnce(&broker::NativeVisibleRowRuntimeReceipt) -> Result<(), String>,
+{
+    recheck_context(context.context_epoch, &context.context_host)?;
+    require_lock()?;
+    persist(&receipt)?;
+    Ok(receipt)
+}
+
 /// Take one non-mutating, bounded runtime census from the real Windows native
 /// visible-row producer.
 ///
@@ -2039,20 +2147,27 @@ async fn request_native_discord_visible_row_qa_receipt(
     app: tauri::AppHandle,
     caller: tauri::WebviewWindow,
 ) -> Result<broker::NativeVisibleRowRuntimeReceipt, String> {
-    if caller.label() != "main" {
-        return Err(
-            "Only the trusted OSL Privacy window may request native QA evidence".to_owned(),
-        );
-    }
-    require_engaged_lock(&app)?;
-    let owner = active_unlocked_osl_user_id(&app.state::<HubCoreState>())?;
-    let (epoch, context_host) = require_overlay_context_snapshot(&app)?;
-    let scope_binding = native_discord_scope_binding(&app)?;
-    require_same_overlay_context(&app, epoch, &context_host)?;
-    let build_hash = canonical_native_visible_row_qa_build_hash(option_env!("OSL_SOURCE_COMMIT"))?;
-    let osl_target_identity_sha256 = trusted_native_visible_row_qa_caller_identity(&caller)?;
-
+    let context = prepare_native_visible_row_qa_request(
+        || {
+            if caller.label() == "main" {
+                Ok(())
+            } else {
+                Err("Only the trusted OSL Privacy window may request native QA evidence".to_owned())
+            }
+        },
+        || require_engaged_lock(&app),
+        || active_unlocked_osl_user_id(&app.state::<HubCoreState>()),
+        || require_overlay_context_snapshot(&app),
+        || native_discord_scope_binding(&app),
+        |epoch, context_host| require_same_overlay_context(&app, epoch, context_host),
+        || canonical_native_visible_row_qa_build_hash(option_env!("OSL_SOURCE_COMMIT")),
+        || trusted_native_visible_row_qa_caller_identity(&caller),
+    )?;
     let read_app = app.clone();
+    let owner = context.owner.clone();
+    let scope_binding = context.scope_binding.clone();
+    let build_hash = context.build_hash.clone();
+    let osl_target_identity_sha256 = context.osl_target_identity_sha256.clone();
     let receipt = tauri::async_runtime::spawn_blocking(move || {
         broker::request_native_visible_row_runtime_receipt(
             &read_app.state::<NativeWindowHostState>(),
@@ -2071,10 +2186,13 @@ async fn request_native_discord_visible_row_qa_receipt(
     // The native host callback re-proves its HWND/process/generation after the
     // producer returns. Re-prove the broker context and lock as well, so a
     // receipt from a superseded session never leaves this command.
-    require_same_overlay_context(&app, epoch, &context_host)?;
-    require_engaged_lock(&app)?;
-    broker::persist_native_visible_row_runtime_receipt(&receipt)?;
-    Ok(receipt)
+    finish_native_visible_row_qa_request(
+        &context,
+        receipt,
+        || require_engaged_lock(&app),
+        |epoch, context_host| require_same_overlay_context(&app, epoch, context_host),
+        broker::persist_native_visible_row_runtime_receipt,
+    )
 }
 
 #[tauri::command]
@@ -2098,33 +2216,39 @@ fn send_native_discord_overlay_carrier(
     let scope_binding = native_discord_scope_binding(&app)?;
     require_same_overlay_context(&app, epoch, &host)?;
     let composer = app.state::<NativeDiscordComposerState>();
-    let product_send_authority =
-        require_native_discord_product_send_authority(&composer, &scope_binding, layout)?;
-    let overlay_state = app.state::<OverlaySessionState>();
-    let carrier_placement = overlay_state.begin_carrier_placement()?;
-    require_engaged_lock(&app)?;
-    let placement_scope_binding = native_discord_scope_binding(&app)?;
-    if placement_scope_binding != scope_binding {
-        drop(carrier_placement);
-        return Err("The native Discord friend context changed before placement".to_owned());
-    }
-    require_same_overlay_context(&app, epoch, &host)?;
-    let placement_context = NativeDiscordPlacementContext::new(&placement_scope_binding, mode);
-    let receipt = composer.place_carrier(
-        &app.state::<NativeWindowHostState>(),
-        &owner,
-        &placement_scope_binding,
-        Some(&placement_context),
-        mode,
-        chars_per_second,
-        &product_send_authority.carrier,
-    );
-    drop(carrier_placement);
-    require_same_overlay_context(&app, epoch, &host)?;
-    if let Some(window) = app.get_webview_window(native_discord_overlay::OVERLAY_LABEL) {
-        let _ = window.set_focus();
-    }
-    Ok(receipt)
+    with_native_discord_product_send_authority(
+        &composer,
+        &scope_binding,
+        layout,
+        |product_send_authority| {
+            let overlay_state = app.state::<OverlaySessionState>();
+            let carrier_placement = overlay_state.begin_carrier_placement()?;
+            require_engaged_lock(&app)?;
+            let placement_scope_binding = native_discord_scope_binding(&app)?;
+            if placement_scope_binding != scope_binding {
+                drop(carrier_placement);
+                return Err("The native Discord friend context changed before placement".to_owned());
+            }
+            require_same_overlay_context(&app, epoch, &host)?;
+            let placement_context =
+                NativeDiscordPlacementContext::new(&placement_scope_binding, mode);
+            let receipt = composer.place_carrier(
+                &app.state::<NativeWindowHostState>(),
+                &owner,
+                &placement_scope_binding,
+                Some(&placement_context),
+                mode,
+                chars_per_second,
+                &product_send_authority.carrier,
+            );
+            drop(carrier_placement);
+            require_same_overlay_context(&app, epoch, &host)?;
+            if let Some(window) = app.get_webview_window(native_discord_overlay::OVERLAY_LABEL) {
+                let _ = window.set_focus();
+            }
+            Ok(receipt)
+        },
+    )
 }
 
 #[derive(Serialize)]
@@ -7041,6 +7165,43 @@ mod qa_selftest {
         }
     }
 
+    #[derive(Debug, Eq, PartialEq)]
+    enum TriggerSelection<'a> {
+        Addressed(&'a str),
+        Legacy(&'a str),
+        DeclineLegacy { declared: String, body: &'a str },
+        None,
+    }
+
+    fn select_trigger_body<'a>(
+        instance: &str,
+        addressed_body: Option<&'a str>,
+        legacy_body: Option<&'a str>,
+    ) -> TriggerSelection<'a> {
+        if let Some(body) = addressed_body {
+            return TriggerSelection::Addressed(body);
+        }
+        let Some(body) = legacy_body else {
+            return TriggerSelection::None;
+        };
+        let declared = match parse_request(body) {
+            ParsedRequest::Accepted(request) => request.instance,
+            ParsedRequest::Refused(_) => None,
+        };
+        match declared {
+            Some(declared) if declared != instance => {
+                TriggerSelection::DeclineLegacy { declared, body }
+            }
+            _ => TriggerSelection::Legacy(body),
+        }
+    }
+
+    fn selftest_busy() -> bool {
+        RUN_IN_FLIGHT.load(Ordering::SeqCst)
+            || SEND_IN_FLIGHT.load(Ordering::SeqCst)
+            || DRIVE_IN_FLIGHT.load(Ordering::SeqCst)
+    }
+
     /// Poll for a trigger and run one scenario per file.
     ///
     /// TWO TRIGGER PATHS, AND WHY.
@@ -7097,34 +7258,41 @@ mod qa_selftest {
 
                 // The addressed path first: it is unambiguous, so a harness
                 // that uses it is never made to wait behind the shared one.
-                let picked = if let Some(body) = read_trigger(&addressed_trigger) {
-                    if std::fs::remove_file(&addressed_trigger).is_err() {
-                        continue;
-                    }
-                    Some((body, addressed_trigger.clone(), addressed_verdict.clone()))
-                } else if let Some(body) = read_trigger(&legacy_trigger) {
-                    // Decide BEFORE consuming. A trigger declared for another
-                    // instance must survive this tick.
-                    let declared = match parse_request(&body) {
-                        ParsedRequest::Accepted(request) => request.instance,
-                        // An unparseable body declares nothing, so it is this
-                        // instance's to consume and to refuse by name below.
-                        ParsedRequest::Refused(_) => None,
-                    };
-                    match declared {
-                        Some(declared) if declared != instance => {
-                            record_decline(&instance, &declared, &body);
+                let addressed_body = read_trigger(&addressed_trigger);
+                let legacy_body = addressed_body
+                    .is_none()
+                    .then(|| read_trigger(&legacy_trigger))
+                    .flatten();
+                let picked = match select_trigger_body(
+                    &instance,
+                    addressed_body.as_deref(),
+                    legacy_body.as_deref(),
+                ) {
+                    TriggerSelection::Addressed(body) => {
+                        if std::fs::remove_file(&addressed_trigger).is_err() {
                             continue;
                         }
-                        _ => {
-                            if std::fs::remove_file(&legacy_trigger).is_err() {
-                                continue;
-                            }
-                            Some((body, legacy_trigger.clone(), legacy_verdict.clone()))
-                        }
+                        Some((
+                            body.to_owned(),
+                            addressed_trigger.clone(),
+                            addressed_verdict.clone(),
+                        ))
                     }
-                } else {
-                    None
+                    TriggerSelection::Legacy(body) => {
+                        if std::fs::remove_file(&legacy_trigger).is_err() {
+                            continue;
+                        }
+                        Some((
+                            body.to_owned(),
+                            legacy_trigger.clone(),
+                            legacy_verdict.clone(),
+                        ))
+                    }
+                    TriggerSelection::DeclineLegacy { declared, body } => {
+                        record_decline(&instance, &declared, body);
+                        continue;
+                    }
+                    TriggerSelection::None => None,
                 };
                 let Some((body, trigger_path, verdict_path)) = picked else {
                     continue;
@@ -7178,10 +7346,7 @@ mod qa_selftest {
                 let mut busy_detail =
                     VerbOutcome::new(request.verb.label(), &instance, &trigger_name);
                 busy_detail.request_format = request.format;
-                if RUN_IN_FLIGHT.load(Ordering::SeqCst)
-                    || SEND_IN_FLIGHT.load(Ordering::SeqCst)
-                    || DRIVE_IN_FLIGHT.load(Ordering::SeqCst)
-                {
+                if selftest_busy() {
                     write_verdict(
                         &refused_verdict(
                             "busy",
@@ -7232,6 +7397,76 @@ mod qa_selftest {
                     ),
                 }
             });
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn p5_offline_queue_restart_proof() {
+            let instance_b = "org.oslprivacy.hub.qa-b";
+            let addressed_drain = r#"{"verb":"drain","instance":"org.oslprivacy.hub.qa-b"}"#;
+            let shared_for_a = r#"{"verb":"send","instance":"org.oslprivacy.hub.qa-a"}"#;
+
+            assert_eq!(
+                select_trigger_body(instance_b, Some(addressed_drain), Some(shared_for_a)),
+                TriggerSelection::Addressed(addressed_drain),
+                "B's addressed restart trigger must win even when the shared rendezvous is present"
+            );
+            let ParsedRequest::Accepted(request) = parse_request(addressed_drain) else {
+                panic!("addressed drain request must parse");
+            };
+            assert_eq!(request.verb, Verb::Drain);
+            assert!(osl_privacy_hub::qa_selftest_request::request_is_for_me(
+                request.instance.as_deref(),
+                instance_b
+            ));
+
+            assert_eq!(
+                select_trigger_body(instance_b, None, Some(shared_for_a)),
+                TriggerSelection::DeclineLegacy {
+                    declared: "org.oslprivacy.hub.qa-a".to_owned(),
+                    body: shared_for_a,
+                },
+                "B must leave a shared trigger declared for A instead of consuming it"
+            );
+
+            let legacy_drain = r#"{"verb":"drain","instance":"org.oslprivacy.hub.qa-b"}"#;
+            assert_eq!(
+                select_trigger_body(instance_b, None, Some(legacy_drain)),
+                TriggerSelection::Legacy(legacy_drain),
+                "B may consume the shared trigger only when it is addressed to B"
+            );
+
+            assert!(!selftest_busy());
+            RUN_IN_FLIGHT.store(true, Ordering::SeqCst);
+            assert!(
+                selftest_busy(),
+                "a stalled run must make the next trigger busy"
+            );
+            RUN_IN_FLIGHT.store(false, Ordering::SeqCst);
+            SEND_IN_FLIGHT.store(true, Ordering::SeqCst);
+            assert!(
+                selftest_busy(),
+                "an unfinished send must make the next trigger busy"
+            );
+            SEND_IN_FLIGHT.store(false, Ordering::SeqCst);
+            DRIVE_IN_FLIGHT.store(true, Ordering::SeqCst);
+            assert!(
+                selftest_busy(),
+                "an unfinished receive-side drive must make the next trigger busy"
+            );
+            DRIVE_IN_FLIGHT.store(false, Ordering::SeqCst);
+
+            let refused = refused_verdict(
+                "busy",
+                "A previous self-test invocation has not finished",
+                VerbOutcome::new(Verb::Drain.label(), instance_b, "osl-qa-selftest.b.request"),
+            );
+            assert_eq!(refused.outcome, "busy");
+            assert!(!refused.pass, "a busy restart proof must not pass green");
+        }
     }
 }
 
@@ -7850,13 +8085,6 @@ fn main() {
 
 #[cfg(all(test, feature = "discord-qa-shell"))]
 mod b6_startup_gate_tests {
-    fn between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
-        source
-            .split_once(start)
-            .and_then(|(_, tail)| tail.split_once(end).map(|(body, _)| body))
-            .expect("source section exists")
-    }
-
     #[test]
     fn b6_gate_is_textually_before_every_qa_startup_side_effect() {
         let source = include_str!("main.rs");
@@ -7907,203 +8135,86 @@ mod b6_startup_gate_tests {
             "the retained receipt gate must bind the eighth starvation fact"
         );
     }
-
-    #[test]
-    fn p5_offline_queue_restart_proof() {
-        let source = include_str!("main.rs");
-        let broker = include_str!("broker.rs");
-        let setup = between(
-            source,
-            "fn main()",
-            "let builder = builder.invoke_handler(hub_tauri_commands!(hub_tauri_generate_handler));",
-        );
-        let broker_managed = setup
-            .find("app.manage(HubBrokerState::default());")
-            .expect("a relaunched B starts with fresh broker state");
-        let security_managed = setup
-            .find("app.manage(security_state);")
-            .expect("a relaunched B starts with fresh security state");
-        let watcher_spawned = setup
-            .find("qa_selftest::spawn_trigger_watcher(app.handle().clone());")
-            .expect("a relaunched B starts the addressed self-test watcher");
-        assert!(broker_managed < watcher_spawned);
-        assert!(security_managed < watcher_spawned);
-
-        let poll_start = source
-            .find("async fn poll_native_discord_headless_qa(")
-            .expect("poll command exists");
-        let poll_end = source[poll_start..]
-            .find("/// Longest conversation identifier")
-            .map(|offset| poll_start + offset)
-            .expect("poll command is bounded by the next section");
-        let poll = &source[poll_start..poll_end];
-        assert!(poll.contains("\"Only the trusted Discord QA shell may poll headless QA\""));
-        assert!(
-            !between(
-                poll,
-                "async fn poll_native_discord_headless_qa(",
-                ") -> Result<"
-            )
-            .contains("context_token"),
-            "a restart proof must not accept a renderer-provided stale context token"
-        );
-        let active_token = poll
-            .find("let context_token = broker_state.active_native_manual_context_token()?;")
-            .expect("poll reloads B's active native context after relaunch");
-        let host_before = poll
-            .find("current_discord_service_host(&owner)?;")
-            .expect("poll reloads the live native host");
-        let validate_before = poll
-            .find("broker_state.validate_active_host(&context_token, &host)?;")
-            .expect("poll validates B's reloaded host before draining");
-        let drain = poll
-            .find("broker::drain_native_discord_overlay_text(")
-            .expect("poll drains through the production broker entrypoint");
-        let poll_receipt = poll
-            .find("discord_qa_inbound_receipt::record_poll(")
-            .expect("poll records a count-only receipt for the verifier");
-        let validate_after = poll
-            .find("broker_state.validate_active_host(&context_token, &current)?;")
-            .expect("poll validates B's host after the drain");
-        assert!(active_token < host_before);
-        assert!(host_before < validate_before);
-        assert!(validate_before < drain);
-        assert!(drain < poll_receipt);
-        assert!(poll_receipt < validate_after);
-        for count in [
-            "opened_count: opened.messages.len()",
-            "pending_view_once_count: opened.pending_view_once.len()",
-            "acknowledgment_count: opened.acknowledgments.len()",
-            "fetched: opened.fetched",
-        ] {
-            assert!(
-                poll.contains(count),
-                "poll receipt must expose only counts: {count}"
-            );
-        }
-
-        let selftest = between(source, "mod qa_selftest {", "/// Wake-up channel");
-        for required in [
-            "const ADDRESSED_TRIGGER_FORMAT: &str = \"osl-qa-selftest.{token}.request\";",
-            "const ADDRESSED_VERDICT_FORMAT: &str = \"osl-qa-selftest.{token}.json\";",
-            "let addressed_trigger = temp_path(&addressed_name(ADDRESSED_TRIGGER_FORMAT, &instance));",
-            "let addressed_verdict = temp_path(&addressed_name(ADDRESSED_VERDICT_FORMAT, &instance));",
-            "if let Some(body) = read_trigger(&addressed_trigger)",
-            "drive_drain(app.clone())",
-            "Some(Ok(batch)) => outcome_detail.drain = Some(DrainReport::from_batch(&batch))",
-            "\"busy\"",
-            "\"stalled\"",
-        ] {
-            assert!(
-                selftest.contains(required),
-                "B restart verification needs the addressed bounded drain path: {required}"
-            );
-        }
-        let addressed_first = selftest
-            .find("if let Some(body) = read_trigger(&addressed_trigger)")
-            .expect("addressed trigger branch exists");
-        let legacy_second = selftest
-            .find("} else if let Some(body) = read_trigger(&legacy_trigger)")
-            .expect("legacy trigger branch exists");
-        assert!(
-            addressed_first < legacy_second,
-            "B's private trigger must win over the shared rendezvous after relaunch"
-        );
-        assert!(
-            selftest.contains("if RUN_IN_FLIGHT.load(Ordering::SeqCst)")
-                && selftest.contains("SEND_IN_FLIGHT.load(Ordering::SeqCst)")
-                && selftest.contains("DRIVE_IN_FLIGHT.load(Ordering::SeqCst)"),
-            "a killed or timed-out B drive must leave later requests non-green, not overlapped"
-        );
-
-        let broker_drain = between(
-            broker,
-            "fn drain_peer_inbox_text(",
-            "fn begin_peer_attachment(",
-        );
-        let revocation_classify = broker_drain
-            .find("InboundRevocationControl::classify(&bundle)")
-            .expect("drain handles queued peer burn frames");
-        let post_due = broker_drain
-            .find("post_due_revocations(")
-            .expect("drain posts queued local burns after receiving");
-        assert!(revocation_classify < post_due);
-        assert!(
-            broker_drain.contains("let _posted = post_due_revocations("),
-            "offline burn delivery must be best-effort and leave queue state to the durable outbox"
-        );
-        let post_due_body = between(
-            broker,
-            "fn post_due_revocations(",
-            "fn verify_manual_v3_type(",
-        );
-        assert!(post_due_body.contains("security::due_revocations(security_state, now)"));
-        assert!(post_due_body.contains("CONTROL_INBOX_KIND_REVOCATION"));
-        assert!(post_due_body.contains("security::record_revocation_attempt"));
-    }
 }
 
 #[cfg(test)]
 mod native_discord_carrier_command_tests {
-    fn function_body(source: &'static str, signature: &str, following: &str) -> &'static str {
-        let start = source.find(signature).expect("function must exist");
-        let end = source[start..]
-            .find(following)
-            .map(|offset| start + offset)
-            .expect("function must be bounded");
-        &source[start..end]
+    use super::{
+        deidentify_prepared_visual_structure, with_native_discord_product_send_authority,
+        DiscordCarrierLayout, NativeDiscordComposerState,
+    };
+    use osl_privacy_hub::native_discord_adapter::{DiscordCarrierPadding, DiscordCarrierRowKind};
+    use std::cell::{Cell, RefCell};
+
+    const TEST_FLAGTEXT: &str = "ok i will weekend again with you get what i was thinking usual";
+
+    fn measured_layout() -> DiscordCarrierLayout {
+        DiscordCarrierLayout {
+            content_width_px: 240.0,
+            average_grapheme_width_px: 8.0,
+            line_height_px: 18.0,
+            zoom: 1.0,
+            density: 1.0,
+            padding: DiscordCarrierPadding::ShapeMatched,
+            row_kind: DiscordCarrierRowKind::PlainText,
+        }
     }
 
     #[test]
     fn native_carrier_command_reproves_product_context_immediately_before_placement() {
-        let source = include_str!("main.rs");
-        let command = function_body(
-            source,
-            "#[tauri::command]\nfn send_native_discord_overlay_carrier(",
-            "#[derive(Serialize)]\nstruct NativeDiscordOverlayStateDto",
+        let composer = NativeDiscordComposerState::default();
+        let placed = Cell::new(false);
+        let missing = with_native_discord_product_send_authority(
+            &composer,
+            "scope-a",
+            Some(measured_layout()),
+            |_| {
+                placed.set(true);
+                Ok(())
+            },
         );
-        let latch = command
-            .find("let carrier_placement = overlay_state.begin_carrier_placement()?;")
-            .expect("placement latch must be acquired");
-        let lock = command[latch..]
-            .find("require_engaged_lock(&app)?;")
-            .map(|offset| latch + offset)
-            .expect("lock must be re-proven after the latch");
-        let fresh_scope = command
-            .find("let placement_scope_binding = native_discord_scope_binding(&app)?;")
-            .expect("scope must be re-read after the latch");
-        let context_check = command
-            .find("if placement_scope_binding != scope_binding")
-            .expect("scope drift must refuse");
-        let overlay_reproof = command[context_check..]
-            .find("require_same_overlay_context(&app, epoch, &host)?;")
-            .map(|offset| context_check + offset)
-            .expect("overlay context must be re-proven");
-        let authority = command
-            .find("let placement_context = NativeDiscordPlacementContext::new(&placement_scope_binding, mode);")
-            .expect("placement authority must be minted from the fresh scope");
-        let call = command
-            .find("let receipt = composer.place_carrier(")
-            .expect("carrier placement must remain");
-        assert!(
-            latch < lock
-                && lock < fresh_scope
-                && fresh_scope < context_check
-                && context_check < overlay_reproof
-                && overlay_reproof < authority
-                && authority < call,
-            "the last native gates before placement must be lock, scope, overlay context and authority"
+        assert!(missing.is_err());
+        assert!(!placed.get());
+
+        composer.remember_prepared_visual_structure(
+            "scope-a",
+            deidentify_prepared_visual_structure("private"),
+            TEST_FLAGTEXT.to_owned(),
         );
-        let call_block = &command[call..];
-        assert!(call_block.contains("&placement_scope_binding,"));
-        assert!(call_block.contains("Some(&placement_context),"));
-        assert!(
-            call_block
-                .find("Some(&placement_context),")
-                .expect("context argument")
-                < call_block.find("mode,").expect("mode argument"),
-            "the adapter must verify context before it sees the mode-specific placement path"
+        let wrong_scope = with_native_discord_product_send_authority(
+            &composer,
+            "scope-b",
+            Some(measured_layout()),
+            |_| {
+                placed.set(true);
+                Ok(())
+            },
         );
+        assert!(wrong_scope.is_err());
+        assert!(!placed.get());
+
+        composer.remember_prepared_visual_structure(
+            "scope-a",
+            deidentify_prepared_visual_structure("private"),
+            TEST_FLAGTEXT.to_owned(),
+        );
+        let events = RefCell::new(Vec::<&'static str>::new());
+        let carrier = with_native_discord_product_send_authority(
+            &composer,
+            "scope-a",
+            Some(measured_layout()),
+            |authority| {
+                events.borrow_mut().push("authority");
+                placed.set(true);
+                Ok(authority.carrier)
+            },
+        )
+        .expect("same-scope prepared carrier authorizes native placement");
+        assert!(placed.get());
+        assert_eq!(events.into_inner(), ["authority"]);
+        assert!(carrier
+            .split_whitespace()
+            .eq(TEST_FLAGTEXT.split_whitespace()));
     }
 }
 
@@ -8111,12 +8222,15 @@ mod native_discord_carrier_command_tests {
 mod native_visible_row_qa_command_tests {
     use super::{
         canonical_native_visible_row_qa_build_hash, deidentify_prepared_visual_structure,
-        require_native_discord_product_send_authority,
+        finish_native_visible_row_qa_request, prepare_native_visible_row_qa_request,
+        recorded_executable_hash_matches_rebuild, require_native_discord_product_send_authority,
+        with_native_discord_product_send_authority, ActiveServiceHost,
     };
     use osl_privacy_hub::native_discord_adapter::{
         DiscordCarrierLayout, DiscordCarrierPadding, DiscordCarrierRowKind,
-        NativeDiscordComposerState,
+        NativeDiscordComposerState, NativeVisibleRowQaTriState,
     };
+    use std::cell::{Cell, RefCell};
 
     const TEST_FLAGTEXT: &str = "ok i will weekend again with you get what i was thinking usual";
 
@@ -8142,117 +8256,228 @@ mod native_visible_row_qa_command_tests {
             .any(|registered| registered == command)
     }
 
+    fn test_active_host() -> ActiveServiceHost {
+        ActiveServiceHost {
+            service_id: "discord".to_owned(),
+            account_id: "acct-1".to_owned(),
+            generation: 7,
+            owner_namespace: "owner-ns".to_owned(),
+        }
+    }
+
+    fn runtime_receipt_fixture() -> osl_privacy_hub::broker::NativeVisibleRowRuntimeReceipt {
+        use osl_privacy_hub::broker::NativeVisibleRowRuntimeOutcomes;
+        use NativeVisibleRowQaTriState::{Accepted, Refused};
+
+        osl_privacy_hub::broker::NativeVisibleRowRuntimeReceipt {
+            schema_version: 2,
+            observed_at_unix_ms: 1,
+            build_hash: "a".repeat(40),
+            osl_target_identity_sha256: "b".repeat(64),
+            discord_target_identity_sha256: "c".repeat(64),
+            scope_binding_sha256: "d".repeat(64),
+            window_generation: 7,
+            rows_observed: 2,
+            native_proof_some: 2,
+            native_proof_none: 0,
+            authenticated_own_outgoing: 1,
+            authenticated_peer_incoming: 1,
+            broker_plaintext_rows: 2,
+            broker_refused_rows: 0,
+            outcomes: NativeVisibleRowRuntimeOutcomes {
+                own_outgoing: Accepted,
+                peer_incoming: Accepted,
+                peer_anchor: Accepted,
+                zero_rows: Refused,
+                missing_proof: Refused,
+                mixed_scope: Refused,
+                different_non_self: Refused,
+                replay: Refused,
+                reorder: Refused,
+                persistence: Accepted,
+            },
+            accepted: true,
+        }
+    }
+
     #[test]
     fn native_visible_row_qa_command_is_reachable_only_through_trusted_state() {
-        let source = include_str!("main.rs");
         assert!(command_is_registered(
             "request_native_discord_visible_row_qa_receipt"
         ));
-        let start = source
-            .find(
-                "#[cfg(feature = \"discord-qa-shell\")]\n#[tauri::command]\nasync fn request_native_discord_visible_row_qa_receipt(",
-            )
-            .expect("QA receipt command must exist");
-        let end = source[start..]
-            .find("#[tauri::command]\nfn send_native_discord_overlay_carrier(")
-            .map(|offset| start + offset)
-            .expect("QA receipt command must remain bounded");
-        let command = &source[start..end];
-        for required in [
-            "#[tauri::command]",
-            "caller.label() != \"main\"",
-            "require_engaged_lock(&app)?",
-            "active_unlocked_osl_user_id(",
-            "require_overlay_context_snapshot(&app)?",
-            "native_discord_scope_binding(&app)?",
-            "require_same_overlay_context(&app, epoch, &context_host)?",
-            "trusted_native_visible_row_qa_caller_identity(&caller)?",
-            "spawn_blocking(move ||",
-            "broker::request_native_visible_row_runtime_receipt(",
-            "broker::persist_native_visible_row_runtime_receipt(&receipt)?;",
-            "MAX_VISIBLE_CARRIER_ROWS",
-        ] {
-            assert!(
-                command.contains(required),
-                "missing command gate: {required}"
-            );
+
+        let events = RefCell::new(Vec::<&'static str>::new());
+        let context = prepare_native_visible_row_qa_request(
+            || {
+                events.borrow_mut().push("caller");
+                Ok(())
+            },
+            || {
+                events.borrow_mut().push("lock-before");
+                Ok(())
+            },
+            || {
+                events.borrow_mut().push("owner");
+                Ok("owner-1".to_owned())
+            },
+            || {
+                events.borrow_mut().push("snapshot");
+                Ok((42, test_active_host()))
+            },
+            || {
+                events.borrow_mut().push("scope");
+                Ok("scope-binding".to_owned())
+            },
+            |epoch, host| {
+                events.borrow_mut().push("context-before");
+                assert_eq!(epoch, 42);
+                assert_eq!(host.service_id, "discord");
+                Ok(())
+            },
+            || {
+                events.borrow_mut().push("build-hash");
+                canonical_native_visible_row_qa_build_hash(Some(
+                    "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+                ))
+            },
+            || {
+                events.borrow_mut().push("target");
+                Ok("b".repeat(64))
+            },
+        )
+        .expect("trusted state prepares the native receipt request");
+        assert_eq!(context.owner, "owner-1");
+        assert_eq!(context.scope_binding, "scope-binding");
+        assert_eq!(
+            context.build_hash,
+            "abcdef0123456789abcdef0123456789abcdef01"
+        );
+
+        let persisted = Cell::new(false);
+        let receipt = finish_native_visible_row_qa_request(
+            &context,
+            runtime_receipt_fixture(),
+            || {
+                events.borrow_mut().push("lock-after");
+                Ok(())
+            },
+            |epoch, host| {
+                events.borrow_mut().push("context-after");
+                assert_eq!(epoch, 42);
+                assert_eq!(host.generation, 7);
+                Ok(())
+            },
+            |receipt| {
+                events.borrow_mut().push("persist");
+                persisted.set(true);
+                assert!(receipt.accepted);
+                Ok(())
+            },
+        )
+        .expect("receipt persists only after post-read gates");
+        assert!(receipt.accepted);
+        assert!(persisted.get());
+        assert_eq!(
+            events.into_inner(),
+            [
+                "caller",
+                "lock-before",
+                "owner",
+                "snapshot",
+                "scope",
+                "context-before",
+                "build-hash",
+                "target",
+                "context-after",
+                "lock-after",
+                "persist",
+            ]
+        );
+
+        let refused_events = RefCell::new(Vec::<&'static str>::new());
+        let refused = prepare_native_visible_row_qa_request(
+            || {
+                refused_events.borrow_mut().push("caller");
+                Err("untrusted caller".to_owned())
+            },
+            || {
+                refused_events.borrow_mut().push("lock-before");
+                Ok(())
+            },
+            || Ok("owner-1".to_owned()),
+            || Ok((42, test_active_host())),
+            || Ok("scope-binding".to_owned()),
+            |_epoch, _host| Ok(()),
+            || {
+                canonical_native_visible_row_qa_build_hash(Some(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ))
+            },
+            || Ok("b".repeat(64)),
+        );
+        match refused {
+            Err(error) => assert_eq!(error, "untrusted caller"),
+            Ok(_) => panic!("untrusted caller must refuse"),
         }
         assert_eq!(
-            command.matches("require_engaged_lock(&app)?").count(),
-            2,
-            "the lock must be checked before and after the native read"
-        );
-        assert_eq!(
-            command
-                .matches("require_same_overlay_context(&app, epoch, &context_host)?")
-                .count(),
-            2,
-            "the broker context must be checked before and after the native read"
+            refused_events.into_inner(),
+            ["caller"],
+            "untrusted callers must refuse before lock, context, native read or persist"
         );
 
-        let signature_end = command.find(") -> Result<").expect("command signature");
-        let signature = &command[..signature_end];
-        assert!(!signature.contains("String"));
-        assert!(!signature.contains("u64"));
-        assert!(!signature.contains("usize"));
-
-        let mut registration_removed = registered_commands();
-        registration_removed
-            .retain(|command| command != "request_native_discord_visible_row_qa_receipt");
+        let composer = NativeDiscordComposerState::default();
+        let placed = Cell::new(false);
+        let missing_authority = with_native_discord_product_send_authority(
+            &composer,
+            "scope-a",
+            Some(measured_layout()),
+            |_| {
+                placed.set(true);
+                Ok(())
+            },
+        );
+        assert!(missing_authority.is_err());
         assert!(
-            !registration_removed
-                .iter()
-                .any(|command| command == "request_native_discord_visible_row_qa_receipt"),
-            "removing the real handler registration must fail reachability"
+            !placed.get(),
+            "without product send authority the native placement/send closure must not run"
         );
 
-        let carrier_start = source
-            .find("#[tauri::command]\nfn send_native_discord_overlay_carrier(")
-            .expect("native carrier command must exist");
-        let carrier_end = source[carrier_start..]
-            .find("\n#[derive(Serialize)]")
-            .map(|offset| carrier_start + offset)
-            .expect("native carrier command must remain bounded");
-        let carrier_command = &source[carrier_start..carrier_end];
-        for required in [
-            "caller.label() != native_discord_overlay::OVERLAY_LABEL",
-            "require_engaged_lock(&app)?",
-            "active_unlocked_osl_user_id(",
-            "require_overlay_context_snapshot(&app)?",
-            "native_discord_scope_binding(&app)?",
-            "require_same_overlay_context(&app, epoch, &host)?",
-            "require_native_discord_product_send_authority(&composer, &scope_binding, layout)?",
-            "overlay_state.begin_carrier_placement()?",
-            "composer.place_carrier(",
-        ] {
-            assert!(
-                carrier_command.contains(required),
-                "missing native carrier send gate: {required}"
-            );
-        }
-        let authority = carrier_command
-            .find("require_native_discord_product_send_authority(")
-            .expect("product send authority gate");
-        let placement = carrier_command
-            .find("overlay_state.begin_carrier_placement()?")
-            .expect("placement gate");
-        let send = carrier_command
-            .find("composer.place_carrier(")
-            .expect("native send");
-        assert!(
-            authority < placement && placement < send,
-            "product send authority must be proven before placement or native input"
+        composer.remember_prepared_visual_structure(
+            "scope-a",
+            deidentify_prepared_visual_structure("private"),
+            TEST_FLAGTEXT.to_owned(),
         );
-        let carrier_signature_end = carrier_command
-            .find(") -> Result<")
-            .expect("native carrier command signature");
-        let carrier_signature = &carrier_command[..carrier_signature_end];
-        let carrier_params = &carrier_signature[carrier_signature
-            .find('(')
-            .expect("native carrier command parameters")..];
-        assert!(!carrier_params.contains("String"));
-        assert!(!carrier_params.contains("scope"));
-        assert!(!carrier_params.contains("carrier:"));
+        let wrong_scope = with_native_discord_product_send_authority(
+            &composer,
+            "scope-b",
+            Some(measured_layout()),
+            |_| {
+                placed.set(true);
+                Ok(())
+            },
+        );
+        assert!(wrong_scope.is_err());
+        assert!(!placed.get());
+
+        composer.remember_prepared_visual_structure(
+            "scope-a",
+            deidentify_prepared_visual_structure("private"),
+            TEST_FLAGTEXT.to_owned(),
+        );
+        let carrier = with_native_discord_product_send_authority(
+            &composer,
+            "scope-a",
+            Some(measured_layout()),
+            |authority| {
+                placed.set(true);
+                Ok(authority.carrier)
+            },
+        )
+        .expect("same-scope prepared product send authority permits placement");
+        assert!(placed.get());
+        assert!(carrier
+            .split_whitespace()
+            .eq(TEST_FLAGTEXT.split_whitespace()));
     }
 
     #[test]
@@ -8270,6 +8495,30 @@ mod native_visible_row_qa_command_tests {
             "gggggggggggggggggggggggggggggggggggggggg"
         ))
         .is_err());
+    }
+
+    #[test]
+    fn second_session_rebuild_reproduces_recorded_executable_hash() {
+        let first_session = "ABCDEF0123456789ABCDEF0123456789ABCDEF01";
+        let second_session = "abcdef0123456789abcdef0123456789abcdef01";
+        assert_eq!(
+            recorded_executable_hash_matches_rebuild(first_session, second_session).unwrap(),
+            second_session
+        );
+
+        let mismatch = recorded_executable_hash_matches_rebuild(
+            first_session,
+            "1111111111111111111111111111111111111111",
+        );
+        match mismatch {
+            Err(error) => assert_eq!(
+                error,
+                "The rebuilt QA executable hash does not match the recorded first-session hash"
+            ),
+            Ok(_) => panic!("a second-session rebuild with a different hash must refuse"),
+        }
+
+        assert!(recorded_executable_hash_matches_rebuild(first_session, "not-a-hash").is_err());
     }
 
     #[test]
@@ -8468,6 +8717,28 @@ mod tauri_registration_surface_tests {
             ),
             "removing the consent probe must make the proof fail"
         );
+        let mut missing_permission = permissions.clone();
+        missing_permission.remove("allow-native-app-takeover-requires-consent");
+        assert!(
+            !is_registered_and_granted(
+                &handlers,
+                &missing_permission,
+                &capability,
+                "native_app_takeover_requires_consent",
+            ),
+            "removing the consent probe permission declaration must make the proof fail"
+        );
+        let mut missing_capability = capability.clone();
+        missing_capability.remove("allow-native-app-takeover-requires-consent");
+        assert!(
+            !is_registered_and_granted(
+                &handlers,
+                &permissions,
+                &missing_capability,
+                "native_app_takeover_requires_consent",
+            ),
+            "removing the consent probe ACL grant must make the proof fail"
+        );
     }
 
     #[test]
@@ -8505,6 +8776,28 @@ mod tauri_registration_surface_tests {
                 "request_hosted_session_scan",
             ),
             "removing the scan request command must make the proof fail"
+        );
+        let mut missing_permission = permissions.clone();
+        missing_permission.remove("allow-request-hosted-session-scan-command");
+        assert!(
+            !is_registered_and_granted(
+                &handlers,
+                &missing_permission,
+                &capability,
+                "request_hosted_session_scan_command",
+            ),
+            "removing the scan command permission declaration must make the proof fail"
+        );
+        let mut missing_capability = capability.clone();
+        missing_capability.remove("allow-open-hosted-session-scan");
+        assert!(
+            !is_registered_and_granted(
+                &handlers,
+                &permissions,
+                &missing_capability,
+                "open_hosted_session_scan",
+            ),
+            "removing the scan open ACL grant must make the proof fail"
         );
     }
 
@@ -8579,10 +8872,18 @@ mod tauri_registration_surface_tests {
     #[test]
     fn identity_binding_verifier_is_wired_as_review_ui_production_caller() {
         let state = HubCoreState::default();
+        *state.osl.license_state.lock().expect("license state lock") = keystore::LicenseStateDto {
+            state: keystore::LicenseState::Paid,
+            raw_status: "ACTIVE".to_owned(),
+            current_period_end: None,
+            last_validated_at: None,
+        };
         state.osl.install_identity(keystore::identity_from_entropy(
             [77; 16],
             "owner".to_owned(),
         ));
+        let before = autoscrub_run::fleet_status(&state.osl)
+            .expect("paid test state can read AutoScrub fleet");
         let request = AutoScrubReviewedRunRequest {
             service_id: ServiceKind::Discord,
             account_id: "acct-1".to_owned(),
@@ -8598,6 +8899,12 @@ mod tauri_registration_surface_tests {
             ),
             Ok(_) => panic!("reviewed AutoScrub must not start without an exact identity binding"),
         }
+        let after = autoscrub_run::fleet_status(&state.osl)
+            .expect("paid test state can reread AutoScrub fleet");
+        assert_eq!(
+            after.open_run_count, before.open_run_count,
+            "missing reviewed identity binding must refuse before opening a reviewed run"
+        );
     }
 
     #[test]
@@ -8621,6 +8928,28 @@ mod tauri_registration_surface_tests {
                 "start_autoscrub_reviewed_run",
             ),
             "removing the start-run ACL grant must make the proof fail"
+        );
+        let mut missing_handler = handlers.clone();
+        missing_handler.remove("request_autoscrub_global_stop");
+        assert!(
+            !is_registered_and_granted(
+                &missing_handler,
+                &permissions,
+                &capability,
+                "request_autoscrub_global_stop",
+            ),
+            "removing the stop command handler must make the proof fail"
+        );
+        let mut missing_permission = permissions.clone();
+        missing_permission.remove("allow-get-autoscrub-run-fl");
+        assert!(
+            !is_registered_and_granted(
+                &handlers,
+                &missing_permission,
+                &capability,
+                "get_autoscrub_run_fl",
+            ),
+            "removing the fleet-status permission declaration must make the proof fail"
         );
     }
 }
