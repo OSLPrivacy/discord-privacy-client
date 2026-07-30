@@ -1081,6 +1081,16 @@ class OneShotLedgerTests(unittest.TestCase):
                     with self.assertRaises(LedgerError):
                         restarted.recover_incomplete(NOW + 1)
 
+    def test_missing_watermark_after_recovery_refuses_work(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = recovered_ledger(directory)
+            ledger.issue(CHALLENGE, NOW)
+            (Path(directory) / ".ledger.watermark").unlink()
+            with self.assertRaises(LedgerError):
+                ledger.read(CHALLENGE)
+            with self.assertRaises(LedgerError):
+                ledger.issue(OTHER_CHALLENGE, NOW + 1)
+
     def test_backdated_transitions_and_exact_expiry_refuse(self) -> None:
         receipt = make_receipt()
         with tempfile.TemporaryDirectory() as directory:
