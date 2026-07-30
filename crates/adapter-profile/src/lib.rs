@@ -13,8 +13,9 @@ pub mod score;
 pub mod trust;
 
 pub use contract::{
-    run_contract_self_test, CheckOutcome, ContractVerdict, Predicate, ReportError, SelfTestReport,
-    Subsystem, UnverifiedCause, CONTRACT_VERSION, MAX_SELF_TEST_CHECKS,
+    run_contract_self_test, CheckOutcome, ContractVerdict, Predicate, ReportError, SelfTestProbe,
+    SelfTestReport, Subsystem, UnverifiedCause, CONTRACT_VERSION, MAX_SELF_TEST_CHECKS,
+    REQUIRED_SELF_TEST_PROBES,
 };
 pub use defaults::{
     signal_default_profile, signal_default_trusted_signing_key_b64, whatsapp_default_profile,
