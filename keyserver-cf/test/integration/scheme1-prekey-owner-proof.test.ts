@@ -406,6 +406,42 @@ describe("scheme-1 prekey owner proofs through the shipping Worker and D1", () =
     });
   });
 
+  it("end-to-end proof verification passes for the true owner and fails for", async () => {
+    const owner = await createScheme1Identity();
+    const other = await createScheme1Identity();
+    const account = await makeOwnershipAccount({
+      identity: owner.identity,
+      signingKey: owner.currentSigningKey,
+      platformId: "platform-account-id-short-title",
+      fill: 0x74,
+    });
+
+    await expect(
+      verifyScheme1AccountOwnershipProof({
+        identity: owner.identity,
+        account,
+        now_unix_seconds: ACCOUNT_PROOF_NOW,
+      }),
+    ).resolves.toEqual({ ok: true });
+
+    const differentOwnerAccount = await makeOwnershipAccount({
+      identity: owner.identity,
+      signingKey: owner.currentSigningKey,
+      platformId: "platform-account-id-short-title",
+      fill: 0x75,
+    });
+    await expect(
+      verifyScheme1AccountOwnershipProof({
+        identity: other.identity,
+        account: differentOwnerAccount,
+        now_unix_seconds: ACCOUNT_PROOF_NOW,
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: "proof_for_different_owner",
+    });
+  });
+
   it("keeps legacy registration tagless and refuses stripped or ambiguous scheme-1 registration", async () => {
     const legacyPair = await generateEd25519Pair();
     const legacyBody = await signedRegisterBody(

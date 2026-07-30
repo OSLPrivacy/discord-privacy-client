@@ -1,5 +1,23 @@
 export const OSL_CHAT_MAX_DRAFT_BYTES = 1_000;
 
+export const FIRST_PARTY_OSL_SERVICE_SURFACES = [{
+  surfaceId: "osl-chat",
+  destination: "Inbox",
+  displayName: "OSL Chat",
+  participantScope: "verified_friend",
+  accountScope: "active_friend_only",
+  plaintextBoundary: "osl_controlled_composer",
+  sendAuthority: "explicit_user_action",
+  historyVisibility: "local_osl_history",
+  externalProvider: false,
+}] as const;
+
+export type FirstPartyOslServiceSurface =
+  typeof FIRST_PARTY_OSL_SERVICE_SURFACES[number];
+
+export type FirstPartyOslServiceSurfaceId =
+  FirstPartyOslServiceSurface["surfaceId"];
+
 export const OSL_CHAT_DELIVERY_STATES = [
   "sent",
   "delivered",
@@ -39,6 +57,12 @@ export interface OslChatsViewModel {
   busy: boolean;
   viewOnce?: boolean;
   homeLogoUrl?: string;
+}
+
+export function firstPartyOslServiceSurface(
+  surfaceId: FirstPartyOslServiceSurfaceId,
+): FirstPartyOslServiceSurface {
+  return FIRST_PARTY_OSL_SERVICE_SURFACES.find((surface) => surface.surfaceId === surfaceId)!;
 }
 
 const chatIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17.5 3.5 20v-5.2A8 8 0 0 1 3 12c0-4.4 4-8 9-8s9 3.6 9 8-4 8-9 8a10 10 0 0 1-5-1.5Z"/></svg>';

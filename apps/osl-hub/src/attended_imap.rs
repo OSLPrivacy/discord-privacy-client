@@ -435,6 +435,7 @@ impl SeededLocalImapFixture {
 #[derive(Clone, Default)]
 pub struct ImapMailbox {
     messages: BTreeMap<(String, String, String), ImapMessageSnapshot>,
+    duplicate_message_ids: BTreeSet<(String, String, String)>,
     deleted: BTreeSet<(String, String, String)>,
 }
 
@@ -453,20 +454,21 @@ impl ImapMailbox {
     }
 
     pub fn from_messages(messages: Vec<ImapMessageSnapshot>) -> Self {
+        let mut mapped = BTreeMap::new();
+        let mut duplicate_message_ids = BTreeSet::new();
+        for message in messages {
+            let key = (
+                message.account_id.clone(),
+                message.mailbox.clone(),
+                message.message_id.clone(),
+            );
+            if mapped.insert(key.clone(), message).is_some() {
+                duplicate_message_ids.insert(key);
+            }
+        }
         Self {
-            messages: messages
-                .into_iter()
-                .map(|message| {
-                    (
-                        (
-                            message.account_id.clone(),
-                            message.mailbox.clone(),
-                            message.message_id.clone(),
-                        ),
-                        message,
-                    )
-                })
-                .collect(),
+            messages: mapped,
+            duplicate_message_ids,
             deleted: BTreeSet::new(),
         }
     }
@@ -514,6 +516,13 @@ pub fn prepare_delete(
     let message = mailbox
         .search_message(account_id, mailbox_name, message_id)
         .ok_or(ImapPolicyError::MessageNotFound)?;
+    if mailbox.duplicate_message_ids.contains(&(
+        account_id.to_owned(),
+        mailbox_name.to_owned(),
+        message_id.to_owned(),
+    )) {
+        return Err(ImapPolicyError::AccountBindingMismatch);
+    }
     require_message_binding(
         message,
         owner_osl_user_id,

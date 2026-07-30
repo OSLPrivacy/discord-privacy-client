@@ -306,7 +306,7 @@ describe("POST /v1/control-inbox hardening", () => {
     expect(admitted.status).toBe(201);
   });
 
-  it("reports same-sender inbox eviction count on success and replay", async () => {
+  it("(new) server-side inbox-eviction count signal beyond HTTP 429", async () => {
     const senderId = userId("sender");
     const recipientId = userId("recipient");
     const sender = await registerTestUser(SELF, senderId);
