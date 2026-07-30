@@ -650,6 +650,18 @@ function b6_controllers_read_the_retained_preflight_before_consent_or_drive {
         foreach ($path in @($missingA, $missingB, $validA, $validB)) {
             [void](New-Item -ItemType Directory -Path $path -Force -ErrorAction Stop)
         }
+        function Assert-NoSelftestDriveFiles {
+            param([string]$Label, [string[]]$TempRoots)
+            foreach ($tempRoot in $TempRoots) {
+                $driveFiles = @(
+                    Get-ChildItem -LiteralPath $tempRoot -File -Filter 'osl-qa-selftest*.request' -ErrorAction Stop
+                )
+                if ($driveFiles.Count -gt 0) {
+                    throw ('{0}: refusal wrote drive request file(s) before the gate completed in {1}: {2}' -f
+                        $Label, $tempRoot, (@($driveFiles | ForEach-Object { $_.Name }) -join ','))
+                }
+            }
+        }
 
         $missingJson = Join-Path $root 'missing.json'
         $missing = Invoke-P2PLoopSelfTestChild `
@@ -663,6 +675,10 @@ function b6_controllers_read_the_retained_preflight_before_consent_or_drive {
         if (@($missing.preconditionGate)[0].gate -cne 'b6-preflight') {
             throw 'missing-retained-b6 did not evaluate the B6 gate first'
         }
+        if ($missing.overall.stepsRun -ne $false -or @($missing.steps).Count -ne 0) {
+            throw 'missing retained B6 self-test drove measurement steps'
+        }
+        Assert-NoSelftestDriveFiles -Label 'missing-retained-b6' -TempRoots @($missingA, $missingB)
 
         $receipt = New-B6StartupReceiptForSelfTest
         foreach ($path in @($validA, $validB)) {
@@ -685,6 +701,7 @@ function b6_controllers_read_the_retained_preflight_before_consent_or_drive {
         if ($valid.overall.stepsRun -ne $false -or @($valid.steps).Count -ne 0) {
             throw 'the no-consent self-test drove measurement steps'
         }
+        Assert-NoSelftestDriveFiles -Label 'valid-b6-no-consent' -TempRoots @($validA, $validB)
     } finally {
         if (Test-Path -LiteralPath $root) {
             Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
