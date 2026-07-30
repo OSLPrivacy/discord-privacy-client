@@ -29,8 +29,25 @@ checklist below is what most contributors will follow.
 
 ## Verifying
 
-Open any PR. Both required Rust workflow checks should appear in the merge
-box. The **Merge** button is disabled until both pass.
+Verify the live `main` rule with the GitHub API, not only the
+merge box:
+
+```sh
+gh api repos/OSLPrivacy/discord-privacy-client/branches/main/protection \
+  --jq '.required_status_checks.contexts[], .enforce_admins.enabled'
+```
+
+The output must include both required contexts, plus admin
+enforcement:
+
+```text
+test
+quality-checks
+true
+```
+
+Then open any PR. Both required checks should appear in the merge
+box, and the **Merge** button is disabled until both pass.
 
 If a check name appears in the UI as `test` but doesn't actually gate the
 merge, GitHub may be matching a stale check from an earlier workflow version
