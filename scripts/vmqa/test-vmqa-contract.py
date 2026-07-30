@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -367,6 +368,55 @@ class CleanupContractTests(unittest.TestCase):
         self.receipt["schemaVersion"] = 999
         self._write("azure-cleanup-receipt.json", self.receipt)
         self.assertEqual(self._verify().returncode, 9)
+
+    def test_schema_version_symbol_is_frozen_v2_without_value_echo(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "vmqa_contract_under_test", SCRIPT
+        )
+        if spec is None or spec.loader is None:
+            raise AssertionError("could not load VMQA contract module")
+        contract = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(contract)
+
+        self.assertEqual(contract.SCHEMA_VERSION, 2)
+        self.assertEqual(contract.__annotations__["SCHEMA_VERSION"], "Final[int]")
+        for rejected in (1, 3, 2.0, True, "caller-sensitive-value"):
+            with self.subTest(rejected=type(rejected).__name__):
+                with self.assertRaises(contract.ContractError) as raised:
+                    contract.validate_schema_version(rejected, "probe")
+                message = str(raised.exception)
+                self.assertEqual(message, "probe.schemaVersion must be exactly 2")
+                self.assertNotIn(str(rejected), message)
+
+    def test_rejects_retained_schema_version_drift_at_every_boundary(self) -> None:
+        versioned_files = {
+            "buildIdentity": self.root / "build-identity.json",
+            "request": self.root / "request.json",
+            "verdict": self.root / "verdict.json",
+            "azureInstanceView": self.root / "azure-instance-view.json",
+            "azureSubscriptionCensus": self.root / "azure-subscription-census.json",
+            "azureCleanupReceipt": self.root / "azure-cleanup-receipt.json",
+        }
+        clean_bytes = {
+            path: path.read_bytes() for path in versioned_files.values()
+        }
+        for label, path in versioned_files.items():
+            with self.subTest(label=label):
+                for clean_path, payload in clean_bytes.items():
+                    clean_path.write_bytes(payload)
+                candidate = json.loads(path.read_text(encoding="utf-8"))
+                candidate["schemaVersion"] = 3
+                path.write_text(
+                    json.dumps(candidate, sort_keys=True, separators=(",", ":"))
+                    + "\n",
+                    encoding="utf-8",
+                )
+                result = self._verify()
+                self.assertEqual(result.returncode, 9, result.stderr)
+                self.assertIn(
+                    f"{label}.schemaVersion must be exactly 2",
+                    result.stderr,
+                )
 
     def test_rejects_unknown_field(self) -> None:
         self.receipt["unknown"] = True
