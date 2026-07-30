@@ -950,6 +950,19 @@ class CleanupContractTests(unittest.TestCase):
         self.exe.write_bytes(Path("/bin/true").read_bytes())
         self.assertEqual(self._verify_bundle().returncode, 9)
 
+    def test_verify_retained_vmqa_build_evidence_from_exact_producer_bytes(
+        self,
+    ) -> None:
+        self.assertEqual(self._verify_bundle().returncode, 0)
+
+        self.exe.write_bytes(b"same path, different producer bytes\n")
+        result = self._verify_bundle()
+        self.assertEqual(result.returncode, 9)
+        self.assertIn(
+            "build log artifact does not bind the independent executable",
+            result.stderr,
+        )
+
     def test_detached_seal_rejects_coherent_executable_and_metadata_rewrite(
         self,
     ) -> None:
