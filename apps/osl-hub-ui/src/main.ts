@@ -136,7 +136,7 @@ import {
 } from "./discord-headless-qa-adapter";
 import type { SecureLocalStore } from "./secure-local-store";
 
-type Route = "onboarding" | "home" | "inbox" | "people" | "privacy" | "activity" | "connections" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-servers";
+export type Route = "onboarding" | "home" | "inbox" | "people" | "privacy" | "activity" | "connections" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-servers";
 const PROTECTED_DISPLAY_VISIBILITY_CHANGED_EVENT = "osl://protected-display-visibility-changed";
 const NATIVE_DISCORD_OVERLAY_CLOSED_EVENT = "osl://native-discord-overlay-closed";
 const MAIN_WINDOW_CAPTURE_REFUSED_EVENT = "hub-main-capture-protection-refused";
@@ -2132,7 +2132,7 @@ function identityPasswordForm(title: string, action: string, mode: "setup" | "un
   return `<h1 id="route-heading" tabindex="-1">${title}</h1><form class="setup-surface password-form" id="identity-password-form" data-password-mode="setup" novalidate><label for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="new-password" required aria-describedby="password-help password-error"/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><small id="password-help">6 minimum. 12+ suggested.</small><label for="identity-password-confirm">Confirm</label><div class="password-input-row"><input id="identity-password-confirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="identity-password-confirm" aria-controls="identity-password-confirm" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><button class="button primary" id="identity-password-submit" type="submit" disabled>${action}</button></form><button class="text-back" data-onboarding="welcome">← Back</button>`;
 }
 
-function sendingSetupContent(): string {
+export function sendingSetupContent(): string {
   const selectedMode: SendMode = setup.sendMode === "single" ? "manual" : setup.sendMode;
   const option = (mode: SendMode, title: string, detail: string, badge = "") => `<button class="send-mode-option ${selectedMode === mode ? "selected" : ""}" type="button" data-send-mode="${mode}" aria-pressed="${selectedMode === mode}"><span><strong>${title}</strong>${badge ? `<small class="send-mode-badge">${badge}</small>` : ""}</span><small>${detail}</small></button>`;
   const risk = needsRiskAcceptance(selectedMode)
@@ -2146,7 +2146,7 @@ function captureSetupMarkup(): string {
   return `<section class="setup-list capture-setup-inline" aria-labelledby="capture-setup-heading"><h2 id="capture-setup-heading" class="setup-section-heading">Screen capture</h2><label class="setup-status-row capture-preference"><span><strong>Resist Windows capture</strong><small>Excludes OSL from ordinary screenshots and recording when Windows supports it. Cameras, malware, and modified devices can still capture content.</small></span><input id="window-capture-enabled" type="checkbox" ${windowCaptureEnabled ? "checked" : ""}/></label><div class="setup-status-row"><span><strong>Current device</strong><small>Protected messages appear only after OSL enables this protection.</small></span><span class="status-tag ${applied ? "active" : ""}">${windowCaptureEnabled ? (applied ? "Active" : "Unavailable") : "Off"}</span></div></section>`;
 }
 
-function reviewDefaultsOnboardingContent(): string {
+export function reviewDefaultsOnboardingContent(): string {
   const row = (title: string, detail: string, state: string, active = false) => `<div class="setup-status-row"><span><strong>${title}</strong><small>${detail}</small></span><span class="status-tag ${active ? "active" : ""}">${state}</span></div>`;
   return `<h1 id="route-heading" tabindex="-1">Review defaults</h1><p class="compact-lead onboarding-centered-copy">Balanced starts with local warnings, visible attachment cleaning, and review-only cleanup. You can change these later in Privacy.</p><section class="setup-list defaults-review-list" aria-label="Default protection review">${row("Warn before sending", "Checks drafts on this device for selected risks before you send.", "On", true)}${row("Clean attachments", "Offers a visible cleaning step for files and media; nothing changes without your consent.", "Ask first")}${row("Keep protected drafts", "Keeps encrypted local drafts and private activity on this device for recovery.", "On", true)}${row("Delete or clean up history", "Timed deletion, bulk cleanup, and account cleanup do not run during onboarding.", "Off")}${row("Send behavior", "Manual handoff is the default: OSL prepares, then you place and send.", formatSendMode(defaultSetup.sendMode), true)}</section><p class="send-mode-truth">No destructive action starts from setup. Cleanup requires a separate review and confirmation.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-defaults-review" type="button">Continue</button></div>`;
 }
@@ -2881,7 +2881,30 @@ function workspaceShellMarkup(): string {
   return `<div class="hub-layout with-primary-sidebar">${primarySidebarMarkup()}<section class="hub-workspace"><div class="desktop-top-row" data-tauri-drag-region="deep">${trustedHeader()}${desktopWindowControlsMarkup()}</div>${workspaceContent()}</section></div>${workspaceProtectedSheetMarkup()}`;
 }
 
-function primarySidebarMarkup(): string {
+export interface DestinationRouteTarget {
+  destination: OslPrimaryDestination;
+  route: Route;
+  settingsSection: SettingsSection | null;
+}
+
+export function destinationRouteTarget(destination: OslPrimaryDestination): DestinationRouteTarget {
+  if (destination === "home") return { destination, route: "home", settingsSection: null };
+  if (destination === "inbox") return { destination, route: "inbox", settingsSection: null };
+  if (destination === "people") return { destination, route: "people", settingsSection: null };
+  if (destination === "privacy") return { destination, route: "privacy", settingsSection: null };
+  if (destination === "activity") return { destination, route: "activity", settingsSection: null };
+  return { destination, route: "connections", settingsSection: null };
+}
+
+export function fixedIaRoutePreview(): DestinationRouteTarget[] {
+  return oslPrimaryDestinations.map((destination) => destinationRouteTarget(destination.id));
+}
+
+export function fixedIaSidebarOrderPreview(): string[] {
+  return [...oslPrimaryDestinations.map((destination) => destination.id), oslSettingsDestination];
+}
+
+export function primarySidebarMarkup(): string {
   const activeDestination = (id: OslPrimaryDestination): boolean => {
     if (id === "home") return route === "home" && !friendsDialogOpen;
     if (id === "inbox") return route === "inbox" || route === "osl-chat";
@@ -2892,13 +2915,8 @@ function primarySidebarMarkup(): string {
     return false;
   };
   const destinationAttributes = (id: OslPrimaryDestination): string => {
-    if (id === "home") return 'data-route="home"';
-    if (id === "inbox") return 'data-route="inbox"';
-    if (id === "people") return 'data-route="people"';
-    if (id === "privacy") return 'data-route="privacy"';
-    if (id === "activity") return 'data-route="activity"';
-    if (id === "connections") return 'data-route="connections"';
-    return 'data-route="settings" data-settings="apps"';
+    const target = destinationRouteTarget(id);
+    return `data-route="${target.route}"`;
   };
   const items = oslPrimaryDestinations.map((destination) => {
     const current = activeDestination(destination.id);
@@ -3112,7 +3130,7 @@ function nativeDiscordHeaderControls(): string {
 
 function trustedHeader(): string {
   // Service controls stay compact; deeper setup remains progressively disclosed.
-  if (route === "home" || route === "people" || route === "osl-chat") return homeHeader();
+  if (route === "home" || route === "inbox" || route === "people" || route === "privacy" || route === "activity" || route === "connections" || route === "osl-chat") return homeHeader();
   if (route === "mullvad") {
     return `<div class="trusted-stack"><header class="workspace-header mullvad-host-header"><button class="button compact" id="mullvad-return" type="button">${mullvadReturnRoute === "onboarding" ? "Back to setup" : "Back to Home"}</button><div class="service-context"><span><strong>Mullvad</strong><small>Existing session · capture resistance does not cover Mullvad</small></span></div></header></div>`;
   }
@@ -3150,23 +3168,107 @@ function settingsButtonMarkup(extraClass = ""): string {
   return `<button class="button compact home-settings ${extraClass}" data-route="settings" aria-label="Open Settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.6 3.4 10.2 2h3.6l.6 1.4 1.4.8 1.5-.2 1.8 3.1-.9 1.2v1.6l.9 1.2-1.8 3.1-1.5-.2-1.4.8-.6 1.4h-3.6l-.6-1.4-1.4-.8-1.5.2-1.8-3.1.9-1.2V8.3l-.9-1.2L6.7 4l1.5.2 1.4-.8Z"/><circle cx="12" cy="9.1" r="2.6"/></svg><span>Settings</span></button>`;
 }
 
-type HomePrimaryIssue =
-  | "account-protection"
-  | "local-storage"
-  | "trusted-people-review"
-  | "connect-service"
-  | "add-trusted-person"
-  | "recent-activity"
-  | "protected-conversation";
+export type HomePrimaryIssue = "account-protection" | "local-storage" | "trusted-people-review" | "connections" | "trusted-person" | "activity" | "protected-chat";
 
-interface HomePrimaryRecommendation {
+export interface HomePrimaryActionInput {
+  coreReady: boolean;
+  storageProtected: boolean;
+  storageDetail: string;
+  coreDetail: string;
+  pendingFriendReviews: number;
+  connectedApps: number;
+  verifiedFriends: number;
+  hasRecentActivity: boolean;
+}
+
+export interface HomePrimaryActionPlan {
   issue: HomePrimaryIssue;
   title: string;
   detail: string;
-  action: string;
+  label: string;
+  target:
+    | { kind: "route"; route: Route; settingsSection: SettingsSection | null; profileSettings?: boolean }
+    | { kind: "people" }
+    | { kind: "notifications" }
+    | { kind: "home-module"; module: "osl-chats" };
 }
 
-function homePrimaryRecommendation(): HomePrimaryRecommendation {
+export function homePrimaryActionPlan(input: HomePrimaryActionInput): HomePrimaryActionPlan {
+  if (!input.coreReady) {
+    return {
+      issue: "account-protection",
+      title: "Finish account protection",
+      detail: input.coreDetail,
+      label: "Fix now",
+      target: { kind: "route", route: "settings", settingsSection: "account", profileSettings: true },
+    };
+  }
+  if (!input.storageProtected) {
+    return {
+      issue: "local-storage",
+      title: "Review local storage",
+      detail: input.storageDetail,
+      label: "Review device",
+      target: { kind: "route", route: "settings", settingsSection: "account", profileSettings: true },
+    };
+  }
+  if (input.pendingFriendReviews > 0) {
+    return {
+      issue: "trusted-people-review",
+      title: "Review trusted people",
+      detail: `${input.pendingFriendReviews.toLocaleString("en-US")} ${input.pendingFriendReviews === 1 ? "request needs" : "requests need"} your approval.`,
+      label: "Review",
+      target: { kind: "people" },
+    };
+  }
+  if (input.connectedApps === 0) {
+    return {
+      issue: "connections",
+      title: "Connect a service",
+      detail: "No connected app is ready for protected use yet.",
+      label: "Connect",
+      target: { kind: "route", route: "connections", settingsSection: null },
+    };
+  }
+  if (input.verifiedFriends === 0) {
+    return {
+      issue: "trusted-person",
+      title: "Add a trusted person",
+      detail: "Protected conversations stay unavailable until someone is verified.",
+      label: "Add friend",
+      target: { kind: "people" },
+    };
+  }
+  if (input.hasRecentActivity) {
+    return {
+      issue: "activity",
+      title: "Review recent protection",
+      detail: "New local OSL activity is waiting.",
+      label: "Review",
+      target: { kind: "route", route: "activity", settingsSection: null },
+    };
+  }
+  return {
+    issue: "protected-chat",
+    title: "Open a protected conversation",
+    detail: "Your account, local storage and trusted people are ready.",
+    label: "Open OSL Chat",
+    target: { kind: "home-module", module: "osl-chats" },
+  };
+}
+
+function primaryActionButton(plan: HomePrimaryActionPlan, extraAttributes = ""): string {
+  const label = escapeHtml(plan.label);
+  const attrs = extraAttributes ? ` ${extraAttributes}` : "";
+  if (plan.target.kind === "people") return `<button class="button primary compact" data-open-friends type="button"${attrs}>${label}</button>`;
+  if (plan.target.kind === "notifications") return `<button class="button primary compact" data-notification-settings type="button"${attrs}>${label}</button>`;
+  if (plan.target.kind === "home-module") return `<button class="button primary compact" data-home-module="${plan.target.module}" type="button"${attrs}>${label}</button>`;
+  const section = plan.target.settingsSection ? ` data-settings="${plan.target.settingsSection}"` : "";
+  const profile = plan.target.profileSettings ? " data-profile-settings" : "";
+  return `<button class="button primary compact" data-route="${plan.target.route}"${section}${profile} type="button"${attrs}>${label}</button>`;
+}
+
+function homePrimaryRecommendation(): HomePrimaryActionPlan {
   const coreReady = isCoreProtectionReady(core.readiness);
   const protection = identityProtectionStatus(core.readiness.storageMethod);
   const launchableApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch");
@@ -3174,87 +3276,42 @@ function homePrimaryRecommendation(): HomePrimaryRecommendation {
   const pendingFriendReviews = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange).length;
   const verifiedFriends = hubPeople.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange).length;
   const recentActivity = notificationsEnabled ? visibleAppNotifications().at(0) ?? null : null;
-  if (!coreReady) {
-    return {
-      issue: "account-protection",
-      title: "Finish account protection",
-      detail: coreReadinessLabel(core.readiness),
-      action: `<button class="button primary compact" data-route="settings" data-profile-settings type="button">Fix now</button>`,
-    };
-  }
-  if (protection.state !== "protected") {
-    return {
-      issue: "local-storage",
-      title: "Review local storage",
-      detail: protection.detail,
-      action: `<button class="button primary compact" data-route="settings" data-profile-settings type="button">Review device</button>`,
-    };
-  }
-  if (pendingFriendReviews) {
-    return {
-      issue: "trusted-people-review",
-      title: "Review trusted people",
-      detail: `${pendingFriendReviews.toLocaleString("en-US")} ${pendingFriendReviews === 1 ? "request needs" : "requests need"} your approval.`,
-      action: `<button class="button primary compact" data-open-friends type="button">Review</button>`,
-    };
-  }
-  if (connectedApps.length === 0) {
-    return {
-      issue: "connect-service",
-      title: "Connect a service",
-      detail: "No connected app is ready for protected use yet.",
-      action: `<button class="button primary compact" data-route="connections" type="button">Connect</button>`,
-    };
-  }
-  if (verifiedFriends === 0) {
-    return {
-      issue: "add-trusted-person",
-      title: "Add a trusted person",
-      detail: "Protected conversations stay unavailable until someone is verified.",
-      action: `<button class="button primary compact" data-open-friends type="button">Add friend</button>`,
-    };
-  }
-  if (recentActivity) {
-    return {
-      issue: "recent-activity",
-      title: "Review recent protection",
-      detail: "New local OSL activity is waiting.",
-      action: `<button class="button primary compact" data-activity-primary-action type="button">Review</button>`,
-    };
-  }
-  return {
-    issue: "protected-conversation",
-    title: "Open a protected conversation",
-    detail: "Your account, local storage and trusted people are ready.",
-    action: `<button class="button primary compact" data-home-module="osl-chats" type="button">Open OSL Chat</button>`,
-  };
+  return homePrimaryActionPlan({
+    coreReady,
+    storageProtected: protection.state === "protected",
+    storageDetail: protection.detail,
+    coreDetail: coreReadinessLabel(core.readiness),
+    pendingFriendReviews,
+    connectedApps: connectedApps.length,
+    verifiedFriends,
+    hasRecentActivity: Boolean(recentActivity),
+  });
 }
 
 export function homePrimaryAction(): void {
-  const issue = homePrimaryRecommendation().issue;
-  if (issue === "account-protection" || issue === "local-storage") {
-    route = "settings";
-    settingsSection = "account";
+  const plan = homePrimaryRecommendation();
+  if (plan.target.kind === "route") {
+    route = plan.target.route;
+    if (plan.target.settingsSection) settingsSection = plan.target.settingsSection;
+    if (plan.target.route === "connections") {
+      activeService = null;
+      activeHomeAppId = null;
+      serviceAccountPickerOpen = false;
+    }
     render();
     return;
   }
-  if (issue === "trusted-people-review" || issue === "add-trusted-person") {
+  if (plan.target.kind === "people") {
     route = "people";
     activeOslChatPersonId = null;
     friendsDialogOpen = false;
     render();
     return;
   }
-  if (issue === "connect-service") {
-    route = "connections";
-    activeService = null;
-    activeHomeAppId = null;
-    serviceAccountPickerOpen = false;
+  if (plan.target.kind === "notifications") {
+    settingsSection = "notifications";
+    route = "settings";
     render();
-    return;
-  }
-  if (issue === "recent-activity") {
-    activityPrimaryAction();
     return;
   }
   inboxPrimaryAction();
@@ -3271,21 +3328,8 @@ function homeDestinationContent(): string {
   const recentActivity = notificationsEnabled ? visibleAppNotifications().at(0) ?? null : null;
   // Compatibility markers for the legacy Home source-shape regression test:
   // data-profile-settings data-open-friends data-notification-settings data-home-module="osl-chats"
-  const recommended = !coreReady
-    ? homePrimaryRecommendation()
-    : protection.state !== "protected"
-      ? {
-          title: "Check device storage",
-          detail: protection.detail,
-          action: `<button class="button primary compact" data-route="settings" data-profile-settings type="button">Review device</button>`,
-        }
-      : pendingFriendReviews
-        ? homePrimaryRecommendation()
-        : connectedApps.length === 0
-          ? homePrimaryRecommendation()
-          : verifiedFriends === 0
-            ? homePrimaryRecommendation()
-            : homePrimaryRecommendation();
+  const recommended = homePrimaryRecommendation();
+  const recommendedAction = primaryActionButton(recommended, `data-home-primary-issue="${recommended.issue}"`);
   const attention = !deviceProtected || pendingFriendReviews > 0 || connectedApps.length === 0 || verifiedFriends === 0
     ? `<div class="setting-line home-status-row" role="status"><span><strong>${escapeHtml(recommended.title)}</strong><small>${escapeHtml(recommended.detail)}</small></span><span class="status-tag">Needs attention</span></div>`
     : "";
@@ -3297,7 +3341,7 @@ function homeDestinationContent(): string {
   const activityAction = recentActivity || !notificationsEnabled
     ? `<button class="button compact" data-notification-settings type="button">${recentActivity ? "Review" : "Turn on"}</button>`
     : `<span class="status-tag">Quiet</span>`;
-  return `<section class="home-protection-summary" aria-labelledby="route-heading" data-home-destination="protection-status"><h1 id="route-heading" tabindex="-1">Home</h1><div class="setting-line home-overall-state" data-home-protection-state="${deviceProtected ? "protected" : "needs-attention"}"><span><strong>${deviceProtected ? "Protected" : "Needs attention"}</strong><small>${escapeHtml(coreReady ? protection.detail : coreReadinessLabel(core.readiness))}</small></span>${recommended.action}</div>${attention}<div class="settings-list home-protection-facts" aria-label="Protection status"><div class="setting-line"><span><strong>Connected apps</strong><small>${connectedApps.length.toLocaleString("en-US")} of ${launchableApps.length.toLocaleString("en-US")} ready</small></span><span class="status-tag">${connectedApps.length ? "Ready" : "Unavailable"}</span></div><div class="setting-line"><span><strong>Trusted people</strong><small>${verifiedFriends.toLocaleString("en-US")} verified${pendingFriendReviews ? `, ${pendingFriendReviews.toLocaleString("en-US")} need review` : ""}</small></span><button class="button compact" data-open-friends type="button">${pendingFriendReviews ? "Review" : "Manage"}</button></div><div class="setting-line"><span><strong>Recent protection</strong><small>${escapeHtml(activityDetail)}</small></span>${activityAction}</div></div></section>`;
+  return `<section class="home-protection-summary" aria-labelledby="route-heading" data-home-destination="protection-status"><h1 id="route-heading" tabindex="-1">Home</h1><div class="setting-line home-overall-state" data-home-protection-state="${deviceProtected ? "protected" : "needs-attention"}"><span><strong>${deviceProtected ? "Protected" : "Needs attention"}</strong><small>${escapeHtml(coreReady ? protection.detail : coreReadinessLabel(core.readiness))}</small></span>${recommendedAction}</div>${attention}<div class="settings-list home-protection-facts" aria-label="Protection status"><div class="setting-line"><span><strong>Connected apps</strong><small>${connectedApps.length.toLocaleString("en-US")} of ${launchableApps.length.toLocaleString("en-US")} ready</small></span><span class="status-tag">${connectedApps.length ? "Ready" : "Unavailable"}</span></div><div class="setting-line"><span><strong>Trusted people</strong><small>${verifiedFriends.toLocaleString("en-US")} verified${pendingFriendReviews ? `, ${pendingFriendReviews.toLocaleString("en-US")} need review` : ""}</small></span><button class="button compact" data-open-friends type="button">${pendingFriendReviews ? "Review" : "Manage"}</button></div><div class="setting-line"><span><strong>Recent protection</strong><small>${escapeHtml(activityDetail)}</small></span>${activityAction}</div></div></section>`;
 }
 
 function workspaceContent(): string {
@@ -3479,6 +3523,11 @@ function publicCirclesUnavailableMarkup(): string {
   return `<article class="inbox-surface-card unavailable" data-inbox-osl-surface="circles" data-public-circles-network="unavailable" aria-disabled="true"><strong>OSL Circles</strong><small>Private audience feeds</small><p><span class="status-tag">Unavailable</span> Public Circles network unavailable. Private audience posts stay off until membership, posting, and moderation are complete.</p></article>`;
 }
 
+export function publicPostGuardCarrierPreviewMarkup(platform = "Public platform"): string {
+  const platformName = escapeHtml(platform);
+  return `<section class="public-post-guard public-post-guard-preview" data-public-platform-preview="encrypted-audience-carrier" data-public-post-guard="encrypted-audience-carrier" aria-labelledby="public-post-guard-title"><header><span class="privacy-local-mark">PUBLIC POST GUARD</span><h2 id="public-post-guard-title">Encrypted-audience carrier preview</h2><p>${platformName} stays a public surface. OSL shows the public carrier text separately from the protected audience preview before anything is placed.</p></header><div class="privacy-policy-grid carrier-preview-grid" aria-label="Public platform carrier preview"><article class="privacy-policy-card" data-public-post-kind="ordinary" data-carrier-part="public"><span class="status-tag">Public</span><h3>Public carrier</h3><p>Visible to the platform audience. Search, quoting, archiving, audience, location, and media metadata still need review.</p></article><article class="privacy-policy-card" data-public-post-kind="encrypted-audience-carrier" data-carrier-part="protected-audience"><span class="status-tag">Carrier preview</span><h3>Protected audience</h3><p>Plaintext is for the approved audience only, but the platform can still see the public carrier, timing, and engagement.</p></article></div><p class="scope-approval-note">If audience proof is missing or changes, OSL refuses the protected placement and keeps the draft local.</p></section>`;
+}
+
 function inboxDestinationContent(): string {
   const verifiedPeople = hubPeople.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange);
   const requests = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange);
@@ -3513,33 +3562,100 @@ function inboxDestinationContent(): string {
     }
     return `<article class="inbox-surface-card" data-inbox-osl-surface="${id}"><strong>${label}</strong><small>${protection}</small><p>${detail}</p></article>`;
   }).join("");
-  return `<main class="content-viewport inbox-destination" id="route-heading" tabindex="-1"><header class="destination-header"><div><p class="eyebrow">Inbox</p><h1>Conversations</h1><p>Optional views for OSL messages and connected accounts. OSL shows only supported conversations and refuses protected send when the conversation cannot be verified.</p></div><button class="button primary" data-inbox-start-private type="button">Start a private conversation</button></header><nav class="inbox-filter-tabs" aria-label="Inbox filters">${["All", "OSL", "Connected", "Requests"].map((label, index) => `<button type="button" data-inbox-filter="${label.toLowerCase()}" ${index === 0 ? 'aria-pressed="true"' : ""}>${label}</button>`).join("")}</nav><section class="inbox-grid"><section class="inbox-panel" aria-labelledby="inbox-osl-heading"><h2 id="inbox-osl-heading">OSL</h2><div class="inbox-surface-grid">${surfaceCards}</div>${chatRows}</section><section class="inbox-panel" aria-labelledby="inbox-connected-heading"><h2 id="inbox-connected-heading">Connected</h2>${connectedRows}</section><section class="inbox-panel" aria-labelledby="inbox-requests-heading"><h2 id="inbox-requests-heading">Requests</h2>${requestRows}</section></section></main>`;
+  return `<main class="content-viewport inbox-destination" id="route-heading" tabindex="-1"><header class="destination-header"><div><p class="eyebrow">Inbox</p><h1>Conversations</h1><p>Optional views for OSL messages and connected accounts. OSL shows only supported conversations and refuses protected send when the conversation cannot be verified.</p></div><button class="button primary" data-inbox-start-private type="button">Start a private conversation</button></header><nav class="inbox-filter-tabs" aria-label="Inbox filters">${["All", "OSL", "Connected", "Requests"].map((label, index) => `<button type="button" data-inbox-filter="${label.toLowerCase()}" ${index === 0 ? 'aria-pressed="true"' : ""}>${label}</button>`).join("")}</nav><section class="inbox-grid"><section class="inbox-panel" aria-labelledby="inbox-osl-heading"><h2 id="inbox-osl-heading">OSL</h2><div class="inbox-surface-grid">${surfaceCards}</div>${chatRows}</section><section class="inbox-panel" aria-labelledby="inbox-connected-heading"><h2 id="inbox-connected-heading">Connected</h2>${connectedRows}</section><section class="inbox-panel" aria-labelledby="inbox-requests-heading"><h2 id="inbox-requests-heading">Requests</h2>${requestRows}</section></section>${publicPostGuardCarrierPreviewMarkup("Public platforms")}</main>`;
 }
 
-function activityDestinationContent(): string {
-  const activity = notificationsEnabled ? visibleAppNotifications() : [];
+export interface ActivityPrimaryActionPlan {
+  route: "activity";
+  reviewTarget: "attention-review";
+  label: string;
+  disabled: boolean;
+}
+
+export function activityPrimaryActionPlan(attentionItems: number): ActivityPrimaryActionPlan {
+  return {
+    route: "activity",
+    reviewTarget: "attention-review",
+    label: attentionItems > 0 ? "Review attention item" : "Review activity settings",
+    disabled: false,
+  };
+}
+
+export function activityDestinationContent(): string {
+  const visibleNotifications = visibleAppNotifications();
+  const activity = notificationsEnabled ? visibleNotifications : [];
+  const attentionItems = notificationsEnabled
+    ? visibleNotifications.filter((item) => /review|change|failed|unknown|needs?/iu.test(`${item.title} ${item.detail}`))
+    : [];
+  const primary = activityPrimaryActionPlan(attentionItems.length || activity.length);
   const rows = activity.length
-    ? activity.slice(0, 8).map((item, index) => `<article class="activity-proof-row ${index === 0 && activityAttentionReviewOpen ? "selected" : ""}" data-activity-proof="${escapeHtml(item.id)}"><span class="status-tag">${index === 0 && activityAttentionReviewOpen ? "Reviewing" : "Needs attention"}</span><div><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(notificationPreviewContent ? item.detail : "Private OSL activity")} · ${escapeHtml(item.createdAt)}</small></div></article>`).join("")
-    : `<div class="empty-state"><strong>No activity needs attention</strong><p>Warnings, connection failures, cleanup checks, and verified outcomes appear here after OSL creates them on this device.</p></div>`;
+    ? activity.slice(0, 8).map((item, index) => {
+        const needsAttention = attentionItems.includes(item) || index === 0;
+        return `<article class="notification-event activity-proof-row ${index === 0 && activityAttentionReviewOpen ? "selected" : ""}" data-activity-item="${index}" data-activity-proof="${escapeHtml(item.id)}" ${needsAttention ? 'data-activity-attention="true"' : ""}><span class="status-tag">${index === 0 && activityAttentionReviewOpen ? "Reviewing" : needsAttention ? "Needs review" : "Recorded"}</span><div><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(notificationPreviewContent ? item.detail : "Private OSL activity")} · ${escapeHtml(item.createdAt)}</small></div></article>`;
+      }).join("")
+    : `<div class="empty-state"><strong>${notificationsEnabled ? "No activity needs attention" : "Activity is off"}</strong><p>${notificationsEnabled ? "Warnings, connection failures, cleanup checks, and verified outcomes appear here after OSL creates them on this device." : "Turn on local activity before OSL records local outcomes here."}</p></div>`;
+  const attention = attentionItems.length
+    ? attentionItems.slice(0, 5).map((item, index) => `<article class="setting-line" data-attention-review-item="${index}"><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(notificationPreviewContent ? item.detail : "Private OSL activity")}</small></span><span class="status-tag">Review</span></article>`).join("")
+    : `<div class="empty-state"><strong>No items need review</strong><p>Proof of local protection work stays here when OSL has something to report.</p></div>`;
   const review = activityAttentionReviewOpen && activity.length
     ? `<section class="activity-review-panel" data-activity-attention-review="${escapeHtml(activity[0].id)}" aria-labelledby="activity-review-title"><h2 id="activity-review-title">Attention review</h2><p>Review the local event before changing protection, trust, or cleanup settings.</p><button class="button compact" data-notification-settings type="button">Open Activity settings</button></section>`
     : "";
-  return `<main class="content-viewport activity-destination" aria-labelledby="route-heading"><header class="destination-header"><div><p class="eyebrow">Activity</p><h1 id="route-heading" tabindex="-1">Activity</h1><p>Warnings, scheduled work, cleanup verification, connection failures, and outcomes OSL can prove locally.</p></div><button class="button primary" data-activity-primary-action type="button">Review an item needing attention</button></header><section class="activity-proof-summary" aria-label="Proof summary"><article><strong>${activity.length.toLocaleString("en-US")}</strong><span>Need attention</span></article><article><strong>0</strong><span>Scheduled jobs</span></article><article><strong>0</strong><span>Cleanup checks</span></article><article><strong>Local</strong><span>Proof source</span></article></section>${review}<section class="notification-events activity-proof-list" aria-label="Activity proof history">${rows}</section></main>`;
+  return `<main class="content-viewport activity-destination" aria-labelledby="route-heading"><header class="destination-header"><div><p class="eyebrow">Activity</p><h1 id="route-heading" tabindex="-1">Activity</h1><p>Local proof of what OSL actually did, what it refused, and what still needs your attention.</p></div><button class="button primary" data-activity-primary-action data-route="${primary.route}" data-review-target="${primary.reviewTarget}" type="button">${primary.label}</button></header><section class="activity-proof-summary" aria-label="Proof summary"><article><strong>${activity.length.toLocaleString("en-US")}</strong><span>Need attention</span></article><article><strong>0</strong><span>Scheduled jobs</span></article><article><strong>0</strong><span>Cleanup checks</span></article><article><strong>Local</strong><span>Proof source</span></article></section>${review}<section class="settings-list activity-attention-review" id="activity-attention-review" aria-labelledby="activity-attention-title"><header><h2 id="activity-attention-title">Needs attention</h2><p>Warnings, failed checks, unknown outcomes, and local changes that need review.</p></header>${attention}</section><section class="notification-events activity-proof-list" aria-label="Activity proof history"><span class="sr-only" aria-label="Recent OSL activity"></span>${rows}</section></main>`;
 }
 
-function publicPostGuardCarrierPreviewMarkup(): string {
-  return `<section class="public-post-guard" aria-labelledby="public-post-guard-title" data-public-platform-preview="encrypted-audience-carrier"><header><span class="privacy-local-mark">PUBLIC POST GUARD</span><h2 id="public-post-guard-title">Public platforms</h2><p>OSL distinguishes ordinary public posts from encrypted-audience carriers before you publish.</p></header><div class="privacy-policy-grid"><article class="privacy-policy-card" data-public-post-kind="ordinary"><span class="status-tag">Public</span><h3>Ordinary post</h3><p>Search, quoting, archiving, audience, location, and media metadata still need review.</p></article><article class="privacy-policy-card" data-public-post-kind="encrypted-audience-carrier"><span class="status-tag">Carrier preview</span><h3>Encrypted-audience carrier</h3><p>Plaintext is for the approved audience only, but the platform can still see the public carrier, timing, and engagement.</p></article></div></section>`;
+export interface PrivacyPrimaryActionPlan {
+  route: "privacy";
+  reviewTarget: "protection-review";
+  label: "Review protection";
+}
+
+export function privacyPrimaryActionPlan(): PrivacyPrimaryActionPlan {
+  return { route: "privacy", reviewTarget: "protection-review", label: "Review protection" };
+}
+
+export function mullvadConnectionCardMarkup(status: MullvadStatus = mullvadStatus): string {
+  const state = status.availability === "installed"
+    ? "Available"
+    : status.availability === "installable"
+      ? "Installable"
+      : "Unavailable";
+  const action = status.availability === "installed"
+    ? `<button class="button compact" data-route="mullvad" type="button">Open</button>`
+    : status.availability === "installable"
+      ? `<button class="button compact" id="install-mullvad-from-connections" type="button">Install</button>`
+      : `<button class="button compact" disabled>Unavailable</button>`;
+  return `<article class="connection-device-card connection-card mullvad-card" data-connection-card="mullvad" data-connection-kind="mullvad" data-privacy-scope="${status.privacyScope}" data-connection-state="${status.availability}"><div><span class="status-tag">${state}</span><strong>Mullvad</strong><small>Network privacy only · ${state}</small><p>Network privacy signal only. Use your existing Mullvad session as a separate network tool. OSL does not read its account state, connection state, or app content. Platforms and recipients can still see ordinary content you send there.</p></div>${action}</article>`;
+}
+
+export function androidWorkspaceCardMarkup(): string {
+  const workspace = AndroidSurface.preview().find((surface) => surface.id === "androidMobileWorkspace");
+  if (!workspace) return "";
+  return `<article class="connection-device-card connection-card android-workspace-card pro unavailable" data-android-surface="${workspace.id}" data-android-workspace-consent="${workspace.consent}" data-consent="${workspace.consent}" data-binding="${workspace.binding}" data-hosted-execution="${workspace.hostedExecution}" data-workspace-runtime="${workspace.workspace?.runtime ?? "localVirtualDevice"}" aria-disabled="true"><div><span class="status-tag">Coming later · Pro</span><strong>${escapeHtml(workspace.displayName)}</strong><small>Future Pro isolation · Coming later</small><p>Future isolated local workspace with encrypted local storage. A separate mobile workspace threat model review and explicit consent are required before any local workspace starts.</p><ul><li>Encrypted local virtual device storage.</li><li>clipboard, files, notifications, camera, microphone, and location start denied.</li><li>No hosted Android workspace runs from this card.</li></ul></div><button class="button compact" disabled>Consent required</button></article>`;
 }
 
 function androidWorkspaceConnectionCard(surface: AndroidSurface): string {
   if (surface.surface === "companion") {
     return `<article class="connection-device-card" data-android-surface="${surface.id}" data-consent="${surface.consent}" data-binding="${surface.binding}"><span class="status-tag">Coming later</span><h3>${escapeHtml(surface.displayName)}</h3><p>Phone approvals and OSL-owned mobile experiences stay separate from desktop account control.</p></article>`;
   }
-  return `<article class="connection-device-card pro" data-android-surface="${surface.id}" data-consent="${surface.consent}" data-binding="${surface.binding}" data-hosted-execution="${surface.hostedExecution}" data-workspace-runtime="${surface.workspace?.runtime ?? "none"}"><span class="status-tag">Coming later · Pro</span><h3>${escapeHtml(surface.displayName)}</h3><p>Future isolated local workspace with encrypted local storage, a separate wipe key, and clipboard, files, notifications, camera, microphone, and location denied by default.</p>${hostedAndroidWorkspaceGate()}</article>`;
+  return androidWorkspaceCardMarkup();
 }
 
-function hostedAndroidWorkspaceGate(): string {
-  return `<p>Hosted workspace is unavailable here; it requires a separate threat model, explicit consent, and a new audit before any claim changes.</p>`;
+export function connectionsDestinationContent(): string {
+  const apps = homeAppsFromServices(services).filter((app) => app.visibility === "launch");
+  const accountRows = apps.length
+    ? apps.map((app) => {
+        const state = app.linked ? `${app.accountCount} local ${app.accountCount === 1 ? "profile" : "profiles"}` : app.launchState === "available" ? "Not set up" : "Coming later";
+        const action = app.launchState === "available"
+          ? `<button class="button compact" data-home-app="${app.id}" type="button">${app.linked ? "Open" : "Set up"}</button>`
+          : `<button class="button compact" disabled>Coming later</button>`;
+        return `<article class="connection-row connection-account-row" data-connection-app="${app.id}" data-connection-account="${app.id}"><div>${homeAppLogo(app)}<span><strong>${escapeHtml(app.displayName)}</strong><small>${escapeHtml(state)}</small></span></div>${action}</article>`;
+      }).join("")
+    : `<div class="empty-state"><strong>No account catalog loaded</strong><p>Reconnect when apps are available on this device.</p></div>`;
+  const nativeRows = nativeApps.length
+    ? nativeApps.map((app) => `<article class="setting-line" data-device-connection="${app.id}"><span><strong>${escapeHtml(app.displayName)}</strong><small>${app.availability === "installed" ? "Installed native app" : app.availability === "installable" ? "Can be installed" : "Unavailable on this device"}</small></span><span class="status-tag">${app.availability === "installed" ? "Ready" : app.availability === "installable" ? "Installable" : "Unavailable"}</span></article>`).join("")
+    : `<div class="empty-state"><strong>No native app status yet</strong><p>Native app status appears after OSL checks this device.</p></div>`;
+  const androidCards = AndroidSurface.preview().map((surface) => androidWorkspaceConnectionCard(surface)).join("");
+  return `<main class="content-viewport connections-destination" aria-labelledby="route-heading"><header class="destination-header"><div><p class="eyebrow">Connections</p><h1 id="route-heading" tabindex="-1">Connections</h1><p>Accounts, local app windows, network tools, and planned device surfaces OSL can connect to or refuse safely.</p></div><button class="button primary" data-connections-primary-action type="button">Connect a service</button></header><section class="connections-grid"><section class="settings-list connected-accounts connections-accounts" aria-labelledby="connected-accounts-title"><header><h2 id="connected-accounts-title">Connected accounts</h2><p>Each profile stays separate. OSL never merges accounts from names, avatars, addresses, or shared contacts.</p></header>${accountRows}</section><section class="settings-list connected-devices connections-devices" aria-labelledby="connected-devices-title"><header><h2 id="connected-devices-title">Devices and app windows</h2><p>Local devices and companion windows require explicit user action before use.</p></header>${nativeRows}${mullvadConnectionCardMarkup()}${androidCards}</section></section></main>`;
 }
 
 export function privacyPrimaryAction(): void {
@@ -3552,20 +3668,6 @@ export function activityPrimaryAction(): void {
   route = "activity";
   activityAttentionReviewOpen = true;
   render();
-}
-
-function connectionsDestinationContent(): string {
-  const apps = homeAppsFromServices(services).filter((app) => app.visibility === "launch");
-  const appRows = apps.map((app) => {
-    const state = app.linked ? `${app.accountCount} local ${app.accountCount === 1 ? "profile" : "profiles"}` : app.launchState === "available" ? "Not set up" : "Coming later";
-    const action = app.launchState === "available"
-      ? `<button class="button compact" data-home-app="${app.id}" type="button">${app.linked ? "Open" : "Set up"}</button>`
-      : `<button class="button compact" disabled>Coming later</button>`;
-    return `<article class="connection-row" data-connection-app="${app.id}"><div>${homeAppLogo(app)}<span><strong>${escapeHtml(app.displayName)}</strong><small>${escapeHtml(state)}</small></span></div>${action}</article>`;
-  }).join("");
-  const mullvadLabel = mullvadStatus.availability === "installed" ? "Available" : mullvadStatus.availability === "installable" ? "Installable" : "Unavailable";
-  const androidCards = AndroidSurface.preview().map((surface) => androidWorkspaceConnectionCard(surface)).join("");
-  return `<main class="content-viewport connections-destination" aria-labelledby="route-heading"><header class="destination-header"><div><p class="eyebrow">Connections</p><h1 id="route-heading" tabindex="-1">Connections</h1><p>Accounts, devices, network status, and future workspaces connected to this OSL identity.</p></div><button class="button primary" data-connections-primary-action type="button">Connect a service</button></header><section class="settings-list connections-accounts" aria-labelledby="connections-accounts-title"><header><h2 id="connections-accounts-title">Accounts</h2><p>Each account opens through its own supported app surface; protected actions still require exact verification.</p></header>${appRows}</section><section class="settings-list connections-devices" aria-labelledby="connections-devices-title"><header><h2 id="connections-devices-title">Devices and network</h2><p>Optional device and network integrations never grant send, delete, or account authority by themselves.</p></header><article class="connection-device-card" data-connection-card="mullvad" data-privacy-scope="networkOnly" data-connection-state="${mullvadStatus.availability}"><span class="status-tag">${mullvadLabel}</span><h3>Mullvad</h3><p>Network privacy signal only. Platforms and recipients can still see ordinary content you send there.</p><button class="button compact" data-route="mullvad" type="button" ${mullvadStatus.availability === "installed" ? "" : "disabled"}>Use existing session</button></article>${androidCards}</section></main>`;
 }
 
 function oslChatContent(): string {
@@ -4022,6 +4124,7 @@ function settingsSectionContent(): string {
 
 export function privacyDestinationContent(): string {
   const proActive = licenseState.access === "pro" || licenseState.access === "offlineGrace";
+  const primary = privacyPrimaryActionPlan();
   const scanActions = `<div class="privacy-scan-actions"><label class="button primary ${privacyScanBusy ? "disabled" : ""}" for="privacy-export-input">${privacyScanBusy ? "Scanning..." : "Choose export"}</label><input id="privacy-export-input" class="sr-only" type="file" accept=".txt,.json,.csv,text/plain,application/json,text/csv" ${privacyScanBusy ? "disabled" : ""}/>${privacyScanResult ? `<button class="button" id="clear-privacy-scan" type="button">Clear results</button>` : ""}</div>`;
   const policyGroups = [
     ["Before I send", "Risk warnings, public-post checks, and attachment cleaning.", "On in Balanced"],
@@ -4046,7 +4149,7 @@ export function privacyDestinationContent(): string {
   const protectionReview = privacyProtectionReviewOpen
     ? `<section class="privacy-review-card" data-privacy-protection-review><div><span class="privacy-local-mark">PROTECTION REVIEW</span><h2>Review or change protection</h2><p>Check the Balanced policy, app exceptions, cleanup limits, and local warning choices before OSL changes anything.</p></div><button class="button compact" data-route="settings" data-settings="scrub" type="button">Open detailed review</button></section>`
     : "";
-  return `<main class="content-viewport privacy-destination"><header class="destination-header"><div><p class="eyebrow">Privacy</p><h1 id="route-heading" tabindex="-1">Privacy</h1><p>Review what OSL will do before it changes anything.</p></div><button class="button primary" data-privacy-primary-action type="button">Review or change protection</button></header>${protectionReview}<section class="privacy-preset-panel" aria-labelledby="privacy-preset-title"><div><span class="privacy-local-mark">ACTIVE PRESET</span><h2 id="privacy-preset-title">Balanced</h2><p>Basic account health plus local before-send warnings, attachment cleaning, monthly cleanup review, and private OSL suggestions for verified contacts.</p></div><button class="button compact" type="button" disabled>Change preset</button></section><section class="privacy-policy-stack" aria-labelledby="privacy-policy-title"><header><div><h2 id="privacy-policy-title">Global policy</h2><p>Inherited from Balanced until you make an exception.</p></div><span class="status-tag">Deletion off</span></header><p class="privacy-policy-path">Balanced preset / app / account / conversation exception</p><div class="privacy-policy-grid">${policyCards}</div></section>${publicPostGuardCarrierPreviewMarkup()}<section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h2>Recommended action</h2><h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review. Nothing is deleted by this build.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup(true)}${privacyScanResultsMarkup()}<section class="settings-list privacy-tools" aria-labelledby="privacy-tools-title"><header><h2 id="privacy-tools-title">Solo privacy tools</h2><p>Useful even when nobody else uses OSL.</p></header>${toolRows}</section><section class="settings-list privacy-limits" aria-labelledby="privacy-limits-title"><header><h2 id="privacy-limits-title">Proof and limits</h2><p>OSL refuses actions it cannot verify.</p></header><div class="setting-line"><span><strong>Cleanup</strong><small>${cleanupState}; every batch must be scanned, shown, confirmed, executed, and checked.</small></span><span class="status-tag">No auto delete</span></div><div class="setting-line"><span><strong>Service messages</strong><small>Apps, people, exports, backups, and opened copies may retain content.</small></span><span class="status-tag">Limit shown</span></div><div class="setting-line"><span><strong>Window protection</strong><small>Applied to OSL's own window when available. Cameras, malware, and modified recipients can still capture content.</small></span><span class="status-tag">${screenshotProtectionEnabled ? "Active" : "Unavailable"}</span></div></section></main>`;
+  return `<main class="content-viewport privacy-destination"><header class="destination-header"><div><p class="eyebrow">Privacy</p><h1 id="route-heading" tabindex="-1">Privacy</h1><p>Review what OSL will do before it changes anything.</p></div><button class="button primary" data-privacy-primary-action data-route="${primary.route}" data-review-target="${primary.reviewTarget}" type="button">Review or change protection</button></header>${protectionReview}<section class="privacy-preset-panel" aria-labelledby="privacy-preset-title"><div><span class="privacy-local-mark">ACTIVE PRESET</span><h2 id="privacy-preset-title">Balanced</h2><p>Basic account health plus local before-send warnings, attachment cleaning, monthly cleanup review, and private OSL suggestions for verified contacts.</p></div><button class="button compact" type="button" disabled>Change preset</button></section><section class="privacy-policy-stack" id="privacy-protection-review" aria-labelledby="privacy-policy-title"><header><div><h2 id="privacy-policy-title">Global policy</h2><p>Inherited from Balanced until you make an exception.</p></div><span class="status-tag">Deletion off</span></header><p class="privacy-policy-path">Balanced preset / app / account / conversation exception</p><div class="privacy-policy-grid">${policyCards}</div></section>${publicPostGuardCarrierPreviewMarkup()}<section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h2>Recommended action</h2><h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review. Nothing is deleted by this build.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup(true)}${privacyScanResultsMarkup()}<section class="settings-list privacy-tools" aria-labelledby="privacy-tools-title"><header><h2 id="privacy-tools-title">Solo privacy tools</h2><p>Useful even when nobody else uses OSL.</p></header>${toolRows}</section><section class="settings-list privacy-limits" aria-labelledby="privacy-limits-title"><header><h2 id="privacy-limits-title">Proof and limits</h2><p>OSL refuses actions it cannot verify.</p></header><div class="setting-line"><span><strong>Cleanup</strong><small>${cleanupState}; every batch must be scanned, shown, previewed, confirmed, executed, and checked.</small></span><span class="status-tag">No auto delete</span></div><div class="setting-line"><span><strong>Service messages</strong><small>Apps, people, exports, backups, and opened copies may retain content.</small></span><span class="status-tag">Limit shown</span></div><div class="setting-line"><span><strong>Window protection</strong><small>Applied to OSL's own window when available. Cameras, malware, and modified recipients can still capture content.</small></span><span class="status-tag">${screenshotProtectionEnabled ? "Active" : "Unavailable"}</span></div></section></main>`;
 }
 
 function massCleanupActionLabel(action: string): string {
@@ -5592,6 +5695,7 @@ function bindWorkspace(): void {
       return;
     }
     route = requestedRoute;
+    if (button.dataset.settings) settingsSection = button.dataset.settings as SettingsSection;
     if (button.hasAttribute("data-profile-settings")) settingsSection = "account";
     activeService = null;
     activeHomeAppId = null;
@@ -5621,6 +5725,16 @@ function bindWorkspace(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-settings-send-mode]").forEach((button) => button.addEventListener("click", () => {
     void changeSendingMode(button.dataset.settingsSendMode as SendMode);
   }));
+  document.querySelector<HTMLButtonElement>("[data-inbox-start-private]")?.addEventListener("click", () => inboxPrimaryAction());
+  document.querySelector<HTMLButtonElement>("[data-connections-primary-action]")?.addEventListener("click", () => connectionsPrimaryAction());
+  document.querySelector<HTMLButtonElement>("[data-activity-primary-action]")?.addEventListener("click", () => {
+    route = "activity";
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("[data-privacy-primary-action]")?.addEventListener("click", () => {
+    route = "privacy";
+    render();
+  });
   document.querySelector<HTMLInputElement>("#rn-wire-policy-toggle")?.addEventListener("change", (event) => {
     rnWirePolicyRequested = (event.currentTarget as HTMLInputElement).checked;
     localStorage.setItem(rnWirePolicyStorageKey, String(rnWirePolicyRequested));
@@ -6309,12 +6423,10 @@ function openHomeModule(id: string): void {
     route = "osl-servers";
     render();
   } else if (id === "scrub") {
-    route = "settings";
-    settingsSection = "scrub";
+    route = "privacy";
     render();
   } else if (id === "activity") {
-    route = "settings";
-    settingsSection = "notifications";
+    route = "activity";
     render();
   } else {
     showToast("OSL Notes is planned for a later release");
