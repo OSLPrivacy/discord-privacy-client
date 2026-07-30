@@ -6,6 +6,7 @@
 //! `safety_number_verified` bit records the user's out-of-band confirmation.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -161,12 +162,116 @@ pub struct ScopeSecurityDto {
 /// The minimum friend state needed to create a manual peer-messaging lease.
 /// Key material stays in the original core; callers receive only stable local
 /// and public identity identifiers.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct ManualPeerBinding {
     pub person_id: String,
     pub peer_osl_user_id: String,
     pub peer_x25519_public: [u8; X25519_PUBLIC_BYTES],
     pub peer_mlkem768_public: [u8; MLKEM768_PUBLIC_BYTES],
+}
+
+impl fmt::Debug for ManualPeerBinding {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ManualPeerBinding")
+            .field("person_id", &"[REDACTED]")
+            .field("peer_osl_user_id", &"[REDACTED]")
+            .field("peer_x25519_public", &"[REDACTED]")
+            .field("peer_mlkem768_public", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScopedTrustConsent {
+    ExplicitUserAction,
+    Absent,
+}
+
+/// A friend-scoped local trust capability.
+///
+/// This is only a local authorization record: it binds one already-verified
+/// friend to one exact Hub manual DM scope. It carries no plaintext, provider
+/// credential, send authority, or platform account claim, and absence of any of
+/// those inputs refuses construction rather than widening trust.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ScopedTrustGrant {
+    person_id: String,
+    service_id: String,
+    account_id: String,
+    scope: Scope,
+    storage_key: String,
+}
+
+impl ScopedTrustGrant {
+    pub fn for_manual_peer(
+        binding: &ManualPeerBinding,
+        service_id: &str,
+        account_id: &str,
+        scope_input: ScopeInput,
+        consent: ScopedTrustConsent,
+    ) -> Result<Self, String> {
+        if consent != ScopedTrustConsent::ExplicitUserAction {
+            return Err("OSL scoped trust requires explicit approval".to_owned());
+        }
+        let scope: Scope = scope_input
+            .try_into()
+            .map_err(|_| "OSL scoped trust scope is invalid".to_owned())?;
+        if scope.kind != ScopeKind::Dm
+            || scope.id != manual_peer_scope_id(service_id, account_id, &binding.person_id)?
+            || scope.channel_id.as_deref().is_none_or(str::is_empty)
+        {
+            return Err("OSL scoped trust scope is invalid".to_owned());
+        }
+        Ok(Self {
+            person_id: binding.person_id.clone(),
+            service_id: service_id.to_owned(),
+            account_id: account_id.to_owned(),
+            storage_key: scope.storage_key(),
+            scope,
+        })
+    }
+
+    pub fn person_id(&self) -> &str {
+        &self.person_id
+    }
+
+    pub fn service_id(&self) -> &str {
+        &self.service_id
+    }
+
+    pub fn account_id(&self) -> &str {
+        &self.account_id
+    }
+
+    pub fn scope(&self) -> &Scope {
+        &self.scope
+    }
+
+    pub fn storage_key(&self) -> &str {
+        &self.storage_key
+    }
+
+    pub fn require_binding(&self, binding: Option<&ManualPeerBinding>) -> Result<(), String> {
+        let binding = binding.ok_or_else(|| "OSL scoped trust binding is missing".to_owned())?;
+        if binding.person_id != self.person_id {
+            return Err("OSL scoped trust binding does not match".to_owned());
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for ScopedTrustGrant {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ScopedTrustGrant")
+            .field("person_id", &"[REDACTED]")
+            .field("service_id", &"[REDACTED]")
+            .field("account_id", &"[REDACTED]")
+            .field("scope_kind", &self.scope.kind)
+            .field("storage_key", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3878,6 +3983,130 @@ mod tests {
         let mut identity = keystore::generate_native_identity();
         identity.user_id = osl_user_id.to_owned();
         friend_code_for_identity(&identity)
+    }
+
+    fn test_manual_binding(person_id: String) -> ManualPeerBinding {
+        ManualPeerBinding {
+            person_id,
+            peer_osl_user_id: "peer-private-handle".to_owned(),
+            peer_x25519_public: [0x21; X25519_PUBLIC_BYTES],
+            peer_mlkem768_public: [0x42; MLKEM768_PUBLIC_BYTES],
+        }
+    }
+
+    fn dm_scope_input(id: String) -> ScopeInput {
+        ScopeInput {
+            kind: ScopeKind::Dm,
+            id,
+            server_id: None,
+            channel_id: None,
+        }
+    }
+
+    #[test]
+    fn scoped_trust_grant_requires_explicit_consent_and_exact_friend_scope() {
+        let (person_id, _, _) = test_friend(7);
+        let binding = test_manual_binding(person_id.clone());
+        let account_id = "account-private-1";
+        let scope_id = manual_peer_scope_id("osl-chat", account_id, &person_id).unwrap();
+
+        let grant = ScopedTrustGrant::for_manual_peer(
+            &binding,
+            "osl-chat",
+            account_id,
+            dm_scope_input(scope_id.clone()),
+            ScopedTrustConsent::ExplicitUserAction,
+        )
+        .unwrap();
+
+        assert_eq!(grant.person_id(), person_id.as_str());
+        assert_eq!(grant.service_id(), "osl-chat");
+        assert_eq!(grant.account_id(), account_id);
+        assert_eq!(grant.scope().kind, ScopeKind::Dm);
+        assert_eq!(grant.storage_key(), format!("dm:{scope_id}"));
+        grant.require_binding(Some(&binding)).unwrap();
+
+        let absent_consent = ScopedTrustGrant::for_manual_peer(
+            &binding,
+            "osl-chat",
+            account_id,
+            dm_scope_input(scope_id.clone()),
+            ScopedTrustConsent::Absent,
+        )
+        .unwrap_err();
+        assert_eq!(
+            absent_consent,
+            "OSL scoped trust requires explicit approval"
+        );
+
+        let wrong_scope = ScopedTrustGrant::for_manual_peer(
+            &binding,
+            "osl-chat",
+            account_id,
+            dm_scope_input("manual-scope-other".to_owned()),
+            ScopedTrustConsent::ExplicitUserAction,
+        )
+        .unwrap_err();
+        assert_eq!(wrong_scope, "OSL scoped trust scope is invalid");
+    }
+
+    #[test]
+    fn scoped_trust_grant_refuses_absent_or_different_friend_binding() {
+        let (person_id, _, _) = test_friend(9);
+        let binding = test_manual_binding(person_id.clone());
+        let account_id = "account-private-2";
+        let scope_id = manual_peer_scope_id("osl-chat", account_id, &person_id).unwrap();
+        let grant = ScopedTrustGrant::for_manual_peer(
+            &binding,
+            "osl-chat",
+            account_id,
+            dm_scope_input(scope_id),
+            ScopedTrustConsent::ExplicitUserAction,
+        )
+        .unwrap();
+
+        assert_eq!(
+            grant.require_binding(None).unwrap_err(),
+            "OSL scoped trust binding is missing"
+        );
+
+        let (other_person_id, _, _) = test_friend(10);
+        let other_binding = test_manual_binding(other_person_id);
+        assert_eq!(
+            grant.require_binding(Some(&other_binding)).unwrap_err(),
+            "OSL scoped trust binding does not match"
+        );
+    }
+
+    #[test]
+    fn scoped_trust_debug_output_redacts_identifiers_and_key_material() {
+        let (person_id, _, _) = test_friend(11);
+        let binding = test_manual_binding(person_id.clone());
+        let account_id = "account-private-3";
+        let scope_id = manual_peer_scope_id("osl-chat", account_id, &person_id).unwrap();
+        let grant = ScopedTrustGrant::for_manual_peer(
+            &binding,
+            "osl-chat",
+            account_id,
+            dm_scope_input(scope_id.clone()),
+            ScopedTrustConsent::ExplicitUserAction,
+        )
+        .unwrap();
+
+        let grant_debug = format!("{grant:?}");
+        assert!(grant_debug.contains("ScopedTrustGrant"));
+        assert!(grant_debug.contains("scope_kind"));
+        assert!(!grant_debug.contains(&person_id));
+        assert!(!grant_debug.contains(account_id));
+        assert!(!grant_debug.contains(&scope_id));
+        assert!(!grant_debug.contains(&format!("dm:{scope_id}")));
+
+        let binding_debug = format!("{binding:?}");
+        assert!(binding_debug.contains("ManualPeerBinding"));
+        assert!(!binding_debug.contains(&person_id));
+        assert!(!binding_debug.contains("peer-private-handle"));
+        assert!(!binding_debug.contains("33"));
+        assert!(!binding_debug.contains("66"));
     }
 
     #[test]
