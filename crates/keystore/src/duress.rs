@@ -162,6 +162,144 @@ pub struct DuressHandlers {
     pub strip_opsec_files: Option<WipeFn>,
 }
 
+/// Production-owned adapter for wiring the duress engine's callback slots.
+///
+/// This type is intentionally additive over [`DuressHandlers`]: the engine's
+/// low-level tests can continue constructing `DuressHandlers` directly, while
+/// production callers get one named boundary for explicit wipe wiring. A missing
+/// callback remains `None`, which the engine reports as `Skipped`; absence of a
+/// production binding never grants permission to run a wipe by inference.
+#[derive(Default)]
+pub struct ProductionDuressHandlers {
+    handlers: DuressHandlers,
+}
+
+impl ProductionDuressHandlers {
+    /// Start with no production callbacks wired. Each missing handler is a
+    /// refusal-by-omission and becomes a skipped step at execution time.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Wrap an already-assembled handler set. Intended for integration layers
+    /// that own concrete wipe resources and can prove those resources are
+    /// explicitly bound before invoking the duress engine.
+    pub fn from_handlers(handlers: DuressHandlers) -> Self {
+        Self { handlers }
+    }
+
+    pub fn with_wipe_local_cache_dir(mut self, handler: WipeFn) -> Self {
+        self.handlers.wipe_local_cache_dir = Some(handler);
+        self
+    }
+
+    pub fn with_wipe_anonymous_credentials(mut self, handler: WipeFn) -> Self {
+        self.handlers.wipe_anonymous_credentials = Some(handler);
+        self
+    }
+
+    pub fn with_wipe_anonymous_credentials_paths<I, P>(mut self, paths: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<PathBuf>,
+    {
+        self.handlers.wipe_anonymous_credentials = Some(remove_bound_paths_handler(
+            paths,
+            "anonymous credentials wipe requires at least one explicitly bound path",
+        ));
+        self
+    }
+
+    pub fn with_wipe_prekeys(mut self, handler: WipeFn) -> Self {
+        self.handlers.wipe_prekeys = Some(handler);
+        self
+    }
+
+    pub fn with_wipe_double_ratchet(mut self, handler: WipeFn) -> Self {
+        self.handlers.wipe_double_ratchet = Some(handler);
+        self
+    }
+
+    pub fn with_wipe_sender_keys(mut self, handler: WipeFn) -> Self {
+        self.handlers.wipe_sender_keys = Some(handler);
+        self
+    }
+
+    pub fn with_wipe_peer_ratchets(mut self, handler: WipeFn) -> Self {
+        self.handlers.wipe_peer_ratchets = Some(handler);
+        self
+    }
+
+    pub fn with_zeroize_in_memory(mut self, handler: WipeFn) -> Self {
+        self.handlers.zeroize_in_memory = Some(handler);
+        self
+    }
+
+    pub fn with_strip_opsec_files(mut self, handler: WipeFn) -> Self {
+        self.handlers.strip_opsec_files = Some(handler);
+        self
+    }
+
+    pub fn with_strip_opsec_file_paths<I, P>(mut self, paths: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<PathBuf>,
+    {
+        self.handlers.strip_opsec_files = Some(remove_bound_paths_handler(
+            paths,
+            "OPSEC strip requires at least one explicitly bound path",
+        ));
+        self
+    }
+
+    pub fn into_handlers(self) -> DuressHandlers {
+        self.handlers
+    }
+}
+
+impl From<ProductionDuressHandlers> for DuressHandlers {
+    fn from(production: ProductionDuressHandlers) -> Self {
+        production.into_handlers()
+    }
+}
+
+fn remove_bound_paths_handler<I, P>(paths: I, empty_binding_error: &'static str) -> WipeFn
+where
+    I: IntoIterator<Item = P>,
+    P: Into<PathBuf>,
+{
+    let paths: Vec<PathBuf> = paths.into_iter().map(Into::into).collect();
+    Box::new(move || remove_bound_paths(&paths, empty_binding_error))
+}
+
+fn remove_bound_paths(
+    paths: &[PathBuf],
+    empty_binding_error: &'static str,
+) -> std::result::Result<(), DuressError> {
+    if paths.is_empty() {
+        return Err(DuressError::Handler(empty_binding_error.to_string()));
+    }
+
+    for (idx, path) in paths.iter().enumerate() {
+        match std::fs::symlink_metadata(path) {
+            Ok(meta) if meta.file_type().is_dir() && !meta.file_type().is_symlink() => {
+                std::fs::remove_dir_all(path)
+                    .map_err(|e| DuressError::Io(format!("remove bound directory #{idx}: {e}")))?;
+            }
+            Ok(_) => {
+                std::fs::remove_file(path)
+                    .map_err(|e| DuressError::Io(format!("remove bound file #{idx}: {e}")))?;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(DuressError::Io(format!("inspect bound path #{idx}: {e}")));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// On-disk paths the engine deletes directly.
 pub struct DuressPaths {
     pub identity_file: PathBuf,
@@ -500,6 +638,110 @@ mod tests {
             .find(|(step, _)| *step == target)
             .unwrap_or_else(|| panic!("step {target:?} missing from report"))
             .1
+    }
+
+    #[test]
+    fn production_handlers_absence_keeps_remaining_callbacks_skipped() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        let handlers = ProductionDuressHandlers::new().into_handlers();
+        let engine = DuressEngine::new(journal_path, paths, handlers);
+
+        let report = engine
+            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
+            .unwrap();
+
+        for step in [
+            WipeStep::AnonymousCredentials,
+            WipeStep::InMemoryZeroize,
+            WipeStep::StripOpsecFiles,
+        ] {
+            assert!(
+                matches!(
+                    outcome_for(&report.steps, step),
+                    StepOutcome::Skipped { .. }
+                ),
+                "unbound production callback {step:?} must fail closed as Skipped"
+            );
+        }
+    }
+
+    #[test]
+    fn production_path_handlers_wipe_anonymous_credentials_and_strip_files() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        let anonymous_store = dir.path().join("anonymous_credentials.json");
+        let strip_file = dir.path().join("boot.js");
+        let strip_dir = dir.path().join("opsec_config");
+        std::fs::write(&anonymous_store, b"credential-token").unwrap();
+        std::fs::write(&strip_file, b"injection").unwrap();
+        std::fs::create_dir(&strip_dir).unwrap();
+        std::fs::write(strip_dir.join("config.json"), b"{}").unwrap();
+
+        let handlers = ProductionDuressHandlers::new()
+            .with_wipe_anonymous_credentials_paths([anonymous_store.clone()])
+            .with_strip_opsec_file_paths([strip_file.clone(), strip_dir.clone()])
+            .into_handlers();
+        let engine = DuressEngine::new(journal_path, paths, handlers);
+        let report = engine
+            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
+            .unwrap();
+
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::AnonymousCredentials),
+            &StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::StripOpsecFiles),
+            &StepOutcome::Wiped
+        );
+        assert!(!anonymous_store.exists());
+        assert!(!strip_file.exists());
+        assert!(!strip_dir.exists());
+    }
+
+    #[test]
+    fn production_path_handlers_with_empty_bindings_fail_closed() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        let handlers = ProductionDuressHandlers::new()
+            .with_wipe_anonymous_credentials_paths(Vec::<PathBuf>::new())
+            .with_strip_opsec_file_paths(Vec::<PathBuf>::new())
+            .into_handlers();
+        let engine = DuressEngine::new(journal_path, paths, handlers);
+
+        let report = engine
+            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
+            .unwrap();
+
+        assert!(matches!(
+            outcome_for(&report.steps, WipeStep::AnonymousCredentials),
+            StepOutcome::Failed { error } if error.contains("explicitly bound path")
+        ));
+        assert!(matches!(
+            outcome_for(&report.steps, WipeStep::StripOpsecFiles),
+            StepOutcome::Failed { error } if error.contains("explicitly bound path")
+        ));
+    }
+
+    #[test]
+    fn production_password_hashes_wipe_is_bound_by_duress_paths() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        std::fs::write(&paths.password_file, b"password-record").unwrap();
+        let password_file = paths.password_file.clone();
+        let handlers = ProductionDuressHandlers::new().into_handlers();
+        let engine = DuressEngine::new(journal_path, paths, handlers);
+
+        let report = engine
+            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
+            .unwrap();
+
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::PasswordHashes),
+            &StepOutcome::Wiped
+        );
+        assert!(!password_file.exists());
     }
 
     #[test]

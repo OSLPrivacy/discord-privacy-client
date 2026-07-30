@@ -50,7 +50,7 @@ pub use client::{
 };
 pub use duress::{
     DuressEngine, DuressError, DuressHandlers, DuressJournal, DuressPaths, DuressReport,
-    StepOutcome, WipeFn, WipeStep,
+    ProductionDuressHandlers, StepOutcome, WipeFn, WipeStep,
 };
 pub use identity::{
     generate_identity, generate_native_identity, identity_from_entropy,
