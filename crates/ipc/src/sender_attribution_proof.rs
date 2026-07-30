@@ -209,35 +209,46 @@ mod tests {
     }
 
     #[test]
-    fn sender_attribution_proof_prevents_bundle_wire_version_relabel() {
+    fn sender_attribution_proof_prevents_cross_version_relabel() {
         let (sender_secret, sender_public) = ed25519::generate_keypair();
         let bundle = signed_bundle(&sender_secret, &sender_public, 5, 0b0000_0011);
-        let legacy_wire_version = crate::wire_rn::LEGACY_WIRE_VERSION_V3;
-        let rn_wire_version = osl_ratchet_next::WIRE_VERSION_RN;
-
-        let proof =
-            SenderAttributionProof::create(&bundle, &sender_public, Some(4), legacy_wire_version)
-                .expect("signed monotonic bundle should produce a proof");
-
-        assert_eq!(
-            proof.verify_for(&bundle, &sender_public, Some(4), legacy_wire_version),
-            Ok(())
-        );
-        assert_eq!(
-            proof.verify_for(&bundle, &sender_public, Some(4), rn_wire_version),
-            Err(SenderAttributionProofError::WireVersionRelabel)
-        );
-
         let relabeled_bundle = signed_bundle(&sender_secret, &sender_public, 6, 0b0000_0011);
-        assert_eq!(
-            proof.verify_for(
-                &relabeled_bundle,
-                &sender_public,
-                Some(5),
-                legacy_wire_version
-            ),
-            Err(SenderAttributionProofError::WireVersionRelabel)
-        );
+        let versions = [
+            ("wire v3", crate::wire_rn::LEGACY_WIRE_VERSION_V3),
+            ("wire rn", osl_ratchet_next::WIRE_VERSION_RN),
+        ];
+
+        for (proof_label, proof_version) in versions {
+            let proof =
+                SenderAttributionProof::create(&bundle, &sender_public, Some(4), proof_version)
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "{proof_label} signed monotonic bundle should produce a proof: {error}"
+                        )
+                    });
+
+            assert_eq!(
+                proof.verify_for(&bundle, &sender_public, Some(4), proof_version),
+                Ok(()),
+                "{proof_label} proof must verify for its original wire version"
+            );
+            assert_eq!(
+                proof.verify_for(&relabeled_bundle, &sender_public, Some(5), proof_version),
+                Err(SenderAttributionProofError::WireVersionRelabel),
+                "{proof_label} proof must reject a newer bundle revision"
+            );
+
+            for (candidate_label, candidate_version) in versions {
+                if candidate_version == proof_version {
+                    continue;
+                }
+                assert_eq!(
+                    proof.verify_for(&bundle, &sender_public, Some(4), candidate_version),
+                    Err(SenderAttributionProofError::WireVersionRelabel),
+                    "{proof_label} proof must reject relabeling as {candidate_label}"
+                );
+            }
+        }
     }
 
     #[test]

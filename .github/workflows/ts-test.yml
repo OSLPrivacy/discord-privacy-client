@@ -81,6 +81,18 @@ jobs:
       - name: Run selector check
         working-directory: selector-ci
         run: npm run check
+  telegram-reporting-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Install keyserver worker deps
+        working-directory: keyserver-cf
+        run: npm ci
+      - name: keyserver-cf/scripts/test-configure-telegram-reporting-bot.sh
+        run: bash keyserver-cf/scripts/test-configure-telegram-reporting-bot.sh
   public-audit:
     runs-on: ubuntu-latest
     steps:
@@ -106,6 +118,7 @@ jobs:
     needs:
       - test
       - selector-check
+      - telegram-reporting-bot
       - public-audit
     steps:
       - name: Require TypeScript, selector, and public-audit success
@@ -117,6 +130,10 @@ jobs:
           fi
           if [ '${{ needs.selector-check.result }}' != 'success' ]; then
             echo "Selector check failed with result: ${{ needs.selector-check.result }}"
+            failed=1
+          fi
+          if [ '${{ needs.telegram-reporting-bot.result }}' != 'success' ]; then
+            echo "Telegram reporting bot script check failed with result: ${{ needs.telegram-reporting-bot.result }}"
             failed=1
           fi
           if [ '${{ needs.public-audit.result }}' != 'success' ]; then

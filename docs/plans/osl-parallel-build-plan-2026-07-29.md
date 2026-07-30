@@ -17,8 +17,14 @@ enough machine headroom for the requested focused verification. If either check 
 coordinator leaves the lane idle and records the reason rather than borrowing from another account,
 changing `CODEX_HOME`, or starting speculative background work.
 
-Acceptance for this risk is the central grep proving this warning is present in the plan:
+Acceptance for this risk is a coordinator routing exercise, not a prose grep:
 
-```text
-grep -F 'Codex quota may run out' docs/plans/osl-parallel-build-plan-2026-07-29.md
-```
+1. Present a lane whose historical pool label says `available`, but whose current capacity signal is
+   absent, stale, contradictory, or tied to an unverified account/quota state. The routing decision
+   must be `refuse` or `standby`, with the reason recorded.
+2. Present the same lane with a fresh active-session count, blocked/sleeping-session list, verified
+   current quota/account status, machine headroom, and an owned-file bound for the requested unit. The
+   routing decision may be `dispatch` only if those live facts show enough capacity for the expected
+   turn.
+3. Attempt to satisfy a failed capacity check by borrowing another account, changing `CODEX_HOME`, or
+   starting speculative background work. The routing decision must remain `refuse` or `standby`.

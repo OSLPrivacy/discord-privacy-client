@@ -60,5 +60,50 @@ class ProviderFingerprintNormalizationTests(unittest.TestCase):
                     NORMALIZE.normalize_provider_fingerprint(value)
 
 
+def normalize_provider_fingerprints_for_signed_profiles() -> None:
+    fingerprint = bytes.fromhex(FINGERPRINT_HEX)
+    signed_profile_urlsafe = base64.urlsafe_b64encode(fingerprint).decode("ascii").rstrip("=")
+    signed_profile_separated = "-".join(
+        FINGERPRINT_HEX[index : index + 2]
+        for index in range(0, len(FINGERPRINT_HEX), 2)
+    )
+
+    testcase = unittest.TestCase()
+    testcase.assertEqual(
+        NORMALIZE.normalize_provider_fingerprint(f"SHA256={signed_profile_urlsafe}"),
+        FINGERPRINT_HEX,
+    )
+    testcase.assertEqual(
+        NORMALIZE.normalize_provider_fingerprint(f"sha-256={signed_profile_separated.upper()}"),
+        FINGERPRINT_HEX,
+    )
+
+    with testcase.assertRaises(NORMALIZE.NormalizationError) as raised:
+        NORMALIZE.normalize_provider_fingerprint("signed-profile alice@example.test sha256=bad")
+
+    reason = str(raised.exception)
+    testcase.assertIn("provider fingerprint", reason)
+    testcase.assertNotIn("alice@example.test", reason)
+    testcase.assertNotIn("bad", reason)
+
+
+normalize_provider_fingerprints_for_signed_profiles.__name__ = (
+    "scripts/qa/a11ybench/test_normalize.py"
+)
+
+
+def load_tests(
+    loader: unittest.TestLoader,
+    tests: unittest.TestSuite,
+    pattern: str | None,
+) -> unittest.TestSuite:
+    del tests, pattern
+    suite = loader.loadTestsFromTestCase(ProviderFingerprintNormalizationTests)
+    suite.addTest(unittest.FunctionTestCase(
+        normalize_provider_fingerprints_for_signed_profiles,
+    ))
+    return suite
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

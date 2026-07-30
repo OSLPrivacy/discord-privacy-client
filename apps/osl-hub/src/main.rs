@@ -10522,6 +10522,40 @@ mod tauri_registration_surface_tests {
             ["checked-host", "attended-binding"],
             "absence of attended binding must refuse before scan or post-scan success"
         );
+
+        let stale_context_events = RefCell::new(Vec::<&'static str>::new());
+        let stale_context = checked_hosted_session_scan_flow(
+            || {
+                stale_context_events.borrow_mut().push("checked-host");
+                Ok(test_checked_host())
+            },
+            |_checked| {
+                stale_context_events.borrow_mut().push("attended-binding");
+                Ok(vec!["operator".to_owned()])
+            },
+            |_checked, _operator_names| {
+                stale_context_events.borrow_mut().push("native-scan");
+                Ok(test_deletion_scan())
+            },
+            |_checked| {
+                stale_context_events.borrow_mut().push("context-recheck");
+                Err("stale native context".to_owned())
+            },
+        );
+        match stale_context {
+            Err(error) => assert_eq!(error, "stale native context"),
+            Ok(_) => panic!("stale native context must refuse the hosted scan result"),
+        }
+        assert_eq!(
+            stale_context_events.into_inner(),
+            [
+                "checked-host",
+                "attended-binding",
+                "native-scan",
+                "context-recheck"
+            ],
+            "a stale context after native scan must refuse before the result is returned"
+        );
     }
 
     #[test]

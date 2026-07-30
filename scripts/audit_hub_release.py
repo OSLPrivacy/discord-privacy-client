@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from audit_reproducible_build import audit_workflow as audit_reproducible_build_workflow
 
 
@@ -40,6 +42,12 @@ def require_object(value: object, message: str) -> dict[str, object]:
     return value
 
 
+def require_before(text: str, earlier: str, later: str, message: str) -> None:
+    earlier_index = text.find(earlier)
+    later_index = text.find(later)
+    require(earlier_index >= 0 and later_index >= 0 and earlier_index < later_index, message)
+
+
 def audit_release_policy(
     workflow: str,
     promotion: str,
@@ -66,6 +74,14 @@ def audit_release_policy(
             "Candidate workflow must never publish a release directly")
     require("gh release upload hub-latest" not in workflow,
             "Candidate workflow must never move the stable updater feed")
+    require("python scripts/audit_hub_release.py" in workflow,
+            "OSL Privacy release must run the supply-chain audit before signing")
+    require("python -m unittest scripts/audit_hub_release.py" in workflow,
+            "OSL Privacy release must run the release-audit tests before signing")
+    require_before(workflow,
+                   "Audit OSL Privacy updater supply-chain policy",
+                   "Build signed draft installer and updater manifest",
+                   "OSL Privacy supply-chain audit must run before candidate signing")
 
     require("on:\n  workflow_dispatch:" in promotion,
             "OSL Privacy promotion must be a separate manual workflow")
@@ -126,6 +142,10 @@ jobs:
           if ("${{ github.ref_name }}" -ne $tag) {
             throw "Tag mismatch"
           }
+      - name: Audit OSL Privacy updater supply-chain policy
+        run: |
+          python scripts/audit_hub_release.py
+          python -m unittest scripts/audit_hub_release.py
       - name: Build signed draft installer and updater manifest
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.HUB_TAURI_SIGNING_PRIVATE_KEY }}
@@ -181,6 +201,81 @@ jobs:
         workflow = workflow + "\n      - run: gh release upload hub-latest latest.json"
         with self.assertRaises(SystemExit):
             audit_release_policy(workflow, promotion, hub, original, root)
+
+
+def _scripts_audit_hub_release_py(self: HubReleaseAuditTests) -> None:
+    workflow, promotion, hub, original, root = self.fixture()
+    audit_release_policy(workflow, promotion, hub, original, root)
+
+    mutants = [
+        (
+            workflow.replace(
+                "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5",
+                "actions/checkout@v4",
+                1,
+            ),
+            promotion,
+            hub,
+            original,
+            root,
+        ),
+        (
+            workflow.replace(
+                """      - name: Audit OSL Privacy updater supply-chain policy
+        run: |
+          python scripts/audit_hub_release.py
+          python -m unittest scripts/audit_hub_release.py
+""",
+                "",
+            )
+            + """
+      - name: Audit OSL Privacy updater supply-chain policy
+        run: |
+          python scripts/audit_hub_release.py
+          python -m unittest scripts/audit_hub_release.py
+""",
+            promotion,
+            hub,
+            original,
+            root,
+        ),
+        (
+            workflow.replace("releaseDraft: true", "releaseDraft: false"),
+            promotion,
+            hub,
+            original,
+            root,
+        ),
+        (
+            workflow,
+            promotion,
+            {"plugins": {"updater": {
+                "endpoints": [
+                    "https://github.com/OSLPrivacy/discord-privacy-client/releases/download/hub-latest/latest.json"
+                ],
+                "pubkey": "original-public-key",
+            }}},
+            original,
+            root,
+        ),
+    ]
+    for mutant in mutants:
+        with self.assertRaises(SystemExit):
+            audit_release_policy(*mutant)
+
+
+setattr(HubReleaseAuditTests, "scripts/audit_hub_release.py", _scripts_audit_hub_release_py)
+
+
+def load_tests(
+    loader: unittest.TestLoader,
+    tests: unittest.TestSuite,
+    pattern: str | None,
+) -> unittest.TestSuite:
+    suite = unittest.TestSuite()
+    suite.addTests(tests)
+    suite.addTest(HubReleaseAuditTests("scripts/audit_hub_release.py"))
+    return suite
 
 
 if __name__ == "__main__":
