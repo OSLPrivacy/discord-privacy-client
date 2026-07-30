@@ -6685,6 +6685,73 @@ pub struct DiscordQaB6RuntimeFacts {
     pub negative_cross_peer_isolation: bool,
 }
 
+/// Closed outcome vocabulary for B6 proof receipts.
+///
+/// `blocked` is reserved for a build/configuration prerequisite that makes the
+/// run inadmissible. `unmeasurable` means the proof could exist, but this
+/// retained receipt does not contain it. A missing proof is never a pass.
+#[cfg(any(feature = "discord-qa-shell", test))]
+#[derive(Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum B6ProofOutcome {
+    Pass,
+    Fail,
+    Unmeasurable,
+    Blocked,
+}
+
+#[cfg(any(feature = "discord-qa-shell", test))]
+impl B6ProofOutcome {
+    fn rank(self) -> u8 {
+        match self {
+            Self::Pass => 0,
+            Self::Unmeasurable => 1,
+            Self::Blocked => 2,
+            Self::Fail => 3,
+        }
+    }
+
+    #[cfg(test)]
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Fail => "fail",
+            Self::Unmeasurable => "unmeasurable",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
+/// One objective B6 proof row. All fields are fixed labels; no account,
+/// credential, handle, key material or plaintext may be placed in this schema.
+#[cfg(any(feature = "discord-qa-shell", test))]
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct B6ProofStep {
+    pub id: &'static str,
+    pub outcome: B6ProofOutcome,
+    pub detail: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub product_change_required: Option<&'static str>,
+}
+
+/// Structured B6 proof receipt with explicit pass/fail/unmeasurable/blocked
+/// counters. It is derived from the retained B6 facts; caller assertions do not
+/// create proof.
+#[cfg(any(feature = "discord-qa-shell", test))]
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct B6ProofReceipt {
+    pub schema_version: u8,
+    pub kind: &'static str,
+    pub overall: B6ProofOutcome,
+    pub passed: u8,
+    pub failed: u8,
+    pub unmeasurable: u8,
+    pub blocked: u8,
+    pub steps: Vec<B6ProofStep>,
+}
+
 /// Read-only B6 prerequisite receipt for the disposable QA shell.
 ///
 /// `startup_allowed` is the pre-side-effect gate. `ready` is stronger: it
@@ -6708,6 +6775,208 @@ pub struct DiscordQaB6Preflight {
     pub identity_public_fingerprints_sha256: Vec<String>,
     pub identity_keystore_root_fingerprints_sha256: Vec<String>,
     pub runtime: DiscordQaB6RuntimeFacts,
+}
+
+#[cfg(any(feature = "discord-qa-shell", test))]
+impl DiscordQaB6Preflight {
+    pub fn proof_receipt(&self) -> B6ProofReceipt {
+        let distinct_roots = self.runtime.distinct_identity_and_keystore_roots;
+        let distinct_public_fingerprints = self.identity_public_fingerprints_sha256.len() == 2
+            && self.identity_public_fingerprints_sha256[0]
+                != self.identity_public_fingerprints_sha256[1];
+        let distinct_keystore_fingerprints =
+            self.identity_keystore_root_fingerprints_sha256.len() == 2
+                && self.identity_keystore_root_fingerprints_sha256[0]
+                    != self.identity_keystore_root_fingerprints_sha256[1];
+
+        let mut steps = vec![
+            B6ProofStep {
+                id: "startup-rn-wire-in",
+                outcome: if self.ratchet_wire_in_enabled {
+                    B6ProofOutcome::Pass
+                } else {
+                    B6ProofOutcome::Blocked
+                },
+                detail: if self.ratchet_wire_in_enabled {
+                    "startup wire-in prerequisite is enabled"
+                } else {
+                    "startup wire-in prerequisite is disabled"
+                },
+                product_change_required: if self.ratchet_wire_in_enabled {
+                    None
+                } else {
+                    Some("enable the persisted transport path in a reviewed build")
+                },
+            },
+            B6ProofStep {
+                id: "startup-broker-relay",
+                outcome: if self.broker_relay_transport == "persisted_rn" {
+                    B6ProofOutcome::Pass
+                } else {
+                    B6ProofOutcome::Blocked
+                },
+                detail: if self.broker_relay_transport == "persisted_rn" {
+                    "broker relay uses the persisted transport"
+                } else {
+                    "broker relay still uses direct manual v3"
+                },
+                product_change_required: if self.broker_relay_transport == "persisted_rn" {
+                    None
+                } else {
+                    Some("route the broker relay through the persisted transport")
+                },
+            },
+            B6ProofStep {
+                id: "startup-dedicated-deployment",
+                outcome: if self.keyserver_origin == "dedicated_qa"
+                    && self.server_deployment_identity.is_some()
+                {
+                    B6ProofOutcome::Pass
+                } else {
+                    B6ProofOutcome::Blocked
+                },
+                detail: if self.keyserver_origin == "dedicated_qa"
+                    && self.server_deployment_identity.is_some()
+                {
+                    "dedicated QA deployment identity is bound"
+                } else {
+                    "dedicated QA deployment identity is not bound"
+                },
+                product_change_required: if self.keyserver_origin == "dedicated_qa"
+                    && self.server_deployment_identity.is_some()
+                {
+                    None
+                } else {
+                    Some("bind an independently identified dedicated QA deployment")
+                },
+            },
+            B6ProofStep {
+                id: "startup-source-and-binary",
+                outcome: if self.source_commit.is_some() && self.binary_sha256.is_some() {
+                    B6ProofOutcome::Pass
+                } else {
+                    B6ProofOutcome::Blocked
+                },
+                detail: if self.source_commit.is_some() && self.binary_sha256.is_some() {
+                    "source commit and executable digest are bound"
+                } else {
+                    "source commit or executable digest is unbound"
+                },
+                product_change_required: if self.source_commit.is_some()
+                    && self.binary_sha256.is_some()
+                {
+                    None
+                } else {
+                    Some("build with source commit and executable digest binding")
+                },
+            },
+        ];
+
+        steps.push(B6ProofStep {
+            id: "runtime-distinct-identities",
+            outcome: if distinct_roots
+                && distinct_public_fingerprints
+                && distinct_keystore_fingerprints
+            {
+                B6ProofOutcome::Pass
+            } else if distinct_roots {
+                B6ProofOutcome::Fail
+            } else {
+                B6ProofOutcome::Unmeasurable
+            },
+            detail: if distinct_roots && distinct_public_fingerprints && distinct_keystore_fingerprints {
+                "two independent local identities and storage roots are proven"
+            } else if distinct_roots {
+                "runtime claims distinct roots, but retained fingerprints collapse or are incomplete"
+            } else {
+                "two independent local identities and storage roots are not proven"
+            },
+            product_change_required: None,
+        });
+        steps.extend([
+            runtime_b6_proof_step(
+                "runtime-bidirectional-content",
+                self.runtime.bidirectional_ciphertext_and_plaintext,
+                "bidirectional protected content flow is proven",
+                "bidirectional protected content flow is not proven",
+            ),
+            runtime_b6_proof_step(
+                "runtime-offline-delivery",
+                self.runtime.offline_enqueue_and_delivery,
+                "offline enqueue and later delivery are proven",
+                "offline enqueue and later delivery are not proven",
+            ),
+            runtime_b6_proof_step(
+                "runtime-persisted-restart",
+                self.runtime.persisted_ratchet_restart,
+                "restart persistence is proven",
+                "restart persistence is not proven",
+            ),
+            runtime_b6_proof_step(
+                "runtime-exactly-once-drain",
+                self.runtime.exactly_once_drain,
+                "exactly-once drain is proven",
+                "exactly-once drain is not proven",
+            ),
+            runtime_b6_proof_step(
+                "runtime-peer-attribution",
+                self.runtime.independent_peer_attribution,
+                "independent peer attribution is proven",
+                "independent peer attribution is not proven",
+            ),
+            runtime_b6_proof_step(
+                "runtime-cross-peer-isolation",
+                self.runtime.negative_cross_peer_isolation,
+                "negative cross-peer isolation is proven",
+                "negative cross-peer isolation is not proven",
+            ),
+        ]);
+
+        let passed = count_b6_outcome(&steps, B6ProofOutcome::Pass);
+        let failed = count_b6_outcome(&steps, B6ProofOutcome::Fail);
+        let unmeasurable = count_b6_outcome(&steps, B6ProofOutcome::Unmeasurable);
+        let blocked = count_b6_outcome(&steps, B6ProofOutcome::Blocked);
+        let overall = steps
+            .iter()
+            .map(|step| step.outcome)
+            .max_by_key(|outcome| outcome.rank())
+            .unwrap_or(B6ProofOutcome::Blocked);
+
+        B6ProofReceipt {
+            schema_version: 1,
+            kind: "osl.b6.proof-receipt",
+            overall,
+            passed,
+            failed,
+            unmeasurable,
+            blocked,
+            steps,
+        }
+    }
+}
+
+#[cfg(any(feature = "discord-qa-shell", test))]
+fn runtime_b6_proof_step(
+    id: &'static str,
+    proven: bool,
+    pass_detail: &'static str,
+    missing_detail: &'static str,
+) -> B6ProofStep {
+    B6ProofStep {
+        id,
+        outcome: if proven {
+            B6ProofOutcome::Pass
+        } else {
+            B6ProofOutcome::Unmeasurable
+        },
+        detail: if proven { pass_detail } else { missing_detail },
+        product_change_required: None,
+    }
+}
+
+#[cfg(any(feature = "discord-qa-shell", test))]
+fn count_b6_outcome(steps: &[B6ProofStep], outcome: B6ProofOutcome) -> u8 {
+    steps.iter().filter(|step| step.outcome == outcome).count() as u8
 }
 
 #[cfg(any(feature = "discord-qa-shell", test))]
@@ -7237,6 +7506,130 @@ mod tests {
             ]
         );
         assert_eq!(receipt.blockers.len(), 12);
+    }
+
+    #[test]
+    fn b6_proof_receipt_has_closed_outcome_schema() {
+        let receipt = B6ProofReceipt {
+            schema_version: 1,
+            kind: "osl.b6.proof-receipt",
+            overall: B6ProofOutcome::Fail,
+            passed: 1,
+            failed: 1,
+            unmeasurable: 1,
+            blocked: 1,
+            steps: vec![
+                B6ProofStep {
+                    id: "pass-row",
+                    outcome: B6ProofOutcome::Pass,
+                    detail: "measured pass",
+                    product_change_required: None,
+                },
+                B6ProofStep {
+                    id: "fail-row",
+                    outcome: B6ProofOutcome::Fail,
+                    detail: "measured fail",
+                    product_change_required: None,
+                },
+                B6ProofStep {
+                    id: "unmeasurable-row",
+                    outcome: B6ProofOutcome::Unmeasurable,
+                    detail: "not measured",
+                    product_change_required: None,
+                },
+                B6ProofStep {
+                    id: "blocked-row",
+                    outcome: B6ProofOutcome::Blocked,
+                    detail: "prerequisite absent",
+                    product_change_required: Some("add the missing prerequisite"),
+                },
+            ],
+        };
+
+        let encoded = serde_json::to_value(&receipt).expect("B6 proof receipt serializes");
+        assert_eq!(encoded["schemaVersion"], 1);
+        assert_eq!(encoded["kind"], "osl.b6.proof-receipt");
+        assert_eq!(encoded["overall"], "fail");
+        assert_eq!(encoded["passed"], 1);
+        assert_eq!(encoded["failed"], 1);
+        assert_eq!(encoded["unmeasurable"], 1);
+        assert_eq!(encoded["blocked"], 1);
+        let outcomes: Vec<_> = encoded["steps"]
+            .as_array()
+            .expect("steps are an array")
+            .iter()
+            .map(|step| step["outcome"].as_str().expect("outcome is text"))
+            .collect();
+        assert_eq!(outcomes, vec!["pass", "fail", "unmeasurable", "blocked"]);
+    }
+
+    #[test]
+    fn b6_proof_receipt_turns_missing_evidence_into_non_green_rows() {
+        let preflight = b6_preflight_for(B6PreflightInputs {
+            ratchet_wire_in_enabled: false,
+            broker_relay_uses_persisted_ratchet: false,
+            keyserver_origin: "production",
+            source_commit: None,
+            binary_sha256: Some("11".repeat(32)),
+            server_deployment_identity: None,
+            identity_public_fingerprints_sha256: Vec::new(),
+            identity_keystore_root_fingerprints_sha256: Vec::new(),
+            runtime: DiscordQaB6RuntimeFacts::default(),
+        });
+        let proof = preflight.proof_receipt();
+
+        assert!(proof.overall == B6ProofOutcome::Blocked);
+        assert_eq!(proof.passed, 0);
+        assert_eq!(proof.failed, 0);
+        assert_eq!(proof.blocked, 4);
+        assert_eq!(proof.unmeasurable, 7);
+        assert_eq!(proof.steps.len(), 11);
+        assert!(proof
+            .steps
+            .iter()
+            .filter(|step| step.outcome == B6ProofOutcome::Blocked)
+            .all(|step| step.product_change_required.is_some()));
+        assert!(proof
+            .steps
+            .iter()
+            .filter(|step| step.outcome == B6ProofOutcome::Unmeasurable)
+            .all(|step| step.product_change_required.is_none()));
+    }
+
+    #[test]
+    fn b6_proof_receipt_reports_measured_identity_collapse_as_fail() {
+        let preflight = b6_preflight_for(B6PreflightInputs {
+            ratchet_wire_in_enabled: true,
+            broker_relay_uses_persisted_ratchet: true,
+            keyserver_origin: "dedicated_qa",
+            source_commit: Some("a".repeat(40)),
+            binary_sha256: Some("11".repeat(32)),
+            server_deployment_identity: Some("qa-deployment-1".to_owned()),
+            identity_public_fingerprints_sha256: vec!["22".repeat(32), "22".repeat(32)],
+            identity_keystore_root_fingerprints_sha256: vec!["44".repeat(32), "55".repeat(32)],
+            runtime: DiscordQaB6RuntimeFacts {
+                distinct_identity_and_keystore_roots: true,
+                bidirectional_ciphertext_and_plaintext: true,
+                offline_enqueue_and_delivery: true,
+                persisted_ratchet_restart: true,
+                exactly_once_drain: true,
+                independent_peer_attribution: true,
+                negative_cross_peer_isolation: true,
+            },
+        });
+        let proof = preflight.proof_receipt();
+
+        assert!(proof.overall == B6ProofOutcome::Fail);
+        assert_eq!(proof.failed, 1);
+        assert_eq!(proof.blocked, 0);
+        assert_eq!(proof.unmeasurable, 0);
+        let failed = proof
+            .steps
+            .iter()
+            .find(|step| step.outcome == B6ProofOutcome::Fail)
+            .expect("one measured row fails");
+        assert_eq!(failed.id, "runtime-distinct-identities");
+        assert_eq!(failed.outcome.as_str(), "fail");
     }
 
     #[test]
