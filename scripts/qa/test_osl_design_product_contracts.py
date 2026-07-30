@@ -325,6 +325,40 @@ encode_browser_import_choices_and_noninterrupting_monetization.__name__ = (
 )
 
 
+def gui_final_plan_document_contract() -> None:
+    markdown = GUI_PLAN.read_text(encoding="utf-8")
+    testcase = unittest.TestCase()
+    testcase.assertEqual(_errors_for_information_architecture(markdown), [])
+    testcase.assertEqual(_errors_for_browser_and_monetization(markdown), [])
+
+    settings_destination = markdown.replace(
+        "| **Activity** | What did OSL actually do?",
+        "| **Settings** | What did OSL actually do?",
+    )
+    testcase.assertIn(
+        "primary destinations are not exactly the fixed six",
+        _errors_for_information_architecture(settings_destination),
+    )
+
+    widened_import_choices = markdown.replace(
+        "a web app shows only `Browser account` and `New account`",
+        "a web app shows `Browser account`, `Existing profile` and `New account`",
+    )
+    testcase.assertIn(
+        "browser import receipt path must expose exactly two choices",
+        _errors_for_browser_and_monetization(widened_import_choices),
+    )
+
+    interrupting_paid_state = markdown.replace("must never interrupt", "may interrupt", 1)
+    testcase.assertIn(
+        "monetization can interrupt safety or capability refusal",
+        _errors_for_browser_and_monetization(interrupting_paid_state),
+    )
+
+
+gui_final_plan_document_contract.__name__ = "docs/design/osl-gui-final-plan.md'"
+
+
 def encode_burns_five_guarantees_and_banned_phrases() -> None:
     markdown = SIMPLE_SPEC.read_text(encoding="utf-8")
     broken = markdown.replace(
@@ -341,8 +375,34 @@ encode_burns_five_guarantees_and_banned_phrases.__name__ = (
 
 def simple_spec_burn_contract() -> None:
     markdown = SIMPLE_SPEC.read_text(encoding="utf-8")
+    gui = GUI_PLAN.read_text(encoding="utf-8")
     testcase = unittest.TestCase()
+    testcase.assertEqual(_errors_for_send_contract(markdown, gui), [])
     testcase.assertEqual(_errors_for_burn_contract(markdown), [])
+
+    optimistic_send = markdown.replace(
+        "Sending has three honest outcomes: sent, not sent, or delivery uncertain.",
+        "Sending has two outcomes: sent or failed.",
+    )
+    testcase.assertIn(
+        "sending outcomes are not the honest tri-state",
+        _errors_for_send_contract(optimistic_send, gui),
+    )
+
+    auto_retry = markdown.replace("never auto-retries it, ", "")
+    testcase.assertIn(
+        "missing sending refusal: never auto-retries",
+        _errors_for_send_contract(auto_retry, gui),
+    )
+
+    synthetic_second_enter = markdown.replace(
+        "Key repeat, a\nheld key, a synthetic event or OSL's own placement action cannot satisfy the\nsecond Enter.",
+        "Key repeat and a\nheld key may satisfy the second Enter.",
+    )
+    testcase.assertIn(
+        "missing simple Double Enter rule: synthetic event",
+        _errors_for_send_contract(synthetic_second_enter, gui),
+    )
 
     missing_peer_refusal = markdown.replace(
         "absence of consent, binding, authority, transport delivery or\n   verification means the peer cleanup is refused or reported as unavailable.",
@@ -380,6 +440,7 @@ def load_tests(
         encode_the_six_fixed_information_architecture_destinations,
         encode_honest_tri_state_sending_and_double_enter_without_auto_retry,
         encode_browser_import_choices_and_noninterrupting_monetization,
+        gui_final_plan_document_contract,
         encode_burns_five_guarantees_and_banned_phrases,
         simple_spec_burn_contract,
     ):
