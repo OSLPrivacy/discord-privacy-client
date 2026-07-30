@@ -1256,7 +1256,7 @@ pub enum AutoScrubQuitGuardState {
     Refused,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoScrubRunSummary {
     pub run_id: String,
@@ -1269,7 +1269,7 @@ pub struct AutoScrubRunSummary {
     pub last_outcome: AutoScrubRunOutcome,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoScrubQuitGuardEstimate {
     pub state: AutoScrubQuitGuardState,
@@ -1277,7 +1277,7 @@ pub struct AutoScrubQuitGuardEstimate {
     pub reason: &'static str,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoScrubFleetStatus {
     pub contract: &'static str,
@@ -2211,5 +2211,32 @@ mod production_fleet_tests {
             r#"{"serviceId":"discord","accountId":"acct-1","reviewToken":"review-1","planDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","reviewedItemCount":1}"#,
         )
         .is_err());
+    }
+
+    #[test]
+    fn autoscrub_fleet_debug_excludes_review_request_secrets() {
+        let _guard = crate::GLOBAL_KEYSTORE_TEST_LOCK
+            .lock()
+            .expect("global keystore test lock");
+        reset_run_store_for_test();
+        let state = state_with_license(LicenseState::Paid, "ACTIVE");
+        let request = AutoScrubReviewedRunRequest {
+            service_id: ServiceKind::Discord,
+            account_id: "acct-secret-debug-regression".to_owned(),
+            review_token: "review-token-secret-debug-regression".to_owned(),
+            plan_digest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                .to_owned(),
+            reviewed_item_count: 3,
+            consent: AutoScrubRunConsent::ReviewedBatchOnly,
+        };
+
+        let debug = format!(
+            "{:?}",
+            start_reviewed_run(&state, request).expect("reviewed AutoScrub run")
+        );
+
+        assert!(!debug.contains("acct-secret-debug-regression"));
+        assert!(!debug.contains("review-token-secret-debug-regression"));
+        assert!(!debug.contains("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
     }
 }

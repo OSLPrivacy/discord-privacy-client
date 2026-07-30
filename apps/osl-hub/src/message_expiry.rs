@@ -762,7 +762,7 @@ pub fn prune_receipt_dedup_at_path(
 ///
 /// Duplicated deliberately rather than widening that module's API while another
 /// agent holds the attachment transport. It is safe by construction: every
-/// removal goes through [`crate::peer_attachment_io::remove_staging_path`],
+/// removal goes through [`crate::peer_attachment_io::remove_staging_path_in_root`],
 /// which independently re-checks the parent directory name, filename prefix and
 /// extension, so a wrong constant here makes removal fail closed rather than
 /// delete the wrong file.

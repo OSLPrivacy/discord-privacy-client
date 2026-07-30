@@ -1671,19 +1671,28 @@ fn fetch_and_verify(
         Ok(size) => size,
         Err(_) => {
             drop(download);
-            let _ = osl_privacy_hub::peer_attachment_io::remove_staging_path(&download_path);
+            let _ = osl_privacy_hub::peer_attachment_io::remove_staging_path_in_root(
+                &receiver.local_root,
+                &download_path,
+            );
             return Err("This private attachment is unavailable or expired".to_owned());
         }
     };
     if fetched != plan.sealed_size || download.sync_all().is_err() {
         drop(download);
-        let _ = osl_privacy_hub::peer_attachment_io::remove_staging_path(&download_path);
+        let _ = osl_privacy_hub::peer_attachment_io::remove_staging_path_in_root(
+            &receiver.local_root,
+            &download_path,
+        );
         return Err("This private attachment has an invalid size".to_owned());
     }
     drop(download);
     let (digest, size) = osl_privacy_hub::peer_attachment_io::sha256_file(&download_path)?;
     if size != plan.sealed_size || hex_lower(&digest) != plan.ciphertext_sha256 {
-        let _ = osl_privacy_hub::peer_attachment_io::remove_staging_path(&download_path);
+        let _ = osl_privacy_hub::peer_attachment_io::remove_staging_path_in_root(
+            &receiver.local_root,
+            &download_path,
+        );
         return Err("This private attachment failed authentication".to_owned());
     }
     Ok(download_path)
@@ -1794,8 +1803,11 @@ fn direct_upload_round_trip_recovers_byte_identical_plaintext_and_leaves_no_plai
     )
     .expect("decrypt the attachment");
     drop(sealed);
-    osl_privacy_hub::peer_attachment_io::remove_staging_path(&download_path)
-        .expect("clear the download staging file");
+    osl_privacy_hub::peer_attachment_io::remove_staging_path_in_root(
+        &bob.local_root,
+        &download_path,
+    )
+    .expect("clear the download staging file");
     assert_eq!(opened.plaintext_len(), plan.plaintext_size);
 
     let opened_path = opened
@@ -2129,7 +2141,7 @@ fn tampered_expired_deleted_and_capability_rejected_fetches_are_each_refused_dis
 
     // --- an honest fetch still works, so the refusals above were specific --
     let good = fetch_and_verify(&bob, &client, &plan).expect("the honest object still verifies");
-    osl_privacy_hub::peer_attachment_io::remove_staging_path(&good)
+    osl_privacy_hub::peer_attachment_io::remove_staging_path_in_root(&bob.local_root, &good)
         .expect("clear the download staging file");
 
     // --- a notice that lies about the sealed size is refused --------------
@@ -2236,8 +2248,11 @@ fn view_once_open_is_replay_safe_and_a_failed_burn_is_recovered_by_the_deletion_
     )
     .expect("decrypt the image into memory");
     drop(sealed);
-    osl_privacy_hub::peer_attachment_io::remove_staging_path(&download_path)
-        .expect("clear the download staging file");
+    osl_privacy_hub::peer_attachment_io::remove_staging_path_in_root(
+        &bob.local_root,
+        &download_path,
+    )
+    .expect("clear the download staging file");
 
     assert_eq!(opened.len() as u64, plan.plaintext_size);
     let expected = fs::read(&source).expect("read the sender's file");
@@ -2667,8 +2682,11 @@ fn full_crypto_multipart_round_trip_at_the_fifty_mebibyte_bucket() {
     )
     .expect("decrypt the multipart attachment");
     drop(sealed);
-    osl_privacy_hub::peer_attachment_io::remove_staging_path(&download_path)
-        .expect("clear the download staging file");
+    osl_privacy_hub::peer_attachment_io::remove_staging_path_in_root(
+        &bob.local_root,
+        &download_path,
+    )
+    .expect("clear the download staging file");
 
     let opened_path = opened
         .path()
