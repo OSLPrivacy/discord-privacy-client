@@ -644,10 +644,12 @@ function b6_controllers_read_the_retained_preflight_before_consent_or_drive {
     $root = Join-Path ([System.IO.Path]::GetTempPath()) ('osl-p2p-loop-selftest-' + [Guid]::NewGuid().ToString('N'))
     $missingA = Join-Path $root 'missing-a'
     $missingB = Join-Path $root 'missing-b'
+    $oneSidedA = Join-Path $root 'one-sided-a'
+    $oneSidedB = Join-Path $root 'one-sided-b'
     $validA = Join-Path $root 'valid-a'
     $validB = Join-Path $root 'valid-b'
     try {
-        foreach ($path in @($missingA, $missingB, $validA, $validB)) {
+        foreach ($path in @($missingA, $missingB, $oneSidedA, $oneSidedB, $validA, $validB)) {
             [void](New-Item -ItemType Directory -Path $path -Force -ErrorAction Stop)
         }
         function Assert-NoSelftestDriveFiles {
@@ -681,6 +683,26 @@ function b6_controllers_read_the_retained_preflight_before_consent_or_drive {
         Assert-NoSelftestDriveFiles -Label 'missing-retained-b6' -TempRoots @($missingA, $missingB)
 
         $receipt = New-B6StartupReceiptForSelfTest
+
+        $receipt | ConvertTo-Json -Depth 12 | Out-File -LiteralPath (Join-Path $oneSidedA 'osl-discord-qa-b6-preflight.v2.json') -Encoding utf8
+        $oneSidedJson = Join-Path $root 'one-sided.json'
+        $oneSided = Invoke-P2PLoopSelfTestChild `
+            -Name 'one-sided-retained-b6' `
+            -TempRootAForChild $oneSidedA `
+            -TempRootBForChild $oneSidedB `
+            -JsonOutForChild $oneSidedJson
+        if ($oneSided.overall.blockedBy -cne 'b6-preflight') {
+            throw ('one-sided retained preflight blocked by {0}, not b6-preflight' -f $oneSided.overall.blockedBy)
+        }
+        $oneSidedGates = @($oneSided.preconditionGate)
+        if ($oneSidedGates.Count -ne 1 -or $oneSidedGates[0].gate -cne 'b6-preflight' -or $oneSidedGates[0].ok -ne $false) {
+            throw 'one-sided retained B6 preflight did not stop at the B6 gate'
+        }
+        if ($oneSided.overall.stepsRun -ne $false -or @($oneSided.steps).Count -ne 0) {
+            throw 'one-sided retained B6 self-test drove measurement steps'
+        }
+        Assert-NoSelftestDriveFiles -Label 'one-sided-retained-b6' -TempRoots @($oneSidedA, $oneSidedB)
+
         foreach ($path in @($validA, $validB)) {
             $receipt | ConvertTo-Json -Depth 12 | Out-File -LiteralPath (Join-Path $path 'osl-discord-qa-b6-preflight.v2.json') -Encoding utf8
         }
