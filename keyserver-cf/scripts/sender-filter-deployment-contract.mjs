@@ -33,7 +33,7 @@ export const SENDER_FILTER_SOURCE_FILES = Object.freeze({
   "keyserver-cf/src/index.ts": Object.freeze({
     role: "worker-route-registration",
     sha256:
-      "ba2e504235dce21677b18676b6c7f7841ed424ac654faa96f2b92f5ac38e7200",
+      "c07c2f84f8cae9443047fbfa69b8588918a7c066328462d6bf12b92b37de1d4f",
   }),
   "keyserver-cf/src/endpoints/register.ts": Object.freeze({
     role: "shipping-canonical-identity-registration-caller",
@@ -59,12 +59,12 @@ export const SENDER_FILTER_SOURCE_FILES = Object.freeze({
   "keyserver-cf/src/endpoints/control-inbox.ts": Object.freeze({
     role: "signed-sender-filter-route",
     sha256:
-      "23a58e917ada33c07995d9ae933e6e0e92cf0892cd16201b6c25a04d3324301f",
+      "bf8bb621403b5e7a5ed224d9abf61f07f26edc7c8ebbd1f8cd002d7f7da351a6",
   }),
   "keyserver-cf/src/endpoints/healthz.ts": Object.freeze({
     role: "capability-route",
     sha256:
-      "8328a29f38669343f24b88a2848066eb03d5fd397b8aece36695323576950d0c",
+      "e405a17b9aed664443b27f42832c191b5e4c4d72eeea5ed1d09feee05d7e5401",
   }),
   "keyserver-cf/src/endpoints/sender-filter-capability-floor.ts":
     Object.freeze({
@@ -85,7 +85,7 @@ export const SENDER_FILTER_SOURCE_FILES = Object.freeze({
   "keyserver-cf/src/lib/control-inbox-sweep.ts": Object.freeze({
     role: "capability-schema-projection",
     sha256:
-      "2e2263a4b2d37ae33fb0638028e99068dd0216fc420446b93986a98db331173a",
+      "177a9551cf8fba4ce92a2e4b958690cdd6ae3e825fcc8a0581bc5ed23610448d",
   }),
   "keyserver-cf/test/integration/control-inbox-sender-filter.test.ts":
     Object.freeze({
@@ -97,7 +97,7 @@ export const SENDER_FILTER_SOURCE_FILES = Object.freeze({
     Object.freeze({
       role: "nonempty-authority-and-anti-reset-fixture",
       sha256:
-        "a515a84f6ea2e56be0a8fcfda557938f7c359ecd70c07ad62e92a688a209b9d8",
+        "750a44215620f8a2485bc25e7468115b4396dc89845aacc964d46ba95cb08317",
     }),
   "keyserver-cf/test/integration/canonical-identity-rollout.test.ts":
     Object.freeze({
