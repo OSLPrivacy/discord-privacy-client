@@ -537,7 +537,7 @@ mod tests {
         let peer = *bundle.identity.as_bytes();
 
         assert!(matches!(
-            rn_store.save_session(&peer, &session, &NoOpSealer),
+            rn_store.save_session_with_sealer(&peer, &session, &NoOpSealer),
             Err(RnError::PlaintextSealerRefused)
         ));
         assert!(

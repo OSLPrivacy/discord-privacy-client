@@ -3067,7 +3067,7 @@ fn encrypt_rn_content_send(
     peer_identity_x25519: &[u8; 32],
     plaintext: &[u8],
 ) -> Result<EncryptWire, String> {
-    crate::wire_rn::send_rn(
+    crate::wire_rn::send_rn_with_sealer(
         store,
         sealer,
         peer_identity_x25519,
@@ -3561,10 +3561,12 @@ fn try_encrypt_rn_first_contact_from_state(
         drop(id_guard);
 
         let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
-        let peer_entry = pm
-            .get(peer_did)
-            .cloned()
-            .ok_or_else(|| format!("OSL: no peer entry for discord_id={peer_did}", peer_did = crate::log_id::log_id(peer_did)))?;
+        let peer_entry = pm.get(peer_did).cloned().ok_or_else(|| {
+            format!(
+                "OSL: no peer entry for discord_id={peer_did}",
+                peer_did = crate::log_id::log_id(peer_did)
+            )
+        })?;
         (identity, peer_entry)
     };
 
@@ -3730,10 +3732,9 @@ fn rn_peer_identity_from_entry(
             peer_did = crate::log_id::log_id(peer_did)
         )
     })?;
-    Ok(osl_ratchet_next::XPublic::from_bytes(decode_b64_array::<32>(
-        "OSL-RN peer identity",
-        b64,
-    )?))
+    Ok(osl_ratchet_next::XPublic::from_bytes(
+        decode_b64_array::<32>("OSL-RN peer identity", b64)?,
+    ))
 }
 
 fn rn_peer_bundle_from_prekey_response(
@@ -3813,11 +3814,11 @@ fn try_encrypt_rn_first_contact_with_bundle(
         .map_err(|e| format!("OSL: OSL-RN first contact: peer ML-KEM base64: {e}"))?;
 
     let mut session = match store
-        .load_session(&peer_identity, sealer)
+        .load_session_with_sealer(&peer_identity, sealer)
         .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?
     {
         Some(session) => session,
-        None => crate::wire_rn::initiate_and_persist(
+        None => crate::wire_rn::initiate_and_persist_with_sealer(
             store,
             sealer,
             &own_secret,
@@ -3830,14 +3831,11 @@ fn try_encrypt_rn_first_contact_with_bundle(
         )
         .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?,
     };
-    let wire = osl_ratchet_next::encrypt_rn(
-        &mut session,
-        crate::wire_v2::MSG_TYPE_CONTENT,
-        plaintext,
-    )
-    .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?;
+    let wire =
+        osl_ratchet_next::encrypt_rn(&mut session, crate::wire_v2::MSG_TYPE_CONTENT, plaintext)
+            .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?;
     store
-        .save_session(&peer_identity, &session, sealer)
+        .save_session_with_sealer(&peer_identity, &session, sealer)
         .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?;
     Ok(Some(wire))
 }
@@ -3881,7 +3879,7 @@ mod rn_first_contact_command_tests {
 
         assert_eq!(wire, None);
         assert!(store
-            .load_session(peer_bundle.identity.as_bytes(), &sealer)
+            .load_session_with_sealer(peer_bundle.identity.as_bytes(), &sealer)
             .expect("load session")
             .is_none());
         assert_eq!(
@@ -3916,7 +3914,7 @@ mod rn_first_contact_command_tests {
 
         assert_eq!(wire, None);
         assert!(store
-            .load_session(peer_bundle.identity.as_bytes(), &sealer)
+            .load_session_with_sealer(peer_bundle.identity.as_bytes(), &sealer)
             .expect("load session")
             .is_none());
     }
@@ -3949,7 +3947,7 @@ mod rn_first_contact_command_tests {
             Some(osl_ratchet_next::WIRE_VERSION_RN)
         );
         assert!(store
-            .load_session(peer_bundle.identity.as_bytes(), &sealer)
+            .load_session_with_sealer(peer_bundle.identity.as_bytes(), &sealer)
             .expect("load session")
             .is_some());
         assert!(store
@@ -5978,7 +5976,7 @@ mod rn_inbound_unknown_tests {
         let alice_dir = TempDir::new().expect("alice tempdir");
         let alice_store = crate::wire_rn::RnSessionStore::new(alice_dir.path().join("rn"));
         let sealer = MemorySealer::new();
-        let mut alice_session = crate::wire_rn::initiate_and_persist(
+        let mut alice_session = crate::wire_rn::initiate_and_persist_with_sealer(
             &alice_store,
             &sealer,
             &alice_identity,
@@ -6017,7 +6015,7 @@ mod rn_inbound_unknown_tests {
         assert_eq!(opened.plaintext, b"b78 bootstrap hello".to_vec());
 
         assert!(alice_store
-            .load_session(bob_bundle.identity.as_bytes(), &sealer)
+            .load_session_with_sealer(bob_bundle.identity.as_bytes(), &sealer)
             .expect("load alice session")
             .is_some());
         assert!(alice_store
@@ -6028,7 +6026,7 @@ mod rn_inbound_unknown_tests {
         let bob_store =
             crate::wire_rn::RnSessionStore::new(bob_dir.path().join(RN_SESSION_DIR_NAME));
         assert!(bob_store
-            .load_session(alice_identity_public.as_bytes(), &sealer)
+            .load_session_with_sealer(alice_identity_public.as_bytes(), &sealer)
             .expect("load bob session")
             .is_some());
         assert!(bob_store
