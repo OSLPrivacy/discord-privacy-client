@@ -374,8 +374,7 @@ mod production_duress_session_wipe_tests {
             .expect("peer_map persists after duress session wipe");
         let plain_peer_map =
             crate::main_password::maybe_decrypt(&raw_peer_map).expect("peer_map decrypts");
-        let plain_peer_map =
-            String::from_utf8(plain_peer_map).expect("peer_map remains utf8 JSON");
+        let plain_peer_map = String::from_utf8(plain_peer_map).expect("peer_map remains utf8 JSON");
         assert!(
             !plain_peer_map.contains("ratchet_state"),
             "persisted peer_map must not retain ratchet_state"
@@ -2689,9 +2688,12 @@ mod legacy_v1_decrypt_sender_binding_tests {
         let bob = generate_identity("bob-osl".to_string());
         let plaintext = "legacy v1 sender binding proof";
 
-        let cover =
-            encrypt_osl_phase4_to_pubkeys(&bob.x25519_secret, &[recipient.x25519_public], plaintext)
-                .expect("valid legacy v1 cover");
+        let cover = encrypt_osl_phase4_to_pubkeys(
+            &bob.x25519_secret,
+            &[recipient.x25519_public],
+            plaintext,
+        )
+        .expect("valid legacy v1 cover");
 
         let state = AppState::new();
         *state.identity.lock().expect("identity mutex poisoned") = Some(recipient);
@@ -4354,7 +4356,9 @@ fn try_encrypt_rn_first_contact_with_bundle(
 mod rn_first_contact_command_tests {
     use super::*;
     use base64::Engine as _;
-    use keystore::client::{PeerCapabilities, PrekeyBundleOpk, PrekeyBundleResponse, RN_CAP_WIRE_RN};
+    use keystore::client::{
+        PeerCapabilities, PrekeyBundleOpk, PrekeyBundleResponse, RN_CAP_WIRE_RN,
+    };
     use keystore::sealer::MemorySealer;
     use osl_ratchet_next::test_support::{fresh_bundle, seeded_rng};
     use std::io::{Read, Write};
@@ -6900,7 +6904,11 @@ mod rn_inbound_unknown_tests {
         let bob_store =
             crate::wire_rn::RnSessionStore::new(bob_dir.path().join(RN_SESSION_DIR_NAME));
         let third = crate::wire_rn::receive_rn_for_state(
-            &bob_state, &bob_store, &sealer, &alice_peer, &wire_3,
+            &bob_state,
+            &bob_store,
+            &sealer,
+            &alice_peer,
+            &wire_3,
         )
         .expect("receive m3 first");
         assert_eq!(third.plaintext, b"three");
@@ -8284,9 +8292,10 @@ mod v5_sender_key_attribution_tests {
                 .sender_key_state
                 .lock()
                 .expect("sender_key_state mutex poisoned");
-            on_disk
-                .states
-                .insert(scope_key.clone(), SenderKeyStateOnDisk::from(&receiver_state));
+            on_disk.states.insert(
+                scope_key.clone(),
+                SenderKeyStateOnDisk::from(&receiver_state),
+            );
             on_disk.version = 1;
         }
 
@@ -8504,23 +8513,14 @@ fn verified_identity_bundle_from_fetch_response(
     })?;
 
     let mut bundle = keystore::identity_bundle::IdentityBundle {
-        ed25519_identity_pub: b64_to_array(
-            "identity bundle Ed25519 key",
-            &resp.ik_ed25519_pub,
-        )?,
+        ed25519_identity_pub: b64_to_array("identity bundle Ed25519 key", &resp.ik_ed25519_pub)?,
         x25519_identity_pub: b64_to_array("identity bundle X25519 key", &resp.ik_x25519_pub)?,
-        mlkem768_identity_pub: b64_to_array(
-            "identity bundle ML-KEM key",
-            &resp.ik_mlkem768_pub,
-        )?,
+        mlkem768_identity_pub: b64_to_array("identity bundle ML-KEM key", &resp.ik_mlkem768_pub)?,
         capability_bundle: resp.rn_capabilities.unwrap_or(0),
         revision,
         signature: [0u8; crypto::ed25519::SIGNATURE_SIZE],
     };
-    bundle.signature = b64_to_array(
-        "identity bundle signature",
-        identity_bundle_signature_b64,
-    )?;
+    bundle.signature = b64_to_array("identity bundle signature", identity_bundle_signature_b64)?;
 
     keystore::identity_bundle::BundleVerifyPolicy::new()
         .verify(&bundle, pinned_signer, last_known_revision)
@@ -8829,8 +8829,7 @@ mod production_identity_bundle_pipeline_tests {
         assert_eq!(verified.capability_bundle, capabilities);
 
         let mut tampered_fetch = fetched_pubkeys(&peer, capabilities);
-        tampered_fetch.ik_x25519_pub =
-            STANDARD.encode([0x55u8; crypto::x25519::PUBLIC_KEY_SIZE]);
+        tampered_fetch.ik_x25519_pub = STANDARD.encode([0x55u8; crypto::x25519::PUBLIC_KEY_SIZE]);
         let err = verified_identity_bundle_from_fetch_response(
             &tampered_fetch,
             &peer.ed25519_public,
@@ -8873,7 +8872,10 @@ mod production_identity_bundle_pipeline_tests {
         let pm = state.peer_map.lock().unwrap();
         let entry = pm.get(peer_discord_id).expect("peer cached");
         assert_eq!(entry.osl_user_id.as_deref(), Some(peer.user_id.as_str()));
-        assert_eq!(entry.pubkey.as_deref(), Some(fetched.ik_x25519_pub.as_str()));
+        assert_eq!(
+            entry.pubkey.as_deref(),
+            Some(fetched.ik_x25519_pub.as_str())
+        );
         assert_eq!(
             entry.tofu_key_bundle.as_ref(),
             Some(&crate::tofu::KeyBundle {
@@ -10264,7 +10266,9 @@ mod burn_wrapped_key_coordination_tests {
         assert_eq!(second.0, 1);
         assert!(second.1.starts_with("DELETE /v1/wrapped-keys "));
         assert!(second.1.contains("\"scope\":\"to_user\""));
-        assert!(second.1.contains("\"target_user_id\":\"burn-recipient-osl\""));
+        assert!(second
+            .1
+            .contains("\"target_user_id\":\"burn-recipient-osl\""));
     }
 }
 
@@ -12118,9 +12122,8 @@ mod identity_registration_prekey_onboarding_tests {
         assert!(request.contains("\"opks\""));
 
         let sealer = select_best_sealer();
-        let loaded =
-            keystore::load_prekey_state(&dir.path().join("prekeys.json"), sealer.as_ref())
-                .expect("sealed prekey state loads");
+        let loaded = keystore::load_prekey_state(&dir.path().join("prekeys.json"), sealer.as_ref())
+            .expect("sealed prekey state loads");
         assert!(prekey_state_is_bound_to_identity(&loaded, &identity));
         assert!(!loaded.opk_pool.is_empty());
     }
@@ -15434,6 +15437,292 @@ pub enum UpdateInstallResult {
 /// `select_rn_wire_path` is a pure function of (pin, capabilities,
 /// policy) — no `AppState`/Tauri scaffolding needed, following the
 /// precedent in `test_deep_link_parser`.
+#[cfg(test)]
+mod unit_a_sender_attribution_chain {
+    use super::*;
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine as _;
+    use keystore::{generate_identity, Identity};
+
+    const ALICE_DID: &str = "1000000000000000001";
+    const BOB_DID: &str = "1000000000000000002";
+    const MALLORY_DID: &str = "1000000000000000003";
+    const CHANNEL_ID: &str = "2000000000000000001";
+
+    struct AttributionFixture {
+        alice: Identity,
+        bob: Identity,
+        mallory: Identity,
+        bob_state: AppState,
+    }
+
+    fn attribution_fixture() -> AttributionFixture {
+        let alice = generate_identity("alice-attribution".to_string());
+        let bob = generate_identity("bob-attribution".to_string());
+        let mallory = generate_identity("mallory-attribution".to_string());
+        let bob_state = AppState::new();
+        bob_state.install_identity(bob.clone());
+
+        install_self(&bob_state, BOB_DID);
+        pin_peer(&bob_state, ALICE_DID, "alice-osl", &alice);
+        pin_peer(&bob_state, MALLORY_DID, "mallory-osl", &mallory);
+
+        AttributionFixture {
+            alice,
+            bob,
+            mallory,
+            bob_state,
+        }
+    }
+
+    fn install_self(state: &AppState, did: &str) {
+        let mut pm = state.peer_map.lock().unwrap();
+        let pe = pm.entry(did.to_string()).or_default();
+        pe.is_self = Some(true);
+        pe.discord_id = Some(did.to_string());
+    }
+
+    fn pin_peer(state: &AppState, did: &str, osl_user_id: &str, identity: &Identity) {
+        let mut pm = state.peer_map.lock().unwrap();
+        let pe = pm.entry(did.to_string()).or_default();
+        pe.osl_user_id = Some(osl_user_id.to_string());
+        pe.pubkey = Some(STANDARD.encode(identity.x25519_public.as_bytes()));
+        pe.ik_mlkem768_pub = Some(STANDARD.encode(&identity.mlkem_public_bytes));
+        pe.ik_ratchet_initial_pub = identity
+            .ratchet_initial_pub
+            .map(|pk| STANDARD.encode(pk.as_bytes()));
+        pe.discord_id = Some(did.to_string());
+    }
+
+    fn recipient_v3(identity: &Identity) -> crate::wire_v2::RecipientV3 {
+        crate::wire_v2::RecipientV3 {
+            x25519_pub: identity.x25519_public,
+            mlkem_pub: identity.mlkem_encapsulation_key(),
+        }
+    }
+
+    fn install_v5_receiver_chains_for_alice_and_mallory(
+        bob_state: &AppState,
+        scope_key: &str,
+        alice_sender_state: &crypto::sender_keys::SenderKeyState,
+    ) {
+        let alice_chain = alice_sender_state.sender_chain().unwrap();
+        let chain_id = alice_chain.current_chain_id();
+        let rotation_root = alice_chain.rotation_root_bytes();
+        let physical_device_id = alice_chain.physical_device_id();
+
+        let mut bob_sender_keys = crypto::sender_keys::SenderKeyState::new();
+        bob_sender_keys
+            .install_receiver(
+                ALICE_DID.as_bytes().to_vec(),
+                chain_id,
+                &rotation_root,
+                physical_device_id,
+            )
+            .unwrap();
+        bob_sender_keys
+            .install_receiver(
+                MALLORY_DID.as_bytes().to_vec(),
+                chain_id,
+                &rotation_root,
+                physical_device_id,
+            )
+            .unwrap();
+
+        let mut stored = bob_state.sender_key_state.lock().unwrap();
+        stored.states.insert(
+            scope_key.to_string(),
+            crypto::sender_keys::SenderKeyStateOnDisk::from(&bob_sender_keys),
+        );
+        stored.version = 1;
+    }
+
+    #[test]
+    fn v3_pinned_sender_rejects_forged_sender_cross_version_fixture() {
+        let f = attribution_fixture();
+        assert!(
+            crate::sender_attribution_proof::prove_resolved_sender_key(
+                &f.alice.x25519_public,
+                &f.mallory.x25519_public,
+            )
+            .is_err(),
+            "fixture must model distinct pinned and authenticated sender keys"
+        );
+        let wire = crate::wire_v2::encrypt_v3(
+            &f.mallory.x25519_secret,
+            &f.mallory.x25519_public,
+            &[recipient_v3(&f.bob)],
+            crate::wire_v2::MSG_TYPE_CONTENT,
+            b"v3 honest mallory",
+        )
+        .unwrap();
+
+        let honest = cmd_osl_decrypt_message_v2(
+            &f.bob_state,
+            None,
+            CHANNEL_ID.to_string(),
+            MALLORY_DID.to_string(),
+            wire.clone(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(honest, "v3 honest mallory");
+
+        let err = cmd_osl_decrypt_message_v2(
+            &f.bob_state,
+            None,
+            CHANNEL_ID.to_string(),
+            ALICE_DID.to_string(),
+            wire,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("v3 authenticated sender refused"),
+            "forged v3 sender label must fail at the pinned-sender check, got: {err}"
+        );
+    }
+
+    #[test]
+    fn legacy_v1_decrypt_fails_closed_under_forged_sender_cross_version_fixture() {
+        let f = attribution_fixture();
+        f.bob_state
+            .sender_pubkey_cache
+            .insert("alice-osl".to_string(), f.alice.x25519_public);
+        f.bob_state
+            .sender_pubkey_cache
+            .insert("mallory-osl".to_string(), f.mallory.x25519_public);
+
+        let wire = encrypt_osl_phase4_to_pubkeys(
+            &f.mallory.x25519_secret,
+            &[f.bob.x25519_public],
+            "legacy honest mallory",
+        )
+        .unwrap();
+
+        let honest = cmd_osl_decrypt_message(
+            &f.bob_state,
+            CHANNEL_ID.to_string(),
+            MALLORY_DID.to_string(),
+            wire.clone(),
+        )
+        .unwrap();
+        assert_eq!(honest, "legacy honest mallory");
+
+        let err = cmd_osl_decrypt_message(
+            &f.bob_state,
+            CHANNEL_ID.to_string(),
+            ALICE_DID.to_string(),
+            wire,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("not a recipient") || err.contains("wrap slot opened"),
+            "legacy v1 must not decrypt a Mallory wire attributed to Alice, got: {err}"
+        );
+    }
+
+    #[test]
+    fn v2_resolve_sender_pubkey_rejects_forged_sender() {
+        let f = attribution_fixture();
+        let wire = crate::wire_v2::encrypt_v2(
+            b"v2 honest mallory",
+            &[f.bob.x25519_public],
+            crate::wire_v2::MSG_TYPE_CONTENT,
+            &f.mallory.x25519_secret,
+        )
+        .unwrap();
+
+        let honest = cmd_osl_decrypt_message_v2(
+            &f.bob_state,
+            None,
+            CHANNEL_ID.to_string(),
+            MALLORY_DID.to_string(),
+            wire.clone(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(honest, "v2 honest mallory");
+
+        let err = cmd_osl_decrypt_message_v2(
+            &f.bob_state,
+            None,
+            CHANNEL_ID.to_string(),
+            ALICE_DID.to_string(),
+            wire,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("not a recipient") || err.contains("body"),
+            "v2 must resolve the claimed sender id to Alice's key and reject Mallory's wire, got: {err}"
+        );
+    }
+
+    #[test]
+    fn v5_sender_keys_rejects_forged_sender_discord_id_cross_version_fixture() {
+        let f = attribution_fixture();
+        let scope = crate::scope::Scope::gc("3000000000000000001");
+        let scope_key = scope.storage_key();
+
+        let mut alice_sender_keys = crypto::sender_keys::SenderKeyState::new();
+        alice_sender_keys.install_sender().unwrap();
+        install_v5_receiver_chains_for_alice_and_mallory(
+            &f.bob_state,
+            &scope_key,
+            &alice_sender_keys,
+        );
+
+        let sender_ctx = crypto::sender_keys::SenderContext {
+            sender_ik_x25519_pub: f.alice.x25519_public,
+            sender_ik_mlkem_pub: f.alice.mlkem_public_bytes.to_vec(),
+            group_id: scope_key.clone().into_bytes(),
+            session_version: crypto::sender_keys::SESSION_VERSION_V1,
+        };
+        let em = alice_sender_keys
+            .encrypt(b"v5 honest alice", &sender_ctx)
+            .unwrap();
+        let wire = crate::wire_v2::encrypt_v5(
+            &f.alice.x25519_public,
+            crate::wire_v2::MSG_TYPE_CONTENT,
+            0,
+            &em,
+        )
+        .unwrap();
+
+        let honest = cmd_osl_decrypt_message_v2(
+            &f.bob_state,
+            None,
+            CHANNEL_ID.to_string(),
+            ALICE_DID.to_string(),
+            wire.clone(),
+            Some(crate::scope::ScopeInput::from(&scope)),
+            None,
+        )
+        .unwrap();
+        assert_eq!(honest, "v5 honest alice");
+
+        let err = cmd_osl_decrypt_message_v2(
+            &f.bob_state,
+            None,
+            CHANNEL_ID.to_string(),
+            MALLORY_DID.to_string(),
+            wire,
+            Some(crate::scope::ScopeInput::from(&scope)),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("decrypt_from"),
+            "v5 must reject a sender-keys message under a forged sender_discord_id, got: {err}"
+        );
+    }
+}
+
 #[cfg(test)]
 mod unit_b1_rn_wire_path_dispatch {
     use super::*;
