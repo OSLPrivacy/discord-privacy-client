@@ -107,10 +107,12 @@ a partially prepared pair.
 
 ## Complete live matrix
 
-The controller owns a fixed matrix so a manifest cannot omit a direction or
-security case. It requires `signal-qa-1 → signal-qa-2` and
-`signal-qa-2 → signal-qa-1` for protected text, multiline/UTF-8, encryption,
-protected-composer binding, transcript overlay, burn, Covertext,
+The controller owns a fixed matrix so a manifest cannot omit an identity, a
+direction, or a security case. It requires exactly the two dedicated Signal QA
+identities, `signal-qa-1` and `signal-qa-2`, exercised as
+`signal-qa-1 → signal-qa-2` and `signal-qa-2 → signal-qa-1` for protected text,
+multiline/UTF-8, encryption, protected-composer binding, transcript overlay,
+burn, Covertext,
 attachments/images, delivery/read receipts, reconnect, replay rejection,
 malformed-data rejection, expiry, and window lifecycle.
 

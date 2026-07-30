@@ -250,6 +250,30 @@ class ManifestTests(unittest.TestCase):
             self.assertEqual(sum(stage.get("action") == action for stage in live), 2, case_id)
         self.assertTrue(all(stage["support"] == "blockedUntilLiveAdapterReviewed" for stage in live))
 
+    def test_complete_live_matrix(self) -> None:
+        plan = qa.stage_plan()
+        live = [stage for stage in plan if stage["support"] == "blockedUntilLiveAdapterReviewed"]
+        expected_pairs = {
+            (sender, receiver, action)
+            for sender, receiver in qa.DIRECTIONS
+            for _case_id, action in qa.QA_CASES
+        }
+        actual_pairs = {
+            (stage.get("sender"), stage.get("receiver"), stage.get("action"))
+            for stage in live
+        }
+
+        self.assertEqual(tuple(sorted(qa.ALIASES)), ("signal-qa-1", "signal-qa-2"))
+        self.assertEqual(
+            set(qa.DIRECTIONS),
+            {("signal-qa-1", "signal-qa-2"), ("signal-qa-2", "signal-qa-1")},
+        )
+        self.assertEqual(len(qa.QA_CASES), 14)
+        self.assertEqual(len(live), 28)
+        self.assertEqual(actual_pairs, expected_pairs)
+        self.assertTrue(all(stage["mode"] == "ordered" for stage in live))
+        self.assertTrue(all("caseId" not in stage for stage in live))
+
     def test_plan_has_two_deploy_audit_cycles_and_safe_screenshot(self) -> None:
         ids = [stage["id"] for stage in qa.stage_plan()]
         self.assertLess(ids.index("deploy-1"), ids.index("audit-1"))
