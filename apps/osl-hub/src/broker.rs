@@ -9201,6 +9201,141 @@ mod tests {
     }
 
     #[test]
+    fn b53_drain_entrypoints_are_reachable_after_process_reactivation() {
+        let native_binding = ManualPeerBinding {
+            person_id: "hub-person-bob".to_owned(),
+            peer_osl_user_id: "osl-bob".to_owned(),
+            peer_x25519_public: [2; 32],
+            peer_mlkem768_public: [2; 1184],
+        };
+        let first_native_host = ActiveServiceHost {
+            service_id: "discord".to_owned(),
+            account_id: "native-discord-restart-a".to_owned(),
+            generation: 17,
+            owner_namespace: "owner-native-restart-a".to_owned(),
+        };
+        let first_process = HubBrokerState::default();
+        let first_native = activate_owned_native_manual_peer_context(
+            &first_process,
+            "osl-alice",
+            &first_native_host,
+            native_binding.clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            first_process.active_native_manual_context_token().unwrap(),
+            first_native.lease.context_token
+        );
+
+        let relaunched_process = HubBrokerState::default();
+        assert!(relaunched_process
+            .active_native_manual_context_token()
+            .is_err());
+        assert!(relaunched_process.active_osl_chat_context_token().is_err());
+        assert!(relaunched_process
+            .manual_peer_for(&first_native.lease.context_token)
+            .is_err());
+
+        let second_native_host = ActiveServiceHost {
+            service_id: "discord".to_owned(),
+            account_id: first_native_host.account_id.clone(),
+            generation: first_native_host.generation + 1,
+            owner_namespace: first_native_host.owner_namespace.clone(),
+        };
+        let second_native = activate_owned_native_manual_peer_context(
+            &relaunched_process,
+            "osl-alice",
+            &second_native_host,
+            native_binding,
+        )
+        .unwrap();
+        assert_eq!(
+            relaunched_process.active_native_manual_context_token().unwrap(),
+            second_native.lease.context_token
+        );
+        assert_ne!(
+            first_native.lease.context_token,
+            second_native.lease.context_token,
+            "a relaunched native host generation must not reuse the stale drain token"
+        );
+        assert_eq!(
+            relaunched_process
+                .manual_peer_for(&second_native.lease.context_token)
+                .unwrap()
+                .peer_osl_user_id,
+            "osl-bob"
+        );
+
+        let chat_process = HubBrokerState::default();
+        let chat = activate_owned_osl_chat_context(
+            &chat_process,
+            "osl-alice",
+            ManualPeerBinding {
+                person_id: "hub-person-bob".to_owned(),
+                peer_osl_user_id: "osl-bob".to_owned(),
+                peer_x25519_public: [2; 32],
+                peer_mlkem768_public: [2; 1184],
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            chat_process.active_osl_chat_context_token().unwrap(),
+            chat.lease.context_token
+        );
+        assert!(chat_process.active_native_manual_context_token().is_err());
+    }
+
+    #[test]
+    fn b53_public_drains_resolve_the_current_active_context_token() {
+        fn between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+            source
+                .split_once(start)
+                .and_then(|(_, tail)| tail.split_once(end).map(|(body, _)| body))
+                .expect("source section exists")
+        }
+
+        let source = include_str!("broker.rs");
+        let native = between(
+            source,
+            "pub fn drain_native_discord_overlay_text(",
+            "pub fn reveal_native_discord_overlay_view_once(",
+        );
+        let chat = between(
+            source,
+            "pub fn drain_osl_chat_text(",
+            "/// Fetch the active peer's control rows",
+        );
+        let shared = between(
+            source,
+            "fn drain_peer_inbox_text(",
+            "fn begin_peer_attachment(",
+        );
+
+        assert!(
+            native.contains("let context_token = broker.active_native_manual_context_token()?;"),
+            "the native drain entrypoint must reload the active native context after reactivation"
+        );
+        assert!(
+            chat.contains("let context_token = broker.active_osl_chat_context_token()?;"),
+            "the chat drain entrypoint must reload the active OSL Chat context after reactivation"
+        );
+        assert!(
+            native.contains("&context_token,\n        None,\n        true,\n        true,")
+                && chat.contains("&context_token,\n        None,\n        false,\n        capture_protection_ready,"),
+            "public drains must pass the freshly loaded token to the shared receive path"
+        );
+        assert!(
+            !native.contains("context_token:") && !chat.contains("context_token:"),
+            "renderer-provided or stale context tokens must not be drain parameters"
+        );
+        assert!(
+            shared.contains("let manual = broker.manual_peer_for(context_token)?;")
+                && shared.contains("let context = broker.context_for(context_token)?;"),
+            "the shared drain must bind the reloaded token to both peer and conversation state"
+        );
+    }
+
+    #[test]
     fn first_party_osl_chat_chunk_roundtrip_preserves_capture_policy() {
         // See owned_loopback_context_derives_self_only_and_exact_host_generation
         // for why this lock is needed (this test also calls
