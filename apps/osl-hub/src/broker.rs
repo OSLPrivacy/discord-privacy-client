@@ -2190,22 +2190,16 @@ pub fn rehydrate_native_discord_overlay_history(
                 Ok(authenticated) => authenticated,
                 Err(failure) => {
                     match failure {
-                        PeerProsePointerError::Pointer(
-                            PeerProsePointerFailure::NotAToken,
-                        ) => {
+                        PeerProsePointerError::Pointer(PeerProsePointerFailure::NotAToken) => {
                             counts.pointer_absent += 1
                         }
                         PeerProsePointerError::Pointer(
                             PeerProsePointerFailure::PointerBlobGone,
                         ) => counts.pointer_blob_gone += 1,
-                        PeerProsePointerError::Pointer(
-                            PeerProsePointerFailure::Transport,
-                        ) => {
+                        PeerProsePointerError::Pointer(PeerProsePointerFailure::Transport) => {
                             counts.store_unreachable += 1
                         }
-                        PeerProsePointerError::Pointer(
-                            PeerProsePointerFailure::Rejected,
-                        )
+                        PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected)
                         | PeerProsePointerError::Local(_) => counts.refused += 1,
                     }
                     return None;
@@ -7937,6 +7931,96 @@ mod tests {
         );
     }
 
+    #[test]
+    fn bilateral_burn_applied_on_b() {
+        use std::cell::{Cell, RefCell};
+        use std::rc::Rc;
+
+        struct FakeControlInboxClient {
+            events: Rc<RefCell<Vec<&'static str>>>,
+            b_ledger_applied: Rc<Cell<bool>>,
+        }
+
+        impl RevocationControlInboxClient for FakeControlInboxClient {
+            fn post_ack(&mut self, ack_b64: &str) {
+                assert!(!ack_b64.is_empty(), "B must post a concrete burn ack");
+                assert!(
+                    self.b_ledger_applied.get(),
+                    "B must durably apply the burn before posting its ack"
+                );
+                self.events.borrow_mut().push("post_ack");
+            }
+
+            fn delete_row(&mut self) {
+                assert!(
+                    self.b_ledger_applied.get(),
+                    "B must durably apply the burn before retiring the peer row"
+                );
+                self.events.borrow_mut().push("delete_row");
+            }
+        }
+
+        let alice_pub = [7u8; 32];
+        let bob_pub = [11u8; 32];
+        let storage_key = "dm:bilateral-burn-b";
+        let commit_key = ipc::revocation::scope_commit_key(&alice_pub, &bob_pub)
+            .expect("derive bilateral commitment key");
+        let commitment = ipc::revocation::scope_commitment(&commit_key, storage_key);
+        let notice = ipc::control_messages::RevocationNotice {
+            scope_commitment: commitment,
+            burn_epoch: 1,
+            burn_upto_seq: 3,
+            message_commitments: Vec::new(),
+            burn_id: ipc::revocation::burn_id(&commit_key, &commitment, 1, 3),
+            issued_at: 1_700_000_000,
+        };
+        let mut b_ledger = ipc::revocation::RevocationLedger::default();
+        for seq in 1..=3 {
+            ipc::revocation::record_content_accepted(&mut b_ledger, &commitment, seq)
+                .expect("seed B's accepted content floor");
+        }
+
+        let events = Rc::new(RefCell::new(Vec::<&'static str>::new()));
+        let b_ledger_applied = Rc::new(Cell::new(false));
+        let mut deferred_rows = 0;
+        let mut control_inbox = FakeControlInboxClient {
+            events: Rc::clone(&events),
+            b_ledger_applied: Rc::clone(&b_ledger_applied),
+        };
+        drain_inbound_revocation_row(
+            InboundRevocationControl::Notice,
+            &mut deferred_rows,
+            {
+                let events = Rc::clone(&events);
+                move |control| {
+                    assert_eq!(control, InboundRevocationControl::Notice);
+                    events.borrow_mut().push("apply_on_b");
+                    let outcome = ipc::revocation::apply_inbound_revocation(
+                        &mut b_ledger,
+                        &commit_key,
+                        &notice,
+                        1_700_000_001,
+                    )
+                    .expect("B applies the authenticated burn notice");
+                    assert_eq!(outcome.decision, ipc::revocation::InboundDecision::Applied);
+                    assert_eq!(outcome.destroy_upto_seq, 3);
+                    assert!(outcome.ack.applied);
+                    b_ledger_applied.set(true);
+                    let ack = ipc::control_messages::serialize_revocation_ack(&outcome.ack)
+                        .expect("B encodes the burn ack");
+                    (RevocationRowOutcome::Applied, Some(STANDARD.encode(ack)))
+                }
+            },
+            &mut control_inbox,
+        );
+
+        assert_eq!(deferred_rows, 0);
+        assert_eq!(
+            events.borrow().as_slice(),
+            ["apply_on_b", "post_ack", "delete_row"]
+        );
+    }
+
     /// A peer notice must not be acknowledged merely because its dormant floor
     /// contract can be written. Production content still carries no authenticated
     /// sequence/commitment and calls no admission gate, so the only honest
@@ -11955,9 +12039,8 @@ ok i will weekend again with you",
         let expected_blob_id = authenticated.blob_id.clone();
         let expected_ciphertext_sha256 = authenticated.ciphertext_sha256.clone();
         let expected_payload_id = authenticated.payload.message_id.clone();
-        let (_, orientation, attribution) =
-            bind_authenticated_native_row(&peer, authenticated)
-                .expect("matching native and wire orientations bind");
+        let (_, orientation, attribution) = bind_authenticated_native_row(&peer, authenticated)
+            .expect("matching native and wire orientations bind");
         assert_eq!(orientation, RehydratedRowOrientation::Incoming);
         assert_eq!(attribution.blob_id, expected_blob_id);
         assert_eq!(attribution.ciphertext_sha256, expected_ciphertext_sha256);
