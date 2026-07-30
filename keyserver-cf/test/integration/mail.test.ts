@@ -97,6 +97,14 @@ describe("OSL Mail Worker", () => {
     });
     expect(await mailEpochCount()).toBe(1);
 
+    await replaceUsername(alice.userId, "alice_m2_blocked");
+    response = await signedPost("/v1/mail/address", "PROVISION", alice, { username: "alice_m2_blocked", rotate: false });
+    expect(response.status).toBe(409);
+    expect(await env.DB.prepare("SELECT address, address_epoch, state FROM mail_address_epochs WHERE user_id = ? AND state = 'active'")
+      .bind(alice.userId).first<{ address: string; address_epoch: number; state: string }>())
+      .toMatchObject({ address: "alice_m2@oslprivacy.com", address_epoch: 1, state: "active" });
+    expect(await mailEpochCount()).toBe(1);
+
     await replaceUsername(alice.userId, "alice_m2_next");
     response = await signedPost("/v1/mail/address", "PROVISION", alice, { username: "alice_m2_next", rotate: true });
     expect(response.status).toBe(201);
