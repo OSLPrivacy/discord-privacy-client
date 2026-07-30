@@ -1634,4 +1634,38 @@ mod password_policy_tests {
         );
         set_file_storage_key(None);
     }
+
+    #[test]
+    fn tenth_consecutive_wrong_password_attempt_triggers_duress() {
+        set_file_storage_key(None);
+        let dir = tempfile::tempdir().unwrap();
+        write_marker(dir.path(), &build_fast_test_marker(TEST_MAIN_PASSWORD)).unwrap();
+
+        for expected_attempt in 1..DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD {
+            match verify_gate_password_attempt(dir.path(), "still-wrong").unwrap() {
+                GatePasswordAttemptResult::Wrong { attempts_used, .. } => {
+                    assert_eq!(attempts_used, expected_attempt);
+                }
+                _ => panic!("consecutive wrong attempts must stay non-duress before attempt 10"),
+            }
+            let lock = read_lockout(dir.path());
+            assert_eq!(
+                lock.password_failed_attempts, expected_attempt,
+                "wrong attempts must persist as a consecutive counter"
+            );
+            clear_password_lockout_window(dir.path());
+        }
+
+        match verify_gate_password_attempt(dir.path(), "still-wrong").unwrap() {
+            GatePasswordAttemptResult::Duress { attempts_used } => {
+                assert_eq!(attempts_used, DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD);
+            }
+            _ => panic!("the tenth consecutive wrong password must trigger duress"),
+        }
+        assert!(
+            !marker_path(dir.path()).exists(),
+            "duress must destroy the marker on the threshold attempt"
+        );
+        set_file_storage_key(None);
+    }
 }
