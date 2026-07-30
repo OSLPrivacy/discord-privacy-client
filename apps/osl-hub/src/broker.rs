@@ -8939,6 +8939,136 @@ mod tests {
         );
     }
 
+    #[test]
+    fn sender_filtered_active_peer_control_inbox_refuses_widening() {
+        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let account_dir = install_sender_filter_test_account("audit-filtered");
+        let identity = keystore::generate_identity("recipient".to_owned());
+        let sender_a = "peer-a";
+        let sender_b = "peer-b";
+        let a_text = control_inbox_test_row(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            sender_a,
+            ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
+        );
+        let a_attachment = control_inbox_test_row(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab",
+            sender_a,
+            ipc::wire_v2::MSG_TYPE_ATTACHMENT,
+        );
+        let b_text = control_inbox_test_row(
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            sender_b,
+            ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
+        );
+
+        let (base_url, requests, server) = spawn_control_inbox_test_server(vec![
+            serde_json::json!({
+                "ok": true,
+                "capabilities": {
+                    "control_inbox_sender_disposition": 1,
+                },
+            }),
+            serde_json::json!({
+                "items": [a_text, a_attachment],
+                "filtered_sender_id": sender_a,
+                "filtered_sender_delivery": {
+                    "live": 2,
+                    "retryable": 0,
+                    "quarantined": 0,
+                    "retired": 0,
+                },
+            }),
+        ]);
+        let client = keystore::KeyServerClient::new(&base_url).expect("build audit client");
+        let page = fetch_peer_control_inbox(&identity, &client, sender_a)
+            .expect("active-peer consumer uses the sender-scoped boundary");
+        assert_eq!(page.items.len(), 2);
+        assert!(
+            page.items.iter().all(|row| row.sender_id == sender_a),
+            "a sender-scoped active-peer drain must not admit another peer's rows"
+        );
+        let bundles = page
+            .items
+            .iter()
+            .map(|row| STANDARD.decode(&row.bundle_b64).expect("fixture bundle"))
+            .collect::<Vec<_>>();
+        assert!(
+            bundles
+                .iter()
+                .any(|bundle| ipc::wire_v2::is_native_overlay_relay_bundle(bundle)),
+            "the same sender-scoped boundary carries text rows"
+        );
+        assert!(
+            bundles
+                .iter()
+                .any(|bundle| ipc::wire_v2::is_attachment_bundle(bundle)),
+            "the same sender-scoped boundary carries attachment rows"
+        );
+        assert_health_request(&requests.recv().expect("capture capability probe"));
+        assert_filtered_request(
+            &requests.recv().expect("capture filtered active-peer GET"),
+            sender_a,
+        );
+        server.join().expect("filtered audit server exits");
+
+        let (widened_url, widened_requests, widened_server) =
+            spawn_control_inbox_test_server(vec![
+                serde_json::json!({
+                    "ok": true,
+                    "capabilities": {
+                        "control_inbox_sender_disposition": 1,
+                    },
+                }),
+                serde_json::json!({
+                    "items": [b_text],
+                    "filtered_sender_id": sender_a,
+                    "filtered_sender_delivery": {
+                        "live": 1,
+                        "retryable": 0,
+                        "quarantined": 0,
+                        "retired": 0,
+                    },
+                }),
+            ]);
+        let widened_client =
+            keystore::KeyServerClient::new(&widened_url).expect("build widened audit client");
+        let widened = fetch_peer_control_inbox(&identity, &widened_client, sender_a)
+            .expect_err("a widened sender page must be refused");
+        assert!(
+            widened.to_string().contains("outside its sender filter"),
+            "the refusal must come from the widened-page path"
+        );
+        assert_health_request(&widened_requests.recv().expect("capture widened health"));
+        assert_filtered_request(
+            &widened_requests
+                .recv()
+                .expect("capture widened filtered GET"),
+            sender_a,
+        );
+        widened_server.join().expect("widened audit server exits");
+
+        let (legacy_url, legacy_requests, legacy_server) =
+            spawn_control_inbox_test_server(vec![serde_json::json!({ "ok": true })]);
+        let legacy_client =
+            keystore::KeyServerClient::new(&legacy_url).expect("build legacy audit client");
+        let legacy = fetch_peer_control_inbox(&identity, &legacy_client, sender_a)
+            .expect_err("a legacy server must not trigger an unfiltered fallback GET");
+        assert!(
+            legacy
+                .to_string()
+                .contains("sender-filter capability unavailable"),
+            "missing sender-filter authority is a refusal, never permission"
+        );
+        assert_health_request(&legacy_requests.recv().expect("capture legacy health"));
+        assert!(
+            legacy_requests.try_recv().is_err(),
+            "legacy refusal must stop before an unfiltered active-peer GET"
+        );
+        legacy_server.join().expect("legacy audit server exits");
+        remove_sender_filter_test_account(&account_dir);
+    }
+
     fn control_inbox_test_row(id: &str, sender_id: &str, message_type: u8) -> serde_json::Value {
         serde_json::json!({
             "id": id,
@@ -9042,6 +9172,359 @@ mod tests {
             Some("GET /v1/healthz HTTP/1.1"),
             "the shipping receive boundary probes the exact health route first",
         );
+    }
+
+    fn request_body_json(request: &str) -> serde_json::Value {
+        let header_end = request
+            .find("\r\n\r\n")
+            .map(|index| index + 4)
+            .expect("request has a header terminator");
+        serde_json::from_str(&request[header_end..]).expect("request body is JSON")
+    }
+
+    struct NativeManualPair {
+        core: HubCoreState,
+        alice: keystore::Identity,
+        bob: keystore::Identity,
+        alice_binding: ManualPeerBinding,
+        bob_binding: ManualPeerBinding,
+        alice_manual: ManualPeerContext,
+        bob_manual: ManualPeerContext,
+        alice_context: HubConversationContext,
+        bob_context: HubConversationContext,
+    }
+
+    fn native_manual_pair(label: &str) -> NativeManualPair {
+        let alice = keystore::generate_identity(format!("osl-{label}-alice"));
+        let bob = keystore::generate_identity(format!("osl-{label}-bob"));
+        let conversation_id =
+            manual_dm_channel_binding("discord", &alice.user_id, &bob.user_id).unwrap();
+        let core = HubCoreState::default();
+        *core.osl.identity.lock().unwrap() = Some(alice.clone());
+        let alice_binding = ManualPeerBinding {
+            person_id: "hub-person-bob".to_owned(),
+            peer_osl_user_id: bob.user_id.clone(),
+            peer_x25519_public: *bob.x25519_public.as_bytes(),
+            peer_mlkem768_public: bob.mlkem_public_bytes,
+        };
+        let bob_binding = ManualPeerBinding {
+            person_id: "hub-person-alice".to_owned(),
+            peer_osl_user_id: alice.user_id.clone(),
+            peer_x25519_public: *alice.x25519_public.as_bytes(),
+            peer_mlkem768_public: alice.mlkem_public_bytes,
+        };
+        let alice_manual = ManualPeerContext {
+            service_id: "discord".to_owned(),
+            account_id: "native-discord-alice".to_owned(),
+            person_id: alice_binding.person_id.clone(),
+            peer_osl_user_id: bob.user_id.clone(),
+            scope: ScopeInput {
+                kind: ScopeKind::Dm,
+                id: format!("{label}-alice-scope"),
+                server_id: None,
+                channel_id: Some(conversation_id.clone()),
+            },
+        };
+        let bob_manual = ManualPeerContext {
+            service_id: "discord".to_owned(),
+            account_id: "native-discord-bob".to_owned(),
+            person_id: bob_binding.person_id.clone(),
+            peer_osl_user_id: alice.user_id.clone(),
+            scope: ScopeInput {
+                kind: ScopeKind::Dm,
+                id: format!("{label}-bob-scope"),
+                server_id: None,
+                channel_id: Some(conversation_id.clone()),
+            },
+        };
+        let alice_context = HubConversationContext {
+            service_id: "discord".to_owned(),
+            account_id: alice_manual.account_id.clone(),
+            conversation_kind: HubConversationKind::Dm,
+            conversation_id: conversation_id.clone(),
+            space_id: None,
+            participant_osl_ids: vec![alice_binding.person_id.clone()],
+            self_osl_id: alice.user_id.clone(),
+        };
+        let bob_context = HubConversationContext {
+            service_id: "discord".to_owned(),
+            account_id: bob_manual.account_id.clone(),
+            conversation_kind: HubConversationKind::Dm,
+            conversation_id,
+            space_id: None,
+            participant_osl_ids: vec![bob_binding.person_id.clone()],
+            self_osl_id: bob.user_id.clone(),
+        };
+        NativeManualPair {
+            core,
+            alice,
+            bob,
+            alice_binding,
+            bob_binding,
+            alice_manual,
+            bob_manual,
+            alice_context,
+            bob_context,
+        }
+    }
+
+    fn native_peer_payload(
+        manual: &ManualPeerContext,
+        context: &HubConversationContext,
+        message_id: &str,
+        plaintext: &str,
+        view_once: bool,
+    ) -> PeerProtectedPayload {
+        PeerProtectedPayload {
+            version: PEER_PROTECTED_VERSION,
+            message_id: message_id.to_owned(),
+            created_at: 1_700_000_000,
+            expires_at: 1_700_003_600,
+            service_id: manual.service_id.clone(),
+            conversation_binding: context.conversation_id.clone(),
+            sender_osl_user_id: context.self_osl_id.clone(),
+            recipient_osl_user_id: manual.peer_osl_user_id.clone(),
+            plaintext: plaintext.to_owned(),
+            view_once,
+            require_capture_protection: true,
+            logical_message_id: None,
+            chunk_index: None,
+            chunk_count: None,
+            whole_sha256: None,
+        }
+    }
+
+    #[test]
+    fn p1_sends_encrypted_message_into_live_conversation() {
+        let pair = native_manual_pair("b50");
+        const FIXTURE: &str = "B50 encrypted native send fixture";
+        let message_id = "peer-b5000000000000000000000000000000";
+        let encrypted_content = prepare_direct_manual_v3(
+            &pair.core,
+            &pair.alice_binding,
+            &pair.alice_manual,
+            &pair.alice_context,
+            FIXTURE.to_owned(),
+            PeerProtectionPolicy {
+                view_once: false,
+                require_capture_protection: true,
+                created_at: 1_700_000_000,
+                expires_at: 1_700_003_600,
+            },
+            message_id.to_owned(),
+            None,
+        )
+        .expect("A encrypts the private content to B");
+        let encrypted_content_bytes = STANDARD
+            .decode(
+                encrypted_content
+                    .strip_prefix("DPC0::")
+                    .expect("content wire has the DPC0 prefix"),
+            )
+            .expect("content wire body is base64");
+        assert!(
+            !encrypted_content_bytes
+                .windows(FIXTURE.as_bytes().len())
+                .any(|window| window == FIXTURE.as_bytes()),
+            "the protected content wire must not contain private plaintext"
+        );
+        let notice = NativeOverlayRelayNotice {
+            version: NATIVE_OVERLAY_RELAY_VERSION,
+            domain: NATIVE_OVERLAY_RELAY_DOMAIN.to_owned(),
+            created_at: 1_700_000_000,
+            expires_at: 1_700_003_600,
+            service_id: pair.alice_manual.service_id.clone(),
+            conversation_binding: pair.alice_context.conversation_id.clone(),
+            sender_osl_user_id: pair.alice.user_id.clone(),
+            recipient_osl_user_id: pair.bob.user_id.clone(),
+            message_id: message_id.to_owned(),
+            cover_pointer: "public carrier token only".to_owned(),
+        };
+        validate_native_overlay_relay_notice(
+            &notice,
+            &pair.alice_manual,
+            &pair.alice_context,
+            1_700_000_001,
+        )
+        .expect_err("A's outbound notice is not valid as an inbound row to A");
+        let encoded = serde_json::to_vec(&notice).expect("relay notice encodes");
+        let wire = encrypt_direct_manual_v3_payload(
+            &pair.core,
+            &pair.alice_binding,
+            ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
+            &encoded,
+        )
+        .expect("A encrypts the native relay notice to B");
+        verify_manual_v3_type(
+            &pair.core,
+            &pair.alice_binding,
+            &wire,
+            ManualWireSender::SelfIdentity,
+            ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
+        )
+        .expect("A can verify the encrypted relay frame before posting");
+        let bundle =
+            decode_overlay_relay_wire(&wire).expect("relay wire is a native overlay bundle");
+        assert!(
+            !bundle
+                .windows(FIXTURE.as_bytes().len())
+                .any(|window| window == FIXTURE.as_bytes()),
+            "the relay bundle must not contain private plaintext"
+        );
+
+        let scope_id = native_overlay_relay_scope_id(&pair.alice_context.conversation_id).unwrap();
+        let (base_url, requests, server) =
+            spawn_control_inbox_test_server(vec![serde_json::json!({
+                "id": "b50-live-row",
+                "expires_at": notice.expires_at,
+            })]);
+        let client = keystore::KeyServerClient::new(&base_url).expect("build post client");
+        client
+            .post_control_inbox(&pair.alice, &pair.bob.user_id, &scope_id, &bundle)
+            .expect("A posts the encrypted row into B's live inbox");
+        let request = requests.recv().expect("capture live inbox post");
+        assert_eq!(
+            request.lines().next(),
+            Some("POST /v1/control-inbox HTTP/1.1"),
+            "live delivery uses the control-inbox post verb"
+        );
+        let body = request_body_json(&request);
+        assert!(
+            body["sender_id"].as_str() == Some(pair.alice.user_id.as_str()),
+            "the posted row is signed as A"
+        );
+        assert!(
+            body["recipient_id"].as_str() == Some(pair.bob.user_id.as_str()),
+            "the posted row is addressed to B"
+        );
+        assert!(
+            body["scope_id"].as_str() == Some(scope_id.as_str()),
+            "the posted row is scoped to the live conversation"
+        );
+        let posted_bundle = STANDARD
+            .decode(
+                body["bundle_b64"]
+                    .as_str()
+                    .expect("posted bundle is a string"),
+            )
+            .expect("posted bundle is base64");
+        assert!(
+            posted_bundle == bundle,
+            "the keyserver receives the encrypted relay bundle A prepared"
+        );
+        assert!(ipc::wire_v2::is_native_overlay_relay_bundle(&posted_bundle));
+        assert!(
+            !body.to_string().contains(FIXTURE),
+            "the keyserver request body must not contain private plaintext"
+        );
+        server.join().expect("control-inbox post server exits");
+    }
+
+    #[test]
+    fn native_discord_inbound_opens_once_and_refuses_foreign_malformed_and_replayed_rows() {
+        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let account_dir = install_sender_filter_test_account("b52-replay");
+        ipc::main_password::set_file_storage_key(Some([0x52; 32]));
+        let pair = native_manual_pair("b52");
+        const FIXTURE: &str = "B52 inbound plaintext";
+        let message_id = "peer-b5200000000000000000000000000000";
+        let wire = prepare_direct_manual_v3(
+            &pair.core,
+            &pair.alice_binding,
+            &pair.alice_manual,
+            &pair.alice_context,
+            FIXTURE.to_owned(),
+            PeerProtectionPolicy {
+                view_once: false,
+                require_capture_protection: true,
+                created_at: 1_700_000_000,
+                expires_at: 1_700_003_600,
+            },
+            message_id.to_owned(),
+            None,
+        )
+        .expect("A prepares encrypted peer content");
+        *pair.core.osl.identity.lock().unwrap() = Some(pair.bob.clone());
+        let opened =
+            decrypt_direct_manual_v3(&pair.core, &pair.bob_binding, ManualWireSender::Peer, &wire)
+                .expect("B decrypts the peer-authenticated row");
+        validate_peer_protected_payload(
+            &opened,
+            &pair.bob_manual,
+            &pair.bob_context,
+            1_700_000_001,
+        )
+        .expect("B admits the row only for the live conversation");
+        assert!(
+            opened.message_id == message_id,
+            "B opens the row under the authenticated message id"
+        );
+        assert!(
+            opened.plaintext == FIXTURE,
+            "B opens exactly the protected plaintext"
+        );
+        assert!(capture_policy_allows_plaintext(&opened, true));
+        assert!(!capture_policy_allows_plaintext(&opened, false));
+
+        let mut foreign_context = pair.bob_context.clone();
+        foreign_context.conversation_id = "manual-dm-foreign-b52".to_owned();
+        assert!(
+            validate_peer_protected_payload(
+                &opened,
+                &pair.bob_manual,
+                &foreign_context,
+                1_700_000_001,
+            )
+            .is_err(),
+            "B must refuse a row replayed into a different conversation"
+        );
+        assert!(
+            decrypt_direct_manual_v3(
+                &pair.core,
+                &pair.bob_binding,
+                ManualWireSender::Peer,
+                "DPC0::not-base64",
+            )
+            .is_err(),
+            "B must refuse malformed encrypted rows"
+        );
+
+        let security_state = HubSecurityState::default();
+        assert!(!security::peer_message_was_consumed(
+            &security_state,
+            pair.bob_manual.scope.clone(),
+            message_id,
+            1_700_000_001,
+        )
+        .unwrap());
+        security::consume_peer_message(
+            &security_state,
+            pair.bob_manual.scope.clone(),
+            message_id,
+            opened.expires_at,
+            1_700_000_001,
+        )
+        .expect("first inbound open burns the replay slot");
+        assert!(security::peer_message_was_consumed(
+            &security_state,
+            pair.bob_manual.scope.clone(),
+            message_id,
+            1_700_000_002,
+        )
+        .unwrap());
+        assert!(
+            security::consume_peer_message(
+                &security_state,
+                pair.bob_manual.scope.clone(),
+                message_id,
+                opened.expires_at,
+                1_700_000_002,
+            )
+            .is_err(),
+            "a replayed row must not open a second time"
+        );
+        ipc::main_password::set_file_storage_key(None);
+        remove_sender_filter_test_account(&account_dir);
     }
 
     #[test]
@@ -10115,11 +10598,34 @@ mod tests {
 
     #[test]
     fn view_once_list_appears_on_b() {
+        let pair = native_manual_pair("b68");
+        let payload = native_peer_payload(
+            &pair.alice_manual,
+            &pair.alice_context,
+            "peer-0123456789abcdef0123456789abcdef",
+            "B68 view-once plaintext",
+            true,
+        );
+        let mut bob_side = payload.clone();
+        bob_side.sender_osl_user_id = pair.alice.user_id.clone();
+        bob_side.recipient_osl_user_id = pair.bob.user_id.clone();
+        validate_peer_protected_payload(
+            &bob_side,
+            &pair.bob_manual,
+            &pair.bob_context,
+            1_700_000_001,
+        )
+        .expect("B admits the authenticated view-once row");
+        assert!(
+            bob_side.view_once,
+            "the row is classified as view-once before display"
+        );
+
         let batch = OpenedNativeOverlayTextBatch {
             messages: Vec::new(),
             pending_view_once: vec![PendingNativeOverlayText {
-                message_id: "peer-0123456789abcdef0123456789abcdef".to_owned(),
-                expires_at: 1_787_000_100,
+                message_id: bob_side.message_id.clone(),
+                expires_at: bob_side.expires_at,
                 person_to_person_e2ee: true,
             }],
             acknowledgments: Vec::new(),
@@ -10133,12 +10639,12 @@ mod tests {
             .as_array()
             .expect("B receives a pending view-once list");
         assert_eq!(pending.len(), 1);
-        assert_eq!(
-            pending[0]["messageId"],
-            "peer-0123456789abcdef0123456789abcdef"
+        assert!(
+            pending[0]["messageId"].as_str() == Some("peer-0123456789abcdef0123456789abcdef"),
+            "the pending list preserves the view-once message correlation id"
         );
         assert_eq!(pending[0]["personToPersonE2ee"], true);
-        assert_eq!(pending[0]["expiresAt"], 1_787_000_100i64);
+        assert_eq!(pending[0]["expiresAt"], 1_700_003_600i64);
         assert!(
             pending[0].get("plaintext").is_none(),
             "the B-side view-once list must not render plaintext before reveal"
@@ -10147,6 +10653,116 @@ mod tests {
             value["messages"].as_array().unwrap().is_empty(),
             "listing a view-once row must not also open it"
         );
+
+        let ordinary = native_peer_payload(
+            &pair.alice_manual,
+            &pair.alice_context,
+            "peer-fedcba9876543210fedcba9876543210",
+            "ordinary plaintext",
+            false,
+        );
+        assert!(
+            !ordinary.view_once,
+            "ordinary encrypted rows must not be routed into the pending view-once list"
+        );
+    }
+
+    #[test]
+    fn reveal_once_consumes_on_b() {
+        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let account_dir = install_sender_filter_test_account("b74-reveal");
+        ipc::main_password::set_file_storage_key(Some([0x74; 32]));
+        let pair = native_manual_pair("b74");
+        const FIXTURE: &str = "B74 reveal-once plaintext";
+        let message_id = "peer-b7400000000000000000000000000000";
+        let wire = prepare_direct_manual_v3(
+            &pair.core,
+            &pair.alice_binding,
+            &pair.alice_manual,
+            &pair.alice_context,
+            FIXTURE.to_owned(),
+            PeerProtectionPolicy {
+                view_once: true,
+                require_capture_protection: true,
+                created_at: 1_700_000_000,
+                expires_at: 1_700_003_600,
+            },
+            message_id.to_owned(),
+            None,
+        )
+        .expect("A prepares the view-once encrypted row");
+        *pair.core.osl.identity.lock().unwrap() = Some(pair.bob.clone());
+        let opened =
+            decrypt_direct_manual_v3(&pair.core, &pair.bob_binding, ManualWireSender::Peer, &wire)
+                .expect("B decrypts the selected view-once row");
+        validate_peer_protected_payload(
+            &opened,
+            &pair.bob_manual,
+            &pair.bob_context,
+            1_700_000_001,
+        )
+        .expect("B admits the selected view-once row");
+        assert!(
+            opened.message_id == message_id,
+            "B reveals the selected view-once message id"
+        );
+        assert!(
+            opened.plaintext == FIXTURE,
+            "B reveals exactly the protected plaintext"
+        );
+        assert!(
+            opened.view_once,
+            "the reveal path must report view-once consumption"
+        );
+
+        let security_state = HubSecurityState::default();
+        assert!(!security::peer_message_was_consumed(
+            &security_state,
+            pair.bob_manual.scope.clone(),
+            message_id,
+            1_700_000_001,
+        )
+        .unwrap());
+        security::consume_peer_message(
+            &security_state,
+            pair.bob_manual.scope.clone(),
+            message_id,
+            opened.expires_at,
+            1_700_000_001,
+        )
+        .expect("first reveal burns B's replay slot");
+        assert!(security::peer_message_was_consumed(
+            &security_state,
+            pair.bob_manual.scope.clone(),
+            message_id,
+            1_700_000_002,
+        )
+        .unwrap());
+        assert!(
+            security::consume_peer_message(
+                &security_state,
+                pair.bob_manual.scope.clone(),
+                message_id,
+                opened.expires_at,
+                1_700_000_002,
+            )
+            .is_err(),
+            "a second reveal of the same view-once row must be refused"
+        );
+        let broker = HubBrokerState::default();
+        let trace = broker
+            .record_view_once_second_reveal_refusal(message_id, 1_700_000_002)
+            .expect("B records the second-reveal refusal without exposing the handle");
+        assert_eq!(trace.refusal_count, 1);
+        assert_eq!(
+            broker
+                .view_once_second_reveal_refusal_trace(message_id, 1_700_000_003)
+                .unwrap()
+                .map(|trace| trace.refusal_count),
+            Some(1)
+        );
+        ipc::main_password::set_file_storage_key(None);
+        remove_sender_filter_test_account(&account_dir);
     }
 
     /// The correlation handle is routing metadata and stays inside the renderer's
