@@ -45,6 +45,7 @@ import {
   parseDiscordSessionMode,
   parseNativeSessionMode,
   focusMullvadWindow,
+  finishProtectedBrowserImport,
   resizeDefaultBrowserCompanion,
   resizeNativeAppWindow,
   resizeMullvadWindow,
@@ -1055,6 +1056,19 @@ function activeBrowserImportPendingStorageKey(): string | null {
   return owner ? `${browserImportPendingStorageKey}:${encodeURIComponent(owner)}` : null;
 }
 
+function persistBrowserImportQueue(): void {
+  const pendingKey = activeBrowserImportPendingStorageKey();
+  if (!pendingKey) return;
+  if (browserImportQueue.length > 0) {
+    localStorage.setItem(pendingKey, JSON.stringify({
+      queue: browserImportQueue,
+      index: browserImportQueueIndex,
+    }));
+  } else {
+    localStorage.removeItem(pendingKey);
+  }
+}
+
 function refreshActiveBrowserAccountsReady(): void {
   const activeOwner = core.readiness.activeOslUserId;
   const key = activeBrowserAccountsReadyStorageKey();
@@ -1076,6 +1090,7 @@ function refreshActiveBrowserAccountsReady(): void {
   browserImportQueue = [];
   browserImportQueueIndex = 0;
   browserImportSourceSelected = false;
+  persistBrowserImportQueue();
 }
 
 function applyNativeBrowserFootprint(hydration: BrowserFootprintHydration): void {
@@ -1388,18 +1403,18 @@ async function reopenActiveNativeCompanion(): Promise<void> {
   await openNativeHostedApp(app, service, staleAppId);
 }
 
-function onboardingShellMarkup(): string {
+function onboardingShellMarkup(setupNavigation = ""): string {
+  return `<div class="app-frame with-titlebar">${desktopTitlebar()}<div class="onboarding-shell"><main class="onboarding-panel onboarding-${onboardingRoute}">${onboardingContent()}</main>${setupNavigation}</div>${scrubReviewDialogMarkup()}</div>`;
+}
+
+function renderOnboarding(): void {
   onboardingRoute = onboardingRouteForBuild(onboardingRoute);
   persistCurrentOnboardingRoute();
   const setupScreen = ["pro", "privacy", "defaults", "sending", "cover", "passwords", "burnpass", "browser", "tutorial", "detected", "install", "apps", "mullvad"].includes(onboardingRoute);
   const setupNavigation = setupScreen
     ? `<button class="onboarding-back-dock" id="onboarding-back" type="button">Back</button>`
     : "";
-  return `<div class="app-frame with-titlebar">${desktopTitlebar()}<div class="onboarding-shell"><main class="onboarding-panel onboarding-${onboardingRoute}">${onboardingContent()}</main>${setupNavigation}</div>${scrubReviewDialogMarkup()}</div>`;
-}
-
-function renderOnboarding(): void {
-  const markup = onboardingShellMarkup();
+  const markup = onboardingShellMarkup(setupNavigation);
   lastWorkspaceMarkup = null;
   lastWorkspaceViewKey = "";
   if (lastOnboardingMarkup === markup && root.querySelector(".onboarding-shell")) {
@@ -1926,6 +1941,7 @@ function bindBrowserImportControls(): void {
     browserImportQueue = selectedProfiles.map((profile) => profile.browserId);
     browserImportQueueIndex = 0;
     browserImportSourceSelected = false;
+    persistBrowserImportQueue();
     browserImportBusy = true;
     render();
     try {
@@ -1934,6 +1950,7 @@ function bindBrowserImportControls(): void {
         if (runEpoch !== browserImportRunEpoch) return;
         browserImportQueueIndex = index;
         browserImportSourceSelected = false;
+        persistBrowserImportQueue();
         render();
         const selectedProfile = selectedProfiles[index];
         if (!selectedProfile) throw new Error("Browser selection queue is invalid");
@@ -1947,13 +1964,16 @@ function bindBrowserImportControls(): void {
           grant.grantId,
         );
         if (runEpoch !== browserImportRunEpoch) return;
-        if (receipt.persistedCount < 1
-          || receipt.persistedCount !== receipt.immediateRereadCount) {
+        if (receipt.persistedCount < 1) {
+          throw new Error("Nothing was imported from it");
+        }
+        if (receipt.persistedCount !== receipt.immediateRereadCount) {
           throw new Error("The saved browser account hints did not survive their immediate reread.");
         }
         scanReceipts.push(receipt);
         browserImportSourceSelected = true;
         browserImportFailureNotice = "";
+        persistBrowserImportQueue();
       }
       if (runEpoch !== browserImportRunEpoch) return;
       const ownerBeforeHydration = core.readiness.activeOslUserId;
@@ -1969,16 +1989,22 @@ function bindBrowserImportControls(): void {
       browserImportQueue = [];
       browserImportQueueIndex = 0;
       browserImportSourceSelected = false;
+      persistBrowserImportQueue();
       selectedBrowserProfileKeys.clear();
       resetOnboardingBranch();
       resetOnboardingConnections();
-      showToast("Saved browser account hints protected");
+      const finishProtectedBrowserImportCleanup = finishProtectedBrowserImport;
+      const activeOperation = finishProtectedBrowserImportCleanup();
+      await activeOperation;
+      await finishProtectedBrowserImportCleanup().catch(() => undefined);
+      showToast("Browser import finished");
       await enterCombinedAppChoice();
     } catch (failure) {
       if (runEpoch !== browserImportRunEpoch) return;
       browserImportQueue = [];
       browserImportQueueIndex = 0;
       browserImportSourceSelected = false;
+      persistBrowserImportQueue();
       selectedBrowserProfileKeys.clear();
       browserImportFailureNotice = localActionError(failure, "Saved browser account check did not finish");
       showToast(browserImportFailureNotice);
@@ -2003,6 +2029,7 @@ function bindBrowserImportControls(): void {
     browserImportQueue = [];
     browserImportQueueIndex = 0;
     browserImportSourceSelected = false;
+    persistBrowserImportQueue();
     selectedBrowserProfileKeys.clear();
     browserImportCancelling = false;
     resetOnboardingBranch();
@@ -2588,9 +2615,8 @@ function bindPasswordForm(): void {
           return;
         }
         if (unlockScreenDuressPinTriggeredWipe(gate)) {
-          identityStorageMethod = null;
+          clearIdentityStorageAfterBurnedGate(gate);
           localStorage.clear();
-          onboardingComplete = false;
           setup = parseSetupState(null);
           services = [];
           passwordRoleStatus = null;
@@ -2764,6 +2790,13 @@ function bindImportForm(): void {
   });
 }
 
+function clearIdentityStorageAfterBurnedGate(gate: Awaited<ReturnType<typeof unlockHubPasswordGate>>): void {
+  if (gate.outcome === "burned") {
+    identityStorageMethod = null;
+    onboardingComplete = false;
+  }
+}
+
 function workspaceProtectedSheetMarkup(): string {
   const protectedSheet = activeEmbeddedHost
     ? protectedSheetMode === "local"
@@ -2779,7 +2812,7 @@ function workspaceShellMarkup(): string {
 
 function renderWorkspace(): void {
   lastOnboardingMarkup = null;
-  const markup = workspaceShellMarkup();
+  const markup = `<div class="hub-layout with-primary-sidebar">${primarySidebarMarkup()}<section class="hub-workspace"><div class="desktop-top-row" data-tauri-drag-region="deep">${trustedHeader()}${desktopWindowControlsMarkup()}</div>${workspaceContent()}</section></div>${workspaceProtectedSheetMarkup()}`;
   let surface = root.querySelector<HTMLElement>("#workspace-render-surface");
   if (!surface) {
     // No separate 44px desktop titlebar row here: the drag region and window
