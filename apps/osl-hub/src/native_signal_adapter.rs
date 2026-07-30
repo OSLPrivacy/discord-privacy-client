@@ -126,6 +126,12 @@ pub struct SignalCarrierPlacement {
     pub prefix_proof_sha256: String,
 }
 
+#[derive(Clone, Eq, PartialEq)]
+pub struct SignalPaintGeometry {
+    pub paint_bounds: SignalRect,
+    pub authenticated_node_indices: Vec<usize>,
+}
+
 pub fn discover_signal_composer(
     nodes: &[SignalNode],
     window_bounds: SignalRect,
@@ -249,6 +255,41 @@ pub fn signal_carrier_prefix_proof_sha256(
     )
 }
 
+pub fn signal_paint_geometry(
+    row_bounds: SignalRect,
+    candidates: &[SignalRowCandidate],
+    authenticated_node_indices: &[usize],
+) -> Result<SignalPaintGeometry, SignalSelectorError> {
+    if !row_bounds.valid() || authenticated_node_indices.is_empty() {
+        return Err(SignalSelectorError::Missing);
+    }
+    let mut paint_bounds: Option<SignalRect> = None;
+    let mut accepted = Vec::new();
+    for node_index in authenticated_node_indices {
+        let Some(candidate) = candidates
+            .iter()
+            .find(|candidate| candidate.node_index == *node_index)
+        else {
+            return Err(SignalSelectorError::Invalid);
+        };
+        if !candidate.body_bounds.contained_by(row_bounds) {
+            return Err(SignalSelectorError::Invalid);
+        }
+        paint_bounds = Some(match paint_bounds {
+            Some(bounds) => bounds.union(candidate.body_bounds),
+            None => candidate.body_bounds,
+        });
+        accepted.push(*node_index);
+    }
+    let Some(paint_bounds) = paint_bounds else {
+        return Err(SignalSelectorError::Missing);
+    };
+    Ok(SignalPaintGeometry {
+        paint_bounds,
+        authenticated_node_indices: accepted,
+    })
+}
+
 fn signal_composer_candidate(node: &SignalNode, window_bounds: SignalRect) -> bool {
     let right_pane_left = window_bounds.left.saturating_add(window_bounds.width() / 3);
     let lower_band_top = window_bounds
@@ -277,6 +318,17 @@ fn signal_transcript_candidate(
         && node.bounds.bottom <= composer.bounds.top
         && node.bounds.height() >= window_bounds.height() / 4
         && node.bounds.horizontal_overlap(composer.bounds) >= required_overlap
+}
+
+impl SignalRect {
+    fn union(self, other: Self) -> Self {
+        Self {
+            left: self.left.min(other.left),
+            top: self.top.min(other.top),
+            right: self.right.max(other.right),
+            bottom: self.bottom.max(other.bottom),
+        }
+    }
 }
 
 fn descendants(nodes: &[SignalNode], root: usize) -> Result<Vec<usize>, SignalSelectorError> {
@@ -501,6 +553,54 @@ mod tests {
             })
             .map(|placement| placement.committed_text),
             Err(SignalSelectorError::Invalid)
+        );
+    }
+
+    #[test]
+    fn signal_geometry() {
+        let row_bounds = rect(420, 230, 1130, 340);
+        let candidates = vec![
+            SignalRowCandidate {
+                node_index: 10,
+                text: "authenticated first body".to_owned(),
+                body_bounds: rect(500, 245, 960, 270),
+            },
+            SignalRowCandidate {
+                node_index: 11,
+                text: "unauthenticated wide body".to_owned(),
+                body_bounds: rect(440, 272, 1120, 296),
+            },
+            SignalRowCandidate {
+                node_index: 12,
+                text: "authenticated second body".to_owned(),
+                body_bounds: rect(500, 300, 980, 326),
+            },
+        ];
+
+        let single = signal_paint_geometry(row_bounds, &candidates, &[12])
+            .expect("one authenticated body rectangle should paint");
+        assert_eq!(single.paint_bounds, rect(500, 300, 980, 326));
+        assert_eq!(single.authenticated_node_indices, vec![12]);
+
+        let paired = signal_paint_geometry(row_bounds, &candidates, &[10, 12])
+            .expect("authenticated body rectangles should union");
+        assert_eq!(paired.paint_bounds, rect(500, 245, 980, 326));
+        assert_eq!(paired.authenticated_node_indices, vec![10, 12]);
+
+        assert_eq!(
+            signal_paint_geometry(row_bounds, &candidates, &[11])
+                .map(|geometry| geometry.paint_bounds),
+            Ok(rect(440, 272, 1120, 296))
+        );
+        assert_eq!(
+            signal_paint_geometry(row_bounds, &candidates, &[99])
+                .map(|geometry| geometry.paint_bounds),
+            Err(SignalSelectorError::Invalid)
+        );
+        assert_eq!(
+            signal_paint_geometry(row_bounds, &candidates, &[])
+                .map(|geometry| geometry.paint_bounds),
+            Err(SignalSelectorError::Missing)
         );
     }
 }
