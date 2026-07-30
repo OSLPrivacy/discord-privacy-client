@@ -54,6 +54,15 @@ Failure caught by the test: a Cargo/Tauri build that runs first, or that ignores
 stale/missing `dist`, can produce a binary with an old renderer while claiming to
 contain the latest frontend source. That must fail rather than silently shipping.
 
+Executable self-test: `scripts/qa/osl-instance-b-build-wsl.sh --self-test` invokes
+`frontend_dist_is_embedded_after_frontend_build`. It creates a temporary repository,
+plants a fake frontend source tree and a fake build tool, and proves three outcomes:
+missing `dist` blocks, stale `dist` blocks, and a fresh `dist` is the only path that
+can stage a desktop executable. The test is behavioral: the passing case writes the
+bundle identifier through the fake build output and checks the staged executable,
+while the two negative cases check the harness exits at the build-order gate before
+any executable can be produced.
+
 ```rust
 #[test]
 fn frontend_dist_is_embedded_after_frontend_build() {
