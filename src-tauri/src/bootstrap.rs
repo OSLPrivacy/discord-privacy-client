@@ -162,17 +162,8 @@ fn run_autostart_mode(state: &AppState, register_online: bool) {
     let keyserver_cfg = read_keyserver_config(&base);
     let (identity_loaded, identity_regenerated) =
         load_or_generate_identity(state, &dir, keyserver_cfg.as_ref());
-    if identity_loaded {
-        match ipc::state_reload::load_persisted_prekey_state(state, &dir) {
-            Ok(true) => tracing::info!("OSL bootstrap: prekey state loaded"),
-            Ok(false) => {
-                tracing::info!("OSL bootstrap: no prekeys.json; first replenish tick will publish")
-            }
-            Err(e) => tracing::warn!(
-                error = %e,
-                "OSL bootstrap: prekey state refused; prekey-dependent work stays unavailable"
-            ),
-        }
+    if identity_loaded && identity_regenerated {
+        load_persisted_prekey_state_for_bootstrap(state, &dir);
     }
     // G3-FIX: keyserver.json is an OVERRIDE only. The base URL always
     // resolves (keyserver.json `base_url` if present+valid → else the
@@ -1228,7 +1219,7 @@ fn load_or_generate_identity(
                     path = %path.display(),
                     "OSL bootstrap: identity loaded"
                 );
-                install_loaded_identity(state, id);
+                install_loaded_identity(state, id, dir);
                 return (true, false);
             }
             Err(e) => {
@@ -1291,8 +1282,22 @@ fn load_or_generate_identity(
     (true, true)
 }
 
-fn install_loaded_identity(state: &AppState, identity: keystore::Identity) {
+fn install_loaded_identity(state: &AppState, identity: keystore::Identity, dir: &Path) {
     state.install_identity(identity);
+    load_persisted_prekey_state_for_bootstrap(state, dir);
+}
+
+fn load_persisted_prekey_state_for_bootstrap(state: &AppState, dir: &Path) {
+    match ipc::state_reload::load_persisted_prekey_state(state, dir) {
+        Ok(true) => tracing::info!("OSL bootstrap: prekey state loaded"),
+        Ok(false) => {
+            tracing::info!("OSL bootstrap: no prekeys.json; first replenish tick will publish")
+        }
+        Err(e) => tracing::warn!(
+            error = %e,
+            "OSL bootstrap: prekey state refused; prekey-dependent work stays unavailable"
+        ),
+    }
 }
 
 /// Init the keyserver client and call `register`.
@@ -1400,6 +1405,60 @@ mod multi_account_marker_tests {
             .clone()
             .expect("identity installed");
         assert_eq!(loaded_identity.user_id, identity.user_id);
+
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn load_or_generate_identity_loads_persisted_prekey_state_and_primes_replenishment() {
+        let dir = temp_dir("identity-prekeys-load");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let sealer = select_best_sealer();
+        let identity = generate_identity("persisted-prekey-owner".to_owned());
+        let identity_path = dir.join("identity.json");
+        save_identity(&identity_path, &identity, sealer.as_ref()).expect("save identity");
+
+        let mut persisted = keystore::PrekeyState::new(
+            &identity,
+            keystore::PrekeyConfig {
+                opk_pool_target: 7,
+                opk_replenish_threshold: 3,
+                spk_rotation_seconds: 86_400,
+            },
+            1234,
+        );
+        persisted.opk_pool.truncate(2);
+        let expected_next_opk_id = persisted.next_opk_id;
+        let expected_opk_ids = persisted
+            .opk_pool
+            .iter()
+            .map(|opk| opk.id)
+            .collect::<Vec<_>>();
+        let prekey_path = dir.join("prekeys.json");
+        keystore::save_prekey_state(&prekey_path, &persisted, sealer.as_ref())
+            .expect("save persisted prekeys");
+
+        let state = AppState::new();
+        assert_eq!(load_or_generate_identity(&state, &dir, None), (true, false));
+
+        let loaded = state
+            .prekey_state
+            .lock()
+            .expect("prekey_state mutex poisoned")
+            .clone()
+            .expect("persisted prekey state installed");
+        assert_eq!(loaded.current_spk.rotated_at_unix_seconds, 1234);
+        assert_eq!(loaded.config.opk_pool_target, 7);
+        assert_eq!(loaded.config.opk_replenish_threshold, 3);
+        assert_eq!(loaded.next_opk_id, expected_next_opk_id);
+        assert_eq!(
+            loaded.opk_pool.iter().map(|opk| opk.id).collect::<Vec<_>>(),
+            expected_opk_ids
+        );
+        assert!(
+            loaded.should_replenish(loaded.opk_pool.len() as u32),
+            "loaded low-water persisted pool must be ready for the replenish driver"
+        );
 
         std::fs::remove_dir_all(dir).expect("cleanup");
     }
