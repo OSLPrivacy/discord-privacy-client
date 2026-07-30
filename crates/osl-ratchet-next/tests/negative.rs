@@ -256,7 +256,13 @@ fn a_restored_session_cannot_reuse_a_consumed_message_key() {
     let after = bob.export_state().expect("export");
 
     let mut restored = Session::import_state(&after).expect("import");
+    let restored_before_replay = restored.export_state().expect("export restored");
     assert_eq!(restored.decrypt(&w, &mut rng), Err(Error::AuthFailed));
+    assert_eq!(
+        restored.export_state().expect("export restored after replay"),
+        restored_before_replay,
+        "rejected replay mutated the restored session"
+    );
     let fresh = alice
         .encrypt(0, b"after consumed replay", &mut rng)
         .expect("fresh send");
@@ -290,7 +296,15 @@ fn a_restored_session_cannot_reuse_a_consumed_message_key() {
     let after_skipped_use = bob.export_state().expect("export skipped state");
     let mut restored =
         Session::import_state(&after_skipped_use).expect("import skipped state");
+    let restored_before_skipped_replay = restored
+        .export_state()
+        .expect("export restored skipped");
     assert_eq!(restored.decrypt(&first, &mut rng), Err(Error::AuthFailed));
+    assert_eq!(
+        restored.export_state().expect("export restored skipped after replay"),
+        restored_before_skipped_replay,
+        "rejected skipped-key replay mutated the restored session"
+    );
     assert_eq!(
         restored
             .decrypt(&second, &mut rng)
