@@ -8772,11 +8772,39 @@ mod tests {
 
     #[test]
     fn audit_control_inbox_consumers_have_no_active_peer_unfiltered_drain() {
-        fn production(source: &str) -> &str {
-            source
-                .split_once("\n#[cfg(test)]")
-                .map(|(production, _)| production)
-                .unwrap_or(source)
+        /// Strip every `#[cfg(test)]` item, keeping all production code.
+        ///
+        /// This used to `split_once("\n#[cfg(test)]")` and keep only the prefix.
+        /// crates/ipc/src/commands.rs has 37 test blocks and the first starts at
+        /// line 38 of 17088, so the audit was inspecting 37 lines of the file and
+        /// silently passing over everything it was written to check.
+        fn production(source: &str) -> String {
+            let mut kept = String::with_capacity(source.len());
+            let mut lines = source.lines().peekable();
+            while let Some(line) = lines.next() {
+                if line.trim_start() != "#[cfg(test)]" {
+                    kept.push_str(line);
+                    kept.push('\n');
+                    continue;
+                }
+                // Skip any further attributes, then the item the attribute guards.
+                while lines.peek().is_some_and(|next| next.starts_with("#[")) {
+                    lines.next();
+                }
+                match lines.next() {
+                    // A brace-opening item ends at the first `}` in column zero.
+                    Some(item) if item.ends_with('{') => {
+                        for body in lines.by_ref() {
+                            if body == "}" {
+                                break;
+                            }
+                        }
+                    }
+                    // `#[cfg(test)] use ...;` and friends are a single line.
+                    _ => {}
+                }
+            }
+            kept
         }
 
         fn between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
@@ -8788,8 +8816,11 @@ mod tests {
         }
 
         let broker = production(include_str!("broker.rs"));
+        let broker = broker.as_str();
         let client = production(include_str!("../../../crates/keystore/src/client.rs"));
+        let client = client.as_str();
         let ipc_commands = production(include_str!("../../../crates/ipc/src/commands.rs"));
+        let ipc_commands = ipc_commands.as_str();
 
         let broker_fetch = between(
             broker,
@@ -10120,6 +10151,10 @@ mod tests {
             include_str!("../../osl-hub-ui/src/updates.ts"),
             include_str!("../../osl-hub-ui/src/mass-cleanup.ts"),
             include_str!("../../osl-hub-ui/src/discord-headless-qa-adapter.ts"),
+            // ui-behavior.ts invokes remove_hub_friend and was not scanned, so any
+            // command reached only from there could stay undeclared and ungranted --
+            // exactly what this test exists to catch.
+            include_str!("../../osl-hub-ui/src/ui-behavior.ts"),
         ] {
             commands.extend(literal_renderer_invokes(source));
         }
