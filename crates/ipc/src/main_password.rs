@@ -64,6 +64,7 @@ const ARGON_OUTPUT_LEN: usize = 64; // 32 hash + 32 AES key
 const HASH_LEN: usize = 32;
 const KEY_LEN: usize = 32;
 const NONCE_LEN: usize = 12;
+pub const INACTIVITY_AUTO_LOCK_SECONDS: i64 = 15 * 60;
 
 const ARGON_MEMORY_KB: u32 = 65_536; // 64 MiB
 const ARGON_ITERATIONS: u32 = 3;
@@ -870,9 +871,14 @@ fn marker_phrase_hash(marker: &PasswordMarker) -> Option<String> {
 use std::sync::{Mutex, OnceLock};
 
 static FILE_STORAGE_KEY: OnceLock<Mutex<Option<[u8; 32]>>> = OnceLock::new();
+static LAST_MAIN_PASSWORD_ACTIVITY: OnceLock<Mutex<Option<i64>>> = OnceLock::new();
 
 fn file_storage_slot() -> &'static Mutex<Option<[u8; 32]>> {
     FILE_STORAGE_KEY.get_or_init(|| Mutex::new(None))
+}
+
+fn main_password_activity_slot() -> &'static Mutex<Option<i64>> {
+    LAST_MAIN_PASSWORD_ACTIVITY.get_or_init(|| Mutex::new(None))
 }
 
 /// Public accessor used by peer_map / whitelist_state /
@@ -900,6 +906,47 @@ pub fn set_file_storage_key(key: Option<[u8; 32]>) {
     } else if !is_some && was_some {
         eprintln!("[OSL][crypto] file_storage_key cleared");
     }
+    if is_some {
+        record_main_password_activity_at(now_unix_secs());
+    } else {
+        clear_main_password_activity();
+    }
+}
+
+pub fn record_main_password_activity() {
+    record_main_password_activity_at(now_unix_secs());
+}
+
+fn record_main_password_activity_at(now: i64) {
+    *main_password_activity_slot()
+        .lock()
+        .expect("main_password_activity mutex poisoned") = Some(now);
+}
+
+fn clear_main_password_activity() {
+    *main_password_activity_slot()
+        .lock()
+        .expect("main_password_activity mutex poisoned") = None;
+}
+
+pub fn run_inactivity_auto_lock_timer() -> bool {
+    run_inactivity_auto_lock_timer_at(now_unix_secs())
+}
+
+fn run_inactivity_auto_lock_timer_at(now: i64) -> bool {
+    if get_file_storage_key().is_none() {
+        clear_main_password_activity();
+        return false;
+    }
+    let should_lock = main_password_activity_slot()
+        .lock()
+        .expect("main_password_activity mutex poisoned")
+        .as_ref()
+        .is_some_and(|last| now.saturating_sub(*last) >= INACTIVITY_AUTO_LOCK_SECONDS);
+    if should_lock {
+        set_file_storage_key(None);
+    }
+    should_lock
 }
 
 /// Ensure this no-main-password install still has an encrypted
@@ -1435,6 +1482,31 @@ mod password_policy_tests {
         assert!(validate_new_password("short").is_err());
         assert!(validate_new_password(&"x".repeat(PASSWORD_MAX_LEN + 1)).is_err());
         assert!(validate_new_password("twelve\nchars").is_err());
+    }
+
+    #[test]
+    fn run_inactivity_auto_lock_timer() {
+        set_file_storage_key(None);
+        set_file_storage_key(Some([0x42; 32]));
+        record_main_password_activity_at(1_000);
+
+        assert!(!super::run_inactivity_auto_lock_timer_at(
+            1_000 + INACTIVITY_AUTO_LOCK_SECONDS - 1
+        ));
+        assert_eq!(get_file_storage_key(), Some([0x42; 32]));
+
+        record_main_password_activity_at(1_500);
+        assert!(!super::run_inactivity_auto_lock_timer_at(
+            1_500 + INACTIVITY_AUTO_LOCK_SECONDS - 1
+        ));
+        assert_eq!(get_file_storage_key(), Some([0x42; 32]));
+
+        assert!(super::run_inactivity_auto_lock_timer_at(
+            1_500 + INACTIVITY_AUTO_LOCK_SECONDS
+        ));
+        assert_eq!(get_file_storage_key(), None);
+
+        set_file_storage_key(None);
     }
 
     #[test]
