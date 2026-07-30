@@ -12969,6 +12969,61 @@ impl<'a> MessageStorePause<'a> {
     }
 }
 
+fn open_production_message_store(
+    app_data_dir: &Path,
+    identity_secret: &[u8; 32],
+) -> Result<MessageStore, StoreError> {
+    let anchor = Arc::new(keystore::KeystoreBackedAnchor::production());
+    open_production_message_store_anchored(app_data_dir, identity_secret, anchor)
+}
+
+#[cfg(not(test))]
+fn open_production_message_store_anchored(
+    app_data_dir: &Path,
+    identity_secret: &[u8; 32],
+    anchor: Arc<keystore::KeystoreBackedAnchor>,
+) -> Result<MessageStore, StoreError> {
+    MessageStore::open_anchored(app_data_dir, identity_secret, anchor)
+}
+
+#[cfg(test)]
+type ProductionMessageStoreOpenHook = Box<
+    dyn Fn(
+            &Path,
+            &[u8; 32],
+            Arc<keystore::KeystoreBackedAnchor>,
+        ) -> Result<MessageStore, StoreError>
+        + Send
+        + Sync
+        + 'static,
+>;
+
+#[cfg(test)]
+type ProductionMessageStoreOpenHookSlot = std::sync::Mutex<Option<ProductionMessageStoreOpenHook>>;
+
+#[cfg(test)]
+fn production_message_store_open_hook() -> &'static ProductionMessageStoreOpenHookSlot {
+    static HOOK: std::sync::OnceLock<ProductionMessageStoreOpenHookSlot> =
+        std::sync::OnceLock::new();
+    HOOK.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(test)]
+fn open_production_message_store_anchored(
+    app_data_dir: &Path,
+    identity_secret: &[u8; 32],
+    anchor: Arc<keystore::KeystoreBackedAnchor>,
+) -> Result<MessageStore, StoreError> {
+    if let Some(hook) = production_message_store_open_hook()
+        .lock()
+        .expect("production message store open hook mutex poisoned")
+        .as_ref()
+    {
+        return hook(app_data_dir, identity_secret, anchor);
+    }
+    MessageStore::open_anchored(app_data_dir, identity_secret, anchor)
+}
+
 impl Drop for MessageStorePause<'_> {
     fn drop(&mut self) {
         if !self.was_open {
@@ -12983,7 +13038,7 @@ impl Drop for MessageStorePause<'_> {
         let Some(secret) = secret else {
             return;
         };
-        match MessageStore::open(&self.dir.join("store"), &secret) {
+        match open_production_message_store(&self.dir.join("store"), &secret) {
             Ok(store) => {
                 if let Ok(mut slot) = self.state.message_store.lock() {
                     *slot = Some(store);
@@ -13213,6 +13268,17 @@ mod account_transfer_tests {
     use tempfile::TempDir;
 
     static FILE_KEY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static PRODUCTION_STORE_OPEN_HOOK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct ProductionStoreOpenHookReset;
+
+    impl Drop for ProductionStoreOpenHookReset {
+        fn drop(&mut self) {
+            *production_message_store_open_hook()
+                .lock()
+                .expect("production message store open hook mutex poisoned") = None;
+        }
+    }
 
     fn state_with_entropy(entropy: [u8; 16]) -> AppState {
         let state = AppState::new();
@@ -13234,6 +13300,55 @@ mod account_transfer_tests {
         )
         .unwrap();
         serde_json::from_slice(&plaintext).unwrap()
+    }
+
+    #[test]
+    fn production_store_opens_use_keystore_backed_anchor() {
+        let _serial = PRODUCTION_STORE_OPEN_HOOK_TEST_LOCK.lock().unwrap();
+        let _reset = ProductionStoreOpenHookReset;
+        let dir = TempDir::new().unwrap();
+        let state = AppState::new();
+        let identity = keystore::generate_identity("production-store-anchor-owner".to_string());
+        let secret = *identity.x25519_secret.as_bytes();
+        state.install_identity(identity);
+
+        let store = MessageStore::open(&dir.path().join("store"), &secret).unwrap();
+        *state.message_store.lock().unwrap() = Some(store);
+
+        let observed_anchor_debug = Arc::new(std::sync::Mutex::new(None::<String>));
+        let observed_anchor_debug_for_hook = Arc::clone(&observed_anchor_debug);
+        let expected_store_dir = dir.path().join("store");
+        *production_message_store_open_hook()
+            .lock()
+            .expect("production message store open hook mutex poisoned") =
+            Some(Box::new(move |app_data_dir, identity_secret, anchor| {
+                assert_eq!(app_data_dir, expected_store_dir.as_path());
+                assert_eq!(identity_secret, &secret);
+                *observed_anchor_debug_for_hook.lock().unwrap() = Some(format!("{anchor:?}"));
+                Err(StoreError::Anchor(
+                    "test hook refused anchored reopen".to_string(),
+                ))
+            }));
+
+        {
+            let pause = MessageStorePause::new(&state, dir.path()).unwrap();
+            assert!(state.message_store.lock().unwrap().is_none());
+            drop(pause);
+        }
+
+        let debug = observed_anchor_debug
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("production reopen hook must observe an anchor provider");
+        assert!(
+            debug.contains("KeystoreBackedAnchor"),
+            "production reopen must use the keystore-backed anchor, got {debug}"
+        );
+        assert!(
+            state.message_store.lock().unwrap().is_none(),
+            "hook refusal should leave the slot closed; a direct unanchored reopen would repopulate it"
+        );
     }
 
     #[test]
