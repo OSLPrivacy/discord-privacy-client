@@ -50,6 +50,41 @@ Fail condition: the package is rejected if deletion is inferred from a UI transi
 post-delete IMAP re-read, has no retained negative control, is not tied to the exact executable/run,
 or describes live-provider/account-wide deletion beyond the seeded fixture.
 
+Structured receipt-package contract:
+
+```json
+{
+  "schemaVersion": 1,
+  "test": "seeded_windows_imap_receipt_package_positive_and_negative",
+  "requiredEvidence": [
+    "immutable_windows_executable",
+    "run_id",
+    "fixture_mailbox",
+    "reviewed_manifest",
+    "positive_seeded_message_locator",
+    "negative_control_locator",
+    "attended_imap_authority",
+    "post_delete_imap_reread"
+  ],
+  "positiveRequirement": {
+    "seededMessageAbsentAfterReread": true,
+    "deletionAuthority": "attended_imap_authority"
+  },
+  "negativeRequirement": {
+    "minimumRetainedNegativeControls": 1,
+    "negativeControlsRemainPresent": true
+  },
+  "rejectedIf": [
+    "ui_transition_only",
+    "missing_post_delete_imap_reread",
+    "missing_negative_control",
+    "not_bound_to_exact_executable_or_run",
+    "claims_live_provider_or_account_wide_deletion"
+  ],
+  "status": "receipt-contract-defined"
+}
+```
+
 ### Messaging
 
 `A2 recovery-derived full-bundle identity → scheme-1 prekey client/server → A3 attribution and A4
