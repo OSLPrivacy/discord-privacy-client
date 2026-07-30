@@ -367,16 +367,19 @@ fn now_secs() -> i64 {
 #[test]
 fn sealed_relay_post_run_reset_cleanup() {
     let relay = RelayServer::start();
+    let relay_address = relay.address.clone();
     let storage = TestStorage::new();
     let root = storage.root.clone();
     let account_dir = storage.account("cleanup-account", &relay.base_url());
     TestStorage::activate(&account_dir);
 
-    assert_eq!(keystore::active_account_dir(), Some(account_dir));
+    assert_eq!(keystore::active_account_dir(), Some(account_dir.clone()));
     assert!(ipc::main_password::get_file_storage_key().is_some());
     assert!(root.exists());
+    assert!(account_dir.exists());
 
     drop(storage);
+    drop(relay);
 
     assert!(keystore::active_account_dir().is_none());
     assert!(ipc::main_password::get_file_storage_key().is_none());
@@ -389,6 +392,10 @@ fn sealed_relay_post_run_reset_cleanup() {
     assert!(
         !root.exists(),
         "isolated sealed relay fixture root must be removed after the run"
+    );
+    assert!(
+        TcpStream::connect(&relay_address).is_err(),
+        "sealed relay fixture listener must be stopped after the run"
     );
 }
 
