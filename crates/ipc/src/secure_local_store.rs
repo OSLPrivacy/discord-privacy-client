@@ -443,12 +443,26 @@ mod tests {
     fn sealed_store_put_get_round_trips_through_the_full_trait() {
         let store = SealedStore::new(test_key(), InMemoryBackend::default());
         let id = RecordId::new("notification", "notif-42");
+        let plaintext: &[u8] = b"hello from the secure trait path";
+        let api: &dyn SecureLocalStore = &store;
 
-        store.put(&id, b"hello").expect("put with key");
-        let got = store.get(&id).expect("get with key");
+        api.put(&id, plaintext).expect("put with key");
+        let got = api.get(&id).expect("get with key");
 
-        assert_eq!(got, b"hello");
-        assert!(store.has_key());
+        assert_eq!(got, plaintext);
+        assert!(api.has_key());
+        let stored_blob = store
+            .backend
+            .read_blob(&id.storage_key())
+            .unwrap()
+            .expect("trait put should persist one sealed blob");
+        assert_ne!(stored_blob.as_slice(), plaintext);
+        assert!(
+            !stored_blob
+                .windows(plaintext.len())
+                .any(|window| window == plaintext),
+            "full trait put must persist sealed bytes, not plaintext"
+        );
     }
 
     #[test]
