@@ -898,7 +898,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_identity_binding_rejects_all_mutated_bindings() {
+    fn verify_identity_binding_rejects_all_mutated_bindings_second_path() {
         let target_owner = owner(90);
         let target_account = account_on("discord", "account-a");
         let target_scope = BindingScope::ScrubDeletion;
