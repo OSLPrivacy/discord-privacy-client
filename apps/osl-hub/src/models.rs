@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// How an encrypted capsule would be handed to a service composer.
 ///
@@ -28,8 +28,8 @@ pub enum PlacementMode {
     Compatibility,
 }
 
-#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OnboardingPreferences {
     pub onboarding_complete: bool,
     pub send_mode: SendMode,
@@ -54,6 +54,36 @@ impl Default for OnboardingPreferences {
             window_capture_enabled: true,
             acknowledge_experimental_send_risk: false,
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for OnboardingPreferences {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct WirePreferences {
+            onboarding_complete: bool,
+            send_mode: SendMode,
+            placement_mode: PlacementMode,
+            show_plaintext_preview: bool,
+            #[serde(default = "default_true")]
+            window_capture_enabled: bool,
+            acknowledge_experimental_send_risk: bool,
+        }
+
+        let preferences = WirePreferences::deserialize(deserializer)?;
+        Ok(Self {
+            onboarding_complete: preferences.onboarding_complete,
+            send_mode: preferences.send_mode,
+            placement_mode: preferences.placement_mode,
+            show_plaintext_preview: preferences.show_plaintext_preview,
+            window_capture_enabled: preferences.window_capture_enabled,
+            acknowledge_experimental_send_risk: preferences.acknowledge_experimental_send_risk,
+        }
+        .fail_closed())
     }
 }
 
@@ -95,6 +125,37 @@ mod tests {
             assert_eq!(serde_json::to_string(&mode).unwrap(), expected);
             assert_eq!(serde_json::from_str::<SendMode>(expected).unwrap(), mode);
         }
+
+        let default_contract = serde_json::json!({
+            "onboardingComplete": false,
+            "sendMode": "manual",
+            "placementMode": "atomic",
+            "showPlaintextPreview": true,
+            "windowCaptureEnabled": true,
+            "acknowledgeExperimentalSendRisk": false,
+        });
+        assert_eq!(
+            serde_json::to_value(OnboardingPreferences::default()).unwrap(),
+            default_contract
+        );
+        assert_eq!(
+            serde_json::from_value::<OnboardingPreferences>(default_contract).unwrap(),
+            OnboardingPreferences::default()
+        );
+
+        let incomplete_risk_acknowledgement = serde_json::json!({
+            "onboardingComplete": true,
+            "sendMode": "double",
+            "placementMode": "atomic",
+            "showPlaintextPreview": true,
+            "windowCaptureEnabled": true,
+            "acknowledgeExperimentalSendRisk": false,
+        });
+        assert!(
+            !serde_json::from_value::<OnboardingPreferences>(incomplete_risk_acknowledgement)
+                .unwrap()
+                .onboarding_complete
+        );
     }
 
     #[test]
