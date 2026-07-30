@@ -30,6 +30,7 @@ pub mod native_window_host;
 pub mod proprietary_module_boundary;
 pub mod proprietary_module_lifecycle;
 pub mod hosted_port;
+pub mod hosted_audience;
 pub mod hosted_provider_recipe;
 pub mod owner_presence;
 #[cfg(feature = "core")]
@@ -84,6 +85,7 @@ pub mod qa_selftest_request;
 #[cfg(feature = "core")]
 pub mod scrub_index;
 pub mod scrub_imap;
+pub mod scrub_receipt;
 #[cfg(feature = "core")]
 pub mod security;
 #[cfg(feature = "core")]

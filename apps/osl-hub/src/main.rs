@@ -1008,10 +1008,16 @@ async fn unlock_hub_password_gate(
 }
 
 #[tauri::command]
-async fn create_hub_osl_identity(app: tauri::AppHandle) -> Result<HubIdentitySetupResult, String> {
+async fn create_hub_osl_identity(
+    app: tauri::AppHandle,
+    owner_authorized: bool,
+) -> Result<HubIdentitySetupResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<HubCoreState>();
-        password_lifecycle::create_native_identity(&state)
+        let authorization = owner_authorized.then_some(
+            password_lifecycle::IdentityCreationOwnerAuthorization::ExplicitOwnerSignoff,
+        );
+        password_lifecycle::create_native_identity(&state, authorization)
     })
     .await
     .map_err(|_| "OSL identity setup worker failed".to_string())?
