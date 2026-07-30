@@ -1879,18 +1879,25 @@ mod tests {
 
     #[test]
     fn autoscrub_run_wipes_isolated_environment_after_each_exit() {
-        let root = temp_root("autoscrub-env");
-        let secret_file = root.join("session.bin");
-        let mut env =
-            IsolatedRunEnvironment::new(root.clone(), b"session-secret".to_vec()).unwrap();
-        fs::write(&secret_file, b"disk-secret").unwrap();
-        assert!(secret_file.exists());
-        assert!(env.memory().iter().any(|byte| *byte != 0));
+        for suffix in ["first", "second"] {
+            let root = temp_root(&format!("autoscrub-env-{suffix}"));
+            let nested = root.join("profile").join("cache");
+            let secret_file = nested.join("session.bin");
+            let mut env = IsolatedRunEnvironment::new(
+                root.clone(),
+                format!("session-secret-{suffix}").into_bytes(),
+            )
+            .unwrap();
+            fs::create_dir_all(&nested).unwrap();
+            fs::write(&secret_file, format!("disk-secret-{suffix}")).unwrap();
+            assert!(secret_file.exists());
+            assert!(env.memory().iter().any(|byte| *byte != 0));
 
-        env.exit().unwrap();
+            env.exit().unwrap();
 
-        assert!(!root.exists());
-        assert!(env.memory().iter().all(|byte| *byte == 0));
+            assert!(!root.exists());
+            assert!(env.memory().iter().all(|byte| *byte == 0));
+        }
     }
 
     #[test]
