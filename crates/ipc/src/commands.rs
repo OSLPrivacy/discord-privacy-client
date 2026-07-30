@@ -5873,7 +5873,11 @@ mod rn_inbound_unknown_tests {
         keystore::sealer::MemorySealer,
     ) {
         let mut rng = seeded_rng(0xB62);
-        let (bob_prekeys, bob_bundle) = fresh_bundle(&mut rng);
+        let (bob_prekeys, mut bob_bundle) = fresh_bundle(&mut rng);
+        // AppState identities do not persist RN one-time prekeys. Build
+        // this command-level fixture from the production identity fields
+        // only: IK, signed prekey, and ML-KEM prekey.
+        bob_bundle.one_time_prekey = None;
         let (alice_identity, alice_identity_pub) =
             osl_ratchet_next::primitives::x25519_keypair(&mut rng);
         let binding = osl_ratchet_next::Negotiation::for_rn(

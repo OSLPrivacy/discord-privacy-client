@@ -231,6 +231,7 @@ pub enum IdentityBundleError {
     MalformedEd25519PublicKey,
     MalformedRegistrationSignature,
     UnsupportedCapabilityBitmap,
+    CanonicalIdentityProofInvalid,
     SignatureMismatch,
 }
 
@@ -248,6 +249,9 @@ impl fmt::Display for IdentityBundleError {
             }
             IdentityBundleError::UnsupportedCapabilityBitmap => {
                 "identity bundle capability bitmap is unsupported"
+            }
+            IdentityBundleError::CanonicalIdentityProofInvalid => {
+                "canonical identity bundle proof invalid"
             }
             IdentityBundleError::SignatureMismatch => {
                 "identity bundle registration signature does not verify"
@@ -271,6 +275,12 @@ impl std::error::Error for IdentityBundleError {}
 pub fn validate_peer_bundle(
     resp: &PubkeysResponse,
 ) -> core::result::Result<(), IdentityBundleError> {
+    if has_canonical_identity_authority(resp) {
+        crate::identity_bundle::validate_scheme1_pubkeys_response(resp)
+            .map_err(|_| IdentityBundleError::CanonicalIdentityProofInvalid)?;
+        return Ok(());
+    }
+
     let Some(sig_b64) = resp.registration_sig.as_deref() else {
         return Err(IdentityBundleError::MissingRegistrationSignature);
     };
@@ -324,6 +334,14 @@ pub fn validate_peer_bundle(
     } else {
         Err(IdentityBundleError::SignatureMismatch)
     }
+}
+
+fn has_canonical_identity_authority(resp: &PubkeysResponse) -> bool {
+    resp.identity_scheme.is_some()
+        || resp.identity_bundle_version.is_some()
+        || resp.identity_revision.is_some()
+        || resp.ik_root_ed25519_pub.is_some()
+        || resp.identity_bundle_proof_sig.is_some()
 }
 
 /// Compatibility wrapper for existing callers that only need a fail-closed
@@ -1966,6 +1984,16 @@ mod tests {
     }
 
     #[test]
+    fn validate_peer_bundle_accepts_canonical_scheme1_identity_proofs() {
+        let identity = generate_identity("peer".to_owned());
+        let scheme1 =
+            crate::identity_bundle::scheme1_pubkeys_response_for_test(&identity, 1, RN_CAP_WIRE_RN);
+
+        assert_eq!(validate_peer_bundle(&scheme1), Ok(()));
+        assert!(verify_peer_bundle(&scheme1));
+    }
+
+    #[test]
     fn validate_peer_bundle_reports_missing_or_malformed_signature_material() {
         let identity = generate_identity("peer".to_owned());
 
@@ -2008,6 +2036,15 @@ mod tests {
             Err(IdentityBundleError::SignatureMismatch)
         );
         assert!(!verify_peer_bundle(&tampered_capability));
+
+        let mut tampered_scheme1 =
+            crate::identity_bundle::scheme1_pubkeys_response_for_test(&identity, 1, RN_CAP_WIRE_RN);
+        tampered_scheme1.ik_x25519_pub = STANDARD.encode([0x42u8; 32]);
+        assert_eq!(
+            validate_peer_bundle(&tampered_scheme1),
+            Err(IdentityBundleError::CanonicalIdentityProofInvalid)
+        );
+        assert!(!verify_peer_bundle(&tampered_scheme1));
     }
 
     #[test]
