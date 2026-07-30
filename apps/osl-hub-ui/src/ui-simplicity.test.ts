@@ -16,9 +16,11 @@ describe("radically simple onboarding", () => {
     const sending = functionSource("sendingSetupContent", "coverDraftSetupContent");
     expect(sending).toContain("Choose how to send");
     expect(sending).toContain("manualSendingAnimationMarkup(selectedMode)");
-    expect(sending).toContain('"Copy", "Encrypts and copies. Never presses Send.", "Recommended"');
+    expect(sending).toContain('"Manual", "OSL prepares the protected message; you place it and send it.", "Recommended"');
+    expect(sending).toContain('"Clipboard", "OSL encrypts and copies; you paste it and send it."');
+    expect(sending).toContain('"Double Enter", "First Enter prepares and places. A second distinct Enter sends after another exact check."');
     expect(sending).not.toContain('<details class="send-mode-advanced"');
-    expect(sending).toContain('"Single Enter"');
+    expect(sending).not.toContain('option("single", "Single Enter"');
   });
 });
 
