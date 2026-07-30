@@ -446,18 +446,20 @@ describe("browser-owned import IPC", () => {
   it("production renderer caller wiring in main.ts", () => {
     const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
     const start = source.indexOf("function bindBrowserImportControls(): void {");
-    const end = source.indexOf("async function ensureFirefoxForProtectedImport(): Promise<void> {");
+    const end = source.indexOf("async function refreshBrowserImportReadiness(): Promise<void> {");
     expect(start).toBeGreaterThanOrEqual(0);
     expect(end).toBeGreaterThan(start);
     const bindBrowserImportControls = source.slice(start, end);
 
-    expect(bindBrowserImportControls).toContain("browserImportQueue = [...selectedBrowserImportIds];");
-    expect(bindBrowserImportControls).toContain("const operation = beginProtectedBrowserImport([currentSource]);");
-    expect(bindBrowserImportControls).toContain("browserImportOperation = operation;");
-    expect(bindBrowserImportControls).toContain("await finishProtectedBrowserImport();");
-    expect(bindBrowserImportControls).toContain("await activeOperation?.catch(() => undefined);");
-    expect(bindBrowserImportControls.indexOf("const operation = beginProtectedBrowserImport([currentSource]);"))
-      .toBeLessThan(bindBrowserImportControls.indexOf("await finishProtectedBrowserImport();"));
+    expect(bindBrowserImportControls).toContain("const selectedProfiles = browserProfiles.filter");
+    expect(bindBrowserImportControls).toContain("const grant = await grantBrowserProfileConsent(");
+    expect(bindBrowserImportControls).toContain("const receipt = await scanConsentedBrowserProfile(");
+    expect(bindBrowserImportControls).toContain("const hydration = await loadDetectedBrowserFootprint(scanReceipts)");
+    expect(bindBrowserImportControls).toContain("applyNativeBrowserFootprint(hydration)");
+    expect(bindBrowserImportControls.indexOf("const grant = await grantBrowserProfileConsent("))
+      .toBeLessThan(bindBrowserImportControls.indexOf("const receipt = await scanConsentedBrowserProfile("));
+    expect(bindBrowserImportControls.indexOf("const receipt = await scanConsentedBrowserProfile("))
+      .toBeLessThan(bindBrowserImportControls.indexOf("const hydration = await loadDetectedBrowserFootprint(scanReceipts)"));
   });
 
   it("permits the explicit existing-session mode for Signal", async () => {
