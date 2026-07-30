@@ -56,6 +56,19 @@ const REQUIRED_ATTACHMENT_BANS = [
   "discord receives harmless cover files instead of the attachment",
   "uploaded files are opaque to discord's scanners",
 ];
+const REQUIRED_FORBIDDEN_SUPPORT_PHRASES = [
+  "burn deletes provider messages",
+  "burn removes provider messages",
+  "burn deletes discord messages",
+  "burn removes discord messages",
+  "burn unsends messages",
+  "signal support is available",
+  "whatsapp support is available",
+  "osl supports signal",
+  "osl supports whatsapp",
+  "works on signal",
+  "works on whatsapp",
+];
 const REQUIRED_CONDITIONAL_APP_EVIDENCE = [
   {
     id: "telegram_desktop_native",
@@ -1988,6 +2001,14 @@ function bannedPhraseInputFailures(bannedPhrases) {
       actual: attachmentBanCount,
     });
   }
+  const supportPhraseCount = REQUIRED_FORBIDDEN_SUPPORT_PHRASES.filter((phrase) => present.has(phrase)).length;
+  if (supportPhraseCount < REQUIRED_FORBIDDEN_SUPPORT_PHRASES.length) {
+    failures.push({
+      name: "forbidden_support_phrases",
+      expected: REQUIRED_FORBIDDEN_SUPPORT_PHRASES.length,
+      actual: supportPhraseCount,
+    });
+  }
   return failures;
 }
 
@@ -2119,6 +2140,16 @@ async function runSelfTest() {
     {
       name: "catches permanent ciphertext",
       text: "All sent messages become permanent ciphertext.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches banned provider Burn deletion wording",
+      text: "Burn unsends messages from the connected service.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches banned Signal support wording",
+      text: "OSL supports Signal for protected messages.",
       shouldFlag: true,
     },
     {
@@ -2915,8 +2946,11 @@ async function runSelfTest() {
         "disappears forever",
         "permanently undecryptable",
         "gone for good",
+        "burn unsends messages",
         "works on gmail",
         "works on discord",
+        "osl supports signal",
+        "works on whatsapp",
         "provider-tested",
         "verified by discord",
         "works with discord's approval",
@@ -2934,6 +2968,12 @@ async function runSelfTest() {
         "malware detection",
         "protection score",
       ].every((phrase) => bannedPhrases.some((parsed) => parsed.normalized === phrase)),
+    },
+    {
+      name: "forbidden_support_phrases",
+      passed: bannedPhraseInputFailures(bannedPhrases).every(
+        (failure) => failure.name !== "forbidden_support_phrases",
+      ),
     },
     {
       name: "renamed section D fails the production phrase floor",
