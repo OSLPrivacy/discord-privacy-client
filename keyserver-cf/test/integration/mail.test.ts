@@ -46,6 +46,15 @@ describe("OSL Mail Worker", () => {
     const old = await env.DB.prepare("SELECT state FROM mail_address_epochs WHERE address='alice@oslprivacy.com'").first<{ state: string }>();
     expect(old?.state).toBe("tombstoned");
 
+    await env.DB.prepare("DELETE FROM username_directory WHERE user_id = ?").bind(alice.userId).run();
+    await env.DB.prepare("INSERT INTO username_directory(username,user_id,friend_code,claimed_at,updated_at) VALUES ('alice',?,?,?,?)")
+      .bind(alice.userId, "friend-code-placeholder", new Date().toISOString(), new Date().toISOString()).run();
+    response = await signedPost("/v1/mail/address", "PROVISION", alice, { username: "alice", rotate: true });
+    expect(response.status).toBe(409);
+    const stillActive = await env.DB.prepare("SELECT state FROM mail_address_epochs WHERE address='alice_new@oslprivacy.com'").first<{ state: string }>();
+    expect(stillActive?.state).toBe("active");
+
+    await env.DB.prepare("DELETE FROM username_directory WHERE username = 'alice'").run();
     const mallory = await createIdentity("mallory-id", "alice");
     response = await signedPost("/v1/mail/address", "PROVISION", mallory, { username: "alice", rotate: false });
     expect(response.status).toBe(409);
