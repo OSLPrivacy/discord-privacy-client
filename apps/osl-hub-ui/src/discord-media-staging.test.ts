@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
+
 import {
   DISCORD_MEDIA_CAPTION_MAX_BYTES,
   advanceDiscordMediaStage,
@@ -18,6 +22,7 @@ import {
   setDiscordMediaViewOnce,
   stageDiscordMedia,
 } from "./discord-media-staging";
+import { listOslChatAttachments } from "./native-overlay-adapter";
 
 const selection = {
   jobId: "R4nd0mOpaqueJobHandle_1234567890",
@@ -31,6 +36,10 @@ function staged() {
 }
 
 describe("Discord protected media staging", () => {
+  beforeEach(() => {
+    mocks.invoke.mockReset();
+  });
+
   it("accepts only an opaque handle and sanitized filename/type/size", () => {
     expect(parseDiscordMediaSelection(selection)).toEqual(selection);
     expect(sanitizeDiscordMediaFilename("C:\\Users\\liam\\ secret\u0000  photo.png ")).toBe("secret photo.png");
@@ -106,6 +115,40 @@ describe("Discord protected media staging", () => {
       3_500,
     );
     expect(discordMediaPrivatePreviewRequest(sent)).toBeNull();
+  });
+
+  it("lists OSL Chat attachments only from authenticated envelopes", async () => {
+    const attachment = {
+      attachmentId: `peer-${"a".repeat(32)}`,
+      originalFilename: "photo.png",
+      mimeType: "image/png",
+      plaintextSize: 2_048,
+      expiresAt: 4_102_444_800,
+      viewOnce: false,
+    };
+    const envelope = {
+      protocol: "osl-chat-attachments-v1",
+      authenticatedEnvelope: true,
+      consent: true,
+      binding: true,
+      authority: true,
+      attachments: [attachment],
+    };
+
+    mocks.invoke.mockResolvedValueOnce(envelope);
+    await expect(listOslChatAttachments()).resolves.toEqual([attachment]);
+    expect(mocks.invoke).toHaveBeenCalledWith("list_osl_chat_attachments");
+
+    for (const missingGate of ["consent", "binding", "authority"] as const) {
+      mocks.invoke.mockResolvedValueOnce({ ...envelope, [missingGate]: false });
+      await expect(listOslChatAttachments()).resolves.toBeNull();
+      const omitted: Partial<typeof envelope> = { ...envelope };
+      delete omitted[missingGate];
+      mocks.invoke.mockResolvedValueOnce(omitted);
+      await expect(listOslChatAttachments()).resolves.toBeNull();
+    }
+    mocks.invoke.mockResolvedValueOnce([attachment]);
+    await expect(listOslChatAttachments()).resolves.toBeNull();
   });
 
   it("provides accessible status labels and disables decorative motion when requested", () => {
