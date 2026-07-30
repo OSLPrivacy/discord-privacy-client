@@ -541,7 +541,7 @@ fn resolve_active_account_on_launch() {
 /// app prefs, password gate) is intentionally left alone.
 fn reset_account_scoped_state(state: &AppState) {
     use std::sync::atomic::Ordering;
-    *state.identity.lock().expect("identity poisoned") = None;
+    state.clear_identity();
     *state.keyserver.lock().expect("keyserver poisoned") = None;
     *state
         .registration_alert
@@ -1216,7 +1216,7 @@ fn load_or_generate_identity(
                     path = %path.display(),
                     "OSL bootstrap: identity loaded"
                 );
-                *state.identity.lock().expect("identity mutex poisoned") = Some(id);
+                state.install_identity(id);
                 return (true, false);
             }
             Err(e) => {
@@ -1275,7 +1275,7 @@ fn load_or_generate_identity(
              but won't survive a restart"
         ),
     }
-    *state.identity.lock().expect("identity mutex poisoned") = Some(id);
+    state.install_identity(id);
     (true, true)
 }
 
