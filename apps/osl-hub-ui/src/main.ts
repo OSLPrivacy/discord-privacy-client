@@ -491,6 +491,20 @@ type DesktopCtaSurface = "desktop" | "phone-demo" | "mobile-companion";
 type DesktopCtaRoute = "desktop-app" | "phone-companion";
 let oslChatSecureStore: OslChatSecureStore | null = null;
 let rnWirePolicyRequested = false;
+const autoScrubServiceLabels: Record<ServiceId, string> = {
+  discord: "Discord",
+  telegram: "Telegram",
+  instagram: "Instagram",
+  snapchat: "Snapchat",
+  email: "Email",
+  x: "X",
+  slack: "Slack",
+  linkedin: "LinkedIn",
+  teams: "Teams",
+  messenger: "Messenger",
+  signal: "Signal",
+  whatsapp: "WhatsApp",
+};
 const supportedNativeAppIds = new Set<NativeAppId>(["discord", "telegram", "signal", "whatsapp", "outlook"]);
 const importedFirefoxHomeAppIds = new Set<HomeAppId>([
   "instagram", "snapchat", "x", "messenger", "gmail", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
@@ -1257,7 +1271,7 @@ function containBackgroundFailure(): void {
 
 function desktopTitlebar(): string {
   const nativeControlsBlocked = activeNativeHostId || activeDefaultBrowserCompanion ? ' disabled title="Unavailable while a companion window is open"' : "";
-  return `<header class="desktop-titlebar"><div class="desktop-drag-region" data-tauri-drag-region aria-hidden="true"></div><div class="window-controls"><button id="window-minimize" aria-label="Minimize"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5h10"/></svg></button><button id="window-maximize" aria-label="Maximize"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9"/></svg></button><button id="window-close" class="window-close" aria-label="Close"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button></div></header>`;
+  return `<header class="desktop-titlebar"><div class="desktop-drag-region" data-tauri-drag-region aria-hidden="true"></div>${fleetIndicatorMarkup()}<div class="window-controls"><button id="window-minimize" aria-label="Minimize"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5h10"/></svg></button><button id="window-maximize" aria-label="Maximize"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9"/></svg></button><button id="window-close" class="window-close" aria-label="Close"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button></div></header>`;
 }
 
 // The hub route (onboarding excluded — see renderOnboarding) no longer gets a
@@ -1274,7 +1288,7 @@ function desktopTitlebar(): string {
 // helper whose blast radius spans both layouts.
 function desktopWindowControlsMarkup(): string {
   const nativeControlsBlocked = activeNativeHostId || activeDefaultBrowserCompanion ? ' disabled title="Unavailable while a companion window is open"' : "";
-  return `<div class="window-controls"><button id="window-minimize" aria-label="Minimize"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5h10"/></svg></button><button id="window-maximize" aria-label="Maximize"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9"/></svg></button><button id="window-close" class="window-close" aria-label="Close"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button></div>`;
+  return `${fleetIndicatorMarkup()}<div class="window-controls"><button id="window-minimize" aria-label="Minimize"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5h10"/></svg></button><button id="window-maximize" aria-label="Maximize"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9"/></svg></button><button id="window-close" class="window-close" aria-label="Close"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button></div>`;
 }
 
 const desktopMaximizeGlyph = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9"/></svg>';
@@ -1396,14 +1410,18 @@ async function reopenActiveNativeCompanion(): Promise<void> {
   await openNativeHostedApp(app, service, staleAppId);
 }
 
-function renderOnboarding(): void {
+function onboardingShellMarkup(): string {
   onboardingRoute = onboardingRouteForBuild(onboardingRoute);
   persistCurrentOnboardingRoute();
   const setupScreen = ["pro", "privacy", "defaults", "sending", "cover", "passwords", "burnpass", "browser", "tutorial", "detected", "install", "apps", "mullvad"].includes(onboardingRoute);
   const setupNavigation = setupScreen
     ? `<button class="onboarding-back-dock" id="onboarding-back" type="button">Back</button>`
     : "";
-  const markup = `<div class="app-frame with-titlebar">${desktopTitlebar()}<div class="onboarding-shell"><main class="onboarding-panel onboarding-${onboardingRoute}">${onboardingContent()}</main>${setupNavigation}</div>${scrubReviewDialogMarkup()}</div>`;
+  return `<div class="app-frame with-titlebar">${desktopTitlebar()}<div class="onboarding-shell"><main class="onboarding-panel onboarding-${onboardingRoute}">${onboardingContent()}</main>${setupNavigation}</div>${scrubReviewDialogMarkup()}</div>`;
+}
+
+function renderOnboarding(): void {
+  const markup = onboardingShellMarkup();
   lastWorkspaceMarkup = null;
   lastWorkspaceViewKey = "";
   if (lastOnboardingMarkup === markup && root.querySelector(".onboarding-shell")) {
@@ -2744,14 +2762,22 @@ function bindImportForm(): void {
   });
 }
 
-function renderWorkspace(): void {
-  lastOnboardingMarkup = null;
+function workspaceProtectedSheetMarkup(): string {
   const protectedSheet = activeEmbeddedHost
     ? protectedSheetMode === "local"
       ? localProtectedSheetMarkup(localProtectedSheet, setup.sendMode)
       : peerProtectedSheetMarkup(peerProtectedSheet, hubPeople)
     : "";
-  const markup = `<div class="hub-layout with-primary-sidebar">${primarySidebarMarkup()}<section class="hub-workspace"><div class="desktop-top-row" data-tauri-drag-region="deep">${trustedHeader()}${desktopWindowControlsMarkup()}</div>${workspaceContent()}</section></div>${protectedSheet}${nativeDiscordProtectPickerMarkup()}${whitelistRosterMarkup()}${peopleDialogMarkup()}${friendsDialogMarkup()}${scrubReviewDialogMarkup()}${burnDialogMarkup()}${ownedConfirmationMarkup()}${updateDialogMarkup()}`;
+  return `${protectedSheet}${nativeDiscordProtectPickerMarkup()}${whitelistRosterMarkup()}${peopleDialogMarkup()}${friendsDialogMarkup()}${scrubReviewDialogMarkup()}${burnDialogMarkup()}${ownedConfirmationMarkup()}${updateDialogMarkup()}`;
+}
+
+function workspaceShellMarkup(): string {
+  return `<div class="hub-layout with-primary-sidebar">${primarySidebarMarkup()}<section class="hub-workspace"><div class="desktop-top-row" data-tauri-drag-region="deep">${trustedHeader()}${desktopWindowControlsMarkup()}</div>${workspaceContent()}</section></div>${workspaceProtectedSheetMarkup()}`;
+}
+
+function renderWorkspace(): void {
+  lastOnboardingMarkup = null;
+  const markup = workspaceShellMarkup();
   let surface = root.querySelector<HTMLElement>("#workspace-render-surface");
   if (!surface) {
     // No separate 44px desktop titlebar row here: the drag region and window
@@ -2850,6 +2876,19 @@ function simpleDeviceStatusMarkup(): string {
   const label = coreReady ? protection.label : "Needs attention";
   const detail = coreReady ? protection.detail : coreReadinessLabel(core.readiness);
   return `<div class="trust-state ${ready ? "ready" : "pending"} ${coreReady && !ready ? "not-secure" : ""}" role="status" data-identity-protection="${protection.state}"><span class="dot"></span><span><strong>${escapeHtml(label)}</strong><small>${escapeHtml(detail)}</small></span></div>`;
+}
+
+function autoScrubRunServiceName(serviceId: ServiceId): string {
+  return services.find((service) => service.id === serviceId)?.displayName ?? autoScrubServiceLabels[serviceId];
+}
+
+function fleetIndicatorMarkup(): string {
+  const status = projectAutoScrubFleetStatus(autoScrubFleetStatus);
+  const openRunNames = autoScrubFleetStatus?.runs.map((run) => autoScrubRunServiceName(run.serviceId)) ?? [];
+  const openRunCount = autoScrubFleetStatus?.openRunCount ?? 0;
+  const runNames = openRunNames.length ? openRunNames.join(", ") : "No cleanup running";
+  const ariaLabel = `Cleanup monitor: ${status.label}; ${runNames}`;
+  return `<aside class="fleet-indicator fleet-indicator-${status.tone}" data-fleet-indicator data-open-run-count="${openRunCount}" data-open-run-names="${escapeHtml(runNames)}" role="status" aria-label="${escapeHtml(ariaLabel)}" title="${escapeHtml(ariaLabel)}" style="align-self:center;max-width:min(34ch,28vw);min-height:30px;padding:3px 8px;border:1px solid var(--line);border-radius:7px;display:grid;grid-template-columns:auto minmax(0,1fr);column-gap:8px;align-items:center;background:var(--panel-2);color:var(--text);font-size:11px;line-height:1.15"><span aria-hidden="true" style="width:8px;height:8px;border-radius:999px;background:currentColor;opacity:${status.tone === "neutral" ? "0.45" : "1"}"></span><span style="min-width:0"><strong style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(status.label)}</strong><small style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--subtle)">${escapeHtml(runNames)}</small></span></aside>`;
 }
 
 /**
@@ -3934,11 +3973,6 @@ async function refreshMassCleanupCapabilities(): Promise<void> {
 
 async function refreshAutoScrubFleetStatus(): Promise<void> {
   if (autoScrubStatusLoading) return;
-  const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
-  if (!pro) {
-    autoScrubFleetStatus = null;
-    return;
-  }
   autoScrubStatusLoading = true;
   render();
   try {
@@ -3947,7 +3981,7 @@ async function refreshAutoScrubFleetStatus(): Promise<void> {
     autoScrubFleetStatus = null;
   } finally {
     autoScrubStatusLoading = false;
-    if (route === "settings" && settingsSection === "scrub") render();
+    if (route !== "onboarding") render();
   }
 }
 
@@ -7054,6 +7088,7 @@ function startReadyWorkspaceLoads(): void {
   void openMullvadOnStartup();
   void loadHubPasswordRoleStatus().then((status) => { passwordRoleStatus = status; if (route === "settings" && settingsSection === "account") renderWhenIdle(); }).catch(() => undefined);
   void refreshUpdateStatus(true);
+  void refreshAutoScrubFleetStatus();
   void loadFriendProfile().then((profile) => { friendCode = profile?.friendCode ?? null; friendDisplayId = profile?.oslUserId ?? null; if (route === "home") renderWhenIdle(); });
   void listHubPeople().then((people) => { hubPeople = people ?? []; if (route === "home") renderWhenIdle(); });
   if (notificationsEnabled) void setNotificationsEnabled(true).then(async (enabled) => {
@@ -7811,6 +7846,7 @@ type OslHubUiTestStatePatch = {
   appNotifications?: AppNotification[];
   mullvadAvailability?: MullvadStatus["availability"];
   licenseAccess?: HubLicenseState["access"];
+  autoScrubFleetStatus?: AutoScrubFleetStatus | null;
 };
 
 function testHubPerson(person: Partial<HubPerson> & { personId: string }): HubPerson {
@@ -7865,6 +7901,9 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   notificationPreviewContent = patch.notificationPreviewContent ?? true;
   appNotifications = patch.appNotifications ?? [];
   licenseState = { ...unconfiguredLicenseState, access: patch.licenseAccess ?? "free" };
+  autoScrubFleetStatus = patch.autoScrubFleetStatus ?? null;
+  autoScrubStatusLoading = false;
+  autoScrubStopPending = false;
   mullvadStatus = {
     availability: patch.mullvadAvailability ?? "unavailable",
     integrationState: patch.mullvadAvailability === "installed" ? "availableToOpen" : patch.mullvadAvailability === "installable" ? "installable" : "unavailable",
@@ -7884,6 +7923,10 @@ export const __oslHubUiTest = {
   renderWorkspaceContent(destination?: Route): string {
     if (destination) route = destination;
     return workspaceContent();
+  },
+  renderRouteShell(destination: Route): string {
+    route = destination;
+    return destination === "onboarding" ? onboardingShellMarkup() : workspaceShellMarkup();
   },
   renderOnboardingSendModes(sendMode: SendMode = "manual"): string {
     route = "onboarding";
