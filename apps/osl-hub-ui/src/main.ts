@@ -116,6 +116,7 @@ import {
   requestNativeDiscordVisibleRowRuntimeReceipt,
   runNativeDiscordHeadlessQa,
 } from "./discord-headless-qa-adapter";
+import type { SecureLocalStore } from "./secure-local-store";
 
 type Route = "onboarding" | "home" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-servers";
 const PROTECTED_DISPLAY_VISIBILITY_CHANGED_EVENT = "osl://protected-display-visibility-changed";
@@ -159,7 +160,10 @@ function requireRoot(): HTMLDivElement {
   if (!element) throw new Error("OSL Privacy root is missing");
   return element;
 }
-const root = requireRoot();
+const runningUnderVitest = Boolean(import.meta.vitest || (typeof process !== "undefined" && process.env.VITEST));
+const root = runningUnderVitest
+  ? (globalThis.document?.querySelector<HTMLDivElement>("#app") ?? globalThis.document?.createElement("div") ?? {} as HTMLDivElement)
+  : requireRoot();
 const discordQaShell = import.meta.env.VITE_OSL_DISCORD_QA_SHELL === "1";
 if (discordQaShell) document.documentElement.classList.add("discord-qa-shell");
 
@@ -412,11 +416,59 @@ const browserImportPendingStorageKey = "osl-browser-import-pending-v1";
 const onboardingResumeStorageKey = "osl-onboarding-resume-v1";
 const onboardingBranchStorageKey = "osl-onboarding-branch-v1";
 const experimentalSendConsentStorageKey = "osl-experimental-send-consent-v1";
+const rnWirePolicyStorageKey = "osl-rn-wire-policy-requested-v1";
 let nativeDiscordCovertextEnabled = true;
 const oslChatPreviewStorageKey = "osl-chat-previews-visible-v1";
 const oslChatMutedStorageKey = "osl-chat-muted-people-v1";
 const oslChatUnreadStorageKey = "osl-chat-unread-v1";
 const oslChatNotificationStorageKey = "osl-chat-notifications-v1";
+type OslChatSecureStore = Pick<SecureLocalStore, "getItem" | "setItem">;
+type BrowserImportStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+type RnWirePolicyState = {
+  readonly requested: boolean;
+  readonly buildEnabled: boolean;
+  readonly effectiveEnabled: boolean;
+  readonly refusal: "build-disabled" | "user-disabled" | null;
+};
+type AttendedImapRunRequest = {
+  readonly accountId: string;
+  readonly selectedMessageIds: readonly string[];
+  readonly livePathProved: boolean;
+  readonly confirmFinalRun: boolean;
+};
+type AttendedImapRunResult =
+  | { readonly state: "refused"; readonly reason: "live-path-required" | "invalid-selection" | "preview-refused" | "final-refused" }
+  | { readonly state: "preview"; readonly previewToken: string; readonly selectedMessageIds: readonly string[] }
+  | { readonly state: "completed"; readonly previewToken: string; readonly runId: string; readonly receiptCount: number };
+type AutoscrubAuthorizationRequest = {
+  readonly accountId: string;
+  readonly selectedMessageIds: readonly string[];
+  readonly operatorConfirmed: boolean;
+};
+type AutoscrubAuthorizationResult =
+  | { readonly state: "refused"; readonly reason: "confirmation-required" | "invalid-selection" | "native-refused" }
+  | { readonly state: "armed"; readonly authorizationId: string; readonly selectedMessageIds: readonly string[] };
+type AutoscrubReceiptProjection = {
+  readonly itemLabel: string;
+  readonly state: "verified" | "notVerified" | "held";
+};
+type AutoscrubStatusProjection = {
+  readonly phase: "idle" | "running" | "completed" | "failed";
+  readonly receipts: readonly AutoscrubReceiptProjection[];
+};
+type AutoscrubUnattendedContract = {
+  readonly production: boolean;
+  readonly unattendedAllowed: boolean;
+  readonly reviewRequiredEveryBatch: boolean;
+  readonly externalSecurityReviewPassed: boolean;
+};
+type AutoscrubUnattendedRunResult =
+  | { readonly state: "refused"; readonly reason: "not-production" | "unattended-disabled" | "review-required" | "external-review-required" }
+  | { readonly state: "ready"; readonly command: "autoscrub_unattended_run" };
+type DesktopCtaSurface = "desktop" | "phone-demo" | "mobile-companion";
+type DesktopCtaRoute = "desktop-app" | "phone-companion";
+let oslChatSecureStore: OslChatSecureStore | null = null;
+let rnWirePolicyRequested = false;
 const supportedNativeAppIds = new Set<NativeAppId>(["discord", "telegram", "signal", "whatsapp", "outlook"]);
 const importedFirefoxHomeAppIds = new Set<HomeAppId>([
   "instagram", "snapchat", "x", "messenger", "gmail", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
@@ -482,6 +534,242 @@ function parseTheme(raw: string | null): ThemeChoice {
 
 function parseSavedAccountMode(raw: string | null): SavedAccountMode {
   return raw === "use" || raw === "clean" ? raw : "ask";
+}
+
+function parseOslChatMutedPeople(raw: string | null): Set<string> {
+  try {
+    const parsed = JSON.parse(raw ?? "[]") as unknown;
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((personId): personId is string => (
+      typeof personId === "string" && personId.length > 0 && personId.length <= 180
+    )).slice(0, 512));
+  } catch {
+    return new Set();
+  }
+}
+
+function parseOslChatUnread(raw: string | null): Map<string, number> {
+  const unread = new Map<string, number>();
+  try {
+    const parsed = JSON.parse(raw ?? "{}") as unknown;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return unread;
+    for (const [personId, count] of Object.entries(parsed).slice(0, 512)) {
+      if (personId.length > 0
+        && personId.length <= 180
+        && Number.isSafeInteger(count)
+        && Number(count) > 0
+        && Number(count) <= 10_000) {
+        unread.set(personId, Number(count));
+      }
+    }
+  } catch {
+    return new Map();
+  }
+  return unread;
+}
+
+function encodeOslChatMutedPeople(people: ReadonlySet<string>): string {
+  return JSON.stringify([...people].filter((personId) => personId.length > 0 && personId.length <= 180).slice(0, 512));
+}
+
+function encodeOslChatUnread(unread: ReadonlyMap<string, number>): string {
+  return JSON.stringify(Object.fromEntries([...unread.entries()]
+    .filter(([personId, count]) => personId.length > 0
+      && personId.length <= 180
+      && Number.isSafeInteger(count)
+      && count > 0
+      && count <= 10_000)
+    .slice(0, 512)));
+}
+
+function persistSensitiveOslChatJson(logicalKey: string, payload: string): void {
+  if (!oslChatSecureStore) return;
+  void oslChatSecureStore.setItem(logicalKey, payload).catch(() => undefined);
+}
+
+function persistOslChatMutedPeople(): void {
+  persistSensitiveOslChatJson(oslChatMutedStorageKey, encodeOslChatMutedPeople(oslChatMutedPeople));
+}
+
+async function loadOslChatSensitiveStateFromSecureStore(): Promise<void> {
+  if (!oslChatSecureStore) return;
+  const [mutedRaw, unreadRaw] = await Promise.all([
+    oslChatSecureStore.getItem(oslChatMutedStorageKey).catch(() => null),
+    oslChatSecureStore.getItem(oslChatUnreadStorageKey).catch(() => null),
+  ]);
+  if (mutedRaw !== null) oslChatMutedPeople = parseOslChatMutedPeople(mutedRaw);
+  if (unreadRaw !== null) {
+    oslChatUnread.clear();
+    for (const [personId, count] of parseOslChatUnread(unreadRaw)) oslChatUnread.set(personId, count);
+  }
+}
+
+export function configureOslChatSecureLocalStore(store: OslChatSecureStore | null): void {
+  oslChatSecureStore = store;
+}
+
+export async function migrateOslChatUnreadToSecureLocalStore(
+  store: OslChatSecureStore,
+  storage: BrowserImportStorage,
+): Promise<Map<string, number>> {
+  const parsed = parseOslChatUnread(storage.getItem(oslChatUnreadStorageKey));
+  await store.setItem(oslChatUnreadStorageKey, encodeOslChatUnread(parsed));
+  storage.removeItem(oslChatUnreadStorageKey);
+  return parsed;
+}
+
+export async function migrateOslChatMutedPeopleToSecureLocalStore(
+  store: OslChatSecureStore,
+  storage: BrowserImportStorage,
+): Promise<Set<string>> {
+  const parsed = parseOslChatMutedPeople(storage.getItem(oslChatMutedStorageKey));
+  await store.setItem(oslChatMutedStorageKey, encodeOslChatMutedPeople(parsed));
+  storage.removeItem(oslChatMutedStorageKey);
+  return parsed;
+}
+
+export function rnWirePolicyState(requested: boolean, buildEnabled = false): RnWirePolicyState {
+  if (!buildEnabled) return { requested, buildEnabled, effectiveEnabled: false, refusal: "build-disabled" };
+  if (!requested) return { requested, buildEnabled, effectiveEnabled: false, refusal: "user-disabled" };
+  return { requested, buildEnabled, effectiveEnabled: true, refusal: null };
+}
+
+export function rnWirePolicySettingsMarkup(state: RnWirePolicyState): string {
+  const checked = state.effectiveEnabled ? "checked" : "";
+  const disabled = state.buildEnabled ? "" : "disabled";
+  const summary = state.effectiveEnabled ? "On" : state.refusal === "build-disabled" ? "Unavailable in this build" : "Off";
+  return `<details class="settings-disclosure" data-rn-wire-policy><summary><span><strong>Advanced message format</strong><small>${summary}</small></span></summary><label class="setting-line interactive"><span><strong>Use next-generation protected messages</strong><small>OSL keeps using the current message format unless this build and this setting both allow the newer one.</small></span><input id="rn-wire-policy-toggle" type="checkbox" ${checked} ${disabled}/></label></details>`;
+}
+
+function validOpaqueSelection(accountId: string, selectedMessageIds: readonly string[]): boolean {
+  return accountId.length > 0
+    && accountId.length <= 128
+    && selectedMessageIds.length > 0
+    && selectedMessageIds.length <= 32
+    && new Set(selectedMessageIds).size === selectedMessageIds.length
+    && selectedMessageIds.every((id) => /^[A-Za-z0-9._:-]{1,180}$/u.test(id));
+}
+
+function parseAttendedPreview(raw: unknown, selectedMessageIds: readonly string[]): { previewToken: string } | null {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  return typeof record.previewToken === "string"
+    && /^[A-Za-z0-9._:-]{16,180}$/u.test(record.previewToken)
+    && Array.isArray(record.selectedMessageIds)
+    && record.selectedMessageIds.length === selectedMessageIds.length
+    && record.selectedMessageIds.every((id, index) => id === selectedMessageIds[index])
+    ? { previewToken: record.previewToken }
+    : null;
+}
+
+function parseAttendedFinal(raw: unknown, previewToken: string): { runId: string; receiptCount: number } | null {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  return typeof record.runId === "string"
+    && /^[A-Za-z0-9._:-]{8,180}$/u.test(record.runId)
+    && record.previewToken === previewToken
+    && Number.isSafeInteger(record.receiptCount)
+    && Number(record.receiptCount) >= 0
+    && Number(record.receiptCount) <= 32
+    ? { runId: record.runId, receiptCount: Number(record.receiptCount) }
+    : null;
+}
+
+export async function runAttendedImapUi(
+  request: AttendedImapRunRequest,
+  nativeInvoke: typeof invoke = invoke,
+): Promise<AttendedImapRunResult> {
+  if (!request.livePathProved) return { state: "refused", reason: "live-path-required" };
+  if (!validOpaqueSelection(request.accountId, request.selectedMessageIds)) return { state: "refused", reason: "invalid-selection" };
+  const selectedMessageIds = [...request.selectedMessageIds];
+  const preview = parseAttendedPreview(await nativeInvoke("preview_attended_imap_batch_review", {
+    request: { accountId: request.accountId, selectedMessageIds, dryRun: true },
+  }).catch(() => null), selectedMessageIds);
+  if (!preview) return { state: "refused", reason: "preview-refused" };
+  if (!request.confirmFinalRun) return { state: "preview", previewToken: preview.previewToken, selectedMessageIds };
+  const final = parseAttendedFinal(await nativeInvoke("execute_attended_imap_batch_review", {
+    request: { previewToken: preview.previewToken, selectedMessageIds },
+  }).catch(() => null), preview.previewToken);
+  return final
+    ? { state: "completed", previewToken: preview.previewToken, runId: final.runId, receiptCount: final.receiptCount }
+    : { state: "refused", reason: "final-refused" };
+}
+
+export function toggleScrubReviewSelection(
+  selected: ReadonlySet<number>,
+  findingIndex: number,
+  checked: boolean,
+  findingCount: number,
+): Set<number> {
+  const next = new Set([...selected].filter((index) => Number.isSafeInteger(index) && index >= 0 && index < findingCount));
+  if (!Number.isSafeInteger(findingIndex) || findingIndex < 0 || findingIndex >= findingCount) return next;
+  if (checked) next.add(findingIndex);
+  else next.delete(findingIndex);
+  return next;
+}
+
+export async function authorizeAutoscrubReviewList(
+  request: AutoscrubAuthorizationRequest,
+  nativeInvoke: typeof invoke = invoke,
+): Promise<AutoscrubAuthorizationResult> {
+  if (!request.operatorConfirmed) return { state: "refused", reason: "confirmation-required" };
+  if (!validOpaqueSelection(request.accountId, request.selectedMessageIds)) return { state: "refused", reason: "invalid-selection" };
+  const selectedMessageIds = [...request.selectedMessageIds];
+  const raw = await nativeInvoke("authorize_attended_imap_batch_review", {
+    request: { accountId: request.accountId, selectedMessageIds },
+  }).catch(() => null);
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { state: "refused", reason: "native-refused" };
+  const authorizationId = (raw as Record<string, unknown>).authorizationId;
+  if (typeof authorizationId !== "string" || !/^[A-Za-z0-9._:-]{16,180}$/u.test(authorizationId)) {
+    return { state: "refused", reason: "native-refused" };
+  }
+  return { state: "armed", authorizationId, selectedMessageIds };
+}
+
+export function autoscrubStatusProjectionMarkup(status: AutoscrubStatusProjection): string {
+  if (status.phase !== "completed") return `<section class="activity-run-status" data-phase="${status.phase}"><strong>${status.phase === "running" ? "Running" : status.phase === "failed" ? "Needs attention" : "No cleanup run"}</strong></section>`;
+  const rows = status.receipts.map((receipt) => {
+    const state = receipt.state === "verified" ? "Removed" : receipt.state === "held" ? "Held" : "Not verified";
+    return `<li data-cleanup-proof="${receipt.state}"><span>${escapeHtml(receipt.itemLabel)}</span><strong>${state}</strong></li>`;
+  }).join("");
+  return `<section class="activity-run-status completed" data-phase="completed"><h3>Cleanup activity</h3><ul>${rows}</ul></section>`;
+}
+
+export function autoscrubUnattendedProductionRun(contract: AutoscrubUnattendedContract): AutoscrubUnattendedRunResult {
+  if (!contract.production) return { state: "refused", reason: "not-production" };
+  if (!contract.unattendedAllowed) return { state: "refused", reason: "unattended-disabled" };
+  if (contract.reviewRequiredEveryBatch) return { state: "refused", reason: "review-required" };
+  if (!contract.externalSecurityReviewPassed) return { state: "refused", reason: "external-review-required" };
+  return { state: "ready", command: "autoscrub_unattended_run" };
+}
+
+export function revokeBrowserImportForSource(
+  storage: BrowserImportStorage,
+  ownerId: string,
+  source: BrowserImportId,
+): { completed: Set<BrowserImportId>; ready: boolean } {
+  const readyKey = `${savedAccountsReadyStorageKey}:${encodeURIComponent(ownerId)}`;
+  const importsKey = `${completedBrowserImportsStorageKey}:${encodeURIComponent(ownerId)}`;
+  const completed = new Set<BrowserImportId>();
+  try {
+    const stored = JSON.parse(storage.getItem(importsKey) ?? "[]") as unknown;
+    if (Array.isArray(stored)) stored.filter(supportedBrowserId).forEach((id) => completed.add(id));
+  } catch {
+    completed.clear();
+  }
+  completed.delete(source);
+  if (completed.size) {
+    storage.setItem(importsKey, JSON.stringify([...completed]));
+    storage.setItem(readyKey, "true");
+  } else {
+    storage.removeItem(importsKey);
+    storage.removeItem(readyKey);
+  }
+  return { completed, ready: storage.getItem(readyKey) === "true" };
+}
+
+export function desktopCtaHandoffRoute(surface: DesktopCtaSurface): DesktopCtaRoute {
+  return surface === "mobile-companion" ? "phone-companion" : "desktop-app";
 }
 
 function pendingOnboardingRoute(): OnboardingRoute | null {
@@ -618,22 +906,12 @@ function loadUiPreferences(): void {
   notificationChatActivity = localStorage.getItem(notificationChatStorageKey) !== "false";
   notificationSecurityActivity = localStorage.getItem(notificationSecurityStorageKey) !== "false";
   oslChatPreviewsVisible = localStorage.getItem(oslChatPreviewStorageKey) !== "false";
-  try {
-    const mutedPeople = JSON.parse(localStorage.getItem(oslChatMutedStorageKey) ?? "[]") as unknown;
-    if (Array.isArray(mutedPeople)) {
-      oslChatMutedPeople = new Set(mutedPeople.filter((personId): personId is string => typeof personId === "string" && personId.length > 0 && personId.length <= 180).slice(0, 512));
-    }
-  } catch { oslChatMutedPeople.clear(); }
-  try {
-    const unread = JSON.parse(localStorage.getItem(oslChatUnreadStorageKey) ?? "{}") as unknown;
-    if (typeof unread === "object" && unread !== null && !Array.isArray(unread)) {
-      for (const [personId, count] of Object.entries(unread).slice(0, 512)) {
-        if (personId.length > 0 && personId.length <= 180 && Number.isSafeInteger(count) && Number(count) > 0 && Number(count) <= 10_000) {
-          oslChatUnread.set(personId, Number(count));
-        }
-      }
-    }
-  } catch { oslChatUnread.clear(); }
+  rnWirePolicyRequested = localStorage.getItem(rnWirePolicyStorageKey) === "true";
+  oslChatMutedPeople = parseOslChatMutedPeople(localStorage.getItem(oslChatMutedStorageKey));
+  oslChatUnread.clear();
+  for (const [personId, count] of parseOslChatUnread(localStorage.getItem(oslChatUnreadStorageKey))) {
+    oslChatUnread.set(personId, count);
+  }
   try {
     const notices = JSON.parse(localStorage.getItem(oslChatNotificationStorageKey) ?? "[]") as unknown;
     if (Array.isArray(notices)) {
@@ -3138,7 +3416,7 @@ function sendingSettingsContent(): string {
   const consentRows = needsRiskAcceptance(selectedMode) && accounts.length
     ? `<div class="send-account-consents"><strong>Account approvals</strong>${accounts.map((account) => `<div><span>${escapeHtml(account.service)} · ${escapeHtml(account.account)}</span><small>${hasExperimentalSendConsent(selectedMode, account.serviceId, account.accountId) ? "Approved on this device" : "Will ask before first use"}</small></div>`).join("")}</div>`
     : "";
-  return `<details class="settings-disclosure sending-settings"><summary><span><strong>Sending</strong><small>${escapeHtml(formatSendMode(selectedMode))}</small></span></summary><div class="sending-settings-body"><div class="send-mode-list compact">${modes.map(([mode, label, detail]) => `<button class="send-mode-option ${selectedMode === mode ? "selected" : ""}" type="button" data-settings-send-mode="${mode}" aria-pressed="${selectedMode === mode}"><span><strong>${label}</strong></span><small>${detail}</small></button>`).join("")}</div>${needsRiskAcceptance(selectedMode) ? `<div class="warning send-settings-warning"><strong>Experimental</strong><p>OSL must recheck the exact app, account, chat, and composer. If proof is unavailable or changes, it copies instead and sends nothing.</p></div>` : `<p class="send-settings-truth">OSL encrypts and copies. You choose where and when to send.</p>`}${consentRows}</div></details>`;
+  return `<details class="settings-disclosure sending-settings"><summary><span><strong>Sending</strong><small>${escapeHtml(formatSendMode(selectedMode))}</small></span></summary><div class="sending-settings-body"><div class="send-mode-list compact">${modes.map(([mode, label, detail]) => `<button class="send-mode-option ${selectedMode === mode ? "selected" : ""}" type="button" data-settings-send-mode="${mode}" aria-pressed="${selectedMode === mode}"><span><strong>${label}</strong></span><small>${detail}</small></button>`).join("")}</div>${needsRiskAcceptance(selectedMode) ? `<div class="warning send-settings-warning"><strong>Experimental</strong><p>OSL must recheck the exact app, account, chat, and composer. If proof is unavailable or changes, it copies instead and sends nothing.</p></div>` : `<p class="send-settings-truth">OSL encrypts and copies. You choose where and when to send.</p>`}${consentRows}${rnWirePolicySettingsMarkup(rnWirePolicyState(rnWirePolicyRequested))}</div></details>`;
 }
 
 async function changeSendingMode(mode: SendMode): Promise<void> {
@@ -3277,8 +3555,12 @@ function bindScrubControls(): void {
   }));
   document.querySelectorAll<HTMLInputElement>("[data-scrub-review-finding]").forEach((input) => input.addEventListener("change", () => {
     const index = Number(input.dataset.scrubReviewFinding);
-    if (!Number.isSafeInteger(index) || index < 0 || !privacyScanResult?.findings[index]) return;
-    if (input.checked) selectedScrubFindings.add(index); else selectedScrubFindings.delete(index);
+    selectedScrubFindings = toggleScrubReviewSelection(
+      selectedScrubFindings,
+      index,
+      input.checked,
+      privacyScanResult?.findings.length ?? 0,
+    );
     render();
   }));
   document.querySelectorAll<HTMLButtonElement>("[data-scrub-review-page]").forEach((button) => button.addEventListener("click", () => {
@@ -4409,7 +4691,7 @@ function bindWorkspace(): void {
     const personId = oslChatSettingsPersonId;
     if (!personId) return;
     if ((event.currentTarget as HTMLInputElement).checked) oslChatMutedPeople.add(personId); else oslChatMutedPeople.delete(personId);
-    localStorage.setItem(oslChatMutedStorageKey, JSON.stringify([...oslChatMutedPeople].slice(0, 512)));
+    persistOslChatMutedPeople();
     render();
   });
   document.querySelector<HTMLInputElement>("#osl-chat-preview-toggle")?.addEventListener("change", (event) => {
@@ -4510,6 +4792,11 @@ function bindWorkspace(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-settings-send-mode]").forEach((button) => button.addEventListener("click", () => {
     void changeSendingMode(button.dataset.settingsSendMode as SendMode);
   }));
+  document.querySelector<HTMLInputElement>("#rn-wire-policy-toggle")?.addEventListener("change", (event) => {
+    rnWirePolicyRequested = (event.currentTarget as HTMLInputElement).checked;
+    localStorage.setItem(rnWirePolicyStorageKey, String(rnWirePolicyRequested));
+    render();
+  });
   document.querySelectorAll<HTMLButtonElement>("[data-notification-settings]").forEach((button) => button.addEventListener("click", () => { route = "settings"; settingsSection = "notifications"; render(); }));
   document.querySelectorAll<HTMLButtonElement>("[data-onboarding-action]").forEach((button) => button.addEventListener("click", () => { onboardingRoute = button.dataset.onboardingAction as OnboardingRoute; route = "onboarding"; render(); }));
   document.querySelector<HTMLInputElement>("#decrypt-display")?.addEventListener("change", (event) => void changeDecryptDisplay(event.currentTarget as HTMLInputElement));
@@ -4717,7 +5004,7 @@ function bindWorkspace(): void {
   document.querySelectorAll<HTMLInputElement>("[data-notification-app]").forEach((input) => input.addEventListener("change", () => { const id = input.dataset.notificationApp as ServiceId; notificationAppPreferences[id] = input.checked; localStorage.setItem(notificationAppsStorageKey, JSON.stringify(notificationAppPreferences)); }));
   document.querySelectorAll<HTMLButtonElement>("[data-osl-chat-unmute]").forEach((button) => button.addEventListener("click", () => {
     oslChatMutedPeople.delete(button.dataset.oslChatUnmute ?? "");
-    localStorage.setItem(oslChatMutedStorageKey, JSON.stringify([...oslChatMutedPeople].slice(0, 512)));
+    persistOslChatMutedPeople();
     render();
   }));
   bindBurnDialog();
@@ -5256,7 +5543,7 @@ async function openOslChat(personId: string): Promise<void> {
 }
 
 function persistOslChatUnread(): void {
-  localStorage.setItem(oslChatUnreadStorageKey, JSON.stringify(Object.fromEntries([...oslChatUnread.entries()].slice(0, 512))));
+  persistSensitiveOslChatJson(oslChatUnreadStorageKey, encodeOslChatUnread(oslChatUnread));
 }
 
 function persistOslChatNotifications(): void {
@@ -6576,6 +6863,9 @@ async function bootstrap(): Promise<void> {
   mullvadAutoStartAttempted = false;
   applyTheme(themeChoice);
   loadUiPreferences();
+  void loadOslChatSensitiveStateFromSecureStore().then(() => {
+    if (route === "home" || route === "osl-chat" || (route === "settings" && settingsSection === "notifications")) renderWhenIdle();
+  });
   root.innerHTML = `<div class="app-frame with-titlebar">${desktopTitlebar()}<main class="loading-screen"><div class="loading-seal" aria-hidden="true"><img class="osl-logo loading-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/></div><span class="sr-only">Opening OSL</span></main></div>`;
   bindDesktopTitlebar();
   try {
@@ -6651,16 +6941,18 @@ async function bootstrap(): Promise<void> {
   }
 }
 
-window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => { if (themeChoice === "system") applyTheme("system"); });
-window.addEventListener("keydown", (event) => {
-  if (event.key !== "F11" || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-  event.preventDefault();
-  if (discordQaShell) {
-    void openDiscordQaComposer();
-    return;
-  }
-  void toggleDesktopFullscreen().catch(() => undefined);
-});
+if (!runningUnderVitest) {
+  window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => { if (themeChoice === "system") applyTheme("system"); });
+  window.addEventListener("keydown", (event) => {
+    if (event.key !== "F11" || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    event.preventDefault();
+    if (discordQaShell) {
+      void openDiscordQaComposer();
+      return;
+    }
+    void toggleDesktopFullscreen().catch(() => undefined);
+  });
+}
 let nativeHostResizeFrame = 0;
 
 /**
@@ -6803,39 +7095,41 @@ function scheduleNativeHostRealignment(): void {
     void validateNativeSurfaces();
   });
 }
-window.addEventListener("resize", scheduleNativeHostRealignment);
-const desktopWindow = getCurrentWindow();
-void desktopWindow.onMoved(scheduleNativeHostRealignment).catch(() => undefined);
-void desktopWindow.onResized(scheduleNativeHostRealignment).catch(() => undefined);
-void bindMainWindowFocusChanges(
-  (handler) => desktopWindow.onFocusChanged(handler),
-  {
-    scheduleNativeHostRealignment,
-    hasRecoverySecrets: () => Boolean(recoveryBundle || newIdentityRecoveryPhrase),
-    proveRecoveryCaptureProtection,
-    invalidateRecoveryCapture: () => recoveryCaptureGate.invalidate(),
-    setScreenshotProtectionEnabled: (enabled) => { screenshotProtectionEnabled = enabled; },
-    render,
-  },
-).catch(() => undefined);
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") {
-    recoveryCaptureGate.invalidate();
-    screenshotProtectionEnabled = false;
-    newIdentityRecoveryPhrase = null;
-    if (recoveryBundle || (route === "settings" && settingsSection === "account")) render();
-    return;
-  }
-  if (recoveryBundle || newIdentityRecoveryPhrase) {
-    void proveRecoveryCaptureProtection().then(() => render());
-  }
-});
-window.addEventListener("error", (event) => { event.preventDefault(); containBackgroundFailure(); });
-window.addEventListener("unhandledrejection", (event) => { event.preventDefault(); containBackgroundFailure(); });
-void bootstrap();
 function scheduleOslChatBackgroundSync(delayMs = 30_000): void {
   window.setTimeout(() => {
     void syncOslChatsInBackground().finally(() => scheduleOslChatBackgroundSync());
   }, delayMs);
 }
-scheduleOslChatBackgroundSync(1_000);
+if (!runningUnderVitest) {
+  window.addEventListener("resize", scheduleNativeHostRealignment);
+  const desktopWindow = getCurrentWindow();
+  void desktopWindow.onMoved(scheduleNativeHostRealignment).catch(() => undefined);
+  void desktopWindow.onResized(scheduleNativeHostRealignment).catch(() => undefined);
+  void bindMainWindowFocusChanges(
+    (handler) => desktopWindow.onFocusChanged(handler),
+    {
+      scheduleNativeHostRealignment,
+      hasRecoverySecrets: () => Boolean(recoveryBundle || newIdentityRecoveryPhrase),
+      proveRecoveryCaptureProtection,
+      invalidateRecoveryCapture: () => recoveryCaptureGate.invalidate(),
+      setScreenshotProtectionEnabled: (enabled) => { screenshotProtectionEnabled = enabled; },
+      render,
+    },
+  ).catch(() => undefined);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      recoveryCaptureGate.invalidate();
+      screenshotProtectionEnabled = false;
+      newIdentityRecoveryPhrase = null;
+      if (recoveryBundle || (route === "settings" && settingsSection === "account")) render();
+      return;
+    }
+    if (recoveryBundle || newIdentityRecoveryPhrase) {
+      void proveRecoveryCaptureProtection().then(() => render());
+    }
+  });
+  window.addEventListener("error", (event) => { event.preventDefault(); containBackgroundFailure(); });
+  window.addEventListener("unhandledrejection", (event) => { event.preventDefault(); containBackgroundFailure(); });
+  void bootstrap();
+  scheduleOslChatBackgroundSync(1_000);
+}
