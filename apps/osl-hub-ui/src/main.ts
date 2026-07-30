@@ -626,6 +626,27 @@ function encodeOslChatPreviewVisibility(visible: boolean): string {
   return String(visible);
 }
 
+function isPersistedOslChatNotification(item: unknown): item is AppNotification {
+  return typeof item === "object" && item !== null
+    && typeof (item as AppNotification).id === "string" && (item as AppNotification).id.length <= 96
+    && typeof (item as AppNotification).title === "string" && (item as AppNotification).title.length <= 120
+    && (item as AppNotification).detail === "New encrypted message"
+    && typeof (item as AppNotification).createdAt === "string" && (item as AppNotification).createdAt.length <= 32;
+}
+
+function parseOslChatNotifications(raw: string | null): AppNotification[] {
+  try {
+    const parsed = JSON.parse(raw ?? "[]") as unknown;
+    return Array.isArray(parsed) ? parsed.slice(0, 20).filter(isPersistedOslChatNotification) : [];
+  } catch {
+    return [];
+  }
+}
+
+function encodeOslChatNotifications(notifications: readonly AppNotification[]): string {
+  return JSON.stringify(notifications.filter(isPersistedOslChatNotification).slice(0, 20));
+}
+
 function persistSensitiveOslChatJson(logicalKey: string, payload: string): Promise<void> {
   if (!oslChatSecureStore) return Promise.resolve();
   return oslChatSecureStore.setItem(logicalKey, payload).catch(() => undefined);
@@ -718,6 +739,23 @@ export async function migrateOslChatMutedPeopleToSecureLocalStore(
   const parsed = parseOslChatMutedPeople(storage.getItem(oslChatMutedStorageKey));
   await store.setItem(oslChatMutedStorageKey, encodeOslChatMutedPeople(parsed));
   storage.removeItem(oslChatMutedStorageKey);
+  return parsed;
+}
+
+export async function loadMigratedOslChatNotifications(
+  store: OslChatSecureStore | null,
+  storage: Pick<Storage, "getItem">,
+): Promise<AppNotification[]> {
+  return parseOslChatNotifications(await secureOrLegacyOslChatPreference(store, storage, oslChatNotificationStorageKey));
+}
+
+export async function migrateOslChatNotificationsToSecureLocalStore(
+  store: OslChatSecureStore,
+  storage: BrowserImportStorage,
+): Promise<AppNotification[]> {
+  const parsed = parseOslChatNotifications(storage.getItem(oslChatNotificationStorageKey));
+  await store.setItem(oslChatNotificationStorageKey, encodeOslChatNotifications(parsed));
+  storage.removeItem(oslChatNotificationStorageKey);
   return parsed;
 }
 
@@ -994,17 +1032,8 @@ export async function loadUiPreferences(): Promise<void> {
   notificationSecurityActivity = localStorage.getItem(notificationSecurityStorageKey) !== "false";
   rnWirePolicyRequested = localStorage.getItem(rnWirePolicyStorageKey) === "true";
   await loadOslChatSensitiveStateFromSecureStore();
-  try {
-    const notices = JSON.parse(localStorage.getItem(oslChatNotificationStorageKey) ?? "[]") as unknown;
-    if (Array.isArray(notices)) {
-      const parsed = notices.slice(0, 20).filter((item): item is AppNotification => typeof item === "object" && item !== null
-        && typeof (item as AppNotification).id === "string" && (item as AppNotification).id.length <= 96
-        && typeof (item as AppNotification).title === "string" && (item as AppNotification).title.length <= 120
-        && (item as AppNotification).detail === "New encrypted message"
-        && typeof (item as AppNotification).createdAt === "string" && (item as AppNotification).createdAt.length <= 32);
-      if (parsed.length) appNotifications = parsed;
-    }
-  } catch { /* malformed local notification metadata is ignored */ }
+  const notices = await loadMigratedOslChatNotifications(oslChatSecureStore, localStorage);
+  if (notices.length) appNotifications = notices;
   screenshotProtectionEnabled = false;
   mullvadAutoStart = localStorage.getItem(mullvadAutoStartStorageKey) === "true";
   enabledScrubSignals = parseScrubSignalGroups(localStorage.getItem(scrubSignalsStorageKey));
@@ -6321,7 +6350,7 @@ export function persistOslChatUnread(): Promise<void> {
 
 function persistOslChatNotifications(): void {
   const metadata = (appNotifications ?? []).filter((item) => item.detail === "New encrypted message").slice(0, 20);
-  localStorage.setItem(oslChatNotificationStorageKey, JSON.stringify(metadata));
+  persistSensitiveOslChatJson(oslChatNotificationStorageKey, encodeOslChatNotifications(metadata));
 }
 
 function mergePersistedOslChatNotifications(items: AppNotification[] | null): AppNotification[] {
@@ -7996,6 +8025,9 @@ export const __oslHubUiTest = {
     onboardingRoute = "sending";
     setup = { ...defaultSetup, sendMode };
     return sendingSetupContent();
+  },
+  persistOslChatNotifications(): void {
+    persistOslChatNotifications();
   },
   snapshot(): {
     route: Route;
