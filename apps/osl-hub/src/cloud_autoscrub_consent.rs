@@ -857,16 +857,35 @@ mod tests {
             tier.require_attended_authority(generic_scope, scan_findings, 9),
             Err(CloudAutoScrubConsentError::AuthorityRequired)
         );
+        assert_eq!(
+            tier.require_cloud_autoscrub_capability(
+                scan_capability,
+                generic_scope,
+                scan_findings,
+                9
+            ),
+            Err(CloudAutoScrubConsentError::CapabilityRequired)
+        );
 
         let generic_capability = tier
             .configure_cloud_autoscrub_capability(generic_scope, generic_findings)
             .unwrap();
         tier.grant_run_authority(generic_capability, generic_scope, generic_findings, 9)
             .unwrap();
+        assert_eq!(tier.explicit_scope_consent_count(), 2);
 
         assert_eq!(
             tier.require_run_authority(generic_scope, generic_findings, 9),
             Ok(())
+        );
+        assert_eq!(
+            tier.require_cloud_autoscrub_capability(
+                generic_capability,
+                scan_only_scope,
+                generic_findings,
+                9
+            ),
+            Err(CloudAutoScrubConsentError::CapabilityRequired)
         );
         assert_eq!(
             tier.require_attended_authority(generic_scope, generic_findings, 9),
