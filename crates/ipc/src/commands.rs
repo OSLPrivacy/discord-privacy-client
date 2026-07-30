@@ -11953,6 +11953,119 @@ pub enum UpdateInstallResult {
 /// policy) — no `AppState`/Tauri scaffolding needed, following the
 /// precedent in `test_deep_link_parser`.
 #[cfg(test)]
+mod unit_a_sender_attribution_chain {
+    use super::*;
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine as _;
+    use keystore::{generate_identity, Identity};
+
+    const ALICE_DID: &str = "1000000000000000001";
+    const BOB_DID: &str = "1000000000000000002";
+    const MALLORY_DID: &str = "1000000000000000003";
+    const CHANNEL_ID: &str = "2000000000000000001";
+
+    struct AttributionFixture {
+        alice: Identity,
+        bob: Identity,
+        mallory: Identity,
+        bob_state: AppState,
+    }
+
+    fn attribution_fixture() -> AttributionFixture {
+        let alice = generate_identity("alice-attribution".to_string());
+        let bob = generate_identity("bob-attribution".to_string());
+        let mallory = generate_identity("mallory-attribution".to_string());
+        let bob_state = AppState::new();
+        bob_state.install_identity(bob.clone());
+
+        install_self(&bob_state, BOB_DID);
+        pin_peer(&bob_state, ALICE_DID, "alice-osl", &alice);
+        pin_peer(&bob_state, MALLORY_DID, "mallory-osl", &mallory);
+
+        AttributionFixture {
+            alice,
+            bob,
+            mallory,
+            bob_state,
+        }
+    }
+
+    fn install_self(state: &AppState, did: &str) {
+        let mut pm = state.peer_map.lock().unwrap();
+        let pe = pm.entry(did.to_string()).or_default();
+        pe.is_self = Some(true);
+        pe.discord_id = Some(did.to_string());
+    }
+
+    fn pin_peer(state: &AppState, did: &str, osl_user_id: &str, identity: &Identity) {
+        let mut pm = state.peer_map.lock().unwrap();
+        let pe = pm.entry(did.to_string()).or_default();
+        pe.osl_user_id = Some(osl_user_id.to_string());
+        pe.pubkey = Some(STANDARD.encode(identity.x25519_public.as_bytes()));
+        pe.ik_mlkem768_pub = Some(STANDARD.encode(&identity.mlkem_public_bytes));
+        pe.ik_ratchet_initial_pub = identity
+            .ratchet_initial_pub
+            .map(|pk| STANDARD.encode(pk.as_bytes()));
+        pe.discord_id = Some(did.to_string());
+    }
+
+    fn recipient_v3(identity: &Identity) -> crate::wire_v2::RecipientV3 {
+        crate::wire_v2::RecipientV3 {
+            x25519_pub: identity.x25519_public,
+            mlkem_pub: identity.mlkem_encapsulation_key(),
+        }
+    }
+
+    #[test]
+    fn v3_pinned_sender_rejects_forged_sender() {
+        let f = attribution_fixture();
+        assert!(
+            crate::sender_attribution_proof::prove_resolved_sender_key(
+                &f.alice.x25519_public,
+                &f.mallory.x25519_public,
+            )
+            .is_err(),
+            "fixture must model distinct pinned and authenticated sender keys"
+        );
+        let wire = crate::wire_v2::encrypt_v3(
+            &f.mallory.x25519_secret,
+            &f.mallory.x25519_public,
+            &[recipient_v3(&f.bob)],
+            crate::wire_v2::MSG_TYPE_CONTENT,
+            b"v3 honest mallory",
+        )
+        .unwrap();
+
+        let honest = cmd_osl_decrypt_message_v2(
+            &f.bob_state,
+            None,
+            CHANNEL_ID.to_string(),
+            MALLORY_DID.to_string(),
+            wire.clone(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(honest, "v3 honest mallory");
+
+        let err = cmd_osl_decrypt_message_v2(
+            &f.bob_state,
+            None,
+            CHANNEL_ID.to_string(),
+            ALICE_DID.to_string(),
+            wire,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("v3 authenticated sender refused"),
+            "forged v3 sender label must fail at the pinned-sender check, got: {err}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod unit_b1_rn_wire_path_dispatch {
     use super::*;
     use crate::wire_rn::{RnPeerPin, RnPolicy};
