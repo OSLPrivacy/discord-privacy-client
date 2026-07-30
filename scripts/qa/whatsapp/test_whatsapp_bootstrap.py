@@ -14,6 +14,7 @@ class WhatsAppBootstrapStaticTests(unittest.TestCase):
         cls.arm = (ROOT / "arm-whatsapp-bootstrap.ps1").read_text(encoding="utf-8")
         cls.poll = (ROOT / "poll-whatsapp-bootstrap.ps1").read_text(encoding="utf-8")
         cls.discover = (ROOT / "discover-whatsapp-session.ps1").read_text(encoding="utf-8")
+        cls.live_audit = (ROOT / "audit-whatsapp-live-session.ps1").read_text(encoding="utf-8")
         cls.orchestrator = (ROOT / "whatsapp-bootstrap-orchestrator.py").read_text(encoding="utf-8")
 
     def test_only_exact_store_product_and_package_identity_are_allowed(self) -> None:
@@ -92,6 +93,20 @@ class WhatsAppBootstrapStaticTests(unittest.TestCase):
         self.assertIn("DISCOVER", self.orchestrator)
         for mutation in ("Start-Process", "Stop-Process", "Register-ScheduledTask", "Set-Content", "Remove-Item"):
             self.assertNotIn(mutation, self.discover)
+
+    def test_WhatsAppTwoClientQualification(self) -> None:
+        self.assertIn("function WhatsAppTwoClientQualification", self.live_audit)
+        self.assertRegex(self.live_audit, r"\[ValidateSet\(1,\s*2\)\]\[int\]\$ClientNumber")
+        self.assertIn("'OSL-WhatsApp-Client-1', 'OSL-WhatsApp-Client-2'", self.live_audit)
+        self.assertIn("whatsapp-two-client-qualification/v1", self.live_audit)
+        self.assertIn("$explorerSessions.Count -eq 1", self.live_audit)
+        self.assertIn("$oslSessions.Count -ge 1", self.live_audit)
+        self.assertIn("$whatsAppSessions.Count -ge 1", self.live_audit)
+        self.assertIn("$sharedSessions.Count -eq 1", self.live_audit)
+        for field in ("ProfileRead = $false", "ProviderStorageRead = $false", "ContentRead = $false", "WindowForegrounded = $false", "ProcessesTerminated = $false"):
+            self.assertIn(field, self.live_audit)
+        for forbidden in ("Get-Content", "LocalState", "SetForegroundWindow", "Start-Process", "Stop-Process", "Set-Content", "Remove-Item"):
+            self.assertNotIn(forbidden, self.live_audit)
 
 
 if __name__ == "__main__":
