@@ -36,6 +36,18 @@ describe("simplified truthful settings", () => {
     expect(security.indexOf("if (!wired)")).toBeLessThan(security.indexOf('data-password-role="${role}"'));
   });
 
+  it("labels optional Pro module access as separately installed and licensed", () => {
+    const start = source.indexOf("function activationSettingsContent");
+    const end = source.indexOf("function formatUnixDate", start);
+    const activation = source.slice(start, end);
+    expect(activation).toContain("Optional Pro module");
+    expect(activation).toContain("separately installed and licensed on this device");
+    expect(activation).toContain("separate install and license required");
+    expect(activation).toContain("base OSL stays available");
+    expect(activation).toContain('<p class="quiet-note">${moduleAccess}</p>');
+    expect(activation).not.toContain("Pro module included");
+  });
+
   it("keeps full local cleanup in collapsed Account advanced settings", () => {
     const accountStart = source.indexOf("function accountAdvancedSettingsContent");
     const accountEnd = source.indexOf("function serviceAccountsSettingsContent", accountStart);
