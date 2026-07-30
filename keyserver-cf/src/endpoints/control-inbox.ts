@@ -192,21 +192,40 @@ async function findRequestReceipt(
   db: D1Database,
   senderId: string,
   requestDigest: Uint8Array,
-): Promise<{ id: string; expires_at: number } | null> {
+): Promise<{
+  id: string;
+  expires_at: number;
+  inbox_eviction_count: number;
+} | null> {
   const row = await db
     .prepare(
-      `SELECT inbox_id, expires_at
+      `SELECT inbox_id, expires_at, inbox_eviction_count
          FROM control_inbox_requests
         WHERE sender_id = ? AND request_digest = ?`,
     )
     .bind(senderId, requestDigest)
-    .first<{ inbox_id: unknown; expires_at: number }>();
+    .first<{
+      inbox_id: unknown;
+      expires_at: number;
+      inbox_eviction_count: number | null;
+    }>();
   if (!row) return null;
   const id = bytesToU8(row.inbox_id);
   if (!id || id.length !== INBOX_ID_BYTES) {
     throw new Error("invalid inbox id in request receipt");
   }
-  return { id: idToHex(id), expires_at: row.expires_at };
+  const inboxEvictionCount = row.inbox_eviction_count ?? 0;
+  if (
+    !Number.isSafeInteger(inboxEvictionCount) ||
+    inboxEvictionCount < 0
+  ) {
+    throw new Error("invalid inbox eviction count in request receipt");
+  }
+  return {
+    id: idToHex(id),
+    expires_at: row.expires_at,
+    inbox_eviction_count: inboxEvictionCount,
+  };
 }
 
 /**
@@ -413,6 +432,7 @@ export async function handleControlInboxPost(
       collapseKey,
       senderSigningKey: sender.ik_ed25519_pub,
       requestDigest,
+      inboxEvictionCount: 0,
       now,
     });
   }
@@ -487,7 +507,7 @@ export async function handleControlInboxPost(
   }
 
   // Admitted. Only now may this sender recycle its own stalest rows.
-  await evictOldestPending(
+  const inboxEvictionCount = await evictOldestPending(
     env,
     `recipient_id = ? AND sender_id = ? AND kind = ''`,
     [body.recipient_id, body.sender_id],
@@ -510,6 +530,7 @@ export async function handleControlInboxPost(
     collapseKey: null,
     senderSigningKey: sender.ik_ed25519_pub,
     requestDigest,
+    inboxEvictionCount,
     now,
   });
 }
@@ -540,6 +561,7 @@ async function insertControlInboxRow(
     collapseKey: string | null;
     senderSigningKey: string;
     requestDigest: Uint8Array;
+    inboxEvictionCount: number;
     now: number;
     /**
      * Recipient-wide ordinary-lane ceiling, enforced inside the insert so the
@@ -607,8 +629,9 @@ async function insertControlInboxRow(
         env.DB
           .prepare(
             `INSERT INTO control_inbox_requests
-               (sender_id, request_digest, inbox_id, recipient_id, expires_at)
-             SELECT ?1, ?2, ?3, ?4, ?5
+               (sender_id, request_digest, inbox_id, recipient_id, expires_at,
+                inbox_eviction_count)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?7
               WHERE EXISTS (
                 SELECT 1 FROM users
                  WHERE user_id = ?1 AND ik_ed25519_pub = ?6
@@ -616,7 +639,7 @@ async function insertControlInboxRow(
                 AND EXISTS (
                   SELECT 1 FROM control_inbox
                    WHERE sender_id = ?1 AND recipient_id = ?4
-                     AND (id = ?3 OR ?7 = 1)
+                     AND (id = ?3 OR ?8 = 1)
                 )`,
           )
           .bind(
@@ -626,6 +649,7 @@ async function insertControlInboxRow(
             args.recipientId,
             receiptExpiresAt,
             args.senderSigningKey,
+            args.inboxEvictionCount,
             isRevocation ? 1 : 0,
           ),
       ]);
@@ -674,7 +698,14 @@ async function insertControlInboxRow(
           reportedId = idToHex(survivingId);
         }
       }
-      return json({ id: reportedId, expires_at: expiresAt }, { status: 201 });
+      return json(
+        {
+          id: reportedId,
+          expires_at: expiresAt,
+          inbox_eviction_count: args.inboxEvictionCount,
+        },
+        { status: 201 },
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // The D1 triggers (migrations 0006 / 0016 / 0027) are the race-safe

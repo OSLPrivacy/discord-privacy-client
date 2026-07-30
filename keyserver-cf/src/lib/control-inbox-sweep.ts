@@ -38,6 +38,8 @@ export interface ControlInboxSweepResult {
 
 export const CONTROL_INBOX_DISPOSITION_CAPABILITY =
   "control_inbox_sender_disposition";
+export const CONTROL_INBOX_EVICTION_SIGNAL_CAPABILITY =
+  "control_inbox_eviction_signal";
 export const CONTROL_INBOX_RECONCILIATION_STARTED_CAPABILITY =
   "control_inbox_sender_reconciliation_started";
 const dispositionReadyDatabases = new WeakSet<object>();
@@ -60,6 +62,13 @@ export async function controlInboxDispositionSchemaReady(
         WHERE capability = ?`,
     ).bind(CONTROL_INBOX_DISPOSITION_CAPABILITY).first<{ version: number }>();
     if (marker?.version !== 1) return false;
+    const evictionSignalMarker = await db.prepare(
+      `SELECT version
+         FROM worker_schema_capabilities
+        WHERE capability = ?`,
+    ).bind(CONTROL_INBOX_EVICTION_SIGNAL_CAPABILITY)
+      .first<{ version: number }>();
+    if (evictionSignalMarker?.version !== 1) return false;
     await db.prepare(
       `SELECT delivery_status,
               delivery_reason,
@@ -68,6 +77,11 @@ export async function controlInboxDispositionSchemaReady(
               delivery_next_retry_at,
               delivery_retain_until
          FROM control_inbox
+        LIMIT 0`,
+    ).all();
+    await db.prepare(
+      `SELECT inbox_eviction_count
+         FROM control_inbox_requests
         LIMIT 0`,
     ).all();
     dispositionReadyDatabases.add(db as object);
