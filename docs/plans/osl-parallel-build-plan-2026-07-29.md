@@ -5,6 +5,14 @@
 Codex quota may run out during a parallel implementation wave, so routing must use current,
 observable Codex capacity instead of stale lane pools or cached availability notes.
 
+Behavioral acceptance test:
+`docs/plans/osl-parallel-build-plan-2026-07-29.md`
+
+The test passes only if the coordinator decision can be made from fresh capacity facts, not from
+historical pool labels. It fails if an `available` label without a current capacity record permits
+dispatch, if a failed quota or headroom check can be bypassed by account or `CODEX_HOME`
+substitution, or if a dispatch omits the owned-file bound.
+
 Before dispatching or resuming a Codex child, the coordinator records the real capacity signal used
 for that decision: active session count, blocked or sleeping sessions, current account/quota status,
 and whether the requested work is still bounded to the recipient's owned files. If the capacity
@@ -36,3 +44,91 @@ Acceptance for this risk is a coordinator routing exercise, not a prose grep:
    turn.
 3. Attempt to satisfy a failed capacity check by borrowing another account, changing `CODEX_HOME`, or
    starting speculative background work. The routing decision must remain `refuse` or `standby`.
+
+## Acceptance Fixture
+
+Machine-checkable acceptance contract:
+
+```json
+{
+  "schemaVersion": 1,
+  "testName": "docs/plans/osl-parallel-build-plan-2026-07-29.md",
+  "routingInputs": [
+    {
+      "case": "stale_available_pool_refuses_without_live_capacity",
+      "historicalPoolLabel": "available",
+      "currentCapacityRecord": {
+        "present": false,
+        "fresh": false,
+        "contradictory": false,
+        "verifiedAccountQuota": false,
+        "activeSessionCountRecorded": false,
+        "blockedOrSleepingSessionsRecorded": false,
+        "machineHeadroomEnough": null,
+        "ownedFileBound": true
+      },
+      "forbiddenSubstituteAttempted": null,
+      "allowedDecisions": ["refuse", "standby"],
+      "forbiddenDecisions": ["dispatch"],
+      "reasonRequired": true
+    },
+    {
+      "case": "fresh_capacity_and_owned_files_allow_bounded_dispatch",
+      "historicalPoolLabel": "available",
+      "currentCapacityRecord": {
+        "present": true,
+        "fresh": true,
+        "contradictory": false,
+        "verifiedAccountQuota": true,
+        "activeSessionCountRecorded": true,
+        "blockedOrSleepingSessionsRecorded": true,
+        "machineHeadroomEnough": true,
+        "ownedFileBound": true
+      },
+      "forbiddenSubstituteAttempted": null,
+      "allowedDecisions": ["dispatch", "refuse", "standby"],
+      "dispatchPreconditions": [
+        "present",
+        "fresh",
+        "verifiedAccountQuota",
+        "activeSessionCountRecorded",
+        "blockedOrSleepingSessionsRecorded",
+        "machineHeadroomEnough",
+        "ownedFileBound"
+      ],
+      "reasonRequiredForNonDispatch": true
+    },
+    {
+      "case": "failed_quota_cannot_be_patched_by_substitution",
+      "historicalPoolLabel": "available",
+      "currentCapacityRecord": {
+        "present": true,
+        "fresh": true,
+        "contradictory": false,
+        "verifiedAccountQuota": false,
+        "activeSessionCountRecorded": true,
+        "blockedOrSleepingSessionsRecorded": true,
+        "machineHeadroomEnough": true,
+        "ownedFileBound": true
+      },
+      "forbiddenSubstituteAttempted": [
+        "borrowed_account",
+        "changed_CODEX_HOME",
+        "speculative_background_child"
+      ],
+      "allowedDecisions": ["refuse", "standby"],
+      "forbiddenDecisions": ["dispatch"],
+      "reasonRequired": true
+    }
+  ],
+  "inversionsThatMustFail": [
+    "dispatch_from_available_label_without_current_capacity_record",
+    "dispatch_after_failed_quota_check",
+    "dispatch_after_failed_headroom_check",
+    "dispatch_without_owned_file_bound",
+    "dispatch_by_borrowing_an_account",
+    "dispatch_by_changing_CODEX_HOME",
+    "dispatch_by_starting_speculative_background_work"
+  ]
+}
+```
