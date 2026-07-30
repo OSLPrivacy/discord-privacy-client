@@ -18,8 +18,9 @@ use crate::whitelist_state::WhitelistState;
 use crypto::x25519;
 use keystore::{Identity, KeyServerClient};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use store::MessageStore;
 
@@ -374,6 +375,12 @@ pub struct AppState {
     /// Option-B whitelist precedence + dynamic recipient resolution
     /// consult. Mirrors `membership.json`; safe to lose (re-accrues).
     pub scope_membership: Mutex<crate::membership::ScopeMembership>,
+
+    /// Production duress wipe engine for this AppState, installed only after
+    /// the caller binds a concrete config directory. The engine's callback
+    /// table captures an `Arc<AppState>` so duress can clear IPC-owned live
+    /// session state in addition to deleting fixed on-disk paths.
+    pub production_duress_engine: Mutex<Option<keystore::DuressEngine>>,
     // F3.6 pivot: `launch_time` and `free_tier_unlocked_until`
     // (added in F3.1 for the 60-min launch-window + ad-unlock
     // model) are removed. The new model has unlimited free text
@@ -413,6 +420,7 @@ impl Default for AppState {
             license_state: Mutex::new(keystore::LicenseStateDto::default()),
             recovery_guard: Mutex::new(crate::recovery::RecoveryGuard::default()),
             scope_membership: Mutex::new(crate::membership::ScopeMembership::default()),
+            production_duress_engine: Mutex::new(None),
             // RN starts unwired. wire_rn::RN_WIRE_IN_ENABLED is the compile-time
             // fuse; this runtime flag must never default to a more permissive value.
             rn_wire_in_enabled: AtomicBool::new(false),
@@ -423,6 +431,46 @@ impl Default for AppState {
 impl AppState {
     pub fn new() -> Self {
         AppState::default()
+    }
+
+    pub fn new_with_production_duress_engine(config_dir: impl Into<PathBuf>) -> Arc<Self> {
+        let state = Arc::new(AppState::default());
+        state
+            .install_production_duress_engine(config_dir)
+            .expect("production_duress_engine mutex poisoned");
+        state
+    }
+
+    pub fn install_production_duress_engine(
+        self: &Arc<Self>,
+        config_dir: impl Into<PathBuf>,
+    ) -> Result<(), &'static str> {
+        let engine = build_production_duress_engine_for_state(Arc::clone(self), config_dir.into());
+        *self
+            .production_duress_engine
+            .lock()
+            .map_err(|_| "production_duress_engine mutex poisoned")? = Some(engine);
+        Ok(())
+    }
+
+    pub fn production_duress_engine_is_configured(&self) -> bool {
+        self.production_duress_engine
+            .lock()
+            .expect("production_duress_engine mutex poisoned")
+            .is_some()
+    }
+
+    pub fn execute_production_duress(&self) -> Result<keystore::DuressReport, String> {
+        let guard = self
+            .production_duress_engine
+            .lock()
+            .map_err(|_| "OSL: duress engine unavailable".to_owned())?;
+        let engine = guard
+            .as_ref()
+            .ok_or_else(|| "OSL: duress engine unavailable".to_owned())?;
+        engine
+            .execute()
+            .map_err(|_| "OSL: duress engine failed to run".to_owned())
     }
 
     /// Install an identity and construct its live prekey state in the
@@ -551,9 +599,143 @@ impl AppState {
     }
 }
 
+fn build_production_duress_engine_for_state(
+    state: Arc<AppState>,
+    config_dir: PathBuf,
+) -> keystore::DuressEngine {
+    let paths = production_duress_paths(&config_dir);
+    let handlers = keystore::duress::build_production_duress_handlers(
+        keystore::ProductionDuressHandlers::new()
+            .with_wipe_local_cache_dir_path(config_dir.join("store"))
+            .with_wipe_anonymous_credentials_paths([config_dir.join("anonymous_credentials.json")])
+            .with_wipe_prekeys(wipe_prekeys_handler(Arc::clone(&state)))
+            .with_wipe_double_ratchet(crate::commands::wipe_double_ratchet_session_state_handler(
+                Arc::clone(&state),
+            ))
+            .with_wipe_sender_keys(crate::commands::wipe_sender_keys_session_state_handler(
+                Arc::clone(&state),
+            ))
+            .with_wipe_peer_ratchets(crate::commands::wipe_peer_ratchet_session_state_handler(
+                Arc::clone(&state),
+            ))
+            .with_zeroize_in_memory(zeroize_in_memory_handler(Arc::clone(&state)))
+            .with_strip_opsec_file_paths(production_strip_opsec_paths(&config_dir))
+            .with_unregister_account(unregister_account_handler(state)),
+    );
+    keystore::DuressEngine::new(config_dir.join("duress.journal"), paths, handlers)
+}
+
+fn production_duress_paths(config_dir: &Path) -> keystore::DuressPaths {
+    keystore::DuressPaths {
+        identity_file: config_dir.join("identity.json"),
+        password_file: config_dir.join("password_marker.json"),
+        prekey_file: Some(config_dir.join("prekeys.json")),
+    }
+}
+
+fn production_strip_opsec_paths(config_dir: &Path) -> Vec<PathBuf> {
+    vec![
+        config_dir.join("boot.js"),
+        config_dir.join("injection.js"),
+        config_dir.join("opsec"),
+    ]
+}
+
+fn wipe_prekeys_handler(state: Arc<AppState>) -> keystore::WipeFn {
+    Box::new(move || {
+        state.clear_prekey_state();
+        Ok(())
+    })
+}
+
+fn zeroize_in_memory_handler(state: Arc<AppState>) -> keystore::WipeFn {
+    Box::new(move || {
+        state.clear_identity();
+        crate::main_password::set_file_storage_key(None);
+        state.sender_pubkey_cache.clear();
+        Ok(())
+    })
+}
+
+fn unregister_account_handler(state: Arc<AppState>) -> keystore::WipeFn {
+    Box::new(move || unregister_account_for_duress(&state))
+}
+
+fn unregister_account_for_duress(state: &AppState) -> Result<(), keystore::DuressError> {
+    let (user_id, signature_b64, timestamp_ms) = {
+        let guard = state.identity.lock().map_err(|_| {
+            keystore::DuressError::Handler(
+                "identity mutex poisoned during duress unregister".to_owned(),
+            )
+        })?;
+        let identity = guard.as_ref().ok_or_else(|| {
+            keystore::DuressError::Handler(
+                "identity authority missing for duress unregister".to_owned(),
+            )
+        })?;
+        let timestamp_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let signature = keystore::sign_unregister(identity, timestamp_ms);
+        use base64::engine::general_purpose::STANDARD as B64;
+        use base64::Engine as _;
+        (
+            identity.user_id.clone(),
+            B64.encode(signature.as_bytes()),
+            timestamp_ms,
+        )
+    };
+    let client = state
+        .keyserver
+        .lock()
+        .map_err(|_| {
+            keystore::DuressError::Handler(
+                "keyserver mutex poisoned during duress unregister".to_owned(),
+            )
+        })?
+        .clone()
+        .ok_or_else(|| {
+            keystore::DuressError::Handler(
+                "keyserver authority missing for duress unregister".to_owned(),
+            )
+        })?;
+    client
+        .unregister_signed(&user_id, &signature_b64, timestamp_ms)
+        .map_err(|_| keystore::DuressError::Handler("keyserver unregister failed".to_owned()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct ConfigDirGuard;
+
+    impl Drop for ConfigDirGuard {
+        fn drop(&mut self) {
+            keystore::set_active_account_dir(None);
+            keystore::set_base_dir_override(None);
+            crate::main_password::set_file_storage_key(None);
+        }
+    }
+
+    fn use_temp_config_dir(dir: &Path) -> ConfigDirGuard {
+        keystore::set_active_account_dir(None);
+        keystore::set_base_dir_override(Some(dir.to_path_buf()));
+        crate::main_password::set_file_storage_key(None);
+        ConfigDirGuard
+    }
+
+    fn outcome_for<'a>(
+        steps: &'a [(keystore::WipeStep, keystore::StepOutcome)],
+        step: keystore::WipeStep,
+    ) -> &'a keystore::StepOutcome {
+        steps
+            .iter()
+            .find(|(candidate, _)| *candidate == step)
+            .map(|(_, outcome)| outcome)
+            .expect("duress report contains step")
+    }
 
     #[test]
     fn rn_wire_in_runtime_gate_defaults_to_refusal() {
@@ -570,6 +752,100 @@ mod tests {
         assert!(state.rn_wire_in_enabled());
         state.set_rn_wire_in_enabled(false);
         assert!(!state.rn_wire_in_enabled());
+    }
+
+    #[test]
+    fn app_state_constructs_production_duress_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = use_temp_config_dir(dir.path());
+        let state = AppState::new_with_production_duress_engine(dir.path().to_path_buf());
+        let identity = keystore::generate_identity("duress-state-owner".to_owned());
+        state.install_identity(identity);
+        {
+            let mut sender_keys = state
+                .sender_key_state
+                .lock()
+                .expect("sender_key_state mutex poisoned");
+            sender_keys.states.insert(
+                "gc:state-test".to_owned(),
+                crypto::sender_keys::SenderKeyStateOnDisk::default(),
+            );
+        }
+        std::fs::write(dir.path().join("identity.json"), b"identity").unwrap();
+        std::fs::write(dir.path().join("password_marker.json"), b"password").unwrap();
+        std::fs::write(dir.path().join("prekeys.json"), b"prekeys").unwrap();
+        std::fs::create_dir(dir.path().join("store")).unwrap();
+        std::fs::write(dir.path().join("store").join("messages.sqlite"), b"store").unwrap();
+        std::fs::write(dir.path().join("anonymous_credentials.json"), b"anonymous").unwrap();
+        std::fs::write(dir.path().join("boot.js"), b"opsec").unwrap();
+
+        assert!(
+            state.production_duress_engine_is_configured(),
+            "production AppState constructor must hold a DuressEngine"
+        );
+
+        let report = state
+            .execute_production_duress()
+            .expect("configured production duress engine runs to a report");
+
+        assert_eq!(
+            outcome_for(&report.steps, keystore::WipeStep::IdentityFile),
+            &keystore::StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, keystore::WipeStep::PasswordHashes),
+            &keystore::StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, keystore::WipeStep::PrekeyFile),
+            &keystore::StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, keystore::WipeStep::LocalCacheDir),
+            &keystore::StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, keystore::WipeStep::AnonymousCredentials),
+            &keystore::StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, keystore::WipeStep::SenderKeys),
+            &keystore::StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, keystore::WipeStep::Prekeys),
+            &keystore::StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, keystore::WipeStep::InMemoryZeroize),
+            &keystore::StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, keystore::WipeStep::StripOpsecFiles),
+            &keystore::StepOutcome::Wiped
+        );
+        assert!(matches!(
+            outcome_for(&report.steps, keystore::WipeStep::UnregisterAccount),
+            keystore::StepOutcome::Failed { error }
+                if error == "handler: keyserver authority missing for duress unregister"
+        ));
+        assert!(!dir.path().join("identity.json").exists());
+        assert!(!dir.path().join("password_marker.json").exists());
+        assert!(!dir.path().join("prekeys.json").exists());
+        assert!(!dir.path().join("store").exists());
+        assert!(!dir.path().join("anonymous_credentials.json").exists());
+        assert!(!dir.path().join("boot.js").exists());
+        assert!(!state.has_identity());
+        assert!(!state.has_prekey_state());
+        assert!(
+            state
+                .sender_key_state
+                .lock()
+                .expect("sender_key_state mutex poisoned")
+                .states
+                .is_empty(),
+            "production duress engine must use the sender-key wipe handler"
+        );
     }
 }
 
