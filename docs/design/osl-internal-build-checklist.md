@@ -591,7 +591,16 @@ timestamped deltas, not keep this number manually forever.
 - ⬜ **B7 · Independent crypto review** — required before uncontrolled traffic/public superiority
   claims. `needs: B2-B6` `weight: 3` `earned: 0`
 
-## C · Discord reference adapter — 35 points (18 earned)
+## C Discord reference adapter — 35 points (18 earned)
+
+**Category C release gate.** Discord evidence is admissible only when it is
+bound to the committed source object or exact executable under review, the
+production Discord adapter path, the verified native Discord process/window and
+conversation, and the configured user send authority. A synthetic harness,
+source substring, caller-authored build fact, fake screenshot, replayed bundle,
+or renderer-only return is supporting evidence at most; it cannot promote a C
+row by itself. Missing consent, binding, authority, native-target proof, or
+honest tri-state outcome is a refusal, not a degraded pass.
 
 - ✅ **C1 · Carrier generation and encrypted commit** — exercised in live QA sends.
   `needs: B1/B2 gated path` `weight: 4` `earned: 4`
