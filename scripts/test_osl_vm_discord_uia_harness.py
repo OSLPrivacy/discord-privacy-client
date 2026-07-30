@@ -7,6 +7,7 @@ from pathlib import Path
 
 HARNESS = Path(__file__).parent / "qa" / "osl-vm-discord-uia-harness.ps1"
 UNLOCK = Path(__file__).parent / "qa" / "osl-vm-unlock-from-key-vault.ps1"
+ADAPTER = Path(__file__).parents[1] / "apps" / "osl-hub" / "src" / "native_discord_adapter.rs"
 
 REQUIRED_ACTIONS = (
     "Inventory",
@@ -70,6 +71,7 @@ class OslVmDiscordUiaHarnessStaticTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.source = HARNESS.read_text(encoding="utf-8")
         cls.unlock = UNLOCK.read_text(encoding="utf-8")
+        cls.adapter = ADAPTER.read_text(encoding="utf-8")
 
     def test_exposes_only_the_required_semantic_actions(self) -> None:
         validate_set = re.search(
@@ -211,6 +213,33 @@ class OslVmDiscordUiaHarnessStaticTests(unittest.TestCase):
         self.assertRegex(body, r"sentDiscordMarked")
         self.assertRegex(body, r"FullDiscordProofPassed\s*=\s*\$false")
         self.assertRegex(body, r"ProtectedSendSucceeded")
+
+    def test_refresh_verified_bounds_qualifies_discord_profile_on_production_route(self) -> None:
+        wrapper = self.adapter[
+            self.adapter.index("pub fn refresh_verified_bounds(") :
+            self.adapter.index("    pub fn place_carrier(", self.adapter.index("pub fn refresh_verified_bounds("))
+        ]
+        self.assertIn("with_current_discord_accessibility_target", wrapper)
+        self.assertIn("windows::refresh_bounds(self, target, trusted, scope_binding)", wrapper)
+        self.assertNotIn("discord-qa-shell", wrapper)
+
+        refresh = self.adapter[
+            self.adapter.index("pub(super) fn refresh_bounds(") :
+            self.adapter.index("    /// Whether raising the borrowed Discord window", self.adapter.index("pub(super) fn refresh_bounds("))
+        ]
+        self.assertIn("refresh_from_cached_composer(target, process_is_trusted, scope_binding)", refresh)
+        self.assertIn("locate(target, process_is_trusted, scope_binding, true)", refresh)
+        self.assertIn("composer_semantic_identity_matches(expected, &located.binding)", refresh)
+
+        cache = self.adapter[
+            self.adapter.index("fn refresh_from_cached_composer(") :
+            self.adapter.index("    pub(super) fn refresh_bounds(", self.adapter.index("fn refresh_from_cached_composer("))
+        ]
+        self.assertIn("normalized_conversation_from_composer(&composer_name)", cache)
+        self.assertIn('stable_hash("discord-visible-conversation", conversation)', cache)
+        self.assertIn("cached.binding.conversation_binding_hash", cache)
+        self.assertIn("return None;", cache)
+        self.assertNotIn("discord-qa-shell", cache)
 
     def test_does_not_overwrite_powershell_reserved_host_variable(self) -> None:
         self.assertNotRegex(self.source, r"(?im)^\s*\$host\s*=")
