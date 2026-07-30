@@ -1,12 +1,15 @@
 export const OSL_CHAT_MAX_DRAFT_BYTES = 1_000;
 
-export type OslChatDeliveryState =
-  | "sent"
-  | "delivered"
-  | "received"
-  | "opened"
-  | "expired"
-  | "failed";
+export const OSL_CHAT_DELIVERY_STATES = [
+  "sent",
+  "delivered",
+  "received",
+  "opened",
+  "expired",
+  "failed",
+] as const;
+
+export type OslChatDeliveryState = typeof OSL_CHAT_DELIVERY_STATES[number];
 
 export type OslChatMessageDirection = "outgoing" | "incoming";
 
@@ -128,7 +131,7 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
     <div class="osl-chat-message-list" role="log" aria-live="polite" aria-relevant="additions text">${messages}</div>
     <form class="osl-chat-composer" data-osl-chat-compose="${escapeHtml(friend.personId)}">
       <label for="osl-chat-draft">Message</label>
-      <div class="osl-chat-composer-bar"><label class="osl-chat-view-once" title="View once"><input id="osl-chat-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""} ${model.busy ? "disabled" : ""}/>${onceIcon}<span><strong>View once</strong><small>Removed from the relay when opened and never added to OSL history.</small></span></label><textarea id="osl-chat-draft" rows="1" placeholder="Message ${escapeHtml(friend.nickname)}" autocomplete="off" spellcheck="true" aria-describedby="osl-chat-draft-count osl-chat-readiness">${escapeHtml(model.draft)}</textarea><button class="osl-chat-send" type="submit" aria-label="${model.busy ? "Sending" : "Send"}" ${canSend ? "" : "disabled"}>${sendIcon}<span>${model.busy ? "Sending…" : "Send"}</span></button></div>
+      <div class="osl-chat-composer-bar"><label class="osl-chat-view-once" title="View once"><input id="osl-chat-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""} ${model.busy ? "disabled" : ""}/>${onceIcon}<span><strong>View once</strong><small>Removed after it is opened and kept out of OSL history.</small></span></label><textarea id="osl-chat-draft" rows="1" placeholder="Message ${escapeHtml(friend.nickname)}" autocomplete="off" spellcheck="true" aria-describedby="osl-chat-draft-count osl-chat-readiness">${escapeHtml(model.draft)}</textarea><button class="osl-chat-send" type="submit" aria-label="${model.busy ? "Sending" : "Send"}" ${canSend ? "" : "disabled"}>${sendIcon}<span>${model.busy ? "Sending…" : "Send"}</span></button></div>
       <div class="osl-chat-composer-meta"><span id="osl-chat-readiness" class="osl-chat-readiness">${readiness}</span><output id="osl-chat-draft-count" class="osl-chat-byte-count${withinLimit ? "" : " is-over"}">${bytes.toLocaleString("en-US")} / ${OSL_CHAT_MAX_DRAFT_BYTES.toLocaleString("en-US")}</output></div>
     </form>
   </section>`;
