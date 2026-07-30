@@ -2722,7 +2722,7 @@ async function checkUnlockScreenCredential(secret: string): Promise<Awaited<Retu
 }
 
 function unlockScreenDuressPinTriggeredWipe(gate: Awaited<ReturnType<typeof unlockHubPasswordGate>>): boolean {
-  return gate.outcome === "burned" && gate.burn !== null;
+  return (gate.outcome === "burned" || gate.outcome === "duress") && gate.burn !== null;
 }
 
 function bindImportForm(): void {
@@ -6350,7 +6350,7 @@ export function persistOslChatUnread(): Promise<void> {
 
 function persistOslChatNotifications(): void {
   const metadata = (appNotifications ?? []).filter((item) => item.detail === "New encrypted message").slice(0, 20);
-  persistSensitiveOslChatJson(oslChatNotificationStorageKey, encodeOslChatNotifications(metadata));
+  void persistSensitiveOslChatJson(oslChatNotificationStorageKey, encodeOslChatNotifications(metadata));
 }
 
 function mergePersistedOslChatNotifications(items: AppNotification[] | null): AppNotification[] {

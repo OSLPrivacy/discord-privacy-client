@@ -116,7 +116,7 @@ pub fn verify_password_role(
 
 fn role_after_duress_threshold(role: VerifiedGateRole, attempts_used: u32) -> VerifiedGateRole {
     if role == VerifiedGateRole::Wrong
-        && attempts_used >= keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD
+        && attempts_used >= ipc::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT
     {
         VerifiedGateRole::Duress
     } else {
@@ -249,10 +249,15 @@ mod tests {
             (VerifiedGateRole::Wrong, "wrong"),
         ];
         assert_eq!(actions.len(), 5);
-        assert_ne!(actions[0].1, actions[1].1);
-        assert_ne!(actions[0].1, actions[2].1);
-        assert_ne!(actions[1].1, actions[2].1);
-        assert_ne!(actions[2].1, actions[3].1);
+        for (index, (_, outcome)) in actions.iter().enumerate() {
+            assert!(
+                actions
+                    .iter()
+                    .enumerate()
+                    .all(|(candidate, (_, other))| candidate == index || other != outcome),
+                "gate outcome {outcome} must stay distinct"
+            );
+        }
     }
 
     #[test]
@@ -276,10 +281,10 @@ mod tests {
         let below_threshold = GatePasswordVerification {
             role: role_after_duress_threshold(
                 VerifiedGateRole::Wrong,
-                keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD - 1,
+                ipc::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 1,
             ),
             lockout_seconds_remaining: 3600,
-            attempts_used: keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD - 1,
+            attempts_used: ipc::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 1,
         };
         let below_result = HubGateUnlockResult::wrong(below_threshold);
         assert_eq!(below_result.outcome, "wrong");
@@ -291,10 +296,10 @@ mod tests {
         let threshold_verification = GatePasswordVerification {
             role: role_after_duress_threshold(
                 VerifiedGateRole::Wrong,
-                keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD,
+                ipc::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT,
             ),
             lockout_seconds_remaining: 3600,
-            attempts_used: keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD,
+            attempts_used: ipc::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT,
         };
         assert_eq!(threshold_verification.role, VerifiedGateRole::Duress);
         let threshold_result = gate_result_for_verification(
