@@ -38,12 +38,98 @@ type MessagingProductionFacts = {
   prekeyLifecycleCalled: boolean;
 };
 
+type CallerRootRuntimeFacts = {
+  callerRootBoundaryNamed: boolean;
+  stagingPathsStayUnderCallerRoot: boolean;
+  stagedPlaintextCleanupUsesCallerRoot: boolean;
+  runtimeLocksIdentityAndMessagePages: boolean;
+  runtimeFailureRollsBackPriorLocks: boolean;
+  runtimeGuardBorrowsPlaintextMutably: boolean;
+  runtimePlaintextIsZeroizingOwned: boolean;
+  rnWireInStaysReviewGated: boolean;
+};
+
 function rustProductionPrefix(source: string): string {
-  const testModule = source.search(/^#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*mod\s+tests\s*\{/mu);
-  const production = testModule < 0 ? source : source.slice(0, testModule);
+  const production = stripRustCfgTestModules(source);
   return production
     .replace(/\/\*[\s\S]*?\*\//gu, "")
     .replace(/\/\/[^\n]*/gu, "");
+}
+
+function stripRustCfgTestModules(source: string): string {
+  const testModule = /#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*mod\s+\w+\s*\{/gu;
+  let match: RegExpExecArray | null;
+  let cursor = 0;
+  let output = "";
+
+  while ((match = testModule.exec(source)) !== null) {
+    const openBrace = testModule.lastIndex - 1;
+    let depth = 0;
+    let inLineComment = false;
+    let blockCommentDepth = 0;
+    let inString = false;
+    let escaped = false;
+    let end = source.length;
+
+    for (let index = openBrace; index < source.length; index += 1) {
+      const current = source[index];
+      const next = source[index + 1];
+
+      if (inLineComment) {
+        if (current === "\n") inLineComment = false;
+        continue;
+      }
+      if (blockCommentDepth > 0) {
+        if (current === "/" && next === "*") {
+          blockCommentDepth += 1;
+          index += 1;
+        } else if (current === "*" && next === "/") {
+          blockCommentDepth -= 1;
+          index += 1;
+        }
+        continue;
+      }
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (current === "\\") {
+          escaped = true;
+        } else if (current === '"') {
+          inString = false;
+        }
+        continue;
+      }
+      if (current === "/" && next === "/") {
+        inLineComment = true;
+        index += 1;
+        continue;
+      }
+      if (current === "/" && next === "*") {
+        blockCommentDepth = 1;
+        index += 1;
+        continue;
+      }
+      if (current === '"') {
+        inString = true;
+        continue;
+      }
+      if (current === "{") {
+        depth += 1;
+      } else if (current === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          end = index + 1;
+          break;
+        }
+      }
+    }
+
+    output += source.slice(cursor, match.index);
+    cursor = end;
+    testModule.lastIndex = end;
+  }
+
+  return output + source.slice(cursor);
 }
 
 function tauriCommandSurface(source: string): string {
@@ -607,6 +693,177 @@ describe("bundled preview security boundary", () => {
     ).toBe(true);
   });
 
+  it("combined caller-root+runtime boundary regression test", () => {
+    const atRestBoundary = readRelative("../../../crates/ipc/src/at_rest_boundary.rs");
+    const peerAttachment = readRelative("../../osl-hub/src/peer_attachment_io.rs");
+    const sensitiveMemory = readRelative("../../../crates/keystore/src/sensitive_memory.rs");
+    const wireRn = readRelative("../../../crates/ipc/src/wire_rn.rs");
+    const classifyBoundary = (
+      atRestSource: string,
+      attachmentSource: string,
+      memorySource: string,
+      rnSource: string,
+    ): CallerRootRuntimeFacts => {
+      const atRestProduction = rustProductionPrefix(atRestSource);
+      const attachmentProduction = rustProductionPrefix(attachmentSource);
+      const memoryProduction = rustProductionPrefix(memorySource);
+      const allStart = atRestProduction.indexOf("pub const ALL:");
+      const allEnd = atRestProduction.indexOf("];", allStart);
+      const allList =
+        allStart < 0 || allEnd < 0
+          ? ""
+          : atRestProduction.slice(allStart, allEnd);
+      const removalCalls =
+        attachmentProduction.match(
+          /remove_plaintext_with_retries\(&staged\.root,\s*&staged\.path\)/gu,
+        ) ?? [];
+
+      return {
+        callerRootBoundaryNamed:
+          allList.includes("Self::CallerRoot,") &&
+          atRestProduction.includes('Self::CallerRoot => "caller_root"') &&
+          atRestProduction.includes("Self::PhysicalMedia") &&
+          atRestProduction.includes('Self::PhysicalMedia => "physical_media"'),
+        stagingPathsStayUnderCallerRoot:
+          attachmentProduction.includes("fn validate_staging_path_in_root(") &&
+          attachmentProduction.includes("let staging = staging_directory_for_root(root)?;") &&
+          attachmentProduction.includes("path.parent() != Some(staging.as_path())") &&
+          attachmentProduction.includes(
+            'return Err("staged attachment path is invalid".to_owned());',
+          ) &&
+          attachmentProduction.includes("Ok(root.join(STAGING_DIRECTORY))") &&
+          attachmentProduction.includes(
+            "matches!(component, Component::CurDir | Component::ParentDir)",
+          ),
+        stagedPlaintextCleanupUsesCallerRoot: removalCalls.length >= 2,
+        runtimeLocksIdentityAndMessagePages:
+          memoryProduction.includes("pub fn lock_sensitive_pages<'a>(") &&
+          memoryProduction.includes("identity_plaintext: &'a mut [u8]") &&
+          memoryProduction.includes("message_plaintext: &'a mut [u8]") &&
+          memoryProduction.includes(
+            "SensitiveBufferKind::IdentityPlaintext,\n            identity_plaintext.as_ptr(),",
+          ) &&
+          memoryProduction.includes(
+            "SensitiveBufferKind::MessagePlaintext,\n            message_plaintext.as_ptr(),",
+          ) &&
+          memoryProduction.includes("locker.lock(span.addr, span.len)"),
+        runtimeFailureRollsBackPriorLocks:
+          memoryProduction.includes("for prior in locked.iter().rev()") &&
+          memoryProduction.includes("locker.unlock(prior.addr, prior.len);") &&
+          memoryProduction.includes("return Err(SensitiveMemoryError::LockFailed") &&
+          memoryProduction.includes("kind: span.kind"),
+        runtimeGuardBorrowsPlaintextMutably:
+          memoryProduction.includes("_borrowed_plaintext: PhantomData<&'buf mut [u8]>") &&
+          memoryProduction.includes(
+            "fn lock_sensitive_pages_with_locker<'buf, 'locker, L: PageLocker + ?Sized>",
+          ),
+        runtimePlaintextIsZeroizingOwned:
+          memoryProduction.includes("bytes: Zeroizing<Vec<u8>>") &&
+          memoryProduction.includes("bytes.zeroize();") &&
+          memoryProduction.includes("LockedSensitivePlaintext"),
+        rnWireInStaysReviewGated:
+          /\bpub\s+const\s+RN_WIRE_IN_ENABLED:\s+bool\s*=\s*false\s*;/u.test(
+            rustProductionPrefix(rnSource),
+          ),
+      };
+    };
+
+    const facts = classifyBoundary(atRestBoundary, peerAttachment, sensitiveMemory, wireRn);
+    expect(facts).toEqual({
+      callerRootBoundaryNamed: true,
+      stagingPathsStayUnderCallerRoot: true,
+      stagedPlaintextCleanupUsesCallerRoot: true,
+      runtimeLocksIdentityAndMessagePages: true,
+      runtimeFailureRollsBackPriorLocks: true,
+      runtimeGuardBorrowsPlaintextMutably: true,
+      runtimePlaintextIsZeroizingOwned: true,
+      rnWireInStaysReviewGated: true,
+    });
+
+    expect(
+      classifyBoundary(
+        atRestBoundary.replace("Self::CallerRoot,", "Self::CallerRootRemoved,"),
+        peerAttachment,
+        sensitiveMemory,
+        wireRn,
+      ).callerRootBoundaryNamed,
+    ).toBe(false);
+    expect(
+      classifyBoundary(
+        atRestBoundary,
+        peerAttachment.replace(
+          "path.parent() != Some(staging.as_path())",
+          "false",
+        ),
+        sensitiveMemory,
+        wireRn,
+      ).stagingPathsStayUnderCallerRoot,
+    ).toBe(false);
+    expect(
+      classifyBoundary(
+        atRestBoundary,
+        peerAttachment.replaceAll(
+          "remove_plaintext_with_retries(&staged.root, &staged.path)",
+          'remove_plaintext_with_retries(Path::new("/tmp"), &staged.path)',
+        ),
+        sensitiveMemory,
+        wireRn,
+      ).stagedPlaintextCleanupUsesCallerRoot,
+    ).toBe(false);
+    expect(
+      classifyBoundary(
+        atRestBoundary,
+        peerAttachment,
+        sensitiveMemory.replace(
+          "SensitiveBufferKind::MessagePlaintext,\n            message_plaintext.as_ptr(),",
+          "SensitiveBufferKind::IdentityPlaintext,\n            message_plaintext.as_ptr(),",
+        ),
+        wireRn,
+      ).runtimeLocksIdentityAndMessagePages,
+    ).toBe(false);
+    expect(
+      classifyBoundary(
+        atRestBoundary,
+        peerAttachment,
+        sensitiveMemory.replace(
+          "for prior in locked.iter().rev()",
+          "for prior in [].iter().rev()",
+        ),
+        wireRn,
+      ).runtimeFailureRollsBackPriorLocks,
+    ).toBe(false);
+    expect(
+      classifyBoundary(
+        atRestBoundary,
+        peerAttachment,
+        sensitiveMemory.replace(
+          "_borrowed_plaintext: PhantomData<&'buf mut [u8]>",
+          "_borrowed_plaintext: PhantomData<&'buf [u8]>",
+        ),
+        wireRn,
+      ).runtimeGuardBorrowsPlaintextMutably,
+    ).toBe(false);
+    expect(
+      classifyBoundary(
+        atRestBoundary,
+        peerAttachment,
+        sensitiveMemory.replace("bytes: Zeroizing<Vec<u8>>", "bytes: Vec<u8>"),
+        wireRn,
+      ).runtimePlaintextIsZeroizingOwned,
+    ).toBe(false);
+    expect(
+      classifyBoundary(
+        atRestBoundary,
+        peerAttachment,
+        sensitiveMemory,
+        wireRn.replace(
+          "pub const RN_WIRE_IN_ENABLED: bool = false;",
+          "pub const RN_WIRE_IN_ENABLED: bool = true;",
+        ),
+      ).rnWireInStaysReviewGated,
+    ).toBe(false);
+  });
+
   it("keeps signed burn alerts classified as implemented-unwired", () => {
     const burnAlert = readRelative("../../../crates/keystore/src/burn_alert.rs");
     const keystoreLib = readRelative("../../../crates/keystore/src/lib.rs");
@@ -757,15 +1014,19 @@ describe("bundled preview security boundary", () => {
       remoteBlobDeleteAttempted: true,
     });
 
-    // Wrapped-key upload is live for native-overlay relay/view-once link
-    // setup, and fetch is live for attachment open. Burn must still not be
-    // described as that upload path.
+    // Wrapped-key upload is live for native-overlay relay, and fetch is live
+    // for attachment open. IPC now also owns bounded attachment wrapped-key
+    // posting, so the burn-specific assertion is scoped to the burn body.
+    const commandsProduction = rustProductionPrefix(commands);
+    const applyBurnBody =
+      commandsProduction
+        .split("pub fn cmd_osl_apply_burn(")[1]
+        ?.split("\nfn whitelist_entry_matches(")[0] ?? "";
     expect(productionUsesRemoteWrappedKeyUpload(productionRust)).toBe(true);
     expect(productionUsesRemoteWrappedKeyUpload(security)).toBe(false);
     expect(productionUsesRemoteWrappedKeyUpload(commands)).toBe(true);
-    expect(rustProductionPrefix(commands)).toContain(
-      "post_wrapped_key_before_producing_link",
-    );
+    expect(commandsProduction).toContain("post_wrapped_key_before_producing_link");
+    expect(productionUsesRemoteWrappedKeyUpload(applyBurnBody)).toBe(false);
     expect(rustProductionPrefix(productionRust)).toMatch(/\.fetch_wrapped_key\s*\(/u);
 
     const assertBurnTruth = (
@@ -887,7 +1148,7 @@ describe("bundled preview security boundary", () => {
       ).toBe(false);
   });
 
-  it("keeps the keyserver burn client classified as explicit wrapped-key burn", () => {
+  it("keeps the keyserver burn client constrained to explicit OSL-user burns", () => {
     const burnPrimitive = readRelative("../../../crates/keystore/src/burn.rs");
     const keystoreClient = readRelative("../../../crates/keystore/src/client.rs");
     const keystoreLib = readRelative("../../../crates/keystore/src/lib.rs");
@@ -933,21 +1194,25 @@ describe("bundled preview security boundary", () => {
       "post_burn_control_and_delete_wrapped_keys",
     );
 
-    const assertUnwiredBurnTruth = (source: string): void => {
+    const commandProduction = rustProductionPrefix(commands);
+    const keyserverBurnBody =
+      commandProduction
+        .split("fn burn_wrapped_keys_for_peer(")[1]
+        ?.split("\n#[cfg(test)]")[0] ?? "";
+    const assertLiveWrappedKeyBurnTruth = (source: string): void => {
+      expect(source).toContain("pm.get(peer_discord_id)");
+      expect(source).toContain("is_discord_snowflake_shaped(&recipient_osl_id)");
       expect(source).toContain(
-        "Wrapped-key deletion request primitives (implemented-unwired)",
+        'return Err("OSL: Discord identifiers cannot address wrapped-key burn".to_string());',
       );
-      expect(source).toContain(
-        "Current Hub/IPC production code does not construct a",
-      );
-      expect(source).toContain(
-        "the reachable product burn",
-      );
-      expect(source).toContain(
-        "These primitives therefore do not establish that a product burn",
+      expect(source).toContain("keystore::BurnScope::ToUser");
+      expect(source).toContain("user_id: recipient_osl_id");
+      expect(source.indexOf("is_discord_snowflake_shaped(&recipient_osl_id)")).toBeLessThan(
+        source.indexOf(".burn("),
       );
     };
-    assertUnwiredBurnTruth(burnPrimitive);
+    assertLiveWrappedKeyBurnTruth(keyserverBurnBody);
+    expect(burnPrimitive).toContain("Server-side filter is sender-only");
 
     for (const syntheticCaller of [
       "let scope = BurnScope::All;",
@@ -959,10 +1224,10 @@ describe("bundled preview security boundary", () => {
     }
 
     expect(() =>
-      assertUnwiredBurnTruth(
-        burnPrimitive.replace(
-          "Wrapped-key deletion request primitives (implemented-unwired)",
-          "User-facing wrapped-key deletion",
+      assertLiveWrappedKeyBurnTruth(
+        keyserverBurnBody.replace(
+          "is_discord_snowflake_shaped(&recipient_osl_id)",
+          "false",
         ),
       ),
     ).toThrow();
@@ -1053,10 +1318,13 @@ describe("bundled preview security boundary", () => {
     expect(commands).toContain("pub fn run_prekey_replenishment_tick(");
     expect(commands).toContain("client\n                .replenish_using_state(");
     expect(commands).toContain("crate::wire_rn::RN_WIRE_IN_ENABLED");
-    expect(rustProductionPrefix(wireRn)).toMatch(/\bconsume_opk\s*\(/u);
-    expect(rustProductionPrefix(wireRn)).toContain(
-      "pub const RN_WIRE_IN_ENABLED: bool = false",
+    const wireRnProduction = rustProductionPrefix(wireRn);
+    expect(wireRnProduction).toMatch(/\bconsume_opk\s*\(/u);
+    expect(wireRnProduction).toContain("prekeys.consume_opk(opk_id)");
+    expect(wireRnProduction).toContain(
+      "accept_b5_prekey_state_and_persist_with_sealer",
     );
+    expect(wireRnProduction).toContain("pub const RN_WIRE_IN_ENABLED: bool = false;");
 
     const assertWiredPrekeyTruth = (source: string): void => {
       expect(source).toContain(
@@ -1412,6 +1680,8 @@ describe("bundled preview security boundary", () => {
     const password = readRelative("../../../crates/keystore/src/password.rs");
     const keystoreLib = readRelative("../../../crates/keystore/src/lib.rs");
     const main = readRelative("../../osl-hub/src/main.rs");
+    const state = readRelative("../../../crates/ipc/src/state.rs");
+    const mainPassword = readRelative("../../../crates/ipc/src/main_password.rs");
     const productionRust = [
       readProductionRustTree("../../osl-hub/src/"),
       readProductionRustTree("../../../crates/ipc/src/"),
@@ -1433,8 +1703,8 @@ describe("bundled preview security boundary", () => {
         rustProductionPrefix(source),
       );
 
-    // Positive implementation/re-export controls prevent removing the dormant
-    // subsystem from satisfying the absence assertion.
+    // Positive implementation/re-export controls prevent deleting the
+    // subsystem from satisfying the live reachability assertions.
     for (const implementationSymbol of [
       "pub enum WipeStep",
       "pub struct DuressHandlers",
@@ -1470,8 +1740,11 @@ describe("bundled preview security boundary", () => {
       "execute_production_duress",
     );
 
-    // Positive controls for the separate, reachable Hub implementation.
+    // Positive controls for the separate, reachable Hub password gate and the
+    // now-live production duress engine.
     const mainProduction = rustProductionPrefix(main);
+    const stateProduction = rustProductionPrefix(state);
+    const mainPasswordProduction = rustProductionPrefix(mainPassword);
     const handler = tauriCommandSurface(mainProduction);
     expect(handler).toContain("unlock_hub_password_gate,");
     expect(mainProduction).toContain(
@@ -1479,43 +1752,27 @@ describe("bundled preview security boundary", () => {
     );
     expect(mainProduction).toContain("VerifiedGateRole::Burn => {");
     expect(mainProduction).toContain("cleanup::execute_verified_gate_burn(");
-
-    const assertLegacyDuressTruth = (
-      duressSource: string,
+    const assertLiveDuressEngineTruth = (
+      stateSource: string,
       passwordSource: string,
     ): void => {
-      expect(duressSource).toContain(
-        "Legacy duress-engine primitives (implemented-unwired)",
+      expect(stateSource).toContain(
+        "production_duress_engine: Mutex<Option<keystore::DuressEngine>>",
       );
-      expect(duressSource).toContain(
-        "neither construct a\n//! [`DuressEngine`] nor call",
-      );
-      expect(duressSource).toContain(
-        "separately implemented burn-password path uses `startup_gate` and",
-      );
-      expect(duressSource).toContain(
-        "No production startup path currently",
-      );
-      expect(duressSource).toContain(
-        "With no callback, this step is reported as",
-      );
-      expect(duressSource).toContain(
-        "After each step attempt, the engine records its",
-      );
+      expect(stateSource).toContain("new_with_production_duress_engine");
+      expect(stateSource).toContain("install_production_duress_engine");
+      expect(stateSource).toContain("execute_production_duress");
+      expect(stateSource).toContain("build_production_duress_engine_for_state");
+      expect(stateSource).toContain("keystore::DuressEngine::new(");
+      expect(stateSource).toContain("with_wipe_double_ratchet");
+      expect(stateSource).toContain("with_wipe_sender_keys");
+      expect(stateSource).toContain("with_wipe_peer_ratchets");
       expect(passwordSource).toContain(
-        "Legacy unlock/duress record primitives (implemented-unwired)",
+        "keystore::InactivityTimer::with_last_activity",
       );
-      expect(passwordSource).toContain(
-        "call neither\n//! [`verify_against_record`] nor [`InactivityTimer`]",
-      );
-      expect(passwordSource).toContain(
-        "separately\n//! implemented password gate uses `startup_gate` and `cleanup`",
-      );
-      expect(passwordSource).toContain(
-        "When invoked, this module's storage helpers serialize",
-      );
+      expect(passwordSource).toContain("lock_main_password_session(state);");
     };
-    assertLegacyDuressTruth(duress, password);
+    assertLiveDuressEngineTruth(stateProduction, mainPasswordProduction);
 
     for (const syntheticProductionReference of [
       "let engine = DuressEngine::new(journal, paths, handlers);",
@@ -1531,12 +1788,12 @@ describe("bundled preview security boundary", () => {
     }
 
     expect(() =>
-      assertLegacyDuressTruth(
-        duress.replace(
-          "Legacy duress-engine primitives (implemented-unwired)",
-          "Shipping duress flow execution",
+      assertLiveDuressEngineTruth(
+        stateProduction.replace(
+          "production_duress_engine: Mutex<Option<keystore::DuressEngine>>",
+          "production_duress_engine: Mutex<Option<()>>",
         ),
-        password,
+        mainPasswordProduction,
       ),
     ).toThrow();
     expect(duress).not.toContain(

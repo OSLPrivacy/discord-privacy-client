@@ -9544,6 +9544,69 @@ mod tauri_registration_surface_tests {
         "revoke_detected_browser_footprint",
     ];
 
+    const F1_FOOTPRINT_NATIVE_COMMANDS: [&str; 2] = [
+        "load_detected_browser_footprint",
+        "revoke_detected_browser_footprint",
+    ];
+
+    #[test]
+    fn load_detected_browser_footprint_and_revoke_detected_browser_footprint_are_registered_and_durable(
+    ) {
+        let (handlers, permissions, capability) = registration_inputs();
+        let expected_permissions = F1_FOOTPRINT_NATIVE_COMMANDS
+            .iter()
+            .map(|command| command_permission(command))
+            .collect::<BTreeSet<_>>();
+
+        for command in F1_FOOTPRINT_NATIVE_COMMANDS {
+            assert_registered_and_granted(&handlers, &permissions, &capability, command);
+
+            let mut without_handler = handlers.clone();
+            without_handler.remove(command);
+            assert!(
+                !is_registered_and_granted(&without_handler, &permissions, &capability, command),
+                "removing {command} from generate_handler must fail the footprint command proof"
+            );
+
+            let permission = command_permission(command);
+            let mut without_permission = permissions.clone();
+            without_permission.remove(&permission);
+            assert!(
+                !is_registered_and_granted(&handlers, &without_permission, &capability, command),
+                "removing {permission} from hub.toml must fail the footprint command proof"
+            );
+
+            let mut without_capability = capability.clone();
+            without_capability.remove(&permission);
+            assert!(
+                !is_registered_and_granted(&handlers, &permissions, &without_capability, command),
+                "removing {permission} from hub.json must fail the footprint command proof"
+            );
+        }
+
+        let declared_footprint_permissions = permissions
+            .iter()
+            .filter_map(|(permission, command)| {
+                F1_FOOTPRINT_NATIVE_COMMANDS
+                    .contains(&command.as_str())
+                    .then_some(permission.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            declared_footprint_permissions, expected_permissions,
+            "the F1 footprint commands must keep exactly their two fixed permission identifiers"
+        );
+
+        let granted_footprint_permissions = capability
+            .intersection(&expected_permissions)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            granted_footprint_permissions, expected_permissions,
+            "the main-window capability must keep granting both F1 footprint commands"
+        );
+    }
+
     #[test]
     fn browser_consent_commands_are_registered_and_acl_granted() {
         let (handlers, permissions, capability) = registration_inputs();
