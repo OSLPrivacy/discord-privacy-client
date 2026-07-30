@@ -1,0 +1,38 @@
+{
+  "adapter": "signal-desktop",
+  "leafScriptDirectory": "./scripts/qa",
+  "machines": {
+    "signal-qa-1": {
+      "resourceGroup": "replace-me",
+      "vmName": "osl-signal-qa-1",
+      "sessionId": 2,
+      "windowsUser": "osltest",
+      "profileRoot": "C:\\Users\\osltest\\AppData\\Roaming",
+      "oslExePath": "C:\\Users\\osltest\\Desktop\\OSL Privacy\\OSL Privacy.exe",
+      "signalExePath": "C:\\Users\\osltest\\AppData\\Local\\Programs\\signal-desktop\\Signal.exe",
+      "signalExeSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "signalPublisherSubject": "replace-with-exact-valid-authenticode-subject",
+      "safeScreenshotUploadBaseUri": "https://replace.blob.core.windows.net/signal-qa/client-1"
+    },
+    "signal-qa-2": {
+      "resourceGroup": "replace-me",
+      "vmName": "osl-signal-qa-2",
+      "sessionId": 2,
+      "windowsUser": "osltest",
+      "profileRoot": "C:\\Users\\osltest\\AppData\\Roaming",
+      "oslExePath": "C:\\Users\\osltest\\Desktop\\OSL Privacy\\OSL Privacy.exe",
+      "signalExePath": "C:\\Users\\osltest\\AppData\\Local\\Programs\\signal-desktop\\Signal.exe",
+      "signalExeSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "signalPublisherSubject": "replace-with-exact-valid-authenticode-subject",
+      "safeScreenshotUploadBaseUri": "https://replace.blob.core.windows.net/signal-qa/client-2"
+    }
+  },
+  "build": {
+    "exeUri": "https://artifacts.example.invalid/OSL-Privacy.exe",
+    "exeSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "webView2LoaderUri": "https://artifacts.example.invalid/WebView2Loader.dll",
+    "webView2LoaderSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "harnessUri": "https://artifacts.example.invalid/osl-vm-signal-uia-harness.ps1",
+    "harnessSha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  }
+}
