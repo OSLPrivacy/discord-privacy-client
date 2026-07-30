@@ -7547,6 +7547,13 @@ fn main() {
 
 #[cfg(all(test, feature = "discord-qa-shell"))]
 mod b6_startup_gate_tests {
+    fn between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+        source
+            .split_once(start)
+            .and_then(|(_, tail)| tail.split_once(end).map(|(body, _)| body))
+            .expect("source section exists")
+    }
+
     #[test]
     fn b6_gate_is_textually_before_every_qa_startup_side_effect() {
         let source = include_str!("main.rs");
@@ -7596,6 +7603,133 @@ mod b6_startup_gate_tests {
             controller.contains("'negativeCrossPeerIsolation'"),
             "the retained receipt gate must bind the eighth starvation fact"
         );
+    }
+
+    #[test]
+    fn p5_offline_queue_restart_proof() {
+        let source = include_str!("main.rs");
+        let broker = include_str!("broker.rs");
+        let setup = between(
+            source,
+            "fn main()",
+            "let builder = builder.invoke_handler(tauri::generate_handler![",
+        );
+        let broker_managed = setup
+            .find("app.manage(HubBrokerState::default());")
+            .expect("a relaunched B starts with fresh broker state");
+        let security_managed = setup
+            .find("app.manage(security_state);")
+            .expect("a relaunched B starts with fresh security state");
+        let watcher_spawned = setup
+            .find("qa_selftest::spawn_trigger_watcher(app.handle().clone());")
+            .expect("a relaunched B starts the addressed self-test watcher");
+        assert!(broker_managed < watcher_spawned);
+        assert!(security_managed < watcher_spawned);
+
+        let poll_start = source
+            .find("async fn poll_native_discord_headless_qa(")
+            .expect("poll command exists");
+        let poll_end = source[poll_start..]
+            .find("/// Longest conversation identifier")
+            .map(|offset| poll_start + offset)
+            .expect("poll command is bounded by the next section");
+        let poll = &source[poll_start..poll_end];
+        assert!(poll.contains("\"Only the trusted Discord QA shell may poll headless QA\""));
+        assert!(
+            !between(poll, "async fn poll_native_discord_headless_qa(", ") -> Result<")
+                .contains("context_token"),
+            "a restart proof must not accept a renderer-provided stale context token"
+        );
+        let active_token = poll
+            .find("let context_token = broker_state.active_native_manual_context_token()?;")
+            .expect("poll reloads B's active native context after relaunch");
+        let host_before = poll
+            .find("current_discord_service_host(&owner)?;")
+            .expect("poll reloads the live native host");
+        let validate_before = poll
+            .find("broker_state.validate_active_host(&context_token, &host)?;")
+            .expect("poll validates B's reloaded host before draining");
+        let drain = poll
+            .find("broker::drain_native_discord_overlay_text(")
+            .expect("poll drains through the production broker entrypoint");
+        let poll_receipt = poll
+            .find("discord_qa_inbound_receipt::record_poll(")
+            .expect("poll records a count-only receipt for the verifier");
+        let validate_after = poll
+            .find("broker_state.validate_active_host(&context_token, &current)?;")
+            .expect("poll validates B's host after the drain");
+        assert!(active_token < host_before);
+        assert!(host_before < validate_before);
+        assert!(validate_before < drain);
+        assert!(drain < poll_receipt);
+        assert!(poll_receipt < validate_after);
+        for count in [
+            "opened_count: opened.messages.len()",
+            "pending_view_once_count: opened.pending_view_once.len()",
+            "acknowledgment_count: opened.acknowledgments.len()",
+            "fetched: opened.fetched",
+        ] {
+            assert!(poll.contains(count), "poll receipt must expose only counts: {count}");
+        }
+
+        let selftest = between(source, "mod qa_selftest {", "/// Wake-up channel");
+        for required in [
+            "const ADDRESSED_TRIGGER_FORMAT: &str = \"osl-qa-selftest.{token}.request\";",
+            "const ADDRESSED_VERDICT_FORMAT: &str = \"osl-qa-selftest.{token}.json\";",
+            "let addressed_trigger = temp_path(&addressed_name(ADDRESSED_TRIGGER_FORMAT, &instance));",
+            "let addressed_verdict = temp_path(&addressed_name(ADDRESSED_VERDICT_FORMAT, &instance));",
+            "if let Some(body) = read_trigger(&addressed_trigger)",
+            "drive_drain(app.clone())",
+            "Some(Ok(batch)) => outcome_detail.drain = Some(DrainReport::from_batch(&batch))",
+            "\"busy\"",
+            "\"stalled\"",
+        ] {
+            assert!(
+                selftest.contains(required),
+                "B restart verification needs the addressed bounded drain path: {required}"
+            );
+        }
+        let addressed_first = selftest
+            .find("if let Some(body) = read_trigger(&addressed_trigger)")
+            .expect("addressed trigger branch exists");
+        let legacy_second = selftest
+            .find("} else if let Some(body) = read_trigger(&legacy_trigger)")
+            .expect("legacy trigger branch exists");
+        assert!(
+            addressed_first < legacy_second,
+            "B's private trigger must win over the shared rendezvous after relaunch"
+        );
+        assert!(
+            selftest.contains("if RUN_IN_FLIGHT.load(Ordering::SeqCst)")
+                && selftest.contains("SEND_IN_FLIGHT.load(Ordering::SeqCst)")
+                && selftest.contains("DRIVE_IN_FLIGHT.load(Ordering::SeqCst)"),
+            "a killed or timed-out B drive must leave later requests non-green, not overlapped"
+        );
+
+        let broker_drain = between(
+            broker,
+            "fn drain_peer_inbox_text(",
+            "fn begin_peer_attachment(",
+        );
+        let revocation_classify = broker_drain
+            .find("InboundRevocationControl::classify(&bundle)")
+            .expect("drain handles queued peer burn frames");
+        let post_due = broker_drain
+            .find("post_due_revocations(")
+            .expect("drain posts queued local burns after receiving");
+        assert!(revocation_classify < post_due);
+        assert!(
+            broker_drain.contains("let _posted = post_due_revocations("),
+            "offline burn delivery must be best-effort and leave queue state to the durable outbox"
+        );
+        let post_due_body = between(
+            broker,
+            "fn post_due_revocations(",
+            "fn verify_manual_v3_type(",
+        );
+        assert!(post_due_body.contains("security::due_revocations(security_state, now)"));
+        assert!(post_due_body.contains("CONTROL_INBOX_KIND_REVOCATION"));
+        assert!(post_due_body.contains("security::record_revocation_attempt"));
     }
 }
 
