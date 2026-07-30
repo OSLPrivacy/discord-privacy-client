@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { buildServer } from '../src/server.js';
 
 function ts(offsetMs = 0) {
@@ -368,6 +371,56 @@ test('end-to-end: register, fetch pubkeys, upload, fetch wrapped key', async () 
   assert.equal(fetched.statusCode, 200);
   assert.equal(fetched.body.recipient_id, 'user-2');
   await s.close();
+});
+
+test('wrapped-key roundtrip e2e test: post then fetch across two sessions', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'osl-keyserver-roundtrip-'));
+  const dbFile = path.join(tempDir, 'keyserver.sqlite');
+  const payload = validWrappedKey({
+    content_id: 'persisted-msg-1',
+    sender_id: 'alice',
+    recipient_id: 'bob',
+    session_version: 7,
+    share_index: 2,
+    wrapped_share_blob: b64('wrapped-share-across-sessions'),
+    blob_version: 3,
+  });
+
+  let firstSession;
+  let secondSession;
+  try {
+    firstSession = await buildServer({ logger: false, dbFile });
+    const upload = await inject(firstSession, {
+      method: 'POST',
+      url: '/v1/wrapped-keys',
+      payload,
+    });
+    assert.equal(upload.statusCode, 201);
+    assert.equal(upload.body.content_id, 'persisted-msg-1');
+    await firstSession.close();
+    firstSession = null;
+
+    secondSession = await buildServer({ logger: false, dbFile });
+    const fetched = await inject(secondSession, {
+      method: 'GET',
+      url: '/v1/wrapped-keys/persisted-msg-1',
+    });
+    assert.equal(fetched.statusCode, 200);
+    assert.equal(fetched.body.content_id, payload.content_id);
+    assert.equal(fetched.body.sender_id, payload.sender_id);
+    assert.equal(fetched.body.recipient_id, payload.recipient_id);
+    assert.equal(fetched.body.session_version, payload.session_version);
+    assert.equal(fetched.body.share_index, payload.share_index);
+    assert.equal(fetched.body.wrapped_share_blob, payload.wrapped_share_blob);
+    assert.equal(fetched.body.blob_version, payload.blob_version);
+    assert.equal(fetched.body.single_use, false);
+    await secondSession.close();
+    secondSession = null;
+  } finally {
+    if (firstSession) await firstSession.close();
+    if (secondSession) await secondSession.close();
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 // ============================================================

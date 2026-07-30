@@ -1943,6 +1943,12 @@ mod tests {
         assert!(!report.revealed);
         assert!(!report.view_once_consumed);
         assert_eq!(report.target, "last");
+
+        let encoded = serde_json::to_value(&report).expect("encode");
+        assert_eq!(encoded["phaseTwoDriven"], true);
+        assert_eq!(encoded["refused"], true);
+        assert_eq!(encoded["revealed"], false);
+        assert_eq!(encoded["target"], "last");
     }
 
     #[test]
