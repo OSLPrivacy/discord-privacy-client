@@ -1721,7 +1721,34 @@ function onboardingPasswordRoleContent(role: "stealth" | "burn"): string {
 function onboardingPrivacyContent(): string {
   // Resume older interrupted setups on the new combined page instead of
   // forcing users through the retired capture-only screen.
-  return sendingSetupContent();
+  return protectionPresetOnboardingContent();
+}
+
+function protectionPresetOnboardingContent(): string {
+  const presets = [
+    {
+      id: "basic",
+      title: "Basic",
+      detail: "Account health, email tracker blocking, attachment metadata warnings, and exposure alerts.",
+    },
+    {
+      id: "balanced",
+      title: "Balanced",
+      detail: "Basic plus local before-send warnings, one-click attachment cleaning, monthly cleanup review, and OSL protection suggestions for verified contacts.",
+      badge: "Recommended",
+    },
+    {
+      id: "maximum",
+      title: "Maximum",
+      detail: "Balanced plus stricter public-post checks, optional VPN-required actions, and OSL protection required for chosen contacts.",
+    },
+  ] as const;
+  const presetChoices = presets.map((preset) => {
+    const selected = preset.id === "balanced";
+    const badge = "badge" in preset ? `<small class="send-mode-badge">${preset.badge}</small>` : "";
+    return `<label class="send-mode-option ${selected ? "selected" : ""}" data-protection-preset="${preset.id}"><span><input class="sr-only" type="radio" name="protection-preset" value="${preset.id}" ${selected ? "checked" : ""}/><strong>${preset.title}</strong>${badge}</span><small>${preset.detail}</small></label>`;
+  }).join("");
+  return `<h1 id="route-heading" tabindex="-1">Choose protection</h1><p class="compact-lead onboarding-centered-copy">Balanced starts on and is safe without more setup.</p><div class="send-mode-list protection-preset-list" role="group" aria-label="Protection preset">${presetChoices}</div><section class="setup-list" aria-labelledby="balanced-defaults-heading"><h2 id="balanced-defaults-heading" class="setup-section-heading">Balanced defaults</h2><div class="setup-status-row"><span><strong>Warn before risky sends</strong><small>OSL checks locally before protected handoff.</small></span><span class="status-tag active">On</span></div><div class="setup-status-row"><span><strong>Clean attachments by choice</strong><small>OSL can prepare a cleaned copy when you ask.</small></span><span class="status-tag active">On</span></div><div class="setup-status-row"><span><strong>Review cleanup monthly</strong><small>Deletion automation starts off. You review first.</small></span><span class="status-tag">Manual</span></div><div class="setup-status-row"><span><strong>Require clear authority</strong><small>No consent, account binding, or send/delete authority means Unavailable.</small></span><span class="status-tag active">Fail closed</span></div></section><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-onboarding-privacy" type="button">Continue</button></div>`;
 }
 
 function mullvadSetupContent(): string {
