@@ -2881,6 +2881,32 @@ mod rn_send_selection_tests {
     }
 }
 
+/// Send-path transport policy after recipient resolution.
+///
+/// Keep this as the single typed answer for the v=3/v=4/v=5 routing
+/// question. Absence of an explicit local authorization must resolve
+/// to [`RatchetPolicyDecision::LegacyV3`], never to a ratcheted branch.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RatchetPolicyDecision {
+    /// Stateless PQ-hybrid wrapping for the resolved recipients.
+    LegacyV3,
+    /// Inert retained single-peer DM ratchet path.
+    LegacyV4Dm,
+    /// Group/server sender-key path.
+    SenderKeysV5,
+}
+
+impl std::fmt::Debug for RatchetPolicyDecision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            RatchetPolicyDecision::LegacyV3 => "LegacyV3",
+            RatchetPolicyDecision::LegacyV4Dm => "LegacyV4Dm",
+            RatchetPolicyDecision::SenderKeysV5 => "SenderKeysV5",
+        };
+        f.write_str(label)
+    }
+}
+
 /// Layer 10 / Phase 7b IPC entry point: encrypt a v=2 content
 /// message for the whitelist-resolved recipients in `scope`.
 ///
@@ -3185,127 +3211,106 @@ pub fn cmd_osl_encrypt_message_v2_wire(
             )?;
         }
     }
-    // OPTION B: DMs no longer use the v=4 Double Ratchet. They route
-    // through the stateless v=3 path below (the same PQ-hybrid scheme
-    // groups use), which eliminates the desync class entirely — there
-    // is no session state to fall out of sync, no bootstrap handshake,
-    // and no reset/recovery loop. v=4 was the sole source of the
-    // recurring "ratchet desync" DM failures. The branch is gated off
-    // (kept inert for reference) rather than deleted to keep this a
-    // minimal, low-risk change; the v=4 recovery machinery in boot.js
-    // is also disabled so old undecodable v=4 messages don't churn.
-    let v4_dm_enabled = false;
-    if v4_dm_enabled && non_self_peers.len() == 1 && !scope_is_group_or_server(&scope) {
-        let peer_did_opt = derive_v4_peer_discord_id(state, &channel_members, &self_discord_id);
-        if let Some(peer_did) = peer_did_opt {
-            // Probe peer_map for v=4 eligibility. Eligible iff (a)
-            // peer entry has ratchet_state (continuation) or (b)
-            // entry has ik_ratchet_initial_pub (bootstrap target).
-            let mut eligible = false;
-            {
-                let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
-                if let Some(pe) = pm_guard.get(&peer_did) {
-                    eligible = pe.ratchet_state.is_some() || pe.ik_ratchet_initial_pub.is_some();
-                }
-            }
-            // Phase 9-A1b precedent: refresh-on-error retry. If the
-            // entry has ML-KEM (so v=3 would work) but no ratchet
-            // pub, attempt a single keyserver fetch to populate it
-            // before deciding v=4 vs v=3.
-            if !eligible {
-                if let Ok(true) = refresh_peer_pubkeys_from_keyserver(state, &peer_did) {
+    let ratchet_decision = ratchet_policy_decision(
+        &scope,
+        non_self_peers.len(),
+        state
+            .sender_keys_enabled
+            .load(std::sync::atomic::Ordering::Acquire),
+    );
+    match ratchet_decision {
+        RatchetPolicyDecision::LegacyV4Dm => {
+            let peer_did_opt = derive_v4_peer_discord_id(state, &channel_members, &self_discord_id);
+            if let Some(peer_did) = peer_did_opt {
+                // Probe peer_map for v=4 eligibility. Eligible iff (a)
+                // peer entry has ratchet_state (continuation) or (b)
+                // entry has ik_ratchet_initial_pub (bootstrap target).
+                let mut eligible = false;
+                {
                     let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
                     if let Some(pe) = pm_guard.get(&peer_did) {
                         eligible =
                             pe.ratchet_state.is_some() || pe.ik_ratchet_initial_pub.is_some();
                     }
                 }
-            }
-            if eligible {
-                // Cross-machine decrypt fix: v=4 is single-recipient
-                // and unforgiving. When the peer entry already has a
-                // ratchet pub the `!eligible` refresh above is skipped,
-                // so a stale `peer_map.pubkey` (e.g. the peer's
-                // pre-burn X25519, never re-fetched) survives and we
-                // wrap to a key the peer no longer holds → the peer
-                // sees "not a recipient of this message". Force a
-                // keyserver refresh for THIS recipient and re-resolve
-                // so we encrypt to the current X25519. FAIL-CLOSED: a
-                // refresh failure used to be swallowed (`let _ = …`),
-                // silently encrypting to a possibly-stale key. We now
-                // surface the error and refuse to send — a stale-key
-                // mis-encrypt is undiagnosable from the peer side; a
-                // surfaced send error is not.
-                if let Err(e) = refresh_peer_pubkeys_from_keyserver(state, &peer_did) {
-                    return Err(format!(
-                        "OSL: v=4 send: keyserver refresh for recipient \
-                         {peer_did} failed: {e} — refusing to encrypt with \
-                         a possibly-stale X25519 key (fail-closed; message \
-                         NOT sent)",
-                        peer_did = crate::log_id::log_id(&peer_did)
-                    ));
+                // Phase 9-A1b precedent: refresh-on-error retry. If the
+                // entry has ML-KEM (so v=3 would work) but no ratchet
+                // pub, attempt a single keyserver fetch to populate it
+                // before deciding v=4 vs v=3.
+                if !eligible {
+                    if let Ok(true) = refresh_peer_pubkeys_from_keyserver(state, &peer_did) {
+                        let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+                        if let Some(pe) = pm_guard.get(&peer_did) {
+                            eligible =
+                                pe.ratchet_state.is_some() || pe.ik_ratchet_initial_pub.is_some();
+                        }
+                    }
                 }
-                let fresh_recipients =
-                    resolve_recipients().map_err(|e| format!("OSL: v=4 recipient refresh: {e}"))?;
-                // v=4 keeps its own peer_did (derive_v4_peer_discord_id,
-                // untouched); only the keys are extracted from the pair.
-                let fresh_peer = &fresh_recipients
-                    .get(1)
-                    .ok_or_else(|| {
-                        format!(
-                            "OSL: v=4 send: recipient {peer_did} vanished \
-                             from peer_map after keyserver refresh",
+                if eligible {
+                    // Cross-machine decrypt fix: v=4 is single-recipient
+                    // and unforgiving. When the peer entry already has a
+                    // ratchet pub the `!eligible` refresh above is skipped,
+                    // so a stale `peer_map.pubkey` (e.g. the peer's
+                    // pre-burn X25519, never re-fetched) survives and we
+                    // wrap to a key the peer no longer holds → the peer
+                    // sees "not a recipient of this message". Force a
+                    // keyserver refresh for THIS recipient and re-resolve
+                    // so we encrypt to the current X25519. FAIL-CLOSED: a
+                    // refresh failure used to be swallowed (`let _ = …`),
+                    // silently encrypting to a possibly-stale key. We now
+                    // surface the error and refuse to send — a stale-key
+                    // mis-encrypt is undiagnosable from the peer side; a
+                    // surfaced send error is not.
+                    if let Err(e) = refresh_peer_pubkeys_from_keyserver(state, &peer_did) {
+                        return Err(format!(
+                            "OSL: v=4 send: keyserver refresh for recipient \
+                             {peer_did} failed: {e} — refusing to encrypt with \
+                             a possibly-stale X25519 key (fail-closed; message \
+                             NOT sent)",
                             peer_did = crate::log_id::log_id(&peer_did)
-                        )
-                    })?
-                    .1;
-                return encrypt_v4_send(
-                    state,
-                    &sender_sk,
-                    &self_pk,
-                    &peer_did,
-                    fresh_peer,
-                    &scope,
-                    plaintext.as_bytes(),
-                    &self_discord_id,
-                )
-                .map(EncryptWire::content_only);
+                        ));
+                    }
+                    let fresh_recipients = resolve_recipients()
+                        .map_err(|e| format!("OSL: v=4 recipient refresh: {e}"))?;
+                    // v=4 keeps its own peer_did (derive_v4_peer_discord_id,
+                    // untouched); only the keys are extracted from the pair.
+                    let fresh_peer = &fresh_recipients
+                        .get(1)
+                        .ok_or_else(|| {
+                            format!(
+                                "OSL: v=4 send: recipient {peer_did} vanished \
+                                 from peer_map after keyserver refresh",
+                                peer_did = crate::log_id::log_id(&peer_did)
+                            )
+                        })?
+                        .1;
+                    return encrypt_v4_send(
+                        state,
+                        &sender_sk,
+                        &self_pk,
+                        &peer_did,
+                        fresh_peer,
+                        &scope,
+                        plaintext.as_bytes(),
+                        &self_discord_id,
+                    )
+                    .map(EncryptWire::content_only);
+                }
             }
         }
-    }
-
-    // Phase 9-A3 prototype / GC Step 2: an explicitly enabled group/server
-    // scope can route to v=5 sender keys. Production defaults that state flag
-    // off, while the disabled DM prototype above would route to v=4.
-    // Threshold lowered from >=2 to >=1: a gc:/server scope with at
-    // least one OSL-resolvable peer is still a group and must use
-    // sender-keys, not v=4 (the single-peer DM path is now gated
-    // off for group scopes above). With 0 resolvable OSL peers it
-    // falls through to v=3 self-only (non-OSL members see DPC0::,
-    // per decision (a)). Anything else falls through to v=3.
-    // MULTI-DEVICE SAFETY: v=5 sender chains are mutable local state
-    // indexed by (scope, sender Discord id). Two installations of the
-    // same Discord account therefore advance independent chains under
-    // the same logical sender and can make alternating GC/server
-    // messages undecryptable. Until the wire protocol carries a signed
-    // device id and receivers key chains by (account, device), route
-    // group/server content through stateless v=3 just like DMs. This is
-    // less wire-efficient, but every message is independently
-    // decryptable on every device holding the transferred account keys.
-    let v5_group_enabled = state
-        .sender_keys_enabled
-        .load(std::sync::atomic::Ordering::Acquire);
-    if v5_group_enabled && !non_self_peers.is_empty() && scope_is_group_or_server(&scope) {
-        return encrypt_v5_send(
-            state,
-            &sender_sk,
-            &self_pk,
-            &scope,
-            &self_discord_id,
-            &channel_members,
-            &non_self_peers,
-            plaintext.as_bytes(),
-        );
+        RatchetPolicyDecision::SenderKeysV5 => {
+            return encrypt_v5_send(
+                state,
+                &sender_sk,
+                &self_pk,
+                &scope,
+                &self_discord_id,
+                &channel_members,
+                &non_self_peers,
+                plaintext.as_bytes(),
+            );
+        }
+        RatchetPolicyDecision::LegacyV3 => {}
     }
 
     // Unit b1: RnWirePath dispatch seam. Every non-self recipient is
@@ -3370,6 +3375,88 @@ pub fn cmd_osl_encrypt_message_v2_wire(
 fn scope_is_group_or_server(scope: &crate::scope::Scope) -> bool {
     use crate::scope::ScopeKind::*;
     matches!(scope.kind, Gc | ServerChannel | ServerFull)
+}
+
+fn ratchet_policy_decision(
+    scope: &crate::scope::Scope,
+    non_self_peer_count: usize,
+    sender_keys_enabled: bool,
+) -> RatchetPolicyDecision {
+    if sender_keys_enabled && non_self_peer_count > 0 && scope_is_group_or_server(scope) {
+        return RatchetPolicyDecision::SenderKeysV5;
+    }
+
+    // OPTION B: DMs no longer use the v=4 Double Ratchet. They route
+    // through stateless v=3, which eliminates the desync class entirely:
+    // no session state to fall out of sync, no bootstrap handshake, and
+    // no reset/recovery loop. There is deliberately no implicit input
+    // here that authorizes [`RatchetPolicyDecision::LegacyV4Dm`].
+    RatchetPolicyDecision::LegacyV3
+}
+
+#[cfg(test)]
+mod ratchet_policy_decision_tests {
+    use super::{ratchet_policy_decision, RatchetPolicyDecision};
+
+    #[test]
+    fn dm_sends_stay_on_v3_even_when_sender_keys_are_enabled() {
+        assert_eq!(
+            ratchet_policy_decision(&crate::scope::Scope::dm("peer"), 1, true),
+            RatchetPolicyDecision::LegacyV3
+        );
+    }
+
+    #[test]
+    fn group_sends_need_an_enabled_policy_and_a_non_self_peer_for_v5() {
+        let scope = crate::scope::Scope::gc("group");
+
+        assert_eq!(
+            ratchet_policy_decision(&scope, 1, false),
+            RatchetPolicyDecision::LegacyV3
+        );
+        assert_eq!(
+            ratchet_policy_decision(&scope, 0, true),
+            RatchetPolicyDecision::LegacyV3
+        );
+        assert_eq!(
+            ratchet_policy_decision(&scope, 1, true),
+            RatchetPolicyDecision::SenderKeysV5
+        );
+    }
+
+    #[test]
+    fn server_scopes_follow_the_same_v5_policy_as_group_scopes() {
+        for scope in [
+            crate::scope::Scope::server_channel("server", "channel"),
+            crate::scope::Scope::server_full("server"),
+        ] {
+            assert_eq!(
+                ratchet_policy_decision(&scope, 1, true),
+                RatchetPolicyDecision::SenderKeysV5
+            );
+        }
+    }
+
+    #[test]
+    fn no_current_input_authorizes_the_retained_v4_dm_branch() {
+        let scopes = [
+            crate::scope::Scope::dm("peer"),
+            crate::scope::Scope::gc("group"),
+            crate::scope::Scope::server_channel("server", "channel"),
+            crate::scope::Scope::server_full("server"),
+        ];
+
+        for scope in scopes {
+            for non_self_peer_count in [0, 1, 2] {
+                for sender_keys_enabled in [false, true] {
+                    assert_ne!(
+                        ratchet_policy_decision(&scope, non_self_peer_count, sender_keys_enabled),
+                        RatchetPolicyDecision::LegacyV4Dm
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// Phase 9-A3: 24-hour rotation timer threshold.
