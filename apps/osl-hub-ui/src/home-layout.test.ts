@@ -1,9 +1,36 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), emitTo: vi.fn(), getCurrentWindow: vi.fn() }));
+vi.mock("@fontsource-variable/inter/wght.css", () => ({}));
+vi.mock("./logos", () => ({ browserLogo: (id: string) => `<span>${id}</span>`, providerLogo: (id: string) => `<span>${id}</span>`, serviceLogo: (id: string) => `<span>${id}</span>` }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
+vi.mock("@tauri-apps/api/event", () => ({ emitTo: mocks.emitTo, listen: mocks.listen }));
+vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: mocks.getCurrentWindow }));
 
 function readRelative(relativePath: string): string {
   return readFileSync(fileURLToPath(new URL(relativePath, import.meta.url)), "utf8");
+}
+
+async function loadUi() {
+  vi.resetModules();
+  const store = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => { store.set(key, value); },
+    removeItem: (key: string) => { store.delete(key); },
+    clear: () => { store.clear(); },
+  });
+  vi.stubGlobal("document", { querySelector: vi.fn(() => null), createElement: vi.fn(() => ({})), documentElement: { classList: { add: vi.fn() }, dataset: {} }, addEventListener: vi.fn(), visibilityState: "visible" });
+  vi.stubGlobal("window", { addEventListener: vi.fn(), matchMedia: vi.fn(() => ({ matches: false, addEventListener: vi.fn() })), setTimeout, confirm: vi.fn(() => false) });
+  vi.stubGlobal("requestAnimationFrame", () => 1);
+  vi.stubGlobal("cancelAnimationFrame", () => undefined);
+  return import("./main");
+}
+
+function visibleText(markup: string): string {
+  return markup.replace(/<[^>]*>/gu, " ").replace(/\s+/gu, " ").trim();
 }
 
 function functionSource(source: string, name: string, nextName: string): string {
@@ -20,6 +47,56 @@ describe("home workspace hierarchy", () => {
   const destination = functionSource(source, "homeDestinationContent", "workspaceContent");
   const home = functionSource(source, "workspaceContent", "peopleListMarkup");
 
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("Implement Home as the protection status destination", async () => {
+    const { __oslHubUiTest } = await loadUi();
+
+    __oslHubUiTest.reset({ route: "home", coreReady: false, storageMethod: null });
+    const blockedHome = __oslHubUiTest.renderWorkspaceContent("home");
+    const blockedCopy = visibleText(blockedHome);
+
+    expect(blockedHome).toContain('data-home-destination="protection-status"');
+    expect(blockedHome).toContain('data-home-protection-state="needs-attention"');
+    expect(blockedHome).toContain('data-home-primary-issue="account-protection"');
+    expect(blockedCopy).toMatch(/\bHome\b/iu);
+    expect(blockedCopy).toMatch(/Needs attention/iu);
+    expect(blockedCopy).toMatch(/Connected apps/iu);
+    expect(blockedCopy).toMatch(/Trusted people/iu);
+    expect(blockedCopy).toMatch(/Recent protection/iu);
+
+    __oslHubUiTest.reset({
+      route: "home",
+      coreReady: true,
+      storageMethod: "tpm-pcp",
+      services: [{
+        id: "discord",
+        displayName: "Discord",
+        sidebarGlyph: "D",
+        sidebarOrder: 1,
+        category: "consumer",
+        launchState: "available",
+        supportsNativePreview: true,
+        supportsProtectedPreview: true,
+        accounts: [{ id: "discord-local", label: "Local Discord", displayHandle: "local", state: "demoLinked", provider: null }],
+      }],
+      hubPeople: [{ personId: "verified", alias: "Verified friend", safetyNumberVerified: true }],
+      notificationsEnabled: true,
+      appNotifications: [],
+    });
+    const protectedHome = __oslHubUiTest.renderWorkspaceContent("home");
+    const protectedCopy = visibleText(protectedHome);
+
+    expect(protectedHome).toContain('data-home-protection-state="protected"');
+    expect(protectedHome).toContain('data-home-primary-issue="protected-conversation"');
+    expect(protectedCopy).toMatch(/\bProtected\b/iu);
+    expect(protectedCopy).toMatch(/1 of \d+ ready/iu);
+    expect(protectedCopy).toMatch(/1 verified/iu);
+    expect(protectedCopy).not.toMatch(/keyservers?|ratchets?|receipts?|browser profiles?|provider adapters?/iu);
+  });
+
   it("implements Home as the protection status destination", () => {
     expect(home).toContain("${homeDestinationContent()}");
     expect(destination).toContain('data-home-destination="protection-status"');
@@ -32,12 +109,26 @@ describe("home workspace hierarchy", () => {
     expect(destination).toContain("visibleAppNotifications().at(0)");
   });
 
-  it("routes the Home primary action to the highest-priority safe fix", () => {
-    expect(destination).toMatch(/const recommended = !coreReady[\s\S]*protection\.state !== "protected"[\s\S]*pendingFriendReviews[\s\S]*connectedApps\.length === 0[\s\S]*verifiedFriends === 0/);
-    expect(destination).toContain('data-profile-settings');
-    expect(destination).toContain('data-open-friends');
-    expect(destination).toContain('data-notification-settings');
-    expect(destination).toContain('data-home-module="osl-chats"');
+  it("routes the Home primary action to the highest-priority safe fix", async () => {
+    const { homePrimaryActionPlan } = await loadUi();
+    const ready = {
+      coreReady: true,
+      storageProtected: true,
+      storageDetail: "Device protection confirmed.",
+      coreDetail: "Ready",
+      pendingFriendReviews: 0,
+      connectedApps: 1,
+      verifiedFriends: 1,
+      hasRecentActivity: false,
+    };
+
+    expect(homePrimaryActionPlan({ ...ready, coreReady: false, pendingFriendReviews: 1, connectedApps: 0 }).issue).toBe("account-protection");
+    expect(homePrimaryActionPlan({ ...ready, storageProtected: false, pendingFriendReviews: 1, connectedApps: 0 }).issue).toBe("local-storage");
+    expect(homePrimaryActionPlan({ ...ready, pendingFriendReviews: 1, connectedApps: 0 }).issue).toBe("trusted-people-review");
+    expect(homePrimaryActionPlan({ ...ready, connectedApps: 0 }).issue).toBe("connect-service");
+    expect(homePrimaryActionPlan({ ...ready, verifiedFriends: 0 }).issue).toBe("add-trusted-person");
+    expect(homePrimaryActionPlan({ ...ready, hasRecentActivity: true }).issue).toBe("recent-activity");
+    expect(homePrimaryActionPlan(ready).issue).toBe("protected-conversation");
   });
 
   it("keeps Home status copy product-facing and free of sensitive detail", () => {
@@ -223,12 +314,13 @@ describe("home interaction regressions", () => {
   });
 
   it("keeps nicknames local and shows only proven friend connections", () => {
-    expect(source).toContain('data-nickname-person=');
+    const peopleList = functionSource(source, "peopleListMarkup", "peopleDestinationContent");
+    expect(peopleList).toContain('data-nickname-person=');
     expect(source).toContain("setHubFriendNickname(personId, input.value)");
-    expect(source).not.toContain("Connected accounts");
-    expect(source).not.toContain("None linked");
-    expect(source).toContain("whitelistedScopes");
-    expect(source).not.toContain("linkedInstagram");
+    expect(peopleList).not.toContain("Connected accounts");
+    expect(peopleList).not.toContain("None linked");
+    expect(peopleList).toContain("whitelistedScopes");
+    expect(peopleList).not.toContain("linkedInstagram");
   });
 
   it("uses one trusted browser companion only for web apps while Discord stays native", () => {

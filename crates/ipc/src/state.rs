@@ -941,6 +941,60 @@ mod identity_authority_tests {
     }
 
     #[test]
+    fn installing_identity_constructs_live_prekey_state() {
+        let state = AppState::new();
+        let identity = keystore::generate_identity("live-prekey-owner".to_owned());
+        let installed_identity = identity.clone();
+        let installed_at = 1_800_000_123;
+
+        state.install_identity_at(identity, installed_at);
+
+        let stored_identity = state
+            .identity
+            .lock()
+            .expect("identity mutex poisoned")
+            .as_ref()
+            .expect("identity installed")
+            .clone();
+        assert_eq!(stored_identity.user_id, installed_identity.user_id);
+
+        let prekeys = state
+            .prekey_state
+            .lock()
+            .expect("prekey_state mutex poisoned");
+        let prekeys = prekeys.as_ref().expect("live prekey state installed");
+        assert_eq!(
+            prekeys.current_spk.rotated_at_unix_seconds, installed_at,
+            "installed identity must construct the live SPK at installation time"
+        );
+        assert!(prekeys.previous_spk.is_none());
+        assert_eq!(
+            prekeys.opk_pool.len(),
+            usize::try_from(prekeys.config.opk_pool_target).unwrap()
+        );
+        assert_eq!(prekeys.next_opk_id, prekeys.config.opk_pool_target);
+        assert!(
+            prekeys
+                .opk_pool
+                .iter()
+                .enumerate()
+                .all(|(expected, opk)| opk.id == u32::try_from(expected).unwrap()),
+            "live OPK pool must be generated, addressable state"
+        );
+
+        let signature = crypto::ed25519::Signature::from_bytes(prekeys.current_spk.signature);
+        assert!(
+            crypto::ed25519::verify(
+                &installed_identity.ed25519_public,
+                &prekeys.current_spk.public,
+                &signature,
+            )
+            .expect("SPK signature verification runs"),
+            "SPK must be signed by the installed identity"
+        );
+    }
+
+    #[test]
     fn installing_identity_with_loaded_prekeys_preserves_persisted_state() {
         let state = AppState::new();
         let identity = keystore::generate_identity("prekey-owner".to_owned());

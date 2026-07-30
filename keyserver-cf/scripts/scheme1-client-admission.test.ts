@@ -463,6 +463,12 @@ describe("scheme-1 Rust-client deployment admission", () => {
   });
 
   it("enroll the frozen shipping Rust client as a trusted evidence producer", () => {
+    expect(Object.isFrozen(TRUSTED_SCHEME1_CLIENT_EVIDENCE_PRODUCERS)).toBe(
+      true,
+    );
+    expect(Object.keys(TRUSTED_SCHEME1_CLIENT_EVIDENCE_PRODUCERS)).toEqual([
+      SCHEME1_FROZEN_RUST_CLIENT_PRODUCER_KEY_ID,
+    ]);
     const producer =
       TRUSTED_SCHEME1_CLIENT_EVIDENCE_PRODUCERS[
         SCHEME1_FROZEN_RUST_CLIENT_PRODUCER_KEY_ID
@@ -480,6 +486,39 @@ describe("scheme-1 Rust-client deployment admission", () => {
       type: "spki",
     });
     expect(publicKey.asymmetricKeyType).toBe("ed25519");
+
+    const evidence = signedEnvelope(positivePayload(), {
+      producer_key_id: SCHEME1_FROZEN_RUST_CLIENT_PRODUCER_KEY_ID,
+      producer_key_epoch: producer.key_epoch,
+      producer_sequence: producer.minimum_sequence,
+    });
+    const admitted = validateScheme1ClientEvidenceEnvelope(evidence, {
+      expectedClientCommit: CLIENT_COMMIT,
+      expectedClientTree: CLIENT_TREE,
+      expectedChallenge: CHALLENGE,
+      nowMs: NOW,
+      trustedProducers: {
+        [SCHEME1_FROZEN_RUST_CLIENT_PRODUCER_KEY_ID]: {
+          ...producer,
+          public_key_spki_b64: producerPair.publicKey
+            .export({ format: "der", type: "spki" })
+            .toString("base64"),
+        },
+      },
+    });
+    expect(admitted.producer_identity).toBe(producer.identity);
+    expect(admitted.envelope.producer_key_id).toBe(
+      SCHEME1_FROZEN_RUST_CLIENT_PRODUCER_KEY_ID,
+    );
+
+    expect(() =>
+      validateScheme1ClientEvidenceEnvelope(evidence, {
+        expectedClientCommit: CLIENT_COMMIT,
+        expectedClientTree: CLIENT_TREE,
+        expectedChallenge: CHALLENGE,
+        nowMs: NOW,
+        trustedProducers: {},
+      })).toThrow(/trusted scheme-1 client evidence producer/);
   });
 
   it("refuses untrusted Rust-client evidence by default", async () => {

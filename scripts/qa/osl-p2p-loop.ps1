@@ -640,7 +640,7 @@ function Invoke-P2PLoopSelfTestChild {
     return (Get-Content -LiteralPath $JsonOutForChild -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop)
 }
 
-function b6_controller_gates_valid_receipt_before_consent_selftest {
+function b6_controllers_read_the_retained_preflight_before_consent_or_drive {
     $root = Join-Path ([System.IO.Path]::GetTempPath()) ('osl-p2p-loop-selftest-' + [Guid]::NewGuid().ToString('N'))
     $missingA = Join-Path $root 'missing-a'
     $missingB = Join-Path $root 'missing-b'
@@ -741,8 +741,8 @@ function Read-B6StartupReceipt {
 if ($RunScriptSelfTests) {
     b6_startup_receipt_binding_selftest
     Say 'ok - b6_startup_receipt_binding_selftest' 'Green'
-    b6_controller_gates_valid_receipt_before_consent_selftest
-    Say 'ok - b6_controller_gates_valid_receipt_before_consent_selftest' 'Green'
+    b6_controllers_read_the_retained_preflight_before_consent_or_drive
+    Say 'ok - b6_controllers_read_the_retained_preflight_before_consent_or_drive' 'Green'
     exit 0
 }
 

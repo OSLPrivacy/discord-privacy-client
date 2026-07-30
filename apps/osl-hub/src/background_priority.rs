@@ -246,4 +246,92 @@ mod tests {
             "extra untrack while idle must not invent another transition"
         );
     }
+
+    #[test]
+    fn background_priority_tracks_busy_period_transitions() {
+        let mut priority = BackgroundPriority::new();
+        let sync = Tracked::new("sync-account");
+        let upload = Tracked::new("upload-preview");
+
+        assert_eq!(priority.mode(), BackgroundMode::Idle);
+        assert_eq!(priority.tracked_count(), 0);
+
+        assert_eq!(
+            priority.track(sync.clone()),
+            Some(BackgroundTransition {
+                from: BackgroundMode::Idle,
+                to: BackgroundMode::Busy,
+            }),
+            "first tracked job must open one busy period"
+        );
+        assert_eq!(priority.mode(), BackgroundMode::Busy);
+        assert!(priority.is_tracked(&sync));
+
+        assert_eq!(
+            priority.track(upload.clone()),
+            None,
+            "additional tracked work must not create another mode transition"
+        );
+        assert_eq!(
+            priority.track(sync.clone()),
+            None,
+            "tracking the same work twice must be idempotent"
+        );
+        assert_eq!(priority.tracked_count(), 2);
+
+        assert_eq!(
+            priority.untrack(&sync),
+            None,
+            "remaining tracked work must keep the priority busy"
+        );
+        assert_eq!(priority.mode(), BackgroundMode::Busy);
+        assert!(priority.is_tracked(&upload));
+        assert!(!priority.is_tracked(&sync));
+
+        assert_eq!(
+            priority.untrack(&upload),
+            Some(BackgroundTransition {
+                from: BackgroundMode::Busy,
+                to: BackgroundMode::Idle,
+            }),
+            "last tracked job must close the busy period"
+        );
+        assert_eq!(priority.mode(), BackgroundMode::Idle);
+        assert_eq!(priority.untrack(&upload), None);
+
+        let mut busy_periods = BusyPeriodTracker::new();
+        busy_periods.track();
+        busy_periods.track();
+        busy_periods.untrack();
+        assert_eq!(busy_periods.mode(), BackgroundMode::Busy);
+        assert_eq!(busy_periods.busy_periods(), 1);
+        assert_eq!(
+            busy_periods.transitions(),
+            &[BusyPeriodTransition {
+                from: BackgroundMode::Idle,
+                to: BackgroundMode::Busy,
+                busy_periods: 1,
+            }],
+            "nested anonymous work must be part of the same busy period"
+        );
+
+        busy_periods.untrack();
+        assert_eq!(busy_periods.mode(), BackgroundMode::Idle);
+        assert_eq!(
+            busy_periods.transitions(),
+            &[
+                BusyPeriodTransition {
+                    from: BackgroundMode::Idle,
+                    to: BackgroundMode::Busy,
+                    busy_periods: 1,
+                },
+                BusyPeriodTransition {
+                    from: BackgroundMode::Busy,
+                    to: BackgroundMode::Idle,
+                    busy_periods: 0,
+                },
+            ],
+            "the tracker must record only the effective busy-period boundaries"
+        );
+    }
 }
