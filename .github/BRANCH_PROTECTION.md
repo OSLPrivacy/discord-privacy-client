@@ -63,9 +63,20 @@ The equivalent API contract is:
     "contexts": [
       "test",
       "quality-checks"
+    ],
+    "checks": [
+      {
+        "context": "test",
+        "workflow": "Rust Test"
+      },
+      {
+        "context": "quality-checks",
+        "workflow": "Rust Test"
+      }
     ]
   },
-  "enforce_admins": true
+  "enforce_admins": true,
+  "admin_bypass": "forbidden"
 }
 ```
 

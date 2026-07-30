@@ -1722,6 +1722,19 @@ mod tests {
         assert_eq!(report.deferred_rows, 0);
         assert!(report.decrypt_display_enabled);
 
+        let opened_not_received = DrainReport::from_batch(&batch(
+            Vec::new(),
+            vec![NativeOverlayAcknowledgmentStatus::Opened],
+        ));
+        assert_eq!(opened_not_received.acknowledgment_count, 1);
+        assert_eq!(opened_not_received.acknowledgment_received_count, 0);
+        assert_eq!(opened_not_received.acknowledgment_opened_count, 1);
+        assert_eq!(opened_not_received.acknowledgment_kind_order, ["opened"]);
+        assert_ne!(
+            report.acknowledgment_kind_order,
+            opened_not_received.acknowledgment_kind_order
+        );
+
         let encoded = serde_json::to_value(&report).expect("encode");
         assert_eq!(encoded["acknowledgmentCount"], 1);
         assert_eq!(encoded["acknowledgmentReceivedCount"], 1);
@@ -1880,6 +1893,8 @@ mod tests {
             assert!(!decision.may_continue, "{lane} {interruption}");
             assert!(!decision.may_delete, "{lane} {interruption}");
         }
+        assert!(!matrix.iter().any(|decision| decision.may_continue));
+        assert!(!matrix.iter().any(|decision| decision.may_delete));
 
         assert_eq!(
             challenge_stop_restart_decision(
@@ -1949,6 +1964,17 @@ mod tests {
         assert_eq!(encoded["refused"], true);
         assert_eq!(encoded["revealed"], false);
         assert_eq!(encoded["target"], "last");
+
+        let mut successful_first_reveal = RevealReport::not_driven(RevealTarget::Last, 0);
+        successful_first_reveal.phase_one_driven = true;
+        successful_first_reveal.selected = true;
+        successful_first_reveal.record_phase_two(Ok(&opened(None, true)));
+        assert!(successful_first_reveal.revealed);
+        assert!(!successful_first_reveal.refused);
+        assert_ne!(
+            serde_json::to_value(&successful_first_reveal).expect("encode"),
+            encoded
+        );
     }
 
     #[test]

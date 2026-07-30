@@ -1169,10 +1169,24 @@ mod tests {
         assert_eq!(opened.msg_type, 7);
         assert_eq!(opened.plaintext, b"bob interleaved reply");
 
+        let alice_session_id = alice.session_id();
+        let bob_session_id = bob.session_id();
+        let alice_sending_counter = alice.sending_counter();
+        let alice_receiving_counter = alice.receiving_counter();
+        let bob_sending_counter = bob.sending_counter();
+        let bob_receiving_counter = bob.receiving_counter();
+        let bob_skip_params = bob.skip_params();
         let alice_state = alice.export_state().expect("export alice");
         let bob_state = bob.export_state().expect("export bob");
         alice = Session::import_state(&alice_state).expect("import alice");
         bob = Session::import_state(&bob_state).expect("import bob");
+        assert_eq!(alice.session_id(), alice_session_id);
+        assert_eq!(bob.session_id(), bob_session_id);
+        assert_eq!(alice.sending_counter(), alice_sending_counter);
+        assert_eq!(alice.receiving_counter(), alice_receiving_counter);
+        assert_eq!(bob.sending_counter(), bob_sending_counter);
+        assert_eq!(bob.receiving_counter(), bob_receiving_counter);
+        assert_eq!(bob.skip_params(), bob_skip_params);
         assert_eq!(bob.skipped_key_count(), 3);
 
         assert_eq!(
@@ -1181,6 +1195,7 @@ mod tests {
                 .plaintext,
             b"alice gap 1"
         );
+        assert_eq!(bob.skipped_key_count(), 2);
         assert!(
             bob.decrypt(&a1, &mut rng).is_err(),
             "a restored skipped key must be consumed exactly once"
@@ -1191,6 +1206,7 @@ mod tests {
                 .plaintext,
             b"alice gap 0"
         );
+        assert_eq!(bob.skipped_key_count(), 1);
         assert_eq!(
             bob.decrypt(&a2, &mut rng)
                 .expect("deliver skipped 2")
