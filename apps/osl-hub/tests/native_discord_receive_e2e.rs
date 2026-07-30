@@ -73,6 +73,28 @@ struct BlobRow {
     fetch_token: String,
 }
 
+/// One uploaded wrapped share. The loopback relay never implemented
+/// /v1/wrapped-keys at all, so every send failed with the deliberately generic
+/// "OSL could not deliver the protected message" and took twelve receive-path
+/// tests with it. Model the endpoint faithfully, including the two properties the
+/// refusal tests depend on: a share is readable ONLY by its recipient, and a
+/// single-use share is consumed by the first successful fetch.
+struct WrappedKeyRow {
+    sender_id: String,
+    recipient_id: String,
+    content_type: String,
+    system_message_kind: Option<String>,
+    session_version: u64,
+    share_index: u64,
+    wrapped_share_blob: String,
+    blob_version: u64,
+    single_use: bool,
+    display_duration_seconds: Option<u64>,
+    expires_at: String,
+    created_at: String,
+    consumed: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ControlInboxGetRecord {
     recipient_id: String,
@@ -95,6 +117,7 @@ struct RelayState {
     inbox: Vec<InboxRow>,
     posted: Vec<InboxRow>,
     blobs: BTreeMap<String, BlobRow>,
+    wrapped_keys: BTreeMap<String, WrappedKeyRow>,
     control_inbox_gets: Vec<ControlInboxGetRecord>,
     control_inbox_get_replies: VecDeque<ControlInboxGetReply>,
 }
@@ -334,6 +357,117 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
                 },
             }),
         ),
+        ("POST", "/v1/wrapped-keys") => match serde_json::from_slice::<Value>(&body) {
+            Err(_) => json_response(400, json!({ "error": "bad json" })),
+            Ok(parsed) => {
+                let field = |name: &str| -> String {
+                    parsed
+                        .get(name)
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned()
+                };
+                let content_id = field("content_id");
+                if content_id.is_empty() {
+                    json_response(400, json!({ "error": "content_id required" }))
+                } else {
+                    let mut state = state.lock().unwrap();
+                    state.wrapped_keys.insert(
+                        content_id.clone(),
+                        WrappedKeyRow {
+                            sender_id: field("sender_id"),
+                            recipient_id: field("recipient_id"),
+                            content_type: field("content_type"),
+                            system_message_kind: parsed
+                                .get("system_message_kind")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                            session_version: parsed
+                                .get("session_version")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(0),
+                            share_index: parsed
+                                .get("share_index")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(0),
+                            wrapped_share_blob: field("wrapped_share_blob"),
+                            blob_version: parsed
+                                .get("blob_version")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(0),
+                            single_use: parsed
+                                .get("single_use")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false),
+                            display_duration_seconds: parsed
+                                .get("display_duration_seconds")
+                                .and_then(Value::as_u64),
+                            expires_at: field("expires_at"),
+                            created_at: format!("{now}"),
+                            consumed: false,
+                        },
+                    );
+                    json_response(200, json!({ "content_id": content_id }))
+                }
+            }
+        },
+        ("GET", route) if route.starts_with("/v1/wrapped-keys/") => {
+            let content_id = route.trim_start_matches("/v1/wrapped-keys/").to_owned();
+            // The match binds the path with its query already stripped, so read the
+            // recipient from the original request line.
+            let requester = path
+                .split_once('?')
+                .map(|(_, query)| query)
+                .unwrap_or_default()
+                .split('&')
+                .find_map(|pair| pair.strip_prefix("recipient_id="))
+                .unwrap_or_default()
+                .replace("%3A", ":");
+            let mut state = state.lock().unwrap();
+            match state.wrapped_keys.get_mut(&content_id) {
+                None => json_response(404, json!({ "error": "not found" })),
+                // A share belongs to exactly one recipient. Without this check the
+                // cross-sender and mismatched-echo refusal tests could not fail.
+                Some(row) if row.recipient_id != requester => {
+                    json_response(403, json!({ "error": "recipient mismatch" }))
+                }
+                Some(row) if row.single_use && row.consumed => {
+                    json_response(410, json!({ "error": "already consumed" }))
+                }
+                Some(row) => {
+                    if row.single_use {
+                        row.consumed = true;
+                    }
+                    json_response(
+                        200,
+                        json!({
+                            "content_id": content_id,
+                            "content_type": row.content_type,
+                            "system_message_kind": row.system_message_kind,
+                            "sender_id": row.sender_id,
+                            "recipient_id": row.recipient_id,
+                            "session_version": row.session_version,
+                            "share_index": row.share_index,
+                            "wrapped_share_blob": row.wrapped_share_blob,
+                            "blob_version": row.blob_version,
+                            "single_use": row.single_use,
+                            "display_duration_seconds": row.display_duration_seconds,
+                            "expires_at": row.expires_at,
+                            "created_at": row.created_at,
+                        }),
+                    )
+                }
+            }
+        }
+        ("DELETE", route) if route.starts_with("/v1/wrapped-keys") => {
+            let content_id = route
+                .trim_start_matches("/v1/wrapped-keys")
+                .trim_start_matches('/')
+                .to_owned();
+            let mut state = state.lock().unwrap();
+            let removed = state.wrapped_keys.remove(&content_id).is_some();
+            json_response(200, json!({ "burned": removed }))
+        }
         ("POST", "/v1/blob") => {
             let mut state = state.lock().unwrap();
             state.next_id += 1;
