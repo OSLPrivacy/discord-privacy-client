@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   nativeDiscordAttributionsAreUnique,
@@ -7,40 +6,7 @@ import {
   type NativeDiscordRowAttribution,
 } from "./discord-row-attribution";
 
-const nativeAdapter = readFileSync(
-  new URL("../../osl-hub/src/native_discord_adapter.rs", import.meta.url),
-  "utf8",
-);
-
 const h = (character: string): string => character.repeat(64);
-
-function between(source: string, start: string, end: string): string {
-  const from = source.indexOf(start);
-  const to = source.indexOf(end, from + start.length);
-  expect(from, `missing source marker: ${start}`).toBeGreaterThanOrEqual(0);
-  expect(to, `missing source marker: ${end}`).toBeGreaterThan(from);
-  return source.slice(from, to);
-}
-
-function nativeReadQualifiesAttribution(source: string): boolean {
-  const qualifier = between(
-    source,
-    "fn qualify_native_visible_rows(",
-    "\n}\n\n/// Why one rehydration walk stopped.",
-  );
-  const finalizer = between(
-    source,
-    "fn finish_native_visible_rows(",
-    "\n}\n\n/// One row's descendant text plus",
-  );
-  return qualifier.includes("rows_observed: rows.len()")
-    && qualifier.includes("qualification.proof_some = qualification.proof_some.saturating_add(1)")
-    && qualifier.includes("qualification.proof_none = qualification.proof_none.saturating_add(1)")
-    && finalizer.includes("let qualification = qualify_native_visible_rows(&visible_rows);")
-    && finalizer.includes("qualification.proof_some == visible_rows.len()")
-    && finalizer.includes("qualification.proof_none == 0")
-    && finalizer.includes("if !producer_proof_is_valid {\n        for row in &mut visible_rows {\n            row.attribution = None;");
-}
 
 function proof(
   poster: "self_account" | "peer_account",
@@ -63,21 +29,58 @@ function proof(
 }
 
 describe("native Discord row attribution proof", () => {
-  it("qualifies the native visible-row read before exposing attribution", () => {
-    expect(nativeReadQualifiesAttribution(nativeAdapter)).toBe(true);
+  it("Qualify Discord visible-row read and attribution", () => {
+    const own = proof("self_account", "outgoing", "own");
+    const peer = proof("peer_account", "incoming", "peer");
+    const parsedOwn = parseNativeDiscordRowAttribution(own);
+    const parsedPeer = parseNativeDiscordRowAttribution(peer);
+    expect(parsedOwn).toEqual(own);
+    expect(parsedPeer).toEqual(peer);
+    expect(nativeDiscordAttributionsAreUnique([parsedOwn!, parsedPeer!])).toBe(true);
 
-    const noQualification = nativeAdapter.replace(
-      "let qualification = qualify_native_visible_rows(&visible_rows);",
-      "let qualification = NativeVisibleRowQualification::default();",
-    );
-    const acceptsMissingProof = nativeAdapter.replace(
-      "&& qualification.proof_none == 0",
-      "&& true",
-    );
-    expect(noQualification).not.toBe(nativeAdapter);
-    expect(acceptsMissingProof).not.toBe(nativeAdapter);
-    expect(nativeReadQualifiesAttribution(noQualification)).toBe(false);
-    expect(nativeReadQualifiesAttribution(acceptsMissingProof)).toBe(false);
+    expect(projectNativeDiscordVisibleRow({
+      plaintext: "own plaintext",
+      orientation: "outgoing",
+      attribution: parsedOwn,
+      row: { leftPx: 1, topPx: 2, widthPx: 300, heightPx: 24 },
+    })).toMatchObject({
+      author: "self",
+      direction: "outgoing",
+      key: `decoded-${h("b")}`,
+      discordMessageId: "discord-own",
+    });
+    expect(projectNativeDiscordVisibleRow({
+      plaintext: "peer plaintext",
+      orientation: "incoming",
+      attribution: parsedPeer,
+      row: { leftPx: 1, topPx: 30, widthPx: 300, heightPx: 24 },
+    })).toMatchObject({
+      author: "peer",
+      direction: "incoming",
+      key: `decoded-${h("c")}`,
+      discordMessageId: "discord-peer",
+    });
+
+    expect(projectNativeDiscordVisibleRow({
+      plaintext: "unqualified",
+      orientation: "outgoing",
+      attribution: null,
+      row: { leftPx: 1, topPx: 2, widthPx: 300, heightPx: 24 },
+    })).toBeNull();
+    expect(projectNativeDiscordVisibleRow({
+      plaintext: "substituted",
+      orientation: "incoming",
+      attribution: own,
+      row: { leftPx: 1, topPx: 2, widthPx: 300, heightPx: 24 },
+    })).toBeNull();
+    expect(parseNativeDiscordRowAttribution({
+      ...own,
+      poster: "peer_account",
+    })).toBeNull();
+    expect(nativeDiscordAttributionsAreUnique([
+      own,
+      { ...peer, nativeLocatorSha256: own.nativeLocatorSha256 },
+    ])).toBe(false);
   });
 
   it("accepts genuine own and peer orientation agreements", () => {
