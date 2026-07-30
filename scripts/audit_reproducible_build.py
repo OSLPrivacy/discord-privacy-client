@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import re
 import sys
 import unittest
 from pathlib import Path
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,8 +21,204 @@ def require(condition: bool, message: str, errors: list[str]) -> None:
         errors.append(message)
 
 
+def _workflow_model(text: str) -> dict[str, Any]:
+    jobs: dict[str, dict[str, Any]] = {}
+    current_job: dict[str, Any] | None = None
+    in_steps = False
+    current_step: dict[str, Any] | None = None
+    in_env = False
+    run_indent: int | None = None
+    run_lines: list[str] = []
+
+    def unquote(value: str) -> str:
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            return value[1:-1]
+        return value
+
+    def finish_run() -> None:
+        nonlocal run_indent, run_lines
+        if current_step is not None and run_indent is not None:
+            current_step["run"] = "\n".join(run_lines)
+        run_indent = None
+        run_lines = []
+
+    for raw_line in text.splitlines():
+        if run_indent is not None:
+            indent = len(raw_line) - len(raw_line.lstrip(" "))
+            if raw_line.strip() == "" or indent >= run_indent:
+                run_lines.append(raw_line[run_indent:] if len(raw_line) >= run_indent else "")
+                continue
+            finish_run()
+
+        job_match = re.fullmatch(r"  ([A-Za-z0-9_-]+):", raw_line)
+        if job_match:
+            current_job = {"steps": []}
+            jobs[job_match.group(1)] = current_job
+            current_step = None
+            in_steps = False
+            in_env = False
+            continue
+
+        if current_job is None:
+            continue
+
+        if raw_line == "    steps:":
+            in_steps = True
+            current_step = None
+            in_env = False
+            continue
+
+        job_field = re.fullmatch(r"    ([A-Za-z_-]+): (.+)", raw_line)
+        if job_field and not in_steps:
+            current_job[job_field.group(1)] = unquote(job_field.group(2))
+            continue
+
+        if not in_steps:
+            continue
+
+        step_start = re.fullmatch(r"      - ([A-Za-z_-]+): ?(.*)", raw_line)
+        if step_start:
+            current_step = {step_start.group(1): unquote(step_start.group(2))}
+            current_job["steps"].append(current_step)
+            in_env = False
+            continue
+
+        if current_step is None:
+            continue
+
+        if raw_line == "        env:":
+            current_step["env"] = {}
+            in_env = True
+            continue
+
+        if in_env:
+            env_field = re.fullmatch(r"          ([A-Za-z0-9_]+): (.+)", raw_line)
+            if env_field:
+                current_step["env"][env_field.group(1)] = unquote(env_field.group(2))
+                continue
+            in_env = False
+
+        step_field = re.fullmatch(r"        ([A-Za-z_-]+): ?(.*)", raw_line)
+        if step_field:
+            key, value = step_field.group(1), step_field.group(2)
+            if key == "run" and value == "|":
+                run_indent = 10
+                run_lines = []
+            else:
+                current_step[key] = unquote(value)
+
+    finish_run()
+    return {"jobs": jobs}
+
+
+def _workflow() -> dict[str, Any]:
+    return _workflow_model(WORKFLOW.read_text(encoding="utf-8"))
+
+
+def _job(workflow: dict[str, Any], job_id: str) -> dict[str, Any]:
+    jobs = workflow.get("jobs")
+    if not isinstance(jobs, dict) or not isinstance(jobs.get(job_id), dict):
+        raise AssertionError(f"workflow job {job_id!r} is missing")
+    return jobs[job_id]
+
+
+def _step(job: dict[str, Any], name: str) -> dict[str, Any]:
+    matches = [
+        step
+        for step in job.get("steps", [])
+        if isinstance(step, dict) and step.get("name") == name
+    ]
+    if len(matches) != 1:
+        raise AssertionError(f"expected exactly one step named {name!r}")
+    return matches[0]
+
+
+def _audit_success_step(workflow: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    job = _job(workflow, "reproduce-hub-release")
+    success = _step(job, "success'")
+    run = success.get("run")
+    env = success.get("env")
+    if success.get("shell") != "pwsh":
+        errors.append("success step must run under PowerShell")
+    if not isinstance(env, dict) or set(env) != {
+        "CANDIDATE_TAG",
+        "SOURCE_COMMIT",
+        "SOURCE_TREE",
+    }:
+        errors.append("success step must bind candidate tag, source commit, and source tree")
+    if not isinstance(run, str):
+        return errors + ["success step must execute proof verification commands"]
+
+    required = {
+        "proof": (
+            "$proof = Get-Content reproducible-build-proof.json -Raw | ConvertFrom-Json",
+            "success step must read the retained reproducibility proof",
+        ),
+        "released-hash": (
+            "$releasedHash = (Get-FileHash $env:RELEASED_EXE -Algorithm SHA256).Hash.ToLowerInvariant()",
+            "success step must recompute the released executable hash",
+        ),
+        "rebuilt-hash": (
+            "$rebuiltHash = (Get-FileHash $env:REBUILT_EXE -Algorithm SHA256).Hash.ToLowerInvariant()",
+            "success step must recompute the rebuilt executable hash",
+        ),
+        "installer-hash": (
+            "$installerHash = (Get-FileHash $env:RELEASE_INSTALLER -Algorithm SHA256).Hash.ToLowerInvariant()",
+            "success step must recompute the released installer hash",
+        ),
+        "actual-commit": (
+            "$actualCommit = (git rev-parse HEAD).Trim()",
+            "success step must read the checked-out commit",
+        ),
+        "actual-tree": (
+            "$actualTree = (git rev-parse HEAD^{tree}).Trim()",
+            "success step must read the checked-out source tree",
+        ),
+    }
+    for needle, message in required.values():
+        if needle not in run:
+            errors.append(message)
+
+    def has_closed_guard(pattern: str) -> bool:
+        return re.search(pattern, run, re.DOTALL) is not None
+
+    if not has_closed_guard(
+        r"\$actualCommit -cne \$env:SOURCE_COMMIT -or "
+        r"\$actualTree -cne \$env:SOURCE_TREE.*?"
+        r"reproducibility proof was not produced from the resolved exact source"
+    ):
+        errors.append("success step must fail unless the proof was produced from the exact source")
+    if not has_closed_guard(
+        r"\$proof\.candidateTag -cne \$env:CANDIDATE_TAG -or\s+"
+        r"\$proof\.sourceCommit -cne \$env:SOURCE_COMMIT -or\s+"
+        r"\$proof\.sourceTree -cne \$env:SOURCE_TREE.*?"
+        r"reproducibility proof is not bound to the resolved exact source"
+    ):
+        errors.append("success step must bind the proof to the resolved source")
+    if not has_closed_guard(
+        r"\$proof\.installer\.name -cne \$env:RELEASE_INSTALLER_NAME -or\s+"
+        r"\$proof\.installer\.sha256 -cne \$installerHash.*?"
+        r"reproducibility proof is not bound to the released installer bytes"
+    ):
+        errors.append("success step must bind the proof to the released installer")
+    if not has_closed_guard(
+        r"\$proof\.releasedExecutable\.sha256 -cne \$releasedHash -or\s+"
+        r"\$proof\.rebuiltExecutable\.sha256 -cne \$rebuiltHash -or\s+"
+        r"\$releasedHash -cne \$rebuiltHash.*?"
+        r"released executable bytes do not reproduce from exact source"
+    ):
+        errors.append("success step must fail unless released and rebuilt bytes match")
+    return errors
+
+
 def audit_text(text: str) -> list[str]:
     errors: list[str] = []
+    try:
+        errors.extend(_audit_success_step(_workflow_model(text)))
+    except AssertionError as exc:
+        errors.append(str(exc))
     require(
         "push:\n    branches:\n      - main\n    tags:\n      - \"hub-v*\"" in text,
         "workflow must run on main pushes and hub-v* tags",
@@ -164,12 +362,68 @@ jobs:
         )
 
 
+def reproducible_success_contract() -> None:
+    workflow = _workflow()
+    testcase = unittest.TestCase()
+    testcase.assertEqual(_audit_success_step(workflow), [])
+
+    missing_source_tree = copy.deepcopy(workflow)
+    missing_source_tree_step = _step(
+        _job(missing_source_tree, "reproduce-hub-release"), "success'"
+    )
+    del missing_source_tree_step["env"]["SOURCE_TREE"]
+    testcase.assertIn(
+        "success step must bind candidate tag, source commit, and source tree",
+        _audit_success_step(missing_source_tree),
+    )
+
+    branch_head_proof = copy.deepcopy(workflow)
+    branch_head_step = _step(
+        _job(branch_head_proof, "reproduce-hub-release"), "success'"
+    )
+    branch_head_step["run"] = branch_head_step["run"].replace(
+        "$actualTree = (git rev-parse HEAD^{tree}).Trim()",
+        "$actualTree = $env:SOURCE_TREE",
+    )
+    testcase.assertIn(
+        "success step must read the checked-out source tree",
+        _audit_success_step(branch_head_proof),
+    )
+
+    permissive_byte_compare = copy.deepcopy(workflow)
+    permissive_step = _step(
+        _job(permissive_byte_compare, "reproduce-hub-release"), "success'"
+    )
+    permissive_step["run"] = permissive_step["run"].replace(
+        "$releasedHash -cne $rebuiltHash",
+        "$releasedHash -ceq $rebuiltHash",
+    )
+    testcase.assertIn(
+        "success step must fail unless released and rebuilt bytes match",
+        _audit_success_step(permissive_byte_compare),
+    )
+
+
+reproducible_success_contract.__name__ = "success'"
+
+
+def load_tests(
+    loader: unittest.TestLoader,
+    tests: unittest.TestSuite,
+    pattern: str | None,
+) -> unittest.TestSuite:
+    del loader, pattern
+    tests.addTest(unittest.FunctionTestCase(reproducible_success_contract))
+    return tests
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args(argv)
     if args.self_test:
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(ReproducibleBuildWorkflowTests)
+        suite.addTest(unittest.FunctionTestCase(reproducible_success_contract))
         result = unittest.TextTestRunner(verbosity=2).run(suite)
         return 0 if result.wasSuccessful() else 1
 
