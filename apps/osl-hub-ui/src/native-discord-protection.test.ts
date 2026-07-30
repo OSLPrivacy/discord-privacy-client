@@ -174,7 +174,9 @@ describe("native Discord protected overlay routing", () => {
     // Every narrow adapter fails closed by RESOLVING false/null rather than
     // throwing, so `localActionError` -- which takes a thrown failure -- could
     // never fire for them and the Rust reason reached nothing at all.
-    expect(source).toContain('import { lastBackendFailure } from "./backend-failure";');
+    expect(source).toMatch(
+      /import\s+\{[^}]*\blastBackendFailure\b[^}]*\}\s+from "\.\/backend-failure";/s,
+    );
     const helper = source.slice(
       source.indexOf("function withBackendReason("),
       source.indexOf("function localActionError("),

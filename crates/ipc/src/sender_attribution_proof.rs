@@ -1,4 +1,4 @@
-//! Cross-version sender-attribution proof.
+//! Cross-version sender attribution proof.
 //!
 //! A row attributed to a sender is not just "some bundle verified once" or
 //! "some claimed sender id". The proof below keeps two independent refusal
@@ -9,6 +9,13 @@
 //! - an authenticated X25519 sender identity key must equal the local pin for
 //!   the claimed sender, so an attacker cannot relabel one sender's wire row as
 //!   another sender's account.
+//!
+//! The receive paths have different ways to learn the sender key: v1/v2
+//! resolve it out of band from the claimed sender id, while v3/v4/v5 carry an
+//! authenticated sender identity key in the wire or in ratchet-associated data.
+//! Bundle-backed proofs also bind the verified identity bundle to the exact
+//! wire version being decoded so a proof cannot be relabelled across wire
+//! versions or bundle revisions.
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;

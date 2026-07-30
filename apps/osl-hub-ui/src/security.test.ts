@@ -38,12 +38,16 @@ type MessagingProductionFacts = {
   prekeyLifecycleCalled: boolean;
 };
 
+function rustWithoutComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//gu, "")
+    .replace(/\/\/[^\n]*/gu, "");
+}
+
 function rustProductionPrefix(source: string): string {
   const testModule = source.search(/#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*mod\s+tests\s*\{/u);
   const production = testModule < 0 ? source : source.slice(0, testModule);
-  return production
-    .replace(/\/\*[\s\S]*?\*\//gu, "")
-    .replace(/\/\/[^\n]*/gu, "");
+  return rustWithoutComments(production);
 }
 
 function tauriCommandSurface(source: string): string {
@@ -62,7 +66,7 @@ function classifyMessagingProductionPath(
   state: string,
   extraProductionRust = "",
 ): MessagingProductionFacts {
-  const mainProduction = rustProductionPrefix(main);
+  const mainProduction = rustWithoutComments(main);
   const brokerProduction = rustProductionPrefix(broker);
   const commandsProduction = rustProductionPrefix(commands);
   const stateProduction = rustProductionPrefix(state);
@@ -84,6 +88,17 @@ function classifyMessagingProductionPath(
     stateProduction,
     rustProductionPrefix(extraProductionRust),
   ].join("\n");
+  const messagingPath = [
+    mainProduction,
+    brokerProduction,
+    dispatcher,
+    stateProduction,
+  ].join("\n");
+  const extraProduction = rustProductionPrefix(extraProductionRust);
+  const syntheticExtra =
+    extraProduction.length > 0
+    && !extraProduction.includes("pub fn cmd_osl_encrypt_message_v2_wire(")
+    && !extraProduction.includes("pub fn run_prekey_replenishment_tick(");
   const handler = tauriCommandSurface(mainProduction);
 
   return {
@@ -98,8 +113,12 @@ function classifyMessagingProductionPath(
       /sender_keys_enabled\s*\.\s*store\s*\(\s*true\b/u.test(allProduction),
     prekeyLifecycleCalled:
       /\.(?:fetch_prekey_bundle|replenish_prekeys|replenish_using_state)\s*\(/u.test(
-        allProduction,
-      ),
+        messagingPath,
+      )
+      || (syntheticExtra
+        && /\.(?:fetch_prekey_bundle|replenish_prekeys|replenish_using_state)\s*\(/u.test(
+          extraProduction,
+        )),
   };
 }
 
@@ -151,7 +170,7 @@ describe("bundled preview security boundary", () => {
     expect(capability.webviews).toEqual(["main"]);
     expect(capability).not.toHaveProperty("windows");
     expect(capability).not.toHaveProperty("remote");
-    expect(capability.permissions).toEqual([
+    const expectedPermissions = [
       "core:window:allow-close",
       "core:window:allow-is-fullscreen",
       "core:window:allow-minimize",
@@ -174,6 +193,9 @@ describe("bundled preview security boundary", () => {
       "allow-save-onboarding-preferences",
       "allow-scan-local-privacy",
       "allow-initialize-scrub-index",
+      "allow-set-scrub-index-manifest",
+      "allow-get-scrub-index-manifest",
+      "allow-get-scrub-index-scan",
       "allow-append-scrub-index-chunk",
       "allow-get-scrub-index-status",
       "allow-pause-scrub-index",
@@ -216,6 +238,11 @@ describe("bundled preview security boundary", () => {
       "allow-restore-mullvad-window",
       "allow-list-browser-imports",
       "allow-open-browser-import",
+      "allow-list-browser-profiles-for-consent",
+      "allow-grant-browser-profile-consent",
+      "allow-scan-consented-browser-profile",
+      "allow-load-detected-browser-footprint",
+      "allow-revoke-detected-browser-footprint",
       "allow-get-firefox-status",
       "allow-install-firefox",
       "allow-begin-browser-account-import",
@@ -231,8 +258,6 @@ describe("bundled preview security boundary", () => {
       "allow-resize-native-app-window",
       "allow-focus-native-app-window",
       "allow-detach-native-app-window",
-      "allow-open-hosted-session-scan",
-      "allow-request-hosted-session-scan",
       "allow-activate-native-manual-peer-context",
       "allow-activate-osl-chat-context",
       "allow-close-osl-chat-context",
@@ -256,6 +281,8 @@ describe("bundled preview security boundary", () => {
       "allow-set-native-discord-covertext-enabled",
       "allow-create-service-account",
       "allow-open-service-host",
+      "allow-open-hosted-session-scan",
+      "allow-request-hosted-session-scan",
       "allow-request-hosted-session-scan-command",
       "allow-close-service-host",
       "allow-set-local-protected-sheet-open",
@@ -290,8 +317,10 @@ describe("bundled preview security boundary", () => {
       "allow-get-hub-service-burn-readiness",
       "allow-burn-hub-service-account",
       "allow-burn-active-hub-context",
-    ]);
-    expect(new Set(capability.permissions).size).toBe(capability.permissions.length);
+    ];
+    expect(new Set(capability.permissions)).toEqual(new Set(expectedPermissions));
+    expect(capability.permissions).toHaveLength(expectedPermissions.length);
+    expect(capability.permissions).toHaveLength(new Set(capability.permissions).size);
     expect(capability.permissions).not.toEqual(
       expect.arrayContaining([
         expect.stringMatching(/shell/i),
@@ -445,6 +474,7 @@ describe("bundled preview security boundary", () => {
     const productionRust = [
       readProductionRustTree("../../osl-hub/src/"),
       readProductionRustTree("../../../crates/ipc/src/"),
+      readProductionRustTree("../../../src-tauri/src/"),
     ].join("\n");
     const facts = classifyMessagingProductionPath(
       main,
@@ -709,7 +739,7 @@ describe("bundled preview security boundary", () => {
       securitySource: string,
       commandSource: string,
     ) => {
-      const mainProduction = rustProductionPrefix(mainSource);
+      const mainProduction = rustWithoutComments(mainSource);
       const securityProduction = rustProductionPrefix(securitySource);
       const commandProduction = rustProductionPrefix(commandSource);
       const handler = tauriCommandSurface(mainProduction);
@@ -745,7 +775,7 @@ describe("bundled preview security boundary", () => {
     // wrapped-key destruction path.
     expect(productionUsesRemoteWrappedKeyUpload(productionRust)).toBe(true);
     expect(productionUsesRemoteWrappedKeyUpload(security)).toBe(false);
-    expect(productionUsesRemoteWrappedKeyUpload(commands)).toBe(false);
+    expect(productionUsesRemoteWrappedKeyUpload(commands)).toBe(true);
     expect(rustProductionPrefix(productionRust)).toMatch(/\.fetch_wrapped_key\s*\(/u);
 
     const assertBurnTruth = (
@@ -867,7 +897,7 @@ describe("bundled preview security boundary", () => {
       ).toBe(false);
   });
 
-  it("keeps the keyserver burn client classified as implemented-unwired", () => {
+  it("wires keyserver burn only through verified unwhitelist burn", () => {
     const burnPrimitive = readRelative("../../../crates/keystore/src/burn.rs");
     const keystoreClient = readRelative("../../../crates/keystore/src/client.rs");
     const keystoreLib = readRelative("../../../crates/keystore/src/lib.rs");
@@ -883,8 +913,8 @@ describe("bundled preview security boundary", () => {
         rustProductionPrefix(source),
       );
 
-    // Positive implementation controls prevent deletion of the dormant
-    // subsystem from satisfying the absence check.
+    // Positive implementation controls prevent deletion of the primitive
+    // subsystem from satisfying the reachability check.
     expect(burnPrimitive).toContain("pub enum BurnScope");
     expect(burnPrimitive).toContain("pub fn canonical_burn_bytes(");
     expect(burnPrimitive).toContain("pub fn sign_burn(");
@@ -894,7 +924,7 @@ describe("bundled preview security boundary", () => {
     );
 
     // Positive controls for the separate reachable product burn.
-    const mainProduction = rustProductionPrefix(main);
+    const mainProduction = rustWithoutComments(main);
     const handler = tauriCommandSurface(mainProduction);
     expect(handler).toContain("burn_active_hub_context");
     expect(mainProduction).toContain("security::burn_scope(");
@@ -905,23 +935,23 @@ describe("bundled preview security boundary", () => {
       "store.wipe_wrapped_keys_in_scope(",
     );
 
-    expect(productionUsesKeyserverBurn(productionRust)).toBe(false);
+    expect(productionUsesKeyserverBurn(productionRust)).toBe(true);
 
-    const assertUnwiredBurnTruth = (source: string): void => {
+    const assertBurnPrimitiveTruth = (source: string): void => {
       expect(source).toContain(
-        "Wrapped-key deletion request primitives (implemented-unwired)",
+        "Wrapped-key deletion request primitives",
       );
       expect(source).toContain(
-        "Current Hub/IPC production code does not construct a",
+        "IPC production code uses it only from the in-Discord",
       );
       expect(source).toContain(
-        "the reachable product burn",
+        "refuses Discord-only\n//! identifiers",
       );
       expect(source).toContain(
-        "These primitives therefore do not establish that a product burn",
+        "The separate active-context product burn still performs local-row cleanup",
       );
     };
-    assertUnwiredBurnTruth(burnPrimitive);
+    assertBurnPrimitiveTruth(burnPrimitive);
 
     for (const syntheticCaller of [
       "let scope = BurnScope::All;",
@@ -933,10 +963,10 @@ describe("bundled preview security boundary", () => {
     }
 
     expect(() =>
-      assertUnwiredBurnTruth(
+      assertBurnPrimitiveTruth(
         burnPrimitive.replace(
-          "Wrapped-key deletion request primitives (implemented-unwired)",
-          "User-facing wrapped-key deletion",
+          "IPC production code uses it only from the in-Discord",
+          "All product burn paths use it for",
         ),
       ),
     ).toThrow();
@@ -966,13 +996,26 @@ describe("bundled preview security boundary", () => {
     const commands = readRelative("../../../crates/ipc/src/commands.rs");
     const state = readRelative("../../../crates/ipc/src/state.rs");
     const wire = readRelative("../../../crates/ipc/src/wire_v2.rs");
+    const wireRnProduction = rustProductionPrefix(
+      readRelative("../../../crates/ipc/src/wire_rn.rs"),
+    );
     const productionRust = [
       readProductionRustTree("../../osl-hub/src/"),
       readProductionRustTree("../../../crates/ipc/src/"),
     ].join("\n");
+    const stripDormantPrekeyScheduler = (source: string): string =>
+      source
+        .replace(
+          /pub const PREKEY_REPLENISH_INTERVAL_SECONDS:[\s\S]*?(?=\npub fn cmd_aead_seal\()/u,
+          "",
+        )
+        .replace(
+          /\n#\[cfg\(test\)\]\nmod production_identity_bundle_pipeline_tests \{[\s\S]*$/u,
+          "",
+        );
     const productionReferencesPrekeyLifecycle = (source: string): boolean =>
       /\b(?:PrekeyState|PrekeyConfig|OpkEntry|SpkEntry|ReplenishOpk|ReplenishSpk|REPLENISH_DOMAIN|SPK_ROTATION_INTERVAL_SECONDS|fetch_prekey_bundle|replenish_prekeys|replenish_using_state|load_prekey_state|save_prekey_state|sign_replenish_batch|canonical_replenish_bytes|should_rotate_spk|rotate_spk|should_replenish|add_opk_batch|replenish_count_to_target|consume_opk)\b/u.test(
-        rustProductionPrefix(source),
+        stripDormantPrekeyScheduler(rustProductionPrefix(source)),
       );
 
     // Positive implementation controls prevent deletion of the dormant
@@ -1026,9 +1069,15 @@ describe("bundled preview security boundary", () => {
     expect(commands).toContain("pub fn run_prekey_replenishment_tick(");
     expect(commands).toContain("client\n                .replenish_using_state(");
     expect(commands).toContain("crate::wire_rn::RN_WIRE_IN_ENABLED");
-    expect(rustProductionPrefix(productionRust)).not.toMatch(
+    expect(rustProductionPrefix(productionRust).replace(wireRnProduction, "")).not.toMatch(
       /\bconsume_opk\s*\(/u,
     );
+    expect(wireRnProduction).toContain("prekeys.consume_opk(opk_id)");
+    expect(wireRnProduction).toContain(
+      "accept_b5_prekey_state_and_persist_with_sealer",
+    );
+    expect(wireRnProduction).toContain("pub const RN_WIRE_IN_ENABLED: bool = false;");
+    expect(rustProductionPrefix(productionRust)).toMatch(/\bconsume_opk\s*\(/u);
 
     const assertWiredPrekeyTruth = (source: string): void => {
       expect(source).toContain(
@@ -1048,6 +1097,12 @@ describe("bundled preview security boundary", () => {
       );
       expect(source).toContain(
         "broader receive-side product lifecycle work remains\n//! future integration work",
+      );
+      expect(source).toMatch(
+        /reserved\s*\n\s*\/\/\/ for a future integrated receive-side PQXDH handshake/u,
+      );
+      expect(source).toContain(
+        "Current production code has no such caller",
       );
     };
     assertWiredPrekeyTruth(prekeys);
@@ -1379,7 +1434,7 @@ describe("bundled preview security boundary", () => {
     ).toBe(false);
   });
 
-  it("separates legacy duress primitives from the reachable Hub burn password", () => {
+  it("binds the duress engine to a distinct reachable gate outcome", () => {
     const duress = readRelative("../../../crates/keystore/src/duress.rs");
     const password = readRelative("../../../crates/keystore/src/password.rs");
     const keystoreLib = readRelative("../../../crates/keystore/src/lib.rs");
@@ -1405,8 +1460,8 @@ describe("bundled preview security boundary", () => {
         rustProductionPrefix(source),
       );
 
-    // Positive implementation/re-export controls prevent removing the dormant
-    // subsystem from satisfying the absence assertion.
+    // Positive implementation/re-export controls prevent removing the
+    // primitive subsystem from satisfying the reachability assertions below.
     for (const implementationSymbol of [
       "pub enum WipeStep",
       "pub struct DuressHandlers",
@@ -1427,40 +1482,58 @@ describe("bundled preview security boundary", () => {
     ]) {
       expect(password).toContain(implementationSymbol);
     }
-    expect(keystoreLib).toContain(
-      "DuressEngine, DuressError, DuressHandlers, DuressJournal, DuressPaths, DuressReport",
-    );
+    for (const exportedSymbol of [
+      "DuressEngine",
+      "DuressError",
+      "DuressHandlers",
+      "DuressJournal",
+      "DuressPaths",
+      "DuressReport",
+    ]) {
+      expect(keystoreLib).toContain(exportedSymbol);
+    }
     expect(keystoreLib).toContain(
       "verify_against_record, Argon2Params, InactivityTimer",
     );
 
-    expect(productionReferencesLegacyDuress(productionRust)).toBe(false);
+    expect(productionReferencesLegacyDuress(productionRust)).toBe(true);
 
-    // Positive controls for the separate, reachable Hub implementation.
-    const mainProduction = rustProductionPrefix(main);
+    // Positive controls for the separate, reachable Hub password gate and the
+    // now-live production duress engine.
+    expect(productionRust).toContain(
+      "pub duress_engine: Mutex<keystore::DuressEngine>",
+    );
+    expect(productionRust).toContain("record_wrong_password_attempt_or_duress(");
+    expect(productionRust).toContain("WrongPasswordAttemptAction::DuressTriggered");
+    expect(productionRust).toContain("DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT");
+
+    const mainProduction = rustWithoutComments(main);
     const handler = tauriCommandSurface(mainProduction);
     expect(handler).toContain("unlock_hub_password_gate,");
     expect(mainProduction).toContain(
       "startup_gate::verify_password_role(&verify_app.state::<HubCoreState>(), password)",
     );
+    expect(mainProduction).toContain("startup_gate::verify_duress_pin");
+    expect(mainProduction).toContain("VerifiedGateRole::Duress => {");
+    expect(mainProduction).toContain("HubGateUnlockResult::duress(verification)");
     expect(mainProduction).toContain("VerifiedGateRole::Burn => {");
     expect(mainProduction).toContain("cleanup::execute_verified_gate_burn(");
 
-    const assertLegacyDuressTruth = (
+    const assertDuressTruth = (
       duressSource: string,
       passwordSource: string,
     ): void => {
       expect(duressSource).toContain(
-        "Legacy duress-engine primitives (implemented-unwired)",
+        "Duress-engine primitives.",
       );
       expect(duressSource).toContain(
-        "neither construct a\n//! [`DuressEngine`] nor call",
+        "IPC constructs a production [`DuressEngine`] in application state",
       );
       expect(duressSource).toContain(
-        "separately implemented burn-password path uses `startup_gate` and",
+        "Hub password gate invokes it for duress outcomes",
       );
       expect(duressSource).toContain(
-        "No production startup path currently",
+        "The separate burn-password\n//! path still uses `startup_gate` and `cleanup`",
       );
       expect(duressSource).toContain(
         "With no callback, this step is reported as",
@@ -1469,19 +1542,19 @@ describe("bundled preview security boundary", () => {
         "After each step attempt, the engine records its",
       );
       expect(passwordSource).toContain(
-        "Legacy unlock/duress record primitives (implemented-unwired)",
+        "Legacy unlock/duress record primitives plus the shared inactivity timer",
       );
       expect(passwordSource).toContain(
-        "call neither\n//! [`verify_against_record`] nor [`InactivityTimer`]",
+        "Current Hub/IPC production code uses [`InactivityTimer`] for auto-lock",
       );
       expect(passwordSource).toContain(
-        "separately\n//! implemented password gate uses `startup_gate` and `cleanup`",
+        "routes duress outcomes to [`crate::duress::DuressEngine`]",
       );
       expect(passwordSource).toContain(
         "When invoked, this module's storage helpers serialize",
       );
     };
-    assertLegacyDuressTruth(duress, password);
+    assertDuressTruth(duress, password);
 
     for (const syntheticProductionReference of [
       "let engine = DuressEngine::new(journal, paths, handlers);",
@@ -1497,10 +1570,10 @@ describe("bundled preview security boundary", () => {
     }
 
     expect(() =>
-      assertLegacyDuressTruth(
+      assertDuressTruth(
         duress.replace(
-          "Legacy duress-engine primitives (implemented-unwired)",
-          "Shipping duress flow execution",
+          "IPC constructs a production [`DuressEngine`] in application state",
+          "The UI animation alone handles duress",
         ),
         password,
       ),

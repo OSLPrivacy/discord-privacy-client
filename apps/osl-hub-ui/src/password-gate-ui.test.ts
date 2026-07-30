@@ -6,14 +6,14 @@ const core = readFileSync(new URL("./core.ts", import.meta.url), "utf8");
 
 describe("password gate UI", () => {
   it("routes every unlock through the typed role gate", () => {
-    expect(source).toContain("await unlockHubPasswordGate(secret)");
+    expect(source).toContain("await checkUnlockScreenCredential(secret, duressSecret)");
     expect(source).not.toContain("unlockHubMainPassword");
     expect(core).not.toContain('invoke<unknown>("unlock_hub_main_password"');
   });
 
   it("loads no protected workspace data for stealth", () => {
     const start = source.indexOf('if (gate.outcome === "decoy")');
-    const end = source.indexOf('if (gate.outcome === "burned")', start);
+    const end = source.indexOf('if (gate.outcome === "duress")', start);
     const branch = source.slice(start, end);
     expect(branch).toContain("structuredClone(unavailableCoreIntegration)");
     expect(branch).toContain("services = []");
@@ -22,7 +22,7 @@ describe("password gate UI", () => {
   });
 
   it("clears only OSL UI state after a verified burn result", () => {
-    const start = source.indexOf('if (gate.outcome === "burned")');
+    const start = source.indexOf("if (isVerifiedBurnGate(gate))");
     const end = source.indexOf('if (!gate.readiness?.unlocked)', start);
     const branch = source.slice(start, end);
     expect(branch).toContain("localStorage.clear()");

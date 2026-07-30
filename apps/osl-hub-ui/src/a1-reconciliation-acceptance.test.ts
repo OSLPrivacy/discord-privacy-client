@@ -75,7 +75,7 @@ describe("A1 reconciliation acceptance", () => {
       "fn isolated_account_dir",
     );
 
-    expectOrdered(createFlow, "await createHubOslIdentity()", "await setupHubMainPassword(secret)");
+    expectOrdered(createFlow, "await createHubOslIdentity(true)", "await setupHubMainPassword(secret)");
     expectOrdered(createFlow, "await setupHubMainPassword(secret)", "core = await loadCoreIntegration()");
     expectOrdered(createFlow, "core = await loadCoreIntegration()", "recoveryBundle = {");
     expect(createFlow).toContain("identity?.userId ?? core.readiness.activeOslUserId");
