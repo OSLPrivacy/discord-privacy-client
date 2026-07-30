@@ -209,10 +209,43 @@ def _reject_content_bearing_accessibility_bench_artifacts(
     self.assertNotIn("e" * 64, reason)
 
 
+def _test_redaction_module_contract(self: AccessibilityBenchRedactionTests) -> None:
+    self.assertIsNone(REDACTION.reject_content_fields(positive_evidence()))
+
+    for key, value, expected in (
+        ("rawText", "visible message text", "content-bearing evidence field"),
+        ("accountIdentifier", "user@example.test", "content-bearing evidence field"),
+        ("containsUserContent", True, "containsUserContent"),
+    ):
+        with self.subTest(key=key):
+            reason = self.reject(
+                lambda evidence, key=key, value=value: evidence["artifacts"][0].update(
+                    {key: value}
+                )
+            )
+            self.assertIn(expected, reason)
+            self.assertNotIn(str(value), reason)
+
+    reason = self.reject(
+        lambda evidence: evidence["artifacts"][0].update(
+            kind="png",
+            relativePath="a11ybench/raw-row.png",
+            containsUserContent=False,
+        )
+    )
+    self.assertIn("content-bearing artifact", reason)
+    self.assertNotIn("raw-row.png", reason)
+
+
 setattr(
     AccessibilityBenchRedactionTests,
     "Reject content-bearing accessibility bench artifacts",
     _reject_content_bearing_accessibility_bench_artifacts,
+)
+setattr(
+    AccessibilityBenchRedactionTests,
+    "scripts/qa/a11ybench/test_redaction.py",
+    _test_redaction_module_contract,
 )
 
 
@@ -225,6 +258,9 @@ def load_tests(
         AccessibilityBenchRedactionTests(
             "Reject content-bearing accessibility bench artifacts"
         )
+    )
+    tests.addTest(
+        AccessibilityBenchRedactionTests("scripts/qa/a11ybench/test_redaction.py")
     )
     return tests
 

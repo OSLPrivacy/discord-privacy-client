@@ -181,9 +181,9 @@ Document-owned acceptance controls:
   through the guarded lanes, and requires child prompts to forbid account changes. It fails if a
   delegate can clear, synthesize, switch, or infer a Codex account, or if heavyweight work can bypass
   the named guarded routes.
-- **Pin mirror sessions by identifier before prompting or resuming them.** Pass only when new mirror
-  sessions are inspected and selected by concrete session ID before any prompt or resume action. It
-  fails if a title, stale screen text, or unverified background-terminal report is enough to route
+- **Pin mirror sessions by identifier before prompting or resuming them.** Pass only when every
+  mirror session is inspected and selected by concrete session ID before any prompt or resume action.
+  It fails if a title, stale screen text, or unverified background-terminal report is enough to route
   work into a mirror session.
 
 ## Idle and dead-lane handling
@@ -194,8 +194,9 @@ Document-owned acceptance controls:
 - An unchanged screen for ten minutes with no attributable process is dead and must be reprompted.
 - Repeated sleep/poll loops with no branch or file movement are coordination spin; stop polling and
   enter explicit standby.
-- New mirror sessions are inspected and pinned by session ID before prompting or resuming them.
-  Never route by title.
+- Every mirror session is inspected and pinned by concrete session ID immediately before prompting
+  or resuming it. Never route by title, stale screen text, or an unverified background-terminal
+  report.
 
 ## Runtime discipline
 

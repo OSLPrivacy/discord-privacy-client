@@ -37,6 +37,7 @@ const APP_SRC_ROOT = path.join(REPO_ROOT, "apps/osl-hub-ui/src");
 const RUST_APP_SRC_ROOT = path.join(REPO_ROOT, "apps/osl-hub/src");
 const README_PATH = path.join(REPO_ROOT, "README.md");
 const TS_TEST_WORKFLOW_PATH = path.join(REPO_ROOT, ".github/workflows/ts-test.yml");
+const BRANCH_PROTECTION_PATH = path.join(REPO_ROOT, ".github/BRANCH_PROTECTION.md");
 const SUPPORT_MATRIX_PATH = path.join(REPO_ROOT, "docs/status/support-matrix.json");
 const GATE_SOURCE_PATH = fileURLToPath(import.meta.url);
 const GATE_CONTRACT_PATTERN =
@@ -443,6 +444,56 @@ function validateClaimGateWorkflow(workflowText) {
     )
   ) {
     failures.push("app-claim gate must run before dependency installation");
+  }
+
+  return failures;
+}
+
+function extractJsonCodeBlocks(markdownText) {
+  return [...markdownText.matchAll(/```json\s*\n([\s\S]*?)\n```/g)]
+    .map((match) => {
+      try {
+        return JSON.parse(match[1]);
+      } catch {
+        return null;
+      }
+    })
+    .filter((value) => value && typeof value === "object" && !Array.isArray(value));
+}
+
+function validateBranchProtectionContract(markdownText) {
+  const failures = [];
+  const contract = extractJsonCodeBlocks(markdownText)
+    .find((block) => block?.required_status_checks && Object.hasOwn(block, "enforce_admins"));
+  if (!contract) {
+    return ["missing machine-readable branch-protection JSON contract"];
+  }
+
+  const statusChecks = contract.required_status_checks;
+  const contexts = Array.isArray(statusChecks.contexts) ? statusChecks.contexts : [];
+  const checks = Array.isArray(statusChecks.checks) ? statusChecks.checks : [];
+  const rustContexts = new Set(
+    checks
+      .filter((check) => check?.workflow === "Rust Test" && typeof check.context === "string")
+      .map((check) => check.context),
+  );
+
+  if (statusChecks.strict !== true) {
+    failures.push("required status checks must require up-to-date branches");
+  }
+  for (const context of ["test", "quality-checks"]) {
+    if (!contexts.includes(context)) {
+      failures.push(`missing required status context ${context}`);
+    }
+    if (!rustContexts.has(context)) {
+      failures.push(`${context} must be sourced from the Rust Test workflow`);
+    }
+  }
+  if (contract.enforce_admins !== true) {
+    failures.push("administrators must be included in enforcement");
+  }
+  if (contract.admin_bypass !== "forbidden") {
+    failures.push("admin bypass must be forbidden");
   }
 
   return failures;
@@ -3183,6 +3234,7 @@ async function scanRepository() {
 async function runSelfTest() {
   const allowlist = await readUtf8(ALLOWLIST_PATH);
   const tsTestWorkflow = await readUtf8(TS_TEST_WORKFLOW_PATH);
+  const branchProtection = await readUtf8(BRANCH_PROTECTION_PATH);
   const bannedPhrases = parseBannedPhrases(allowlist);
   const fixtures = [
     {
@@ -4222,6 +4274,13 @@ async function runSelfTest() {
     /\n\s+node scripts\/check-app-claims\.mjs\n/,
     "\n",
   );
+  const branchProtectionWithoutRustSource = branchProtection.replaceAll(
+    "\"workflow\": \"Rust Test\"",
+    "\"workflow\": \"TypeScript Test\"",
+  );
+  const branchProtectionWithAdminBypass = branchProtection
+    .replace("\"enforce_admins\": true", "\"enforce_admins\": false")
+    .replace("\"admin_bypass\": \"forbidden\"", "\"admin_bypass\": \"allowed\"");
   const minimalForbiddenPhraseAllowlist = [
     "# Fixture",
     "## D · NOT ELIGIBLE — these phrases may not appear anywhere",
@@ -4360,6 +4419,37 @@ async function runSelfTest() {
       name: "forbidden_support_phrases",
       passed: REQUIRED_SUPPORT_BANS.every((phrase) => bannedPhrases.some((parsed) => parsed.normalized === phrase))
         && REQUIRED_BURN_BANS.every((phrase) => bannedPhrases.some((parsed) => parsed.normalized === phrase)),
+    },
+    {
+      name: "Block banned Burn and support phrasings",
+      passed:
+        bannedPhraseInputFailures(bannedPhrases).length === 0
+        && analyseFragments(
+          "self-test/burn-support-phrasing",
+          [{ text: "Burn deletes Discord messages.", line: 1 }],
+          bannedPhrases,
+        ).some((violation) => violation.phrase === "Burn deletes Discord messages")
+        && analyseFragments(
+          "self-test/burn-support-phrasing",
+          [{ text: "OSL supports WhatsApp.", line: 1 }],
+          bannedPhrases,
+        ).some((violation) => violation.phrase === "OSL supports WhatsApp")
+        && analyseFragments(
+          "self-test/burn-support-phrasing",
+          [{ text: "Burn removes this device's local cached copy.", line: 1 }],
+          bannedPhrases,
+        ).length === 0,
+    },
+    {
+      name: "Define the branch-protection contract that requires Rust and forbids admin bypass.",
+      passed:
+        validateBranchProtectionContract(branchProtection).length === 0
+        && validateBranchProtectionContract(branchProtectionWithoutRustSource).some(
+          (failure) => failure.includes("Rust Test"),
+        )
+        && validateBranchProtectionContract(branchProtectionWithAdminBypass).some(
+          (failure) => failure.includes("admin"),
+        ),
     },
     {
       name: "renamed section D fails the production phrase floor",
