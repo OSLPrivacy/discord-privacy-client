@@ -3781,6 +3781,69 @@ mod rn_send_selection_tests {
     }
 
     #[test]
+    fn verify_peer_capabilities_feeds_pre_send_select_wire_version() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let store = crate::wire_rn::RnSessionStore::new(dir.path().join("rn"));
+        let peer_identity = keystore::generate_identity("b24-peer-exact".to_string());
+        let x25519 = STANDARD.encode(peer_identity.x25519_public.as_bytes());
+        let ed25519 = STANDARD.encode(peer_identity.ed25519_public.as_bytes());
+        let mlkem = STANDARD.encode(peer_identity.mlkem_public_bytes);
+        let capabilities = keystore::client::RN_CAP_WIRE_RN;
+        let reg_msg = keystore::client::reg_msg_with_capabilities(
+            &peer_identity.user_id,
+            &x25519,
+            &ed25519,
+            &mlkem,
+            None,
+            capabilities,
+        );
+        let sig = crypto::ed25519::sign(&peer_identity.ed25519_secret, &reg_msg);
+        let response = keystore::client::PubkeysResponse {
+            user_id: peer_identity.user_id.clone(),
+            ik_x25519_pub: x25519,
+            ik_ed25519_pub: ed25519,
+            ik_mlkem768_pub: mlkem,
+            registered_at: "2026-07-30T00:00:00Z".to_string(),
+            last_rotated_at: None,
+            ik_ratchet_initial_pub: None,
+            rn_capabilities: Some(capabilities),
+            registration_sig: Some(STANDARD.encode(sig.as_bytes())),
+            identity_scheme: None,
+            identity_bundle_version: None,
+            identity_revision: None,
+            ik_root_ed25519_pub: None,
+            identity_bundle_proof_sig: None,
+        };
+
+        let verified = keystore::client::verify_peer_capabilities(&response);
+        assert!(
+            verified.supports_rn(),
+            "fixture must prove capabilities via the signed keyserver response"
+        );
+
+        let legacy = select_rn_wire_path_for_send(
+            &store,
+            "123456789012345678",
+            peer_identity.x25519_public.as_bytes(),
+            keystore::client::PeerCapabilities::Absent,
+        )
+        .expect("unverified capabilities must not select RN for an unpinned peer");
+        assert_eq!(legacy, RnWirePath::LegacyV3);
+
+        let err = select_rn_wire_path_for_send(
+            &store,
+            "123456789012345678",
+            peer_identity.x25519_public.as_bytes(),
+            verified,
+        )
+        .expect_err("verified RN capability must be fed into send-time selection");
+        assert!(
+            err.contains("wire-in is disabled"),
+            "verified RN capability reached the wrong selection/refusal: {err}"
+        );
+    }
+
+    #[test]
     fn unit_b59_rn_wire_path_calls_send_rn_and_keeps_gate_disabled() {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let store = crate::wire_rn::RnSessionStore::new(dir.path().join("rn"));
@@ -4887,6 +4950,118 @@ mod rn_first_contact_command_tests {
         assert!(request.starts_with("GET /v1/prekey-bundle/b34-peer?"));
         assert!(request.contains("requester_id=b34-local"));
         assert!(request.contains("recipient_id=b34-peer"));
+    }
+
+    #[test]
+    fn first_contact_handshake_fetches_prekey_bundle() {
+        let local = keystore::generate_identity("b34-local-exact".to_string());
+        let peer = keystore::generate_identity("b34-peer-exact".to_string());
+        let prekeys =
+            keystore::PrekeyState::new(&peer, keystore::PrekeyConfig::default(), 1_700_000_000);
+        let opk = prekeys.opk_pool.first().expect("OPK exists");
+        let bundle = PrekeyBundleResponse {
+            user_id: peer.user_id.clone(),
+            ik_x25519_pub: STANDARD.encode(peer.x25519_public.as_bytes()),
+            ik_ed25519_pub: STANDARD.encode(peer.ed25519_public.as_bytes()),
+            ik_mlkem768_pub: STANDARD.encode(peer.mlkem_public_bytes),
+            spk_pub: STANDARD.encode(prekeys.current_spk.public),
+            spk_signature: STANDARD.encode(prekeys.current_spk.signature),
+            spk_rotated_at: "2026-07-30T00:00:00Z".to_string(),
+            opk: Some(PrekeyBundleOpk {
+                id: opk.id,
+                pub_b64: STANDARD.encode(opk.public),
+            }),
+            remaining_opk_count: 42,
+            ik_ratchet_initial_pub: None,
+        };
+        let response_body = serde_json::json!({
+            "user_id": bundle.user_id.clone(),
+            "ik_x25519_pub": bundle.ik_x25519_pub.clone(),
+            "ik_ed25519_pub": bundle.ik_ed25519_pub.clone(),
+            "ik_mlkem768_pub": bundle.ik_mlkem768_pub.clone(),
+            "spk_pub": bundle.spk_pub.clone(),
+            "spk_signature": bundle.spk_signature.clone(),
+            "spk_rotated_at": bundle.spk_rotated_at.clone(),
+            "opk": {
+                "id": opk.id,
+                "pub_b64": STANDARD.encode(opk.public),
+            },
+            "remaining_opk_count": bundle.remaining_opk_count,
+            "ik_ratchet_initial_pub": null,
+        })
+        .to_string();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut buf = [0u8; 8192];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                tx.send(String::from_utf8_lossy(&buf[..n]).to_string())
+                    .unwrap();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+
+        let state = AppState::new();
+        state.install_identity(local.clone());
+        *state.keyserver.lock().unwrap() =
+            Some(KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap());
+        let peer_entry = crate::peer_map::PeerEntry {
+            osl_user_id: Some(peer.user_id.clone()),
+            pubkey: Some(STANDARD.encode(peer.x25519_public.as_bytes())),
+            ik_mlkem768_pub: Some(STANDARD.encode(peer.mlkem_public_bytes)),
+            tofu_key_bundle: Some(crate::tofu::KeyBundle {
+                ed25519_pub: STANDARD.encode(peer.ed25519_public.as_bytes()),
+                x25519_pub: STANDARD.encode(peer.x25519_public.as_bytes()),
+                mlkem768_pub: STANDARD.encode(peer.mlkem_public_bytes),
+                ratchet_initial_pub: None,
+            }),
+            ..Default::default()
+        };
+
+        let mut mismatched_entry = peer_entry.clone();
+        mismatched_entry.pubkey = Some(STANDARD.encode([0x5au8; 32]));
+        let mismatch = fetch_rn_prekey_bundle_for_peer(
+            &state,
+            &local,
+            "900000000000034000",
+            &mismatched_entry,
+        )
+        .expect_err("first-contact prekey fetch must reject a bundle not bound to trusted keys");
+        assert!(
+            mismatch.contains("does not match trusted keys"),
+            "unexpected mismatch refusal: {mismatch}"
+        );
+
+        let fetched =
+            fetch_rn_prekey_bundle_for_peer(&state, &local, "900000000000034000", &peer_entry)
+                .expect("fetch prekey bundle")
+                .expect("bundle present");
+
+        assert_eq!(fetched.user_id, peer.user_id);
+        assert_eq!(fetched.remaining_opk_count, 42);
+        let requests: Vec<String> = (0..2)
+            .map(|_| rx.recv_timeout(Duration::from_secs(2)).unwrap())
+            .collect();
+        assert!(requests
+            .iter()
+            .all(|request| request.starts_with("GET /v1/prekey-bundle/b34-peer-exact?")));
+        assert!(requests
+            .iter()
+            .all(|request| request.contains("requester_id=b34-local-exact")));
+        assert!(requests
+            .iter()
+            .all(|request| request.contains("recipient_id=b34-peer-exact")));
     }
 
     #[test]
