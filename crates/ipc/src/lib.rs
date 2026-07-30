@@ -89,7 +89,7 @@ pub use at_rest_boundary::AtRestBoundary;
 pub use commands::{
     AeadOpenRequest, AeadSealRequest, AeadSealResponse, FetchPubkeysResponse,
     GenerateIdentityResponse, RegisterResponse, StatusResponse, StegoDecodeResponse,
-    StegoEncodeRequest, StegoEncodeResponse,
+    StegoEncodeRequest, StegoEncodeResponse, UiSessionEncryptionKeyDto,
 };
 pub use state::AppState;
 
