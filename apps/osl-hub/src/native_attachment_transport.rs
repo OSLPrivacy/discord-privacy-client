@@ -632,7 +632,7 @@ fn open_pending_inner(
     let token = parse_token(&plan.fetch_token)?;
     let (download_path, mut download) = peer_attachment_io::create_download_file(&local_root)?;
     let cleanup_download = |path: &Path| {
-        let _ = peer_attachment_io::remove_staging_path(path);
+        let _ = peer_attachment_io::remove_staging_path_in_root(&local_root, path);
     };
     let fetched = match client.fetch_attachment_to_writer(&plan.object_id, &token, &mut download) {
         Ok(size) => size,
@@ -843,6 +843,10 @@ fn launch_and_scavenge(staged: peer_attachment_io::StagedPlaintext) -> Result<()
             Some(path) => path.to_owned(),
             None => return Err("The decrypted attachment is unavailable".to_owned()),
         };
+        let root = match staged.root() {
+            Some(root) => root.to_owned(),
+            None => return Err("The decrypted attachment is unavailable".to_owned()),
+        };
         // Install the OS-owned deletion before anything can read the plaintext.
         // The reaper is a separate process, so the decrypted copy's lifetime no
         // longer depends on an in-process best-effort call winning a race with
@@ -884,7 +888,7 @@ fn launch_and_scavenge(staged: peer_attachment_io::StagedPlaintext) -> Result<()
             std::thread::sleep(PLAINTEXT_READ_WINDOW);
             let deadline = std::time::Instant::now() + PLAINTEXT_REMOVAL_WINDOW;
             loop {
-                if peer_attachment_io::remove_staging_path(&path).is_ok() {
+                if peer_attachment_io::remove_staging_path_in_root(&root, &path).is_ok() {
                     return;
                 }
                 if std::time::Instant::now() >= deadline {

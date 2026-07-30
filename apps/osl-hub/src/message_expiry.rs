@@ -814,7 +814,10 @@ pub fn sweep_abandoned_staging(local_data_dir: &Path, max_age: Duration) -> usiz
             .and_then(|meta| meta.modified().ok())
             .and_then(|modified| modified.elapsed().ok())
             .is_some_and(|age| age >= max_age);
-        if stale && crate::peer_attachment_io::remove_staging_path(&entry.path()).is_ok() {
+        if stale
+            && crate::peer_attachment_io::remove_staging_path_in_root(local_data_dir, &entry.path())
+                .is_ok()
+        {
             removed += 1;
         }
     }
