@@ -76,6 +76,7 @@ pub mod state;
 pub mod state_reload;
 pub mod tier_gate;
 pub mod tofu;
+pub mod trust_ceremony_proof;
 pub mod whitelist;
 pub mod whitelist_state;
 pub mod wire_v2;

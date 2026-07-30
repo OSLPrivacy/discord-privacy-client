@@ -4378,6 +4378,171 @@ mod tests {
     }
 
     #[test]
+    fn verify_friend_safety_number_refuses_safety_number_mismatch_mutants() {
+        let harness = FileBackedSecurityHarness::new("safety-mismatch-refusal");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        let (person_id, mut metadata, peer) = test_friend(61);
+        metadata.safety_number_verified = false;
+        let expected =
+            safety_number_for_bundle(peer.tofu_key_bundle.as_ref().expect("fixture bundle"))
+                .unwrap();
+        let mut wrong = normalise_safety_number(&expected).into_bytes();
+        let last = wrong.last_mut().expect("fixture has safety-number digits");
+        *last = if *last == b'9' { b'8' } else { *last + 1 };
+        let wrong = String::from_utf8(wrong).unwrap();
+        write_people(harness.path(), &person_id, metadata.clone());
+        install_peer_map(&core, harness.path(), &person_id, peer.clone());
+
+        let error = verify_friend_safety_number(&core, &security, person_id.clone(), wrong)
+            .expect_err("mismatched safety number must refuse");
+        assert_eq!(error, SAFETY_NUMBER_MISMATCH_REFUSAL);
+        let people: PeopleFile = load_encrypted_json(&harness.path().join(PEOPLE_FILE)).unwrap();
+        assert_eq!(
+            people.people.get(&person_id).unwrap().safety_number_verified,
+            false,
+            "refusal must not mark the friend verified"
+        );
+        assert_eq!(
+            load_peer_map(harness.path()).get(&person_id),
+            Some(&peer),
+            "refusal must not rewrite trusted peer keys"
+        );
+
+        let verified =
+            verify_friend_safety_number(&core, &security, person_id.clone(), expected.clone())
+                .expect("matching safety number verifies the fixture");
+        assert!(verified.safety_number_verified);
+        let people: PeopleFile = load_encrypted_json(&harness.path().join(PEOPLE_FILE)).unwrap();
+        assert!(
+            people
+                .people
+                .get(&person_id)
+                .unwrap()
+                .safety_number_verified
+        );
+    }
+
+    #[test]
+    fn key_change_alert_ceremony_paths_persist_only_after_verified_safety() {
+        let harness = FileBackedSecurityHarness::new("key-change-ceremony-persist");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        install_self_identity(&core);
+        let friend = keystore::generate_native_identity();
+        let added = add_friend_code(
+            &core,
+            &security,
+            friend_code_for_identity(&friend),
+            None,
+        )
+        .unwrap();
+        verify_friend_safety_number(
+            &core,
+            &security,
+            added.person_id.clone(),
+            added.safety_number.clone(),
+        )
+        .unwrap();
+        let trusted_peer = load_peer_map(harness.path())
+            .get(&added.person_id)
+            .expect("trusted peer persisted")
+            .clone();
+
+        let changed_payload = FriendCodeUnsigned {
+            version: FRIEND_CODE_VERSION,
+            osl_user_id: friend.user_id.clone(),
+            x25519_public: STANDARD.encode([71u8; X25519_PUBLIC_BYTES]),
+            ed25519_public: STANDARD.encode(friend.ed25519_public.as_bytes()),
+            mlkem768_public: STANDARD.encode([72u8; MLKEM768_PUBLIC_BYTES]),
+            ratchet_initial_public: Some(STANDARD.encode([73u8; RATCHET_PUBLIC_BYTES])),
+        };
+        let canonical = serde_json::to_vec(&changed_payload).unwrap();
+        let signature = crypto::ed25519::sign(&friend.ed25519_secret, &canonical);
+        let changed_code = format!(
+            "{FRIEND_CODE_PREFIX}{}",
+            URL_SAFE_NO_PAD.encode(
+                serde_json::to_vec(&SignedFriendCode {
+                    payload: changed_payload.clone(),
+                    signature: URL_SAFE_NO_PAD.encode(signature.as_bytes()),
+                })
+                .unwrap()
+            )
+        );
+        let staged = add_friend_code(&core, &security, changed_code, None).unwrap();
+        assert_eq!(
+            staged.disposition,
+            AddFriendDisposition::KeyChangeRequiresVerification
+        );
+        assert!(!staged.safety_number_verified);
+        assert_ne!(staged.safety_number, added.safety_number);
+        assert_eq!(
+            load_peer_map(harness.path()).get(&added.person_id),
+            Some(&trusted_peer),
+            "staging a key change must not persist new encryption keys"
+        );
+        let people: PeopleFile = load_encrypted_json(&harness.path().join(PEOPLE_FILE)).unwrap();
+        let staged_metadata = people.people.get(&added.person_id).unwrap();
+        assert!(!staged_metadata.safety_number_verified);
+        assert_eq!(
+            staged_metadata.pending_key_bundle.as_ref(),
+            Some(&changed_payload)
+        );
+
+        let mut wrong = normalise_safety_number(&staged.safety_number).into_bytes();
+        let last = wrong.last_mut().expect("fixture has safety-number digits");
+        *last = if *last == b'9' { b'8' } else { *last + 1 };
+        let wrong = String::from_utf8(wrong).unwrap();
+        assert_eq!(
+            verify_friend_safety_number(&core, &security, added.person_id.clone(), wrong)
+                .unwrap_err(),
+            SAFETY_NUMBER_MISMATCH_REFUSAL
+        );
+        assert_eq!(
+            load_peer_map(harness.path()).get(&added.person_id),
+            Some(&trusted_peer),
+            "mismatch refusal must leave old keys persisted"
+        );
+        let people: PeopleFile = load_encrypted_json(&harness.path().join(PEOPLE_FILE)).unwrap();
+        assert!(
+            people
+                .people
+                .get(&added.person_id)
+                .unwrap()
+                .pending_key_bundle
+                .is_some(),
+            "mismatch refusal must leave pending ceremony state"
+        );
+
+        let verified = verify_friend_safety_number(
+            &core,
+            &security,
+            added.person_id.clone(),
+            staged.safety_number,
+        )
+        .unwrap();
+        assert!(verified.safety_number_verified);
+        assert!(!verified.pending_key_change);
+        let people: PeopleFile = load_encrypted_json(&harness.path().join(PEOPLE_FILE)).unwrap();
+        let verified_metadata = people.people.get(&added.person_id).unwrap();
+        assert!(verified_metadata.safety_number_verified);
+        assert!(verified_metadata.pending_key_bundle.is_none());
+        let persisted_peer = load_peer_map(harness.path())
+            .get(&added.person_id)
+            .expect("verified peer persisted")
+            .clone();
+        assert_eq!(persisted_peer.pubkey, Some(changed_payload.x25519_public));
+        assert_eq!(
+            persisted_peer.ik_mlkem768_pub,
+            Some(changed_payload.mlkem768_public)
+        );
+        assert_eq!(
+            persisted_peer.ik_ratchet_initial_pub,
+            changed_payload.ratchet_initial_public
+        );
+    }
+
+    #[test]
     fn every_transport_key_change_changes_the_ceremony_and_clears_verification() {
         let base = FriendCodeUnsigned {
             version: FRIEND_CODE_VERSION,

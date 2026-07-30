@@ -4757,8 +4757,16 @@
                                 {
                                     label: "I verified — Accept",
                                     onClick: function () {
+                                        const suppliedSafetyNumber =
+                                            window.prompt(
+                                                "Enter the safety number you verified"
+                                            );
+                                        if (suppliedSafetyNumber === null) {
+                                            return;
+                                        }
                                         invoke("osl_accept_key_change", {
                                             discordId: a.discord_id,
+                                            safetyNumber: suppliedSafetyNumber,
                                         }).catch(function () {});
                                     },
                                 },
