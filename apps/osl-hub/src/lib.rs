@@ -23,6 +23,7 @@ pub mod native_attachment_jobs;
 pub mod native_discord_adapter;
 pub mod native_window_host;
 pub mod proprietary_module_boundary;
+pub mod proprietary_module_lifecycle;
 pub mod hosted_port;
 pub mod hosted_provider_recipe;
 pub mod owner_presence;
