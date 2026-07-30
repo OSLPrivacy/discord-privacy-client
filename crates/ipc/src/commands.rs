@@ -1748,19 +1748,19 @@ impl std::fmt::Debug for StatusResponse {
 
 const UI_SESSION_ENCRYPTION_KEY_INFO: &[u8] = b"OSL/UI-session-encryption-key/v1";
 
+#[derive(Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UiSessionEncryptionKeyDto {
+    pub key_b64: String,
+    pub derivation: String,
+}
+
 fn derive_ui_session_encryption_key(identity: &keystore::Identity) -> IpcResult<[u8; 32]> {
     Ok(hkdf::derive_32(
         identity.ed25519_public.as_bytes(),
         identity.x25519_secret.as_bytes(),
         UI_SESSION_ENCRYPTION_KEY_INFO,
     )?)
-}
-
-#[derive(Clone, serde::Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct UiSessionEncryptionKeyDto {
-    pub key_b64: String,
-    pub derivation: String,
 }
 
 pub fn cmd_status(state: &AppState) -> StatusResponse {
@@ -1810,22 +1810,23 @@ mod identity_status_and_ui_session_tests {
         state.install_identity(identity.clone());
 
         let from_command = cmd_osl_ui_session_encryption_key(&state).expect("loaded identity");
+        let from_command_key = from_command.key_b64.clone();
         let from_status = cmd_status(&state)
             .ui_session_encryption_key_b64
             .expect("status includes UI session key when identity is loaded");
-        assert_eq!(from_command.key_b64, expected);
+        assert_eq!(from_command_key, expected);
         assert_eq!(from_command.derivation, "loaded_identity_v1");
         assert_eq!(from_status, expected);
-        assert_eq!(STANDARD.decode(&from_command.key_b64).unwrap().len(), 32);
+        assert_eq!(STANDARD.decode(&from_command_key).unwrap().len(), 32);
 
         let other = keystore::generate_identity("ui-session-owner".to_string());
         assert_ne!(
-            from_command.key_b64,
+            from_command_key,
             STANDARD.encode(derive_ui_session_encryption_key(&other).unwrap()),
             "a key not derived from the loaded identity would fail this comparison"
         );
         assert!(
-            !format!("{:?}", cmd_status(&state)).contains(&from_command.key_b64),
+            !format!("{:?}", cmd_status(&state)).contains(&from_command_key),
             "StatusResponse Debug must not expose the UI session key"
         );
     }
@@ -1838,6 +1839,7 @@ mod identity_status_and_ui_session_tests {
         assert_eq!(unloaded.identity_at_rest_sealer_label, expected_label);
         assert_eq!(unloaded.at_rest_sealer_label, expected_label);
         assert!(!unloaded.identity_at_rest_sealer_label.is_empty());
+        assert!(!unloaded.at_rest_sealer_label.trim().is_empty());
 
         state.install_identity(keystore::generate_identity("sealer-status".to_string()));
         let loaded = cmd_status(&state);
@@ -10644,6 +10646,13 @@ pub struct PendingFriendRequestRecord {
     pub created_at_unix_seconds: u64,
 }
 
+#[derive(Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingFriendRequestResult {
+    pub pending: bool,
+    pub scope_storage_key: String,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct SendFriendRequestResult {
     pub request: crate::friend_request::FriendRequest,
@@ -10771,6 +10780,58 @@ fn cmd_osl_send_friend_request_with_dir(
     Ok(SendFriendRequestResult { request, pending })
 }
 
+fn persist_typed_friend_request_with_dir(
+    state: &AppState,
+    peer_discord_id: String,
+    request: crate::friend_request::FriendRequest,
+    dir: &Path,
+) -> Result<PendingFriendRequestResult, String> {
+    guard_friend_request_peer_binding(state, &peer_discord_id)?;
+    let _peer_authority = peer_friend_authority(state, &peer_discord_id)?;
+    let scope = request.scope_grant.scope().clone();
+    if scope.kind == crate::scope::ScopeKind::Dm && scope.id != peer_discord_id {
+        return Err("OSL: friend request DM scope does not match peer".to_string());
+    }
+    if !request.grants_scope(&scope) {
+        return Err("OSL: friend request scope was not granted".to_string());
+    }
+    let accepted_grant_exists = {
+        let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        pm.get(&peer_discord_id)
+            .map(|entry| {
+                entry
+                    .outgoing_whitelists
+                    .iter()
+                    .any(|w| whitelist_entry_matches(w, &scope))
+            })
+            .unwrap_or(false)
+    };
+    if accepted_grant_exists {
+        return Err("OSL: friend request scope is already accepted".to_string());
+    }
+
+    let pending = PendingFriendRequestRecord {
+        peer_discord_id,
+        scope_storage_key: scope.storage_key(),
+        created_at_unix_seconds: now_unix_secs() as u64,
+    };
+    let path = pending_friend_requests_path(dir);
+    let mut records = load_pending_friend_requests(&path)?;
+    if records.iter().any(|record| {
+        record.peer_discord_id == pending.peer_discord_id
+            && record.scope_storage_key == pending.scope_storage_key
+    }) {
+        return Err("OSL: friend request already exists".to_string());
+    }
+    records.push(pending.clone());
+    save_pending_friend_requests(&path, &records)?;
+
+    Ok(PendingFriendRequestResult {
+        pending: true,
+        scope_storage_key: pending.scope_storage_key,
+    })
+}
+
 fn guard_friend_request_peer_binding(
     state: &AppState,
     requester_discord_id: &str,
@@ -10854,7 +10915,7 @@ mod friend_request_acceptance_tests {
     use super::{
         cmd_osl_accept_friend_request, cmd_osl_send_friend_request_with_dir,
         cmd_osl_send_typed_friend_request_with_dir, load_pending_friend_requests,
-        pending_friend_requests_path,
+        pending_friend_requests_path, persist_typed_friend_request_with_dir,
     };
     use crate::friend_request::{
         FriendPeer, FriendRequest, FriendScopeGrant, VerifiedFriendAuthority,
@@ -10897,6 +10958,14 @@ mod friend_request_acceptance_tests {
         let state = AppState::new();
         let scope = Scope::gc("friend-pending-gc");
         let request = request_for(scope.clone());
+        state.peer_map.lock().unwrap().insert(
+            REQUESTER_DID.to_string(),
+            crate::peer_map::PeerEntry {
+                discord_id: Some(REQUESTER_DID.to_string()),
+                tofu_key_bundle: Some(bundle("target")),
+                ..Default::default()
+            },
+        );
 
         let result = cmd_osl_send_typed_friend_request_with_dir(
             &state,
@@ -10910,8 +10979,15 @@ mod friend_request_acceptance_tests {
         assert_eq!(result.pending.peer_discord_id, REQUESTER_DID);
         assert_eq!(result.pending.scope_storage_key, scope.storage_key());
         assert!(
-            state.peer_map.lock().unwrap().get(REQUESTER_DID).is_none(),
-            "pending request must not create peer authority"
+            state
+                .peer_map
+                .lock()
+                .unwrap()
+                .get(REQUESTER_DID)
+                .unwrap()
+                .outgoing_whitelists
+                .is_empty(),
+            "pending request must not adopt peer authority as an outgoing grant"
         );
         assert!(
             state.whitelist_state.lock().unwrap().is_empty(),
@@ -10937,6 +11013,47 @@ mod friend_request_acceptance_tests {
             Err(err) => err,
         };
         assert!(duplicate.contains("already exists"), "{duplicate}");
+    }
+
+    #[test]
+    fn persist_typed_friend_request_records_authority_bound_pending_without_adopting_scope() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let state = AppState::new();
+        let scope = Scope::gc("friend-persist-gc");
+        state.peer_map.lock().unwrap().insert(
+            REQUESTER_DID.to_string(),
+            crate::peer_map::PeerEntry {
+                discord_id: Some(REQUESTER_DID.to_string()),
+                tofu_key_bundle: Some(bundle("target")),
+                ..Default::default()
+            },
+        );
+
+        let result = persist_typed_friend_request_with_dir(
+            &state,
+            REQUESTER_DID.to_string(),
+            request_for(scope.clone()),
+            dir.path(),
+        )
+        .expect("typed friend request should persist as pending");
+
+        assert!(result.pending);
+        assert_eq!(result.scope_storage_key, scope.storage_key());
+        assert!(
+            state
+                .peer_map
+                .lock()
+                .unwrap()
+                .get(REQUESTER_DID)
+                .unwrap()
+                .outgoing_whitelists
+                .is_empty(),
+            "pending request must not adopt peer authority as an outgoing grant"
+        );
+        assert!(
+            state.whitelist_state.lock().unwrap().is_empty(),
+            "pending request must not enable encryption for the scope"
+        );
     }
 
     #[test]
@@ -11059,6 +11176,11 @@ mod friend_request_acceptance_tests {
         let ws = state.whitelist_state.lock().unwrap();
         assert!(ws.get(&scope.storage_key()).unwrap().encrypt_toggle);
         assert!(ws.get(&scope.storage_key()).unwrap().auto_enabled);
+        let adopted = ws
+            .get(&scope.storage_key())
+            .expect("accepted grant should create scope state");
+        assert!(adopted.encrypt_toggle);
+        assert!(adopted.auto_enabled);
         assert!(ws.get(&other_scope.storage_key()).is_none());
     }
 
