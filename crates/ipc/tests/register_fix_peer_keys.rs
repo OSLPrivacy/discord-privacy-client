@@ -14,7 +14,8 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use ipc::commands::{
-    cmd_osl_accept_key_change, cmd_osl_set_whitelist, populate_peer_from_fetch_response,
+    cmd_osl_accept_key_change, cmd_osl_decline_key_change, cmd_osl_list_key_change_alerts,
+    cmd_osl_set_whitelist, populate_peer_from_fetch_response,
 };
 use ipc::scope::{Scope, ScopeInput};
 use ipc::state::AppState;
@@ -353,6 +354,81 @@ fn accept_key_change_requires_verified_safety_number() {
         })
     );
     assert!(state.key_change_alerts.lock().unwrap().is_empty());
+}
+
+#[test]
+fn key_change_alert_list_accept_decline_and_mismatch_refusal_are_wired() {
+    let state = fresh_state();
+    let first = peer_pubkeys_response();
+    populate_peer_from_fetch_response(&state, PEER_DID, &first).unwrap();
+    let trusted_before = state
+        .peer_map
+        .lock()
+        .unwrap()
+        .get(PEER_DID)
+        .unwrap()
+        .clone();
+    let changed = peer_pubkeys_response_for(generate_identity(first.user_id.clone()));
+
+    populate_peer_from_fetch_response(&state, PEER_DID, &changed).unwrap();
+    let listed = cmd_osl_list_key_change_alerts(&state).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].discord_id, PEER_DID);
+    assert_eq!(
+        listed[0].new_ed25519_pub.as_str(),
+        changed.ik_ed25519_pub.as_str()
+    );
+    assert_eq!(
+        listed[0].pending_bundle.x25519_pub.as_str(),
+        changed.ik_x25519_pub.as_str()
+    );
+    assert!(!listed[0].new_safety_number.is_empty());
+
+    assert_eq!(
+        cmd_osl_accept_key_change(
+            &state,
+            PEER_DID.to_owned(),
+            TrustCeremonyProof::new("00000 00000 00000 00000 00000 00000")
+        )
+        .unwrap_err(),
+        "OSL safety number does not match"
+    );
+    assert_eq!(
+        cmd_osl_list_key_change_alerts(&state).unwrap().len(),
+        1,
+        "mismatch refusal keeps the blocking alert pending"
+    );
+    assert_eq!(
+        state.peer_map.lock().unwrap().get(PEER_DID).unwrap().pubkey,
+        trusted_before.pubkey,
+        "mismatch refusal must not adopt the pending live key"
+    );
+
+    cmd_osl_decline_key_change(&state, PEER_DID.to_owned()).unwrap();
+    assert!(
+        cmd_osl_list_key_change_alerts(&state).unwrap().is_empty(),
+        "decline clears the current alert"
+    );
+    assert_eq!(
+        state.peer_map.lock().unwrap().get(PEER_DID).unwrap().pubkey,
+        trusted_before.pubkey,
+        "decline keeps the old trusted key"
+    );
+
+    populate_peer_from_fetch_response(&state, PEER_DID, &changed).unwrap();
+    let relisted = cmd_osl_list_key_change_alerts(&state).unwrap();
+    assert_eq!(relisted.len(), 1, "unchanged remote rotation re-alerts");
+    cmd_osl_accept_key_change(
+        &state,
+        PEER_DID.to_owned(),
+        TrustCeremonyProof::new(relisted[0].new_safety_number.clone()),
+    )
+    .unwrap();
+    assert!(cmd_osl_list_key_change_alerts(&state).unwrap().is_empty());
+    assert_eq!(
+        state.peer_map.lock().unwrap().get(PEER_DID).unwrap().pubkey,
+        Some(changed.ik_x25519_pub)
+    );
 }
 
 // NOTE: a 5th test (`receive_defaults_to_snowflake_instead_of_unknown_sender`)
