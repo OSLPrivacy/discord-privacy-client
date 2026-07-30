@@ -20,7 +20,7 @@ describe("IA routing", () => {
     vi.unstubAllGlobals();
   });
 
-  it("Map application routes to the fixed IA destinations", async () => {
+  it("maps application routes to the fixed IA destinations in the rendered shell", async () => {
     const { __oslHubUiTest } = await loadUi();
     const expectations = [
       ["home", "Home"],
@@ -41,6 +41,21 @@ describe("IA routing", () => {
       expect(sidebar).toContain(`data-primary-destination="${route}"`);
       expect(sidebar).toContain(`data-route="${route}"`);
       expect(content).toContain(heading);
+    }
+  });
+
+  it("exposes fixed IA route preview helpers", async () => {
+    const { fixedIaRoutePreview, primarySidebarMarkup } = await loadUi();
+
+    const routes = fixedIaRoutePreview();
+    expect(routes.map((target) => target.destination)).toEqual(oslPrimaryDestinationValues);
+    expect(routes.map((target) => target.route)).toEqual(["home", "inbox", "people", "privacy", "activity", "connections"]);
+    expect(routes.every((target) => target.settingsSection === null)).toBe(true);
+
+    const sidebar = primarySidebarMarkup();
+    for (const target of routes) {
+      expect(sidebar).toContain(`data-primary-destination="${target.destination}"`);
+      expect(sidebar).toContain(`data-route="${target.route}"`);
     }
   });
 });

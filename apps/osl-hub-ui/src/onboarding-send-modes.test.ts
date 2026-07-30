@@ -14,12 +14,16 @@ async function loadUi() {
   return import("./main");
 }
 
+function sendModeButtons(markup: string): string[] {
+  return [...markup.matchAll(/data-send-mode="([^"]+)"/gu)].map((match) => match[1]);
+}
+
 describe("onboarding send modes", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it("Implement ordinary send choices without Single Enter", async () => {
+  it("implements ordinary send choices without Single Enter in onboarding state", async () => {
     const { __oslHubUiTest } = await loadUi();
     __oslHubUiTest.reset();
 
@@ -32,5 +36,18 @@ describe("onboarding send modes", () => {
     expect(html).not.toContain("Single Enter");
     expect(html).toContain("No mode silently sends.");
     expect(html).toContain("If OSL cannot prove the destination, it copies the encrypted text and sends nothing.");
+  });
+
+  it("exposes the direct send mode content without Single Enter", async () => {
+    const { sendingSetupContent } = await loadUi();
+    const markup = sendingSetupContent();
+
+    expect(sendModeButtons(markup)).toEqual(["manual", "clipboard", "double"]);
+    expect(markup).toContain("Manual");
+    expect(markup).toContain("Clipboard");
+    expect(markup).toContain("Double Enter");
+    expect(markup).not.toContain('data-send-mode="single"');
+    expect(markup).not.toMatch(/Single Enter/iu);
+    expect(markup).toMatch(/No mode silently sends/iu);
   });
 });

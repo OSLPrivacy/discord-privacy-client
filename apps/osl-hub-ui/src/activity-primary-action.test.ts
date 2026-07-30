@@ -19,7 +19,7 @@ describe("Activity primary action", () => {
     vi.unstubAllGlobals();
   });
 
-  it("Route Activity primary action to attention review", async () => {
+  it("routes Activity primary action to attention review state", async () => {
     const { __oslHubUiTest, activityPrimaryAction } = await loadUi();
     __oslHubUiTest.reset({
       route: "activity",
@@ -39,5 +39,19 @@ describe("Activity primary action", () => {
     });
     expect(__oslHubUiTest.renderWorkspaceContent()).toContain('data-activity-attention-review="attention-1"');
     expect(__oslHubUiTest.renderWorkspaceContent()).toContain("Attention review");
+  });
+
+  it("returns Activity primary action plan metadata", async () => {
+    const { activityDestinationContent, activityPrimaryActionPlan } = await loadUi();
+
+    expect(activityPrimaryActionPlan(2)).toEqual({
+      route: "activity",
+      reviewTarget: "attention-review",
+      label: "Review attention item",
+      disabled: false,
+    });
+    expect(activityDestinationContent()).toContain('data-activity-primary-action');
+    expect(activityDestinationContent()).toContain('data-route="activity"');
+    expect(activityDestinationContent()).toContain('data-review-target="attention-review"');
   });
 });

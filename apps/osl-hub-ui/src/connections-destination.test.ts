@@ -15,6 +15,10 @@ async function loadUi() {
   return import("./main");
 }
 
+function visibleText(markup: string): string {
+  return markup.replace(/<[^>]*>/gu, " ").replace(/\s+/gu, " ").trim();
+}
+
 const discordService: LinkedService = {
   id: "discord",
   displayName: "Discord",
@@ -34,7 +38,7 @@ describe("Connections destination", () => {
     vi.unstubAllGlobals();
   });
 
-  it("Implement Connections as the account and device destination", async () => {
+  it("renders Connections as the account and device destination", async () => {
     const { __oslHubUiTest } = await loadUi();
     __oslHubUiTest.reset({ route: "connections", services: [discordService], mullvadAvailability: "unavailable" });
 
@@ -47,5 +51,21 @@ describe("Connections destination", () => {
     expect(html).toContain('data-connection-card="mullvad"');
     expect(html).toContain('data-android-surface="androidCompanion"');
     expect(html).toContain('data-android-surface="androidMobileWorkspace"');
+  });
+
+  it("exposes Connections IA route and direct destination markup", async () => {
+    const { connectionsDestinationContent, fixedIaRoutePreview } = await loadUi();
+
+    const route = fixedIaRoutePreview().find((target) => target.destination === "connections");
+    const markup = connectionsDestinationContent();
+    const copy = visibleText(markup);
+
+    expect(route).toMatchObject({ route: "connections", settingsSection: null });
+    expect(markup).toContain('class="settings-list connections-accounts connected-accounts"');
+    expect(markup).toContain('class="settings-list connections-devices connected-devices"');
+    expect(markup).toContain('data-connection-kind="mullvad"');
+    expect(copy).toMatch(/Accounts, devices, network status, and future workspaces/iu);
+    expect(copy).toMatch(/Each profile stays separate/iu);
+    expect(copy).not.toMatch(/keyservers?|ratchets?|receipts?|browser profiles?|provider adapters?/iu);
   });
 });

@@ -19,7 +19,7 @@ describe("Home primary action", () => {
     vi.unstubAllGlobals();
   });
 
-  it("Route Home primary action to the most important issue", async () => {
+  it("routes Home primary action to the most important stateful issue", async () => {
     const { __oslHubUiTest, homePrimaryAction } = await loadUi();
     __oslHubUiTest.reset({
       coreReady: true,
@@ -42,5 +42,27 @@ describe("Home primary action", () => {
       route: "people",
       homePrimaryIssue: "trusted-people-review",
     });
+  });
+
+  it("plans Home primary action priority without rendering", async () => {
+    const { homePrimaryActionPlan } = await loadUi();
+    const ready = {
+      coreReady: true,
+      storageProtected: true,
+      storageDetail: "Hardware protected",
+      coreDetail: "Ready",
+      pendingFriendReviews: 0,
+      connectedApps: 1,
+      verifiedFriends: 1,
+      hasRecentActivity: false,
+    };
+
+    expect(homePrimaryActionPlan({ ...ready, coreReady: false, pendingFriendReviews: 2, connectedApps: 0 }).issue).toBe("account-protection");
+    expect(homePrimaryActionPlan({ ...ready, storageProtected: false, pendingFriendReviews: 2, connectedApps: 0 }).issue).toBe("local-storage");
+    expect(homePrimaryActionPlan({ ...ready, pendingFriendReviews: 2, connectedApps: 0 }).issue).toBe("trusted-people-review");
+    expect(homePrimaryActionPlan({ ...ready, connectedApps: 0 }).target).toEqual({ kind: "route", route: "connections", settingsSection: null });
+    expect(homePrimaryActionPlan({ ...ready, verifiedFriends: 0 }).issue).toBe("add-trusted-person");
+    expect(homePrimaryActionPlan({ ...ready, hasRecentActivity: true }).target).toEqual({ kind: "route", route: "activity", settingsSection: null });
+    expect(homePrimaryActionPlan(ready).target).toEqual({ kind: "home-module", module: "osl-chats" });
   });
 });

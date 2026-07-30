@@ -19,7 +19,7 @@ describe("Privacy primary action", () => {
     vi.unstubAllGlobals();
   });
 
-  it("Route Privacy primary action to protection review", async () => {
+  it("routes Privacy primary action to protection review state", async () => {
     const { __oslHubUiTest, privacyPrimaryAction } = await loadUi();
     __oslHubUiTest.reset({ route: "privacy" });
 
@@ -33,5 +33,19 @@ describe("Privacy primary action", () => {
     });
     expect(__oslHubUiTest.renderWorkspaceContent()).toContain("data-privacy-protection-review");
     expect(__oslHubUiTest.renderWorkspaceContent()).toContain("Review or change protection");
+  });
+
+  it("returns Privacy primary action plan metadata", async () => {
+    const { privacyDestinationContent, privacyPrimaryActionPlan } = await loadUi();
+
+    const plan = privacyPrimaryActionPlan();
+    const markup = privacyDestinationContent();
+
+    expect(plan).toEqual({ route: "privacy", reviewTarget: "protection-review", label: "Review protection" });
+    expect(markup).toContain('data-privacy-primary-action');
+    expect(markup).toContain('data-route="privacy"');
+    expect(markup).toContain('data-review-target="protection-review"');
+    expect(markup).toContain('id="privacy-protection-review"');
+    expect(markup).toContain("Global policy");
   });
 });

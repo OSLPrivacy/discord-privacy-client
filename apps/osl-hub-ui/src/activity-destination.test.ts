@@ -14,12 +14,16 @@ async function loadUi() {
   return import("./main");
 }
 
+function visibleText(markup: string): string {
+  return markup.replace(/<[^>]*>/gu, " ").replace(/\s+/gu, " ").trim();
+}
+
 describe("Activity destination", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it("Implement Activity as the proof destination", async () => {
+  it("renders Activity as the proof destination with recorded events", async () => {
     const { __oslHubUiTest } = await loadUi();
     __oslHubUiTest.reset({
       route: "activity",
@@ -32,9 +36,23 @@ describe("Activity destination", () => {
     const html = __oslHubUiTest.renderWorkspaceContent("activity");
 
     expect(html).toContain('class="content-viewport activity-destination"');
-    expect(html).toContain("Warnings, scheduled work, cleanup verification, connection failures, and outcomes OSL can prove locally.");
+    expect(html).toContain("cleanup verification, connection failures, and outcomes OSL can prove locally");
     expect(html).toContain('aria-label="Activity proof history"');
     expect(html).toContain('data-activity-proof="event-1"');
     expect(html).toContain("Connection failed");
+  });
+
+  it("exposes Activity IA route and avoids implementation-facing copy", async () => {
+    const { activityDestinationContent, fixedIaRoutePreview } = await loadUi();
+
+    const route = fixedIaRoutePreview().find((target) => target.destination === "activity");
+    const markup = activityDestinationContent();
+    const copy = visibleText(markup);
+
+    expect(route).toMatchObject({ route: "activity", settingsSection: null });
+    expect(markup).toContain('id="activity-attention-review"');
+    expect(markup).toContain('data-review-target="attention-review"');
+    expect(copy).toMatch(/Local proof of what OSL did/iu);
+    expect(copy).not.toMatch(/keyservers?|ratchets?|receipts?|browser profiles?|provider adapters?/iu);
   });
 });
