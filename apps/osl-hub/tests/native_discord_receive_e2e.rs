@@ -700,6 +700,98 @@ impl Peer {
 // Tests.
 // ---------------------------------------------------------------------------
 
+/// P1: A commits an encrypted native-Discord protected message into B's live
+/// conversation without handing plaintext to the relay row or the public
+/// Discord carrier.
+#[test]
+fn p1_sends_encrypted_message_into_live_conversation() {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("p1-send");
+    let relay_url = relay.base_url();
+
+    let alice = Peer::new(&storage, "alice", &relay_url, "a1a15050");
+    let bob = Peer::new(&storage, "bob", &relay_url, "b2b25050");
+    alice.open_native_context_to(&bob.friend_code, &bob.safety_number);
+    bob.open_native_context_to(&alice.friend_code, &alice.safety_number);
+
+    const FIXTURE: &str = "P1 native Discord protected send fixture";
+    alice.activate();
+    let prepared = prepare_native_discord_overlay_text(
+        &alice.core,
+        &alice.security,
+        &alice.broker,
+        FIXTURE.to_owned(),
+        false,
+    )
+    .expect("prepare the protected message");
+
+    assert!(
+        prepared.prepared.person_to_person_e2ee,
+        "the send receipt proves peer end-to-end encryption"
+    );
+    assert!(
+        prepared.prepared.delivered_to_osl_inbox,
+        "the send receipt proves delivery into the live OSL inbox"
+    );
+    assert!(
+        !prepared.prepared.view_once,
+        "this fixture is an ordinary live-conversation message"
+    );
+    assert!(
+        prepared.flagtext.is_some(),
+        "a single-row native Discord send returns its public carrier"
+    );
+    assert!(
+        !prepared
+            .flagtext
+            .as_deref()
+            .is_some_and(|flagtext| flagtext.contains(FIXTURE)),
+        "the public Discord carrier must not contain the private draft"
+    );
+
+    let posted = relay.posted_rows(&alice.identity_id, &bob.identity_id);
+    assert_eq!(
+        posted.len(),
+        1,
+        "A posts exactly one relay row for a one-chunk message"
+    );
+    assert_eq!(
+        relay.pending_for(&bob.identity_id),
+        1,
+        "B's live conversation has exactly one encrypted row waiting"
+    );
+    assert!(
+        posted[0].scope_id.starts_with("native-overlay:"),
+        "the relay row is scoped to the native overlay conversation"
+    );
+    let bundle = base64_decode(&posted[0].bundle_b64);
+    assert!(
+        ipc::wire_v2::is_native_overlay_relay_bundle(&bundle),
+        "the waiting row is the encrypted native overlay relay frame"
+    );
+    assert!(
+        !contains_bytes(&bundle, FIXTURE.as_bytes()),
+        "the relay frame must not carry plaintext bytes"
+    );
+    assert!(
+        !relay
+            .state
+            .lock()
+            .unwrap()
+            .blobs
+            .values()
+            .any(|blob| contains_bytes(&blob.bytes, FIXTURE.as_bytes())),
+        "cipher-store blobs must not carry plaintext bytes"
+    );
+
+    drop(alice);
+    drop(bob);
+    drop(storage);
+}
+
 /// The whole inbound contract for one single-chunk protected message:
 ///
 /// * an empty inbox drains to an explicit empty batch, not an error;
