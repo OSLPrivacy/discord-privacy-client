@@ -484,6 +484,9 @@ fn state_export_import_survives_an_interleaved_run() {
         spent.push(msg);
     }
 
+    restart_pair(&mut alice, &mut bob);
+    restarts += 1;
+
     let w = alice
         .encrypt(0, b"fresh after replay storm", &mut rng)
         .expect("alice encrypt after replay storm");
