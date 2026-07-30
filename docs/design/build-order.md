@@ -53,3 +53,64 @@ refuses before producing a desktop binary.
 Failure caught by the test: a Cargo/Tauri build that runs first, or that ignores a
 stale/missing `dist`, can produce a binary with an old renderer while claiming to
 contain the latest frontend source. That must fail rather than silently shipping.
+
+```rust
+#[test]
+fn frontend_dist_is_embedded_after_frontend_build() {
+    use std::time::{Duration, SystemTime};
+
+    #[derive(Clone, Copy)]
+    struct FileStamp {
+        exists: bool,
+        modified: SystemTime,
+    }
+
+    fn build_order_gate(dist_files: &[FileStamp], shipping_sources: &[FileStamp]) -> bool {
+        let Some(newest_dist) = dist_files
+            .iter()
+            .filter(|file| file.exists)
+            .map(|file| file.modified)
+            .max()
+        else {
+            return false;
+        };
+
+        shipping_sources
+            .iter()
+            .filter(|file| file.exists)
+            .all(|source| source.modified <= newest_dist)
+    }
+
+    let frontend_build = SystemTime::UNIX_EPOCH + Duration::from_secs(200);
+    let older_source = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+    let newer_source = SystemTime::UNIX_EPOCH + Duration::from_secs(300);
+
+    assert!(build_order_gate(
+        &[FileStamp {
+            exists: true,
+            modified: frontend_build,
+        }],
+        &[FileStamp {
+            exists: true,
+            modified: older_source,
+        }],
+    ));
+    assert!(!build_order_gate(
+        &[],
+        &[FileStamp {
+            exists: true,
+            modified: older_source,
+        }],
+    ));
+    assert!(!build_order_gate(
+        &[FileStamp {
+            exists: true,
+            modified: frontend_build,
+        }],
+        &[FileStamp {
+            exists: true,
+            modified: newer_source,
+        }],
+    ));
+}
+```
