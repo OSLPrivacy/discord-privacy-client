@@ -273,7 +273,7 @@ describe("home interaction regressions", () => {
   });
 
   it("loads the new identity's friend profile before first Home render", () => {
-    const completion = functionSource(source, "completeOnboarding", "bindImportForm");
+    const completion = functionSource(source, "completeSixStepOnboarding", "completeOnboarding");
     expect(completion).toContain("await refreshIdentityScopedState()");
     expect(completion.indexOf("await refreshIdentityScopedState()"))
       .toBeLessThan(completion.indexOf("render()"));

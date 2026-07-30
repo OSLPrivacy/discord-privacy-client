@@ -2358,23 +2358,41 @@ function bindPasswordVisibility(): void {
   }));
 }
 
+function balancedFirstRunSetup(state: SetupState): SetupState {
+  const sendMode = state.sendMode === "manual" ? "clipboard" : state.sendMode;
+  const acceptedRisk = needsRiskAcceptance(sendMode) && state.acceptedRisk && state.acceptedRiskForMode === sendMode;
+  return {
+    sendMode,
+    placementMode: "atomic",
+    acceptedRisk,
+    acceptedRiskForMode: acceptedRisk ? sendMode : null,
+  };
+}
+
+async function completeSixStepOnboarding(): Promise<void> {
+  const completedSetup = balancedFirstRunSetup(setup);
+  if (!canCompleteSetup(completedSetup)) throw new Error("setup missing required sending consent");
+  setup = completedSetup;
+  const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, showPlaintextPreview: true, windowCaptureEnabled });
+  setup = saved.setup;
+  windowCaptureEnabled = saved.windowCaptureEnabled;
+  onboardingComplete = true;
+  clearServiceOnboardingResume();
+  resetOnboardingBranch();
+  resetOnboardingConnections();
+  // A newly-created identity is already unlocked. Load its signed invite and
+  // local People state before Home renders so friend setup never incorrectly
+  // tells the user to unlock again.
+  await refreshIdentityScopedState();
+  nativeApps = await loadNativeApps().catch(() => nativeApps);
+  route = "home";
+  clearPrivacyScanState();
+  render();
+}
+
 async function completeOnboarding(): Promise<void> {
   try {
-    const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, showPlaintextPreview: true, windowCaptureEnabled });
-    setup = saved.setup;
-    windowCaptureEnabled = saved.windowCaptureEnabled;
-    onboardingComplete = true;
-    clearServiceOnboardingResume();
-    resetOnboardingBranch();
-    resetOnboardingConnections();
-    // A newly-created identity is already unlocked. Load its signed invite and
-    // local People state before Home renders so friend setup never incorrectly
-    // tells the user to unlock again.
-    await refreshIdentityScopedState();
-    nativeApps = await loadNativeApps().catch(() => nativeApps);
-    route = "home";
-    clearPrivacyScanState();
-    render();
+    await completeSixStepOnboarding();
   } catch {
     showToast("Could not save local setup · nothing changed");
   }
