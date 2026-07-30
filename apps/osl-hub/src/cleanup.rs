@@ -594,6 +594,24 @@ mod tests {
         assert!(config.join(HUB_CORE_DIR).join("identity.json").exists());
         assert!(local.join(PROFILE_DIR).join("cache").exists());
 
+        let foreign_config = temp_root("gate-foreign-config");
+        let foreign_local = temp_root("gate-foreign-local");
+        std::fs::create_dir_all(foreign_config.join(HUB_CORE_DIR)).unwrap();
+        std::fs::create_dir_all(foreign_local.join(PROFILE_DIR)).unwrap();
+        std::fs::write(
+            foreign_config.join(HUB_CORE_DIR).join("identity.json"),
+            b"foreign sealed",
+        )
+        .unwrap();
+        std::fs::write(foreign_local.join(PROFILE_DIR).join("cache"), b"foreign").unwrap();
+        write_gate_burn_journal(&foreign_config).unwrap();
+        assert!(resume_interrupted_gate_burn(&foreign_config, &foreign_local).is_err());
+        assert!(foreign_config
+            .join(HUB_CORE_DIR)
+            .join("identity.json")
+            .exists());
+        assert!(foreign_local.join(PROFILE_DIR).join("cache").exists());
+
         write_gate_burn_journal(&config).unwrap();
         assert!(resume_interrupted_gate_burn(&config, &local).unwrap());
         assert!(!config.join(HUB_CORE_DIR).exists());
@@ -605,5 +623,7 @@ mod tests {
         keystore::set_base_dir_override(None);
         let _ = std::fs::remove_dir_all(config);
         let _ = std::fs::remove_dir_all(local);
+        let _ = std::fs::remove_dir_all(foreign_config);
+        let _ = std::fs::remove_dir_all(foreign_local);
     }
 }
