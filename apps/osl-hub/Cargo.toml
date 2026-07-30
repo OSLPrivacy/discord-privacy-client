@@ -26,7 +26,6 @@ store = { path = "../../crates/store", optional = true }
 # no I/O; `message_expiry` is the sealed-storage and scheduling shell around it.
 message-lifecycle = { path = "../../crates/message-lifecycle", optional = true }
 runtime = { path = "../../crates/runtime", optional = true }
-adapter-profile = { path = "../../crates/adapter-profile" }
 # The carrier planner shapes the payload-bearing cover to the protected row's
 # rendered line count (`stego::shape_cover`). `discord_carrier_geometry` is not
 # behind `core`, so this cannot be an optional dependency: the planner must obey

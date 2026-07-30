@@ -31,7 +31,8 @@ pub use loader::{
 };
 
 pub use schema::{
-    canonical_profile_bytes, parse_profile_doc, ActionLevel, AdapterAuthority, AdapterSurface,
+    canonical_profile_bytes, parse_profile_doc, ActionLevel, AdapterAuthority, AdapterService,
+    AdapterSurface,
     BindingRequirement, Capability, CapabilityGrant, ProfileDoc, ProfileValidationError,
     SendOutcomeContract, ValidatedProfile, ValidationEvidence, PROFILE_DOC_VERSION,
 };
