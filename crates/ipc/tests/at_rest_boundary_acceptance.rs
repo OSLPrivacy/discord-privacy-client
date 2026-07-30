@@ -22,17 +22,27 @@ fn staging_backup_boundary_regression() {
         "backup_rollback_copies"
     );
 
-    let refusal = guard_backup_destination("store/messages.sqlite", false).unwrap_err();
-    assert!(
-        refusal.contains(AtRestBoundary::MessageStore.as_str()),
-        "{refusal}"
-    );
-    assert!(
-        refusal.contains(AtRestBoundary::BackupRollbackCopies.as_str()),
-        "{refusal}"
-    );
-    assert!(refusal.contains("unencrypted destination"), "{refusal}");
+    for rel in [
+        "store/messages.sqlite",
+        "store/messages.sqlite-wal",
+        "store/messages.sqlite-shm",
+    ] {
+        let refusal = guard_backup_destination(rel, false).unwrap_err();
+        assert!(
+            refusal.contains(AtRestBoundary::MessageStore.as_str()),
+            "{rel}: {refusal}"
+        );
+        assert!(
+            refusal.contains(AtRestBoundary::BackupRollbackCopies.as_str()),
+            "{rel}: {refusal}"
+        );
+        assert!(
+            refusal.contains("unencrypted destination"),
+            "{rel}: {refusal}"
+        );
+    }
 
+    assert!(guard_backup_destination("store/messages.sqlite", true).is_ok());
     assert!(guard_backup_destination("store/messages.sqlite-wal", true).is_ok());
     assert!(guard_backup_destination("store/messages.sqlite-shm", true).is_ok());
     assert!(
