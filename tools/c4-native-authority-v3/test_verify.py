@@ -1575,6 +1575,8 @@ def define_c4_one_shot_challenge_ledger_contract() -> None:
         testcase.assertEqual(persisted["pipeBindingSha256"], binding)
         testcase.assertEqual(persisted["receiptFrameSha256"], receipt_digest)
 
+    define_the_c4_v3_native_authority_receipt_schema_for_exact_shipping_builds()
+
 
 define_c4_one_shot_challenge_ledger_contract.__name__ = "test_verify.py"
 
@@ -1667,6 +1669,44 @@ validate_carrier_and_pre_post_readbacks_against_one_discord_target_binding.__nam
 )
 
 
+def readback() -> None:
+    testcase = unittest.TestCase()
+    receipt = make_receipt()
+    binding = receipt["target"]["bindingSha256"]
+    carrier_digest = receipt["carrier"]["sha256"]
+
+    validate_receipt(receipt)
+    testcase.assertEqual(receipt["carrier"]["targetBindingSha256"], binding)
+    testcase.assertEqual(receipt["preSend"]["readback"]["targetBindingSha256"], binding)
+    testcase.assertEqual(receipt["postSend"]["readback"]["targetBindingSha256"], binding)
+    testcase.assertEqual(receipt["preSend"]["readback"]["sha256"], carrier_digest)
+    testcase.assertEqual(receipt["postSend"]["readback"]["sha256"], sha256_hex(b""))
+
+    mismatched_binding = copy.deepcopy(receipt)
+    mismatched_binding["postSend"]["readback"]["targetBindingSha256"] = "f" * 64
+    mismatched_binding = reseal(mismatched_binding)
+    with testcase.assertRaisesRegex(SchemaError, "postSend.readback.*target binding"):
+        validate_receipt(mismatched_binding)
+
+    permissive_pre_readback = copy.deepcopy(receipt)
+    permissive_pre_readback["preSend"]["readback"]["classification"] = "partial"
+    permissive_pre_readback = reseal(permissive_pre_readback)
+    with testcase.assertRaisesRegex(SchemaError, "preSend.readback.classification"):
+        validate_receipt(permissive_pre_readback)
+
+    false_empty_readback = copy.deepcopy(receipt)
+    false_empty_readback["postSend"]["readback"]["sha256"] = carrier_digest
+    false_empty_readback["postSend"]["readback"]["byteLength"] = receipt["carrier"][
+        "byteLength"
+    ]
+    false_empty_readback["postSend"]["readback"]["utf16Length"] = receipt["carrier"][
+        "utf16Length"
+    ]
+    false_empty_readback = reseal(false_empty_readback)
+    with testcase.assertRaisesRegex(SchemaError, "postSend.readback digest"):
+        validate_receipt(false_empty_readback)
+
+
 def load_tests(
     loader: unittest.TestLoader,
     tests: unittest.TestSuite,
@@ -1685,6 +1725,7 @@ def load_tests(
     suite.addTest(unittest.FunctionTestCase(
         validate_carrier_and_pre_post_readbacks_against_one_discord_target_binding,
     ))
+    suite.addTest(unittest.FunctionTestCase(readback))
     return suite
 
 
