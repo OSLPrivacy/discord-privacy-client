@@ -629,6 +629,8 @@ timestamped deltas, not keep this number manually forever.
 
 ## D · Attachments and lifecycle — 30 points (7 earned)
 
+<!-- category_D_release_gate: source-owned admission marker; scripts/admit-category-d-lifecycle.mjs enforces fail-closed row accounting. -->
+
 - 🟨 **D1 · Structure-compatible text/image/video/file carriers** — text shaping works in QA;
   literal line/size/file-type parity and host transformations need proof. `needs: C contract`
   `weight: 5` `earned: 2`
@@ -651,9 +653,13 @@ timestamped deltas, not keep this number manually forever.
   2026-07-26 as unproven.** Pending cover handoff, media measurement, cleanup, and
   no-plaintext-at-rest all remain. Exact `e8fbd3f` locally proves stale legacy upload reclamation,
   R2-before-D1 ordering and retryable abort failure, but it is not deployed and production cleanup
-  remains `unknown`. Exact `05282a4`, `9de23ba`, and `fc91401` strengthen a fail-closed promotion
-  proof and its starvation/bypass controls, but the helper is `implemented-unwired`; it does not
-  bind an active Worker UUID to source or prove a natural production scheduled cycle. None of
+  remains `unknown`. Exact `b944e9a` is a later one-file Hub candidate for legacy deletion recovery:
+  it keeps the shipping lowercase 32-hex attachment object ID and rejects wrong length, uppercase,
+  cross-origin, cross-object and symbolic-link substitutions. This is source/test evidence only,
+  not deployment, migration, or two-identity runtime evidence. Exact `05282a4`, `9de23ba`, and
+  `fc91401` strengthen a fail-closed promotion proof and its starvation/bypass controls, but the
+  helper is `implemented-unwired`; it does not bind an active Worker UUID to source or prove a
+  natural production scheduled cycle. None of
   `e8fbd3f`, `3938a73`, or `1e9e635` is deployment proof.
   `needs: A6,D1` `weight: 5` `earned: 1`
 - 🧪 **D3 · View-once text** — mechanisms exist; two-identity second-open refusal unproved.
