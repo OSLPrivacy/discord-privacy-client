@@ -14,6 +14,32 @@ and two-sided encryption, and full cleanup. Pause for the operator at CAPTCHA,
 2FA, or provider security checks; never automate around them or put credentials
 in the attestation, logs, screenshots, or repository.
 
+## final_owner_gated_signoff_reproduces_package_from_second_session
+
+Final promotion is a two-person/session gate. The release owner may prepare the
+candidate and first VM evidence, but the final approver must use a second
+login/session to download the draft release assets, reproduce the package hash,
+run the verifier against that reproduced candidate directory, and record the
+reproduction in the attestation before approving `hub-vm-qa`.
+
+This test refuses promotion unless all of these are true:
+
+- the second session observes the same `candidateTag` and exactly one Windows
+  installer in the candidate directory;
+- the second session computes the installer SHA-256 and it exactly matches
+  `candidateSha256`;
+- the second session runs `scripts/verify_hub_vm_qa_attestation.py` against the
+  downloaded candidate directory, not a local build tree;
+- the attestation names the second reviewer/session and records
+  `packageReproducedBySecondSession: true`;
+- the release owner and final approver are not the same session.
+
+Any mismatch, missing second-session reviewer, missing downloaded candidate
+directory, missing `latest.json`, changed installer bytes, or locally rebuilt
+package is a refusal. Do not approve the environment and do not attach a
+replacement attestation until the second session reproduces the package from the
+draft release assets.
+
 Use this bounded attestation shape:
 
 ```json
@@ -23,6 +49,8 @@ Use this bounded attestation shape:
   "candidateSha256": "<64 lowercase hex characters>",
   "completedAtUtc": "2026-07-17T23:00:00Z",
   "operator": "<reviewer identity>",
+  "finalApprover": "<second reviewer/session identity>",
+  "packageReproducedBySecondSession": true,
   "captchaHandling": "paused_for_manual_completion",
   "vms": [
     {"name": "OSL-QA-A", "goldenSnapshotId": "<signed snapshot A>", "cleanRestore": true},
