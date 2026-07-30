@@ -1152,6 +1152,85 @@ fn native_discord_inbound_opens_once_and_refuses_foreign_malformed_and_replayed_
     drop(storage);
 }
 
+#[test]
+fn view_once_list_appears_on_b() {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("view-once-list");
+    let relay_url = relay.base_url();
+
+    let alice = Peer::new(&storage, "alice", &relay_url, "b68a5050");
+    let bob = Peer::new(&storage, "bob", &relay_url, "b68b5050");
+    alice.open_native_context_to(&bob.friend_code, &bob.safety_number);
+    bob.open_native_context_to(&alice.friend_code, &alice.safety_number);
+
+    const FIXTURE: &str = "B68 native Discord view-once fixture";
+    alice.activate();
+    let prepared = prepare_native_discord_overlay_text(
+        &alice.core,
+        &alice.security,
+        &alice.broker,
+        FIXTURE.to_owned(),
+        true,
+    )
+    .expect("prepare the view-once protected message");
+    assert!(
+        prepared.prepared.view_once,
+        "the send receipt marks the message view-once"
+    );
+    assert!(
+        prepared.flagtext.is_some(),
+        "the view-once carrier row exists for B's live transcript"
+    );
+    let honest = relay.posted_row(&alice.identity_id, &bob.identity_id);
+
+    bob.activate();
+    let listed = drain_native_discord_overlay_text(&bob.core, &bob.security, &bob.broker)
+        .expect("B drains the view-once listing phase");
+    assert!(
+        listed.messages.is_empty(),
+        "the listing phase must not open view-once plaintext"
+    );
+    assert_eq!(
+        listed.pending_view_once.len(),
+        1,
+        "B receives exactly one pending view-once entry"
+    );
+    assert!(
+        listed.pending_view_once[0].message_id == prepared.prepared.message_id,
+        "the pending entry is correlated to A's prepared message"
+    );
+    assert!(
+        listed.pending_view_once[0].person_to_person_e2ee,
+        "the pending entry preserves peer end-to-end encryption"
+    );
+    assert!(
+        listed.pending_view_once[0].expires_at > now_secs(),
+        "the pending entry is still live"
+    );
+    assert_eq!(
+        listed.fetched, 1,
+        "the listing phase counts the pending view-once row"
+    );
+    assert!(
+        listed.decrypt_display_enabled,
+        "B's list comes from an enabled live conversation"
+    );
+    assert!(
+        relay.still_pending(&honest.id),
+        "listing a view-once row must not consume the reveal row"
+    );
+    if let Some(leaked) = file_containing(&storage.root, FIXTURE.as_bytes()) {
+        panic!("view-once plaintext reached persistent storage at {leaked:?}");
+    }
+
+    drop(alice);
+    drop(bob);
+    drop(storage);
+}
+
 /// A message larger than one carrier chunk is split by the sender into several
 /// independently encrypted rows and must be reassembled by the receiver into
 /// exactly the original text -- once. This is the `v = 4` chunk path, which had
