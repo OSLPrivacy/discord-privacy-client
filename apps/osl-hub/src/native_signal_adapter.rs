@@ -156,6 +156,9 @@ pub fn discover_signal_transcript(
     let Some(composer) = nodes.get(composer_index) else {
         return Err(SignalSelectorError::Missing);
     };
+    if !signal_composer_candidate(composer, window_bounds) {
+        return Err(SignalSelectorError::Invalid);
+    }
     let matches = nodes
         .iter()
         .enumerate()
@@ -266,6 +269,9 @@ pub fn signal_paint_geometry(
     let mut paint_bounds: Option<SignalRect> = None;
     let mut accepted = Vec::new();
     for node_index in authenticated_node_indices {
+        if accepted.contains(node_index) {
+            return Err(SignalSelectorError::Invalid);
+        }
         let Some(candidate) = candidates
             .iter()
             .find(|candidate| candidate.node_index == *node_index)
@@ -468,6 +474,11 @@ mod tests {
             Ok(1)
         );
 
+        assert_eq!(
+            discover_signal_transcript(&renamed, 0, window),
+            Err(SignalSelectorError::Invalid)
+        );
+
         let mut ambiguous = renamed;
         ambiguous.push(list(rect(440, 100, 1128, 700), "second paired list"));
         assert_eq!(
@@ -499,11 +510,31 @@ mod tests {
         assert_eq!(candidates[0].text, "first visible body");
         assert_eq!(candidates[1].node_index, 3);
         assert_eq!(candidates[1].text, "second visible body");
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.node_index != 2),
+            "text without body evidence must not become a row candidate"
+        );
 
         let mut invalid = nodes.clone();
         invalid[1].text = Some("bad\u{0008}body".to_owned());
         assert_eq!(
             extract_signal_row_candidates(&invalid, 0, 4, 128).map(|value| value.len()),
+            Err(SignalSelectorError::Invalid)
+        );
+
+        let mut missing_body_text = nodes.clone();
+        missing_body_text[3].text = None;
+        assert_eq!(
+            extract_signal_row_candidates(&missing_body_text, 0, 4, 128).map(|value| value.len()),
+            Err(SignalSelectorError::Invalid)
+        );
+
+        let mut outside_row = nodes.clone();
+        outside_row[3].bounds = rect(500, 296, 1170, 320);
+        assert_eq!(
+            extract_signal_row_candidates(&outside_row, 0, 4, 128).map(|value| value.len()),
             Err(SignalSelectorError::Invalid)
         );
 
@@ -586,11 +617,20 @@ mod tests {
             .expect("authenticated body rectangles should union");
         assert_eq!(paired.paint_bounds, rect(500, 245, 980, 326));
         assert_eq!(paired.authenticated_node_indices, vec![10, 12]);
+        assert!(
+            paired.paint_bounds.right < candidates[1].body_bounds.right,
+            "unauthenticated body rectangles must not widen paint geometry"
+        );
 
         assert_eq!(
             signal_paint_geometry(row_bounds, &candidates, &[11])
                 .map(|geometry| geometry.paint_bounds),
             Ok(rect(440, 272, 1120, 296))
+        );
+        assert_eq!(
+            signal_paint_geometry(row_bounds, &candidates, &[10, 10])
+                .map(|geometry| geometry.paint_bounds),
+            Err(SignalSelectorError::Invalid)
         );
         assert_eq!(
             signal_paint_geometry(row_bounds, &candidates, &[99])
