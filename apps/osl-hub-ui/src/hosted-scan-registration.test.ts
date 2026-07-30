@@ -62,6 +62,10 @@ describe("hosted-session scan registration", () => {
       ...scan(),
       candidates: [{ ...scan().candidates[0], locator: "runtime:message:7" }],
     })).toThrow("invalid hosted session scan response");
+    expect(() => parseHostedSessionScan({
+      ...scan(),
+      candidates: [{ ...scan().candidates[0], shape: { heightPx: 42 } }],
+    })).toThrow("invalid hosted session scan response");
     expect(() => parseHostedSessionScan({ ...scan(), scopeBindingHash: "not-a-hash" })).toThrow(
       "invalid hosted session scan response",
     );

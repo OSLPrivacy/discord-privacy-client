@@ -155,7 +155,7 @@ const NATIVE_DISCORD_COMPOSER_UNREACHABLE_EVENT = "osl://native-discord-composer
 // warning.
 const NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS = ["zorder-band", "keyboard-focus", "session-ended"] as const;
 type NativeDiscordComposerUnreachableReason = (typeof NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS)[number];
-type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "recovery" | "mullvad" | "sending" | "cover" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy";
+type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "recovery" | "mullvad" | "sending" | "defaults" | "cover" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy";
 type SettingsSection = "account" | "apps" | "scrub" | "cleanup" | "notifications" | "appearance" | "about";
 type SavedAccountMode = "ask" | "use" | "clean";
 type BurnScope = "chat" | "app" | "account";
@@ -845,6 +845,7 @@ function pendingOnboardingRoute(): OnboardingRoute | null {
   const pending = localStorage.getItem(onboardingResumeStorageKey);
   if (pending === "pro"
     || pending === "privacy"
+    || pending === "defaults"
     || pending === "sending"
     || pending === "cover"
     || pending === "passwords"
@@ -859,6 +860,7 @@ function pendingOnboardingRoute(): OnboardingRoute | null {
 function persistCurrentOnboardingRoute(): void {
   if (onboardingRoute === "pro"
     || onboardingRoute === "privacy"
+    || onboardingRoute === "defaults"
     || onboardingRoute === "sending"
     || onboardingRoute === "cover"
     || onboardingRoute === "passwords"
@@ -1395,7 +1397,7 @@ async function reopenActiveNativeCompanion(): Promise<void> {
 function renderOnboarding(): void {
   onboardingRoute = onboardingRouteForBuild(onboardingRoute);
   persistCurrentOnboardingRoute();
-  const setupScreen = ["pro", "privacy", "sending", "cover", "passwords", "burnpass", "browser", "tutorial", "detected", "install", "apps", "mullvad"].includes(onboardingRoute);
+  const setupScreen = ["pro", "privacy", "defaults", "sending", "cover", "passwords", "burnpass", "browser", "tutorial", "detected", "install", "apps", "mullvad"].includes(onboardingRoute);
   const setupNavigation = setupScreen
     ? `<button class="onboarding-back-dock" id="onboarding-back" type="button">Back</button>`
     : "";
@@ -1432,6 +1434,7 @@ function onboardingContent(): string {
   if (onboardingRoute === "apps") return onboardingAppsContent();
   if (onboardingRoute === "browser") return browserImportContent();
   if (onboardingRoute === "mullvad") return mullvadSetupContent();
+  if (onboardingRoute === "defaults") return reviewDefaultsOnboardingContent();
   if (onboardingRoute === "cover") return coverDraftSetupContent();
   if (onboardingRoute === "passwords") return onboardingPasswordRoleContent("stealth");
   if (onboardingRoute === "burnpass") return onboardingPasswordRoleContent("burn");
@@ -2139,7 +2142,8 @@ function previousSetupRoute(current: OnboardingRoute): OnboardingRoute {
   const routes: Partial<Record<OnboardingRoute, OnboardingRoute>> = {
     pro: "recovery",
     privacy: "pro",
-    sending: "pro",
+    defaults: "privacy",
+    sending: "defaults",
     cover: "sending",
     passwords: "cover",
     burnpass: "passwords",
@@ -2283,13 +2287,14 @@ function bindOnboarding(): void {
     render();
   });
   document.querySelector("#finish-onboarding")?.addEventListener("click", () => {
-    if (onboardingRoute !== "sending" && onboardingRoute !== "privacy") return;
+    if (onboardingRoute !== "sending") return;
     if (setup.sendMode === "manual") setup.sendMode = "clipboard";
     if (!canCompleteSetup(setup)) return;
     setup.placementMode = "atomic";
     onboardingRoute = "cover";
     render();
   });
+  document.querySelector("#continue-defaults-review")?.addEventListener("click", () => { onboardingRoute = "sending"; render(); });
   document.querySelector("#continue-cover-draft")?.addEventListener("click", () => { onboardingRoute = "passwords"; render(); });
   bindOnboardingPasswordRole();
   document.querySelectorAll<HTMLButtonElement>("button[data-password-role-next]").forEach((button) => button.addEventListener("click", () => {
@@ -2305,7 +2310,7 @@ function bindOnboarding(): void {
     if (next === "browser") void refreshBrowserImportReadiness();
     if (next === "mullvad") void refreshMullvadSetup();
   }));
-  document.querySelector("#continue-onboarding-privacy")?.addEventListener("click", () => { onboardingRoute = "sending"; render(); });
+  document.querySelector("#continue-onboarding-privacy")?.addEventListener("click", () => { onboardingRoute = "defaults"; render(); });
   document.querySelector<HTMLInputElement>("#window-capture-enabled")?.addEventListener("change", async (event) => {
     windowCaptureEnabled = (event.currentTarget as HTMLInputElement).checked;
     screenshotProtectionEnabled = await setScreenshotProtection(windowCaptureEnabled).catch(() => false);

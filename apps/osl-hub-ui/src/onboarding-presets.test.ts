@@ -52,12 +52,12 @@ describe("onboarding protection presets", () => {
     expect(presetContent).not.toContain("automatic deletion");
   });
 
-  it("renders from the onboarding privacy step and continues to send setup", () => {
+  it("renders from the onboarding privacy step and continues to default review", () => {
     const privacy = functionSource("onboardingPrivacyContent", "protectionPresetOnboardingContent");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
     expect(privacy).toContain("return protectionPresetOnboardingContent();");
     expect(presetContent).toContain('id="continue-onboarding-privacy"');
     expect(binding).toContain('"#continue-onboarding-privacy"');
-    expect(binding).toContain('onboardingRoute = "sending"');
+    expect(binding).toContain('onboardingRoute = "defaults"');
   });
 });

@@ -167,7 +167,7 @@ function boundedText(value: unknown, max: number): value is string {
 }
 
 function boundedCount(value: unknown, max: number): value is number {
-  return Number.isInteger(value) && value >= 0 && value <= max;
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= max;
 }
 
 function opaqueIdentifier(value: unknown, max: number): value is string {

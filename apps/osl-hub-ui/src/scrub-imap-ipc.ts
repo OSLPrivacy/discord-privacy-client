@@ -94,15 +94,22 @@ function parseImapDeleteReceipt(
   raw: unknown,
   prepared: NativePreparedImapDelete,
 ): NativeImapDeleteReceipt {
-  if (!exactRecord(raw, ["accountId", "mailbox", "messageId", "deletedUid"])
+  if (!isNativeImapDeleteReceipt(raw)
     || raw.accountId !== prepared.accountId
     || raw.mailbox !== prepared.mailbox
     || raw.messageId !== prepared.messageId
-    || raw.deletedUid !== prepared.preparedUid
-    || !safeCounter(raw.deletedUid)) {
+    || raw.deletedUid !== prepared.preparedUid) {
     throw new Error("invalid scrub IMAP delete receipt");
   }
-  return raw as NativeImapDeleteReceipt;
+  return raw;
+}
+
+function isNativeImapDeleteReceipt(value: unknown): value is NativeImapDeleteReceipt {
+  return exactRecord(value, ["accountId", "mailbox", "messageId", "deletedUid"])
+    && safeBinding(value.accountId, 128)
+    && safeBinding(value.mailbox, 128)
+    && safeBinding(value.messageId, 256)
+    && safeCounter(value.deletedUid);
 }
 
 function isPreparedImapDelete(value: unknown): value is NativePreparedImapDelete {
