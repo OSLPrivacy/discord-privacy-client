@@ -227,6 +227,54 @@ describe("Telegram operator webhook route", () => {
     expect(body.text).not.toContain("Stripe pending");
   });
 
+  it("keyserver-cf/src/lib/telegram.ts", async () => {
+    const viewerChatId = "8876204092";
+    const viewerFetcher = outboundFetcher();
+    const viewerResponse = await handleTelegramWebhook(
+      commandRequest("/stats", viewerChatId),
+      configuredEnv({ TELEGRAM_VIEWER_CHAT_IDS: viewerChatId }),
+      viewerFetcher,
+    );
+
+    await expectNeutralTelegramAck(viewerResponse);
+    expect(viewerFetcher).toHaveBeenCalledTimes(1);
+    expect(String(vi.mocked(viewerFetcher).mock.calls[0]?.[0])).toContain("api.telegram.org");
+    const viewerBody = JSON.parse(
+      String(vi.mocked(viewerFetcher).mock.calls[0]?.[1]?.body),
+    ) as { chat_id: string; text: string };
+    expect(viewerBody.chat_id).toBe(viewerChatId);
+    expect(viewerBody.text).toContain("OSL live commerce");
+    expect(viewerBody.text).not.toContain("Stripe available");
+    expect(viewerBody.text).not.toContain("Stripe pending");
+
+    const operatorFetcher = outboundFetcher();
+    const operatorResponse = await handleTelegramWebhook(
+      commandRequest("/stats", PRIVATE_CHAT_ONE),
+      configuredEnv({ TELEGRAM_VIEWER_CHAT_IDS: viewerChatId }),
+      operatorFetcher,
+    );
+
+    await expectNeutralTelegramAck(operatorResponse);
+    expect(operatorFetcher).toHaveBeenCalledTimes(2);
+    expect(String(vi.mocked(operatorFetcher).mock.calls[0]?.[0])).toBe(
+      "https://api.stripe.com/v1/balance",
+    );
+    const operatorBody = JSON.parse(
+      String(vi.mocked(operatorFetcher).mock.calls[1]?.[1]?.body),
+    ) as { chat_id: string; text: string };
+    expect(operatorBody.chat_id).toBe(PRIVATE_CHAT_ONE);
+    expect(operatorBody.text).toContain("Stripe available: $12.50");
+
+    const ignoredFetcher = outboundFetcher();
+    const ignoredResponse = await handleTelegramWebhook(
+      commandRequest("/stats", "99112233"),
+      configuredEnv({ TELEGRAM_VIEWER_CHAT_IDS: viewerChatId }),
+      ignoredFetcher,
+    );
+    await expectNeutralTelegramAck(ignoredResponse);
+    expect(ignoredFetcher).not.toHaveBeenCalled();
+  });
+
   it("keeps an operator role when the same chat is also listed as a viewer", async () => {
     const fetcher = outboundFetcher();
     const response = await handleTelegramWebhook(
@@ -509,5 +557,45 @@ describe("Telegram operator webhook route", () => {
     expect(telegramBody.text).toContain("Owner binding is required");
     expect(telegramBody.text).not.toContain("tab-7");
     expect(telegramBody.text).toContain("OSL progress  unavailable");
+  });
+
+  it("telegram'", async () => {
+    const typoFetcher = outboundFetcher();
+    const typoResponse = await handleTelegramWebhook(
+      commandRequest("/osl paymnts private-note"),
+      configuredEnv(),
+      typoFetcher,
+    );
+
+    await expectNeutralTelegramAck(typoResponse);
+    expect(typoFetcher).toHaveBeenCalledTimes(1);
+    const typoBody = JSON.parse(
+      String(vi.mocked(typoFetcher).mock.calls[0]?.[1]?.body),
+    ) as { chat_id: string; text: string };
+    expect(typoBody.chat_id).toBe(ADMIN_CHAT_ID);
+    expect(typoBody.text).toContain("Unknown /osl command.");
+    expect(typoBody.text).toContain("Suggestion: /osl payments");
+    expect(typoBody.text).toContain("OSL progress  unavailable");
+    expect(typoBody.text).not.toContain("paymnts");
+    expect(typoBody.text).not.toContain("private-note");
+
+    const viewerChatId = "8876204092";
+    const controlFetcher = outboundFetcher();
+    const controlResponse = await handleTelegramWebhook(
+      commandRequest("/osl on owner-secret", viewerChatId),
+      configuredEnv({ TELEGRAM_VIEWER_CHAT_IDS: viewerChatId }),
+      controlFetcher,
+    );
+
+    await expectNeutralTelegramAck(controlResponse);
+    expect(controlFetcher).toHaveBeenCalledTimes(1);
+    const controlBody = JSON.parse(
+      String(vi.mocked(controlFetcher).mock.calls[0]?.[1]?.body),
+    ) as { chat_id: string; text: string };
+    expect(controlBody.chat_id).toBe(viewerChatId);
+    expect(controlBody.text).toContain("Cannot change /osl coordination state from this chat.");
+    expect(controlBody.text).toContain("Try /osl status");
+    expect(controlBody.text).toContain("OSL progress  unavailable");
+    expect(controlBody.text).not.toContain("owner-secret");
   });
 });
