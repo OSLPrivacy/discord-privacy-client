@@ -3708,6 +3708,18 @@ fn drain_peer_inbox_text(
         }
         if payload.view_once && two_phase_view_once {
             if reveal_view_once.is_none() {
+                let Ok(already_consumed) = security::peer_message_was_consumed(
+                    security_state,
+                    manual.scope.clone(),
+                    &payload.message_id,
+                    now,
+                ) else {
+                    continue;
+                };
+                if already_consumed {
+                    let _ = client.delete_control_inbox(&identity, &item.id);
+                    continue;
+                }
                 // Per-row discipline, like every other failure in this loop. This
                 // used to be `?`: one unreadable receipt ledger aborted the whole
                 // drain and zeroed an otherwise good batch of unrelated rows.
@@ -3833,6 +3845,20 @@ fn drain_peer_inbox_text(
         if group.template.view_once && two_phase_view_once {
             if reveal_view_once.is_none() {
                 let now = ipc::main_password::now_unix_secs_pub();
+                let Ok(already_consumed) = security::peer_message_was_consumed(
+                    security_state,
+                    manual.scope.clone(),
+                    &logical_message_id,
+                    now,
+                ) else {
+                    continue;
+                };
+                if already_consumed {
+                    for inbox_id in group.inbox_ids.iter().chain(&group.quarantined_inbox_ids) {
+                        let _ = client.delete_control_inbox(&identity, inbox_id);
+                    }
+                    continue;
+                }
                 let mut receipt_payload = group.template.clone();
                 receipt_payload.message_id = logical_message_id.clone();
                 receipt_payload.plaintext.clear();
