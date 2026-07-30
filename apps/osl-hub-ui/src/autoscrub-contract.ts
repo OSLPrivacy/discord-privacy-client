@@ -37,6 +37,15 @@ export interface AutoScrubStatusProjection {
   stopAvailable: boolean;
 }
 
+export interface AutoScrubReviewedRunRequest {
+  serviceId: ServiceId;
+  accountId: string;
+  reviewToken: string;
+  planDigest: string;
+  reviewedItemCount: number;
+  consent: "reviewedBatchOnly";
+}
+
 const serviceIds: readonly ServiceId[] = [
   "discord", "telegram", "instagram", "snapchat", "email", "x", "slack", "linkedin", "teams", "messenger", "signal", "whatsapp",
 ];
@@ -57,6 +66,17 @@ function boundedText(value: unknown, max: number): value is string {
 
 function boundedCount(value: unknown, max: number): value is number {
   return Number.isInteger(value) && value >= 0 && value <= max;
+}
+
+function opaqueIdentifier(value: unknown, max: number): value is string {
+  return typeof value === "string"
+    && value.length > 0
+    && value.length <= max
+    && /^[A-Za-z0-9_-]+$/u.test(value);
+}
+
+function sha256Hex(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/u.test(value);
 }
 
 function parseRun(raw: unknown): AutoScrubRunSummary {
@@ -104,6 +124,20 @@ export function parseAutoScrubFleetStatus(raw: unknown): AutoScrubFleetStatus {
     throw new Error("invalid AutoScrub fleet status");
   }
   return { ...raw, quitGuard, runs } as AutoScrubFleetStatus;
+}
+
+export function parseAutoScrubReviewedRunRequest(raw: unknown): AutoScrubReviewedRunRequest {
+  if (!exactRecord(raw, ["serviceId", "accountId", "reviewToken", "planDigest", "reviewedItemCount", "consent"])
+    || !serviceIds.includes(raw.serviceId as ServiceId)
+    || !opaqueIdentifier(raw.accountId, 64)
+    || !opaqueIdentifier(raw.reviewToken, 96)
+    || !sha256Hex(raw.planDigest)
+    || !boundedCount(raw.reviewedItemCount, 500)
+    || raw.reviewedItemCount < 1
+    || raw.consent !== "reviewedBatchOnly") {
+    throw new Error("invalid AutoScrub reviewed run request");
+  }
+  return raw as unknown as AutoScrubReviewedRunRequest;
 }
 
 function formatEstimate(seconds: number | null): string {
