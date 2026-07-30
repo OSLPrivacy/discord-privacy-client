@@ -155,6 +155,23 @@ export interface ReviewedItemIdentity {
 export interface ReviewedItemIdentityBinding extends ReviewedItemIdentity {
   selected: true;
 }
+export type SupportMatrixEvidenceStatus =
+  | "supported"
+  | "verified_live"
+  | "runtime_proven"
+  | "test_proven_only"
+  | "implemented_unwired"
+  | "designed_only"
+  | "externally_blocked"
+  | "unsupported";
+export type SupportMatrixPresentationTone = "available" | "beta" | "planned" | "blocked" | "unavailable";
+export interface SupportMatrixPresentation {
+  service: string;
+  label: string;
+  detail: string;
+  tone: SupportMatrixPresentationTone;
+  publicClaimAllowed: boolean;
+}
 
 export const LOCAL_PROTECTED_TEXT_MAX_BYTES = 1_000;
 export const HUB_PLAINTEXT_MAX_BYTES = 1_000;
@@ -174,6 +191,70 @@ export function isLocalProtectedPlaintext(value: unknown): value is string {
 
 export function isHubPlaintext(value: unknown): value is string {
   return boundedUtf8Text(value, HUB_PLAINTEXT_MAX_BYTES);
+}
+
+export function supportMatrixPresentation(row: unknown): SupportMatrixPresentation | null {
+  if (!isRecord(row) || typeof row.service !== "string" || !safePlaintext(row.service, 80)) return null;
+  const status = normalizeSupportMatrixStatus(row.status);
+  if (!status) return null;
+  const service = row.service;
+  const claimScope = typeof row.claim_scope === "string" ? row.claim_scope : "";
+
+  if (service === "Outlook" && claimScope === "osl_mail") {
+    return {
+      service: "OSL Mail",
+      label: "Coming later",
+      detail: "Protected Outlook replies are unavailable until mailbox, recipient, draft, and send checks are complete.",
+      tone: "planned",
+      publicClaimAllowed: false,
+    };
+  }
+
+  switch (status) {
+    case "supported":
+    case "verified_live":
+      return {
+        service,
+        label: "Supported",
+        detail: `${service} can be shown as supported for the current release.`,
+        tone: "available",
+        publicClaimAllowed: true,
+      };
+    case "runtime_proven":
+    case "test_proven_only":
+      return {
+        service,
+        label: "Beta",
+        detail: `${service} has testing proof, but not enough current-release evidence for a full support claim.`,
+        tone: "beta",
+        publicClaimAllowed: false,
+      };
+    case "implemented_unwired":
+    case "designed_only":
+      return {
+        service,
+        label: "Coming later",
+        detail: `${service} is planned, but protected use is not available in this release.`,
+        tone: "planned",
+        publicClaimAllowed: false,
+      };
+    case "externally_blocked":
+      return {
+        service,
+        label: "Externally blocked",
+        detail: `${service} cannot be offered until OSL can confirm a reliable conversation view.`,
+        tone: "blocked",
+        publicClaimAllowed: false,
+      };
+    case "unsupported":
+      return {
+        service,
+        label: "Unavailable",
+        detail: `${service} is not available for protected use in this release.`,
+        tone: "unavailable",
+        publicClaimAllowed: false,
+      };
+  }
 }
 
 /**
@@ -1322,6 +1403,20 @@ function isRecord(value: unknown): value is Record<string, unknown> { return typ
 function exact(value: Record<string, unknown>, keys: string[]): boolean { const actual = Object.keys(value); return actual.length === keys.length && actual.every((key) => keys.includes(key)); }
 function safe(value: unknown, max: number): value is string { return typeof value === "string" && value.length > 0 && value.length <= max && !/[<>\u0000-\u001f\u007f]/.test(value); }
 function safePlaintext(value: unknown, max: number): value is string { return typeof value === "string" && value.length > 0 && value.length <= max && !/[\u0000\u007f]/.test(value); }
+function normalizeSupportMatrixStatus(value: unknown): SupportMatrixEvidenceStatus | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.replace(/-/gu, "_");
+  return [
+    "supported",
+    "verified_live",
+    "runtime_proven",
+    "test_proven_only",
+    "implemented_unwired",
+    "designed_only",
+    "externally_blocked",
+    "unsupported",
+  ].includes(normalized) ? normalized as SupportMatrixEvidenceStatus : null;
+}
 function safeId(value: unknown, max: number): value is string { return typeof value === "string" && value.length > 0 && value.length <= max && /^[a-z0-9_-]+$/.test(value); }
 function safeOpaque(value: unknown, max: number): value is string { return typeof value === "string" && value.length > 0 && value.length <= max && /^[A-Za-z0-9_-]+$/.test(value); }
 function boundedCount(value: unknown): boolean { return Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= 10_000_000; }
