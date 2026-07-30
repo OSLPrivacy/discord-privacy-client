@@ -10,6 +10,10 @@
 //! after that handshake leg succeeds. IPC also owns server-count-driven
 //! replenish scheduling; broader receive-side product lifecycle work remains
 //! future integration work.
+//! Current Hub/IPC production code does not yet establish the full prekey
+//! fetch/replenish lifecycle. This module implements state, persistence,
+//! canonical signing, rotation helpers, and the responder-side PQXDH path that
+//! removes a local OPK only after that handshake leg succeeds.
 //!
 //! Holds:
 //! - The current SPK keypair (X25519) + its Ed25519 signature + the
