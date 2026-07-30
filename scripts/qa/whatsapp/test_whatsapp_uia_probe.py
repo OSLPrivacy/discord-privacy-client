@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 import ast
+import contextlib
+import importlib.util
+import io
+import json
 import re
+import sys
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -139,8 +146,110 @@ class WhatsAppUiaProbeStaticTests(unittest.TestCase):
         self.assertIn('"OSL-WhatsApp-Client-1"', self.orchestrator)
         self.assertIn('"OSL-WhatsApp-Client-2"', self.orchestrator)
         self.assertIn('"vm", "run-command", "invoke"', self.orchestrator)
+        self.assertIn('"probe-whatsapp-msaa-metadata.ps1"', self.orchestrator)
+        self.assertIn('"--bench"', self.orchestrator)
         for forbidden in ('"vm", "start"', '"vm", "restart"', '"vm", "deallocate"', "keyvault secret show"):
             self.assertNotIn(forbidden, self.orchestrator)
+
+    def test_orchestrator_runs_uia_then_msaa_metadata_benches_through_one_session_guard(self) -> None:
+        module = load_orchestrator()
+        calls: list[list[str]] = []
+        responses = iter(
+            [
+                {"Status": "ready", "ProfileRead": False, "ProviderStorageRead": False, "SessionId": 2},
+                {"Status": "armed"},
+                {"Terminal": True, "Result": {"Status": "capturedStructure"}},
+                {
+                    "Schema": "whatsapp-msaa-metadata-probe/v1",
+                    "TotalNodes": 17,
+                    "NamesReturned": False,
+                    "ValuesReturned": False,
+                    "ProviderContentReturned": False,
+                    "InputSent": False,
+                    "WindowForegrounded": False,
+                    "WhatsAppPrivateStorageRead": False,
+                },
+            ]
+        )
+
+        def fake_run(command: list[str], **_: object) -> SimpleNamespace:
+            calls.append(command)
+            return SimpleNamespace(stdout="noise\n" + json.dumps(next(responses)) + "\n")
+
+        argv = [
+            "whatsapp-uia-probe-orchestrator.py",
+            "--vm",
+            "OSL-WhatsApp-Client-1",
+            "--invocation",
+            "wa-uia-0001",
+            "--timeout",
+            "10",
+        ]
+        stdout = io.StringIO()
+        with patch.object(sys, "argv", argv), patch.object(module.subprocess, "run", fake_run), contextlib.redirect_stdout(stdout):
+            self.assertEqual(module.main(), 0)
+
+        scripts = [Path(command[command.index("--scripts") + 1][1:]).name for command in calls]
+        self.assertEqual(
+            scripts,
+            [
+                "discover-whatsapp-session.ps1",
+                "arm-whatsapp-uia-probe.ps1",
+                "poll-whatsapp-uia-probe.ps1",
+                "probe-whatsapp-msaa-metadata.ps1",
+            ],
+        )
+        msaa_command = calls[-1]
+        self.assertIn("MaxNodes=2048", msaa_command)
+        self.assertIn("SessionId=2", msaa_command)
+        receipt = json.loads(stdout.getvalue())
+        self.assertEqual(receipt["Uia"]["Result"]["Status"], "capturedStructure")
+        self.assertEqual(receipt["Msaa"]["Schema"], "whatsapp-msaa-metadata-probe/v1")
+
+    def test_orchestrator_refuses_msaa_receipt_that_returns_content_or_exceeds_cap(self) -> None:
+        module = load_orchestrator()
+        responses = iter(
+            [
+                {"Status": "ready", "ProfileRead": False, "ProviderStorageRead": False, "SessionId": 2},
+                {
+                    "Schema": "whatsapp-msaa-metadata-probe/v1",
+                    "TotalNodes": 65,
+                    "NamesReturned": False,
+                    "ValuesReturned": True,
+                    "ProviderContentReturned": False,
+                    "InputSent": False,
+                    "WindowForegrounded": False,
+                    "WhatsAppPrivateStorageRead": False,
+                },
+            ]
+        )
+
+        def fake_run(command: list[str], **_: object) -> SimpleNamespace:
+            return SimpleNamespace(stdout=json.dumps(next(responses)))
+
+        argv = [
+            "whatsapp-uia-probe-orchestrator.py",
+            "--vm",
+            "OSL-WhatsApp-Client-1",
+            "--invocation",
+            "wa-uia-0001",
+            "--bench",
+            "msaa",
+            "--msaa-max-nodes",
+            "64",
+        ]
+        with patch.object(sys, "argv", argv), patch.object(module.subprocess, "run", fake_run), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(module.main(), 4)
+
+
+def load_orchestrator():
+    path = ROOT / "whatsapp-uia-probe-orchestrator.py"
+    spec = importlib.util.spec_from_file_location("whatsapp_uia_probe_orchestrator_under_test", path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 if __name__ == "__main__":
