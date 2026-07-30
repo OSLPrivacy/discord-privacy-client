@@ -158,6 +158,9 @@ pub const RN_CAP_MAX: u32 = 0xffff;
 /// change keys, but it cannot silently lower this build's protocol capability
 /// floor.
 pub const CLIENT_RN_CAPABILITY_FLOOR: u32 = RN_CAP_WIRE_RN;
+/// Compatibility name for callers/tests that refer to the signed capability
+/// bitmap directly. It must stay tied to the floor.
+pub const CLIENT_RN_CAPABILITIES: u32 = CLIENT_RN_CAPABILITY_FLOOR;
 
 /// REG_MSG bytes for a record that advertises a capability bitmap.
 ///
@@ -444,6 +447,33 @@ pub fn rot_msg(
         new_ik_ratchet_initial_pub_b64.unwrap_or("")
     )
     .into_bytes()
+}
+
+/// ROT_MSG bytes for a rotation that advertises a capability bitmap.
+///
+/// Mirrors `buildRotMsg` called with `rn_capabilities` on the Worker: a
+/// rotation re-states the whole registered record, so the outgoing key must
+/// authorize the advertised bitmap as well as the replacement keys.
+pub fn rot_msg_with_capabilities(
+    user_id: &str,
+    prev_ik_ed25519_pub_b64: &str,
+    new_ik_x25519_pub_b64: &str,
+    new_ik_ed25519_pub_b64: &str,
+    new_ik_mlkem768_pub_b64: &str,
+    new_ik_ratchet_initial_pub_b64: Option<&str>,
+    rn_capabilities: u32,
+) -> Vec<u8> {
+    let mut bytes = rot_msg(
+        user_id,
+        prev_ik_ed25519_pub_b64,
+        new_ik_x25519_pub_b64,
+        new_ik_ed25519_pub_b64,
+        new_ik_mlkem768_pub_b64,
+        new_ik_ratchet_initial_pub_b64,
+    );
+    bytes.push(b'\n');
+    bytes.extend_from_slice(rn_capabilities.to_string().as_bytes());
+    bytes
 }
 
 #[derive(Deserialize)]
@@ -851,13 +881,14 @@ impl KeyServerClient {
         );
         let reg_sig = crypto::ed25519::sign(&new_identity.ed25519_secret, &reg);
         // old key authorises the change over ROT_MSG.
-        let rot = rot_msg(
+        let rot = rot_msg_with_capabilities(
             &user_id,
             &prev_ed,
             &new_x,
             &new_ed,
             &new_mlkem,
             new_ratchet.as_deref(),
+            rn_capabilities,
         );
         let prev_sig = crypto::ed25519::sign(&old_identity.ed25519_secret, &rot);
 
@@ -1059,6 +1090,23 @@ impl KeyServerClient {
         bundle
             .verify_full(&prekey, &identity.ed25519_public, last_known_revision)
             .map_err(|_| Error::PeerBundleProofInvalid)
+    }
+
+    /// Fetch this identity's canonical public-key bundle and prekey bundle as
+    /// one usable unit.
+    ///
+    /// The caller receives a [`crate::identity_bundle::MergedIdentityBundle`]
+    /// only after the `/v1/pubkeys` response has canonical scheme-1 authority,
+    /// every fetched identity key matches `identity`, the identity bundle
+    /// signature verifies, and the `/v1/prekey-bundle` response matches that
+    /// same verified identity bundle. A mismatch on either endpoint is refused
+    /// as a bundle-proof failure rather than returning partially trusted data.
+    pub fn fetch_own_identity_bundle_since(
+        &self,
+        identity: &Identity,
+        last_known_revision: Option<u64>,
+    ) -> Result<crate::identity_bundle::MergedIdentityBundle> {
+        self.fetch_identity_bundle_since(identity, &identity.user_id, last_known_revision)
     }
 
     /// Authenticated wrapped-key fetch. Only the intended recipient can
@@ -2132,6 +2180,332 @@ mod tests {
             identity_revision: None,
             ik_root_ed25519_pub: None,
             identity_bundle_proof_sig: None,
+        }
+    }
+
+    mod pw4_tests {
+        use super::*;
+
+        fn http_json_response(status: &str, body: impl AsRef<[u8]>) -> Vec<u8> {
+            let body = body.as_ref();
+            let mut response = Vec::new();
+            response.extend_from_slice(format!("HTTP/1.1 {status}\r\n").as_bytes());
+            response.extend_from_slice(format!("Content-Length: {}\r\n", body.len()).as_bytes());
+            response.extend_from_slice(b"Content-Type: application/json\r\n\r\n");
+            response.extend_from_slice(body);
+            response
+        }
+
+        fn read_request(stream: &mut std::net::TcpStream) -> Vec<u8> {
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut buf = [0u8; 4096];
+            let mut acc = Vec::new();
+            let header_end = loop {
+                let n = stream.read(&mut buf).unwrap();
+                assert!(n > 0, "request ended before headers");
+                acc.extend_from_slice(&buf[..n]);
+                if let Some(pos) = acc.windows(4).position(|window| window == b"\r\n\r\n") {
+                    break pos;
+                }
+            };
+            let headers = std::str::from_utf8(&acc[..header_end]).unwrap();
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim())
+                })
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            while acc[header_end + 4..].len() < content_length {
+                let n = stream.read(&mut buf).unwrap();
+                assert!(n > 0, "request body ended early");
+                acc.extend_from_slice(&buf[..n]);
+            }
+            acc
+        }
+
+        fn one_shot_server(response: Vec<u8>) -> (u16, mpsc::Receiver<Vec<u8>>) {
+            multi_response_server(vec![response])
+        }
+
+        fn multi_response_server(responses: Vec<Vec<u8>>) -> (u16, mpsc::Receiver<Vec<u8>>) {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let (tx, rx) = mpsc::channel();
+            thread::spawn(move || {
+                for response in responses {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let request = read_request(&mut stream);
+                    tx.send(request).unwrap();
+                    stream.write_all(&response).unwrap();
+                }
+            });
+            (port, rx)
+        }
+
+        fn request_target(request: &[u8]) -> &str {
+            std::str::from_utf8(request)
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap()
+                .split_whitespace()
+                .nth(1)
+                .unwrap()
+        }
+
+        fn request_json_body(request: &[u8]) -> serde_json::Value {
+            let text = std::str::from_utf8(request).unwrap();
+            serde_json::from_str(text.split("\r\n\r\n").nth(1).unwrap()).unwrap()
+        }
+
+        fn pubkeys_response_json(response: &PubkeysResponse) -> Vec<u8> {
+            serde_json::to_vec(&serde_json::json!({
+                "user_id": &response.user_id,
+                "ik_x25519_pub": &response.ik_x25519_pub,
+                "ik_ed25519_pub": &response.ik_ed25519_pub,
+                "ik_mlkem768_pub": &response.ik_mlkem768_pub,
+                "registered_at": &response.registered_at,
+                "last_rotated_at": &response.last_rotated_at,
+                "ik_ratchet_initial_pub": &response.ik_ratchet_initial_pub,
+                "rn_capabilities": response.rn_capabilities,
+                "registration_sig": &response.registration_sig,
+                "identity_scheme": response.identity_scheme,
+                "identity_bundle_version": response.identity_bundle_version,
+                "identity_revision": response.identity_revision,
+                "ik_root_ed25519_pub": &response.ik_root_ed25519_pub,
+                "identity_bundle_proof_sig": &response.identity_bundle_proof_sig,
+            }))
+            .unwrap()
+        }
+
+        fn prekey_bundle_json(identity: &Identity, ed25519_pub_b64: Option<String>) -> Vec<u8> {
+            let spk_pub = [0x33u8; 32];
+            let spk_sig = crypto::ed25519::sign(&identity.ed25519_secret, &spk_pub);
+            serde_json::to_vec(&serde_json::json!({
+                "user_id": &identity.user_id,
+                "ik_x25519_pub": STANDARD.encode(identity.x25519_public.as_bytes()),
+                "ik_ed25519_pub": ed25519_pub_b64
+                    .unwrap_or_else(|| STANDARD.encode(identity.ed25519_public.as_bytes())),
+                "ik_mlkem768_pub": STANDARD.encode(identity.mlkem_public_bytes),
+                "ik_ratchet_initial_pub": identity.ratchet_initial_pub
+                    .as_ref()
+                    .map(|key| STANDARD.encode(key.as_bytes())),
+                "spk_pub": STANDARD.encode(spk_pub),
+                "spk_signature": STANDARD.encode(spk_sig.as_bytes()),
+                "spk_rotated_at": "2026-07-29T00:00:00.000Z",
+                "opk": {
+                    "id": 7,
+                    "pub_b64": STANDARD.encode([0x44u8; 32]),
+                },
+                "remaining_opk_count": 41,
+            }))
+            .unwrap()
+        }
+
+        #[test]
+        fn register_request_carries_nonzero_rn_capabilities() {
+            let identity = generate_identity("alice".to_owned());
+            let request = KeyServerClient::build_register_request(&identity);
+            let capabilities = request
+                .rn_capabilities
+                .expect("new client registrations must advertise capabilities");
+
+            assert_ne!(capabilities, 0);
+            assert_eq!(capabilities, CLIENT_RN_CAPABILITIES);
+            assert!(capabilities & RN_CAP_WIRE_RN != 0);
+            let json = serde_json::to_value(&request).unwrap();
+            assert_eq!(
+                json.get("rn_capabilities")
+                    .and_then(serde_json::Value::as_u64),
+                Some(u64::from(capabilities))
+            );
+
+            let signature_bytes = STANDARD.decode(&request.registration_sig).unwrap();
+            let signature = crypto::ed25519::Signature::from_bytes(
+                signature_bytes.as_slice().try_into().unwrap(),
+            );
+            let extended = reg_msg_with_capabilities(
+                &request.user_id,
+                &request.ik_x25519_pub,
+                &request.ik_ed25519_pub,
+                &request.ik_mlkem768_pub,
+                request.ik_ratchet_initial_pub.as_deref(),
+                capabilities,
+            );
+            assert!(
+                crypto::ed25519::verify(&identity.ed25519_public, &extended, &signature).unwrap(),
+                "registration_sig must cover the advertised capability bitmap"
+            );
+            let legacy = reg_msg(
+                &request.user_id,
+                &request.ik_x25519_pub,
+                &request.ik_ed25519_pub,
+                &request.ik_mlkem768_pub,
+                request.ik_ratchet_initial_pub.as_deref(),
+            );
+            assert!(
+                !crypto::ed25519::verify(&identity.ed25519_public, &legacy, &signature).unwrap(),
+                "stripping rn_capabilities must invalidate the registration signature"
+            );
+        }
+
+        #[test]
+        fn client_rotation_never_lowers_rn_capabilities() {
+            let old_identity = generate_identity("alice".to_owned());
+            let new_identity = generate_identity("alice".to_owned());
+            let request = KeyServerClient::build_rotation_request(&old_identity, &new_identity);
+            let rotation = request.rotation.as_ref().unwrap();
+            let capabilities = request
+                .rn_capabilities
+                .expect("rotation must re-advertise this client's capability floor");
+
+            assert_eq!(capabilities, CLIENT_RN_CAPABILITIES);
+            assert_ne!(capabilities, 0);
+
+            let registration_signature_bytes = STANDARD.decode(&request.registration_sig).unwrap();
+            let registration_signature = crypto::ed25519::Signature::from_bytes(
+                registration_signature_bytes.as_slice().try_into().unwrap(),
+            );
+            let registration_message = reg_msg_with_capabilities(
+                &request.user_id,
+                &request.ik_x25519_pub,
+                &request.ik_ed25519_pub,
+                &request.ik_mlkem768_pub,
+                request.ik_ratchet_initial_pub.as_deref(),
+                capabilities,
+            );
+            assert!(crypto::ed25519::verify(
+                &new_identity.ed25519_public,
+                &registration_message,
+                &registration_signature,
+            )
+            .unwrap());
+
+            let rotation_signature_bytes = STANDARD.decode(&rotation.prev_sig).unwrap();
+            let rotation_signature = crypto::ed25519::Signature::from_bytes(
+                rotation_signature_bytes.as_slice().try_into().unwrap(),
+            );
+            let rotation_message = rot_msg_with_capabilities(
+                &request.user_id,
+                &rotation.prev_ik_ed25519_pub,
+                &request.ik_x25519_pub,
+                &request.ik_ed25519_pub,
+                &request.ik_mlkem768_pub,
+                request.ik_ratchet_initial_pub.as_deref(),
+                capabilities,
+            );
+            assert!(crypto::ed25519::verify(
+                &old_identity.ed25519_public,
+                &rotation_message,
+                &rotation_signature,
+            )
+            .unwrap());
+
+            let legacy_rotation = rot_msg(
+                &request.user_id,
+                &rotation.prev_ik_ed25519_pub,
+                &request.ik_x25519_pub,
+                &request.ik_ed25519_pub,
+                &request.ik_mlkem768_pub,
+                request.ik_ratchet_initial_pub.as_deref(),
+            );
+            assert!(
+                !crypto::ed25519::verify(
+                    &old_identity.ed25519_public,
+                    &legacy_rotation,
+                    &rotation_signature,
+                )
+                .unwrap(),
+                "a rolled-back/stripped rotation must not verify as a lower-capability record"
+            );
+        }
+
+        #[test]
+        fn request_ownership_challenge_round_trips_through_mock_server() {
+            let nonce = [0x5au8; PROOF_CHALLENGE_NONCE_BYTES];
+            let body = serde_json::to_vec(&serde_json::json!({
+                "nonce_b64": STANDARD.encode(nonce),
+                "service_account_id": "service-account-1",
+                "owner_user_id": "owner-user-1",
+                "issued_at_unix_seconds": 1_800_000_000u64,
+                "expires_at_unix_seconds": 1_800_000_300u64,
+            }))
+            .unwrap();
+            let (port, rx) = one_shot_server(http_json_response("201 Created", body));
+            let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+
+            let challenge = client
+                .request_ownership_challenge("service-account-1", "owner-user-1")
+                .unwrap();
+
+            assert_eq!(challenge.nonce(), &nonce);
+            assert!(challenge.binds("service-account-1", "owner-user-1"));
+            assert_eq!(challenge.issued_at_unix_seconds(), 1_800_000_000);
+            assert_eq!(challenge.expires_at_unix_seconds(), 1_800_000_300);
+            assert!(!challenge.is_spent());
+            let request = rx.recv().unwrap();
+            assert_eq!(request_target(&request), "/v1/account-ownership/challenge");
+            let sent = request_json_body(&request);
+            assert_eq!(sent["service_account_id"], "service-account-1");
+            assert_eq!(sent["owner_user_id"], "owner-user-1");
+            assert_eq!(sent.as_object().unwrap().len(), 2);
+            assert!(!String::from_utf8_lossy(&request)
+                .to_ascii_lowercase()
+                .contains("authorization:"));
+        }
+
+        #[test]
+        fn fetch_identity_bundle_atomically_fetches_pubkeys_and_prekey_bundle() {
+            let identity = generate_identity("self-bundle".to_owned());
+            let pubkeys = crate::identity_bundle::scheme1_pubkeys_response_for_test(
+                &identity,
+                3,
+                RN_CAP_WIRE_RN,
+            );
+            let (port, rx) = multi_response_server(vec![
+                http_json_response("200 OK", pubkeys_response_json(&pubkeys)),
+                http_json_response("200 OK", prekey_bundle_json(&identity, None)),
+            ]);
+            let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+
+            let merged = client
+                .fetch_own_identity_bundle_since(&identity, None)
+                .unwrap();
+
+            assert_eq!(merged.identity.revision, 3);
+            assert_eq!(merged.identity.capability_bundle, RN_CAP_WIRE_RN);
+            assert_eq!(merged.prekey.spk_x25519_pub, [0x33u8; 32]);
+            assert_eq!(merged.prekey.opk, Some((7, [0x44u8; 32])));
+            assert_eq!(merged.prekey.remaining_opk_count, 41);
+            let pubkeys_request = rx.recv().unwrap();
+            let prekey_request = rx.recv().unwrap();
+            assert_eq!(request_target(&pubkeys_request), "/v1/pubkeys/self-bundle");
+            assert!(
+                request_target(&prekey_request).starts_with("/v1/prekey-bundle/self-bundle?"),
+                "prekey bundle fetch must happen through the authenticated consuming endpoint"
+            );
+
+            let other = generate_identity("self-bundle".to_owned());
+            let (port, _rx) = multi_response_server(vec![
+                http_json_response("200 OK", pubkeys_response_json(&pubkeys)),
+                http_json_response(
+                    "200 OK",
+                    prekey_bundle_json(
+                        &identity,
+                        Some(STANDARD.encode(other.ed25519_public.as_bytes())),
+                    ),
+                ),
+            ]);
+            let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+            assert!(matches!(
+                client.fetch_own_identity_bundle_since(&identity, None),
+                Err(Error::PeerBundleProofInvalid)
+            ));
         }
     }
 

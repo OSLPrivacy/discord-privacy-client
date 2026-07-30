@@ -14,6 +14,27 @@ and the exclusive files for the scrub merge units. It fails if a merge operator 
 determine which trees to merge, which tree is the base, or which files are owned by
 this lane.
 
+## Acceptance Fixture
+
+Behavioral test:
+`scrub_tree_merge_plan_records_source_shas_base_tree_and_exclusive_files`.
+
+The plan is acceptable only when these merge inputs are recoverable as operator
+instructions, not inferred from current branch heads:
+
+- Source SHAs: `16778b297d3ec8d0358b7d3812a95f4f8443e462`,
+  `61933d3a4b50e410e3be1d5e05560d955ee72b4c`,
+  `403cfa2e090bf76ae4cb2950f3febcc72204fc59`.
+- Base tree: `e85e4bd48bfaab810845e307614ab8af238a33d3`.
+- Exclusive scrub files: `apps/osl-hub/src/scrub_imap.rs`,
+  `apps/osl-hub/src/cloud_autoscrub_envelope.rs`,
+  `apps/osl-hub/src/cloud_autoscrub_consent.rs`,
+  `docs/plans/scrub-tree-merge-plan.md`.
+
+The inversion that must fail is a plan that omits any one of those inputs, swaps
+one pinned source SHA for a moving branch head, or leaves the scrub lane's
+exclusive-file boundary ambiguous.
+
 ## Source SHAs
 
 | Line | Pinned SHA | Notes |
