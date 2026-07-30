@@ -347,7 +347,7 @@ describe("OSL Mail Worker", () => {
     expect(rawRead).toBe(false);
   });
 
-  it("immediately envelope-encrypts bounded external MIME and retains no plaintext fields", async () => {
+  it("m4 envelope-encrypts external inbound mail without retaining plaintext", async () => {
     const bob = await createIdentity("bob-id", "bob");
     await signedPost("/v1/mail/address", "PROVISION", bob, { username: "bob", rotate: false });
     const mime = "From: outside@example.com\r\nSubject: private subject\r\nMessage-ID: <thread@example.com>\r\n\r\nsecret external body";
@@ -378,6 +378,8 @@ describe("OSL Mail Worker", () => {
     expect((listing.messages[0]?.expires_at ?? 0) - (listing.messages[0]?.received_at ?? 0)).toBe(72 * 60 * 60 * 1000);
     const fetched = await signedPost("/v1/mail/fetch", "FETCH", bob, { message_id: listing.messages[0]!.message_id });
     const fetchedText = await fetched.text();
+    expect(fetchedText).not.toContain("private subject");
+    expect(fetchedText).not.toContain("outside@example.com");
     expect(fetchedText).not.toContain("secret external body");
     const fetchedBody = JSON.parse(fetchedText) as {
       ciphertext_b64: string;
