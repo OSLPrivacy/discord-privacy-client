@@ -50,6 +50,45 @@ const validWrappedKey = (overrides = {}) => ({
   ...overrides,
 });
 
+async function assertWrappedKeyRoundtripAcrossSessions(payload) {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'osl-keyserver-roundtrip-'));
+  const dbFile = path.join(tempDir, 'keyserver.sqlite');
+
+  let firstSession;
+  let secondSession;
+  try {
+    firstSession = await buildServer({ logger: false, dbFile });
+    const upload = await inject(firstSession, {
+      method: 'POST',
+      url: '/v1/wrapped-keys',
+      payload,
+    });
+    assert.equal(upload.statusCode, 201);
+    assert.equal(upload.body.content_id, payload.content_id);
+    await firstSession.close();
+    firstSession = null;
+
+    secondSession = await buildServer({ logger: false, dbFile });
+    const fetched = await inject(secondSession, {
+      method: 'GET',
+      url: `/v1/wrapped-keys/${payload.content_id}`,
+    });
+    assert.equal(fetched.statusCode, 200);
+    assert.equal(fetched.body.content_id, payload.content_id);
+    assert.equal(fetched.body.sender_id, payload.sender_id);
+    assert.equal(fetched.body.recipient_id, payload.recipient_id);
+    assert.equal(fetched.body.session_version, payload.session_version);
+    assert.equal(fetched.body.share_index, payload.share_index);
+    assert.equal(fetched.body.wrapped_share_blob, payload.wrapped_share_blob);
+    assert.equal(fetched.body.blob_version, payload.blob_version);
+    assert.equal(fetched.body.single_use, false);
+  } finally {
+    if (firstSession) await firstSession.close();
+    if (secondSession) await secondSession.close();
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
 // ---- /v1/healthz ----
 
 test('healthz returns ok', async () => {
@@ -374,9 +413,7 @@ test('end-to-end: register, fetch pubkeys, upload, fetch wrapped key', async () 
 });
 
 test('wrapped-key roundtrip e2e test: post then fetch across two sessions', async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'osl-keyserver-roundtrip-'));
-  const dbFile = path.join(tempDir, 'keyserver.sqlite');
-  const payload = validWrappedKey({
+  await assertWrappedKeyRoundtripAcrossSessions(validWrappedKey({
     content_id: 'persisted-msg-1',
     sender_id: 'alice',
     recipient_id: 'bob',
@@ -384,43 +421,19 @@ test('wrapped-key roundtrip e2e test: post then fetch across two sessions', asyn
     share_index: 2,
     wrapped_share_blob: b64('wrapped-share-across-sessions'),
     blob_version: 3,
-  });
+  }));
+});
 
-  let firstSession;
-  let secondSession;
-  try {
-    firstSession = await buildServer({ logger: false, dbFile });
-    const upload = await inject(firstSession, {
-      method: 'POST',
-      url: '/v1/wrapped-keys',
-      payload,
-    });
-    assert.equal(upload.statusCode, 201);
-    assert.equal(upload.body.content_id, 'persisted-msg-1');
-    await firstSession.close();
-    firstSession = null;
-
-    secondSession = await buildServer({ logger: false, dbFile });
-    const fetched = await inject(secondSession, {
-      method: 'GET',
-      url: '/v1/wrapped-keys/persisted-msg-1',
-    });
-    assert.equal(fetched.statusCode, 200);
-    assert.equal(fetched.body.content_id, payload.content_id);
-    assert.equal(fetched.body.sender_id, payload.sender_id);
-    assert.equal(fetched.body.recipient_id, payload.recipient_id);
-    assert.equal(fetched.body.session_version, payload.session_version);
-    assert.equal(fetched.body.share_index, payload.share_index);
-    assert.equal(fetched.body.wrapped_share_blob, payload.wrapped_share_blob);
-    assert.equal(fetched.body.blob_version, payload.blob_version);
-    assert.equal(fetched.body.single_use, false);
-    await secondSession.close();
-    secondSession = null;
-  } finally {
-    if (firstSession) await firstSession.close();
-    if (secondSession) await secondSession.close();
-    await rm(tempDir, { recursive: true, force: true });
-  }
+test('key"', async () => {
+  await assertWrappedKeyRoundtripAcrossSessions(validWrappedKey({
+    content_id: 'exact-attributor-key-name',
+    sender_id: 'sender-exact-name',
+    recipient_id: 'recipient-exact-name',
+    session_version: 11,
+    share_index: 4,
+    wrapped_share_blob: b64('exact-name-wrapped-share'),
+    blob_version: 5,
+  }));
 });
 
 // ============================================================
