@@ -13,6 +13,8 @@ DEFAULT_TIMEOUT=300
 EXPECTED_SELFTEST_SURFACE_CLASS="Tauri Window"
 EXPECTED_SELFTEST_STEP_SHAPE="S0:stage,S1:launch,S2:ping,S3:shot,S4:click,S5:type,S6:key,S7:wait,S8:kill"
 EXPECTED_SELFTEST_STEP_COUNT=9
+EXPECTED_F1_WALKTHROUGH_STEP_SHAPE="P:picker,G:grant-ipc,I:import,V:revoke-ipc,S:restart,D:reread,R:receipt"
+EXPECTED_F1_WALKTHROUGH_STEP_COUNT=7
 BIN_NAME="osl-privacy-hub"
 SELFTEST_STEPS="$SCRIPT_DIR/steps/selftest.json"
 PNG_FACTS="$SCRIPT_DIR/png-facts.py"
@@ -305,6 +307,12 @@ step_count() {
   local file="$1"
   [ -f "$file" ] || { printf '0\n'; return 0; }
   jq -r '[.steps[]?] | length' "$file" 2>/dev/null || printf '0\n'
+}
+
+step_shape() {
+  local file="$1"
+  [ -f "$file" ] || { printf '\n'; return 0; }
+  jq -r '[.steps[]? | (.id + ":" + .verb)] | join(",")' "$file" 2>/dev/null || printf '\n'
 }
 
 step_status() {
@@ -700,30 +708,62 @@ grade_selftest() {
 is_sha256() { [[ "${1:-}" =~ ^[0-9a-f]{64}$ ]]; }
 
 grade_f1_live_windows_walkthrough_import() {
-  local file="$1" overall picker grant import receipt selected rows bytes receipt_rows
-  local grant_bound attended receipt_sha no_secrets
+  local file="$1" overall shape steps picker grant import revoke restart reread receipt selected
+  local rows bytes receipt_rows reread_rows grant_bound attended receipt_sha no_secrets
+  local revoke_bound revoked revoked_source restarted persisted_after_restart
+  local vm_name request_sha exe_sha agent_sha win32_sha receipt_request_sha receipt_exe_sha
   [ -f "$file" ] || { echo "F1 INVALID: verdict file is missing" >&2; return 9; }
   overall="$(jq -r '.overall // empty' "$file" 2>/dev/null || true)"
+  shape="$(step_shape "$file")"
+  steps="$(step_count "$file")"
   picker="$(step_status "$file" picker)"
   grant="$(step_status "$file" grant-ipc)"
   import="$(step_status "$file" import)"
+  revoke="$(step_status "$file" revoke-ipc)"
+  restart="$(step_status "$file" restart)"
+  reread="$(step_status "$file" reread)"
   receipt="$(step_status "$file" receipt)"
   selected="$(fact_from_step "$file" picker selectedSource)"
   grant_bound="$(fact_from_step "$file" grant-ipc grantBoundToRun)"
   attended="$(fact_from_step "$file" grant-ipc attendedOperator)"
   rows="$(metric_from_step "$file" import importedRows)"
   bytes="$(metric_from_step "$file" import importedBytes)"
+  revoke_bound="$(fact_from_step "$file" revoke-ipc revokeBoundToRun)"
+  revoked="$(fact_from_step "$file" revoke-ipc grantRevoked)"
+  revoked_source="$(fact_from_step "$file" revoke-ipc revokedSource)"
+  restarted="$(fact_from_step "$file" restart restartedProcess)"
+  reread_rows="$(metric_from_step "$file" reread importedRows)"
+  persisted_after_restart="$(fact_from_step "$file" reread persistedAfterRestart)"
   receipt_rows="$(metric_from_step "$file" receipt importedRows)"
   receipt_sha="$(fact_from_step "$file" receipt receiptSha256)"
   no_secrets="$(fact_from_step "$file" receipt containsNoSecrets)"
+  receipt_request_sha="$(fact_from_step "$file" receipt requestSha256)"
+  receipt_exe_sha="$(fact_from_step "$file" receipt exeSha256)"
+  vm_name="$(jq -r '.vmName // empty' "$file" 2>/dev/null || true)"
+  request_sha="$(jq -r '.requestSha256 // empty' "$file" 2>/dev/null || true)"
+  exe_sha="$(jq -r '.requestExeSha256 // .exeSha256 // empty' "$file" 2>/dev/null || true)"
+  agent_sha="$(jq -r '.agentSha // empty' "$file" 2>/dev/null || true)"
+  win32_sha="$(jq -r '.win32Sha // empty' "$file" 2>/dev/null || true)"
 
   if [ "$overall" != "pass" ]; then
     echo "F1 FAIL: overall=$overall" >&2
     return 1
   fi
+  if [ "$steps" -ne "$EXPECTED_F1_WALKTHROUGH_STEP_COUNT" ] \
+     || [ "$shape" != "$EXPECTED_F1_WALKTHROUGH_STEP_SHAPE" ]; then
+    echo "F1 INVALID: expected exact walkthrough '$EXPECTED_F1_WALKTHROUGH_STEP_SHAPE', got '$shape'" >&2
+    return 9
+  fi
+  if [ -z "$vm_name" ] || ! is_sha256 "$request_sha" || ! is_sha256 "$exe_sha" \
+     || ! is_sha256 "$agent_sha" || ! is_sha256 "$win32_sha" ]; then
+    echo "F1 INVALID: verdict is not bound to a live Windows VM request, executable and agent pair" >&2
+    return 9
+  fi
   if [ "$picker" != "pass" ] || [ "$grant" != "pass" ] \
-     || [ "$import" != "pass" ] || [ "$receipt" != "pass" ]; then
-    echo "F1 FAIL: expected picker/grant/import/receipt pass statuses, got $picker/$grant/$import/$receipt" >&2
+     || [ "$import" != "pass" ] || [ "$revoke" != "pass" ] \
+     || [ "$restart" != "pass" ] || [ "$reread" != "pass" ] \
+     || [ "$receipt" != "pass" ]; then
+    echo "F1 FAIL: expected picker/grant/import/revoke/restart/reread/receipt pass statuses, got $picker/$grant/$import/$revoke/$restart/$reread/$receipt" >&2
     return 1
   fi
   case "$selected" in chrome|edge|firefox|brave|opera|duckduckgo) ;; *)
@@ -739,7 +779,19 @@ grade_f1_live_windows_walkthrough_import() {
     echo "F1 FAIL: import/receipt is empty or row counts differ" >&2
     return 1
   fi
-  if ! is_sha256 "$receipt_sha" || [ "$no_secrets" != "true" ]; then
+  if [ "$revoke_bound" != "true" ] || [ "$revoked" != "true" ] \
+     || [ "$revoked_source" != "$selected" ]; then
+    echo "F1 FAIL: revoke IPC did not revoke the selected source under the current run" >&2
+    return 1
+  fi
+  if [ "$restarted" != "true" ] || [ "$persisted_after_restart" != "true" ] \
+     || [ "$reread_rows" -ne "$rows" ]; then
+    echo "F1 FAIL: restart persisted reread did not preserve the imported rows" >&2
+    return 1
+  fi
+  if ! is_sha256 "$receipt_sha" || [ "$no_secrets" != "true" ] \
+     || [ "$receipt_request_sha" != "$request_sha" ] \
+     || [ "$receipt_exe_sha" != "$exe_sha" ]; then
     echo "F1 FAIL: receipt is missing digest binding or secret redaction" >&2
     return 1
   fi
@@ -787,7 +839,8 @@ vmqa_named_test_tmpdir() {
 }
 
 f1_live_windows_walkthrough_imports_nonempty_receipt() {
-  local tmp good bad_empty bad_grant bad_receipt bad_source bad_secret
+  local tmp good bad_empty bad_grant bad_receipt bad_source bad_secret bad_revoke
+  local bad_restart bad_reread bad_live_binding request_sha exe_sha agent_sha win32_sha receipt_sha
   tmp="$(vmqa_named_test_tmpdir)"
   good="$tmp/f1-good.json"
   bad_empty="$tmp/f1-empty.json"
@@ -795,20 +848,46 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
   bad_receipt="$tmp/f1-bad-receipt.json"
   bad_source="$tmp/f1-bad-source.json"
   bad_secret="$tmp/f1-secret-receipt.json"
-  jq -n --arg sha "$(printf receipt | sha256sum | awk '{print $1}')" '{
+  bad_revoke="$tmp/f1-bad-revoke.json"
+  bad_restart="$tmp/f1-bad-restart.json"
+  bad_reread="$tmp/f1-bad-reread.json"
+  bad_live_binding="$tmp/f1-bad-live-binding.json"
+  request_sha="$(printf f1-request | sha256sum | awk '{print $1}')"
+  exe_sha="$(printf f1-exe | sha256sum | awk '{print $1}')"
+  agent_sha="$(printf f1-agent | sha256sum | awk '{print $1}')"
+  win32_sha="$(printf f1-win32 | sha256sum | awk '{print $1}')"
+  receipt_sha="$(printf receipt | sha256sum | awk '{print $1}')"
+  jq -n --arg request "$request_sha" --arg exe "$exe_sha" \
+    --arg agent "$agent_sha" --arg win32 "$win32_sha" --arg receipt "$receipt_sha" '{
+    schemaVersion:2,
+    runId:"f1-fixture",
+    vmName:"OSL-Azure-Client-1",
+    requestSha256:$request,
+    requestExeSha256:$exe,
+    agentSha:$agent,
+    win32Sha:$win32,
     overall:"pass",
     steps:[
       {id:"P",verb:"picker",status:"pass",facts:{selectedSource:"edge"}},
       {id:"G",verb:"grant-ipc",status:"pass",facts:{grantBoundToRun:true,attendedOperator:true}},
       {id:"I",verb:"import",status:"pass",facts:{importedRows:2,importedBytes:256}},
-      {id:"R",verb:"receipt",status:"pass",facts:{importedRows:2,receiptSha256:$sha,containsNoSecrets:true}}
+      {id:"V",verb:"revoke-ipc",status:"pass",facts:{revokeBoundToRun:true,grantRevoked:true,revokedSource:"edge"}},
+      {id:"S",verb:"restart",status:"pass",facts:{restartedProcess:true}},
+      {id:"D",verb:"reread",status:"pass",facts:{importedRows:2,persistedAfterRestart:true}},
+      {id:"R",verb:"receipt",status:"pass",facts:{importedRows:2,receiptSha256:$receipt,containsNoSecrets:true,requestSha256:$request,exeSha256:$exe}}
     ]}' >"$good"
-  jq '.steps[2].facts.importedRows=0 | .steps[3].facts.importedRows=0' "$good" >"$bad_empty"
+  jq '.steps[2].facts.importedRows=0 | .steps[2].facts.importedBytes=0 | .steps[5].facts.importedRows=0 | .steps[6].facts.importedRows=0' "$good" >"$bad_empty"
   jq '.steps[1].facts.grantBoundToRun=false' "$good" >"$bad_grant"
-  jq '.steps[3].facts.importedRows=1 | .steps[3].facts.receiptSha256="not-a-sha256"' \
+  jq '.steps[6].facts.importedRows=1 | .steps[6].facts.receiptSha256="not-a-sha256"' \
     "$good" >"$bad_receipt"
   jq '.steps[0].facts.selectedSource="unbounded-profile-path"' "$good" >"$bad_source"
-  jq '.steps[3].facts.containsNoSecrets=false' "$good" >"$bad_secret"
+  jq '.steps[6].facts.containsNoSecrets=false' "$good" >"$bad_secret"
+  jq '.steps[3].facts.grantRevoked=false' "$good" >"$bad_revoke"
+  jq '.steps[4].facts.restartedProcess=false' "$good" >"$bad_restart"
+  jq '.steps[5].facts.importedRows=0 | .steps[5].facts.persistedAfterRestart=false' \
+    "$good" >"$bad_reread"
+  jq '.win32Sha="" | .steps[6].facts.requestSha256=("0" * 64)' \
+    "$good" >"$bad_live_binding"
   grade_f1_live_windows_walkthrough_import "$good" >/dev/null \
     || { rm -rf -- "$tmp"; return 1; }
   grade_f1_live_windows_walkthrough_import "$bad_empty" >/dev/null 2>&1 \
@@ -820,6 +899,14 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
   grade_f1_live_windows_walkthrough_import "$bad_source" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
   grade_f1_live_windows_walkthrough_import "$bad_secret" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_revoke" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_restart" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_reread" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_live_binding" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
   rm -rf -- "$tmp"
   return 0
