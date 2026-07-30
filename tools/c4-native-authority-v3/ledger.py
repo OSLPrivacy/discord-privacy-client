@@ -324,6 +324,12 @@ class OneShotLedger:
             raise LedgerError("ledger watermark is out of range")
         return value
 
+    def _require_recovered_watermark(self) -> int:
+        watermark = self._read_watermark()
+        if watermark is None:
+            raise LedgerError("ledger watermark is absent after recovery")
+        return watermark
+
     def _commit_watermark(self, now_ms: int) -> None:
         encoded = now_ms.to_bytes(WATERMARK_BYTES, "big", signed=False)
         try:
@@ -442,6 +448,8 @@ class OneShotLedger:
         watermark = self._read_watermark()
         if watermark is not None:
             observed.append(watermark)
+        elif self._recovery_complete:
+            raise LedgerError("ledger watermark is absent after recovery")
         latest = max(observed, default=None)
         if latest is not None and now_ms < latest:
             raise LedgerError("ledger clock predates another ledger record")
@@ -558,6 +566,7 @@ class OneShotLedger:
         expected = _challenge_hash(challenge)
         with self._locked():
             record = self._read_path(self._path(challenge))
+            self._require_recovered_watermark()
         if record["challengeSha256"] != expected:
             raise LedgerError("ledger record belongs to another challenge")
         return record
