@@ -1043,7 +1043,7 @@ mod tests {
             Err(error) => error,
         };
         assert!(
-            matches!(error, StoreError::Anchor(message) if message.contains("behind external anchor")),
+            matches!(&error, StoreError::Anchor(message) if message.contains("behind external anchor")),
             "stale restore must be refused by the advanced keystore anchor, got {error}"
         );
 
