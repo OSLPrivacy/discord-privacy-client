@@ -211,6 +211,17 @@ impl ProductionDuressHandlers {
         self
     }
 
+    pub fn with_wipe_local_cache_dir_path<P>(mut self, path: P) -> Self
+    where
+        P: Into<PathBuf>,
+    {
+        self.handlers.wipe_local_cache_dir = Some(remove_bound_paths_handler(
+            [path.into()],
+            "local cache wipe requires an explicitly bound directory path",
+        ));
+        self
+    }
+
     pub fn with_wipe_anonymous_credentials(mut self, handler: WipeFn) -> Self {
         self.handlers.wipe_anonymous_credentials = Some(handler);
         self

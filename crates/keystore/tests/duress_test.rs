@@ -1,7 +1,7 @@
 use keystore::{
     generate_identity, save_identity, save_password_record, save_prekey_state, Argon2Params,
     DuressEngine, DuressHandlers, DuressJournal, DuressPaths, NoOpSealer, PasswordRecord,
-    PrekeyConfig, PrekeyState, StepOutcome, WipeStep,
+    PrekeyConfig, PrekeyState, ProductionDuressHandlers, StepOutcome, WipeStep,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -219,6 +219,47 @@ fn missing_files_yield_already_clean_not_failure() {
         &StepOutcome::AlreadyClean
     );
     assert!(report.failed_steps().is_empty());
+}
+
+#[test]
+fn production_duress_wipes_cache_prekeys_and_identity_files() {
+    let dir = TempDir::new().unwrap();
+    let (paths, journal_path) = build_paths(&dir);
+    let sealer = NoOpSealer::new();
+    let id = generate_identity("alice".into());
+    save_identity(&paths.identity_file, &id, &sealer).unwrap();
+    let prekey_state = PrekeyState::new(&id, PrekeyConfig::default(), 1_700_000_000);
+    save_prekey_state(paths.prekey_file.as_ref().unwrap(), &prekey_state, &sealer).unwrap();
+
+    let identity_file = paths.identity_file.clone();
+    let prekey_file = paths.prekey_file.clone().unwrap();
+    let cache_dir = dir.path().join("local-cache");
+    std::fs::create_dir(&cache_dir).unwrap();
+    std::fs::write(cache_dir.join("sealed-cache-record"), b"cache").unwrap();
+
+    let handlers = ProductionDuressHandlers::new()
+        .with_purge_keyring(Box::new(|| Ok(())))
+        .with_wipe_local_cache_dir_path(cache_dir.clone())
+        .into_handlers();
+    let engine = DuressEngine::new(journal_path, paths, handlers);
+
+    let report = engine.execute().unwrap();
+
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::IdentityFile),
+        &StepOutcome::Wiped
+    );
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::PrekeyFile),
+        &StepOutcome::Wiped
+    );
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::LocalCacheDir),
+        &StepOutcome::Wiped
+    );
+    assert!(!identity_file.exists());
+    assert!(!prekey_file.exists());
+    assert!(!cache_dir.exists());
 }
 
 #[test]
