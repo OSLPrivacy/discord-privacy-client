@@ -164,6 +164,21 @@ description = "Initialize one bounded encrypted local-only Scrub index for expli
 commands.allow = ["initialize_scrub_index"]
 
 [[permission]]
+identifier = "allow-set-scrub-index-manifest"
+description = "Initialize and return the active identity's bounded encrypted Scrub manifest for explicitly selected profiles owned by that identity."
+commands.allow = ["set_scrub_index_manifest"]
+
+[[permission]]
+identifier = "allow-get-scrub-index-manifest"
+description = "Read only the active identity's bounded encrypted Scrub manifest metadata."
+commands.allow = ["get_scrub_index_manifest"]
+
+[[permission]]
+identifier = "allow-get-scrub-index-scan"
+description = "Read only the active identity's bounded local Scrub scan summary; grants no deletion or service access."
+commands.allow = ["get_scrub_index_scan"]
+
+[[permission]]
 identifier = "allow-append-scrub-index-chunk"
 description = "Append one bounded caller-provided export or OSL-visible-data chunk to the authenticated local Scrub index; provides no discovery, network, or deletion authority."
 commands.allow = ["append_scrub_index_chunk"]
@@ -485,7 +500,7 @@ commands.allow = ["detach_native_app_window"]
 
 [[permission]]
 identifier = "allow-open-hosted-session-scan"
-description = "Open the trusted hosted-session scan surface for the exact active native-hosted context; grants no preview, confirmation, deletion, navigation, credential, profile, process, path, URL, conversation, row, or network authority."
+description = "Borrow only the current native Discord session for a reviewed hosted-session scan; accepts no URL, profile, account, handle, credential, row, or takeover authority."
 commands.allow = ["open_hosted_session_scan"]
 
 [[permission]]
