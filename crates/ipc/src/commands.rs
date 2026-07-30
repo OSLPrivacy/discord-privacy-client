@@ -12379,6 +12379,21 @@ pub fn cmd_osl_list_all_whitelists(state: &AppState) -> Result<Vec<WhitelistRowD
 
 pub use crate::main_password::{LockoutStatusDto, PasswordStatusDto};
 
+/// Command-boundary activity hook for the password gate's inactivity timer.
+/// Returns false when the command arrived after the idle window and caused the
+/// session to auto-lock; otherwise records this command as fresh activity.
+pub fn record_activity_on_every_command() -> bool {
+    record_activity_on_every_command_at(std::time::Instant::now())
+}
+
+pub(crate) fn record_activity_on_every_command_at(now: std::time::Instant) -> bool {
+    if crate::main_password::run_file_key_inactivity_auto_lock_timer_at(now) {
+        return false;
+    }
+    crate::main_password::mark_activity_for_inactivity_auto_lock_at(now);
+    true
+}
+
 // The password gate (marker, lockout, stealth/burn passwords, the
 // derived file_storage_key) is DEVICE-level, NOT per-account: one
 // password unlocks the device, and the file_storage_key it yields
@@ -12388,6 +12403,51 @@ pub use crate::main_password::{LockoutStatusDto, PasswordStatusDto};
 // find the password".
 fn password_dir() -> Result<std::path::PathBuf, String> {
     keystore::osl_base_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))
+}
+
+#[cfg(test)]
+mod inactivity_command_activity_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    static INACTIVITY_COMMAND_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn record_activity_on_every_command_marks_inactivity_timer() {
+        let _guard = INACTIVITY_COMMAND_TEST_LOCK.lock().unwrap();
+        crate::main_password::set_file_storage_key(None);
+        let t0 = Instant::now();
+        let key = [0x5A; 32];
+        crate::main_password::set_file_storage_key_after_main_password_unlock(key);
+
+        let activity_at = t0 + Duration::from_secs(keystore::DEFAULT_INACTIVITY_SECONDS - 60);
+        assert!(
+            record_activity_on_every_command_at(activity_at),
+            "activity inside the idle window should be recorded"
+        );
+        assert_eq!(crate::main_password::get_file_storage_key(), Some(key));
+
+        assert!(
+            !crate::main_password::run_file_key_inactivity_auto_lock_timer_at(
+                t0 + Duration::from_secs(keystore::DEFAULT_INACTIVITY_SECONDS + 1)
+            ),
+            "recorded command activity must reset the inactivity deadline"
+        );
+        assert_eq!(crate::main_password::get_file_storage_key(), Some(key));
+
+        assert!(
+            !record_activity_on_every_command_at(
+                activity_at + Duration::from_secs(keystore::DEFAULT_INACTIVITY_SECONDS)
+            ),
+            "a command arriving at the idle threshold must lock instead of reviving the session"
+        );
+        assert_eq!(
+            crate::main_password::get_file_storage_key(),
+            None,
+            "late command activity must clear the unlocked file key"
+        );
+        crate::main_password::set_file_storage_key(None);
+    }
 }
 
 pub fn cmd_osl_password_status() -> Result<PasswordStatusDto, String> {
@@ -13597,7 +13657,7 @@ pub fn cmd_osl_burn_password_status() -> Result<PasswordStatusDto, String> {
 
 // =====================================================================
 // Phase 7d-B2/B3: gate-side single-call password verify across the
-// three roles. Returns one of "main" | "stealth" | "burn" | "wrong"
+// three roles. Returns one of "main" | "stealth" | "burn" | "duress" | "wrong"
 // + the same lockout fields as `verify_main_password`. All three
 // successful entries reset the shared counter (so an attacker
 // observing repeated entries can't distinguish "main" from
@@ -13633,7 +13693,7 @@ pub fn cmd_osl_verify_gate_password(
     let outcome = crate::main_password::verify_gate_password_with_marker(&marker, &password)?;
     match outcome {
         GateMatch::Main(file_key) => {
-            crate::main_password::set_file_storage_key(Some(file_key));
+            crate::main_password::set_file_storage_key_after_main_password_unlock(file_key);
             // 9-D-FIX2: reload every encrypted-at-rest state file
             // now that `file_storage_key` is in slot. Bootstrap
             // attempted these reads pre-gate with no key, so each
@@ -13739,7 +13799,7 @@ pub fn cmd_osl_verify_gate_password(
                 } => {
                     let _ = crate::main_password::write_lockout_pub(&dir, &lock);
                     Ok(GateVerifyDto {
-                        result: "burn".to_string(),
+                        result: "duress".to_string(),
                         lockout_seconds_remaining: 0,
                         attempts_used,
                     })
