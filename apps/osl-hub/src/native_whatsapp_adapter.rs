@@ -4,6 +4,8 @@
 //! metadata. This module keeps the trust, discovery, and placement decisions
 //! deterministic and testable without touching the remote process.
 
+use sha2::{Digest, Sha256};
+
 pub const WHATSAPP_ROOT_WINDOW_CLASS: &str = "WinUIDesktopWin32WindowClass";
 pub const WHATSAPP_CARRIER_PREFIX: &str = "OSL1.WA.";
 
@@ -122,6 +124,22 @@ pub struct WhatsAppBodyCandidate {
     pub bounds: WhatsAppBounds,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct WhatsAppCarrierRowProof {
+    pub row_id: String,
+    pub row_runtime_hash: String,
+    pub carrier_sha256_label: String,
+    pub bounds: WhatsAppBounds,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct PlacedWhatsAppCarrier {
+    pub composer_node_id: String,
+    pub composer_runtime_hash: String,
+    pub carrier: String,
+    pub row_proof: WhatsAppCarrierRowProof,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WhatsAppAdapterRefusal {
     MissingExactAppRoot,
@@ -134,6 +152,9 @@ pub enum WhatsAppAdapterRefusal {
     AmbiguousTranscript,
     MissingExactBodyCandidate,
     BodyCandidateSupportBlocked,
+    InvalidCarrier,
+    MissingCarrierRowProof,
+    AmbiguousCarrierRowProof,
 }
 
 pub fn trusted_whatsapp_content_root(
@@ -258,6 +279,36 @@ pub fn extract_whatsapp_body_candidates(
         return Err(WhatsAppAdapterRefusal::MissingExactBodyCandidate);
     }
     Ok(candidates)
+}
+
+pub fn place_whatsapp_carrier(
+    pair: &DiscoveredWhatsAppPair,
+    carrier_payload: &str,
+    rows_after_write: &[WhatsAppTranscriptRow],
+) -> Result<PlacedWhatsAppCarrier, WhatsAppAdapterRefusal> {
+    let carrier = prefixed_whatsapp_carrier(carrier_payload)?;
+    let matching_candidates: Vec<WhatsAppBodyCandidate> =
+        extract_whatsapp_body_candidates(pair, rows_after_write)?
+            .into_iter()
+            .filter(|candidate| candidate.body == carrier)
+            .collect();
+    let proof_candidate = match matching_candidates.as_slice() {
+        [candidate] => candidate,
+        [] => return Err(WhatsAppAdapterRefusal::MissingCarrierRowProof),
+        _ => return Err(WhatsAppAdapterRefusal::AmbiguousCarrierRowProof),
+    };
+
+    Ok(PlacedWhatsAppCarrier {
+        composer_node_id: pair.composer.node_id.clone(),
+        composer_runtime_hash: pair.composer.runtime_hash.clone(),
+        carrier: carrier.clone(),
+        row_proof: WhatsAppCarrierRowProof {
+            row_id: proof_candidate.row_id.clone(),
+            row_runtime_hash: proof_candidate.row_runtime_hash.clone(),
+            carrier_sha256_label: carrier_sha256_label(&carrier),
+            bounds: proof_candidate.bounds,
+        },
+    })
 }
 
 fn trusted_webview_ancestor_id(
@@ -401,6 +452,27 @@ fn canonical_whatsapp_body(text: &str) -> String {
         .to_owned()
 }
 
+fn prefixed_whatsapp_carrier(payload: &str) -> Result<String, WhatsAppAdapterRefusal> {
+    let payload = payload.trim();
+    if payload.is_empty()
+        || payload.len() > 4096
+        || payload.chars().any(|value| value.is_control())
+        || payload.contains(char::is_whitespace)
+    {
+        return Err(WhatsAppAdapterRefusal::InvalidCarrier);
+    }
+    Ok(format!("{WHATSAPP_CARRIER_PREFIX}{payload}"))
+}
+
+fn carrier_sha256_label(carrier: &str) -> String {
+    let digest = Sha256::digest(carrier.as_bytes());
+    let mut encoded = String::with_capacity(64);
+    for byte in digest {
+        encoded.push_str(&format!("{byte:02x}"));
+    }
+    format!("sha256:{encoded}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -497,6 +569,10 @@ mod tests {
                 text: text.to_owned(),
             }],
         }
+    }
+
+    fn exact_body_row(row_id: &str, text: &str) -> WhatsAppTranscriptRow {
+        row(row_id, WhatsAppTextFragmentRole::ExactBody, text)
     }
 
     #[test]
@@ -629,6 +705,50 @@ mod tests {
         assert!(matches!(
             extract_whatsapp_body_candidates(&pair, &metadata_only),
             Err(WhatsAppAdapterRefusal::MissingExactBodyCandidate)
+        ));
+    }
+
+    #[test]
+    fn whatsapp_carrier_writes_prefixed_carrier_only_with_row_proof() {
+        let pair = discovered_pair();
+        let proof_rows = vec![exact_body_row("carrier-row", "OSL1.WA.publiccover")];
+        let placed = place_whatsapp_carrier(&pair, "publiccover", &proof_rows)
+            .expect("matching exact body row should prove placement");
+        assert_eq!(placed.composer_node_id, "composer");
+        assert_eq!(placed.composer_runtime_hash, "runtime-composer");
+        assert_eq!(placed.carrier, "OSL1.WA.publiccover");
+        assert_eq!(placed.row_proof.row_id, "carrier-row");
+        assert_eq!(placed.row_proof.row_runtime_hash, "runtime-carrier-row");
+        assert!(placed.row_proof.carrier_sha256_label.starts_with("sha256:"));
+
+        let unprefixed_row = vec![exact_body_row("unprefixed", "publiccover")];
+        assert!(matches!(
+            place_whatsapp_carrier(&pair, "publiccover", &unprefixed_row),
+            Err(WhatsAppAdapterRefusal::MissingCarrierRowProof)
+        ));
+
+        let preview_row = vec![row(
+            "preview",
+            WhatsAppTextFragmentRole::LinkPreviewTitle,
+            "OSL1.WA.publiccover",
+        )];
+        assert!(matches!(
+            place_whatsapp_carrier(&pair, "publiccover", &preview_row),
+            Err(WhatsAppAdapterRefusal::BodyCandidateSupportBlocked)
+        ));
+
+        let duplicate_rows = vec![
+            exact_body_row("carrier-row-a", "OSL1.WA.publiccover"),
+            exact_body_row("carrier-row-b", "OSL1.WA.publiccover"),
+        ];
+        assert!(matches!(
+            place_whatsapp_carrier(&pair, "publiccover", &duplicate_rows),
+            Err(WhatsAppAdapterRefusal::AmbiguousCarrierRowProof)
+        ));
+
+        assert!(matches!(
+            place_whatsapp_carrier(&pair, "has spaces", &[]),
+            Err(WhatsAppAdapterRefusal::InvalidCarrier)
         ));
     }
 }
