@@ -50,7 +50,7 @@ def integration_branch_anchor_records_osl_newest_integration_403cfa2() -> None:
     assert re.findall(r"`([^`]+)`", fields["Branch"]) == ["unit-f11"]
     base_sha = re.findall(r"`([^`]+)`", fields["Base SHA (per plan §2 \"Base tree\")"])[0]
     assert base_sha == "16778b297d3ec8d0358b7d3812a95f4f8443e462"
-    assert rows["osl-newest-integration"][0].startswith("403cfa2")
+    assert rows["osl-newest-integration"][0] == INTEGRATION_PIN
 
     branch_commit = _git("rev-parse", "--verify", "unit-f11^{commit}")
     parent = _git("rev-list", "--parents", "-n", "1", branch_commit).split()[1]

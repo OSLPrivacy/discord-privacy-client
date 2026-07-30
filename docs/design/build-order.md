@@ -61,7 +61,9 @@ missing `dist` blocks, stale `dist` blocks, and a fresh `dist` is the only path 
 can stage a desktop executable. The test is behavioral: the passing case writes the
 bundle identifier through the fake build output and checks the staged executable,
 while the two negative cases check the harness exits at the build-order gate before
-any executable can be produced.
+any executable can be produced. It does not assert on repository text; the observed
+contract is the process exit status, the emitted JSON verdict, and the staged
+artifact bytes.
 
 ```bash
 frontend_dist_is_embedded_after_frontend_build() {
