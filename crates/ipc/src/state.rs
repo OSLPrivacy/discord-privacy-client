@@ -20,7 +20,7 @@ use keystore::{Identity, KeyServerClient};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use store::MessageStore;
 
 /// Time-to-live for cached sender public keys. Bounded staleness
@@ -179,10 +179,6 @@ pub struct AppState {
     /// never interleave validation, marker updates, and state reloads.
     pub account_switch_lock: Mutex<()>,
     pub identity: Mutex<Option<Identity>>,
-    /// Live prekey lifecycle for the loaded identity. This is absent
-    /// until an identity is explicitly installed; default AppState must
-    /// refuse prekey-dependent work rather than manufacturing authority.
-    pub prekey_state: Mutex<Option<keystore::PrekeyState>>,
     pub keyserver: Mutex<Option<KeyServerClient>>,
 
     /// Latest confirmed outcome of this process's remote public-key
@@ -386,7 +382,6 @@ impl Default for AppState {
         Self {
             account_switch_lock: Mutex::new(()),
             identity: Mutex::new(None),
-            prekey_state: Mutex::new(None),
             keyserver: Mutex::new(None),
             cloud_registration_state: AtomicU8::new(CloudRegistrationState::NotAttempted as u8),
             identity_regenerated_this_launch: AtomicBool::new(false),
@@ -425,12 +420,10 @@ impl AppState {
         AppState::default()
     }
 
-    /// Install an identity and construct its live prekey state in the
-    /// same AppState transition. Callers that bypass this helper leave
-    /// prekey-dependent production paths unavailable.
+    /// Install an identity with a fresh local prekey state.
     pub fn install_identity(&self, identity: Identity) {
         self.try_install_identity(identity)
-            .expect("identity/prekey mutex poisoned");
+            .expect("identity mutex poisoned");
     }
 
     pub fn try_install_identity(&self, identity: Identity) -> Result<(), &'static str> {
@@ -513,13 +506,6 @@ impl AppState {
             .is_some()
     }
 
-    pub fn has_prekey_state(&self) -> bool {
-        self.prekey_state
-            .lock()
-            .expect("prekey_state mutex poisoned")
-            .is_some()
-    }
-
     pub fn has_keyserver(&self) -> bool {
         self.keyserver
             .lock()
@@ -579,43 +565,30 @@ fn default_rn_session_store() -> crate::wire_rn::RnSessionStore {
     crate::wire_rn::RnSessionStore::new(dir.join("rn_sessions"))
 }
 
-fn current_unix_seconds() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
 #[cfg(test)]
-mod prekey_authority_tests {
+mod identity_authority_tests {
     use super::*;
 
     #[test]
-    fn default_state_has_no_prekey_authority() {
+    fn default_state_has_no_identity_authority() {
         let state = AppState::new();
 
         assert!(!state.has_identity());
-        assert!(!state.has_prekey_state());
     }
 
     #[test]
-    fn installing_identity_constructs_live_prekey_state() {
+    fn installing_identity_constructs_fresh_prekey_state() {
         let state = AppState::new();
         let identity = keystore::generate_identity("prekey-owner".to_owned());
 
-        state.install_identity_at(identity, 1_700_000_000);
+        state.install_identity(identity);
 
         assert!(state.has_identity());
-        let prekeys = state
+        assert!(state
             .prekey_state
             .lock()
-            .expect("prekey_state mutex poisoned");
-        let prekeys = prekeys.as_ref().expect("prekey state installed");
-        assert_eq!(prekeys.current_spk.rotated_at_unix_seconds, 1_700_000_000);
-        assert_eq!(
-            prekeys.opk_pool.len(),
-            keystore::PrekeyConfig::default().opk_pool_target as usize
-        );
+            .expect("prekey_state mutex poisoned")
+            .is_some());
     }
 
     #[test]
@@ -646,7 +619,11 @@ mod prekey_authority_tests {
         state.clear_identity();
 
         assert!(!state.has_identity());
-        assert!(!state.has_prekey_state());
+        assert!(state
+            .prekey_state
+            .lock()
+            .expect("prekey_state mutex poisoned")
+            .is_none());
     }
 
     #[test]

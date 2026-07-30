@@ -5339,8 +5339,8 @@ where
 /// payload. Backwards-compatible with V1 files (signaled by the
 /// empty cover from `open_attachment_v2_split`) — falls back to the
 /// caller-supplied legacy `att_key_b64` argument for V1 only. If
-/// that legacy local key is absent, the V1 branch consumes the
-/// authenticated server wrapped-key row for `discord_message_id`.
+/// that legacy local key is absent, the V1 branch refuses; the server
+/// wrapped-key fetch lifecycle is implemented-unwired in this build.
 ///
 /// Phase 8e: open path now chains V3 → V2 → V1 magic detection via
 /// `open_attachment_v3_split`. JS callers don't need to know which
@@ -5470,11 +5470,8 @@ pub fn cmd_osl_open_attachment_v2(
             k.copy_from_slice(&key_bytes);
             k
         } else {
-            let content_id = match discord_message_id.as_deref() {
-                Some(content_id) => content_id,
-                None => return Err("OSL: V1 file with no legacy att_key supplied".to_string()),
-            };
-            fetch_wrapped_attachment_key_for_open(state, content_id, &sender_discord_id)?
+            let _ = discord_message_id;
+            return Err("OSL: V1 file with no local attachment key supplied".to_string());
         }
     };
     let file_key = crypto::aead::Key::from_bytes(att_key_arr);
@@ -5532,7 +5529,7 @@ mod wrapped_key_open_tests {
     }
 
     #[test]
-    fn v1_attachment_open_fetches_wrapped_key_when_local_key_absent() {
+    fn v1_attachment_open_refuses_remote_wrapped_key_when_local_key_absent() {
         let key = [9u8; 32];
         let sealed = crate::attachment_wire::seal_attachment(
             crypto::aead::Key::from_bytes(key),
@@ -5564,7 +5561,7 @@ mod wrapped_key_open_tests {
             crate::peer_map::legacy_entry("sender-osl"),
         );
 
-        let opened = cmd_osl_open_attachment_v2(
+        let err = cmd_osl_open_attachment_v2(
             &state,
             "sender-discord".to_string(),
             None,
@@ -5572,17 +5569,10 @@ mod wrapped_key_open_tests {
             None,
             Some("content-1".to_string()),
         )
-        .unwrap();
+        .unwrap_err();
 
-        assert_eq!(
-            STANDARD.decode(opened.plaintext_b64).unwrap(),
-            b"wrapped-key plaintext"
-        );
-        assert_eq!(opened.original_filename, "wrapped.png");
-        let request = rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        assert!(request.starts_with("GET /v1/wrapped-keys/content-1?"));
-        assert!(request.contains("requester_id=recipient-osl"));
-        assert!(request.contains("recipient_id=recipient-osl"));
+        assert_eq!(err, "OSL: V1 file with no local attachment key supplied");
+        assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
     }
 
     #[test]

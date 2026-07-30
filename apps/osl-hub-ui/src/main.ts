@@ -2832,8 +2832,8 @@ function simpleDeviceStatusMarkup(): string {
   const coreReady = isCoreProtectionReady(core.readiness);
   const protection = identityProtectionStatus(core.readiness.storageMethod);
   const ready = coreReady && protection.state === "protected";
-  const label = coreReady ? protection.label : "Needs attention";
-  const detail = coreReady ? protection.detail : coreReadinessLabel(core.readiness);
+  const label = ready ? "Ready" : "Needs attention";
+  const detail = label;
   return `<div class="trust-state ${ready ? "ready" : "pending"} ${coreReady && !ready ? "not-secure" : ""}" role="status" data-identity-protection="${protection.state}"><span class="dot"></span><span><strong>${escapeHtml(label)}</strong><small>${escapeHtml(detail)}</small></span></div>`;
 }
 
