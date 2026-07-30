@@ -9,6 +9,15 @@ Sending has three honest outcomes: sent, not sent, or delivery uncertain. OSL
 never treats delivery uncertain as sent, never auto-retries it, and never asks
 the user to resend as if the first attempt certainly failed.
 
+Double Enter, when selected, is still a two-step user send. The first distinct
+user Enter encrypts and places the protected capsule only after OSL verifies the
+destination. A second separate user Enter after key-up, after the same
+destination is verified again, is the only action that can send. Key repeat, a
+held key, a synthetic event or OSL's own placement action cannot satisfy the
+second Enter. Timeout, focus loss, destination mismatch or restart cancels the
+armed state and preserves the local draft; it never sends and never retries
+automatically.
+
 ## Burn
 
 Burn cleans up. Burn does not un-send.

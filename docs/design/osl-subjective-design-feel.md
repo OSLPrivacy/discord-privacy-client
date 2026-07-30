@@ -23,3 +23,21 @@ protocol names, storage layouts, automation internals or service-specific plumbi
 Advanced diagnostics may include machine-readable implementation fields for support
 or audit exports, but visible UI labels still translate them into the product model.
 Diagnostics must never substitute for a clear product answer on the main screen.
+
+## Frozen user-facing contract
+
+Every user-facing surface must preserve the same mental model even when the
+implementation changes underneath it:
+
+- The app speaks in protection state, trusted people, connected accounts, private
+  conversations, cleanup actions and activity history.
+- The app refuses to expose implementation machinery as a decision the user must
+  understand before acting.
+- When protection cannot proceed, the app gives a plain consequence and the next
+  safe action, including an explicit unknown state when certainty is unavailable.
+- Advanced exports may carry implementation fields for support, but the main UI
+  remains accountable for the product answer in ordinary language.
+
+This contract is user-facing behavior, not copy decoration. A design that teaches
+the user protocol, storage, automation, transport or service-plumbing concepts in
+order to operate OSL violates the design feel even if the underlying feature works.
