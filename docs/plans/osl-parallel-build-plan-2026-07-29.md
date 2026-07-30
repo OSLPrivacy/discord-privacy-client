@@ -36,3 +36,93 @@ Acceptance for this risk is a coordinator routing exercise, not a prose grep:
    turn.
 3. Attempt to satisfy a failed capacity check by borrowing another account, changing `CODEX_HOME`, or
    starting speculative background work. The routing decision must remain `refuse` or `standby`.
+
+Machine-readable coordinator exercise:
+
+```json
+{
+  "schema": "osl-codex-routing-capacity-v1",
+  "cases": [
+    {
+      "name": "stale available pool is not authority",
+      "historicalPoolLabel": "available",
+      "currentCapacity": {
+        "fresh": false,
+        "activeSessionCount": null,
+        "blockedOrSleepingSessions": null,
+        "quotaAccountStatus": "unverified",
+        "expectedTurnCapacity": "unknown",
+        "machineHeadroom": "unknown",
+        "ownedFileBound": false
+      },
+      "forbiddenSubstitute": "none",
+      "expectedDecision": "standby",
+      "expectedReason": "missing-current-capacity"
+    },
+    {
+      "name": "fresh bounded capacity can dispatch",
+      "historicalPoolLabel": "available",
+      "currentCapacity": {
+        "fresh": true,
+        "activeSessionCount": 2,
+        "blockedOrSleepingSessions": ["docs-waiting-review"],
+        "quotaAccountStatus": "verified-enough",
+        "expectedTurnCapacity": "enough",
+        "machineHeadroom": "enough",
+        "ownedFileBound": true
+      },
+      "forbiddenSubstitute": "none",
+      "expectedDecision": "dispatch",
+      "expectedReason": "fresh-capacity-and-owned-files"
+    },
+    {
+      "name": "borrowed account cannot satisfy failed capacity",
+      "historicalPoolLabel": "available",
+      "currentCapacity": {
+        "fresh": true,
+        "activeSessionCount": 9,
+        "blockedOrSleepingSessions": [],
+        "quotaAccountStatus": "verified-exhausted",
+        "expectedTurnCapacity": "insufficient",
+        "machineHeadroom": "enough",
+        "ownedFileBound": true
+      },
+      "forbiddenSubstitute": "borrowed-account",
+      "expectedDecision": "refuse",
+      "expectedReason": "forbidden-substitute"
+    },
+    {
+      "name": "changed CODEX_HOME cannot satisfy failed capacity",
+      "historicalPoolLabel": "green",
+      "currentCapacity": {
+        "fresh": true,
+        "activeSessionCount": 8,
+        "blockedOrSleepingSessions": ["quota-blocked"],
+        "quotaAccountStatus": "verified-exhausted",
+        "expectedTurnCapacity": "insufficient",
+        "machineHeadroom": "enough",
+        "ownedFileBound": true
+      },
+      "forbiddenSubstitute": "changed-CODEX_HOME",
+      "expectedDecision": "refuse",
+      "expectedReason": "forbidden-substitute"
+    },
+    {
+      "name": "speculative background child cannot satisfy failed headroom",
+      "historicalPoolLabel": "idle",
+      "currentCapacity": {
+        "fresh": true,
+        "activeSessionCount": 4,
+        "blockedOrSleepingSessions": [],
+        "quotaAccountStatus": "verified-enough",
+        "expectedTurnCapacity": "enough",
+        "machineHeadroom": "insufficient",
+        "ownedFileBound": true
+      },
+      "forbiddenSubstitute": "speculative-background-work",
+      "expectedDecision": "refuse",
+      "expectedReason": "forbidden-substitute"
+    }
+  ]
+}
+```
