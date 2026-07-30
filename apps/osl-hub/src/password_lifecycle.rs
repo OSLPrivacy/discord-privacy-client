@@ -247,6 +247,55 @@ pub fn setup_main_password(
     })
 }
 
+/// Verify a locally-entered duress PIN and, only on the burn-password role,
+/// run the full fixed-root cleanup path that returns the user-visible report.
+pub fn enter_duress_pin_for_full_wipe_report(
+    state: &HubCoreState,
+    duress_pin: String,
+    app_config_dir: &Path,
+    app_local_data_dir: &Path,
+    service_hosts_shutdown: bool,
+) -> Result<crate::cleanup::HubFullCleanupResult, String> {
+    ipc::main_password::validate_password(&duress_pin)
+        .map_err(|_| "OSL duress PIN was rejected".to_owned())?;
+    let _lifecycle = state
+        .lifecycle_lock
+        .lock()
+        .map_err(|_| "OSL account lifecycle is unavailable".to_owned())?;
+    let password_dir = keystore::osl_base_dir()
+        .map_err(|_| "OSL password gate storage is unavailable".to_owned())?;
+    let marker = ipc::main_password::read_marker_pub(&password_dir)
+        .map_err(|_| "OSL password gate storage is unavailable".to_owned())?;
+    match ipc::main_password::verify_gate_password_with_marker(&marker, &duress_pin)
+        .map_err(|_| "OSL password gate storage is unavailable".to_owned())?
+    {
+        ipc::main_password::GateMatch::Burn => {}
+        ipc::main_password::GateMatch::Wrong => {
+            return Err("OSL duress PIN was rejected".to_owned())
+        }
+        ipc::main_password::GateMatch::Main | ipc::main_password::GateMatch::Stealth => {
+            return Err("OSL duress action requires the burn password".to_owned())
+        }
+    }
+
+    let verification = crate::startup_gate::verify_password_role(state, duress_pin)?;
+    match verification.role {
+        crate::startup_gate::VerifiedGateRole::Burn => crate::cleanup::execute_verified_gate_burn(
+            state,
+            app_config_dir,
+            app_local_data_dir,
+            service_hosts_shutdown,
+        ),
+        crate::startup_gate::VerifiedGateRole::Wrong => {
+            Err("OSL duress PIN was rejected".to_owned())
+        }
+        crate::startup_gate::VerifiedGateRole::Main
+        | crate::startup_gate::VerifiedGateRole::Stealth => {
+            Err("OSL duress action requires the burn password".to_owned())
+        }
+    }
+}
+
 struct PasswordSetupOutcome {
     password_recovery_phrase: String,
     reload_issue_count: usize,
@@ -405,6 +454,29 @@ mod tests {
         std::env::temp_dir().join(format!("osl-hub-{label}-{}-{nonce}", std::process::id()))
     }
 
+    struct KeystoreGlobalReset;
+
+    impl Drop for KeystoreGlobalReset {
+        fn drop(&mut self) {
+            ipc::main_password::set_file_storage_key(None);
+            keystore::set_active_account_dir(None);
+            keystore::set_base_dir_override(None);
+        }
+    }
+
+    fn assert_removed_target(report: &crate::cleanup::HubFullCleanupResult, target: &str) {
+        assert!(
+            report.removed_targets.iter().any(|removed| removed == target),
+            "cleanup report did not include removed target {target}; report={:?}",
+            report.removed_targets
+        );
+        assert!(
+            !report.failed_targets.iter().any(|failed| failed == target),
+            "cleanup report included failed target {target}; report={:?}",
+            report.failed_targets
+        );
+    }
+
     #[test]
     fn readiness_distinguishes_identity_password_setup_and_unlock() {
         assert_eq!(
@@ -485,5 +557,88 @@ mod tests {
         assert!(dir.join("password_marker.json").exists());
         ipc::main_password::set_file_storage_key(None);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn entering_duress_pin_triggers_full_wipe_report() {
+        let _guard = FILE_KEY_TEST_LOCK.lock().unwrap();
+        let _reset = KeystoreGlobalReset;
+        let config_dir = temp_dir("duress-config");
+        let local_data_dir = temp_dir("duress-local");
+        let core_dir = config_dir.join("osl-core");
+        let service_profiles = local_data_dir.join("service-profiles-v2");
+        let native_profiles = local_data_dir.join("native-window-profiles-v1");
+        std::fs::create_dir_all(&core_dir).unwrap();
+        std::fs::create_dir_all(&service_profiles).unwrap();
+        std::fs::create_dir_all(&native_profiles).unwrap();
+        std::fs::write(core_dir.join("peer_map.json"), br#"{}"#).unwrap();
+        std::fs::write(core_dir.join("whitelist_state.json"), br#"{}"#).unwrap();
+        std::fs::write(service_profiles.join("profile-cache"), b"local profile bytes").unwrap();
+        std::fs::write(native_profiles.join("native-cache"), b"native profile bytes").unwrap();
+        std::fs::write(config_dir.join("service-registry.json"), br#"{}"#).unwrap();
+        std::fs::write(config_dir.join("service-scope-index.json"), br#"{}"#).unwrap();
+        std::fs::write(config_dir.join("preview-preferences.json"), br#"{}"#).unwrap();
+
+        keystore::set_active_account_dir(None);
+        keystore::set_base_dir_override(Some(core_dir.clone()));
+        let state = HubCoreState::default();
+        *state.osl.identity.lock().unwrap() = Some(keystore::identity_from_entropy(
+            [29; 16],
+            "osl_test_duress".to_owned(),
+        ));
+
+        let main_password = "main-pin-7421";
+        let duress_pin = "duress-pin-9381";
+        ipc::commands::cmd_osl_set_main_password(main_password.to_owned()).unwrap();
+        ipc::commands::cmd_osl_set_burn_password(main_password.to_owned(), duress_pin.to_owned())
+            .unwrap();
+        assert!(core_dir.join("password_marker.json").exists());
+        ipc::main_password::set_file_storage_key(None);
+
+        let ordinary_unlock_error = enter_duress_pin_for_full_wipe_report(
+            &state,
+            main_password.to_owned(),
+            &config_dir,
+            &local_data_dir,
+            true,
+        )
+        .expect_err("ordinary main password must not trigger a full wipe");
+        assert!(ordinary_unlock_error.contains("burn password"));
+        assert!(core_dir.exists());
+        assert!(service_profiles.exists());
+        ipc::main_password::set_file_storage_key(None);
+
+        let report = enter_duress_pin_for_full_wipe_report(
+            &state,
+            duress_pin.to_owned(),
+            &config_dir,
+            &local_data_dir,
+            true,
+        )
+        .unwrap();
+        assert!(report.local_cleanup_complete);
+        assert!(report.failed_targets.is_empty());
+        assert!(!report.restart_required);
+        assert!(report.original_discord_data_untouched);
+        for target in [
+            "hub_core",
+            "service_profiles",
+            "native_profiles",
+            "service_registry",
+            "service_scope_index",
+            "preview_preferences",
+        ] {
+            assert_removed_target(report, target);
+        }
+        assert!(!core_dir.exists());
+        assert!(!service_profiles.exists());
+        assert!(!native_profiles.exists());
+        assert!(!config_dir.join("service-registry.json").exists());
+        assert!(!config_dir.join("service-scope-index.json").exists());
+        assert!(!config_dir.join("preview-preferences.json").exists());
+        assert!(ipc::main_password::get_file_storage_key().is_none());
+
+        let _ = std::fs::remove_dir_all(config_dir);
+        let _ = std::fs::remove_dir_all(local_data_dir);
     }
 }
