@@ -5116,14 +5116,22 @@ function toggleHomeTile(id: string): void {
   render();
 }
 
+export function inboxPrimaryAction(): void {
+  const first = hubPeople.find((person) => person.safetyNumberVerified && !person.pendingKeyChange);
+  if (first) {
+    friendsDialogOpen = false;
+    void openOslChat(first.personId);
+    return;
+  }
+  route = "home";
+  activeOslChatPersonId = null;
+  friendsDialogOpen = true;
+  render();
+}
+
 function openHomeModule(id: string): void {
   if (id === "osl-chats") {
-    const first = hubPeople.find((person) => person.safetyNumberVerified && !person.pendingKeyChange);
-    if (first) void openOslChat(first.personId);
-    else {
-      friendsDialogOpen = true;
-      render();
-    }
+    inboxPrimaryAction();
   } else if (id === "osl-servers") {
     route = "osl-servers";
     render();
