@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -20,6 +21,36 @@ REQUIRED_PRIVACY_TRUE = frozenset(
 REQUIRED_AUTHORITY_FIELDS = frozenset(("collector", "verifier"))
 REQUIRED_BINDING_FIELDS = frozenset(("method", "subjectBindingSha256"))
 ALLOWED_TEXT_KEYS = frozenset(("noRawText",))
+CONTENT_BEARING_ARTIFACT_KINDS = frozenset(
+    (
+        "dom",
+        "html",
+        "image",
+        "jpeg",
+        "jpg",
+        "log",
+        "png",
+        "rawlog",
+        "screenshot",
+        "snapshot",
+        "text",
+        "transcript",
+        "uia",
+        "webp",
+    )
+)
+CONTENT_BEARING_ARTIFACT_SUFFIXES = (
+    ".bmp",
+    ".gif",
+    ".htm",
+    ".html",
+    ".jpeg",
+    ".jpg",
+    ".log",
+    ".png",
+    ".txt",
+    ".webp",
+)
 FORBIDDEN_NORMALIZED_KEYS = frozenset(
     (
         "accountemail",
@@ -87,6 +118,17 @@ def _content_bearing_key(key: str) -> bool:
     if normalized in FORBIDDEN_NORMALIZED_KEYS:
         return True
     return normalized.endswith("text") or "content" in normalized
+
+
+def _content_bearing_artifact_text(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    tokens = {token.lower() for token in re.findall(r"[A-Za-z0-9]+", value)}
+    if not tokens:
+        return False
+    if tokens & CONTENT_BEARING_ARTIFACT_KINDS:
+        return True
+    return value.lower().endswith(CONTENT_BEARING_ARTIFACT_SUFFIXES)
 
 
 def _require_mapping(value: Any, label: str) -> Mapping[str, Any]:
@@ -158,6 +200,10 @@ def _reject_content_artifacts(evidence: Mapping[str, Any]) -> None:
         if "containsUserContent" not in artifact:
             _reject("artifact content declaration is absent")
         _require_false(artifact["containsUserContent"], "artifact.containsUserContent")
+        if _content_bearing_artifact_text(artifact.get("kind")):
+            _reject("content-bearing artifact is not allowed")
+        if _content_bearing_artifact_text(artifact.get("relativePath")):
+            _reject("content-bearing artifact is not allowed")
 
 
 def reject_content_fields(evidence: Mapping[str, Any]) -> None:

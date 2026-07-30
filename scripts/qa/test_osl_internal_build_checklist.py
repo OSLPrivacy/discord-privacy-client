@@ -77,7 +77,7 @@ def internal_build_checklist_keeps_wave_report_rules_current() -> None:
 
 
 internal_build_checklist_keeps_wave_report_rules_current.__name__ = (
-    "docs/design/osl-internal-build-checklist.md'"
+    "Keep compact reports and trap-ledger rules current after each wave."
 )
 
 
