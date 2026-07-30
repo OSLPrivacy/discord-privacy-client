@@ -1111,10 +1111,12 @@ fn run_prekey_replenishment_tick_at(
     let path = dir.join("prekeys.json");
     let sealer = keystore::select_best_sealer();
     let existing = if path.exists() {
-        Some(
-            keystore::load_prekey_state(&path, sealer.as_ref())
-                .map_err(|_| "OSL: prekey replenish refused: local prekey state is unreadable")?,
-        )
+        let prekeys = keystore::load_prekey_state(&path, sealer.as_ref())
+            .map_err(|_| "OSL: prekey replenish refused: local prekey state is unreadable")?;
+        crate::state_reload::validate_prekey_state_for_identity(&identity, &prekeys)
+            .map_err(|_| "OSL: prekey replenish refused: local prekey state is unbound")?;
+        state.set_prekey_state(prekeys.clone());
+        Some(prekeys)
     } else {
         None
     };
@@ -1135,6 +1137,7 @@ fn run_prekey_replenishment_tick_at(
                 .map_err(|_| "OSL: prekey initial publication failed".to_string())?;
             keystore::save_prekey_state(&path, &prekeys, sealer.as_ref())
                 .map_err(|_| "OSL: prekey state persist failed".to_string())?;
+            state.set_prekey_state(prekeys.clone());
             Ok(PrekeyReplenishmentOutcome::InitialPublished {
                 opks_published: u32::try_from(prekeys.opk_pool.len()).unwrap_or(u32::MAX),
             })
@@ -1148,6 +1151,7 @@ fn run_prekey_replenishment_tick_at(
                 .map_err(|_| "OSL: prekey replenish failed".to_string())?;
             keystore::save_prekey_state(&path, &prekeys, sealer.as_ref())
                 .map_err(|_| "OSL: prekey state persist failed".to_string())?;
+            state.set_prekey_state(prekeys);
             Ok(PrekeyReplenishmentOutcome::Replenished {
                 opks_added: response.opks_added,
             })

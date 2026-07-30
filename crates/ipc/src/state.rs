@@ -403,6 +403,26 @@ impl AppState {
             keystore::PrekeyConfig::default(),
             now_unix_seconds,
         );
+        self.try_install_identity_with_prekey_state(identity, prekeys)
+    }
+
+    /// Install an identity with a prekey state already loaded from durable
+    /// storage. Startup uses this to avoid replacing the published prekey pool
+    /// with a fresh, unpublished one.
+    pub fn install_identity_with_prekey_state(
+        &self,
+        identity: Identity,
+        prekeys: keystore::PrekeyState,
+    ) {
+        self.try_install_identity_with_prekey_state(identity, prekeys)
+            .expect("identity/prekey mutex poisoned");
+    }
+
+    pub fn try_install_identity_with_prekey_state(
+        &self,
+        identity: Identity,
+        prekeys: keystore::PrekeyState,
+    ) -> Result<(), &'static str> {
         let mut identity_slot = self
             .identity
             .lock()
@@ -416,14 +436,25 @@ impl AppState {
         Ok(())
     }
 
-    /// Clear identity-owned live state. Account switches, imports, and burn
-    /// resets must not leave a stale prekey pool associated with no identity.
-    pub fn clear_identity(&self) {
-        *self.identity.lock().expect("identity mutex poisoned") = None;
+    pub fn set_prekey_state(&self, prekeys: keystore::PrekeyState) {
+        *self
+            .prekey_state
+            .lock()
+            .expect("prekey_state mutex poisoned") = Some(prekeys);
+    }
+
+    pub fn clear_prekey_state(&self) {
         *self
             .prekey_state
             .lock()
             .expect("prekey_state mutex poisoned") = None;
+    }
+
+    /// Clear identity-owned live state. Account switches, imports, and burn
+    /// resets must not leave a stale prekey pool associated with no identity.
+    pub fn clear_identity(&self) {
+        *self.identity.lock().expect("identity mutex poisoned") = None;
+        self.clear_prekey_state();
     }
 
     pub fn has_identity(&self) -> bool {
@@ -500,6 +531,23 @@ mod tests {
             prekeys.opk_pool.len(),
             keystore::PrekeyConfig::default().opk_pool_target as usize
         );
+    }
+
+    #[test]
+    fn installing_identity_with_loaded_prekeys_preserves_persisted_state() {
+        let state = AppState::new();
+        let identity = keystore::generate_identity("prekey-owner".to_owned());
+        let persisted =
+            keystore::PrekeyState::new(&identity, keystore::PrekeyConfig::default(), 42);
+
+        state.install_identity_with_prekey_state(identity, persisted);
+
+        let prekeys = state
+            .prekey_state
+            .lock()
+            .expect("prekey_state mutex poisoned");
+        let prekeys = prekeys.as_ref().expect("prekey state installed");
+        assert_eq!(prekeys.current_spk.rotated_at_unix_seconds, 42);
     }
 
     #[test]

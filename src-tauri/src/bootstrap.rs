@@ -162,6 +162,18 @@ fn run_autostart_mode(state: &AppState, register_online: bool) {
     let keyserver_cfg = read_keyserver_config(&base);
     let (identity_loaded, identity_regenerated) =
         load_or_generate_identity(state, &dir, keyserver_cfg.as_ref());
+    if identity_loaded {
+        match ipc::state_reload::load_persisted_prekey_state(state, &dir) {
+            Ok(true) => tracing::info!("OSL bootstrap: prekey state loaded"),
+            Ok(false) => {
+                tracing::info!("OSL bootstrap: no prekeys.json; first replenish tick will publish")
+            }
+            Err(e) => tracing::warn!(
+                error = %e,
+                "OSL bootstrap: prekey state refused; prekey-dependent work stays unavailable"
+            ),
+        }
+    }
     // G3-FIX: keyserver.json is an OVERRIDE only. The base URL always
     // resolves (keyserver.json `base_url` if present+valid → else the
     // built-in production default, via the single shared resolver),
