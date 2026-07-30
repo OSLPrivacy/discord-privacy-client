@@ -29,7 +29,7 @@ describe("OSL Mail view", () => {
     expect(settings).not.toMatch(/provider|adapter|SMTP|end-to-end encrypted/iu);
   });
 
-  it("renders external SMTP mail without end-to-end encrypted labels", () => {
+  it("Render OSL Mail without labeling SMTP as end-to-end encrypted", () => {
     const external = {
       threadId: "abcdefghijkl",
       retrievalId: "abcdefghijklx",
