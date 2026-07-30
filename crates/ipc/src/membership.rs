@@ -149,6 +149,10 @@ impl ScopeMembership {
             .unwrap_or_default()
     }
 
+    pub fn observed_member_count(&self) -> usize {
+        self.map.values().map(HashSet::len).sum()
+    }
+
     /// Decision #2 gate: is `discord_id` a member of the *specific*
     /// scope? Used to member-gate the DM-bleed cross-grant so a
     /// DM-whitelisted peer only reads server/channel traffic in
@@ -241,6 +245,18 @@ pub fn load_scope_membership_from_path(
 /// Serialize + atomically write `m` to `path` (tempfile + rename;
 /// at-rest-encrypted when a main password key is in the slot).
 pub fn write_scope_membership(path: &Path, m: &ScopeMembership) -> std::io::Result<()> {
+    if crate::main_password::get_file_storage_key().is_none() && path.exists() {
+        if let Ok(existing) = std::fs::read(path) {
+            if crate::main_password::has_enc_magic(&existing) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "OSL: refusing to write plaintext membership over encrypted file \
+                     — file_storage_key not in slot (password not yet entered)",
+                ));
+            }
+        }
+    }
+
     let body = serde_json::to_vec_pretty(m).map_err(std::io::Error::other)?;
     let out_bytes = crate::main_password::maybe_encrypt(&body).map_err(std::io::Error::other)?;
     let tmp = path.with_extension("json.tmp");
@@ -253,6 +269,7 @@ pub fn write_scope_membership(path: &Path, m: &ScopeMembership) -> std::io::Resu
 mod tests {
     use super::*;
     use crate::scope::Scope;
+    use std::sync::Mutex;
 
     const A: &str = "111111111111111111";
     const B: &str = "222222222222222222";
@@ -261,6 +278,8 @@ mod tests {
     const CH1: &str = "900000000000000010";
     const CH2: &str = "900000000000000011";
     const GC: &str = "900000000000000099";
+
+    static KEY_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn channel_observation_rolls_up_to_server() {
@@ -345,6 +364,8 @@ mod tests {
 
     #[test]
     fn file_round_trip_and_missing_is_notfound() {
+        let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::main_password::set_file_storage_key(None);
         let dir = std::env::temp_dir().join(format!("osl_mem_test_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("membership.json");
@@ -361,6 +382,7 @@ mod tests {
         let back = load_scope_membership_from_path(&path).unwrap();
         assert_eq!(m, back);
         let _ = std::fs::remove_file(&path);
+        crate::main_password::set_file_storage_key(None);
     }
 
     #[test]
@@ -373,5 +395,79 @@ mod tests {
         assert!(m.is_server_member(SRV, B));
         assert!(m.is_gc_member(GC, A));
         assert!(!m.is_gc_member(GC, C));
+    }
+
+    #[test]
+    fn writes_are_encrypted_when_key_present() {
+        let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::main_password::set_file_storage_key(Some([0x45u8; 32]));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("membership.json");
+        let mut m = ScopeMembership::new();
+        m.note_server_channel_member(SRV, CH1, A);
+
+        write_scope_membership(&path, &m).unwrap();
+
+        let raw = std::fs::read(&path).unwrap();
+        assert!(crate::main_password::has_enc_magic(&raw));
+        let back = load_scope_membership_from_path(&path).unwrap();
+        assert_eq!(back, m);
+        crate::main_password::set_file_storage_key(None);
+    }
+
+    #[test]
+    fn write_refuses_to_clobber_encrypted_membership_with_plaintext() {
+        let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let key = [0x46u8; 32];
+        crate::main_password::set_file_storage_key(Some(key));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("membership.json");
+        let mut m = ScopeMembership::new();
+        m.note_server_channel_member(SRV, CH1, A);
+        write_scope_membership(&path, &m).unwrap();
+        let encrypted = std::fs::read(&path).unwrap();
+        assert!(crate::main_password::has_enc_magic(&encrypted));
+
+        crate::main_password::set_file_storage_key(None);
+        let mut replacement = ScopeMembership::new();
+        replacement.note_gc_member(GC, B);
+        let result = write_scope_membership(&path, &replacement);
+
+        assert!(result.is_err());
+        assert_eq!(
+            result.err().unwrap().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), encrypted);
+        crate::main_password::set_file_storage_key(None);
+    }
+
+    #[test]
+    fn reload_reencrypts_plaintext_membership_when_key_now_present() {
+        let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::main_password::set_file_storage_key(None);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("membership.json");
+        let mut membership = ScopeMembership::new();
+        membership.note_server_channel_member(SRV, CH1, A);
+        write_scope_membership(&path, &membership).unwrap();
+        assert!(!crate::main_password::has_enc_magic(
+            &std::fs::read(&path).unwrap()
+        ));
+
+        crate::main_password::set_file_storage_key(Some([0x47u8; 32]));
+        let state = crate::AppState::new();
+        let report = crate::state_reload::reload_encrypted_state_after_unlock(&state, dir.path())
+            .expect("post-unlock reload succeeds");
+
+        assert!(report.scope_membership_loaded);
+        assert!(report.scope_membership_reencrypted);
+        assert_eq!(report.scope_membership_observations, 2);
+        let raw = std::fs::read(&path).unwrap();
+        assert!(crate::main_password::has_enc_magic(&raw));
+        let reloaded = load_scope_membership_from_path(&path).unwrap();
+        assert!(reloaded.is_channel_member(SRV, CH1, A));
+        assert!(reloaded.is_server_member(SRV, A));
+        crate::main_password::set_file_storage_key(None);
     }
 }

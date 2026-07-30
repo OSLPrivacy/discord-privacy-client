@@ -866,6 +866,17 @@ pub fn persist_scope_membership_now(state: &AppState) {
         }
     };
     let path = dir.join("membership.json");
+    if crate::main_password::get_file_storage_key().is_none() {
+        if let Ok(existing) = std::fs::read(&path) {
+            if crate::main_password::has_enc_magic(&existing) {
+                tracing::info!(
+                    "OSL: deferring membership persist (file_storage_key not yet \
+                     installed; post-gate reload will persist)"
+                );
+                return;
+            }
+        }
+    }
     let snapshot = state
         .scope_membership
         .lock()

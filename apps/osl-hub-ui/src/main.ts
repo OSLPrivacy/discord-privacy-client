@@ -105,6 +105,7 @@ import { FrameRenderScheduler } from "./render-scheduler";
 import { defaultScrubSignalGroups, enabledScrubFindings, parseScrubSignalGroups, scrubSignalDefinitions, scrubSignalGroupFor, type ScrubSignalGroup } from "./scrub";
 import { loadMassCleanupCapabilities, type MassCleanupCapabilityManifest } from "./mass-cleanup";
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
+import { SecureLocalStore } from "./secure-local-store";
 import { oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
 import { bindFriendRemovalControls, bindMainWindowFocusChanges, friendRemovalButtonMarkup, friendTrustAction, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat } from "./ui-behavior";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
@@ -251,6 +252,7 @@ let recoveryBundle: { userId: string; identityPhrase: string | null; passwordPhr
 let recoverySavedAcknowledged = false;
 let decryptDisplay = true;
 let themeChoice: ThemeChoice = initializeThemePreference(localStorage);
+const secureLocalStore = new SecureLocalStore(localStorage);
 let sidebarOrder: string[] = [];
 let hiddenServices = new Set<string>();
 let homeEditMode = false;
@@ -406,6 +408,9 @@ const oslChatPreviewStorageKey = "osl-chat-previews-visible-v1";
 const oslChatMutedStorageKey = "osl-chat-muted-people-v1";
 const oslChatUnreadStorageKey = "osl-chat-unread-v1";
 const oslChatNotificationStorageKey = "osl-chat-notifications-v1";
+const secureOslChatMutedKey = "osl-chat-muted-people";
+const secureOslChatUnreadKey = "osl-chat-unread";
+const secureOslChatNotificationKey = "osl-chat-notifications";
 const supportedNativeAppIds = new Set<NativeAppId>(["discord", "telegram", "signal", "whatsapp", "outlook"]);
 const importedFirefoxHomeAppIds = new Set<HomeAppId>([
   "instagram", "snapchat", "x", "messenger", "gmail", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
@@ -471,6 +476,48 @@ function parseTheme(raw: string | null): ThemeChoice {
 
 function parseSavedAccountMode(raw: string | null): SavedAccountMode {
   return raw === "use" || raw === "clean" ? raw : "ask";
+}
+
+function parseOslChatMutedPeople(raw: string): Set<string> | null {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return null;
+    return new Set(parsed.filter((personId): personId is string =>
+      typeof personId === "string" && personId.length > 0 && personId.length <= 180,
+    ).slice(0, 512));
+  } catch {
+    return null;
+  }
+}
+
+function parseOslChatUnread(raw: string): Map<string, number> | null {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+    const unread = new Map<string, number>();
+    for (const [personId, count] of Object.entries(parsed).slice(0, 512)) {
+      if (personId.length > 0 && personId.length <= 180 && Number.isSafeInteger(count) && Number(count) > 0 && Number(count) <= 10_000) {
+        unread.set(personId, Number(count));
+      }
+    }
+    return unread;
+  } catch {
+    return null;
+  }
+}
+
+function parseOslChatNotifications(raw: string): AppNotification[] | null {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return null;
+    return parsed.slice(0, 20).filter((item): item is AppNotification => typeof item === "object" && item !== null
+      && typeof (item as AppNotification).id === "string" && (item as AppNotification).id.length <= 96
+      && typeof (item as AppNotification).title === "string" && (item as AppNotification).title.length <= 120
+      && (item as AppNotification).detail === "New encrypted message"
+      && typeof (item as AppNotification).createdAt === "string" && (item as AppNotification).createdAt.length <= 32);
+  } catch {
+    return null;
+  }
 }
 
 function pendingOnboardingRoute(): OnboardingRoute | null {
@@ -607,33 +654,10 @@ function loadUiPreferences(): void {
   notificationChatActivity = localStorage.getItem(notificationChatStorageKey) !== "false";
   notificationSecurityActivity = localStorage.getItem(notificationSecurityStorageKey) !== "false";
   oslChatPreviewsVisible = localStorage.getItem(oslChatPreviewStorageKey) !== "false";
-  try {
-    const mutedPeople = JSON.parse(localStorage.getItem(oslChatMutedStorageKey) ?? "[]") as unknown;
-    if (Array.isArray(mutedPeople)) {
-      oslChatMutedPeople = new Set(mutedPeople.filter((personId): personId is string => typeof personId === "string" && personId.length > 0 && personId.length <= 180).slice(0, 512));
-    }
-  } catch { oslChatMutedPeople.clear(); }
-  try {
-    const unread = JSON.parse(localStorage.getItem(oslChatUnreadStorageKey) ?? "{}") as unknown;
-    if (typeof unread === "object" && unread !== null && !Array.isArray(unread)) {
-      for (const [personId, count] of Object.entries(unread).slice(0, 512)) {
-        if (personId.length > 0 && personId.length <= 180 && Number.isSafeInteger(count) && Number(count) > 0 && Number(count) <= 10_000) {
-          oslChatUnread.set(personId, Number(count));
-        }
-      }
-    }
-  } catch { oslChatUnread.clear(); }
-  try {
-    const notices = JSON.parse(localStorage.getItem(oslChatNotificationStorageKey) ?? "[]") as unknown;
-    if (Array.isArray(notices)) {
-      const parsed = notices.slice(0, 20).filter((item): item is AppNotification => typeof item === "object" && item !== null
-        && typeof (item as AppNotification).id === "string" && (item as AppNotification).id.length <= 96
-        && typeof (item as AppNotification).title === "string" && (item as AppNotification).title.length <= 120
-        && (item as AppNotification).detail === "New encrypted message"
-        && typeof (item as AppNotification).createdAt === "string" && (item as AppNotification).createdAt.length <= 32);
-      if (parsed.length) appNotifications = parsed;
-    }
-  } catch { /* malformed local notification metadata is ignored */ }
+  oslChatMutedPeople = secureLocalStore.migrateLegacyItem(secureOslChatMutedKey, oslChatMutedStorageKey, parseOslChatMutedPeople) ?? new Set();
+  oslChatUnread = secureLocalStore.migrateLegacyItem(secureOslChatUnreadKey, oslChatUnreadStorageKey, parseOslChatUnread) ?? new Map();
+  const notices = secureLocalStore.migrateLegacyItem(secureOslChatNotificationKey, oslChatNotificationStorageKey, parseOslChatNotifications);
+  if (notices !== null && notices.length) appNotifications = notices;
   screenshotProtectionEnabled = false;
   mullvadAutoStart = localStorage.getItem(mullvadAutoStartStorageKey) === "true";
   enabledScrubSignals = parseScrubSignalGroups(localStorage.getItem(scrubSignalsStorageKey));
@@ -4357,7 +4381,7 @@ function bindWorkspace(): void {
     const personId = oslChatSettingsPersonId;
     if (!personId) return;
     if ((event.currentTarget as HTMLInputElement).checked) oslChatMutedPeople.add(personId); else oslChatMutedPeople.delete(personId);
-    localStorage.setItem(oslChatMutedStorageKey, JSON.stringify([...oslChatMutedPeople].slice(0, 512)));
+    secureLocalStore.setItem(secureOslChatMutedKey, JSON.stringify([...oslChatMutedPeople].slice(0, 512)));
     render();
   });
   document.querySelector<HTMLInputElement>("#osl-chat-preview-toggle")?.addEventListener("change", (event) => {
@@ -4665,7 +4689,7 @@ function bindWorkspace(): void {
   document.querySelectorAll<HTMLInputElement>("[data-notification-app]").forEach((input) => input.addEventListener("change", () => { const id = input.dataset.notificationApp as ServiceId; notificationAppPreferences[id] = input.checked; localStorage.setItem(notificationAppsStorageKey, JSON.stringify(notificationAppPreferences)); }));
   document.querySelectorAll<HTMLButtonElement>("[data-osl-chat-unmute]").forEach((button) => button.addEventListener("click", () => {
     oslChatMutedPeople.delete(button.dataset.oslChatUnmute ?? "");
-    localStorage.setItem(oslChatMutedStorageKey, JSON.stringify([...oslChatMutedPeople].slice(0, 512)));
+    secureLocalStore.setItem(secureOslChatMutedKey, JSON.stringify([...oslChatMutedPeople].slice(0, 512)));
     render();
   }));
   bindBurnDialog();
@@ -5204,12 +5228,12 @@ async function openOslChat(personId: string): Promise<void> {
 }
 
 function persistOslChatUnread(): void {
-  localStorage.setItem(oslChatUnreadStorageKey, JSON.stringify(Object.fromEntries([...oslChatUnread.entries()].slice(0, 512))));
+  secureLocalStore.setItem(secureOslChatUnreadKey, JSON.stringify(Object.fromEntries([...oslChatUnread.entries()].slice(0, 512))));
 }
 
 function persistOslChatNotifications(): void {
   const metadata = (appNotifications ?? []).filter((item) => item.detail === "New encrypted message").slice(0, 20);
-  localStorage.setItem(oslChatNotificationStorageKey, JSON.stringify(metadata));
+  secureLocalStore.setItem(secureOslChatNotificationKey, JSON.stringify(metadata));
 }
 
 function mergePersistedOslChatNotifications(items: AppNotification[] | null): AppNotification[] {
