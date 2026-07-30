@@ -591,6 +591,7 @@ mod tests {
     fn contract() {
         let verified = SelfTestReport::from_checks(required_checks()).unwrap();
         assert_eq!(verified.verdict(), ContractVerdict::Verified);
+        assert_eq!(verified.verdict().label(), "contract_verified");
         assert!(verified.verdict().permits_protected_path());
 
         let mut degraded_checks = required_checks();
@@ -610,6 +611,7 @@ mod tests {
                 cause: UnverifiedCause::Ambiguous,
             }
         );
+        assert_eq!(degraded.verdict().label(), "contract_degraded");
         assert!(!degraded.verdict().permits_protected_path());
 
         let mut refused_checks = required_checks();
@@ -629,7 +631,20 @@ mod tests {
                 cause: UnverifiedCause::MissingBinding,
             }
         );
+        assert_eq!(refused.verdict().label(), "contract_refused");
         assert!(!refused.verdict().permits_protected_path());
+
+        assert!(!UnverifiedCause::NotObserved.requires_refusal());
+        assert!(!UnverifiedCause::Ambiguous.requires_refusal());
+        assert!(!UnverifiedCause::Unsupported.requires_refusal());
+        assert!(!UnverifiedCause::TimedOut.requires_refusal());
+        assert!(!UnverifiedCause::InvalidProfile.requires_refusal());
+        assert!(!UnverifiedCause::BoundsExceeded.requires_refusal());
+        assert!(!UnverifiedCause::MissingWriteProof.requires_refusal());
+        assert!(UnverifiedCause::MissingConsent.requires_refusal());
+        assert!(UnverifiedCause::MissingBinding.requires_refusal());
+        assert!(UnverifiedCause::MissingAuthority.requires_refusal());
+        assert!(UnverifiedCause::OperatorRefused.requires_refusal());
     }
 
     mod contract {
@@ -722,6 +737,79 @@ mod tests {
                     ]
                 })
             }));
+        }
+
+        #[test]
+        fn run_the_profile_self_test_as_a_local_fixed_label_contract_without_telemetry() {
+            let report = run_local_fixed_label_profile_self_test().unwrap();
+            let shared_contract = super::super::run_contract_self_test().unwrap();
+
+            assert_eq!(report, shared_contract);
+            assert_eq!(report.version(), CONTRACT_VERSION);
+            assert_eq!(report.verdict(), ContractVerdict::Verified);
+            assert!(report.verdict().permits_protected_path());
+            assert_eq!(report.checks().len(), REQUIRED_SELF_TEST_PROBES.len());
+
+            for (check, expected) in report.checks().iter().zip(REQUIRED_SELF_TEST_PROBES) {
+                assert_eq!(check.subsystem, expected.subsystem);
+                assert_eq!(check.predicate, expected.predicate);
+                assert_eq!(check.label(), "check_passed");
+                assert!(check.cause.is_none());
+                assert_eq!(check.observed_count, 0);
+                assert_eq!(check.required_count, 0);
+            }
+
+            let json = serde_json::to_value(&report).unwrap();
+            let object = json.as_object().expect("report object");
+            let mut report_keys = object.keys().map(String::as_str).collect::<Vec<_>>();
+            report_keys.sort_unstable();
+            assert_eq!(report_keys, vec!["checks", "verdict", "version"]);
+            assert_eq!(
+                object.get("verdict"),
+                Some(&Value::String("verified".to_owned()))
+            );
+
+            let checks = object
+                .get("checks")
+                .and_then(Value::as_array)
+                .expect("checks");
+            let mut serialized_probes = Vec::new();
+            for check in checks {
+                let fields = check.as_object().expect("check object");
+                let mut keys = fields.keys().map(String::as_str).collect::<Vec<_>>();
+                keys.sort_unstable();
+                assert_eq!(
+                    keys,
+                    vec![
+                        "cause",
+                        "observedCount",
+                        "passed",
+                        "predicate",
+                        "requiredCount",
+                        "subsystem",
+                    ]
+                );
+                assert_eq!(fields.get("cause"), Some(&Value::Null));
+                assert_eq!(fields.get("observedCount"), Some(&Value::from(0)));
+                assert_eq!(fields.get("passed"), Some(&Value::Bool(true)));
+                assert_eq!(fields.get("requiredCount"), Some(&Value::from(0)));
+                serialized_probes.push((
+                    fields.get("subsystem").and_then(Value::as_str).unwrap(),
+                    fields.get("predicate").and_then(Value::as_str).unwrap(),
+                ));
+            }
+            assert_eq!(
+                serialized_probes,
+                vec![
+                    ("composer", "composerDiscovery"),
+                    ("transcript", "transcriptDiscovery"),
+                    ("rowText", "rowTextExtraction"),
+                    ("writeProof", "writePrefixProof"),
+                    ("consent", "operatorConsent"),
+                    ("binding", "scopeBinding"),
+                    ("authority", "hostAuthority"),
+                ]
+            );
         }
     }
 

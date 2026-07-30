@@ -196,6 +196,53 @@ async fn drive_prekey_replenishment_timer<F, Fut>(
     }
 }
 
+fn prekey_replenishment_outcome_label(
+    outcome: ipc::commands::PrekeyReplenishmentOutcome,
+) -> &'static str {
+    match outcome {
+        ipc::commands::PrekeyReplenishmentOutcome::InitialPublished { .. } => "initial-published",
+        ipc::commands::PrekeyReplenishmentOutcome::Replenished { .. } => "replenished",
+        ipc::commands::PrekeyReplenishmentOutcome::Skipped => "skipped",
+    }
+}
+
+fn spawn_prekey_replenishment_timer(app_handle: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        drive_prekey_replenishment_timer(
+            Duration::from_secs(ipc::commands::PREKEY_REPLENISH_INTERVAL_SECONDS),
+            None,
+            move || {
+                let app_handle = app_handle.clone();
+                async move {
+                    let result = tauri::async_runtime::spawn_blocking(move || {
+                        let state = app_handle.state::<AppState>();
+                        let dir = keystore::osl_config_dir().map_err(|_| {
+                            "OSL: prekey replenish refused: config dir is unavailable".to_string()
+                        })?;
+                        ipc::commands::run_prekey_replenishment_tick(state.inner(), &dir, None)
+                    })
+                    .await;
+                    match result {
+                        Ok(Ok(outcome)) => tracing::debug!(
+                            outcome = %prekey_replenishment_outcome_label(outcome),
+                            "OSL: prekey replenish timer tick completed"
+                        ),
+                        Ok(Err(error)) => tracing::debug!(
+                            error = %error,
+                            "OSL: prekey replenish timer tick refused"
+                        ),
+                        Err(error) => tracing::warn!(
+                            error = %error,
+                            "OSL: prekey replenish timer task join failed"
+                        ),
+                    }
+                }
+            },
+        )
+        .await;
+    });
+}
+
 /// Layer 10 / Phase 4 entry point. The injected boot script (see
 /// `injection::BOOT_SCRIPT`) intercepts outbound `/messages` /
 /// `/messages/edit` requests and routes the chat-input plaintext
@@ -2993,6 +3040,7 @@ fn main() {
             // `bootstrap::run_autostart` docs.
             let app_state = app.state::<AppState>();
             bootstrap::run_autostart(app_state.inner());
+            spawn_prekey_replenishment_timer(app.handle().clone());
 
             // F2.4: license-refresh task. `run_autostart` did the
             // synchronous cache-only classify (so the first webview
@@ -3276,21 +3324,25 @@ fn main() {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::time::Instant;
 
     #[tokio::test]
     async fn prekey_replenishment_real_timer_driver() {
         let ticks = Arc::new(AtomicUsize::new(0));
+        let fired_at = Arc::new(Mutex::new(Vec::new()));
         let started = Instant::now();
         let ticks_for_driver = ticks.clone();
+        let fired_at_for_driver = fired_at.clone();
 
         tokio::time::timeout(
             Duration::from_secs(1),
             drive_prekey_replenishment_timer(Duration::from_millis(10), Some(3), move || {
                 let ticks_for_tick = ticks_for_driver.clone();
+                let fired_at_for_tick = fired_at_for_driver.clone();
                 async move {
                     ticks_for_tick.fetch_add(1, Ordering::SeqCst);
+                    fired_at_for_tick.lock().unwrap().push(Instant::now());
                 }
             }),
         )
@@ -3298,6 +3350,16 @@ mod tests {
         .expect("driver should complete three ticks on a real timer");
 
         assert_eq!(ticks.load(Ordering::SeqCst), 3);
+        let fired_at = fired_at.lock().unwrap();
+        assert_eq!(fired_at.len(), 3);
+        assert!(
+            fired_at[1].duration_since(fired_at[0]) >= Duration::from_millis(8),
+            "the first periodic replenish tick must wait for the real interval"
+        );
+        assert!(
+            fired_at[2].duration_since(fired_at[1]) >= Duration::from_millis(8),
+            "later replenish ticks must also wait for the real interval"
+        );
         assert!(
             started.elapsed() >= Duration::from_millis(15),
             "after the launch tick, two periodic ticks must be separated by the real interval"

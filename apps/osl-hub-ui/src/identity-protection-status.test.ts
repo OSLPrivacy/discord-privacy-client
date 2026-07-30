@@ -1,5 +1,12 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), emitTo: vi.fn(), getCurrentWindow: vi.fn() }));
+vi.mock("@fontsource-variable/inter/wght.css", () => ({}));
+vi.mock("./logos", () => ({ browserLogo: (id: string) => `<span>${id}</span>`, providerLogo: (id: string) => `<span>${id}</span>`, serviceLogo: (id: string) => `<span>${id}</span>` }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
+vi.mock("@tauri-apps/api/event", () => ({ emitTo: mocks.emitTo, listen: mocks.listen }));
+vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: mocks.getCurrentWindow }));
 
 // Unit a11: identity storage-protection status must be rendered honestly —
 // hardware-backed (TPM/keyring) shown as such, software fallback shown as
@@ -13,6 +20,26 @@ import { describe, expect, it } from "vitest";
 // logic, so a regression in the shipped code fails the test.
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+
+async function loadUi() {
+  vi.resetModules();
+  const store = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => { store.set(key, value); },
+    removeItem: (key: string) => { store.delete(key); },
+    clear: () => { store.clear(); },
+  });
+  vi.stubGlobal("document", { querySelector: vi.fn(() => null), createElement: vi.fn(() => ({})), documentElement: { classList: { add: vi.fn() }, dataset: {} }, addEventListener: vi.fn(), visibilityState: "visible" });
+  vi.stubGlobal("window", { addEventListener: vi.fn(), matchMedia: vi.fn(() => ({ matches: false, addEventListener: vi.fn() })), setTimeout, confirm: vi.fn(() => false) });
+  vi.stubGlobal("requestAnimationFrame", () => 1);
+  vi.stubGlobal("cancelAnimationFrame", () => undefined);
+  return import("./main");
+}
+
+function visibleText(markup: string): string {
+  return markup.replace(/<[^>]*>/gu, " ").replace(/\s+/gu, " ").trim();
+}
 
 function region(startNeedle: string, endNeedle: string): string {
   const start = source.indexOf(startNeedle);
@@ -45,6 +72,37 @@ function loadMarkup(): (protection: IdentityStorageProtection) => string {
 describe("identity storage-protection status (unit a11)", () => {
   const classify = loadClassify();
   const markup = loadMarkup();
+
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("(new) wire identity-protection status into the UI so it never conflate", async () => {
+    const { __oslHubUiTest } = await loadUi();
+
+    __oslHubUiTest.reset({ route: "settings", coreReady: true, storageMethod: "tpm-pcp" });
+    const protectedHeader = __oslHubUiTest.renderRouteShell("settings");
+
+    __oslHubUiTest.reset({ route: "settings", coreReady: true, storageMethod: "noop-insecure" });
+    const fallbackHeader = __oslHubUiTest.renderRouteShell("settings");
+
+    __oslHubUiTest.reset({ route: "settings", coreReady: false, storageMethod: "tpm-pcp" });
+    const unfinishedHeader = __oslHubUiTest.renderRouteShell("settings");
+
+    expect(protectedHeader).toContain('role="status" data-identity-protection="protected"');
+    expect(protectedHeader).toContain('class="trust-state ready "');
+    expect(visibleText(protectedHeader)).toMatch(/\bReady\b/iu);
+
+    expect(fallbackHeader).toContain('role="status" data-identity-protection="not-secure"');
+    expect(fallbackHeader).toContain('class="trust-state pending not-secure"');
+    expect(visibleText(fallbackHeader)).toMatch(/\bNeeds attention\b/iu);
+    expect(visibleText(fallbackHeader)).not.toMatch(/\bReady\b/iu);
+
+    expect(unfinishedHeader).toContain('role="status" data-identity-protection="protected"');
+    expect(unfinishedHeader).toContain('class="trust-state pending "');
+    expect(visibleText(unfinishedHeader)).toMatch(/\bNeeds attention\b/iu);
+    expect(visibleText(unfinishedHeader)).not.toMatch(/\bAccount protected\b|Device protection confirmed\b/iu);
+  });
 
   it("classifies the real hardware-backed sealer labels as hardware", () => {
     expect(classify("tpm-pcp")).toBe("hardware");
@@ -112,7 +170,7 @@ describe("identity storage-protection status (unit a11)", () => {
     // survive either.
     const decoyBranch = region('if (gate.outcome === "decoy") {', 'onboardingRoute = "decoy";');
     expect(decoyBranch).toContain("identityStorageMethod = null;");
-    const burnedBranch = region('if (gate.outcome === "burned") {', "onboardingComplete = false;");
+    const burnedBranch = region("if (isVerifiedBurnGate(gate)) {", "onboardingComplete = false;");
     expect(burnedBranch).toContain("identityStorageMethod = null;");
   });
 

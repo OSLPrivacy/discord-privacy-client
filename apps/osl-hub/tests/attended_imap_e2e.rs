@@ -45,7 +45,7 @@ fn message(
 }
 
 #[test]
-fn attended_imap_fixture_rejects_wrong_sender_duplicate_message_id_and_changed_fingerprint() {
+fn attended_imap_rejects_wrong_sender_duplicate_message_id_and_changed_fingerprint() {
     let fixture = SeededLocalImapFixture::scaffold(17);
     let wrong_sender = fixture
         .messages()
