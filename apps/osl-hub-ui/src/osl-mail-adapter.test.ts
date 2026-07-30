@@ -4,7 +4,7 @@ const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 vi.mock("./preferences", () => ({ isTauriRuntime: () => true }));
 
-import { acknowledgeOslMailRetrieval, burnOslMailbox, listOslMailThreads, parseOslMailDeleteReceipt, parseOslMailRetrievedThread, parseOslMailStatus, sendOslMail } from "./osl-mail-adapter";
+import { acknowledgeOslMailRetrieval, burnOslMailbox, listOslMailThreads, loadOslMailStatus, parseOslMailDeleteReceipt, parseOslMailRetrievedThread, parseOslMailStatus, sendOslMail } from "./osl-mail-adapter";
 
 const id = "abcdefghijkl";
 const hash = "a".repeat(64);
@@ -16,6 +16,15 @@ describe("OSL Mail strict adapter", () => {
     expect(parseOslMailStatus({ available: true, provisioned: true, address: "liam@oslprivacy.com", unreadCount: 2, retentionSeconds: 3600 })?.address).toBe("liam@oslprivacy.com");
     expect(parseOslMailStatus({ available: true, provisioned: true, address: null, unreadCount: 0, retentionSeconds: 3600 })).toBeNull();
     expect(parseOslMailStatus({ available: true, provisioned: false, address: null, unreadCount: 0, retentionSeconds: 3600, extra: true })).toBeNull();
+  });
+
+  it("models unprovisioned status as no mailbox and no unread mail", async () => {
+    const unprovisioned = parseOslMailStatus({ available: true, provisioned: false, address: null, unreadCount: 0, retentionSeconds: 3600 });
+    expect(unprovisioned).toMatchObject({ provisioned: false, address: null, unreadCount: 0 });
+    expect(parseOslMailStatus({ available: true, provisioned: false, address: "liam@oslprivacy.com", unreadCount: 0, retentionSeconds: 3600 })).toBeNull();
+    expect(parseOslMailStatus({ available: true, provisioned: false, address: null, unreadCount: 1, retentionSeconds: 3600 })).toBeNull();
+    invoke.mockResolvedValueOnce({ available: true, provisioned: false, address: null, unreadCount: 1, retentionSeconds: 3600 });
+    await expect(loadOslMailStatus()).resolves.toBeNull();
   });
 
   it("rejects malformed retrieved plaintext and unknown fields", () => {

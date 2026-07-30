@@ -18,7 +18,7 @@ describe("OSL Mail view", () => {
   });
 
   it("keeps external outbound unavailable and labels external inbound as SMTP", () => {
-    const status = { available: true as const, provisioned: true, address: "liam@oslprivacy.com", unreadCount: 0, retentionSeconds: 3600 };
+    const status = { available: true as const, provisioned: true as const, address: "liam@oslprivacy.com" as const, unreadCount: 0, retentionSeconds: 3600 };
     const compose = oslMailViewMarkup({ ...base, available: true, status, pane: "compose" });
     const settings = oslMailViewMarkup({ ...base, available: true, status, pane: "settings" });
     expect(compose).toContain("External outbound is unavailable in v1");
@@ -28,7 +28,7 @@ describe("OSL Mail view", () => {
   });
 
   it("requires device acknowledgment before claiming server deletion", () => {
-    const status = { available: true as const, provisioned: true, address: "liam@oslprivacy.com", unreadCount: 1, retentionSeconds: 3600 };
+    const status = { available: true as const, provisioned: true as const, address: "liam@oslprivacy.com" as const, unreadCount: 1, retentionSeconds: 3600 };
     const activeThread = { threadId: "abcdefghijkl", retrievalId: "abcdefghijklx", expiresAt: 200, messages: [{ messageId: "abcdefghijklm", from: "friend@oslprivacy.com", to: ["liam@oslprivacy.com"], subject: "Hi", body: "Private", receivedAt: 100, transit: "oslE2ee" as const }] };
     const html = oslMailViewMarkup({ ...base, available: true, status, activeThread });
     expect(html).toContain("Acknowledge device copy & delete server copy");

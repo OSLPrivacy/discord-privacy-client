@@ -7,12 +7,21 @@ const RECEIPT = /^[a-f0-9]{64}$/u;
 const MAX_BODY_BYTES = 256 * 1024;
 
 export type OslMailTransit = "oslE2ee" | "externalSmtp";
-export interface OslMailStatus {
-  available: true;
-  provisioned: boolean;
-  address: string | null;
-  unreadCount: number;
-  retentionSeconds: number;
+export type OslMailAddress = `${string}@oslprivacy.com`;
+export type OslMailStatus = OslMailProvisionedStatus | OslMailUnprovisionedStatus;
+export interface OslMailProvisionedStatus {
+  readonly available: true;
+  readonly provisioned: true;
+  readonly address: OslMailAddress;
+  readonly unreadCount: number;
+  readonly retentionSeconds: number;
+}
+export interface OslMailUnprovisionedStatus {
+  readonly available: true;
+  readonly provisioned: false;
+  readonly address: null;
+  readonly unreadCount: 0;
+  readonly retentionSeconds: number;
 }
 export interface OslMailThreadSummary {
   threadId: string;
@@ -87,7 +96,7 @@ export function parseOslMailStatus(value: unknown): OslMailStatus | null {
     || !(value.address === null || (typeof value.address === "string" && ADDRESS.test(value.address)))
     || !Number.isSafeInteger(value.unreadCount) || Number(value.unreadCount) < 0 || Number(value.unreadCount) > 100_000
     || !Number.isSafeInteger(value.retentionSeconds) || Number(value.retentionSeconds) < 60 || Number(value.retentionSeconds) > 604_800
-    || (value.provisioned ? value.address === null : value.address !== null)) return null;
+    || (value.provisioned ? value.address === null : value.address !== null || value.unreadCount !== 0)) return null;
   return value as unknown as OslMailStatus;
 }
 
