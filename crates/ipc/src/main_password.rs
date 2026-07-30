@@ -1668,4 +1668,58 @@ mod password_policy_tests {
         );
         set_file_storage_key(None);
     }
+
+    #[test]
+    fn correct_password_before_tenth_attempt_resets_counter() {
+        set_file_storage_key(None);
+        let dir = tempfile::tempdir().unwrap();
+        write_marker(dir.path(), &build_fast_test_marker(TEST_MAIN_PASSWORD)).unwrap();
+
+        for expected_attempt in 1..DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD {
+            match verify_gate_password_attempt(dir.path(), "wrong-before-reset").unwrap() {
+                GatePasswordAttemptResult::Wrong { attempts_used, .. } => {
+                    assert_eq!(attempts_used, expected_attempt);
+                }
+                _ => panic!("wrong attempts before reset must not trigger duress"),
+            }
+            clear_password_lockout_window(dir.path());
+        }
+        assert_eq!(
+            read_lockout(dir.path()).password_failed_attempts,
+            DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD - 1
+        );
+
+        match verify_gate_password_attempt(dir.path(), TEST_MAIN_PASSWORD).unwrap() {
+            GatePasswordAttemptResult::Main(_) => {}
+            _ => panic!("correct main password must unlock before the threshold"),
+        }
+        let after_success = read_lockout(dir.path());
+        assert_eq!(
+            after_success.password_failed_attempts, 0,
+            "correct password must reset the consecutive wrong-attempt counter"
+        );
+        assert!(
+            after_success.password_locked_until.is_none(),
+            "correct password must clear any stale lockout window"
+        );
+        assert!(
+            marker_path(dir.path()).exists(),
+            "correct password before the tenth wrong attempt must not trigger duress"
+        );
+
+        match verify_gate_password_attempt(dir.path(), "wrong-after-reset").unwrap() {
+            GatePasswordAttemptResult::Wrong { attempts_used, .. } => {
+                assert_eq!(
+                    attempts_used, 1,
+                    "first wrong password after a correct unlock must start a fresh counter"
+                );
+            }
+            _ => panic!("one wrong password after reset must not trigger duress"),
+        }
+        assert!(
+            marker_path(dir.path()).exists(),
+            "the reset counter must keep the marker intact after one new wrong attempt"
+        );
+        set_file_storage_key(None);
+    }
 }
