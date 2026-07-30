@@ -18,6 +18,7 @@
 //!   `/v1/pubkeys/:user_id`).
 
 pub mod account_ownership_error;
+pub mod account_ownership_proof;
 pub mod burn;
 pub mod burn_alert;
 pub mod client;
@@ -46,6 +47,10 @@ pub mod wrapped_key;
 pub use zeroize::Zeroizing;
 
 pub use account_ownership_error::AccountOwnershipError;
+pub use account_ownership_proof::{
+    canonical_account_ownership_proof_bytes, AccountOwnershipEvidence, AccountOwnershipProof,
+    ACCOUNT_OWNERSHIP_PROOF_DOMAIN, ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1,
+};
 pub use burn::{canonical_burn_bytes, sign_burn, BurnScope, BURN_DOMAIN};
 pub use burn_alert::{sign_burn_alert, verify_burn_alert, BurnAlertPayload, BURN_ALERT_DOMAIN};
 pub use client::{
