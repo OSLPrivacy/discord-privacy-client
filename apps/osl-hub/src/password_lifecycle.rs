@@ -486,4 +486,79 @@ mod tests {
         ipc::main_password::set_file_storage_key(None);
         let _ = std::fs::remove_dir_all(dir);
     }
+
+    #[test]
+    fn entering_duress_pin_triggers_full_wipe_report() {
+        let _guard = FILE_KEY_TEST_LOCK.lock().unwrap();
+        let config = temp_dir("duress-config");
+        let local = temp_dir("duress-local");
+        let core_dir = config.join("osl-core");
+        let state = HubCoreState::default();
+        keystore::set_base_dir_override(Some(core_dir.clone()));
+        keystore::set_active_account_dir(None);
+
+        std::fs::create_dir_all(&core_dir).unwrap();
+        std::fs::create_dir_all(local.join("service-profiles-v2")).unwrap();
+        std::fs::create_dir_all(local.join("native-window-profiles-v1")).unwrap();
+        std::fs::write(core_dir.join("identity.json"), b"sealed identity").unwrap();
+        std::fs::write(
+            local.join("service-profiles-v2").join("cache"),
+            b"ciphertext",
+        )
+        .unwrap();
+        std::fs::write(
+            local.join("native-window-profiles-v1").join("session"),
+            b"isolated",
+        )
+        .unwrap();
+        std::fs::write(config.join("service-registry.json"), b"{}").unwrap();
+
+        ipc::main_password::set_main_password(&core_dir, "ordinary-pin").unwrap();
+        ipc::main_password::set_burn_password(&core_dir, "ordinary-pin", "duress-pin").unwrap();
+        ipc::main_password::set_file_storage_key(None);
+
+        let verification =
+            crate::startup_gate::verify_password_role(&state, "duress-pin".to_owned()).unwrap();
+        assert_eq!(
+            verification.role,
+            crate::startup_gate::VerifiedGateRole::Burn
+        );
+        assert!(ipc::main_password::get_file_storage_key().is_none());
+
+        let report = crate::cleanup::execute_verified_gate_burn(&state, &config, &local, true)
+            .expect("verified burn password executes the full local wipe");
+        let unlock = crate::startup_gate::HubGateUnlockResult::burned(verification, report);
+        let burn = unlock.burn.as_ref().expect("burn report is returned");
+
+        assert_eq!(unlock.outcome, "burned");
+        assert!(unlock.readiness.is_none());
+        assert!(burn.local_cleanup_complete);
+        assert!(burn.failed_targets.is_empty());
+        assert!(burn
+            .removed_targets
+            .iter()
+            .any(|target| target == "hub_core"));
+        assert!(burn
+            .removed_targets
+            .iter()
+            .any(|target| target == "service_profiles"));
+        assert!(burn
+            .removed_targets
+            .iter()
+            .any(|target| target == "native_profiles"));
+        assert_eq!(burn.remote_unregister.identities_found, 1);
+        assert_eq!(burn.remote_unregister.unavailable, 1);
+        assert!(!burn.restart_required);
+        assert!(burn.original_discord_data_untouched);
+        assert!(!core_dir.exists());
+        assert!(!local.join("service-profiles-v2").exists());
+        assert!(!local.join("native-window-profiles-v1").exists());
+        assert!(!config.join(".gate-burn-journal.json").exists());
+        assert!(ipc::main_password::get_file_storage_key().is_none());
+
+        keystore::set_active_account_dir(None);
+        keystore::set_base_dir_override(None);
+        let _ = std::fs::remove_dir_all(config);
+        let _ = std::fs::remove_dir_all(local);
+    }
 }
