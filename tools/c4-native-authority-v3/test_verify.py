@@ -1453,26 +1453,53 @@ class OneShotLedgerTests(unittest.TestCase):
 def ledger() -> None:
     receipt = make_receipt()
     pipe = receipt["emitter"]
+    wrong_pipe = process(
+        5252,
+        133_100_000_000_000_050,
+        r"C:\Program Files\OSL\osl-privacy-hub.exe",
+        "c",
+    )
     receipt_digest = "d" * 64
     testcase = unittest.TestCase()
 
     with tempfile.TemporaryDirectory() as directory:
         ledger_store = recovered_ledger(directory)
         ledger_store.issue(CHALLENGE, NOW)
-        ledger_store.connect(CHALLENGE, pipe, NOW + 1)
 
-        ledger_store.consume(CHALLENGE, pipe, receipt_digest, NOW + 2)
+        with testcase.assertRaises(LedgerError):
+            ledger_store.consume(CHALLENGE, pipe, "c" * 64, NOW + 1)
+        issued = ledger_store.read(CHALLENGE)
+        testcase.assertEqual(issued["state"], "issued")
+        testcase.assertIsNone(issued["pipeBindingSha256"])
+        testcase.assertIsNone(issued["receiptFrameSha256"])
+
+        binding = ledger_store.connect(CHALLENGE, pipe, NOW + 2)
+        connected = ledger_store.read(CHALLENGE)
+        testcase.assertEqual(connected["state"], "connected")
+        testcase.assertEqual(connected["pipeBindingSha256"], binding)
+        testcase.assertIsNone(connected["receiptFrameSha256"])
+
+        with testcase.assertRaises(LedgerError):
+            ledger_store.consume(CHALLENGE, wrong_pipe, "c" * 64, NOW + 3)
+        connected = ledger_store.read(CHALLENGE)
+        testcase.assertEqual(connected["state"], "connected")
+        testcase.assertEqual(connected["pipeBindingSha256"], binding)
+        testcase.assertIsNone(connected["receiptFrameSha256"])
+
+        ledger_store.consume(CHALLENGE, pipe, receipt_digest, NOW + 4)
         consumed = ledger_store.read(CHALLENGE)
         testcase.assertEqual(consumed["state"], "consumed")
+        testcase.assertEqual(consumed["pipeBindingSha256"], binding)
         testcase.assertEqual(consumed["receiptFrameSha256"], receipt_digest)
 
         with testcase.assertRaises(LedgerError):
-            ledger_store.consume(CHALLENGE, pipe, "e" * 64, NOW + 3)
+            ledger_store.consume(CHALLENGE, pipe, "e" * 64, NOW + 5)
 
         restarted = OneShotLedger(directory)
-        testcase.assertEqual(restarted.recover_incomplete(NOW + 4), 0)
+        testcase.assertEqual(restarted.recover_incomplete(NOW + 6), 0)
         persisted = restarted.read(CHALLENGE)
         testcase.assertEqual(persisted["state"], "consumed")
+        testcase.assertEqual(persisted["pipeBindingSha256"], binding)
         testcase.assertEqual(persisted["receiptFrameSha256"], receipt_digest)
 
 
@@ -1524,6 +1551,13 @@ def define_c4_one_shot_challenge_ledger_contract() -> None:
         testcase.assertEqual(consumed["state"], "consumed")
         testcase.assertEqual(consumed["pipeBindingSha256"], binding)
         testcase.assertEqual(consumed["receiptFrameSha256"], receipt_digest)
+
+        restarted = OneShotLedger(directory)
+        testcase.assertEqual(restarted.recover_incomplete(NOW + 9), 0)
+        persisted = restarted.read(CHALLENGE)
+        testcase.assertEqual(persisted["state"], "consumed")
+        testcase.assertEqual(persisted["pipeBindingSha256"], binding)
+        testcase.assertEqual(persisted["receiptFrameSha256"], receipt_digest)
 
 
 define_c4_one_shot_challenge_ledger_contract.__name__ = "test_verify.py"
