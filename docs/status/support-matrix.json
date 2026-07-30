@@ -2,6 +2,59 @@
   "schema_version": 1,
   "generated_from": "manual-verdict-ingest",
   "updated": "2026-07-30",
+  "versioned_public_support_matrix": {
+    "id": "E7",
+    "version": "2026-07-30.e7",
+    "status": "current",
+    "updated": "2026-07-30",
+    "service_search_terms": "Signal|WhatsApp|Telegram|OSL Mail",
+    "rows": [
+      {
+        "service": "Signal",
+        "claim_scope": "protected_native_adapter",
+        "status": "designed_only",
+        "public_label": "Coming later",
+        "public_claim_allowed": false,
+        "evidence_report": "docs/design/osl-master-decision-2026-07-26.md",
+        "evidence_anchor": "E3 Signal",
+        "last_verified": "2026-07-30",
+        "limitation": "Signal needs complete adapter qualification and two-identity exact-build proof before OSL may claim protected Signal support."
+      },
+      {
+        "service": "WhatsApp",
+        "claim_scope": "protected_native_adapter",
+        "status": "designed_only",
+        "public_label": "Coming later",
+        "public_claim_allowed": false,
+        "evidence_report": "docs/design/osl-master-decision-2026-07-26.md",
+        "evidence_anchor": "E4 WhatsApp",
+        "last_verified": "2026-07-30",
+        "limitation": "WhatsApp needs current adapter qualification and two-identity exact-build proof before OSL may claim protected WhatsApp support."
+      },
+      {
+        "service": "Telegram",
+        "claim_scope": "protected_native_adapter",
+        "status": "externally_blocked",
+        "public_label": "Externally blocked",
+        "public_claim_allowed": false,
+        "evidence_report": "docs/reports/telegram-adapter-verdict.md",
+        "evidence_anchor": "TelegramSupportVerdict",
+        "last_verified": "2026-07-30",
+        "limitation": "Telegram cannot be listed as supported until the signed-client row probe proves stable, text-exposed conversation rows."
+      },
+      {
+        "service": "OSL Mail",
+        "claim_scope": "osl_mail",
+        "status": "unsupported",
+        "public_label": "Coming later",
+        "public_claim_allowed": false,
+        "evidence_report": "docs/reports/outlook-osl-mail-verdict.md",
+        "evidence_anchor": "OutlookOslMailSupportVerdict",
+        "last_verified": "2026-07-30",
+        "limitation": "OSL Mail for Outlook-connected mailboxes needs mailbox binding, recipient authority, draft handling, safe send behavior, and runtime proof before protected replies may be claimed."
+      }
+    ]
+  },
   "conditional_app_evidence": [
     {
       "id": "telegram_desktop_native",

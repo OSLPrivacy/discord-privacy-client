@@ -95,6 +95,40 @@ const REQUIRED_CONDITIONAL_APP_EVIDENCE = [
     reportVerdict: /Outlook inline-reply support as OSL Mail is `unsupported`/i,
   },
 ];
+const REQUIRED_VERSIONED_PUBLIC_SUPPORT_ROWS = [
+  {
+    service: "Signal",
+    claimScope: "protected_native_adapter",
+    status: "designed_only",
+    publicLabel: "Coming later",
+    evidenceReport: "docs/design/osl-master-decision-2026-07-26.md",
+    limitation: /\bcomplete adapter qualification\b.*\btwo-identity exact-build proof\b/i,
+  },
+  {
+    service: "WhatsApp",
+    claimScope: "protected_native_adapter",
+    status: "designed_only",
+    publicLabel: "Coming later",
+    evidenceReport: "docs/design/osl-master-decision-2026-07-26.md",
+    limitation: /\bcurrent adapter qualification\b.*\btwo-identity exact-build proof\b/i,
+  },
+  {
+    service: "Telegram",
+    claimScope: "protected_native_adapter",
+    status: "externally_blocked",
+    publicLabel: "Externally blocked",
+    evidenceReport: "docs/reports/telegram-adapter-verdict.md",
+    limitation: /\bsigned-client row probe\b.*\bstable, text-exposed conversation rows\b/i,
+  },
+  {
+    service: "OSL Mail",
+    claimScope: "osl_mail",
+    status: "unsupported",
+    publicLabel: "Coming later",
+    evidenceReport: "docs/reports/outlook-osl-mail-verdict.md",
+    limitation: /\bmailbox binding\b.*\brecipient authority\b.*\bdraft handling\b.*\bsafe send behavior\b/i,
+  },
+];
 const SUPPORT_CLAIM_TARGETS = [
   { service: "Signal", pattern: /\bsignal\b/i },
   { service: "WhatsApp", pattern: /\bwhats\s*app\b/i },
@@ -113,6 +147,14 @@ async function readUtf8(filePath) {
 function supportMatrixFailure(message) {
   return {
     name: "conditional_app_evidence",
+    expected: message,
+    actual: "invalid support matrix",
+  };
+}
+
+function versionedPublicSupportMatrixFailure(message) {
+  return {
+    name: "versioned_public_support_matrix",
     expected: message,
     actual: "invalid support matrix",
   };
@@ -212,6 +254,71 @@ async function validateSupportMatrix() {
   return failures;
 }
 
+async function validateVersionedPublicSupportMatrix(matrix) {
+  const failures = [];
+  const publicMatrix = matrix?.versioned_public_support_matrix;
+  if (!publicMatrix || typeof publicMatrix !== "object" || Array.isArray(publicMatrix)) {
+    failures.push(versionedPublicSupportMatrixFailure("top-level versioned_public_support_matrix object"));
+    return failures;
+  }
+  for (const [field, expected] of [
+    ["id", "E7"],
+    ["status", "current"],
+    ["updated", "2026-07-30"],
+  ]) {
+    if (publicMatrix[field] !== expected) {
+      failures.push(versionedPublicSupportMatrixFailure(`${field}=${JSON.stringify(expected)}`));
+    }
+  }
+  if (typeof publicMatrix.version !== "string" || !/^2026-07-30\.e7$/.test(publicMatrix.version)) {
+    failures.push(versionedPublicSupportMatrixFailure("version=2026-07-30.e7"));
+  }
+  if (!Array.isArray(publicMatrix.rows)) {
+    failures.push(versionedPublicSupportMatrixFailure("rows array"));
+    return failures;
+  }
+  const rowsByService = new Map();
+  for (const row of publicMatrix.rows) {
+    if (!row || typeof row !== "object" || Array.isArray(row) || typeof row.service !== "string") {
+      failures.push(versionedPublicSupportMatrixFailure("each row has a service"));
+      continue;
+    }
+    if (rowsByService.has(row.service)) {
+      failures.push(versionedPublicSupportMatrixFailure(`unique row for ${row.service}`));
+      continue;
+    }
+    rowsByService.set(row.service, row);
+  }
+  for (const required of REQUIRED_VERSIONED_PUBLIC_SUPPORT_ROWS) {
+    const row = rowsByService.get(required.service);
+    if (!row) {
+      failures.push(versionedPublicSupportMatrixFailure(`row ${required.service}`));
+      continue;
+    }
+    for (const [field, expected] of [
+      ["claim_scope", required.claimScope],
+      ["status", required.status],
+      ["public_label", required.publicLabel],
+      ["public_claim_allowed", false],
+      ["evidence_report", required.evidenceReport],
+      ["last_verified", "2026-07-30"],
+    ]) {
+      if (row[field] !== expected) {
+        failures.push(versionedPublicSupportMatrixFailure(`${required.service}.${field}=${JSON.stringify(expected)}`));
+      }
+    }
+    if (typeof row.limitation !== "string" || !required.limitation.test(row.limitation)) {
+      failures.push(versionedPublicSupportMatrixFailure(`${required.service}.limitation matches support boundary`));
+    }
+    try {
+      await readUtf8(path.join(REPO_ROOT, required.evidenceReport));
+    } catch {
+      failures.push(versionedPublicSupportMatrixFailure(`${required.service}.evidence_report exists`));
+    }
+  }
+  return failures;
+}
+
 function normalizeSupportMatrixStatus(value) {
   return typeof value === "string" ? value.replace(/-/g, "_") : "";
 }
@@ -222,6 +329,9 @@ function supportEvidenceRows(matrix) {
   }
   return [
     ...(Array.isArray(matrix.public_support_matrix) ? matrix.public_support_matrix : []),
+    ...(Array.isArray(matrix.versioned_public_support_matrix?.rows)
+      ? matrix.versioned_public_support_matrix.rows
+      : []),
     ...(Array.isArray(matrix.conditional_app_evidence) ? matrix.conditional_app_evidence : []),
   ].filter((row) => row && typeof row === "object" && !Array.isArray(row));
 }
@@ -1721,11 +1831,13 @@ async function scanRepository() {
   }
   const publicClaimServices = supportMatrixPublicClaimServices(supportMatrix);
   const supportMatrixFailures = await validateSupportMatrix();
+  const versionedPublicSupportMatrixFailures = await validateVersionedPublicSupportMatrix(supportMatrix);
   const rows = [];
   const allViolations = [];
   const floorFailures = [
     ...bannedPhraseInputFailures(bannedPhrases),
     ...supportMatrixFailures,
+    ...versionedPublicSupportMatrixFailures,
   ];
   let tsStringCount = 0;
   let rustStringCount = 0;
@@ -2667,6 +2779,21 @@ async function runSelfTest() {
     );
   }
 
+  const productionSupportMatrix = JSON.parse(await readUtf8(SUPPORT_MATRIX_PATH));
+  const mutatedSupportMatrix = structuredClone(productionSupportMatrix);
+  mutatedSupportMatrix.versioned_public_support_matrix.rows[0].public_claim_allowed = true;
+  const versionedPublicSupportMatrixPassed =
+    (await validateVersionedPublicSupportMatrix(productionSupportMatrix)).length === 0
+    && (await validateVersionedPublicSupportMatrix(mutatedSupportMatrix)).some(
+      (failure) => failure.name === "versioned_public_support_matrix",
+    );
+  if (!versionedPublicSupportMatrixPassed) {
+    failures += 1;
+  }
+  console.log(
+    `${versionedPublicSupportMatrixPassed ? "PASS" : "FAIL"} versioned_public_support_matrix`,
+  );
+
   const supportClaimFixtures = [
     {
       name: "validateSupportMatrixClaims",
@@ -2787,7 +2914,7 @@ async function runSelfTest() {
   );
 
   console.log(
-    `Self-test: phrases parsed=${bannedPhrases.length}, fixtures=${fixtures.length + rustFixtures.length + inputCases.length + supportClaimFixtures.length + 2}, failures=${failures}`,
+    `Self-test: phrases parsed=${bannedPhrases.length}, fixtures=${fixtures.length + rustFixtures.length + inputCases.length + supportClaimFixtures.length + 3}, failures=${failures}`,
   );
 
   return failures === 0 ? 0 : 1;
