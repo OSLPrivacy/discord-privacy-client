@@ -58,6 +58,7 @@ pub enum SignalRole {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SignalNodeEvidence {
     None,
+    Body,
 }
 
 #[derive(Clone)]
@@ -97,6 +98,15 @@ impl SignalNode {
 pub enum SignalSelectorError {
     Missing,
     Ambiguous,
+    Invalid,
+    LimitExceeded,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct SignalRowCandidate {
+    pub node_index: usize,
+    pub text: String,
+    pub body_bounds: SignalRect,
 }
 
 pub fn discover_signal_composer(
@@ -137,6 +147,47 @@ pub fn discover_signal_transcript(
     }
 }
 
+pub fn extract_signal_row_candidates(
+    nodes: &[SignalNode],
+    row_index: usize,
+    max_candidates: usize,
+    max_text_bytes: usize,
+) -> Result<Vec<SignalRowCandidate>, SignalSelectorError> {
+    let Some(row) = nodes.get(row_index) else {
+        return Err(SignalSelectorError::Missing);
+    };
+    if !row.visible || !row.bounds.valid() || max_candidates == 0 || max_text_bytes == 0 {
+        return Err(SignalSelectorError::Invalid);
+    }
+
+    let mut candidates = Vec::new();
+    for index in descendants(nodes, row_index)? {
+        let node = &nodes[index];
+        if node.evidence != SignalNodeEvidence::Body {
+            continue;
+        }
+        let Some(text) = node.text.as_ref() else {
+            return Err(SignalSelectorError::Invalid);
+        };
+        if node.role != SignalRole::Text
+            || !node.visible
+            || !node.bounds.contained_by(row.bounds)
+            || !valid_candidate_text(text, max_text_bytes)
+        {
+            return Err(SignalSelectorError::Invalid);
+        }
+        if candidates.len() >= max_candidates {
+            return Err(SignalSelectorError::LimitExceeded);
+        }
+        candidates.push(SignalRowCandidate {
+            node_index: index,
+            text: text.clone(),
+            body_bounds: node.bounds,
+        });
+    }
+    Ok(candidates)
+}
+
 fn signal_composer_candidate(node: &SignalNode, window_bounds: SignalRect) -> bool {
     let right_pane_left = window_bounds.left.saturating_add(window_bounds.width() / 3);
     let lower_band_top = window_bounds
@@ -167,6 +218,33 @@ fn signal_transcript_candidate(
         && node.bounds.horizontal_overlap(composer.bounds) >= required_overlap
 }
 
+fn descendants(nodes: &[SignalNode], root: usize) -> Result<Vec<usize>, SignalSelectorError> {
+    let Some(root_node) = nodes.get(root) else {
+        return Err(SignalSelectorError::Missing);
+    };
+    let mut result = Vec::new();
+    let mut queue = std::collections::VecDeque::from(root_node.children.clone());
+    while let Some(index) = queue.pop_front() {
+        let Some(node) = nodes.get(index) else {
+            return Err(SignalSelectorError::Invalid);
+        };
+        if result.len() >= nodes.len() {
+            return Err(SignalSelectorError::Invalid);
+        }
+        result.push(index);
+        queue.extend(node.children.iter().copied());
+    }
+    Ok(result)
+}
+
+fn valid_candidate_text(value: &str, max_text_bytes: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max_text_bytes
+        && !value
+            .chars()
+            .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,6 +270,13 @@ mod tests {
     fn list(bounds: SignalRect, localized_name: &str) -> SignalNode {
         let mut node = SignalNode::structural(SignalRole::List, bounds);
         node.localized_name = Some(localized_name.to_owned());
+        node
+    }
+
+    fn body_text(bounds: SignalRect, text: &str) -> SignalNode {
+        let mut node = SignalNode::structural(SignalRole::Text, bounds);
+        node.evidence = SignalNodeEvidence::Body;
+        node.text = Some(text.to_owned());
         node
     }
 
@@ -248,6 +333,43 @@ mod tests {
         assert_eq!(
             discover_signal_transcript(&ambiguous, composer, window),
             Err(SignalSelectorError::Ambiguous)
+        );
+    }
+
+    #[test]
+    fn signal_row_candidates() {
+        let mut row = SignalNode::structural(SignalRole::Row, rect(420, 230, 1130, 330));
+        row.children = vec![1, 2, 3];
+        let nodes = vec![
+            row,
+            body_text(rect(500, 245, 970, 270), "first visible body"),
+            {
+                let mut decorative =
+                    SignalNode::structural(SignalRole::Text, rect(500, 274, 970, 292));
+                decorative.text = Some("timestamp that is not body evidence".to_owned());
+                decorative
+            },
+            body_text(rect(500, 296, 970, 320), "second visible body"),
+        ];
+
+        let candidates = extract_signal_row_candidates(&nodes, 0, 4, 128)
+            .expect("body evidence should produce candidates");
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].node_index, 1);
+        assert_eq!(candidates[0].text, "first visible body");
+        assert_eq!(candidates[1].node_index, 3);
+        assert_eq!(candidates[1].text, "second visible body");
+
+        let mut invalid = nodes.clone();
+        invalid[1].text = Some("bad\u{0008}body".to_owned());
+        assert_eq!(
+            extract_signal_row_candidates(&invalid, 0, 4, 128).map(|value| value.len()),
+            Err(SignalSelectorError::Invalid)
+        );
+
+        assert_eq!(
+            extract_signal_row_candidates(&nodes, 0, 1, 128).map(|value| value.len()),
+            Err(SignalSelectorError::LimitExceeded)
         );
     }
 }
