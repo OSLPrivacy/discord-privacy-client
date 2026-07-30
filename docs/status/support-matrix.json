@@ -1,4 +1,6 @@
 {
+  "schema": "osl-support-matrix-v1",
+  "updated_utc": "2026-07-30T00:00:00Z",
   "schema_version": 1,
   "generated_from": "manual-verdict-ingest",
   "updated": "2026-07-30",
@@ -124,5 +126,124 @@
       "verdict_recorded": "2026-07-30",
       "support_boundary": "Outlook is scoped as OSL Mail, not Outlook chat support; protected inline replies must refuse until a separate OSL Mail gate proves mailbox binding, recipient authority, safe send behavior, draft handling, and runtime support."
     }
-  ]
+  ],
+  "chat_app_evidence": {
+    "schema": "osl-chat-app-evidence-v1",
+    "unit": "p2",
+    "evidence_policy": {
+      "no_runtime_inference": true,
+      "no_secret_or_account_identifier_material": true,
+      "absence_of_authority_means_refusal": true,
+      "promotion_rule": "A chat app stays unavailable unless current evidence proves consent, account binding, release authority, exact app identity, conversation binding, composer binding, and send outcome for that app."
+    },
+    "apps": [
+      {
+        "app_id": "discord",
+        "display_name": "Discord",
+        "service_family": "messaging",
+        "public_status": "unavailable",
+        "evidence_status": "blocked",
+        "qualification": "not-qualified",
+        "qualified_surfaces": [],
+        "capabilities": {
+          "protected_send": "unavailable",
+          "protected_receive": "unavailable",
+          "attachments": "unavailable",
+          "burn": "unavailable"
+        },
+        "authority_requirements": {
+          "user_consent_required": true,
+          "account_binding_required": true,
+          "release_authority_required": true,
+          "conversation_binding_required": true,
+          "composer_binding_required": true
+        },
+        "dependency_units": [
+          {
+            "unit_id": "d6",
+            "status": "open-security-finding",
+            "evidence_tier": "source/test-proven-only",
+            "summary": "Bilateral Burn remains unqualified for product claims because two-identity runtime proof and the complete enforcement lifecycle are absent.",
+            "source_anchors": [
+              {
+                "path": "docs/design/osl-internal-build-checklist.md",
+                "contains": "D6 · Bilateral Burn"
+              },
+              {
+                "path": "docs/reports/crypto-lane-2026-07-26.md",
+                "contains": "D6 is `open-security-finding`"
+              }
+            ]
+          },
+          {
+            "unit_id": "w9",
+            "status": "blocks-core-feature",
+            "evidence_tier": "source-audit",
+            "summary": "Production engage brings Discord forward before the protected composer is revealed, so the protected-send path is blocked rather than qualified.",
+            "source_anchors": [
+              {
+                "path": "docs/OSL-DISCORD-STATE-MAP.md",
+                "contains": "| W9 | Nothing raises Discord above the composer at engage time |"
+              },
+              {
+                "path": "docs/OSL-DISCORD-STATE-MAP.md",
+                "contains": "Blocks core feature"
+              }
+            ]
+          }
+        ],
+        "refusal_conditions": [
+          "Missing consent, account binding, release authority, exact app identity, conversation binding, composer binding, or send outcome keeps Discord unavailable.",
+          "D6 and W9 prevent any runtime, verified-live, release-qualified, or available Discord claim."
+        ]
+      },
+      {
+        "app_id": "signal",
+        "display_name": "Signal",
+        "service_family": "messaging",
+        "public_status": "unavailable",
+        "evidence_status": "source-profile-only",
+        "qualification": "profile-published-unwired",
+        "qualified_surfaces": [
+          "signed-default-profile"
+        ],
+        "capabilities": {
+          "protected_send": "unavailable",
+          "protected_receive": "unavailable",
+          "attachments": "unavailable",
+          "burn": "unavailable"
+        },
+        "authority_requirements": {
+          "user_consent_required": true,
+          "account_binding_required": true,
+          "release_authority_required": true,
+          "harmless_canary_required": true,
+          "conversation_binding_required": true,
+          "composer_binding_required": true
+        },
+        "dependency_units": [
+          {
+            "unit_id": "s9",
+            "status": "source-profile-published",
+            "evidence_tier": "source/test-proven-only",
+            "summary": "A signed, data-only Signal Desktop native profile exists, requires consent, binding, release authority, and harmless canary checks, and is not wired as runtime app support.",
+            "source_anchors": [
+              {
+                "path": "crates/adapter-profile/src/defaults.rs",
+                "contains": "A signed, data-only Signal Desktop native support profile."
+              },
+              {
+                "path": "crates/adapter-profile/src/lib.rs",
+                "contains": "signal_default_profile"
+              }
+            ]
+          }
+        ],
+        "refusal_conditions": [
+          "The signed profile grants no protected send, protected receive, attachment, or burn capability without consent, binding, release authority, canary, and exact runtime app evidence.",
+          "Profile publication alone must not be promoted to runtime, verified-live, release-qualified, or available Signal support."
+        ]
+      }
+    ]
+  }
 }
