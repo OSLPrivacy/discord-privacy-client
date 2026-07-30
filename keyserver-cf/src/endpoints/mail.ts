@@ -134,6 +134,8 @@ export async function handleMailSendOsl(request: Request, env: Env): Promise<Res
   if (typeof body.recipient_key_fingerprint !== "string" || body.recipient_key_fingerprint.length > 128) {
     return badRequest("recipient_key_fingerprint invalid");
   }
+  const senderAddress = await activeAddressForUser(env, auth.userId);
+  if (!senderAddress) return forbidden("active sender mailbox required");
   const recipient = await env.DB.prepare(
     "SELECT address, user_id FROM mail_address_epochs WHERE address = ? AND state = 'active'",
   ).bind(body.recipient_address).first<{ address: string; user_id: string }>();
@@ -240,4 +242,3 @@ async function deterministicMessageId(userId: string, requestId: string): Promis
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`OSL-MAIL-ID-v1\n${userId}\n${requestId}\n`)));
   return `mail_${base64Encode(digest).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "")}`;
 }
-

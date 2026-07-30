@@ -94,6 +94,26 @@ describe("OSL Mail Worker", () => {
     expect(response.status).toBe(404);
   });
 
+  it("refuses OSL-to-OSL delivery from a sender without an active mailbox even with consent", async () => {
+    const alice = await createIdentity("alice-id", "alice");
+    const bob = await createIdentity("bob-id", "bob");
+    expect((await signedPost("/v1/mail/address", "PROVISION", bob, { username: "bob", rotate: false })).status).toBe(201);
+    expect((await signedPost("/v1/mail/consent", "CONSENT", bob, { sender_user_id: alice.userId, allowed: true })).status).toBe(200);
+
+    const response = await signedPost("/v1/mail/send/osl", "SEND-OSL", alice, {
+      recipient_address: "bob@oslprivacy.com",
+      opaque_thread_token: "abcdefghijklmnop",
+      ciphertext_b64: base64Encode(new TextEncoder().encode("ciphertext-not-plaintext")),
+      envelope: { version: 1, nonce_b64: "bm9uY2U=" },
+      recipient_key_fingerprint: "fingerprint",
+    });
+    expect(response.status).toBe(403);
+
+    const list = await signedPost("/v1/mail/list", "LIST", bob, { limit: 10 });
+    const body = await list.json() as { messages: unknown[] };
+    expect(body.messages).toHaveLength(0);
+  });
+
   it("burns the mailbox atomically and tombstones its address", async () => {
     const alice = await createIdentity("alice-id", "alice");
     await signedPost("/v1/mail/address", "PROVISION", alice, { username: "alice", rotate: false });
