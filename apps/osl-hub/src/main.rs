@@ -106,6 +106,7 @@ const B6_PREFLIGHT_RECEIPT_FILE: &str = "osl-discord-qa-b6-preflight.v2.json";
 struct DiscordQaB6StartupReceipt<'a> {
     schema_version: u8,
     b6_preflight: &'a broker::DiscordQaB6Preflight,
+    b6_proof_receipt: broker::B6ProofReceipt,
 }
 
 /// The first QA-shell action. Apart from retaining this public preflight
@@ -117,6 +118,7 @@ fn discord_qa_b6_startup_gate() -> Result<bool, String> {
     let receipt = DiscordQaB6StartupReceipt {
         schema_version: 2,
         b6_preflight: &preflight,
+        b6_proof_receipt: preflight.proof_receipt(),
     };
     let encoded = serde_json::to_vec_pretty(&receipt)
         .map_err(|_| "B6 startup preflight receipt could not be encoded".to_owned())?;
