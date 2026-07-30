@@ -37,10 +37,10 @@ def _decode_base64_sha256(value: str) -> bytes | None:
     if not compact:
         return None
 
-    padding = "=" * (-len(compact) % 4)
-    for decoder in (base64.b64decode, base64.urlsafe_b64decode):
+    padded = compact + ("=" * (-len(compact) % 4))
+    for altchars in (None, b"-_"):
         try:
-            decoded = decoder(compact + padding)
+            decoded = base64.b64decode(padded, altchars=altchars, validate=True)
         except (binascii.Error, ValueError):
             continue
         if len(decoded) == 32:
