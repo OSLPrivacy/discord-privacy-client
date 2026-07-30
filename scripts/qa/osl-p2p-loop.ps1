@@ -542,6 +542,13 @@ function Test-B6StartupReceiptBinding {
         'negativeCrossPeerIsolation'
     )
     $runtimeComplete = (@($requiredRuntime | Where-Object { $runtimeNames -notcontains $_ }).Count -eq 0)
+    $runtimeFactsTrue = $runtimeComplete
+    foreach ($fact in $requiredRuntime) {
+        if ($runtimeComplete -and $b6.runtime.PSObject.Properties[$fact].Value -ne $true) {
+            $runtimeFactsTrue = $false
+            break
+        }
+    }
     $startupBlockers = @($b6.startupBlockers)
     $ok = (
         $Receipt.schemaVersion -eq 2 -and
@@ -551,18 +558,18 @@ function Test-B6StartupReceiptBinding {
         $b6.sourceCommit -and
         $b6.binarySha256 -and
         $b6.serverDeploymentIdentity -and
-        $runtimeComplete -and
+        $runtimeFactsTrue -and
         $null -ne $b6.identityPublicFingerprintsSha256 -and
         $null -ne $b6.identityKeystoreRootFingerprintsSha256
     )
     [pscustomobject]@{
         Ok = $ok
-        Detail = ('{0}: startupAllowed={1}; schema={2}/{3}; sourceCommit={4}; binarySha256={5}; deployment={6}; startupBlockers=[{7}]; allEightFactsRepresented={8}' -f
+        Detail = ('{0}: startupAllowed={1}; schema={2}/{3}; sourceCommit={4}; binarySha256={5}; deployment={6}; startupBlockers=[{7}]; allEightFactsRepresented={8}; allEightFactsTrue={9}' -f
             $Side, $b6.startupAllowed, $Receipt.schemaVersion, $b6.schemaVersion,
             $(if ($b6.sourceCommit) { $b6.sourceCommit } else { '<absent>' }),
             $(if ($b6.binarySha256) { $b6.binarySha256 } else { '<absent>' }),
             $(if ($b6.serverDeploymentIdentity) { $b6.serverDeploymentIdentity } else { '<absent>' }),
-            ($startupBlockers -join ','), $runtimeComplete)
+            ($startupBlockers -join ','), $runtimeComplete, $runtimeFactsTrue)
         Path = $Path
         Receipt = $Receipt
     }
@@ -728,6 +735,32 @@ function b6_controllers_read_the_retained_preflight_before_consent_or_drive {
         }
         Assert-NoSelftestDriveFiles -Label 'incomplete-retained-b6' -TempRoots @($incompleteA, $incompleteB)
 
+        $falseFactA = Join-Path $root 'false-fact-a'
+        $falseFactB = Join-Path $root 'false-fact-b'
+        foreach ($path in @($falseFactA, $falseFactB)) {
+            [void](New-Item -ItemType Directory -Path $path -Force -ErrorAction Stop)
+            $falseFactReceipt = New-B6StartupReceiptForSelfTest
+            $falseFactReceipt.b6Preflight.runtime['negativeCrossPeerIsolation'] = $false
+            $falseFactReceipt | ConvertTo-Json -Depth 12 | Out-File -LiteralPath (Join-Path $path 'osl-discord-qa-b6-preflight.v2.json') -Encoding utf8
+        }
+        $falseFactJson = Join-Path $root 'false-fact.json'
+        $falseFact = Invoke-P2PLoopSelfTestChild `
+            -Name 'false-fact-retained-b6' `
+            -TempRootAForChild $falseFactA `
+            -TempRootBForChild $falseFactB `
+            -JsonOutForChild $falseFactJson
+        if ($falseFact.overall.blockedBy -cne 'b6-preflight') {
+            throw ('false retained preflight fact blocked by {0}, not b6-preflight' -f $falseFact.overall.blockedBy)
+        }
+        $falseFactGates = @($falseFact.preconditionGate)
+        if ($falseFactGates.Count -ne 1 -or $falseFactGates[0].gate -cne 'b6-preflight' -or $falseFactGates[0].ok -ne $false) {
+            throw 'false retained B6 facts did not stop at the B6 gate'
+        }
+        if ($falseFact.overall.stepsRun -ne $false -or @($falseFact.steps).Count -ne 0) {
+            throw 'the false retained B6 self-test drove measurement steps'
+        }
+        Assert-NoSelftestDriveFiles -Label 'false-fact-retained-b6' -TempRoots @($falseFactA, $falseFactB)
+
         foreach ($path in @($validA, $validB)) {
             $receipt | ConvertTo-Json -Depth 12 | Out-File -LiteralPath (Join-Path $path 'osl-discord-qa-b6-preflight.v2.json') -Encoding utf8
         }
@@ -780,6 +813,16 @@ function b6_startup_receipt_binding_selftest {
         -Path 'selftest-b'
     if ($missingCrossPeer.Ok) {
         throw 'retained B6 startup receipt without negativeCrossPeerIsolation must refuse before consent or drive'
+    }
+
+    $falseCrossPeer = New-B6StartupReceiptSelftestFixture -RuntimeFacts $allFacts
+    $falseCrossPeer.b6Preflight.runtime.negativeCrossPeerIsolation = $false
+    $falseCrossPeerResult = Test-B6StartupReceiptBinding `
+        -Receipt $falseCrossPeer `
+        -Side 'B' `
+        -Path 'selftest-b'
+    if ($falseCrossPeerResult.Ok) {
+        throw 'retained B6 startup receipt with false negativeCrossPeerIsolation must refuse before consent or drive'
     }
 
     $blocked = Test-B6StartupReceiptBinding `
