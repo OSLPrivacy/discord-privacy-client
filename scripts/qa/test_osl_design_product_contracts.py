@@ -328,8 +328,8 @@ encode_browser_import_choices_and_noninterrupting_monetization.__name__ = (
 def encode_burns_five_guarantees_and_banned_phrases() -> None:
     markdown = SIMPLE_SPEC.read_text(encoding="utf-8")
     broken = markdown.replace(
-        '8. **Honest result:** OSL reports what it actually verified.',
-        '8. **Optimistic result:** OSL reports cleanup requests as success.',
+        '5. **Honest result:** OSL reports what it actually verified.',
+        '5. **Optimistic result:** OSL reports cleanup requests as success.',
     ).replace('"gone for good"', '"secure cleanup"')
     _assert_contract(_errors_for_burn_contract, markdown, broken_documents=(broken,))
 
@@ -337,6 +337,36 @@ def encode_burns_five_guarantees_and_banned_phrases() -> None:
 encode_burns_five_guarantees_and_banned_phrases.__name__ = (
     "Encode Burn's five guarantees and banned phrases."
 )
+
+
+def simple_spec_burn_contract() -> None:
+    markdown = SIMPLE_SPEC.read_text(encoding="utf-8")
+    testcase = unittest.TestCase()
+    testcase.assertEqual(_errors_for_burn_contract(markdown), [])
+
+    missing_peer_refusal = markdown.replace(
+        "absence of consent, binding, authority, transport delivery or\n   verification means the peer cleanup is refused or reported as unavailable.",
+        "peer cleanup is attempted whenever transport delivery is available.",
+    )
+    testcase.assertIn(
+        "Burn guarantee is incomplete: Cooperative peer request",
+        _errors_for_burn_contract(missing_peer_refusal),
+    )
+
+    optimistic_result = markdown.replace(
+        "A cleanup request\n   is never displayed as deletion",
+        "A cleanup request\n   is displayed as deletion",
+    )
+    testcase.assertIn(
+        "Burn guarantee is incomplete: Honest result",
+        _errors_for_burn_contract(optimistic_result),
+    )
+
+    missing_ban = markdown.replace('"permanent ciphertext"', '"durable cleanup"')
+    testcase.assertIn("Burn banned phrases changed", _errors_for_burn_contract(missing_ban))
+
+
+simple_spec_burn_contract.__name__ = "docs/design/osl-simple-spec.md'"
 
 
 def load_tests(
@@ -351,6 +381,7 @@ def load_tests(
         encode_honest_tri_state_sending_and_double_enter_without_auto_retry,
         encode_browser_import_choices_and_noninterrupting_monetization,
         encode_burns_five_guarantees_and_banned_phrases,
+        simple_spec_burn_contract,
     ):
         suite.addTest(unittest.FunctionTestCase(test))
     return suite
