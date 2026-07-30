@@ -40,6 +40,8 @@ class HubVmQaAttestationTests(unittest.TestCase):
                     "candidateSha256": hashlib.sha256(installer.read_bytes()).hexdigest(),
                     "completedAtUtc": "2026-07-17T23:00:00Z",
                     "operator": "qa-reviewer",
+                    "finalApprover": "qa-final-approver-second-session",
+                    "packageReproducedBySecondSession": True,
                     "captchaHandling": "paused_for_manual_completion",
                     "vms": [
                         {"name": "A", "goldenSnapshotId": "signed-a", "cleanRestore": True},
@@ -85,6 +87,68 @@ class HubVmQaAttestationTests(unittest.TestCase):
             attestation.write_text(json.dumps(document), encoding="utf-8")
             with self.assertRaises(SystemExit):
                 verify("hub-v0.1.0", root, attestation)
+
+
+def freeze_the_exact_signed_candidate_vm_attestation_contract() -> None:
+    test_case = HubVmQaAttestationTests()
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        installer, attestation = test_case.candidate(root)
+
+        verify("hub-v0.1.0", root, attestation)
+
+        document = json.loads(attestation.read_text(encoding="utf-8"))
+        manifest_path = root / "latest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        document["candidateSha256"] = hashlib.sha256(b"untested package").hexdigest()
+        attestation.write_text(json.dumps(document), encoding="utf-8")
+        with test_case.assertRaises(SystemExit):
+            verify("hub-v0.1.0", root, attestation)
+        document["candidateSha256"] = hashlib.sha256(installer.read_bytes()).hexdigest()
+
+        document["packageReproducedBySecondSession"] = False
+        attestation.write_text(json.dumps(document), encoding="utf-8")
+        with test_case.assertRaises(SystemExit):
+            verify("hub-v0.1.0", root, attestation)
+        document["packageReproducedBySecondSession"] = True
+
+        document["finalApprover"] = document["operator"]
+        attestation.write_text(json.dumps(document), encoding="utf-8")
+        with test_case.assertRaises(SystemExit):
+            verify("hub-v0.1.0", root, attestation)
+        document["finalApprover"] = "qa-final-approver-second-session"
+        attestation.write_text(json.dumps(document), encoding="utf-8")
+
+        manifest["platforms"]["windows-x86_64"]["url"] = (
+            "https://github.com/OSLPrivacy/discord-privacy-client/"
+            "releases/download/hub-latest/osl-hub-0.1.0-x64-nsis.exe"
+        )
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        with test_case.assertRaises(SystemExit):
+            verify("hub-v0.1.0", root, attestation)
+
+
+freeze_the_exact_signed_candidate_vm_attestation_contract.__name__ = (
+    "Freeze the exact signed-candidate VM attestation contract."
+)
+
+
+def load_tests(
+    loader: unittest.TestLoader,
+    tests: unittest.TestSuite,
+    pattern: str | None,
+) -> unittest.TestSuite:
+    del loader, tests, pattern
+    suite = unittest.TestSuite()
+    for test in (
+        HubVmQaAttestationTests("test_accepts_exact_candidate_and_complete_two_vm_gate"),
+        HubVmQaAttestationTests("test_rejects_installer_changed_after_qa"),
+        HubVmQaAttestationTests("test_rejects_incomplete_test_matrix"),
+        unittest.FunctionTestCase(freeze_the_exact_signed_candidate_vm_attestation_contract),
+    ):
+        suite.addTest(test)
+    return suite
 
 
 if __name__ == "__main__":
