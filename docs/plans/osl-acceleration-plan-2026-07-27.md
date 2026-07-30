@@ -106,11 +106,13 @@ Resource states:
   exact active command finish, checkpoint, and wait.
 
 Fast children handle boilerplate, fixture generation, bounded searches, mechanical inventories, and
-repetitive mutation execution. Main Sol/Terra tabs retain architecture, cryptography, destructive
-behavior, conflict resolution, acceptance decisions, and final review. Never switch Codex accounts
-or change `CODEX_HOME` unless Liam explicitly changes that instruction. The
-guarded launcher inherits an already-selected `CODEX_HOME` unchanged; it never
-clears, replaces, or synthesizes one.
+repetitive mutation execution. Route that work only through `osl-fast-delegate`, and only while the
+resource state is Green. Main Sol/Terra tabs retain architecture, cryptography, destructive behavior,
+conflict resolution, acceptance decisions, and final review. Broad or heavy verification remains
+behind `osl-heavy`; Cargo verification remains batched through `osl-cargo` under the release owner.
+Never switch Codex accounts or change `CODEX_HOME` unless Liam explicitly changes that instruction.
+The guarded launcher inherits an already-selected `CODEX_HOME` unchanged; it never clears, replaces,
+or synthesizes one.
 
 Use the guarded launcher instead of invoking nested Codex directly:
 
