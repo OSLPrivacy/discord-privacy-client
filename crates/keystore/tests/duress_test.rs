@@ -318,7 +318,11 @@ fn handlers_run_in_canonical_order() {
     assert!(report.failed_steps().is_empty());
     assert!(report.skipped_steps().is_empty());
     assert_eq!(
-        report.steps.iter().map(|(step, _)| *step).collect::<Vec<_>>(),
+        report
+            .steps
+            .iter()
+            .map(|(step, _)| *step)
+            .collect::<Vec<_>>(),
         vec![
             WipeStep::TpmEvict,
             WipeStep::KeyringPurge,
@@ -390,6 +394,75 @@ fn keyring_purge_handler() {
     assert!(
         !journal_path.exists(),
         "successful keyring purge handler run must clear the journal"
+    );
+}
+
+#[test]
+fn tpm_evict_and_keyring_purge_handlers_compose() {
+    let dir = TempDir::new().unwrap();
+    let (paths, journal_path) = build_paths(&dir);
+
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let calls_for_keyring = calls.clone();
+    let calls_for_unregister = calls.clone();
+    let handlers = DuressHandlers {
+        purge_keyring: Some(Box::new(move || {
+            calls_for_keyring.lock().unwrap().push("keyring_purge");
+            Ok(())
+        })),
+        unregister_account: Some(Box::new(move || {
+            calls_for_unregister
+                .lock()
+                .unwrap()
+                .push("unregister_account");
+            Err(keystore::DuressError::Handler(
+                "intentional failure after TPM/keyring composition proof".into(),
+            ))
+        })),
+        ..Default::default()
+    };
+
+    let engine = DuressEngine::new(journal_path.clone(), paths, handlers);
+    let report = engine.execute().unwrap();
+
+    let tpm_step = report.steps.first().expect("TPM eviction step missing");
+    let keyring_step = report.steps.get(1).expect("keyring purge step missing");
+    assert_eq!(tpm_step.0, WipeStep::TpmEvict);
+    assert_eq!(keyring_step, &(WipeStep::KeyringPurge, StepOutcome::Wiped));
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec!["keyring_purge", "unregister_account"],
+        "keyring purge must run exactly once after the TPM eviction step"
+    );
+    assert!(
+        matches!(
+            &tpm_step.1,
+            StepOutcome::Wiped | StepOutcome::AlreadyClean | StepOutcome::Failed { .. }
+        ),
+        "TPM eviction must be attempted and recorded as a terminal outcome"
+    );
+    assert!(
+        matches!(
+            outcome_for(&report.steps, WipeStep::UnregisterAccount),
+            StepOutcome::Failed { error } if error.contains("intentional failure")
+        ),
+        "the later failure keeps the journal available for composition checks"
+    );
+    assert!(
+        journal_path.exists(),
+        "a later failure must retain the journal with the TPM and keyring outcomes"
+    );
+
+    let journal: DuressJournal =
+        serde_json::from_slice(&std::fs::read(&journal_path).unwrap()).unwrap();
+    assert_eq!(journal.completed, report.steps);
+    assert_eq!(
+        &journal.completed[..2],
+        &[
+            (WipeStep::TpmEvict, tpm_step.1.clone()),
+            (WipeStep::KeyringPurge, StepOutcome::Wiped),
+        ],
+        "journal order must preserve TPM eviction before keyring purge"
     );
 }
 
