@@ -484,8 +484,20 @@ export async function selectOslChatAttachment(viewOnce: boolean): Promise<Native
 export async function listOslChatAttachments(): Promise<NativeOverlayPendingAttachment[] | null> {
   try {
     const value = await invoke<unknown>("list_osl_chat_attachments");
-    if (!Array.isArray(value) || value.length > 64) return null;
-    const parsed = value.map(parseNativeOverlayPendingAttachment);
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    const expectedKeys = ["attachments", "authenticatedEnvelope", "authority", "binding", "consent", "protocol"] as const;
+    const actualKeys = Object.keys(record).sort();
+    if (actualKeys.length !== expectedKeys.length
+      || ![...expectedKeys].sort().every((key, index) => key === actualKeys[index])
+      || record.protocol !== "osl-chat-attachments-v1"
+      || record.authenticatedEnvelope !== true
+      || record.consent !== true
+      || record.binding !== true
+      || record.authority !== true
+      || !Array.isArray(record.attachments)
+      || record.attachments.length > 64) return null;
+    const parsed = record.attachments.map(parseNativeOverlayPendingAttachment);
     return parsed.some((entry) => entry === null) ? null : parsed as NativeOverlayPendingAttachment[];
   } catch (error) { recordBackendFailure("list_osl_chat_attachments", error); return null; }
 }
