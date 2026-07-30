@@ -6645,8 +6645,8 @@ fn finish_native_visible_rows(
     read: RehydrateRead,
     scope_binding: &str,
     window_generation: u64,
-    root_identity_still_holds: bool,
     discovery_profile: NativeVisibleRowDiscoveryProfile,
+    root_identity_still_holds: bool,
 ) -> Vec<VisibleMessageRow> {
     let mut visible_rows = read
         .rows
@@ -10554,8 +10554,8 @@ mod windows {
             read,
             scope_binding,
             target.generation,
-            root_window_identity_holds(target, process_is_trusted),
             NativeVisibleRowDiscoveryProfile::reviewed_signed_profile(),
+            root_window_identity_holds(target, process_is_trusted),
         );
         let different_non_self = if foreign_poster_attempts.get() == 0 {
             NativeVisibleRowQaTriState::NotObserved
@@ -19454,8 +19454,8 @@ mod tests {
             read,
             "scope-binding",
             7,
-            true,
             NativeVisibleRowDiscoveryProfile::reviewed_signed_profile(),
+            true,
         );
         assert_eq!(
             visible.iter().map(|row| row.bounds).collect::<Vec<_>>(),
@@ -25423,8 +25423,8 @@ mod tests {
             provider_rehydrate_read(own, peer),
             "trusted-scope",
             7,
-            true,
             NativeVisibleRowDiscoveryProfile::reviewed_signed_profile(),
+            true,
         );
         assert_eq!(visible.len(), 2);
         assert!(visible.iter().all(|row| row.attribution.is_some()));
@@ -25500,8 +25500,8 @@ mod tests {
             },
             "trusted-scope",
             7,
-            true,
             NativeVisibleRowDiscoveryProfile::reviewed_signed_profile(),
+            true,
         );
         assert_eq!(finished.len(), 2);
         assert!(finished.iter().all(|row| row.attribution.is_none()));
@@ -25603,8 +25603,8 @@ mod tests {
             provider_rehydrate_read(own.clone(), peer.clone()),
             "trusted-scope",
             7,
-            false,
             NativeVisibleRowDiscoveryProfile::reviewed_signed_profile(),
+            false,
         );
         assert!(stale_root.iter().all(|row| row.attribution.is_none()));
         assert!(!native_row_producer_batch_is_valid(
@@ -26563,8 +26563,8 @@ mod tests {
             provider_rehydrate_read(own.clone(), peer.clone()),
             "trusted-scope",
             7,
-            true,
             discovery_profile,
+            true,
         );
         assert_eq!(admitted_rows.len(), 2);
         assert!(admitted_rows.iter().all(|row| row.attribution.is_some()));
@@ -26590,8 +26590,8 @@ mod tests {
             provider_rehydrate_read(own, peer),
             "trusted-scope",
             7,
-            true,
             NativeVisibleRowDiscoveryProfile::incomplete_for_tests(),
+            true,
         );
         assert_eq!(refused_rows.len(), 2);
         assert!(refused_rows.iter().all(|row| row.attribution.is_none()));
