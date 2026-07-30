@@ -63,6 +63,10 @@ class ProviderFingerprintNormalizationTests(unittest.TestCase):
 def normalize_provider_fingerprints_for_signed_profiles() -> None:
     fingerprint = bytes.fromhex(FINGERPRINT_HEX)
     signed_profile_urlsafe = base64.urlsafe_b64encode(fingerprint).decode("ascii").rstrip("=")
+    signed_profile_wrapped = "\n  ".join(
+        base64.b64encode(fingerprint).decode("ascii")[index : index + 16]
+        for index in range(0, 44, 16)
+    )
     signed_profile_separated = "-".join(
         FINGERPRINT_HEX[index : index + 2]
         for index in range(0, len(FINGERPRINT_HEX), 2)
@@ -71,6 +75,10 @@ def normalize_provider_fingerprints_for_signed_profiles() -> None:
     testcase = unittest.TestCase()
     testcase.assertEqual(
         NORMALIZE.normalize_provider_fingerprint(f"SHA256={signed_profile_urlsafe}"),
+        FINGERPRINT_HEX,
+    )
+    testcase.assertEqual(
+        NORMALIZE.normalize_provider_fingerprint(f"sha256:{signed_profile_wrapped}"),
         FINGERPRINT_HEX,
     )
     testcase.assertEqual(
