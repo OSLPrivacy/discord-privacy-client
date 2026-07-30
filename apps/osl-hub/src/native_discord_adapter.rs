@@ -168,6 +168,29 @@ pub enum DiscordCarrierStatus {
     PlatformUnsupported,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum DiscordProtectedSendOutcome {
+    Sent,
+    NotSent,
+    DeliveryUncertain,
+}
+
+impl DiscordCarrierStatus {
+    pub fn protected_send_outcome(
+        self,
+        placed: bool,
+        enter_sent: bool,
+    ) -> DiscordProtectedSendOutcome {
+        if self == DiscordCarrierStatus::Sent && placed && enter_sent {
+            DiscordProtectedSendOutcome::Sent
+        } else if enter_sent {
+            DiscordProtectedSendOutcome::DeliveryUncertain
+        } else {
+            DiscordProtectedSendOutcome::NotSent
+        }
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscordComposerCalibrationReceipt {

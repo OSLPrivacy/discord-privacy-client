@@ -15,6 +15,8 @@ export const DISCORD_QA_SEND_STAGES = [
   "renderer_keydown_observed",
   "renderer_enter_recognised",
   "renderer_enter_refocused_draft",
+  "renderer_double_enter_handoff_keydown",
+  "renderer_double_enter_handoff_keyup",
   "renderer_send_refused_not_ready",
   "renderer_send_refused_busy",
   "renderer_send_refused_empty_draft",

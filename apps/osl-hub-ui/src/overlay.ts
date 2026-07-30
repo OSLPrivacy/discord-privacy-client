@@ -5,7 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { checkedBackendResponse, lastBackendFailure, recordBackendFailure, recordInvalidBackendResponse } from "./backend-failure";
 import { burnNativeDiscordOverlayChat, captureC4NativeReceipt, clearC4NativeReceiptEvidence, getNativeDiscordOverlayQaDiagnostic, getNativeDiscordOverlayState, listNativeDiscordOverlayAttachments, openNativeDiscordOverlayAttachment, openNativeDiscordOverlayText, prepareNativeDiscordOverlayText, revealNativeDiscordOverlayViewOnce, selectNativeDiscordOverlayAttachment, sendNativeDiscordOverlayCarrier, sendNativeDiscordQaAtomicText, sendNativeDiscordQaProbe, setNativeDiscordOverlaySecurity, type NativeDiscordCarrierLayout, type NativeDiscordCarrierMode, type NativeDiscordCarrierSendOutcome } from "./native-overlay-adapter";
 import { boundedProtectedDraft, MAX_PROTECTED_DRAFT_BYTES, NATIVE_OVERLAY_TTL_OPTIONS, overlayExpiryDelayMs, PROTECTED_DRAFT_WARNING_BYTES, type NativeOverlayTtlSeconds, type NativeSurfaceCapture, utf8Length } from "./overlay-state";
-import { OverlaySendGesture, type OverlaySendMode } from "./overlay-send-gesture";
+import { OverlaySendGesture, type OverlaySendGestureResult, type OverlaySendMode } from "./overlay-send-gesture";
 import { CoarseTypingRate } from "./coarse-typing-rate";
 import { TwoStepBurnConfirmation } from "./two-step-burn";
 import { shouldPollDiscordOverlay } from "./discord-qa-receive-policy";
@@ -1738,6 +1738,22 @@ async function sendDraft(): Promise<void> {
 
 prepare.addEventListener("click", () => void sendDraft());
 
+let qaDoubleEnterHandoffKeyDown = false;
+
+function handleSendGestureResult(result: OverlaySendGestureResult): void {
+  if (result === "send") {
+    clearGestureTimer();
+    void sendDraft();
+  } else if (result === "armed") {
+    clearGestureTimer();
+    status.textContent = "Press Enter again to send. Escape cancels.";
+    gestureTimer = window.setTimeout(() => {
+      gestureTimer = undefined;
+      if (sendGesture.expire(performance.now())) status.textContent = "Double Enter expired. Your draft is still here.";
+    }, 1_200);
+  }
+}
+
 // Window-level and capture-phase on purpose: the disposable QA build must be
 // able to prove that an Enter reached the protected WebView even when the
 // trusted textarea does not hold DOM focus, because that is the one case where
@@ -1752,14 +1768,32 @@ if (discordQaShell) {
     recordDiscordQaSendStage("renderer_enter_recognised");
     // The textarea's own listener already owns this keystroke.
     if (event.target === draft) return;
-    // Route it through the exact configured single-Enter gesture rather than
-    // dropping it. Every identity, scope, geometry, and context check still
-    // runs in the backend below.
-    if (sendMode.value !== "single") return;
+    // Route it through the exact configured Enter gesture rather than dropping
+    // it. Every identity, scope, geometry, and context check still runs in the
+    // backend below.
+    if (sendMode.value !== "single" && sendMode.value !== "double") return;
     recordDiscordQaSendStage("renderer_enter_refocused_draft");
     event.preventDefault();
     draft.focus({ preventScroll: true });
-    void sendDraft();
+    if (sendMode.value === "single") {
+      void sendDraft();
+    } else if (sendMode.value === "double") {
+      qaDoubleEnterHandoffKeyDown = true;
+      recordDiscordQaSendStage("renderer_double_enter_handoff_keydown");
+      handleSendGestureResult(sendGesture.keydown(keyboardGesture(event)));
+    }
+  }, true);
+
+  window.addEventListener("keyup", (event) => {
+    if (event.key !== "Enter" || sendMode.value !== "double" || !qaDoubleEnterHandoffKeyDown) return;
+    qaDoubleEnterHandoffKeyDown = false;
+    if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey
+      || event.isComposing || event.repeat) return;
+    recordDiscordQaSendStage("renderer_double_enter_handoff_keyup");
+    event.preventDefault();
+    event.stopPropagation();
+    draft.focus({ preventScroll: true });
+    handleSendGestureResult(sendGesture.keyup(keyboardGesture(event)));
   }, true);
 }
 
@@ -1880,6 +1914,7 @@ function clearGestureTimer(): void {
 
 sendMode.addEventListener("change", () => {
   const mode = sendMode.value;
+  qaDoubleEnterHandoffKeyDown = false;
   if (mode !== "button" && mode !== "double" && mode !== "single") {
     sendMode.value = "button";
     sendGesture.setMode("button");
@@ -1908,6 +1943,7 @@ draft.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     sendGesture.cancel();
     clearGestureTimer();
+    qaDoubleEnterHandoffKeyDown = false;
     status.textContent = "Send canceled. Your draft is still here.";
     return;
   }
@@ -1926,18 +1962,7 @@ draft.addEventListener("keydown", (event) => {
 });
 
 draft.addEventListener("keyup", (event) => {
-  const result = sendGesture.keyup(keyboardGesture(event));
-  if (result === "send") {
-    clearGestureTimer();
-    void sendDraft();
-  } else if (result === "armed") {
-    clearGestureTimer();
-    status.textContent = "Press Enter again to send. Escape cancels.";
-    gestureTimer = window.setTimeout(() => {
-      gestureTimer = undefined;
-      if (sendGesture.expire(performance.now())) status.textContent = "Double Enter expired. Your draft is still here.";
-    }, 1_200);
-  }
+  handleSendGestureResult(sendGesture.keyup(keyboardGesture(event)));
 });
 
 function expiryLabel(seconds: NativeOverlayTtlSeconds): string {

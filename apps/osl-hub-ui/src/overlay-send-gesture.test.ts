@@ -33,6 +33,17 @@ describe("native overlay send gestures", () => {
     expect(gesture.keyup(enter(21))).toBe("send");
   });
 
+  it("d4 qualifies the Double Enter handoff as two release-completed gestures", () => {
+    const gesture = new OverlaySendGesture();
+    gesture.setMode("double");
+    expect(gesture.keydown(enter(10))).toBe("none");
+    expect(gesture.keydown(enter(11))).toBe("none");
+    expect(gesture.keyup(enter(12))).toBe("armed");
+    expect(gesture.keyup(enter(13))).toBe("none");
+    expect(gesture.keydown(enter(20))).toBe("none");
+    expect(gesture.keyup(enter(21))).toBe("send");
+  });
+
   it("ignores synthetic input and expires without sending", () => {
     const gesture = new OverlaySendGesture();
     gesture.setMode("double");
