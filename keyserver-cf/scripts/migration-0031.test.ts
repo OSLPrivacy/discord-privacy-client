@@ -134,6 +134,7 @@ describe("migration 0031 control-inbox sender retention", () => {
   it("verify deployed migration 0031 control_inbox_sender_retention behaves", async () => {
     const db = await pre0031Db();
     await seedUser(db, "disabled-retained-sender", 0);
+    await seedUser(db, "enabled-expired-sender", 1);
     const retained = payload(60);
     await oldWorkerInsert(
       db,
@@ -141,6 +142,15 @@ describe("migration 0031 control-inbox sender retention", () => {
       "recipient",
       "disabled-retained-sender",
       retained,
+      1_000_000_000,
+    );
+    const ordinaryExpired = payload(70);
+    await oldWorkerInsert(
+      db,
+      id(7),
+      "recipient",
+      "enabled-expired-sender",
+      ordinaryExpired,
       1_000_000_000,
     );
 
@@ -155,7 +165,7 @@ describe("migration 0031 control-inbox sender retention", () => {
     const oldExpiryDelete = await db.prepare(
       "DELETE FROM control_inbox WHERE expires_at < ?",
     ).bind(1_900_000_000).run();
-    expect(oldExpiryDelete.meta?.changes ?? 0).toBe(0);
+    expect(oldExpiryDelete.meta?.changes ?? 0).toBe(1);
     expect(
       asBytes(
         (await db.prepare(
@@ -163,6 +173,11 @@ describe("migration 0031 control-inbox sender retention", () => {
         ).bind(id(6)).first<{ bundle: unknown }>())?.bundle,
       ),
     ).toEqual(retained);
+    expect(
+      await db.prepare(
+        "SELECT COUNT(*) AS count FROM control_inbox WHERE id = ?",
+      ).bind(id(7)).first<number>("count"),
+    ).toBe(0);
 
     await expect(
       db.prepare(
