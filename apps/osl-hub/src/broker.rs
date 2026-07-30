@@ -48,6 +48,7 @@ const MAX_PROSE_COVER_BYTES: usize = 16 * 1024;
 /// message without its routing handle degrades in-place painting, a message the
 /// renderer rejects outright is a lost message.
 const MAX_NATIVE_OVERLAY_COVER_HANDLE_BYTES: usize = 2_000;
+const MAX_NATIVE_OVERLAY_WRAPPED_SHARE_BYTES: usize = 64 * 1024;
 const MAX_ATTACHMENT_B64_BYTES: usize = 32 * 1024 * 1024;
 const MAX_LOCAL_LEDGER_BYTES: usize = 2 * 1024 * 1024;
 const MAX_LOCAL_LEDGER_ENTRIES: usize = 4_096;
@@ -1023,6 +1024,12 @@ pub struct OpenedPeerAttachment {
     pub view_once_consumed: bool,
 }
 
+struct PreparedPeerProseEnvelope {
+    prepared: PreparedPeerProseMessage,
+    message_id: String,
+    encrypted_wire: String,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct LocalProtectedPayload {
     version: u32,
@@ -1413,7 +1420,7 @@ pub fn prepare_peer_prose_text_with_capture(
         view_once,
         require_capture_protection,
     )
-    .map(|(prepared, _)| prepared)
+    .map(|envelope| envelope.prepared)
 }
 
 fn prepare_peer_prose_text_inner(
@@ -1424,7 +1431,7 @@ fn prepare_peer_prose_text_inner(
     plaintext: String,
     view_once: bool,
     require_capture_protection: bool,
-) -> Result<(PreparedPeerProseMessage, String), String> {
+) -> Result<PreparedPeerProseEnvelope, String> {
     prepare_peer_prose_text_inner_with_chunk(
         core,
         security_state,
@@ -1447,7 +1454,7 @@ fn prepare_peer_prose_text_inner_with_chunk(
     view_once: bool,
     require_capture_protection: bool,
     chunk: Option<NativeTextChunkMeta>,
-) -> Result<(PreparedPeerProseMessage, String), String> {
+) -> Result<PreparedPeerProseEnvelope, String> {
     let manual = broker.manual_peer_for(context_token)?;
     let verified = security::require_manual_peer_scope_approved(
         core,
@@ -1519,15 +1526,78 @@ fn prepare_peer_prose_text_inner_with_chunk(
         }
         return Err("OSL could not save the encrypted message safely".to_owned());
     }
-    Ok((
-        PreparedPeerProseMessage {
+    Ok(PreparedPeerProseEnvelope {
+        prepared: PreparedPeerProseMessage {
             cover_text: uploaded.cover_text,
             expires_at,
             person_to_person_e2ee: true,
             view_once,
         },
         message_id,
-    ))
+        encrypted_wire: encrypted,
+    })
+}
+
+fn build_native_overlay_wrapped_key_upload(
+    message_id: &str,
+    recipient_id: &str,
+    encrypted_wire: &str,
+    view_once: bool,
+    ttl_seconds: u32,
+    expires_at: i64,
+    share_index: u32,
+) -> Result<keystore::WrappedKeyUpload, String> {
+    const ERROR: &str = "OSL could not prepare the protected message key";
+    if !valid_peer_message_id(message_id)
+        || recipient_id.is_empty()
+        || recipient_id.as_bytes().len() > 256
+        || recipient_id.chars().any(char::is_control)
+        || ttl_seconds == 0
+        || encrypted_wire.is_empty()
+        || encrypted_wire.as_bytes().len() > MAX_NATIVE_OVERLAY_WRAPPED_SHARE_BYTES
+    {
+        return Err(ERROR.to_owned());
+    }
+    let expires_at_unix = u64::try_from(expires_at).map_err(|_| ERROR.to_owned())?;
+    Ok(keystore::WrappedKeyUpload {
+        content_id: message_id.to_owned(),
+        content_type: "text".to_owned(),
+        system_message_kind: None,
+        recipient_id: recipient_id.to_owned(),
+        session_version: PEER_PROTECTED_CHUNK_VERSION,
+        share_index,
+        wrapped_share_blob: STANDARD.encode(encrypted_wire.as_bytes()),
+        blob_version: 1,
+        single_use: view_once,
+        display_duration_seconds: view_once.then_some(ttl_seconds),
+        expires_at: keystore::iso_8601_from_unix_seconds(expires_at_unix),
+    })
+}
+
+fn post_native_overlay_wrapped_key(
+    client: &keystore::KeyServerClient,
+    identity: &keystore::Identity,
+    message_id: &str,
+    recipient_id: &str,
+    encrypted_wire: &str,
+    view_once: bool,
+    ttl_seconds: u32,
+    expires_at: i64,
+    share_index: u32,
+) -> Result<(), String> {
+    let upload = build_native_overlay_wrapped_key_upload(
+        message_id,
+        recipient_id,
+        encrypted_wire,
+        view_once,
+        ttl_seconds,
+        expires_at,
+        share_index,
+    )?;
+    client
+        .post_wrapped_key(identity, &upload)
+        .map(|_| ())
+        .map_err(|_| "OSL could not deliver the protected message".to_owned())
 }
 
 fn prepare_direct_manual_v3(
@@ -3107,10 +3177,26 @@ fn prepare_peer_inbox_text(
                 Some(error),
             )?;
         }
-        let (prepared, physical_message_id) = encrypted_result?;
+        let envelope = encrypted_result?;
+        let PreparedPeerProseEnvelope {
+            prepared,
+            message_id: physical_message_id,
+            encrypted_wire,
+        } = envelope;
         if single_chunk {
             carrier_flagtext = Some(prepared.cover_text.clone());
         }
+        post_native_overlay_wrapped_key(
+            &client,
+            &identity,
+            &physical_message_id,
+            &manual.peer_osl_user_id,
+            &encrypted_wire,
+            view_once,
+            ttl_seconds,
+            expires_at,
+            u32::from(chunk_index),
+        )?;
         let notice = NativeOverlayRelayNotice {
             version: NATIVE_OVERLAY_RELAY_VERSION,
             domain: NATIVE_OVERLAY_RELAY_DOMAIN.to_owned(),
@@ -8801,6 +8887,98 @@ mod tests {
             Some("GET /v1/healthz HTTP/1.1"),
             "the shipping receive boundary probes the exact health route first",
         );
+    }
+
+    #[test]
+    fn native_overlay_text_producer_posts_wrapped_key_before_relay_notice() {
+        let encrypted_wire = "DPC0::sealed-native-overlay-wire";
+        let upload = build_native_overlay_wrapped_key_upload(
+            "peer-0123456789abcdef0123456789abcdef",
+            "recipient-osl-id",
+            encrypted_wire,
+            true,
+            3_600,
+            1_700_003_600,
+            2,
+        )
+        .expect("valid native overlay wrapped-key upload");
+        assert_eq!(upload.content_id, "peer-0123456789abcdef0123456789abcdef");
+        assert_eq!(upload.content_type, "text");
+        assert_eq!(upload.system_message_kind, None);
+        assert_eq!(upload.recipient_id, "recipient-osl-id");
+        assert_eq!(upload.session_version, PEER_PROTECTED_CHUNK_VERSION);
+        assert_eq!(upload.share_index, 2);
+        assert_eq!(upload.blob_version, 1);
+        assert!(upload.single_use);
+        assert_eq!(upload.display_duration_seconds, Some(3_600));
+        assert_eq!(upload.expires_at, "2023-11-14T23:13:20.000Z");
+        assert_eq!(
+            STANDARD
+                .decode(&upload.wrapped_share_blob)
+                .expect("wrapped share is base64"),
+            encrypted_wire.as_bytes()
+        );
+
+        let reusable = build_native_overlay_wrapped_key_upload(
+            "peer-0123456789abcdef0123456789abcdee",
+            "recipient-osl-id",
+            encrypted_wire,
+            false,
+            3_600,
+            1_700_003_600,
+            0,
+        )
+        .expect("ordinary native overlay wrapped-key upload");
+        assert!(!reusable.single_use);
+        assert_eq!(reusable.display_duration_seconds, None);
+
+        let source = include_str!("broker.rs");
+        let production = source
+            .split_once("\n#[cfg(test)]\nmod tests")
+            .map_or(source, |(production, _)| production);
+        let producer = production
+            .split_once("fn prepare_peer_inbox_text(")
+            .and_then(|(_, tail)| tail.split_once("fn split_native_overlay_text("))
+            .map(|(body, _)| body)
+            .expect("native overlay producer source is present");
+        let helper = production
+            .split_once("fn post_native_overlay_wrapped_key(")
+            .and_then(|(_, tail)| tail.split_once("fn prepare_direct_manual_v3("))
+            .map(|(body, _)| body)
+            .expect("wrapped-key post helper source is present");
+        let wrapped_post = producer
+            .find("post_native_overlay_wrapped_key(")
+            .expect("producer posts a wrapped key");
+        let relay_post = producer
+            .find(".post_control_inbox(&identity, &manual.peer_osl_user_id, &scope_id, &bundle)")
+            .expect("producer posts the relay notice");
+        assert!(
+            wrapped_post < relay_post,
+            "the server-held wrapped key must exist before the relay notice is deliverable"
+        );
+        assert!(
+            helper.contains(".post_wrapped_key(identity, &upload)"),
+            "the producer helper must call the authenticated wrapped-key client"
+        );
+
+        let mutations = [
+            producer.replacen("post_native_overlay_wrapped_key(", "post_native_overlay_wrapped_key_DISABLED(", 1),
+            producer.replacen(
+                ".post_control_inbox(&identity, &manual.peer_osl_user_id, &scope_id, &bundle)",
+                ".post_control_inbox_DISABLED(&identity, &manual.peer_osl_user_id, &scope_id, &bundle)",
+                1,
+            ),
+        ];
+        for (index, mutated) in mutations.into_iter().enumerate() {
+            let maybe_wrapped = mutated.find("post_native_overlay_wrapped_key(");
+            let maybe_relay = mutated.find(
+                ".post_control_inbox(&identity, &manual.peer_osl_user_id, &scope_id, &bundle)",
+            );
+            assert!(
+                !matches!((maybe_wrapped, maybe_relay), (Some(wrapped), Some(relay)) if wrapped < relay),
+                "mutation {index} must break the production wrapped-key ordering gate"
+            );
+        }
     }
 
     fn install_sender_filter_test_account(label: &str) -> std::path::PathBuf {
