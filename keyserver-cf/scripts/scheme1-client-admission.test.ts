@@ -335,6 +335,31 @@ describe("scheme-1 Rust-client deployment admission", () => {
         receipt,
         validationOptions("activate-scheme1-worker", files, frozenFiles),
       )).not.toThrow();
+
+    await expect(
+      runScheme1ClientPreflightCli(args, {
+        loadInputs: async () => ({
+          deploymentAnchor: {
+            commit: DEPLOYMENT_COMMIT,
+            repository_tree: DEPLOYMENT_TREE,
+            keyserver_tree: DEPLOYMENT_KEYSERVER_TREE,
+          },
+          expectedClientCommit: CLIENT_COMMIT,
+          expectedClientTree: CLIENT_TREE,
+          fileValues: files,
+          frozenFixtureBytes: await frozenFixtureBytes(),
+          frozenContractFileValues: frozenFiles,
+          clientEvidence: signedEnvelope(positivePayload(), {
+            challenge_nonce: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+          }),
+        }),
+        now: () => NOW,
+        trustedProducers: TRUSTED_PRODUCERS,
+        write: () => {
+          throw new Error("wrong-challenge evidence must not be emitted");
+        },
+      }),
+    ).rejects.toThrow(/challenge/);
   });
 
   it("scripts/scheme1-client-admission.test.ts", async () => {

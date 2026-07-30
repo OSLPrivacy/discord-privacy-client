@@ -151,6 +151,7 @@ PY
 
 WRANGLER_CAPTURE="${TEST_DIR}/capture/wrangler-bulk.json"
 [[ -f "${WRANGLER_CAPTURE}" ]] || fail 'the atomic secret bundle was not sent to Wrangler'
+[[ "$(cat "${TEST_DIR}/capture/wrangler-argv")" == 'secret bulk' ]] || fail 'Wrangler was not called through secret bulk'
 WEBHOOK_SECRET="$(python3 - "${WRANGLER_CAPTURE}" "${TOKEN}" <<'PY'
 import json
 import sys
@@ -158,6 +159,8 @@ import sys
 with open(sys.argv[1], "r", encoding="utf-8") as handle:
     payload = json.load(handle)
 if sorted(payload) != ["TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET"]:
+    raise SystemExit(1)
+if any("ALLOW" in key or "CHAT" in key for key in payload):
     raise SystemExit(1)
 if payload["TELEGRAM_BOT_TOKEN"] != sys.argv[2]:
     raise SystemExit(1)
