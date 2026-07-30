@@ -2052,6 +2052,10 @@ function identityPasswordForm(title: string, action: string, mode: "setup" | "un
   return `<h1 id="route-heading" tabindex="-1">${title}</h1><form class="setup-surface password-form" id="identity-password-form" data-password-mode="setup" novalidate><label for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="new-password" required aria-describedby="password-help password-error"/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><small id="password-help">6 minimum. 12+ suggested.</small><label for="identity-password-confirm">Confirm</label><div class="password-input-row"><input id="identity-password-confirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="identity-password-confirm" aria-controls="identity-password-confirm" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><button class="button primary" id="identity-password-submit" type="submit" disabled>${action}</button></form><button class="text-back" data-onboarding="welcome">← Back</button>`;
 }
 
+function isVerifiedBurnGate(gate: { outcome: string }): boolean {
+  return gate.outcome === "burned";
+}
+
 function sendingSetupContent(): string {
   const selectedMode: SendMode = setup.sendMode === "single" ? "manual" : setup.sendMode;
   const option = (mode: SendMode, title: string, detail: string, badge = "") => `<button class="send-mode-option ${selectedMode === mode ? "selected" : ""}" type="button" data-send-mode="${mode}" aria-pressed="${selectedMode === mode}"><span><strong>${title}</strong>${badge ? `<small class="send-mode-badge">${badge}</small>` : ""}</span><small>${detail}</small></button>`;
@@ -2575,6 +2579,7 @@ function bindPasswordForm(): void {
           render();
           return;
         }
+
         if (gate.outcome === "duress") {
           identityStorageMethod = null;
           localStorage.clear();
@@ -2589,7 +2594,8 @@ function bindPasswordForm(): void {
           render();
           return;
         }
-        if (gate.outcome === "burned") {
+        if (isVerifiedBurnGate(gate)) {
+
           identityStorageMethod = null;
           localStorage.clear();
           onboardingComplete = false;

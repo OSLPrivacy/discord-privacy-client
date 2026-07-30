@@ -67,6 +67,7 @@ const ARGON_OUTPUT_LEN: usize = 64; // 32 hash + 32 AES key
 const HASH_LEN: usize = 32;
 const KEY_LEN: usize = 32;
 const NONCE_LEN: usize = 12;
+
 pub const DURESS_FAILED_ATTEMPT_THRESHOLD: u32 = keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD;
 const DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD: u32 = DURESS_FAILED_ATTEMPT_THRESHOLD;
 
@@ -75,7 +76,6 @@ const ARGON_ITERATIONS: u32 = 3;
 const ARGON_PARALLELISM: u32 = 1;
 
 pub const INACTIVITY_AUTO_LOCK_SECONDS: u64 = keystore::DEFAULT_INACTIVITY_SECONDS;
-
 
 // =====================================================================
 // On-disk schemas.
@@ -895,13 +895,11 @@ static INACTIVITY_AUTO_LOCK_TIMER: OnceLock<Mutex<Option<keystore::InactivityTim
     OnceLock::new();
 static INACTIVITY_AUTO_LOCK_LOCKED: OnceLock<Mutex<bool>> = OnceLock::new();
 
-
 fn file_storage_slot() -> &'static Mutex<Option<[u8; 32]>> {
     FILE_STORAGE_KEY.get_or_init(|| Mutex::new(None))
 }
 
 fn inactivity_auto_lock_slot() -> &'static Mutex<Option<keystore::InactivityTimer>> {
-
     INACTIVITY_AUTO_LOCK_TIMER.get_or_init(|| Mutex::new(None))
 }
 
@@ -1014,7 +1012,6 @@ fn seed_inactivity_auto_lock_timer(last_activity: Instant, locked: bool) {
         arm_inactivity_auto_lock_timer_at(last_activity);
     }
     set_inactivity_auto_lock_locked(locked);
-
 }
 
 /// Public accessor used by peer_map / whitelist_state /
@@ -1841,6 +1838,60 @@ mod password_policy_tests {
     }
 
     #[test]
+    fn command_threshold_wrong_password_triggers_duress_wipe() {
+        struct OverrideReset;
+        impl Drop for OverrideReset {
+            fn drop(&mut self) {
+                set_file_storage_key(None);
+                keystore::set_active_account_dir(None);
+                keystore::set_base_dir_override(None);
+            }
+        }
+
+        set_file_storage_key(None);
+        let dir = tempfile::tempdir().unwrap();
+        let base_dir = dir.path().join("base");
+        let account_dir = dir.path().join("accounts").join("active");
+        std::fs::create_dir_all(&account_dir).unwrap();
+        keystore::set_base_dir_override(Some(base_dir.clone()));
+        keystore::set_active_account_dir(Some(account_dir.clone()));
+        let _reset = OverrideReset;
+
+        let state = AppState::new();
+        let marker = build_marker(
+            "correct-password",
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        )
+        .unwrap();
+        write_marker(&base_dir, &marker).unwrap();
+        std::fs::write(account_dir.join("identity.json"), b"identity").unwrap();
+        std::fs::write(account_dir.join("prekeys.json"), b"prekeys").unwrap();
+        write_lockout(
+            &base_dir,
+            &LockoutState {
+                version: LOCKOUT_VERSION,
+                password_failed_attempts: DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD - 1,
+                password_locked_until: Some(now_unix_secs() - 1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let result =
+            crate::commands::cmd_osl_verify_gate_password(&state, "wrong-password".to_owned())
+                .unwrap();
+
+        assert_eq!(result.result, "duress");
+        assert_eq!(
+            result.attempts_used,
+            DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD
+        );
+        assert!(!account_dir.join("identity.json").exists());
+        assert!(!account_dir.join("prekeys.json").exists());
+        assert!(!base_dir.join("password_marker.json").exists());
+    }
+
+    #[test]
     fn device_bound_fallback_file_storage_key_round_trips_without_main_password() {
         set_file_storage_key(None);
         let dir = tempfile::tempdir().unwrap();
@@ -1925,13 +1976,11 @@ mod password_policy_tests {
             br#"{"mode":"device-bound"}"#
         );
 
-
         set_file_storage_key(None);
     }
 
     #[test]
-    fn tenth_wrong_password_attempt_triggers_duress() {
-
+    fn tenth_wrong_password_attempt_triggers_duress_result() {
         set_file_storage_key(None);
         let dir = tempfile::tempdir().unwrap();
         write_marker(dir.path(), &build_fast_test_marker(TEST_MAIN_PASSWORD)).unwrap();
@@ -2128,6 +2177,34 @@ mod password_policy_tests {
     }
 
     #[test]
+    fn activity_extends_inactivity_auto_lock_deadline() {
+        let _guard = INACTIVITY_AUTO_LOCK_TEST_LOCK.lock().unwrap();
+        set_file_storage_key(None);
+        let t0 = Instant::now();
+        let key = [0x42; 32];
+        set_file_storage_key_after_main_password_unlock_at(key, t0);
+
+        let touch = t0 + std::time::Duration::from_secs(keystore::DEFAULT_INACTIVITY_SECONDS - 1);
+        assert!(mark_activity_for_inactivity_auto_lock_at(touch));
+        assert!(
+            !run_inactivity_auto_lock_timer_at(
+                touch + std::time::Duration::from_secs(keystore::DEFAULT_INACTIVITY_SECONDS - 1)
+            ),
+            "activity must extend the auto-lock deadline"
+        );
+        assert_eq!(get_file_storage_key(), Some(key));
+
+        assert!(
+            run_inactivity_auto_lock_timer_at(
+                touch + std::time::Duration::from_secs(keystore::DEFAULT_INACTIVITY_SECONDS)
+            ),
+            "timer must lock after the extended inactivity deadline"
+        );
+        assert_eq!(get_file_storage_key(), None);
+        set_file_storage_key(None);
+    }
+
+    #[test]
     fn tenth_consecutive_wrong_main_password_attempt_sets_duress_flag() {
         let dir = tempfile::tempdir().unwrap();
         let salt = [0xA7; SALT_LEN];
@@ -2218,5 +2295,4 @@ mod password_policy_tests {
         assert!(!inactivity_auto_lock_is_locked());
         set_file_storage_key(None);
     }
-
 }

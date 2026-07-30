@@ -61,9 +61,10 @@ pub use client::{
     WrappedKeyPostResponse, WrappedKeyResponse,
 };
 pub use duress::{
-    build_production_duress_handlers, DuressEngine, DuressError, DuressHandlers, DuressJournal,
-    DuressPaths, DuressReport, KeyringPurgeFn, ProductionDuressConfig, ProductionDuressHandlers,
-    ProductionDuressParts, StepOutcome, TpmEvictFn, WipeFn, WipeStep,
+    build_production_duress_engine, build_production_duress_handlers, DuressEngine, DuressError,
+    DuressHandlers, DuressJournal, DuressPaths, DuressReport, KeyringPurgeFn,
+    ProductionDuressConfig, ProductionDuressHandlers, ProductionDuressParts, StepOutcome,
+    TpmEvictFn, WipeFn, WipeStep,
 };
 pub use identity::{
     generate_identity, generate_native_identity, identity_from_entropy,

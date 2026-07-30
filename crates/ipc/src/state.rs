@@ -241,6 +241,7 @@ pub struct AppState {
     /// identity storage; callers must not construct ad hoc plaintext RN stores.
     pub rn_session_store: crate::wire_rn::RnSessionStore,
     pub rn_session_sealer: Box<dyn keystore::Sealer>,
+    pub duress_engine: Mutex<keystore::DuressEngine>,
 
     /// Per-scope whitelist + encryption-toggle state, mirroring
     /// `<config_dir>/whitelist_state.json`. Empty by default —
@@ -409,6 +410,7 @@ impl Default for AppState {
             message_store: Mutex::new(None),
             rn_session_store: default_rn_session_store(),
             rn_session_sealer: keystore::select_best_sealer(),
+            duress_engine: Mutex::new(default_duress_engine()),
             whitelist_state: Mutex::new(WhitelistState::default()),
             recovery_token: Mutex::new(None),
             stealth_active: Mutex::new(false),

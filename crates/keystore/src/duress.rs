@@ -743,7 +743,7 @@ impl DuressEngine {
             Ok(_) => StepOutcome::Wiped,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => StepOutcome::AlreadyClean,
             Err(e) => StepOutcome::Failed {
-                error: format!("remove_file {}: {e}", path.display()),
+                error: format!("remove_file failed: {e}"),
             },
         }
     }
@@ -785,6 +785,11 @@ impl DuressEngine {
             Err(e) => Err(DuressError::Io(e.to_string())),
         }
     }
+}
+
+pub fn build_production_duress_engine(config: ProductionDuressConfig) -> DuressEngine {
+    let parts = build_production_duress_handlers(config);
+    DuressEngine::new(parts.journal_path, parts.paths, parts.handlers)
 }
 
 fn map_tpm_evict_result(result: std::result::Result<TpmEvictOutcome, SealerError>) -> StepOutcome {

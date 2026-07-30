@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
+
 const CLAIMS_THAT_MUST_NOT_SURFACE = [
   /\bduress password\b[\s\S]{0,180}\bunlocks? the app normally\b/iu,
   /\bduress password\b[\s\S]{0,220}\bsilently (?:burns?|deletes?|destroys?|strips?)\b/iu,
@@ -13,6 +14,7 @@ function readRelative(path: string): string {
   return readFileSync(new URL(path, import.meta.url), "utf8");
 }
 
+
 function sourceBetween(source: string, start: string, end: string): string {
   const startIndex = source.indexOf(start);
   const endIndex = source.indexOf(end, startIndex + start.length);
@@ -20,6 +22,7 @@ function sourceBetween(source: string, start: string, end: string): string {
   expect(endIndex, `missing end marker: ${end}`).toBeGreaterThan(startIndex);
   return source.slice(startIndex, endIndex);
 }
+
 
 describe("duress wipe production reachability", () => {
   it("wires a distinct duress outcome at the unlock screen", () => {
@@ -37,7 +40,7 @@ describe("duress wipe production reachability", () => {
     const duressBranch = sourceBetween(
       main,
       'if (gate.outcome === "duress") {',
-      'if (gate.outcome === "burned") {',
+      'if (isVerifiedBurnGate(gate)) {',
     );
 
     expect(duressBranch).toContain("localStorage.clear()");
@@ -53,6 +56,7 @@ describe("duress wipe production reachability", () => {
     for (const claim of CLAIMS_THAT_MUST_NOT_SURFACE) {
       expect(main).not.toMatch(claim);
     }
+
   });
 
   it("wires the burn-code path to the production duress engine", () => {

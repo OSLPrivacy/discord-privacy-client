@@ -275,6 +275,46 @@ fn handlers_run_in_canonical_order() {
 }
 
 #[test]
+fn production_duress_config_wires_local_cache_and_opsec_paths() {
+    let dir = TempDir::new().unwrap();
+    let account_dir = dir.path().join("account");
+    let password_dir = dir.path().join("device");
+    let opsec_file = account_dir.join("injection.js");
+    let opsec_dir = account_dir.join("opsec");
+    std::fs::create_dir_all(account_dir.join("store")).unwrap();
+    std::fs::create_dir_all(&opsec_dir).unwrap();
+    std::fs::create_dir_all(&password_dir).unwrap();
+    std::fs::write(account_dir.join("store").join("message-cache"), b"cache").unwrap();
+    std::fs::write(&opsec_file, b"opsec").unwrap();
+    std::fs::write(opsec_dir.join("config.json"), b"{}").unwrap();
+
+    let mut config =
+        keystore::ProductionDuressConfig::new(account_dir.clone(), password_dir.clone());
+    config.opsec_paths = vec![opsec_file.clone(), opsec_dir.clone()];
+
+    let parts = keystore::build_production_duress_handlers(config);
+    assert_eq!(parts.paths.identity_file, account_dir.join("identity.json"));
+    assert_eq!(
+        parts.paths.password_file,
+        password_dir.join("password_marker.json")
+    );
+    assert_eq!(
+        parts.paths.prekey_file,
+        Some(account_dir.join("prekeys.json"))
+    );
+    assert_eq!(parts.journal_path, account_dir.join("duress.journal"));
+
+    let local_cache_handler = parts.handlers.wipe_local_cache_dir.as_ref().unwrap();
+    local_cache_handler().unwrap();
+    let opsec_handler = parts.handlers.strip_opsec_files.as_ref().unwrap();
+    opsec_handler().unwrap();
+
+    assert!(!account_dir.join("store").exists());
+    assert!(!opsec_file.exists());
+    assert!(!opsec_dir.exists());
+}
+
+#[test]
 fn keyring_purge_entry_handler_runs_for_pending_keyring_step() {
     let dir = TempDir::new().unwrap();
     let (paths, journal_path) = build_paths(&dir);
