@@ -761,6 +761,7 @@ class OneShotLedger:
         if (
             type(receipt_frame_sha256) is not str
             or SHA256_RE.fullmatch(receipt_frame_sha256) is None
+            or receipt_frame_sha256 == "0" * 64
         ):
             raise LedgerError("receipt frame digest is invalid")
         expected_binding = pipe_binding_digest(pipe_client_binding)
