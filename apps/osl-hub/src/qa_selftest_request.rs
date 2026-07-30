@@ -1809,6 +1809,23 @@ mod tests {
             ),
         ];
 
+        let actual_cells = matrix
+            .iter()
+            .map(|decision| {
+                (
+                    decision.lane,
+                    decision.interruption,
+                    decision.authority_scope,
+                    decision.refusal,
+                )
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected_cells = expected
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(actual_cells, expected_cells);
+
         for (decision, (lane, interruption, authority_scope, refusal)) in
             matrix.iter().zip(expected)
         {
