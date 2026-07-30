@@ -278,7 +278,12 @@ describe("native window host IPC", () => {
       .mockResolvedValueOnce({ availability: "installed" })
       .mockResolvedValueOnce({ started: true })
       .mockResolvedValueOnce({ started: true });
-    await expect(loadMullvadStatus()).resolves.toEqual({ availability: "installed" });
+    await expect(loadMullvadStatus()).resolves.toEqual({
+      availability: "installed",
+      integrationState: "availableToOpen",
+      privacyScope: "networkOnly",
+      connectionState: "notObserved",
+    });
     await expect(openMullvad()).resolves.toEqual({ started: true });
     await expect(installMullvad()).resolves.toEqual({ started: true });
     expect(mocks.invoke.mock.calls).toEqual([

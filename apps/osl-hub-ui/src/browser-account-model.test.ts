@@ -26,6 +26,8 @@ describe("browser account model", () => {
     expect(choices).toContain("selectedBrowserHasImportReceipt()");
     expect(choices).toContain(">Browser account</button>");
     expect(choices).toContain(">New account</button>");
+    expect(choices.match(/data-browser-session-mode=/gu) ?? []).toHaveLength(2);
+    expect(choices.match(/<button /gu) ?? []).toHaveLength(2);
     expect(choices).not.toContain("Use existing account");
     expect(choices).not.toContain("Use separate account");
     expect(choices).toContain('role="group"');

@@ -5,11 +5,48 @@
 //! or profile names. Absence of consent, binding, or authority is always a
 //! refusal at the report level, never a degraded permission.
 
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize};
 use std::fmt;
 
 pub const CONTRACT_VERSION: u16 = 1;
 pub const MAX_SELF_TEST_CHECKS: usize = 32;
+const REQUIRED_CHECKS: &[(Subsystem, Predicate, UnverifiedCause)] = &[
+    (
+        Subsystem::Composer,
+        Predicate::ComposerDiscovery,
+        UnverifiedCause::NotObserved,
+    ),
+    (
+        Subsystem::Transcript,
+        Predicate::TranscriptDiscovery,
+        UnverifiedCause::NotObserved,
+    ),
+    (
+        Subsystem::RowText,
+        Predicate::RowTextExtraction,
+        UnverifiedCause::NotObserved,
+    ),
+    (
+        Subsystem::WriteProof,
+        Predicate::WritePrefixProof,
+        UnverifiedCause::MissingWriteProof,
+    ),
+    (
+        Subsystem::Consent,
+        Predicate::OperatorConsent,
+        UnverifiedCause::MissingConsent,
+    ),
+    (
+        Subsystem::Binding,
+        Predicate::ScopeBinding,
+        UnverifiedCause::MissingBinding,
+    ),
+    (
+        Subsystem::Authority,
+        Predicate::HostAuthority,
+        UnverifiedCause::MissingAuthority,
+    ),
+];
 
 /// The protected subsystem a self-test check covers.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -202,12 +239,36 @@ impl ContractVerdict {
 }
 
 /// A bounded, content-free report safe to persist in local diagnostic trails.
-#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SelfTestReport {
     version: u16,
     verdict: ContractVerdict,
     checks: Vec<CheckOutcome>,
+}
+
+impl<'de> Deserialize<'de> for SelfTestReport {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct RawSelfTestReport {
+            version: u16,
+            verdict: ContractVerdict,
+            checks: Vec<CheckOutcome>,
+        }
+
+        let raw = RawSelfTestReport::deserialize(deserializer)?;
+        let report = Self {
+            version: raw.version,
+            verdict: raw.verdict,
+            checks: raw.checks,
+        };
+        report.validate().map_err(de::Error::custom)?;
+        Ok(report)
+    }
 }
 
 impl fmt::Debug for SelfTestReport {
@@ -367,14 +428,17 @@ fn validate_checks(checks: &[CheckOutcome]) -> Result<(), ReportError> {
 }
 
 fn classify(checks: &[CheckOutcome]) -> ContractVerdict {
-    if checks.iter().all(|check| check.passed) {
+    let first_missing_required = REQUIRED_CHECKS
+        .iter()
+        .find(|(_, predicate, _)| !checks.iter().any(|check| check.predicate == *predicate));
+    let missing_refusal = REQUIRED_CHECKS.iter().find(|(_, predicate, cause)| {
+        !checks.iter().any(|check| check.predicate == *predicate) && cause.requires_refusal()
+    });
+    if checks.iter().all(|check| check.passed) && first_missing_required.is_none() {
         return ContractVerdict::Verified;
     }
 
-    let first_failure = checks
-        .iter()
-        .find(|check| !check.passed)
-        .expect("validated reports have at least one failed check when classify needs failure");
+    let first_failure = checks.iter().find(|check| !check.passed);
     let refusal_failure = checks.iter().find(|check| {
         !check.passed
             && check
@@ -382,6 +446,14 @@ fn classify(checks: &[CheckOutcome]) -> ContractVerdict {
                 .expect("validated failed checks always carry a cause")
                 .requires_refusal()
     });
+
+    if let Some((subsystem, predicate, cause)) = missing_refusal.copied() {
+        return ContractVerdict::Refused {
+            failed_subsystem: subsystem,
+            failed_predicate: predicate,
+            cause,
+        };
+    }
 
     if let Some(refusal_failure) = refusal_failure {
         let cause = refusal_failure
@@ -394,20 +466,30 @@ fn classify(checks: &[CheckOutcome]) -> ContractVerdict {
         };
     }
 
-    let cause = first_failure
-        .cause
-        .expect("validated failed checks always carry a cause");
+    let (failed_subsystem, failed_predicate, cause) = if let Some(first_failure) = first_failure {
+        (
+            first_failure.subsystem,
+            first_failure.predicate,
+            first_failure
+                .cause
+                .expect("validated failed checks always carry a cause"),
+        )
+    } else {
+        first_missing_required
+            .copied()
+            .expect("non-verified reports have a failed or missing required check")
+    };
     if checks.iter().all(|check| !check.passed) {
         return ContractVerdict::Refused {
-            failed_subsystem: first_failure.subsystem,
-            failed_predicate: first_failure.predicate,
+            failed_subsystem,
+            failed_predicate,
             cause,
         };
     }
 
     ContractVerdict::Degraded {
-        failed_subsystem: first_failure.subsystem,
-        failed_predicate: first_failure.predicate,
+        failed_subsystem,
+        failed_predicate,
         cause,
     }
 }
@@ -465,6 +547,69 @@ mod tests {
             report.failed_predicate_labels(),
             vec!["contract_transcript_discovery"]
         );
+    }
+
+    #[test]
+    fn missing_required_non_authority_check_does_not_verify() {
+        let checks = required_checks()
+            .into_iter()
+            .filter(|check| check.predicate != Predicate::TranscriptDiscovery)
+            .collect();
+
+        let report = SelfTestReport::from_checks(checks).unwrap();
+
+        assert_eq!(
+            report.verdict(),
+            ContractVerdict::Degraded {
+                failed_subsystem: Subsystem::Transcript,
+                failed_predicate: Predicate::TranscriptDiscovery,
+                cause: UnverifiedCause::NotObserved,
+            }
+        );
+        assert!(!report.verdict().permits_protected_path());
+    }
+
+    #[test]
+    fn missing_consent_check_refuses_even_when_present_checks_passed() {
+        let checks = required_checks()
+            .into_iter()
+            .filter(|check| check.predicate != Predicate::OperatorConsent)
+            .collect();
+
+        let report = SelfTestReport::from_checks(checks).unwrap();
+
+        assert_eq!(
+            report.verdict(),
+            ContractVerdict::Refused {
+                failed_subsystem: Subsystem::Consent,
+                failed_predicate: Predicate::OperatorConsent,
+                cause: UnverifiedCause::MissingConsent,
+            }
+        );
+        assert!(!report.verdict().permits_protected_path());
+    }
+
+    #[test]
+    fn missing_authority_dominates_missing_non_authority_check() {
+        let checks = required_checks()
+            .into_iter()
+            .filter(|check| {
+                check.predicate != Predicate::TranscriptDiscovery
+                    && check.predicate != Predicate::HostAuthority
+            })
+            .collect();
+
+        let report = SelfTestReport::from_checks(checks).unwrap();
+
+        assert_eq!(
+            report.verdict(),
+            ContractVerdict::Refused {
+                failed_subsystem: Subsystem::Authority,
+                failed_predicate: Predicate::HostAuthority,
+                cause: UnverifiedCause::MissingAuthority,
+            }
+        );
+        assert!(!report.verdict().permits_protected_path());
     }
 
     #[test]
@@ -672,14 +817,12 @@ mod tests {
             }]
         }"#;
 
-        let report: SelfTestReport = serde_json::from_str(json).unwrap();
-
-        assert_eq!(
-            report.validate().unwrap_err(),
-            ReportError::VerdictMismatch {
-                got: "contract_verified",
-                expected: "contract_refused",
-            }
+        let error = serde_json::from_str::<SelfTestReport>(json).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("self-test verdict contract_verified did not match contract_refused"),
+            "unexpected error: {error}"
         );
     }
 

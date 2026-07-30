@@ -1868,7 +1868,7 @@ function bindBrowserImportControls(): void {
     else selectedBrowserImportIds.delete(browserId);
     render();
   }));
-  const startProtectedBrowserImport = async (): Promise<void> => {
+  async function startProtectedBrowse(): Promise<void> {
     if (!protectedBrowserImportReady || selectedBrowserImportIds.size === 0 || browserImportBusy) return;
     const runEpoch = ++browserImportRunEpoch;
     browserImportFailureNotice = "";
@@ -1935,7 +1935,8 @@ function bindBrowserImportControls(): void {
         render();
       }
     }
-  };
+  }
+  const startProtectedBrowserImport = startProtectedBrowse;
   document.querySelector<HTMLButtonElement>("#import-saved-accounts")?.addEventListener("click", () => {
     void startProtectedBrowserImport();
   });
