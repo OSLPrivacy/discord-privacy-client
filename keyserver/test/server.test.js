@@ -401,6 +401,14 @@ test('wrapped-key roundtrip e2e test: post then fetch across two sessions', asyn
     firstSession = null;
 
     secondSession = await buildServer({ logger: false, dbFile });
+    const duplicate = await inject(secondSession, {
+      method: 'POST',
+      url: '/v1/wrapped-keys',
+      payload,
+    });
+    assert.equal(duplicate.statusCode, 409);
+    assert.equal(duplicate.body.error, 'content_id already exists');
+
     const fetched = await inject(secondSession, {
       method: 'GET',
       url: '/v1/wrapped-keys/persisted-msg-1',

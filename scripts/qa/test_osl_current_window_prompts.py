@@ -133,6 +133,16 @@ def adopt_shared_memory_cards_across_every_active_account() -> None:
         _errors_for_current_window_prompt_contract(missing_active_window),
     )
 
+    missing_adoption_row = markdown.replace(
+        "| New website/head-developer lane | Reusable new-window bootstrap plus Prompt C | Bootstrap loads the compact memory card before the bounded task; Prompt C repeats the first-read memory-card rule | Never copy the full master spec or volatile status into memory |\n",
+        "",
+        1,
+    )
+    testcase.assertIn(
+        "memory-card adoption table does not cover every active account",
+        _errors_for_current_window_prompt_contract(missing_adoption_row),
+    )
+
 
 adopt_shared_memory_cards_across_every_active_account.__name__ = (
     "Adopt shared memory cards across every active account."
