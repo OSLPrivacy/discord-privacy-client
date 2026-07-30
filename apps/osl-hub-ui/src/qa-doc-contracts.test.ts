@@ -42,6 +42,10 @@ function parseTable<T extends Record<string, string>>(
   return body;
 }
 
+function fencedTextBlocks(source: string): string[] {
+  return [...source.matchAll(/```text\n([\s\S]*?)\n```/gu)].map((match) => match[1]!);
+}
+
 describe("QA documentation contracts", () => {
   it("warm_agent_baseline_snapshot_for_osl_azure_clients_1_and_2", () => {
     const workflow = readDoc("docs/testing/azure-vm-qa-workflow.md");
@@ -116,5 +120,47 @@ describe("QA documentation contracts", () => {
       ["docs/design/build-order.md", "f83"],
       ["apps/osl-hub/src/cloud_autoscrub_envelope.rs", "f149"],
     ]));
+  });
+
+  it("Adopt shared memory cards across every active account.", () => {
+    const prompts = readDoc("docs/design/osl-current-window-prompts-2026-07-26.md");
+    const rows = parseTable<{
+      "Active account/window": string;
+      "Prompt source": string;
+      "Memory-card route": string;
+      "Volatile-status rule": string;
+    }>(section(prompts, "## Shared memory-card adoption contract"), [
+      "Active account/window",
+      "Prompt source",
+      "Memory-card route",
+      "Volatile-status rule",
+    ]);
+
+    expect(rows.map((row) => row["Active account/window"]).sort()).toEqual([
+      "Coordinating Telegram `/osl` lane",
+      "Existing Discord testing window",
+      "Existing OSL Hub/UI window",
+      "Existing Scrub window",
+      "Existing two-way Opus test window",
+      "New website/head-developer lane",
+    ]);
+
+    for (const row of rows) {
+      expect(row["Memory-card route"].toLowerCase()).toMatch(/\b(?:memory-card|memory card)\b/u);
+      expect(row["Memory-card route"].toLowerCase()).toMatch(/\b(?:common update|bootstrap|prompt [a-d]|handoff)\b/u);
+      expect(row["Volatile-status rule"].toLowerCase()).toMatch(/\bnever copy\b/u);
+      expect(row["Volatile-status rule"].toLowerCase()).toMatch(/\b(?:full master spec|full spec|volatile status)\b/u);
+    }
+
+    const commonUpdate = fencedTextBlocks(section(prompts, "## One update prompt for every active OSL tab"));
+    expect(commonUpdate).toHaveLength(1);
+    expect(commonUpdate[0]!.toLowerCase()).toMatch(/if this ai\/account has never read it[\s\S]*compact memory card/u);
+    expect(commonUpdate[0]!.toLowerCase()).toMatch(/if it already has[\s\S]*read only/u);
+    expect(commonUpdate[0]!.toLowerCase()).toMatch(/never copy the giant spec or volatile status\s+into memory/u);
+
+    const bootstrap = fencedTextBlocks(section(prompts, "## Reusable safe new-window bootstrap"));
+    expect(bootstrap).toHaveLength(1);
+    expect(bootstrap[0]!.toLowerCase()).toMatch(/load the compact\s+memory card/u);
+    expect(bootstrap[0]!.toLowerCase()).toMatch(/before editing/u);
   });
 });
