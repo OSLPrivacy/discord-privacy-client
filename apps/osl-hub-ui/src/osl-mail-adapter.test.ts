@@ -70,11 +70,19 @@ describe("OSL Mail strict adapter", () => {
     expect(parseOslMailRetrievedThread({ ...valid, messages: [{ ...valid.messages[0], transit: "smtp" }] })).toBeNull();
     expect(parseOslMailRetrievedThread({ ...valid, messages: [{ ...valid.messages[0], unexpected: true }] })).toBeNull();
     expect(parseOslMailRetrievedThread({ ...valid, unexpected: true })).toBeNull();
+    const statusWithHiddenField = { available: true, provisioned: true, address: "liam@oslprivacy.com", unreadCount: 0, retentionSeconds: 3600 };
+    Object.defineProperty(statusWithHiddenField, "capability", { value: "mailbox-hosting" });
+    expect(parseOslMailStatus(statusWithHiddenField)).toBeNull();
+    const messageWithSymbol = { ...valid.messages[0], [Symbol.for("capability")]: "external-send" };
+    expect(parseOslMailRetrievedThread({ ...valid, messages: [messageWithSymbol] })).toBeNull();
     const sparseMessages = Array(1) as unknown[];
     expect(parseOslMailRetrievedThread({ ...valid, messages: sparseMessages })).toBeNull();
     const messagesWithExpando = [{ ...valid.messages[0] }] as unknown[] & { hidden?: boolean };
     messagesWithExpando.hidden = true;
     expect(parseOslMailRetrievedThread({ ...valid, messages: messagesWithExpando })).toBeNull();
+    const messagesWithHiddenExpando = [{ ...valid.messages[0] }];
+    Object.defineProperty(messagesWithHiddenExpando, "capability", { value: "external-send" });
+    expect(parseOslMailRetrievedThread({ ...valid, messages: messagesWithHiddenExpando })).toBeNull();
   });
 
   it("requires an explicit positive server deletion receipt", () => {

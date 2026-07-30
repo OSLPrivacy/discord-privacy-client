@@ -91,9 +91,15 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 
 function exact(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  const actual = Object.keys(value).sort();
-  const expected = [...keys].sort();
-  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+  const expected = new Set(keys);
+  const actual = Reflect.ownKeys(value);
+  return actual.length === expected.size && actual.every((key) => typeof key === "string" && expected.has(key));
+}
+
+function denseArray(value: readonly unknown[]): boolean {
+  const keys = Reflect.ownKeys(value);
+  return keys.length === value.length + 1
+    && keys.every((key) => key === "length" || (typeof key === "string" && /^\d+$/u.test(key) && Number(key) < value.length));
 }
 
 function text(value: unknown, maximum: number, allowEmpty = false): value is string {
@@ -163,7 +169,7 @@ export function parseOslMailRetrievedThread(value: unknown): OslMailRetrievedThr
     || typeof value.threadId !== "string" || !OSL_MAIL_ID.test(value.threadId)
     || typeof value.retrievalId !== "string" || !OSL_MAIL_ID.test(value.retrievalId)
     || !timestamp(value.expiresAt) || !Array.isArray(value.messages) || value.messages.length < 1 || value.messages.length > 200) return null;
-  if (Object.keys(value.messages).length !== value.messages.length) return null;
+  if (!denseArray(value.messages)) return null;
   const messages: OslMailThreadMessage[] = [];
   for (const message of value.messages) {
     const parsed = parseMessage(message);
