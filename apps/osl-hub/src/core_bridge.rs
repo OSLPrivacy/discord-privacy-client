@@ -8,10 +8,10 @@
 use ipc::AppState;
 use serde::Serialize;
 use std::fmt;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 pub struct HubCoreState {
-    pub osl: AppState,
+    pub osl: Arc<AppState>,
     bootstrap_attempted: bool,
     /// Serialises trusted identity/password transitions so Create, Import,
     /// Setup, and Unlock cannot race each other into replacing disk state.
@@ -21,7 +21,7 @@ pub struct HubCoreState {
 impl Default for HubCoreState {
     fn default() -> Self {
         Self {
-            osl: AppState::new(),
+            osl: production_osl_state(),
             bootstrap_attempted: false,
             lifecycle_lock: Mutex::new(()),
         }
@@ -33,7 +33,7 @@ impl HubCoreState {
     /// configuration. Missing, locked, or corrupt state remains unavailable.
     pub fn bootstrap_from_disk() -> Self {
         let state = Self {
-            osl: AppState::new(),
+            osl: production_osl_state(),
             bootstrap_attempted: true,
             lifecycle_lock: Mutex::new(()),
         };
@@ -44,6 +44,12 @@ impl HubCoreState {
     pub fn register_after_local_bootstrap(&self) {
         crate::original_bootstrap::register_after_local_bootstrap(&self.osl);
     }
+}
+
+fn production_osl_state() -> Arc<AppState> {
+    let config_dir = keystore::osl_config_dir()
+        .unwrap_or_else(|_| std::env::temp_dir().join("osl-production-duress-unconfigured"));
+    AppState::new_with_production_duress_engine(config_dir)
 }
 
 #[derive(Serialize)]

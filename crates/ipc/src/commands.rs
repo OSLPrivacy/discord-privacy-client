@@ -13300,16 +13300,31 @@ pub fn cmd_osl_verify_gate_password(
             })
         }
         GateMatch::Wrong => {
-            lock.password_failed_attempts = lock.password_failed_attempts.saturating_add(1);
-            let secs =
-                crate::main_password::password_lockout_secs_pub(lock.password_failed_attempts);
-            lock.password_locked_until = if secs > 0 { Some(now + secs) } else { None };
-            let _ = crate::main_password::write_lockout_pub(&dir, &lock);
-            Ok(GateVerifyDto {
-                result: "wrong".to_string(),
-                lockout_seconds_remaining: secs,
-                attempts_used: lock.password_failed_attempts,
-            })
+            match crate::main_password::record_wrong_password_attempt_or_duress(
+                state, &mut lock, now,
+            )? {
+                crate::main_password::WrongPasswordAttemptAction::Wrong {
+                    attempts_used,
+                    lockout_seconds_remaining,
+                } => {
+                    let _ = crate::main_password::write_lockout_pub(&dir, &lock);
+                    Ok(GateVerifyDto {
+                        result: "wrong".to_string(),
+                        lockout_seconds_remaining,
+                        attempts_used,
+                    })
+                }
+                crate::main_password::WrongPasswordAttemptAction::DuressTriggered {
+                    attempts_used,
+                } => {
+                    let _ = crate::main_password::write_lockout_pub(&dir, &lock);
+                    Ok(GateVerifyDto {
+                        result: "burn".to_string(),
+                        lockout_seconds_remaining: 0,
+                        attempts_used,
+                    })
+                }
+            }
         }
     }
 }
