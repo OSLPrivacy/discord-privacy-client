@@ -1,5 +1,39 @@
 export type OverlaySendMode = "button" | "double" | "single";
 export type OverlaySendGestureResult = "none" | "armed" | "send";
+export type SendOutcome = "sent" | "not-sent" | "unknown";
+
+export const SendOutcome = Object.freeze({
+  parse(value: unknown): SendOutcome {
+    let status: string | null = null;
+    if (typeof value === "string") {
+      status = value;
+    } else if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+      const candidate = (value as Record<string, unknown>).status;
+      status = typeof candidate === "string" ? candidate : null;
+    }
+    if (status === null) return "unknown";
+    const notSentStatuses = [
+      "calibrationRequired",
+      "contextChanged",
+      "composerUnavailable",
+      "composerNotEmpty",
+      "placementRejected",
+      "enterRejected",
+      "platformUnsupported",
+    ];
+    if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+      const record = value as Record<string, unknown>;
+      const placed = record.placed;
+      const enterSent = record.enterSent;
+      if ((placed !== undefined && typeof placed !== "boolean") || (enterSent !== undefined && typeof enterSent !== "boolean")) return "unknown";
+      if (status === "sent") return placed === true && enterSent === true ? "sent" : "unknown";
+      if (status === "carrierUnconfirmed" || enterSent === true) return "unknown";
+      return notSentStatuses.includes(status) ? "not-sent" : "unknown";
+    }
+    if (status === "sent" || status === "carrierUnconfirmed") return "unknown";
+    return notSentStatuses.includes(status) ? "not-sent" : "unknown";
+  },
+});
 
 export interface OverlayEnterGesture {
   key: string;

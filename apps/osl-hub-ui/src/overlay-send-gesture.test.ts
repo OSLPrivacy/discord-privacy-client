@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OverlaySendGesture, type OverlayEnterGesture } from "./overlay-send-gesture";
+import { OverlaySendGesture, SendOutcome, type OverlayEnterGesture } from "./overlay-send-gesture";
 
 const enter = (now: number, overrides: Partial<OverlayEnterGesture> = {}): OverlayEnterGesture => ({
   key: "Enter", shiftKey: false, repeat: false, isTrusted: true, isComposing: false, now, ...overrides,
@@ -87,5 +87,36 @@ describe("native overlay send gestures", () => {
     gesture.setMode("double");
     gesture.keydown(enter(12));
     expect(gesture.keyup(enter(13))).toBe("armed");
+  });
+});
+
+describe("native overlay send outcomes", () => {
+  it("parses sent only from a fully verified sent receipt", () => {
+    expect(SendOutcome.parse({ status: "sent", placed: true, enterSent: true })).toBe("sent");
+    expect(SendOutcome.parse({ status: "sent", placed: true, enterSent: false })).toBe("unknown");
+    expect(SendOutcome.parse("sent")).toBe("unknown");
+  });
+
+  it("parses explicit no-send terminal statuses as not-sent", () => {
+    for (const status of [
+      "calibrationRequired",
+      "contextChanged",
+      "composerUnavailable",
+      "composerNotEmpty",
+      "placementRejected",
+      "enterRejected",
+      "platformUnsupported",
+    ]) {
+      expect(SendOutcome.parse({ status, placed: false, enterSent: false })).toBe("not-sent");
+      expect(SendOutcome.parse(status)).toBe("not-sent");
+    }
+  });
+
+  it("keeps ambiguous carrier and malformed receipts unknown", () => {
+    expect(SendOutcome.parse({ status: "carrierUnconfirmed", placed: true, enterSent: true })).toBe("unknown");
+    expect(SendOutcome.parse({ status: "contextChanged", placed: true, enterSent: true })).toBe("unknown");
+    expect(SendOutcome.parse({ status: "placementRejected", placed: "no", enterSent: false })).toBe("unknown");
+    expect(SendOutcome.parse({ status: "newBackendStatus", placed: false, enterSent: false })).toBe("unknown");
+    expect(SendOutcome.parse(null)).toBe("unknown");
   });
 });
