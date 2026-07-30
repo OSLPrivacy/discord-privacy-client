@@ -845,6 +845,87 @@ mod tests {
     }
 
     #[test]
+    fn schema() {
+        let payload = sample_payload();
+        let (secret, public, trusted) = signer();
+        let doc = sign_profile_doc(&secret, &public, &payload).unwrap();
+
+        assert_eq!(verify_profile_doc(&doc, &trusted, NOW).unwrap(), payload);
+
+        let mut tampered = doc.clone();
+        let mut bytes = STANDARD.decode(&tampered.payload_b64).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1;
+        tampered.payload_b64 = STANDARD.encode(bytes);
+        assert_eq!(
+            verify_profile_doc(&tampered, &trusted, NOW),
+            Err(ProfileError::BadSignature)
+        );
+
+        let mut missing_authority = payload.clone();
+        missing_authority.authority.release_authority_required = false;
+        let unsigned_refusal = missing_authority.validate_for_use(NOW);
+        assert_eq!(
+            unsigned_refusal,
+            Err(ProfileError::MissingAuthority {
+                field: "release_authority_required"
+            })
+        );
+
+        let mut script_field = serde_json::to_value(&payload).unwrap();
+        script_field["script"] = serde_json::json!("native-hook.exe");
+        assert!(
+            serde_json::from_value::<ProfilePayload>(script_field).is_err(),
+            "signed profile payloads must not carry arbitrary executable hooks"
+        );
+    }
+
+    #[test]
+    fn validate_structure() {
+        let validated = profile().validate_structure().unwrap();
+        assert!(validated.permits(Capability::PlaceProtectedPayload, full_evidence()));
+
+        let mut no_consent = full_evidence();
+        no_consent.user_consented = false;
+        assert!(!validated.permits(Capability::PlaceProtectedPayload, no_consent));
+
+        let mut no_recipient_binding = full_evidence();
+        no_recipient_binding.recipient_bound = false;
+        assert!(!validated.permits(
+            Capability::PlaceProtectedPayload,
+            no_recipient_binding
+        ));
+
+        let mut wrong_authority = full_evidence();
+        wrong_authority.authority = Some(AdapterAuthority::DocumentedPlatformApi);
+        assert!(!validated.permits(Capability::PlaceProtectedPayload, wrong_authority));
+
+        let mut absent_binding = serde_json::to_value(profile()).unwrap();
+        absent_binding["capabilities"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("binding_required");
+        let json = serde_json::to_vec(&absent_binding).unwrap();
+        assert_eq!(parse_profile_doc(&json), Err(ProfileValidationError::Json));
+
+        let mut false_consent = profile();
+        false_consent.capabilities[0].consent_required = false;
+        assert_eq!(
+            false_consent.validate_structure(),
+            Err(ProfileValidationError::ConsentNotRequired(
+                Capability::InspectVisibleComposer
+            ))
+        );
+
+        let mut incomplete_outcome = profile();
+        incomplete_outcome.send_outcome.reports_unknown = false;
+        assert_eq!(
+            incomplete_outcome.validate_structure(),
+            Err(ProfileValidationError::MissingTriStateSendOutcome)
+        );
+    }
+
+    #[test]
     fn schema_valid_profile_permits_only_with_consent_binding_and_authority() {
         let validated = profile().validate_structure().unwrap();
         assert!(validated.permits(Capability::PlaceProtectedPayload, full_evidence()));
