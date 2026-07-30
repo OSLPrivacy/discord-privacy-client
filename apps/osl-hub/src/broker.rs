@@ -7652,6 +7652,126 @@ mod tests {
         }
     }
 
+    #[test]
+    fn audit_control_inbox_consumers_have_no_active_peer_unfiltered_drain() {
+        fn production(source: &str) -> &str {
+            source
+                .split_once("\n#[cfg(test)]")
+                .map(|(production, _)| production)
+                .unwrap_or(source)
+        }
+
+        fn between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+            source
+                .split_once(start)
+                .and_then(|(_, rest)| rest.split_once(end))
+                .map(|(body, _)| body)
+                .expect("source audit boundary is present")
+        }
+
+        let broker = production(include_str!("broker.rs"));
+        let client = production(include_str!("../../../crates/keystore/src/client.rs"));
+        let ipc_commands = production(include_str!("../../../crates/ipc/src/commands.rs"));
+
+        let broker_fetch = between(
+            broker,
+            "fn fetch_peer_control_inbox(",
+            "fn control_inbox_delivery_facts(",
+        );
+        let text_drain = between(
+            broker,
+            "fn drain_peer_inbox_text(",
+            "fn begin_peer_attachment(",
+        );
+        let attachment_drain = between(
+            broker,
+            "fn native_overlay_attachment_plans(",
+            "fn collect_valid_bounded",
+        );
+        let client_compat = between(
+            client,
+            "pub fn get_control_inbox_compatible_from(",
+            "fn probe_control_inbox_sender_filter_capability(",
+        );
+        let ipc_all_row_dispatcher = between(
+            ipc_commands,
+            "pub fn cmd_osl_control_inbox_drain(",
+            "Ok(ControlInboxDrainReport {",
+        );
+
+        let shared_boundary_call =
+            ["fetch_peer_control_", "inbox(&identity, &client, &manual.peer_osl_user_id)"]
+                .concat();
+        let compatible_call = [
+            "client.get_control_inbox_compatible",
+            "_from(identity, peer_osl_user_id)",
+        ]
+        .concat();
+        let filtered_call = "self.get_control_inbox_from(identity, sender_id)";
+        let unfiltered_fallback = "self.get_control_inbox(identity)";
+        let unfiltered_method_call = ".get_control_inbox(&identity)";
+
+        assert!(
+            broker_fetch.contains(&compatible_call),
+            "the only broker GET boundary must call the measured sender-filter client"
+        );
+        assert!(
+            !broker.contains(unfiltered_method_call),
+            "broker production must not issue an unfiltered active-peer GET"
+        );
+        assert_eq!(
+            broker.matches("fetch_peer_control_inbox(").count(),
+            3,
+            "broker production should have one boundary plus text and attachment consumers"
+        );
+        for (name, drain) in [("text", text_drain), ("attachment", attachment_drain)] {
+            assert!(
+                drain.contains(&shared_boundary_call),
+                "{name} consumer must enter through the shared sender-scoped boundary"
+            );
+        }
+
+        assert!(
+            client_compat.contains(filtered_call),
+            "client compatibility boundary must end in the signed sender-filtered GET"
+        );
+        assert!(
+            !client_compat.contains(unfiltered_fallback),
+            "client compatibility boundary must refuse legacy widening, not locally filter it"
+        );
+
+        assert_eq!(
+            ipc_commands.matches(unfiltered_method_call).count(),
+            1,
+            "the audit must account for every remaining unfiltered GET call"
+        );
+        assert!(
+            ipc_all_row_dispatcher.contains("for item in items {")
+                && ipc_all_row_dispatcher
+                    .contains("cmd_osl_decrypt_message_v2(")
+                && ipc_all_row_dispatcher.contains(
+                    "if crate::wire_v2::is_native_overlay_relay_bundle(&bundle) {\n            continue;\n        }"
+                ),
+            "the sole unfiltered IPC caller must remain an all-row dispatcher, not an active-peer consumer"
+        );
+
+        let mutated_broker = broker.replacen(&shared_boundary_call, unfiltered_method_call, 1);
+        assert_ne!(mutated_broker, broker, "mutation must alter a consumer");
+        assert!(
+            mutated_broker.contains(unfiltered_method_call),
+            "the audit mutation demonstrates an active-peer widening"
+        );
+        let mutated_client = client_compat.replacen(filtered_call, unfiltered_fallback, 1);
+        assert_ne!(
+            mutated_client, client_compat,
+            "mutation must alter the client compatibility tail"
+        );
+        assert!(
+            mutated_client.contains(unfiltered_fallback),
+            "the audit mutation demonstrates a client fallback widening"
+        );
+    }
+
     fn control_inbox_test_row(
         id: &str,
         sender_id: &str,
