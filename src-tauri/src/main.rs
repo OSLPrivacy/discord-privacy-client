@@ -2955,6 +2955,43 @@ fn main() {
             let app_state = app.state::<AppState>();
             bootstrap::run_autostart(app_state.inner());
 
+            // B33: prekey replenishment scheduler. Autostart has already
+            // loaded identity + keyserver state when they exist; this task
+            // refuses if either is absent. It fires once after launch, then
+            // every 6h as a backstop for SPK rotation and locally-observed
+            // OPK depletion.
+            let prekey_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                use std::time::Duration;
+
+                let h = prekey_handle.clone();
+                let _ = tauri::async_runtime::spawn_blocking(move || {
+                    let s = h.state::<AppState>();
+                    if let Ok(dir) = keystore::osl_config_dir() {
+                        let _ =
+                            ipc::commands::run_prekey_replenishment_tick(s.inner(), &dir, None);
+                    }
+                })
+                .await;
+
+                let mut iv = tokio::time::interval(Duration::from_secs(
+                    ipc::commands::PREKEY_REPLENISH_INTERVAL_SECONDS,
+                ));
+                iv.tick().await;
+                loop {
+                    iv.tick().await;
+                    let h = prekey_handle.clone();
+                    let _ = tauri::async_runtime::spawn_blocking(move || {
+                        let s = h.state::<AppState>();
+                        if let Ok(dir) = keystore::osl_config_dir() {
+                            let _ =
+                                ipc::commands::run_prekey_replenishment_tick(s.inner(), &dir, None);
+                        }
+                    })
+                    .await;
+                }
+            });
+
             // F2.4: license-refresh task. `run_autostart` did the
             // synchronous cache-only classify (so the first webview
             // render reads a real value, not Free-by-default). This
