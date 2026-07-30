@@ -8,6 +8,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 const MAX_BINDING_FIELD_BYTES: usize = 256;
 
 #[derive(Clone, Eq, PartialEq)]
@@ -144,7 +146,8 @@ impl fmt::Debug for ImapMessageSummary {
     }
 }
 
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OwnerFacingDryRunPreview {
     pub owner_account: String,
     pub dry_run: bool,
@@ -192,7 +195,8 @@ pub enum QueryAfterDelete {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DeleteVerification {
     VerifiedGone,
     StillPresent,
@@ -216,7 +220,8 @@ pub fn delete_and_verify(
     }
 }
 
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UiScrubRequest {
     pub owner: String,
     pub account: String,
@@ -235,7 +240,8 @@ impl fmt::Debug for UiScrubRequest {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EndToEndScrubReport {
     pub preview: OwnerFacingDryRunPreview,
     pub verified: Vec<(u64, DeleteVerification)>,
@@ -356,6 +362,18 @@ mod tests {
         ]
     }
 
+    fn ui_tauri_request(grant_id: u64) -> UiScrubRequest {
+        serde_json::from_str(&format!(
+            r#"{{
+                "owner": "owner-a",
+                "account": "account-a",
+                "grantId": {grant_id},
+                "approvedUids": [20, 10]
+            }}"#
+        ))
+        .unwrap()
+    }
+
     #[derive(Default)]
     struct FixtureImap {
         outcomes: BTreeMap<u64, QueryAfterDelete>,
@@ -455,28 +473,106 @@ mod tests {
         let mut ledger = ConsentLedger::default();
         let binding = binding();
         let grant = ledger.mint(binding, 100, 60).unwrap();
-        let request = UiScrubRequest {
-            owner: "owner-a".to_string(),
+
+        assert!(
+            serde_json::from_str::<UiScrubRequest>(&format!(
+                r#"{{
+                    "owner": "owner-a",
+                    "account": "account-a",
+                    "grantId": {},
+                    "approvedUids": [10],
+                    "deleteEverything": true
+                }}"#,
+                grant.id()
+            ))
+            .is_err(),
+            "the Tauri command payload must reject renderer-supplied ambient authority"
+        );
+
+        let acl = MainOnlyAcl::for_owner("owner-a");
+        let mut adapter = FixtureImap::default();
+
+        let wrong_owner = UiScrubRequest {
+            owner: "owner-b".to_string(),
             account: "account-a".to_string(),
             grant_id: grant.id(),
             approved_uids: vec![10],
         };
-        let acl = MainOnlyAcl::for_owner("owner-a");
-        let mut adapter = FixtureImap::default();
-        adapter.outcomes.insert(10, QueryAfterDelete::Gone);
+        assert_eq!(
+            run_attended_fixture(
+                wrong_owner,
+                &acl,
+                &mut ledger,
+                &mut adapter,
+                110,
+                &messages()
+            ),
+            Err(ScrubImapError::AclRefused)
+        );
+        assert!(
+            adapter.calls.is_empty(),
+            "main-only ACL refusal must happen before native IMAP is called"
+        );
 
-        let report =
-            run_attended_fixture(request, &acl, &mut ledger, &mut adapter, 120, &messages())
-                .unwrap();
+        let wrong_binding = UiScrubRequest {
+            owner: "owner-a".to_string(),
+            account: "account-b".to_string(),
+            grant_id: grant.id(),
+            approved_uids: vec![10],
+        };
+        assert_eq!(
+            run_attended_fixture(
+                wrong_binding,
+                &acl,
+                &mut ledger,
+                &mut adapter,
+                111,
+                &messages()
+            ),
+            Err(ScrubImapError::ConsentBindingMismatch)
+        );
+        assert!(
+            adapter.calls.is_empty(),
+            "consent binding refusal must happen before native IMAP is called"
+        );
+
+        adapter.outcomes.insert(10, QueryAfterDelete::Gone);
+        adapter.outcomes.insert(20, QueryAfterDelete::Present);
+
+        let report = run_attended_fixture(
+            ui_tauri_request(grant.id()),
+            &acl,
+            &mut ledger,
+            &mut adapter,
+            120,
+            &messages(),
+        )
+        .unwrap();
 
         assert!(report.preview.dry_run);
+        assert_eq!(report.preview.deletable_uids, vec![10, 20]);
         assert_eq!(
             report.verified,
-            vec![(10, DeleteVerification::VerifiedGone)]
+            vec![
+                (10, DeleteVerification::VerifiedGone),
+                (20, DeleteVerification::StillPresent)
+            ]
         );
         assert_eq!(
             adapter.calls,
-            vec!["delete:10".to_string(), "query:10".to_string()]
+            vec![
+                "delete:10".to_string(),
+                "query:10".to_string(),
+                "delete:20".to_string(),
+                "query:20".to_string(),
+            ],
+            "native IMAP must be reached only after UI payload parsing, ACL, and consent"
+        );
+        let tauri_response = serde_json::to_value(&report).unwrap();
+        assert_eq!(tauri_response["preview"]["dryRun"], true);
+        assert_eq!(
+            tauri_response["verified"],
+            serde_json::json!([[10, "verified_gone"], [20, "still_present"]])
         );
 
         let replay = UiScrubRequest {
@@ -485,10 +581,15 @@ mod tests {
             grant_id: grant.id(),
             approved_uids: vec![20],
         };
+        let native_calls_after_success = adapter.calls.clone();
         assert_eq!(
             run_attended_fixture(replay, &acl, &mut ledger, &mut adapter, 121, &messages()),
             Err(ScrubImapError::ConsentMissing),
             "the UI-to-native path must not be reusable after the consent grant is spent"
+        );
+        assert_eq!(
+            adapter.calls, native_calls_after_success,
+            "replayed UI authority must not reach native IMAP"
         );
     }
 }
