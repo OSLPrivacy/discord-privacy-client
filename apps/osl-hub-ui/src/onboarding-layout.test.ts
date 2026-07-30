@@ -452,6 +452,7 @@ describe("fresh-account continuation", () => {
     const recovery = functionSource("recoveryContent", "identityPasswordForm");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
     expect(recovery).toContain('id="copy-recovery-kit"');
+    expect(recovery).toContain("secureRecoveryOnboardingContent()");
     expect(recovery).toContain('recoverySavedAcknowledged ? "checked" : ""');
     expect(recovery).toContain('recoverySavedAcknowledged ? "" : "disabled"');
     expect(binding).toMatch(/#copy-recovery-kit[\s\S]*?navigator\.clipboard\.writeText\(kit\)[\s\S]*?Recovery kit copied — save it, then confirm below/);
@@ -469,6 +470,19 @@ describe("fresh-account continuation", () => {
     expect(password).toMatch(/recoveryBundle = \{[\s\S]*?recoverySavedAcknowledged = false;[\s\S]*?onboardingRoute = "recovery"/);
     expect(imported).toMatch(/recoveryBundle = \{[\s\S]*?recoverySavedAcknowledged = false;[\s\S]*?onboardingRoute = "recovery"/);
     expect(burn).toMatch(/localStorage\.clear\(\);[\s\S]*?recoveryBundle = null;[\s\S]*?recoverySavedAcknowledged = false;/);
+  });
+
+  it("adds secure recovery next steps without exposing machinery or claiming Android readiness", () => {
+    const recovery = functionSource("recoveryContent", "secureRecoveryOnboardingContent");
+    const nextSteps = functionSource("secureRecoveryOnboardingContent", "identityPasswordForm");
+    expect(recovery).toMatch(/recoveryCaptureGate\.canRender\(\)[\s\S]*?secureRecoveryOnboardingContent\(\)/);
+    expect(nextSteps).toContain('class="secure-recovery-next-steps"');
+    expect(nextSteps).toContain("Mullvad");
+    expect(nextSteps).toContain("Optional. Use your existing session later for network privacy.");
+    expect(nextSteps).toContain("Android device");
+    expect(nextSteps).toContain("Coming later. Phone setup stays optional and separate.");
+    expect(nextSteps).not.toMatch(/keyserver|ratchet|receipt|browser profile|provider adapter|account number|tunnel state|credential|token/i);
+    expect(styles).toContain(".secure-recovery-next-steps");
   });
 
   it("keeps setup sequential without a global completion shortcut", () => {
