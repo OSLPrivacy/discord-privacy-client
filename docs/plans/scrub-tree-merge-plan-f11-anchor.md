@@ -6,6 +6,16 @@ re-deriving. This unit performed **git-only** work: no code changes, no builds, 
 merges. It only creates the branch/worktree the merge units (T7/T8/S6/S7/S10/S12/S13
 etc.) will build on.
 
+Behavioral acceptance test:
+`integration_branch_anchor_records_osl_newest_integration_403cfa2`.
+
+The test passes only if this anchor record names the integration source line as
+`osl-newest-integration`, preserves the pinned input SHA
+`403cfa2e090bf76ae4cb2950f3febcc72204fc59`, and records that the branch was created
+as the plan's integration anchor without mutating the source checkouts. It fails if
+the integration source is absent, if a newer integration HEAD is silently substituted
+for the pinned SHA, or if the branch/worktree cannot be identified.
+
 ## What was created
 
 | Field | Value |
