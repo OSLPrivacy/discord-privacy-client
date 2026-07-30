@@ -830,6 +830,81 @@ class OneShotLedgerTests(unittest.TestCase):
             with self.assertRaises(LedgerError):
                 restarted.consume(CHALLENGE, pipe, "e" * 64, NOW + 5)
 
+    def test_consume_requires_connected_pipe_and_preserves_available_state(self) -> None:
+        receipt = make_receipt()
+        pipe = receipt["emitter"]
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = recovered_ledger(directory)
+            ledger.issue(CHALLENGE, NOW)
+            with self.assertRaises(LedgerError):
+                ledger.consume(CHALLENGE, pipe, "e" * 64, NOW + 1)
+            issued = ledger.read(CHALLENGE)
+            self.assertEqual(issued["state"], "issued")
+            self.assertIsNone(issued["pipeBindingSha256"])
+            self.assertIsNone(issued["receiptFrameSha256"])
+
+    def test_wrong_connected_pipe_cannot_consume_or_spoil_the_claim(self) -> None:
+        receipt = make_receipt()
+        pipe = receipt["emitter"]
+        wrong_pipe = process(
+            5252,
+            133_100_000_000_000_050,
+            r"C:\Program Files\OSL\osl-privacy-hub.exe",
+            "c",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = recovered_ledger(directory)
+            ledger.issue(CHALLENGE, NOW)
+            binding = ledger.connect(CHALLENGE, pipe, NOW + 1)
+            with self.assertRaises(LedgerError):
+                ledger.consume(CHALLENGE, wrong_pipe, "d" * 64, NOW + 2)
+            connected = ledger.read(CHALLENGE)
+            self.assertEqual(connected["state"], "connected")
+            self.assertEqual(connected["pipeBindingSha256"], binding)
+            self.assertIsNone(connected["receiptFrameSha256"])
+            ledger.consume(CHALLENGE, pipe, "e" * 64, NOW + 3)
+            consumed = ledger.read(CHALLENGE)
+            self.assertEqual(consumed["state"], "consumed")
+            self.assertEqual(consumed["receiptFrameSha256"], "e" * 64)
+
+    def test_only_one_concurrent_consume_can_claim_connected_challenge(self) -> None:
+        receipt = make_receipt()
+        pipe = receipt["emitter"]
+        outcomes: list[tuple[str, str]] = []
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = recovered_ledger(directory)
+            ledger.issue(CHALLENGE, NOW)
+            ledger.connect(CHALLENGE, pipe, NOW + 1)
+            barrier = threading.Barrier(16)
+
+            def consume(index: int) -> None:
+                digest = f"{index + 1:064x}"
+                try:
+                    barrier.wait()
+                    ledger.consume(CHALLENGE, pipe, digest, NOW + 2)
+                    outcomes.append(("consumed", digest))
+                except (threading.BrokenBarrierError, LedgerError) as error:
+                    outcomes.append(("rejected", str(error)))
+
+            threads = [
+                threading.Thread(target=consume, args=(index,))
+                for index in range(16)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            consumed = [digest for status, digest in outcomes if status == "consumed"]
+            self.assertEqual(len(consumed), 1)
+            self.assertEqual(len(outcomes), 16)
+            self.assertEqual(
+                sum(1 for status, _ in outcomes if status == "rejected"),
+                15,
+            )
+            record = ledger.read(CHALLENGE)
+            self.assertEqual(record["state"], "consumed")
+            self.assertEqual(record["receiptFrameSha256"], consumed[0])
+
     def test_only_one_concurrent_connection_can_claim_a_challenge(self) -> None:
         receipt = make_receipt()
         pipe = receipt["emitter"]
