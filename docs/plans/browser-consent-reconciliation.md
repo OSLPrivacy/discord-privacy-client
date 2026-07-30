@@ -5,7 +5,7 @@ Date: 2026-07-29
 Current tree inspected: `unit-f14` at `16778b297d3e`.
 
 Comparison line inspected for analysis only: `codex/f1-browser-footprint` at
-`61933d3a4b50`, worktree `/home/liamw/discord-privacy-client-f1-footprint`.
+`61933d3a4b50`, worktree `/home/<user>/discord-privacy-client-f1-footprint`.
 
 This is a reconciliation specification, not a merge. Do not copy code between
 lines. The future implementation must be a semantic port into the current tree.

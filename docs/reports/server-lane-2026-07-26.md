@@ -1972,7 +1972,7 @@ and predicates are exact.
 
 ```sh
 cd keyserver-cf
-PATH=/home/liamw/.nvm/versions/node/v24.14.0/bin:$PATH \
+PATH=/home/<user>/.nvm/versions/node/v24.14.0/bin:$PATH \
 WRANGLER_WRITE_LOGS=false \
 npx wrangler d1 execute osl-keyserver-prod --remote --json --command "
 SELECT COUNT(*) AS applied_migration_count,
@@ -2197,7 +2197,7 @@ Migrations to be applied:
 
 ```sh
 cd cipher-store-cf
-PATH=/home/liamw/.nvm/versions/node/v24.14.0/bin:$PATH \
+PATH=/home/<user>/.nvm/versions/node/v24.14.0/bin:$PATH \
 WRANGLER_WRITE_LOGS=false \
 npx wrangler d1 execute osl-cipher-store-prod --remote --json --command "
 SELECT COUNT(*) AS applied_migration_count,
@@ -2482,7 +2482,7 @@ proves:
 Candidate result:
 
 ```text
-$ PATH=/home/liamw/.nvm/versions/node/v24.14.0/bin:$PATH \
+$ PATH=/home/<user>/.nvm/versions/node/v24.14.0/bin:$PATH \
   ./node_modules/.bin/vitest run --config vitest.node.config.ts \
   scripts/migration-0030.test.ts --reporter=verbose
 Test Files  1 passed (1)
@@ -2519,14 +2519,14 @@ harness failed to exercise D1 or the Worker.
 Focused Worker and type gates:
 
 ```text
-$ PATH=/home/liamw/.nvm/versions/node/v24.14.0/bin:$PATH \
+$ PATH=/home/<user>/.nvm/versions/node/v24.14.0/bin:$PATH \
   ./node_modules/.bin/vitest run \
   test/integration/register.test.ts test/integration/pubkeys.test.ts \
   --reporter=dot
 Test Files  2 passed (2)
 Tests  22 passed (22)
 
-$ PATH=/home/liamw/.nvm/versions/node/v24.14.0/bin:$PATH npm run typecheck
+$ PATH=/home/<user>/.nvm/versions/node/v24.14.0/bin:$PATH npm run typecheck
 > tsc --noEmit
 ```
 
@@ -2617,7 +2617,7 @@ the multipart handle was non-vacuous while the metadata shape exactly exercised
 the no-part predicate. Before the fix:
 
 ```text
-$ PATH=/home/liamw/.nvm/versions/node/v24.14.0/bin:$PATH \
+$ PATH=/home/<user>/.nvm/versions/node/v24.14.0/bin:$PATH \
   ./node_modules/.bin/vitest run test/attachment-sweep.test.ts \
   -t "stale legacy no-part" --reporter=verbose
 × expires a stale legacy no-part reservation and aborts R2 before metadata removal
@@ -2656,7 +2656,7 @@ metadata remains retryable for the next scheduled run.
 The focused real-D1/R2 file passes eight tests:
 
 ```text
-$ PATH=/home/liamw/.nvm/versions/node/v24.14.0/bin:$PATH \
+$ PATH=/home/<user>/.nvm/versions/node/v24.14.0/bin:$PATH \
   ./node_modules/.bin/vitest run test/attachment-sweep.test.ts \
   --reporter=verbose
 Test Files  1 passed (1)
@@ -2710,11 +2710,11 @@ setup or SQL binding errors.
 Full Worker and type gates:
 
 ```text
-$ PATH=/home/liamw/.nvm/versions/node/v24.14.0/bin:$PATH npm test
+$ PATH=/home/<user>/.nvm/versions/node/v24.14.0/bin:$PATH npm test
 Test Files  12 passed (12)
 Tests  104 passed (104)
 
-$ PATH=/home/liamw/.nvm/versions/node/v24.14.0/bin:$PATH npm run typecheck
+$ PATH=/home/<user>/.nvm/versions/node/v24.14.0/bin:$PATH npm run typecheck
 > tsc --noEmit
 ```
 
@@ -2763,7 +2763,7 @@ the sender through the exact `identity_lookup_enabled` column, inserted a
 nonempty opaque bundle, and invoked the scheduled Worker. Before the fix:
 
 ```text
-$ PATH=/home/liamw/.nvm/versions/node/v24.14.0/bin:$PATH \
+$ PATH=/home/<user>/.nvm/versions/node/v24.14.0/bin:$PATH \
   ./node_modules/.bin/vitest run \
   test/integration/control-inbox-sweep.test.ts \
   -t "does not silently delete" --reporter=verbose
@@ -2923,13 +2923,13 @@ test itself fails if both independent protections regress.
 Full Worker, Node, and type gates:
 
 ```text
-$ PATH=/home/liamw/.nvm/versions/node/v24.14.0/bin:$PATH npm test
+$ PATH=/home/<user>/.nvm/versions/node/v24.14.0/bin:$PATH npm test
 Test Files  42 passed (42)
 Tests  406 passed (406)
 Test Files  4 passed (4)
 Tests  15 passed (15)
 
-$ PATH=/home/liamw/.nvm/versions/node/v24.14.0/bin:$PATH npm run typecheck
+$ PATH=/home/<user>/.nvm/versions/node/v24.14.0/bin:$PATH npm run typecheck
 > tsc --noEmit
 ```
 

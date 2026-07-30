@@ -26,7 +26,10 @@ SCHEMA_VERSION = 2
 PINNED_COMMIT = "1f745c85bb23cf79a956aa87d623905e20f83cf1"
 PINNED_TREE = "1b9bbbcaf52fdac66d671d06a5a4ac585ec3167a"
 PINNED_LOADER_SOURCE = Path(
-    "/mnt/c/Users/liamw/OSL-Scrub-Demo/WebView2Loader.dll"
+    os.environ.get(
+        "OSL_VMQA_WEBVIEW2_LOADER",
+        "/mnt/c/OSL-Scrub-Demo/WebView2Loader.dll",
+    )
 )
 PINNED_LOADER_SHA256 = (
     "8427b1fc58ec707813e5c0a51eb5d69397bb333250a7b891be4d3b123f1e0f1c"
@@ -62,6 +65,7 @@ SEAL_SCHEMA_VERSION = 2
 SEAL_STATE_SCHEMA_VERSION = 1
 PRODUCTION_SEAL_STATE = PRODUCTION_SEAL_DIRECTORY / ".seal-chain-state.json"
 PRODUCTION_SEAL_LOCK = PRODUCTION_SEAL_DIRECTORY / ".seal-chain.lock"
+PRODUCTION_HOME = Path(os.environ.get("OSL_VMQA_PRODUCTION_HOME", "/home/osl-vmqa"))
 FIXTURE_LOADER_BYTES = b"fixture-WebView2Loader-produced-by-vmqa\n"
 EVIDENCE_FILES = {
     "source.tar",
@@ -90,23 +94,23 @@ PRODUCTION_TOOL_PINS = {
         "2a8c18fbf43da9f692d75474c72bea9dfd796c260b0f3dfe456376abc3bbd668",
     ),
     "npm": (
-        Path("/home/liamw/.nvm/versions/node/v24.14.0/bin/npm"),
+        PRODUCTION_HOME / ".nvm/versions/node/v24.14.0/bin/npm",
         "8e5f6f3429f8cdbe693cdc29904e9d5a7b127a494bd15c804bd54c7403bfcbe7",
     ),
     "node": (
-        Path("/home/liamw/.nvm/versions/node/v24.14.0/bin/node"),
+        PRODUCTION_HOME / ".nvm/versions/node/v24.14.0/bin/node",
         "e237a2839d0cbdc9a9a2adda1a184afc0f5b20306ffbe923af5686550472d8a8",
     ),
     "osl-cargo": (
-        Path("/home/liamw/.local/bin/osl-cargo"),
+        PRODUCTION_HOME / ".local/bin/osl-cargo",
         "b27c3f5c974184f086fcb24da95d6397c333155f2ab2e5e638eafdac57da600a",
     ),
     "rustc": (
-        Path("/home/liamw/.cargo/bin/rustc"),
+        PRODUCTION_HOME / ".cargo/bin/rustc",
         "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10",
     ),
     "cargo": (
-        Path("/home/liamw/.cargo/bin/cargo"),
+        PRODUCTION_HOME / ".cargo/bin/cargo",
         "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10",
     ),
 }
@@ -1019,13 +1023,15 @@ def build_environments(
     for directory in ("/usr/bin", "/bin"):
         if directory not in path_dirs:
             path_dirs.append(directory)
+    production_home = PRODUCTION_HOME.as_posix()
+    production_user = os.environ.get("OSL_VMQA_PRODUCTION_USER", "osl-vmqa")
     common = {
-        "HOME": "/home/liamw",
+        "HOME": production_home,
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
-        "LOGNAME": "liamw",
+        "LOGNAME": production_user,
         "PATH": ":".join(path_dirs),
-        "USER": "liamw",
+        "USER": production_user,
     }
     npm_environment = {
         **common,
@@ -1035,13 +1041,13 @@ def build_environments(
     }
     cargo_environment = {
         **common,
-        "CARGO_HOME": "/home/liamw/.cargo",
+        "CARGO_HOME": (PRODUCTION_HOME / ".cargo").as_posix(),
         "CARGO_INCREMENTAL": "1",
         "CARGO_TARGET_DIR": cargo_target.as_posix(),
         "OSL_CARGO_JOBS": "3",
         "OSL_CARGO_MAXLOAD": "24",
         "OSL_CARGO_MIN_HOST_FREE_GB": "50",
-        "RUSTUP_HOME": "/home/liamw/.rustup",
+        "RUSTUP_HOME": (PRODUCTION_HOME / ".rustup").as_posix(),
     }
     return npm_environment, cargo_environment
 

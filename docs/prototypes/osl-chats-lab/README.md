@@ -9,7 +9,7 @@ The default visual system mirrors the current OSL client: `#0a0a0a` background, 
 ## Run
 
 ```bash
-cd /home/liamw/discord-privacy-client/docs/prototypes/osl-chats-lab
+cd /home/<user>/discord-privacy-client/docs/prototypes/osl-chats-lab
 python3 -m http.server 4173 --bind 127.0.0.1
 ```
 

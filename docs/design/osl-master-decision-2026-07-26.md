@@ -686,7 +686,7 @@ context, not implementation evidence. “Done” still requires current source a
 
 There are currently multiple competing website realities:
 
-- local checkout `/mnt/c/Users/liamw/projects/oslprivacy-web` at an older May revision;
+- local checkout `/mnt/c/Users/<user>/projects/oslprivacy-web` at an older May revision;
 - public GitHub `main`;
 - a newer preview deployment;
 - the public production deployment.
@@ -778,7 +778,7 @@ translate each into a screenshot/evidence reference before editing.
 
 Detailed website files currently include `index.html`, `pricing.html`, `download.html`,
 `audit.html`, and `docs/{faq,getting-started,how-it-works,privacy,terms,threat-model}.html` in
-`/mnt/c/Users/liamw/projects/oslprivacy-web`.
+`/mnt/c/Users/<user>/projects/oslprivacy-web`.
 
 ## 9 · Current implementation truth snapshot
 
@@ -884,7 +884,7 @@ Every Claude/Codex/model account that touches OSL saves a **small structured car
 this specification. Keep it under roughly 40 lines and include:
 
 1. `project`: OSL and authoritative repository/worktree paths; explicitly distinguish
-   `/home/liamw/discord-privacy-client` from `/home/liamw/osl-newest-integration`.
+   `/home/<user>/discord-privacy-client` from `/home/<user>/osl-newest-integration`.
 2. `authority`: owner current instruction → later owner decision → master → subsystem → source/live
    evidence for status; source cannot silently rewrite product intent.
 3. `master`: exact path, saved control revision, date read, and full-read-only-on-first-encounter
@@ -1459,7 +1459,7 @@ matrix, exact changed files, and concise handoff.
 
 ## 16 · Telegram terminal mirror `/osl` mode
 
-Target project: `/home/liamw/claude-bridge/mirror_bot.py` and its transparent PTY mirror. The live
+Target project: `/home/<user>/claude-bridge/mirror_bot.py` and its transparent PTY mirror. The live
 bot is a large uncommitted working tree; **never reset it to git HEAD**. Deploy through the existing
 supervisor/singleton lock by terminating the live bot and allowing the supervisor to respawn it.
 Never start a second bot process, expose its token, loosen config permissions, or restart-loop into
@@ -2123,7 +2123,7 @@ Read only what the task needs:
 - Discord completion checkpoint: `docs/design/osl-completion-plan-2026-07-26.md`.
 - Two-identity testing: `docs/qa/two-identity-p2p-verification.md`.
 - VM release gate: `docs/testing/hub-release-candidate-vm-gate.md`.
-- Scrub execution: `/home/liamw/osl-newest-integration/docs/plans/scrub-to-spec-plan.md`,
+- Scrub execution: `/home/<user>/osl-newest-integration/docs/plans/scrub-to-spec-plan.md`,
   `scrub-autoscrub-architecture.md`, and `scrub-detection-opus5-plan.md`.
 
 Every detailed subsystem document should end with:
@@ -2187,7 +2187,7 @@ Use this for any new Claude/Codex/model account, then append the bounded task:
 You are joining OSL work cold.
 
 FIRST: read this file completely:
-/home/liamw/discord-privacy-client/docs/design/osl-master-decision-2026-07-26.md
+/home/<user>/discord-privacy-client/docs/design/osl-master-decision-2026-07-26.md
 
 If this is the first OSL encounter for this AI/account, read the whole master and save the compact
 structured memory card required by sections 11.1.1–11.1.2. If returning, compare the saved master

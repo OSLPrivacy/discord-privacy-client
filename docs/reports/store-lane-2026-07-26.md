@@ -1,7 +1,7 @@
 # Store lane — 2026-07-26
 
 **Lane:** store · **Owns:** `crates/store/**` exclusively · **Model:** Opus 5, effort high
-**Base:** branch `osl-eye-and-features-2026-07-26`, tree `/home/liamw/discord-privacy-client`
+**Base:** branch `osl-eye-and-features-2026-07-26`, tree `/home/<user>/discord-privacy-client`
 **Audit under repair:** `docs/security/osl-audit-2026-07-26-codex.md`
 **Invariant document:** `docs/THREAT_MODEL.md` — the code was audited against it, not the reverse.
 

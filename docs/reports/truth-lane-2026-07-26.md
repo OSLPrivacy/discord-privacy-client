@@ -1,7 +1,7 @@
 # Truth lane — website, public claims, project documents (2026-07-26)
 
 **Lane owner:** truth. **Model:** Opus 5, effort high.
-**Branch:** `web-pricing-truth-2026-07-26` in `/mnt/c/Users/liamw/projects/oslprivacy-web`.
+**Branch:** `web-pricing-truth-2026-07-26` in `/mnt/c/Users/<user>/projects/oslprivacy-web`.
 **Commit:** `72213331beee76da926124214d9e778b4517dc45` ("Bring every website claim inside the
 public-claim allowlist"), based on `d77709b` = `origin/main` = **what production serves today**.
 **Nothing is deployed.** Promotion to production is the owner's call.
@@ -268,7 +268,7 @@ most specific one — a website event should use `h1`/`workstream.h`, not `overa
 the right dashboard.
 
 **Two events from the Scrub lane are currently stranded as `.rejected`** in
-`/home/liamw/claude-bridge/osl-events/` and were never delivered:
+`/home/<user>/claude-bridge/osl-events/` and were never delivered:
 `scrub-f10-demo-target-decision-2026-07-26` and `scrub-imap-qa-certificate-authority-2026-07-26`.
 They are not this lane's to re-file — the Scrub lane should resubmit them with the same ids (replay
 is idempotent) and a valid scope such as `f10`.
@@ -953,9 +953,9 @@ ungated.
 
 ## 19 · Four hand-verified zero-caller findings — independent claim triage
 
-Re-verified on `/home/liamw/discord-privacy-client`, branch
+Re-verified on `/home/<user>/discord-privacy-client`, branch
 `osl-eye-and-features-2026-07-26`, HEAD `5822a8f` before this documentation edit, and on the clean
-website worktree `/mnt/c/Users/liamw/projects/oslprivacy-web`, `main` at `007907c`.
+website worktree `/mnt/c/Users/<user>/projects/oslprivacy-web`, `main` at `007907c`.
 
 ### Production reachability
 

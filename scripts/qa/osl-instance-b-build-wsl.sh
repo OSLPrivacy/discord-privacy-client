@@ -5,7 +5,7 @@
 #   The PowerShell sibling drives `tauri build --config <overlay>` with the
 #   Windows MSVC toolchain. That is not the toolchain this machine's current
 #   instance A was produced with: A's binary carries WSL debuginfo paths
-#   (/home/liamw/.cargo/registry/...) and this checkout's only Windows target
+#   ($HOME/.cargo/registry/...) and this checkout's only Windows target
 #   directory is target/x86_64-pc-windows-gnu. Building B with a different
 #   toolchain than A would make every cross-instance difference ambiguous --
 #   toolchain or product? -- so B is cross-compiled the same way A was.
@@ -62,13 +62,14 @@ PY
   exit $?
 fi
 
-REPO="${REPO:-/home/liamw/discord-privacy-client}"
+REPO="${REPO:-$HOME/discord-privacy-client}"
 IDENTIFIER="${1:-org.oslprivacy.hubqab}"
 BUNDLE_A="${BUNDLE_A:-org.oslprivacy.hub}"
 STAGE_WIN="${STAGE_WIN:-C:\\OSL-QA-B}"
 STAGE="${STAGE:-/mnt/c/OSL-QA-B}"
+OSL_WIN_TEMP_ROOT="${OSL_WIN_TEMP_ROOT:-/mnt/c/OSL-QA-Temp}"
 TARGET="x86_64-pc-windows-gnu"
-JSON_OUT="${JSON_OUT:-/mnt/c/Users/liamw/AppData/Local/Temp/osl-instance-b-build.json}"
+JSON_OUT="${JSON_OUT:-$OSL_WIN_TEMP_ROOT/osl-instance-b-build.json}"
 LOG="${LOG:-/tmp/osl-instance-b-build.log}"
 RUN_START="$(date -Is)"
 
@@ -151,7 +152,7 @@ if ! grep -qa -- "$IDENTIFIER" "$EXE"; then
 fi
 
 mkdir -p "$STAGE" || fail "Cannot create $STAGE." "Check permissions."
-A_EXE="$(ls -1 /mnt/c/Users/liamw/AppData/Local/Temp/osl-*/osl-privacy-hub.exe 2>/dev/null | head -1)"
+A_EXE="$(ls -1 "$OSL_WIN_TEMP_ROOT"/osl-*/osl-privacy-hub.exe 2>/dev/null | head -1)"
 if [ -n "$A_EXE" ] && [ "$(readlink -f "$A_EXE")" = "$(readlink -f "$STAGE/osl-privacy-hub.exe")" ]; then
   fail "Refusing to stage over instance A's executable." "Pick another STAGE."
 fi
@@ -160,7 +161,7 @@ cp -f "$EXE" "$STAGE/osl-privacy-hub.exe" || fail "Staging copy failed." "Check 
 # The exe alone hangs before main() with no window and no trace file at all.
 DLL_SRC="${DLL_SRC:-}"
 if [ -z "$DLL_SRC" ]; then
-  DLL_SRC="$(ls -1t /mnt/c/Users/liamw/AppData/Local/Temp/osl-*/WebView2Loader.dll 2>/dev/null | head -1)"
+  DLL_SRC="$(ls -1t "$OSL_WIN_TEMP_ROOT"/osl-*/WebView2Loader.dll 2>/dev/null | head -1)"
 fi
 [ -n "$DLL_SRC" ] && [ -f "$DLL_SRC" ] || fail \
   "WebView2Loader.dll was not found next to any staged OSL build." \

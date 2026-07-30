@@ -4,7 +4,7 @@ Status/build/worktree/owner:
 - Status: `test-proven-only`. Everything below is compile + unit evidence. **No runtime,
   two-identity, or user-visible evidence was produced in this run**, so no acceptance row is
   claimed. See "Checklist rows" at the end.
-- Worktree: `/home/liamw/discord-privacy-client`, branch `osl-eye-and-features-2026-07-26`,
+- Worktree: `/home/<user>/discord-privacy-client`, branch `osl-eye-and-features-2026-07-26`,
   HEAD `fc6b983` (dirty).
 - Master control revision read: `OSL-MASTER-2026-07-26-r5` (returning encounter — header, §0.5,
   §2.1 deadline register, and task-linked sections only).
@@ -356,7 +356,7 @@ Correct usage: `export CARGO_BUILD_JOBS=4` then invoke the script **unwrapped**.
 applies to cargo commands you issue yourself, not to scripts that already self-lock. Two of my
 attempts were lost to this before the process tree showed both `flock` PIDs on the same file.
 
-(Also worth knowing: `/mnt/c/Users/liamw/AppData/Local/Temp/osl-instance-b-build.json` can hold a
+(Also worth knowing: `/mnt/c/Users/<user>/AppData/Local/Temp/osl-instance-b-build.json` can hold a
 **stale** verdict from an earlier tab's run — mine showed a 15:27 keystore failure that had nothing
 to do with the current bytes. Check `runStartedAt` before believing it.)
 
@@ -1589,7 +1589,7 @@ listed Rust/UI paths and the truth lane owns `docs/**`/website but not root
 README, so neither lane is authorized to edit that file. The handoff is
 published at:
 
-`/home/liamw/.local/share/ai-context-bus/messages/20260727T183234Z-beca80c1.json`
+`/home/<user>/.local/share/ai-context-bus/messages/20260727T183234Z-beca80c1.json`
 
 The global public claim therefore remains blocked on an owner for
 `README.md`. No Cargo, build, install, browser, deployment, live Discord,
@@ -1664,7 +1664,7 @@ install, browser, deployment, live peer, or runtime action ran.
 
 Non-owned present-tense design wording was routed to truth ownership:
 
-`/home/liamw/.local/share/ai-context-bus/messages/20260727T184108Z-9886bca9.json`
+`/home/<user>/.local/share/ai-context-bus/messages/20260727T184108Z-9886bca9.json`
 
 Truth corrected `docs/design/group-messaging.md`,
 `docs/design/key-server-api.md`, and `docs/design/sender-keys.md` in
