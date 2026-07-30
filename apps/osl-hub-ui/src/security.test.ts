@@ -242,6 +242,7 @@ describe("bundled preview security boundary", () => {
       "allow-set-native-discord-covertext-enabled",
       "allow-create-service-account",
       "allow-open-service-host",
+      "allow-request-hosted-session-scan-command",
       "allow-close-service-host",
       "allow-set-local-protected-sheet-open",
       "allow-remove-service-account",

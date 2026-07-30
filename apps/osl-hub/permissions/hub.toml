@@ -454,6 +454,11 @@ description = "Open one explicitly allowlisted service in an isolated per-accoun
 commands.allow = ["open_service_host"]
 
 [[permission]]
+identifier = "allow-request-hosted-session-scan-command"
+description = "Request one read-only scan of the exact checked native-hosted Discord context; native code derives owner, scope, generation, and attended binding state and grants no account, handle, credential, profile, path, URL, conversation, row, preview, confirmation, deletion, navigation, or network authority."
+commands.allow = ["request_hosted_session_scan_command"]
+
+[[permission]]
 identifier = "allow-close-service-host"
 description = "Close the currently hosted service child webview."
 commands.allow = ["close_service_host"]
