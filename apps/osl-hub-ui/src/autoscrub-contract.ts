@@ -122,19 +122,19 @@ export function projectAutoScrubFleetStatus(status: AutoScrubFleetStatus | null)
       stopAvailable: false,
     };
   }
-  if (status.globalStopRequested || status.runs.some((run) => run.stopRequested) || status.quitGuard.state === "estimated" || status.quitGuard.state === "checking") {
-    return {
-      label: "Stop requested",
-      detail: `Finishing checked items; ${formatEstimate(status.quitGuard.honestRemainingSecondsEstimate)}.`,
-      tone: status.quitGuard.state === "unknown" ? "warning" : "working",
-      stopAvailable: false,
-    };
-  }
   if (status.quitGuard.state === "refused") {
     return {
       label: "Stopped",
       detail: "OSL refused to continue because stop authority could not be proven.",
       tone: "blocked",
+      stopAvailable: false,
+    };
+  }
+  if (status.globalStopRequested || status.runs.some((run) => run.stopRequested) || status.quitGuard.state === "estimated" || status.quitGuard.state === "checking") {
+    return {
+      label: "Stop requested",
+      detail: `Finishing checked items; ${formatEstimate(status.quitGuard.honestRemainingSecondsEstimate)}.`,
+      tone: status.quitGuard.state === "unknown" ? "warning" : "working",
       stopAvailable: false,
     };
   }
