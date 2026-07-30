@@ -753,6 +753,44 @@ pub struct OpenedNativeOverlayTextBatch {
     pub deferred_rows: u32,
 }
 
+/// Counts of acknowledgement states in one broker batch.
+///
+/// Counts only. No message id, peer id, plaintext, cover text or receipt path is
+/// representable here, so callers can distinguish Received from Opened without
+/// learning which protected row produced either fact.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeOverlayAcknowledgmentCounters {
+    pub received: usize,
+    pub opened: usize,
+}
+
+impl OpenedNativeOverlayTextBatch {
+    pub fn acknowledgment_counters(&self) -> NativeOverlayAcknowledgmentCounters {
+        native_overlay_acknowledgment_counters(self.acknowledgments.iter().map(|ack| ack.status))
+    }
+}
+
+pub fn native_overlay_acknowledgment_counters<I>(
+    statuses: I,
+) -> NativeOverlayAcknowledgmentCounters
+where
+    I: IntoIterator<Item = NativeOverlayAcknowledgmentStatus>,
+{
+    let mut counters = NativeOverlayAcknowledgmentCounters::default();
+    for status in statuses {
+        match status {
+            NativeOverlayAcknowledgmentStatus::Received => {
+                counters.received = counters.received.saturating_add(1);
+            }
+            NativeOverlayAcknowledgmentStatus::Opened => {
+                counters.opened = counters.opened.saturating_add(1);
+            }
+        }
+    }
+    counters
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ControlInboxDeliveryFacts {
     deliverable_rows: u64,
@@ -8471,6 +8509,58 @@ mod tests {
         assert!(reassembled.get("coverPointer").is_none());
     }
 
+    #[test]
+    fn native_overlay_acknowledgment_counters_split_received_from_opened() {
+        let counters = native_overlay_acknowledgment_counters([
+            NativeOverlayAcknowledgmentStatus::Received,
+            NativeOverlayAcknowledgmentStatus::Opened,
+            NativeOverlayAcknowledgmentStatus::Received,
+        ]);
+        assert_eq!(
+            counters,
+            NativeOverlayAcknowledgmentCounters {
+                received: 2,
+                opened: 1,
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(counters).unwrap(),
+            serde_json::json!({
+                "received": 2,
+                "opened": 1,
+            })
+        );
+    }
+
+    #[test]
+    fn native_overlay_open_batch_exposes_acknowledgment_counters_without_ids() {
+        let batch = OpenedNativeOverlayTextBatch {
+            messages: Vec::new(),
+            pending_view_once: Vec::new(),
+            acknowledgments: vec![
+                NativeOverlayAcknowledgment {
+                    message_id: "peer-received-row".to_owned(),
+                    status: NativeOverlayAcknowledgmentStatus::Received,
+                    acknowledged_at: 1_700_000_010,
+                },
+                NativeOverlayAcknowledgment {
+                    message_id: "peer-opened-row".to_owned(),
+                    status: NativeOverlayAcknowledgmentStatus::Opened,
+                    acknowledged_at: 1_700_000_011,
+                },
+            ],
+            fetched: 0,
+            decrypt_display_enabled: true,
+            deferred_rows: 0,
+        };
+        let counters = batch.acknowledgment_counters();
+        assert_eq!(counters.received, 1);
+        assert_eq!(counters.opened, 1);
+        let encoded = serde_json::to_string(&counters).unwrap();
+        assert!(!encoded.contains("peer-received-row"));
+        assert!(!encoded.contains("peer-opened-row"));
+    }
+
     /// The correlation handle is routing metadata and stays inside the renderer's
     /// own bound. A cover the renderer would refuse is dropped, because losing the
     /// handle degrades in-place painting while losing the message would not be
@@ -8688,7 +8778,7 @@ mod tests {
             .map(|(production, _)| production)
             .expect("broker test module boundary remains visible");
         assert!(
-            !production.contains("NativeOverlayAcknowledgmentStatus::Opened"),
+            !production.contains("status: NativeOverlayAcknowledgmentStatus::Opened"),
             "no production branch may construct or send an Opened acknowledgment"
         );
         assert_eq!(
