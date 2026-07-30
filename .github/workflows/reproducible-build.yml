@@ -164,6 +164,33 @@ jobs:
           }
           $proof | ConvertTo-Json -Depth 5 | Set-Content reproducible-build-proof.json -Encoding UTF8
 
+      - name: "success'"
+        shell: pwsh
+        env:
+          CANDIDATE_TAG: ${{ steps.source.outputs.candidate_tag }}
+          SOURCE_COMMIT: ${{ steps.source.outputs.source_commit }}
+          SOURCE_TREE: ${{ steps.source.outputs.source_tree }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $proof = Get-Content reproducible-build-proof.json -Raw | ConvertFrom-Json
+          $releasedHash = (Get-FileHash $env:RELEASED_EXE -Algorithm SHA256).Hash.ToLowerInvariant()
+          $rebuiltHash = (Get-FileHash $env:REBUILT_EXE -Algorithm SHA256).Hash.ToLowerInvariant()
+          $installerHash = (Get-FileHash $env:RELEASE_INSTALLER -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($proof.candidateTag -cne $env:CANDIDATE_TAG -or
+              $proof.sourceCommit -cne $env:SOURCE_COMMIT -or
+              $proof.sourceTree -cne $env:SOURCE_TREE) {
+            throw "reproducibility proof is not bound to the resolved exact source"
+          }
+          if ($proof.installer.name -cne $env:RELEASE_INSTALLER_NAME -or
+              $proof.installer.sha256 -cne $installerHash) {
+            throw "reproducibility proof is not bound to the released installer bytes"
+          }
+          if ($proof.releasedExecutable.sha256 -cne $releasedHash -or
+              $proof.rebuiltExecutable.sha256 -cne $rebuiltHash -or
+              $releasedHash -cne $rebuiltHash) {
+            throw "released executable bytes do not reproduce from exact source"
+          }
+
       - name: Upload reproducibility proof
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
