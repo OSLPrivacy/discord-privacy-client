@@ -36,6 +36,47 @@ function rustSourcesBelow(directory: URL): string {
 }
 
 describe("legacy duress wipe production reachability", () => {
+  it("wire a distinct duress PIN check at the unlock screen that triggers Du", () => {
+    const uiMain = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+
+    const unlockHandler = sourceBetween(
+      uiMain,
+      "function bindPasswordForm(): void {",
+      "\nfunction bindImportForm(): void {",
+    );
+    const unlockBranch = sourceBetween(
+      unlockHandler,
+      "const gate = await unlockHubPasswordGate(secret);",
+      "services = await loadLinkedServices().catch(() => services);",
+    );
+    const burnedBranch = sourceBetween(
+      unlockBranch,
+      'if (gate.outcome === "burned") {',
+      "\n        }",
+    );
+
+    expect(unlockBranch).toContain("const gate = await unlockHubPasswordGate(secret);");
+    expect(unlockBranch.indexOf('if (gate.outcome === "burned")')).toBeGreaterThan(
+      unlockBranch.indexOf('if (gate.outcome === "decoy")'),
+    );
+    expect(unlockBranch.indexOf('if (gate.outcome === "burned")')).toBeLessThan(
+      unlockBranch.indexOf('if (!gate.readiness?.unlocked)'),
+    );
+    expect(burnedBranch).toContain("localStorage.clear();");
+    expect(burnedBranch).toContain("onboardingComplete = false;");
+    expect(burnedBranch).toContain('core = structuredClone(unavailableCoreIntegration);');
+    expect(burnedBranch).toContain('onboardingRoute = "welcome";');
+    expect(burnedBranch).toContain("showToast(gate.burn?.localCleanupComplete");
+    expect(burnedBranch).toContain("render();");
+    expect(burnedBranch).toContain("return;");
+
+    const mutation = unlockBranch.replace('if (gate.outcome === "burned") {', 'if (gate.outcome === "unlocked") {');
+    expect(
+      mutation.indexOf('if (gate.outcome === "burned")'),
+      "mutation must remove the distinct burned outcome branch",
+    ).toBe(-1);
+  });
+
   it("does not sell the implemented-but-unwired DuressEngine sequence", () => {
     const keystoreDuress = readFileSync(
       new URL("../../../crates/keystore/src/duress.rs", import.meta.url),
