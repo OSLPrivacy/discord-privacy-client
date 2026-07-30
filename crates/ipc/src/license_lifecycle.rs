@@ -109,7 +109,7 @@ impl std::fmt::Debug for LicenseScopedModuleAccess {
                 "proprietary_module_available",
                 &self.proprietary_module_available,
             )
-            .field("raw_license_status", &self.raw_license_status)
+            .field("raw_license_status", &"[redacted; license status]")
             .finish()
     }
 }
@@ -389,6 +389,14 @@ mod tests {
         assert!(unconfigured.base_app_available());
         assert!(!unconfigured.proprietary_module_available());
         assert_eq!(unconfigured.raw_license_status(), "Unconfigured");
+
+        let suspicious_status = LicenseScopedModuleAccess::from_license_state(&dto(
+            LicenseState::Free,
+            "OSL-secret-license-key",
+            None,
+        ));
+        let suspicious_rendered = format!("{suspicious_status:?}");
+        assert!(!suspicious_rendered.contains("OSL-secret-license-key"));
 
         let rendered = format!("{expired:?}");
         assert!(rendered.contains("base_app_available: true"));
