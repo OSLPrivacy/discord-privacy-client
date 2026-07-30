@@ -700,6 +700,98 @@ impl Peer {
 // Tests.
 // ---------------------------------------------------------------------------
 
+/// P1: A commits an encrypted native-Discord protected message into B's live
+/// conversation without handing plaintext to the relay row or the public
+/// Discord carrier.
+#[test]
+fn p1_sends_encrypted_message_into_live_conversation() {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("p1-send");
+    let relay_url = relay.base_url();
+
+    let alice = Peer::new(&storage, "alice", &relay_url, "a1a15050");
+    let bob = Peer::new(&storage, "bob", &relay_url, "b2b25050");
+    alice.open_native_context_to(&bob.friend_code, &bob.safety_number);
+    bob.open_native_context_to(&alice.friend_code, &alice.safety_number);
+
+    const FIXTURE: &str = "P1 native Discord protected send fixture";
+    alice.activate();
+    let prepared = prepare_native_discord_overlay_text(
+        &alice.core,
+        &alice.security,
+        &alice.broker,
+        FIXTURE.to_owned(),
+        false,
+    )
+    .expect("prepare the protected message");
+
+    assert!(
+        prepared.prepared.person_to_person_e2ee,
+        "the send receipt proves peer end-to-end encryption"
+    );
+    assert!(
+        prepared.prepared.delivered_to_osl_inbox,
+        "the send receipt proves delivery into the live OSL inbox"
+    );
+    assert!(
+        !prepared.prepared.view_once,
+        "this fixture is an ordinary live-conversation message"
+    );
+    assert!(
+        prepared.flagtext.is_some(),
+        "a single-row native Discord send returns its public carrier"
+    );
+    assert!(
+        !prepared
+            .flagtext
+            .as_deref()
+            .is_some_and(|flagtext| flagtext.contains(FIXTURE)),
+        "the public Discord carrier must not contain the private draft"
+    );
+
+    let posted = relay.posted_rows(&alice.identity_id, &bob.identity_id);
+    assert_eq!(
+        posted.len(),
+        1,
+        "A posts exactly one relay row for a one-chunk message"
+    );
+    assert_eq!(
+        relay.pending_for(&bob.identity_id),
+        1,
+        "B's live conversation has exactly one encrypted row waiting"
+    );
+    assert!(
+        posted[0].scope_id.starts_with("native-overlay:"),
+        "the relay row is scoped to the native overlay conversation"
+    );
+    let bundle = base64_decode(&posted[0].bundle_b64);
+    assert!(
+        ipc::wire_v2::is_native_overlay_relay_bundle(&bundle),
+        "the waiting row is the encrypted native overlay relay frame"
+    );
+    assert!(
+        !contains_bytes(&bundle, FIXTURE.as_bytes()),
+        "the relay frame must not carry plaintext bytes"
+    );
+    assert!(
+        !relay
+            .state
+            .lock()
+            .unwrap()
+            .blobs
+            .values()
+            .any(|blob| contains_bytes(&blob.bytes, FIXTURE.as_bytes())),
+        "cipher-store blobs must not carry plaintext bytes"
+    );
+
+    drop(alice);
+    drop(bob);
+    drop(storage);
+}
+
 /// The whole inbound contract for one single-chunk protected message:
 ///
 /// * an empty inbox drains to an explicit empty batch, not an error;
@@ -1030,6 +1122,15 @@ fn native_discord_inbound_opens_once_and_refuses_foreign_malformed_and_replayed_
     );
     bob.set_decrypt_display(true);
 
+    let gets = relay.control_inbox_gets();
+    assert!(
+        gets.iter().any(|get| {
+            get.recipient_id == bob.identity_id
+                && get.sender_id.as_deref() == Some(alice.identity_id.as_str())
+        }),
+        "B's drain reads the live conversation through the sender-filtered inbox boundary"
+    );
+
     // 9. Nothing anywhere under either account root holds the plaintext.
     //    Checked as a byte-window search so a failure reports only the
     //    offending path, never the content.
@@ -1048,6 +1149,85 @@ fn native_discord_inbound_opens_once_and_refuses_foreign_malformed_and_replayed_
     drop(alice);
     drop(bob);
     drop(charlie);
+    drop(storage);
+}
+
+#[test]
+fn view_once_list_appears_on_b() {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("view-once-list");
+    let relay_url = relay.base_url();
+
+    let alice = Peer::new(&storage, "alice", &relay_url, "b68a5050");
+    let bob = Peer::new(&storage, "bob", &relay_url, "b68b5050");
+    alice.open_native_context_to(&bob.friend_code, &bob.safety_number);
+    bob.open_native_context_to(&alice.friend_code, &alice.safety_number);
+
+    const FIXTURE: &str = "B68 native Discord view-once fixture";
+    alice.activate();
+    let prepared = prepare_native_discord_overlay_text(
+        &alice.core,
+        &alice.security,
+        &alice.broker,
+        FIXTURE.to_owned(),
+        true,
+    )
+    .expect("prepare the view-once protected message");
+    assert!(
+        prepared.prepared.view_once,
+        "the send receipt marks the message view-once"
+    );
+    assert!(
+        prepared.flagtext.is_some(),
+        "the view-once carrier row exists for B's live transcript"
+    );
+    let honest = relay.posted_row(&alice.identity_id, &bob.identity_id);
+
+    bob.activate();
+    let listed = drain_native_discord_overlay_text(&bob.core, &bob.security, &bob.broker)
+        .expect("B drains the view-once listing phase");
+    assert!(
+        listed.messages.is_empty(),
+        "the listing phase must not open view-once plaintext"
+    );
+    assert_eq!(
+        listed.pending_view_once.len(),
+        1,
+        "B receives exactly one pending view-once entry"
+    );
+    assert!(
+        listed.pending_view_once[0].message_id == prepared.prepared.message_id,
+        "the pending entry is correlated to A's prepared message"
+    );
+    assert!(
+        listed.pending_view_once[0].person_to_person_e2ee,
+        "the pending entry preserves peer end-to-end encryption"
+    );
+    assert!(
+        listed.pending_view_once[0].expires_at > now_secs(),
+        "the pending entry is still live"
+    );
+    assert_eq!(
+        listed.fetched, 1,
+        "the listing phase counts the pending view-once row"
+    );
+    assert!(
+        listed.decrypt_display_enabled,
+        "B's list comes from an enabled live conversation"
+    );
+    assert!(
+        relay.still_pending(&honest.id),
+        "listing a view-once row must not consume the reveal row"
+    );
+    if let Some(leaked) = file_containing(&storage.root, FIXTURE.as_bytes()) {
+        panic!("view-once plaintext reached persistent storage at {leaked:?}");
+    }
+
+    drop(alice);
+    drop(bob);
     drop(storage);
 }
 
