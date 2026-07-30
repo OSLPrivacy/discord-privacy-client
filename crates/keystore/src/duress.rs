@@ -38,6 +38,8 @@
 //! - Password-record file deletion.
 //! - **Prekey-bundle file deletion** (B4: `prekeys.json` holds the
 //!   sealed `PrekeyState`).
+//! - Account unregister callback (caller-supplied; normally signs and sends
+//!   the keyserver unregister request before local identity material is gone).
 //! - In-memory zeroize (caller responsibility — the design's
 //!   "Phase 2 step 9" is a process-exit / drop concern, not
 //!   on-disk).
@@ -97,6 +99,9 @@ pub enum WipeStep {
     InMemoryZeroize,
     /// Step 10 — wipe stored unlock/duress password hashes.
     PasswordHashes,
+    /// Account-burn unregister. The engine cannot infer keyserver authority;
+    /// production must supply an explicit signed unregister callback.
+    UnregisterAccount,
     /// Identity blob file deletion (the on-disk identity.json that
     /// holds sealed keys). Listed under TPM eviction in the design
     /// but the file itself is separate from the TPM blob.
@@ -115,6 +120,7 @@ impl WipeStep {
             WipeStep::KeyringPurge,
             WipeStep::IdentityFile,
             WipeStep::PasswordHashes,
+            WipeStep::UnregisterAccount,
             WipeStep::PrekeyFile,
             WipeStep::LocalCacheDir,
             WipeStep::AnonymousCredentials,
@@ -162,6 +168,7 @@ pub struct DuressHandlers {
     pub wipe_peer_ratchets: Option<WipeFn>,
     pub zeroize_in_memory: Option<WipeFn>,
     pub strip_opsec_files: Option<WipeFn>,
+    pub unregister_account: Option<WipeFn>,
 }
 
 /// Production-owned adapter for wiring the duress engine's callback slots.
@@ -188,6 +195,11 @@ impl ProductionDuressHandlers {
     /// explicitly bound before invoking the duress engine.
     pub fn from_handlers(handlers: DuressHandlers) -> Self {
         Self { handlers }
+    }
+
+    pub fn with_purge_keyring(mut self, handler: WipeFn) -> Self {
+        self.handlers.purge_keyring = Some(handler);
+        self
     }
 
     pub fn with_wipe_local_cache_dir(mut self, handler: WipeFn) -> Self {
@@ -251,6 +263,11 @@ impl ProductionDuressHandlers {
             paths,
             "OPSEC strip requires at least one explicitly bound path",
         ));
+        self
+    }
+
+    pub fn with_unregister_account(mut self, handler: WipeFn) -> Self {
+        self.handlers.unregister_account = Some(handler);
         self
     }
 
@@ -464,6 +481,12 @@ impl DuressEngine {
             WipeStep::KeyringPurge => self.run_keyring_purge(),
             WipeStep::IdentityFile => self.delete_file_idempotent(&self.paths.identity_file),
             WipeStep::PasswordHashes => self.delete_file_idempotent(&self.paths.password_file),
+            WipeStep::UnregisterAccount => self.run_handler(
+                self.handlers.unregister_account.as_ref(),
+                "account unregister not wired — caller must bind a signed \
+                 keyserver unregister callback before local identity material \
+                 is burned",
+            ),
             WipeStep::PrekeyFile => match self.paths.prekey_file.as_deref() {
                 Some(path) => self.delete_file_idempotent(path),
                 None => StepOutcome::Skipped {
@@ -612,6 +635,7 @@ fn map_tpm_evict_result(result: std::result::Result<TpmEvictOutcome, SealerError
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
 
     fn test_paths(dir: &TempDir) -> (DuressPaths, PathBuf) {
@@ -652,6 +676,122 @@ mod tests {
             .find(|(step, _)| *step == target)
             .unwrap_or_else(|| panic!("step {target:?} missing from report"))
             .1
+    }
+
+    fn record_handler(calls: Arc<Mutex<Vec<&'static str>>>, label: &'static str) -> WipeFn {
+        Box::new(move || {
+            calls.lock().unwrap().push(label);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn production_duress_handlers_compose_concrete_handlers() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        std::fs::write(&paths.identity_file, b"identity").unwrap();
+        std::fs::write(&paths.password_file, b"password").unwrap();
+        if let Some(prekey_file) = paths.prekey_file.as_ref() {
+            std::fs::write(prekey_file, b"prekeys").unwrap();
+        }
+        let anonymous_store = dir.path().join("anonymous_credentials.json");
+        let strip_file = dir.path().join("opsec.js");
+        std::fs::write(&anonymous_store, b"anonymous").unwrap();
+        std::fs::write(&strip_file, b"opsec").unwrap();
+
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let handlers = ProductionDuressHandlers::new()
+            .with_purge_keyring(record_handler(Arc::clone(&calls), "purge_keyring"))
+            .with_wipe_local_cache_dir(record_handler(Arc::clone(&calls), "local_cache"))
+            .with_wipe_anonymous_credentials_paths([anonymous_store.clone()])
+            .with_wipe_prekeys(record_handler(Arc::clone(&calls), "prekeys"))
+            .with_wipe_double_ratchet(record_handler(Arc::clone(&calls), "double_ratchet"))
+            .with_wipe_sender_keys(record_handler(Arc::clone(&calls), "sender_keys"))
+            .with_wipe_peer_ratchets(record_handler(Arc::clone(&calls), "peer_ratchets"))
+            .with_zeroize_in_memory(record_handler(Arc::clone(&calls), "zeroize"))
+            .with_strip_opsec_file_paths([strip_file.clone()])
+            .with_unregister_account(record_handler(Arc::clone(&calls), "unregister"))
+            .into_handlers();
+        let engine = DuressEngine::new(journal_path, paths, handlers);
+
+        let report = engine
+            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
+            .unwrap();
+
+        for step in [
+            WipeStep::KeyringPurge,
+            WipeStep::IdentityFile,
+            WipeStep::PasswordHashes,
+            WipeStep::UnregisterAccount,
+            WipeStep::PrekeyFile,
+            WipeStep::LocalCacheDir,
+            WipeStep::AnonymousCredentials,
+            WipeStep::Prekeys,
+            WipeStep::DoubleRatchet,
+            WipeStep::SenderKeys,
+            WipeStep::PeerRatchets,
+            WipeStep::InMemoryZeroize,
+            WipeStep::StripOpsecFiles,
+        ] {
+            assert_eq!(outcome_for(&report.steps, step), &StepOutcome::Wiped);
+        }
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            &[
+                "purge_keyring",
+                "unregister",
+                "local_cache",
+                "prekeys",
+                "double_ratchet",
+                "sender_keys",
+                "peer_ratchets",
+                "zeroize",
+            ]
+        );
+        assert!(!anonymous_store.exists());
+        assert!(!strip_file.exists());
+    }
+
+    #[test]
+    fn production_duress_wipes_password_hashes_strips_opsec_and_unregisters() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        std::fs::write(&paths.password_file, b"unlock-and-duress-hashes").unwrap();
+        let password_file = paths.password_file.clone();
+        let opsec_file = dir.path().join("injection-config.json");
+        std::fs::write(&opsec_file, b"opsec").unwrap();
+        let unregister_calls = Arc::new(Mutex::new(0usize));
+        let unregister_calls_for_handler = Arc::clone(&unregister_calls);
+
+        let handlers = ProductionDuressHandlers::new()
+            .with_purge_keyring(Box::new(|| Ok(())))
+            .with_strip_opsec_file_paths([opsec_file.clone()])
+            .with_unregister_account(Box::new(move || {
+                *unregister_calls_for_handler.lock().unwrap() += 1;
+                Ok(())
+            }))
+            .into_handlers();
+        let engine = DuressEngine::new(journal_path, paths, handlers);
+
+        let report = engine
+            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
+            .unwrap();
+
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::PasswordHashes),
+            &StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::StripOpsecFiles),
+            &StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::UnregisterAccount),
+            &StepOutcome::Wiped
+        );
+        assert!(!password_file.exists());
+        assert!(!opsec_file.exists());
+        assert_eq!(*unregister_calls.lock().unwrap(), 1);
     }
 
     #[cfg(not(windows))]

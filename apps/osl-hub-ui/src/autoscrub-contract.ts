@@ -80,6 +80,40 @@ export interface AutoScrubReviewedRunRequest {
   consent: "reviewedBatchOnly";
 }
 
+type DeepReadonly<T> = T extends (...args: never[]) => unknown
+  ? T
+  : T extends readonly (infer U)[]
+    ? readonly DeepReadonly<U>[]
+    : T extends object
+      ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
+      : T;
+
+function deepFreeze<T>(value: T): DeepReadonly<T> {
+  if (typeof value !== "object" || value === null || Object.isFrozen(value)) {
+    return value as DeepReadonly<T>;
+  }
+  for (const key of Reflect.ownKeys(value)) {
+    const child = (value as Record<PropertyKey, unknown>)[key];
+    if (typeof child === "object" && child !== null) {
+      deepFreeze(child);
+    }
+  }
+  return Object.freeze(value) as DeepReadonly<T>;
+}
+
+export const AUTOSCRUB_UNATTENDED_BASE_CONTRACT = deepFreeze({
+  production: true,
+  unattendedAllowed: false,
+  reviewRequiredEveryBatch: true,
+  externalSecurityReviewPassed: false,
+} satisfies AutoscrubUnattendedContract);
+
+export function createAutoscrubUnattendedContract(
+  overrides: Partial<AutoscrubUnattendedContract> = {},
+): AutoscrubUnattendedContract {
+  return deepFreeze({ ...AUTOSCRUB_UNATTENDED_BASE_CONTRACT, ...overrides });
+}
+
 const serviceIds: readonly ServiceId[] = [
   "discord", "telegram", "instagram", "snapchat", "email", "x", "slack", "linkedin", "teams", "messenger", "signal", "whatsapp",
 ];
@@ -103,7 +137,7 @@ export function parseAutoscrubUnattendedContract(raw: unknown): AutoscrubUnatten
     && typeof raw.unattendedAllowed === "boolean"
     && typeof raw.reviewRequiredEveryBatch === "boolean"
     && typeof raw.externalSecurityReviewPassed === "boolean"
-    ? raw as unknown as AutoscrubUnattendedContract
+    ? deepFreeze({ ...raw } as unknown as AutoscrubUnattendedContract)
     : null;
 }
 
@@ -129,13 +163,13 @@ export function parseAutoscrubUnattendedRunStarted(raw: unknown): AutoscrubUnatt
     || Number(raw.totalRuns) > 2) {
     return null;
   }
-  return {
+  return deepFreeze({
     state: "started",
     command: AUTOSCRUB_UNATTENDED_RUN_COMMAND,
     runId: raw.runId,
     working: Number(raw.working),
     totalRuns: Number(raw.totalRuns),
-  };
+  });
 }
 
 
@@ -172,7 +206,7 @@ function parseRun(raw: unknown): AutoScrubRunSummary {
     || !outcomes.includes(raw.lastOutcome as AutoScrubRunSummary["lastOutcome"])) {
     throw new Error("invalid AutoScrub run");
   }
-  return raw as unknown as AutoScrubRunSummary;
+  return deepFreeze({ ...raw } as unknown as AutoScrubRunSummary);
 }
 
 function parseQuitGuard(raw: unknown): AutoScrubQuitGuardEstimate {
@@ -184,7 +218,7 @@ function parseQuitGuard(raw: unknown): AutoScrubQuitGuardEstimate {
     || !boundedText(raw.reason, 160)) {
     throw new Error("invalid AutoScrub quit guard");
   }
-  return raw as unknown as AutoScrubQuitGuardEstimate;
+  return deepFreeze({ ...raw } as unknown as AutoScrubQuitGuardEstimate);
 }
 
 export function parseAutoScrubFleetStatus(raw: unknown): AutoScrubFleetStatus {
@@ -202,7 +236,7 @@ export function parseAutoScrubFleetStatus(raw: unknown): AutoScrubFleetStatus {
   if (new Set(runs.map((run) => run.runId)).size !== runs.length) {
     throw new Error("invalid AutoScrub fleet status");
   }
-  return { ...raw, quitGuard, runs } as AutoScrubFleetStatus;
+  return deepFreeze({ ...raw, quitGuard, runs } as AutoScrubFleetStatus);
 }
 
 export function parseAutoScrubReviewedRunRequest(raw: unknown): AutoScrubReviewedRunRequest {
@@ -216,7 +250,7 @@ export function parseAutoScrubReviewedRunRequest(raw: unknown): AutoScrubReviewe
     || raw.consent !== "reviewedBatchOnly") {
     throw new Error("invalid AutoScrub reviewed run request");
   }
-  return raw as unknown as AutoScrubReviewedRunRequest;
+  return deepFreeze({ ...raw } as unknown as AutoScrubReviewedRunRequest);
 }
 
 function formatEstimate(seconds: number | null): string {
