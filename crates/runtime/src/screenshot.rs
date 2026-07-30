@@ -62,7 +62,8 @@ mod imp {
     use super::{Result, ScreenshotError, ScreenshotProtection};
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{
-        SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE, WDA_NONE,
+        GetWindowDisplayAffinity, SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE, WDA_NONE,
+        WINDOW_DISPLAY_AFFINITY,
     };
 
     fn flag_for(
@@ -84,6 +85,16 @@ mod imp {
             SetWindowDisplayAffinity(hwnd, flag).map_err(|e| {
                 ScreenshotError::Win32(format!("{} (HRESULT 0x{:08X})", e.message(), e.code().0))
             })?;
+            let mut observed = 0u32;
+            GetWindowDisplayAffinity(hwnd, &mut observed).map_err(|e| {
+                ScreenshotError::Win32(format!("{} (HRESULT 0x{:08X})", e.message(), e.code().0))
+            })?;
+            if observed != flag.0 {
+                return Err(ScreenshotError::Win32(format!(
+                    "display affinity readback mismatch: requested 0x{:08X}, observed 0x{:08X}",
+                    flag.0, observed
+                )));
+            }
         }
         Ok(())
     }

@@ -150,11 +150,9 @@ pub struct NativeAppStatus {
     pub protected_mode: NativeAppProtectedMode,
     /// True only when the current integration has a verified secondary-instance
     /// switch that keeps writable state inside an OSL-owned profile.
-    #[serde(skip_serializing)]
     pub isolated_profile_available: bool,
     /// Remains false until a service-specific Windows accessibility adapter
     /// can prove the exact account, conversation, recipients, and composer.
-    #[serde(skip_serializing)]
     pub supports_overlay: bool,
 }
 

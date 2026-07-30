@@ -23,17 +23,13 @@
 use crate::burn::{sign_burn, BurnScope};
 use crate::control_inbox::{
     sign_control_inbox_delete, sign_control_inbox_get, sign_control_inbox_get_filtered,
-    sign_control_inbox_post_lane, sign_sender_filter_floor_get,
+    sign_control_inbox_post_lane,
 };
 use crate::identity::Identity;
 use crate::prekeys::{
     sign_replenish_batch, OpkEntry, PrekeyState, ReplenishOpk, ReplenishSpk, SpkEntry,
 };
 use crate::proof_challenge::{ProofChallenge, PROOF_CHALLENGE_NONCE_BYTES};
-use crate::sender_filter_rollout::{
-    validate_sender_filter_capability_floor_observation, SenderFilterCapabilityFloor,
-    SenderFilterCapabilityFloorObservation, SENDER_FILTER_CAPABILITY_VERSION,
-};
 use crate::signed_get::{sign_prekey_bundle_get, sign_wrapped_key_get};
 use crate::unregister::sign_unregister;
 use crate::wrapped_key::{sign_wrapped_key_post, WrappedKeyUpload};
@@ -1355,128 +1351,19 @@ impl KeyServerClient {
         Ok(parsed.items)
     }
 
-    /// Shipping Worker/client rollout boundary for one active peer.
+    /// Shipping Worker/client boundary for one active peer.
     ///
-    /// This method, rather than the broker, owns the live `/v1/healthz`
-    /// capability observation and the durable local downgrade floor derived
-    /// from it.
-    ///
-    /// Before this account has ever observed the sender-filter capability, a
-    /// legacy Worker is still usable through the old page with a local sender
-    /// filter. Once the capability is observed, the durable floor is raised and
-    /// any later legacy observation is refused as a downgrade.
+    /// The sender filter is part of the signed request and the response must
+    /// echo the exact sender plus its delivery disposition. A legacy or
+    /// transitional worker that answers without those fields is refused by
+    /// [`Self::get_control_inbox_from`]; this boundary must never widen to an
+    /// unfiltered page and locally filter it.
     pub fn get_control_inbox_compatible_from(
         &self,
         identity: &Identity,
         sender_id: &str,
     ) -> Result<FilteredControlInbox> {
-        if !valid_control_inbox_sender_id(&identity.user_id) {
-            return Err(Error::Transport(
-                "control-inbox recipient identity is invalid".into(),
-            ));
-        }
-        if !valid_control_inbox_sender_id(sender_id) {
-            return Err(Error::Transport(
-                "control-inbox sender filter is invalid".into(),
-            ));
-        }
-        let capability = self.probe_control_inbox_sender_filter_capability()?;
-        let floor_observed = match capability {
-            ControlInboxSenderFilterCapability::Legacy => {
-                sender_filter_capability_floor_was_observed()?
-            }
-            ControlInboxSenderFilterCapability::Version1 => false,
-        };
-        match capability {
-            ControlInboxSenderFilterCapability::Version1 => {
-                record_sender_filter_capability_floor()?;
-                self.get_control_inbox_from(identity, sender_id)
-            }
-            ControlInboxSenderFilterCapability::Legacy if floor_observed => Err(Error::Transport(
-                "control-inbox sender-filter capability downgrade refused".into(),
-            )),
-            ControlInboxSenderFilterCapability::Legacy => {
-                self.get_control_inbox_legacy_filtered(identity, sender_id)
-            }
-        }
-    }
-
-    fn get_control_inbox_legacy_filtered(
-        &self,
-        identity: &Identity,
-        sender_id: &str,
-    ) -> Result<FilteredControlInbox> {
-        let items: Vec<ControlInboxItem> = self
-            .get_control_inbox(identity)?
-            .into_iter()
-            .filter(|item| item.sender_id == sender_id)
-            .collect();
-        let live = u64::try_from(items.len()).map_err(|_| {
-            Error::Transport("control-inbox live disposition count is invalid".into())
-        })?;
-        Ok(FilteredControlInbox {
-            items,
-            delivery: ControlInboxDeliveryDisposition {
-                live,
-                retryable: 0,
-                quarantined: 0,
-                retired: 0,
-            },
-        })
-    }
-
-    fn probe_control_inbox_sender_filter_capability(
-        &self,
-    ) -> Result<ControlInboxSenderFilterCapability> {
-        let response = self.send_request("GET", "/v1/healthz", None)?;
-        let value: serde_json::Value = serde_json::from_slice(&response.body).map_err(|_| {
-            Error::Transport("control-inbox capability response is not exact JSON".into())
-        })?;
-        if response.status == 200 && value == serde_json::json!({ "ok": true }) {
-            return Ok(ControlInboxSenderFilterCapability::Legacy);
-        }
-        if response.status == 200
-            && value
-                == serde_json::json!({
-                    "ok": true,
-                    "capabilities": {
-                        "control_inbox_sender_disposition":
-                            SENDER_FILTER_CAPABILITY_VERSION
-                    }
-                })
-        {
-            return Ok(ControlInboxSenderFilterCapability::Version1);
-        }
-        Err(Error::Transport(
-            "control-inbox sender-filter capability is unavailable, malformed, or transitional"
-                .into(),
-        ))
-    }
-
-    fn observe_sender_filter_capability_floor(
-        &self,
-        identity: &Identity,
-    ) -> Result<SenderFilterCapabilityFloor> {
-        let timestamp_ms = unix_timestamp_ms();
-        let request_id = fresh_request_id();
-        let signature = sign_sender_filter_floor_get(identity, timestamp_ms, &request_id);
-        let path = format!(
-            "/v1/sender-filter-capability-floor/{}?ts={}&request_id={}&sig={}",
-            urlencode_segment(&identity.user_id),
-            timestamp_ms,
-            request_id,
-            urlencode_query_value(&STANDARD.encode(signature.as_bytes())),
-        );
-        let response = self.send_request("GET", &path, None)?;
-        check_2xx(&response)?;
-        let observation: SenderFilterCapabilityFloorObservation =
-            serde_json::from_slice(&response.body)?;
-        validate_sender_filter_capability_floor_observation(
-            identity,
-            timestamp_ms,
-            &request_id,
-            observation,
-        )
+        self.get_control_inbox_from(identity, sender_id)
     }
 
     /// Drain only the rows one specific peer sent.
@@ -1689,12 +1576,6 @@ struct HttpResponse {
     body: Vec<u8>,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-enum ControlInboxSenderFilterCapability {
-    Legacy,
-    Version1,
-}
-
 fn check_2xx(resp: &HttpResponse) -> Result<()> {
     if (200..300).contains(&resp.status) {
         Ok(())
@@ -1756,40 +1637,6 @@ fn valid_control_inbox_sender_id(value: &str) -> bool {
 
 fn fresh_request_id() -> String {
     URL_SAFE_NO_PAD.encode(crypto::random::random_bytes(32))
-}
-
-const SENDER_FILTER_CAPABILITY_FLOOR_FILE: &str = "sender-filter-capability-floor.json";
-const SENDER_FILTER_CAPABILITY_FLOOR_JSON: &[u8] = br#"{"control_inbox_sender_disposition":1}"#;
-
-fn sender_filter_capability_floor_path() -> Result<std::path::PathBuf> {
-    let mut path = crate::recipients::osl_config_dir()
-        .map_err(|_| Error::Transport("control-inbox sender-filter floor is unavailable".into()))?;
-    path.push(SENDER_FILTER_CAPABILITY_FLOOR_FILE);
-    Ok(path)
-}
-
-fn sender_filter_capability_floor_was_observed() -> Result<bool> {
-    let path = sender_filter_capability_floor_path()?;
-    match std::fs::read(path) {
-        Ok(bytes) if bytes == SENDER_FILTER_CAPABILITY_FLOOR_JSON => Ok(true),
-        Ok(_) => Err(Error::Transport(
-            "control-inbox sender-filter floor is malformed".into(),
-        )),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(Error::Io(error)),
-    }
-}
-
-fn record_sender_filter_capability_floor() -> Result<()> {
-    let path = sender_filter_capability_floor_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    if sender_filter_capability_floor_was_observed()? {
-        return Ok(());
-    }
-    std::fs::write(path, SENDER_FILTER_CAPABILITY_FLOOR_JSON)?;
-    Ok(())
 }
 
 // ---- Phase 6.4 control-inbox payload shapes (used by post_control_inbox /

@@ -8701,7 +8701,7 @@ mod tests {
         let client_compat = between(
             client,
             "pub fn get_control_inbox_compatible_from(",
-            "fn probe_control_inbox_sender_filter_capability(",
+            "/// Drain only the rows one specific peer sent.",
         );
         let ipc_all_row_dispatcher = between(
             ipc_commands,
@@ -8881,14 +8881,6 @@ mod tests {
         );
     }
 
-    fn assert_health_request(request: &str) {
-        assert_eq!(
-            request.lines().next(),
-            Some("GET /v1/healthz HTTP/1.1"),
-            "the shipping receive boundary probes the exact health route first",
-        );
-    }
-
     #[test]
     fn native_overlay_text_producer_posts_wrapped_key_before_relay_notice() {
         let encrypted_wire = "DPC0::sealed-native-overlay-wire";
@@ -9025,12 +9017,6 @@ mod tests {
         );
         let (base_url, requests, server) = spawn_control_inbox_test_server(vec![
             serde_json::json!({
-                "ok": true,
-                "capabilities": {
-                    "control_inbox_sender_disposition": 1,
-                },
-            }),
-            serde_json::json!({
                 "items": [a_text, a_attachment],
                 "filtered_sender_id": sender_a,
                 "filtered_sender_delivery": {
@@ -9038,12 +9024,6 @@ mod tests {
                     "retryable": 0,
                     "quarantined": 0,
                     "retired": 0,
-                },
-            }),
-            serde_json::json!({
-                "ok": true,
-                "capabilities": {
-                    "control_inbox_sender_disposition": 1,
                 },
             }),
             serde_json::json!({
@@ -9098,12 +9078,10 @@ mod tests {
         assert_eq!(b_rows.len(), 1, "B's row remains untouched by A's fetch");
         assert_eq!(b_rows[0].sender_id, sender_b);
 
-        assert_health_request(&requests.recv().expect("capture A capability request"));
         assert_filtered_request(
             &requests.recv().expect("capture A's production request"),
             sender_a,
         );
-        assert_health_request(&requests.recv().expect("capture B capability request"));
         assert_filtered_request(
             &requests.recv().expect("capture B's production request"),
             sender_b,
@@ -9183,15 +9161,7 @@ mod tests {
         ];
 
         for (label, response, expected_error) in cases {
-            let (base_url, requests, server) = spawn_control_inbox_test_server(vec![
-                serde_json::json!({
-                    "ok": true,
-                    "capabilities": {
-                        "control_inbox_sender_disposition": 1,
-                    },
-                }),
-                response,
-            ]);
+            let (base_url, requests, server) = spawn_control_inbox_test_server(vec![response]);
             let client = keystore::KeyServerClient::new(&base_url).expect("build test client");
             let error = fetch_peer_control_inbox(&identity, &client, sender_a)
                 .expect_err("an unconfirmed or widened page must be refused");
@@ -9199,7 +9169,6 @@ mod tests {
                 error.to_string().contains(expected_error),
                 "{label} must fail through its specific closed-path verdict"
             );
-            assert_health_request(&requests.recv().expect("capture capability request"));
             assert_filtered_request(
                 &requests.recv().expect("capture refused production request"),
                 sender_a,
@@ -9210,16 +9179,15 @@ mod tests {
     }
 
     #[test]
-    fn shipping_receive_boundary_preserves_legacy_worker_then_refuses_downgrade_after_capability() {
+    fn shipping_receive_boundary_refuses_legacy_worker_shape_without_widening() {
         let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
-        let account_dir = install_sender_filter_test_account("legacy-downgrade");
+        let account_dir = install_sender_filter_test_account("legacy-refused");
         let identity = keystore::generate_identity("recipient".to_owned());
         let sender_a = "peer-a";
         let sender_b = "peer-b";
 
-        let (legacy_url, legacy_requests, legacy_server) = spawn_control_inbox_test_server(vec![
-            serde_json::json!({ "ok": true }),
-            serde_json::json!({
+        let (legacy_url, legacy_requests, legacy_server) =
+            spawn_control_inbox_test_server(vec![serde_json::json!({
                 "items": [
                     control_inbox_test_row(
                         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -9232,60 +9200,19 @@ mod tests {
                         ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
                     ),
                 ],
-            }),
-        ]);
+            })]);
         let legacy_client = keystore::KeyServerClient::new(&legacy_url).expect("legacy client");
-        let legacy_page = fetch_peer_control_inbox(&identity, &legacy_client, sender_a)
-            .expect("legacy Worker remains available before capability");
-        assert_eq!(legacy_page.items.len(), 1);
-        assert_eq!(legacy_page.items[0].sender_id, sender_a);
-        assert_health_request(&legacy_requests.recv().expect("capture legacy health"));
-        let legacy_get = legacy_requests.recv().expect("capture legacy GET");
-        let legacy_line = legacy_get.lines().next().expect("legacy request line");
-        assert!(legacy_line.starts_with("GET /v1/control-inbox/"));
-        assert!(!legacy_line.contains("&sender="));
-        legacy_server.join().expect("legacy server exits");
-
-        let (final_url, final_requests, final_server) = spawn_control_inbox_test_server(vec![
-            serde_json::json!({
-                "ok": true,
-                "capabilities": {
-                    "control_inbox_sender_disposition": 1,
-                },
-            }),
-            serde_json::json!({
-                "items": [],
-                "filtered_sender_id": sender_a,
-                "filtered_sender_delivery": {
-                    "live": 0,
-                    "retryable": 0,
-                    "quarantined": 0,
-                    "retired": 0,
-                },
-            }),
-        ]);
-        let final_client = keystore::KeyServerClient::new(&final_url).expect("final client");
-        fetch_peer_control_inbox(&identity, &final_client, sender_a)
-            .expect("final Worker raises the durable capability floor");
-        assert_health_request(&final_requests.recv().expect("capture final health"));
-        assert_filtered_request(
-            &final_requests.recv().expect("capture final filtered GET"),
-            sender_a,
-        );
-        final_server.join().expect("final server exits");
-
-        let (rolled_back_url, rollback_requests, rollback_server) =
-            spawn_control_inbox_test_server(vec![serde_json::json!({ "ok": true })]);
-        let restarted_client =
-            keystore::KeyServerClient::new(&rolled_back_url).expect("fresh client after restart");
-        let error = fetch_peer_control_inbox(&identity, &restarted_client, sender_a)
-            .expect_err("a fresh client must retain the downgrade floor");
+        let error = fetch_peer_control_inbox(&identity, &legacy_client, sender_a)
+            .expect_err("legacy shape without sender echo must be refused");
         assert!(
-            error.to_string().contains("capability downgrade refused"),
-            "rollback is refused by durable client state"
+            error
+                .to_string()
+                .contains("did not confirm the sender filter"),
+            "legacy shape is refused by the exact echo requirement"
         );
-        assert_health_request(&rollback_requests.recv().expect("capture rollback health"));
-        rollback_server.join().expect("rollback server exits");
+        let legacy_get = legacy_requests.recv().expect("capture legacy GET");
+        assert_filtered_request(&legacy_get, sender_a);
+        legacy_server.join().expect("legacy server exits");
         remove_sender_filter_test_account(&account_dir);
     }
 
@@ -12771,6 +12698,30 @@ ok i will weekend again with you",
         let _ = std::fs::remove_dir(dir);
     }
 
+    fn source_function_body<'a>(source: &'a str, signature: &str) -> &'a str {
+        let start = source
+            .find(signature)
+            .unwrap_or_else(|| panic!("{signature} exists"));
+        let body_start = source[start..]
+            .find('{')
+            .map(|offset| start + offset)
+            .unwrap_or_else(|| panic!("{signature} has a body"));
+        let mut depth = 0usize;
+        for (offset, character) in source[body_start..].char_indices() {
+            match character {
+                '{' => depth = depth.saturating_add(1),
+                '}' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return &source[start..body_start + offset + character.len_utf8()];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("{signature} body is terminated");
+    }
+
     #[test]
     fn the_decode_leg_of_one_rehydration_is_bounded_in_wall_clock() {
         // The accessibility read that produces these rows is bounded; the decode
@@ -12787,14 +12738,7 @@ ok i will weekend again with you",
         // the way the decrypted-display switch does, so an exhausted budget answers
         // `None` -- a first-class answer here -- rather than dropping the row.
         let source = include_str!("broker.rs");
-        let start = source
-            .find("pub fn rehydrate_native_discord_overlay_history(")
-            .expect("the rehydrate entry point exists");
-        let body = &source[start
-            ..start
-                + source[start..]
-                    .find("\n}\n")
-                    .expect("the rehydrate entry point is terminated")];
+        let body = source_function_body(source, "pub fn rehydrate_native_discord_overlay_history(");
         assert!(body.contains(
             "let decode_deadline = Instant::now() + Duration::from_millis(REHYDRATE_DECODE_BUDGET_MS);"
         ));
@@ -12818,7 +12762,7 @@ ok i will weekend again with you",
         assert!(body.contains("counts.budget_exhausted += 1;"));
         // Still one row out per row in: the budget may only turn a plaintext into
         // `None`, never remove a row from the transcript.
-        assert!(body.contains("row.line,\n                row.decode_candidates,"));
+        assert!(body.contains("row.line, row.decode_candidates, row.bounds, row.attribution"));
         // Native evidence selects exactly one committed carrier before any
         // pointer is opened. The decrypt therefore cannot roam across the other
         // accessible names in the row.
@@ -12896,14 +12840,7 @@ ok i will weekend again with you",
         }
 
         let source = include_str!("broker.rs");
-        let start = source
-            .find("pub fn rehydrate_native_discord_overlay_history(")
-            .expect("the rehydrate entry point exists");
-        let body = &source[start
-            ..start
-                + source[start..]
-                    .find("\n}\n")
-                    .expect("the rehydrate entry point is terminated")];
+        let body = source_function_body(source, "pub fn rehydrate_native_discord_overlay_history(");
         // Every row that goes in is tallied, before any early return can skip it.
         let rows_counted = body
             .find("rows: rows.len(),")
@@ -12951,7 +12888,7 @@ ok i will weekend again with you",
         // row is not absent until every node has said so.
         for (variant, counter) in [
             (
-                "PeerProsePointerFailure::NotAToken,",
+                "PeerProsePointerFailure::NotAToken)",
                 "counts.pointer_absent += 1",
             ),
             (
@@ -12962,7 +12899,7 @@ ok i will weekend again with you",
                 "PeerProsePointerFailure::Transport,",
                 "counts.store_unreachable += 1",
             ),
-            ("PeerProsePointerFailure::Rejected", "counts.refused += 1"),
+            ("PeerProsePointerFailure::Rejected)", "counts.refused += 1"),
         ] {
             let arm = body
                 .find(variant)
