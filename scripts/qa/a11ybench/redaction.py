@@ -23,6 +23,10 @@ REQUIRED_BINDING_FIELDS = frozenset(("method", "subjectBindingSha256"))
 ALLOWED_TEXT_KEYS = frozenset(("noRawText",))
 CONTENT_BEARING_ARTIFACT_KINDS = frozenset(
     (
+        "a11ytree",
+        "accessibility",
+        "accessibilitytree",
+        "ax",
         "dom",
         "html",
         "image",
@@ -36,6 +40,7 @@ CONTENT_BEARING_ARTIFACT_KINDS = frozenset(
         "text",
         "transcript",
         "uia",
+        "uianode",
         "webp",
     )
 )
@@ -60,9 +65,12 @@ FORBIDDEN_NORMALIZED_KEYS = frozenset(
         "accountidentifiers",
         "accountname",
         "accesstoken",
+        "accessibledescription",
+        "accessiblename",
         "apikey",
         "apikeys",
         "automationselector",
+        "automationvalue",
         "b64",
         "base64",
         "browserprofile",
@@ -73,6 +81,8 @@ FORBIDDEN_NORMALIZED_KEYS = frozenset(
         "cookies",
         "credential",
         "credentials",
+        "elementname",
+        "elementvalue",
         "handle",
         "hwnd",
         "log",

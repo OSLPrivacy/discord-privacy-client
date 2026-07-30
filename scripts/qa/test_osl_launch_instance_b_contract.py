@@ -25,6 +25,7 @@ def _run_fixture(
     *,
     confirm: bool,
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
+    tmp.mkdir(parents=True, exist_ok=True)
     fixture_path = tmp / "fixture.json"
     out_path = tmp / "result.json"
     fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
@@ -93,6 +94,30 @@ def instance_b_launcher_uses_private_temp_root_and_preserves_instance_a() -> Non
         assert (Path(str(fixture["tempRootB"])) / "osl-startup-trace.txt").is_file()
         assert not (Path(str(fixture["tempRootA"])) / "osl-startup-trace.txt").exists()
 
+        shared_temp = _fixture(tmp / "shared-temp")
+        shared_temp["tempRootB"] = shared_temp["tempRootA"]
+        shared_completed, shared_payload = _run_fixture(
+            tmp / "shared-temp",
+            shared_temp,
+            confirm=True,
+        )
+        assert shared_completed.returncode == 2, shared_completed.stderr
+        assert shared_payload["overall"]["verdict"] == "blocked"
+        assert shared_payload["steps"][-1]["step"] == "temp-isolation"
+        assert shared_payload["steps"][-1]["result"] == "failed"
+
+        changed_a = _fixture(tmp / "changed-a")
+        changed_a["instanceAIdentityShaAfter"] = "b" * 64
+        changed_completed, changed_payload = _run_fixture(
+            tmp / "changed-a",
+            changed_a,
+            confirm=True,
+        )
+        assert changed_completed.returncode == 1, changed_completed.stderr
+        assert changed_payload["overall"]["verdict"] == "failed"
+        assert changed_payload["steps"][-1]["step"] == "assert/instance-a-untouched"
+        assert changed_payload["steps"][-1]["result"] == "failed"
+
 
 def instance_b_confirm_creates_identity_registers_second_identity() -> None:
     with tempfile.TemporaryDirectory() as raw_tmp:
@@ -103,6 +128,11 @@ def instance_b_confirm_creates_identity_registers_second_identity() -> None:
         assert blocked.returncode == 2, blocked.stderr
         assert blocked_payload["overall"]["verdict"] == "blocked"
         assert blocked_payload["steps"][-1]["step"] == "gate/consent"
+        assert not any(
+            step["step"] == "identity/keyserver-registration"
+            for step in blocked_payload["steps"]
+        )
+        assert not (Path(str(fixture["tempRootB"])) / "osl-startup-trace.txt").exists()
 
         allowed, allowed_payload = _run_fixture(tmp, fixture, confirm=True)
         assert allowed.returncode == 0, allowed.stderr
@@ -116,6 +146,22 @@ def instance_b_confirm_creates_identity_registers_second_identity() -> None:
         assert identity_step["identitiesBefore"] == 1
         assert identity_step["identitiesAfter"] == 2
         assert allowed_payload["instanceB"]["registeredSecondIdentity"] is True
+
+        no_new_identity = _fixture(tmp / "no-new-identity")
+        no_new_identity["keyserverIdentitiesAfter"] = ["identity-a"]
+        failed, failed_payload = _run_fixture(
+            tmp / "no-new-identity",
+            no_new_identity,
+            confirm=True,
+        )
+        assert failed.returncode == 1, failed.stderr
+        assert failed_payload["overall"]["verdict"] == "failed"
+        failed_identity_step = next(
+            step
+            for step in failed_payload["steps"]
+            if step["step"] == "identity/keyserver-registration"
+        )
+        assert failed_identity_step["result"] == "failed"
 
 
 def load_tests(
