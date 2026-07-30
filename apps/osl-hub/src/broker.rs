@@ -10512,6 +10512,67 @@ mod tests {
     }
 
     #[test]
+    fn a_drain_report_separates_received_from_opened_and_keeps_their_order() {
+        let batch = OpenedNativeOverlayTextBatch {
+            messages: Vec::new(),
+            pending_view_once: Vec::new(),
+            acknowledgments: vec![
+                NativeOverlayAcknowledgment {
+                    message_id: "peer-report-first".to_owned(),
+                    status: NativeOverlayAcknowledgmentStatus::Received,
+                    acknowledged_at: 1_700_000_010,
+                },
+                NativeOverlayAcknowledgment {
+                    message_id: "peer-report-second".to_owned(),
+                    status: NativeOverlayAcknowledgmentStatus::Opened,
+                    acknowledged_at: 1_700_000_011,
+                },
+                NativeOverlayAcknowledgment {
+                    message_id: "peer-report-third".to_owned(),
+                    status: NativeOverlayAcknowledgmentStatus::Received,
+                    acknowledged_at: 1_700_000_012,
+                },
+            ],
+            fetched: 3,
+            decrypt_display_enabled: true,
+            deferred_rows: 0,
+        };
+
+        assert_eq!(
+            batch.acknowledgment_counters(),
+            NativeOverlayAcknowledgmentCounters {
+                received: 2,
+                opened: 1,
+            }
+        );
+
+        let statuses = batch
+            .acknowledgments
+            .iter()
+            .map(|ack| ack.status)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            statuses,
+            vec![
+                NativeOverlayAcknowledgmentStatus::Received,
+                NativeOverlayAcknowledgmentStatus::Opened,
+                NativeOverlayAcknowledgmentStatus::Received,
+            ]
+        );
+
+        let visible_report = serde_json::to_value(&batch).unwrap();
+        assert_eq!(
+            visible_report["acknowledgments"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|ack| ack["status"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["received", "opened", "received"]
+        );
+    }
+
+    #[test]
     fn received_then_opened_ordering_proof() {
         fn production(source: &str) -> &str {
             source
