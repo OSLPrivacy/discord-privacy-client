@@ -46,6 +46,9 @@ label is never sufficient authority; `dispatch` is valid only when the current c
 fresh, internally consistent, quota/account verified, machine headroom is sufficient, and the unit
 is still owned-file bound.
 
+Freshness is deliberately narrow for dispatch: `observedAt` must be no more than five minutes before
+`freshForDecisionAt`, and it must not be in the future relative to the decision timestamp.
+
 ```json
 {
   "name": "Update routing decisions from real Codex capacity instead of stale pools.",
@@ -128,4 +131,183 @@ is still owned-file bound.
     }
   ]
 }
+```
+
+Executable oracle for the fixture:
+
+```js
+import assert from "node:assert/strict";
+
+const TEST_NAME = "Update routing decisions from real Codex capacity instead of stale pools.";
+const FRESHNESS_WINDOW_MS = 5 * 60 * 1000;
+
+function routeCodexChild({ currentCapacityRecord, forbiddenSubstitute }) {
+  if (currentCapacityRecord === null) {
+    return {
+      decision: "standby",
+      reason: "current capacity signal absent",
+    };
+  }
+
+  const record = currentCapacityRecord;
+  const observedAt = Date.parse(record.observedAt);
+  const decisionAt = Date.parse(record.freshForDecisionAt);
+  const stale =
+    !Number.isFinite(observedAt) ||
+    !Number.isFinite(decisionAt) ||
+    observedAt > decisionAt ||
+    decisionAt - observedAt > FRESHNESS_WINDOW_MS;
+  const contradictions = Array.isArray(record.contradictions)
+    ? record.contradictions
+    : ["capacity record contradictions missing"];
+  const hasFreshLiveCapacity =
+    !stale &&
+    contradictions.length === 0 &&
+    Number.isInteger(record.activeSessionCount) &&
+    Array.isArray(record.blockedOrSleepingSessions) &&
+    record.accountQuotaStatus === "verified_enough_for_expected_turn";
+  const hasMachineHeadroom =
+    record.machineHeadroom === "verified_enough_for_focused_verification";
+  const ownedFileBound = record.ownedFileBound === true;
+
+  if (!hasFreshLiveCapacity && forbiddenSubstitute === "borrow_other_account") {
+    return {
+      decision: "refuse",
+      reason: "failed live capacity check cannot be satisfied by borrowing authority",
+    };
+  }
+
+  if (!hasMachineHeadroom && forbiddenSubstitute === "change_CODEX_HOME") {
+    return {
+      decision: "refuse",
+      reason: "failed machine headroom check cannot be satisfied by changing CODEX_HOME",
+    };
+  }
+
+  if (!ownedFileBound && forbiddenSubstitute === "speculative_background_child") {
+    return {
+      decision: "standby",
+      reason: "unbounded ownership cannot be satisfied by speculative background work",
+    };
+  }
+
+  if (!hasFreshLiveCapacity) {
+    return {
+      decision: "standby",
+      reason: stale ? "current capacity signal stale" : "current capacity signal contradictory or unverified",
+    };
+  }
+
+  if (!hasMachineHeadroom) {
+    return {
+      decision: "standby",
+      reason: "machine headroom unavailable",
+    };
+  }
+
+  if (!ownedFileBound) {
+    return {
+      decision: "standby",
+      reason: "owned-file bound absent",
+    };
+  }
+
+  return {
+    decision: "dispatch",
+    reason: "fresh verified capacity and owned-file bound",
+  };
+}
+
+const cases = [
+  {
+    lane: "j14",
+    historicalPoolLabel: "available",
+    currentCapacityRecord: null,
+    forbiddenSubstitute: null,
+    expectedDecision: "standby",
+    expectedReason: "current capacity signal absent",
+  },
+  {
+    lane: "j14",
+    historicalPoolLabel: "available",
+    currentCapacityRecord: {
+      observedAt: "2026-07-30T09:12:00Z",
+      freshForDecisionAt: "2026-07-30T09:12:20Z",
+      activeSessionCount: 3,
+      blockedOrSleepingSessions: ["j6"],
+      accountQuotaStatus: "verified_enough_for_expected_turn",
+      machineHeadroom: "verified_enough_for_focused_verification",
+      ownedFileBound: true,
+      contradictions: [],
+    },
+    forbiddenSubstitute: null,
+    expectedDecision: "dispatch",
+    expectedReason: "fresh verified capacity and owned-file bound",
+  },
+  {
+    lane: "j14",
+    historicalPoolLabel: "available",
+    currentCapacityRecord: {
+      observedAt: "2026-07-30T07:00:00Z",
+      freshForDecisionAt: "2026-07-30T09:12:20Z",
+      activeSessionCount: 1,
+      blockedOrSleepingSessions: [],
+      accountQuotaStatus: "unverified",
+      machineHeadroom: "verified_enough_for_focused_verification",
+      ownedFileBound: true,
+      contradictions: ["quota note expired before decision"],
+    },
+    forbiddenSubstitute: "borrow_other_account",
+    expectedDecision: "refuse",
+    expectedReason: "failed live capacity check cannot be satisfied by borrowing authority",
+  },
+  {
+    lane: "j14",
+    historicalPoolLabel: "available",
+    currentCapacityRecord: {
+      observedAt: "2026-07-30T09:12:05Z",
+      freshForDecisionAt: "2026-07-30T09:12:20Z",
+      activeSessionCount: 3,
+      blockedOrSleepingSessions: ["j6"],
+      accountQuotaStatus: "verified_enough_for_expected_turn",
+      machineHeadroom: "insufficient_for_focused_verification",
+      ownedFileBound: true,
+      contradictions: [],
+    },
+    forbiddenSubstitute: "change_CODEX_HOME",
+    expectedDecision: "refuse",
+    expectedReason: "failed machine headroom check cannot be satisfied by changing CODEX_HOME",
+  },
+  {
+    lane: "j14",
+    historicalPoolLabel: "available",
+    currentCapacityRecord: {
+      observedAt: "2026-07-30T09:12:05Z",
+      freshForDecisionAt: "2026-07-30T09:12:20Z",
+      activeSessionCount: 3,
+      blockedOrSleepingSessions: ["j6"],
+      accountQuotaStatus: "verified_enough_for_expected_turn",
+      machineHeadroom: "verified_enough_for_focused_verification",
+      ownedFileBound: false,
+      contradictions: [],
+    },
+    forbiddenSubstitute: "speculative_background_child",
+    expectedDecision: "standby",
+    expectedReason: "unbounded ownership cannot be satisfied by speculative background work",
+  },
+];
+
+for (const fixture of cases) {
+  const actual = routeCodexChild(fixture);
+  assert.deepEqual(
+    actual,
+    {
+      decision: fixture.expectedDecision,
+      reason: fixture.expectedReason,
+    },
+    `${TEST_NAME} failed for ${fixture.lane}`,
+  );
+}
+
+console.log(`PASS ${TEST_NAME}`);
 ```
