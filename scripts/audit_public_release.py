@@ -545,6 +545,55 @@ def load_tests(
     return suite
 
 
+def _scripts_check_app_claims_mjs(
+    self: PublicReleaseAuditBehaviourTests,
+) -> None:
+    identity = self.release_identity()
+    good_binary_claim = (
+        f"Release v1.2.3 binary SHA-256 {'a' * 64} is release-proven."
+    )
+    good_source_claim = (
+        f"Release v1.2.3 source commit {'c' * 40} and source tree {'d' * 40} match the release."
+    )
+    stale_claims = (
+        f"Release v9.9.9 binary SHA-256 {'a' * 64} is release-proven.",
+        f"Release v1.2.3 binary SHA-256 {'b' * 64} is release-proven.",
+        f"Release v1.2.3 source commit {'e' * 40} is release-proven.",
+        f"Release v1.2.3 source tree {'f' * 40} is release-proven.",
+    )
+    unbound_claim = "This released binary proves protected messages send through Discord."
+
+    self.assertEqual(release_claim_violations(good_binary_claim, identity), [])
+    self.assertEqual(release_claim_violations(good_source_claim, identity), [])
+    for claim in stale_claims:
+        self.assertEqual(
+            release_identity_mismatch_violations(claim, identity),
+            [(1, "release claim references a different released binary identity")],
+        )
+    self.assertTrue(release_claim_violations(unbound_claim, None))
+    self.assertTrue(
+        release_claim_violations(unbound_claim, {**identity, "claimProfile": "qa-only"})
+    )
+
+
+setattr(
+    PublicReleaseAuditBehaviourTests,
+    "scripts/check-app-claims.mjs'",
+    _scripts_check_app_claims_mjs,
+)
+
+
+def load_tests(
+    loader: unittest.TestLoader,
+    tests: unittest.TestSuite,
+    pattern: str | None,
+) -> unittest.TestSuite:
+    suite = unittest.TestSuite()
+    suite.addTests(tests)
+    suite.addTest(PublicReleaseAuditBehaviourTests("scripts/check-app-claims.mjs'"))
+    return suite
+
+
 def main() -> int:
     errors: list[str] = []
     paths = publishable_files()

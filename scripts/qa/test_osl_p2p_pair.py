@@ -66,3 +66,14 @@ def osl_p2p_pair_refuses_same_osl_user_id() -> None:
 
 def test_osl_p2p_pair_refuses_same_osl_user_id(tmp_path: Path) -> None:
     _run_osl_p2p_pair_refuses_same_osl_user_id(tmp_path)
+
+
+def load_tests(
+    loader: unittest.TestLoader,
+    tests: unittest.TestSuite,
+    pattern: str | None,
+) -> unittest.TestSuite:
+    suite = unittest.TestSuite()
+    suite.addTests(tests)
+    suite.addTest(unittest.FunctionTestCase(osl_p2p_pair_refuses_same_osl_user_id))
+    return suite
