@@ -548,6 +548,139 @@ mod tests {
     }
 
     #[test]
+    fn verify_identity_binding_rejects_all_mutated_bindings() {
+        let canonical = account_on("discord", "account-a");
+        let mut verifier = IdentityBindingVerifier::new(owner(25));
+        verifier
+            .bind(
+                canonical.clone(),
+                BindingScope::ScrubDeletion,
+                BindingEvidence::CallerAttested,
+            )
+            .unwrap();
+        assert_eq!(
+            verifier.verify(&canonical, BindingScope::ScrubDeletion),
+            Ok(())
+        );
+
+        let mut refusals = 0;
+        let mut assert_refused = |result: Result<(), IdentityBindingError>| {
+            refusals += 1;
+            assert_eq!(result, Err(IdentityBindingError::NoBinding));
+        };
+
+        assert_refused(
+            IdentityBindingVerifier::new(owner(25)).verify(&canonical, BindingScope::ScrubDeletion),
+        );
+        assert_refused(verifier.verify(
+            &account_on("discord", "account-b"),
+            BindingScope::ScrubDeletion,
+        ));
+        assert_refused(verifier.verify(
+            &account_on("telegram", "account-a"),
+            BindingScope::ScrubDeletion,
+        ));
+        assert_refused(verifier.verify(
+            &account_on("telegram", "account-b"),
+            BindingScope::ScrubDeletion,
+        ));
+        assert_refused(verifier.verify(&account_on("", "account-a"), BindingScope::ScrubDeletion));
+        assert_refused(verifier.verify(&account_on("discord", ""), BindingScope::ScrubDeletion));
+        assert_refused(verifier.verify(
+            &account_on("Discord", "account-a"),
+            BindingScope::ScrubDeletion,
+        ));
+        assert_refused(verifier.verify(
+            &account_on("discord ", "account-a"),
+            BindingScope::ScrubDeletion,
+        ));
+        assert_refused(verifier.verify(
+            &account_on("discord", " account-a"),
+            BindingScope::ScrubDeletion,
+        ));
+        assert_refused(verifier.verify(
+            &account_on("discord", "account-a "),
+            BindingScope::ScrubDeletion,
+        ));
+        assert_refused(verifier.verify(
+            &account_on("discord", "ACCOUNT-A"),
+            BindingScope::ScrubDeletion,
+        ));
+        assert_refused(verifier.verify(
+            &account_on("discord", "account-a-extra"),
+            BindingScope::ScrubDeletion,
+        ));
+        assert_refused(verifier.verify(
+            &account_on("discord", "account-"),
+            BindingScope::ScrubDeletion,
+        ));
+        assert_refused(verifier.verify(
+            &account_on("discord", "account-a/child"),
+            BindingScope::ScrubDeletion,
+        ));
+        assert_refused(verifier.verify(
+            &account_on("discord", "account_a"),
+            BindingScope::ScrubDeletion,
+        ));
+        assert_refused(verifier.verify(&canonical, BindingScope::ScrubIndex));
+
+        for evidence in [
+            BindingEvidence::RendererSupplied,
+            BindingEvidence::UnsignedMetadata,
+            BindingEvidence::UnverifiedFlag,
+        ] {
+            let mut weak = IdentityBindingVerifier::new(owner(25));
+            assert_eq!(
+                weak.bind(canonical.clone(), BindingScope::ScrubDeletion, evidence),
+                Err(IdentityBindingError::EvidenceNotAttested)
+            );
+            assert_refused(weak.verify(&canonical, BindingScope::ScrubDeletion));
+        }
+
+        let mut foreign_owner = IdentityBindingVerifier::new(owner(25));
+        foreign_owner.bindings.push(AccountBinding {
+            account: canonical.clone(),
+            scope: BindingScope::ScrubDeletion,
+            owner: owner(26),
+        });
+        assert_refused(foreign_owner.verify(&canonical, BindingScope::ScrubDeletion));
+
+        let mut foreign_scope = IdentityBindingVerifier::new(owner(25));
+        foreign_scope.bindings.push(AccountBinding {
+            account: canonical.clone(),
+            scope: BindingScope::ScrubIndex,
+            owner: owner(25),
+        });
+        assert_refused(foreign_scope.verify(&canonical, BindingScope::ScrubDeletion));
+
+        let mut foreign_service_binding = IdentityBindingVerifier::new(owner(25));
+        foreign_service_binding.bindings.push(AccountBinding {
+            account: account_on("telegram", "account-a"),
+            scope: BindingScope::ScrubDeletion,
+            owner: owner(25),
+        });
+        assert_refused(foreign_service_binding.verify(&canonical, BindingScope::ScrubDeletion));
+
+        let mut foreign_account_binding = IdentityBindingVerifier::new(owner(25));
+        foreign_account_binding.bindings.push(AccountBinding {
+            account: account_on("discord", "account-b"),
+            scope: BindingScope::ScrubDeletion,
+            owner: owner(25),
+        });
+        assert_refused(foreign_account_binding.verify(&canonical, BindingScope::ScrubDeletion));
+
+        let mut all_fields_mutated = IdentityBindingVerifier::new(owner(25));
+        all_fields_mutated.bindings.push(AccountBinding {
+            account: account_on("telegram", "account-b"),
+            scope: BindingScope::ScrubIndex,
+            owner: owner(26),
+        });
+        assert_refused(all_fields_mutated.verify(&canonical, BindingScope::ScrubDeletion));
+
+        assert_eq!(refusals, 24);
+    }
+
+    #[test]
     fn f66_verify_identity_binding_rejects_foreign_owner_binding_on_same_verifier() {
         let mut verifier = IdentityBindingVerifier::new(owner(17));
         verifier.bindings.push(AccountBinding {

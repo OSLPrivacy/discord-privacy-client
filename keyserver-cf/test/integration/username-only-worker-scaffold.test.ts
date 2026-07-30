@@ -1,7 +1,7 @@
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-async function usernameCoverage(body: unknown): Promise<Response> {
+async function postUsernameCoverage(body: unknown): Promise<Response> {
   return SELF.fetch("http://test/v1/username-coverage", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -12,7 +12,7 @@ async function usernameCoverage(body: unknown): Promise<Response> {
 describe("username-only Worker scaffold", () => {
   it("test/integration/username-only-worker-scaffold.test.ts", async () => {
     const acceptedUsername = "alice.example_1";
-    const accepted = await usernameCoverage({ username: acceptedUsername });
+    const accepted = await postUsernameCoverage({ username: acceptedUsername });
     expect(accepted.status).toBe(200);
     const payload = await accepted.json() as Record<string, unknown>;
     expect(payload).toEqual({
@@ -32,6 +32,10 @@ describe("username-only Worker scaffold", () => {
       ],
       signals: [],
     });
+    expect(payload).not.toHaveProperty("provider");
+    expect(payload).not.toHaveProperty("account_id");
+    expect(payload).not.toHaveProperty("deletion");
+    expect(payload).not.toHaveProperty("risk_percentage");
     for (const forbidden of [
       "deletion",
       "private_mailbox_access",
@@ -50,18 +54,22 @@ describe("username-only Worker scaffold", () => {
         { username: acceptedUsername, account_id: "900000000000000001" },
       ],
       ["discord_snowflake", { username: "900000000000000001" }],
+      ["credential_pair_input", { username: "alice@example.com:password" }],
+      ["username_with_space", { username: "alice example" }],
     ];
     expect(refusals.map(([name]) => name).sort()).toEqual(
       [
         "credential_like_input",
+        "credential_pair_input",
         "discord_snowflake",
         "extra_provider",
         "missing_username",
         "unsupported_provider_binding",
+        "username_with_space",
       ],
     );
     for (const [, body] of refusals) {
-      const refused = await usernameCoverage(body);
+      const refused = await postUsernameCoverage(body);
       expect(refused.status).toBe(400);
       await expect(refused.json()).resolves.toHaveProperty("error");
     }
