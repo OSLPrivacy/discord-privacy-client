@@ -5821,12 +5821,7 @@ async function openOslChat(personId: string): Promise<void> {
     : [];
   const epoch = ++oslChatOperationEpoch;
   oslChatBusy = true;
-  activeOslChatPersonId = personId;
-  activeOslChatContext = null;
   oslChatSettingsPersonId = null;
-  oslChatUnread.delete(personId);
-  persistOslChatUnread();
-  route = "osl-chat";
   render();
   let shouldRefresh = false;
   try {
@@ -5839,11 +5834,15 @@ async function openOslChat(personId: string): Promise<void> {
     }
     screenshotProtectionEnabled = true;
     const context = await activateOslChatContext(personId);
-    if (!context || epoch !== oslChatOperationEpoch || activeOslChatPersonId !== personId) {
+    if (!context || epoch !== oslChatOperationEpoch) {
       showToast(withBackendReason("OSL Chat could not open", "activate_osl_chat_context"));
       return;
     }
+    activeOslChatPersonId = personId;
     activeOslChatContext = context;
+    oslChatUnread.delete(personId);
+    persistOslChatUnread();
+    route = "osl-chat";
     if (context.scopeApproved) {
       const history = await listOslChatHistory();
       if (epoch !== oslChatOperationEpoch) return;
