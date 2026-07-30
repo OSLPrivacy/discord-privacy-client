@@ -36,3 +36,101 @@ Acceptance for this risk is a coordinator routing exercise, not a prose grep:
    turn.
 3. Attempt to satisfy a failed capacity check by borrowing another account, changing `CODEX_HOME`, or
    starting speculative background work. The routing decision must remain `refuse` or `standby`.
+
+## Test: Update routing decisions from real Codex capacity instead of stale pools.
+
+This acceptance test is evaluated against the coordinator's routing decision, not against this
+document's wording. Feed each fixture record to the routing policy and assert the decision class and
+reason. A stale historical pool label is never a capacity grant.
+
+```json
+{
+  "test": "Update routing decisions from real Codex capacity instead of stale pools.",
+  "cases": [
+    {
+      "name": "stale available label refuses without current capacity",
+      "input": {
+        "historical_pool_label": "available",
+        "current_capacity_record": null,
+        "requested_work": { "owned_file_bound": true, "expected_turns": 1 },
+        "substitute": null
+      },
+      "expected_decision": ["refuse", "standby"],
+      "expected_reason": "current capacity signal absent"
+    },
+    {
+      "name": "fresh verified capacity can dispatch",
+      "input": {
+        "historical_pool_label": "available",
+        "current_capacity_record": {
+          "recorded_at": "fresh",
+          "active_session_count": 2,
+          "blocked_or_sleeping_sessions": [],
+          "account_quota_status": "verified_enough_for_expected_turn",
+          "machine_headroom": "verified_enough_for_focused_verification",
+          "contradictory": false
+        },
+        "requested_work": { "owned_file_bound": true, "expected_turns": 1 },
+        "substitute": null
+      },
+      "expected_decision": ["dispatch"],
+      "expected_reason": "fresh verified capacity and owned-file bound"
+    },
+    {
+      "name": "contradictory live signal refuses despite available label",
+      "input": {
+        "historical_pool_label": "available",
+        "current_capacity_record": {
+          "recorded_at": "fresh",
+          "active_session_count": 2,
+          "blocked_or_sleeping_sessions": ["lane-a"],
+          "account_quota_status": "verified_enough_for_expected_turn",
+          "machine_headroom": "verified_enough_for_focused_verification",
+          "contradictory": true
+        },
+        "requested_work": { "owned_file_bound": true, "expected_turns": 1 },
+        "substitute": null
+      },
+      "expected_decision": ["refuse", "standby"],
+      "expected_reason": "current capacity signal contradictory"
+    },
+    {
+      "name": "failed quota cannot be repaired with forbidden substitute",
+      "input": {
+        "historical_pool_label": "available",
+        "current_capacity_record": {
+          "recorded_at": "fresh",
+          "active_session_count": 2,
+          "blocked_or_sleeping_sessions": [],
+          "account_quota_status": "failed_quota_check",
+          "machine_headroom": "verified_enough_for_focused_verification",
+          "contradictory": false
+        },
+        "requested_work": { "owned_file_bound": true, "expected_turns": 1 },
+        "substitute": "borrow_account"
+      },
+      "expected_decision": ["refuse", "standby"],
+      "expected_reason": "failed quota check; forbidden substitute"
+    },
+    {
+      "name": "unbounded file ownership refuses even with quota",
+      "input": {
+        "historical_pool_label": "available",
+        "current_capacity_record": {
+          "recorded_at": "fresh",
+          "active_session_count": 1,
+          "blocked_or_sleeping_sessions": [],
+          "account_quota_status": "verified_enough_for_expected_turn",
+          "machine_headroom": "verified_enough_for_focused_verification",
+          "contradictory": false
+        },
+        "requested_work": { "owned_file_bound": false, "expected_turns": 1 },
+        "substitute": null
+      },
+      "expected_decision": ["refuse", "standby"],
+      "expected_reason": "requested work is not bounded to owned files"
+    }
+  ],
+  "inversion_check": "If stale-label-only routing dispatches, if a borrowed account repairs failed quota, or if missing owned-file bounds dispatch, this test fails."
+}
+```
