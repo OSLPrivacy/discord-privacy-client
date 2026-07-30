@@ -394,6 +394,7 @@ describe("OSL Mail Worker", () => {
     const mime = "From: outside@example.com\r\nSubject: private subject\r\nMessage-ID: <thread@example.com>\r\n\r\nsecret external body";
     const rawChunk = new TextEncoder().encode(mime);
     let rejected = "";
+    let forwardedTo = "";
     const message = {
       from: "outside@example.com",
       to: "bob@oslprivacy.com",
@@ -406,9 +407,11 @@ describe("OSL Mail Worker", () => {
         },
       }),
       setReject(reason: string) { rejected = reason; },
+      async forward(recipient: string) { forwardedTo = recipient; },
     } as unknown as ForwardableEmailMessage;
     await handleInboundEmail(message, env);
     expect(rejected).toBe("");
+    expect(forwardedTo).toBe("");
     expect(Array.from(rawChunk)).toEqual(Array(rawChunk.byteLength).fill(0));
     const response = await signedPost("/v1/mail/list", "LIST", bob, { limit: 10 });
     const listingText = await response.text();
@@ -429,6 +432,9 @@ describe("OSL Mail Worker", () => {
     };
     expect(fetchedBody.kind).toBe("external_envelope");
     expect(fetchedBody.ciphertext_b64).not.toBe(base64Encode(new TextEncoder().encode(mime)));
+    expect(fetchedBody.envelope_json).not.toContain("private subject");
+    expect(fetchedBody.envelope_json).not.toContain("outside@example.com");
+    expect(fetchedBody.envelope_json).not.toContain("secret external body");
     const envelope = JSON.parse(fetchedBody.envelope_json) as {
       algorithm: string;
       ephemeral_public_key_b64: string;
@@ -437,6 +443,9 @@ describe("OSL Mail Worker", () => {
       aad_b64: string;
     };
     expect(envelope.algorithm).toBe("X25519-HKDF-SHA256-AES-256-GCM");
+    const aad = new TextDecoder().decode(base64Decode(envelope.aad_b64));
+    expect(aad).toContain(bob.userId);
+    expect(aad).not.toContain("outside@example.com");
     const ciphertext = base64Decode(fetchedBody.ciphertext_b64);
     expect(new TextDecoder().decode(ciphertext)).not.toContain("secret external body");
     const ephemeral = await crypto.subtle.importKey("raw", base64Decode(envelope.ephemeral_public_key_b64), { name: "X25519" }, false, []);
