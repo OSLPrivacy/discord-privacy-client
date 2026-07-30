@@ -10820,8 +10820,9 @@ mod tests {
             activated.scope.id,
             security::manual_peer_scope_id("osl-chat", "osl-main", "hub-person-bob").unwrap()
         );
-        assert!(
-            security::manual_peer_scope_id("osl-chat", "other-account", "hub-person-bob").is_err()
+        assert_ne!(
+            activated.scope.id,
+            security::manual_peer_scope_id("osl-chat", "other-account", "hub-person-bob").unwrap()
         );
         broker.clear_osl_chat_context().unwrap();
         assert!(broker.active_osl_chat_context_token().is_err());
