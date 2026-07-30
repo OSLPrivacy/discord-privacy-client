@@ -12016,6 +12016,42 @@ mod unit_a_sender_attribution_chain {
         }
     }
 
+    fn install_v5_receiver_chains_for_alice_and_mallory(
+        bob_state: &AppState,
+        scope_key: &str,
+        alice_sender_state: &crypto::sender_keys::SenderKeyState,
+    ) {
+        let alice_chain = alice_sender_state.sender_chain().unwrap();
+        let chain_id = alice_chain.current_chain_id();
+        let rotation_root = alice_chain.rotation_root_bytes();
+        let physical_device_id = alice_chain.physical_device_id();
+
+        let mut bob_sender_keys = crypto::sender_keys::SenderKeyState::new();
+        bob_sender_keys
+            .install_receiver(
+                ALICE_DID.as_bytes().to_vec(),
+                chain_id,
+                &rotation_root,
+                physical_device_id,
+            )
+            .unwrap();
+        bob_sender_keys
+            .install_receiver(
+                MALLORY_DID.as_bytes().to_vec(),
+                chain_id,
+                &rotation_root,
+                physical_device_id,
+            )
+            .unwrap();
+
+        let mut stored = bob_state.sender_key_state.lock().unwrap();
+        stored.states.insert(
+            scope_key.to_string(),
+            crypto::sender_keys::SenderKeyStateOnDisk::from(&bob_sender_keys),
+        );
+        stored.version = 1;
+    }
+
     #[test]
     fn v3_pinned_sender_rejects_forged_sender() {
         let f = attribution_fixture();
@@ -12139,6 +12175,65 @@ mod unit_a_sender_attribution_chain {
         assert!(
             err.contains("not a recipient") || err.contains("body"),
             "v2 must resolve the claimed sender id to Alice's key and reject Mallory's wire, got: {err}"
+        );
+    }
+
+    #[test]
+    fn v5_sender_keys_rejects_forged_sender_discord_id() {
+        let f = attribution_fixture();
+        let scope = crate::scope::Scope::gc("3000000000000000001");
+        let scope_key = scope.storage_key();
+
+        let mut alice_sender_keys = crypto::sender_keys::SenderKeyState::new();
+        alice_sender_keys.install_sender().unwrap();
+        install_v5_receiver_chains_for_alice_and_mallory(
+            &f.bob_state,
+            &scope_key,
+            &alice_sender_keys,
+        );
+
+        let sender_ctx = crypto::sender_keys::SenderContext {
+            sender_ik_x25519_pub: f.alice.x25519_public,
+            sender_ik_mlkem_pub: f.alice.mlkem_public_bytes.to_vec(),
+            group_id: scope_key.clone().into_bytes(),
+            session_version: crypto::sender_keys::SESSION_VERSION_V1,
+        };
+        let em = alice_sender_keys
+            .encrypt(b"v5 honest alice", &sender_ctx)
+            .unwrap();
+        let wire = crate::wire_v2::encrypt_v5(
+            &f.alice.x25519_public,
+            crate::wire_v2::MSG_TYPE_CONTENT,
+            0,
+            &em,
+        )
+        .unwrap();
+
+        let honest = cmd_osl_decrypt_message_v2(
+            &f.bob_state,
+            None,
+            CHANNEL_ID.to_string(),
+            ALICE_DID.to_string(),
+            wire.clone(),
+            Some(crate::scope::ScopeInput::from(&scope)),
+            None,
+        )
+        .unwrap();
+        assert_eq!(honest, "v5 honest alice");
+
+        let err = cmd_osl_decrypt_message_v2(
+            &f.bob_state,
+            None,
+            CHANNEL_ID.to_string(),
+            MALLORY_DID.to_string(),
+            wire,
+            Some(crate::scope::ScopeInput::from(&scope)),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("decrypt_from"),
+            "v5 must reject a sender-keys message under a forged sender_discord_id, got: {err}"
         );
     }
 }
