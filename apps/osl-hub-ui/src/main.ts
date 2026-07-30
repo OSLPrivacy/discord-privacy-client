@@ -6,6 +6,7 @@ import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   canCompleteSetup,
+  defaultSetup,
   formatSendMode,
   needsRiskAcceptance,
   parseSetupState,
@@ -2043,6 +2044,11 @@ function sendingSetupContent(): string {
 function captureSetupMarkup(): string {
   const applied = windowCaptureEnabled && screenshotProtectionEnabled;
   return `<section class="setup-list capture-setup-inline" aria-labelledby="capture-setup-heading"><h2 id="capture-setup-heading" class="setup-section-heading">Screen capture</h2><label class="setup-status-row capture-preference"><span><strong>Resist Windows capture</strong><small>Excludes OSL from ordinary screenshots and recording when Windows supports it. Cameras, malware, and modified devices can still capture content.</small></span><input id="window-capture-enabled" type="checkbox" ${windowCaptureEnabled ? "checked" : ""}/></label><div class="setup-status-row"><span><strong>Current device</strong><small>Protected messages appear only after OSL enables this protection.</small></span><span class="status-tag ${applied ? "active" : ""}">${windowCaptureEnabled ? (applied ? "Active" : "Unavailable") : "Off"}</span></div></section>`;
+}
+
+function reviewDefaultsOnboardingContent(): string {
+  const row = (title: string, detail: string, state: string, active = false) => `<div class="setup-status-row"><span><strong>${title}</strong><small>${detail}</small></span><span class="status-tag ${active ? "active" : ""}">${state}</span></div>`;
+  return `<h1 id="route-heading" tabindex="-1">Review defaults</h1><p class="compact-lead onboarding-centered-copy">Balanced starts with local warnings, visible attachment cleaning, and review-only cleanup. You can change these later in Privacy.</p><section class="setup-list defaults-review-list" aria-label="Default protection review">${row("Warn before sending", "Checks drafts on this device for selected risks before you send.", "On", true)}${row("Clean attachments", "Offers a visible cleaning step for files and media; nothing changes without your consent.", "Ask first")}${row("Keep protected drafts", "Keeps encrypted local drafts and private activity on this device for recovery.", "On", true)}${row("Delete or clean up history", "Timed deletion, bulk cleanup, and account cleanup do not run during onboarding.", "Off")}${row("Send behavior", "Manual handoff is the default: OSL prepares, then you place and send.", formatSendMode(defaultSetup.sendMode), true)}</section><p class="send-mode-truth">No destructive action starts from setup. Cleanup requires a separate review and confirmation.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-defaults-review" type="button">Continue</button></div>`;
 }
 
 function coverDraftSetupContent(): string {
