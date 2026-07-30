@@ -83,6 +83,10 @@ const REQUIRED_CONDITIONAL_APP_EVIDENCE = [
     evidenceAnchor: "TelegramSupportVerdict",
     requiredBoundary: /\bsigned-client UI Automation probe\b.*\bstable, text-exposed message rows\b/i,
     reportVerdict: /Telegram Desktop remains `externally blocked`/i,
+    publicClaimPattern: /\btelegram(?:\s+desktop)?\b/i,
+    publicSupportClaimPattern:
+      /\b(?:supported|available|ready|works?\s+(?:with|on)|protect(?:s|ed|ion)?|protected\s+(?:send|receive|messag(?:e|ing)|reply|delivery|use))\b/i,
+    publicClaimName: "Telegram protected support overclaim",
   },
   {
     id: "outlook_osl_mail",
@@ -93,6 +97,10 @@ const REQUIRED_CONDITIONAL_APP_EVIDENCE = [
     evidenceAnchor: "OutlookOslMailSupportVerdict",
     requiredBoundary: /\bOutlook is scoped as OSL Mail\b.*\bnot Outlook chat support\b/i,
     reportVerdict: /Outlook inline-reply support as OSL Mail is `unsupported`/i,
+    publicClaimPattern: /\b(?:outlook|osl\s+mail)\b/i,
+    publicSupportClaimPattern:
+      /\b(?:supported|available|ready|works?\s+(?:with|on)|inline[-\s]+repl(?:y|ies)|protected\s+(?:send|receive|messag(?:e|ing)|reply|delivery|use)|e2ee|end[-\s]+to[-\s]+end)\b/i,
+    publicClaimName: "Outlook OSL Mail protected support overclaim",
   },
 ];
 const REQUIRED_VERSIONED_PUBLIC_SUPPORT_ROWS = [
@@ -155,6 +163,10 @@ const SUPPORT_CLAIM_TARGETS = [
   { service: "Telegram", pattern: /\btelegram\b/i },
   { service: "OSL Mail", pattern: /\bosl\s+mail\b|\boutlook\b/i },
 ];
+const SUPPORT_MATRIX_PUBLIC_PROOF_NAME = "Gate public claims against exact support evidence";
+const PUBLIC_SUPPORT_LIMITATION_RE =
+  /\b(?:coming\s+(?:soon|later)|externally\s+blocked|blocked|unavailable|unsupported|not\s+(?:available|supported|ready|proved|proven|qualified)|not\s+yet|cannot|can't|must\s+refuse|refuses?|planned|future|later|until|requires?\s+(?:a\s+)?(?:future|separate|new|verified)|no\s+(?:current|release)\s+support)\b/i;
+const PUBLIC_SUPPORT_ALLOWED_STATUSES = new Set(["supported", "verified_live"]);
 
 function repoRelative(filePath) {
   return path.relative(REPO_ROOT, filePath).split(path.sep).join("/");
@@ -179,6 +191,133 @@ function versionedPublicSupportMatrixFailure(message) {
     actual: "invalid support matrix",
   };
 }
+
+function normalizeSupportEvidenceStatus(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.replace(/-/g, "_");
+  return [
+    "supported",
+    "verified_live",
+    "runtime_proven",
+    "test_proven_only",
+    "implemented_unwired",
+    "designed_only",
+    "externally_blocked",
+    "unsupported",
+  ].includes(normalized) ? normalized : null;
+}
+
+function sentenceSpans(text) {
+  return [...text.matchAll(/[^.!?;\n]+[.!?;]?/g)]
+    .map((match) => ({
+      start: match.index ?? 0,
+      end: (match.index ?? 0) + match[0].length,
+      text: match[0].trim(),
+    }))
+    .filter(({ text: sentence }) => sentence.length > 0);
+}
+
+function supportMatrixClaimViolations(file, fragment, rowsById) {
+  const violations = [];
+  const normalized = normalizedClaimTextWithSourceMap(fragment.text);
+
+  for (const required of REQUIRED_CONDITIONAL_APP_EVIDENCE) {
+    const row = rowsById.get(required.id);
+    const status = normalizeSupportEvidenceStatus(row?.status);
+    if (status && PUBLIC_SUPPORT_ALLOWED_STATUSES.has(status)) {
+      continue;
+    }
+
+    for (const sentence of sentenceSpans(normalized.text)) {
+      if (
+        !required.publicClaimPattern.test(sentence.text) ||
+        !required.publicSupportClaimPattern.test(sentence.text) ||
+        PUBLIC_SUPPORT_LIMITATION_RE.test(sentence.text)
+      ) {
+        continue;
+      }
+
+      const sourceIndex = normalized.sourceIndexes[sentence.start] ?? 0;
+      violations.push({
+        file,
+        line: fragment.line + countNewlinesBefore(fragment.text, sourceIndex),
+        phrase: required.publicClaimName,
+        excerpt: excerptAround(
+          fragment.text,
+          sourceIndex,
+          Math.max(1, sentence.end - sentence.start),
+        ),
+      });
+    }
+  }
+
+  return violations;
+}
+
+function supportMatrixPublicClaimProofFailures(rowsById) {
+  const proofFragments = [
+    {
+      file: "self-test/support-matrix-public-claims",
+      text: "Telegram Desktop protected messaging is supported.",
+      line: 1,
+      shouldFlag: true,
+      expectedPhrase: "Telegram protected support overclaim",
+    },
+    {
+      file: "self-test/support-matrix-public-claims",
+      text: "Telegram Desktop protected messaging is externally blocked until stable message rows are proved.",
+      line: 1,
+      shouldFlag: false,
+      expectedPhrase: "Telegram protected support overclaim",
+    },
+    {
+      file: "self-test/support-matrix-public-claims",
+      text: "Outlook inline replies are OSL Mail protected delivery.",
+      line: 1,
+      shouldFlag: true,
+      expectedPhrase: "Outlook OSL Mail protected support overclaim",
+    },
+  ];
+  const failures = [];
+
+  for (const proof of proofFragments) {
+    const violations = supportMatrixClaimViolations(proof.file, proof, rowsById);
+    const flagged = violations.some(({ phrase }) => phrase === proof.expectedPhrase);
+    if (flagged !== proof.shouldFlag) {
+      failures.push({
+        name: SUPPORT_MATRIX_PUBLIC_PROOF_NAME,
+        expected: `${proof.expectedPhrase} ${proof.shouldFlag ? "caught" : "not flagged"}`,
+        actual: flagged ? "flagged" : "not flagged",
+      });
+    }
+  }
+
+  const supportedRows = new Map(rowsById);
+  supportedRows.set("telegram_desktop_native", {
+    ...(supportedRows.get("telegram_desktop_native") ?? {}),
+    status: "supported",
+  });
+  const supportedViolations = supportMatrixClaimViolations(
+    "self-test/support-matrix-public-claims",
+    {
+      text: "Telegram Desktop protected messaging is supported.",
+      line: 1,
+    },
+    supportedRows,
+  );
+  if (supportedViolations.some(({ phrase }) => phrase === "Telegram protected support overclaim")) {
+    failures.push({
+      name: SUPPORT_MATRIX_PUBLIC_PROOF_NAME,
+      expected: "supported evidence permits its matching public claim",
+      actual: "flagged supported evidence",
+    });
+  }
+
+  return failures;
+}
+
 async function validateSupportMatrix() {
   const failures = [];
   let matrix;
@@ -229,7 +368,6 @@ async function validateSupportMatrix() {
     for (const [field, expected] of [
       ["service", required.service],
       ["claim_scope", required.claimScope],
-      ["status", required.status],
       ["evidence_report", required.evidenceReport],
       ["evidence_anchor", required.evidenceAnchor],
     ]) {
@@ -238,6 +376,12 @@ async function validateSupportMatrix() {
           supportMatrixFailure(`${required.id}.${field}=${JSON.stringify(expected)}`),
         );
       }
+    }
+
+    if (normalizeSupportEvidenceStatus(row.status) !== required.status) {
+      failures.push(
+        supportMatrixFailure(`${required.id}.status=${JSON.stringify(required.status)}`),
+      );
     }
 
     if (
@@ -272,7 +416,115 @@ async function validateSupportMatrix() {
     }
   }
 
+  failures.push(...supportMatrixPublicClaimProofFailures(rowsById));
+
   return failures;
+}
+
+async function validateSupportMatrixPublicFragments(publicFragments = []) {
+  const failures = [];
+  const violations = [];
+  let matrix;
+
+  try {
+    matrix = JSON.parse(await readUtf8(SUPPORT_MATRIX_PATH));
+  } catch (error) {
+    failures.push(supportMatrixFailure(`readable JSON at ${repoRelative(SUPPORT_MATRIX_PATH)}`));
+    return { failures, violations };
+  }
+
+  if (!matrix || typeof matrix !== "object" || Array.isArray(matrix)) {
+    failures.push(supportMatrixFailure("top-level support matrix object"));
+    return { failures, violations };
+  }
+
+  if (!Array.isArray(matrix.conditional_app_evidence)) {
+    failures.push(supportMatrixFailure("conditional_app_evidence array"));
+    return { failures, violations };
+  }
+
+  const rowsById = new Map();
+  for (const row of matrix.conditional_app_evidence) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) {
+      failures.push(supportMatrixFailure("each conditional_app_evidence row is an object"));
+      continue;
+    }
+    if (typeof row.id !== "string" || row.id.length === 0) {
+      failures.push(supportMatrixFailure("each conditional_app_evidence row has a non-empty id"));
+      continue;
+    }
+    if (rowsById.has(row.id)) {
+      failures.push(supportMatrixFailure(`unique conditional_app_evidence id ${row.id}`));
+      continue;
+    }
+    rowsById.set(row.id, row);
+  }
+
+  for (const required of REQUIRED_CONDITIONAL_APP_EVIDENCE) {
+    const row = rowsById.get(required.id);
+    if (!row) {
+      failures.push(supportMatrixFailure(`row ${required.id}`));
+      continue;
+    }
+
+    for (const [field, expected] of [
+      ["service", required.service],
+      ["claim_scope", required.claimScope],
+      ["evidence_report", required.evidenceReport],
+      ["evidence_anchor", required.evidenceAnchor],
+    ]) {
+      if (row[field] !== expected) {
+        failures.push(
+          supportMatrixFailure(`${required.id}.${field}=${JSON.stringify(expected)}`),
+        );
+      }
+    }
+
+    if (normalizeSupportEvidenceStatus(row.status) !== required.status) {
+      failures.push(
+        supportMatrixFailure(`${required.id}.status=${JSON.stringify(required.status)}`),
+      );
+    }
+
+    if (
+      typeof row.support_boundary !== "string" ||
+      !required.requiredBoundary.test(row.support_boundary)
+    ) {
+      failures.push(supportMatrixFailure(`${required.id}.support_boundary matches verdict scope`));
+    }
+
+    if (
+      required.id === "outlook_osl_mail" &&
+      /\bchat\b/i.test(`${row.surface ?? ""} ${row.support_boundary ?? ""}`) &&
+      !/\bnot Outlook chat support\b/i.test(`${row.surface ?? ""} ${row.support_boundary ?? ""}`)
+    ) {
+      failures.push(supportMatrixFailure("Outlook row refuses chat-support framing"));
+    }
+
+    let report;
+    try {
+      report = await readUtf8(path.join(REPO_ROOT, required.evidenceReport));
+    } catch (error) {
+      failures.push(supportMatrixFailure(`source report ${required.evidenceReport}`));
+      continue;
+    }
+
+    if (!new RegExp(`^Anchor: ${required.evidenceAnchor}$`, "m").test(report)) {
+      failures.push(supportMatrixFailure(`${required.id} source report anchor`));
+    }
+
+    if (!required.reportVerdict.test(report)) {
+      failures.push(supportMatrixFailure(`${required.id} source report verdict`));
+    }
+  }
+
+  failures.push(...supportMatrixPublicClaimProofFailures(rowsById));
+
+  for (const fragment of publicFragments) {
+    violations.push(...supportMatrixClaimViolations(fragment.file, fragment, rowsById));
+  }
+
+  return { failures, violations };
 }
 
 async function validateVersionedPublicSupportMatrix(matrix) {
@@ -1899,13 +2151,12 @@ async function scanRepository() {
   }
   const publicClaimServices = supportMatrixPublicClaimServices(supportMatrix);
   const supportMatrixFailures = await validateSupportMatrix();
-  const versionedPublicSupportMatrixFailures = await validateVersionedPublicSupportMatrix(supportMatrix);
   const rows = [];
   const allViolations = [];
+  const publicFragments = [];
   const floorFailures = [
     ...bannedPhraseInputFailures(bannedPhrases),
     ...supportMatrixFailures,
-    ...versionedPublicSupportMatrixFailures,
   ];
   let tsStringCount = 0;
   let rustStringCount = 0;
@@ -1919,6 +2170,7 @@ async function scanRepository() {
     const violations = analyseFragments(file, fragments, bannedPhrases, publicClaimServices);
 
     tsStringCount += fragments.length;
+    publicFragments.push(...fragments.map((fragment) => ({ ...fragment, file })));
     allViolations.push(...violations);
     rows.push({
       file,
@@ -1935,6 +2187,7 @@ async function scanRepository() {
     const violations = analyseFragments(file, fragments, bannedPhrases, publicClaimServices);
 
     rustStringCount += fragments.length;
+    publicFragments.push(...fragments.map((fragment) => ({ ...fragment, file })));
     allViolations.push(...violations);
     rows.push({
       file,
@@ -1955,6 +2208,7 @@ async function scanRepository() {
 
   const readmeFragments = readmeText ? [{ text: readmeText, line: 1 }] : [];
   const readmeViolations = analyseFragments("README.md", readmeFragments, bannedPhrases, publicClaimServices);
+  publicFragments.push(...readmeFragments.map((fragment) => ({ ...fragment, file: "README.md" })));
   allViolations.push(...readmeViolations);
   rows.push({
     file: "README.md",
@@ -1984,6 +2238,16 @@ async function scanRepository() {
       expected: MIN_README_BYTES,
       actual: readmeBytes,
     });
+  }
+
+  const supportMatrixResult = await validateSupportMatrixPublicFragments(publicFragments);
+  floorFailures.push(...supportMatrixResult.failures);
+  allViolations.push(...supportMatrixResult.violations);
+  for (const violation of supportMatrixResult.violations) {
+    const row = rows.find((candidate) => candidate.file === violation.file);
+    if (row) {
+      row.violations += 1;
+    }
   }
 
   rows.sort((a, b) => a.file.localeCompare(b.file));
