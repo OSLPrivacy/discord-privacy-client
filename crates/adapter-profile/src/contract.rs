@@ -587,6 +587,40 @@ mod tests {
         required_contract_check_outcomes()
     }
 
+    fn collect_json_keys<'a>(value: &'a Value, keys: &mut Vec<&'a str>) {
+        match value {
+            Value::Object(object) => {
+                for (key, child) in object {
+                    keys.push(key.as_str());
+                    collect_json_keys(child, keys);
+                }
+            }
+            Value::Array(values) => {
+                for child in values {
+                    collect_json_keys(child, keys);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn collect_json_strings<'a>(value: &'a Value, strings: &mut Vec<&'a str>) {
+        match value {
+            Value::String(string) => strings.push(string.as_str()),
+            Value::Object(object) => {
+                for child in object.values() {
+                    collect_json_strings(child, strings);
+                }
+            }
+            Value::Array(values) => {
+                for child in values {
+                    collect_json_strings(child, strings);
+                }
+            }
+            _ => {}
+        }
+    }
+
     #[test]
     fn contract() {
         let verified = SelfTestReport::from_checks(required_checks()).unwrap();
@@ -809,6 +843,49 @@ mod tests {
                     ("binding", "scopeBinding"),
                     ("authority", "hostAuthority"),
                 ]
+            );
+
+            let mut keys = Vec::new();
+            collect_json_keys(&json, &mut keys);
+            for forbidden in [
+                "hostText",
+                "accountIdentifier",
+                "accountHandle",
+                "credential",
+                "localPath",
+                "profileName",
+                "telemetry",
+            ] {
+                assert!(
+                    !keys.contains(&forbidden),
+                    "self-test report carried telemetry-like key {forbidden}"
+                );
+            }
+
+            let mut strings = Vec::new();
+            collect_json_strings(&json, &mut strings);
+            let allowed_strings = [
+                "verified",
+                "composer",
+                "transcript",
+                "rowText",
+                "writeProof",
+                "consent",
+                "binding",
+                "authority",
+                "composerDiscovery",
+                "transcriptDiscovery",
+                "rowTextExtraction",
+                "writePrefixProof",
+                "operatorConsent",
+                "scopeBinding",
+                "hostAuthority",
+            ];
+            assert!(
+                strings
+                    .iter()
+                    .all(|string| allowed_strings.contains(string)),
+                "self-test report carried a non-contract string: {strings:?}"
             );
         }
     }
