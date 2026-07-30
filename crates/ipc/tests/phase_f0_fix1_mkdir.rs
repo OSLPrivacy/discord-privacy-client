@@ -64,6 +64,10 @@ fn persist_to_nonexistent_dir_records_persist_error() {
 
 #[test]
 fn persist_succeeds_after_create_dir_all_simulates_bootstrap_fix() {
+    let _base = tempfile::TempDir::new().unwrap();
+    keystore::set_base_dir_override(Some(_base.path().to_path_buf()));
+    ipc::main_password::set_file_storage_key(None);
+
     // Post-fix repro: bootstrap calls create_dir_all on the config
     // dir before any persist fires. Writing the same file with the
     // dir present succeeds and the error sentinel stays clean.
