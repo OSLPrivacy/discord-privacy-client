@@ -316,6 +316,28 @@ mod tests {
     }
 
     #[test]
+    fn keystore_backed_anchor_load_decodes_current_backend_record() {
+        let backend = InMemoryKeyring::default();
+        let anchor = anchor_on(backend.clone());
+        let store_id = [0x52; 32];
+        let user = entry_user(store_id);
+
+        backend
+            .set("test-service", &user, &encode_record(&record(4, 0x44)))
+            .unwrap();
+        assert_eq!(anchor.load(store_id).unwrap(), Some(record(4, 0x44)));
+
+        backend
+            .set("test-service", &user, &encode_record(&record(9, 0x99)))
+            .unwrap();
+        assert_eq!(
+            anchor.load(store_id).unwrap(),
+            Some(record(9, 0x99)),
+            "load must decode the currently recorded generation and digest, not a cached value"
+        );
+    }
+
+    #[test]
     fn stale_expected_generation_is_refused() {
         let anchor = anchor_on(InMemoryKeyring::default());
         let store_id = [9u8; 32];
