@@ -1,9 +1,31 @@
+/// Extract the block between two markers, matching each marker as a WHOLE LINE.
+///
+/// A plain `find` matched the wrong block: the script lists step arguments as
+/// `            'launch' { @('exeSha256','timeoutSeconds') }` at a deeper indent,
+/// and an 8-space marker matches inside that 12-space line (8 of its spaces
+/// followed by the quote). The section therefore covered the argument list rather
+/// than the implementation, and every assertion about the launch step was checking
+/// a few characters that could not contain them.
 fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
-    let start_index = source.find(start).expect("source section start exists");
-    let end_index = source[start_index..]
-        .find(end)
-        .map(|offset| start_index + offset)
-        .expect("source section end exists");
+    // Anchor to the START of a line. Markers are line prefixes, not whole lines, so
+    // requiring a trailing newline breaks callers like "function Process-RunDirectory";
+    // but an unanchored find matches a DEEPER-indented line (an 8-space marker matches
+    // inside a 12-space one), which is what selected the wrong block.
+    let at_line_start = |marker: &str, from: usize| -> Option<usize> {
+        // Prefer a match at the start of a line: an unanchored find lets an
+        // 8-space marker match INSIDE a 12-space line, which selected the step
+        // argument list instead of the launch implementation and left every
+        // assertion inspecting a few characters that could not contain them.
+        // Some markers are written without their real indentation, so fall back
+        // to a plain search when no line-anchored match exists.
+        let needle = format!("\n{marker}");
+        source[from..]
+            .find(&needle)
+            .map(|offset| from + offset + 1)
+            .or_else(|| source[from..].find(marker).map(|offset| from + offset))
+    };
+    let start_index = at_line_start(start, 0).expect("source section start exists");
+    let end_index = at_line_start(end, start_index).expect("source section end exists");
     &source[start_index..end_index]
 }
 
