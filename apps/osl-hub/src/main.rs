@@ -1075,6 +1075,13 @@ fn require_review_ui_identity_binding(
         .cloned()
         .ok_or_else(|| "Unlock an OSL identity before starting AutoScrub".to_owned())?;
     let verifier = IdentityBindingVerifier::new(PinnedOwner::from_identity(&identity));
+    require_review_ui_identity_binding_from_verifier(&verifier, request)
+}
+
+fn require_review_ui_identity_binding_from_verifier(
+    verifier: &IdentityBindingVerifier,
+    request: &AutoScrubReviewedRunRequest,
+) -> Result<(), String> {
     let account = AccountRef {
         service_id: service_kind_id(request.service_id).to_owned(),
         account_id: request.account_id.clone(),
@@ -9467,6 +9474,7 @@ mod native_visible_row_qa_command_tests {
 #[cfg(test)]
 mod tauri_registration_surface_tests {
     use super::*;
+    use osl_privacy_hub::identity_binding_verifier::BindingEvidence;
     use std::cell::RefCell;
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -9904,6 +9912,40 @@ mod tauri_registration_surface_tests {
             ["checked-host", "attended-binding"],
             "absence of attended binding must refuse before scan or post-scan success"
         );
+
+        let stale_context_events = RefCell::new(Vec::<&'static str>::new());
+        let stale_context = checked_hosted_session_scan_flow(
+            || {
+                stale_context_events.borrow_mut().push("checked-host");
+                Ok(test_checked_host())
+            },
+            |_checked| {
+                stale_context_events.borrow_mut().push("attended-binding");
+                Ok(vec!["operator".to_owned()])
+            },
+            |_checked, _operator_names| {
+                stale_context_events.borrow_mut().push("native-scan");
+                Ok(test_deletion_scan())
+            },
+            |_checked| {
+                stale_context_events.borrow_mut().push("context-recheck");
+                Err("stale native context".to_owned())
+            },
+        );
+        match stale_context {
+            Err(error) => assert_eq!(error, "stale native context"),
+            Ok(_) => panic!("stale native context must refuse the hosted scan result"),
+        }
+        assert_eq!(
+            stale_context_events.into_inner(),
+            [
+                "checked-host",
+                "attended-binding",
+                "native-scan",
+                "context-recheck"
+            ],
+            "a stale context after native scan must refuse before the result is returned"
+        );
     }
 
     #[test]
@@ -9929,6 +9971,66 @@ mod tauri_registration_surface_tests {
             reviewed_item_count: 1,
             consent: autoscrub_run::AutoScrubRunConsent::ReviewedBatchOnly,
         };
+        let owner_identity = state
+            .osl
+            .identity
+            .lock()
+            .expect("identity lock")
+            .as_ref()
+            .cloned()
+            .expect("test identity installed");
+        let mut verifier =
+            IdentityBindingVerifier::new(PinnedOwner::from_identity(&owner_identity));
+        assert_eq!(
+            require_review_ui_identity_binding_from_verifier(&verifier, &request),
+            Err("A reviewed identity binding is required before starting AutoScrub".to_owned()),
+            "absence of an exact review binding must refuse before the reviewed run opens"
+        );
+        verifier
+            .bind(
+                AccountRef {
+                    service_id: "discord".to_owned(),
+                    account_id: "acct-1".to_owned(),
+                },
+                BindingScope::ScrubIndex,
+                BindingEvidence::CallerAttested,
+            )
+            .expect("index binding can be recorded");
+        assert_eq!(
+            require_review_ui_identity_binding_from_verifier(&verifier, &request),
+            Err("A reviewed identity binding is required before starting AutoScrub".to_owned()),
+            "a non-destructive review binding must not authorize a destructive AutoScrub run"
+        );
+        verifier
+            .bind(
+                AccountRef {
+                    service_id: "discord".to_owned(),
+                    account_id: "acct-2".to_owned(),
+                },
+                BindingScope::ScrubDeletion,
+                BindingEvidence::CallerAttested,
+            )
+            .expect("other-account deletion binding can be recorded");
+        assert_eq!(
+            require_review_ui_identity_binding_from_verifier(&verifier, &request),
+            Err("A reviewed identity binding is required before starting AutoScrub".to_owned()),
+            "a deletion binding for another account must not authorize this reviewed run"
+        );
+        verifier
+            .bind(
+                AccountRef {
+                    service_id: "discord".to_owned(),
+                    account_id: "acct-1".to_owned(),
+                },
+                BindingScope::ScrubDeletion,
+                BindingEvidence::CallerAttested,
+            )
+            .expect("exact deletion binding can be recorded");
+        assert_eq!(
+            require_review_ui_identity_binding_from_verifier(&verifier, &request),
+            Ok(()),
+            "the review UI production helper must accept only the exact ScrubDeletion binding"
+        );
         match start_autoscrub_reviewed_run_inner(&state, request) {
             Err(error) => assert_eq!(
                 error, "A reviewed identity binding is required before starting AutoScrub",

@@ -257,6 +257,37 @@ fn a_restored_session_cannot_reuse_a_consumed_message_key() {
 
     let mut restored = Session::import_state(&after).expect("import");
     assert_eq!(restored.decrypt(&w, &mut rng), Err(Error::AuthFailed));
+
+    let (mut alice, mut bob, mut rng) = established_pair(313);
+    let first = alice.encrypt(0, b"first skipped", &mut rng).expect("first");
+    let second = alice
+        .encrypt(0, b"second skipped", &mut rng)
+        .expect("second");
+    let third = alice.encrypt(0, b"third skipped", &mut rng).expect("third");
+    assert_eq!(
+        bob.decrypt(&third, &mut rng)
+            .expect("derive skipped keys")
+            .plaintext,
+        b"third skipped"
+    );
+    assert_eq!(
+        bob.decrypt(&first, &mut rng)
+            .expect("consume skipped key")
+            .plaintext,
+        b"first skipped"
+    );
+
+    let after_skipped_use = bob.export_state().expect("export skipped state");
+    let mut restored =
+        Session::import_state(&after_skipped_use).expect("import skipped state");
+    assert_eq!(restored.decrypt(&first, &mut rng), Err(Error::AuthFailed));
+    assert_eq!(
+        restored
+            .decrypt(&second, &mut rng)
+            .expect("unconsumed skipped key must survive restart")
+            .plaintext,
+        b"second skipped"
+    );
 }
 
 #[test]

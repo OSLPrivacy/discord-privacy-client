@@ -1142,4 +1142,77 @@ mod tests {
         assert_eq!(h.alice.session_id(), h.bob_ref().session_id());
         assert_ne!(h.alice.session_id(), [0u8; 16]);
     }
+
+    #[test]
+    fn state_export_import_survives_an_interleaved_run() {
+        let (mut alice, mut bob, mut rng) = established_pair(44);
+
+        let a0 = alice.encrypt(0, b"alice gap 0", &mut rng).expect("a0");
+        let a1 = alice.encrypt(0, b"alice gap 1", &mut rng).expect("a1");
+        let a2 = alice.encrypt(0, b"alice gap 2", &mut rng).expect("a2");
+        let a3 = alice.encrypt(0, b"alice gap 3", &mut rng).expect("a3");
+
+        assert_eq!(
+            bob.decrypt(&a3, &mut rng)
+                .expect("deliver newest")
+                .plaintext,
+            b"alice gap 3"
+        );
+        assert_eq!(bob.skipped_key_count(), 3);
+
+        let interleaved = bob
+            .encrypt(7, b"bob interleaved reply", &mut rng)
+            .expect("bob reply");
+        let opened = alice
+            .decrypt(&interleaved, &mut rng)
+            .expect("alice receives interleaved reply");
+        assert_eq!(opened.msg_type, 7);
+        assert_eq!(opened.plaintext, b"bob interleaved reply");
+
+        let alice_state = alice.export_state().expect("export alice");
+        let bob_state = bob.export_state().expect("export bob");
+        alice = Session::import_state(&alice_state).expect("import alice");
+        bob = Session::import_state(&bob_state).expect("import bob");
+        assert_eq!(bob.skipped_key_count(), 3);
+
+        assert_eq!(
+            bob.decrypt(&a1, &mut rng)
+                .expect("deliver skipped 1")
+                .plaintext,
+            b"alice gap 1"
+        );
+        assert!(
+            bob.decrypt(&a1, &mut rng).is_err(),
+            "a restored skipped key must be consumed exactly once"
+        );
+        assert_eq!(
+            bob.decrypt(&a0, &mut rng)
+                .expect("deliver skipped 0")
+                .plaintext,
+            b"alice gap 0"
+        );
+        assert_eq!(
+            bob.decrypt(&a2, &mut rng)
+                .expect("deliver skipped 2")
+                .plaintext,
+            b"alice gap 2"
+        );
+        assert_eq!(bob.skipped_key_count(), 0);
+
+        let after = alice
+            .encrypt(9, b"alice after restored gaps", &mut rng)
+            .expect("alice after restore");
+        let opened = bob.decrypt(&after, &mut rng).expect("bob after restore");
+        assert_eq!(opened.msg_type, 9);
+        assert_eq!(opened.plaintext, b"alice after restored gaps");
+
+        let bob_after = bob
+            .encrypt(10, b"bob after restored gaps", &mut rng)
+            .expect("bob after restore");
+        let opened = alice
+            .decrypt(&bob_after, &mut rng)
+            .expect("alice after restore");
+        assert_eq!(opened.msg_type, 10);
+        assert_eq!(opened.plaintext, b"bob after restored gaps");
+    }
 }

@@ -60,6 +60,27 @@ PERSONAL_PATH_PATTERNS = {
 RELEASE_IDENTITY_PATH = ROOT / "docs/evidence/public-release/released-binary.json"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 GIT_OBJECT_RE = re.compile(r"^[0-9a-f]{40}$")
+RELEASE_CONTEXT_RE = re.compile(
+    r"\b(?:release|released|shipping|production|binary|build|artifact|candidate|executable|app)\b",
+    re.I,
+)
+RELEASE_TAG_RE = re.compile(r"\bv[0-9][0-9A-Za-z._-]*\b")
+HEX64_RE = re.compile(r"\b[0-9a-fA-F]{64}\b")
+BINARY_DIGEST_CONTEXT_RE = re.compile(
+    r"\b(?:binary|executable|artifact|installer|app)\b.{0,60}\b(?:sha-?256|digest|hash)\b"
+    r"|\b(?:sha-?256|digest|hash)\b.{0,60}\b(?:binary|executable|artifact|installer|app)\b",
+    re.I | re.S,
+)
+SOURCE_COMMIT_CONTEXT_RE = re.compile(
+    r"\bsource\s+commit\b.{0,60}\b(?:sha-?1|git|object|hash)?\b"
+    r"|\b(?:sha-?1|git|object|hash)\b.{0,60}\bsource\s+commit\b",
+    re.I | re.S,
+)
+SOURCE_TREE_CONTEXT_RE = re.compile(
+    r"\bsource\s+tree\b.{0,60}\b(?:sha-?1|git|object|hash)?\b"
+    r"|\b(?:sha-?1|git|object|hash)\b.{0,60}\bsource\s+tree\b",
+    re.I | re.S,
+)
 PUBLIC_CLAIM_SURFACES = {
     "README.md",
     "apps/osl-hub-ui/README.md",
@@ -247,9 +268,72 @@ def line_at(text: str, offset: int) -> int:
     return text.count("\n", 0, offset) + 1
 
 
+def claim_sentences(text: str) -> list[tuple[int, str]]:
+    spans: list[tuple[int, str]] = []
+    cursor = 0
+    for line in text.splitlines(keepends=True):
+        if line.strip():
+            spans.append((cursor, line))
+        cursor += len(line)
+    if not text.endswith(("\n", "\r")):
+        tail_start = cursor
+        if tail_start < len(text) and text[tail_start:].strip():
+            spans.append((tail_start, text[tail_start:]))
+    return spans
+
+
+def release_identity_mismatch_violations(
+    text: str, release_identity: dict[str, Any] | None
+) -> list[tuple[int, str]]:
+    if release_identity is None or release_identity.get("claimProfile") != "release-proven":
+        return []
+
+    release_tag = release_identity["releaseTag"]
+    binary_sha = release_identity["binarySha256"].lower()
+    source_commit = release_identity["sourceCommit"].lower()
+    source_tree = release_identity["sourceTree"].lower()
+    allowed_identity_hashes = {binary_sha, source_commit, source_tree}
+    violations: list[tuple[int, str]] = []
+
+    for offset, sentence in claim_sentences(text):
+        if not RELEASE_CONTEXT_RE.search(sentence):
+            continue
+        for match in RELEASE_TAG_RE.finditer(sentence):
+            if match.group(0) != release_tag:
+                violations.append(
+                    (
+                        line_at(text, offset + match.start()),
+                        "release claim references a different released binary identity",
+                    )
+                )
+        for match in HEX64_RE.finditer(sentence):
+            digest = match.group(0).lower()
+            context = sentence[
+                max(0, match.start() - 80) : min(len(sentence), match.end() + 80)
+            ]
+            expected_hashes: set[str] = set()
+            if BINARY_DIGEST_CONTEXT_RE.search(context):
+                expected_hashes.add(binary_sha)
+            if SOURCE_COMMIT_CONTEXT_RE.search(context):
+                expected_hashes.add(source_commit)
+            if SOURCE_TREE_CONTEXT_RE.search(context):
+                expected_hashes.add(source_tree)
+            if not expected_hashes:
+                expected_hashes = allowed_identity_hashes
+            if digest not in expected_hashes:
+                violations.append(
+                    (
+                        line_at(text, offset + match.start()),
+                        "release claim references a different released binary identity",
+                    )
+                )
+    return violations
+
+
 def release_claim_violations(text: str, release_identity: dict[str, Any] | None) -> list[tuple[int, str]]:
     violations: list[tuple[int, str]] = []
     release_claims_allowed = release_identity is not None and release_identity.get("claimProfile") == "release-proven"
+    violations.extend(release_identity_mismatch_violations(text, release_identity))
     for label, pattern in RELEASE_BINARY_REQUIRED_CLAIMS.items():
         for match in pattern.finditer(text):
             start = match.start()
@@ -301,6 +385,25 @@ def audit_public_release_claims_self_test(errors: list[str]) -> None:
     bad_release = "This release build proves encrypted messages send through Discord."
     bad_stale = "It works for direct messages, group chats, and server channels, including images and edits."
     honest_limit = "Encrypted send is verified on QA builds, not yet on the release build."
+    exact_release_test = "Reconcile public docs and site claims against the exact released binary."
+    release_identity = {
+        "schemaVersion": 1,
+        "releaseTag": "v1.2.3",
+        "sourceCommit": "c" * 40,
+        "sourceTree": "d" * 40,
+        "binarySha256": "a" * 64,
+        "binarySizeBytes": 123,
+        "claimProfile": "release-proven",
+    }
+    good_exact = (
+        f"Release v1.2.3 binary SHA-256 {'a' * 64} is the release-proven binary."
+    )
+    bad_tag = (
+        f"Release v9.9.9 binary SHA-256 {'a' * 64} is the release-proven binary."
+    )
+    bad_hash = (
+        f"Release v1.2.3 binary SHA-256 {'b' * 64} is the release-proven binary."
+    )
     release_identity = None
     if not release_claim_violations(bad_release, release_identity):
         errors.append("internal release-claim test did not catch unbound release proof")
@@ -308,6 +411,20 @@ def audit_public_release_claims_self_test(errors: list[str]) -> None:
         errors.append("internal release-claim test did not catch stale shipped-feature wording")
     if release_claim_violations(honest_limit, release_identity):
         errors.append("internal release-claim test rejected honest release limitation")
+    release_identity = {
+        "schemaVersion": 1,
+        "releaseTag": "v1.2.3",
+        "sourceCommit": "c" * 40,
+        "sourceTree": "d" * 40,
+        "binarySha256": "a" * 64,
+        "binarySizeBytes": 123,
+        "claimProfile": "release-proven",
+    }
+    if release_claim_violations(good_exact, release_identity):
+        errors.append(f"{exact_release_test}: exact release identity was rejected")
+    for bad in (bad_tag, bad_hash):
+        if not release_identity_mismatch_violations(bad, release_identity):
+            errors.append(f"{exact_release_test}: stale release identity was not caught")
 
 
 def main() -> int:
