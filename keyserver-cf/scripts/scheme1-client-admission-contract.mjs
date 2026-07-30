@@ -51,9 +51,26 @@ export const SCHEME1_CLIENT_MINIMUM_TEST_COUNT =
   RESTART_CASE_IDS.length +
   DOWNGRADE_CASE_IDS.length;
 
-// Enrollment is a separately reviewed source change. Caller-authored
-// evidence is not authority while this committed registry remains empty.
-export const TRUSTED_SCHEME1_CLIENT_EVIDENCE_PRODUCERS = Object.freeze({});
+export const SCHEME1_FROZEN_RUST_CLIENT_PRODUCER_KEY_ID =
+  "osl-rust-client-scheme1-frozen-20260727";
+
+function freezeTrustedProducers(producers) {
+  for (const producer of Object.values(producers)) {
+    Object.freeze(producer);
+  }
+  return Object.freeze(producers);
+}
+
+export const TRUSTED_SCHEME1_CLIENT_EVIDENCE_PRODUCERS =
+  freezeTrustedProducers({
+    [SCHEME1_FROZEN_RUST_CLIENT_PRODUCER_KEY_ID]: {
+      identity: "osl://scheme1-rust-client/frozen-shipping/2026-07-27",
+      minimum_sequence: 1,
+      public_key_spki_b64:
+        "MCowBQYDK2VwAyEArqLJqLipE68NG6DRgdUTUlPduDx4S/b0rVkHER2tH6s=",
+      key_epoch: 1,
+    },
+  });
 
 export const SCHEME1_FROZEN_CONTRACT_SOURCE_PATHS = Object.freeze([
   "keyserver-cf/migrations/0033_canonical_identity_rollout_authority.sql",

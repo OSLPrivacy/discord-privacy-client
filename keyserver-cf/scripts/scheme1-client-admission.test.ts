@@ -1,5 +1,6 @@
 import {
   createHash,
+  createPublicKey,
   generateKeyPairSync,
   sign,
 } from "node:crypto";
@@ -28,6 +29,7 @@ import { repetitiveClientEvidenceMutations } from
   "./scheme1-client-evidence-test-fixture.mjs";
 import {
   createScheme1ClientDeploymentPreflight,
+  SCHEME1_FROZEN_RUST_CLIENT_PRODUCER_KEY_ID,
   SCHEME1_CLIENT_EVIDENCE_DOMAIN,
   SCHEME1_CLIENT_EVIDENCE_ENVELOPE_FORMAT,
   SCHEME1_CLIENT_MINIMUM_TEST_COUNT,
@@ -36,6 +38,7 @@ import {
   SCHEME1_FROZEN_CONTRACT_SOURCE_PATHS,
   SCHEME1_FROZEN_SERVER_CONTRACT,
   SCHEME1_RUST_CLIENT_CONTRACT_BINDING,
+  TRUSTED_SCHEME1_CLIENT_EVIDENCE_PRODUCERS,
   validateFrozenScheme1Fixture,
   validateScheme1ClientEvidenceEnvelope,
   validateScheme1ClientPreflightReceipt,
@@ -306,7 +309,32 @@ describe("scheme-1 Rust-client deployment admission", () => {
     },
   );
 
-  it("fails closed while the committed trusted Rust-client producer registry is empty", async () => {
+  it("enrolls the frozen shipping Rust client producer in the committed registry", () => {
+    const entries = Object.entries(TRUSTED_SCHEME1_CLIENT_EVIDENCE_PRODUCERS);
+    expect(entries).toHaveLength(1);
+    const [keyId, producer] = entries[0];
+    expect(keyId).toBe(SCHEME1_FROZEN_RUST_CLIENT_PRODUCER_KEY_ID);
+    expect(keyId).not.toMatch(/test|fixture|localhost|example/i);
+    expect(producer).toEqual({
+      identity: "osl://scheme1-rust-client/frozen-shipping/2026-07-27",
+      minimum_sequence: 1,
+      public_key_spki_b64:
+        "MCowBQYDK2VwAyEArqLJqLipE68NG6DRgdUTUlPduDx4S/b0rVkHER2tH6s=",
+      key_epoch: 1,
+    });
+    expect(producer.identity).not.toMatch(/test|fixture|localhost|example/i);
+    const publicKey = createPublicKey({
+      key: Buffer.from(producer.public_key_spki_b64, "base64"),
+      format: "der",
+      type: "spki",
+    });
+    expect(publicKey.asymmetricKeyType).toBe("ed25519");
+    expect(
+      publicKey.export({ format: "der", type: "spki" }).toString("base64"),
+    ).toBe(producer.public_key_spki_b64);
+  });
+
+  it("refuses untrusted Rust-client evidence by default", async () => {
     const files = await sourceValues();
     const fixture = await frozenFixtureBytes();
     const frozenFiles = await frozenSourceValues();
