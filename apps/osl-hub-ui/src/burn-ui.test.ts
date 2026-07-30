@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { BurnGuaranteeCopy } from "./two-step-burn";
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
@@ -13,6 +14,39 @@ function functionSource(name: string, nextName: string): string {
 }
 
 describe("truthful Burn UI", () => {
+  it("defines the five-part Burn guarantee copy contract without unsend claims", () => {
+    expect(BurnGuaranteeCopy.summary).toBe("Burn cleans up. It does not un-send.");
+    expect(BurnGuaranteeCopy.items.map((item) => item.id)).toEqual([
+      "local_osl_copy",
+      "osl_server_copy",
+      "other_person_app",
+      "connected_service_message",
+      "already_opened_copies",
+    ]);
+    expect(new Set(BurnGuaranteeCopy.items.map((item) => item.title)).size).toBe(5);
+    expect(BurnGuaranteeCopy.items.map((item) => item.state)).toEqual([
+      "available",
+      "request_only",
+      "unavailable",
+      "request_only",
+      "not_possible",
+    ]);
+
+    const copy = [
+      BurnGuaranteeCopy.summary,
+      BurnGuaranteeCopy.intro,
+      BurnGuaranteeCopy.limit,
+      ...BurnGuaranteeCopy.items.flatMap((item) => [item.title, item.body]),
+    ].join("\n");
+    expect(copy).toContain("one success does not prove the others");
+    expect(copy).toContain("The service decides.");
+    expect(copy).toContain("That workflow is unavailable in this build.");
+    expect(copy).toContain("cannot take back access someone already had");
+    expect(copy).not.toMatch(/cryptographic burn|disappears forever|permanently undecryptable|gone for good/i);
+    expect(copy).not.toMatch(/keyservers?|ratchets?|receipts?|browser profiles?|provider adapters?/i);
+    expect(copy).not.toMatch(/\b\d+%\b/);
+  });
+
   it("offers exactly the requested scopes and gates app-wide burn on proven coverage", () => {
     const dialog = functionSource("burnDialogMarkup", "ownedConfirmationMarkup");
     expect(dialog).toContain('title: "This chat"');
