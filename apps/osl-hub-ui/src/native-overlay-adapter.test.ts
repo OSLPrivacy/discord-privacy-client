@@ -99,16 +99,56 @@ describe("native overlay narrow adapter", () => {
   });
 
   it("accepts only a fixed-mode bounded aggregate carrier request and truthful receipt", async () => {
-    const receipt = { placed: true, enterSent: true, status: "sent", mode: "compatibility", compatibilityDelayMs: 200 };
-    mocks.invoke.mockResolvedValueOnce(receipt);
+    const nativeReceipt = { placed: true, enterSent: true, status: "sent", mode: "compatibility", compatibilityDelayMs: 200 } as const;
+    const receipt = { ...nativeReceipt, sendOutcome: "sent", automaticRetryAfterUncertain: false } as const;
+    mocks.invoke.mockResolvedValueOnce(nativeReceipt);
     await expect(sendNativeDiscordOverlayCarrier("compatibility", 5)).resolves.toEqual(receipt);
     expect(mocks.invoke).toHaveBeenCalledWith("send_native_discord_overlay_carrier", {
       mode: "compatibility",
       charsPerSecond: 5,
     });
-    mocks.invoke.mockResolvedValueOnce({ ...receipt, enterSent: false });
+    mocks.invoke.mockResolvedValueOnce({ ...nativeReceipt, enterSent: false });
     await expect(sendNativeDiscordOverlayCarrier("compatibility", 5)).resolves.toBeNull();
     await expect(sendNativeDiscordOverlayCarrier("atomic", 121)).resolves.toBeNull();
+  });
+
+  it("derives the send-proof tri-state from native receipt evidence and never backend text", async () => {
+    const notSent = {
+      placed: true,
+      enterSent: false,
+      status: "carrierUnconfirmed",
+      mode: "atomic",
+      compatibilityDelayMs: 167,
+      sendOutcome: "sent",
+      automaticRetryAfterUncertain: true,
+      uiStatusText: "Sent privately through OSL.",
+    };
+    const uncertain = {
+      ...notSent,
+      enterSent: true,
+    };
+    mocks.invoke
+      .mockResolvedValueOnce(notSent)
+      .mockResolvedValueOnce(uncertain);
+
+    await expect(sendNativeDiscordOverlayCarrier("atomic", 6)).resolves.toEqual({
+      placed: true,
+      enterSent: false,
+      status: "carrierUnconfirmed",
+      mode: "atomic",
+      compatibilityDelayMs: 167,
+      sendOutcome: "notSent",
+      automaticRetryAfterUncertain: false,
+    });
+    await expect(sendNativeDiscordOverlayCarrier("atomic", 6)).resolves.toEqual({
+      placed: true,
+      enterSent: true,
+      status: "carrierUnconfirmed",
+      mode: "atomic",
+      compatibilityDelayMs: 167,
+      sendOutcome: "deliveryUncertain",
+      automaticRetryAfterUncertain: false,
+    });
   });
 
   it("accepts a committed QA result and parses its exact carrier-row binding", async () => {
@@ -120,13 +160,14 @@ describe("native overlay narrow adapter", () => {
       viewOnce: false,
       deliveredToOslInbox: true,
     };
-    const carrier = {
+    const nativeCarrier = {
       placed: true,
       enterSent: true,
       status: "sent",
       mode: "atomic",
       compatibilityDelayMs: 167,
-    };
+    } as const;
+    const carrier = { ...nativeCarrier, sendOutcome: "sent", automaticRetryAfterUncertain: false } as const;
     const visibleCarrierRow = {
       messageId: prepared.messageId,
       nativeLocatorSha256: "1".repeat(64),
@@ -145,7 +186,7 @@ describe("native overlay narrow adapter", () => {
       zoom: 1,
       density: 1.25,
     };
-    mocks.invoke.mockResolvedValueOnce({ prepared, carrier, visibleCarrierRow });
+    mocks.invoke.mockResolvedValueOnce({ prepared, carrier: nativeCarrier, visibleCarrierRow });
     await expect(
       sendNativeDiscordQaAtomicText("hello", false, "atomic", 6),
     ).resolves.toEqual({ prepared, carrier, visibleCarrierRow });
@@ -159,7 +200,7 @@ describe("native overlay narrow adapter", () => {
     mocks.invoke.mockResolvedValueOnce({
       prepared,
       carrier: {
-        ...carrier,
+        ...nativeCarrier,
         placed: false,
         enterSent: false,
         status: "contextChanged",
@@ -174,11 +215,12 @@ describe("native overlay narrow adapter", () => {
         placed: false,
         enterSent: false,
         status: "contextChanged",
+        sendOutcome: "notSent",
       },
     });
     mocks.invoke.mockResolvedValueOnce({
       prepared,
-      carrier,
+      carrier: nativeCarrier,
       visibleCarrierRow: { ...visibleCarrierRow, plaintext: "secret" },
     });
     await expect(
@@ -188,9 +230,10 @@ describe("native overlay narrow adapter", () => {
   });
 
   it("passes only bounded presentation metrics for shape-matched cover rows", async () => {
-    const receipt = { placed: true, enterSent: true, status: "sent", mode: "atomic", compatibilityDelayMs: 167 };
+    const nativeReceipt = { placed: true, enterSent: true, status: "sent", mode: "atomic", compatibilityDelayMs: 167 } as const;
+    const receipt = { ...nativeReceipt, sendOutcome: "sent", automaticRetryAfterUncertain: false } as const;
     const layout = { contentWidthPx: 640, averageGraphemeWidthPx: 7.8, lineHeightPx: 20, zoom: 1, density: 1, padding: "shapeMatched", rowKind: "plainText" } as const;
-    mocks.invoke.mockResolvedValueOnce(receipt);
+    mocks.invoke.mockResolvedValueOnce(nativeReceipt);
     await expect(sendNativeDiscordOverlayCarrier("atomic", 6, layout)).resolves.toEqual(receipt);
     expect(mocks.invoke).toHaveBeenCalledWith("send_native_discord_overlay_carrier", {
       mode: "atomic", charsPerSecond: 6, layout,

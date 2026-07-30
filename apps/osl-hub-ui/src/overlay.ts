@@ -3,7 +3,7 @@ import "./overlay.css";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { checkedBackendResponse, lastBackendFailure, recordBackendFailure, recordInvalidBackendResponse } from "./backend-failure";
-import { burnNativeDiscordOverlayChat, captureC4NativeReceipt, clearC4NativeReceiptEvidence, getNativeDiscordOverlayQaDiagnostic, getNativeDiscordOverlayState, listNativeDiscordOverlayAttachments, openNativeDiscordOverlayAttachment, openNativeDiscordOverlayText, prepareNativeDiscordOverlayText, revealNativeDiscordOverlayViewOnce, selectNativeDiscordOverlayAttachment, sendNativeDiscordOverlayCarrier, sendNativeDiscordQaAtomicText, sendNativeDiscordQaProbe, setNativeDiscordOverlaySecurity, type NativeDiscordCarrierLayout, type NativeDiscordCarrierMode } from "./native-overlay-adapter";
+import { burnNativeDiscordOverlayChat, captureC4NativeReceipt, clearC4NativeReceiptEvidence, getNativeDiscordOverlayQaDiagnostic, getNativeDiscordOverlayState, listNativeDiscordOverlayAttachments, openNativeDiscordOverlayAttachment, openNativeDiscordOverlayText, prepareNativeDiscordOverlayText, revealNativeDiscordOverlayViewOnce, selectNativeDiscordOverlayAttachment, sendNativeDiscordOverlayCarrier, sendNativeDiscordQaAtomicText, sendNativeDiscordQaProbe, setNativeDiscordOverlaySecurity, type NativeDiscordCarrierLayout, type NativeDiscordCarrierMode, type NativeDiscordCarrierSendOutcome } from "./native-overlay-adapter";
 import { boundedProtectedDraft, MAX_PROTECTED_DRAFT_BYTES, NATIVE_OVERLAY_TTL_OPTIONS, overlayExpiryDelayMs, PROTECTED_DRAFT_WARNING_BYTES, type NativeOverlayTtlSeconds, type NativeSurfaceCapture, utf8Length } from "./overlay-state";
 import { OverlaySendGesture, type OverlaySendMode } from "./overlay-send-gesture";
 import { CoarseTypingRate } from "./coarse-typing-rate";
@@ -1576,6 +1576,7 @@ async function sendDraft(): Promise<void> {
     discordMarkerAvailable = refreshedState.discordMarkerAvailable;
     let markerSent = false;
     let carrierStatusLabel: string | undefined;
+    let carrierSendOutcome: NativeDiscordCarrierSendOutcome = "notSent";
     let immediateCarrierRow: NativeDiscordCarrierRowBinding | undefined;
     let result: Awaited<ReturnType<typeof prepareNativeDiscordOverlayText>>;
     if (discordQaShell) {
@@ -1602,10 +1603,8 @@ async function sendDraft(): Promise<void> {
       recordDiscordQaSendStage("renderer_send_command_accepted");
       result = atomic.prepared;
       carrierStatusLabel = atomic.carrier.status;
-      markerSent = atomic.carrier.status === "sent"
-        && atomic.carrier.placed
-        && atomic.carrier.enterSent
-        && atomic.visibleCarrierRow !== undefined;
+      carrierSendOutcome = atomic.carrier.sendOutcome;
+      markerSent = carrierSendOutcome === "sent" && atomic.visibleCarrierRow !== undefined;
       immediateCarrierRow = atomic.visibleCarrierRow;
     } else {
       result = await prepareNativeDiscordOverlayText(plaintext, requestedViewOnce);
@@ -1622,7 +1621,8 @@ async function sendDraft(): Promise<void> {
           ),
         );
         carrierStatusLabel = carrier?.status;
-        markerSent = carrier?.status === "sent" && carrier.placed && carrier.enterSent;
+        carrierSendOutcome = carrier?.sendOutcome ?? "notSent";
+        markerSent = carrierSendOutcome === "sent";
       }
     }
     if (!result || result.viewOnce !== requestedViewOnce) {
@@ -1640,7 +1640,11 @@ async function sendDraft(): Promise<void> {
       // never draft text -- this composes only fixed literals plus that enum
       // value, so no draft content, plaintext, or Discord row text ever lands
       // in this message, in a log, or in any persisted state.
-      const failureNotice = carrierStatusLabel
+      const failureNotice = carrierSendOutcome === "deliveryUncertain"
+        ? carrierStatusLabel
+          ? `Delivery could not be confirmed (carrier status: ${carrierStatusLabel}). Check the conversation before trying again. Your draft is still here.`
+          : "Delivery could not be confirmed. Check the conversation before trying again. Your draft is still here."
+        : carrierStatusLabel
         ? `Discord did not receive this message (carrier status: ${carrierStatusLabel}). Your draft is still here.`
         : "Discord did not receive this message. Your draft is still here.";
       status.textContent = failureNotice;

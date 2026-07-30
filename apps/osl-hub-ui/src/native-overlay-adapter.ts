@@ -172,15 +172,18 @@ export async function prepareNativeDiscordOverlayText(plaintext: string, viewOnc
 }
 
 export type NativeDiscordCarrierMode = "atomic" | "compatibility";
+export type NativeDiscordCarrierSendOutcome = "sent" | "notSent" | "deliveryUncertain";
 export interface NativeDiscordCarrierReceipt {
   placed: boolean;
   enterSent: boolean;
   status: "sent" | "calibrationRequired" | "contextChanged" | "composerUnavailable" | "composerNotEmpty" | "placementRejected" | "enterRejected" | "carrierUnconfirmed" | "platformUnsupported";
   mode: NativeDiscordCarrierMode;
   compatibilityDelayMs: number;
+  sendOutcome: NativeDiscordCarrierSendOutcome;
+  automaticRetryAfterUncertain: false;
 }
 
-export const C4_NATIVE_RECEIPT_SCHEMA = "osl-c4-native-receipt-v1" as const;
+export const C4_NATIVE_RECEIPT_SCHEMA = "osl-c4-native-receipt-v2" as const;
 
 export interface C4NativeReceiptSurface {
   value: string;
@@ -205,6 +208,27 @@ function requireC4Attempt(attempt: number): void {
   }
 }
 
+export function nativeDiscordCarrierSendOutcome(
+  receipt: Pick<NativeDiscordCarrierReceipt, "enterSent" | "status">,
+): NativeDiscordCarrierSendOutcome {
+  if (receipt.status === "sent") return "sent";
+  return receipt.enterSent ? "deliveryUncertain" : "notSent";
+}
+
+function completeNativeDiscordCarrierReceipt(
+  receipt: Pick<NativeDiscordCarrierReceipt, "placed" | "enterSent" | "status" | "mode" | "compatibilityDelayMs">,
+): NativeDiscordCarrierReceipt {
+  return {
+    placed: receipt.placed,
+    enterSent: receipt.enterSent,
+    status: receipt.status,
+    mode: receipt.mode,
+    compatibilityDelayMs: receipt.compatibilityDelayMs,
+    sendOutcome: nativeDiscordCarrierSendOutcome(receipt),
+    automaticRetryAfterUncertain: false,
+  };
+}
+
 export function serializeC4NativeReceiptEvidence(
   attempt: number,
   receipt?: NativeDiscordCarrierReceipt,
@@ -220,16 +244,12 @@ export function serializeC4NativeReceiptEvidence(
       schema: C4_NATIVE_RECEIPT_SCHEMA,
       attempt,
       state: "returned",
-      // Copy only the fields in the existing Rust receipt. In particular this
+      // Copy the Rust receipt fields plus deterministic C4 policy fields. This
       // surface must never grow UI-derived status text or fields guessed by the
-      // renderer: native remains the sole authority for this result.
-      receipt: {
-        placed: receipt.placed,
-        enterSent: receipt.enterSent,
-        status: receipt.status,
-        mode: receipt.mode,
-        compatibilityDelayMs: receipt.compatibilityDelayMs,
-      },
+      // renderer. The send outcome below is derived only from the native status
+      // and Enter edge, and uncertainty explicitly forbids automatic retry so a
+      // proof failure cannot duplicate a real host send.
+      receipt: completeNativeDiscordCarrierReceipt(receipt),
     };
   return JSON.stringify(evidence);
 }
@@ -292,7 +312,13 @@ function parseNativeDiscordCarrierReceipt(
     || Number(record.compatibilityDelayMs) < 63 || Number(record.compatibilityDelayMs) > 500
     || (record.status === "sent" && (record.placed !== true || record.enterSent !== true))
     || (record.enterSent === true && record.placed !== true)) return null;
-  return record as unknown as NativeDiscordCarrierReceipt;
+  return completeNativeDiscordCarrierReceipt({
+    placed: record.placed,
+    enterSent: record.enterSent,
+    status: record.status as NativeDiscordCarrierReceipt["status"],
+    mode: record.mode as NativeDiscordCarrierMode,
+    compatibilityDelayMs: Number(record.compatibilityDelayMs),
+  });
 }
 
 export async function sendNativeDiscordOverlayCarrier(

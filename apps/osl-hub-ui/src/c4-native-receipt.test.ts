@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   C4_NATIVE_RECEIPT_SCHEMA,
   captureC4NativeReceipt,
+  nativeDiscordCarrierSendOutcome,
   serializeC4NativeReceiptEvidence,
   type NativeDiscordCarrierReceipt,
 } from "./native-overlay-adapter";
@@ -28,6 +29,8 @@ const sentReceipt: NativeDiscordCarrierReceipt = {
   status: "sent",
   mode: "atomic",
   compatibilityDelayMs: 167,
+  sendOutcome: "sent",
+  automaticRetryAfterUncertain: false,
 };
 
 describe("C4 native carrier receipt surface", () => {
@@ -73,6 +76,8 @@ describe("C4 native carrier receipt surface", () => {
       status: "contextChanged",
       mode: "compatibility",
       compatibilityDelayMs: 200,
+      sendOutcome: "notSent",
+      automaticRetryAfterUncertain: false,
     };
     native.resolve(refusedReceipt);
 
@@ -100,6 +105,8 @@ describe("C4 native carrier receipt surface", () => {
       status: "composerNotEmpty",
       mode: "atomic",
       compatibilityDelayMs: 63,
+      sendOutcome: "notSent",
+      automaticRetryAfterUncertain: false,
     };
     await expect(captureC4NativeReceipt(
       surface,
@@ -132,6 +139,37 @@ describe("C4 native carrier receipt surface", () => {
       },
     )).rejects.toThrow("native unavailable");
     expect(rejectedSurface.value).toBe("");
+  });
+
+  it("records the honest C4 send-proof tri-state and forbids automatic retry after uncertainty", () => {
+    const uncertainReceipt: NativeDiscordCarrierReceipt = {
+      placed: true,
+      enterSent: true,
+      status: "carrierUnconfirmed",
+      mode: "atomic",
+      compatibilityDelayMs: 167,
+      sendOutcome: "deliveryUncertain",
+      automaticRetryAfterUncertain: false,
+    };
+    const notSentReceipt: NativeDiscordCarrierReceipt = {
+      placed: true,
+      enterSent: false,
+      status: "carrierUnconfirmed",
+      mode: "atomic",
+      compatibilityDelayMs: 167,
+      sendOutcome: "notSent",
+      automaticRetryAfterUncertain: false,
+    };
+
+    expect(nativeDiscordCarrierSendOutcome(sentReceipt)).toBe("sent");
+    expect(nativeDiscordCarrierSendOutcome(notSentReceipt)).toBe("notSent");
+    expect(nativeDiscordCarrierSendOutcome(uncertainReceipt)).toBe("deliveryUncertain");
+    expect(JSON.parse(serializeC4NativeReceiptEvidence(11, uncertainReceipt))).toEqual({
+      schema: C4_NATIVE_RECEIPT_SCHEMA,
+      attempt: 11,
+      state: "returned",
+      receipt: uncertainReceipt,
+    });
   });
 
   it("binds the shipping call site to the real native result and never the QA path", () => {
