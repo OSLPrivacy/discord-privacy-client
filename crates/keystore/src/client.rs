@@ -23,17 +23,13 @@
 use crate::burn::{sign_burn, BurnScope};
 use crate::control_inbox::{
     sign_control_inbox_delete, sign_control_inbox_get, sign_control_inbox_get_filtered,
-    sign_control_inbox_post_lane, sign_sender_filter_floor_get,
+    sign_control_inbox_post_lane,
 };
 use crate::identity::Identity;
 use crate::prekeys::{
     sign_replenish_batch, OpkEntry, PrekeyState, ReplenishOpk, ReplenishSpk, SpkEntry,
 };
 use crate::proof_challenge::{ProofChallenge, PROOF_CHALLENGE_NONCE_BYTES};
-use crate::sender_filter_rollout::{
-    validate_sender_filter_capability_floor_observation, SenderFilterCapabilityFloor,
-    SenderFilterCapabilityFloorObservation, SENDER_FILTER_CAPABILITY_VERSION,
-};
 use crate::signed_get::{sign_prekey_bundle_get, sign_wrapped_key_get};
 use crate::unregister::sign_unregister;
 use crate::wrapped_key::{sign_wrapped_key_post, WrappedKeyUpload};
@@ -1464,7 +1460,7 @@ impl KeyServerClient {
         Ok(parsed.items)
     }
 
-    /// Shipping Worker/client rollout boundary for one active peer.
+    /// Shipping Worker/client boundary for one active peer.
     ///
     /// This method, rather than the broker, owns the live `/v1/healthz`
     /// capability observation and the durable local downgrade floor derived
@@ -1472,6 +1468,11 @@ impl KeyServerClient {
     ///
     /// The active-peer receive path must never widen to an all-row page. A
     /// legacy Worker that cannot prove sender-filter support is refused here.
+    /// The sender filter is part of the signed request and the response must
+    /// echo the exact sender plus its delivery disposition. A legacy or
+    /// transitional worker that answers without those fields is refused by
+    /// [`Self::get_control_inbox_from`]; this boundary must never widen to an
+    /// unfiltered page and locally filter it.
     pub fn get_control_inbox_compatible_from(
         &self,
         identity: &Identity,
@@ -1763,12 +1764,6 @@ struct HttpResponse {
     body: Vec<u8>,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-enum ControlInboxSenderFilterCapability {
-    Legacy,
-    Version1,
-}
-
 fn check_2xx(resp: &HttpResponse) -> Result<()> {
     if (200..300).contains(&resp.status) {
         Ok(())
@@ -1850,7 +1845,7 @@ fn sender_filter_capability_floor_was_observed() -> Result<bool> {
             "control-inbox sender-filter floor is malformed".into(),
         )),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(Error::Io(error)),
+        Err(error) => Err(error.into()),
     }
 }
 

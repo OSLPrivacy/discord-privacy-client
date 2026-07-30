@@ -21195,15 +21195,19 @@ mod tests {
         let enter = place
             .find("qa_place_stage(\"place_enter_injected\");")
             .expect("Enter injection must be recorded");
-        let consumed = place
-            .find("if !confirm_carrier_consumed(")
-            .expect("the composer must be read back empty after Enter");
-        let disarm = place
-            .find("cleanup.disarm_after_confirmed_send();")
-            .expect("cleanup is disarmed only after consumption proof");
-        let finish_call = place
-            .find("finish_confirmed_carrier_send(")
-            .expect("the sent-row proof must finish the send");
+        let enter_path = &place[enter..];
+        let consumed = enter
+            + enter_path
+                .find("if !confirm_carrier_consumed(")
+                .expect("the composer must be read back empty after Enter");
+        let disarm = enter
+            + enter_path
+                .find("cleanup.disarm_after_confirmed_send();")
+                .expect("cleanup is disarmed only after consumption proof");
+        let finish_call = enter
+            + enter_path
+                .find("finish_confirmed_carrier_send(")
+                .expect("the sent-row proof must finish the send");
 
         assert!(enter < consumed, "consumption cannot precede Enter");
         assert!(consumed < disarm, "cleanup cannot disarm before empty readback");
