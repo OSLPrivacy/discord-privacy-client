@@ -1089,7 +1089,7 @@ impl From<&SenderKeyState> for SenderKeyStateOnDisk {
                 .flat_map(|(peer_id, chains)| {
                     chains
                         .iter()
-                        .map(|chain| (STANDARD.encode(peer_id), ReceiverChainOnDisk::from(chain)))
+                        .map(move |chain| (STANDARD.encode(peer_id), ReceiverChainOnDisk::from(chain)))
                 })
                 .collect(),
         }
@@ -1157,7 +1157,7 @@ impl TryFrom<SenderKeyStateOnDisk> for SenderKeyState {
             Some(disk) => Some(disk.try_into()?),
             None => None,
         };
-        let mut receivers: HashMap<Vec<u8>, ReceiverChain> = HashMap::new();
+        let mut receivers: HashMap<Vec<u8>, Vec<ReceiverChain>> = HashMap::new();
         for (peer_b64, chain_disk) in s.receivers {
             let peer_bytes =
                 STANDARD
