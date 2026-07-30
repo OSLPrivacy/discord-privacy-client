@@ -77,6 +77,18 @@ def _fixture(tmp: Path) -> dict[str, object]:
     }
 
 
+def _step(payload: dict[str, object], name: str) -> dict[str, object]:
+    steps = payload["steps"]
+    assert isinstance(steps, list)
+    matches = [
+        step
+        for step in steps
+        if isinstance(step, dict) and step.get("step") == name
+    ]
+    assert matches, f"missing step {name}"
+    return matches[-1]
+
+
 def instance_b_launcher_uses_private_temp_root_and_preserves_instance_a() -> None:
     with tempfile.TemporaryDirectory() as raw_tmp:
         tmp = Path(raw_tmp)
@@ -92,6 +104,20 @@ def instance_b_launcher_uses_private_temp_root_and_preserves_instance_a() -> Non
         assert payload["instanceB"]["tempRootHonouredByChild"] is True
         assert (Path(str(fixture["tempRootB"])) / "osl-startup-trace.txt").is_file()
         assert not (Path(str(fixture["tempRootA"])) / "osl-startup-trace.txt").exists()
+
+        shared_temp = _fixture(tmp / "shared-temp")
+        shared_temp["tempRootB"] = shared_temp["tempRootA"]
+        blocked, blocked_payload = _run_fixture(tmp, shared_temp, confirm=True)
+        assert blocked.returncode == 2, blocked.stderr
+        assert blocked_payload["overall"]["verdict"] == "blocked"
+        assert _step(blocked_payload, "temp-isolation")["result"] == "failed"
+
+        touched_a = _fixture(tmp / "touched-a")
+        touched_a["instanceAIdentityShaAfter"] = "b" * 64
+        failed, failed_payload = _run_fixture(tmp, touched_a, confirm=True)
+        assert failed.returncode == 1, failed.stderr
+        assert failed_payload["overall"]["verdict"] == "failed"
+        assert _step(failed_payload, "assert/instance-a-untouched")["result"] == "failed"
 
 
 def instance_b_confirm_creates_identity_registers_second_identity() -> None:
@@ -116,6 +142,13 @@ def instance_b_confirm_creates_identity_registers_second_identity() -> None:
         assert identity_step["identitiesBefore"] == 1
         assert identity_step["identitiesAfter"] == 2
         assert allowed_payload["instanceB"]["registeredSecondIdentity"] is True
+
+        not_registered = _fixture(tmp / "not-registered")
+        not_registered["keyserverIdentitiesAfter"] = ["identity-a"]
+        failed, failed_payload = _run_fixture(tmp, not_registered, confirm=True)
+        assert failed.returncode == 1, failed.stderr
+        assert failed_payload["overall"]["verdict"] == "failed"
+        assert _step(failed_payload, "identity/keyserver-registration")["result"] == "failed"
 
 
 def load_tests(
