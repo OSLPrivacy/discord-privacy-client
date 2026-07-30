@@ -34,7 +34,6 @@ pub mod preferences;
 pub mod privacy_scan;
 #[cfg(feature = "core")]
 pub mod pro_context_cover;
-pub mod proprietary_module_boundary;
 pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;

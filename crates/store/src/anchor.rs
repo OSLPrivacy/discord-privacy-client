@@ -788,7 +788,7 @@ mod tests {
         let error = super::validate_restored_backup_against_anchor(&conn, SECRET, provider.clone())
             .unwrap_err();
         assert!(
-            matches!(error, StoreError::Anchor(message) if message.contains("behind external anchor")),
+            matches!(&error, StoreError::Anchor(message) if message.contains("behind external anchor")),
             "wrong restored-backup refusal: {error}"
         );
         assert_eq!(
@@ -947,7 +947,7 @@ mod tests {
             Err(error) => error,
         };
         assert!(
-            matches!(error, StoreError::Anchor(message) if message.contains("after physical vacuum"))
+            matches!(&error, StoreError::Anchor(message) if message.contains("after physical vacuum"))
         );
         let conn = Connection::open(tmp.path().join("messages.sqlite")).unwrap();
         assert_eq!(schema::inspect_schema_version(&conn).unwrap(), Some(8));
@@ -1026,7 +1026,7 @@ mod tests {
             Err(error) => error,
         };
         assert!(
-            matches!(error, StoreError::Anchor(message) if message.contains("journal store, version, or plan"))
+            matches!(&error, StoreError::Anchor(message) if message.contains("journal store, version, or plan"))
         );
         let conn = Connection::open(tmp.path().join("messages.sqlite")).unwrap();
         assert_eq!(schema::inspect_schema_version(&conn).unwrap(), Some(7));
@@ -1077,7 +1077,7 @@ mod tests {
                 Err(error) => error,
             };
             assert!(
-                matches!(error, StoreError::Anchor(message) if message.contains("journal store, version, or plan"))
+                matches!(&error, StoreError::Anchor(message) if message.contains("journal store, version, or plan"))
             );
             let conn = Connection::open(tmp.path().join("messages.sqlite")).unwrap();
             assert_eq!(schema::inspect_schema_version(&conn).unwrap(), Some(7));
@@ -1104,7 +1104,7 @@ mod tests {
         b.migrate_v7_to_v8(&conn).unwrap();
         let error = a.migrate_v7_to_v8(&conn).unwrap_err();
         assert!(
-            matches!(error, StoreError::Anchor(message) if message.contains("needs v7 source")),
+            matches!(&error, StoreError::Anchor(message) if message.contains("needs v7 source")),
             "a stale recovery binding must refuse after the winner clears the journal"
         );
         drop(conn);

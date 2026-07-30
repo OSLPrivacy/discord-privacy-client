@@ -211,7 +211,7 @@ fn full_anchor_coverage_load_compare_and_restore() {
         Err(error) => error,
     };
     assert!(
-        matches!(error, StoreError::Anchor(message) if message.contains("behind external anchor")),
+        matches!(&error, StoreError::Anchor(message) if message.contains("behind external anchor")),
         "wrong restored-backup refusal: {error}"
     );
     assert_eq!(
@@ -284,7 +284,7 @@ fn anchored_open_refuses_a_coherent_stale_database_replay() {
         Err(error) => error,
     };
     assert!(
-        matches!(error, StoreError::Anchor(message) if message.contains("behind external anchor"))
+        matches!(&error, StoreError::Anchor(message) if message.contains("behind external anchor"))
     );
 }
 
@@ -345,7 +345,7 @@ fn anchored_v7_migration_enrolls_post_migration_state_then_refuses_replay() {
         Err(error) => error,
     };
     assert!(
-        matches!(error, StoreError::Anchor(message) if message.contains("behind external anchor"))
+        matches!(&error, StoreError::Anchor(message) if message.contains("behind external anchor"))
     );
 }
 
@@ -432,7 +432,7 @@ fn anchored_provider_is_store_domain_separated_and_stale_concurrent_writer_fails
     a.put(&message("a", "first writer")).unwrap();
     let error = b.put(&message("b", "stale writer")).unwrap_err();
     assert!(
-        matches!(error, StoreError::Anchor(message) if message.contains("stale local anchor generation")),
+        matches!(&error, StoreError::Anchor(message) if message.contains("stale local anchor generation")),
         "the stale writer must be refused before it can commit a conflicting local generation"
     );
     drop(a);
