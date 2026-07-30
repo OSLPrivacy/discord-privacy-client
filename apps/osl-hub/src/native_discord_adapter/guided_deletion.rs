@@ -37,6 +37,8 @@
 //! module back a COUNT. `RowCensus` is therefore the whole verification input,
 //! and it is three integers and two enums.
 
+use std::fmt;
+
 use serde::Serialize;
 
 use super::stable_hash;
@@ -226,6 +228,10 @@ pub enum PlanRefusal {
     DuplicateRow,
     /// The confirmation echoed a digest that does not match this plan.
     ConfirmationStale,
+    /// No native-held attended run authority was supplied for execution.
+    RunAuthorityMissing,
+    /// The supplied run authority was for another scope, generation, or plan.
+    RunAuthorityStale,
 }
 
 impl PlanRefusal {
@@ -240,7 +246,68 @@ impl PlanRefusal {
             Self::ForeignRow => "row_is_not_your_own_message",
             Self::DuplicateRow => "row_selected_twice",
             Self::ConfirmationStale => "confirmation_no_longer_matches_the_plan",
+            Self::RunAuthorityMissing => "attended_run_authority_missing",
+            Self::RunAuthorityStale => "attended_run_authority_no_longer_matches_the_plan",
         }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteRunAuthority {
+    pub run_id: String,
+    pub attended_action_id: String,
+    pub scope_binding_hash: String,
+    pub generation: u64,
+    pub plan_digest: String,
+    pub mode: &'static str,
+}
+
+impl fmt::Debug for DeleteRunAuthority {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DeleteRunAuthority")
+            .field("run_id", &"[redacted]")
+            .field("attended_action_id", &"[redacted]")
+            .field("scope_binding_hash", &"[redacted; sha256]")
+            .field("generation", &self.generation)
+            .field("plan_digest", &"[redacted; sha256]")
+            .field("mode", &self.mode)
+            .finish()
+    }
+}
+
+impl DeleteRunAuthority {
+    pub fn attended(
+        run_id: String,
+        attended_action_id: String,
+        scope_binding_hash: String,
+        generation: u64,
+        plan_digest: String,
+    ) -> Result<Self, PlanRefusal> {
+        if !valid_opaque(&run_id, 80)
+            || !valid_opaque(&attended_action_id, 80)
+            || !valid_digest(&scope_binding_hash)
+            || generation == 0
+            || !valid_digest(&plan_digest)
+        {
+            return Err(PlanRefusal::RunAuthorityMissing);
+        }
+        Ok(Self {
+            run_id,
+            attended_action_id,
+            scope_binding_hash,
+            generation,
+            plan_digest,
+            mode: "attended_delete_run_v1",
+        })
+    }
+
+    fn matches_preview(&self, preview: &DeletionPreview, expected_digest: &str) -> bool {
+        self.mode == "attended_delete_run_v1"
+            && self.scope_binding_hash == preview.scope_binding_hash
+            && self.generation == preview.generation
+            && self.plan_digest == expected_digest
     }
 }
 
@@ -275,11 +342,16 @@ pub struct DeletionPreview {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfirmedPlan {
     preview: DeletionPreview,
+    authority: DeleteRunAuthority,
 }
 
 impl ConfirmedPlan {
     pub fn preview(&self) -> &DeletionPreview {
         &self.preview
+    }
+
+    pub fn authority(&self) -> &DeleteRunAuthority {
+        &self.authority
     }
 
     /// Rows in the order they must be EXECUTED: bottom of the transcript first.
@@ -352,6 +424,7 @@ pub fn confirm_preview(
     echoed_digest: &str,
     current_scope_binding_hash: &str,
     current_generation: u64,
+    authority: Option<DeleteRunAuthority>,
 ) -> Result<ConfirmedPlan, PlanRefusal> {
     if preview.scope_binding_hash != current_scope_binding_hash
         || preview.generation != current_generation
@@ -366,8 +439,13 @@ pub fn confirm_preview(
     if expected != preview.plan_digest || echoed_digest != expected {
         return Err(PlanRefusal::ConfirmationStale);
     }
+    let authority = authority.ok_or(PlanRefusal::RunAuthorityMissing)?;
+    if !authority.matches_preview(preview, &expected) {
+        return Err(PlanRefusal::RunAuthorityStale);
+    }
     Ok(ConfirmedPlan {
         preview: preview.clone(),
+        authority,
     })
 }
 
@@ -389,6 +467,21 @@ fn plan_digest(scope_binding_hash: &str, generation: u64, rows: &[ScannedRow]) -
         ));
     }
     stable_hash(GUIDED_DELETION_CONTRACT, &value)
+}
+
+fn valid_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn valid_opaque(value: &str, max: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
 /// What re-resolving one planned row found, immediately before touching it.
@@ -585,7 +678,9 @@ pub fn classify_removal(before: RowCensus, after: RowCensus) -> RemovalVerdict {
     // A shape count that fell by more than one means rows of the target's shape
     // went beyond the target itself, whichever path follows. Additions can only
     // push this count up, so an over-large drop is real.
-    let shape_drop = before.target_shape_rows.saturating_sub(after.target_shape_rows);
+    let shape_drop = before
+        .target_shape_rows
+        .saturating_sub(after.target_shape_rows);
     if shape_drop > 1 {
         return RemovalVerdict::Ambiguous("more_than_one_matching_row_disappeared");
     }
@@ -601,7 +696,11 @@ pub fn classify_removal(before: RowCensus, after: RowCensus) -> RemovalVerdict {
     // Duplicated text. The count cannot say which matching row went, so the
     // attribution rests entirely on the action -- and that is only good enough
     // when the transcript was otherwise completely still.
-    if before.target_text_rows.saturating_sub(after.target_text_rows) != 1 {
+    if before
+        .target_text_rows
+        .saturating_sub(after.target_text_rows)
+        != 1
+    {
         return RemovalVerdict::Ambiguous("more_than_one_matching_row_disappeared");
     }
     if shape_drop == 0 {
@@ -763,7 +862,9 @@ fn execute_row<S: DiscordDeletionSurface>(row: &ScannedRow, surface: &mut S) -> 
         RowResolution::Resolved => {}
         RowResolution::Gone => return RowOutcome::held(row, "row_was_already_gone"),
         RowResolution::Ambiguous => return RowOutcome::held(row, "row_could_not_be_told_apart"),
-        RowResolution::Untrusted => return RowOutcome::held(row, "row_resolved_into_untrusted_tree"),
+        RowResolution::Untrusted => {
+            return RowOutcome::held(row, "row_resolved_into_untrusted_tree")
+        }
         RowResolution::Unreadable => return RowOutcome::held(row, "row_could_not_be_read"),
     }
     let before = surface.census(row);
@@ -886,11 +987,12 @@ impl GuidedDeletionReceipt {
     pub fn is_self_consistent(&self) -> bool {
         self.rows.len() == self.rows_requested
             && self.rows.iter().all(RowOutcome::state_is_earned)
-            && self.rows_verified == self
-                .rows
-                .iter()
-                .filter(|row| row.state == ActivityState::Verified)
-                .count()
+            && self.rows_verified
+                == self
+                    .rows
+                    .iter()
+                    .filter(|row| row.state == ActivityState::Verified)
+                    .count()
             && self.platform_removal_verified
                 == (self.rows_requested > 0 && self.rows_verified == self.rows_requested)
             && !self.osl_content_expiry_applied
@@ -939,6 +1041,17 @@ mod tests {
             target_shape_rows: shape_rows,
             target_text_rows: text_rows,
         }
+    }
+
+    fn authority_for(preview: &DeletionPreview) -> DeleteRunAuthority {
+        DeleteRunAuthority::attended(
+            "run-7".to_owned(),
+            "attended-action-7".to_owned(),
+            preview.scope_binding_hash.clone(),
+            preview.generation,
+            preview.plan_digest.clone(),
+        )
+        .expect("valid attended authority")
     }
 
     /// A scripted surface. Every rung defaults to the cooperative answer so a
@@ -1022,6 +1135,7 @@ mod tests {
             &preview.plan_digest,
             &scan.scope_binding_hash,
             scan.generation,
+            Some(authority_for(&preview)),
         )
         .expect("confirmation")
     }
@@ -1033,7 +1147,10 @@ mod tests {
             build_preview(&scan, &[3], false),
             Err(PlanRefusal::ProRequired)
         );
-        assert_eq!(PlanRefusal::ProRequired.reason(), "guided_deletion_requires_pro");
+        assert_eq!(
+            PlanRefusal::ProRequired.reason(),
+            "guided_deletion_requires_pro"
+        );
     }
 
     #[test]
@@ -1113,7 +1230,8 @@ mod tests {
                 &preview,
                 &wider.plan_digest,
                 &scan.scope_binding_hash,
-                scan.generation
+                scan.generation,
+                Some(authority_for(&preview)),
             ),
             Err(PlanRefusal::ConfirmationStale)
         );
@@ -1122,7 +1240,8 @@ mod tests {
                 &preview,
                 &preview.plan_digest,
                 &scan.scope_binding_hash,
-                scan.generation + 1
+                scan.generation + 1,
+                Some(authority_for(&preview)),
             ),
             Err(PlanRefusal::ScopeChanged)
         );
@@ -1131,7 +1250,8 @@ mod tests {
                 &preview,
                 &preview.plan_digest,
                 &"b".repeat(64),
-                scan.generation
+                scan.generation,
+                Some(authority_for(&preview)),
             ),
             Err(PlanRefusal::ScopeChanged)
         );
@@ -1139,7 +1259,8 @@ mod tests {
             &preview,
             &preview.plan_digest,
             &scan.scope_binding_hash,
-            scan.generation
+            scan.generation,
+            Some(authority_for(&preview)),
         )
         .is_ok());
     }
@@ -1154,16 +1275,57 @@ mod tests {
                 &preview,
                 &preview.plan_digest.clone(),
                 &scan.scope_binding_hash,
-                scan.generation
+                scan.generation,
+                Some(authority_for(&preview)),
             ),
             Err(PlanRefusal::ConfirmationStale)
         );
     }
 
     #[test]
+    fn confirmation_refuses_without_matching_attended_run_authority() {
+        let scan = scan(vec![owned_row(1)]);
+        let preview = build_preview(&scan, &[1], true).expect("preview");
+        assert_eq!(
+            confirm_preview(
+                &preview,
+                &preview.plan_digest,
+                &scan.scope_binding_hash,
+                scan.generation,
+                None,
+            ),
+            Err(PlanRefusal::RunAuthorityMissing)
+        );
+        let stale = DeleteRunAuthority::attended(
+            "run-7".to_owned(),
+            "attended-action-7".to_owned(),
+            scan.scope_binding_hash.clone(),
+            scan.generation,
+            "c".repeat(64),
+        )
+        .expect("valid stale authority shape");
+        assert_eq!(
+            confirm_preview(
+                &preview,
+                &preview.plan_digest,
+                &scan.scope_binding_hash,
+                scan.generation,
+                Some(stale),
+            ),
+            Err(PlanRefusal::RunAuthorityStale)
+        );
+        assert_eq!(
+            format!("{:?}", authority_for(&preview)),
+            "DeleteRunAuthority { run_id: \"[redacted]\", attended_action_id: \"[redacted]\", scope_binding_hash: \"[redacted; sha256]\", generation: 7, plan_digest: \"[redacted; sha256]\", mode: \"attended_delete_run_v1\" }"
+        );
+    }
+
+    #[test]
     fn the_plan_digest_covers_the_scope_the_generation_and_every_row_field() {
         let base = scan(vec![owned_row(1)]);
-        let baseline = build_preview(&base, &[1], true).expect("preview").plan_digest;
+        let baseline = build_preview(&base, &[1], true)
+            .expect("preview")
+            .plan_digest;
         let mut wider_shape = owned_row(1);
         wider_shape.shape = shape(45, 1);
         let mut longer = owned_row(1);
@@ -1174,7 +1336,9 @@ mod tests {
             let scan = scan(vec![variant]);
             assert_ne!(
                 baseline,
-                build_preview(&scan, &[1], true).expect("preview").plan_digest
+                build_preview(&scan, &[1], true)
+                    .expect("preview")
+                    .plan_digest
             );
         }
         let other_generation = DeletionScan {
@@ -1335,10 +1499,7 @@ mod tests {
         for (resolution, stage) in [
             (RowResolution::Gone, "row_was_already_gone"),
             (RowResolution::Ambiguous, "row_could_not_be_told_apart"),
-            (
-                RowResolution::Untrusted,
-                "row_resolved_into_untrusted_tree",
-            ),
+            (RowResolution::Untrusted, "row_resolved_into_untrusted_tree"),
             (RowResolution::Unreadable, "row_could_not_be_read"),
         ] {
             let mut surface = FakeSurface::happy();
@@ -1547,7 +1708,9 @@ mod tests {
         // it. The ladder must also be finite and monotonic -- a wait that shrinks
         // is a wait that stops meaning anything.
         assert!(POSTED_KEY_OBSERVE_MS[0] >= 60);
-        assert!(POSTED_KEY_OBSERVE_MS.windows(2).all(|pair| pair[1] > pair[0]));
+        assert!(POSTED_KEY_OBSERVE_MS
+            .windows(2)
+            .all(|pair| pair[1] > pair[0]));
         assert_eq!(posted_key_observe_budget_ms(), 900);
         // And it is one key per observation by construction: the surface exposes
         // exactly one posting rung between each pair of observations, so no code
@@ -1927,8 +2090,16 @@ mod tests {
         let shuffled = build_preview(&scan, &[7, 1, 4], true).expect("preview");
         assert_eq!(ascending.plan_digest, shuffled.plan_digest);
         assert_eq!(
-            ascending.rows.iter().map(|row| row.scan_ordinal).collect::<Vec<_>>(),
-            shuffled.rows.iter().map(|row| row.scan_ordinal).collect::<Vec<_>>()
+            ascending
+                .rows
+                .iter()
+                .map(|row| row.scan_ordinal)
+                .collect::<Vec<_>>(),
+            shuffled
+                .rows
+                .iter()
+                .map(|row| row.scan_ordinal)
+                .collect::<Vec<_>>()
         );
         for subset in [vec![1, 4], vec![4, 7], vec![1], vec![1, 4, 7]] {
             let other = build_preview(&scan, &subset, true).expect("preview");
@@ -1998,7 +2169,8 @@ mod tests {
                 &elsewhere,
                 &approved.plan_digest,
                 &scan_b.scope_binding_hash,
-                scan_b.generation
+                scan_b.generation,
+                Some(authority_for(&approved)),
             ),
             Err(PlanRefusal::ConfirmationStale)
         );
@@ -2009,7 +2181,8 @@ mod tests {
                 &approved,
                 &approved.plan_digest,
                 &scan_b.scope_binding_hash,
-                scan_b.generation
+                scan_b.generation,
+                Some(authority_for(&approved)),
             ),
             Err(PlanRefusal::ScopeChanged)
         );
@@ -2033,7 +2206,8 @@ mod tests {
                 &now,
                 &approved.plan_digest,
                 &rescanned.scope_binding_hash,
-                rescanned.generation
+                rescanned.generation,
+                Some(authority_for(&approved)),
             ),
             Err(PlanRefusal::ConfirmationStale)
         );
