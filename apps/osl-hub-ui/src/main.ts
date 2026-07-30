@@ -121,6 +121,7 @@ export {
 } from "./autoscrub-unattended-run";
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
 import { oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
+import { parseCircleAudience, type CircleAudience } from "./osl-collab";
 import { bindFriendRemovalControls, bindMainWindowFocusChanges, friendRemovalButtonMarkup, friendTrustAction, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat } from "./ui-behavior";
 import { BurnGuaranteeCopy, type BurnGuaranteeState } from "./two-step-burn";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
@@ -490,6 +491,20 @@ type DesktopCtaSurface = "desktop" | "phone-demo" | "mobile-companion";
 type DesktopCtaRoute = "desktop-app" | "phone-companion";
 let oslChatSecureStore: OslChatSecureStore | null = null;
 let rnWirePolicyRequested = false;
+const autoScrubServiceLabels: Record<ServiceId, string> = {
+  discord: "Discord",
+  telegram: "Telegram",
+  instagram: "Instagram",
+  snapchat: "Snapchat",
+  email: "Email",
+  x: "X",
+  slack: "Slack",
+  linkedin: "LinkedIn",
+  teams: "Teams",
+  messenger: "Messenger",
+  signal: "Signal",
+  whatsapp: "WhatsApp",
+};
 const supportedNativeAppIds = new Set<NativeAppId>(["discord", "telegram", "signal", "whatsapp", "outlook"]);
 const importedFirefoxHomeAppIds = new Set<HomeAppId>([
   "instagram", "snapchat", "x", "messenger", "gmail", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
@@ -1256,7 +1271,7 @@ function containBackgroundFailure(): void {
 
 function desktopTitlebar(): string {
   const nativeControlsBlocked = activeNativeHostId || activeDefaultBrowserCompanion ? ' disabled title="Unavailable while a companion window is open"' : "";
-  return `<header class="desktop-titlebar"><div class="desktop-drag-region" data-tauri-drag-region aria-hidden="true"></div><div class="window-controls"><button id="window-minimize" aria-label="Minimize"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5h10"/></svg></button><button id="window-maximize" aria-label="Maximize"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9"/></svg></button><button id="window-close" class="window-close" aria-label="Close"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button></div></header>`;
+  return `<header class="desktop-titlebar"><div class="desktop-drag-region" data-tauri-drag-region aria-hidden="true"></div>${fleetIndicatorMarkup()}<div class="window-controls"><button id="window-minimize" aria-label="Minimize"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5h10"/></svg></button><button id="window-maximize" aria-label="Maximize"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9"/></svg></button><button id="window-close" class="window-close" aria-label="Close"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button></div></header>`;
 }
 
 // The hub route (onboarding excluded — see renderOnboarding) no longer gets a
@@ -1273,7 +1288,7 @@ function desktopTitlebar(): string {
 // helper whose blast radius spans both layouts.
 function desktopWindowControlsMarkup(): string {
   const nativeControlsBlocked = activeNativeHostId || activeDefaultBrowserCompanion ? ' disabled title="Unavailable while a companion window is open"' : "";
-  return `<div class="window-controls"><button id="window-minimize" aria-label="Minimize"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5h10"/></svg></button><button id="window-maximize" aria-label="Maximize"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9"/></svg></button><button id="window-close" class="window-close" aria-label="Close"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button></div>`;
+  return `${fleetIndicatorMarkup()}<div class="window-controls"><button id="window-minimize" aria-label="Minimize"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5h10"/></svg></button><button id="window-maximize" aria-label="Maximize"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9"/></svg></button><button id="window-close" class="window-close" aria-label="Close"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button></div>`;
 }
 
 const desktopMaximizeGlyph = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9"/></svg>';
@@ -1395,14 +1410,18 @@ async function reopenActiveNativeCompanion(): Promise<void> {
   await openNativeHostedApp(app, service, staleAppId);
 }
 
-function renderOnboarding(): void {
+function onboardingShellMarkup(): string {
   onboardingRoute = onboardingRouteForBuild(onboardingRoute);
   persistCurrentOnboardingRoute();
   const setupScreen = ["pro", "privacy", "defaults", "sending", "cover", "passwords", "burnpass", "browser", "tutorial", "detected", "install", "apps", "mullvad"].includes(onboardingRoute);
   const setupNavigation = setupScreen
     ? `<button class="onboarding-back-dock" id="onboarding-back" type="button">Back</button>`
     : "";
-  const markup = `<div class="app-frame with-titlebar">${desktopTitlebar()}<div class="onboarding-shell"><main class="onboarding-panel onboarding-${onboardingRoute}">${onboardingContent()}</main>${setupNavigation}</div>${scrubReviewDialogMarkup()}</div>`;
+  return `<div class="app-frame with-titlebar">${desktopTitlebar()}<div class="onboarding-shell"><main class="onboarding-panel onboarding-${onboardingRoute}">${onboardingContent()}</main>${setupNavigation}</div>${scrubReviewDialogMarkup()}</div>`;
+}
+
+function renderOnboarding(): void {
+  const markup = onboardingShellMarkup();
   lastWorkspaceMarkup = null;
   lastWorkspaceViewKey = "";
   if (lastOnboardingMarkup === markup && root.querySelector(".onboarding-shell")) {
@@ -2743,14 +2762,22 @@ function bindImportForm(): void {
   });
 }
 
-function renderWorkspace(): void {
-  lastOnboardingMarkup = null;
+function workspaceProtectedSheetMarkup(): string {
   const protectedSheet = activeEmbeddedHost
     ? protectedSheetMode === "local"
       ? localProtectedSheetMarkup(localProtectedSheet, setup.sendMode)
       : peerProtectedSheetMarkup(peerProtectedSheet, hubPeople)
     : "";
-  const markup = `<div class="hub-layout with-primary-sidebar">${primarySidebarMarkup()}<section class="hub-workspace"><div class="desktop-top-row" data-tauri-drag-region="deep">${trustedHeader()}${desktopWindowControlsMarkup()}</div>${workspaceContent()}</section></div>${protectedSheet}${nativeDiscordProtectPickerMarkup()}${whitelistRosterMarkup()}${peopleDialogMarkup()}${friendsDialogMarkup()}${scrubReviewDialogMarkup()}${burnDialogMarkup()}${ownedConfirmationMarkup()}${updateDialogMarkup()}`;
+  return `${protectedSheet}${nativeDiscordProtectPickerMarkup()}${whitelistRosterMarkup()}${peopleDialogMarkup()}${friendsDialogMarkup()}${scrubReviewDialogMarkup()}${burnDialogMarkup()}${ownedConfirmationMarkup()}${updateDialogMarkup()}`;
+}
+
+function workspaceShellMarkup(): string {
+  return `<div class="hub-layout with-primary-sidebar">${primarySidebarMarkup()}<section class="hub-workspace"><div class="desktop-top-row" data-tauri-drag-region="deep">${trustedHeader()}${desktopWindowControlsMarkup()}</div>${workspaceContent()}</section></div>${workspaceProtectedSheetMarkup()}`;
+}
+
+function renderWorkspace(): void {
+  lastOnboardingMarkup = null;
+  const markup = workspaceShellMarkup();
   let surface = root.querySelector<HTMLElement>("#workspace-render-surface");
   if (!surface) {
     // No separate 44px desktop titlebar row here: the drag region and window
@@ -2849,6 +2876,19 @@ function simpleDeviceStatusMarkup(): string {
   const label = coreReady ? protection.label : "Needs attention";
   const detail = coreReady ? protection.detail : coreReadinessLabel(core.readiness);
   return `<div class="trust-state ${ready ? "ready" : "pending"} ${coreReady && !ready ? "not-secure" : ""}" role="status" data-identity-protection="${protection.state}"><span class="dot"></span><span><strong>${escapeHtml(label)}</strong><small>${escapeHtml(detail)}</small></span></div>`;
+}
+
+function autoScrubRunServiceName(serviceId: ServiceId): string {
+  return services.find((service) => service.id === serviceId)?.displayName ?? autoScrubServiceLabels[serviceId];
+}
+
+function fleetIndicatorMarkup(): string {
+  const status = projectAutoScrubFleetStatus(autoScrubFleetStatus);
+  const openRunNames = autoScrubFleetStatus?.runs.map((run) => autoScrubRunServiceName(run.serviceId)) ?? [];
+  const openRunCount = autoScrubFleetStatus?.openRunCount ?? 0;
+  const runNames = openRunNames.length ? openRunNames.join(", ") : "No cleanup running";
+  const ariaLabel = `Cleanup monitor: ${status.label}; ${runNames}`;
+  return `<aside class="fleet-indicator fleet-indicator-${status.tone}" data-fleet-indicator data-open-run-count="${openRunCount}" data-open-run-names="${escapeHtml(runNames)}" role="status" aria-label="${escapeHtml(ariaLabel)}" title="${escapeHtml(ariaLabel)}" style="align-self:center;max-width:min(34ch,28vw);min-height:30px;padding:3px 8px;border:1px solid var(--line);border-radius:7px;display:grid;grid-template-columns:auto minmax(0,1fr);column-gap:8px;align-items:center;background:var(--panel-2);color:var(--text);font-size:11px;line-height:1.15"><span aria-hidden="true" style="width:8px;height:8px;border-radius:999px;background:currentColor;opacity:${status.tone === "neutral" ? "0.45" : "1"}"></span><span style="min-width:0"><strong style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(status.label)}</strong><small style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--subtle)">${escapeHtml(runNames)}</small></span></aside>`;
 }
 
 /**
@@ -3245,6 +3285,43 @@ function workspaceContent(): string {
   return `<main id="home-navigation" class="content-viewport home-dashboard ${homeEditMode ? "editing" : ""}"><section class="home-primary">${homeDestinationContent()}<section class="home-apps" aria-labelledby="route-heading"><div class="home-app-groups">${oslSection}${socialTiles ? `<section class="home-app-section"><header><h2>Social</h2>${organizeButton("social apps")}</header><div class="app-grid" aria-label="Social apps">${socialTiles}</div></section>` : ""}${emailTiles ? `<section class="home-app-section"><header><h2>Email</h2>${organizeButton("email apps")}</header><div class="app-grid" aria-label="Email apps">${emailTiles}</div></section>` : ""}</div></section></section><button class="home-profile-dock" data-route="settings" data-profile-settings type="button" aria-label="Open your OSL profile" title="${escapeHtml(profileName)}"><span aria-hidden="true">${escapeHtml(profileInitial)}</span><strong>${escapeHtml(profileName)}</strong></button></main>`;
 }
 
+const privateCircleAudienceRecords = [
+  { audienceId: "c".repeat(32), name: "Close friends", memberCount: 3, membershipVisibility: "visible", visibleMembers: [{ memberId: "1".repeat(32), name: "Maya", verified: true }, { memberId: "2".repeat(32), name: "Theo", verified: true }, { memberId: "3".repeat(32), name: "Rina", verified: true }], consentGranted: true, boundToCurrentCircle: true, postingAuthorized: true },
+  { audienceId: "f".repeat(32), name: "Family", memberCount: 5, membershipVisibility: "visible", visibleMembers: [{ memberId: "4".repeat(32), name: "Ari", verified: true }, { memberId: "5".repeat(32), name: "Sam", verified: false }], consentGranted: false, boundToCurrentCircle: true, postingAuthorized: true },
+  { audienceId: "b".repeat(32), name: "Book club", memberCount: 8, membershipVisibility: "count-only", visibleMembers: [], consentGranted: true, boundToCurrentCircle: false, postingAuthorized: true },
+  { audienceId: "w".repeat(32), name: "Work", memberCount: 4, membershipVisibility: "count-only", visibleMembers: [], consentGranted: true, boundToCurrentCircle: true, postingAuthorized: true },
+  { audienceId: "n".repeat(32), name: "Neighborhood", memberCount: 12, membershipVisibility: "hidden", visibleMembers: [], consentGranted: true, boundToCurrentCircle: true, postingAuthorized: false },
+] as const;
+
+const privateCircleAudiences: CircleAudience[] = privateCircleAudienceRecords
+  .map((record) => parseCircleAudience(record))
+  .filter((audience): audience is CircleAudience => audience !== null);
+
+function circleAudienceMembershipDetail(audience: CircleAudience): string {
+  if (audience.membershipVisibility === "visible") {
+    const names = audience.visibleMembers.map((member) => `${member.name}${member.verified ? " verified" : " needs review"}`).join(", ");
+    return names ? `${audience.memberCount.toLocaleString("en-US")} people: ${names}` : `${audience.memberCount.toLocaleString("en-US")} people. Members are shown before posting.`;
+  }
+  if (audience.membershipVisibility === "count-only") return `${audience.memberCount.toLocaleString("en-US")} people. Names are shown during the final audience review before posting.`;
+  return "Membership is hidden here. Posting stays refused until the audience is shown for review.";
+}
+
+function circleAudienceStatus(audience: CircleAudience): { label: "Ready" | "Refused"; detail: string } {
+  if (audience.canPost) return { label: "Ready", detail: "Posts and comments are encrypted for the selected audience." };
+  if (audience.refusal === "consent") return { label: "Refused", detail: "Review and approve this audience on this device before posting." };
+  if (audience.refusal === "binding") return { label: "Refused", detail: "Choose the Circle for this audience before posting." };
+  return { label: "Refused", detail: "This account is not allowed to post to that audience." };
+}
+
+function circlesDestinationContent(): string {
+  const audienceCards = privateCircleAudiences.map((audience) => {
+    const status = circleAudienceStatus(audience);
+    return `<article class="setting-line circle-audience-card ${audience.canPost ? "" : "unavailable"}" data-circle-audience="${escapeHtml(audience.audienceId)}" data-circle-posting="${audience.canPost ? "ready" : "refused"}" data-circle-refusal="${audience.refusal ?? "none"}" aria-disabled="${audience.canPost ? "false" : "true"}"><span><strong>${escapeHtml(audience.name)}</strong><small>${escapeHtml(circleAudienceMembershipDetail(audience))}</small></span><span class="status-tag">${status.label}</span><p>${escapeHtml(status.detail)}</p></article>`;
+  }).join("");
+  const feedItems = privateCircleAudiences.filter((audience) => audience.canPost).map((audience, index) => `<article class="inbox-row circle-feed-item" data-circle-feed-item="${index}" data-circle-feed-order="chronological" data-circle-audience="${escapeHtml(audience.audienceId)}"><span class="source-mark">${homeModuleIcon("osl-chats")}</span><div><strong>${escapeHtml(audience.name)}</strong><small>Chronological private feed · ${audience.memberCount.toLocaleString("en-US")} people · no ranking or behavioral advertising</small></div><span class="status-tag">Encrypted</span></article>`).join("");
+  return `<section class="inbox-surface-card circles-destination" data-inbox-osl-surface="circles" data-circle-feeds="private-audiences"><strong>OSL Circles</strong><small>Private audience feeds</small><p><span class="status-tag">Private</span> Posts and comments are encrypted for the selected audience. Audience membership is shown before posting.</p><div class="settings-list circle-audience-list" aria-label="Private Circle audiences">${audienceCards}</div><div class="circle-feed-list" aria-label="Chronological private Circle feeds">${feedItems}</div>${publicCirclesUnavailableMarkup()}</section>`;
+}
+
 function publicCirclesUnavailableMarkup(): string {
   return `<article class="inbox-surface-card unavailable" data-inbox-osl-surface="circles" data-public-circles-network="unavailable" aria-disabled="true"><strong>OSL Circles</strong><small>Private audience feeds</small><p><span class="status-tag">Unavailable</span> Public Circles network unavailable. Private audience posts stay off until membership, posting, and moderation are complete.</p></article>`;
 }
@@ -3299,6 +3376,22 @@ export function oslMailboxStageCGate(
   };
 }
 
+export function oslMailStageAContent(
+  stage: OslMailStage = oslMailStage("stageA"),
+  mailboxGate: OslMailboxStageCGateResult = oslMailboxStageCGate(),
+): string {
+  if (stage.id !== "stageA" || stage.availability !== "available") {
+    return `<article class="inbox-surface-card unavailable" data-inbox-osl-surface="mail" data-osl-mail-stage-a="unavailable" data-osl-mail-protection="private-client" data-osl-mailbox-stage-c-gate="${mailboxGate.reason ?? "reviewed"}" data-mailbox-operations="refused" aria-disabled="true"><strong>OSL Mail</strong><small>Private client protection</small><p><span class="status-tag">Coming later</span> OSL Mail client protection is unavailable until Stage A review accepts it.</p></article>`;
+  }
+  const capabilities = [
+    "Connect an existing mailbox only after authorization",
+    "Warn before send and label the protection scope",
+    "Sanitize selected links and attachments",
+    "Organize retention on this device",
+  ];
+  return `<article class="inbox-surface-card" data-inbox-osl-surface="mail" data-osl-mail-stage-a="available" data-osl-mail-protection="private-client" data-osl-mailbox-stage-c-gate="${mailboxGate.reason ?? "reviewed"}" data-mailbox-operations="${mailboxGate.operationsAllowed ? "allowed" : "refused"}" aria-disabled="false"><strong>OSL Mail</strong><small>Private client protection</small><p><span class="status-tag">Available</span> Protect mailboxes you already control after explicit authorization.</p><ul>${capabilities.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul><p><span class="status-tag">${mailboxGate.label}</span> ${escapeHtml(mailboxGate.detail)} External email remains ordinary email unless a supported encrypted path is selected before send.</p></article>`;
+}
+
 function inboxDestinationContent(): string {
   const verifiedPeople = hubPeople.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange);
   const requests = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange);
@@ -3327,9 +3420,9 @@ function inboxDestinationContent(): string {
   ] as const;
   const mailboxGate = oslMailboxStageCGate();
   const surfaceCards = oslSurfaces.map(([id, label, protection, detail]) => {
-    if (id === "circles") return publicCirclesUnavailableMarkup();
+    if (id === "circles") return circlesDestinationContent();
     if (id === "mail") {
-      return `<article class="inbox-surface-card ${mailboxGate.operationsAllowed ? "" : "unavailable"}" data-inbox-osl-surface="mail" data-osl-mailbox-stage-c-gate="${mailboxGate.reason ?? "reviewed"}" data-mailbox-operations="${mailboxGate.operationsAllowed ? "allowed" : "refused"}" aria-disabled="${mailboxGate.operationsAllowed ? "false" : "true"}"><strong>OSL Mail</strong><small>Client protection</small><p><span class="status-tag">${mailboxGate.label}</span> ${escapeHtml(mailboxGate.detail)}</p></article>`;
+      return oslMailStageAContent(oslMailStage("stageA"), mailboxGate);
     }
     return `<article class="inbox-surface-card" data-inbox-osl-surface="${id}"><strong>${label}</strong><small>${protection}</small><p>${detail}</p></article>`;
   }).join("");
@@ -3377,7 +3470,7 @@ function connectionsDestinationContent(): string {
     if (surface.surface === "companion") {
       return `<article class="connection-device-card" data-android-surface="${surface.id}" data-consent="${surface.consent}" data-binding="${surface.binding}"><span class="status-tag">Coming later</span><h3>${escapeHtml(surface.displayName)}</h3><p>Phone approvals and OSL-owned mobile experiences stay separate from desktop account control.</p></article>`;
     }
-    return `<article class="connection-device-card pro" data-android-surface="${surface.id}" data-consent="${surface.consent}" data-binding="${surface.binding}" data-hosted-execution="${surface.hostedExecution}" data-workspace-runtime="${surface.workspace?.runtime ?? "none"}"><span class="status-tag">Coming later · Pro</span><h3>${escapeHtml(surface.displayName)}</h3><p>Future isolated local workspace with encrypted local storage, a separate wipe key, and clipboard, files, notifications, camera, microphone, and location denied by default.</p><p>Hosted workspace is unavailable here; it requires a separate threat model, explicit consent, and a new audit before any claim changes.</p></article>`;
+    return `<article class="connection-device-card pro" data-android-surface="${surface.id}" data-consent="${surface.consent}" data-binding="${surface.binding}" data-hosted-execution="${surface.hostedExecution}" data-workspace-runtime="${surface.workspace?.runtime ?? "none"}"><span class="status-tag">Coming later · Pro</span><h3>${escapeHtml(surface.displayName)}</h3><p>Future isolated local workspace with a separate wipe key and clipboard, files, notifications, camera, microphone, and location denied by default.</p><p>Hosted workspace is unavailable here; it requires a separate threat model, explicit consent, and a new audit before any claim changes.</p></article>`;
   }).join("");
   return `<main class="content-viewport connections-destination" aria-labelledby="route-heading"><header class="destination-header"><div><p class="eyebrow">Connections</p><h1 id="route-heading" tabindex="-1">Connections</h1><p>Accounts, devices, network status, and future workspaces connected to this OSL identity.</p></div><button class="button primary" data-connections-primary-action type="button">Connect a service</button></header><section class="settings-list connections-accounts" aria-labelledby="connections-accounts-title"><header><h2 id="connections-accounts-title">Accounts</h2><p>Each account opens through its own supported app surface; protected actions still require exact verification.</p></header>${appRows}</section><section class="settings-list connections-devices" aria-labelledby="connections-devices-title"><header><h2 id="connections-devices-title">Devices and network</h2><p>Optional device and network integrations never grant send, delete, or account authority by themselves.</p></header><article class="connection-device-card" data-connection-card="mullvad" data-privacy-scope="networkOnly" data-connection-state="${mullvadStatus.availability}"><span class="status-tag">${mullvadLabel}</span><h3>Mullvad</h3><p>Network privacy signal only. Platforms and recipients can still see ordinary content you send there.</p><button class="button compact" data-route="mullvad" type="button" ${mullvadStatus.availability === "installed" ? "" : "disabled"}>Use existing session</button></article>${androidCards}</section></main>`;
 }
@@ -3447,7 +3540,7 @@ function activeHomeApp(): HomeAppCatalogEntry | null {
 
 function mailComposerEncryptionScope(app: HomeAppCatalogEntry | null): string {
   if (app?.serviceId !== "email" || app.provider === null) return "";
-  return `<aside class="mail-composer-encryption-scope" data-mail-composer-encryption-scope="${app.id}" role="note" aria-label="Email protection scope"><strong>Before you send</strong><small>${escapeHtml(app.displayName)} protects this app account. Ordinary external email is not OSL end-to-end encrypted. Use OSL Chat for verified friends.</small></aside>`;
+  return `<aside class="mail-composer-encryption-scope" data-mail-composer-encryption-scope="${app.id}" role="note" aria-label="Email protection scope"><strong>Before you send</strong><small>${escapeHtml(app.displayName)} protects this app account. Ordinary external email uses the mail provider's delivery path. Use OSL Chat for verified friends.</small></aside>`;
 }
 
 function activeHomeAppName(): string {
@@ -3880,11 +3973,6 @@ async function refreshMassCleanupCapabilities(): Promise<void> {
 
 async function refreshAutoScrubFleetStatus(): Promise<void> {
   if (autoScrubStatusLoading) return;
-  const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
-  if (!pro) {
-    autoScrubFleetStatus = null;
-    return;
-  }
   autoScrubStatusLoading = true;
   render();
   try {
@@ -3893,7 +3981,7 @@ async function refreshAutoScrubFleetStatus(): Promise<void> {
     autoScrubFleetStatus = null;
   } finally {
     autoScrubStatusLoading = false;
-    if (route === "settings" && settingsSection === "scrub") render();
+    if (route !== "onboarding") render();
   }
 }
 
@@ -7000,6 +7088,7 @@ function startReadyWorkspaceLoads(): void {
   void openMullvadOnStartup();
   void loadHubPasswordRoleStatus().then((status) => { passwordRoleStatus = status; if (route === "settings" && settingsSection === "account") renderWhenIdle(); }).catch(() => undefined);
   void refreshUpdateStatus(true);
+  void refreshAutoScrubFleetStatus();
   void loadFriendProfile().then((profile) => { friendCode = profile?.friendCode ?? null; friendDisplayId = profile?.oslUserId ?? null; if (route === "home") renderWhenIdle(); });
   void listHubPeople().then((people) => { hubPeople = people ?? []; if (route === "home") renderWhenIdle(); });
   if (notificationsEnabled) void setNotificationsEnabled(true).then(async (enabled) => {
@@ -7757,6 +7846,7 @@ type OslHubUiTestStatePatch = {
   appNotifications?: AppNotification[];
   mullvadAvailability?: MullvadStatus["availability"];
   licenseAccess?: HubLicenseState["access"];
+  autoScrubFleetStatus?: AutoScrubFleetStatus | null;
 };
 
 function testHubPerson(person: Partial<HubPerson> & { personId: string }): HubPerson {
@@ -7811,6 +7901,9 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   notificationPreviewContent = patch.notificationPreviewContent ?? true;
   appNotifications = patch.appNotifications ?? [];
   licenseState = { ...unconfiguredLicenseState, access: patch.licenseAccess ?? "free" };
+  autoScrubFleetStatus = patch.autoScrubFleetStatus ?? null;
+  autoScrubStatusLoading = false;
+  autoScrubStopPending = false;
   mullvadStatus = {
     availability: patch.mullvadAvailability ?? "unavailable",
     integrationState: patch.mullvadAvailability === "installed" ? "availableToOpen" : patch.mullvadAvailability === "installable" ? "installable" : "unavailable",
@@ -7830,6 +7923,10 @@ export const __oslHubUiTest = {
   renderWorkspaceContent(destination?: Route): string {
     if (destination) route = destination;
     return workspaceContent();
+  },
+  renderRouteShell(destination: Route): string {
+    route = destination;
+    return destination === "onboarding" ? onboardingShellMarkup() : workspaceShellMarkup();
   },
   renderOnboardingSendModes(sendMode: SendMode = "manual"): string {
     route = "onboarding";
