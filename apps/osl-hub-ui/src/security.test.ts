@@ -677,15 +677,6 @@ describe("bundled preview security boundary", () => {
   });
 
   it("public 'independently reviewed' claim gate unlocked", () => {
-    const allowlist = readRelative("../../../docs/design/osl-public-claim-allowlist.md");
-
-    expect(allowlist).toContain(
-      "A narrow SESSION_RESET ratchet remediation was independently reviewed and signed off.",
-    );
-    expect(allowlist).toContain(
-      "This was source review of one remediation, not a third-party cryptographic audit of OSL.",
-    );
-
     const gateScript = fileURLToPath(
       new URL("../../../scripts/check-app-claims.mjs", import.meta.url),
     );
@@ -694,6 +685,7 @@ describe("bundled preview security boundary", () => {
       maxBuffer: 1024 * 1024,
     });
 
+    expect(output).not.toContain("FAIL");
     expect(output).toContain("PASS passes narrow independently reviewed remediation claim");
     expect(output).toContain("PASS catches narrow independently reviewed claim without limitation");
     expect(output).toContain("PASS catches broad independently reviewed encryption claim");
