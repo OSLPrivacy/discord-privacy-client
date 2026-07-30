@@ -139,6 +139,14 @@ mod tests {
     };
     use tempfile::tempdir;
 
+    struct FileKeyReset;
+
+    impl Drop for FileKeyReset {
+        fn drop(&mut self) {
+            crate::main_password::set_file_storage_key(None);
+        }
+    }
+
     #[test]
     fn transient_failure_is_retried_and_next_attempt_grows_between_attempts() {
         let mut file = ControlInboxDeadLetterFile::default();
@@ -222,6 +230,7 @@ mod tests {
     fn control_inbox_dead_letter_round_trips_through_encryption_path_unchanged() {
         use crate::main_password::{has_enc_magic, set_file_storage_key};
 
+        let _reset = FileKeyReset;
         set_file_storage_key(Some([0x55u8; 32]));
         let dir = tempdir().unwrap();
         let path = dir.path().join("control_inbox_dead_letter.json");
