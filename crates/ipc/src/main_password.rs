@@ -45,7 +45,9 @@ use base64::Engine;
 use bip39::{Language, Mnemonic};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+
 use std::sync::{Mutex, OnceLock};
+
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -71,7 +73,9 @@ const DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD: u32 = DURESS_FAILED_ATTEMPT_THRE
 const ARGON_MEMORY_KB: u32 = 65_536; // 64 MiB
 const ARGON_ITERATIONS: u32 = 3;
 const ARGON_PARALLELISM: u32 = 1;
+
 pub const INACTIVITY_AUTO_LOCK_SECONDS: u64 = keystore::DEFAULT_INACTIVITY_SECONDS;
+
 
 // =====================================================================
 // On-disk schemas.
@@ -886,15 +890,18 @@ fn marker_phrase_hash(marker: &PasswordMarker) -> Option<String> {
 // =====================================================================
 
 static FILE_STORAGE_KEY: OnceLock<Mutex<Option<[u8; 32]>>> = OnceLock::new();
+
 static INACTIVITY_AUTO_LOCK_TIMER: OnceLock<Mutex<Option<keystore::InactivityTimer>>> =
     OnceLock::new();
 static INACTIVITY_AUTO_LOCK_LOCKED: OnceLock<Mutex<bool>> = OnceLock::new();
+
 
 fn file_storage_slot() -> &'static Mutex<Option<[u8; 32]>> {
     FILE_STORAGE_KEY.get_or_init(|| Mutex::new(None))
 }
 
 fn inactivity_auto_lock_slot() -> &'static Mutex<Option<keystore::InactivityTimer>> {
+
     INACTIVITY_AUTO_LOCK_TIMER.get_or_init(|| Mutex::new(None))
 }
 
@@ -1007,6 +1014,7 @@ fn seed_inactivity_auto_lock_timer(last_activity: Instant, locked: bool) {
         arm_inactivity_auto_lock_timer_at(last_activity);
     }
     set_inactivity_auto_lock_locked(locked);
+
 }
 
 /// Public accessor used by peer_map / whitelist_state /
@@ -1030,10 +1038,12 @@ pub fn set_file_storage_key(key: Option<[u8; 32]>) {
     }
     *slot = key;
     drop(slot);
+
     if !is_some {
         disarm_inactivity_auto_lock_timer();
     }
     set_inactivity_auto_lock_locked(false);
+
     if is_some && !was_some {
         eprintln!("[OSL][crypto] file_storage_key populated");
     } else if !is_some && was_some {
@@ -1324,6 +1334,12 @@ pub enum GatePasswordAttemptResult {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateFailureAction {
+    Wrong,
+    DuressByThreshold,
+}
+
 pub fn verify_gate_password_with_marker(
     marker: &PasswordMarker,
     password: &str,
@@ -1392,6 +1408,23 @@ pub fn verify_gate_password_with_marker(
         return Ok(GateMatch::Burn);
     }
     Ok(GateMatch::Wrong)
+}
+
+pub fn reset_password_failure_counter(lock: &mut LockoutState) {
+    lock.password_failed_attempts = 0;
+    lock.password_locked_until = None;
+}
+
+pub fn record_gate_password_failure(lock: &mut LockoutState, now: i64) -> GateFailureAction {
+    lock.password_failed_attempts = lock.password_failed_attempts.saturating_add(1);
+    if lock.password_failed_attempts >= DURESS_FAILED_ATTEMPT_THRESHOLD {
+        lock.password_locked_until = None;
+        GateFailureAction::DuressByThreshold
+    } else {
+        let secs = password_lockout_secs(lock.password_failed_attempts);
+        lock.password_locked_until = if secs > 0 { Some(now + secs) } else { None };
+        GateFailureAction::Wrong
+    }
 }
 
 /// Gate-side password verification with the shared persisted failure
@@ -1851,6 +1884,7 @@ mod password_policy_tests {
     }
 
     #[test]
+
     fn maybe_decrypt_transparently_supports_both_device_bound_and_main_password() {
         set_file_storage_key(None);
 
@@ -1891,11 +1925,13 @@ mod password_policy_tests {
             br#"{"mode":"device-bound"}"#
         );
 
+
         set_file_storage_key(None);
     }
 
     #[test]
     fn tenth_wrong_password_attempt_triggers_duress() {
+
         set_file_storage_key(None);
         let dir = tempfile::tempdir().unwrap();
         write_marker(dir.path(), &build_fast_test_marker(TEST_MAIN_PASSWORD)).unwrap();
@@ -2182,4 +2218,5 @@ mod password_policy_tests {
         assert!(!inactivity_auto_lock_is_locked());
         set_file_storage_key(None);
     }
+
 }

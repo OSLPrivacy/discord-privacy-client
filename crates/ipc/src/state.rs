@@ -18,7 +18,9 @@ use crate::whitelist_state::WhitelistState;
 use crypto::x25519;
 use keystore::{Identity, KeyServerClient};
 use std::collections::HashMap;
+
 use std::path::PathBuf;
+
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -582,6 +584,7 @@ mod tests {
         assert!(!state.rn_wire_in_enabled());
     }
 
+
     #[test]
     fn app_state_constructs_production_duress_engine() {
         let temp = tempfile::TempDir::new().expect("tempdir");
@@ -631,6 +634,7 @@ mod tests {
         assert!(!account_dir.join("store").exists());
         assert!(!password_dir.join("password_marker.json").exists());
         assert!(!state.duress_journal_path.exists());
+
     }
 }
 

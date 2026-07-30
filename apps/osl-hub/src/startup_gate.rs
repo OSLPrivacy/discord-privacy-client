@@ -103,7 +103,7 @@ pub fn verify_password_role(
         "wrong" => VerifiedGateRole::Wrong,
         _ => return Err("OSL password gate returned an invalid role".to_owned()),
     };
-    let role = role_after_auto_burn_threshold(parsed_role, result.attempts_used);
+    let role = role_after_auto_duress_threshold(parsed_role, result.attempts_used);
     Ok(GatePasswordVerification {
         role,
         lockout_seconds_remaining: result.lockout_seconds_remaining,
@@ -111,13 +111,79 @@ pub fn verify_password_role(
     })
 }
 
-fn role_after_auto_burn_threshold(role: VerifiedGateRole, attempts_used: u32) -> VerifiedGateRole {
+fn role_after_auto_duress_threshold(role: VerifiedGateRole, attempts_used: u32) -> VerifiedGateRole {
     if role == VerifiedGateRole::Wrong
         && attempts_used >= keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD
     {
-        VerifiedGateRole::Burn
+        VerifiedGateRole::Duress
     } else {
         role
+    }
+}
+
+pub fn verify_duress_pin(
+    state: &HubCoreState,
+    pin: String,
+) -> Result<GatePasswordVerification, String> {
+    let dir =
+        keystore::osl_base_dir().map_err(|_| "OSL password storage is unavailable".to_owned())?;
+    let mut lock = ipc::main_password::read_lockout_pub(&dir);
+    let now = ipc::main_password::now_unix_secs_pub();
+    if let Some(until) = lock.password_locked_until {
+        if now < until {
+            return Ok(GatePasswordVerification {
+                role: VerifiedGateRole::Wrong,
+                lockout_seconds_remaining: until - now,
+                attempts_used: lock.password_failed_attempts,
+            });
+        }
+    }
+
+    let marker = ipc::main_password::read_marker_pub(&dir)?;
+    let outcome = ipc::main_password::verify_gate_password_with_marker(&marker, &pin)?;
+    match outcome {
+        ipc::main_password::GateMatch::Burn => {
+            ipc::main_password::reset_password_failure_counter(&mut lock);
+            let _ = ipc::main_password::write_lockout_pub(&dir, &lock);
+            return Ok(GatePasswordVerification {
+                role: VerifiedGateRole::Burn,
+                lockout_seconds_remaining: 0,
+                attempts_used: 0,
+            });
+        }
+        ipc::main_password::GateMatch::Duress => {
+            ipc::main_password::execute_gate_duress(&state.osl)?;
+            return Ok(GatePasswordVerification {
+                role: VerifiedGateRole::Duress,
+                lockout_seconds_remaining: 0,
+                attempts_used: lock.password_failed_attempts,
+            });
+        }
+        ipc::main_password::GateMatch::Main(_)
+        | ipc::main_password::GateMatch::Stealth
+        | ipc::main_password::GateMatch::Wrong => {}
+    }
+
+    let failure = ipc::main_password::record_gate_password_failure(&mut lock, now);
+    let _ = ipc::main_password::write_lockout_pub(&dir, &lock);
+    match failure {
+        ipc::main_password::GateFailureAction::Wrong => Ok(GatePasswordVerification {
+            role: VerifiedGateRole::Wrong,
+            lockout_seconds_remaining: lock
+                .password_locked_until
+                .map(|until| until - now)
+                .unwrap_or(0)
+                .max(0),
+            attempts_used: lock.password_failed_attempts,
+        }),
+        ipc::main_password::GateFailureAction::DuressByThreshold => {
+            ipc::main_password::execute_gate_duress(&state.osl)?;
+            Ok(GatePasswordVerification {
+                role: VerifiedGateRole::Duress,
+                lockout_seconds_remaining: 0,
+                attempts_used: lock.password_failed_attempts,
+            })
+        }
     }
 }
 
@@ -260,13 +326,13 @@ mod tests {
     }
 
     #[test]
-    fn duress_pin_and_wrong_password_threshold_share_burn_path() {
+    fn burn_code_and_wrong_password_threshold_keep_distinct_paths() {
         let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
         let _reset = KeystoreGlobalReset;
         let state = HubCoreState::default();
 
         let below_threshold = GatePasswordVerification {
-            role: role_after_auto_burn_threshold(
+            role: role_after_auto_duress_threshold(
                 VerifiedGateRole::Wrong,
                 keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD - 1,
             ),
@@ -277,64 +343,37 @@ mod tests {
         assert_eq!(below_result.outcome, "wrong");
         assert!(below_result.burn.is_none());
 
-        let (threshold_config, threshold_local, threshold_core, threshold_profiles, _) =
-            populate_cleanup_roots("threshold");
-        keystore::set_base_dir_override(Some(threshold_core.clone()));
         let threshold_verification = GatePasswordVerification {
-            role: role_after_auto_burn_threshold(
+            role: role_after_auto_duress_threshold(
                 VerifiedGateRole::Wrong,
                 keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD,
             ),
             lockout_seconds_remaining: 3600,
             attempts_used: keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD,
         };
-        assert_eq!(threshold_verification.role, VerifiedGateRole::Burn);
-        let threshold_result = gate_result_for_verification(
-            &state,
-            threshold_verification,
-            &threshold_config,
-            &threshold_local,
-        );
-        assert_burned_result_removed(&threshold_result, "hub_core", &threshold_core);
-        assert_burned_result_removed(&threshold_result, "service_profiles", &threshold_profiles);
+        assert_eq!(threshold_verification.role, VerifiedGateRole::Duress);
+        let threshold_result = HubGateUnlockResult::duress(threshold_verification);
+        assert_eq!(threshold_result.outcome, "duress");
+        assert!(threshold_result.burn.is_none());
 
-        let (duress_config, duress_local, duress_core, duress_profiles, _) =
-            populate_cleanup_roots("duress");
-        keystore::set_base_dir_override(Some(duress_core.clone()));
-        let duress_result = gate_result_for_verification(
+        let (burn_config, burn_local, burn_core, burn_profiles, _) =
+            populate_cleanup_roots("burn");
+        keystore::set_base_dir_override(Some(burn_core.clone()));
+        let burn_result = gate_result_for_verification(
             &state,
             GatePasswordVerification {
-                role: role_after_auto_burn_threshold(VerifiedGateRole::Burn, 0),
+                role: role_after_auto_duress_threshold(VerifiedGateRole::Burn, 0),
                 lockout_seconds_remaining: 0,
                 attempts_used: 0,
             },
-            &duress_config,
-            &duress_local,
+            &burn_config,
+            &burn_local,
         );
-        assert_burned_result_removed(&duress_result, "hub_core", &duress_core);
-        assert_burned_result_removed(&duress_result, "service_profiles", &duress_profiles);
+        assert_burned_result_removed(&burn_result, "hub_core", &burn_core);
+        assert_burned_result_removed(&burn_result, "service_profiles", &burn_profiles);
+        assert_eq!(burn_result.outcome, "burned");
 
-        assert_eq!(threshold_result.outcome, duress_result.outcome);
-        assert_eq!(
-            threshold_result.burn.as_ref().unwrap().restart_required,
-            duress_result.burn.as_ref().unwrap().restart_required
-        );
-        assert_eq!(
-            threshold_result
-                .burn
-                .as_ref()
-                .unwrap()
-                .original_discord_data_untouched,
-            duress_result
-                .burn
-                .as_ref()
-                .unwrap()
-                .original_discord_data_untouched
-        );
-
-        let _ = std::fs::remove_dir_all(threshold_config);
-        let _ = std::fs::remove_dir_all(threshold_local);
-        let _ = std::fs::remove_dir_all(duress_config);
-        let _ = std::fs::remove_dir_all(duress_local);
+        let _ = std::fs::remove_dir_all(burn_config);
+        let _ = std::fs::remove_dir_all(burn_local);
     }
 }

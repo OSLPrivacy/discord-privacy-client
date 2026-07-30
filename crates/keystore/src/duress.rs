@@ -1,11 +1,16 @@
+
 //! Duress-engine primitives.
+
 //!
 //! Spec: `docs/design/unlock-and-duress.md` "Duress flow — full
 //! specification" + `docs/design/build-order.md` Layer B3.
 //!
-//! IPC constructs a production [`DuressEngine`] in application state and the
-//! Hub password gate invokes it for duress outcomes. The separate burn-password
-//! path still uses `startup_gate` and `cleanup`, not this engine.
+
+//! IPC constructs a production [`DuressEngine`] in application state. The Hub
+//! password gate invokes it for distinct duress outcomes, and the burn-code
+//! sign-in path invokes it before its fixed-root cleanup. No production startup
+//! path currently calls [`DuressEngine::resume_if_pending`].
+
 //!
 //! The engine contract, when explicitly driven, has four phases:
 //!

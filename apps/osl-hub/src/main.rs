@@ -1040,11 +1040,15 @@ async fn unlock_hub_password_gate(
     app: tauri::AppHandle,
     session: State<'_, HubAccountSessionState>,
     password: String,
+    duress_pin: Option<String>,
 ) -> Result<HubGateUnlockResult, String> {
     let _session = session.transition.lock().await;
     let verify_app = app.clone();
-    let verification = tauri::async_runtime::spawn_blocking(move || {
-        startup_gate::verify_password_role(&verify_app.state::<HubCoreState>(), password)
+    let verification = tauri::async_runtime::spawn_blocking(move || match duress_pin {
+        Some(pin) if !pin.is_empty() => {
+            startup_gate::verify_duress_pin(&verify_app.state::<HubCoreState>(), pin)
+        }
+        _ => startup_gate::verify_password_role(&verify_app.state::<HubCoreState>(), password),
     })
     .await
     .map_err(|_| "OSL password-gate worker failed".to_owned())??;
@@ -1105,6 +1109,14 @@ async fn unlock_hub_password_gate(
                 .map_err(|_| "OSL Privacy local storage is unavailable".to_owned())?;
             let burn_app = app.clone();
             let burn = tauri::async_runtime::spawn_blocking(move || {
+                burn_app
+                    .state::<HubCoreState>()
+                    .osl
+                    .duress_engine
+                    .lock()
+                    .map_err(|_| "OSL device cleanup could not start".to_owned())?
+                    .execute()
+                    .map_err(|_| "OSL device cleanup could not start".to_owned())?;
                 cleanup::execute_verified_gate_burn(
                     &burn_app.state::<HubCoreState>(),
                     &config_dir,

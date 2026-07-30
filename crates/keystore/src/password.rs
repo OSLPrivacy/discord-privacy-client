@@ -1,4 +1,6 @@
+
 //! Legacy unlock/duress record primitives plus the shared inactivity timer.
+
 //!
 //! Spec: `docs/design/unlock-and-duress.md`. This record model supports two
 //! optional password roles:
@@ -11,10 +13,13 @@
 //! [`crate::sealer::Sealer`]. Failed-attempt tracking, threshold, and
 //! inactivity-timer settings are fields in that model.
 //!
+
 //! Current Hub/IPC production code uses [`InactivityTimer`] for auto-lock, but
 //! the older [`PasswordRecord`] / [`verify_against_record`] storage model
-//! remains legacy. The current Hub password gate has its own marker format and
-//! routes duress outcomes to [`crate::duress::DuressEngine`].
+//! remains legacy. The current Hub password gate has its own marker format,
+//! routes duress outcomes to [`crate::duress::DuressEngine`], and holds the
+//! same engine for the burn-code cleanup path.
+
 //!
 //! ## Cryptographic role (per design doc)
 //!

@@ -22,7 +22,7 @@ function sourceBetween(source: string, start: string, end: string): string {
 }
 
 describe("duress wipe production reachability", () => {
-  it("wire a distinct duress PIN check at the unlock screen that triggers DuressEngine", () => {
+  it("wires a distinct duress outcome at the unlock screen", () => {
     const main = readRelative("./main.ts");
     const core = readRelative("./core.ts");
     const state = readRelative("../../../crates/ipc/src/state.rs");
@@ -53,5 +53,24 @@ describe("duress wipe production reachability", () => {
     for (const claim of CLAIMS_THAT_MUST_NOT_SURFACE) {
       expect(main).not.toMatch(claim);
     }
+  });
+
+  it("wires the burn-code path to the production duress engine", () => {
+    const nativeMain = readRelative("../../osl-hub/src/main.rs");
+    const startupGate = readRelative("../../osl-hub/src/startup_gate.rs");
+    const uiCore = readRelative("./core.ts");
+    const uiMain = readRelative("./main.ts");
+
+    expect(uiMain).toContain('id="identity-duress-pin"');
+    expect(uiMain).toContain("data-duress-pin");
+    expect(uiMain).toContain("unlockHubPasswordGate(secret, duressSecret || undefined)");
+    expect(uiCore).toContain("duressPin?: string");
+    expect(uiCore).toContain("duressPin: hasDuressPin ? duressPin : null");
+    expect(nativeMain).toContain("duress_pin: Option<String>");
+    expect(nativeMain).toContain("startup_gate::verify_duress_pin");
+    expect(nativeMain).toContain(".duress_engine");
+    expect(nativeMain).toContain(".execute()");
+    expect(startupGate).toContain("pub fn verify_duress_pin(");
+    expect(startupGate).toContain("GateMatch::Burn");
   });
 });
