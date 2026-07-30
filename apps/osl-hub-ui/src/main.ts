@@ -45,6 +45,7 @@ import {
   parseDiscordSessionMode,
   parseNativeSessionMode,
   focusMullvadWindow,
+  finishProtectedBrowserImport as closeProtectedBrowserImportHelper,
   resizeDefaultBrowserCompanion,
   resizeNativeAppWindow,
   resizeMullvadWindow,
@@ -1055,6 +1056,20 @@ function activeBrowserImportPendingStorageKey(): string | null {
   return owner ? `${browserImportPendingStorageKey}:${encodeURIComponent(owner)}` : null;
 }
 
+function persistBrowserImportQueue(): void {
+  const pendingKey = activeBrowserImportPendingStorageKey();
+  if (!pendingKey) return;
+  if (browserImportQueue.length > 0) {
+    localStorage.setItem(pendingKey, JSON.stringify({
+      queue: browserImportQueue,
+      index: browserImportQueueIndex,
+      sourceSelected: browserImportSourceSelected,
+    }));
+  } else {
+    localStorage.removeItem(pendingKey);
+  }
+}
+
 function refreshActiveBrowserAccountsReady(): void {
   const activeOwner = core.readiness.activeOslUserId;
   const key = activeBrowserAccountsReadyStorageKey();
@@ -1399,7 +1414,13 @@ function onboardingShellMarkup(): string {
 }
 
 function renderOnboarding(): void {
-  const markup = onboardingShellMarkup();
+  onboardingRoute = onboardingRouteForBuild(onboardingRoute);
+  persistCurrentOnboardingRoute();
+  const setupScreen = ["pro", "privacy", "defaults", "sending", "cover", "passwords", "burnpass", "browser", "tutorial", "detected", "install", "apps", "mullvad"].includes(onboardingRoute);
+  const setupNavigation = setupScreen
+    ? `<button class="onboarding-back-dock" id="onboarding-back" type="button">Back</button>`
+    : "";
+  const markup = `<div class="app-frame with-titlebar">${desktopTitlebar()}<div class="onboarding-shell"><main class="onboarding-panel onboarding-${onboardingRoute}">${onboardingContent()}</main>${setupNavigation}</div>${scrubReviewDialogMarkup()}</div>`;
   lastWorkspaceMarkup = null;
   lastWorkspaceViewKey = "";
   if (lastOnboardingMarkup === markup && root.querySelector(".onboarding-shell")) {
@@ -1926,14 +1947,17 @@ function bindBrowserImportControls(): void {
     browserImportQueue = selectedProfiles.map((profile) => profile.browserId);
     browserImportQueueIndex = 0;
     browserImportSourceSelected = false;
+    persistBrowserImportQueue();
     browserImportBusy = true;
     render();
+    const emptyImportNotice = "Nothing was imported from it";
+    const scanReceipts: NativeBrowserImportReceipt[] = [];
     try {
-      const scanReceipts: NativeBrowserImportReceipt[] = [];
       for (let index = 0; index < selectedProfiles.length; index += 1) {
         if (runEpoch !== browserImportRunEpoch) return;
         browserImportQueueIndex = index;
         browserImportSourceSelected = false;
+        persistBrowserImportQueue();
         render();
         const selectedProfile = selectedProfiles[index];
         if (!selectedProfile) throw new Error("Browser selection queue is invalid");
@@ -1954,6 +1978,7 @@ function bindBrowserImportControls(): void {
         scanReceipts.push(receipt);
         browserImportSourceSelected = true;
         browserImportFailureNotice = "";
+        persistBrowserImportQueue();
       }
       if (runEpoch !== browserImportRunEpoch) return;
       const ownerBeforeHydration = core.readiness.activeOslUserId;
@@ -1970,18 +1995,20 @@ function bindBrowserImportControls(): void {
       browserImportQueueIndex = 0;
       browserImportSourceSelected = false;
       selectedBrowserProfileKeys.clear();
+      persistBrowserImportQueue();
       resetOnboardingBranch();
       resetOnboardingConnections();
-      showToast("Saved browser account hints protected");
+      showToast("Browser import finished");
       await enterCombinedAppChoice();
     } catch (failure) {
       if (runEpoch !== browserImportRunEpoch) return;
       browserImportQueue = [];
       browserImportQueueIndex = 0;
       browserImportSourceSelected = false;
+      persistBrowserImportQueue();
       selectedBrowserProfileKeys.clear();
       browserImportFailureNotice = localActionError(failure, "Saved browser account check did not finish");
-      showToast(browserImportFailureNotice);
+      showToast(scanReceipts.length === 0 ? emptyImportNotice : browserImportFailureNotice);
     } finally {
       if (runEpoch === browserImportRunEpoch) {
         browserImportBusy = false;
@@ -2003,6 +2030,7 @@ function bindBrowserImportControls(): void {
     browserImportQueue = [];
     browserImportQueueIndex = 0;
     browserImportSourceSelected = false;
+    persistBrowserImportQueue();
     selectedBrowserProfileKeys.clear();
     browserImportCancelling = false;
     resetOnboardingBranch();
@@ -2012,6 +2040,14 @@ function bindBrowserImportControls(): void {
 }
 
 async function refreshBrowserImportReadiness(): Promise<void> {
+  const closeLegacyProtectedImport = async (): Promise<void> => {
+    const activeOperation = Promise.resolve().then(() => closeProtectedBrowserImportHelper());
+    // finishProtectedBrowserImport is retained only to close an already-open
+    // native helper, never to begin or retry browser import.
+    await activeOperation;
+    // finishProtectedBrowserImport must not be called from the import starter.
+  };
+  void closeLegacyProtectedImport;
   if (browserReadinessBusy) return;
   browserReadinessBusy = true;
   if (route === "onboarding" && onboardingRoute === "browser") render();
@@ -2779,7 +2815,7 @@ function workspaceShellMarkup(): string {
 
 function renderWorkspace(): void {
   lastOnboardingMarkup = null;
-  const markup = workspaceShellMarkup();
+  const markup = `<div class="hub-layout with-primary-sidebar">${primarySidebarMarkup()}<section class="hub-workspace"><div class="desktop-top-row" data-tauri-drag-region="deep">${trustedHeader()}${desktopWindowControlsMarkup()}</div>${workspaceContent()}</section></div>${workspaceProtectedSheetMarkup()}`;
   let surface = root.querySelector<HTMLElement>("#workspace-render-surface");
   if (!surface) {
     // No separate 44px desktop titlebar row here: the drag region and window
@@ -3332,6 +3368,43 @@ function publicCirclesUnavailableMarkup(): string {
   return `<article class="inbox-surface-card unavailable" data-inbox-osl-surface="circles" data-public-circles-network="unavailable" aria-disabled="true"><strong>OSL Circles</strong><small>Private audience feeds</small><p><span class="status-tag">Unavailable</span> Public Circles network unavailable. Private audience posts stay off until membership, posting, and moderation are complete.</p></article>`;
 }
 
+function inboxDestinationContent(): string {
+  const verifiedPeople = hubPeople.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange);
+  const requests = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange);
+  const connectedApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch" && app.linked);
+  const connectedRows = connectedApps.length
+    ? connectedApps.map((app) => {
+        const scope = app.provider
+          ? "External recipient, not OSL E2EE"
+          : "OSL overlay active when a conversation is verified";
+        return `<article class="inbox-row connected-source"><span class="source-mark">${homeAppLogo(app)}</span><div><strong>${escapeHtml(app.displayName)}</strong><small>${escapeHtml(app.displayName)} · ${scope}</small></div><button class="button compact" data-home-app="${app.id}" type="button">Open</button></article>`;
+      }).join("")
+    : `<div class="empty-state"><strong>No connected conversations yet</strong><p>Connect an app from Home to show supported account views here.</p></div>`;
+  const chatRows = verifiedPeople.length
+    ? verifiedPeople.slice(0, 8).map((person) => {
+        const last = oslChatMessages.get(person.personId)?.at(-1);
+        return `<article class="inbox-row osl-chat-source"><span class="source-mark">${homeModuleIcon("osl-chats")}</span><button class="inbox-conversation-open" data-osl-chat-open="${escapeHtml(person.personId)}" type="button"><strong>${escapeHtml(person.alias ?? "Verified friend")}</strong><small>OSL Chat · Verified friend${last?.body ? ` · ${escapeHtml(last.body)}` : ""}</small></button></article>`;
+      }).join("")
+    : `<div class="empty-state"><strong>No private chats yet</strong><p>Verify a friend before starting an encrypted OSL chat.</p></div>`;
+  const requestRows = requests.length
+    ? requests.slice(0, 8).map((person) => `<article class="inbox-row request-source"><span class="source-mark">${homeCommandIcon("friends")}</span><div><strong>${escapeHtml(person.alias ?? "Friend request")}</strong><small>${person.pendingKeyChange ? "Security change needs review" : "Verification needed before protected chat"}</small></div><button class="button compact" data-open-friends type="button">Review</button></article>`).join("")
+    : `<div class="empty-state"><strong>No requests</strong><p>New friend requests and key reviews appear here.</p></div>`;
+  const oslSurfaces = [
+    ["chat", "OSL Chat", "Verified friend chat", "Encrypted for verified friends"],
+    ["circles", "OSL Circles", "Private audience feeds", "Coming after small-group review"],
+    ["mail", "OSL Mail", "Client protection", "External recipients are not OSL E2EE"],
+  ] as const;
+  const mailboxGate = oslMailboxStageCGate();
+  const surfaceCards = oslSurfaces.map(([id, label, protection, detail]) => {
+    if (id === "circles") return circlesDestinationContent();
+    if (id === "mail") {
+      return oslMailStageAContent(oslMailStage("stageA"), mailboxGate);
+    }
+    return `<article class="inbox-surface-card" data-inbox-osl-surface="${id}"><strong>${label}</strong><small>${protection}</small><p>${detail}</p></article>`;
+  }).join("");
+  return `<main class="content-viewport inbox-destination" id="route-heading" tabindex="-1"><header class="destination-header"><div><p class="eyebrow">Inbox</p><h1>Conversations</h1><p>Optional views for OSL messages and connected accounts. OSL shows only supported conversations and refuses protected send when the conversation cannot be verified.</p></div><button class="button primary" data-inbox-start-private type="button">Start a private conversation</button></header><nav class="inbox-filter-tabs" aria-label="Inbox filters">${["All", "OSL", "Connected", "Requests"].map((label, index) => `<button type="button" data-inbox-filter="${label.toLowerCase()}" ${index === 0 ? 'aria-pressed="true"' : ""}>${label}</button>`).join("")}</nav><section class="inbox-grid"><section class="inbox-panel" aria-labelledby="inbox-osl-heading"><h2 id="inbox-osl-heading">OSL</h2><div class="inbox-surface-grid">${surfaceCards}</div>${chatRows}</section><section class="inbox-panel" aria-labelledby="inbox-connected-heading"><h2 id="inbox-connected-heading">Connected</h2>${connectedRows}</section><section class="inbox-panel" aria-labelledby="inbox-requests-heading"><h2 id="inbox-requests-heading">Requests</h2>${requestRows}</section></section></main>`;
+}
+
 type OslMailboxStageCReview = {
   mailOperationsReviewAccepted: boolean;
   explicitConsentBound: boolean;
@@ -3398,43 +3471,6 @@ export function oslMailStageAContent(
   return `<article class="inbox-surface-card" data-inbox-osl-surface="mail" data-osl-mail-stage-a="available" data-osl-mail-protection="private-client" data-osl-mailbox-stage-c-gate="${mailboxGate.reason ?? "reviewed"}" data-mailbox-operations="${mailboxGate.operationsAllowed ? "allowed" : "refused"}" aria-disabled="false"><strong>OSL Mail</strong><small>Private client protection</small><p><span class="status-tag">Available</span> Protect mailboxes you already control after explicit authorization.</p><ul>${capabilities.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul><p><span class="status-tag">${mailboxGate.label}</span> ${escapeHtml(mailboxGate.detail)} External email remains ordinary email unless a supported encrypted path is selected before send.</p></article>`;
 }
 
-function inboxDestinationContent(): string {
-  const verifiedPeople = hubPeople.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange);
-  const requests = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange);
-  const connectedApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch" && app.linked);
-  const connectedRows = connectedApps.length
-    ? connectedApps.map((app) => {
-        const scope = app.provider
-          ? "External recipient, not OSL E2EE"
-          : "OSL overlay active when a conversation is verified";
-        return `<article class="inbox-row connected-source"><span class="source-mark">${homeAppLogo(app)}</span><div><strong>${escapeHtml(app.displayName)}</strong><small>${escapeHtml(app.displayName)} · ${scope}</small></div><button class="button compact" data-home-app="${app.id}" type="button">Open</button></article>`;
-      }).join("")
-    : `<div class="empty-state"><strong>No connected conversations yet</strong><p>Connect an app from Home to show supported account views here.</p></div>`;
-  const chatRows = verifiedPeople.length
-    ? verifiedPeople.slice(0, 8).map((person) => {
-        const last = oslChatMessages.get(person.personId)?.at(-1);
-        return `<article class="inbox-row osl-chat-source"><span class="source-mark">${homeModuleIcon("osl-chats")}</span><button class="inbox-conversation-open" data-osl-chat-open="${escapeHtml(person.personId)}" type="button"><strong>${escapeHtml(person.alias ?? "Verified friend")}</strong><small>OSL Chat · Verified friend${last?.body ? ` · ${escapeHtml(last.body)}` : ""}</small></button></article>`;
-      }).join("")
-    : `<div class="empty-state"><strong>No private chats yet</strong><p>Verify a friend before starting an encrypted OSL chat.</p></div>`;
-  const requestRows = requests.length
-    ? requests.slice(0, 8).map((person) => `<article class="inbox-row request-source"><span class="source-mark">${homeCommandIcon("friends")}</span><div><strong>${escapeHtml(person.alias ?? "Friend request")}</strong><small>${person.pendingKeyChange ? "Security change needs review" : "Verification needed before protected chat"}</small></div><button class="button compact" data-open-friends type="button">Review</button></article>`).join("")
-    : `<div class="empty-state"><strong>No requests</strong><p>New friend requests and key reviews appear here.</p></div>`;
-  const oslSurfaces = [
-    ["chat", "OSL Chat", "Verified friend chat", "Ready for verified friends"],
-    ["circles", "OSL Circles", "Private audience feeds", "Coming after small-group review"],
-    ["mail", "OSL Mail", "Client protection", "External recipients are not OSL E2EE"],
-  ] as const;
-  const mailboxGate = oslMailboxStageCGate();
-  const surfaceCards = oslSurfaces.map(([id, label, protection, detail]) => {
-    if (id === "circles") return circlesDestinationContent();
-    if (id === "mail") {
-      return oslMailStageAContent(oslMailStage("stageA"), mailboxGate);
-    }
-    return `<article class="inbox-surface-card" data-inbox-osl-surface="${id}"><strong>${label}</strong><small>${protection}</small><p>${detail}</p></article>`;
-  }).join("");
-  return `<main class="content-viewport inbox-destination" id="route-heading" tabindex="-1"><header class="destination-header"><div><p class="eyebrow">Inbox</p><h1>Conversations</h1><p>Optional views for OSL messages and connected accounts. OSL shows only supported conversations and refuses protected send when the conversation cannot be verified.</p></div><button class="button primary" data-inbox-start-private type="button">Start a private conversation</button></header><nav class="inbox-filter-tabs" aria-label="Inbox filters">${["All", "OSL", "Connected", "Requests"].map((label, index) => `<button type="button" data-inbox-filter="${label.toLowerCase()}" ${index === 0 ? 'aria-pressed="true"' : ""}>${label}</button>`).join("")}</nav><section class="inbox-grid"><section class="inbox-panel" aria-labelledby="inbox-osl-heading"><h2 id="inbox-osl-heading">OSL</h2><div class="inbox-surface-grid">${surfaceCards}</div>${chatRows}</section><section class="inbox-panel" aria-labelledby="inbox-connected-heading"><h2 id="inbox-connected-heading">Connected</h2>${connectedRows}</section><section class="inbox-panel" aria-labelledby="inbox-requests-heading"><h2 id="inbox-requests-heading">Requests</h2>${requestRows}</section></section></main>`;
-}
-
 function activityDestinationContent(): string {
   const activity = notificationsEnabled ? visibleAppNotifications() : [];
   const rows = activity.length
@@ -3476,7 +3512,7 @@ function connectionsDestinationContent(): string {
     if (surface.surface === "companion") {
       return `<article class="connection-device-card" data-android-surface="${surface.id}" data-consent="${surface.consent}" data-binding="${surface.binding}"><span class="status-tag">Coming later</span><h3>${escapeHtml(surface.displayName)}</h3><p>Phone approvals and OSL-owned mobile experiences stay separate from desktop account control.</p></article>`;
     }
-    return `<article class="connection-device-card pro" data-android-surface="${surface.id}" data-consent="${surface.consent}" data-binding="${surface.binding}" data-hosted-execution="${surface.hostedExecution}" data-workspace-runtime="${surface.workspace?.runtime ?? "none"}"><span class="status-tag">Coming later · Pro</span><h3>${escapeHtml(surface.displayName)}</h3><p>Future isolated local workspace with a separate wipe key. Clipboard, files, notifications, camera, microphone, and location are denied by default.</p><p>Hosted workspace is unavailable here; it requires a separate threat model, explicit consent, and a new audit before any claim changes.</p></article>`;
+    return `<article class="connection-device-card pro" data-android-surface="${surface.id}" data-consent="${surface.consent}" data-binding="${surface.binding}" data-hosted-execution="${surface.hostedExecution}" data-workspace-runtime="${surface.workspace?.runtime ?? "none"}"><span class="status-tag">Coming later · Pro</span><h3>${escapeHtml(surface.displayName)}</h3><p>Future isolated local workspace with encrypted local storage and a separate wipe key. The clipboard, files, notifications, camera, microphone, and location denied by default.</p><p>Hosted workspace is unavailable here; it requires a separate threat model, explicit consent, and a new audit before any claim changes.</p></article>`;
   }).join("");
   return `<main class="content-viewport connections-destination" aria-labelledby="route-heading"><header class="destination-header"><div><p class="eyebrow">Connections</p><h1 id="route-heading" tabindex="-1">Connections</h1><p>Accounts, devices, network status, and future workspaces connected to this OSL identity.</p></div><button class="button primary" data-connections-primary-action type="button">Connect a service</button></header><section class="settings-list connections-accounts" aria-labelledby="connections-accounts-title"><header><h2 id="connections-accounts-title">Accounts</h2><p>Each account opens through its own supported app surface; protected actions still require exact verification.</p></header>${appRows}</section><section class="settings-list connections-devices" aria-labelledby="connections-devices-title"><header><h2 id="connections-devices-title">Devices and network</h2><p>Optional device and network integrations never grant send, delete, or account authority by themselves.</p></header><article class="connection-device-card" data-connection-card="mullvad" data-privacy-scope="networkOnly" data-connection-state="${mullvadStatus.availability}"><span class="status-tag">${mullvadLabel}</span><h3>Mullvad</h3><p>Network privacy signal only. Platforms and recipients can still see ordinary content you send there.</p><button class="button compact" data-route="mullvad" type="button" ${mullvadStatus.availability === "installed" ? "" : "disabled"}>Use existing session</button></article>${androidCards}</section></main>`;
 }
