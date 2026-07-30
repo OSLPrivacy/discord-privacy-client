@@ -1,0 +1,2491 @@
+# Truth lane — website, public claims, project documents (2026-07-26)
+
+**Lane owner:** truth. **Model:** Opus 5, effort high.
+**Branch:** `web-pricing-truth-2026-07-26` in `/mnt/c/Users/<user>/projects/oslprivacy-web`.
+**Commit:** `72213331beee76da926124214d9e778b4517dc45` ("Bring every website claim inside the
+public-claim allowlist"), based on `d77709b` = `origin/main` = **what production serves today**.
+**Nothing is deployed.** Promotion to production is the owner's call.
+
+Authority used: master `OSL-MASTER-2026-07-26-r7` (bumped by this lane from r5 through r7),
+`docs/design/osl-public-claim-allowlist.md`, `docs/THREAT_MODEL.md`, and current source.
+
+---
+
+> **Read §10 first.** After the first pass, Zhao corrected the frame: the site is **pre-launch
+> marketing for v1**, not a live status dashboard, and one factual error of mine (`per-message-sealing`
+> labelled `Planned`) was reversed. Sections 2–8 describe the first pass and are kept for the audit
+> trail; where §10 differs, §10 wins.
+
+## 0 · The one-paragraph version
+
+The website's pricing is now driven by a single manifest and is provably consistent everywhere. The
+bigger finding is that the site was over-promising capability, not price: after checking every
+capability badge against the allowlist and against source, **five badges had to come down, and the
+site now carries no `Available` capability badge at all.** The most commercially serious of those is
+encrypted image sending — the headline benefit Pro is sold on — which is `Planned`, not `Beta`. That
+is escalated to Zhao as a decision, not fixed by copy edit. Separately, six verified-false claims are
+**live on production right now** and stay live until the owner promotes this branch.
+
+---
+
+## 1 · Live false claims currently on production — raised as an incident
+
+Production serves `origin/main` @ `d77709b` (confirmed: `https://oslprivacy.com` stamps
+`assets/js/main.js?v=182c9e8f`, which is the `origin/main` asset fingerprint). Every phrase below is
+present in that commit and is therefore public right now:
+
+| Phrase | Page at `d77709b` | Why it is false |
+|---|---|---|
+| "Erase 3" | `index.html`, `features.html` | Scrub discovers and hands off; it does not erase. |
+| "forward secrecy" | `docs/index.html` | The live path is stateless per-message sealing. `crates/ipc/src/commands.rs:2842` hard-disables the ratchet. |
+| "use Sender Keys" | `docs/faq.html` | Sender keys are off (`crates/ipc/src/state.rs:280`) and the construction carries no sender signature. |
+| "Unlimited messages" | `download.html` | Master §8.5 orders this replaced with Scrub positioning. |
+| "Private text + files" | `download.html` | Non-image sending is unavailable; the picker offers PNG/JPEG only (`apps/osl-hub/src/attachment_formats.rs:154`). |
+| "the key and readable message disappear" | `features.html` | Expiry is not wired, and there is no cryptographic burn — `crates/store/src/lib.rs:194` never populates `wrapped_key`. |
+
+All six are fixed on this branch. **They remain live until the branch is promoted.** That promotion
+is the owner's decision and this lane did not make it.
+
+---
+
+## 2 · Task 1 — pricing, now single-source
+
+Pro is **$5 for one month**, bought as a prepaid activation code; compute credits are separate
+one-time purchases (master §7.14). `data/pricing.json` is the single manifest and now drives
+**19 markers across all 15 pages** — homepage, download/checkout, FAQ, terms, privacy, receipt and
+entitlement copy.
+
+**The real defect found here:** `index.html` carried two `Get Pro · $5 / month` checkout buttons and
+had **no renewal, cancellation or activation-code disclosure anywhere on the page**. Read plainly,
+that is a subscription — the exact implication master §7.14 forbids ("Copy must never imply a stored
+card or a cancellation duty"), and a breach of allowlist A6 rule 3, which requires the limitation to
+ship on the same page at comparable prominence, not in a linked FAQ. The crawler had not caught it
+because no `required_phrases` entry covered `index.html`.
+
+Fixed: `tiers.pro.no_renewal_note` was added to the manifest, rendered in both the hero and the
+`home-buy` section of `index.html`, and pinned by a new `required_phrases` entry so it cannot
+regress.
+
+Left alone deliberately: `docs/terms.html`'s `$50` is a liability cap, not a price — the crawler
+already whitelists it by proximity to the word "liability".
+
+Prepaid-code honesty: the redemption claim stays unpublished. Master §7.14 and allowlist D8 forbid
+"your month starts when you enter the code" until the keyserver actually implements it — today a paid
+code grants **lifetime** access and no redemption timestamp exists. The manifest records this in
+`model.$redemption_note` as product truth that is explicitly *not publishable yet*.
+
+**Verification:** `pricing-sync --check` → 19 markers, 0 drift, 0 unknown paths.
+`check-claims` → 15 files scanned, 0 failed, 0 bare prices, 0 forbidden hits.
+
+---
+
+## 3 · Task 2 — every capability claim brought inside the allowlist
+
+All eight items named in the assignment were already corrected in the previous tab's uncommitted
+work; I verified each against source rather than assuming, and all eight are genuinely gone. The
+pinned sentence in `docs/how-it-works.html` — "fresh ephemeral key for every message, so each message
+stands on its own" — is intact and is now enforced by a `required_phrases` entry, so a future cleanup
+cannot delete the one accurate crypto sentence while removing the false ones around it.
+
+What the previous tab had **not** done, and what this lane changed: the capability registry still
+granted statuses the allowlist does not earn.
+
+| Capability | Was | Now | Reason |
+|---|---|---|---|
+| `per-message-sealing` | `Available` | `Planned` | Allowlist A1/A2 are `implemented-unwired` → Planned until a **named release build** proves the promise end to end. Allowlist §E also makes `open-security-finding` outrank everything on the row, and master §9 lists live v3 crypto as exactly that (sender attribution). The scheme *is* live in source; the badge is about proof, not existence. |
+| `cover-carrier-text` | `Available` | `Beta` | The claim it carries is row C1, "Encrypted messages send through Discord as ordinary-looking text", which is `runtime-proven` on QA builds only. No allowlist row grants the carrier `Available`. |
+| `image-send` | `Beta` | `Planned` | Master §9 lists the whole attachment lane `implemented-unwired` with open findings; master §10 critical class 4 is non-image attachments staged as durable plaintext. Scope (PNG/JPEG only) is not proof of function. |
+| `scrub-discovery` | `Beta` | `Planned` | No evidence names an exact build. Master §9 says "active dirty integration work"; the last live report (2026-07-25) was that pressing "do scrub" detected **0 accounts**, because browser import never creates an `AccountRecord`. Allowlist rule 5: evidence that does not name an exact build is `unknown-recheck-required`, which earns no claim. |
+| `scrub-guided-deletion` | `Experimental` | `Planned` | Cannot be exercised end to end while discovery produces nothing. |
+
+**Consequence: the site now carries no `Available` capability badge.** Current distribution is
+4 `Beta`, 31 `Planned`, 2 `Illustration`, 0 `Available`. That is the honest state of the product and
+it is the single most important thing in this report after the Pro finding.
+
+Copy was rewritten to match, not just badges — Scrub sections now read "Planned, and not in the
+shipping app yet… the drawing below shows the intended sequence", the Scrub promise moved from "The
+scan stays on your device" to "is designed to stay", and the burn FAQ answer was rewritten to
+separate local erasure, the cooperative peer request, and what burn cannot do.
+
+The AutoScrub open-source exception is stated consistently with §7.6/§7.10 on both
+`docs/how-it-works.html` and `audit.html`, and both are pinned by `required_phrases`.
+
+---
+
+## 4 · Task 3 — banned phrases in project documents
+
+Both were already corrected in the working tree; I verified the corrected text says what burn
+actually does.
+
+- `docs/design/open-core-and-local-privacy-boundary.md:82` — now reads that OSL Burn "deletes OSL's
+  local and server-side state and sends a cooperative request to the peer's client", and states
+  explicitly that burn does **not** destroy the only decryption capability, citing
+  `crates/store/src/lib.rs:194-206`.
+- `docs/design/pqxdh-double-ratchet.md:242` — now marked `Planned` with the same correction.
+
+A sweep of `docs/**` for "cryptographic burn", "permanently undecryptable", "disappears forever" and
+"gone for good" returns only **ban-list entries** (the allowlist, THREAT_MODEL, simple-spec, master
+§9, and the two files above telling people not to write it). No violations remain. As instructed,
+the `cipher-store-cf` hits were left alone — they are ban lists, not violations.
+
+---
+
+## 5 · Task 4 — status keeper
+
+**No lane reports had landed** in `docs/reports/` at the time of writing (only
+`baseline-2026-07-26-current-bytes.md`). Nothing was rubber-stamped because there was nothing to
+judge. The pipeline is ready: when lanes 1 and 2 land their "Acceptance rows this earns" sections,
+they get applied in one atomic edit per lane.
+
+### Checklist: 85 → **88 / 303**
+
+I found and fixed a **pre-existing arithmetic error**: section H's header said 5 earned while its own
+rows summed to 7. Rows are the authority, so the recorded 85 had been *understating* the project by
+2. Nothing was built to close that gap.
+
+| Change | Δ | Why |
+|---|---:|---|
+| Bookkeeping correction, section H | +2 | Header disagreed with its own rows. |
+| H1 · one pricing model | +1 | Manifest provably drives all 15 pages: 0 marker drift, 0 conflicting price/renewal/entitlement claims, missing A6 limitation added and pinned. The 4th point is **held** for actual promotion to production and the keyserver redemption change. |
+| J7 · public-claim allowlist | +1 | The master §8.6 crawler now exists and is proved by 14/14 known-bad fixtures. |
+| H8 · accessibility/motion/responsive matrix | −1 | **Overclaim corrected.** It sat at full marks while its own text named an open defect. 200% zoom and the accessibility half of §8.6 (accessible names, 44×44 tap targets, focus, non-colour-only state) are still unmeasured. |
+
+Verified consistent after editing: row weights 303 = header weights 303, row earned 88 = header
+earned 88 = snapshot 88, **0 section mismatches**. Applied as a single atomic write.
+
+No points were withdrawn for the five badge downgrades, because none of those badges had ever earned
+a checklist point — they were website overclaims, not recorded progress.
+
+### Other document updates
+
+- **Master bumped r5 → r6** with a §0.5 delta line, and the §9 Website row rewritten from "multiple
+  divergent deployments and conflicting claims" to the current evidenced state.
+- **Allowlist gained the rows it was missing**, so every badge on the site now maps to a row: Scrub
+  discovery, Scrub guided deletion, AutoScrub, link/tracker protection, before-send exposure warning,
+  AI carrier text, processing credits, plus an explicit note covering the two `Illustration` items.
+  Section F now records that the crawler exists, and a new subsection records the five downgrades so
+  nobody re-derives an old value from an older page.
+
+---
+
+## 6 · Task 5 — record, don't fix: root `Cargo.toml`
+
+**Not edited**, as instructed — another lane is building Rust and a root-manifest touch forces a full
+rebuild. Verified false: root `Cargo.toml:25-28` says osl-ratchet-next has no dependents, but
+`crates/ipc/Cargo.toml:73` declares it. `implemented-unwired` still holds, because nothing uses
+`wire_rn` — its only non-test reference is `pub mod wire_rn;` at `crates/ipc/src/lib.rs:76`.
+
+Exact replacement text for the manifest owner. Current lines 25–28:
+
+```toml
+    # Isolated, UNWIRED research crate. Reachable only from its own
+    # tests; no other crate or app depends on it. See
+    # crates/osl-ratchet-next/DESIGN.md — unreviewed, must not carry
+    # real traffic before external cryptographic review.
+```
+
+Replace with:
+
+```toml
+    # Isolated research crate, UNWIRED at the product level. `crates/ipc`
+    # declares the dependency (crates/ipc/Cargo.toml:73) and the adapter
+    # crates/ipc/src/wire_rn.rs genuinely uses it — but nothing uses
+    # wire_rn: its only non-test reference is the module declaration
+    # `pub mod wire_rn;` at crates/ipc/src/lib.rs:76. There is still no
+    # production call path, so the status remains implemented-unwired. See
+    # crates/osl-ratchet-next/DESIGN.md — unreviewed, must not carry
+    # real traffic before external cryptographic review.
+```
+
+---
+
+## 7 · Self-verification
+
+| Gate | Result |
+|---|---|
+| `node scripts/check-claims.mjs` | 15 files scanned, **0 failed**; 0 bare prices, 0 forbidden hits, 0 bad badges, 0 missing required sentences |
+| `node scripts/check-claims.mjs --self-test` | **14/14 fixtures**, 0 failed — 12 known-bad caught, 2 honest-negation cases correctly not flagged |
+| `node scripts/pricing-sync.mjs --check` | 19 markers, **0 drift**, 0 unknown paths |
+| `node scripts/screenshot-matrix.mjs` | **252 captures, 0 failed, 0 unmeasurable** |
+| Checklist arithmetic | rows 88/303 = headers 88/303 = snapshot; 0 section mismatches |
+| Every badge maps to an allowlist row | yes, after the allowlist additions in §5 |
+
+**Screenshot matrix**, HeadlessChrome/149.0.7827.55, build stamp `d77709b3-dirty`,
+`docs/evidence/website-matrix/matrix.json`:
+
+- 14 pages × {320, 360, 390, 768, 1024, 1440} px × {js-on, js-off, reduced-motion} = 252.
+- **Meaningful content is visible before scroll and without JavaScript on every page.** Worst case
+  across all 252 captures is 154 visible characters (`/donate` at 1440 px); the js-off floor is also
+  154. The reveal-animation blanking problem in master §8.5 does not reproduce.
+- 504 full-page and fold PNGs are on disk at `docs/evidence/website-matrix/` (70 MB). They are
+  **gitignored on purpose** — the repository carries `matrix.json`, the machine-readable verdict, not
+  70 MB of binaries. `.assetsignore` excludes `data/` and `docs/evidence/` from publication.
+
+**Not covered, and honestly flagged:** 200% zoom and the accessibility checks required by master
+§8.6. That is exactly why H8 was corrected down to 2/3.
+
+---
+
+## 8 · Things I could not decide, or deliberately did not
+
+1. **Pro is sold on a `Planned` capability.** Raised to Zhao as `action-needed`. With `image-send`
+   at `Planned`, the only currently-truthful thing Pro buys is "early access to new privacy tools as
+   they reach the beta channel". I made the copy honest and left the checkout working, because
+   whether to keep selling, reprice, pause sales, or ship image-send is a commercial decision that is
+   not mine. The copy now says plainly: "Buying today buys early access to those tools as they land,
+   not the tools themselves."
+2. **`per-message-sealing` → `Planned` is the most debatable call in this report.** The scheme really
+   is what the live code does, and labelling it `Planned` risks reading as "the encryption isn't
+   there". I followed the allowlist because §E is explicit and because master §0.2 rule 5 says choose
+   the safer, easier-to-prove option. I added a clause to the page explaining that it is what the code
+   does today and that the badge is about unproven-on-a-release-build plus the open attribution
+   finding. If the owner prefers `Beta` here, that is a defensible reading of C1 and a one-line change.
+3. **A conflict I did not resolve silently.** The assignment implies image sending works and only
+   *file* sending is unavailable; master §9 and §10 say the whole attachment lane is unproven. I chose
+   the safe direction (`Planned`) and am flagging the disagreement rather than picking a winner
+   quietly, per master §0.2.
+4. **Scrub downgrade lands 7 days before the hard demo.** Marking the flagship demo feature `Planned`
+   is uncomfortable, and it is reversible the moment the Scrub lane lands an exact-build walkthrough
+   in `docs/reports/`. I would rather under-claim now and promote on evidence.
+5. **Not deployed, not pushed.** The commit is local on `web-pricing-truth-2026-07-26`. I did not push
+   the branch either, because the deploy trigger for this repository is unverified and the safe
+   assumption on record is that a push to `main` publishes to production.
+
+---
+
+## 9 · Operational finding for the other lanes — event `scope` must be a registered id
+
+Both of this lane's events were rejected on first submission with `unknown event scope`, because
+`scope` was set to a descriptive word (`"website"`). `apply_event` requires `scope` to be an id that
+already exists in the bot's state, otherwise it raises and the file is renamed `.rejected` and
+silently dropped. Resubmitting the same ids with a valid scope worked; both are now in
+`processed_event_ids` with `delivered-` records and an empty `alert_outbox`.
+
+**Valid scopes today** (the full checklist has been imported, so this is richer than the "only
+`overall` exists" note that was circulating): `overall`, `workstream.a` … `workstream.j`,
+every acceptance row id `a1` … `j7`, plus `workstream.windows` and the per-window ids. Prefer the
+most specific one — a website event should use `h1`/`workstream.h`, not `overall`, so it routes to
+the right dashboard.
+
+**Two events from the Scrub lane are currently stranded as `.rejected`** in
+`/home/<user>/claude-bridge/osl-events/` and were never delivered:
+`scrub-f10-demo-target-decision-2026-07-26` and `scrub-imap-qa-certificate-authority-2026-07-26`.
+They are not this lane's to re-file — the Scrub lane should resubmit them with the same ids (replay
+is idempotent) and a valid scope such as `f10`.
+
+## Acceptance rows this earns
+
+- **H1 +1** (2 → 3 of 4) — one pricing model, provably single-source across all 15 pages.
+- **J7 +1** (2 → 3 of 3) — the master §8.6 claim crawler exists and is fixture-proved.
+- **H8 −1** (3 → 2 of 3) — correction of a pre-existing overclaim.
+- **Section H header +2** — correction of a pre-existing addition error, not new work.
+
+Net: **85 → 88 / 303.**
+
+---
+
+## 10 · Second pass — owner reframe: pre-launch marketing for v1
+
+Zhao's correction, applied in full. The infrastructure from the first pass stayed; the presentation
+model changed, and one of my calls was simply wrong.
+
+### 10.1 The error I made
+
+I labelled `per-message-sealing` **Planned**. That was wrong. I had treated master §9's
+`implemented-unwired` as if it described the cryptography, when it describes *a call path*. The code
+does do this — `crates/ipc/src/wire_v2.rs:685-760` seals every DM to the recipient's published X25519
+and ML-KEM-768 keys with a fresh per-message ephemeral — and live encrypted sends have landed real
+cover text in a real Discord conversation. Restored to **`Beta`**: proven on QA builds, not on a
+named release build, with sender attribution still an open finding.
+
+**The standing test is now "does the code do this", not "has a two-identity harness watched it."**
+Re-checked under it, the other four hold for code reasons, not missing-harness reasons:
+`cover-carrier-text` `Beta` (never had a row granting `Available`); `image-send` `Planned` (master §9
+attachment lane `implemented-unwired`, §10 critical 4 durable-plaintext staging — and Zhao's own
+instruction not to sell it present-tense agrees); both Scrub rows `Planned` **on the matrix only**.
+
+### 10.2 What the site looks like now
+
+- **Full v1 product is shown.** Encrypted messaging, attachments, view-once, expiry, burn, Scrub and
+  the exposure warning are presented as what OSL is, with real explanations and the animations
+  intact. The per-card `Planned` stamp is gone — that stamp on every card is what made a product
+  under construction read as vaporware.
+- **Honesty concentrated in two places.**
+  1. **`/docs/status` — "What works today."** The master §8.4 versioned matrix, dated
+     `2026-07-26`: a per-capability table covering all 21 registry entries and a per-connector table
+     with protected send, protected receive, attachments, Scrub, verification date, status and
+     provider-policy risk. It is **generated from `data/pricing.json`**, so it cannot drift, and
+     `build-status --check` fails if the committed page is stale. Every feature section links to it
+     with one plain line, "See what works today."
+  2. **The point of sale.** Pro is now an explicit early-access purchase: *"Pro is an early-access
+     purchase. You are paying to support a product that is still being built, and to get new privacy
+     tools first. You are not buying the finished v1 feature set."* Then two lists — what Pro gives
+     you today, and what is not in the app and is not what you are paying for. Image sending sits in
+     the second list.
+- **One global early-access banner** on every page instead of thirty disclaimers.
+- **Scrub marketing was not watered down**, per instruction. Its matrix row carries the truth.
+
+### 10.3 Checkout decision, implemented
+
+Keep selling, as stated early access, at $5/month. It fits the existing layout — no layout change
+was needed. The purchase summary is wrapped in `<!--osl:checkout-summary-->` markers and the crawler
+enforces that only capabilities flagged `sellable` (today: protected text, per-message sealing, cover
+carrier) may be referenced inside it. Selling image sending present-tense is now a build failure, not
+a matter of editorial care.
+
+### 10.4 The crawler learned the distinction
+
+> A marketing page may describe a v1 capability in forward-looking language. The support matrix and
+> the checkout summary may only state what current evidence supports. A present-tense capability
+> claim outside those two surfaces still fails the gate.
+
+Mechanically enforced, with six new fixtures:
+
+| Rule | Failure mode it catches |
+|---|---|
+| Forward-looking framing | a marketing section names a capability that is not `Available`/`Beta` with no forward-looking marker |
+| Matrix link | a marketing capability page does not link to `/docs/status` |
+| Matrix completeness | the matrix silently drops a capability, or carries a row with no status |
+| Checkout allowlist | a non-`sellable` capability appears inside a checkout summary |
+| Badge drift | a badge disagrees with the manifest, on any surface |
+| Section D | a forbidden phrase appears **anywhere** — absolute, framing-independent |
+
+The section D ban stayed absolute rather than becoming surface-dependent. The `ratchet` capability
+was **renamed** to "Ratcheting (protecting old messages)" because its own public name contained a
+banned phrase; renaming was preferable to carving an exception into the ban.
+
+### 10.5 Gates after the reframe
+
+| Gate | Result |
+|---|---|
+| `check-claims` | 16 files, **0 failed** |
+| `check-claims --self-test` | **23/23** fixtures (17 known-bad caught, 6 honest-copy cases not flagged) |
+| `pricing-sync --check` | 18 markers, **0 drift** |
+| `build-status --check` | matrix matches the manifest |
+| `screenshot-matrix` | **270 captures, 0 failed, 0 unmeasurable** (15 pages × 6 widths × JS-on/off/reduced) |
+| checklist arithmetic | rows 89/303 = headers = snapshot, 0 mismatches |
+
+### 10.6 Documents updated
+
+Master **r6 → r7** with a §0.5 delta and a rewritten §9 website row. The allowlist gained an
+"Owner reframe" section recording the new presentation model and the corrected standard, A1/A2 moved
+to `Beta`, and section B's blanket "never in the present tense" rule was narrowed to the matrix and
+checkout. Checklist **88 → 89** (H5 +1 for the versioned support matrix).
+
+### 10.7 Least sure about
+
+The forward-looking marker list is a keyword check, not comprehension. A section that says
+"Arriving at v1" and then describes the capability in confident present tense will pass the gate,
+because the marker is present. It reliably catches a card with *no* hedge at all — which is the
+failure mode that produced this whole exercise — but it cannot judge whether the hedge is prominent
+enough to actually register with a reader. The matrix and the checkout are properly enforced; the
+marketing pages are enforced only against the crude version of the mistake.
+
+---
+
+## 11 · Crypto lane adjudication (report landed 17:15)
+
+`docs/reports/crypto-lane-2026-07-26.md`. Their section is titled "Checklist rows — nothing
+claimed", and their restraint on the two rows they did discuss is correct:
+
+- **D6 bilateral burn** — the control lane is wired rather than inert, but there is no runtime or
+  two-identity evidence that a burn request crosses between two devices, and the keyserver
+  revocation lane's deploy state is still contested in this repository. Correctly not claimed.
+- **C5 attribution** — fixed in code and unit-proven at the producer, but the renderer half is
+  proven only structurally and nothing has been observed on screen. Correctly not claimed.
+
+I agree with both. Claiming either would be the "code written = point earned" failure.
+
+### Where I overrode them — A8, +1, which they did not claim
+
+They left **A8 · Secret zeroization and metadata minimization** at 2/4 without discussing it. I
+awarded +1 after verifying the evidence in source myself:
+
+- `crates/keystore/src/storage.rs:75` derives `Zeroize, ZeroizeOnDrop` on the secret-carrying
+  struct; `zeroizing_an_inner_identity_clears_every_secret_field` (`:298`) asserts every secret
+  field clears, recovery entropy included; `secret_carriers_wipe_themselves_on_drop` (`:344`) pins
+  the derive.
+- Identifier redaction is present in `crates/ipc` (`cipher_store_client.rs:811-812`, `:847`,
+  `wire_v2.rs:1098`).
+
+**Why a unit test is sufficient here and is not the shallow-test failure:** memory wiping on drop
+cannot be observed end to end. A test that constructs the value, drops it and asserts the secret
+fields are cleared *is* the appropriate evidence for the property. The rule exists to stop tests
+standing in for user-visible behaviour that could have been demonstrated; that is not this case.
+
+Not 4/4: master §10 medium finding 9 also covers plaintext identifiers **at rest**, and no
+comprehensive at-rest audit was delivered.
+
+Verified by source inspection, **not** by running cargo — this lane does not contend for the cargo
+lock while another lane is building Rust. I am relying on the crypto lane's reported
+`cargo test -p keystore` result (176 passed / 0 failed / 1 ignored, beating a 170/1 baseline) for
+the fact that these tests pass.
+
+### A correction to my own allowlist that their report forced
+
+Their 0029 analysis does **not** contradict A7 — their heading says "not yet live" but the body
+verifies *source*, whereas A7 rests on the owner's confirmation against the live migration list.
+Those are different evidence, not a conflict.
+
+It did expose an inaccuracy in my own wording. A7's required limitation read "switched off until
+their owner re-registers", which implies manual work. It is automatic:
+`ensure_keyserver_registered` runs on launch **and** unlock (`crates/ipc/src/commands.rs:7580`,
+called from `bootstrap.rs:1296`, `password_lifecycle.rs:384`, `core_bridge.rs:306`), and the
+register request carries the OSL `user_id` with no snowflake, so a quarantined identity re-enables
+itself. Corrected in the allowlist. This is an overstatement in the *cautious* direction, which is
+still an inaccuracy.
+
+**Logged against A7, not owned by me:** `Identity` carries a `discord_snowflake` field, and any
+peer-lookup path keyed on a snowflake rather than an OSL user id is permanently unresolvable under
+0029. Needs an explicit check by whoever owns peer lookup. It does not falsify A7, but it could
+break finding a contact.
+
+### Checklist after this pass
+
+**90 / 303.** Rows 90/303 = headers = snapshot, 0 section mismatches. Point alerts confirmed
+delivered for 88 and 89 (`delivered-point.*.88`, `.89` in the bot state), so the one-alert-per-point
+rule is working end to end.
+
+---
+
+## 12 · Scrub lane F1 adjudication, and the accessibility gate
+
+### F1 · Local all-browser/all-profile detection — **+1 approved** (4 → 5 of 6)
+
+Claimed by the Scrub lane; judged, not rubber-stamped. The row's stated remaining scope was
+"remaining browsers, UI, revocation, exact release proof". This closes the **UI and revocation**
+halves, and closes them at runtime rather than by compilation.
+
+What convinced me, in order of weight:
+
+1. **A negative control was performed.** Forcing `allows()` to always grant makes the test fail on
+   exactly the default-deny assertion. That is the difference between a proof and a green light, and
+   almost nothing else in this project has one.
+2. **The root cause is real and explains a standing blocker.** `set_browser_profile_consent` and
+   `list_browser_profile_choices` were registered in **no** Tauri command, so detection returned zero
+   in any shipped build — which is the "0 accounts detected" symptom that has been sitting on the
+   Scrub demo.
+3. **Scoping was proven, not asserted** — every observation came from the granted seeded profile and
+   the owner's real `Default` profile was never read.
+
+Verified independently rather than taken on trust: both commands are in `generate_handler!`
+(`apps/osl-hub/src/main.rs:4192-4193`), with matching ACL in `capabilities/hub.json`
+(`allow-list-browser-profile-choices`, `allow-set-browser-profile-consent`) and
+`permissions/hub.toml:474` — **no mismatch in either direction**, which matters because this repo has
+previously shipped an ACL entry for a command that was never registered. The runtime test
+`seeded_profile_is_read_only_after_consent` exists at `apps/osl-hub/src/native_apps.rs:6960`.
+
+One correction to their report: it names the second command `list_browser_profile_candidates`; the
+actual name is `list_browser_profile_choices`. A naming slip, not an overclaim.
+
+Their deliberate non-claims (F1 → 6, F2, F4, F10) are correct. **No website claim changes:** this
+proves per-profile consent and scoped reads, not end-to-end account discovery, so `scrub-discovery`
+stays `Planned` on the matrix. That is also what the owner asked for — no whipsawing.
+
+### Accessibility and 200% zoom — the gap H8 was docked for is now closed
+
+`scripts/check-a11y.mjs`, 15 pages × 4 widths × {100%, 200%} = 120 combinations:
+
+| Check | Result |
+|---|---|
+| Images missing `alt` | **0** |
+| Controls with no accessible name | **0** |
+| Horizontal overflow, any width or zoom | **0** |
+| Tap targets under 44px | 3 distinct (33–41px wide × 44px tall) |
+
+Two real bugs found and fixed: `/donate` scrolled sideways 47px at 768px because the `.mission-*`
+illustration has **no CSS rules anywhere in the stylesheet**; `/audit` buttons were 40.8px because
+`assets/css/audit.css` loads after `style.css` with an id-bearing selector.
+
+I also had to fix the audit itself: it used `getBoundingClientRect`, which returns the *transformed*
+box, so the reveal animation made compliant 44px buttons measure 41px. It now uses the layout box.
+**H8 restored 2 → 3.**
+
+Residual, recorded rather than hidden: three nav/footer links are 33–41px wide at 44px tall — WCAG
+2.5.8 AA (24×24) yes, the 44×44 in §8.6 no. Padding short link text out to 44px wide would read
+worse than the finding. Non-colour-only state and illustration text-equivalence remain unasserted.
+
+### Delegation note
+
+The `/audit` 40.8px hunt went to Codex (`codex exec -m gpt-5.5`, backgrounded, read-only prompt with
+explicit may-not-touch files). It found what I had missed — audit.html loads a **second** stylesheet —
+but **its proposed fix was wrong**: it suggested `.audit-file-actions .button.button` at specificity
+(0,3,0), which cannot beat the real rule `#main .audit-file .button` at (1,2,0). Verifying in both
+directions caught that. Fixed at source in `audit.css` instead.
+
+### Checklist
+
+**92 / 303.** Rows = headers = snapshot, 0 section mismatches. Deltas this stretch: A8 +1 (crypto
+lane under-claim), F1 +1 (Scrub lane claim, approved), H8 +1 (restored).
+
+---
+
+## 13 · Release lane adjudication — 4 of the 6 proposed points awarded
+
+Proposed: I3 → 2, I4 → 2, I6 → 2, I2 → 1 (**+6**). Awarded **+4**. Every number below was verified
+by the writer against GitHub and the branch, not taken from the lane's summary.
+
+| Row | Proposed | Awarded | Why |
+|---|---:|---:|---|
+| **I2** · authoritative integration line | +1 | **+1** | Approved |
+| **I3** · green Rust/TS/selector/security CI | +2 | **+1** | **Cut.** Rust is red |
+| **I4** · signed candidate, VM promotion, rollback | +2 | **+2** | Approved — strongest evidence in the batch |
+| **I6** · governance / branch protection / PR cleanup / releases | +1 (to full) | **+0** | **Declined.** Two of four items untouched |
+
+### I4 — approved, and the standard others should copy
+
+The promotion gate is proven by **refusal**, not by a happy path.
+`scripts/release/prove-promotion-gate.sh` contains **20 `expect_reject` cases**, all confirmed
+present. Among them: *"attestation describes a different binary"* (substituted binary),
+`mutate 'd["operator"] = "   "'` → *"no accountable operator"* (blank operator), *"CAPTCHA was
+automated around"*, *"same golden snapshot restored twice"*, *"clean restore attested as a string,
+not a boolean"*, *"no installer at all"*. A gate proven to refuse every tested way of promoting an
+untested or substituted build is a real safety guarantee, which is exactly what the earning rule
+asks for.
+
+Held at 2 of 4: **"signed candidate" is not proven** — `required_signatures` is `false` on the
+protected branch and no signing was demonstrated on a real candidate — and the reproducible build
+has not been shown to actually reproduce.
+
+### I3 — cut from +2 to +1, because the pipeline exists but does not pass
+
+`gh run list` shows `Rust Test` = **`failure` on the four most recent runs** (2026-07-27 00:11,
+00:20, 00:28, 00:40). All four ran on `release-lane-2026-07-26`, **not** on `main`; on `main` the
+only workflow with recent runs is Selector CI.
+
+TypeScript, selectors, the release audit and the new desktop-binary job are genuinely green, and
+that is worth a point. But the row's headline promise is *green* CI **including Rust**. Scoring 2 of
+3 would read as "nearly satisfied" while the heaviest gate fails every run. The three Rust defects
+are not owned by that lane, so this is a scoring cut, not a criticism of their work.
+
+### I6 — declined, because two of the four named items are untouched
+
+Branch protection is genuinely on, verified via
+`gh api repos/OSLPrivacy/discord-privacy-client/branches/main/protection`: force pushes and
+deletions disabled, status checks required. That is real, and it is what earns I2 its point.
+
+But this row also names **PR cleanup** and **releases**. `gh pr list --state open` returns **6 open
+PRs** (#1–#6, several long-stale) and `gh release list` returns **nothing at all — zero releases**.
+Full marks with half the row untouched is the rubber-stamp this role exists to prevent.
+
+**Recorded against the protected line, not a deduction:** the required contexts are only
+`["TypeScript gate", "audit"]` — **the Rust gate is not required** — and `enforce_admins` is
+`false`. So the authoritative integration line can still accept a merge while Rust is red, and an
+admin can bypass it entirely. Worth closing before the line is trusted.
+
+### Recorded, not awarded
+
+Logged in the checklist so they cannot be forgotten or later re-counted as new work: the
+control-inbox **retry bound** (the lane must be a retryable queue, not a dropped notice), the
+**Windows duress defect** (no production caller, known TPM-less failure mode — A7 already sits at 0
+for this), **cryptographic burn not implemented** (owner decision: not now), and **Received/Opened
+receipts collapsing** into one `acknowledgmentCount`.
+
+### The 44×44 residual — fixed, not amended
+
+I chose to meet the rule rather than change it. Weakening an accessibility standard for a cosmetic
+reason is the wrong direction for a product whose users include people with disabilities, and the
+extra width lands as spacing between links, which helps touch anyway. `check-a11y` across 120
+combinations is now clean on all four measures: **0** images missing alt, **0** controls without an
+accessible name, **0** tap targets under 44px, **0** horizontal overflow — verified to introduce no
+overflow at 320px or at 200% zoom.
+
+Still unasserted, recorded rather than hidden: non-colour-only state communication, and whether
+every illustration has an equivalent text description (proving no image lacks `alt` is weaker).
+
+### Checklist
+
+**96 / 303.** Rows = headers = snapshot, 0 section mismatches.
+
+---
+
+## 14 · Two claim-eligibility changes, and a re-derivation
+
+### Attachments were broken in production — applied, not just noted
+
+Part upload returned HTTP 500 for as long as it existed: the request body was piped through a
+`TransformStream` and R2 requires a known length. It passed its tests the whole time because the R2
+test double accepts any stream. Fixed and deployed as cipher-store `0a17547d`; production re-probed,
+part upload now returns 201.
+
+What I changed as a result:
+
+- **The website needed no change**, and that is worth stating precisely rather than claiming credit.
+  `image-send` was already `Planned`, absent from the checkout summary, and flagged `sellable: false`,
+  so nothing on the site rested on attachments working. The conservative call made earlier turns out
+  to have been right for a stronger reason than the one I had.
+- **Checklist D2 marker corrected 🧪 → 🛑.** The single earned point **stands** — it was awarded for
+  substantial source existing, not for uploads succeeding, and withdrawing it would be
+  over-correction. But labelling it *test-proven* was untrue for a path that could not execute, so
+  the marker is wrong and is fixed.
+- **Allowlist B row updated** to record that attachments could not execute in production, with the
+  standing instruction: **treat any "attachment sent successfully" reported before 2026-07-26 as
+  unproven, and re-derive from evidence rather than from a prior award.**
+- **Not assumed:** the possible upside — that audit CRITICAL #4's plaintext-at-rest exposure may be
+  structurally nil if nothing was ever uploadable — is recorded as being established by other lanes,
+  not treated as true.
+
+### The updater key is real — no correction was needed, and I am not inventing one
+
+Verified directly rather than accepting the premise: `apps/osl-hub/tauri.conf.json:50` base64-decodes
+to `untrusted comment: minisign public key: 3B6AE4739858E8D4` and `src-tauri/tauri.conf.json:39` to
+`44AD89E36BC119F8` — real, distinct, correct for two feeds. A sweep of `docs/**` found **no document
+claiming the key is a placeholder or empty**, so there was nothing of mine to retract.
+
+I did refine the I4 note, which had implied more than it should: the key *material* is real; what is
+still unproven is a signed release artifact demonstrated on a real candidate.
+
+### The feature-gate exclusion does not reach A8 — checked, not assumed
+
+`qa_selftest_request` — the module deciding whether an incoming trigger becomes a harmless status
+read or the irreversible send — is gated at `apps/osl-hub/src/lib.rs:68` by
+`#[cfg(all(feature = "core", feature = "discord-qa-shell"))]`. The lane-standard `--features core`
+compiles it out entirely. That is real and serious.
+
+It does **not** touch the A8 award. Those tests are in `crates/keystore/src/storage.rs` with **no cfg
+feature gate at all**, and run under `cargo test -p keystore`, which never involves the osl-hub
+feature set. More importantly, **the award rests on source inspection I performed directly** — the
+`Zeroize, ZeroizeOnDrop` derive and the two named tests — and the crypto lane's 176/0/1 was only
+corroboration. An inherited number is not a measurement, which is exactly the rule that caught this.
+
+Strengthening it further: that test carries its own **negative control**, honestly labelled. It does
+not compile against the pre-fix code because `InnerIdentity` had no `Zeroize` derive, and its author
+states plainly that this is a compile-time control rather than a runtime one, because reading a freed
+buffer to observe the wipe would be undefined behaviour. That is the standard being asked for.
+
+### My own gates could pass vacuously — fixed and proven in both directions
+
+Same family as the four false greens. Every gate I own reported success when it had measured
+**nothing**: if the glob broke, `check-claims` printed "scanned 0 files, 0 failed" and exited 0.
+
+Floors added (delegated to Codex, verified here):
+
+| Gate | Floor | Fires? |
+|---|---|---|
+| `check-claims` | ≥12 html files, non-empty registry, non-empty required_phrases | **yes** — 2 files → exit 1 |
+| `pricing-sync` | ≥12 `osl:` markers | **yes** — 0 markers → exit 1 |
+| `screenshot-matrix` | ≥200 captures | **yes** — 3 captures → exit 1 |
+| `check-a11y` | ≥100 combinations, ≥20 interactive controls found | floor present; counts controls per run |
+
+Each was proven by starving its input, not by reading the code. One honest note on method: my first
+negative test of `pricing-sync` **failed to fire and I was wrong to expect it to** — two pages already
+carry 15 markers, above the floor. The inadequate test was mine, not a broken guard; with a
+marker-free page it exits 1 correctly.
+
+### Gates after all of this
+
+`check-claims` 16 files / 0 failed · `--self-test` 23/23 · `pricing-sync` 18 markers / 0 drift ·
+`build-status --check` clean · `screenshot-matrix` 270 captures / 0 failed / 0 unmeasurable ·
+`check-a11y` 120 combinations, 0 on all four measures. Checklist **96/303**, consistent.
+
+---
+
+## 15 · The app gate, an adversarial audit, and a false claim taken off production
+
+### 15.1 In-app copy is gated now
+
+`scripts/check-app-claims.mjs` scans every string and template literal under
+`apps/osl-hub-ui/src/**` plus `README.md`. First clean run: **28 banned phrases parsed, 7,345 strings
+scanned, 0 violations.** Wired into the `TypeScript Test` workflow.
+
+It **parses §D of the allowlist directly** instead of holding a copy of the ban list — add a §D row
+and the app gate tightens automatically. Floors (≥8 phrases, ≥300 strings, README non-empty) were
+proven by starving the inputs, not by reading the code.
+
+Two precision rules, both learned from its first run rather than designed in:
+
+- **Negation awareness.** README legitimately says burn is *not* cryptographic erasure. A gate that
+  flags an honest denial gets switched off.
+- **Context gating.** Its first run flagged "Selected apps reviewed" and "Every batch is reviewed and
+  confirmed" — the *user* reviewing, not an audit. §D bans "audited"/"reviewed" as security claims,
+  so those single words now fire only near security context. Multi-word bans stay absolute.
+
+A §D sweep of 54 other markdown files found exactly one real violation:
+`docs/phase-7c-manual-tests.md:90`, a manual-test **checkbox** asserting messages "render as
+permanent ciphertext". A tester would have ticked pass for behaviour that cannot happen.
+
+### 15.2 The allowlist was audited adversarially, and 6 of 8 A-rows were wrong
+
+I sent it to an adversarial reviewer precisely because I wrote most of it. It reported only 5 of 27
+rows surviving unchanged. Every finding was re-verified against source before being applied.
+
+**The serious one — a live false claim in production.** `crates/ipc/src/commands.rs:2640-2660`
+(`9-MODE1-RETIRE`) disables Mode 1 template stego in V2 as unviable under the PQ-hybrid wire's
+~1190-byte wrap leg, and **silently coerces** legacy `stego_mode=mode1` to Mode 0. Mode 0 emits a
+visible `DPC0::<base64>` capsule. So the connected service receives an obvious encrypted blob, not a
+harmless cover message — while the promoted site said the opposite and badged `cover-carrier-text`
+as `Beta`.
+
+Confidentiality was never affected: the payload is encrypted and the readable text still never
+reaches the service. **The stealth claim was what was false.** Raised as an incident before touching
+anything, because it was public.
+
+Two further real overstatements, distinct from citation drift:
+
+- **A7 narrowed.** "Nobody can register your Discord identity" is true only for snowflake-shaped ids.
+  `register.ts:110` validates `isProtocolId`; `:114` rejects only `/^[0-9]{17,20}$/`. Any opaque
+  identifier — **a Discord username included** — is still first-come. Most people read "my Discord
+  identity" as their username. This row is `Available`, the worst place to be loose.
+- **A8 corrected.** "Encryption, keys and your plaintext stay on your machine" is *literally false*:
+  the client uploads its X25519, Ed25519 and ML-KEM **public** keys on registration
+  (`crates/keystore/src/client.rs:599`). Necessary and normal, but the sentence does not survive it.
+  The site now tells users their public identity keys are published.
+
+A4 was tense-corrected (the AutoScrub exception was written as though it already exists). A3/A5/A7
+were re-anchored. **A5 turned out stronger than recorded:** `SetWindowDisplayAffinity` is read back
+and required to match exactly (`crates/runtime/src/screenshot.rs:91`, `:97`), with an independent
+re-read in the compositor (`native_discord_overlay.rs:4875`); it stays `Planned` only because
+first-paint ordering is an open critical. A6 is marked owner-attested rather than source-verifiable —
+the `$5` lives behind an external Stripe price id.
+
+### 15.3 Promoted, and verified live
+
+Owner authorised re-promotion. Verified against the live site rather than assumed:
+`harmless cover message` = **0**, the corrected wording present, the public-key disclosure present,
+`/docs/status` returning 200.
+
+Caught mid-promotion: `build.json` and all 16 pages still carried a stamp from three commits earlier,
+so the deployed build identity would not have matched the commit that produced it. Master §8.6 wants
+a deployment to expose its own identity; a stale stamp makes that a lie and makes screenshot evidence
+unattributable. Regenerated and pushed.
+
+### 15.4 The app feature list is latent, not live — checked before judging
+
+`apps/osl-hub/src/core_bridge.rs` labels include **"Group and server encryption"** while group
+protection is switched off. As a user-facing capability line that would be false and would belong
+with the six claims removed from the website.
+
+**It is not live.** `list_core_features` is registered in `generate_handler!` but **no UI code invokes
+it**; `parseCoreFeatures` is referenced only by `core.test.ts`; and `loadCoreIntegrationFromNative`
+invokes only `get_core_readiness` and hardcodes `features: []`. Caller before callee — and the exact
+inverse of the Scrub finding earlier tonight, where commands existed but were registered nowhere so
+detection silently returned zero.
+
+Recorded rather than closed, because **the app-copy gate would not catch it**: the gate reads string
+literals, and these already are string literals that simply never render. A gate that passes because
+copy is unreachable is a cousin of the vacuous-pass problem. Before anyone wires it, the labels need
+§8.2 status vocabulary and `bridge_state` must stop being the honesty channel.
+
+### 15.5 A correction to advice I gave the fleet
+
+Master r8/r10 recorded that the honest Rust gate is `--features core,discord-qa-shell`. That gate
+**turns a security check off** while turning coverage on: `header_proof_is_enforced()` is
+`!cfg!(feature = "discord-qa-shell")` (`apps/osl-hub/src/native_discord_adapter.rs:4529-4531`,
+verified). Neither gate alone is sufficient — one hides a module, the other relaxes an enforcement.
+
+Assessment: **not load-bearing for any claim.** Traced to the actual evidence rather than the nearest
+scary mechanism — no allowlist row depends on header-proof enforcement, attribution is already an
+open finding so nothing rests on it, and A1/A2 are confidentiality rather than header authentication.
+Nothing to retract; the advice was still wrong, and other lanes read it. Corrected in master r11.
+
+### 15.6 Open, and not closed
+
+- **Sol's B and C section verdicts are unreviewed.** Section A alone yielded two real overstatements
+  in rows I wrote, one of them at `Available`. There is no reason to assume B and C are cleaner.
+- **Rust user-facing strings have no gate.** The inventory's honest answer was that no clean
+  mechanical rule separates claim surface from log lines and internal identifiers across ~8,838
+  literals. That surface is manually reviewed, which is to say not reviewed.
+
+## Acceptance rows this earns — none, deliberately
+
+**No points claimed for any of §15.** Removing a false claim does not earn a point; it corrects an
+overclaim that should never have been there. Applying that standard to my own lane is the same
+standard I applied when cutting the release lane's I3 and declining I6.
+
+**H1 stays at 3/4.** Its held point was recorded as "promotion to production **plus** the keyserver
+redemption change". Promotion is now done; redemption is not. Half a condition is not a point.
+
+**The in-app gate earns nothing either.** It closes a gap this lane opened itself, and the H/J rows
+already cover claim tooling.
+
+---
+
+## 16 · Audit sections B and C, and two claims OSL had earned but never made
+
+### 16.1 The B and C verdicts, applied
+
+B1–B6 were all citation drift. The four that mattered were all the same failure: a **design
+intention written in the present tense** — the identical mistake as the burn documents and the
+AutoScrub exception.
+
+- **B9 Scrub guided deletion — weaker than recorded.** Not merely blocked on discovery: the Discord
+  guided-deletion backend is unwired on its *input* half (`native_discord_adapter.rs:6662`) and holds
+  every candidate without opening, selecting, confirming or verifying. "The user confirms every
+  deletion on the service's own page" was phrased as behaviour; it is a design rule.
+- **B10 AutoScrub — downgraded** `implemented-unwired` → `designed-only`. Disabled UI scaffolding,
+  no execution backend; the app itself says "Unavailable in this build" (`main.ts:3139`).
+- **C2 the eye — "paints" removed.** `placedRowCount` is computed at `main.rs:3223` by filtering rows
+  that have both plaintext and geometry, **before the renderer paints**. Geometry computed is not
+  pixels drawn, and that gap is exactly the difference between a measurement and a screenshot.
+
+### 16.2 C3 is a safety finding, not a claim limit
+
+The tri-state contract requires an ambiguous Enter to read as *uncertain*. Verified in source, and
+worse than reported: **the renderer does not model "uncertain" at all** — a search for it in
+`apps/osl-hub-ui/src/overlay.ts` returns nothing.
+
+An ambiguous outcome is reported failure-shaped (`overlay.ts:1603`, "Discord did not receive this
+message") and the draft is deliberately preserved so the user can retry. The code comment concedes
+the send command "can return `Ok(...)` even when Discord never got it".
+
+So the exact case the contract calls uncertain is presented as failure **and** the user is invited to
+resend — delivering a private message twice if the service did accept the first. Master §7.3 and the
+standing "`delivery_uncertain` is never auto-retried" rule are violated **in behaviour**, not merely
+in documentation. `overlay.ts` is not this lane's file; raised to the hub lane as an incident scoped
+to `c3`.
+
+### 16.3 Two claims added — the audit also found OSL underselling itself
+
+Same verification standard applied in the positive direction.
+
+- **A9 · pre-send carrier verification.** `native_discord_adapter.rs:16333` gates Send on
+  `await_exact_carrier_in_composer(...)` with the expected carrier, focus state and a trusted-process
+  check; the draft is cleared only after the carrier is marked sent. This is the honest counterweight
+  to C3 — the product refuses to act rather than acting on an assumption.
+- **A10 · served bundles are verified against the peer.** `crates/keystore/src/client.rs:213`, whose
+  own comment states it exactly: *"the keyserver is a carrier for the bundle, not its integrity
+  authority."* Carries an explicit limitation that it is **not** identity binding — it stops the
+  server altering keys inside a bundle, not a substituted bundle under a different identity key,
+  which is still open as master §2 P0-1.
+
+**Two candidates were rejected on verification** and recorded so nobody re-derives them: the
+encrypted-attachment-cache claim cited a line that is burn-ordering logic, not sealing; and the
+encrypted-metadata/blind-index claim is plausible but belongs to the store lane's in-flight v4 work
+and needs its own verification first. Unknown is the better answer.
+
+## Acceptance rows this earns — none
+
+Correcting overclaims earns nothing, and adding A9/A10 documents capabilities that already existed
+rather than building anything. **H1 remains 3/4**: its held point requires promotion *and* the
+keyserver redemption change; only promotion is done.
+
+Recorded for other lanes rather than claimed here: the C3 resend hazard (hub/overlay lane) and the
+`core_bridge.rs` latent capability labels (whoever owns that file).
+
+---
+
+## 17 · The Rust claim surface now has a gate, and it declares its own incompleteness
+
+I had recorded the Rust surface as ungated because no rule selects all and only user-visible strings
+among ~8,838 literals. That was true, and I was letting it stand as a reason to do nothing.
+
+The inventory had actually supplied the answer: a **high-precision, incomplete** selector is feasible
+even though a complete one is not. So `scripts/check-app-claims.mjs` now scans a third target,
+`apps/osl-hub/src/**/*.rs`, selecting literals only from positions that are user-visible by
+construction — struct fields named `label`/`title`/`detail`/`message`/`warning`/`display_name` and
+similar, arguments to `.title()`/`.set_title()`/`.add_filter()`/`.set_message()`, and returned `Err`
+strings — while excluding `cfg(test)` blocks, comments and identifier-shaped literals.
+
+**163 literals selected, 0 violations.**
+
+The design constraint that mattered: an incomplete gate that implies completeness is the same
+false-confidence failure this whole exercise has been about. So it prints its own limitation on every
+run:
+
+> Rust scan is a KNOWN-INCOMPLETE high-precision subset: 163 literals from user-visible positions.
+> It does not prove the absence of banned phrases elsewhere in Rust.
+
+It reuses the existing analyse path, so §D parsing, negation awareness and context gating apply
+unchanged — one ban list, one matcher, three surfaces.
+
+**Verified in both directions.** 16/16 fixtures, four of them new and asserting the **selected
+count** rather than only the verdict, which tests the selector rather than just the matcher: a banned
+phrase in a struct label is caught, one in an `Err` is caught, one inside `cfg(test)` is not selected,
+and an identifier-shaped literal is not selected. The new floor of 40 selected literals fires on a
+starved tree — verified by starving it, exit 1.
+
+**What this still does not cover, stated plainly:** any user-visible Rust string that reaches a person
+through a position not in the selector list. That set is unknown and unbounded, which is precisely why
+the gate announces its incompleteness rather than reporting a clean scan.
+
+## Acceptance rows this earns — none
+
+The gate closes part of a gap this lane identified itself, and the H/J rows already cover claim
+tooling. **H1 remains 3/4** — promotion is done, the keyserver redemption change is not.
+
+---
+
+## 18 · Self-consistency pass over my own edits
+
+I made roughly a dozen allowlist edits tonight, several under time pressure and one during a live
+production incident. Auditing my own output found two things.
+
+### 18.1 A7's heading still carried the claim I had removed from its wording
+
+An hour after narrowing A7 — because "nobody can register your Discord identity" is true only for
+snowflake-shaped ids, and any opaque identifier including a **username** is still first-come — the
+section heading still read *"Nobody can claim your account before you do."*
+
+The corrected wording sat directly underneath it. **Headings are what people skim**, so the overclaim
+survived in the most-read position in the row while the correction sat in the least-read one. Now
+"The key server refuses Discord account numbers", which is what the code actually does.
+
+This is worth recording rather than quietly fixing: correcting a claim's *body* and leaving its
+*title* is a specific failure mode, and I would have flagged it in another lane's work.
+
+### 18.2 A structural gap: two lists that must agree, and nothing enforcing it
+
+Capability statuses live in **two** places — the rows in the allowlist, and `capability_registry` in
+`data/pricing.json`. `check-claims` verifies that every page badge matches **the manifest**. Nothing
+verifies that the manifest matches **the allowlist**.
+
+So the manifest could drift from the allowlist and **both gates would still pass**: a page badge
+agreeing with a registry entry that no longer agrees with the claim authorising it.
+
+This is precisely the duplication that was designed out for §D banned phrases, where the app gate
+*parses* the allowlist rather than holding a copy. Statuses did not get the same treatment because
+the two files live in different repositories, and a cross-repository path dependency is its own
+fragility — a real reason, not a good outcome.
+
+Checked by hand: they currently agree. **A hand check is not a mechanism**, and recording it as one
+would be the same false-confidence move as an incomplete gate that reports a clean scan. Until a
+mechanism exists, a status change in either file requires the matching edit in the same task.
+
+## Acceptance rows this earns — none
+
+A self-consistency fix earns nothing; it repairs my own output. **H1 remains 3/4.**
+
+**Open in this lane, honestly:** the allowlist/manifest agreement has no enforcing mechanism, only a
+hand check and a rule; and user-visible Rust strings outside the selector list remain unbounded and
+ungated.
+
+---
+
+## 19 · Four hand-verified zero-caller findings — independent claim triage
+
+Re-verified on `/home/<user>/discord-privacy-client`, branch
+`osl-eye-and-features-2026-07-26`, HEAD `5822a8f` before this documentation edit, and on the clean
+website worktree `/mnt/c/Users/<user>/projects/oslprivacy-web`, `main` at `007907c`.
+
+### Production reachability
+
+- `git grep -n -E 'post_wrapped_key|fetch_wrapped_key'` found the two definitions at
+  `crates/keystore/src/client.rs:805` and `:782`, plus keystore test callers only
+  (`client_test.rs` and `live_keyserver_smoke.rs`). No production caller.
+- `git grep -n -E 'BurnAlertPayload|sign_burn_alert|verify_burn_alert'` found definitions/tests in
+  `crates/keystore/src/burn_alert.rs` and only the re-export at
+  `crates/keystore/src/lib.rs:44` outside it. No production caller.
+- `apps/osl-hub/src/lib.rs:1-80` declares none of `osl_notes`, `osl_assets`, or `osl_lan`;
+  `apps/osl-hub/src/main.rs:7207-7336` registers none of their command strings; and grep of the
+  TypeScript wrapper exports found no consumer beyond their defining files. The app itself labels
+  Notes unavailable at `apps/osl-hub-ui/src/main.ts:2555` and says “planned for a later release”
+  at `:5117`.
+
+This is source proof of `implemented-unwired`, not runtime proof.
+
+### Claim surface and decision
+
+| Hand-verified finding | Decision | Why |
+|---|---|---|
+| `post_wrapped_key` | **INTERNAL ONLY** | Internal designs discuss it and the threat model explicitly calls it unbuilt; no human-facing current-capability sentence says production send uploads wrapped keys. |
+| `fetch_wrapped_key` | **INTERNAL ONLY** | Same boundary for receive. |
+| `BurnAlertPayload` | **SOLD — open** | `README.md:85` says a signed burn notice is sent. The newer authenticated `0x0A` revocation path is separate and does not call this signature layer; no runtime/two-identity evidence earns the whole peer action. README is outside this lane's exclusive write scope. |
+| `osl_notes` / `osl_assets` / `osl_lan` cluster | **INTERNAL ONLY after correction** | Website terms had said Pro expiry leaves “your … notes” unaffected, which presupposed a working Notes product. That phrase is removed from `data/pricing.json` and `docs/terms.html`; the app's remaining mention explicitly says Planned/unavailable. |
+
+The website peer-Burn FAQ also changed from present-tense “can send” to an explicit `Planned`,
+not-working-today statement. This preserves the owner-approved pre-launch/v1 framing rather than
+erasing the feature.
+
+### Negative control: string gates are not reachability gates
+
+Before the correction:
+
+```text
+pricing-sync: scanned 16 files, found 18 markers, would rewrite 0, unknown paths 0.
+build-status --check: docs/status.html matches the manifest.
+check-claims: scanned 16 files, 0 failed.
+```
+
+All three commands exited 0 while the Notes and peer-Burn leaks were present. That is not a gate
+bug; it proves the documented structural boundary. The gates compare strings, markers, badges and
+manifest state. No property of a truthful-looking sentence proves the named Rust/Tauri path is
+reachable. A future reachability control must be a separate call-graph/command-registration gate
+owned with app Rust and must carry its own known-good/known-bad fixtures. Bolting a token search onto
+the string crawler would cover only named cases while falsely implying completeness.
+
+Changed truth surfaces:
+
+- master advanced to r12 and records the structural limit;
+- allowlist F0 now carries the exact four-entry triage;
+- checklist B5's stale deployment blocker is corrected without adding a point;
+- website FAQ/terms/manifest withdraw the two website-owned present-tense leaks;
+- coordinator records the remaining public README blocker.
+
+No checklist score changes. J7/H8 already earn policy/string/status-test work; neither row promises a
+Rust call graph, so withdrawing points for an unscoped gate would be as dishonest as awarding points
+for it.
+
+## Acceptance rows this earns
+
+None.
+
+---
+
+## 20 · README closure and completed keyserver/release adjudication
+
+### README `dae12da`: the r12 SOLD blocker is closed, reachability is not
+
+`git show dae12da -- README.md` changes only the public Burn paragraph. The present-tense sentence
+“A signed burn notice is also sent” is gone. Current `README.md:85-87` instead says the
+peer-notification path has not been proved end to end, is not available as a working peer action
+today, and must not be relied on to remove another member's copy. That wording matches r12's
+reachability decision exactly: it does not confuse the newer authenticated `0x0A` path with the
+zero-production-caller `BurnAlertPayload` signature layer.
+
+The requested current-shared-bytes gate was rerun explicitly under Node 24:
+
+```text
+TOTAL                                                       7509   0
+Rust scan is a KNOWN-INCOMPLETE high-precision subset: 163 literals from user-visible positions.
+Counts: phrases parsed=28, TypeScript strings extracted=7345, Rust strings extracted=163,
+README bytes=9682, violations found=0
+```
+
+The 7,509 count includes unrelated dirty in-flight source and is used only to verify the current
+claim surface. An archive of committed HEAD `e83a487` separately reported 7,458 units and 0
+violations, because those in-flight strings were absent. Neither result is reachability evidence.
+The claim classification moves from **SOLD** to **UNCLAIMED**; implementation status remains
+`implemented-unwired`. No point is awarded for correcting an overclaim.
+
+### Keyserver `284f0a5`: completed, `test-proven-only`, no B5 point
+
+The amended diff matches its title. `keyserver-cf/src/lib/control-inbox-sweep.ts:1-46` limits each
+tick to the 100 oldest expired `control_inbox` rows and 100 oldest expired
+`control_inbox_requests` receipts. `keyserver-cf/src/index.ts:189-199` calls that helper from the
+scheduled handler. The committed real-D1 test seeds 101 expired rows and 101 expired receipts,
+preserves one live row of each kind, observes 1+1 remaining after tick one, then 0+0 after tick two
+(`keyserver-cf/test/integration/control-inbox-sweep.test.ts:111-139`).
+
+The committed report's failing-first output is non-vacuous:
+
+```text
+FAIL expected expiredInbox=1, expiredReceipts=1
+     received expiredInbox=0, expiredReceipts=0
+```
+
+An independent archived-copy rerun of exact commit `284f0a5` under Node 24 produced:
+
+```text
+Test Files  1 passed (1)
+Tests       1 passed (1)
+```
+
+`npx --yes node@24 node_modules/typescript/bin/tsc --noEmit` also exited 0. This proves the local
+worker/D1 behaviour only. It does not prove a Cloudflare scheduled invocation, a deployment of the
+changed Worker, or B5's client-side prekey/wrapped-key production path. The server report correctly
+claims no checklist row.
+
+### Release `b9aa48e`: completed locally, still unpushed, no release-row point
+
+The dedicated release worktree is clean at
+`b9aa48ee7e94cbe2dde2e03148b1e8e9b9c8e684`. Its origin is
+`f0f738df3394b23f4207e048bd1b39448210288f`, and
+`git rev-list --left-right --count origin/release-lane-2026-07-26...HEAD` reports `0 1`.
+The commit wires `keyserver-cf`'s existing TypeScript matrix output through `tee` with `pipefail`,
+then calls `assert-test-counts.sh` only for that matrix entry
+(`.github/workflows/ts-test.yml:65-78`). The floor is 297 against a measured two-invocation total of
+313 (`scripts/ci/test-count-floors.txt:25-39`). `git diff --check HEAD^ HEAD` exited 0, the worktree
+status was empty, and `bash scripts/ci/assert-test-counts.sh --self-test` reported:
+
+```text
+11 passed, 0 failed
+```
+
+This is `test-proven-only`. The edited workflow has no GitHub-hosted execution because the commit is
+unpushed. I3's real boundary is green public Rust/TypeScript/selector/security CI, and Rust remains
+red in the accepted evidence. I3 stays 1/3. The commit produces no signed candidate, installer
+reproducibility proof, rollback exercise, PR cleanup or release record, so I2, I4 and I6 also stay
+unchanged.
+
+Checklist score remains **96 / 303**. Crypto, Scrub and VM in-flight claims were not consumed.
+
+## Acceptance rows this earns
+
+None.
+
+---
+
+## 21 · Tonight's three shortest honest +1 boundaries
+
+Owner priority is point acquisition without converting implementation into runtime evidence. This
+map uses only completed evidence already accepted at r13. It does not consume the dirty Scrub,
+release, crypto or VM worktrees as proof, and it does not change the checklist.
+
+| Rank | Exact row and possible delta | Why accepted evidence stops short | Single missing real boundary / probe | Owner lane | Executable command or artifact contract | External mutation / owner confirmation |
+|---:|---|---|---|---|---|---|
+| 1 | **C4 · Production tri-state sent proof**, `1/4 → 2/4` | Discord visibly accepted clean multi-line carriers in the correct Deckard conversation, but OSL reported those sends as failures. The accepted row already says sends landed while receipts lied. A staged or source-level fix is not a production sent proof. | On one exact shipping-config build, perform one authorised send and prove the returned terminal state is `Sent`, with `placed=true` and `enter_sent=true`, while Discord contains exactly one corresponding new row and the composer is empty. This crosses the row's duplicate-safe boundary by removing the false-negative result that could trigger a second send; the command exposes no caller-supplied idempotency token, so inventing a same-token retry would not be evidence. Remaining authority-mode and broader production coverage stay unearned. | Native Discord adapter / QA lane | One evidence bundle must bind executable SHA-256 and run start; retain the command response with `carrier.status=Sent`, `placed=true`, `enter_sent=true`; prove byte-exact pre-Enter readback and an empty post-Enter composer; and include a screenshot plus before/after row count showing exactly one new carrier in the named conversation. No stale append-only trail or QA-shell-only row proof is admissible as the production result. | **Yes.** It sends one real Discord message. Obtain owner confirmation for the target conversation and text before running. |
+| 2 | **F2 · Detected sites/accounts and ownership**, `3/5 → 4/5` | Commit `ae9d5a1` completed a fail-closed four-verb/five-frame capture contract, but the lane report correctly leaves the renderer grant/revoke path `test-proven-only` and the VM take `blocked`. No live Windows UI/IPC walkthrough has produced the resulting account list. | Produce one verifier-green exact-build VM walkthrough showing default-unchecked profile state, explicit grant, a positive resulting account list, and persisted revoke. This is the exact walkthrough named by F2; it does not finish F1's Firefox/beyond-Chromium scope or F10's challenge/stop/restart matrix. | Scrub lane, with VM lane providing the interactive Windows subject | After a disposable identity exists: `scripts/qa/vm-run-loop.sh --self-test --share <share>` then `scripts/qa/vm-run-loop.sh --share <share> --verbs list-browser-profiles,grant-browser-profile,run-browser-import,revoke-browser-profile`. Green means the exact five PNG/JSON pairs `01-browser-profile-picker` through `05-profile-after-revoke`, positive detected-site count, matching run/build/PID hashes, and `processCleanup` stopped/already-exited. Failed takes remain retained. | **Yes, at the current precondition.** The warm VM has no OSL identity; creating one with the staged build registers on the live keyserver. That production identity mutation needs owner confirmation. The four browser verbs themselves do not mutate a provider account. |
+| 3 | **I3 · Green public Rust/TypeScript/selector/security CI**, `1/3 → 2/3` | Commit `b9aa48e` locally wires and refusal-tests the keyserver floor, but it is still one commit ahead of origin. The dedicated release worktree now also has three dirty in-flight release files, which are not evidence. No GitHub-hosted run covers the edited floor, and the accepted Rust gate is red. | Produce one public GitHub-hosted run on one pushed, clean exact SHA where all four named surfaces—Rust, TypeScript, selector, and public security/audit—conclude success, and where the keyserver matrix visibly executes the 297-test floor. One branch run earns only the next point; full marks remain for the stable authoritative line. | Release lane; source owners must first close the Rust failures without weakening or skipping their gates | Preconditions: clean worktree and reviewed commit. External commands, only after approval: `git push origin release-lane-2026-07-26`; then `gh run list --branch release-lane-2026-07-26 --commit <sha> --json databaseId,headSha,name,status,conclusion,url` and `gh run view <run-id> --json headSha,jobs,url --exit-status`. Artifact contract: every cited run has the same `headSha`, all four named gates are `success`, and the keyserver job log contains the floor assertion rather than merely a green matrix shell. | **Yes.** Pushing the branch and starting public CI mutate GitHub state and require owner confirmation. No production deployment or release is part of this probe. |
+
+### Why B6 is not in the top three tonight
+
+**B6 · Controlled two-identity proof** remains the next high-value target, not a smaller dependency
+chain. Its row is still gated by B3/B4/B5; B4 is 0, B5 is partial, the VM report says the crypto pair
+has neither Discord nor an OSL identity, and completed evidence does not show a peer receive/eye
+path. The one-sided Deckard screenshot cannot be rounded into two identities.
+
+The first honest B6 point would require a fresh two-profile run with `separate-profiles` and
+`mutual-pairing` green, then P1 and P2 green on the same run: A sends, B drives the real drain,
+decrypts, renders, and attributes the row to A. The existing command contract is:
+
+```powershell
+scripts\qa\osl-p2p-loop.ps1 -BundleB org.oslprivacy.hubqab `
+  -TempRootB "<launcher tempRoot>" `
+  -ConfirmDriveLiveConversation -OperatorDrivesReceiveSide
+```
+
+That run currently also requires creating/registering B's disposable identity and driving a real
+Discord conversation, both external mutations requiring owner confirmation. Offline queue,
+restart, receipt ordering, view-once, burn and the remaining B6 points stay unearned.
+
+## Acceptance rows this earns
+
+None.
+
+---
+
+## 22 · Exact-commit adjudication: UI `82b9238`, release `c0c18b1`
+
+Only these two completed commits were consumed. Owner approval for the C4/F2 live probes remains
+pending, and no crypto, Scrub, VM or later release work is evidence here.
+
+### UI `82b9238`: 13/13 plus two non-vacuous semantic breaks, no runtime point
+
+An archive of exact commit `82b9238`, run under Node 24 with the archived package dependencies,
+produced:
+
+```text
+Test Files  2 passed (2)
+Tests       13 passed (13)
+```
+
+The split is five recovery-capture tests and eight friend-trust tests. The recovery test dispatches
+the production focus callback with `payload: false`, then requires the accepted proof to be invalid,
+capture protection to be false and a render to occur
+(`apps/osl-hub-ui/src/recovery-capture-ui.test.ts:15-40` at `82b9238`). Deleting the production
+`actions.invalidateRecoveryCapture()` call makes that exact archive fail `1 failed | 4 passed` at
+line 38: `expected true to be false`.
+
+The friend test builds the rendered remove control, binds the production click dispatcher and
+requires the exact person id to reach the request function
+(`apps/osl-hub-ui/src/friend-trust-ui.test.ts:85-103` at `82b9238`). Deleting the production click
+listener makes that exact archive fail `1 failed | 7 passed` at line 102: the spy was called zero
+times instead of once.
+
+This is `test-proven-only`, not a live window, capture or persistence result. It materially
+strengthens A1's recovery-capture evidence and A5's friend-removal call-path evidence, but A1 still
+needs the product capture boundary and A5 still needs the live trust/removal ceremony. Neither
+row's earned score changes.
+
+### Release `c0c18b1`: exact floor/refusal proved; positive suite output is not exact-archive proof
+
+Exact commit `c0c18b1` adds a dedicated Windows job that invokes
+`qa_selftest_request::tests::` with `--features core,discord-qa-shell` and
+`--test-threads=1` (`.github/workflows/rust-test.yml:110-124` at `c0c18b1`). Its committed floor is
+34 against 36 source-declared module tests
+(`scripts/ci/test-count-floors.txt:25-36` at `c0c18b1`). The exact floor parser self-test reports
+`11 passed, 0 failed`. Feeding it a valid zero-collection Rust summary independently produces:
+
+```text
+::error::osl-hub-qa-request passed 0 tests, below floor 34; a drop means tests stopped being compiled or collected - check feature flags first
+```
+
+and exits 1. The starvation refusal is therefore `test-proven-only` on exact committed floor code.
+
+The release report names the integration-tree results as `36 passed; 707 filtered out` for the
+focused module and, for the unfiltered feature suite:
+
+```text
+broker::tests::the_text_drain_applies_inbound_revocations_instead_of_deleting_them
+test result: FAILED. 741 passed; 1 failed; 1 ignored
+```
+
+Those outputs are useful blocker evidence, but they are not exact-commit results: the report says
+the disposable tree included tracked and untracked integration bytes outside `c0c18b1`. An
+independent archive combining the exact workflow with the completed product commit stops during
+compilation on missing IPC key-bundle APIs, before either collection result can be reproduced.
+Accordingly, the two positive counts are `unknown` for exact committed bytes, and the exact-archive
+suite is `blocked` at compilation. The named blocker is recorded, not rounded into a verified
+exact-commit run.
+
+At adjudication time `c0c18b1` was two commits ahead of
+`origin/release-lane-2026-07-26`; the release branch has since advanced locally but remains
+unpushed. The earlier “public CI now requires” milestone was retracted. No remote ref, GitHub
+setting or hosted run changed, so public CI remains unchanged and I3 stays 1/3. The checklist
+remains **96 / 303**.
+
+## Acceptance rows this earns
+
+None.
+
+---
+
+## 23 · Urgent point adjudication: A8 held, B3 +1
+
+Only the completed store and ratchet evidence named in the request was consumed. The arithmetic is
+`96 + 0 + 1 = 97 / 303`.
+
+### A8 `3/4 → 4/4`: rejected; comprehensive at-rest boundary remains open
+
+Exact archive `48b3ef156c790930029b892cf2b7778bf8738683` passes all 48 store tests: 18
+blind-index/migration tests, 13 burn/metadata tests and 17 store tests. The accepted evidence
+proves current schema-v4 message and attachment labels are sealed or represented by keyed,
+domain-separated blind indexes; v3 rows and attachments remain readable; migrated v3 plaintext
+identifiers are scrubbed from raw bytes; a true v1 fixture remains readable, ordered and writable;
+and the new store carries a v4 version stamp.
+
+The scrub negative control is non-vacuous but narrower than a single-mechanism claim. Omitting only
+the pending `VACUUM` stayed green because `secure_delete=ON` also scrubs freed cells. Disabling both
+mechanisms made
+`migrating_a_v3_database_removes_its_plaintext_identifiers` fail with:
+
+```text
+migration left the plaintext channel id recoverable in the database file
+```
+
+That is strong `test-proven-only` evidence for current v4 and the v3 migration. It is not the
+comprehensive audit A8 explicitly held its final point for:
+
+- v2 and unstamped legacy migrations have no dedicated fixtures;
+- the v1 test proves readability/order/version/writability but does not raw-scan post-migration
+  bytes;
+- the downgrade test asserts a v4 version stamp rather than running an older reader against the
+  upgraded file;
+- attachment `mid_bi`/`sender_bi` selectors are not re-derived against sealed attachment metadata;
+- persistence outside `crates/store` has not received a comprehensive identifier-at-rest audit.
+
+The store also deliberately retains graph shape: deterministic equality/frequency, row counts,
+sizes, ordering, burn state and timing remain visible. A8 stays 3/4. Nothing here advances A6 or
+earns an unqualified social-graph secrecy claim.
+
+### B3 `1/5 → 2/5`: accepted at its structural boundary
+
+Exact archive `86f1d0e67af53100dd9be45c15bb43d58ed313ab` passes the full
+`osl-ratchet-next` suite, including:
+
+- duplicate and delayed replay refusal while the session remains usable;
+- bounded skipped-key storage and fail-closed eviction;
+- reverse-order, random-interleaving and permanent-loss delivery;
+- state export/import, receiver rollback recovery and replay refusal after restart.
+
+A fresh negative control retained a consumed skipped key. The exact
+`skipped_message_replay_stays_rejected_after_restart` test then failed:
+
+```text
+accepted skipped-message replay after restart
+left: Ok(Opened { ... })
+right: Err(AuthFailed)
+```
+
+Dependency semantics are qualified rather than hidden. The historical `86f1d0e` archive cannot
+compile the IPC integration gate because it predates required IPC/keystore key-bundle APIs. It is
+used only for the self-contained ratchet crate. Exact later dependency closure
+`1d8bfa8` passes 35 `wire_rn` tests, including sealed save/load, persist-before-return,
+save-failure refusal, store-full no-eviction, and crash-reload wire non-reuse.
+
+B3's literal next boundary is structural safety and sealed recovery, so this
+`test-proven-only` evidence earns one point even though the subsystem remains
+`implemented-unwired`. No real traffic was carried, and B2 live wiring, B4, B6, or any runtime row
+receives credit.
+
+Checklist arithmetic after adjudication:
+
+```text
+A: 8 / 40   (A8 unchanged at 3/4)
+B: 7 / 30   (B3 now 2/5)
+Total: 97 / 303 = 32%
+```
+
+## Acceptance rows this earns
+
+- B3 +1.
+
+---
+
+## 24 · Exact commits `c0279dc` and `79f12eb`; live Worker UUIDs — B5 award retracted
+
+No later dirty source bytes were consumed. This section originally recorded
+`97 + 1 + 0 = 98 / 303`; §25 retracts that B5 award after a counteraudit proved the passing broker
+gate was source-text-only.
+
+### `c0279dc`: B5 remains `1/4`; source reachability is below the row boundary
+
+Exact archive `c0279dc9434d138234d435935fbb2779095e408e` produced:
+
+```text
+filtered_control_inbox...                         2 passed
+unfiltered_or_wrong_filter_echo...                1 passed
+text_and_attachment_drains_are_bound...           1 passed
+```
+
+The direct client positive is nonempty: it returns one row independently for `peer-a` and
+`peer-b`, checks the query's `sender`, and verifies that sender is inside the recipient's Ed25519
+signature. Invalid empty/control-character/oversized filters refuse before network I/O.
+Missing echo, wrong echo, and a row whose `sender_id` differs from the requested filter refuse the
+entire response; there is no unfiltered retry.
+
+Fresh one-sided mutations were non-vacuous:
+
+- accepting any present echo fails the wrong-echo assertion;
+- accepting a missing echo fails the 64-foreign-rows starvation control;
+- disabling the row-sender comparison fails the cross-sender assertion;
+- reverting the attachment drain to unfiltered makes the broker binding test fail. The independent
+  audit performed the equivalent filter-binding mutation for both drains.
+
+Production reachability is structural and exact: `drain_peer_inbox_text` and
+`native_overlay_attachment_plans` both compile with
+`get_control_inbox_from(&identity, &manual.peer_osl_user_id)`. Renderer invokes, Tauri registration
+and ACLs reach those drain functions. The initial adjudication incorrectly treated this source
+reachability as closing B5's production-drain behavioural sub-boundary.
+
+The ceiling remains explicit. All three exact broker relay fakes omit mandatory
+`filtered_sender_id`, so no nonempty broker-level behavioral positive succeeds on these bytes.
+No authenticated live drain or two-identity receive ran. Prekeys and wrapped-key production paths
+remain incomplete. The client evidence is `test-proven-only`; it does not earn a production-drain
+point.
+
+### `79f12eb`: helper proved, production viewer seam unproved; no A6/D2/D4 point
+
+Exact archive `79f12eb79cf9e6baa374b33de7a5caf7f8991a19` passes the focused
+`non_image_open_policy_refuses_without_creating_plaintext` test. The helper refuses
+`application/pdf` before its synthetic download/decrypt flags, staging directory, or durable
+plaintext file; an `image/png` control reaches the helper continuation. Removing the helper's
+refusal makes the test fail:
+
+```text
+non-image refusal must happen before download
+```
+
+But the test calls `require_protected_attachment_viewer` directly. It never calls the actual
+`open_pending_inner` product function. Removing
+`require_protected_attachment_viewer(&plan.mime_type)` from production leaves the focused test
+green. Thus the helper positive and negative controls are non-vacuous while the claimed production
+seam is not behaviorally protected by this test.
+
+Source inspection shows the production call is ordered before token parsing, attachment download,
+decrypt, staging and durable plaintext write. The helper is `test-proven-only`; the production
+ordering is source-inspected, not runtime-proven, and deletion of the call is undetected. A6 still
+covers all protected plaintext-at-rest surfaces and metadata; D2 covers functioning encrypted
+transport; D4 requires protected first paint and an end-to-end view-once image path. None crosses.
+
+### `a3ca157`: exact active Cloudflare versions, Git mapping unknown
+
+The read-only probe window was `2026-07-27T05:14:05Z` through `05:17:09Z`. Cloudflare reported:
+
+| Worker | Active deployment | Tier |
+|---|---|---|
+| Keyserver | version 169, `3f92f0f5-c6ac-4426-9a83-1555f5c6394b`, 100% | `verified-live` |
+| Cipher-store | version 15, `0a17547d-577e-4f70-8159-f5d90e9c9e31`, 100% | `verified-live` |
+
+Health GETs returned 200. The keyserver's present-but-empty sender filter returned its bounded-id
+400 refusal, proving that validation branch is active. It does not prove authenticated filtered D1
+selection. Cloudflare records UUIDs, upload metadata and script etags but no Git annotation; a
+script etag is not a Git object ID. The exact Git commit for both deployed bundles is therefore
+`unknown`, and neither active UUID is mapped to `c0279dc`, `79f12eb`, or any inferred local commit.
+
+Checklist arithmetic:
+
+```text
+A: 8 / 40
+B: 7 / 30   (B5 remains 1/4)
+D: 7 / 30
+Total: 97 / 303 = 32%
+```
+
+## Acceptance rows this earns
+
+- None. The original B5 +1 is retracted by §25.
+
+---
+
+## 25 · B5 counteradjudication: `c0279dc` and later `aca9dae`
+
+This correction makes the point movement explicit:
+
+```text
+98 / 303 after a509cb2
+-1 because c0279dc did not cross the frozen broker-drain boundary
++0 for aca9dae, which still stops at the shared fetch helper
+= 97 / 303
+```
+
+### Exact `c0279dc`: client guards pass; actual broker positive fails
+
+An independent clean archive of `c0279dc9434d138234d435935fbb2779095e408e` reproduced the three
+originally cited focused results:
+
+```text
+filtered_control_inbox...                                           2 passed
+unfiltered_or_wrong_filter_echo...                                  1 passed
+text_and_attachment_drains_are_bound_to_the_active_peer_sender      1 passed
+```
+
+The first two execute only `KeyServerClient`. The third, at `broker.rs:6463`, uses
+`include_str!("broker.rs")` and substring assertions; it executes neither
+`drain_peer_inbox_text` nor `native_overlay_attachment_plans`.
+
+All three exact broker relay fakes return `{"items": ...}` without mandatory
+`filtered_sender_id` (`native_discord_receive_e2e.rs:365`,
+`peer_attachment_network_e2e.rs:1157`, `sealed_relay_e2e.rs:274`). The actual text-drain
+characterization test
+`foreign_sender_rows_head_of_line_block_the_drain_at_the_page_boundary` still deletes one of 64
+foreign blockers before expecting delivery. Re-running it on exact `c0279dc` fails earlier:
+
+```text
+the drain still reports success: "OSL could not receive protected messages"
+test result: FAILED. 0 passed; 1 failed; 3 filtered out
+```
+
+There is no corresponding behavioral attachment positive. Therefore `a509cb2` relied on direct
+client behavior plus source reachability, contrary to the frozen B5 production-drain boundary.
+
+### Exact later `aca9dae`: real refusals, but still helper-level
+
+The exact `aca9dae54dd8496b0af780bbe9f7ee96920f0454` archive passes:
+
+```text
+broker::tests::production_receive_boundary...   2 passed; 0 failed; 666 filtered out
+```
+
+The refusal test genuinely rejects missing echo, echo mismatch, an echoed-A page containing a B
+row, and an unfiltered A+B page. The positive genuinely sends signed HTTP requests through
+`KeyServerClient` and returns two nonempty A rows followed by a separately requested B row.
+
+But both tests directly call `fetch_peer_control_inbox` (`broker.rs:6636,6660`), not either actual
+drain. The text and attachment fixtures are two-byte type markers checked only by
+`is_native_overlay_relay_bundle` and `is_attachment_bundle`; they are not authenticated, decrypted,
+or parsed by the production consumers. The fake server has no pending-row collection or deletion
+semantics: it preprograms the A response then the B response, so B cannot be consumed and the test
+does not retain 64 foreign blockers. The text/attachment consumer linkage remains source-text
+inspection.
+
+Changing the shared helper to `get_control_inbox(identity)` makes the helper positive fail, which
+proves the helper's signed-filter dependency. It does not promote the test into production-drain
+behavior.
+
+Status is `test-proven-only` below B5's held boundary. No authenticated live drain, actual
+text-plus-attachment broker delivery with blockers retained, or two-identity receive is proved.
+
+## Acceptance rows this earns
+
+- None. B5 returns from 2/4 to 1/4; total returns from 98/303 to 97/303.
+
+---
+
+## 26 · Six exact commits: Scrub, VM, server repair, F5 rejection, and C4 block
+
+Only exact committed bytes from `c5b516f`, `6cc103b`, `8802225`, `e8fbd3f`, `f0bd0e1`, and
+`31edb63` were consumed. Later dirty follow-up bytes were used only as an independent C4 block
+finding, never as positive evidence. Arithmetic is:
+
+```text
+97 + 0 + 0 + 0 + 0 + 0 + 0 = 97 / 303
+```
+
+### `c5b516f`: F2 verifier code-ready, runtime blocked
+
+The host independently supplies the selected client; the verifier derives
+`qa-client-{client}:run-{run}:state-{absent|locked|ready}` and checks create
+`absent → ready`, unlock `locked → ready`, and status-only `ready`. Four one-field binding
+mutations and a missing-independent-client control are retained.
+
+Exact archive results:
+
+```text
+python3 scripts/test_verify_scrub_capture_evidence.py -v   24 tests, OK
+scripts/qa/vm-run-loop.sh --self-test --share <temp>       6/6 negatives, 1/1 positive
+bash -n scripts/qa/vm-run-loop.sh                          exit 0
+```
+
+No Azure, Key Vault, OSL identity, provider, or real five-frame VM take ran. Status is
+`test-proven-only`; F2 is code-ready but runtime capture is `blocked`. Owner approval for later
+disposable identity creation is a prerequisite, not evidence.
+
+### `6cc103b`: exact-surface VM gate fails closed; no positive artifact
+
+The exact staged executable path, launched PID, visible non-marker surface, foreground ownership,
+sample-grid ownership, z-order and stable rectangle are now bound before and after capture
+(`vmqa-agent.ps1:721-818`, `vmqa-win32.ps1:348-467`, `vmqa-run.sh:348-414`).
+
+Exact host regression:
+
+```text
+./scripts/vmqa/test-selftest-grading.sh   passed=15 failed=0
+```
+
+The retained live VM evidence first catches a false green: a 6×6 marker HWND was bound while
+Firefox supplied the whole-desktop pixels. The final exact run then refuses
+`VMQA_VISIBLE_SURFACE_OFFSCREEN: rect=0,0 1044x788` and emits no artifact. This is a genuine
+fail-closed improvement with `runtime-proven` false-green/refusal evidence, not a verifier-green
+F2 walkthrough or I4 promotion.
+
+### `8802225`: local namespace refusal and safe rollout order; `0030` undeployed
+
+Exact Node 24 archive results:
+
+```text
+scripts/migration-0030.test.ts                 1 file, 6 tests passed
+register.test.ts + pubkeys.test.ts             2 files, 22 tests passed
+npm run typecheck                              passed
+```
+
+Real local Miniflare D1 proves scheme-0 compatibility, reserved `osl1_...` refusal before D1,
+zero-row insertion for that refusal, and INSERT/UPDATE triggers that permit only
+`(identity_scheme=0, ik_root_ed25519_pub=NULL)`. Mutations of the Worker refusal, update trigger,
+insert trigger, and default each fail. The safe order is Worker refusal first, then migration
+`0030`, then schema/trigger verification; migration-first leaves a namespace-squatting window.
+
+Status is local `runtime-proven`/`test-proven-only` deploy readiness. No Cloudflare command ran,
+`0030` remains pending, and scheme 1 has no client field, canonical root proof, verifier, or
+response: `implemented-unwired`. A2, B5, and release rows earn nothing.
+
+### `e8fbd3f`: local stale-upload repair; production unknown
+
+Exact archive results:
+
+```text
+test/attachment-sweep.test.ts                  1 file, 8 tests passed
+npm test                                       12 files, 104 tests passed
+npm run typecheck                              passed
+```
+
+The real local D1/R2 fixture proves that a stale legacy `uploading` row with null content expiry and
+no part receipt is boundedly marked, its multipart upload is aborted before conditional metadata
+deletion, and an abort failure retains retryable expired metadata. Fresh, current-schema, and
+part-receipted controls remain untouched; five semantic mutations fail.
+
+The sweep function is local `runtime-proven`; `scheduled()` is only source-connected. No deploy or
+post-deploy probe occurred. The older live cipher-store UUID has no Git annotation and must not be
+mapped to this later commit. Production remediation remains `unknown`; D2 earns nothing.
+
+### `f0bd0e1`: F5 isolated candidate rejected
+
+This commit changes only the Scrub report. Its exploratory mocked scan test passed in a temporary
+staged tree, but the exact candidate failed `npm run typecheck` across the unfinished
+content-kind/provider stack. The exploratory test and native seams were removed; untracked hosted
+bytes were excluded. F5 therefore remains `blocked` at 1/5, with no retained `test-proven-only`
+candidate.
+
+### `31edb63`: C4 harness inadmissible
+
+The exact harness reports 17/17 tests, and the PowerShell does populate `protected-draft` and invoke
+`prepare-protected`. Those facts do not make its evidence authoritative:
+
+- its accepted positive uses marker-free text named `.exe`, a fabricated PID/receipt, and a
+  signature-only PNG;
+- the identical fresh bundle verifies twice; there is no one-time challenge or consumption ledger;
+- executable, PID, start, path and hash are caller-authored consistency fields, not OS/build
+  attestation;
+- the source contract still passes when the real Send invocation is placed inside `if ($false)`;
+- `status`, `placed`, `enterSent`, and “native” readback are synthesized after renderer/UIA
+  observation instead of retained from the production command response.
+
+The independent follow-up rejects some malformed fields but still accepts coherent fake image and
+process evidence and replay; it also exposed collector/verifier schema mismatch. Those dirty bytes
+earn nothing. C4 is `blocked` and the owner Discord send must not run until artifact-rooted feature
+attestation, live process binding, retained native command/readback authority, semantic screenshot
+binding, replay consumption, and schema parity exist.
+
+### Shortest honest +1 map from 97 / 303
+
+| Order | Exact checklist row | Why current evidence stops short | Single missing real boundary/probe | Owner lane | Executable command or artifact contract | External mutation / owner confirmation |
+|---|---|---|---|---|---|---|
+| 1 | B5 `1/4 → 2/4` | `c0279dc` is client/source-only; `aca9dae` calls only the shared helper with a stateless A-then-B fake. | One exact behavioral test must execute the actual text and attachment drains, deliver A behind 64 retained B blockers, then prove B remains drainable. | Crypto/broker | Stateful relay; authenticated/decryptable text and attachment notices; four filter refusals; unfiltered one-call mutation must fail. | No. Local exact-commit evidence can cross this partial boundary. |
+| 2 | F2 `3/5 → 4/5` | `c5b516f` is code-ready, but no strict-verifier-green real VM take exists; `6cc103b` final capture is blocked. | One exact-build five-frame VM grant/import/revoke walkthrough with a positive account list and persisted revoke. | Scrub + VM | `./scripts/qa/vm-run-loop.sh --share <share> --timeout 600 --identity-client 1 --confirm-create-identity --verbs identity-status,create-identity,list-browser-profiles,grant-browser-profile,run-browser-import,revoke-browser-profile`; five bound PNG/JSON pairs and cleanup. | **Yes.** Disposable identity creation needs explicit owner confirmation and mutates the live keyserver. Confirmation alone earns nothing. |
+| 3 | I3 `1/3 → 2/3` | Local workflow floors and focused tests are unpushed; public Rust CI is not green. | Push one exact candidate and obtain a GitHub-hosted green Rust gate alongside the named public gates. | Release | Remote commit SHA and workflow URL with required Rust/TypeScript/selector/security jobs green. | **Yes.** Push/hosted CI mutate the remote. A local green or approval earns nothing. |
+
+## Acceptance rows this earns
+
+- None. Score remains 97 / 303.
+
+---
+
+## 27 · Exact B5/F1/website correction: chronology preserved, net zero
+
+Only exact committed bytes from
+`5ba5a029445ba0ce500aad2db8de4295cbd605ff`,
+`ae9d5a1efd2b7bf37c70c1da260ac12a815fc14b`, and
+`15fa16c95123e1b524858719b8d097aa434b05a6` were used positively. Later dirty
+product or website bytes were excluded. Arithmetic is deliberately shown rather than narratively
+netted:
+
+```text
+prior verified score                 97 / 303
+B5 broker behavioral boundary        +1
+F1 unsupported UI/runtime award      -1
+H1 local website candidate            0
+new verified score                   97 / 303
+
+A 8 + B 8 + C 18 + D 7 + E 4 + F 17 + G 5 + H 9 + I 6 + J 15 = 97
+```
+
+### B5: `5ba5a02` earns the later, narrow broker-level point
+
+The chronology matters. The earlier award based on `c0279dc` was wrong and remains retracted:
+client-level filter behavior plus a source-text reachability check did not execute a broker drain.
+`aca9dae` later proved the shared helper and four refusals but still did not execute either
+production consumer or retain a stateful blocked inbox. Neither commit crossed the frozen boundary.
+
+Exact `5ba5a029445ba0ce500aad2db8de4295cbd605ff` changes only
+`apps/osl-hub/tests/native_discord_receive_e2e.rs`. Its stateful positive:
+
+- calls `drain_native_discord_overlay_text`, which enters `drain_peer_inbox_text`;
+- calls `list_native_overlay_attachments` and `take_native_overlay_attachment`, which enter
+  `native_overlay_attachment_plans`;
+- drives both through the shared production `fetch_peer_control_inbox` →
+  `KeyServerClient::get_control_inbox_from` boundary;
+- places A's authenticated text and attachment after exactly 64 older foreign row IDs, opens A's
+  byte-identical plaintext and authenticated attachment plan, retains all 64 IDs through A's
+  consumers, then switches active peer and opens B independently;
+- checks that each A request names A and the final request names B.
+
+The relay applies recipient and sender predicates before `.take(64)`, matching the Worker's
+sender-filter-before-`LIMIT 64` semantics and the real 32-row per-pair admission ceiling. Four
+separate tests feed both consumers a missing echo, mismatched echo, matching echo containing a
+different sender, and an unfiltered fallback without an echo. Each refusal preserves the exact
+pending ID set.
+
+The truth lane independently archived the exact commit and ran:
+
+```text
+osl-cargo test --manifest-path apps/osl-hub/Cargo.toml --features core \
+  --test native_discord_receive_e2e -- --nocapture
+```
+
+Its result matches the retained exact-archive report:
+
+```text
+native_discord_receive_e2e: 8 passed; 0 failed
+```
+
+Two independent disposable-archive mutations each replaced only one production consumer's
+`get_control_inbox_from(identity, peer_osl_user_id)` call with unfiltered
+`get_control_inbox(identity)`:
+
+```text
+text mutation:       exit 101 at "exactly A's text opens"       left: 0 right: 1
+attachment mutation: exit 101 at "exactly A's attachment is listed" left: 0 right: 1
+```
+
+The calls are therefore load-bearing for both consumers rather than decorative source shape.
+Status is `test-proven-only`. No live D1 request, deployed-source mapping, host-provider runtime,
+or two-identity exchange ran. B5 moves **1/4 → 2/4** and no D1/B6/provider row moves.
+
+### F1: exact `ae9d5a1` withdraws the unsupported runtime point
+
+The earlier Scrub section proposed F1 4/6 → 5/6 for closing the UI and revocation halves. The final
+continuation in the same exact report explicitly supersedes that statement and classifies:
+
+- native browser-reader default-deny and one-profile scoping as `runtime-proven`, from the ignored
+  Windows Brave test and its `allows() → true` mutation;
+- direct native grant/revoke persistence as `test-proven-only`;
+- renderer picker, Tauri grant/revoke IPC, and persisted UI revocation as
+  `test-proven-only`, because no live Windows UI/IPC walkthrough completed;
+- agent build attestation/five real frames as `unknown`;
+- exact VM detection/revocation capture as `blocked`.
+
+The exact renderer test reinforces the report's correction: it executes the choice parser, then
+uses `readFileSync(main.ts)` plus substring assertions for the import guard and setter call. Exact
+tree search finds no test that executes `loadBrowserProfileChoices()` or
+`setBrowserProfileConsent()` through the renderer/Tauri boundary. Rust persistence tests call the
+native functions directly. Source registration and ACL wiring are real, but do not make the UI
+runtime-proven.
+
+F1 therefore returns **5/6 → 4/6**. Re-award requires one exact-build live Windows workflow:
+picker → grant IPC → nonempty import → revoke IPC → persisted re-read.
+
+### H1: exact `15fa16c` is local tooling, not a production promotion
+
+The website worktree is clean at exact
+`15fa16c95123e1b524858719b8d097aa434b05a6`, on local `main`, three commits
+ahead of the existing local `origin/main` ref. No fetch, push, Pages action, or deployment occurred.
+An exact archive passes:
+
+```text
+test-build-identity             38/38
+test-live-build                 12/12 (local HTTP fixture)
+pricing-sync --check            16 files, 19 markers, 0 rewrites
+build-status --check            manifest match
+check-claims                    16 files, 0 failed
+```
+
+Those results are `test-proven-only`; the candidate is not locally promotion-ready. There is no
+Pages deployment ID/URL/build log or live SHA-bound `/build.json`, and Pages dashboard build
+command/environment remain `unknown`. The keyserver redemption half of H1 is not present.
+
+Independent exact-archive mutation review also prevents overclaiming the local artifact gate:
+false or duplicate HTML metadata is accepted after manifest rehashing, nested HTML under recursive
+assets is copied but not stamped/HTML-verified, changed `_headers` is accepted, and an undeclared
+served file passes verification. A planted ignored asset is correctly excluded from `dist` and its
+bytes cannot contaminate the artifact, but the requested fail-on-presence contract does not fire.
+The pre-existing crypto-checkout test is 9/10 because its `Pay once` expectation disagrees with the
+exact `One month` HTML. These are additional clean-promotion blockers, not acceptance points.
+
+H1 stays **3/4**. Production promotion and rollback remain blocked on: an exact pushed commit;
+known Pages build command and Production/Preview environment variables; a successful Pages build
+whose `/build.json` and HTML markers bind to that commit; live SHA-bound verification; fixed local
+artifact-verifier gaps (including the ignored-file refusal); all required local gates green; and
+the keyserver redemption change.
+Rollback additionally requires the last known-good exact deployment SHA/artifact and a rehearsed
+Pages rollback path. No local commit is evidence that those conditions hold.
+
+## Acceptance rows this earns
+
+- B5 +1: 1/4 → 2/4, `test-proven-only`.
+- F1 −1 correction: 5/6 → 4/6; the previous runtime award is withdrawn.
+- H1 +0: 3/4 remains.
+- Net score: **97 / 303**.
+
+## 2026-07-27 — D7 mutual-consent tie-breaker and website candidate refresh
+
+### D7 stays 1/4, with an open security finding
+
+I independently read committed product HEAD
+`05282a493fbb165e2011edc2991a273ead3dddc6`, excluding the dirty broker worktree and any pending
+crypto fix.
+
+The retained foundation point is real:
+
+- native-overlay acknowledgments are authenticated under the peer wire path;
+- validation binds message id, service, conversation, sender, recipient and expiry;
+- admission requires a matching encrypted sent-message ledger record; and
+- the receipt ledger advances monotonically from Sent → Received → Opened.
+
+That is enough for D7's existing authenticated/correlated foundation point. It is not enough for
+another point and it does not prove live or two-identity behavior.
+
+The security finding is also exact. `drain_peer_inbox_text` has three production paths that emit
+`NativeOverlayAcknowledgmentStatus::Opened` through `send_native_overlay_acknowledgment`: an
+already-consumed single row, a newly consumed single row, and a reassembled logical message.
+None consults locked mutual consent. Incoming acknowledgments accept `Opened` through
+`validate_native_overlay_acknowledgment` and `apply_native_overlay_acknowledgment_record`, then
+write it to the encrypted ledger and return it toward UI, again without a consent decision.
+`control_contract.rs` contains a signed, identity/scope-bound, expiring and revocable
+`OpenedReceiptConsent` plus `opened_receipt_status`, but current committed production code has no
+caller for that contract.
+
+Immediate fix: fail closed. Suppress every production `Opened` emission and reject every incoming
+`Opened` before ledger mutation or UI projection. Keep ordinary and view-once `Received`
+acknowledgments unchanged. Restore `Opened` only after durable mutual-consent state is bound to the
+two identities and exact scope, signed, expiring and revocable, and checked while holding the
+receipt-state transition lock at both emission and admission. Later dirty or pending crypto bytes
+are not evidence for this adjudication.
+
+Status: `open-security-finding`. Score effect: **D7 +0; 1/4 retained**.
+
+### Website exact `4e225633` remains local/test-only
+
+Exact website commit `4e2256333c53e6b6e17462657260f5d6499ec9ee` has parent `15fa16c`, tree
+`10234165a4c718a1385c869a2b1df834c7dd8a5b`, and a clean local worktree. It is four commits ahead
+of the local `origin/main` ref. Its local promotion gates pass and checkout is deliberately
+disabled because the keyserver has no proved paid-code redemption/one-month enforcement.
+
+No push or deployment occurred. There is no Cloudflare Pages build/dashboard record, public
+SHA-bound `/build.json`, or keyserver redemption proof. This is `test-proven-only`; H1 remains
+3/4 and earns +0.
+
+## Acceptance rows this earns
+
+- D7 +0: 1/4 remains; security status corrected.
+- H1 +0: 3/4 remains.
+- Arithmetic: **97 + 0 + 0 = 97 / 303**.
+
+## 2026-07-27 — immutable verdict reconciliation and Scrub public-truth correction
+
+The accepted checklist authority is now exact commit
+`5aec1fe9d8fb48e5d179e344f480c294b6017a7d`, tree
+`8d7069ce961dcbe31d781a14117c617e2fe72aec`, checklist blob
+`d9435c951b0dcac38040991dd12ae8879485faef`. Its 74 row weights and section
+headers independently sum to **100 / 303**. This report does not modify that
+authority.
+
+The current point-capable immutable receipts do not justify another score edit:
+
+- E1 exact `4747cf861cd605542879508b4104596593a895d8`, tree
+  `e5a11009be69a34aabcabe91f0f571a2429a80a0`, is independently **REJECT +0**.
+  The selector profile has no product-pinned trust anchor, durable monotonic
+  revision store/restart proof, or non-test production caller.
+- D2 exact `4b5b1d30caa45a363382211a020133e64584f6fd`, tree
+  `1dedf24807ba61b51b659c8787ed33419b331b2e`, is independently **REJECT +0**.
+  In the committed object, `cipher-store-cf/src/lib/sweep.ts:149-220` can skip
+  or ignore a failed multipart abort around a wrong-size object, delete the
+  visible object, persist absence, and remove metadata while the old multipart
+  upload can still publish later. Later mutable fixes are not evidence.
+- F1/Scrub exact `1766aaa154c77a179a02227fced2ce5634728890`,
+  tree `face6d5d7e49ac155851cb1ad2cb78f68d3082b4`, is independently
+  **REJECT +0**. `apps/osl-hub-ui/src/scrub-provider-adapters.ts:127-129`
+  falls through from a refused provider parser to generic JSON. That leaves
+  provider identity, archive inventory, media bytes, and completeness
+  unbound. The WhatsApp parser also discards captured year/time fields and
+  stores the author capture as message text. Google, Discord, Meta, X, and
+  WhatsApp are not qualified end to end.
+- Keyserver sender-filter exact
+  `cff1cbb8f10fcfe5f7095fd6cf7edac4dc13cad1`, tree
+  `2e9b77ce4a83225b4fc785a75ac211cb7f4bba8d`, remains
+  **REJECT +0** because fresh shipping genesis cannot establish the production
+  floor state.
+- I3 WebView admission exact
+  `f53dc9c357cb403f6eac363c787b73ef21215f30`, tree
+  `5eae64fb29e8a039cc2d3a898c0f2938b971faf0`, remains
+  **REJECT +0**. Its nonempty corpus exercises an unused scaffolding-version
+  constant rather than the shipping injection surface.
+- VMQA exact `ff117dd12422444b0e41aa45e20dd2c3397226d3` is
+  **ACCEPT +0** at simulation/retained-schema tier. Its focused immutable
+  archive suite passed 9/9, but the live source pin remains `None`; it supplies
+  no runtime or checklist credit.
+
+The highest-impact reachable public mismatch was Scrub discovery. The website
+had described the blocker only as browser import failing to hand results to
+Scrub, which omitted the exact provider-parser and archive-authority failures
+above. Website commit
+`4c937bcd41005496b165a153baa3c6f8adb79bd7`, tree
+`be3594c323d0a31a37401fca4cf959cfa0fb4153`, corrects the public status and
+machine-readable evidence without promoting the capability:
+
+- `data/pricing.json` blob
+  `914580855ec142ee1f7ff1e489c6e72cce7d200e`;
+- `docs/status.html` blob
+  `9e73b83342dfbd477f493da48cc9e690b3cec29c`; and
+- `scripts/check-claims.mjs` blob
+  `3d3cbcf4ca226dccee3025e9c0c5fec7cba6295c`.
+
+The lightweight exact-source gate passed 419/419 semantic negative-control
+fixtures and scanned 16 public files with 0 failures. JSON parsing and
+`git diff --check` also passed. This is `source/static/test-proven-only`: no
+browser, build, deployment, provider archive, or runtime walkthrough ran.
+
+## Acceptance rows this earns
+
+- E1 +0: 3/6 remains.
+- D2 +0: 1/5 remains.
+- F1/Scrub +0: no row movement.
+- Keyserver sender-filter +0.
+- I3 +0.
+- VMQA +0.
+- Website Scrub truth correction +0; no implementation or runtime behavior was
+  awarded.
+- Authoritative arithmetic remains **100 / 303**.
+
+## 2026-07-27 — active Scrub control contract and exact Notes reachability
+
+### Active Scrub is locked and view-only after review
+
+The authority text previously conflated watching a run with Free/Pro
+entitlement and allowed pause/resume during active automation. Exact product-doc
+commit `00f561f240fa0b200c0f20d138e87449f75b17a8`, tree
+`f4f4de9d976d91ca1a5e7dcb97a6260591c0fdf5`, master-decision blob
+`3a436d15a11b232723fff7418bf7fee61ea1eb0c`, corrects that contract:
+
+- Free Scrub requires review of the exact one-time list and explicit launch,
+  but the reviewed run may continue while the owner is away.
+- Every active Free Scrub or AutoScrub controlled surface is view-only and
+  locked to the approved plan. The owner may observe status, progress, and the
+  current item.
+- Emergency Stop/Revoke is the only active-run control. Clicking the provider
+  surface, editing targets, manually advancing steps, and altering the plan are
+  forbidden.
+- Stop/Revoke invalidates the run authority. Continuing requires fresh review
+  and explicit launch; there is no ordinary pause/resume.
+- Pro distinguishes later or repeated use of approved-plan authority, not
+  merely the ability to leave a one-time run unwatched.
+
+`git diff --check` passed. This is a product-contract correction only. No Scrub
+implementation, browser, runtime, build, or provider workflow was exercised.
+
+Two additional truth-owned files already existed as untracked work and were
+preserved rather than overwritten:
+
+```text
+?? docs/design/osl-current-window-prompts-2026-07-26.md
+?? docs/design/osl-simple-spec.md
+```
+
+Their current untracked text still contains the old distinction at
+`osl-current-window-prompts-2026-07-26.md:79-82` and
+`osl-simple-spec.md:195-199`. Those bytes require their owner's reconciliation;
+they were not included in `00f561f`.
+
+### Notes reachability is absent, not merely unknown
+
+A bounded read-only audit found no public claim that Notes works today, but
+found that the public status sentence was weaker than the inspected source.
+In exact product object `d7d877be4aeeaed83e310d32b1e73aabb54881ab`:
+
+- `apps/osl-hub-ui/src/main.ts:2571` marks the Notes tile unavailable and
+  `main.ts:5139` describes it as planned for a later release;
+- production `main.ts` has no Notes route or
+  `list_osl_notes`/`save_osl_note` caller;
+- `apps/osl-hub/src/lib.rs` does not register `osl_notes`;
+- the production Tauri handler beginning at
+  `apps/osl-hub/src/main.rs:7390` registers neither Notes command; and
+- `apps/osl-hub/src/osl_notes.rs:112` contains the isolated encrypted backend,
+  making the exact status `implemented-unwired`.
+
+Website commit `417910e60ea40cff102acd3ad63ec5076c1f6de2`,
+tree `daf40f598e4d27e1f79bd3da144ba4a175a021f1`, changes the
+machine-readable census and its bound public status copy from generic
+“reachability unproved” to the exact split: Notes is implemented but not wired
+into the source-inspected production app; Scrub-index reachability remains
+unproved.
+
+Exact website blobs:
+
+- `data/at-rest-census.json`:
+  `d1e8b717b22f476e315adfc66f7aa943e329892a`;
+- `docs/status.html`:
+  `009ba1c14f0c6fb59b6300d58557df91de7dae05`; and
+- `scripts/check-claims.mjs`:
+  `b4616e108d8577d470cfa98f9fa3f59bdca73cd6`.
+
+The gate now contains a specific negative control that changes implemented-
+unwired Notes back to unknown reachability and requires
+`AT_REST_REACHABILITY_WORDING`. Through `osl-heavy`, the semantic self-test
+passed 420/420 fixtures and the public scan passed 16/16 files. JSON parsing and
+`git diff --check` passed. This remains `source/static/test-proven-only`; no
+deployed page or runtime was checked.
+
+### Later +0 receipts consumed without promotion
+
+- D2 correction `cb2ba4f684d69675c4f998310e9858a89247ce71`,
+  tree `8c29423e756f610addec71f815ce3673c8d6ef6c`, remains
+  independently **REJECT +0** because its inherited source-closure gate was
+  still red 12/14. Follow-up `3a12760ed526e3170d467a370df70fb7786e4877`,
+  tree `ad10fe3b0f41fb59f59484e56948f8bcadfdd5c7`, is also
+  independently **REJECT +0**. Its frozen contract tests passed 4/4 and worker
+  tests 10/10, but reverting the required wrong-size abort predicate to
+  `!completedObject` and disabling the abort branch both false-greened. The
+  gate still does not bind wrong-size objects to unconditional abort.
+- Visible-row receipt `8ac72658b3790c69d0704f14a0f7f3c10d316099`,
+  tree `78c74b937bc8bdd71c8be8496cacae63c048f43e`, is independently
+  **ACCEPT +0** at source/test tier. No Windows producer, live Discord/VM,
+  deployment, or two-identity runtime receipt was run.
+- Sender-filter successor `a7d7a750bef22d9d15bb79ad8c55d38a9ce63e25`,
+  tree `16caf509e43e2b00ac2007e9b8e8ca04f2490477`, is independently
+  **ACCEPT at source/test tier, REJECT at verified-live/shipping tier, +0**.
+  Exact-object rollout mutations passed 8/8, Worker/D1 tests 4/4, and selector
+  controls 8/8. The production producer registry remains empty and the verifier
+  store unprovisioned, so no live authority or checklist credit follows.
+- Discord-ingestion successor
+  `a939ba08987fc260a3925119af7ca2a51f32b545`, tree
+  `4b9a9e4d3c2cd0ee38c1195a49884ef5c908369f`, is independently
+  **REJECT +0**. Although the retained ZIP map now reaches the parser and
+  generic Discord-object fallback was removed, member bytes still do not bind
+  account or media authority; empty account IDs, caller-selected
+  `authoredBySelf`, mismatched inline attachment bytes, and complete plain JSON
+  remain accepted. The focused exact-object suite was red: 1 failed, 9 passed.
+  The existing public statement that Discord exports are not qualified end to
+  end therefore remains accurate.
+
+## Acceptance rows this earns
+
+- Scrub contract correction +0.
+- Notes reachability truth correction +0.
+- D2 successors +0 by independent REJECT verdicts.
+- Visible-row receipt +0 by its accepted source/test limitation.
+- Sender-filter successor +0 by its split source/test-ACCEPT, live-REJECT
+  verdict.
+- Discord-ingestion successor +0 by independent REJECT.
+- No checklist row or section changed.
+- Authoritative arithmetic remains **100 / 303**.
+
+## 2026-07-27 — newest immutable verdicts and FAQ claim correction
+
+The following exact objects were reconciled without scoring:
+
+- D2 `3a12760ed526e3170d467a370df70fb7786e4877`, tree
+  `ad10fe3b0f41fb59f59484e56948f8bcadfdd5c7`: **REJECT +0** solely because
+  unconditional wrong-size multipart abort is not mutation-bound. Reverting to
+  `!completedObject` and disabling the abort branch both false-green; only
+  abort-failure ordering is enforced.
+- Visible-row receipt `8ac72658b3790c69d0704f14a0f7f3c10d316099`, tree
+  `78c74b937bc8bdd71c8be8496cacae63c048f43e`: **ACCEPT source/test +0**.
+  Live Windows/Discord execution and two-identity runtime proof are absent.
+- Sender-filter `a7d7a750bef22d9d15bb79ad8c55d38a9ce63e25`, tree
+  `16caf509e43e2b00ac2007e9b8e8ca04f2490477`: **ACCEPT source/test,
+  REJECT verified-live/shipping, +0**. The production producer registry and
+  verifier store remain unprovisioned.
+- Discord/WhatsApp F1 successor `42c74051e5223a5e03e868439dfe9599e4089926`,
+  tree `efd83a8ac4d5767203ead19abab5cb3f7355952c`: **REJECT +0**. Declared
+  media digest/size, account identity, self-authorship, replay generation, and
+  a raw nonempty positive remain unbound; no score follows its byte-swap fix.
+- WhatsApp head `53993061a7f02948b45310a9c7cbed1e9e012b6d`, tree
+  `788367236ea011c25bdbffc44f31d842f24e28a1`, is independently **REJECT +0**.
+  Its focused parser fixtures passed 5/5 and ingestion fixtures 4/4, but source
+  timezone semantics, system/multiline handling, account binding, stable replay-
+  resistant locators, raw media binding, and complete 8 KiB mutation coverage
+  remain unproved.
+- VM receipt `ff117dd12422444b0e41aa45e20dd2c3397226d3`, tree
+  `45142200f7deed12ea1424c4e1a17793bc851a17`: **REJECT +0** for runtime
+  authority. Its archived 9/9 suite proves only receipt-supplied simulation;
+  no independently produced live operator receipt exists.
+- D2 correction successor `f54fac1970661bc7bc808abfcc94aba3069852bf`, tree
+  `235d649134270c2d1db1398085a86cbd55b9e744`, adds the missing semantic
+  requirement and committed false-green mutations. It is independently
+  **ACCEPT source/test tier, +0**; production R2 retry/idempotency behavior
+  remains unknown and receives no runtime credit.
+
+The next highest-impact reachable website mismatch was the FAQ pricing answer:
+`docs/faq.html` said Free “includes ... Free Scrub” while the canonical
+registry and status page mark Scrub discovery Planned and unavailable in the
+shipping app. Website commit `6d251d5621a1836a97d54990148513c933178fea`,
+tree `c6d44ad1ef69d98efc9de33106732f0bacafef3a`, parent
+`417910e60ea40cff102acd3ad63ec5076c1f6de2`, corrects that paragraph to bind
+Free Scrub to the Planned badge and state it is not available yet.
+
+Exact changed blob:
+
+- `docs/faq.html`: `da2d7226532695fefe5cd11d15633909fac3feb9`.
+
+The `osl-heavy` semantic self-test passed 420/420 fixtures and the public scan
+passed 16/16 files; `git diff --check` passed. No browser, build, install,
+deploy, push, or runtime test ran.
+
+## Acceptance rows this earns
+
+- D2 +0; remains rejected pending a corrected independently accepted successor.
+- D2 `f54fac1` +0 at source/test tier; live R2 retry remains unknown.
+- Visible-row +0; source/test acceptance does not prove runtime.
+- Sender-filter +0; live provisioning is absent.
+- Discord/WhatsApp F1 +0; exact successor remains rejected.
+- VM runtime +0; exact receipt remains rejected for live authority.
+- FAQ Free Scrub wording correction +0; no implementation or runtime behavior
+  was awarded.
+- Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — status-date truth correction and WebView receipt
+
+The next public mismatch was a stale version date in the reachable status page:
+`docs/status.html:63` called the matrix `2026-07-26` while the page’s latest
+authoritative at-rest and Scrub evidence was reviewed on 2026-07-27. Website
+commit `e2e99f1a226e22be1b65138443d09aa57be44ae7`, tree
+`a9f2aef9a10981ce516ab6d9fdd94c351c93d930`, parent
+`6d251d5621a1836a97d54990148513c933178fea`, updates only that date.
+`docs/status.html` blob is `412dda68198ba262add5036752899b490c5f6a0e`.
+The full public scan passed 16/16 files with zero failures; `git diff --check`
+passed. This is metadata truth only, +0.
+
+Newest immutable WebView receipt correction `36afe006435c96786bca265ad84463e33c83b40e`,
+tree `ca2b1b9e7c9942094550bb92d5e9acc32fa6bfd0`, is **REJECT +0**. Its
+disposable fixture suite passed 21/21, but the exact verifier rejects its own
+candidate because the receipt binds the old verifier blob `e6585c3e…` while the
+candidate contains `9c005166…`; the measured test remains scaffolding-only and
+there is no production WebView caller. No score follows this receipt.
+
+## Acceptance rows this earns
+
+- Status matrix date correction +0.
+- WebView `36afe00` +0 by independent REJECT.
+- No checklist edit or score movement; authority remains **100 / 303**.
+
+## 2026-07-27 — pricing visual and subsequent +0 verdicts
+
+The download-page pricing visual also listed bare “Free Scrub” beside current
+private-text features, despite the canonical registry marking Scrub discovery
+Planned. Website commit `a95c7da4cb15b7177044e69f3c2f76e930d52b46`, tree
+`47823f3bc834438376a97fd052c5cbede32f327b`, parent
+`e2e99f1a226e22be1b65138443d09aa57be44ae7`, changes only that visual label to
+“Free Scrub (planned)”. Blob: `download.html`
+`02cbdd94b54d4a0bb24804a8cb54e1f3bc7fe14b`. The public claim scan remained
+16/16 with zero failures.
+
+Further exact verdicts consumed without promotion:
+
+- WhatsApp successor `ad2bd47b84acfc6689f041f087064de7fa493477`, tree
+  `4d5708624526bd4b1b4c2c7a8f0e8360b9662991`, is **REJECT +0**. Its 5/5
+  focused suite does not bind media bytes/digests, exhaustive members,
+  account/self/conversation authority, replay, or complete boundaries.
+- Release reconciliation `704974973065c5a2e488f824e61a1071f4602219`, tree
+  `660467ce3f76ca4c8cab22eceeae077e9c7fd5e4`, is **REJECT +0**. Its fixture
+  reader masks the real Git-object mismatch and does not prove a production
+  release reconciliation path.
+
+## Acceptance rows this earns
+
+- D2 `f54fac1` +0 at source/test tier; no runtime score.
+- WhatsApp `ad2bd47` +0 by independent REJECT.
+- Release reconciliation `7049749` +0 by independent REJECT.
+- Pricing visual truth correction +0.
+- Checklist remains untouched; authority remains **100 / 303**.
+
+The D2 retry-window object `9137d4b702a2b553ac23e9dd90b548f666c9bfde`, tree
+`787317fbcbf18ff161606693149e64d67a50e238`, is now independently **REJECT +0**.
+Its Node/Worker evidence passed 21/21 and covers successful abort → crash before
+absence CAS → `NoSuchUpload` retry, but the exact contract still false-greens
+classifier widening and removal of the `lease_version` predicate from the
+absence `UPDATE`. Production R2 retry behavior is also unknown.
+
+## Acceptance rows this earns
+
+- D2 `9137d4b` +0 by independent REJECT; no score movement.
+- Image pricing visual qualification +0.
+- No checklist edit; authority remains **100 / 303**.
+
+## 2026-07-27 — FAQ image-protection claim qualification
+
+`docs/faq.html:95` previously said “OSL protects supported text and images,”
+which contradicted the canonical image capability’s Planned/unavailable status.
+Website commit `e1127020a890f698e734873c09301074a5017b87`, tree
+`0348ba4c47a3de81a3e637c197298ac9f291be0f`, parent
+`ea4f26c4afbeb4822d45c3648e8c07e3e2d3090e`, narrows the answer to supported
+text today and marks encrypted image sending Planned and unavailable. Blob:
+`docs/faq.html` `66a6d7118013248d29fe6e8be9f46f30ef49f3cd`.
+
+The full public scan passed 16/16 files with zero failures and
+`git diff --check` passed. No runtime or implementation evidence was added.
+
+## Acceptance rows this earns
+
+- FAQ image-protection wording correction +0.
+- No checklist edit or score movement; authority remains **100 / 303**.
+
+## 2026-07-27 — forward-looking feature metadata correction
+
+The reachable `features.html` metadata description said OSL “clears sensitive
+history, cleans attachments, and expires readable content” in present tense,
+while the page’s own sections mark those features Arriving at v1. Website
+commit `185319c60897879a3833dd51552badca380f7862`, tree
+`c198a091cb5b6db38c4a9377aed5dfe5b96955a7`, parent
+`e1127020a890f698e734873c09301074a5017b87`, changes only the description to
+“features OSL is building”. Blob: `features.html`
+`2347916b97ca7d04fae89c8c7a25849b9cb85bee`.
+
+The full public scan passed 16/16 files with zero failures and
+`git diff --check` passed. No implementation, runtime, or release evidence was
+claimed.
+
+## Acceptance rows this earns
+
+- Feature metadata qualification +0.
+- No checklist edit or score movement; authority remains **100 / 303**.
+
+## Acceptance rows this earns
+
+- D2 retry-window implementation +0 pending independent acceptance.
+- Pricing visual correction +0.
+- No checklist edit; authority remains **100 / 303**.
+
+## 2026-07-27 — AutoScrub availability truth correction
+
+The public FAQ and “How it works” page contradicted the status registry by
+stating that AutoScrub did not exist yet while telling users to download it.
+Website commit `d5443410b16d66ba72a92b525befa952b2a1c5a0`, tree
+`d3c6d321b4868915dff7664a835f3d57eac28720`, parent
+`a95c7da4cb15b7177044e69f3c2f76e930d52b46`, corrects the canonical exception
+sentence and both public pages: AutoScrub is a future optional module, not
+available yet; if introduced, it would be separately downloaded only after
+explicit consent.
+
+Exact blobs:
+
+- `data/pricing.json`: `5698685b793f863a200ce883924b20017125848d`;
+- `docs/faq.html`: `e3173b84308e65409589136bf976469305898e31`; and
+- `docs/how-it-works.html`: `dbab26f5a6bb533355ffe154053e08ce73749226`.
+
+The full public claim scan passed 16/16 files with zero failures and
+`git diff --check` passed. No implementation, browser, build, or deployment
+evidence was introduced.
+
+## Acceptance rows this earns
+
+- AutoScrub availability wording correction +0.
+- No implementation or runtime behavior was awarded.
+- Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — image pricing visual qualification
+
+The remaining Pro pricing visual said “Private text + images” even though the
+same page and canonical registry mark image sending Planned and unavailable.
+Website commit `ea4f26c4afbeb4822d45c3648e8c07e3e2d3090e`, tree
+`d5a9acbb3e330da67c08120f5635ccbe716d7201`, parent
+`d5443410b16d66ba72a92b525befa952b2a1c5a0`, changes only that label to
+“Private text + planned images”. `download.html` blob:
+`6e4830bc744bab655ddbec1c318e3ea624e8b65a`.
+
+The full public scan passed 16/16 files with zero failures and
+`git diff --check` passed. No runtime or implementation evidence was added.
+
+## Acceptance rows this earns
+
+- Image pricing visual qualification +0.
+- No checklist edit or score movement; authority remains **100 / 303**.
+
+## 2026-07-27 — attachment/image claim audit: no correction required
+
+A bounded read-only audit found no remaining public overclaim in the image/file
+pricing surfaces. The exact copies are internally consistent:
+
+- `download.html:67` labels encrypted image sending and other files Planned and
+  says they are not in the shipping app or part of today’s purchase;
+- `download.html:106-107` repeats Planned badges for image opening and Scrub;
+- `download.html:129-134` places image/file sending under “Not in the app yet —
+  you are not paying for these today”; and
+- `docs/status.html:87-88` states image sending is not in the shipping app and
+  non-image files are unsupported, matching `data/pricing.json:221-245`.
+
+No file correction was justified by this audit. No browser, build, install,
+runtime, push, or deployment command ran.
+
+## Acceptance rows this earns
+
+- Attachment/image claim audit +0; no mismatch found.
+- Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — remaining public capability claim audit
+
+A second bounded read-only pass over the public HTML found no additional
+present-tense capability overclaim. `docs/status.html:87-102` marks image and
+file sending, Scrub discovery, guided deletion, AutoScrub, group protection,
+Burn, timed expiry, view-once, and related tools as Planned with explicit
+shipping-app limitations. `docs/faq.html:95,126,129,132-139` repeats those
+boundaries, and `docs/how-it-works.html:79,98` keeps group protection and
+AutoScrub forward-looking. The website tree was clean after the prior
+corrections (`185319c`, `e112702`, `ea4f26c`). No correction was justified.
+
+The bounded scan used `rg` only; no browser, build, install, runtime,
+deployment, or release evidence was produced.
+
+## Acceptance rows this earns
+
+- Remaining public capability claim audit +0; no mismatch found.
+- Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — threat-model scope qualification
+
+`docs/threat-model.html` used an unqualified present-tense claim that OSL
+protects “the content of your messages” and that a connected service receives
+ciphertext. That wording could be read to include the explicitly unsupported
+group/channel and non-qualified connector paths. Website commit
+`46c1789398a2cefbdd872a1c39991e2ff4e487cc`, tree
+`ec0088097aec5f967ec3e4e0b7a502d69a2a21a5`, parent `185319c60897879a3833dd51552badca380f7862`,
+qualifies the claims to supported direct messages, states unsupported paths are
+not covered, and preserves the metadata caveat. Exact file blob:
+`docs/threat-model.html` → `b706b649a17a62fcaaf05cd43f2a16a7443816a9`.
+
+`git diff --check` passed. No browser, build, install, runtime, deployment, or
+release evidence was produced.
+
+## Acceptance rows this earns
+
+- Threat-model scope qualification +0.
+- Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — homepage message-scope qualification
+
+The homepage message-protection paragraph said “OSL encrypts it” without
+limiting the claim to the supported direct-message path. Website commit
+`f8d8510ef677e88a0bc5a4e8d58be40b4cb2b524`, tree
+`61185146fa3631f2c74855b368cfccfa9ba3e7f5`, parent
+`46c1789398a2cefbdd872a1c39991e2ff4e487cc`, qualifies the paragraph to
+“supported direct messages” and preserves the existing metadata and cover-text
+limitations. Exact `index.html` blob:
+`3283258f986b38cd760f08924884f553e115fb1f`.
+
+`git diff --check` passed. No browser, build, install, runtime, deployment, or
+release evidence was produced.
+
+## Acceptance rows this earns
+
+- Homepage message-scope qualification +0.
+- Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — privacy collection wording correction
+
+`docs/privacy.html:86` said “From within OSL itself, we collect nothing,”
+while the same page documents license-validation requests containing a license
+key and timestamp. Website commit `599da8a41d34ebce37ad335b3c8d57e72bbc38c2`,
+tree `2cf8352fbc4629dd091f7114b267cbcb37bb76a3`, parent
+`f8d8510ef677e88a0bc5a4e8d58be40b4cb2b524`, narrows the claim to no collection
+of message content or connected-service contacts. Exact `docs/privacy.html`
+blob: `242b287cd038be139723f343e2c1586d77d11a9d`.
+
+`git diff --check` passed. No browser, build, install, runtime, deployment, or
+release evidence was produced.
+
+## Acceptance rows this earns
+
+- Privacy collection wording correction +0.
+- Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — ratchet/sender-key claim blocker
+
+The crypto handoff identifies an unqualified shipping claim in the repository
+root `README.md:44-48,170`: it says direct messages ride a Double Ratchet with
+forward secrecy and that groups/server channels use sender keys. The immutable
+source audit instead found production dispatch forced to stateless v3 and
+sender keys disabled. This is a real public-claim mismatch, but `README.md` is
+outside the truth lane's authorized `docs/**` and `oslprivacy-web` paths; no
+edit was made. The exact owner mechanism is the lane boundary, not a test
+failure. The handoff should go to the README/crypto documentation owner.
+
+The in-scope public website/docs copies already mark ratcheting and sender-key
+paths Planned or switched off, so no independent in-scope correction was
+justified in this pass. No browser, build, install, runtime, deployment, or
+release evidence was produced.
+
+## Acceptance rows this earns
+
+- Ratchet/sender-key mismatch: +0 pending authorized README owner correction.
+- Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — at-rest/privacy claim audit after README blocker
+
+A bounded `rg` pass over the website's FAQ, status, privacy, getting-started,
+threat-model, and audit pages found no further at-rest overclaim. Every local
+storage statement is either census-tagged (`data-osl-at-rest-claim` with named
+backends) or explicitly limits itself to reviewed source/focused tests; the
+message examples are scoped to supported or explicitly encrypted flows. No
+website correction was justified.
+
+No browser, build, install, runtime, deployment, or release evidence was
+produced.
+
+## Acceptance rows this earns
+
+- At-rest/privacy claim audit +0; no mismatch found.
+- Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — truth lane status checkpoint
+
+The in-scope website and `docs/**` claim surfaces remain clean after the
+homepage, threat-model, FAQ, feature-metadata, image, and privacy corrections.
+No new immutable runtime evidence or public claim mismatch is available within
+this lane. The remaining README ratchet claim is still blocked by the explicit
+path-ownership boundary recorded above.
+
+## Acceptance rows this earns
+
+- Status checkpoint +0; no new evidence or correction.
+- Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — stateless-v3 reachability handoff
+
+Independent source/test audit object `0d558341a68a1aa257959206efc7598242e7a044`
+(parent `744209e92fd555ad7e9ece6a0f3982b27cef5df2`, tree
+`68f3fc323bd6272d96cf0b0219815c36728d7133`) verified the production
+main→broker→IPC→v3 path, the v4 false gate, absence of a production v5 setter,
+and no prekey lifecycle caller across the production Rust roots. Its focused
+Vitest command passed 1 test with 5 skipped. The verdict is source/test-only
+`+0`; no runtime claim is made.
+
+The audit independently confirms the unresolved public mismatch at
+`README.md:42-48`: the root README still sells Double Ratchet forward secrecy
+and sender keys, while shipping behavior is stateless v3 and those paths are
+disabled. `README.md` remains outside this lane's `docs/**` and
+`oslprivacy-web` ownership, so the correction is blocked by path ownership.
+
+## Acceptance rows this earns
+
+- Stateless-v3 reachability audit: +0 source/test only.
+- README ratchet/sender-key correction: +0 pending authorized owner edit.
+- Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — README ownership blocker rechecked
+
+The root repository advanced through `e64fe5f` and `dae12da` (the latter says
+it stops claiming peer Burn is live), but the current `README.md:42-48` still
+states that direct messages ride a Double Ratchet with forward secrecy and
+that groups/server channels use sender keys. The immutable stateless-v3 audit
+`0d55834` contradicts those present-tense claims for shipping behavior.
+
+This remains blocked by the explicit lane boundary: root `README.md` is not in
+the truth lane's authorized `docs/**` or `oslprivacy-web` paths. No edit was
+made and no runtime claim is inferred.
+
+## Acceptance rows this earns
+
+- README ratchet/sender-key mismatch: +0 pending authorized owner correction.
+- Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — unwired BurnAlert and sender-key design qualification
+
+Crypto reachability audit at `66412233d10bf257566861c02d1a3b46ca40c3b8`
+confirmed `BurnAlertPayload`, signing, and verification are definitions/tests
+only; no production caller reaches them, and the broker's 0x0A path returns
+`EnforcementUnavailable` without apply/ACK/delete. The in-scope design docs
+therefore needed an availability boundary. Commit
+`2e5b53c08ee162a9db3878a31883c238f4fafdd4`, tree
+`f63ae9241268dd004adbb9fa8a0b80a87b625dad`, qualifies:
+
+- `docs/design/group-messaging.md` blob
+  `057bd7c16c9b4d6fda619566c0806c8f757118ca` now labels sender keys planned
+  and not wired;
+- `docs/design/sender-keys.md` blob
+  `8d0471318988d7f43419cd97838e7f0268103b26` removes the present-tense
+  “v1 alpha ships” claim and states the client does not enable sender keys; and
+- `docs/design/key-server-api.md` blob
+  `b91143c97fb2f06ca26024150176e95b96814594` labels burn-alert upload,
+  verification, and rendering design-only/unwired.
+
+`git diff --check` passed. No runtime, release, browser, build, or deployment
+evidence was claimed.
+
+## Acceptance rows this earns
+
+- BurnAlert/sender-key design qualification +0.
+- Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — residual sender-key design language qualification
+
+A bounded follow-up found three residual present-tense phrases after the first
+qualification: `sender-keys.md` said “v1 ships sender keys,” called burn-alert
+system messages “confirmed,” and said “v1 alpha ships”; `key-server-api.md`
+said “v1 ships the simpler model.” Commit
+`6c76d9a15e83c81bee0f06faa7ea584d01e2f2ae`, tree
+`bec8ae16684d70ba7dfa617f162766466b6bd087`, qualifies these as design targets
+and review gates. Blobs: `docs/design/sender-keys.md`
+`ff77a61fdd3555cab908fa102bfbab733e7f18cd`; `docs/design/key-server-api.md`
+`e7b9ad5d9b53add385c0ce9a2570d0cb90aa63a0`.
+
+`git diff --check` passed. No runtime, release, browser, build, or deployment
+evidence was claimed.
+
+## Acceptance rows this earns
+
+- Residual sender-key design language qualification +0.
+- Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — BurnAlert implemented-unwired audit
+
+Immutable audit `1c4bb4d14e150a965d068286be84c3e787938ae2` (parent
+`2e5b53c08ee162a9db3878a31883c238f4fafdd4`, tree
+`5c5287c3020ce1676602193042fa454b3619ae51`) independently verified
+`BurnAlertPayload` plus sign/verify definitions and re-export, zero production
+caller/import across Hub, IPC, and the keystore client, and the distinct broker
+`EnforcementUnavailable` positive. Synthetic symbol positives and
+comment/`cfg(test)` negatives were also checked. Exact focused Vitest passed
+1/1 with 6 skipped. Verdict is source/test-only `+0`; no runtime or
+two-identity claim is made.
+
+The three design-doc corrections are in direct parent `2e5b53c`; no additional
+file change is needed from this audit.
+
+## Acceptance rows this earns
+
+- BurnAlert implemented-unwired audit +0, source/test only.
+- Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — Five stale handoffs corrected, no score
+
+This truth-only correction supersedes five high-waste status/ownership statements without promoting
+any product claim:
+
+1. Exact F1 candidate `7bbf2e9e966634e7d434ec230b75a7f666db0003` exits `78` at B6 before
+   the F1 UI. Hub owns the first F1-only startup-reachability fix; VM provisioning and live capture
+   are downstream.
+2. Exact Scheme-1 server/admission candidate
+   `e273436dfaf735daab44adbbeb205a3c95ecd4cc` and keystore construction lineage
+   `a1b82a008f53d4864459d353bb6a89fc8753a446` exist at
+   `test-proven-only`. “Canonical proof/client shapes absent” is stale; the shipping
+   register/fetch/replenish caller is absent. The blocked rollout is migrations `0033`, then
+   `0034`, then the matching Worker.
+3. Exact Scrub IMAP `07384f67a829398527ed869034789304c7e74d87` is independently accepted
+   `test-proven-only` for UI → Tauri → main-only ACL → native authority. No production caller arms
+   `authorize_attended_imap_batch_reviewed`, and no live fixture ran; F3 is not code-complete.
+4. Provider lifecycle candidate `085b4e2d8837a8a2facc9ea09d73fb6a5f6e60ae` owns
+   `apps/osl-hub/src/main.rs`/`security.rs`, not `cleanup.rs`/`services.rs`, and is independently
+   `REJECT +0` pending a security successor.
+5. Revocation broker candidate `0572893105d1d75f9a0d43a4fae86539896b5321` is independently
+   accepted `test-proven-only`. The predecessor defect assignment is superseded; integration and
+   controlled two-identity runtime remain.
+
+No acceptance row changes. Checklist authority remains **100 / 303**.

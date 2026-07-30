@@ -36,6 +36,8 @@ pub struct ReloadReport {
     pub server_defaults_entries: usize,
     pub burned_scopes_loaded: bool,
     pub burned_scopes_count: usize,
+    pub prekeys_loaded: bool,
+    pub prekey_opks: usize,
     pub sender_keys_loaded: bool,
     pub sender_keys_count: usize,
     pub app_prefs_loaded: bool,
@@ -198,6 +200,21 @@ pub fn reload_encrypted_state_after_unlock(
             .expect("burned_scopes mutex poisoned") = bs;
     }
 
+    match load_persisted_prekey_state(state, config_dir) {
+        Ok(false) => {}
+        Ok(true) => {
+            report.prekeys_loaded = true;
+            report.prekey_opks = state
+                .prekey_state
+                .lock()
+                .expect("prekey_state mutex poisoned")
+                .as_ref()
+                .map(|prekeys| prekeys.opk_pool.len())
+                .unwrap_or(0);
+        }
+        Err(e) => report.errors.push(format!("prekeys: {e}")),
+    }
+
     // sender_key_state.json — same shape as burned_scopes (loader
     // returns default on failure). Bootstrap pre-FIX2 never loaded
     // this file at all; the reload path is the first time the
@@ -282,6 +299,92 @@ pub fn reload_encrypted_state_after_unlock(
     }
 
     Ok(report)
+}
+
+/// Load `<config_dir>/prekeys.json` into [`AppState`] when it exists.
+///
+/// A prekey file is only authority if it is sealed under the active sealer and
+/// its signed prekey is bound to the loaded identity. A missing file is the
+/// fresh-install case and returns `Ok(false)`. A present but unreadable or
+/// unbound file clears the live prekey slot and returns `Err`, refusing to keep
+/// a synthetic or stale pool in memory.
+pub fn load_persisted_prekey_state(state: &AppState, config_dir: &Path) -> Result<bool, String> {
+    let sealer = keystore::select_best_sealer();
+    load_persisted_prekey_state_with_sealer(state, config_dir, sealer.as_ref())
+}
+
+pub fn load_persisted_prekey_state_with_sealer(
+    state: &AppState,
+    config_dir: &Path,
+    sealer: &dyn keystore::Sealer,
+) -> Result<bool, String> {
+    let path = config_dir.join("prekeys.json");
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    let loaded = (|| {
+        let identity = state
+            .identity
+            .lock()
+            .map_err(|_| "identity mutex poisoned".to_string())?
+            .clone()
+            .ok_or_else(|| "identity is not loaded".to_string())?;
+        let prekeys = keystore::load_prekey_state(&path, sealer)
+            .map_err(|_| "local prekey state is unreadable".to_string())?;
+        validate_prekey_state_for_identity(&identity, &prekeys)?;
+        Ok(prekeys)
+    })();
+
+    match loaded {
+        Ok(prekeys) => {
+            state.set_prekey_state(prekeys);
+            Ok(true)
+        }
+        Err(e) => {
+            state.clear_prekey_state();
+            Err(e)
+        }
+    }
+}
+
+pub fn validate_prekey_state_for_identity(
+    identity: &keystore::Identity,
+    prekeys: &keystore::PrekeyState,
+) -> Result<(), String> {
+    validate_spk_for_identity(identity, &prekeys.current_spk, "current")?;
+    if let Some(previous) = &prekeys.previous_spk {
+        validate_spk_for_identity(identity, previous, "previous")?;
+    }
+    for opk in &prekeys.opk_pool {
+        let secret = crypto::x25519::SecretKey::from_bytes(opk.secret);
+        if crypto::x25519::derive_public(&secret).as_bytes() != &opk.public {
+            return Err("one-time prekey public key does not match its secret".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn validate_spk_for_identity(
+    identity: &keystore::Identity,
+    spk: &keystore::SpkEntry,
+    label: &str,
+) -> Result<(), String> {
+    let secret = crypto::x25519::SecretKey::from_bytes(spk.secret);
+    if crypto::x25519::derive_public(&secret).as_bytes() != &spk.public {
+        return Err(format!(
+            "{label} signed prekey public key does not match its secret"
+        ));
+    }
+    let signature = crypto::ed25519::Signature::from_bytes(spk.signature);
+    let verified = crypto::ed25519::verify(&identity.ed25519_public, &spk.public, &signature)
+        .map_err(|_| format!("{label} signed prekey signature is malformed"))?;
+    if !verified {
+        return Err(format!(
+            "{label} signed prekey is not bound to the loaded identity"
+        ));
+    }
+    Ok(())
 }
 
 /// Wrong-key discrimination for one file_storage_key-sealed JSON

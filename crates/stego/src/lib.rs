@@ -44,6 +44,7 @@
 //! "every message in the configured private channel").
 
 pub mod bigram;
+pub mod line_shape;
 mod mode0;
 mod mode1;
 mod mode1_chunking;
@@ -51,6 +52,10 @@ mod mode1_reassembly;
 mod mode1_templates;
 mod mode1_wordlists;
 
+pub use line_shape::{
+    encode_mode1_shaped, encode_token_shaped, rendered_rows, rows_for_hard_lines, shape_cover,
+    RowBudget, RowMatch, ShapedCover, MAX_SHAPED_ROWS,
+};
 pub use mode0::{
     decode_mode0, encode_mode0, is_mode0, MODE0_MAX_RAW_LEN, MODE0_PREFIX, MODE0_PREFIX_BYTES,
 };

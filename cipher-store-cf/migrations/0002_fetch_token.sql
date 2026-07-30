@@ -1,11 +1,38 @@
 -- Phase 6: per-blob capability tokens for fetch + delete authorization.
 --
 -- Each upload now carries an X-OSL-Fetch-Token header (32 hex chars,
--- 16 bytes). The token is HMAC-SHA256(per_conversation_mac_key, ...)
--- computed client-side from data only the sender + recipients of a
--- specific conversation possess. Storing it server-side lets the
--- worker enforce that a fetcher proves possession of the same key
--- material that produced the cover.
+-- 16 bytes). Storing it server-side lets the worker enforce that a
+-- fetcher proves possession of the key material that produced the cover.
+--
+-- CORRECTION (2026-07-26 source audit). This comment previously said the
+-- token was "computed client-side from data only the sender + recipients of a
+-- specific conversation possess." That was stronger than what ships, and the
+-- audit recorded the gap as a security-relevant documentation contradiction.
+--
+-- What is actually true for the prose-token lane: `derive_scope_primitives`
+-- (crates/ipc/src/prose_token.rs:19-26, :97-133) runs HKDF over
+-- `Scope::storage_key()` or the Discord DM channel id, with NO secret input,
+-- and the source itself notes that anyone who knows the scope can recompute
+-- the result. Upload then derives one token from that public value and an
+-- all-zero placeholder (:181-224), so the token is per-SCOPE, not per-blob.
+--
+-- Consequences a reader of this schema must not be misled about:
+--
+--   * Possession of the token does NOT establish membership of a private
+--     group. Any hostile member of a channel — or anyone who learns its
+--     public Discord ids — can derive the same value.
+--   * The token therefore does not separate read authority from delete
+--     authority. DELETE /v1/blob/:id authorizes on this token alone
+--     (src/endpoints/blob.ts), so a hostile channel member can destroy any
+--     prose-token ciphertext in that conversation before its recipients fetch
+--     it. That is a live High finding whose fix is client-side (bind
+--     capabilities to secret conversation state, per blob, and issue delete
+--     authority only to the author); it is tracked against crates/ipc, not
+--     against this Worker.
+--   * Other lanes are stronger and are not described by this comment. The
+--     attachment lane stores only a SHA-256 digest of its capability
+--     (migration 0004) and the view-once lane keeps its decryption key out of
+--     the server entirely (migration 0005).
 --
 -- The column is NULLABLE for graceful migration:
 --   - Blobs uploaded before this migration land with fetch_token = NULL

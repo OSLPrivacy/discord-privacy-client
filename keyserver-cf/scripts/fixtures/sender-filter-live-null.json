@@ -1,0 +1,15 @@
+{
+  "format": "osl.keyserver.sender-filter-live-evidence.v1",
+  "evidence_tier": "verified-live-read-only-historical",
+  "database": "osl-keyserver-prod",
+  "environment": "production",
+  "captured_started_at": "2026-07-27T11:58:53.000Z",
+  "captured_finished_at": "2026-07-27T11:59:00.000Z",
+  "active_worker_version": "3f92f0f5-c6ac-4426-9a83-1555f5c6394b",
+  "worker_commit": null,
+  "migration_0031_present": false,
+  "capability_table_exists": 0,
+  "control_inbox_sender_disposition": null,
+  "health_probe": null,
+  "route_probe": null
+}

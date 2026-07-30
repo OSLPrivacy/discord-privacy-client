@@ -1,23 +1,27 @@
-//! Unlock + duress password handling.
+//! Legacy unlock/duress record primitives (implemented-unwired).
 //!
-//! Spec: `docs/design/unlock-and-duress.md`. Two passwords, both
-//! optional:
+//! Spec: `docs/design/unlock-and-duress.md`. This record model supports two
+//! optional password roles:
 //!
-//! - **Unlock password**: gates app access.
-//! - **Duress password**: appears to unlock normally, then triggers
-//!   the duress flow (B3) which silently burns and strips the app.
+//! - **Unlock password**: produces an unlock outcome.
+//! - **Duress password**: produces a duress outcome for a caller to handle.
 //!
-//! Both stored as Argon2id hashes alongside the identity blob and
-//! sealed under the same [`crate::sealer::Sealer`]. Failed-attempt
-//! tracking, threshold, and inactivity-timer settings live in the
-//! same record.
+//! When invoked, this module's storage helpers serialize the roles as
+//! Argon2id hashes in a record sealed by the supplied
+//! [`crate::sealer::Sealer`]. Failed-attempt tracking, threshold, and
+//! inactivity-timer settings are fields in that model.
+//!
+//! Current Hub/IPC and legacy Tauri production sources call neither
+//! [`verify_against_record`] nor [`InactivityTimer`], and do not construct the
+//! legacy [`crate::duress::DuressEngine`]. The current Hub's separately
+//! implemented password gate uses `startup_gate` and `cleanup`; these
+//! primitives do not establish that path.
 //!
 //! ## Cryptographic role (per design doc)
 //!
-//! Password is a **UX gate**, not part of identity-key derivation.
-//! TPM-sealed identity unseals regardless of password input — the
-//! password just decides which flow runs (normal unlock vs duress
-//! vs failed-with-retry vs failed-threshold-exceeded).
+//! In this legacy model, password verification is a **UX gate**, not part of
+//! identity-key derivation. This helper only returns which modeled outcome a
+//! caller must handle.
 //!
 //! ## Argon2id parameters
 //!
@@ -243,14 +247,13 @@ impl PasswordRecord {
 pub enum VerifyOutcome {
     /// Unlock password matched. Caller resets `failed_attempts`.
     Unlock,
-    /// Duress password matched. Caller triggers duress (B3) silently.
+    /// Duress password matched. A future integration must handle the outcome.
     Duress,
     /// Neither matched, but the failed-attempt threshold has not yet
     /// been exceeded. Caller increments and persists the counter.
     Wrong { attempts: u32 },
-    /// Neither matched AND the threshold is now reached. Caller
-    /// triggers duress (B3) silently — same effect as Duress, just a
-    /// different cause.
+    /// Neither matched AND the threshold is now reached. A future integration
+    /// must decide how to handle the threshold outcome.
     DuressByThreshold,
 }
 
@@ -289,7 +292,7 @@ pub fn verify_against_record(
     }
 }
 
-/// In-memory inactivity timer. Caller calls
+/// Implemented-unwired inactivity timer. An integrated caller must call
 /// [`Self::mark_activity`] on every OS input event (or a coarser
 /// signal — focus changes, mouse moves) and
 /// [`Self::should_reprompt`] on each tick / ipc command.

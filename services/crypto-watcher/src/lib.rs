@@ -156,6 +156,48 @@ fn verify_monero_wallet_identity(expected: &str, actual: &str) -> Result<(), Wat
     Ok(())
 }
 
+#[derive(Deserialize)]
+struct MoneroViewOnlyProbeResponse {
+    #[serde(default)]
+    result: Option<serde::de::IgnoredAny>,
+    #[serde(default)]
+    error: Option<MoneroViewOnlyProbeError>,
+}
+
+#[derive(Deserialize)]
+struct MoneroViewOnlyProbeError {
+    code: i64,
+    message: String,
+}
+
+fn verify_monero_view_only_probe_response(response: &mut [u8]) -> Result<(), WatcherError> {
+    // `query_key(spend_key)` is a fixed, read-only wallet-rpc probe. A
+    // view-only wallet returns Monero's dedicated WATCH_ONLY error (-29).
+    // A successful result is deliberately deserialized as IgnoredAny, never
+    // as a key/string/value, and the raw response is wiped before any branch
+    // returns. Any success still means the configured wallet can expose a
+    // private spend key and must be rejected.
+    let parsed = serde_json::from_slice::<MoneroViewOnlyProbeResponse>(response);
+    response.fill(0);
+    let parsed =
+        parsed.map_err(|_| WatcherError::Rpc("Monero view-only proof is malformed".into()))?;
+    if parsed.result.is_some() {
+        return Err(WatcherError::Rpc(
+            "Monero wallet is spend-capable; view-only wallet required".into(),
+        ));
+    }
+    let error = parsed
+        .error
+        .ok_or_else(|| WatcherError::Rpc("Monero view-only proof is ambiguous".into()))?;
+    if error.code == -29 && error.message == "The wallet is watch-only. Cannot retrieve spend key."
+    {
+        return Ok(());
+    }
+    Err(WatcherError::Rpc(
+        "Monero wallet did not provide the exact view-only proof".into(),
+    ))
+}
+
 /// Read a small, non-symlinked credential file without exposing its contents.
 /// On Unix, group/other permission bits are rejected before reading.
 pub fn read_secret_file(path: &Path) -> Result<String, WatcherError> {
@@ -310,6 +352,39 @@ impl CoreWalletRpc {
             .map_err(|e| WatcherError::Rpc(e.to_string()))?;
         rpc_call(self.client.post(url), method, params).await
     }
+
+    async fn verify_monero_view_only(&self) -> Result<(), WatcherError> {
+        let config = self
+            .config
+            .monero
+            .as_ref()
+            .ok_or_else(|| WatcherError::Config("Monero payments are not enabled".into()))?;
+        let url = config
+            .monero_wallet_rpc_url
+            .join("json_rpc")
+            .map_err(|e| WatcherError::Rpc(e.to_string()))?;
+        let response = self
+            .client
+            .post(url)
+            .json(&json!({
+                "jsonrpc":"2.0",
+                "id":"osl-view-only-proof",
+                "method":"query_key",
+                "params":{"key_type":"spend_key"}
+            }))
+            .send()
+            .await
+            .map_err(|e| WatcherError::Rpc(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(WatcherError::Rpc(format!("HTTP {}", response.status())));
+        }
+        let mut body = response
+            .bytes()
+            .await
+            .map_err(|e| WatcherError::Rpc(e.to_string()))?
+            .to_vec();
+        verify_monero_view_only_probe_response(&mut body)
+    }
 }
 
 async fn rpc_call<T: DeserializeOwned>(
@@ -413,6 +488,7 @@ impl WalletRpc for CoreWalletRpc {
         }
         if let Some(config) = &self.config.monero {
             let _: Value = self.monero("get_version", json!({})).await?;
+            self.verify_monero_view_only().await?;
             let monero: MoneroAccountAddress = self
                 .monero(
                     "get_address",
@@ -1331,6 +1407,7 @@ pub async fn create_invoice_handler(
 mod tests {
     use super::*;
     use axum::{routing::post, Router};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::tempdir;
 
     #[test]
@@ -1430,6 +1507,34 @@ mod tests {
             .unwrap();
         });
         Url::parse(&format!("http://{address}/settle")).unwrap()
+    }
+
+    async fn callback_url_counted() -> (Url, Arc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let server_calls = calls.clone();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route(
+                    "/settle",
+                    post(move || {
+                        let calls = server_calls.clone();
+                        async move {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            Json(json!({"ok":true,"status":"delivery_ready"}))
+                        }
+                    }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        (
+            Url::parse(&format!("http://{address}/settle")).unwrap(),
+            calls,
+        )
     }
 
     async fn callback_url_recorded() -> Url {
@@ -1827,6 +1932,37 @@ mod tests {
         assert!(verify_monero_wallet_identity(&expected, &expected).is_ok());
         assert!(verify_monero_wallet_identity(&expected, &"5".repeat(95)).is_err());
     }
+
+    #[test]
+    fn monero_watch_only_probe_accepts_only_the_exact_watch_only_error() {
+        let mut view_only = br#"{"jsonrpc":"2.0","id":"osl-view-only-proof","error":{"code":-29,"message":"The wallet is watch-only. Cannot retrieve spend key."}}"#.to_vec();
+        assert!(verify_monero_view_only_probe_response(&mut view_only).is_ok());
+        assert!(view_only.iter().all(|byte| *byte == 0));
+
+        for response in [
+            br#"{"jsonrpc":"2.0","id":"osl-view-only-proof","error":{"code":-1,"message":"wallet unavailable"}}"#.as_slice(),
+            br#"{"jsonrpc":"2.0","id":"osl-view-only-proof"}"#.as_slice(),
+            br#"not-json"#.as_slice(),
+        ] {
+            let mut ambiguous = response.to_vec();
+            assert!(verify_monero_view_only_probe_response(&mut ambiguous).is_err());
+            assert!(ambiguous.iter().all(|byte| *byte == 0));
+        }
+    }
+
+    #[test]
+    fn monero_spend_capability_is_rejected_without_exposing_the_key() {
+        const SENTINEL: &str = "sentinel-private-spend-key-must-never-escape";
+        let mut spend_capable = format!(
+            r#"{{"jsonrpc":"2.0","id":"osl-view-only-proof","result":{{"key":"{SENTINEL}"}}}}"#
+        )
+        .into_bytes();
+        let error = verify_monero_view_only_probe_response(&mut spend_capable).unwrap_err();
+        let displayed = error.to_string();
+        assert!(!displayed.contains(SENTINEL));
+        assert!(spend_capable.iter().all(|byte| *byte == 0));
+    }
+
     #[test]
     fn credential_files_must_be_private_regular_files() {
         let dir = tempdir().unwrap();
@@ -2219,6 +2355,93 @@ mod tests {
             payments: vec![payment('c', 8_333, 2)],
         };
         assert_eq!(state.poll_once(expires_at + 1).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn locked_invoice_survives_store_restarts_and_settles_once() {
+        let dir = tempdir().unwrap();
+        let database = dir.path().join("restart.db");
+        let database_key = [11; 32];
+        let invoice_id = format!("cpay_{}", "7".repeat(32));
+        let expires_at = unix_now() + 60;
+        let wallet = Arc::new(MockWallet {
+            allocations: Mutex::new(vec![("bc1qrestart".into(), None)]),
+            observation: Mutex::new(Observation {
+                payments: vec![payment('7', 8_333, 0)],
+            }),
+        });
+
+        // First process lifetime: allocate, observe, and durably lock the exact
+        // unconfirmed output before the process/store is dropped.
+        {
+            let store = Arc::new(InvoiceStore::open(&database, &database_key).unwrap());
+            let state = AppState {
+                config: config(),
+                wallets: wallet.clone(),
+                store: store.clone(),
+                client: reqwest::Client::new(),
+            };
+            state
+                .create_invoice(CreateInvoiceRequest {
+                    invoice_id: invoice_id.clone(),
+                    payment_method: Asset::Btc,
+                    amount_atomic: "8333".into(),
+                    expires_at,
+                })
+                .await
+                .unwrap();
+            assert_eq!(state.poll_once(expires_at - 1).await.unwrap(), 0);
+            let locked = store.get(&invoice_id).unwrap().unwrap();
+            assert_eq!(locked.observed_at, Some(expires_at - 1));
+            assert_eq!(
+                locked.locked_payment_refs,
+                vec![PaymentReference {
+                    output_identity: format!("btc:{}:0", "7".repeat(64)),
+                    txid: "7".repeat(64),
+                    amount_atomic: 8_333,
+                }]
+            );
+        }
+
+        *wallet.observation.lock().unwrap() = Observation {
+            payments: vec![payment('7', 8_333, 2)],
+        };
+        let (callback_url, callback_calls) = callback_url_counted().await;
+        let mut restarted_config = (*config()).clone();
+        restarted_config.callback_url = callback_url;
+        let restarted_config = Arc::new(restarted_config);
+
+        // Second process lifetime: reopen and decrypt the locked record, then
+        // complete it exactly once when that same output confirms.
+        {
+            let store = Arc::new(InvoiceStore::open(&database, &database_key).unwrap());
+            let recovered = store.get(&invoice_id).unwrap().unwrap();
+            assert_eq!(recovered.observed_at, Some(expires_at - 1));
+            assert_eq!(recovered.locked_payment_refs[0].txid, "7".repeat(64));
+            let state = AppState {
+                config: restarted_config.clone(),
+                wallets: wallet.clone(),
+                store: store.clone(),
+                client: reqwest::Client::new(),
+            };
+            assert_eq!(state.poll_once(expires_at - 1).await.unwrap(), 1);
+            assert_eq!(state.poll_once(expires_at - 1).await.unwrap(), 0);
+            assert!(store.pending(expires_at - 1).unwrap().is_empty());
+            assert_eq!(callback_calls.load(Ordering::SeqCst), 1);
+        }
+
+        // A later restart must retain terminality and cannot redeliver the
+        // callback for the already-settled invoice.
+        let store = Arc::new(InvoiceStore::open(&database, &database_key).unwrap());
+        let state = AppState {
+            config: restarted_config,
+            wallets: wallet,
+            store: store.clone(),
+            client: reqwest::Client::new(),
+        };
+        assert_eq!(state.poll_once(expires_at - 1).await.unwrap(), 0);
+        assert!(store.pending(expires_at - 1).unwrap().is_empty());
+        assert_eq!(callback_calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]

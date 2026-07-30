@@ -51,15 +51,17 @@ describe("linked-service contract", () => {
   });
 
   it("strictly validates native launcher state and action receipts", () => {
-    expect(parseNativeApps([{ id: "discord", displayName: "Discord", availability: "installed", isolatedProfileAvailable: false, supportsOverlay: false }]))
-      .toEqual([{ id: "discord", displayName: "Discord", availability: "installed", isolatedProfileAvailable: false, supportsOverlay: false }]);
-    expect(parseNativeApps([{ id: "telegram", displayName: "Telegram", availability: "installed", isolatedProfileAvailable: true, supportsOverlay: false }]))
-      .toEqual([{ id: "telegram", displayName: "Telegram", availability: "installed", isolatedProfileAvailable: true, supportsOverlay: false }]);
+    expect(parseNativeApps([{ id: "discord", displayName: "Discord", availability: "installed", supportStatus: "beta", protectedMode: "assistOnly", isolatedProfileAvailable: false, supportsOverlay: false }]))
+      .toEqual([{ id: "discord", displayName: "Discord", availability: "installed", supportStatus: "beta", protectedMode: "assistOnly", isolatedProfileAvailable: false, supportsOverlay: false }]);
+    expect(parseNativeApps([{ id: "telegram", displayName: "Telegram", availability: "installed", supportStatus: "comingSoon", protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false }]))
+      .toEqual([{ id: "telegram", displayName: "Telegram", availability: "installed", supportStatus: "comingSoon", protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false }]);
     expect(parseNativeAppAction({ id: "discord", started: true }, false)).toEqual({ id: "discord", started: true });
     expect(parseNativeAppAction({ id: "signal", started: true, packageId: "OpenWhisperSystems.Signal" }, true).packageId)
       .toBe("OpenWhisperSystems.Signal");
-    expect(() => parseNativeApps([{ id: "discord", displayName: "Discord", availability: "web", isolatedProfileAvailable: false, supportsOverlay: true }])).toThrow();
-    expect(() => parseNativeApps([{ id: "discord", displayName: "Discord", availability: "installed", supportsOverlay: false }])).toThrow();
+    expect(() => parseNativeApps([{ id: "discord", displayName: "Discord", availability: "web", supportStatus: "beta", protectedMode: "assistOnly", isolatedProfileAvailable: false, supportsOverlay: true }])).toThrow();
+    expect(() => parseNativeApps([{ id: "discord", displayName: "Discord", availability: "installed", supportStatus: "beta", protectedMode: "assistOnly", supportsOverlay: false }])).toThrow();
+    expect(() => parseNativeApps([{ id: "telegram", displayName: "Telegram", availability: "installed", supportStatus: "comingSoon", protectedMode: "assistOnly", isolatedProfileAvailable: true, supportsOverlay: false }])).toThrow();
+    expect(() => parseNativeApps([{ id: "signal", displayName: "Signal", availability: "installed", supportStatus: "comingSoon", protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: true }])).toThrow();
     expect(() => parseNativeAppAction({ id: "instagram", started: true }, false)).toThrow();
   });
 
@@ -70,10 +72,27 @@ describe("linked-service contract", () => {
   });
 
   it("strictly validates the narrow Mullvad availability receipt", () => {
-    expect(parseMullvadStatus({ availability: "installed" })).toEqual({ availability: "installed" });
-    expect(parseMullvadStatus({ availability: "installable" })).toEqual({ availability: "installable" });
+    expect(parseMullvadStatus({ availability: "installed" })).toEqual({
+      availability: "installed",
+      integrationState: "availableToOpen",
+      privacyScope: "networkOnly",
+      connectionState: "notObserved",
+    });
+    expect(parseMullvadStatus({ availability: "installable" })).toEqual({
+      availability: "installable",
+      integrationState: "installable",
+      privacyScope: "networkOnly",
+      connectionState: "notObserved",
+    });
+    expect(parseMullvadStatus({ availability: "unavailable" })).toEqual({
+      availability: "unavailable",
+      integrationState: "unavailable",
+      privacyScope: "networkOnly",
+      connectionState: "notObserved",
+    });
     expect(() => parseMullvadStatus({ availability: "connected" })).toThrow();
     expect(() => parseMullvadStatus({ availability: "installed", account: "secret" })).toThrow();
+    expect(() => parseMullvadStatus({ availability: "installed", connectionState: "connected" })).toThrow();
   });
 
   it("strictly validates a newly-created isolated account profile", () => {

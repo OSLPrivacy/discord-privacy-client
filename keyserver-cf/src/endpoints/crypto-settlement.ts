@@ -17,9 +17,15 @@ import { badRequest, conflict, json, serviceUnavailable, unauthorized } from "..
 import { generateInvoiceLicenseKey } from "../lib/license.js";
 import { isDonationAmount } from "../lib/donations.js";
 import {
-  notifyTelegramForCryptoDonation,
-  notifyTelegramForCryptoSettlement,
-} from "../lib/telegram.js";
+  drainPaymentAlertOutbox,
+  ensurePaymentAlert,
+  paymentAlertInsertStatement,
+} from "../lib/payment-alert-outbox.js";
+import {
+  prepaidRedemptionReady,
+  PREPAID_REDEMPTION_UNAVAILABLE,
+  type PrepaidRedemptionReadiness,
+} from "../lib/prepaid-redemption-readiness.js";
 
 const DELIVERY_RETENTION = 7 * 24 * 60 * 60;
 const CONFIRMATION_GRACE = 24 * 60 * 60;
@@ -29,6 +35,7 @@ export async function handleCryptoSettlement(
   request: Request,
   env: Env,
   ctx?: Pick<ExecutionContext, "waitUntil">,
+  readiness: PrepaidRedemptionReadiness = prepaidRedemptionReady,
 ): Promise<Response> {
   if (!env.CRYPTO_WATCHER_SETTLEMENT_PUBLIC_KEY) {
     return serviceUnavailable("crypto settlement is not configured");
@@ -85,6 +92,10 @@ export async function handleCryptoSettlement(
     return await settleCryptoDonation(body as WatcherSettlementEvidence, env, ctx);
   }
 
+  if (!readiness()) {
+    return serviceUnavailable(PREPAID_REDEMPTION_UNAVAILABLE);
+  }
+
   if (!env.LICENSE_HMAC_SECRET) {
     return serviceUnavailable("crypto entitlement settlement is not configured");
   }
@@ -128,6 +139,19 @@ export async function handleCryptoSettlement(
   const referenceConflict = await claimPaymentReference(env.DB, evidence);
   if (referenceConflict) return referenceConflict;
   if (invoice.status === "delivery_ready") {
+    try {
+      await ensurePaymentAlert(
+        env.DB,
+        "crypto_pro",
+        invoice.invoice_id,
+        invoice.payment_method,
+        invoice.amount_usd_cents,
+      );
+    } catch {
+      console.error("[crypto-settlement] alert recovery failed");
+      return serviceUnavailable("settlement alert recovery failed");
+    }
+    await schedulePaymentAlertDelivery(env, ctx, "crypto-settlement");
     return json({ ok: true, duplicate: true, status: "delivery_ready" });
   }
 
@@ -148,6 +172,14 @@ export async function handleCryptoSettlement(
   const customerId = `crypto:${invoice.invoice_id}`;
 
   try {
+    const alertInsert = await paymentAlertInsertStatement(
+      env.DB,
+      "crypto_pro",
+      invoice.invoice_id,
+      invoice.payment_method,
+      invoice.amount_usd_cents,
+      now,
+    );
     const claimed = await env.DB.prepare(
       `UPDATE crypto_invoices_v2
           SET status = 'paid', settlement_event_id = ?
@@ -156,6 +188,14 @@ export async function handleCryptoSettlement(
     if ((claimed.meta?.changes ?? 0) === 0) {
       const current = await getAnonymousInvoice(env.DB, invoice.invoice_id);
       if (current?.status === "delivery_ready") {
+        await ensurePaymentAlert(
+          env.DB,
+          "crypto_pro",
+          invoice.invoice_id,
+          invoice.payment_method,
+          invoice.amount_usd_cents,
+        );
+        await schedulePaymentAlertDelivery(env, ctx, "crypto-settlement");
         return json({ ok: true, duplicate: true, status: "delivery_ready" });
       }
       if (current?.status !== "paid" || current.settlement_event_id !== body.event_id) {
@@ -185,6 +225,7 @@ export async function handleCryptoSettlement(
           (subscription_id, payment_method, amount_usd_cents, settled_at)
          VALUES (?, ?, ?, ?)`,
       ).bind(subscriptionId, invoice.payment_method, invoice.amount_usd_cents, now),
+      alertInsert,
       env.DB.prepare(
         `UPDATE crypto_invoices_v2 SET
           status = 'delivery_ready',
@@ -200,13 +241,19 @@ export async function handleCryptoSettlement(
     ]);
     const finalized = (results.at(-1)?.meta?.changes ?? 0) > 0;
     if (finalized) {
-      const notification = notifyTelegramForCryptoSettlement(
-        env,
-        invoice.payment_method,
-        invoice.amount_usd_cents,
-      ).catch(() => console.error("[crypto-settlement] Telegram alert failed"));
-      if (ctx) ctx.waitUntil(notification);
-      else await notification;
+      await schedulePaymentAlertDelivery(env, ctx, "crypto-settlement");
+    } else {
+      const current = await getAnonymousInvoice(env.DB, invoice.invoice_id);
+      if (current?.status === "delivery_ready") {
+        await ensurePaymentAlert(
+          env.DB,
+          "crypto_pro",
+          invoice.invoice_id,
+          invoice.payment_method,
+          invoice.amount_usd_cents,
+        );
+        await schedulePaymentAlertDelivery(env, ctx, "crypto-settlement");
+      }
     }
     return json({ ok: true, duplicate: !finalized, status: "delivery_ready" });
   } catch {
@@ -255,11 +302,32 @@ async function settleCryptoDonation(
   const referenceConflict = await claimPaymentReference(env.DB, evidence);
   if (referenceConflict) return referenceConflict;
   if (invoice.status === "recorded") {
+    try {
+      await ensurePaymentAlert(
+        env.DB,
+        "crypto_donation",
+        invoice.invoice_id,
+        invoice.payment_method,
+        invoice.amount_usd_cents,
+      );
+    } catch {
+      console.error("[crypto-donation] alert recovery failed");
+      return serviceUnavailable("donation alert recovery failed");
+    }
+    await schedulePaymentAlertDelivery(env, ctx, "crypto-donation");
     return json({ ok: true, duplicate: true, status: "recorded" });
   }
 
   const now = Math.floor(Date.now() / 1000);
   try {
+    const alertInsert = await paymentAlertInsertStatement(
+      env.DB,
+      "crypto_donation",
+      invoice.invoice_id,
+      invoice.payment_method,
+      invoice.amount_usd_cents,
+      now,
+    );
     const claimed = await env.DB.prepare(
       `UPDATE crypto_donation_invoices
           SET status = 'paid', settlement_event_id = ?
@@ -268,6 +336,14 @@ async function settleCryptoDonation(
     if ((claimed.meta?.changes ?? 0) === 0) {
       const current = await getCryptoDonationInvoice(env.DB, invoice.invoice_id);
       if (current?.status === "recorded") {
+        await ensurePaymentAlert(
+          env.DB,
+          "crypto_donation",
+          invoice.invoice_id,
+          invoice.payment_method,
+          invoice.amount_usd_cents,
+        );
+        await schedulePaymentAlertDelivery(env, ctx, "crypto-donation");
         return json({ ok: true, duplicate: true, status: "recorded" });
       }
       if (current?.status !== "paid" || current.settlement_event_id !== evidence.event_id) {
@@ -289,6 +365,7 @@ async function settleCryptoDonation(
         invoice.amount_usd_cents,
         now,
       ),
+      alertInsert,
       env.DB.prepare(
         `UPDATE crypto_donation_invoices SET
            status = 'recorded', resolved_at = ?, cleanup_at = ?
@@ -309,24 +386,45 @@ async function settleCryptoDonation(
     ]);
     const finalized = (results.at(-1)?.meta?.changes ?? 0) > 0;
     if (finalized) {
-      const notification = notifyTelegramForCryptoDonation(
-        env,
-        invoice.payment_method,
-        invoice.amount_usd_cents,
-      ).catch(() => console.error("[crypto-donation] Telegram alert failed"));
-      if (ctx) ctx.waitUntil(notification);
-      else await notification;
+      await schedulePaymentAlertDelivery(env, ctx, "crypto-donation");
     } else {
       const current = await getCryptoDonationInvoice(env.DB, invoice.invoice_id);
       if (current?.status !== "recorded") {
         console.error("[crypto-donation] durable donation event conflict");
         return serviceUnavailable("donation recording failed");
       }
+      await ensurePaymentAlert(
+        env.DB,
+        "crypto_donation",
+        invoice.invoice_id,
+        invoice.payment_method,
+        invoice.amount_usd_cents,
+      );
+      await schedulePaymentAlertDelivery(env, ctx, "crypto-donation");
     }
     return json({ ok: true, duplicate: !finalized, status: "recorded" });
   } catch {
     console.error("[crypto-donation] recording transaction failed");
     return serviceUnavailable("donation recording failed");
+  }
+}
+
+async function schedulePaymentAlertDelivery(
+  env: Env,
+  ctx: Pick<ExecutionContext, "waitUntil"> | undefined,
+  logScope: "crypto-settlement" | "crypto-donation",
+): Promise<void> {
+  const delivery = drainPaymentAlertOutbox(env).then((result) => {
+    if (!result.configured) {
+      console.error(`[${logScope}] Telegram alert configuration unavailable; alert retained`);
+    }
+  }).catch(() => {
+    console.error(`[${logScope}] Telegram outbox delivery failed; alert retained`);
+  });
+  if (ctx) {
+    ctx.waitUntil(delivery);
+  } else {
+    await delivery;
   }
 }
 

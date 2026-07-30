@@ -179,9 +179,30 @@ PY
 }
 
 put_worker_secrets() {
+  local secret_payload
+  secret_payload="$(printf '{"TELEGRAM_BOT_TOKEN":"%s","TELEGRAM_WEBHOOK_SECRET":"%s"}' \
+    "${TOKEN}" "${WEBHOOK_SECRET}")"
+
+  if ! printf '%s' "${secret_payload}" | python3 -c '
+import json
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+except ValueError:
+    raise SystemExit(1)
+
+expected = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET"]
+if not isinstance(payload, dict) or sorted(payload) != expected:
+    raise SystemExit(1)
+if not all(isinstance(payload[name], str) and payload[name] for name in expected):
+    raise SystemExit(1)
+'; then
+    fail 'refusing to rotate unexpected Telegram credential bindings'
+  fi
+
   : >"${WRANGLER_ERROR}"
-  if ! printf '{"TELEGRAM_BOT_TOKEN":"%s","TELEGRAM_WEBHOOK_SECRET":"%s"}' \
-    "${TOKEN}" "${WEBHOOK_SECRET}" | (
+  if ! printf '%s' "${secret_payload}" | (
     cd -- "${WORKER_DIR}"
     "${WRANGLER}" secret bulk >/dev/null 2>"${WRANGLER_ERROR}"
   ); then

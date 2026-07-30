@@ -163,6 +163,86 @@ pub const MSG_TYPE_SKDM_REQUEST: u8 = 0x06;
 /// in the recv handler (see `decrypt_v2_recv` SESSION_RESET arm).
 pub const MSG_TYPE_SESSION_RESET: u8 = 0x07;
 
+/// OSL Privacy native-overlay relay notice. This type is never dispatched by
+/// the ordinary control-message drain: the trusted overlay drain alone may
+/// authenticate and open it. Discord is not part of this transport.
+pub const MSG_TYPE_NATIVE_OVERLAY_RELAY: u8 = 0x08;
+
+/// Domain-separated native-overlay receipt. The encrypted body contains only
+/// an opaque original message id plus exact peer/scope/timing facts; it never
+/// carries message content or claims provider delivery/read state.
+pub const MSG_TYPE_NATIVE_OVERLAY_ACK: u8 = 0x09;
+
+/// Bilateral-burn revocation notice ("destroy the content I authored in this
+/// conversation up to this sequence number").
+///
+/// # Why a new type byte rather than reusing `0x01`
+///
+/// `MSG_TYPE_BURN` (`0x01`) is the legacy client's marker. Its body
+/// ([`crate::control_messages::BurnMarker`]) carries a plaintext [`crate::scope::Scope`]
+/// — service ids and channel ids — inside the envelope, which
+/// `docs/design/burn-contract.md` forbids ("notices carry opaque commitments
+/// and authenticated metadata only"), and it has no epoch, no sequence bound
+/// and no burn identifier, so it cannot be made replay-safe. `0x0A` carries
+/// [`crate::control_messages::RevocationNotice`] instead: commitments only,
+/// plus the monotonic `(burn_epoch, burn_upto_seq)` pair the receiver ledger
+/// in [`crate::revocation`] needs.
+///
+/// # Why not `0x02` / `0x03`
+///
+/// Those constants were retired in 9-C1 but the recv dispatcher still matches
+/// the literals `0x02 | 0x03` and returns
+/// [`crate::commands::OSL_RESULT_LEGACY_HANDSHAKE_IGNORED`]. A revocation on
+/// either byte would be **silently swallowed** — the one failure mode a burn
+/// must never have. `0x0A`/`0x0B` are the first genuinely unallocated bytes
+/// (`0x08`/`0x09` are the native-overlay pair above; `0x80` is live but
+/// declared in `apps/osl-hub/src/broker.rs`).
+///
+/// Rides `encrypt_v3` (PQ-hybrid, ratchet-independent) for the same reason as
+/// [`MSG_TYPE_SKDM_REQUEST`] and [`MSG_TYPE_SESSION_RESET`]: a burn has to work
+/// when the Double Ratchet is desynced, which is exactly when it is needed.
+pub const MSG_TYPE_REVOCATION: u8 = 0x0A;
+
+/// Receipt for a [`MSG_TYPE_REVOCATION`]. Body is a CBOR-encoded
+/// [`crate::control_messages::RevocationAck`] carrying **only**
+/// `(burn_id, applied)`.
+///
+/// `applied` deliberately collapses "I destroyed it now" and "I had already
+/// destroyed it" into the same value, so the ack cannot be used as a
+/// did-you-still-have-it oracle. It is not a delivery or read receipt and
+/// never reports what the peer held.
+pub const MSG_TYPE_REVOCATION_ACK: u8 = 0x0B;
+
+/// Framing-only classification for a bilateral-burn revocation notice.
+/// Authentication (`encrypt_v3` open + sender binding) stays mandatory before
+/// any field of the body is trusted.
+pub fn is_revocation_bundle(bundle: &[u8]) -> bool {
+    bundle.len() >= 2 && bundle[0] == WIRE_VERSION_V3 && bundle[1] == MSG_TYPE_REVOCATION
+}
+
+/// Framing-only classification for a revocation receipt.
+pub fn is_revocation_ack_bundle(bundle: &[u8]) -> bool {
+    bundle.len() >= 2 && bundle[0] == WIRE_VERSION_V3 && bundle[1] == MSG_TYPE_REVOCATION_ACK
+}
+
+/// Cheap framing-only classification for an opaque control-inbox bundle.
+/// Authentication and decryption remain the overlay drain's responsibility.
+pub fn is_native_overlay_relay_bundle(bundle: &[u8]) -> bool {
+    bundle.len() >= 2 && bundle[0] == WIRE_VERSION_V3 && bundle[1] == MSG_TYPE_NATIVE_OVERLAY_RELAY
+}
+
+/// Framing-only classification for an encrypted native-overlay receipt.
+pub fn is_native_overlay_ack_bundle(bundle: &[u8]) -> bool {
+    bundle.len() >= 2 && bundle[0] == WIRE_VERSION_V3 && bundle[1] == MSG_TYPE_NATIVE_OVERLAY_ACK
+}
+
+/// Framing-only classification for the native overlay's encrypted attachment
+/// notice. Payload authentication remains mandatory before any metadata or R2
+/// capability is used.
+pub fn is_attachment_bundle(bundle: &[u8]) -> bool {
+    bundle.len() >= 2 && bundle[0] == WIRE_VERSION_V3 && bundle[1] == MSG_TYPE_ATTACHMENT
+}
+
 /// Length of the per-recipient pubkey-hash prefix on the wire
 /// (8 bytes = leading bytes of SHA-256(recipient_pubkey)). 8 bytes
 /// = 1/2^64 ≈ 5.4e-20 collision probability for the small N this
@@ -219,9 +299,9 @@ pub const V5_GLOBAL_HEADER_BYTES: usize = 1 + 1 + 32 + 1;
 pub const V5_FLAG_RESERVED_MASK: u8 = 0xFF;
 
 /// v=5 sender-keys header on the wire:
-/// `header_nonce(24) || enc_header(16-byte Header + 16-byte AEAD tag = 32)`.
-/// Total 56 bytes.
-pub const V5_SENDER_KEYS_HEADER_BYTES: usize = 24 + (16 + 16);
+/// `header_nonce(24) || enc_header(48-byte Header + 16-byte AEAD tag = 64)`.
+/// Total 88 bytes.
+pub const V5_SENDER_KEYS_HEADER_BYTES: usize = 24 + (48 + 16);
 
 /// v=4 global header size: version(1) + msg_type(1) + flags(1) +
 /// sender_ik_x25519_pub(32) + N(1) = 36 bytes.
@@ -276,6 +356,11 @@ pub enum V2Error {
     /// not an OSL message at all.
     #[error("cover string missing DPC0:: prefix")]
     BadPrefix,
+
+    /// The v3 header authenticated a sender identity key other than
+    /// the locally pinned key for the attributed peer.
+    #[error("authenticated sender identity mismatch")]
+    SenderIdentityMismatch,
 
     /// Base64 decode of the cover body failed (truncation or
     /// hand-editing).
@@ -695,6 +780,33 @@ pub fn decrypt_v3(
     recipient_ik_sk: &x25519::SecretKey,
     recipient_mlkem_sk: &ml_kem_768::DecapsulationKey,
 ) -> Result<DecryptedV2, V2Error> {
+    decrypt_v3_inner(wire, recipient_ik_sk, recipient_mlkem_sk, None)
+}
+
+/// Decode v3 only for an already-pinned sender identity. Generic
+/// receive paths must use this entry point; the unbound decoder is
+/// retained for framing tests and callers that perform their own
+/// complete manual-peer bundle verification.
+pub fn decrypt_v3_for_sender(
+    wire: &str,
+    recipient_ik_sk: &x25519::SecretKey,
+    recipient_mlkem_sk: &ml_kem_768::DecapsulationKey,
+    expected_sender_ik: &x25519::PublicKey,
+) -> Result<DecryptedV2, V2Error> {
+    decrypt_v3_inner(
+        wire,
+        recipient_ik_sk,
+        recipient_mlkem_sk,
+        Some(expected_sender_ik),
+    )
+}
+
+fn decrypt_v3_inner(
+    wire: &str,
+    recipient_ik_sk: &x25519::SecretKey,
+    recipient_mlkem_sk: &ml_kem_768::DecapsulationKey,
+    expected_sender_ik: Option<&x25519::PublicKey>,
+) -> Result<DecryptedV2, V2Error> {
     let body = wire.strip_prefix("DPC0::").ok_or(V2Error::BadPrefix)?;
     let raw = STANDARD
         .decode(body)
@@ -718,6 +830,9 @@ pub fn decrypt_v3(
     let mut sender_ik_bytes = [0u8; 32];
     sender_ik_bytes.copy_from_slice(&raw[2..34]);
     let sender_ik_pub = x25519::PublicKey::from_bytes(sender_ik_bytes);
+    if expected_sender_ik.is_some_and(|expected| sender_ik_pub != *expected) {
+        return Err(V2Error::SenderIdentityMismatch);
+    }
     let n = raw[34] as usize;
     if n == 0 {
         return Err(V2Error::ZeroRecipients);
@@ -1184,8 +1299,8 @@ impl std::fmt::Debug for ParsedV5 {
 /// ```text
 ///   global header (35 bytes):
 ///     [ version(1)=0x05 | msg_type(1) | sender_ik_x25519_pub(32) | flags(1) ]
-///   sender-keys header (56 bytes):
-///     [ header_nonce(24) | enc_header(32 = 16 header_bytes + 16 AEAD tag) ]
+///   sender-keys header (88 bytes):
+///     [ header_nonce(24) | enc_header(64 = 48 header_bytes + 16 AEAD tag) ]
 ///   trailer:
 ///     [ message_nonce(24) | ciphertext + 16B AEAD tag ]
 /// ```
@@ -1193,7 +1308,7 @@ impl std::fmt::Debug for ParsedV5 {
 /// The body AEAD's AAD inside `sender_keys::SenderChain::encrypt`
 /// is `canonical_ad_sender_keys(...) || enc_header`. The wire-layer
 /// adds no extra AAD — the canonical AD already binds sender_ik +
-/// group_id + chain_id + n, and the global header's bytes are
+/// group_id + physical_device_id + chain_id + n, and the global header's bytes are
 /// implicitly authenticated via `sender_ik_x25519_pub` (any tamper
 /// on that field selects the wrong ReceiverChain on decode and the
 /// AEAD fails).
@@ -1208,10 +1323,12 @@ pub fn encrypt_v5(
             "v=5 encode: reserved flags bits set in 0x{flags:02x}"
         )));
     }
-    if em.enc_header.len() != 32 {
+    let expected_enc_header = crypto::sender_keys::HEADER_BYTES + 16;
+    if em.enc_header.len() != expected_enc_header {
         return Err(V2Error::Crypto(format!(
-            "v=5 encode: enc_header length {} != expected 32",
-            em.enc_header.len()
+            "v=5 encode: enc_header length {} != expected {}",
+            em.enc_header.len(),
+            expected_enc_header
         )));
     }
 

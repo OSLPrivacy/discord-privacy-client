@@ -1,118 +1,236 @@
 import { invoke } from "@tauri-apps/api/core";
-import { isTauriRuntime } from "./preferences";
-import type { AutoScrubCapability, AutoScrubProviderBridge, AutoScrubProviderId } from "./autoscrub-flow";
-import type { DeleteFinding, DeleteInspection, DeleteRequestResult, DeleteVerification, ScrubDeleteAdapter, StepUpProof } from "./scrub-delete-engine";
 
-export interface ScrubImapConfiguration {
+export interface NativeImapMessageSnapshot {
+  ownerOslUserId: string;
+  accountId: string;
+  mailbox: string;
+  messageId: string;
+  uid: number;
+  fingerprint: number[];
+  authoredBySelf: boolean;
+}
+
+export type NativeImapAuthInput =
+  | { password: { username: string; password: string } }
+  | { oAuthBearer: { username: string; bearerToken: string } };
+
+export interface NativeConfigureImapRequest {
+  ownerOslUserId: string;
   accountId: string;
   host: string;
-  port?: number;
-  username: string;
-  auth: { kind: "appPassword" | "oauthBearer"; secret: string };
-  defaultMailbox?: string;
+  port: number;
+  tlsRequired: boolean;
+  auth: NativeImapAuthInput;
 }
 
-export interface ScrubImapConfigureResult { configured: boolean; liveConfirmed: boolean; authEpoch: string | null; detail: string }
-export interface ScrubImapLocator { accountId: string; mailbox: string; messageId: string; sinceDate?: number }
-interface ImapCapabilityResult { configured: boolean; liveConfirmed: boolean; authEpoch?: string | null; detail?: string }
-interface ImapReauthResult { liveConfirmed: boolean; authEpoch: string | null; detail: string }
-interface ImapEnumeration { findings: Array<{ uid: number; mailbox: string; messageId: string; authoredBySelf: boolean; contentFingerprint: string }>; authEpoch: string }
-
-function desktopOnly(): void {
-  if (!isTauriRuntime()) throw new Error("IMAP AutoScrub requires the OSL desktop app");
+export interface ScrubImapPrepareDeleteRequest {
+  ownerOslUserId: string;
+  accountId: string;
+  mailbox: string;
+  messageId: string;
 }
 
-export async function configureScrubImapAccount(configuration: ScrubImapConfiguration): Promise<ScrubImapConfigureResult> {
-  desktopOnly();
-  return invoke<ScrubImapConfigureResult>("configure_scrub_imap_account", { request: { ...configuration } });
+export interface ScrubImapPreparedDelete {
+  ownerOslUserId: string;
+  accountId: string;
+  mailbox: string;
+  messageId: string;
+  preparedUid: number;
+  fingerprint: readonly number[];
+  batchDigest: readonly number[];
 }
 
-export async function getScrubImapCapability(accountId: string): Promise<ImapCapabilityResult> {
-  if (!isTauriRuntime()) return { configured: false, liveConfirmed: false };
-  return invoke<ImapCapabilityResult>("get_scrub_imap_capability", { request: { accountId } });
+export type NativePreparedImapDelete = ScrubImapPreparedDelete;
+
+export interface ScrubImapDeleteReceipt {
+  accountId: string;
+  mailbox: string;
+  messageId: string;
+  deletedUid: number;
 }
 
-/** Resolve reviewed locators to transport-issued findings. Never derives a fingerprint from UI preview text. */
-export async function prepareScrubImapFindings(locators: readonly ScrubImapLocator[], stepUp: StepUpProof): Promise<readonly DeleteFinding[]> {
-  desktopOnly();
-  if (stepUp.providerId !== "imap" || locators.some((locator) => locator.accountId !== stepUp.accountId)) throw new Error("IMAP prepare step-up does not match every locator");
-  const batches = await Promise.all(locators.map(async (locator) => {
-    const raw = await invoke<ImapEnumeration>("scrub_imap_enumerate", { request: { accountId: locator.accountId, expectedAuthEpoch: stepUp.authEpoch, mailbox: locator.mailbox, messageId: locator.messageId, sinceDateUnixMs: locator.sinceDate, expectedContentFingerprint: null } });
-    if (raw.authEpoch !== stepUp.authEpoch) throw new Error("IMAP prepare authentication changed");
-    return raw.findings.map((finding): DeleteFinding => ({ providerId: "imap", accountId: locator.accountId, channelId: finding.mailbox, correspondentId: finding.mailbox, itemId: finding.messageId, authoredBySelf: finding.authoredBySelf, createdAtUnixMs: locator.sinceDate ?? 0, contentFingerprint: finding.contentFingerprint }));
-  }));
-  const findings = batches.flat();
-  if (findings.length !== locators.length) throw new Error("IMAP prepare did not uniquely resolve every reviewed message");
-  for (const finding of findings) {
-    const locator = locators.find((candidate) => candidate.accountId === finding.accountId && candidate.mailbox === finding.channelId && candidate.messageId === finding.itemId);
-    if (!locator || finding.providerId !== "imap" || !finding.authoredBySelf || !finding.contentFingerprint) throw new Error("IMAP prepare returned an unsafe or mismatched finding");
+export type NativeImapDeleteReceipt = ScrubImapDeleteReceipt;
+
+export interface ScrubImapIpcPort {
+  invoke(command: string, args: Record<string, unknown>): Promise<unknown>;
+}
+
+export interface ScrubImapDeletePort {
+  invoke?: (command: string, args: Record<string, unknown>) => Promise<unknown>;
+  prepareDelete?: (request: ScrubImapPrepareDeleteRequest) => Promise<unknown>;
+  delete?: (prepared: ScrubImapPreparedDelete) => Promise<unknown>;
+}
+
+const productionPort: ScrubImapIpcPort = {
+  invoke: (command, args) => invoke(command, args),
+};
+
+export async function scrubImapPrepareDelete(
+  request: ScrubImapPrepareDeleteRequest,
+  port: ScrubImapDeletePort = productionPort,
+): Promise<ScrubImapPreparedDelete> {
+  validatePrepareRequest(request);
+  return parsePreparedDelete(await invokePrepareDelete(port, request), request);
+}
+
+export async function scrubImapDelete(
+  prepared: ScrubImapPreparedDelete,
+  port: ScrubImapDeletePort = productionPort,
+): Promise<ScrubImapDeleteReceipt> {
+  validatePreparedDelete(prepared);
+  return parseDeleteReceipt(await invokeDelete(port, prepared), prepared);
+}
+
+function invokePrepareDelete(
+  port: ScrubImapDeletePort,
+  request: ScrubImapPrepareDeleteRequest,
+): Promise<unknown> {
+  if (port.invoke) {
+    return port.invoke("scrub_imap_prepare_delete", { request });
   }
-  return findings;
+  if (port.prepareDelete) {
+    return port.prepareDelete(request);
+  }
+  throw new Error("invalid scrub IMAP IPC port");
 }
 
-function operationArgs(finding: DeleteFinding, expectedAuthEpoch: string) {
+function invokeDelete(
+  port: ScrubImapDeletePort,
+  prepared: ScrubImapPreparedDelete,
+): Promise<unknown> {
+  if (port.invoke) {
+    return port.invoke("scrub_imap_delete", { prepared });
+  }
+  if (port.delete) {
+    return port.delete(prepared);
+  }
+  throw new Error("invalid scrub IMAP IPC port");
+}
+
+function parsePreparedDelete(
+  raw: unknown,
+  request: ScrubImapPrepareDeleteRequest,
+): ScrubImapPreparedDelete {
+  if (!exactRecord(raw, [
+    "ownerOslUserId",
+    "accountId",
+    "mailbox",
+    "messageId",
+    "preparedUid",
+    "fingerprint",
+    "batchDigest",
+  ])) {
+    throw new Error("invalid scrub IMAP prepared delete response");
+  }
+  const preparedUid = raw.preparedUid;
+  const fingerprint = raw.fingerprint;
+  const batchDigest = raw.batchDigest;
+  if (raw.ownerOslUserId !== request.ownerOslUserId
+    || raw.accountId !== request.accountId
+    || raw.mailbox !== request.mailbox
+    || raw.messageId !== request.messageId
+    || !positiveU32(preparedUid)
+    || !byteArray(fingerprint, 32)
+    || !byteArray(batchDigest, 32)) {
+    throw new Error("invalid scrub IMAP prepared delete response");
+  }
   return {
-    request: {
-      accountId: finding.accountId,
-      mailbox: finding.channelId,
-      messageId: finding.itemId,
-      sinceDateUnixMs: finding.createdAtUnixMs,
-      expectedAuthEpoch,
-      expectedContentFingerprint: finding.contentFingerprint,
-    },
+    ownerOslUserId: request.ownerOslUserId,
+    accountId: request.accountId,
+    mailbox: request.mailbox,
+    messageId: request.messageId,
+    preparedUid,
+    fingerprint: [...fingerprint],
+    batchDigest: [...batchDigest],
   };
 }
 
-class IpcImapDeleteAdapter implements ScrubDeleteAdapter {
-  readonly #accountId: string;
-  readonly #findings: readonly DeleteFinding[];
-  readonly #authEpoch: string;
-  constructor(accountId: string, findings: readonly DeleteFinding[], authEpoch: string) { this.#accountId = accountId; this.#findings = findings; this.#authEpoch = authEpoch; }
-  async enumerate(scope: { accountId: string; channelIds: readonly string[]; beforeUnixMs: number }): Promise<readonly DeleteFinding[]> {
-    if (scope.accountId !== this.#accountId) return [];
-    const channels = new Set(scope.channelIds);
-    return this.#findings.filter((finding) => channels.has(finding.channelId) && finding.createdAtUnixMs < scope.beforeUnixMs);
+function parseDeleteReceipt(
+  raw: unknown,
+  prepared: NativePreparedImapDelete,
+): NativeImapDeleteReceipt {
+  if (!isNativeImapDeleteReceipt(raw)
+    || raw.accountId !== prepared.accountId
+    || raw.mailbox !== prepared.mailbox
+    || raw.messageId !== prepared.messageId
+    || raw.deletedUid !== prepared.preparedUid) {
+    throw new Error("invalid scrub IMAP delete receipt");
   }
-  async inspect(finding: DeleteFinding): Promise<DeleteInspection> {
-    return invoke<DeleteInspection>("scrub_imap_inspect", operationArgs(finding, this.#authEpoch));
-  }
-  async delete(finding: DeleteFinding): Promise<DeleteRequestResult> {
-    return invoke<DeleteRequestResult>("scrub_imap_delete", operationArgs(finding, this.#authEpoch));
-  }
-  async verify(finding: DeleteFinding): Promise<DeleteVerification> {
-    return invoke<DeleteVerification>("scrub_imap_verify", operationArgs(finding, this.#authEpoch));
+  return raw;
+}
+
+function isNativeImapDeleteReceipt(value: unknown): value is NativeImapDeleteReceipt {
+  return exactRecord(value, ["accountId", "mailbox", "messageId", "deletedUid"])
+    && safeBinding(value.accountId, 128)
+    && safeBinding(value.mailbox, 128)
+    && safeBinding(value.messageId, 256)
+    && safeCounter(value.deletedUid);
+}
+
+function validatePrepareRequest(request: ScrubImapPrepareDeleteRequest): void {
+  if (!exactRecord(request, ["ownerOslUserId", "accountId", "mailbox", "messageId"])
+    || !binding(request.ownerOslUserId, 128)
+    || !binding(request.accountId, 128)
+    || !binding(request.mailbox, 128)
+    || !binding(request.messageId, 256)) {
+    throw new Error("invalid scrub IMAP prepare delete request");
   }
 }
 
-export function createDesktopAutoScrubBridge(accountIds: readonly string[]): AutoScrubProviderBridge {
-  const uniqueAccountIds = [...new Set(accountIds)];
-  return {
-    async capabilities(): Promise<readonly AutoScrubCapability[]> {
-      const imapStates = await Promise.all(uniqueAccountIds.map(async (accountId) => {
-        const state = await getScrubImapCapability(accountId).catch(() => ({ configured: false, liveConfirmed: false }));
-        return { accountId, ...state };
-      }));
-      // Capability is intentionally account-specific: never let account A activate account B.
-      const liveConfirmed = imapStates.length === 1 && imapStates[0].configured && imapStates[0].liveConfirmed;
-      return [
-        { providerId: "imap", label: "Email (IMAP)", liveConfirmed, coverage: liveConfirmed ? "Message-ID deletion with provider readback" : "No live transport confirmed", unavailableReason: liveConfirmed ? undefined : "Connect and verify an IMAP account." },
-        { providerId: "telegram", label: "Telegram", liveConfirmed: false, coverage: "Manual only", unavailableReason: "TDLib session and readback are not available in this build." },
-        { providerId: "discord", label: "Discord", liveConfirmed: false, coverage: "Manual only", unavailableReason: "Hosted deletion is disabled and not live-verified." },
-      ];
-    },
-    async adapter(providerId: AutoScrubProviderId, accountId: string, findings: readonly DeleteFinding[], stepUp: StepUpProof): Promise<ScrubDeleteAdapter> {
-      if (providerId !== "imap") throw new Error("This provider has no live AutoScrub transport");
-      desktopOnly();
-      if (stepUp.providerId !== providerId || stepUp.accountId !== accountId || !stepUp.authEpoch) throw new Error("IMAP step-up is missing or mismatched");
-      return new IpcImapDeleteAdapter(accountId, findings, stepUp.authEpoch);
-    },
-    async stepUp(providerId: AutoScrubProviderId, accountId: string): Promise<StepUpProof> {
-      if (providerId !== "imap") throw new Error("This provider has no live AutoScrub transport");
-      desktopOnly();
-      const result = await invoke<ImapReauthResult>("reauth_scrub_imap_account", { request: { accountId } });
-      if (!result.liveConfirmed || !result.authEpoch) throw new Error(result.detail || "IMAP re-authentication was not confirmed");
-      const authenticatedAt = Date.now();
-      return { providerId, accountId, authEpoch: result.authEpoch, authenticatedAt, expiresAt: authenticatedAt + 300_000 };
-    },
-  };
+function validatePreparedDelete(prepared: ScrubImapPreparedDelete): void {
+  if (!exactRecord(prepared, [
+    "ownerOslUserId",
+    "accountId",
+    "mailbox",
+    "messageId",
+    "preparedUid",
+    "fingerprint",
+    "batchDigest",
+  ])
+    || !binding(prepared.ownerOslUserId, 128)
+    || !binding(prepared.accountId, 128)
+    || !binding(prepared.mailbox, 128)
+    || !binding(prepared.messageId, 256)
+    || !positiveU32(prepared.preparedUid)
+    || !byteArray(prepared.fingerprint, 32)
+    || !byteArray(prepared.batchDigest, 32)) {
+    throw new Error("invalid scrub IMAP prepared delete");
+  }
+}
+
+function exactRecord(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+function safeBinding(value: unknown, maxBytes: number): value is string {
+  return typeof value === "string"
+    && value.length > 0
+    && new TextEncoder().encode(value).length <= maxBytes;
+}
+
+function safeCounter(value: unknown): value is number {
+  return positiveU32(value);
+}
+
+function positiveU32(value: unknown): value is number {
+  return typeof value === "number"
+    && Number.isSafeInteger(value)
+    && value > 0
+    && value <= 0xffff_ffff;
+}
+
+function byteArray(value: unknown, length: number): value is readonly number[] {
+  return Array.isArray(value)
+    && value.length === length
+    && value.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255);
+}
+
+function binding(value: unknown, maxBytes: number): value is string {
+  return typeof value === "string"
+    && value.length > 0
+    && new TextEncoder().encode(value).length <= maxBytes
+    && !/[\u0000-\u001f\u007f]/u.test(value);
 }

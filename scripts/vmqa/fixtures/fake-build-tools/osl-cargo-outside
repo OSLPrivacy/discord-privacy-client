@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$#" -eq 9 ]
+[ "$1" = build ] && [ "$2" = --release ] && [ "$3" = --features ] && [ "$4" = desktop ]
+[ "$5" = --bin ] && [ "$6" = osl-privacy-hub ] && [ "$7" = --target ]
+[ "$8" = x86_64-pc-windows-gnu ] && [ "$9" = --message-format=json ]
+case "$PWD" in */apps/osl-hub) ;; *) echo "wrong cargo cwd: $PWD" >&2; exit 91;; esac
+printf '%s\n' '{"reason":"compiler-artifact","target":{"name":"osl-privacy-hub"},"executable":"/bin/true"}'
+printf 'fixture outside-artifact cargo stderr\n' >&2

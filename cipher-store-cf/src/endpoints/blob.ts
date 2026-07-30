@@ -13,6 +13,7 @@
 ///   - ID path param: 16 hex chars.
 
 import type { Env } from "../env.js";
+import { MAX_LIVE_BLOB_BYTES, MAX_LIVE_BLOB_ROWS } from "../lib/blob-limits.js";
 import { error, json, notFound } from "../lib/http.js";
 import { hexToId, idToHex, newBlobId } from "../lib/id.js";
 
@@ -104,11 +105,31 @@ export async function handleUpload(request: Request, env: Env): Promise<Response
   for (let attempt = 0; attempt < 5; attempt++) {
     const id = newBlobId();
     try {
-      await env.DB.prepare(
-        "INSERT INTO blobs (id, data, size_bytes, expires_at, created_at, fetch_token) VALUES (?, ?, ?, ?, ?, ?)"
+      // Aggregate backstop (audit HIGH-2). One SQLite write statement, so the
+      // COUNT/SUM predicates cannot race another insert. A primary-key
+      // collision still raises a constraint error and is handled below, so
+      // zero affected rows here means exactly one thing: at capacity.
+      const inserted = await env.DB.prepare(
+        `INSERT INTO blobs (id, data, size_bytes, expires_at, created_at, fetch_token)
+         SELECT ?, ?, ?, ?, ?, ?
+          WHERE (SELECT COUNT(*) FROM blobs) < ?
+            AND COALESCE((SELECT SUM(size_bytes) FROM blobs), 0) <= ? - ?`
       )
-        .bind(id, data, data.length, expiresAt, now, fetchToken)
+        .bind(
+          id,
+          data,
+          data.length,
+          expiresAt,
+          now,
+          fetchToken,
+          MAX_LIVE_BLOB_ROWS,
+          MAX_LIVE_BLOB_BYTES,
+          data.length,
+        )
         .run();
+      if ((inserted.meta?.changes ?? 0) !== 1) {
+        return error(503, "storage_capacity", "blob storage is temporarily at capacity");
+      }
       return json({ id: idToHex(id), expires_at: expiresAt }, 201);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

@@ -84,18 +84,29 @@ pub fn verify_password_role(
     password: String,
 ) -> Result<GatePasswordVerification, String> {
     let result = ipc::commands::cmd_osl_verify_gate_password(&state.osl, password)?;
-    let role = match result.result.as_str() {
+    let parsed_role = match result.result.as_str() {
         "main" => VerifiedGateRole::Main,
         "stealth" => VerifiedGateRole::Stealth,
         "burn" => VerifiedGateRole::Burn,
         "wrong" => VerifiedGateRole::Wrong,
         _ => return Err("OSL password gate returned an invalid role".to_owned()),
     };
+    let role = role_after_auto_burn_threshold(parsed_role, result.attempts_used);
     Ok(GatePasswordVerification {
         role,
         lockout_seconds_remaining: result.lockout_seconds_remaining,
         attempts_used: result.attempts_used,
     })
+}
+
+fn role_after_auto_burn_threshold(role: VerifiedGateRole, attempts_used: u32) -> VerifiedGateRole {
+    if role == VerifiedGateRole::Wrong
+        && attempts_used >= keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD
+    {
+        VerifiedGateRole::Burn
+    } else {
+        role
+    }
 }
 
 pub fn readiness_after_main(state: &HubCoreState) -> CoreReadiness {
@@ -112,6 +123,101 @@ pub fn enter_stealth_landing(state: &HubCoreState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct KeystoreGlobalReset;
+
+    impl Drop for KeystoreGlobalReset {
+        fn drop(&mut self) {
+            ipc::main_password::set_file_storage_key(None);
+            keystore::set_active_account_dir(None);
+            keystore::set_base_dir_override(None);
+        }
+    }
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "osl-startup-gate-{label}-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
+    fn populate_cleanup_roots(label: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf, PathBuf) {
+        let config_dir = temp_dir(&format!("{label}-config"));
+        let local_data_dir = temp_dir(&format!("{label}-local"));
+        let core_dir = config_dir.join("osl-core");
+        let service_profiles = local_data_dir.join("service-profiles-v2");
+        let native_profiles = local_data_dir.join("native-window-profiles-v1");
+        std::fs::create_dir_all(&core_dir).unwrap();
+        std::fs::create_dir_all(&service_profiles).unwrap();
+        std::fs::create_dir_all(&native_profiles).unwrap();
+        std::fs::write(core_dir.join("peer_map.json"), br#"{}"#).unwrap();
+        std::fs::write(service_profiles.join("profile-cache"), b"profile").unwrap();
+        std::fs::write(native_profiles.join("native-cache"), b"native").unwrap();
+        std::fs::write(config_dir.join("service-registry.json"), br#"{}"#).unwrap();
+        std::fs::write(config_dir.join("service-scope-index.json"), br#"{}"#).unwrap();
+        std::fs::write(config_dir.join("preview-preferences.json"), br#"{}"#).unwrap();
+        (
+            config_dir,
+            local_data_dir,
+            core_dir,
+            service_profiles,
+            native_profiles,
+        )
+    }
+
+    fn gate_result_for_verification(
+        state: &HubCoreState,
+        verification: GatePasswordVerification,
+        config_dir: &std::path::Path,
+        local_data_dir: &std::path::Path,
+    ) -> HubGateUnlockResult {
+        match verification.role {
+            VerifiedGateRole::Burn => {
+                let burn = crate::cleanup::execute_verified_gate_burn(
+                    state,
+                    config_dir,
+                    local_data_dir,
+                    true,
+                )
+                .unwrap();
+                HubGateUnlockResult::burned(verification, burn)
+            }
+            VerifiedGateRole::Wrong => HubGateUnlockResult::wrong(verification),
+            VerifiedGateRole::Main | VerifiedGateRole::Stealth => {
+                panic!("test only routes burn and wrong gate roles")
+            }
+        }
+    }
+
+    fn assert_burned_result_removed(
+        result: &HubGateUnlockResult,
+        target: &str,
+        removed_path: &std::path::Path,
+    ) {
+        assert_eq!(result.outcome, "burned");
+        assert!(result.readiness.is_none());
+        let burn = result.burn.as_ref().expect("burn result is present");
+        assert!(burn.local_cleanup_complete);
+        assert!(burn.failed_targets.is_empty());
+        assert!(!burn.restart_required);
+        assert!(burn.original_discord_data_untouched);
+        assert!(
+            burn.removed_targets.iter().any(|removed| removed == target),
+            "cleanup report did not include removed target {target}; report={:?}",
+            burn.removed_targets
+        );
+        assert!(
+            !removed_path.exists(),
+            "cleanup target {target} still exists at {}",
+            removed_path.display()
+        );
+    }
 
     #[test]
     fn every_gate_role_has_exactly_one_action() {
@@ -137,5 +243,84 @@ mod tests {
         assert_eq!(result.outcome, "wrong");
         assert!(result.readiness.is_none());
         assert!(result.burn.is_none());
+    }
+
+    #[test]
+    fn duress_pin_and_wrong_password_threshold_share_burn_path() {
+        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _reset = KeystoreGlobalReset;
+        let state = HubCoreState::default();
+
+        let below_threshold = GatePasswordVerification {
+            role: role_after_auto_burn_threshold(
+                VerifiedGateRole::Wrong,
+                keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD - 1,
+            ),
+            lockout_seconds_remaining: 3600,
+            attempts_used: keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD - 1,
+        };
+        let below_result = HubGateUnlockResult::wrong(below_threshold);
+        assert_eq!(below_result.outcome, "wrong");
+        assert!(below_result.burn.is_none());
+
+        let (threshold_config, threshold_local, threshold_core, threshold_profiles, _) =
+            populate_cleanup_roots("threshold");
+        keystore::set_base_dir_override(Some(threshold_core.clone()));
+        let threshold_verification = GatePasswordVerification {
+            role: role_after_auto_burn_threshold(
+                VerifiedGateRole::Wrong,
+                keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD,
+            ),
+            lockout_seconds_remaining: 3600,
+            attempts_used: keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD,
+        };
+        assert_eq!(threshold_verification.role, VerifiedGateRole::Burn);
+        let threshold_result = gate_result_for_verification(
+            &state,
+            threshold_verification,
+            &threshold_config,
+            &threshold_local,
+        );
+        assert_burned_result_removed(&threshold_result, "hub_core", &threshold_core);
+        assert_burned_result_removed(&threshold_result, "service_profiles", &threshold_profiles);
+
+        let (duress_config, duress_local, duress_core, duress_profiles, _) =
+            populate_cleanup_roots("duress");
+        keystore::set_base_dir_override(Some(duress_core.clone()));
+        let duress_result = gate_result_for_verification(
+            &state,
+            GatePasswordVerification {
+                role: role_after_auto_burn_threshold(VerifiedGateRole::Burn, 0),
+                lockout_seconds_remaining: 0,
+                attempts_used: 0,
+            },
+            &duress_config,
+            &duress_local,
+        );
+        assert_burned_result_removed(&duress_result, "hub_core", &duress_core);
+        assert_burned_result_removed(&duress_result, "service_profiles", &duress_profiles);
+
+        assert_eq!(threshold_result.outcome, duress_result.outcome);
+        assert_eq!(
+            threshold_result.burn.as_ref().unwrap().restart_required,
+            duress_result.burn.as_ref().unwrap().restart_required
+        );
+        assert_eq!(
+            threshold_result
+                .burn
+                .as_ref()
+                .unwrap()
+                .original_discord_data_untouched,
+            duress_result
+                .burn
+                .as_ref()
+                .unwrap()
+                .original_discord_data_untouched
+        );
+
+        let _ = std::fs::remove_dir_all(threshold_config);
+        let _ = std::fs::remove_dir_all(threshold_local);
+        let _ = std::fs::remove_dir_all(duress_config);
+        let _ = std::fs::remove_dir_all(duress_local);
     }
 }

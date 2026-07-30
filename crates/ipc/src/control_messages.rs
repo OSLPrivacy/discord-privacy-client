@@ -23,6 +23,10 @@
 //! | `0x05`     | CBOR-encoded [`SenderKeyDistribution`]    |
 //! | `0x06`     | CBOR-encoded [`SkdmRequest`]              |
 //! | `0x07`     | CBOR-encoded [`SessionReset`]             |
+//! | `0x08`     | native-overlay relay notice (JSON, broker) |
+//! | `0x09`     | native-overlay receipt (JSON, broker)     |
+//! | `0x0A`     | CBOR-encoded [`RevocationNotice`]         |
+//! | `0x0B`     | CBOR-encoded [`RevocationAck`]            |
 //!
 //! ## Serialization choice: CBOR
 //!
@@ -56,6 +60,7 @@
 
 use crate::scope::{Scope, ScopeInput};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 // ---- Errors ----
 
@@ -73,16 +78,110 @@ pub enum ControlError {
     /// `from_pubkey` was not 32 bytes.
     #[error("control message pubkey wrong length: got {got}, want 32")]
     BadPubkey { got: usize },
+
+    /// A [`RevocationNotice`] carried more explicit message commitments than
+    /// [`MAX_REVOCATION_MESSAGE_COMMITMENTS`]. Rejected outright — a burn that
+    /// silently dropped targets would report success while leaving content
+    /// alive.
+    #[error("revocation notice carries too many message commitments: got {got}, max {max}")]
+    TooManyCommitments { got: usize, max: usize },
 }
 
 // ---- Structs ----
 
 /// Type=0x01: "burn this scope on receipt."
+///
+/// **Legacy. Do not send from new code.** Two defects, both fixed by
+/// [`RevocationNotice`] (type=0x0A):
+///
+/// 1. `scope` is a plaintext [`Scope`] — server ids, channel ids, peer ids —
+///    inside the envelope. `docs/design/burn-contract.md` requires notices to
+///    carry "opaque commitments and authenticated metadata only—never
+///    plaintext, service names, account handles, chat titles".
+/// 2. There is no epoch and no sequence bound, so a receiver cannot tell a
+///    fresh burn from a replayed one and cannot limit the damage to content
+///    that existed when the burn was issued. The legacy receiver's response
+///    was a permanent scope-level flag, which turns one stale or replayed
+///    marker into a permanent denial of service on that conversation.
+///
+/// Kept only so an inbound 0x01 from an old peer can still be *honoured*. See
+/// [`crate::revocation::legacy_burn_notice`], which converts one into a bounded
+/// revocation at `burn_upto_seq = whatever we currently hold from that sender`
+/// — never a permanent flag.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BurnMarker {
     pub scope: Scope,
     pub burned_at: i64,
 }
+
+/// Type=0x0A: bilateral-burn revocation notice — "destroy the content **I
+/// authored** in this conversation up to `burn_upto_seq`."
+///
+/// # Nothing here is plaintext
+///
+/// Every field is either a keyed commitment or an integer. The receiver does
+/// not learn the scope *from* the notice; it recomputes
+/// [`crate::revocation::scope_commitment`] over the conversations it already
+/// holds for the authenticated sender and constant-time-compares. That keeps
+/// the body free of service names, channel ids and account handles even though
+/// it is already inside an authenticated envelope, and it means a notice
+/// captured from one pair is meaningless to any other pair (the commitment key
+/// is derived from the two identity public keys).
+///
+/// # Authorisation
+///
+/// A revocation authorises destruction of the **sender's own** content and
+/// nothing else. The sender is the authenticated `encrypt_v3` sender, so no
+/// consent grant, quorum or signature-over-scope is needed: you only ever
+/// destroy content you authored. This is the rule the legacy client already
+/// got right (`wipe_wrapped_keys_in_scope(.., Some(sender_discord_id))` —
+/// "Their burn must not blank our own or other members' messages").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevocationNotice {
+    /// `HMAC(scope_commit_key, "scope" ‖ storage_key)`. Opaque; the receiver
+    /// matches it against its own scopes for this sender.
+    pub scope_commitment: [u8; 32],
+    /// Sender-local monotonic burn epoch for this (sender, scope). A notice
+    /// whose epoch is `<= last_burn_epoch` is a replay and is ignored.
+    pub burn_epoch: u64,
+    /// Destroy content from this sender in this scope whose authenticated
+    /// `send_seq` is `<= burn_upto_seq`. Never widened by a replay, so a
+    /// captured notice cannot reach content sent after it was issued.
+    pub burn_upto_seq: u64,
+    /// Optional explicit per-message commitments
+    /// (`HMAC(key, "msg" ‖ scope_commitment ‖ message_id)`), for the case where
+    /// the burn targets specific messages rather than a whole prefix. Bounded
+    /// by [`MAX_REVOCATION_MESSAGE_COMMITMENTS`]; decode rejects an overlong
+    /// list rather than truncating it.
+    pub message_commitments: Vec<[u8; 32]>,
+    /// `HMAC(scope_commit_key, "burn" ‖ scope_commitment ‖ epoch ‖ upto_seq)`.
+    /// Recomputed and constant-time-compared on receipt, so the same id can
+    /// never be presented with different parameters.
+    pub burn_id: [u8; 32],
+    /// Unix seconds the notice was issued. Advisory only — freshness is
+    /// enforced by the epoch, not the clock, because a burn must still apply
+    /// after an arbitrarily long offline period.
+    pub issued_at: i64,
+}
+
+/// Type=0x0B: revocation receipt. `(burn_id, applied)` and nothing else.
+///
+/// `applied == true` means "this burn is in force on my side". It is returned
+/// both when the burn was applied by this notice and when it had already been
+/// applied, so the ack reveals nothing about whether the peer still held the
+/// content. `applied == false` means the notice was refused (bad `burn_id`,
+/// id reused with different parameters, or a full replay journal) and the
+/// sender should surface **Not acknowledged**, never "Deleted".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevocationAck {
+    pub burn_id: [u8; 32],
+    pub applied: bool,
+}
+
+/// Upper bound on `RevocationNotice::message_commitments`. Decode rejects a
+/// longer list instead of silently dropping entries: a truncated burn would
+/// leave content alive while reporting success.
+pub const MAX_REVOCATION_MESSAGE_COMMITMENTS: usize = 256;
 
 // 9-C1: `WhitelistInvitation` (0x02) + `WhitelistResponse` (0x03)
 // removed alongside the invitation handshake. The recv path now
@@ -123,7 +222,7 @@ pub struct AttachmentEnvelope {
 /// leg provides PQ identity binding); the receiver's v=4 decode path
 /// routes the plaintext to the SKDM handler instead of surfacing it
 /// as user-visible content.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SenderKeyDistribution {
     /// `scope.storage_key()` of the group/server/channel this chain
     /// targets. Stable across both peers because storage_key encodes
@@ -131,7 +230,23 @@ pub struct SenderKeyDistribution {
     pub scope_storage_key: String,
     pub chain_id: u32,
     pub rotation_root: [u8; 32],
+    pub physical_device_id: [u8; 32],
     pub sent_at: i64,
+}
+
+impl fmt::Debug for SenderKeyDistribution {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SenderKeyDistribution")
+            .field(
+                "scope_storage_key",
+                &crate::log_id::log_id(&self.scope_storage_key),
+            )
+            .field("chain_id", &self.chain_id)
+            .field("rotation_root", &"[REDACTED]")
+            .field("physical_device_id", &"[REDACTED]")
+            .field("sent_at", &self.sent_at)
+            .finish()
+    }
 }
 
 /// Auto-recovery type=0x06: "I have been unable to decrypt your v=5
@@ -216,6 +331,7 @@ struct SenderKeyDistributionWire {
     scope_storage_key: String,
     chain_id: u32,
     rotation_root: [u8; 32],
+    physical_device_id: [u8; 32],
     sent_at: i64,
 }
 
@@ -230,6 +346,23 @@ struct SkdmRequestWire {
 struct SessionResetWire {
     requested_at: i64,
     nonce: [u8; 16],
+}
+
+#[derive(Serialize, Deserialize)]
+struct RevocationNoticeWire {
+    scope_commitment: [u8; 32],
+    burn_epoch: u64,
+    burn_upto_seq: u64,
+    #[serde(default)]
+    message_commitments: Vec<[u8; 32]>,
+    burn_id: [u8; 32],
+    issued_at: i64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct RevocationAckWire {
+    burn_id: [u8; 32],
+    applied: bool,
 }
 
 // ---- Serialize ----
@@ -302,6 +435,7 @@ pub fn serialize_sender_key_distribution(
         scope_storage_key: m.scope_storage_key.clone(),
         chain_id: m.chain_id,
         rotation_root: m.rotation_root,
+        physical_device_id: m.physical_device_id,
         sent_at: m.sent_at,
     })
 }
@@ -314,6 +448,7 @@ pub fn deserialize_sender_key_distribution(
         scope_storage_key: wire.scope_storage_key,
         chain_id: wire.chain_id,
         rotation_root: wire.rotation_root,
+        physical_device_id: wire.physical_device_id,
         sent_at: wire.sent_at,
     })
 }
@@ -350,9 +485,134 @@ pub fn deserialize_session_reset(bytes: &[u8]) -> Result<SessionReset, ControlEr
     })
 }
 
+pub fn serialize_revocation_notice(m: &RevocationNotice) -> Result<Vec<u8>, ControlError> {
+    if m.message_commitments.len() > MAX_REVOCATION_MESSAGE_COMMITMENTS {
+        return Err(ControlError::TooManyCommitments {
+            got: m.message_commitments.len(),
+            max: MAX_REVOCATION_MESSAGE_COMMITMENTS,
+        });
+    }
+    cbor_encode(&RevocationNoticeWire {
+        scope_commitment: m.scope_commitment,
+        burn_epoch: m.burn_epoch,
+        burn_upto_seq: m.burn_upto_seq,
+        message_commitments: m.message_commitments.clone(),
+        burn_id: m.burn_id,
+        issued_at: m.issued_at,
+    })
+}
+
+pub fn deserialize_revocation_notice(bytes: &[u8]) -> Result<RevocationNotice, ControlError> {
+    let wire: RevocationNoticeWire = cbor_decode(bytes)?;
+    if wire.message_commitments.len() > MAX_REVOCATION_MESSAGE_COMMITMENTS {
+        return Err(ControlError::TooManyCommitments {
+            got: wire.message_commitments.len(),
+            max: MAX_REVOCATION_MESSAGE_COMMITMENTS,
+        });
+    }
+    Ok(RevocationNotice {
+        scope_commitment: wire.scope_commitment,
+        burn_epoch: wire.burn_epoch,
+        burn_upto_seq: wire.burn_upto_seq,
+        message_commitments: wire.message_commitments,
+        burn_id: wire.burn_id,
+        issued_at: wire.issued_at,
+    })
+}
+
+pub fn serialize_revocation_ack(m: &RevocationAck) -> Result<Vec<u8>, ControlError> {
+    cbor_encode(&RevocationAckWire {
+        burn_id: m.burn_id,
+        applied: m.applied,
+    })
+}
+
+pub fn deserialize_revocation_ack(bytes: &[u8]) -> Result<RevocationAck, ControlError> {
+    let wire: RevocationAckWire = cbor_decode(bytes)?;
+    Ok(RevocationAck {
+        burn_id: wire.burn_id,
+        applied: wire.applied,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn revocation_notice_round_trip_inline() {
+        let m = RevocationNotice {
+            scope_commitment: [3u8; 32],
+            burn_epoch: 7,
+            burn_upto_seq: 41,
+            message_commitments: vec![[4u8; 32], [5u8; 32]],
+            burn_id: [6u8; 32],
+            issued_at: 1_700_000_000,
+        };
+        let bytes = serialize_revocation_notice(&m).unwrap();
+        let back = deserialize_revocation_notice(&bytes).unwrap();
+        assert_eq!(back, m);
+    }
+
+    #[test]
+    fn revocation_notice_rejects_overlong_commitment_list() {
+        let m = RevocationNotice {
+            scope_commitment: [3u8; 32],
+            burn_epoch: 1,
+            burn_upto_seq: 1,
+            message_commitments: vec![[0u8; 32]; MAX_REVOCATION_MESSAGE_COMMITMENTS + 1],
+            burn_id: [6u8; 32],
+            issued_at: 1,
+        };
+        assert!(matches!(
+            serialize_revocation_notice(&m),
+            Err(ControlError::TooManyCommitments { .. })
+        ));
+        // And the decoder rejects too, so a hostile peer cannot bypass the
+        // sender-side check by hand-crafting the CBOR.
+        let hostile = cbor_encode(&RevocationNoticeWire {
+            scope_commitment: [3u8; 32],
+            burn_epoch: 1,
+            burn_upto_seq: 1,
+            message_commitments: vec![[0u8; 32]; MAX_REVOCATION_MESSAGE_COMMITMENTS + 1],
+            burn_id: [6u8; 32],
+            issued_at: 1,
+        })
+        .unwrap();
+        assert!(matches!(
+            deserialize_revocation_notice(&hostile),
+            Err(ControlError::TooManyCommitments { .. })
+        ));
+    }
+
+    #[test]
+    fn revocation_ack_round_trip_inline() {
+        for applied in [true, false] {
+            let m = RevocationAck {
+                burn_id: [8u8; 32],
+                applied,
+            };
+            let bytes = serialize_revocation_ack(&m).unwrap();
+            assert_eq!(deserialize_revocation_ack(&bytes).unwrap(), m);
+        }
+    }
+
+    /// The ack must carry nothing beyond `(burn_id, applied)`. If a future
+    /// edit adds a field, this size assertion fails and forces a review of
+    /// whether the new field is an oracle.
+    #[test]
+    fn revocation_ack_carries_only_two_fields() {
+        let bytes = serialize_revocation_ack(&RevocationAck {
+            burn_id: [0u8; 32],
+            applied: true,
+        })
+        .unwrap();
+        let value: ciborium::value::Value = ciborium::from_reader(&bytes[..]).unwrap();
+        let ciborium::value::Value::Map(entries) = value else {
+            panic!("revocation ack must encode as a CBOR map");
+        };
+        assert_eq!(entries.len(), 2);
+    }
 
     #[test]
     fn burn_marker_round_trip_inline() {

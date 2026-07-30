@@ -10,9 +10,10 @@ fn populated_state() -> SenderKeyStateOnDisk {
     s.install_sender().unwrap();
     let chain_id = s.sender_chain().unwrap().current_chain_id();
     let root = s.sender_chain().unwrap().rotation_root_bytes();
-    s.install_receiver(b"alice".to_vec(), chain_id, &root)
+    let device = s.sender_chain().unwrap().physical_device_id();
+    s.install_receiver(b"alice".to_vec(), chain_id, &root, device)
         .unwrap();
-    s.install_receiver(b"bob".to_vec(), chain_id, &root)
+    s.install_receiver(b"bob".to_vec(), chain_id, &root, device)
         .unwrap();
     SenderKeyStateOnDisk::from(&s)
 }

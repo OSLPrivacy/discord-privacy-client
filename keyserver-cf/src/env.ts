@@ -22,6 +22,27 @@ export interface Env {
   /** Optional signed selector-manifest envelope JSON. */
   SELECTOR_MANIFEST_JSON?: string;
 
+  // ---- view-once link lane (Wave A3/A4) ----
+
+  /**
+   * Base64 Ed25519 PRIVATE key of the link-grant issuer — either a raw
+   * 32-byte seed or a 48-byte PKCS#8 DER. Worker secret only; never a
+   * `[vars]` entry, never in the repo.
+   *
+   * Absent (or unusable, or not paired with the public half below) =>
+   * `POST /v1/link-grant` returns 503 and no link can be created
+   * anywhere. See `lib/link-grant-issuer.ts`.
+   */
+  LINK_GRANT_SECRET_B64?: string;
+  /**
+   * Base64 raw 32-byte Ed25519 PUBLIC half of the same pair. The
+   * cipher-store holds this exact value under the same name and uses it
+   * to verify; this Worker keeps a copy solely so a mismatched pair
+   * fails loudly here instead of silently 401-ing every link creation at
+   * the store.
+   */
+  LINK_GRANT_PUBKEY_B64?: string;
+
   // ---- F1.2 (Stripe + licenses + email) ----
 
   /** Production Stripe restricted or secret key (rk_live_... or sk_live_...). */
@@ -74,6 +95,8 @@ export interface Env {
   LICENSE_HMAC_SECRET?: string;
   /** Explicit non-production issuer. Unset and "production" both reject QA codes. */
   DEPLOYMENT_ENV?: "production" | "qa";
+  /** 0028 link-grant lane. Absent/anything-but-"true" keeps the route 503. */
+  LINK_GRANT_ENABLED?: string;
   /** QA-only checksum root. Must never equal LICENSE_HMAC_SECRET. */
   QA_LICENSE_HMAC_SECRET?: string;
   /** Independent second factor for the owner comp-code operator route. */

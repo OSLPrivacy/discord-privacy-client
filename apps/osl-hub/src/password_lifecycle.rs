@@ -10,7 +10,7 @@ use std::path::Path;
 use bip39::{Language, Mnemonic};
 use ipc::AppState;
 use keystore::{Identity, Sealer};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::core_bridge::HubCoreState;
@@ -20,6 +20,7 @@ const NATIVE_ID_HASH_BYTES: usize = 20;
 const MAX_RECOVERY_PHRASE_BYTES: usize = 256;
 
 const ACCOUNT_STATE_FILES: &[&str] = &[
+    "prekeys.json",
     "peer_map.json",
     "whitelist_state.json",
     "sender_key_state.json",
@@ -56,6 +57,41 @@ pub struct HubIdentitySetupResult {
     pub password_setup_required: bool,
 }
 
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubIdentityCreationOwnerSignoff {
+    pub owner_present: bool,
+    pub reviewed_no_existing_identity_replacement: bool,
+    pub accepts_recovery_phrase_responsibility: bool,
+}
+
+impl std::fmt::Debug for HubIdentityCreationOwnerSignoff {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HubIdentityCreationOwnerSignoff")
+            .field("owner_present", &self.owner_present)
+            .field(
+                "reviewed_no_existing_identity_replacement",
+                &self.reviewed_no_existing_identity_replacement,
+            )
+            .field(
+                "accepts_recovery_phrase_responsibility",
+                &self.accepts_recovery_phrase_responsibility,
+            )
+            .finish()
+    }
+}
+
+impl HubIdentityCreationOwnerSignoff {
+    pub fn owner_authorized_for_new_identity() -> Self {
+        Self {
+            owner_present: true,
+            reviewed_no_existing_identity_replacement: true,
+            accepts_recovery_phrase_responsibility: true,
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HubMainPasswordSetupResult {
@@ -77,7 +113,11 @@ pub fn readiness(state: &HubCoreState) -> HubPasswordReadiness {
     let Ok(password_status) = ipc::commands::cmd_osl_password_status() else {
         return unavailable_readiness(identity_loaded);
     };
-    let unlocked = !password_status.is_set || ipc::main_password::get_file_storage_key().is_some();
+    let qa_device_gate =
+        cfg!(feature = "discord-qa-shell") && ipc::main_password::get_file_storage_key().is_some();
+    let unlocked = qa_device_gate
+        || !password_status.is_set
+        || ipc::main_password::get_file_storage_key().is_some();
     let lockout = ipc::commands::cmd_osl_lockout_status().ok();
     let remaining = lockout
         .as_ref()
@@ -91,7 +131,7 @@ pub fn readiness(state: &HubCoreState) -> HubPasswordReadiness {
 
     readiness_from(
         identity_loaded,
-        password_status.is_set,
+        password_status.is_set || qa_device_gate,
         unlocked,
         attempts,
         remaining,
@@ -142,34 +182,66 @@ fn unavailable_readiness(identity_loaded: bool) -> HubPasswordReadiness {
     }
 }
 
-pub fn create_native_identity(state: &HubCoreState) -> Result<HubIdentitySetupResult, String> {
+pub fn create_native_identity_with_owner_authorization_signoff(
+    state: &HubCoreState,
+    owner_authorization_signoff: HubIdentityCreationOwnerSignoff,
+) -> Result<HubIdentitySetupResult, String> {
     let _lifecycle = state
         .lifecycle_lock
         .lock()
         .map_err(|_| "OSL account lifecycle is unavailable".to_owned())?;
     let current = readiness(state);
+    let dir = isolated_account_dir()?;
+    let sealer = persistent_sealer()?;
+    let result = create_native_identity_after_owner_authorization_signoff_using(
+        state,
+        &current,
+        &dir,
+        sealer.as_ref(),
+        owner_authorization_signoff,
+    )?;
+    initialise_keyserver(&state.osl, &dir);
+    Ok(result)
+}
+
+fn create_native_identity_after_owner_authorization_signoff_using(
+    state: &HubCoreState,
+    current: &HubPasswordReadiness,
+    dir: &Path,
+    sealer: &dyn Sealer,
+    owner_authorization_signoff: HubIdentityCreationOwnerSignoff,
+) -> Result<HubIdentitySetupResult, String> {
+    require_identity_creation_owner_authorization_signoff(owner_authorization_signoff)?;
     if !current.can_create_identity {
         return Err(
             "OSL identity creation is not available in the current access state".to_owned(),
         );
     }
-    let dir = isolated_account_dir()?;
-    ensure_empty_identity_slot(&state.osl, &dir)?;
-    let sealer = persistent_sealer()?;
-
+    ensure_empty_identity_slot(&state.osl, dir)?;
     let mut identity = keystore::generate_identity("osl-pending".to_owned());
     identity.user_id = native_user_id(&identity);
     let phrase = identity_recovery_phrase(&identity)?;
     let result = install_identity(
         &state.osl,
         identity,
-        &dir,
-        sealer.as_ref(),
+        dir,
+        sealer,
         Some(phrase),
         !current.main_password_set,
     )?;
-    initialise_keyserver(&state.osl, &dir);
     Ok(result)
+}
+
+fn require_identity_creation_owner_authorization_signoff(
+    signoff: HubIdentityCreationOwnerSignoff,
+) -> Result<(), String> {
+    if signoff.owner_present
+        && signoff.reviewed_no_existing_identity_replacement
+        && signoff.accepts_recovery_phrase_responsibility
+    {
+        return Ok(());
+    }
+    Err("OSL identity creation requires owner authorization sign-off".to_owned())
 }
 
 pub fn import_native_identity_phrase(
@@ -240,6 +312,58 @@ pub fn setup_main_password(
         encrypted_state_reload_issue_count: outcome.reload_issue_count,
         readiness: readiness(state),
     })
+}
+
+/// Verify a locally-entered duress PIN and, only on the burn-password role,
+/// run the full fixed-root cleanup path that returns the user-visible report.
+pub fn enter_duress_pin_for_full_wipe_report(
+    state: &HubCoreState,
+    duress_pin: String,
+    app_config_dir: &Path,
+    app_local_data_dir: &Path,
+    service_hosts_shutdown: bool,
+) -> Result<crate::cleanup::HubFullCleanupResult, String> {
+    ipc::main_password::validate_password(&duress_pin)
+        .map_err(|_| "OSL duress PIN was rejected".to_owned())?;
+    let _lifecycle = state
+        .lifecycle_lock
+        .lock()
+        .map_err(|_| "OSL account lifecycle is unavailable".to_owned())?;
+    let password_dir = keystore::osl_base_dir()
+        .map_err(|_| "OSL password gate storage is unavailable".to_owned())?;
+    let marker = ipc::main_password::read_marker_pub(&password_dir)
+        .map_err(|_| "OSL password gate storage is unavailable".to_owned())?;
+    match ipc::main_password::verify_gate_password_with_marker(&marker, &duress_pin)
+        .map_err(|_| "OSL password gate storage is unavailable".to_owned())?
+    {
+        ipc::main_password::GateMatch::Burn => {}
+        ipc::main_password::GateMatch::Wrong => {
+            return Err("OSL duress PIN was rejected".to_owned())
+        }
+        // GateMatch::Main now carries the derived file_storage_key. This is a
+        // refusal path, so bind it with `_` and let it drop immediately: a main
+        // password must not yield usable key material on the duress route.
+        ipc::main_password::GateMatch::Main(_) | ipc::main_password::GateMatch::Stealth => {
+            return Err("OSL duress action requires the burn password".to_owned())
+        }
+    }
+
+    let verification = crate::startup_gate::verify_password_role(state, duress_pin)?;
+    match verification.role {
+        crate::startup_gate::VerifiedGateRole::Burn => crate::cleanup::execute_verified_gate_burn(
+            state,
+            app_config_dir,
+            app_local_data_dir,
+            service_hosts_shutdown,
+        ),
+        crate::startup_gate::VerifiedGateRole::Wrong => {
+            Err("OSL duress PIN was rejected".to_owned())
+        }
+        crate::startup_gate::VerifiedGateRole::Main
+        | crate::startup_gate::VerifiedGateRole::Stealth => {
+            Err("OSL duress action requires the burn password".to_owned())
+        }
+    }
 }
 
 struct PasswordSetupOutcome {
@@ -320,10 +444,9 @@ fn install_identity(
     keystore::save_identity(&path, &identity, sealer)
         .map_err(|_| "OSL identity could not be sealed to device storage".to_owned())?;
     let user_id = identity.user_id.clone();
-    *state
-        .identity
-        .lock()
-        .map_err(|_| "OSL identity state is unavailable".to_owned())? = Some(identity);
+    state
+        .try_install_identity(identity)
+        .map_err(|_| "OSL identity state is unavailable".to_owned())?;
     Ok(HubIdentitySetupResult {
         user_id,
         identity_recovery_phrase,
@@ -383,10 +506,15 @@ fn initialise_keyserver(state: &AppState, dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    static FILE_KEY_TEST_LOCK: Mutex<()> = Mutex::new(());
+    // Deliberately the crate-wide lock, not a private one. Password setup mutates
+    // the process-wide unlocked-key and base-dir statics, so serialising only
+    // against this module's own tests is no protection at all: a sibling test in
+    // another module holding `GLOBAL_KEYSTORE_TEST_LOCK` would still run
+    // concurrently and read back the wrong key. Two mutexes over one global is
+    // the same as none.
+    use crate::GLOBAL_KEYSTORE_TEST_LOCK as FILE_KEY_TEST_LOCK;
 
     fn temp_dir(label: &str) -> std::path::PathBuf {
         let nonce = SystemTime::now()
@@ -394,6 +522,29 @@ mod tests {
             .expect("clock")
             .as_nanos();
         std::env::temp_dir().join(format!("osl-hub-{label}-{}-{nonce}", std::process::id()))
+    }
+
+    struct KeystoreGlobalReset;
+
+    impl Drop for KeystoreGlobalReset {
+        fn drop(&mut self) {
+            ipc::main_password::set_file_storage_key(None);
+            keystore::set_active_account_dir(None);
+            keystore::set_base_dir_override(None);
+        }
+    }
+
+    fn assert_removed_target(report: &crate::cleanup::HubFullCleanupResult, target: &str) {
+        assert!(
+            report.removed_targets.iter().any(|removed| removed == target),
+            "cleanup report did not include removed target {target}; report={:?}",
+            report.removed_targets
+        );
+        assert!(
+            !report.failed_targets.iter().any(|failed| failed == target),
+            "cleanup report included failed target {target}; report={:?}",
+            report.failed_targets
+        );
     }
 
     #[test]
@@ -456,6 +607,56 @@ mod tests {
     }
 
     #[test]
+    fn identity_creation_requires_owner_authorization_signoff() {
+        let dir = temp_dir("identity-signoff");
+        let state = HubCoreState::default();
+        let current = readiness_from(false, false, true, 0, 0);
+        let sealer = keystore::MemorySealer::new();
+
+        let missing_owner = HubIdentityCreationOwnerSignoff {
+            owner_present: false,
+            reviewed_no_existing_identity_replacement: true,
+            accepts_recovery_phrase_responsibility: true,
+        };
+        let error = match create_native_identity_after_owner_authorization_signoff_using(
+            &state,
+            &current,
+            &dir,
+            &sealer,
+            missing_owner,
+        ) {
+            Ok(_) => panic!("identity creation must refuse without owner sign-off"),
+            Err(error) => error,
+        };
+        assert!(error.contains("owner authorization sign-off"));
+        assert!(!dir.join("identity.json").exists());
+        assert!(state.osl.identity.lock().unwrap().is_none());
+
+        let result = create_native_identity_after_owner_authorization_signoff_using(
+            &state,
+            &current,
+            &dir,
+            &sealer,
+            HubIdentityCreationOwnerSignoff::owner_authorized_for_new_identity(),
+        )
+        .unwrap();
+        assert!(result.user_id.starts_with("osl_"));
+        assert_eq!(
+            result
+                .identity_recovery_phrase
+                .as_deref()
+                .unwrap()
+                .split_whitespace()
+                .count(),
+            12
+        );
+        assert!(dir.join("identity.json").exists());
+        assert!(state.osl.identity.lock().unwrap().is_some());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn password_setup_uses_only_temp_paths_and_reloads_state() {
         let _guard = FILE_KEY_TEST_LOCK.lock().unwrap();
         let dir = temp_dir("password");
@@ -476,5 +677,88 @@ mod tests {
         assert!(dir.join("password_marker.json").exists());
         ipc::main_password::set_file_storage_key(None);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn entering_duress_pin_triggers_full_wipe_report() {
+        let _guard = FILE_KEY_TEST_LOCK.lock().unwrap();
+        let _reset = KeystoreGlobalReset;
+        let config_dir = temp_dir("duress-config");
+        let local_data_dir = temp_dir("duress-local");
+        let core_dir = config_dir.join("osl-core");
+        let service_profiles = local_data_dir.join("service-profiles-v2");
+        let native_profiles = local_data_dir.join("native-window-profiles-v1");
+        std::fs::create_dir_all(&core_dir).unwrap();
+        std::fs::create_dir_all(&service_profiles).unwrap();
+        std::fs::create_dir_all(&native_profiles).unwrap();
+        std::fs::write(core_dir.join("peer_map.json"), br#"{}"#).unwrap();
+        std::fs::write(core_dir.join("whitelist_state.json"), br#"{}"#).unwrap();
+        std::fs::write(service_profiles.join("profile-cache"), b"local profile bytes").unwrap();
+        std::fs::write(native_profiles.join("native-cache"), b"native profile bytes").unwrap();
+        std::fs::write(config_dir.join("service-registry.json"), br#"{}"#).unwrap();
+        std::fs::write(config_dir.join("service-scope-index.json"), br#"{}"#).unwrap();
+        std::fs::write(config_dir.join("preview-preferences.json"), br#"{}"#).unwrap();
+
+        keystore::set_active_account_dir(None);
+        keystore::set_base_dir_override(Some(core_dir.clone()));
+        let state = HubCoreState::default();
+        *state.osl.identity.lock().unwrap() = Some(keystore::identity_from_entropy(
+            [29; 16],
+            "osl_test_duress".to_owned(),
+        ));
+
+        let main_password = "main-pin-7421";
+        let duress_pin = "duress-pin-9381";
+        ipc::commands::cmd_osl_set_main_password(main_password.to_owned()).unwrap();
+        ipc::commands::cmd_osl_set_burn_password(main_password.to_owned(), duress_pin.to_owned())
+            .unwrap();
+        assert!(core_dir.join("password_marker.json").exists());
+        ipc::main_password::set_file_storage_key(None);
+
+        let ordinary_unlock_error = enter_duress_pin_for_full_wipe_report(
+            &state,
+            main_password.to_owned(),
+            &config_dir,
+            &local_data_dir,
+            true,
+        )
+        .expect_err("ordinary main password must not trigger a full wipe");
+        assert!(ordinary_unlock_error.contains("burn password"));
+        assert!(core_dir.exists());
+        assert!(service_profiles.exists());
+        ipc::main_password::set_file_storage_key(None);
+
+        let report = enter_duress_pin_for_full_wipe_report(
+            &state,
+            duress_pin.to_owned(),
+            &config_dir,
+            &local_data_dir,
+            true,
+        )
+        .unwrap();
+        assert!(report.local_cleanup_complete);
+        assert!(report.failed_targets.is_empty());
+        assert!(!report.restart_required);
+        assert!(report.original_discord_data_untouched);
+        for target in [
+            "hub_core",
+            "service_profiles",
+            "native_profiles",
+            "service_registry",
+            "service_scope_index",
+            "preview_preferences",
+        ] {
+            assert_removed_target(&report, target);
+        }
+        assert!(!core_dir.exists());
+        assert!(!service_profiles.exists());
+        assert!(!native_profiles.exists());
+        assert!(!config_dir.join("service-registry.json").exists());
+        assert!(!config_dir.join("service-scope-index.json").exists());
+        assert!(!config_dir.join("preview-preferences.json").exists());
+        assert!(ipc::main_password::get_file_storage_key().is_none());
+
+        let _ = std::fs::remove_dir_all(config_dir);
+        let _ = std::fs::remove_dir_all(local_data_dir);
     }
 }

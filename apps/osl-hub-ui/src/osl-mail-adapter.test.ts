@@ -4,10 +4,28 @@ const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 vi.mock("./preferences", () => ({ isTauriRuntime: () => true }));
 
-import { OSL_MAIL_STATUS_CONTRACT, acknowledgeOslMailRetrieval, burnOslMailbox, listOslMailThreads, loadOslMailStatus, parseOslMailDeleteReceipt, parseOslMailRetrievedThread, parseOslMailSendReceipt, parseOslMailStatus, sendOslMail, type OslMailAddress, type OslMailProvisionedStatus, type OslMailStatus, type OslMailUnprovisionedStatus } from "./osl-mail-adapter";
+import {
+  OSL_MAIL_STATUS_CONTRACT,
+  acknowledgeOslMailRetrieval,
+  burnOslMailbox,
+  listOslMailThreads,
+  loadOslMailStatus,
+  parseOslMailDeleteReceipt,
+  parseOslMailRetrievedThread,
+  parseOslMailSendReceipt,
+  parseOslMailStatus,
+  registerOslMailStatusAdapterTests,
+  sendOslMail,
+  type OslMailAddress,
+  type OslMailProvisionedStatus,
+  type OslMailStatus,
+  type OslMailUnprovisionedStatus,
+} from "./osl-mail-adapter";
 
 const id = "abcdefghijkl";
 const hash = "a".repeat(64);
+
+registerOslMailStatusAdapterTests({ describe, expect, expectTypeOf, it });
 
 describe("OSL Mail strict adapter", () => {
   beforeEach(() => invoke.mockReset());

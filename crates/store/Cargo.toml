@@ -20,6 +20,13 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+# The v3 fixture in `tests/blind_index_test.rs` must seal rows the way the
+# *old* build did, not the way the current one does. Lifting sealed bytes out
+# of a store built from current code produces a fixture that silently follows
+# whatever the code happens to do, so it cannot detect a change to the AAD —
+# which is precisely the migration bug it exists to catch. Reaching for the
+# audited primitives directly makes the fixture independent of the crate.
+crypto = { path = "../crypto" }
 # Pinned to 3.13 to match the rest of the workspace (later 3.x
 # pulls a getrandom requiring edition-2024 / rustc 1.85+ which
 # is past our MSRV).
