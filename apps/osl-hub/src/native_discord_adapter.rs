@@ -6301,6 +6301,121 @@ struct NativeVisibleRowQualification {
     peer_rows: usize,
 }
 
+/// Content-free admission for the native row producer's discovery recipe.
+///
+/// The signed adapter profile is the authority for what this local producer is
+/// allowed to discover. The fields intentionally name product-facing facts, not
+/// native implementation strings: absence of any one means attribution is
+/// refused, while public row text and geometry can still repaint the transcript.
+#[cfg(any(test, target_os = "windows"))]
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct NativeVisibleRowDiscoveryProfile {
+    transcript_rows: bool,
+    scroll_edges: bool,
+    resize_geometry: bool,
+    dpi_geometry: bool,
+    theme_colors: bool,
+    typography: bool,
+}
+
+#[cfg(any(test, target_os = "windows"))]
+impl NativeVisibleRowDiscoveryProfile {
+    const fn reviewed_signed_profile() -> Self {
+        Self {
+            transcript_rows: true,
+            scroll_edges: true,
+            resize_geometry: true,
+            dpi_geometry: true,
+            theme_colors: true,
+            typography: true,
+        }
+    }
+
+    const fn incomplete_for_tests() -> Self {
+        Self {
+            transcript_rows: true,
+            scroll_edges: true,
+            resize_geometry: true,
+            dpi_geometry: true,
+            theme_colors: false,
+            typography: true,
+        }
+    }
+
+    fn from_verified_signed_payload(payload: &adapter_profile::ProfilePayload) -> Option<Self> {
+        use adapter_profile::{SelectorKind, SupportLevel};
+
+        if !matches!(
+            payload.support,
+            SupportLevel::Supported | SupportLevel::Experimental
+        ) || !payload.authority.user_consent_required
+            || !payload.authority.account_binding_required
+            || !payload.authority.release_authority_required
+            || !payload.authority.harmless_canary_required
+        {
+            return None;
+        }
+
+        fn has_accessibility_role(
+            payload: &adapter_profile::ProfilePayload,
+            kind: adapter_profile::SelectorKind,
+            roles: &[&str],
+        ) -> bool {
+            payload.selectors.iter().any(|selector| {
+                selector.required
+                    && selector.kind == kind
+                    && matches!(
+                        &selector.strategy,
+                        adapter_profile::SelectorStrategy::Accessibility { role, .. }
+                            if roles.iter().any(|expected| role == expected)
+                    )
+            })
+        }
+
+        fn has_text_anchor(
+            payload: &adapter_profile::ProfilePayload,
+            kind: adapter_profile::SelectorKind,
+        ) -> bool {
+            payload.selectors.iter().any(|selector| {
+                selector.required
+                    && selector.kind == kind
+                    && matches!(
+                        &selector.strategy,
+                        adapter_profile::SelectorStrategy::TextAnchor { starts_with }
+                            if !starts_with.trim().is_empty()
+                    )
+            })
+        }
+
+        let profile = Self {
+            transcript_rows: has_accessibility_role(
+                payload,
+                SelectorKind::MessageRow,
+                &["row", "listitem"],
+            ),
+            scroll_edges: has_accessibility_role(payload, SelectorKind::MessageList, &["list"]),
+            resize_geometry: has_accessibility_role(payload, SelectorKind::AppRoot, &["window"]),
+            dpi_geometry: has_accessibility_role(payload, SelectorKind::AppRoot, &["window"]),
+            theme_colors: has_text_anchor(payload, SelectorKind::SentState),
+            typography: has_accessibility_role(
+                payload,
+                SelectorKind::ComposerInput,
+                &["editable_text", "textbox", "text"],
+            ),
+        };
+        profile.admits_all_discovery().then_some(profile)
+    }
+
+    const fn admits_all_discovery(self) -> bool {
+        self.transcript_rows
+            && self.scroll_edges
+            && self.resize_geometry
+            && self.dpi_geometry
+            && self.theme_colors
+            && self.typography
+    }
+}
+
 #[cfg(any(test, target_os = "windows", feature = "discord-qa-shell"))]
 fn qualify_native_visible_rows(rows: &[VisibleMessageRow]) -> NativeVisibleRowQualification {
     let mut qualification = NativeVisibleRowQualification {
@@ -6400,6 +6515,7 @@ fn finish_native_visible_rows(
     scope_binding: &str,
     window_generation: u64,
     root_identity_still_holds: bool,
+    discovery_profile: NativeVisibleRowDiscoveryProfile,
 ) -> Vec<VisibleMessageRow> {
     let mut visible_rows = read
         .rows
@@ -6416,6 +6532,7 @@ fn finish_native_visible_rows(
         .collect::<Vec<_>>();
     let qualification = qualify_native_visible_rows(&visible_rows);
     let producer_proof_is_valid = root_identity_still_holds
+        && discovery_profile.admits_all_discovery()
         && native_row_producer_batch_is_valid(
             &visible_rows,
             scope_binding,
@@ -10336,6 +10453,7 @@ mod windows {
             scope_binding,
             target.generation,
             root_window_identity_holds(target, process_is_trusted),
+            NativeVisibleRowDiscoveryProfile::reviewed_signed_profile(),
         );
         let different_non_self = if foreign_poster_attempts.get() == 0 {
             NativeVisibleRowQaTriState::NotObserved
@@ -19073,7 +19191,13 @@ mod tests {
             ]
         );
 
-        let visible = finish_native_visible_rows(read, "scope-binding", 7, true);
+        let visible = finish_native_visible_rows(
+            read,
+            "scope-binding",
+            7,
+            true,
+            NativeVisibleRowDiscoveryProfile::reviewed_signed_profile(),
+        );
         assert_eq!(
             visible
                 .iter()
@@ -24704,6 +24828,102 @@ mod tests {
         (own, peer)
     }
 
+    #[cfg(feature = "core")]
+    fn signed_discord_visible_row_discovery_profile() -> NativeVisibleRowDiscoveryProfile {
+        use adapter_profile::{
+            sign_profile_doc, verify_profile_doc, AppDescriptor, AuthorityRequirements,
+            HarmlessCanary, ProfilePayload, ProfileRevision, SelectorKind, SelectorStrategy,
+            SupportLevel, TypedSelector, PROFILE_DOC_DOMAIN, PROFILE_DOC_SCHEMA_VERSION,
+        };
+        use base64::Engine as _;
+
+        const NOW: u64 = 1_800_000_000;
+        let payload = ProfilePayload {
+            domain: PROFILE_DOC_DOMAIN.to_owned(),
+            schema_version: PROFILE_DOC_SCHEMA_VERSION,
+            adapter_id: "discord.desktop.native".to_owned(),
+            app: AppDescriptor {
+                stable_id: "discord".to_owned(),
+                display_name: "Discord".to_owned(),
+                service_family: "messaging".to_owned(),
+                min_app_version: None,
+            },
+            revision: ProfileRevision {
+                number: 38,
+                label: "c38-discovery".to_owned(),
+            },
+            issued_at_unix_seconds: NOW - 60,
+            expires_at_unix_seconds: NOW + 3_600,
+            support: SupportLevel::Supported,
+            authority: AuthorityRequirements {
+                user_consent_required: true,
+                account_binding_required: true,
+                release_authority_required: true,
+                harmless_canary_required: true,
+            },
+            selectors: vec![
+                TypedSelector {
+                    kind: SelectorKind::AppRoot,
+                    required: true,
+                    strategy: SelectorStrategy::Accessibility {
+                        role: "window".to_owned(),
+                        name: Some("Discord".to_owned()),
+                        automation_id: None,
+                    },
+                },
+                TypedSelector {
+                    kind: SelectorKind::MessageList,
+                    required: true,
+                    strategy: SelectorStrategy::Accessibility {
+                        role: "list".to_owned(),
+                        name: None,
+                        automation_id: None,
+                    },
+                },
+                TypedSelector {
+                    kind: SelectorKind::MessageRow,
+                    required: true,
+                    strategy: SelectorStrategy::Accessibility {
+                        role: "listitem".to_owned(),
+                        name: None,
+                        automation_id: None,
+                    },
+                },
+                TypedSelector {
+                    kind: SelectorKind::ComposerInput,
+                    required: true,
+                    strategy: SelectorStrategy::Accessibility {
+                        role: "editable_text".to_owned(),
+                        name: None,
+                        automation_id: None,
+                    },
+                },
+                TypedSelector {
+                    kind: SelectorKind::SentState,
+                    required: true,
+                    strategy: SelectorStrategy::TextAnchor {
+                        starts_with: "OSL:".to_owned(),
+                    },
+                },
+            ],
+            fallbacks: Vec::new(),
+            canary: HarmlessCanary {
+                selector: SelectorKind::AppRoot,
+                expected_text: "Discord".to_owned(),
+                max_age_seconds: 300,
+            },
+        };
+        let (secret, public) = crypto::ed25519::generate_keypair();
+        let signed =
+            sign_profile_doc(&secret, &public, &payload).expect("test profile signs");
+        let trusted =
+            base64::engine::general_purpose::STANDARD.encode(public.as_bytes());
+        let verified =
+            verify_profile_doc(&signed, &trusted, NOW).expect("test profile verifies");
+        NativeVisibleRowDiscoveryProfile::from_verified_signed_payload(&verified)
+            .expect("signed profile admits every discovery axis")
+    }
+
     #[test]
     fn native_provider_emits_nonempty_own_and_peer_row_proof() {
         const OWN_CARRIER: &str = "the quiet harbour keeps every lantern burning tonight";
@@ -24720,6 +24940,7 @@ mod tests {
             "trusted-scope",
             7,
             true,
+            NativeVisibleRowDiscoveryProfile::reviewed_signed_profile(),
         );
         assert_eq!(visible.len(), 2);
         assert!(visible.iter().all(|row| row.attribution.is_some()));
@@ -24802,6 +25023,7 @@ mod tests {
             "trusted-scope",
             7,
             true,
+            NativeVisibleRowDiscoveryProfile::reviewed_signed_profile(),
         );
         assert_eq!(finished.len(), 2);
         assert!(finished.iter().all(|row| row.attribution.is_none()));
@@ -24907,6 +25129,7 @@ mod tests {
             "trusted-scope",
             7,
             false,
+            NativeVisibleRowDiscoveryProfile::reviewed_signed_profile(),
         );
         assert!(stale_root.iter().all(|row| row.attribution.is_none()));
         assert!(!native_row_producer_batch_is_valid(
@@ -25825,20 +26048,26 @@ mod tests {
         assert!(!rendered.contains("Deckard"));
     }
 
+    #[cfg(feature = "core")]
     #[test]
     fn native_visible_row_qa_receipt_has_nonempty_own_and_peer_positive_controls() {
-        const OWN_CARRIER: &str = "the quiet harbour keeps every lantern burning tonight";
-        const PEER_CARRIER: &str = "the winter garden waits beside the silver morning";
         let (own, peer) = own_and_peer_provider_evidence();
+        let discovery_profile = signed_discord_visible_row_discovery_profile();
+        let admitted_rows = finish_native_visible_rows(
+            provider_rehydrate_read(own.clone(), peer.clone()),
+            "trusted-scope",
+            7,
+            true,
+            discovery_profile,
+        );
+        assert_eq!(admitted_rows.len(), 2);
+        assert!(admitted_rows.iter().all(|row| row.attribution.is_some()));
         let receipt = native_visible_row_qa_receipt_from_rows(
             "a".repeat(40),
             "b".repeat(64),
             "trusted-scope",
             7,
-            vec![
-                provider_visible_row(own, OWN_CARRIER),
-                provider_visible_row(peer, PEER_CARRIER),
-            ],
+            admitted_rows,
         );
         assert!(receipt.accepted);
         assert_eq!(receipt.rows_observed, 2);
@@ -25850,6 +26079,27 @@ mod tests {
             receipt.refusal_reason_counts,
             NativeVisibleRowQaRefusalReasonCounts::default()
         );
+
+        let refused_rows = finish_native_visible_rows(
+            provider_rehydrate_read(own, peer),
+            "trusted-scope",
+            7,
+            true,
+            NativeVisibleRowDiscoveryProfile::incomplete_for_tests(),
+        );
+        assert_eq!(refused_rows.len(), 2);
+        assert!(refused_rows.iter().all(|row| row.attribution.is_none()));
+        let refused = native_visible_row_qa_receipt_from_rows(
+            "a".repeat(40),
+            "b".repeat(64),
+            "trusted-scope",
+            7,
+            refused_rows,
+        );
+        assert!(!refused.accepted);
+        assert_eq!(refused.rows_observed, 2);
+        assert_eq!(refused.proof_some, 0);
+        assert_eq!(refused.proof_none, 2);
     }
 
     #[test]
