@@ -363,7 +363,7 @@ pub fn load_peer_map_from_path(path: &Path) -> Result<PeerMap, PeerMapError> {
     // whether to write back).
     let any_legacy = raw_map
         .values()
-        .any(|v| matches!(v, PeerEntryRepr::Legacy(_)));
+        .any(|v| matches!(&v, PeerEntryRepr::Legacy(_)));
 
     let mut map: PeerMap = raw_map
         .into_iter()

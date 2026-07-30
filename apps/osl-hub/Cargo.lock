@@ -2340,6 +2340,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "store",
  "subtle",
  "thiserror 1.0.69",
  "tracing",

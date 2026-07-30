@@ -2064,7 +2064,7 @@ fn tampered_expired_deleted_and_capability_rejected_fetches_are_each_refused_dis
     let malformed = client
         .fetch_attachment_to_writer("not-a-canonical-id", &token, &mut sink)
         .expect_err("a malformed id must be refused before the network");
-    assert!(matches!(malformed, CipherStoreError::ParseError(_)));
+    assert!(matches!(&malformed, CipherStoreError::ParseError(_)));
     assert_eq!(
         relay.counts(|counts| counts.fetches),
         fetches_before,

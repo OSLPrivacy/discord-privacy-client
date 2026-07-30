@@ -577,7 +577,7 @@ mod tests {
             Err(err) => err,
         };
 
-        assert!(matches!(err, Error::Transport(_)));
+        assert!(matches!(&err, Error::Transport(_)));
         let after_ids: Vec<u32> = bob_prekeys.opk_pool.iter().map(|opk| opk.id).collect();
         assert_eq!(after_ids, before_ids);
         assert!(bob_prekeys.opk_pool.iter().any(|opk| opk.id == opk_id));

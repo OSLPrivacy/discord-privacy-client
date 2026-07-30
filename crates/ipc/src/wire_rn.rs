@@ -1879,7 +1879,7 @@ mod tests {
     }
 
     #[test]
-    fn consume_opk_is_wired_to_live_fetched_prekey_bundle() {
+    fn consume_opk_is_wired_to_live_fetched_prekey_bundle_second_path() {
         let alice_id = b5_identity(83, "alice-live-fetched-rn");
         let bob_id = b5_identity(84, "bob-live-fetched-rn");
         let mut bob_state =
@@ -2150,7 +2150,7 @@ mod tests {
     }
 
     #[test]
-    fn rn_handshake_consumes_local_prekey_state_opk_once() {
+    fn rn_handshake_consumes_local_prekey_state_opk_once_second_path() {
         let alice_id = b5_identity(64, "alice-consume-opk-once");
         let bob_id = b5_identity(65, "bob-consume-opk-once");
         let mut bob_state =
@@ -2301,7 +2301,7 @@ mod tests {
     }
 
     #[test]
-    fn ratchet_policy_decision_replaces_scattered_wire_flags() {
+    fn ratchet_policy_decision_selects_rn_or_legacy_by_pin() {
         let mut pinned = RnPeerPin::UNKNOWN;
         pinned.raise_to_rn();
 
@@ -2967,7 +2967,7 @@ mod tests {
     }
 
     #[test]
-    fn receive_rn_rejects_identical_wire_replay() {
+    fn receive_rn_rejects_identical_wire_replay_second_path() {
         let (_alice_dir, alice_store) = fresh_store();
         let (_bob_dir, bob_store) = fresh_store();
         let sealer = MemorySealer::new();
@@ -3497,7 +3497,7 @@ mod tests {
     }
 
     #[test]
-    fn rn_session_store_migrates_or_retires_legacy_v4_sessions() {
+    fn rn_session_store_migrates_or_retires_legacy_v4_sessions_second_path() {
         let (_d, store) = fresh_store();
         let sealer = MemorySealer::new();
         let peer = [80u8; 32];
@@ -3514,7 +3514,7 @@ mod tests {
             Ok(Some(_)) => panic!("legacy v4-shaped at-rest state must not load as RN"),
         };
         assert!(
-            matches!(err, RnError::Storage(message) if message.contains("session blob version 4")),
+            matches!(&err, RnError::Storage(message) if message.contains("session blob version 4")),
             "legacy v4-shaped state must be explicitly refused, got {err:?}"
         );
         assert!(

@@ -423,7 +423,7 @@ fn mark_burned_unknown_id_returns_not_found() {
     assert_eq!(store.get("known-survivor").unwrap(), Some(survivor.clone()));
 
     let err = store.mark_burned("never-existed").unwrap_err();
-    assert!(matches!(err, StoreError::NotFound(_)), "got {err:?}");
+    assert!(matches!(&err, StoreError::NotFound(_)), "got {err:?}");
     let after = store
         .get("known")
         .unwrap()
@@ -474,7 +474,7 @@ fn mark_burned_is_idempotent() {
     // This rejects an idempotency shortcut that reports success for every
     // later call once *any* row is burned, instead of still selecting the
     // requested blind index and reporting an unknown id.
-    assert!(matches!(wrong_id, StoreError::NotFound(_)), "got {wrong_id:?}");
+    assert!(matches!(&wrong_id, StoreError::NotFound(_)), "got {wrong_id:?}");
     let still_live = store
         .get("untouched")
         .unwrap()
@@ -567,7 +567,7 @@ fn open_with_wrong_secret_returns_sealer_error() {
     }
     match MessageStore::open(&path, SECRET_B) {
         Ok(_) => panic!("wrong secret must not unlock"),
-        Err(e) => assert!(matches!(e, StoreError::Sealer(_)), "got {e:?}"),
+        Err(e) => assert!(matches!(&e, StoreError::Sealer(_)), "got {e:?}"),
     }
 }
 
@@ -722,7 +722,7 @@ fn reopen_with_future_schema_version_refuses() {
     };
     match MessageStore::open(&path, SECRET_A) {
         Ok(_) => panic!("future schema must refuse"),
-        Err(e) => assert!(matches!(e, StoreError::Schema(_)), "got {e:?}"),
+        Err(e) => assert!(matches!(&e, StoreError::Schema(_)), "got {e:?}"),
     }
     // This rejects a future-version handler that performs a partial migration
     // (or quietly downgrades the stamp) before returning its refusal.
@@ -888,7 +888,7 @@ fn attachment_wrong_secret_cannot_unseal() {
     // even reach get_attachment — assert the open itself refuses.
     match MessageStore::open(tmp.path(), SECRET_B) {
         Ok(_) => panic!("wrong secret must refuse to open"),
-        Err(e) => assert!(matches!(e, StoreError::Sealer(_)), "got {e:?}"),
+        Err(e) => assert!(matches!(&e, StoreError::Sealer(_)), "got {e:?}"),
     }
 
     let (source_ct, source_nonce): (Vec<u8>, Vec<u8>) = {
@@ -952,7 +952,7 @@ fn attachment_wrong_secret_cannot_unseal() {
     // This rejects a key-ignoring/missing-row implementation that hid an AEAD
     // failure as None. The selected, existing attachment must authenticate as
     // Corrupted, while the unaffected sibling proves failure is not broad.
-    assert!(matches!(err, StoreError::Corrupted(_)), "got {err:?}");
+    assert!(matches!(&err, StoreError::Corrupted(_)), "got {err:?}");
     assert_eq!(
         store_b.get_attachment("msg2", "f.bin").unwrap(),
         Some(("text/plain".to_string(), b"unaffected sibling bytes".to_vec())),

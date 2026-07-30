@@ -470,7 +470,7 @@ fn anchored_crash_before_or_after_provider_advance_recovers_without_successful_r
         let error = store
             .put(&message("crash", "recoverable ambiguity"))
             .unwrap_err();
-        assert!(matches!(error, StoreError::Anchor(_)));
+        assert!(matches!(&error, StoreError::Anchor(_)));
         drop(store);
         anchor.set_fault(Fault::None);
         let reopened = open(tmp.path(), anchor.clone());

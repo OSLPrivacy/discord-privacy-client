@@ -372,7 +372,7 @@ mod tests {
         let error = anchor
             .compare_and_advance(store_id, Some(record(2, 0x20)), record(4, 0x40))
             .unwrap_err();
-        assert!(matches!(error, StoreError::Anchor(_)));
+        assert!(matches!(&error, StoreError::Anchor(_)));
 
         // The refusal must not have mutated, cleared, or truncated the
         // durable record: generation 3 is exactly what was there before the
@@ -394,7 +394,7 @@ mod tests {
         let error = anchor
             .compare_and_advance(store_id, None, record(1, 0xf0))
             .unwrap_err();
-        assert!(matches!(error, StoreError::Anchor(_)));
+        assert!(matches!(&error, StoreError::Anchor(_)));
         assert_eq!(anchor.load(store_id).unwrap(), Some(record(1, 0xf0)));
     }
 
@@ -432,7 +432,7 @@ mod tests {
             .unwrap();
         let anchor = anchor_on(backend);
         let error = anchor.load([4u8; 32]).unwrap_err();
-        assert!(matches!(error, StoreError::Anchor(_)));
+        assert!(matches!(&error, StoreError::Anchor(_)));
     }
 
     #[test]

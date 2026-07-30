@@ -1177,7 +1177,7 @@ mod tests {
             Ok(_) => panic!("stale pre-migration replay was accepted"),
             Err(error) => error,
         };
-        assert!(matches!(error, StoreError::Anchor(_)));
+        assert!(matches!(&error, StoreError::Anchor(_)));
         let conn = Connection::open(tmp.path().join("messages.sqlite")).unwrap();
         assert_eq!(schema::inspect_schema_version(&conn).unwrap(), Some(7));
         assert!(conn

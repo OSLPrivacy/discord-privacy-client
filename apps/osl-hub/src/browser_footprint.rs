@@ -252,7 +252,7 @@ mod tests {
         writer.grant(binding()).unwrap();
 
         let committed = stale_view.commit(observation()).unwrap();
-        assert!(matches!(committed, BrowserFootprintCommit::Hydrated(rows) if rows.len() == 1));
+        assert!(matches!(&committed, BrowserFootprintCommit::Hydrated(rows) if rows.len() == 1));
 
         let no_consent_path = temp_path("no-consent");
         let no_consent = BrowserFootprintStore::at(no_consent_path.clone());

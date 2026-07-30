@@ -916,7 +916,7 @@ mod tests {
         let last_idx = wire.len() - 1;
         wire[last_idx] ^= 0x01;
         let err = open_attachment(key, &wire).unwrap_err();
-        matches!(err, AttachmentWireError::InnerCrypto(_));
+        matches!(&err, AttachmentWireError::InnerCrypto(_));
     }
 
     #[test]

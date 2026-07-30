@@ -2099,7 +2099,7 @@ mod storage_binding_tests {
             Ok(_) => panic!("the production initializer accepted a wrong-root connection"),
             Err(error) => error,
         };
-        assert!(matches!(error, StoreError::StorageBinding(_)));
+        assert!(matches!(&error, StoreError::StorageBinding(_)));
         assert_eq!(
             Connection::open(&decoy_db)
                 .unwrap()
