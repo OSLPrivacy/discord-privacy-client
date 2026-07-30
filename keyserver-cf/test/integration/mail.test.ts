@@ -153,15 +153,16 @@ describe("OSL Mail Worker", () => {
     const bob = await createIdentity("bob-id", "bob");
     await signedPost("/v1/mail/address", "PROVISION", bob, { username: "bob", rotate: false });
     const mime = "From: outside@example.com\r\nSubject: private subject\r\nMessage-ID: <thread@example.com>\r\n\r\nsecret external body";
+    const rawChunk = new TextEncoder().encode(mime);
     let rejected = "";
     const message = {
       from: "outside@example.com",
       to: "bob@oslprivacy.com",
-      rawSize: new TextEncoder().encode(mime).byteLength,
+      rawSize: rawChunk.byteLength,
       headers: new Headers({ "message-id": "<thread@example.com>" }),
       raw: new ReadableStream<Uint8Array>({
         start(controller) {
-          controller.enqueue(new TextEncoder().encode(mime));
+          controller.enqueue(rawChunk);
           controller.close();
         },
       }),
@@ -169,6 +170,7 @@ describe("OSL Mail Worker", () => {
     } as unknown as ForwardableEmailMessage;
     await handleInboundEmail(message, env);
     expect(rejected).toBe("");
+    expect(Array.from(rawChunk)).toEqual(Array(rawChunk.byteLength).fill(0));
     const response = await signedPost("/v1/mail/list", "LIST", bob, { limit: 10 });
     const listingText = await response.text();
     expect(listingText).not.toContain("private subject");

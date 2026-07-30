@@ -62,6 +62,8 @@ async function readBounded(stream: ReadableStream<Uint8Array>, maxBytes: number)
     if (!value) continue;
     total += value.byteLength;
     if (total > maxBytes) {
+      value.fill(0);
+      zeroChunks(chunks);
       await reader.cancel("message too large");
       return null;
     }
@@ -69,7 +71,14 @@ async function readBounded(stream: ReadableStream<Uint8Array>, maxBytes: number)
   }
   const result = new Uint8Array(total);
   let offset = 0;
-  for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.byteLength; }
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+    chunk.fill(0);
+  }
   return result;
 }
 
+function zeroChunks(chunks: Uint8Array[]): void {
+  for (const chunk of chunks) chunk.fill(0);
+}
