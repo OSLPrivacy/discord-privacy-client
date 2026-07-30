@@ -5,9 +5,14 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
 from audit_reproducible_build import audit_workflow as audit_reproducible_build_workflow
 
@@ -180,6 +185,16 @@ jobs:
         workflow, promotion, hub, original, root = self.fixture()
         workflow = workflow + "\n      - run: gh release upload hub-latest latest.json"
         with self.assertRaises(SystemExit):
+            audit_release_policy(workflow, promotion, hub, original, root)
+
+    def test_refuses_release_supply_chain_drift_before_any_candidate_is_signed(self) -> None:
+        workflow, promotion, hub, original, root = self.fixture()
+        workflow = workflow.replace(
+            "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5",
+            "actions/checkout@v4",
+        )
+
+        with self.assertRaisesRegex(SystemExit, "full commit SHAs"):
             audit_release_policy(workflow, promotion, hub, original, root)
 
 

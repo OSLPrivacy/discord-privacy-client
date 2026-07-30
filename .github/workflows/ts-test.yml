@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  test:
+  ts-test:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -68,3 +68,35 @@ jobs:
       - name: Test legacy keyserver
         working-directory: keyserver
         run: npm test
+
+  selector-check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Install selector check deps
+        working-directory: selector-ci
+        run: npm ci
+      - name: Run selector check
+        working-directory: selector-ci
+        run: npm run check
+
+  success:
+    runs-on: windows-latest
+    needs:
+      - ts-test
+      - selector-check
+    if: ${{ always() }}
+    steps:
+      - name: Require all TypeScript-adjacent checks to pass
+        shell: pwsh
+        run: |
+          $results = @(
+            '${{ needs.ts-test.result }}',
+            '${{ needs.selector-check.result }}'
+          )
+          if ($results -contains 'failure' -or $results -contains 'cancelled' -or $results -contains 'skipped') {
+            throw "Required TypeScript-adjacent checks did not all pass: $($results -join ', ')"
+          }
