@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -8,6 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "qa" / "osl-instance-b-build.ps1"
 TAURI_CONFIG = ROOT / "apps" / "osl-hub" / "tauri.conf.json"
+BUILD_ORDER = ROOT / "docs" / "design" / "build-order.md"
 
 
 class OslInstanceBBuildStaticTests(unittest.TestCase):
@@ -87,6 +90,61 @@ class OslInstanceBBuildStaticTests(unittest.TestCase):
         lowered = self.script.lower()
         for word in forbidden:
             self.assertNotIn(word.lower(), lowered)
+
+
+def _bash_blocks(markdown: str) -> list[str]:
+    return re.findall(r"```bash\n(.*?)\n```", markdown, flags=re.DOTALL)
+
+
+def frontend_dist_is_embedded_after_frontend_build() -> None:
+    markdown = BUILD_ORDER.read_text(encoding="utf-8")
+    blocks = _bash_blocks(markdown)
+    contract = next(
+        (
+            block
+            for block in blocks
+            if re.search(
+                r"^frontend_dist_is_embedded_after_frontend_build\(\)",
+                block,
+                flags=re.MULTILINE,
+            )
+        ),
+        None,
+    )
+    testcase = unittest.TestCase()
+    testcase.assertIsNotNone(contract, "build-order doc has no executable contract")
+
+    with tempfile.TemporaryDirectory(prefix="osl-build-order-doc-") as tmp:
+        script = Path(tmp) / "frontend-dist-contract.sh"
+        script.write_text(contract, encoding="utf-8")
+        result = subprocess.run(
+            ["bash", str(script), str(ROOT)],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+
+    testcase.assertEqual(
+        result.returncode,
+        0,
+        f"build-order contract failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+    )
+
+
+def load_tests(
+    loader: unittest.TestLoader,
+    tests: unittest.TestSuite,
+    pattern: str | None,
+) -> unittest.TestSuite:
+    del tests
+    del pattern
+    suite = unittest.TestSuite()
+    suite.addTests(loader.loadTestsFromTestCase(OslInstanceBBuildStaticTests))
+    suite.addTest(unittest.FunctionTestCase(frontend_dist_is_embedded_after_frontend_build))
+    return suite
 
 
 if __name__ == "__main__":

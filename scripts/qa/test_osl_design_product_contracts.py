@@ -9,6 +9,24 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 GUI_PLAN = ROOT / "docs" / "design" / "osl-gui-final-plan.md"
 SIMPLE_SPEC = ROOT / "docs" / "design" / "osl-simple-spec.md"
+SUBJECTIVE_DESIGN_FEEL = ROOT / "docs" / "design" / "osl-subjective-design-feel.md"
+
+PRODUCT_MODEL_TERMS = {
+    "protection state",
+    "trusted people",
+    "connected accounts",
+    "private conversations",
+    "cleanup actions",
+    "activity history",
+}
+
+IMPLEMENTATION_TERMS = {
+    "keyservers",
+    "ratchets",
+    "receipts",
+    "browser profiles",
+    "provider adapters",
+}
 
 
 def _section(markdown: str, heading: str) -> str:
@@ -53,6 +71,22 @@ def _ordered_items(section: str) -> list[tuple[str, str]]:
             current_body.append(line.strip())
     if current_label is not None:
         items.append((current_label, " ".join(current_body)))
+    return items
+
+
+def _bullet_items(section: str) -> list[str]:
+    items: list[str] = []
+    current: list[str] = []
+    for line in section.splitlines():
+        if line.startswith("- "):
+            if current:
+                items.append(" ".join(current))
+            current = [line.removeprefix("- ").strip()]
+            continue
+        if current and line.startswith("  "):
+            current.append(line.strip())
+    if current:
+        items.append(" ".join(current))
     return items
 
 
@@ -268,6 +302,96 @@ def _errors_for_browser_and_monetization(markdown: str) -> list[str]:
     return errors
 
 
+def _comma_and_terms(text: str) -> set[str]:
+    return {
+        item.strip(" .")
+        for item in re.split(r",\s+|\s+and\s+", text)
+        if item.strip(" .")
+    }
+
+
+def _errors_for_subjective_design_feel(markdown: str) -> list[str]:
+    complexity = _section(markdown, "## Complexity belongs behind the product")
+    frozen = _section(markdown, "## Frozen user-facing contract")
+    combined = f"{complexity}\n{frozen}"
+    lower_complexity = _plain(complexity)
+    lower_combined = _plain(combined)
+    errors: list[str] = []
+
+    model_sentence = next(
+        (
+            sentence
+            for sentence in _sentences(complexity)
+            if sentence.startswith("The user-facing model is ")
+        ),
+        "",
+    )
+    model_terms = _comma_and_terms(
+        model_sentence.removeprefix("The user-facing model is "),
+    )
+    if model_terms != PRODUCT_MODEL_TERMS:
+        errors.append("user-facing model is not the fixed product vocabulary")
+
+    bullets = _bullet_items(frozen)
+    if len(bullets) != 4:
+        errors.append("frozen contract must have four behavioral promises")
+    if bullets:
+        first_terms = _comma_and_terms(
+            bullets[0].removeprefix("The app speaks in "),
+        )
+        if first_terms != PRODUCT_MODEL_TERMS:
+            errors.append("frozen contract does not speak in the product model")
+
+    if not (
+        all(term in lower_complexity for term in IMPLEMENTATION_TERMS)
+        and "belong behind those product nouns" in lower_complexity
+        and "must not appear" in lower_complexity
+        and all(
+            surface in lower_complexity
+            for surface in (
+                "navigation",
+                "onboarding choices",
+                "warning labels",
+                "settings names",
+                "status labels",
+                "user-facing concepts",
+            )
+        )
+    ):
+        errors.append("implementation machinery is not hidden from user-facing decisions")
+
+    decision_sentence = next(
+        (
+            sentence.lower()
+            for sentence in _sentences(complexity)
+            if sentence.lower().startswith("when an implementation detail affects")
+        ),
+        "",
+    )
+    if not all(
+        phrase in decision_sentence
+        for phrase in ("plain consequence", "safe action")
+    ):
+        errors.append("implementation details are not translated into consequence and action")
+    if any(
+        phrase not in lower_combined
+        for phrase in (
+            "explicit unknown state",
+            "main ui",
+            "ordinary language",
+            "violates the design feel",
+        )
+    ):
+        errors.append("contract does not preserve unknown/main-UI accountability")
+    if not any(
+        "refuses to expose implementation machinery" in bullet.lower()
+        and "before acting" in bullet.lower()
+        for bullet in bullets
+    ):
+        errors.append("frozen contract does not refuse implementation decisions")
+    return errors
+
+
 def _assert_contract(
     validate: Callable[..., list[str]],
     *documents: str,
@@ -339,6 +463,32 @@ encode_burns_five_guarantees_and_banned_phrases.__name__ = (
 )
 
 
+def freeze_the_user_facing_complexity_hiding_product_contract() -> None:
+    markdown = SUBJECTIVE_DESIGN_FEEL.read_text(encoding="utf-8")
+    broken_model = markdown.replace(
+        "protection state",
+        "keyservers",
+        1,
+    )
+    broken_exposure = markdown.replace(
+        "They must not appear as navigation,",
+        "They may appear as navigation,",
+        1,
+    )
+    _assert_contract(
+        _errors_for_subjective_design_feel,
+        markdown,
+        broken_documents=(broken_model,),
+    )
+    testcase = unittest.TestCase()
+    testcase.assertNotEqual(_errors_for_subjective_design_feel(broken_exposure), [])
+
+
+freeze_the_user_facing_complexity_hiding_product_contract.__name__ = (
+    "docs/design/osl-subjective-design-feel.md"
+)
+
+
 def load_tests(
     loader: unittest.TestLoader,
     tests: unittest.TestSuite,
@@ -351,6 +501,7 @@ def load_tests(
         encode_honest_tri_state_sending_and_double_enter_without_auto_retry,
         encode_browser_import_choices_and_noninterrupting_monetization,
         encode_burns_five_guarantees_and_banned_phrases,
+        freeze_the_user_facing_complexity_hiding_product_contract,
     ):
         suite.addTest(unittest.FunctionTestCase(test))
     return suite
