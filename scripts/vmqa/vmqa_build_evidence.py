@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import unittest
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -1972,6 +1973,71 @@ def verify_bundle_command(args: argparse.Namespace) -> None:
         allow_fixture=bool(args.internal_test_fixture),
         fixture_seal=fixture_seal,
     )
+
+
+class VmqaBuildEvidenceBehaviourTests(unittest.TestCase):
+    def test_verify_retained_vmqa_build_evidence_from_exact_producer_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_root:
+            root = Path(raw_root)
+            identity_path = root / "build-identity.json"
+            identity_path.write_bytes(
+                b'{"schemaVersion":2,"fixture":"producer-authenticated"}\n'
+            )
+            seal_path = root / "bundle.producer-seal.json"
+            identity_sha = sha256_file(identity_path)
+            seal_path.write_text(
+                json.dumps(
+                    producer_seal_record(identity_sha, "fixture"),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            seal_path.chmod(0o444)
+
+            self.assertEqual(
+                verify_producer_seal(
+                    identity_path,
+                    mode="fixture",
+                    allow_fixture=True,
+                    fixture_seal=seal_path,
+                ),
+                seal_path,
+            )
+
+            identity_path.write_bytes(
+                b'{"schemaVersion":2,"fixture":"same path, different producer bytes"}\n'
+            )
+            with self.assertRaisesRegex(
+                EvidenceError,
+                "does not bind the retained build identity",
+            ):
+                verify_producer_seal(
+                    identity_path,
+                    mode="fixture",
+                    allow_fixture=True,
+                    fixture_seal=seal_path,
+                )
+
+
+def _scripts_vmqa_test_vmqa_contract_py() -> None:
+    testcase = VmqaBuildEvidenceBehaviourTests(
+        "test_verify_retained_vmqa_build_evidence_from_exact_producer_bytes"
+    )
+    testcase.test_verify_retained_vmqa_build_evidence_from_exact_producer_bytes()
+
+
+_scripts_vmqa_test_vmqa_contract_py.__name__ = "scripts/vmqa/test-vmqa-contract.py"
+
+
+def load_tests(
+    loader: unittest.TestLoader,
+    tests: unittest.TestSuite,
+    pattern: str | None,
+) -> unittest.TestSuite:
+    tests.addTest(unittest.FunctionTestCase(_scripts_vmqa_test_vmqa_contract_py))
+    return tests
 
 
 def main() -> int:

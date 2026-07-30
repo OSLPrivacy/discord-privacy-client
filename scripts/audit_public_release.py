@@ -500,6 +500,57 @@ class PublicReleaseAuditBehaviourTests(unittest.TestCase):
         )
 
 
+def _scripts_check_app_claims_mjs_contract() -> None:
+    testcase = unittest.TestCase()
+    identity = {
+        "schemaVersion": 1,
+        "releaseTag": "v1.2.3",
+        "sourceCommit": "c" * 40,
+        "sourceTree": "d" * 40,
+        "binarySha256": "a" * 64,
+        "binarySizeBytes": 123,
+        "claimProfile": "release-proven",
+    }
+
+    testcase.assertEqual(
+        release_claim_violations(
+            (
+                f"Release v1.2.3 binary SHA-256 {'a' * 64} is release-proven. "
+                f"The source commit {'c' * 40} and source tree {'d' * 40} match the app."
+            ),
+            identity,
+        ),
+        [],
+    )
+    for stale_claim in (
+        f"Release v9.9.9 binary SHA-256 {'a' * 64} is release-proven.",
+        f"Release v1.2.3 binary SHA-256 {'b' * 64} is release-proven.",
+        f"Release v1.2.3 source commit {'e' * 40} is release-proven.",
+    ):
+        testcase.assertTrue(
+            release_identity_mismatch_violations(stale_claim, identity),
+            stale_claim,
+        )
+    testcase.assertTrue(
+        release_claim_violations(
+            "This release build proves encrypted messages send through Discord.",
+            None,
+        )
+    )
+
+
+_scripts_check_app_claims_mjs_contract.__name__ = "scripts/check-app-claims.mjs'"
+
+
+def load_tests(
+    loader: unittest.TestLoader,
+    tests: unittest.TestSuite,
+    pattern: str | None,
+) -> unittest.TestSuite:
+    tests.addTest(unittest.FunctionTestCase(_scripts_check_app_claims_mjs_contract))
+    return tests
+
+
 def main() -> int:
     errors: list[str] = []
     paths = publishable_files()
