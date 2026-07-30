@@ -16,7 +16,10 @@ pub use contract::{
     CheckOutcome, ContractVerdict, Predicate, ReportError, SelfTestReport, Subsystem,
     UnverifiedCause, CONTRACT_VERSION, MAX_SELF_TEST_CHECKS,
 };
-pub use defaults::{signal_default_profile, signal_default_trusted_signing_key_b64};
+pub use defaults::{
+    signal_default_profile, signal_default_trusted_signing_key_b64, whatsapp_default_profile,
+    whatsapp_default_trusted_signing_key_b64,
+};
 pub use envelope::{
     canonical_profile_digest, EnvelopeError, SignedProfile, ADAPTER_PROFILE_ENVELOPE_DOMAIN,
     ADAPTER_PROFILE_ENVELOPE_VERSION, ED25519_PUBLIC_KEY_LEN, ED25519_SIGNATURE_LEN,
