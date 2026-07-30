@@ -446,6 +446,12 @@ mod tests {
         renamed[1].localized_name = Some("Escribe un mensaje".to_owned());
         assert_eq!(discover_signal_composer(&renamed, window), Ok(1));
 
+        let mut unnamed = renamed.clone();
+        for node in &mut unnamed {
+            node.localized_name = None;
+        }
+        assert_eq!(discover_signal_composer(&unnamed, window), Ok(1));
+
         let mut ambiguous = renamed;
         ambiguous.push(editable(rect(480, 740, 1130, 825), "another locale"));
         assert_eq!(
