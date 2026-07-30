@@ -8031,17 +8031,17 @@ pub(crate) fn snapshot_claimed_window(
 #[cfg(target_os = "windows")]
 mod windows {
     use super::*;
-    use windows::core::{Interface, VARIANT};
-    use windows::Win32::Foundation::{BOOL, HWND, POINT};
-    use windows::Win32::System::Com::{
+    use ::windows::core::{Interface, VARIANT};
+    use ::windows::Win32::Foundation::{BOOL, HWND, POINT};
+    use ::windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoUninitialize, IDispatch, CLSCTX_INPROC_SERVER,
         COINIT_MULTITHREADED,
     };
-    use windows::Win32::System::Ole::{
+    use ::windows::Win32::System::Ole::{
         SafeArrayAccessData, SafeArrayDestroy, SafeArrayGetLBound, SafeArrayGetUBound,
         SafeArrayUnaccessData,
     };
-    use windows::Win32::UI::Accessibility::{
+    use ::windows::Win32::UI::Accessibility::{
         AccessibleObjectFromPoint, AccessibleObjectFromWindow, CUIAutomation, IAccessible,
         IUIAutomation, IUIAutomationElement, IUIAutomationInvokePattern, IUIAutomationTextPattern,
         IUIAutomationTextPattern2, IUIAutomationTextRange, IUIAutomationTreeWalker,
@@ -8055,7 +8055,7 @@ mod windows {
     // which window an `IAccessible` belongs to, and that walk is QA-shell only.
     use std::ffi::c_void;
     use std::time::{Duration, Instant};
-    use windows::Win32::UI::Accessibility::{AccessibleChildren, WindowFromAccessibleObject};
+    use ::windows::Win32::UI::Accessibility::{AccessibleChildren, WindowFromAccessibleObject};
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
         KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, KEYEVENTF_UNICODE,
