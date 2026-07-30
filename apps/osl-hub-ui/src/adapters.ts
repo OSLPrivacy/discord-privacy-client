@@ -810,6 +810,15 @@ export interface GuidedDeletionPreview {
   removesLocalCopies: false;
 }
 
+export interface GuidedDeletionRunAuthority {
+  runId: string;
+  attendedActionId: string;
+  scopeBindingHash: string;
+  generation: number;
+  planDigest: string;
+  mode: "attended_delete_run_v1";
+}
+
 export interface GuidedDeletionRowOutcome {
   scanOrdinal: number;
   textLen: number;
@@ -877,12 +886,17 @@ export async function previewDiscordGuidedDeletion(scanOrdinals: number[]): Prom
  * native code re-derives it and refuses anything else, so a preview the
  * operator never saw cannot be executed.
  */
-export async function executeDiscordGuidedDeletion(planDigest: string): Promise<GuidedDeletionReceipt | null> {
-  if (!isTauriRuntime() || !/^[a-f0-9]{64}$/.test(planDigest)) return null;
+export async function executeDiscordGuidedDeletion(planDigest: string, authority?: GuidedDeletionRunAuthority): Promise<GuidedDeletionReceipt | null> {
+  if (!isTauriRuntime() || !/^[a-f0-9]{64}$/.test(planDigest) || !validGuidedDeletionRunAuthority(authority, planDigest)) return null;
   try {
-    const receipt = parseGuidedDeletionReceipt(await invoke<unknown>("execute_discord_guided_deletion", { planDigest }));
+    const receipt = parseGuidedDeletionReceipt(await invoke<unknown>("execute_discord_guided_deletion", { planDigest, authority }));
     return checkedBackendResponse("execute_discord_guided_deletion",
-      receipt && receipt.planDigest === planDigest ? receipt : null,
+      receipt
+        && receipt.planDigest === planDigest
+        && receipt.scopeBindingHash === authority.scopeBindingHash
+        && receipt.generation === authority.generation
+        ? receipt
+        : null,
       "the deletion receipt did not match the confirmed plan");
   } catch (error) { recordBackendFailure("execute_discord_guided_deletion", error); return null; }
 }
@@ -1021,6 +1035,18 @@ function isBoundedOrdinalSelection(value: unknown): value is number[] {
     && value.length <= GUIDED_DELETION_MAX_ROWS
     && value.every((ordinal) => Number.isSafeInteger(ordinal) && ordinal >= 0 && ordinal < 4_096)
     && new Set(value).size === value.length;
+}
+
+function validGuidedDeletionRunAuthority(value: unknown, planDigest: string): value is GuidedDeletionRunAuthority {
+  return isRecord(value)
+    && exact(value, ["runId", "attendedActionId", "scopeBindingHash", "generation", "planDigest", "mode"])
+    && safeOpaque(value.runId, 80)
+    && safeOpaque(value.attendedActionId, 80)
+    && /^[a-f0-9]{64}$/.test(String(value.scopeBindingHash))
+    && boundedCount(value.generation)
+    && Number(value.generation) > 0
+    && value.planDigest === planDigest
+    && value.mode === "attended_delete_run_v1";
 }
 
 export async function loadActiveContextSecurity(contextToken: string): Promise<ScopeSecurity | null> {
@@ -1226,6 +1252,7 @@ function exact(value: Record<string, unknown>, keys: string[]): boolean { const 
 function safe(value: unknown, max: number): value is string { return typeof value === "string" && value.length > 0 && value.length <= max && !/[<>\u0000-\u001f\u007f]/.test(value); }
 function safePlaintext(value: unknown, max: number): value is string { return typeof value === "string" && value.length > 0 && value.length <= max && !/[\u0000\u007f]/.test(value); }
 function safeId(value: unknown, max: number): value is string { return typeof value === "string" && value.length > 0 && value.length <= max && /^[a-z0-9_-]+$/.test(value); }
+function safeOpaque(value: unknown, max: number): value is string { return typeof value === "string" && value.length > 0 && value.length <= max && /^[A-Za-z0-9_-]+$/.test(value); }
 function boundedCount(value: unknown): boolean { return Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= 10_000_000; }
 function boundedUtf8Text(value: unknown, maxBytes: number): value is string {
   return typeof value === "string"

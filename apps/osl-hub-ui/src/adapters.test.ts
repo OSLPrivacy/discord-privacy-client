@@ -631,6 +631,15 @@ describe("optional OSL Privacy adapters", () => {
     rows,
   });
 
+  const deletionAuthority = (planDigest = "a".repeat(64)) => ({
+    runId: "run-7",
+    attendedActionId: "attended-action-7",
+    scopeBindingHash: "b".repeat(64),
+    generation: 7,
+    planDigest,
+    mode: "attended_delete_run_v1" as const,
+  });
+
   it("keeps refusing a burn result that claims native history was touched", () => {
     // The narrowing added a second channel; it did not widen this one. Burn does
     // not delete carrier messages from a native service (burn-contract.md:14).
@@ -748,6 +757,8 @@ describe("optional OSL Privacy adapters", () => {
     await expect(previewDiscordGuidedDeletion([1, 1])).resolves.toBeNull();
     await expect(previewDiscordGuidedDeletion([-1])).resolves.toBeNull();
     await expect(executeDiscordGuidedDeletion("not-a-digest")).resolves.toBeNull();
+    await expect(executeDiscordGuidedDeletion("a".repeat(64))).resolves.toBeNull();
+    await expect(executeDiscordGuidedDeletion("a".repeat(64), deletionAuthority("c".repeat(64)))).resolves.toBeNull();
     expect(mocks.invoke).not.toHaveBeenCalled();
   });
 
@@ -771,9 +782,13 @@ describe("optional OSL Privacy adapters", () => {
 
   it("refuses a receipt that belongs to another confirmed plan", async () => {
     mocks.invoke.mockResolvedValueOnce(deletionReceipt([verifiedRow(1)]));
-    await expect(executeDiscordGuidedDeletion("c".repeat(64))).resolves.toBeNull();
+    await expect(executeDiscordGuidedDeletion("c".repeat(64), deletionAuthority("c".repeat(64)))).resolves.toBeNull();
     mocks.invoke.mockResolvedValueOnce(deletionReceipt([verifiedRow(1)]));
-    await expect(executeDiscordGuidedDeletion("a".repeat(64))).resolves.not.toBeNull();
+    await expect(executeDiscordGuidedDeletion("a".repeat(64), deletionAuthority())).resolves.not.toBeNull();
+    expect(mocks.invoke).toHaveBeenLastCalledWith("execute_discord_guided_deletion", {
+      planDigest: "a".repeat(64),
+      authority: deletionAuthority(),
+    });
   });
 
   it("returns nothing outside the native runtime", async () => {
