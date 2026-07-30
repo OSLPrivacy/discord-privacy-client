@@ -66,6 +66,9 @@ RELEASE_CONTEXT_RE = re.compile(
 )
 RELEASE_TAG_RE = re.compile(r"\bv[0-9][0-9A-Za-z._-]*\b")
 HEX64_RE = re.compile(r"\b[0-9a-fA-F]{64}\b")
+GIT_OBJECT_CLAIM_RE = re.compile(
+    r"(?<![0-9a-fA-F])[0-9a-fA-F]{40}(?![0-9a-fA-F])"
+)
 BINARY_DIGEST_CONTEXT_RE = re.compile(
     r"\b(?:binary|executable|artifact|installer|app)\b.{0,60}\b(?:sha-?256|digest|hash)\b"
     r"|\b(?:sha-?256|digest|hash)\b.{0,60}\b(?:binary|executable|artifact|installer|app)\b",
@@ -327,6 +330,25 @@ def release_identity_mismatch_violations(
                         "release claim references a different released binary identity",
                     )
                 )
+        for match in GIT_OBJECT_CLAIM_RE.finditer(sentence):
+            digest = match.group(0).lower()
+            context = sentence[
+                max(0, match.start() - 80) : min(len(sentence), match.end() + 80)
+            ]
+            expected_hashes: set[str] = set()
+            if SOURCE_COMMIT_CONTEXT_RE.search(context):
+                expected_hashes.add(source_commit)
+            if SOURCE_TREE_CONTEXT_RE.search(context):
+                expected_hashes.add(source_tree)
+            if not expected_hashes:
+                expected_hashes = {source_commit, source_tree}
+            if digest not in expected_hashes:
+                violations.append(
+                    (
+                        line_at(text, offset + match.start()),
+                        "release claim references a different released binary identity",
+                    )
+                )
     return violations
 
 
@@ -404,6 +426,9 @@ def audit_public_release_claims_self_test(errors: list[str]) -> None:
     bad_hash = (
         f"Release v1.2.3 binary SHA-256 {'b' * 64} is the release-proven binary."
     )
+    bad_source_commit = (
+        f"Release v1.2.3 source commit {'e' * 40} is the release-proven source."
+    )
     release_identity = None
     if not release_claim_violations(bad_release, release_identity):
         errors.append("internal release-claim test did not catch unbound release proof")
@@ -422,7 +447,7 @@ def audit_public_release_claims_self_test(errors: list[str]) -> None:
     }
     if release_claim_violations(good_exact, release_identity):
         errors.append(f"{exact_release_test}: exact release identity was rejected")
-    for bad in (bad_tag, bad_hash):
+    for bad in (bad_tag, bad_hash, bad_source_commit):
         if not release_identity_mismatch_violations(bad, release_identity):
             errors.append(f"{exact_release_test}: stale release identity was not caught")
 

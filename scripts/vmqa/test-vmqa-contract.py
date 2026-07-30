@@ -1312,10 +1312,29 @@ def _freeze_the_retained_vmqa_evidence_schema(
     self.assertNotIn("private VMQA row text", result.stderr)
 
 
+def _verify_retained_vmqa_build_evidence_from_exact_producer_bytes(
+    self: CleanupContractTests,
+) -> None:
+    self.assertEqual(self._verify_bundle().returncode, 0)
+
+    self.exe.write_bytes(b"same path, different producer bytes\n")
+    result = self._verify_bundle()
+    self.assertEqual(result.returncode, 9, result.stderr)
+    self.assertIn(
+        "build log artifact does not bind the independent executable",
+        result.stderr,
+    )
+
+
 setattr(
     CleanupContractTests,
     "Freeze the retained VMQA evidence schema",
     _freeze_the_retained_vmqa_evidence_schema,
+)
+setattr(
+    CleanupContractTests,
+    "Verify retained VMQA build evidence from exact producer bytes.",
+    _verify_retained_vmqa_build_evidence_from_exact_producer_bytes,
 )
 
 
@@ -1325,6 +1344,11 @@ def load_tests(
     pattern: str | None,
 ) -> unittest.TestSuite:
     tests.addTest(CleanupContractTests("Freeze the retained VMQA evidence schema"))
+    tests.addTest(
+        CleanupContractTests(
+            "Verify retained VMQA build evidence from exact producer bytes."
+        )
+    )
     return tests
 
 
