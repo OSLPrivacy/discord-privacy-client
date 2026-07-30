@@ -167,7 +167,8 @@ function Get-OslKeyVaultSecretValue {
   param(
     [Parameter(Mandatory = $true)][string]$VaultName,
     [Parameter(Mandatory = $true)][string]$SecretName,
-    [Parameter(Mandatory = $true)][string]$AccessToken
+    [Parameter(Mandatory = $true)][string]$AccessToken,
+    [scriptblock]$RestInvoker
   )
 
   Assert-OslTestSecretsVault $VaultName
@@ -177,13 +178,17 @@ function Get-OslKeyVaultSecretValue {
   $encodedSecretName = [Uri]::EscapeDataString($SecretName)
   $secretUri = "https://$VaultName.vault.azure.net/secrets/$encodedSecretName`?api-version=7.4"
   try {
-    $secretRecord = Invoke-RestMethod -Method Get -Uri $secretUri -Headers @{
-      Authorization = "Bearer $AccessToken"
-    } -TimeoutSec 15
+    $headers = @{ Authorization = "Bearer $AccessToken" }
+    if ($null -eq $RestInvoker) {
+      $secretRecord = Invoke-RestMethod -Method Get -Uri $secretUri -Headers $headers -TimeoutSec 15
+    } else {
+      $secretRecord = & $RestInvoker -Method Get -Uri $secretUri -Headers $headers -TimeoutSec 15
+    }
     return [string]$secretRecord.value
   } catch {
     throw 'Key Vault test secret retrieval failed'
   } finally {
+    $headers = $null
     $secretRecord = $null
   }
 }
@@ -335,6 +340,55 @@ function disposable_discord_accounts_load_from_key_vault_without_logging_secrets
   }
   if (@($output).Count -ne 1 -or $output[0].Loaded -ne $true -or [int]$output[0].ClientNumber -ne 1) {
     throw 'disposable Discord account load did not return the bounded public result'
+  }
+
+  $fixtureToken = 'fixture-key-vault-token-not-real'
+  $script:__oslVmUnlockSelfTestRest = $null
+  $keyVaultRest = {
+    param(
+      [Parameter(Mandatory = $true)][string]$Method,
+      [Parameter(Mandatory = $true)][string]$Uri,
+      [Parameter(Mandatory = $true)][hashtable]$Headers,
+      [Parameter(Mandatory = $true)][int]$TimeoutSec
+    )
+    $script:__oslVmUnlockSelfTestRest = [pscustomobject]@{
+      Method = $Method
+      Uri = $Uri
+      Authorization = [string]$Headers.Authorization
+      TimeoutSec = $TimeoutSec
+    }
+    return [pscustomobject]@{ value = $fixtureCredential }
+  }
+  $keyVaultOutput = @(
+    & {
+      $value = Get-OslKeyVaultSecretValue `
+        -VaultName $vault `
+        -SecretName 'osl-test-discord-03' `
+        -AccessToken $fixtureToken `
+        -RestInvoker $keyVaultRest
+      [pscustomobject]@{
+        Loaded = ($value -ceq $fixtureCredential)
+        SecretValueExposed = $false
+      }
+    } *>&1
+  )
+  $restCall = $script:__oslVmUnlockSelfTestRest
+  $script:__oslVmUnlockSelfTestRest = $null
+  if ($null -eq $restCall -or
+      $restCall.Method -cne 'Get' -or
+      $restCall.Uri -cne "https://$vault.vault.azure.net/secrets/osl-test-discord-03?api-version=7.4" -or
+      $restCall.Authorization -cne "Bearer $fixtureToken" -or
+      [int]$restCall.TimeoutSec -ne 15) {
+    throw 'disposable Discord credential was not pulled from the bounded Key Vault secret URI'
+  }
+  $keyVaultPublic = $keyVaultOutput | ConvertTo-Json -Compress -Depth 8
+  if (@($keyVaultOutput).Count -ne 1 -or $keyVaultOutput[0].Loaded -ne $true) {
+    throw 'Key Vault disposable Discord credential load did not return the bounded public result'
+  }
+  foreach ($secretFragment in @($fixtureCredential, $fixtureToken, 'osl-test-discord-03')) {
+    if ($keyVaultPublic -cmatch [regex]::Escape($secretFragment)) {
+      throw 'Key Vault disposable Discord credential load emitted secret-bearing material'
+    }
   }
 
   $objectMapRequested = [System.Collections.Generic.List[string]]::new()
