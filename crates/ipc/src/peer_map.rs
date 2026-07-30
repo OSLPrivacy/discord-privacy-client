@@ -9,6 +9,12 @@
 //!   — per `docs/phase-7-design.md` §5.1. Each value is an
 //!   object carrying the legacy `osl_user_id` plus the new
 //!   whitelist / burn fields the Phase 7 trust model needs.
+//! - **legacy v4 ratchet state / Phase 9-A2**: modern entries may
+//!   carry `ratchet_state`. That per-peer Double Ratchet state is
+//!   retired at load time rather than reused. The peer's bootstrap
+//!   public key is left intact so any surviving legacy v4 caller must
+//!   re-handshake instead of silently continuing from an at-rest
+//!   session snapshot.
 //!
 //! ## Backward compatibility
 //!
@@ -125,21 +131,20 @@ pub struct PeerEntry {
     pub is_self: Option<bool>,
 
     /// Phase 9-A2: base64-encoded X25519 public key that the peer
-    /// published as their initial Double Ratchet bootstrap. Used by
-    /// v=4 senders on the *first* outbound message to a peer — once
-    /// `ratchet_state` is populated this field is no longer read
-    /// (the live DR's `dhr` carries the peer's current ratchet pub).
+    /// published as their initial Double Ratchet bootstrap. Retained
+    /// after legacy v4 state retirement so any remaining v4 caller has
+    /// to re-handshake instead of continuing from an at-rest session.
     /// `None` for peers whose keyserver record predates the A2
-    /// fourth-column rollout; senders fall through to v=3 in that case.
+    /// fourth-column rollout; those peers are not v4 bootstrap-ready.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ik_ratchet_initial_pub: Option<String>,
 
-    /// Phase 9-A2: persisted Double Ratchet state. `Some` once a v=4
-    /// session has been initialized (either by a successful bootstrap
-    /// send or a successful bootstrap receive). DM-scope only — GC
-    /// and server channels stay on v=3 in this phase. Serialized
-    /// inline so the existing `peer_map.json` encryption-at-rest
-    /// envelope covers the ratchet too.
+    /// Legacy Phase 9-A2 persisted Double Ratchet state.
+    ///
+    /// Retired by `load_peer_map_from_path`: a value present on disk is
+    /// accepted only long enough to strip it and write the file back.
+    /// Keeping the field in the struct lets old files deserialize
+    /// cleanly; no current load path may silently reuse it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ratchet_state: Option<crypto::ratchet::RatchetStateOnDisk>,
 
@@ -360,12 +365,13 @@ pub fn load_peer_map_from_path(path: &Path) -> Result<PeerMap, PeerMapError> {
         .values()
         .any(|v| matches!(v, PeerEntryRepr::Legacy(_)));
 
-    let map: PeerMap = raw_map
+    let mut map: PeerMap = raw_map
         .into_iter()
         .map(|(k, v)| (k, PeerEntry::from(v)))
         .collect();
+    let retired_v4_sessions = retire_legacy_v4_sessions(&mut map);
 
-    if any_legacy {
+    if any_legacy || retired_v4_sessions > 0 {
         write_peer_map(path, &map).map_err(|source| PeerMapError::WriteBackFailed {
             path: path.to_path_buf(),
             source,
@@ -373,6 +379,16 @@ pub fn load_peer_map_from_path(path: &Path) -> Result<PeerMap, PeerMapError> {
     }
 
     Ok(map)
+}
+
+fn retire_legacy_v4_sessions(map: &mut PeerMap) -> usize {
+    let mut retired = 0usize;
+    for entry in map.values_mut() {
+        if entry.ratchet_state.take().is_some() {
+            retired += 1;
+        }
+    }
+    retired
 }
 
 /// Serialise + write `map` to `path` atomically (via a tempfile +
@@ -441,8 +457,41 @@ pub fn load_peer_map() -> (PathBuf, Result<PeerMap, PeerMapError>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crypto::pqxdh::SessionKey;
+    use crypto::ratchet::{DoubleRatchet, RatchetStateOnDisk, SessionContext, SESSION_VERSION_V1};
+    use crypto::{ml_kem_768, pqxdh, x25519};
     use std::fs;
     use tempfile::tempdir;
+
+    fn build_test_ratchet_state() -> RatchetStateOnDisk {
+        let (alice_ik_sk, alice_ik_pub) = x25519::generate_keypair();
+        let (bob_ik_sk, bob_ik_pub) = x25519::generate_keypair();
+        let (bob_spk_sk, bob_spk_pub) = x25519::generate_keypair();
+        let (bob_mlkem_dk, bob_mlkem_ek) = ml_kem_768::generate_keypair();
+        let (alice_sk, hs) =
+            pqxdh::initiate(&alice_ik_sk, &bob_ik_pub, &bob_spk_pub, None, &bob_mlkem_ek)
+                .expect("initiate");
+        let _bob_sk: SessionKey = pqxdh::respond(
+            &bob_ik_sk,
+            &bob_spk_sk,
+            None,
+            &bob_mlkem_dk,
+            &alice_ik_pub,
+            &hs,
+        )
+        .expect("respond");
+        let ctx = SessionContext {
+            local_ik_x25519_pub: alice_ik_pub,
+            local_ik_mlkem_pub: vec![0xaa; 1184],
+            peer_ik_x25519_pub: bob_ik_pub,
+            peer_ik_mlkem_pub: vec![0xbb; 1184],
+            conversation_id: b"peer-map-b80-test".to_vec(),
+            session_version: SESSION_VERSION_V1,
+        };
+        let alice =
+            DoubleRatchet::new_initiator(&alice_sk, &bob_spk_pub, ctx).expect("new initiator");
+        RatchetStateOnDisk::from(&alice)
+    }
 
     #[test]
     fn missing_file_is_not_found_error() {
@@ -508,6 +557,53 @@ mod tests {
             WhitelistEntry::Dm { broadened, .. } => assert!(*broadened),
             other => panic!("expected DM whitelist, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn b80_legacy_v4_ratchet_state_is_retired_on_load_and_written_back() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("peer_map.json");
+        let mut map = PeerMap::new();
+        map.insert(
+            "DM_PEER".to_string(),
+            PeerEntry {
+                discord_id: Some("DM_PEER".to_string()),
+                ratchet_state: Some(build_test_ratchet_state()),
+                ik_ratchet_initial_pub: Some(
+                    "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=".to_string(),
+                ),
+                ..Default::default()
+            },
+        );
+        write_peer_map(&path, &map).expect("seed legacy v4 state");
+        assert!(
+            fs::read_to_string(&path)
+                .expect("read seeded peer map")
+                .contains("ratchet_state"),
+            "test fixture must contain legacy at-rest v4 state"
+        );
+
+        let loaded = load_peer_map_from_path(&path).expect("load retires v4 state");
+        let entry = loaded.get("DM_PEER").expect("peer retained");
+        assert!(
+            entry.ratchet_state.is_none(),
+            "legacy v4 state must not be available for silent reuse after load"
+        );
+        assert_eq!(
+            entry.ik_ratchet_initial_pub.as_deref(),
+            Some("ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8="),
+            "bootstrap material stays so any remaining v4 path must re-handshake"
+        );
+
+        let rewritten = fs::read_to_string(&path).expect("read retired peer map");
+        assert!(
+            !rewritten.contains("ratchet_state"),
+            "retirement must be durable on disk"
+        );
+        assert!(
+            rewritten.contains("ik_ratchet_initial_pub"),
+            "retirement must not erase bootstrap material"
+        );
     }
 
     #[test]
