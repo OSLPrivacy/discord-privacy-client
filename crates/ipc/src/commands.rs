@@ -5399,6 +5399,87 @@ mod rn_inbound_unknown_tests {
             .expect("load pin")
             .is_pinned_to_rn());
     }
+
+    #[test]
+    fn unit_b78_initiator_and_command_responder_bootstrap_in_one_process() {
+        assert!(
+            !crate::wire_rn::RN_WIRE_IN_ENABLED,
+            "b78 must not enable the production OSL-RN wire-in gate"
+        );
+
+        let mut rng = seeded_rng(0xB78);
+        let (bob_prekeys, bob_bundle) = fresh_bundle(&mut rng);
+        let bob_identity_public = bob_prekeys.identity.public();
+        let bob_mlkem768_ek = bob_bundle.pq_prekey.to_bytes();
+        let (alice_identity, alice_identity_public) =
+            osl_ratchet_next::primitives::x25519_keypair(&mut rng);
+
+        let alice_dir = TempDir::new().expect("alice tempdir");
+        let alice_store = crate::wire_rn::RnSessionStore::new(alice_dir.path().join("rn"));
+        let sealer = MemorySealer::new();
+        let mut alice_session = crate::wire_rn::initiate_and_persist(
+            &alice_store,
+            &sealer,
+            &alice_identity,
+            alice_identity_public.as_bytes(),
+            &bob_bundle,
+            keystore::client::PeerCapabilities::Verified(keystore::client::RN_CAP_WIRE_RN),
+            &bob_mlkem768_ek,
+            crate::wire_rn::RN_CONTEXT_DISCORD_MANUAL,
+            osl_ratchet_next::SessionParams::default(),
+        )
+        .expect("initiator persists bootstrap session");
+
+        let wire = alice_session
+            .encrypt(
+                crate::wire_v2::MSG_TYPE_CONTENT,
+                b"b78 bootstrap hello",
+                &mut rng,
+            )
+            .expect("bootstrap encrypt");
+
+        let bob_state = AppState::new();
+        *bob_state.identity.lock().expect("identity mutex poisoned") = Some(
+            identity_from_rn_prekeys("bob-b78", &bob_prekeys, &bob_bundle),
+        );
+        let bob_dir = TempDir::new().expect("bob tempdir");
+        let opened = accept_rn_bootstrap_inbound_unknown_with_sealer(
+            &bob_state,
+            &wire,
+            Some(bob_dir.path()),
+            &sealer,
+            true,
+        )
+        .expect("command responder accepts bootstrap");
+
+        assert_eq!(opened.msg_type, crate::wire_v2::MSG_TYPE_CONTENT);
+        assert_eq!(opened.plaintext, b"b78 bootstrap hello".to_vec());
+
+        assert!(alice_store
+            .load_session(bob_bundle.identity.as_bytes(), &sealer)
+            .expect("load alice session")
+            .is_some());
+        assert!(alice_store
+            .load_pin(bob_bundle.identity.as_bytes())
+            .expect("load alice pin")
+            .is_pinned_to_rn());
+
+        let bob_store =
+            crate::wire_rn::RnSessionStore::new(bob_dir.path().join(RN_SESSION_DIR_NAME));
+        assert!(bob_store
+            .load_session(alice_identity_public.as_bytes(), &sealer)
+            .expect("load bob session")
+            .is_some());
+        assert!(bob_store
+            .load_pin(alice_identity_public.as_bytes())
+            .expect("load bob pin")
+            .is_pinned_to_rn());
+        assert_eq!(
+            bob_identity_public.as_bytes(),
+            bob_bundle.identity.as_bytes(),
+            "fixture identity must match its published bundle"
+        );
+    }
 }
 
 /// Phase 9-A2: receive-side v=4 dispatch. Returns the message-type
