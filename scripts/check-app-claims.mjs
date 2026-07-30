@@ -56,6 +56,36 @@ const REQUIRED_ATTACHMENT_BANS = [
   "discord receives harmless cover files instead of the attachment",
   "uploaded files are opaque to discord's scanners",
 ];
+const REQUIRED_BURN_BANS = [
+  "cryptographic burn",
+  "destroys keys, not messages",
+  "permanent ciphertext",
+  "permanent gibberish",
+  "mathematically opaque",
+  "disappears forever",
+  "permanently undecryptable",
+  "gone for good",
+];
+const REQUIRED_SUPPORT_BANS = [
+  "works on gmail",
+  "works on discord",
+  "works on signal",
+  "works on whatsapp",
+  "works on telegram",
+  "works on outlook",
+  "supports gmail",
+  "supports discord",
+  "supports signal",
+  "supports whatsapp",
+  "supports telegram",
+  "supports outlook",
+  "available on gmail",
+  "available on discord",
+  "available on signal",
+  "available on whatsapp",
+  "available on telegram",
+  "available on outlook",
+];
 const REQUIRED_CONDITIONAL_APP_EVIDENCE = [
   {
     id: "telegram_desktop_native",
@@ -1131,8 +1161,8 @@ function genericNegationGovernsClaim(text, start, end) {
   const bounds = sentenceBounds(text, start, end);
   const before = text.slice(bounds.start, start);
   return (
-    /\b(?:is|are|was|were|does|do|did|has|have|had|can|could|will|would)\s+not\s+(?:yet\s+)?(?:an?\s+)?$/i.test(before)
-    || /\bnever\s+(?:an?\s+)?$/i.test(before)
+    /\b(?:is|are|was|were|does|do|did|has|have|had|can|could|will|would)\s+not\s+(?:yet\s+)?(?:an?\s+)?(?:osl\s+)?$/i.test(before)
+    || /\bnever\s+(?:an?\s+)?(?:osl\s+)?$/i.test(before)
     || /\bnot\s+(?:an?\s+)?(?:claim|promise|assertion)\s+(?:of|that)\s*$/i.test(before)
   );
 }
@@ -1570,6 +1600,22 @@ function bannedPhraseInputFailures(bannedPhrases) {
     });
   }
   const present = new Set(bannedPhrases.map((phrase) => phrase.normalized));
+  const burnBanCount = REQUIRED_BURN_BANS.filter((phrase) => present.has(phrase)).length;
+  if (burnBanCount < REQUIRED_BURN_BANS.length) {
+    failures.push({
+      name: "Burn bans parsed from section D",
+      expected: REQUIRED_BURN_BANS.length,
+      actual: burnBanCount,
+    });
+  }
+  const supportBanCount = REQUIRED_SUPPORT_BANS.filter((phrase) => present.has(phrase)).length;
+  if (supportBanCount < REQUIRED_SUPPORT_BANS.length) {
+    failures.push({
+      name: "support bans parsed from forbidden_support_phrases",
+      expected: REQUIRED_SUPPORT_BANS.length,
+      actual: supportBanCount,
+    });
+  }
   const attachmentBanCount = REQUIRED_ATTACHMENT_BANS.filter((phrase) => present.has(phrase)).length;
   if (attachmentBanCount < REQUIRED_ATTACHMENT_BANS.length) {
     failures.push({
@@ -1744,6 +1790,31 @@ async function runSelfTest() {
     {
       name: "passes clean copy",
       text: "Local removal clears the cached message body.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes explicit non-OSL end-to-end limitation",
+      text: "Ordinary external email is not OSL end-to-end encrypted.",
+      shouldFlag: false,
+    },
+    {
+      name: "catches works-on unsupported app phrasing",
+      text: "OSL works on Signal.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches supports unsupported app phrasing",
+      text: "OSL supports WhatsApp.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches available-on unsupported app phrasing",
+      text: "Protected messaging is available on Outlook.",
+      shouldFlag: true,
+    },
+    {
+      name: "passes status-framed service copy",
+      text: "Telegram is Externally blocked until a signed probe proves stable message rows.",
       shouldFlag: false,
     },
     {
@@ -2491,6 +2562,22 @@ async function runSelfTest() {
         "anti-spyware",
         "malware detection",
         "protection score",
+        "works on signal",
+        "works on whatsapp",
+        "works on telegram",
+        "works on outlook",
+        "supports gmail",
+        "supports discord",
+        "supports signal",
+        "supports whatsapp",
+        "supports telegram",
+        "supports outlook",
+        "available on gmail",
+        "available on discord",
+        "available on signal",
+        "available on whatsapp",
+        "available on telegram",
+        "available on outlook",
       ].every((phrase) => bannedPhrases.some((parsed) => parsed.normalized === phrase)),
     },
     {
@@ -2571,6 +2658,29 @@ async function runSelfTest() {
     `${readmeMutationCaught ? "PASS" : "FAIL"} actual README broad at-rest mutation is nonvacuous and caught`,
   );
 
+  const supportMarker = "Windows 10 or newer. macOS and Linux are not supported";
+  const supportOccurrences = productionReadme.split(supportMarker).length - 1;
+  const supportMutatedReadme = productionReadme.replace(
+    supportMarker,
+    "OSL supports WhatsApp. Windows 10 or newer. macOS and Linux are not supported",
+  );
+  const supportMutationViolations = analyseFragments(
+    "README.md",
+    [{ text: supportMutatedReadme, line: 1 }],
+    bannedPhrases,
+  );
+  const supportMutationCaught = supportOccurrences === 1
+    && supportMutatedReadme !== productionReadme
+    && supportMutationViolations.some(
+      ({ phrase }) => phrase === "Supports WhatsApp",
+    );
+  if (!supportMutationCaught) {
+    failures += 1;
+  }
+  console.log(
+    `${supportMutationCaught ? "PASS" : "FAIL"} actual README unsupported-service mutation is nonvacuous and caught`,
+  );
+
   const productionMain = await readUtf8(path.join(APP_SRC_ROOT, "main.ts"));
   const scrubMarker = "<h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review. Nothing is deleted by this build.</p>";
   const scrubMarkerOccurrences = productionMain.split(scrubMarker).length - 1;
@@ -2596,7 +2706,7 @@ async function runSelfTest() {
   );
 
   console.log(
-    `Self-test: phrases parsed=${bannedPhrases.length}, fixtures=${fixtures.length + rustFixtures.length + inputCases.length + 2}, failures=${failures}`,
+    `Self-test: phrases parsed=${bannedPhrases.length}, fixtures=${fixtures.length + rustFixtures.length + inputCases.length + 3}, failures=${failures}`,
   );
 
   return failures === 0 ? 0 : 1;
