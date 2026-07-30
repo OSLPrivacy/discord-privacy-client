@@ -78,6 +78,34 @@ const REQUIRED_CONDITIONAL_APP_EVIDENCE = [
     reportVerdict: /Outlook inline-reply support as OSL Mail is `unsupported`/i,
   },
 ];
+const REQUIRED_CHAT_APP_EVIDENCE = [
+  {
+    id: "signal_desktop_native",
+    service: "Signal",
+    claimScope: "protected_native_adapter",
+    status: "qualified_profile",
+    publicStatus: "coming_soon",
+    publicClaimAllowed: false,
+    evidenceType: "signed_adapter_profile",
+    evidenceReport: "crates/adapter-profile/src/defaults.rs",
+    evidenceAnchor: "signal_default_profile",
+    trustedAnchor: "signal_default_trusted_signing_key_b64",
+    requiredBoundary: /\bsigned data-only Signal support profile exists\b.*\bpublic support remains Coming soon\b/i,
+  },
+  {
+    id: "whatsapp_windows_native",
+    service: "WhatsApp",
+    claimScope: "protected_native_adapter",
+    status: "qualified_profile",
+    publicStatus: "coming_soon",
+    publicClaimAllowed: false,
+    evidenceType: "signed_adapter_profile",
+    evidenceReport: "crates/adapter-profile/src/defaults.rs",
+    evidenceAnchor: "whatsapp_default_profile",
+    trustedAnchor: "whatsapp_default_trusted_signing_key_b64",
+    requiredBoundary: /\bsigned data-only WhatsApp support profile exists\b.*\bpublic support remains Coming soon\b/i,
+  },
+];
 const REQUIRED_VERSIONED_PUBLIC_SUPPORT_MATRIX = {
   schemaVersion: 1,
   matrixVersion: "E7",
@@ -132,6 +160,14 @@ async function readUtf8(filePath) {
 function supportMatrixFailure(message) {
   return {
     name: "conditional_app_evidence",
+    expected: message,
+    actual: "invalid support matrix",
+  };
+}
+
+function chatAppEvidenceFailure(message) {
+  return {
+    name: "chat_app_evidence",
     expected: message,
     actual: "invalid support matrix",
   };
@@ -241,6 +277,7 @@ async function validateSupportMatrix() {
   }
 
   failures.push(...validateVersionedPublicSupportMatrix(matrix));
+  failures.push(...(await validateChatAppEvidence(matrix)));
 
   if (!Array.isArray(matrix.conditional_app_evidence)) {
     failures.push(supportMatrixFailure("conditional_app_evidence array"));
@@ -314,6 +351,83 @@ async function validateSupportMatrix() {
 
     if (!required.reportVerdict.test(report)) {
       failures.push(supportMatrixFailure(`${required.id} source report verdict`));
+    }
+  }
+
+  return failures;
+}
+
+async function validateChatAppEvidence(matrix) {
+  const failures = [];
+
+  if (!Array.isArray(matrix.chat_app_evidence)) {
+    failures.push(chatAppEvidenceFailure("chat_app_evidence array"));
+    return failures;
+  }
+
+  const rowsById = new Map();
+  for (const row of matrix.chat_app_evidence) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) {
+      failures.push(chatAppEvidenceFailure("each chat_app_evidence row is an object"));
+      continue;
+    }
+    if (typeof row.id !== "string" || row.id.length === 0) {
+      failures.push(chatAppEvidenceFailure("each chat_app_evidence row has a non-empty id"));
+      continue;
+    }
+    if (rowsById.has(row.id)) {
+      failures.push(chatAppEvidenceFailure(`unique chat_app_evidence id ${row.id}`));
+      continue;
+    }
+    rowsById.set(row.id, row);
+  }
+
+  for (const required of REQUIRED_CHAT_APP_EVIDENCE) {
+    const row = rowsById.get(required.id);
+    if (!row) {
+      failures.push(chatAppEvidenceFailure(`row ${required.id}`));
+      continue;
+    }
+
+    for (const [field, expected] of [
+      ["service", required.service],
+      ["claim_scope", required.claimScope],
+      ["status", required.status],
+      ["public_status", required.publicStatus],
+      ["public_claim_allowed", required.publicClaimAllowed],
+      ["evidence_type", required.evidenceType],
+      ["evidence_report", required.evidenceReport],
+      ["evidence_anchor", required.evidenceAnchor],
+      ["trusted_anchor", required.trustedAnchor],
+    ]) {
+      if (row[field] !== expected) {
+        failures.push(
+          chatAppEvidenceFailure(`${required.id}.${field}=${JSON.stringify(expected)}`),
+        );
+      }
+    }
+
+    if (
+      typeof row.support_boundary !== "string" ||
+      !required.requiredBoundary.test(row.support_boundary)
+    ) {
+      failures.push(chatAppEvidenceFailure(`${required.id}.support_boundary matches public boundary`));
+    }
+
+    let report;
+    try {
+      report = await readUtf8(path.join(REPO_ROOT, required.evidenceReport));
+    } catch (error) {
+      failures.push(chatAppEvidenceFailure(`source report ${required.evidenceReport}`));
+      continue;
+    }
+
+    if (!new RegExp(`^pub fn ${required.evidenceAnchor}\\(\\) -> SignedProfileDoc \\{$`, "m").test(report)) {
+      failures.push(chatAppEvidenceFailure(`${required.id} signed profile function`));
+    }
+
+    if (!new RegExp(`^pub fn ${required.trustedAnchor}\\(\\) -> &'static str \\{$`, "m").test(report)) {
+      failures.push(chatAppEvidenceFailure(`${required.id} trusted signing key function`));
     }
   }
 
@@ -2652,6 +2766,8 @@ async function runSelfTest() {
   const productionSupportMatrix = JSON.parse(await readUtf8(SUPPORT_MATRIX_PATH));
   const supportMatrixWithoutPublic = JSON.parse(JSON.stringify(productionSupportMatrix));
   delete supportMatrixWithoutPublic.versioned_public_support_matrix;
+  const supportMatrixWithoutChatEvidence = JSON.parse(JSON.stringify(productionSupportMatrix));
+  delete supportMatrixWithoutChatEvidence.chat_app_evidence;
   const inputCases = [
     {
       name: "real docs allowlist supplies every required attachment ban",
@@ -2708,6 +2824,14 @@ async function runSelfTest() {
         validateVersionedPublicSupportMatrix(productionSupportMatrix).length === 0
         && validateVersionedPublicSupportMatrix(supportMatrixWithoutPublic).some(
           (failure) => failure.name === "versioned_public_support_matrix",
+        ),
+    },
+    {
+      name: "chat_app_evidence",
+      passed:
+        (await validateChatAppEvidence(productionSupportMatrix)).length === 0
+        && (await validateChatAppEvidence(supportMatrixWithoutChatEvidence)).some(
+          (failure) => failure.name === "chat_app_evidence",
         ),
     },
   ];
