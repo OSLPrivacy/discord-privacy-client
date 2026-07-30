@@ -1443,7 +1443,7 @@ impl NativeWindowHostResult {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct NativeWindowHostState {
     #[cfg(target_os = "windows")]
     inner: Mutex<Option<HostedWindow>>,
@@ -1455,6 +1455,15 @@ pub struct NativeWindowHostState {
     /// ever making a thread wait.
     #[cfg(target_os = "windows")]
     accessibility_operation_in_flight: AtomicBool,
+}
+
+impl std::fmt::Debug for NativeWindowHostState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NativeWindowHostState")
+            .field("native_host", &"<redacted>")
+            .finish()
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -1470,7 +1479,6 @@ impl Drop for NativeWindowHostState {
 
 // Handles are stored as integers so the state remains Send + Sync without
 // claiming that foreign HWND pointer values may be dereferenced.
-#[derive(Debug)]
 #[cfg(target_os = "windows")]
 struct HostedWindow {
     generation: u64,
@@ -2203,7 +2211,7 @@ pub(crate) struct NativeDiscordAccessibilityTarget {
 ///
 /// Every field is a plain integer or boolean: `Copy + Send + 'static`, no
 /// borrow of host state, no path, title, handle authority, or content.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 #[cfg(any(target_os = "windows", test))]
 struct LockedDiscordHostFacts {
     generation: u64,
@@ -2212,6 +2220,19 @@ struct LockedDiscordHostFacts {
     /// What the host's own trust predicate answered for `window_process_id`,
     /// asked once while the lock was still held and for no other process id.
     target_process_trusted: bool,
+}
+
+#[cfg(any(target_os = "windows", test))]
+impl std::fmt::Debug for LockedDiscordHostFacts {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LockedDiscordHostFacts")
+            .field("generation", &self.generation)
+            .field("window", &"<redacted-hwnd>")
+            .field("window_process_id", &self.window_process_id)
+            .field("target_process_trusted", &self.target_process_trusted)
+            .finish()
+    }
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -2308,7 +2329,7 @@ impl Drop for DiscordAccessibilityOperationGate<'_> {
 /// already claimed by `NativeWindowHostState`. This contains no title, account,
 /// conversation, accessibility, or process data and grants no authority to
 /// operate the foreign window.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub struct NativeDiscordOverlayTarget {
     pub generation: u64,
     /// Exact already-claimed Discord HWND, retained only for native sibling
@@ -2317,6 +2338,19 @@ pub struct NativeDiscordOverlayTarget {
     pub rect: [i32; 4],
     pub foreground: bool,
     pub trusted_parent: isize,
+}
+
+impl std::fmt::Debug for NativeDiscordOverlayTarget {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NativeDiscordOverlayTarget")
+            .field("generation", &self.generation)
+            .field("window", &"<redacted-hwnd>")
+            .field("rect", &self.rect)
+            .field("foreground", &self.foreground)
+            .field("trusted_parent", &"<redacted-hwnd>")
+            .finish()
+    }
 }
 
 impl NativeWindowHostState {
@@ -3345,10 +3379,8 @@ mod windows {
         fn WaitForSingleObject(handle: RawHandle, milliseconds: u32) -> u32;
     }
 
-    #[derive(Debug)]
     pub(super) struct JobHandle(RawHandle);
 
-    #[derive(Debug)]
     pub(super) enum HostedProcess {
         Dedicated {
             child: Child,
@@ -3361,7 +3393,6 @@ mod windows {
         },
     }
 
-    #[derive(Debug)]
     pub(super) struct ProcessHandle(RawHandle);
 
     enum BorrowedWindowTetherCommand {
@@ -3372,7 +3403,6 @@ mod windows {
         Stop,
     }
 
-    #[derive(Debug)]
     pub(super) struct BorrowedWindowTether {
         commands: mpsc::Sender<BorrowedWindowTetherCommand>,
         worker: Option<JoinHandle<()>>,
@@ -3502,7 +3532,7 @@ mod windows {
         }
     }
 
-    #[derive(Debug, Clone)]
+    #[derive(Clone)]
     struct BorrowedTetherSnapshot {
         generation: u64,
         window: isize,
@@ -3528,7 +3558,6 @@ mod windows {
     /// rule for accessibility work in this codebase.
     type CaptionMeasurement = Arc<Mutex<Option<MeasuredCaptionButtons>>>;
 
-    #[derive(Debug)]
     pub(super) struct BorrowedControlShield {
         commands: mpsc::Sender<BorrowedControlShieldCommand>,
         worker: Option<JoinHandle<()>>,
@@ -3627,7 +3656,7 @@ mod windows {
         }
     }
 
-    #[derive(Debug, Clone)]
+    #[derive(Clone)]
     struct BorrowedRecoverySnapshot {
         id: NativeAppId,
         window: isize,
@@ -3644,7 +3673,6 @@ mod windows {
         disposition: GuardianDisposition,
     }
 
-    #[derive(Debug)]
     pub(super) struct BorrowedRecoveryGuardian {
         child: Option<Child>,
         snapshot: BorrowedRecoverySnapshot,
@@ -3925,7 +3953,7 @@ mod windows {
     /// thread, which is the invariant that keeps the reconcile path out of the
     /// deadlock `LockedDiscordHostFacts` / `DiscordAccessibilityOperationGate`
     /// were introduced to cure.
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Clone, Copy)]
     struct BorrowedTetherWorkerState {
         /// When the last full cross-process identity verification succeeded.
         identity_verified_at: Option<Instant>,
@@ -5346,7 +5374,6 @@ mod windows {
         painted
     }
 
-    #[derive(Debug)]
     pub(super) enum TrustedWindowExecutable {
         Authenticode(TrustedExecutable),
         AppxPackage(PathBuf),
@@ -5479,7 +5506,6 @@ mod windows {
         }
     }
 
-    #[derive(Debug)]
     struct LaunchSpec {
         executable: TrustedExecutable,
         publisher: ExecutablePublisher,
@@ -9346,6 +9372,31 @@ mod tests {
         assert!(!facts.still_describes(7, 0x8765, 4242));
         // Same handle value, different owning process: handle reuse.
         assert!(!facts.still_describes(7, 0x4321, 4243));
+    }
+
+    #[test]
+    fn native_target_debug_redacts_window_handles() {
+        let facts = LockedDiscordHostFacts::copy_from_locked(7, 0x4321, 4242, true).unwrap();
+        let facts_debug = format!("{facts:?}");
+        assert!(facts_debug.contains("LockedDiscordHostFacts"));
+        assert!(facts_debug.contains("<redacted-hwnd>"));
+        assert!(!facts_debug.contains("17185"));
+        assert!(!facts_debug.contains("0x4321"));
+
+        let overlay = NativeDiscordOverlayTarget {
+            generation: 9,
+            window: 0x7777,
+            rect: [1, 2, 3, 4],
+            foreground: true,
+            trusted_parent: 0x8888,
+        };
+        let overlay_debug = format!("{overlay:?}");
+        assert!(overlay_debug.contains("NativeDiscordOverlayTarget"));
+        assert!(overlay_debug.contains("<redacted-hwnd>"));
+        assert!(!overlay_debug.contains("30583"));
+        assert!(!overlay_debug.contains("34952"));
+        assert!(!overlay_debug.contains("0x7777"));
+        assert!(!overlay_debug.contains("0x8888"));
     }
 
     #[test]
