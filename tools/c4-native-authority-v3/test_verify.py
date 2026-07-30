@@ -43,11 +43,13 @@ from schema import (
     READBACK_KEYS,
     SCHEMA_NAME,
     SCHEMA_VERSION,
+    SchemaError,
     TARGET_KEYS,
     canonical_json,
     seal_receipt,
     sha256_hex,
     target_binding_digest,
+    validate_receipt,
 )
 from verify import (
     FilesystemAuthorityVerifier,
@@ -518,6 +520,60 @@ class NativeAuthorityV3Tests(unittest.TestCase):
                 receipt = reseal(receipt)
                 with self.assertRaises(VerificationError):
                     verify_receipt(encode(receipt), context(make_receipt()))
+
+    def readback(self) -> None:
+        receipt = make_receipt()
+        validate_receipt(receipt)
+
+        binding_mutations = {
+            "carrier": lambda value: value["carrier"].__setitem__(
+                "targetBindingSha256", "f" * 64
+            ),
+            "preSend": lambda value: value["preSend"].__setitem__(
+                "targetBindingSha256", "f" * 64
+            ),
+            "preSend.readback": lambda value: value["preSend"][
+                "readback"
+            ].__setitem__("targetBindingSha256", "f" * 64),
+            "postSend": lambda value: value["postSend"].__setitem__(
+                "targetBindingSha256", "f" * 64
+            ),
+            "postSend.readback": lambda value: value["postSend"][
+                "readback"
+            ].__setitem__("targetBindingSha256", "f" * 64),
+        }
+        for name, mutate in binding_mutations.items():
+            with self.subTest(binding=name):
+                mutated = make_receipt()
+                mutate(mutated)
+                mutated = reseal(mutated)
+                with self.assertRaisesRegex(
+                    SchemaError,
+                    "does not match the Discord target binding",
+                ):
+                    validate_receipt(mutated)
+
+        readback_mutations = {
+            "pre-readback digest": lambda value: value["preSend"][
+                "readback"
+            ].__setitem__("sha256", "f" * 64),
+            "pre-readback byte length": lambda value: value["preSend"][
+                "readback"
+            ].__setitem__("byteLength", value["carrier"]["byteLength"] + 1),
+            "post-readback digest": lambda value: value["postSend"][
+                "readback"
+            ].__setitem__("sha256", value["carrier"]["sha256"]),
+            "post-readback byte length": lambda value: value["postSend"][
+                "readback"
+            ].__setitem__("byteLength", value["carrier"]["byteLength"]),
+        }
+        for name, mutate in readback_mutations.items():
+            with self.subTest(readback=name):
+                mutated = make_receipt()
+                mutate(mutated)
+                mutated = reseal(mutated)
+                with self.assertRaisesRegex(SchemaError, "does not match"):
+                    validate_receipt(mutated)
 
     def test_verification_context_requires_all_independent_fact_sets(self) -> None:
         receipt = make_receipt()
@@ -1448,6 +1504,15 @@ class OneShotLedgerTests(unittest.TestCase):
             alias.hardlink_to(path)
             with self.assertRaises(LedgerError):
                 ledger.read(CHALLENGE)
+
+
+def load_tests(
+    loader: unittest.TestLoader,
+    tests: unittest.TestSuite,
+    pattern: str | None,
+) -> unittest.TestSuite:
+    tests.addTest(NativeAuthorityV3Tests("readback"))
+    return tests
 
 
 if __name__ == "__main__":
