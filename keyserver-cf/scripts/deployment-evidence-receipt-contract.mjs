@@ -414,6 +414,110 @@ function validateSchemaRows(value) {
   return value;
 }
 
+function schemaSqlByName(rows) {
+  return new Map(rows.map((row) => [row.name, row.sql ?? ""]));
+}
+
+function requireSchemaSql(sqlByName, name, patterns, label) {
+  const sql = sqlByName.get(name);
+  if (typeof sql !== "string" || sql.length === 0) {
+    throw new Error(`${label} is absent from deployed schema`);
+  }
+  for (const pattern of patterns) {
+    if (!pattern.test(sql)) {
+      throw new Error(`${label} does not prove migration 0031 retention behavior`);
+    }
+  }
+}
+
+function validateControlInboxSenderRetentionSchema(rows, migrations) {
+  if (
+    !migrations.some(
+      (entry) => entry.name === "0031_control_inbox_sender_retention.sql",
+    )
+  ) {
+    return;
+  }
+  const sqlByName = schemaSqlByName(rows);
+  requireSchemaSql(
+    sqlByName,
+    "control_inbox",
+    [
+      /\bdelivery_status\b[\s\S]*\bCHECK\s*\(\s*delivery_status\s+IN\s*\(\s*'live'\s*,\s*'retryable'\s*,\s*'quarantined'\s*,\s*'retired'\s*\)/i,
+      /\bdelivery_reason\b[\s\S]*\bsender_lookup_disabled\b[\s\S]*\bsender_lookup_retry_exhausted\b[\s\S]*\bsender_identifier_malformed\b[\s\S]*\bsender_discord_snowflake\b/i,
+      /\bdelivery_attempts\b[\s\S]*\bCHECK\s*\(\s*delivery_attempts\s+BETWEEN\s+0\s+AND\s+3\s*\)/i,
+      /\bsender_disabled_first_seen_at\b/i,
+      /\bdelivery_next_retry_at\b/i,
+      /\bdelivery_retain_until\b/i,
+    ],
+    "control_inbox sender-retention table",
+  );
+  requireSchemaSql(
+    sqlByName,
+    "worker_schema_capabilities",
+    [/\bcapability\b[\s\S]*\bPRIMARY KEY\b/i, /\bversion\b[\s\S]*\bCHECK\s*\(\s*version\s*>=\s*1\s*\)/i],
+    "control_inbox sender-retention capability table",
+  );
+  for (const [name, patterns] of [
+    [
+      "idx_control_inbox_delivery_reconcile",
+      [/\bdelivery_status\b/i, /\bdelivery_next_retry_at\b/i],
+    ],
+    [
+      "idx_control_inbox_sender_delivery",
+      [/\brecipient_id\b/i, /\bsender_id\b/i, /\bdelivery_retain_until\b/i],
+    ],
+    [
+      "idx_control_inbox_live_kind_expiry",
+      [/\bkind\b/i, /\bdelivery_status\b/i, /\bexpires_at\b/i],
+    ],
+    [
+      "idx_control_inbox_live_sender_kind_expiry",
+      [/\bsender_id\b/i, /\bkind\b/i, /\bdelivery_status\b/i],
+    ],
+  ]) {
+    requireSchemaSql(
+      sqlByName,
+      name,
+      patterns,
+      `control_inbox sender-retention index ${name}`,
+    );
+  }
+  for (const [name, patterns] of [
+    [
+      "control_inbox_retention_delete_guard",
+      [/\bBEFORE\s+DELETE\b/i, /\bRAISE\s*\(\s*IGNORE\s*\)/i, /\bidentity_lookup_enabled\s*=\s*1\b/i, /\bdelivery_retain_until\s*>=\s*unixepoch\s*\(\s*\)/i],
+    ],
+    [
+      "control_inbox_delivery_lookup_insert_guard",
+      [/\bBEFORE\s+INSERT\b/i, /\bidentity_lookup_enabled\s*=\s*1\b/i, /\bsender_discord_snowflake\b/i],
+    ],
+    [
+      "control_inbox_delivery_lookup_update_guard",
+      [/\bBEFORE\s+UPDATE\b/i, /\bdelivery_status\b/i, /\bdelivery state contradicts lookup\b/i],
+    ],
+    [
+      "control_inbox_delivery_transition_guard",
+      [/\bBEFORE\s+UPDATE\b/i, /\bquarantined\b/i, /\bdelivery transition is invalid\b/i],
+    ],
+    [
+      "control_inbox_delivery_state_insert_guard",
+      [/\bBEFORE\s+INSERT\b/i, /\bdelivery_retain_until\b[\s\S]*\+ 604800\b/i, /\bdelivery state is inconsistent\b/i],
+    ],
+    [
+      "control_inbox_delivery_state_update_guard",
+      [/\bBEFORE\s+UPDATE\b/i, /\bdelivery_retain_until\b[\s\S]*\+ 604800\b/i, /\bdelivery state is inconsistent\b/i],
+    ],
+  ]) {
+    requireSchemaSql(
+      sqlByName,
+      name,
+      patterns,
+      `control_inbox sender-retention trigger ${name}`,
+    );
+  }
+}
+
 function validateMigrationRows(value, migrations) {
   if (!Array.isArray(value) || value.length === 0) {
     throw new Error("producer raw migration rows are empty");
@@ -506,6 +610,7 @@ function validateDatabase(value, migrations) {
     throw new Error("producer migration output digest mismatch");
   }
   const schemaRows = validateSchemaRows(database.schema_rows);
+  validateControlInboxSenderRetentionSchema(schemaRows, migrations);
   requirePositiveInteger(
     database.schema_object_count,
     "producer schema object cardinality",
@@ -792,6 +897,20 @@ function validateSenderRoute(value, artifact) {
     "producer sender-filter response",
   );
   if (artifact === "B") {
+    const delivery = requireObject(
+      response.filtered_sender_delivery,
+      "producer sender-filter delivery counts",
+    );
+    requireExactKeys(
+      delivery,
+      ["live", "quarantined", "retired", "retryable"],
+      "producer sender-filter delivery counts",
+    );
+    for (const [name, count] of Object.entries(delivery)) {
+      if (!Number.isSafeInteger(count) || count < 0) {
+        throw new Error(`producer sender-filter delivery count is invalid: ${name}`);
+      }
+    }
     if (
       sender.status !== 200 ||
       typeof sender.filtered_sender_id !== "string" ||
@@ -802,6 +921,8 @@ function validateSenderRoute(value, artifact) {
       response.filtered_sender_id !== sender.filtered_sender_id ||
       !Array.isArray(response.items) ||
       response.items.length !== sender.item_count ||
+      delivery.live < sender.item_count ||
+      delivery.retryable + delivery.quarantined + delivery.retired <= 0 ||
       response.items.some(
         (item) =>
           !item ||
@@ -811,7 +932,9 @@ function validateSenderRoute(value, artifact) {
             .byteLength === 0,
       )
     ) {
-      throw new Error("Artifact B sender-filter route proof is empty or mismatched");
+      throw new Error(
+        "Artifact B sender-filter route proof is empty or lacks retained rows",
+      );
     }
   } else if (
     sender.status !== 503 ||

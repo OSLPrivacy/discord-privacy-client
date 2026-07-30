@@ -88,7 +88,7 @@ describe("producer-owned deployment evidence receipt v3", () => {
         producer_sequence: 8,
         database: {
           migration_row_count: 4,
-          schema_object_count: 3,
+          schema_object_count: 14,
         },
         transition: {
           previous_artifact: "A",
@@ -531,6 +531,53 @@ describe("producer-owned deployment evidence receipt v3", () => {
       mutate(payload);
       expect(() => verify(payload)).toThrow(error);
     }
+  });
+
+  it("requires deployed migration 0031 retention schema and hidden-row behavior", () => {
+    const missingTrigger = deploymentEvidencePayload();
+    missingTrigger.database.schema_rows =
+      missingTrigger.database.schema_rows.filter(
+        (row: Record<string, unknown>) =>
+          row.name !== "control_inbox_retention_delete_guard",
+      );
+    missingTrigger.database.schema_object_count =
+      missingTrigger.database.schema_rows.length;
+    missingTrigger.database.schema_output_sha256 = sha256(
+      Buffer.from(canonicalJson(missingTrigger.database.schema_rows)),
+    );
+    missingTrigger.database.schema_fingerprint_sha256 =
+      missingTrigger.database.schema_output_sha256;
+    expect(() => verify(missingTrigger)).toThrow(
+      /retention_delete_guard is absent|migration 0031 retention behavior/,
+    );
+
+    const missingColumn = deploymentEvidencePayload();
+    const table = missingColumn.database.schema_rows.find(
+      (row: Record<string, unknown>) => row.name === "control_inbox",
+    );
+    table.sql = "CREATE TABLE control_inbox (id TEXT, sender_id TEXT)";
+    missingColumn.database.schema_output_sha256 = sha256(
+      Buffer.from(canonicalJson(missingColumn.database.schema_rows)),
+    );
+    missingColumn.database.schema_fingerprint_sha256 =
+      missingColumn.database.schema_output_sha256;
+    expect(() => verify(missingColumn)).toThrow(
+      /sender-retention table does not prove migration 0031 retention behavior/,
+    );
+
+    const liveOnlyRoute = deploymentEvidencePayload();
+    liveOnlyRoute.worker.sender_filter_route.response.filtered_sender_delivery = {
+      live: 1,
+      quarantined: 0,
+      retired: 0,
+      retryable: 0,
+    };
+    liveOnlyRoute.worker.sender_filter_route.response_sha256 = sha256(
+      Buffer.from(canonicalJson(liveOnlyRoute.worker.sender_filter_route.response)),
+    );
+    expect(() => verify(liveOnlyRoute)).toThrow(
+      /lacks retained rows/,
+    );
   });
 
   it("issues a nonce only from initialized durable verifier state", async () => {
