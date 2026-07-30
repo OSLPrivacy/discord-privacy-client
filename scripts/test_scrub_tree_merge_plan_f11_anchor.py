@@ -61,6 +61,10 @@ def integration_branch_anchor_records_osl_newest_integration_403cfa2() -> None:
     assert commit_subject == "f11: record integration-branch anchor point for the Scrub tree merge"
 
 
+def test_integration_branch_anchor_records_osl_newest_integration_403cfa2() -> None:
+    integration_branch_anchor_records_osl_newest_integration_403cfa2()
+
+
 def load_tests(
     loader: unittest.TestLoader,
     tests: unittest.TestSuite,

@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 
-def test_osl_p2p_pair_refuses_same_osl_user_id(tmp_path: Path) -> None:
+def osl_p2p_pair_refuses_same_osl_user_id(tmp_path: Path) -> None:
     pwsh = shutil.which("pwsh") or shutil.which("powershell")
     if pwsh is None or sys.platform != "win32":
         raise unittest.SkipTest("osl-p2p-pair.ps1 refusal test requires Windows PowerShell")
@@ -56,3 +56,7 @@ def test_osl_p2p_pair_refuses_same_osl_user_id(tmp_path: Path) -> None:
     assert payload["steps"][-1]["result"] == "failed"
     assert not (root_a / "discord-qa-peer-offer.v1.json").exists()
     assert not (root_b / "discord-qa-peer-offer.v1.json").exists()
+
+
+def test_osl_p2p_pair_refuses_same_osl_user_id(tmp_path: Path) -> None:
+    osl_p2p_pair_refuses_same_osl_user_id(tmp_path)
