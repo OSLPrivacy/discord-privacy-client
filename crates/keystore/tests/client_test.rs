@@ -30,13 +30,27 @@ fn register_request_carries_correct_base64_keys() {
     // over REG_MSG, verifiable against the submitted ik_ed25519_pub.
     let sig_decoded = STANDARD.decode(&req.registration_sig).unwrap();
     assert_eq!(sig_decoded.len(), 64, "Ed25519 signature is 64 bytes");
-    let msg = keystore::client::reg_msg(
-        &req.user_id,
-        &req.ik_x25519_pub,
-        &req.ik_ed25519_pub,
-        &req.ik_mlkem768_pub,
-        req.ik_ratchet_initial_pub.as_deref(),
-    );
+    // Derive the message from the REQUEST, so this keeps verifying whichever form
+    // production signed. build_register_request now advertises a capability bitmap
+    // and signs reg_msg_with_capabilities; verifying against the bitmap-less
+    // reg_msg made a valid signature look forged.
+    let msg = match req.rn_capabilities {
+        Some(capabilities) => keystore::client::reg_msg_with_capabilities(
+            &req.user_id,
+            &req.ik_x25519_pub,
+            &req.ik_ed25519_pub,
+            &req.ik_mlkem768_pub,
+            req.ik_ratchet_initial_pub.as_deref(),
+            capabilities,
+        ),
+        None => keystore::client::reg_msg(
+            &req.user_id,
+            &req.ik_x25519_pub,
+            &req.ik_ed25519_pub,
+            &req.ik_mlkem768_pub,
+            req.ik_ratchet_initial_pub.as_deref(),
+        ),
+    };
     let mut sig_arr = [0u8; 64];
     sig_arr.copy_from_slice(&sig_decoded);
     let ok = crypto::ed25519::verify(
@@ -47,10 +61,18 @@ fn register_request_carries_correct_base64_keys() {
     .unwrap();
     assert!(ok, "registration_sig must verify against ik_ed25519_pub");
     assert!(req.rotation.is_none(), "Case A/B carries no rotation proof");
-    assert!(
-        req.rn_capabilities.is_none(),
-        "legacy builder must not advertise unsigned capabilities"
-    );
+    // build_register_request advertises a capability bitmap and signs over it via
+    // reg_msg_with_capabilities. The invariant is not "advertise nothing" -- it is
+    // "never advertise capabilities the signature does not cover", which the
+    // verification above already proves, because the message was rebuilt from
+    // req.rn_capabilities itself.
+    if let Some(capabilities) = req.rn_capabilities {
+        assert_eq!(
+            capabilities,
+            keystore::client::CLIENT_RN_CAPABILITY_FLOOR,
+            "an advertised bitmap must be the signed client floor"
+        );
+    }
 }
 
 #[test]
@@ -58,11 +80,21 @@ fn register_request_serializes_optional_rn_capabilities_bitmap() {
     let id = generate_identity("alice".to_string());
     let mut req = KeyServerClient::build_register_request(&id);
 
-    let legacy = serde_json::to_value(&req).unwrap();
-    assert!(
-        legacy.get("rn_capabilities").is_none(),
-        "absent capability bitmap must stay absent on the wire"
-    );
+    // A bitmap the builder sets must reach the wire; an absent one must stay absent.
+    let built = serde_json::to_value(&req).unwrap();
+    match req.rn_capabilities {
+        Some(capabilities) => assert_eq!(
+            built
+                .get("rn_capabilities")
+                .and_then(serde_json::Value::as_u64),
+            Some(u64::from(capabilities)),
+            "an advertised bitmap must reach the wire"
+        ),
+        None => assert!(
+            built.get("rn_capabilities").is_none(),
+            "absent capability bitmap must stay absent on the wire"
+        ),
+    }
 
     req.rn_capabilities = Some(keystore::client::RN_CAP_WIRE_RN);
     let advertised = serde_json::to_value(&req).unwrap();
@@ -118,13 +150,25 @@ fn rotation_request_dual_signs_old_and_new() {
     );
 
     // registration_sig verifies under the NEW key over REG_MSG.
-    let reg = keystore::client::reg_msg(
-        &req.user_id,
-        &req.ik_x25519_pub,
-        &req.ik_ed25519_pub,
-        &req.ik_mlkem768_pub,
-        req.ik_ratchet_initial_pub.as_deref(),
-    );
+    // Same as the plain registration path: rebuild from the request so this verifies
+    // whichever form was signed, bitmap or not.
+    let reg = match req.rn_capabilities {
+        Some(capabilities) => keystore::client::reg_msg_with_capabilities(
+            &req.user_id,
+            &req.ik_x25519_pub,
+            &req.ik_ed25519_pub,
+            &req.ik_mlkem768_pub,
+            req.ik_ratchet_initial_pub.as_deref(),
+            capabilities,
+        ),
+        None => keystore::client::reg_msg(
+            &req.user_id,
+            &req.ik_x25519_pub,
+            &req.ik_ed25519_pub,
+            &req.ik_mlkem768_pub,
+            req.ik_ratchet_initial_pub.as_deref(),
+        ),
+    };
     let mut s = [0u8; 64];
     s.copy_from_slice(&STANDARD.decode(&req.registration_sig).unwrap());
     assert!(crypto::ed25519::verify(
@@ -135,14 +179,26 @@ fn rotation_request_dual_signs_old_and_new() {
     .unwrap());
 
     // prev_sig verifies under the OLD key over ROT_MSG.
-    let rotm = keystore::client::rot_msg(
-        &req.user_id,
-        &rot.prev_ik_ed25519_pub,
-        &req.ik_x25519_pub,
-        &req.ik_ed25519_pub,
-        &req.ik_mlkem768_pub,
-        req.ik_ratchet_initial_pub.as_deref(),
-    );
+    // ROT_MSG has the same two forms as REG_MSG; rebuild from the request.
+    let rotm = match req.rn_capabilities {
+        Some(capabilities) => keystore::client::rot_msg_with_capabilities(
+            &req.user_id,
+            &rot.prev_ik_ed25519_pub,
+            &req.ik_x25519_pub,
+            &req.ik_ed25519_pub,
+            &req.ik_mlkem768_pub,
+            req.ik_ratchet_initial_pub.as_deref(),
+            capabilities,
+        ),
+        None => keystore::client::rot_msg(
+            &req.user_id,
+            &rot.prev_ik_ed25519_pub,
+            &req.ik_x25519_pub,
+            &req.ik_ed25519_pub,
+            &req.ik_mlkem768_pub,
+            req.ik_ratchet_initial_pub.as_deref(),
+        ),
+    };
     let mut p = [0u8; 64];
     p.copy_from_slice(&STANDARD.decode(&rot.prev_sig).unwrap());
     assert!(crypto::ed25519::verify(
