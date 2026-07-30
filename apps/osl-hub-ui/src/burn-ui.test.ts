@@ -57,6 +57,24 @@ describe("truthful Burn UI", () => {
     expect(source).toContain("Open a supported chat first.");
   });
 
+  it("renders the five Burn guarantee outcomes from the shared copy contract", () => {
+    const helper = functionSource("burnGuaranteeMarkup", "burnDialogMarkup");
+    const dialog = functionSource("burnDialogMarkup", "ownedConfirmationMarkup");
+    expect(dialog).toContain("${burnGuaranteeMarkup(effects)}");
+    expect(helper).toContain("BurnGuaranteeCopy.summary");
+    expect(helper).toContain("BurnGuaranteeCopy.intro");
+    expect(helper).toContain("BurnGuaranteeCopy.limit");
+    expect(helper).toContain("BurnGuaranteeCopy.items.map");
+    expect(helper).toContain('data-burn-guarantee="${escapeHtml(item.id)}"');
+    expect(helper).toContain('case "available": return "Available"');
+    expect(helper).toContain('case "request_only": return "Request only"');
+    expect(helper).toContain('case "unavailable": return "Unavailable"');
+    expect(helper).toContain('case "not_possible": return "Not possible"');
+    expect(helper).not.toMatch(/cryptographic burn|disappears forever|permanently undecryptable|gone for good/i);
+    expect(helper).not.toMatch(/keyservers?|ratchets?|receipts?|browser profiles?|provider adapters?/i);
+    expect(helper).not.toMatch(/\b\d+%\b/);
+  });
+
   it("states deletion limits before typed local confirmation", () => {
     const dialog = functionSource("burnDialogMarkup", "ownedConfirmationMarkup");
     expect(dialog).toContain("local decrypt material and caches");
@@ -66,8 +84,8 @@ describe("truthful Burn UI", () => {
     expect(dialog).toContain("indexed");
     expect(dialog).not.toContain("removes local decrypt keys for this app + friend");
     expect(dialog).not.toContain("Incoming OSL messages are already included");
-    expect(dialog).toContain("Messages and history in the service remain");
-    expect(dialog).toContain("Screenshots, exports, backups, and copies");
+    expect(BurnGuaranteeCopy.items.find((item) => item.id === "connected_service_message")?.body).toContain("The service decides");
+    expect(BurnGuaranteeCopy.items.find((item) => item.id === "already_opened_copies")?.body).toContain("screenshots");
     expect(source).toContain("BURN CHAT");
     expect(source).toContain("BURN APP");
     expect(source).toContain("BURN ACCOUNT");
