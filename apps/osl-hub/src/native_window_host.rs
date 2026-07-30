@@ -9795,6 +9795,65 @@ mod tests {
     }
 
     #[test]
+    fn outlook() {
+        assert!(existing_session_supported(NativeAppId::Outlook));
+        assert!(should_relaunch_existing_session(
+            NativeAppId::Outlook,
+            NativeWindowHostReason::ExistingSessionUnavailable,
+        ));
+        assert!(!should_relaunch_existing_session(
+            NativeAppId::Outlook,
+            NativeWindowHostReason::ExistingSessionAmbiguous,
+        ));
+
+        for class_name in [
+            OUTLOOK_CLASSIC_PRIMARY_WINDOW_CLASS,
+            OUTLOOK_NEW_PRIMARY_WINDOW_CLASS,
+        ] {
+            assert!(existing_window_identity_allowed(
+                NativeAppId::Outlook,
+                true,
+                class_name,
+                "Inbox - Work"
+            ));
+            assert!(existing_window_identity_allowed(
+                NativeAppId::Outlook,
+                true,
+                class_name,
+                "Calendar - Personal"
+            ));
+            assert!(!existing_window_identity_allowed(
+                NativeAppId::Outlook,
+                false,
+                class_name,
+                "Inbox - Work"
+            ));
+        }
+
+        assert!(!existing_window_identity_allowed(
+            NativeAppId::Outlook,
+            true,
+            DISCORD_PRIMARY_WINDOW_CLASS,
+            "Outlook"
+        ));
+        assert!(!existing_window_identity_allowed(
+            NativeAppId::Whatsapp,
+            true,
+            OUTLOOK_NEW_PRIMARY_WINDOW_CLASS,
+            "Inbox - Work"
+        ));
+        assert!(!existing_window_identity_uses_title(NativeAppId::Outlook));
+        assert_eq!(
+            fixed_secondary_launch(NativeAppId::Outlook),
+            FixedSecondaryLaunch::Unsupported
+        );
+        assert!(!takeover_supported(
+            NativeAppId::Outlook,
+            DiscordSessionMode::ExistingSession,
+        ));
+    }
+
+    #[test]
     fn routine_alignment_skips_only_verified_cached_geometry() {
         let expected = [10, 20, 810, 620];
         assert!(aligned_geometry_is_current(
