@@ -20,6 +20,7 @@ const NATIVE_ID_HASH_BYTES: usize = 20;
 const MAX_RECOVERY_PHRASE_BYTES: usize = 256;
 
 const ACCOUNT_STATE_FILES: &[&str] = &[
+    "prekeys.json",
     "peer_map.json",
     "whitelist_state.json",
     "sender_key_state.json",

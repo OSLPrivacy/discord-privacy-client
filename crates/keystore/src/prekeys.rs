@@ -4,10 +4,11 @@
 //! "Signed prekey" / "One-time prekey pool" subsections.
 //!
 //! Hub/IPC production state now constructs a live [`PrekeyState`] alongside
-//! the loaded identity. The keyserver prekey fetch/replenish methods remain
-//! explicit client APIs; this module implements state, persistence, canonical
-//! signing, rotation helpers, and the responder-side PQXDH path that removes a
-//! local OPK only after that handshake leg succeeds.
+//! the loaded identity. Identity-registration onboarding calls the keyserver
+//! replenish method for the initial SPK/OPK publish. This module implements
+//! state, persistence, canonical signing, rotation helpers, and the
+//! responder-side PQXDH path that removes a local OPK only after that handshake
+//! leg succeeds.
 //!
 //! Holds:
 //! - The current SPK keypair (X25519) + its Ed25519 signature + the

@@ -9095,6 +9095,7 @@ pub fn ensure_keyserver_registered(state: &AppState, base_url: &str, client_toke
                 .registration_alert
                 .lock()
                 .expect("registration_alert mutex poisoned") = None;
+            ensure_prekeys_after_registration(&client, id);
         };
 
         if let Some(proof) = usable_proof {
@@ -9188,6 +9189,7 @@ pub fn ensure_keyserver_registered(state: &AppState, base_url: &str, client_toke
                         .registration_alert
                         .lock()
                         .expect("registration_alert mutex poisoned") = None;
+                    ensure_prekeys_after_registration(&client, id);
                 }
                 // REGISTER-FIX: the ONE response we must NOT warn-swallow.
                 // 403 = our user_id is held by a DIFFERENT Ed25519 key
@@ -9244,6 +9246,86 @@ pub fn ensure_keyserver_registered(state: &AppState, base_url: &str, client_toke
             );
         }
     }
+}
+
+fn ensure_prekeys_after_registration(client: &KeyServerClient, identity: &keystore::Identity) {
+    let dir = match keystore::osl_config_dir() {
+        Ok(dir) => dir,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "OSL: prekey onboarding: cannot resolve config directory; \
+                 skipping prekey publish"
+            );
+            return;
+        }
+    };
+    if let Err(error) = provision_initial_prekeys(client, identity, &dir) {
+        tracing::warn!(
+            error = %error,
+            "OSL: prekey onboarding: initial prekey publish failed \
+             (non-fatal; identity registration remains authoritative)"
+        );
+    }
+}
+
+fn provision_initial_prekeys(
+    client: &KeyServerClient,
+    identity: &keystore::Identity,
+    dir: &Path,
+) -> Result<(), String> {
+    let path = dir.join("prekeys.json");
+    let sealer = keystore::select_best_sealer();
+    if path.exists() {
+        match keystore::load_prekey_state(&path, sealer.as_ref()) {
+            Ok(existing) if prekey_state_is_bound_to_identity(&existing, identity) => {
+                tracing::info!(
+                    "OSL: prekey onboarding: sealed prekey state already exists; \
+                     leaving it unchanged"
+                );
+                return Ok(());
+            }
+            Ok(_) => {
+                return Err(
+                    "existing prekeys.json is not bound to the current identity; refusing to overwrite it"
+                        .to_owned(),
+                );
+            }
+            Err(error) => {
+                return Err(format!(
+                    "existing prekeys.json could not be loaded; refusing to overwrite it: {error}"
+                ));
+            }
+        }
+    }
+
+    let state = keystore::PrekeyState::new(
+        identity,
+        keystore::PrekeyConfig::default(),
+        crate::main_password::now_unix_secs_pub() as u64,
+    );
+    keystore::save_prekey_state(&path, &state, sealer.as_ref())
+        .map_err(|error| format!("save prekeys.json: {error}"))?;
+    client
+        .replenish_prekeys(identity, Some(&state.current_spk), &state.opk_pool)
+        .map_err(|error| format!("POST /v1/prekey-bundle/replenish: {error}"))?;
+    tracing::info!(
+        opks = state.opk_pool.len(),
+        "OSL: prekey onboarding: initial prekey batch published"
+    );
+    Ok(())
+}
+
+fn prekey_state_is_bound_to_identity(
+    state: &keystore::PrekeyState,
+    identity: &keystore::Identity,
+) -> bool {
+    crypto::ed25519::verify(
+        &identity.ed25519_public,
+        &state.current_spk.public,
+        &crypto::ed25519::Signature::from_bytes(state.current_spk.signature),
+    )
+    .unwrap_or(false)
 }
 
 /// 7d-A: one row in the Whitelist Manager's flat table. The
