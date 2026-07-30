@@ -144,6 +144,17 @@ impl fmt::Debug for IdentityBundle {
 /// a registration/rotation event).
 pub const IDENTITY_BUNDLE_DOMAIN: &[u8] = b"OSL-IDENTITY-BUNDLE-v1";
 
+/// Versioned binary wire prefix for [`IdentityBundle::to_wire`].
+pub const IDENTITY_BUNDLE_WIRE_MAGIC: [u8; 7] = *b"OSLIDB\x01";
+
+const IDENTITY_BUNDLE_WIRE_LEN: usize = 7
+    + ed25519::PUBLIC_KEY_SIZE
+    + 32
+    + crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE
+    + 4
+    + 8
+    + ed25519::SIGNATURE_SIZE;
+
 impl IdentityBundle {
     /// Build a locally-authored [`IdentityBundle`] from this device's
     /// identity plus the public fields just fetched from the keyserver.
@@ -224,6 +235,96 @@ impl IdentityBundle {
         buf
     }
 
+    /// Serialize this bundle to the canonical keystore identity-bundle wire
+    /// frame.
+    ///
+    /// Layout:
+    ///
+    /// ```text
+    /// magic                  : 7 B  ("OSLIDB\x01")
+    /// ed25519_identity_pub   : 32 B
+    /// x25519_identity_pub    : 32 B
+    /// mlkem768_identity_pub  : 1184 B
+    /// capability_bundle      : u32 BE
+    /// revision               : u64 BE
+    /// signature              : 64 B
+    /// ```
+    pub fn to_wire(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(IDENTITY_BUNDLE_WIRE_LEN);
+        buf.extend_from_slice(&IDENTITY_BUNDLE_WIRE_MAGIC);
+        buf.extend_from_slice(&self.ed25519_identity_pub);
+        buf.extend_from_slice(&self.x25519_identity_pub);
+        buf.extend_from_slice(&self.mlkem768_identity_pub);
+        buf.extend_from_slice(&self.capability_bundle.to_be_bytes());
+        buf.extend_from_slice(&self.revision.to_be_bytes());
+        buf.extend_from_slice(&self.signature);
+        buf
+    }
+
+    /// Parse an [`IdentityBundle`] from the canonical wire frame produced by
+    /// [`IdentityBundle::to_wire`].
+    ///
+    /// The parser is exact: unknown magic/version bytes, truncated fields, and
+    /// trailing bytes are refusals. Callers still need
+    /// [`BundleVerifyPolicy::verify`] with a pinned signer before trusting the
+    /// parsed public keys.
+    pub fn from_wire(wire: &[u8]) -> Result<Self, IdentityBundleWireError> {
+        if wire.len() < IDENTITY_BUNDLE_WIRE_MAGIC.len() {
+            return Err(IdentityBundleWireError::Truncated {
+                field: IdentityBundleWireField::Magic,
+                expected: IDENTITY_BUNDLE_WIRE_MAGIC.len(),
+                remaining: wire.len(),
+            });
+        }
+        if &wire[..IDENTITY_BUNDLE_WIRE_MAGIC.len()] != IDENTITY_BUNDLE_WIRE_MAGIC.as_slice() {
+            return Err(IdentityBundleWireError::BadMagic);
+        }
+
+        let mut off = IDENTITY_BUNDLE_WIRE_MAGIC.len();
+        let ed25519_identity_pub = read_wire_fixed::<{ ed25519::PUBLIC_KEY_SIZE }>(
+            wire,
+            &mut off,
+            IdentityBundleWireField::Ed25519IdentityKey,
+        )?;
+        let x25519_identity_pub =
+            read_wire_fixed::<32>(wire, &mut off, IdentityBundleWireField::X25519IdentityKey)?;
+        let mlkem768_identity_pub = read_wire_fixed::<
+            { crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE },
+        >(
+            wire, &mut off, IdentityBundleWireField::MlKem768IdentityKey
+        )?;
+        let capability_bundle = u32::from_be_bytes(read_wire_fixed::<4>(
+            wire,
+            &mut off,
+            IdentityBundleWireField::CapabilityBundle,
+        )?);
+        let revision = u64::from_be_bytes(read_wire_fixed::<8>(
+            wire,
+            &mut off,
+            IdentityBundleWireField::Revision,
+        )?);
+        let signature = read_wire_fixed::<{ ed25519::SIGNATURE_SIZE }>(
+            wire,
+            &mut off,
+            IdentityBundleWireField::Signature,
+        )?;
+
+        if off != wire.len() {
+            return Err(IdentityBundleWireError::TrailingBytes {
+                trailing: wire.len() - off,
+            });
+        }
+
+        Ok(IdentityBundle {
+            ed25519_identity_pub,
+            x25519_identity_pub,
+            mlkem768_identity_pub,
+            capability_bundle,
+            revision,
+            signature,
+        })
+    }
+
     /// Verify the owner-signed identity bundle and then compose the prekey
     /// response checks onto it. This is the one-call contract for callers that
     /// need a fully usable bundle: Ed25519 binding, revision monotonicity,
@@ -240,6 +341,55 @@ impl IdentityBundle {
         self.merge_prekey_bundle_response(prekey_response, last_known_revision)
             .map_err(BundleFullVerifyError::Prekey)
     }
+}
+
+/// Wire fields named in [`IdentityBundleWireError`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityBundleWireField {
+    Magic,
+    Ed25519IdentityKey,
+    X25519IdentityKey,
+    MlKem768IdentityKey,
+    CapabilityBundle,
+    Revision,
+    Signature,
+}
+
+/// Why [`IdentityBundle::from_wire`] refused a wire frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum IdentityBundleWireError {
+    #[error("identity bundle wire has unsupported magic or version")]
+    BadMagic,
+    #[error(
+        "identity bundle wire field {field:?} is truncated: expected {expected} bytes, \
+         {remaining} bytes remain"
+    )]
+    Truncated {
+        field: IdentityBundleWireField,
+        expected: usize,
+        remaining: usize,
+    },
+    #[error("identity bundle wire has {trailing} trailing bytes")]
+    TrailingBytes { trailing: usize },
+}
+
+fn read_wire_fixed<const N: usize>(
+    wire: &[u8],
+    off: &mut usize,
+    field: IdentityBundleWireField,
+) -> Result<[u8; N], IdentityBundleWireError> {
+    let remaining = wire.len().saturating_sub(*off);
+    if remaining < N {
+        return Err(IdentityBundleWireError::Truncated {
+            field,
+            expected: N,
+            remaining,
+        });
+    }
+    let value = <[u8; N]>::try_from(&wire[*off..*off + N])
+        .expect("slice length checked before identity bundle wire copy");
+    *off += N;
+    Ok(value)
 }
 
 fn decode_fixed<const N: usize>(
@@ -1346,6 +1496,50 @@ mod tests {
         let result = policy.verify(&bundle, &owner_pub, None);
 
         assert_eq!(result, Ok(1));
+    }
+
+    #[test]
+    fn identity_bundle_wire_roundtrip() {
+        let (owner_secret, owner_pub) = ed25519::generate_keypair();
+        let bundle = signed_bundle(&owner_secret, &owner_pub, 21);
+
+        let wire = bundle.to_wire();
+        assert_eq!(wire.len(), IDENTITY_BUNDLE_WIRE_LEN);
+        assert_eq!(
+            &wire[..IDENTITY_BUNDLE_WIRE_MAGIC.len()],
+            IDENTITY_BUNDLE_WIRE_MAGIC.as_slice()
+        );
+
+        let decoded = IdentityBundle::from_wire(&wire).expect("valid identity bundle wire");
+        assert_eq!(decoded, bundle);
+        assert_eq!(
+            BundleVerifyPolicy::new().verify(&decoded, &owner_pub, Some(20)),
+            Ok(21)
+        );
+
+        let mut bad_magic = wire.clone();
+        bad_magic[0] ^= 0x01;
+        assert_eq!(
+            IdentityBundle::from_wire(&bad_magic),
+            Err(IdentityBundleWireError::BadMagic)
+        );
+
+        let truncated = &wire[..wire.len() - 1];
+        assert_eq!(
+            IdentityBundle::from_wire(truncated),
+            Err(IdentityBundleWireError::Truncated {
+                field: IdentityBundleWireField::Signature,
+                expected: ed25519::SIGNATURE_SIZE,
+                remaining: ed25519::SIGNATURE_SIZE - 1,
+            })
+        );
+
+        let mut trailing = wire;
+        trailing.push(0);
+        assert_eq!(
+            IdentityBundle::from_wire(&trailing),
+            Err(IdentityBundleWireError::TrailingBytes { trailing: 1 })
+        );
     }
 
     #[test]
