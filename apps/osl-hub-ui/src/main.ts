@@ -2619,6 +2619,36 @@ function workspaceContent(): string {
   return `<main id="home-navigation" class="content-viewport home-dashboard ${homeEditMode ? "editing" : ""}"><section class="home-primary"><section class="home-apps" aria-labelledby="route-heading"><div class="home-app-groups">${oslSection}${socialTiles ? `<section class="home-app-section"><header><h2>Social</h2>${organizeButton("social apps")}</header><div class="app-grid" aria-label="Social apps">${socialTiles}</div></section>` : ""}${emailTiles ? `<section class="home-app-section"><header><h2>Email</h2>${organizeButton("email apps")}</header><div class="app-grid" aria-label="Email apps">${emailTiles}</div></section>` : ""}</div></section></section><button class="home-profile-dock" data-route="settings" data-profile-settings type="button" aria-label="Open your OSL profile" title="${escapeHtml(profileName)}"><span aria-hidden="true">${escapeHtml(profileInitial)}</span><strong>${escapeHtml(profileName)}</strong></button></main>`;
 }
 
+function inboxDestinationContent(): string {
+  const verifiedPeople = hubPeople.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange);
+  const requests = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange);
+  const connectedApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch" && app.linked);
+  const connectedRows = connectedApps.length
+    ? connectedApps.map((app) => {
+        const scope = app.provider
+          ? "External recipient, not OSL E2EE"
+          : "OSL overlay active when a conversation is verified";
+        return `<article class="inbox-row connected-source"><span class="source-mark">${homeAppLogo(app)}</span><div><strong>${escapeHtml(app.displayName)}</strong><small>${escapeHtml(app.displayName)} · ${scope}</small></div><button class="button compact" data-home-app="${app.id}" type="button">Open</button></article>`;
+      }).join("")
+    : `<div class="empty-state"><strong>No connected conversations yet</strong><p>Connect an app from Home to show supported account views here.</p></div>`;
+  const chatRows = verifiedPeople.length
+    ? verifiedPeople.slice(0, 8).map((person) => {
+        const last = oslChatMessages.get(person.personId)?.at(-1);
+        return `<article class="inbox-row osl-chat-source"><span class="source-mark">${homeModuleIcon("osl-chats")}</span><button class="inbox-conversation-open" data-osl-chat-open="${escapeHtml(person.personId)}" type="button"><strong>${escapeHtml(person.alias ?? "Verified friend")}</strong><small>OSL Chat · End-to-end encrypted${last?.body ? ` · ${escapeHtml(last.body)}` : ""}</small></button></article>`;
+      }).join("")
+    : `<div class="empty-state"><strong>No private chats yet</strong><p>Verify a friend before starting an encrypted OSL chat.</p></div>`;
+  const requestRows = requests.length
+    ? requests.slice(0, 8).map((person) => `<article class="inbox-row request-source"><span class="source-mark">${homeCommandIcon("friends")}</span><div><strong>${escapeHtml(person.alias ?? "Friend request")}</strong><small>${person.pendingKeyChange ? "Security change needs review" : "Verification needed before protected chat"}</small></div><button class="button compact" data-open-friends type="button">Review</button></article>`).join("")
+    : `<div class="empty-state"><strong>No requests</strong><p>New friend requests and key reviews appear here.</p></div>`;
+  const oslSurfaces = [
+    ["chat", "OSL Chat", "End-to-end encrypted", "Ready for verified friends"],
+    ["circles", "OSL Circles", "Private audience feeds", "Coming after small-group review"],
+    ["mail", "OSL Mail", "Client protection", "External recipients are not OSL E2EE"],
+  ] as const;
+  const surfaceCards = oslSurfaces.map(([id, label, protection, detail]) => `<article class="inbox-surface-card" data-inbox-osl-surface="${id}"><strong>${label}</strong><small>${protection}</small><p>${detail}</p></article>`).join("");
+  return `<main class="content-viewport inbox-destination" id="route-heading" tabindex="-1"><header class="destination-header"><div><p class="eyebrow">Inbox</p><h1>Conversations</h1><p>Optional views for OSL messages and connected accounts. OSL shows only supported conversations and refuses protected send when the conversation cannot be verified.</p></div><button class="button primary" data-inbox-start-private type="button">Start a private conversation</button></header><nav class="inbox-filter-tabs" aria-label="Inbox filters">${["All", "OSL", "Connected", "Requests"].map((label, index) => `<button type="button" data-inbox-filter="${label.toLowerCase()}" ${index === 0 ? 'aria-pressed="true"' : ""}>${label}</button>`).join("")}</nav><section class="inbox-grid"><section class="inbox-panel" aria-labelledby="inbox-osl-heading"><h2 id="inbox-osl-heading">OSL</h2><div class="inbox-surface-grid">${surfaceCards}</div>${chatRows}</section><section class="inbox-panel" aria-labelledby="inbox-connected-heading"><h2 id="inbox-connected-heading">Connected</h2>${connectedRows}</section><section class="inbox-panel" aria-labelledby="inbox-requests-heading"><h2 id="inbox-requests-heading">Requests</h2>${requestRows}</section></section></main>`;
+}
+
 function oslChatContent(): string {
   const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
   const friends = hubPeople.map((person) => {
