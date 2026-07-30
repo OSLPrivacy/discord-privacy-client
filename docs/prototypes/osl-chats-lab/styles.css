@@ -37,7 +37,7 @@
 :root[data-theme="paper"] { --bg:#edf1f4;--panel:#fbfcfd;--panel-2:#e6ebef;--panel-3:#d9e0e6;--line:#aab6c1;--line-soft:#ccd4db;--text:#111820;--muted:#536170;--subtle:#6d7a87;--accent-ink:#fff;color-scheme:light; }
 
 * { box-sizing: border-box; }
-html, body { width:100%; min-width:320px; height:100%; margin:0; overflow:hidden; }
+html, body { width:100%; min-width:0; height:100%; margin:0; overflow:hidden; }
 body { background:var(--bg); color:var(--text); font-size:calc(15px * var(--font-scale)); line-height:1.5; text-rendering:optimizeLegibility; -webkit-font-smoothing:auto; }
 button, input, textarea, select { min-height:44px; font:inherit; }
 button { color:inherit; cursor:pointer; }

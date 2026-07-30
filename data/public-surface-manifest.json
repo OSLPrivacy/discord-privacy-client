@@ -1,0 +1,40 @@
+{
+  "$schema": "https://oslprivacy.com/schemas/public-surface-manifest-v1.json",
+  "schema_version": 1,
+  "manifest_id": "osl-public-surface",
+  "html": [
+    "docs/prototypes/osl-chats-lab/index.html",
+    "docs/prototypes/osl-hub/index.html"
+  ],
+  "assets": [
+    "docs/prototypes/osl-chats-lab/README.md",
+    "docs/prototypes/osl-chats-lab/app.js",
+    "docs/prototypes/osl-chats-lab/logo-mark.svg",
+    "docs/prototypes/osl-chats-lab/styles.css",
+    "docs/prototypes/osl-hub/README.md",
+    "docs/prototypes/osl-hub/app.js",
+    "docs/prototypes/osl-hub/styles.css"
+  ],
+  "claim_channels": [
+    "rendered-text",
+    "document-title",
+    "metadata-content",
+    "accessible-name",
+    "alt-title-placeholder-value",
+    "public-data-attribute",
+    "json-ld",
+    "inline-script-copy",
+    "textual-asset"
+  ],
+  "textual_asset_extensions": [
+    ".css",
+    ".html",
+    ".js",
+    ".json",
+    ".md",
+    ".svg",
+    ".txt",
+    ".webmanifest",
+    ".xml"
+  ]
+}

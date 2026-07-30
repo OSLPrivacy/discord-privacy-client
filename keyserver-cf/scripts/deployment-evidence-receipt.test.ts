@@ -900,12 +900,31 @@ describe("producer-owned deployment evidence receipt v3", () => {
       ["-C", REPO_ROOT, "rev-parse", "HEAD"],
       { encoding: "utf8" },
     ).trim();
+    const committedMigrationNames = execFileSync(
+      "git",
+      [
+        "-C",
+        REPO_ROOT,
+        "ls-tree",
+        "-r",
+        "--name-only",
+        head,
+        "--",
+        "keyserver-cf/migrations",
+      ],
+      { encoding: "utf8" },
+    )
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .sort()
+      .map((entry) => entry.slice("keyserver-cf/migrations/".length));
     const migrations = loadCommittedMigrationClosure(REPO_ROOT, head);
-    expect(migrations).toHaveLength(34);
-    expect(migrations[0].name).toMatch(/^0001_/);
-    expect(migrations.at(-1)?.name).toBe(
-      "0034_scheme1_prekey_owner_proofs.sql",
+    expect(migrations.map((entry) => entry.name)).toEqual(
+      committedMigrationNames,
     );
+    expect(migrations.length).toBeGreaterThan(0);
+    expect(migrations[0].name).toMatch(/^0001_/);
     expect(
       migrations.every(
         (entry) =>
@@ -914,6 +933,9 @@ describe("producer-owned deployment evidence receipt v3", () => {
       ),
     ).toBe(true);
     expect(new Set(migrations.map((entry) => entry.sha256)).size).toBe(
+      migrations.length,
+    );
+    expect(new Set(migrations.map((entry) => entry.name)).size).toBe(
       migrations.length,
     );
   });
