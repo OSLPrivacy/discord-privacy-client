@@ -12,6 +12,19 @@ import {
 
 export interface FriendProfile { friendCode: string; oslUserId: string; safetyNumber: string; }
 export interface AppNotification { id: string; title: string; detail: string; createdAt: string; }
+export type SupportMatrixPublicStatus = "available" | "beta" | "coming_soon" | "externally_blocked" | "unsupported";
+export type SupportMatrixInputEvidenceStatus = "qualified_profile" | "runtime_proven" | "qa_foundations_only" | "separate_qa_required" | "externally_blocked" | "unsupported" | "unknown";
+export interface SupportMatrixPresentationInput {
+  publicStatus: SupportMatrixPublicStatus | "comingSoon" | "externallyBlocked";
+  evidenceStatus?: SupportMatrixInputEvidenceStatus | string;
+  claimAllowed?: boolean;
+}
+export interface SupportMatrixPublicPresentation {
+  state: "available" | "limited" | "comingSoon" | "blocked" | "unsupported";
+  label: string;
+  detail: string;
+  action: string;
+}
 export interface LocalProtectedText {
   capsule: string;
   localMessageId: string;
@@ -155,7 +168,7 @@ export interface ReviewedItemIdentity {
 export interface ReviewedItemIdentityBinding extends ReviewedItemIdentity {
   selected: true;
 }
-export type SupportMatrixEvidenceStatus =
+export type SupportMatrixRowStatus =
   | "supported"
   | "verified_live"
   | "runtime_proven"
@@ -165,13 +178,14 @@ export type SupportMatrixEvidenceStatus =
   | "externally_blocked"
   | "unsupported";
 export type SupportMatrixPresentationTone = "available" | "beta" | "planned" | "blocked" | "unavailable";
-export interface SupportMatrixPresentation {
+export interface SupportMatrixRowPresentation {
   service: string;
   label: string;
   detail: string;
   tone: SupportMatrixPresentationTone;
   publicClaimAllowed: boolean;
 }
+export type SupportMatrixPresentation = SupportMatrixPublicPresentation | SupportMatrixRowPresentation;
 
 export const LOCAL_PROTECTED_TEXT_MAX_BYTES = 1_000;
 export const HUB_PLAINTEXT_MAX_BYTES = 1_000;
@@ -182,18 +196,73 @@ const HUB_PREPARED_MESSAGE_MAX_ITEMS = 64;
 const HUB_CONTROL_MESSAGE_MAX_ITEMS = 512;
 const HUB_PREPARED_TOTAL_MAX_BYTES = 4 * 1024 * 1024;
 
-export function isLocalProtectedPlaintext(value: unknown): value is string {
-  return typeof value === "string"
-    && value.length > 0
-    && new TextEncoder().encode(value).length <= LOCAL_PROTECTED_TEXT_MAX_BYTES
-    && !/[\u0000\u007f]/.test(value);
+export function supportMatrixPresentation(input: SupportMatrixPresentationInput): SupportMatrixPublicPresentation;
+export function supportMatrixPresentation(row: unknown): SupportMatrixRowPresentation | null;
+export function supportMatrixPresentation(input: unknown): SupportMatrixPublicPresentation | SupportMatrixRowPresentation | null {
+  if (isRecord(input) && typeof input.publicStatus === "string") {
+    return supportMatrixPublicPresentation(input as unknown as SupportMatrixPresentationInput);
+  }
+  return supportMatrixRowPresentation(input);
 }
 
-export function isHubPlaintext(value: unknown): value is string {
-  return boundedUtf8Text(value, HUB_PLAINTEXT_MAX_BYTES);
+function supportMatrixPublicPresentation(input: SupportMatrixPresentationInput): SupportMatrixPublicPresentation {
+  const publicStatus = normalizeSupportPublicStatus(input.publicStatus);
+  const evidenceStatus = typeof input.evidenceStatus === "string" ? input.evidenceStatus : "unknown";
+  const claimAllowed = input.claimAllowed === true;
+
+  if (publicStatus === "available" && claimAllowed) {
+    return {
+      state: "available",
+      label: "Available",
+      detail: "Protected use is available after OSL verifies the app, account and conversation.",
+      action: "Open",
+    };
+  }
+
+  if (publicStatus === "beta" && claimAllowed) {
+    return {
+      state: "limited",
+      label: "Beta",
+      detail: "Protected use is available with extra checks and visible limits.",
+      action: "Open",
+    };
+  }
+
+  if (publicStatus === "externally_blocked" || evidenceStatus === "externally_blocked") {
+    return {
+      state: "blocked",
+      label: "Blocked",
+      detail: "This app cannot be protected until its visible message area can be verified reliably.",
+      action: "Use OSL Chat",
+    };
+  }
+
+  if (publicStatus === "unsupported" || evidenceStatus === "unsupported") {
+    return {
+      state: "unsupported",
+      label: "Unsupported",
+      detail: "Protected use is not available for this app.",
+      action: "Use OSL Chat",
+    };
+  }
+
+  return {
+    state: "comingSoon",
+    label: "Coming soon",
+    detail: "Not ready for protected use yet. OSL will not send or claim support here.",
+    action: "Use OSL Chat",
+  };
 }
 
-export function supportMatrixPresentation(row: unknown): SupportMatrixPresentation | null {
+function normalizeSupportPublicStatus(
+  status: SupportMatrixPresentationInput["publicStatus"],
+): SupportMatrixPublicStatus {
+  if (status === "comingSoon") return "coming_soon";
+  if (status === "externallyBlocked") return "externally_blocked";
+  return status;
+}
+
+function supportMatrixRowPresentation(row: unknown): SupportMatrixRowPresentation | null {
   if (!isRecord(row) || typeof row.service !== "string" || !safePlaintext(row.service, 80)) return null;
   const status = normalizeSupportMatrixStatus(row.status);
   if (!status) return null;
@@ -255,6 +324,17 @@ export function supportMatrixPresentation(row: unknown): SupportMatrixPresentati
         publicClaimAllowed: false,
       };
   }
+}
+
+export function isLocalProtectedPlaintext(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length > 0
+    && new TextEncoder().encode(value).length <= LOCAL_PROTECTED_TEXT_MAX_BYTES
+    && !/[\u0000\u007f]/.test(value);
+}
+
+export function isHubPlaintext(value: unknown): value is string {
+  return boundedUtf8Text(value, HUB_PLAINTEXT_MAX_BYTES);
 }
 
 /**
@@ -1403,7 +1483,7 @@ function isRecord(value: unknown): value is Record<string, unknown> { return typ
 function exact(value: Record<string, unknown>, keys: string[]): boolean { const actual = Object.keys(value); return actual.length === keys.length && actual.every((key) => keys.includes(key)); }
 function safe(value: unknown, max: number): value is string { return typeof value === "string" && value.length > 0 && value.length <= max && !/[<>\u0000-\u001f\u007f]/.test(value); }
 function safePlaintext(value: unknown, max: number): value is string { return typeof value === "string" && value.length > 0 && value.length <= max && !/[\u0000\u007f]/.test(value); }
-function normalizeSupportMatrixStatus(value: unknown): SupportMatrixEvidenceStatus | null {
+function normalizeSupportMatrixStatus(value: unknown): SupportMatrixRowStatus | null {
   if (typeof value !== "string") return null;
   const normalized = value.replace(/-/gu, "_");
   return [
@@ -1415,7 +1495,7 @@ function normalizeSupportMatrixStatus(value: unknown): SupportMatrixEvidenceStat
     "designed_only",
     "externally_blocked",
     "unsupported",
-  ].includes(normalized) ? normalized as SupportMatrixEvidenceStatus : null;
+  ].includes(normalized) ? normalized as SupportMatrixRowStatus : null;
 }
 function safeId(value: unknown, max: number): value is string { return typeof value === "string" && value.length > 0 && value.length <= max && /^[a-z0-9_-]+$/.test(value); }
 function safeOpaque(value: unknown, max: number): value is string { return typeof value === "string" && value.length > 0 && value.length <= max && /^[A-Za-z0-9_-]+$/.test(value); }
