@@ -3065,7 +3065,7 @@ function homePrimaryRecommendation(): HomePrimaryRecommendation {
   if (protection.state !== "protected") {
     return {
       issue: "local-storage",
-      title: "Review local storage",
+      title: "Review device storage",
       detail: protection.detail,
       action: `<button class="button primary compact" data-route="settings" data-profile-settings type="button">Review device</button>`,
     };
@@ -3250,14 +3250,14 @@ export function inboxDestinationContent(): string {
   const chatRows = verifiedPeople.length
     ? verifiedPeople.slice(0, 8).map((person) => {
         const last = oslChatMessages.get(person.personId)?.at(-1);
-        return `<article class="inbox-row osl-chat-source"><span class="source-mark">${homeModuleIcon("osl-chats")}</span><button class="inbox-conversation-open" data-osl-chat-open="${escapeHtml(person.personId)}" type="button"><strong>${escapeHtml(person.alias ?? "Verified friend")}</strong><small>OSL Chat · Private with verified friends${last?.body ? ` · ${escapeHtml(last.body)}` : ""}</small></button></article>`;
+        return `<article class="inbox-row osl-chat-source"><span class="source-mark">${homeModuleIcon("osl-chats")}</span><button class="inbox-conversation-open" data-osl-chat-open="${escapeHtml(person.personId)}" type="button"><strong>${escapeHtml(person.alias ?? "Verified friend")}</strong><small>OSL Chat · Protected OSL message${last?.body ? ` · ${escapeHtml(last.body)}` : ""}</small></button></article>`;
       }).join("")
     : `<div class="empty-state"><strong>No private chats yet</strong><p>Verify a friend before starting an encrypted OSL chat.</p></div>`;
   const requestRows = requests.length
     ? requests.slice(0, 8).map((person) => `<article class="inbox-row request-source"><span class="source-mark">${homeCommandIcon("friends")}</span><div><strong>${escapeHtml(person.alias ?? "Friend request")}</strong><small>${person.pendingKeyChange ? "Security change needs review" : "Verification needed before protected chat"}</small></div><button class="button compact" data-open-friends type="button">Review</button></article>`).join("")
     : `<div class="empty-state"><strong>No requests</strong><p>New friend requests and key reviews appear here.</p></div>`;
   const oslSurfaces = [
-    ["chat", "OSL Chat", "Private with verified friends", "Ready for verified friends"],
+    ["chat", "OSL Chat", "Protected OSL messages", "Ready for verified friends"],
     ["circles", "OSL Circles", "Private audience feeds", "Coming after small-group review"],
     ["mail", "OSL Mail", "Client protection", "External recipients are not OSL E2EE"],
   ] as const;
@@ -3759,7 +3759,7 @@ export function privacyDestinationContent(): string {
   const protectionReview = privacyProtectionReviewOpen
     ? `<section class="privacy-review-card" data-privacy-protection-review><div><span class="privacy-local-mark">PROTECTION REVIEW</span><h2>Review or change protection</h2><p>Check the Balanced policy, app exceptions, cleanup limits, and local warning choices before OSL changes anything.</p></div><button class="button compact" data-route="settings" data-settings="scrub" type="button">Open detailed review</button></section>`
     : "";
-  return `<main class="content-viewport privacy-destination"><header class="destination-header"><div><p class="eyebrow">Privacy</p><h1 id="route-heading" tabindex="-1">Privacy</h1><p>Review what OSL will do before it changes anything.</p></div><button class="button primary" data-privacy-primary-action type="button">Review or change protection</button></header>${protectionReview}<section class="privacy-preset-panel" aria-labelledby="privacy-preset-title"><div><span class="privacy-local-mark">ACTIVE PRESET</span><h2 id="privacy-preset-title">Balanced</h2><p>Basic account health plus local before-send warnings, attachment cleaning, monthly cleanup review, and encrypted OSL suggestions for verified contacts.</p></div><button class="button compact" type="button" disabled>Change preset</button></section><section class="privacy-policy-stack" aria-labelledby="privacy-policy-title"><header><div><h2 id="privacy-policy-title">Global policy</h2><p>Inherited from Balanced until you make an exception.</p></div><span class="status-tag">Deletion off</span></header><p class="privacy-policy-path">Balanced preset / app / account / conversation exception</p><div class="privacy-policy-grid">${policyCards}</div></section>${publicPostGuardCarrierPreviewMarkup()}<section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h2>Recommended action</h2><h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review. Nothing is deleted by this build.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup(true)}${privacyScanResultsMarkup()}<section class="settings-list privacy-tools" aria-labelledby="privacy-tools-title"><header><h2 id="privacy-tools-title">Solo privacy tools</h2><p>Useful even when nobody else uses OSL.</p></header>${toolRows}</section><section class="settings-list privacy-limits" aria-labelledby="privacy-limits-title"><header><h2 id="privacy-limits-title">Proof and limits</h2><p>OSL refuses actions it cannot verify.</p></header><div class="setting-line"><span><strong>Cleanup</strong><small>${cleanupState}; every batch must be scanned, previewed, confirmed, executed, and checked.</small></span><span class="status-tag">No auto delete</span></div><div class="setting-line"><span><strong>Service messages</strong><small>Apps, people, exports, backups, and opened copies may retain content.</small></span><span class="status-tag">Limit shown</span></div><div class="setting-line"><span><strong>Window protection</strong><small>Applied to OSL's own window when available. Cameras, malware, and modified recipients can still capture content.</small></span><span class="status-tag">${screenshotProtectionEnabled ? "Active" : "Unavailable"}</span></div></section></main>`;
+  return `<main class="content-viewport privacy-destination"><header class="destination-header"><div><p class="eyebrow">Privacy</p><h1 id="route-heading" tabindex="-1">Privacy</h1><p>Review what OSL will do before it changes anything.</p></div><button class="button primary" data-privacy-primary-action type="button">Review or change protection</button></header>${protectionReview}<section class="privacy-preset-panel" aria-labelledby="privacy-preset-title"><div><span class="privacy-local-mark">ACTIVE PRESET</span><h2 id="privacy-preset-title">Balanced</h2><p>Basic account health plus local before-send warnings, attachment cleaning, monthly cleanup review, and encrypted OSL suggestions for verified contacts.</p></div><button class="button compact" type="button" disabled>Change preset</button></section><section class="privacy-policy-stack" aria-labelledby="privacy-policy-title"><header><div><h2 id="privacy-policy-title">Global policy</h2><p>Inherited from Balanced until you make an exception.</p></div><span class="status-tag">Deletion off</span></header><p class="privacy-policy-path">Balanced preset / app / account / conversation exception</p><div class="privacy-policy-grid">${policyCards}</div></section>${publicPostGuardCarrierPreviewMarkup()}<section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h2>Recommended action</h2><h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review. Nothing is deleted by this build.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup(true)}${privacyScanResultsMarkup()}<section class="settings-list privacy-tools" aria-labelledby="privacy-tools-title"><header><h2 id="privacy-tools-title">Solo privacy tools</h2><p>Useful even when nobody else uses OSL.</p></header>${toolRows}</section><section class="settings-list privacy-limits" aria-labelledby="privacy-limits-title"><header><h2 id="privacy-limits-title">Proof and limits</h2><p>OSL refuses actions it cannot verify.</p></header><div class="setting-line"><span><strong>Cleanup</strong><small>${cleanupState}; every batch must be checked locally, shown, approved, run, and checked afterward.</small></span><span class="status-tag">No auto delete</span></div><div class="setting-line"><span><strong>Service messages</strong><small>Apps, people, exports, backups, and opened copies may retain content.</small></span><span class="status-tag">Limit shown</span></div><div class="setting-line"><span><strong>Window protection</strong><small>Applied to OSL's own window when available. Cameras, malware, and modified recipients can still capture content.</small></span><span class="status-tag">${screenshotProtectionEnabled ? "Active" : "Unavailable"}</span></div></section></main>`;
 }
 
 function massCleanupActionLabel(action: string): string {
@@ -7323,10 +7323,10 @@ async function requestDiscordQaVisibleRowRuntimeReceipt(): Promise<void> {
       : "refused";
   render();
   showToast(receipt?.accepted
-    ? "Native row proof receipt saved"
+    ? "Native row proof saved"
     : receipt === null
       ? "Native row proof was unavailable"
-      : "Native row proof refused; receipt saved");
+      : "Native row proof refused; proof saved");
 }
 
 async function runDiscordQaOneClick(): Promise<void> {
@@ -7346,7 +7346,7 @@ async function runDiscordQaOneClick(): Promise<void> {
       || !qaProbe.personToPersonE2ee
       || qaProbe.viewOnce
       || !qaProbe.deliveredToOslInbox) {
-      throw new Error("The fixed encrypted probe did not produce an authenticated send receipt");
+      throw new Error("The fixed encrypted probe did not produce authenticated send proof");
     }
     void startDiscordQaVisualOverlayAttempt();
     let receivedPeerProbe = false;
