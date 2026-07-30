@@ -48,6 +48,7 @@ import {
   handlePrekeyBundleGet,
   handlePrekeyBundleReplenish,
 } from "./endpoints/prekey-bundle.js";
+import { handleProofChallenge } from "./endpoints/proof-challenge.js";
 import { handlePubkeys } from "./endpoints/pubkeys.js";
 import { handleRegister } from "./endpoints/register.js";
 import { handleSelectorManifest } from "./endpoints/selector-manifest.js";
@@ -333,6 +334,9 @@ async function dispatch(
     if (path === "/v1/wrapped-keys") return await handleWrappedKeysPost(request, env);
     if (path === "/v1/prekey-bundle/replenish") {
       return await handlePrekeyBundleReplenish(request, env);
+    }
+    if (path === "/v1/proof-challenge") {
+      return await handleProofChallenge(request);
     }
     if (path === "/v1/link-grant") {
       // Deliberately dark. `DEPLOY.md` section 12 records that 0028's link-grant

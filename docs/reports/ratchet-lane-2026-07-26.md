@@ -698,3 +698,20 @@ today: output that resembles proof without being it.
 run. Every `test result:` line cited here was produced by this lane re-running the command
 itself — which mattered, because job A's pasted "verification tail" showed only filtered-out
 integration binaries and would have read as proof.
+
+## Reviewer Sign-Off: Ratchet Remediations Closed
+
+This sign-off is the exact-object re-review for the remediations recorded in
+this report. It does not enable OSL-RN and does not claim any real traffic was
+carried.
+
+| remediation_id | remediation | closed | reviewer_basis | enables_rn |
+| --- | --- | --- | --- | --- |
+| b4_bool_seam | Peer capability selection no longer accepts a caller-supplied boolean | yes | mutation_proven_negative_controls | no |
+| b4_monotone_pin | Pinned peers fail closed instead of falling back to legacy v3 | yes | exhaustive_pin_policy_matrix | no |
+| b3_replay_recovery | Sender rollback and skipped-message replay remain rejected after recovery | yes | replay_recovery_negative_tests | no |
+| b2_wire_gate | Wire-in remains prepared behind the disabled gate | yes | disabled_gate_review | no |
+
+Reviewer verdict: the listed remediations are closed for this report's scope;
+the remaining deployment decision is still blocked on external cryptographic
+review and the disabled wire-in gate.
