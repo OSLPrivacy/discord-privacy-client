@@ -13,6 +13,7 @@ use osl_privacy_hub::cleanup::{self, HubFullCleanupResult};
 use osl_privacy_hub::core_bridge::{
     self, CoreFeature, CoreReadiness, HubCoreState, HubLicenseState,
 };
+use osl_privacy_hub::discord_carrier_geometry::CarrierDecision;
 use osl_privacy_hub::identity_registry::{
     self, HubIdentityBurnResult, HubIdentityRegistryState, HubIdentitySlotCreation,
     HubIdentitySlotDto, HubIdentitySwitchResult,
@@ -1780,6 +1781,27 @@ fn require_engaged_lock(app: &tauri::AppHandle) -> Result<(), String> {
     Err("Protected Discord encryption is switched off".to_owned())
 }
 
+struct NativeDiscordProductSendAuthority {
+    carrier: String,
+}
+
+fn require_native_discord_product_send_authority(
+    composer: &NativeDiscordComposerState,
+    scope_binding: &str,
+    layout: Option<DiscordCarrierLayout>,
+) -> Result<NativeDiscordProductSendAuthority, String> {
+    let plan = composer.take_prepared_carrier_plan(scope_binding, layout);
+    if plan.decision != CarrierDecision::RowOverlay {
+        return Err("The protected message is not ready to send; nothing was placed".to_owned());
+    }
+    let carrier = plan
+        .cover_text()
+        .ok_or_else(|| {
+            "The protected message is not ready to send; nothing was placed".to_owned()
+        })?;
+    Ok(NativeDiscordProductSendAuthority { carrier })
+}
+
 #[cfg(any(test, feature = "discord-qa-shell"))]
 fn canonical_native_visible_row_qa_build_hash(value: Option<&str>) -> Result<String, String> {
     let value = value.ok_or_else(|| "The QA build hash is unavailable".to_owned())?;
@@ -1885,10 +1907,8 @@ fn send_native_discord_overlay_carrier(
     let scope_binding = native_discord_scope_binding(&app)?;
     require_same_overlay_context(&app, epoch, &host)?;
     let composer = app.state::<NativeDiscordComposerState>();
-    let plan = composer.take_prepared_carrier_plan(&scope_binding, layout);
-    let carrier = plan.cover_text().ok_or_else(|| {
-        "Discord carrier geometry could not be proven; nothing was placed".to_owned()
-    })?;
+    let product_send_authority =
+        require_native_discord_product_send_authority(&composer, &scope_binding, layout)?;
     let overlay_state = app.state::<OverlaySessionState>();
     let carrier_placement = overlay_state.begin_carrier_placement()?;
     let receipt = composer.place_carrier(
@@ -1897,7 +1917,7 @@ fn send_native_discord_overlay_carrier(
         &scope_binding,
         mode,
         chars_per_second,
-        &carrier,
+        &product_send_authority.carrier,
     );
     drop(carrier_placement);
     require_same_overlay_context(&app, epoch, &host)?;
@@ -7594,7 +7614,29 @@ mod b6_startup_gate_tests {
 
 #[cfg(all(test, feature = "discord-qa-shell"))]
 mod native_visible_row_qa_command_tests {
-    use super::canonical_native_visible_row_qa_build_hash;
+    use super::{
+        canonical_native_visible_row_qa_build_hash, deidentify_prepared_visual_structure,
+        require_native_discord_product_send_authority,
+    };
+    use osl_privacy_hub::native_discord_adapter::{
+        DiscordCarrierLayout, DiscordCarrierPadding, DiscordCarrierRowKind,
+        NativeDiscordComposerState,
+    };
+
+    const TEST_FLAGTEXT: &str =
+        "ok i will weekend again with you get what i was thinking usual";
+
+    fn measured_layout() -> DiscordCarrierLayout {
+        DiscordCarrierLayout {
+            content_width_px: 240.0,
+            average_grapheme_width_px: 8.0,
+            line_height_px: 18.0,
+            zoom: 1.0,
+            density: 1.0,
+            padding: DiscordCarrierPadding::ShapeMatched,
+            row_kind: DiscordCarrierRowKind::PlainText,
+        }
+    }
 
     fn command_is_registered(source: &str) -> bool {
         let Some(handler_start) = source.find("tauri::generate_handler![") else {
@@ -7665,6 +7707,54 @@ mod native_visible_row_qa_command_tests {
             !command_is_registered(&registration_removed),
             "removing the real handler registration must fail reachability"
         );
+
+        let carrier_start = source
+            .find("#[tauri::command]\nfn send_native_discord_overlay_carrier(")
+            .expect("native carrier command must exist");
+        let carrier_end = source[carrier_start..]
+            .find("\n#[derive(Serialize)]")
+            .map(|offset| carrier_start + offset)
+            .expect("native carrier command must remain bounded");
+        let carrier_command = &source[carrier_start..carrier_end];
+        for required in [
+            "caller.label() != native_discord_overlay::OVERLAY_LABEL",
+            "require_engaged_lock(&app)?",
+            "active_unlocked_osl_user_id(",
+            "require_overlay_context_snapshot(&app)?",
+            "native_discord_scope_binding(&app)?",
+            "require_same_overlay_context(&app, epoch, &host)?",
+            "require_native_discord_product_send_authority(&composer, &scope_binding, layout)?",
+            "overlay_state.begin_carrier_placement()?",
+            "composer.place_carrier(",
+        ] {
+            assert!(
+                carrier_command.contains(required),
+                "missing native carrier send gate: {required}"
+            );
+        }
+        let authority = carrier_command
+            .find("require_native_discord_product_send_authority(")
+            .expect("product send authority gate");
+        let placement = carrier_command
+            .find("overlay_state.begin_carrier_placement()?")
+            .expect("placement gate");
+        let send = carrier_command
+            .find("composer.place_carrier(")
+            .expect("native send");
+        assert!(
+            authority < placement && placement < send,
+            "product send authority must be proven before placement or native input"
+        );
+        let carrier_signature_end = carrier_command
+            .find(") -> Result<")
+            .expect("native carrier command signature");
+        let carrier_signature = &carrier_command[..carrier_signature_end];
+        let carrier_params = &carrier_signature[carrier_signature
+            .find('(')
+            .expect("native carrier command parameters")..];
+        assert!(!carrier_params.contains("String"));
+        assert!(!carrier_params.contains("scope"));
+        assert!(!carrier_params.contains("carrier:"));
     }
 
     #[test]
@@ -7681,6 +7771,48 @@ mod native_visible_row_qa_command_tests {
         assert!(canonical_native_visible_row_qa_build_hash(Some(
             "gggggggggggggggggggggggggggggggggggggggg"
         ))
+        .is_err());
+    }
+
+    #[test]
+    fn native_carrier_send_authority_requires_a_same_scope_prepared_message() {
+        let state = NativeDiscordComposerState::default();
+        assert!(require_native_discord_product_send_authority(
+            &state,
+            "scope-a",
+            Some(measured_layout())
+        )
+        .is_err());
+
+        state.remember_prepared_visual_structure(
+            "scope-a",
+            deidentify_prepared_visual_structure("private"),
+            TEST_FLAGTEXT.to_owned(),
+        );
+        assert!(require_native_discord_product_send_authority(
+            &state,
+            "scope-b",
+            Some(measured_layout())
+        )
+        .is_err());
+
+        state.remember_prepared_visual_structure(
+            "scope-a",
+            deidentify_prepared_visual_structure("private"),
+            TEST_FLAGTEXT.to_owned(),
+        );
+        let authority = require_native_discord_product_send_authority(
+            &state,
+            "scope-a",
+            Some(measured_layout()),
+        )
+        .expect("same-scope prepared carrier authorizes one send");
+        assert!(authority.carrier.split_whitespace().eq(TEST_FLAGTEXT.split_whitespace()));
+        assert!(require_native_discord_product_send_authority(
+            &state,
+            "scope-a",
+            Some(measured_layout())
+        )
         .is_err());
     }
 }
