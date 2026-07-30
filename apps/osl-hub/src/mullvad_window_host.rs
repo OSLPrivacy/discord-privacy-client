@@ -186,10 +186,30 @@ impl MullvadWindowHostResult {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct MullvadWindowHostState {
     #[cfg(target_os = "windows")]
     inner: std::sync::Mutex<Option<windows::BorrowedMullvadWindow>>,
+}
+
+impl std::fmt::Debug for MullvadWindowHostState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("MullvadWindowHostState");
+        #[cfg(target_os = "windows")]
+        {
+            let hosted = self
+                .inner
+                .lock()
+                .map(|hosted| hosted.is_some())
+                .unwrap_or(false);
+            debug.field("hosted", &hosted);
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            debug.field("hosted", &false);
+        }
+        debug.finish()
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -1353,6 +1373,31 @@ mod tests {
         assert_eq!(result.reason, MullvadWindowHostReason::PlatformUnsupported);
         assert_eq!(result.mode, "none");
         assert!(!result.capture_protected);
+    }
+
+    #[test]
+    fn unsupported_host_fails_closed() {
+        if cfg!(target_os = "windows") {
+            return;
+        }
+        let state = MullvadWindowHostState::default();
+        let result = state.host(0);
+        assert_eq!(result.status, MullvadWindowHostStatus::Unsupported);
+        assert_eq!(result.reason, MullvadWindowHostReason::PlatformUnsupported);
+        assert_eq!(result.mode, "none");
+        assert!(!result.capture_protected);
+    }
+
+    #[test]
+    fn state_debug_omits_native_window_identifiers() {
+        let debug = format!("{:?}", MullvadWindowHostState::default());
+        assert!(debug.contains("MullvadWindowHostState"));
+        assert!(debug.contains("hosted"));
+        assert!(!debug.contains("BorrowedMullvadWindow"));
+        assert!(!debug.contains("process_id"));
+        assert!(!debug.contains("window:"));
+        assert!(!debug.contains("trusted_parent"));
+        assert!(!debug.contains("previous_owner"));
     }
 
     #[test]
