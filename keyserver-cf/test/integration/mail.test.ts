@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { env, SELF } from "cloudflare:test";
+import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { base64Decode, base64Encode, mailSignedMessage, randomRequestId } from "../../src/mail/protocol.js";
 import { handleInboundEmail } from "../../src/mail/inbound.js";
+import type { Mailbox } from "../../src/mail/mailbox.js";
 
 interface Identity {
   userId: string;
@@ -21,6 +22,50 @@ beforeEach(async () => {
 });
 
 describe("OSL Mail Worker", () => {
+  it("m1 admits the OSL Mail Durable Object backend", async () => {
+    const box = env.MAILBOX.getByName(`m1-${crypto.randomUUID()}`);
+    const now = Date.now();
+    const ciphertext = base64Encode(new TextEncoder().encode("durable ciphertext"));
+
+    const stored = await box.store({
+      ownerUserId: "owner-m1",
+      messageId: "mail_m1_backend",
+      requestId: "request-m1-store",
+      kind: "osl_e2ee",
+      senderUserId: "sender-m1",
+      opaqueThreadToken: "threadtokenbackend",
+      ciphertextB64: ciphertext,
+      envelopeJson: JSON.stringify({ version: 1, nonce_b64: "bm9uY2U=" }),
+      recipientKeyFingerprint: "fingerprint-m1",
+      receivedAt: now,
+      expiresAt: now + 60_000,
+    });
+    expect(stored).toEqual({ stored: true, replay: false });
+
+    const listing = await box.list("owner-m1", 10);
+    expect(listing).toHaveLength(1);
+    expect(JSON.stringify(listing)).not.toContain(ciphertext);
+    expect(listing[0]).toMatchObject({
+      message_id: "mail_m1_backend",
+      kind: "osl_e2ee",
+      sender_user_id: "sender-m1",
+      opaque_thread_token: "threadtokenbackend",
+    });
+
+    expect(await box.fetchMessage("owner-m1", "mail_m1_backend")).toMatchObject({
+      message_id: "mail_m1_backend",
+      ciphertext_b64: ciphertext,
+      envelope_json: JSON.stringify({ version: 1, nonce_b64: "bm9uY2U=" }),
+    });
+    await runInDurableObject(box, async (instance: Mailbox) => {
+      expect(() => instance.list("intruder-m1", 10)).toThrow("mailbox owner mismatch");
+    });
+
+    expect(await box.ack("owner-m1", "request-m1-ack", "mail_m1_backend", now)).toEqual({ deleted: true, replay: false });
+    expect(await box.ack("owner-m1", "request-m1-ack", "mail_m1_backend", now)).toEqual({ deleted: true, replay: true });
+    expect(await box.fetchMessage("owner-m1", "mail_m1_backend")).toBeNull();
+  });
+
   it("advertises the truthful v1 transport and retention boundary", async () => {
     const response = await SELF.fetch("https://test/v1/mail/capabilities");
     expect(response.status).toBe(200);
