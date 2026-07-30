@@ -24,6 +24,7 @@ import {
 } from "./discord-visual-recipe";
 import {
   applyCarrierRowGeometry,
+  bindCarrierRowGeometry,
   clearCarrierRowGeometry,
   type NativeDiscordCarrierRowBinding,
 } from "./discord-carrier-row-binding";
@@ -636,11 +637,17 @@ function paintBoundRows(): void {
   if (!decryptDisplayEnabled) return;
   for (const [key, binding] of decodedRowBindings) {
     const item = transcript.root.querySelector<HTMLLIElement>(`[data-row-key="${CSS.escape(key)}"]`);
-    if (item) applyCarrierRowGeometry(item, binding);
+    if (item) {
+      bindCarrierRowGeometry(item, binding);
+      applyCarrierRowGeometry(item, binding);
+    }
   }
   for (const binding of verifiedCarrierRows) {
     const item = outgoingBubbles.get(binding.messageId);
-    if (item) applyCarrierRowGeometry(item, binding);
+    if (item) {
+      bindCarrierRowGeometry(item, binding);
+      applyCarrierRowGeometry(item, binding);
+    }
   }
 }
 

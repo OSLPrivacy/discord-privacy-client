@@ -20,6 +20,7 @@ export interface NativeDiscordCarrierRowBinding {
 const MAX_VISIBLE_CARRIER_ROWS = 32;
 const MAX_OVERLAY_EDGE_PX = 16_384;
 const SHA256 = /^[0-9a-f]{64}$/u;
+const CARRIER_ROW_GEOMETRY_BINDING_DATASET_KEY = "carrierRowGeometryBinding";
 
 function exactRecord(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -104,8 +105,43 @@ export function parseNativeDiscordCarrierRowBindings(
   return parsed;
 }
 
+function carrierRowGeometryBindingSignature(binding: NativeDiscordCarrierRowBinding): string {
+  return JSON.stringify([
+    binding.messageId,
+    binding.nativeLocatorSha256,
+    binding.carrierSha256,
+    binding.leftPx,
+    binding.topPx,
+    binding.widthPx,
+    binding.heightPx,
+    binding.backgroundColor,
+    binding.foregroundColor,
+    binding.fontFamily,
+    binding.fontSizePx,
+    binding.fontWeight,
+    binding.lineHeightPx,
+    binding.letterSpacingPx,
+    binding.zoom,
+    binding.density,
+  ]);
+}
+
+export function bindCarrierRowGeometry(
+  row: HTMLElement,
+  binding: NativeDiscordCarrierRowBinding,
+): void {
+  row.dataset[CARRIER_ROW_GEOMETRY_BINDING_DATASET_KEY] = carrierRowGeometryBindingSignature(binding);
+}
+
+export function clearCarrierRowGeometryBinding(row: HTMLElement): void {
+  delete row.dataset[CARRIER_ROW_GEOMETRY_BINDING_DATASET_KEY];
+  clearCarrierRowGeometry(row);
+}
+
 export function clearCarrierRowGeometry(row: HTMLElement): void {
   row.classList.remove("osl-discord-transcript__row--carrier-bound");
+  delete row.dataset[CARRIER_ROW_GEOMETRY_BINDING_DATASET_KEY];
+  delete row.dataset.messageId;
   delete row.dataset.nativeLocatorSha256;
   delete row.dataset.carrierSha256;
   for (const property of [
@@ -129,8 +165,13 @@ export function clearCarrierRowGeometry(row: HTMLElement): void {
 export function applyCarrierRowGeometry(
   row: HTMLElement,
   binding: NativeDiscordCarrierRowBinding,
-): void {
+): boolean {
+  const expectedBinding = carrierRowGeometryBindingSignature(binding);
+  const rowCarriesExactBinding = row.dataset[CARRIER_ROW_GEOMETRY_BINDING_DATASET_KEY] === expectedBinding;
   clearCarrierRowGeometry(row);
+  if (!rowCarriesExactBinding) return false;
+  row.dataset[CARRIER_ROW_GEOMETRY_BINDING_DATASET_KEY] = expectedBinding;
+  row.dataset.messageId = binding.messageId;
   row.dataset.nativeLocatorSha256 = binding.nativeLocatorSha256;
   row.dataset.carrierSha256 = binding.carrierSha256;
   row.style.setProperty("--osl-carrier-left", `${binding.leftPx}px`);
@@ -148,4 +189,5 @@ export function applyCarrierRowGeometry(
   row.style.setProperty("--osl-carrier-density", String(binding.density));
   row.classList.add("osl-discord-transcript__row--carrier-bound");
   row.hidden = false;
+  return true;
 }
