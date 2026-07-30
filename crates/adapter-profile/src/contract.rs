@@ -810,6 +810,10 @@ mod tests {
                     ("authority", "hostAuthority"),
                 ]
             );
+
+            let round_tripped: SelfTestReport = serde_json::from_value(json).unwrap();
+            assert_eq!(round_tripped, report);
+            round_tripped.validate().unwrap();
         }
     }
 
