@@ -37,7 +37,7 @@ fn staging_backup_boundary_regression() {
             "{rel}: {refusal}"
         );
         assert!(
-            refusal.contains("unencrypted destination"),
+            refusal.contains("an encrypted destination"),
             "{rel}: {refusal}"
         );
     }
