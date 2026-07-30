@@ -1,8 +1,11 @@
 use crypto::{ed25519, ml_kem_768, x25519};
-use ipc::commands::{decrypt_osl_phase4_cover, encrypt_osl_phase4_to_pubkeys};
+use ipc::commands::{
+    decrypt_osl_phase4_cover, encrypt_osl_phase4_to_pubkeys, OSL_PHASE4_WIRE_VERSION,
+};
+use ipc::sender_attribution_proof::{SenderAttributionProof, SenderAttributionProofError};
 use ipc::wire_v2::{
     decrypt_v2, decrypt_v3_for_sender, encrypt_v2, encrypt_v3, RecipientV3, V2Error,
-    MSG_TYPE_CONTENT,
+    MSG_TYPE_CONTENT, WIRE_VERSION_V2, WIRE_VERSION_V3, WIRE_VERSION_V4, WIRE_VERSION_V5,
 };
 use keystore::identity_bundle::{BundleVerifyError, BundleVerifyPolicy, IdentityBundle};
 use keystore::{AccountOwnershipError, ProofChallenge, PROOF_CHALLENGE_NONCE_BYTES};
@@ -202,5 +205,65 @@ fn full_a5_existing_ceremony_and_sender_attribution_proof() {
     ] {
         assert!(!rendered.contains("platform-account-a"));
         assert!(!rendered.contains("owner-user-a"));
+    }
+}
+
+#[test]
+fn full_a3_no_relabel_proof() {
+    let (sender_ed_secret, sender_ed_pub) = ed25519::generate_keypair();
+    let (_sender_x_secret, sender_x_pub) = x25519::generate_keypair();
+    let (_sender_mlkem_secret, sender_mlkem_pub) = ml_kem_768::generate_keypair();
+    let bundle = signed_bundle(
+        &sender_ed_secret,
+        &sender_ed_pub,
+        &sender_x_pub,
+        &sender_mlkem_pub,
+        7,
+    );
+    let relabeled_bundle = signed_bundle(
+        &sender_ed_secret,
+        &sender_ed_pub,
+        &sender_x_pub,
+        &sender_mlkem_pub,
+        8,
+    );
+
+    let versions = [
+        ("legacy v1", OSL_PHASE4_WIRE_VERSION),
+        ("wire v2", WIRE_VERSION_V2),
+        ("wire v3", WIRE_VERSION_V3),
+        ("wire v4", WIRE_VERSION_V4),
+        ("wire v5", WIRE_VERSION_V5),
+        ("wire rn", osl_ratchet_next::WIRE_VERSION_RN),
+    ];
+
+    for (proof_label, proof_version) in versions {
+        let proof = SenderAttributionProof::create(&bundle, &sender_ed_pub, Some(6), proof_version)
+            .unwrap_or_else(|error| {
+                panic!("{proof_label} must produce a sender attribution proof: {error:?}")
+            });
+        assert_eq!(proof.wire_version(), proof_version);
+        assert_eq!(proof.bundle_revision(), 7);
+        assert_eq!(
+            proof.verify_for(&bundle, &sender_ed_pub, Some(6), proof_version),
+            Ok(()),
+            "{proof_label} proof must verify for its original wire version"
+        );
+        assert_eq!(
+            proof.verify_for(&relabeled_bundle, &sender_ed_pub, Some(7), proof_version),
+            Err(SenderAttributionProofError::WireVersionRelabel),
+            "{proof_label} proof must not verify after relabeling it onto a newer bundle"
+        );
+
+        for (candidate_label, candidate_version) in versions {
+            if candidate_version == proof_version {
+                continue;
+            }
+            assert_eq!(
+                proof.verify_for(&bundle, &sender_ed_pub, Some(6), candidate_version),
+                Err(SenderAttributionProofError::WireVersionRelabel),
+                "{proof_label} proof must not verify after relabeling it as {candidate_label}"
+            );
+        }
     }
 }
