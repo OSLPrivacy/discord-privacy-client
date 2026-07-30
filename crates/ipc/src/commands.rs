@@ -7014,6 +7014,7 @@ fn decrypt_v5_recv(
 
     let parsed =
         crate::wire_v2::decrypt_v5(&content).map_err(|e| format!("OSL: v=5 decode: {e}"))?;
+    verify_v5_sender_discord_binding(state, &sender_discord_id, &parsed.sender_ik_pub)?;
 
     let scope = scope_opt
         .ok_or_else(|| "OSL: v=5 decode: scope required for sender-keys lookup".to_string())?;
@@ -7117,6 +7118,135 @@ fn decrypt_v5_recv(
 
     String::from_utf8(plaintext_bytes)
         .map_err(|_| "OSL: v=5 decrypted plaintext is not valid UTF-8".to_string())
+}
+
+fn verify_v5_sender_discord_binding(
+    state: &AppState,
+    sender_discord_id: &str,
+    wire_sender_pub: &crypto::x25519::PublicKey,
+) -> Result<(), String> {
+    let self_expected = {
+        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let identity = id_guard
+            .as_ref()
+            .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+        let self_claim = identity.discord_snowflake.as_deref() == Some(sender_discord_id)
+            || identity.user_id.as_str() == sender_discord_id;
+        self_claim.then_some(identity.x25519_public)
+    };
+
+    let expected_sender = match self_expected {
+        Some(pk) => pk,
+        None => resolve_pinned_sender_pubkey(state, sender_discord_id)
+            .map_err(|_| "OSL: v5 sender identity is not pinned".to_string())?,
+    };
+
+    if wire_sender_pub != &expected_sender {
+        return Err("OSL: v5 authenticated sender refused".to_string());
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod v5_sender_key_attribution_tests {
+    use super::*;
+    use crypto::sender_keys::{SenderContext, SenderKeyState, SenderKeyStateOnDisk};
+
+    const REAL_SENDER_DID: &str = "900000000000000092";
+    const FORGED_SENDER_DID: &str = "900000000000000193";
+
+    #[test]
+    fn v5_sender_keys_rejects_forged_sender_discord_id() {
+        let state = AppState::new();
+        let mut recipient = keystore::generate_identity("recipient-a92".to_string());
+        recipient.discord_snowflake = Some("900000000000000291".to_string());
+        *state.identity.lock().expect("identity mutex poisoned") = Some(recipient);
+
+        let real_sender = keystore::generate_identity("real-sender-a92".to_string());
+        let forged_claim = keystore::generate_identity("forged-claim-a92".to_string());
+        let scope = crate::scope::Scope::gc("a92-sender-key-forgery");
+        let scope_key = scope.storage_key();
+
+        {
+            let mut pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+            pm.insert(
+                REAL_SENDER_DID.to_string(),
+                crate::peer_map::PeerEntry {
+                    osl_user_id: Some(real_sender.user_id.clone()),
+                    pubkey: Some(STANDARD.encode(real_sender.x25519_public.as_bytes())),
+                    ik_mlkem768_pub: Some(STANDARD.encode(real_sender.mlkem_public_bytes)),
+                    discord_id: Some(REAL_SENDER_DID.to_string()),
+                    ..crate::peer_map::PeerEntry::default()
+                },
+            );
+            pm.insert(
+                FORGED_SENDER_DID.to_string(),
+                crate::peer_map::PeerEntry {
+                    osl_user_id: Some(forged_claim.user_id.clone()),
+                    pubkey: Some(STANDARD.encode(forged_claim.x25519_public.as_bytes())),
+                    ik_mlkem768_pub: Some(STANDARD.encode(real_sender.mlkem_public_bytes)),
+                    discord_id: Some(FORGED_SENDER_DID.to_string()),
+                    ..crate::peer_map::PeerEntry::default()
+                },
+            );
+        }
+
+        let mut sender_state = SenderKeyState::new();
+        sender_state
+            .install_sender()
+            .expect("sender chain installs");
+        let (chain_id, rotation_root, physical_device_id) = {
+            let sender_chain = sender_state.sender_chain().expect("sender chain exists");
+            (
+                sender_chain.current_chain_id(),
+                sender_chain.rotation_root_bytes(),
+                sender_chain.physical_device_id(),
+            )
+        };
+
+        let mut receiver_state = SenderKeyState::new();
+        receiver_state
+            .install_receiver(
+                FORGED_SENDER_DID.as_bytes().to_vec(),
+                chain_id,
+                &rotation_root,
+                physical_device_id,
+            )
+            .expect("receiver chain installs under forged claim");
+        {
+            let mut on_disk = state
+                .sender_key_state
+                .lock()
+                .expect("sender_key_state mutex poisoned");
+            on_disk
+                .states
+                .insert(scope_key.clone(), SenderKeyStateOnDisk::from(&receiver_state));
+            on_disk.version = 1;
+        }
+
+        let ctx = SenderContext {
+            sender_ik_x25519_pub: real_sender.x25519_public,
+            sender_ik_mlkem_pub: real_sender.mlkem_public_bytes.to_vec(),
+            group_id: scope_key.into_bytes(),
+            session_version: crypto::sender_keys::SESSION_VERSION_V1,
+        };
+        let encrypted = sender_state
+            .encrypt(b"forged sender id must not decrypt", &ctx)
+            .expect("sender-key encryption succeeds");
+        let wire = crate::wire_v2::encrypt_v5(
+            &real_sender.x25519_public,
+            crate::wire_v2::MSG_TYPE_CONTENT,
+            0,
+            &encrypted,
+        )
+        .expect("v5 wire encodes");
+
+        let err = decrypt_v5_recv(&state, FORGED_SENDER_DID.to_string(), wire, Some(scope))
+            .expect_err("claimed Discord id must be bound to the v5 wire sender key");
+
+        assert_eq!(err, "OSL: v5 authenticated sender refused");
+    }
 }
 
 /// Resolve sender pubkey. Prefers `peer_map[sender].pubkey` (v=2
