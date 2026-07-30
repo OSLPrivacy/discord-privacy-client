@@ -186,6 +186,48 @@ Document-owned acceptance controls:
   It fails if a title, stale screen text, or unverified background-terminal report is enough to route
   work into a mirror session.
 
+Machine-checkable acceptance contract:
+
+```json
+{
+  "schemaVersion": 1,
+  "controls": [
+    {
+      "name": "Keep Codex account and heavy-resource routing explicit.",
+      "requiredFacts": [
+        "preserves_inherited_codex_home",
+        "cargo_uses_osl_cargo",
+        "broad_verification_uses_osl_heavy",
+        "delegation_uses_osl_fast_delegate",
+        "child_prompts_forbid_account_changes"
+      ],
+      "refusedFacts": [
+        "delegate_may_clear_codex_home",
+        "delegate_may_synthesize_codex_home",
+        "delegate_may_switch_account",
+        "delegate_may_infer_account",
+        "cargo_bypasses_osl_cargo",
+        "broad_verification_bypasses_osl_heavy"
+      ]
+    },
+    {
+      "name": "Pin mirror sessions by identifier before prompting or resuming them.",
+      "requiredFacts": [
+        "session_inspected_immediately_before_action",
+        "session_selected_by_concrete_id",
+        "pin_required_before_prompt",
+        "pin_required_before_resume"
+      ],
+      "refusedFacts": [
+        "route_by_title",
+        "route_by_stale_screen_text",
+        "route_by_unverified_background_terminal_report"
+      ]
+    }
+  ]
+}
+```
+
 ## Idle and dead-lane handling
 
 - A completed result plus an empty prompt is immediately routed to audit, integration, or fix-only

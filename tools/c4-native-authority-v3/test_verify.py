@@ -41,6 +41,7 @@ from schema import (
     FILE_IDENTITY_KEYS,
     PROCESS_KEYS,
     READBACK_KEYS,
+    SchemaError,
     SCHEMA_NAME,
     SCHEMA_VERSION,
     TARGET_KEYS,
@@ -48,6 +49,7 @@ from schema import (
     seal_receipt,
     sha256_hex,
     target_binding_digest,
+    validate_receipt,
 )
 from verify import (
     FilesystemAuthorityVerifier,
@@ -1453,26 +1455,53 @@ class OneShotLedgerTests(unittest.TestCase):
 def ledger() -> None:
     receipt = make_receipt()
     pipe = receipt["emitter"]
+    wrong_pipe = process(
+        5252,
+        133_100_000_000_000_050,
+        r"C:\Program Files\OSL\osl-privacy-hub.exe",
+        "c",
+    )
     receipt_digest = "d" * 64
     testcase = unittest.TestCase()
 
     with tempfile.TemporaryDirectory() as directory:
         ledger_store = recovered_ledger(directory)
         ledger_store.issue(CHALLENGE, NOW)
-        ledger_store.connect(CHALLENGE, pipe, NOW + 1)
 
-        ledger_store.consume(CHALLENGE, pipe, receipt_digest, NOW + 2)
+        with testcase.assertRaises(LedgerError):
+            ledger_store.consume(CHALLENGE, pipe, "c" * 64, NOW + 1)
+        issued = ledger_store.read(CHALLENGE)
+        testcase.assertEqual(issued["state"], "issued")
+        testcase.assertIsNone(issued["pipeBindingSha256"])
+        testcase.assertIsNone(issued["receiptFrameSha256"])
+
+        binding = ledger_store.connect(CHALLENGE, pipe, NOW + 2)
+        connected = ledger_store.read(CHALLENGE)
+        testcase.assertEqual(connected["state"], "connected")
+        testcase.assertEqual(connected["pipeBindingSha256"], binding)
+        testcase.assertIsNone(connected["receiptFrameSha256"])
+
+        with testcase.assertRaises(LedgerError):
+            ledger_store.consume(CHALLENGE, wrong_pipe, "c" * 64, NOW + 3)
+        connected = ledger_store.read(CHALLENGE)
+        testcase.assertEqual(connected["state"], "connected")
+        testcase.assertEqual(connected["pipeBindingSha256"], binding)
+        testcase.assertIsNone(connected["receiptFrameSha256"])
+
+        ledger_store.consume(CHALLENGE, pipe, receipt_digest, NOW + 4)
         consumed = ledger_store.read(CHALLENGE)
         testcase.assertEqual(consumed["state"], "consumed")
+        testcase.assertEqual(consumed["pipeBindingSha256"], binding)
         testcase.assertEqual(consumed["receiptFrameSha256"], receipt_digest)
 
         with testcase.assertRaises(LedgerError):
-            ledger_store.consume(CHALLENGE, pipe, "e" * 64, NOW + 3)
+            ledger_store.consume(CHALLENGE, pipe, "e" * 64, NOW + 5)
 
         restarted = OneShotLedger(directory)
-        testcase.assertEqual(restarted.recover_incomplete(NOW + 4), 0)
+        testcase.assertEqual(restarted.recover_incomplete(NOW + 6), 0)
         persisted = restarted.read(CHALLENGE)
         testcase.assertEqual(persisted["state"], "consumed")
+        testcase.assertEqual(persisted["pipeBindingSha256"], binding)
         testcase.assertEqual(persisted["receiptFrameSha256"], receipt_digest)
 
 
@@ -1525,8 +1554,103 @@ def define_c4_one_shot_challenge_ledger_contract() -> None:
         testcase.assertEqual(consumed["pipeBindingSha256"], binding)
         testcase.assertEqual(consumed["receiptFrameSha256"], receipt_digest)
 
+        restarted = OneShotLedger(directory)
+        testcase.assertEqual(restarted.recover_incomplete(NOW + 9), 0)
+        persisted = restarted.read(CHALLENGE)
+        testcase.assertEqual(persisted["state"], "consumed")
+        testcase.assertEqual(persisted["pipeBindingSha256"], binding)
+        testcase.assertEqual(persisted["receiptFrameSha256"], receipt_digest)
+
 
 define_c4_one_shot_challenge_ledger_contract.__name__ = "test_verify.py"
+
+
+def define_the_c4_v3_native_authority_receipt_schema_for_exact_shipping_builds() -> None:
+    testcase = unittest.TestCase()
+    receipt = make_receipt()
+
+    validate_receipt(receipt)
+    testcase.assertEqual(receipt["schema"], SCHEMA_NAME)
+    testcase.assertEqual(receipt["version"], SCHEMA_VERSION)
+    testcase.assertEqual(receipt["build"]["features"], EXACT_SHIPPING_FEATURES)
+
+    non_shipping_features = copy.deepcopy(receipt)
+    non_shipping_features["build"]["features"] = ["desktop", "core"]
+    non_shipping_features = reseal(non_shipping_features)
+    with testcase.assertRaisesRegex(SchemaError, "exact shipping set"):
+        validate_receipt(non_shipping_features)
+
+    debug_build = copy.deepcopy(receipt)
+    debug_build["build"]["debugAssertions"] = True
+    debug_build = reseal(debug_build)
+    with testcase.assertRaisesRegex(SchemaError, "debugAssertions"):
+        validate_receipt(debug_build)
+
+    wrong_os = copy.deepcopy(receipt)
+    wrong_os["build"]["targetOs"] = "linux"
+    wrong_os = reseal(wrong_os)
+    with testcase.assertRaisesRegex(SchemaError, "targetOs"):
+        validate_receipt(wrong_os)
+
+
+define_the_c4_v3_native_authority_receipt_schema_for_exact_shipping_builds.__name__ = (
+    "Define the C4 v3 native authority receipt schema for exact shipping builds"
+)
+
+
+def validate_carrier_and_pre_post_readbacks_against_one_discord_target_binding() -> None:
+    testcase = unittest.TestCase()
+    receipt = make_receipt()
+    binding = receipt["target"]["bindingSha256"]
+
+    validate_receipt(receipt)
+    testcase.assertEqual(receipt["carrier"]["targetBindingSha256"], binding)
+    testcase.assertEqual(receipt["preSend"]["targetBindingSha256"], binding)
+    testcase.assertEqual(receipt["preSend"]["readback"]["targetBindingSha256"], binding)
+    testcase.assertEqual(receipt["postSend"]["targetBindingSha256"], binding)
+    testcase.assertEqual(receipt["postSend"]["readback"]["targetBindingSha256"], binding)
+
+    wrong_binding = "f" * 64
+    for path, mutate in {
+        "carrier": lambda value: value["carrier"].__setitem__(
+            "targetBindingSha256", wrong_binding
+        ),
+        "preSend": lambda value: value["preSend"].__setitem__(
+            "targetBindingSha256", wrong_binding
+        ),
+        "preSend.readback": lambda value: value["preSend"]["readback"].__setitem__(
+            "targetBindingSha256", wrong_binding
+        ),
+        "postSend": lambda value: value["postSend"].__setitem__(
+            "targetBindingSha256", wrong_binding
+        ),
+        "postSend.readback": lambda value: value["postSend"]["readback"].__setitem__(
+            "targetBindingSha256", wrong_binding
+        ),
+    }.items():
+        with testcase.subTest(path=path):
+            mutated = copy.deepcopy(receipt)
+            mutate(mutated)
+            mutated = reseal(mutated)
+            with testcase.assertRaisesRegex(SchemaError, "target binding"):
+                validate_receipt(mutated)
+
+    wrong_pre_readback = copy.deepcopy(receipt)
+    wrong_pre_readback["preSend"]["readback"]["sha256"] = sha256_hex(b"different")
+    wrong_pre_readback = reseal(wrong_pre_readback)
+    with testcase.assertRaisesRegex(SchemaError, "preSend.readback digest"):
+        validate_receipt(wrong_pre_readback)
+
+    wrong_post_readback = copy.deepcopy(receipt)
+    wrong_post_readback["postSend"]["readback"]["byteLength"] = 1
+    wrong_post_readback = reseal(wrong_post_readback)
+    with testcase.assertRaisesRegex(SchemaError, "postSend.readback byte length"):
+        validate_receipt(wrong_post_readback)
+
+
+validate_carrier_and_pre_post_readbacks_against_one_discord_target_binding.__name__ = (
+    "Validate carrier and pre/post readbacks against one Discord target binding"
+)
 
 
 def load_tests(
@@ -1540,6 +1664,12 @@ def load_tests(
     suite.addTest(unittest.FunctionTestCase(ledger))
     suite.addTest(unittest.FunctionTestCase(
         define_c4_one_shot_challenge_ledger_contract,
+    ))
+    suite.addTest(unittest.FunctionTestCase(
+        define_the_c4_v3_native_authority_receipt_schema_for_exact_shipping_builds,
+    ))
+    suite.addTest(unittest.FunctionTestCase(
+        validate_carrier_and_pre_post_readbacks_against_one_discord_target_binding,
     ))
     return suite
 
