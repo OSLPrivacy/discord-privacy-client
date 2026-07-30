@@ -111,6 +111,37 @@ afterEach(async () => {
 });
 
 describe("migration 0036 account ownership proof required", () => {
+  it("(new) migration 0035 adding a proof-required constraint to the keyserv", async () => {
+    const db = await preProofRequiredDb();
+    await seedUser(db, "owner-osl-id");
+    await applyMigration(db, "0036_account_ownership_proof_required.sql");
+
+    const nonce = "7".repeat(64);
+    const binding = "8".repeat(64);
+    await insertChallenge(db, { nonce, binding });
+
+    await expect(
+      insertProofBinding(db, { nonce, binding }),
+    ).rejects.toThrow(/proof challenge is required/);
+
+    await spendChallenge(db, nonce);
+    await expect(
+      insertProofBinding(db, { nonce, binding }),
+    ).resolves.toMatchObject({ success: true });
+
+    const stored = await db.prepare(
+      `SELECT owner_user_id, service, verified_at_unix_seconds
+         FROM account_ownership_proof_bindings
+        WHERE nonce_sha256 = ?
+          AND binding_sha256 = ?`,
+    ).bind(nonce, binding).first<Record<string, unknown>>();
+    expect(stored).toEqual({
+      owner_user_id: "owner-osl-id",
+      service: "discord",
+      verified_at_unix_seconds: 1_900_000_040,
+    });
+  });
+
   it("requires a matching spent challenge before durable proof binding", async () => {
     const db = await preProofRequiredDb();
     await seedUser(db, "owner-osl-id");

@@ -19,6 +19,10 @@ members = [
     # real traffic before external cryptographic review.
     "crates/osl-ratchet-next",
 ]
+exclude = [
+    "apps/osl-hub",
+    "services/crypto-watcher",
+]
 
 [workspace.package]
 version = "0.0.1"

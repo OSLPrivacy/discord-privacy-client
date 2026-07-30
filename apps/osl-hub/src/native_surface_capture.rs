@@ -741,7 +741,10 @@ mod tests {
             host_generation: 11,
         };
         state.replace(key, capture).expect("store");
-        assert!(state.current(key).is_some());
+        let stored = state.current(key).expect("same key must read capture");
+        assert_eq!(stored.width_px, 320);
+        assert_eq!(stored.height_px, 24);
+        assert_eq!(stored.image_data_url, "data:image/bmp;base64,AA==");
         assert!(state
             .current(NativeSurfaceKey {
                 session_epoch: 8,
@@ -754,7 +757,24 @@ mod tests {
                 host_generation: 12,
             })
             .is_none());
-        state.clear();
+        let newer_generation = NativeSurfaceKey {
+            session_epoch: 7,
+            host_generation: 12,
+        };
+        let mut newer_capture = stored.clone();
+        newer_capture.width_px = 640;
+        state
+            .replace(newer_generation, newer_capture)
+            .expect("replace");
         assert!(state.current(key).is_none());
+        assert_eq!(
+            state
+                .current(newer_generation)
+                .expect("new generation")
+                .width_px,
+            640
+        );
+        state.clear();
+        assert!(state.current(newer_generation).is_none());
     }
 }

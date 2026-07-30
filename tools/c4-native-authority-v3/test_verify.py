@@ -366,6 +366,98 @@ def rebind_target(receipt: dict) -> None:
 
 
 class NativeAuthorityV3Tests(unittest.TestCase):
+    def test_context(self) -> None:
+        receipt = make_receipt()
+        baseline = context(receipt)
+        verdict = verify_receipt(encode(receipt), baseline)
+        self.assertEqual(verdict.status, "synthetic-parser-crypto-valid")
+
+        mutated_receipt = copy.deepcopy(receipt)
+        mutated_receipt["emitter"]["pid"] += 1
+        mutated_receipt = reseal(mutated_receipt)
+        with self.assertRaisesRegex(
+            VerificationError,
+            "receipt emitter does not match",
+        ):
+            verify_receipt(encode(mutated_receipt), baseline)
+
+        wrong_pipe = copy.deepcopy(baseline.pipe_client)
+        wrong_pipe["processStartTime100ns"] += 1
+        with self.assertRaisesRegex(
+            VerificationError,
+            "named-pipe client is not the expected emitter process",
+        ):
+            verify_receipt(
+                encode(receipt),
+                VerificationContext(
+                    **{
+                        **baseline.__dict__,
+                        "pipe_client": wrong_pipe,
+                    }
+                ),
+            )
+
+        wrong_target = copy.deepcopy(baseline.expected_target)
+        wrong_target["hostGeneration"] += 1
+        wrong_target["bindingSha256"] = ""
+        wrong_target["bindingSha256"] = target_binding_digest(wrong_target)
+        with self.assertRaisesRegex(
+            VerificationError,
+            "Discord target does not match",
+        ):
+            verify_receipt(
+                encode(receipt),
+                VerificationContext(
+                    **{
+                        **baseline.__dict__,
+                        "expected_target": wrong_target,
+                    }
+                ),
+            )
+
+    def test_synthetic(self) -> None:
+        receipt = make_receipt()
+        verdict = verify_receipt(encode(receipt), context(receipt))
+        self.assertEqual(verdict.status, "synthetic-parser-crypto-valid")
+        self.assertTrue(verdict.parser_crypto_valid)
+        self.assertFalse(verdict.runtime_receipt_accepted)
+        self.assertFalse(verdict.full_c4_success)
+        self.assertEqual(verdict.point_delta, 0)
+
+        with self.assertRaisesRegex(
+            VerificationError,
+            "synthetic evidence may not carry runtime authority",
+        ):
+            verify_receipt(
+                encode(receipt),
+                context(receipt),
+                ledger=FakeRuntimeLedger(receipt),
+            )
+        with self.assertRaisesRegex(
+            VerificationError,
+            "synthetic evidence may not carry runtime authority",
+        ):
+            verify_receipt(
+                encode(receipt),
+                context(receipt),
+                filesystem_authority_verifier=FakeFilesystemAuthorityVerifier(),
+            )
+        with self.assertRaisesRegex(
+            VerificationError,
+            "synthetic evidence may not carry native authority",
+        ):
+            verify_receipt(
+                encode(receipt),
+                VerificationContext(
+                    **{
+                        **context(receipt).__dict__,
+                        "filesystem_authority_attestation": runtime_context(
+                            receipt
+                        ).filesystem_authority_attestation,
+                    }
+                ),
+            )
+
     def test_synthetic_parser_crypto_positive_is_never_runtime_or_full_c4(self) -> None:
         receipt = make_receipt()
         verdict = verify_receipt(encode(receipt), context(receipt))
