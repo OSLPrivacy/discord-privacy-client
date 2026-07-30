@@ -11,11 +11,17 @@ import {
   canonicalReplenishV2Bytes,
   identityBundleCommitmentB64,
   scheme1PrekeyContractSha256,
+  verifyScheme1AccountOwnershipProof,
   type OpkOwnerProof,
   type ReplenishOpkV2,
   type ReplenishSpkV2,
   type Scheme1IdentityAuthority,
 } from "../../src/lib/prekey-owner-proof.js";
+import {
+  ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1,
+  canonicalAccountOwnershipProofBytes,
+  type Account,
+} from "../../src/lib/account-ownership-proof.js";
 import {
   canonicalPrekeyBundleGetBytes,
   canonicalReplenishBytes,
@@ -35,6 +41,7 @@ import {
 const testDb = (env as unknown as { DB: D1Database }).DB;
 let requestSequence = 1;
 let registerIp = 210;
+const ACCOUNT_PROOF_NOW = 1_800_000_000;
 
 function requestId(): string {
   return base64Encode(
@@ -239,6 +246,50 @@ async function makeProofBatch(args: {
   return output;
 }
 
+async function makeOwnershipAccount(args: {
+  identity: Scheme1IdentityAuthority;
+  signingKey: CryptoKey;
+  platformId: string;
+  fill: number;
+}): Promise<Account> {
+  const evidence = {
+    owner_user_id: args.identity.user_id,
+    nonce_b64: base64Encode(new Uint8Array(32).fill(args.fill)),
+    issued_at_unix_seconds: ACCOUNT_PROOF_NOW - 30,
+    expires_at_unix_seconds: ACCOUNT_PROOF_NOW + 30,
+    signature_b64: "",
+  };
+  const signature = await signEd25519(
+    args.signingKey,
+    canonicalAccountOwnershipProofBytes({
+      proof_type: ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1,
+      platform_id: args.platformId,
+      owner_user_id: evidence.owner_user_id,
+      nonce_b64: evidence.nonce_b64,
+      issued_at_unix_seconds: evidence.issued_at_unix_seconds,
+      expires_at_unix_seconds: evidence.expires_at_unix_seconds,
+    }),
+  );
+  return {
+    platform_id: args.platformId,
+    owner_user_id: args.identity.user_id,
+    owner_ed25519_pub_b64: args.identity.ik_ed25519_pub,
+    proof_challenge: {
+      platform_id: args.platformId,
+      owner_user_id: args.identity.user_id,
+      nonce_b64: evidence.nonce_b64,
+      issued_at_unix_seconds: evidence.issued_at_unix_seconds,
+      expires_at_unix_seconds: evidence.expires_at_unix_seconds,
+      spent: false,
+    },
+    ownership_proof: {
+      platform_id: args.platformId,
+      proof_type: ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1,
+      e: { ...evidence, signature_b64: signature },
+    },
+  };
+}
+
 async function replenishBody(args: {
   identity: Scheme1IdentityAuthority;
   signingKey: CryptoKey;
@@ -298,6 +349,61 @@ describe("scheme-1 prekey owner proofs through the shipping Worker and D1", () =
     expect(await scheme1PrekeyContractSha256()).toBe(
       "8041c9c14f841935c6b42e74829e39747e6b8915bf4c929c80ff1d3e189dffaa",
     );
+  });
+
+  it("end-to-end proof verification passes for the true owner and fails for a different owner", async () => {
+    const owner = await createScheme1Identity();
+    const other = await createScheme1Identity();
+    const account = await makeOwnershipAccount({
+      identity: owner.identity,
+      signingKey: owner.currentSigningKey,
+      platformId: "platform-account-id",
+      fill: 0x71,
+    });
+
+    await expect(
+      verifyScheme1AccountOwnershipProof({
+        identity: owner.identity,
+        account,
+        now_unix_seconds: ACCOUNT_PROOF_NOW,
+      }),
+    ).resolves.toEqual({ ok: true });
+    expect(account.proof_challenge.spent).toBe(true);
+
+    const replayForOther = await makeOwnershipAccount({
+      identity: owner.identity,
+      signingKey: owner.currentSigningKey,
+      platformId: "platform-account-id",
+      fill: 0x72,
+    });
+    await expect(
+      verifyScheme1AccountOwnershipProof({
+        identity: other.identity,
+        account: replayForOther,
+        now_unix_seconds: ACCOUNT_PROOF_NOW,
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: "proof_for_different_owner",
+    });
+
+    const wrongAccount = await makeOwnershipAccount({
+      identity: owner.identity,
+      signingKey: owner.currentSigningKey,
+      platformId: "platform-account-id",
+      fill: 0x73,
+    });
+    wrongAccount.platform_id = "other-platform-account";
+    await expect(
+      verifyScheme1AccountOwnershipProof({
+        identity: owner.identity,
+        account: wrongAccount,
+        now_unix_seconds: ACCOUNT_PROOF_NOW,
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: "proof_for_different_account",
+    });
   });
 
   it("keeps legacy registration tagless and refuses stripped or ambiguous scheme-1 registration", async () => {

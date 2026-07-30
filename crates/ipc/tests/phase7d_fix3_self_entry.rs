@@ -11,7 +11,8 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use ipc::commands::verify_peer_map_self_entry;
 use ipc::peer_map::PeerEntry;
 use ipc::state::AppState;
-use keystore::generate_identity;
+use keystore::{generate_identity, AccountOwnershipProof, ProofChallenge};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const SELF_DID: &str = "900000000000000003";
 const PEER_DID: &str = "900000000000000001";
@@ -22,6 +23,30 @@ fn fresh_state_with_identity(snowflake: Option<&str>) -> AppState {
     id.discord_snowflake = snowflake.map(|s| s.to_string());
     *state.identity.lock().unwrap() = Some(id);
     state
+}
+
+fn ownership_proof_for(state: &AppState, snowflake: &str) -> AccountOwnershipProof {
+    let identity = state
+        .identity
+        .lock()
+        .unwrap()
+        .as_ref()
+        .expect("identity loaded")
+        .clone();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut challenge = ProofChallenge::new(
+        [0x61; keystore::PROOF_CHALLENGE_NONCE_BYTES],
+        snowflake,
+        &identity.user_id,
+        now.saturating_sub(1),
+        now + 600,
+    )
+    .expect("valid challenge");
+    AccountOwnershipProof::from_challenge(&identity, &mut challenge, now)
+        .expect("valid ownership proof")
 }
 
 #[test]
@@ -187,15 +212,16 @@ fn verify_does_not_touch_unrelated_peer_entries() {
 #[test]
 fn register_rejects_non_numeric_snowflake() {
     let state = fresh_state_with_identity(None);
-    let err = ipc::commands::cmd_osl_register_self_snowflake(&state, "not-a-snowflake".to_string())
-        .expect_err("should err");
+    let err =
+        ipc::commands::cmd_osl_register_self_snowflake(&state, "not-a-snowflake".to_string(), None)
+            .expect_err("should err");
     assert!(err.contains("invalid format"), "got: {err}");
 }
 
 #[test]
 fn register_rejects_too_short_snowflake() {
     let state = fresh_state_with_identity(None);
-    let err = ipc::commands::cmd_osl_register_self_snowflake(&state, "12345".to_string())
+    let err = ipc::commands::cmd_osl_register_self_snowflake(&state, "12345".to_string(), None)
         .expect_err("should err");
     assert!(err.contains("invalid format"), "got: {err}");
 }
@@ -204,9 +230,12 @@ fn register_rejects_too_short_snowflake() {
 fn register_rejects_too_long_snowflake() {
     let state = fresh_state_with_identity(None);
     // 21 digits — beyond the 20-digit Discord snowflake max.
-    let err =
-        ipc::commands::cmd_osl_register_self_snowflake(&state, "123456789012345678901".to_string())
-            .expect_err("should err");
+    let err = ipc::commands::cmd_osl_register_self_snowflake(
+        &state,
+        "123456789012345678901".to_string(),
+        None,
+    )
+    .expect_err("should err");
     assert!(err.contains("invalid format"), "got: {err}");
 }
 
@@ -214,8 +243,12 @@ fn register_rejects_too_long_snowflake() {
 fn register_rejects_mismatch_with_existing_snowflake() {
     let state = fresh_state_with_identity(Some(SELF_DID));
     let other = "9999999999999999999"; // different 19-digit snowflake
-    let err = ipc::commands::cmd_osl_register_self_snowflake(&state, other.to_string())
-        .expect_err("should err");
+    let err = ipc::commands::cmd_osl_register_self_snowflake(
+        &state,
+        other.to_string(),
+        Some(ownership_proof_for(&state, other)),
+    )
+    .expect_err("should err");
     assert!(err.contains("mismatch"), "got: {err}");
 }
 

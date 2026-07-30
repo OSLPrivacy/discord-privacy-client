@@ -6,6 +6,11 @@ import {
   type CanonicalIdentityBundle,
 } from "./identity-authority.js";
 import { verifyEd25519 } from "./crypto.js";
+import {
+  verify_ownership_proof,
+  type Account,
+  type AccountOwnershipProofResult,
+} from "./account-ownership-proof.js";
 
 export const REPLENISH_V2_DOMAIN =
   "discord-privacy-client/prekey-replenish/v2";
@@ -100,6 +105,23 @@ export async function scheme1PrekeyContractSha256(): Promise<string> {
 export interface Scheme1IdentityAuthority extends CanonicalIdentityBundle {
   identity_bundle_proof_sig: string;
   registration_sig: string;
+}
+
+export async function verifyScheme1AccountOwnershipProof(args: {
+  identity: Scheme1IdentityAuthority;
+  account: Account;
+  now_unix_seconds: number;
+}): Promise<AccountOwnershipProofResult> {
+  if (
+    args.account.owner_user_id !== args.identity.user_id ||
+    args.account.owner_ed25519_pub_b64 !== args.identity.ik_ed25519_pub
+  ) {
+    return { ok: false, error: "proof_for_different_owner" };
+  }
+  return await verify_ownership_proof(
+    args.account,
+    args.now_unix_seconds,
+  );
 }
 
 export interface ReplenishSpkV2 {
