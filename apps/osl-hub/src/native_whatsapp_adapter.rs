@@ -86,6 +86,42 @@ pub struct DiscoveredWhatsAppPair {
     pub transcript: WhatsAppTranscriptBinding,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum WhatsAppTextFragmentRole {
+    ExactBody,
+    SenderLabel,
+    Timestamp,
+    Reaction,
+    LinkPreviewTitle,
+    LinkPreviewDescription,
+    Summary,
+    Unknown,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct WhatsAppTextFragment {
+    pub role: WhatsAppTextFragmentRole,
+    pub text: String,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct WhatsAppTranscriptRow {
+    pub row_id: String,
+    pub transcript_node_id: String,
+    pub runtime_hash: String,
+    pub bounds: Option<WhatsAppBounds>,
+    pub offscreen: bool,
+    pub fragments: Vec<WhatsAppTextFragment>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct WhatsAppBodyCandidate {
+    pub row_id: String,
+    pub row_runtime_hash: String,
+    pub body: String,
+    pub bounds: WhatsAppBounds,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WhatsAppAdapterRefusal {
     MissingExactAppRoot,
@@ -96,6 +132,8 @@ pub enum WhatsAppAdapterRefusal {
     AmbiguousComposer,
     MissingTranscript,
     AmbiguousTranscript,
+    MissingExactBodyCandidate,
+    BodyCandidateSupportBlocked,
 }
 
 pub fn trusted_whatsapp_content_root(
@@ -174,6 +212,52 @@ pub fn discover_whatsapp_pair(
         composer,
         transcript,
     })
+}
+
+pub fn extract_whatsapp_body_candidates(
+    pair: &DiscoveredWhatsAppPair,
+    rows: &[WhatsAppTranscriptRow],
+) -> Result<Vec<WhatsAppBodyCandidate>, WhatsAppAdapterRefusal> {
+    let mut candidates = Vec::new();
+    for row in rows.iter().filter(|row| {
+        row.transcript_node_id == pair.transcript.node_id
+            && !row.offscreen
+            && row.bounds.map_or(false, WhatsAppBounds::is_positive)
+    }) {
+        let mut row_has_blocking_text = false;
+        for fragment in &row.fragments {
+            let text = canonical_whatsapp_body(&fragment.text);
+            if text.is_empty() {
+                continue;
+            }
+            match fragment.role {
+                WhatsAppTextFragmentRole::ExactBody => {
+                    candidates.push(WhatsAppBodyCandidate {
+                        row_id: row.row_id.clone(),
+                        row_runtime_hash: row.runtime_hash.clone(),
+                        body: text,
+                        bounds: row.bounds.expect("row bounds were checked above"),
+                    });
+                }
+                WhatsAppTextFragmentRole::SenderLabel
+                | WhatsAppTextFragmentRole::Timestamp
+                | WhatsAppTextFragmentRole::Reaction => {}
+                WhatsAppTextFragmentRole::LinkPreviewTitle
+                | WhatsAppTextFragmentRole::LinkPreviewDescription
+                | WhatsAppTextFragmentRole::Summary
+                | WhatsAppTextFragmentRole::Unknown => {
+                    row_has_blocking_text = true;
+                }
+            }
+        }
+        if row_has_blocking_text {
+            return Err(WhatsAppAdapterRefusal::BodyCandidateSupportBlocked);
+        }
+    }
+    if candidates.is_empty() {
+        return Err(WhatsAppAdapterRefusal::MissingExactBodyCandidate);
+    }
+    Ok(candidates)
 }
 
 fn trusted_webview_ancestor_id(
@@ -310,6 +394,13 @@ fn token_contains(token: &Option<String>, needles: &[&str]) -> bool {
     })
 }
 
+fn canonical_whatsapp_body(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .trim_matches(|value: char| value.is_whitespace() && value != '\n')
+        .to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,6 +474,29 @@ mod tests {
         composer.automation_id = Some("main-composer-input".to_owned());
         composer.runtime_hash = Some("runtime-composer".to_owned());
         vec![root, bridge, content, transcript, composer]
+    }
+
+    fn discovered_pair() -> DiscoveredWhatsAppPair {
+        discover_whatsapp_pair(&trusted_nodes_with_pair()).expect("pair fixture should be exact")
+    }
+
+    fn row(row_id: &str, role: WhatsAppTextFragmentRole, text: &str) -> WhatsAppTranscriptRow {
+        WhatsAppTranscriptRow {
+            row_id: row_id.to_owned(),
+            transcript_node_id: "transcript".to_owned(),
+            runtime_hash: format!("runtime-{row_id}"),
+            bounds: Some(WhatsAppBounds {
+                x: 5,
+                y: 5,
+                width: 50,
+                height: 20,
+            }),
+            offscreen: false,
+            fragments: vec![WhatsAppTextFragment {
+                role,
+                text: text.to_owned(),
+            }],
+        }
     }
 
     #[test]
@@ -467,5 +581,54 @@ mod tests {
             discover_whatsapp_pair(&ambiguous_composer),
             Err(WhatsAppAdapterRefusal::AmbiguousComposer)
         );
+    }
+
+    #[test]
+    fn whatsapp_body_candidates_extract_only_exact_row_bodies_or_block() {
+        let pair = discovered_pair();
+        let rows = vec![
+            row("timestamp", WhatsAppTextFragmentRole::Timestamp, "10:41"),
+            row(
+                "body",
+                WhatsAppTextFragmentRole::ExactBody,
+                "  hello\r\nworld  ",
+            ),
+        ];
+        let candidates = extract_whatsapp_body_candidates(&pair, &rows)
+            .expect("one exact body row should produce a body candidate");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].row_id, "body");
+        assert_eq!(candidates[0].row_runtime_hash, "runtime-body");
+        assert_eq!(candidates[0].body, "hello\nworld");
+
+        let preview = vec![row(
+            "preview",
+            WhatsAppTextFragmentRole::LinkPreviewTitle,
+            "Example Domain",
+        )];
+        assert!(matches!(
+            extract_whatsapp_body_candidates(&pair, &preview),
+            Err(WhatsAppAdapterRefusal::BodyCandidateSupportBlocked)
+        ));
+
+        let unknown = vec![row(
+            "unknown",
+            WhatsAppTextFragmentRole::Unknown,
+            "maybe body",
+        )];
+        assert!(matches!(
+            extract_whatsapp_body_candidates(&pair, &unknown),
+            Err(WhatsAppAdapterRefusal::BodyCandidateSupportBlocked)
+        ));
+
+        let metadata_only = vec![row(
+            "timestamp",
+            WhatsAppTextFragmentRole::Timestamp,
+            "10:42",
+        )];
+        assert!(matches!(
+            extract_whatsapp_body_candidates(&pair, &metadata_only),
+            Err(WhatsAppAdapterRefusal::MissingExactBodyCandidate)
+        ));
     }
 }
