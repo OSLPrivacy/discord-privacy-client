@@ -575,6 +575,34 @@ describe("producer-owned deployment evidence receipt v3", () => {
     ).rejects.toThrow(/state is missing; genesis is forbidden/);
   });
 
+  it("refuses forged live producer identities in transactional verifier state", async () => {
+    const forgedIdentity = "test://forged-live-producer";
+    const verifier = createDeploymentEvidenceVerifierStoreFixture(
+      "B",
+      {
+        pending_challenge: null,
+        producer_identity: forgedIdentity,
+      },
+    );
+    await expect(
+      issueDeploymentEvidenceChallenge(challengeRequest(), {
+        verifierStore: verifier.store,
+        nowMs: DEPLOYMENT_FIXTURE_NOW,
+      }),
+    ).rejects.toThrow(/producer does not match transactional state/);
+
+    const forgedLiveState = createDeploymentEvidenceVerifierStoreFixture(
+      "B",
+      { producer_identity: forgedIdentity },
+    );
+    await expect(
+      consumeDeploymentEvidenceOnce(verify(deploymentEvidencePayload()), {
+        verifierStore: forgedLiveState.store,
+      }),
+    ).rejects.toThrow(/producer does not match transactional state/);
+    expect(forgedLiveState.casCalls()).toBe(0);
+  });
+
   it("consumes once and refuses replay or caller-file genesis reset", async () => {
     const verifier = createDeploymentEvidenceVerifierStoreFixture();
     const verified = verify(deploymentEvidencePayload());
