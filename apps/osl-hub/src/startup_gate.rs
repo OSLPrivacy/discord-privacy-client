@@ -119,8 +119,7 @@ pub fn verify_duress_pin(
     let marker = ipc::main_password::read_marker_pub(&dir)?;
     let outcome = ipc::main_password::verify_gate_password_with_marker(&marker, &pin)?;
     if matches!(outcome, ipc::main_password::GateMatch::Burn) {
-        lock.password_failed_attempts = 0;
-        lock.password_locked_until = None;
+        ipc::main_password::reset_password_failure_counter(&mut lock);
         let _ = ipc::main_password::write_lockout_pub(&dir, &lock);
         return Ok(GatePasswordVerification {
             role: VerifiedGateRole::Burn,
@@ -129,15 +128,24 @@ pub fn verify_duress_pin(
         });
     }
 
-    lock.password_failed_attempts = lock.password_failed_attempts.saturating_add(1);
-    let secs = ipc::main_password::password_lockout_secs_pub(lock.password_failed_attempts);
-    lock.password_locked_until = if secs > 0 { Some(now + secs) } else { None };
+    let failure = ipc::main_password::record_gate_password_failure(&mut lock, now);
     let _ = ipc::main_password::write_lockout_pub(&dir, &lock);
-    Ok(GatePasswordVerification {
-        role: VerifiedGateRole::Wrong,
-        lockout_seconds_remaining: secs,
-        attempts_used: lock.password_failed_attempts,
-    })
+    match failure {
+        ipc::main_password::GateFailureAction::Wrong => Ok(GatePasswordVerification {
+            role: VerifiedGateRole::Wrong,
+            lockout_seconds_remaining: lock
+                .password_locked_until
+                .map(|until| until - now)
+                .unwrap_or(0)
+                .max(0),
+            attempts_used: lock.password_failed_attempts,
+        }),
+        ipc::main_password::GateFailureAction::DuressByThreshold => Ok(GatePasswordVerification {
+            role: VerifiedGateRole::Burn,
+            lockout_seconds_remaining: 0,
+            attempts_used: lock.password_failed_attempts,
+        }),
+    }
 }
 
 pub fn readiness_after_main(state: &HubCoreState) -> CoreReadiness {

@@ -69,6 +69,7 @@ const ARGON_MEMORY_KB: u32 = 65_536; // 64 MiB
 const ARGON_ITERATIONS: u32 = 3;
 const ARGON_PARALLELISM: u32 = 1;
 const INACTIVITY_AUTO_LOCK_SECONDS: u64 = 15 * 60;
+pub const DURESS_FAILED_ATTEMPT_THRESHOLD: u32 = 10;
 
 // =====================================================================
 // On-disk schemas.
@@ -1218,7 +1219,31 @@ pub enum GateMatch {
     Main([u8; 32]), // also returns derived file_storage_key
     Stealth,
     Burn,
+    DuressByThreshold,
     Wrong,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateFailureAction {
+    Wrong,
+    DuressByThreshold,
+}
+
+pub fn reset_password_failure_counter(lock: &mut LockoutState) {
+    lock.password_failed_attempts = 0;
+    lock.password_locked_until = None;
+}
+
+pub fn record_gate_password_failure(lock: &mut LockoutState, now: i64) -> GateFailureAction {
+    lock.password_failed_attempts = lock.password_failed_attempts.saturating_add(1);
+    if lock.password_failed_attempts >= DURESS_FAILED_ATTEMPT_THRESHOLD {
+        lock.password_locked_until = None;
+        GateFailureAction::DuressByThreshold
+    } else {
+        let secs = password_lockout_secs(lock.password_failed_attempts);
+        lock.password_locked_until = if secs > 0 { Some(now + secs) } else { None };
+        GateFailureAction::Wrong
+    }
 }
 
 pub fn verify_gate_password_with_marker(
@@ -1558,5 +1583,25 @@ mod password_policy_tests {
         ));
         assert_eq!(get_file_storage_key(), None);
         set_file_storage_key(None);
+    }
+
+    #[test]
+    fn tenth_wrong_password_attempt_triggers_duress() {
+        let mut lock = LockoutState {
+            version: LOCKOUT_VERSION,
+            password_failed_attempts: DURESS_FAILED_ATTEMPT_THRESHOLD - 1,
+            password_locked_until: Some(1),
+            phrase_failed_attempts: 0,
+            phrase_locked_until: None,
+        };
+
+        let action = record_gate_password_failure(&mut lock, 1_700_000_000);
+
+        assert_eq!(action, GateFailureAction::DuressByThreshold);
+        assert_eq!(lock.password_failed_attempts, DURESS_FAILED_ATTEMPT_THRESHOLD);
+        assert_eq!(
+            lock.password_locked_until, None,
+            "the tenth wrong password must enter duress instead of ordinary lockout"
+        );
     }
 }

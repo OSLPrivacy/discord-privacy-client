@@ -11543,8 +11543,7 @@ pub fn cmd_osl_verify_gate_password(
                 &resolve_keyserver_base_url(&dir),
                 read_keyserver_client_token(&dir),
             );
-            lock.password_failed_attempts = 0;
-            lock.password_locked_until = None;
+            crate::main_password::reset_password_failure_counter(&mut lock);
             let _ = crate::main_password::write_lockout_pub(&dir, &lock);
             Ok(GateVerifyDto {
                 result: "main".to_string(),
@@ -11556,8 +11555,7 @@ pub fn cmd_osl_verify_gate_password(
             // Shared counter reset on any successful entry — see
             // security rationale in the spec (prevents attacker
             // distinguishing main from stealth via counter dynamics).
-            lock.password_failed_attempts = 0;
-            lock.password_locked_until = None;
+            crate::main_password::reset_password_failure_counter(&mut lock);
             let _ = crate::main_password::write_lockout_pub(&dir, &lock);
             Ok(GateVerifyDto {
                 result: "stealth".to_string(),
@@ -11566,8 +11564,7 @@ pub fn cmd_osl_verify_gate_password(
             })
         }
         GateMatch::Burn => {
-            lock.password_failed_attempts = 0;
-            lock.password_locked_until = None;
+            crate::main_password::reset_password_failure_counter(&mut lock);
             let _ = crate::main_password::write_lockout_pub(&dir, &lock);
             Ok(GateVerifyDto {
                 result: "burn".to_string(),
@@ -11575,17 +11572,33 @@ pub fn cmd_osl_verify_gate_password(
                 attempts_used: 0,
             })
         }
-        GateMatch::Wrong => {
-            lock.password_failed_attempts = lock.password_failed_attempts.saturating_add(1);
-            let secs =
-                crate::main_password::password_lockout_secs_pub(lock.password_failed_attempts);
-            lock.password_locked_until = if secs > 0 { Some(now + secs) } else { None };
+        GateMatch::DuressByThreshold => {
             let _ = crate::main_password::write_lockout_pub(&dir, &lock);
             Ok(GateVerifyDto {
-                result: "wrong".to_string(),
-                lockout_seconds_remaining: secs,
+                result: "burn".to_string(),
+                lockout_seconds_remaining: 0,
                 attempts_used: lock.password_failed_attempts,
             })
+        }
+        GateMatch::Wrong => {
+            let failure = crate::main_password::record_gate_password_failure(&mut lock, now);
+            let _ = crate::main_password::write_lockout_pub(&dir, &lock);
+            match failure {
+                crate::main_password::GateFailureAction::Wrong => Ok(GateVerifyDto {
+                    result: "wrong".to_string(),
+                    lockout_seconds_remaining: lock
+                        .password_locked_until
+                        .map(|until| until - now)
+                        .unwrap_or(0)
+                        .max(0),
+                    attempts_used: lock.password_failed_attempts,
+                }),
+                crate::main_password::GateFailureAction::DuressByThreshold => Ok(GateVerifyDto {
+                    result: "burn".to_string(),
+                    lockout_seconds_remaining: 0,
+                    attempts_used: lock.password_failed_attempts,
+                }),
+            }
         }
     }
 }
