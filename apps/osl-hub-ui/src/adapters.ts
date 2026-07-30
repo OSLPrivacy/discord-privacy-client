@@ -7,9 +7,7 @@ import { isTauriRuntime } from "./preferences";
 import { checkedBackendResponse, recordBackendFailure, recordInvalidBackendResponse } from "./backend-failure";
 import {
   parseNativeDiscordOverlayOpenedBatch,
-  parseNativeDiscordOverlayPrepared,
   type NativeDiscordOverlayOpenedBatch,
-  type NativeDiscordOverlayPrepared,
 } from "./overlay-state";
 
 export interface FriendProfile { friendCode: string; oslUserId: string; safetyNumber: string; }
@@ -56,6 +54,13 @@ export interface OpenedPeerProseText {
   personToPersonE2ee: true;
   viewOnceConsumed: boolean;
   requireCaptureProtection: boolean;
+}
+export interface PreparedOslChatText {
+  messageId: string;
+  expiresAt: number;
+  personToPersonE2ee: true;
+  viewOnce: boolean;
+  deliveredToOslInbox: true;
 }
 export interface OslChatHistoryRow {
   messageId: string;
@@ -238,11 +243,11 @@ export async function closeOslChatContext(): Promise<boolean> {
   catch (error) { recordBackendFailure("close_osl_chat_context", error); return false; }
 }
 
-export async function prepareOslChatText(plaintext: string, viewOnce = false): Promise<NativeDiscordOverlayPrepared | null> {
+export async function prepareOslChatText(plaintext: string, viewOnce = false): Promise<PreparedOslChatText | null> {
   if (!isTauriRuntime() || !isHubPlaintext(plaintext) || typeof viewOnce !== "boolean") return null;
   try {
     return checkedBackendResponse("prepare_osl_chat_text",
-      parseNativeDiscordOverlayPrepared(await invoke<unknown>("prepare_osl_chat_text", { plaintext, viewOnce })),
+      parsePreparedOslChatText(await invoke<unknown>("prepare_osl_chat_text", { plaintext, viewOnce })),
       "the prepared message did not match the expected shape");
   } catch (error) { recordBackendFailure("prepare_osl_chat_text", error, [plaintext]); return null; }
 }
@@ -1153,6 +1158,17 @@ export function parsePreparedPeerProseText(raw: unknown): PreparedPeerProseText 
     || raw.personToPersonE2ee !== true
     || typeof raw.viewOnce !== "boolean") return null;
   return raw as unknown as PreparedPeerProseText;
+}
+
+export function parsePreparedOslChatText(raw: unknown): PreparedOslChatText | null {
+  if (!isRecord(raw) || !exact(raw, ["messageId", "expiresAt", "personToPersonE2ee", "viewOnce", "deliveredToOslInbox"])) return null;
+  if (!safe(raw.messageId, 96)
+    || !Number.isSafeInteger(raw.expiresAt)
+    || Number(raw.expiresAt) <= 0
+    || raw.personToPersonE2ee !== true
+    || typeof raw.viewOnce !== "boolean"
+    || raw.deliveredToOslInbox !== true) return null;
+  return raw as unknown as PreparedOslChatText;
 }
 
 export function parseOpenedPeerProseText(raw: unknown): OpenedPeerProseText | null {

@@ -65,6 +65,19 @@ describe("first-party OSL Chat IPC", () => {
     await expect(openOslChatText()).resolves.toBeNull();
   });
 
+  it("refuses platform carrier fields on first-party prepared sends", async () => {
+    mocks.invoke.mockResolvedValueOnce({
+      messageId: "peer-0123456789abcdef0123456789abcdef",
+      expiresAt: 2_000_000_000,
+      personToPersonE2ee: true,
+      viewOnce: false,
+      deliveredToOslInbox: true,
+      flagtext: "public carrier belongs to a platform row",
+    });
+    await expect(prepareOslChatText("hello")).resolves.toBeNull();
+    expect(mocks.invoke).toHaveBeenCalledWith("prepare_osl_chat_text", { plaintext: "hello", viewOnce: false });
+  });
+
   it("strictly parses bounded encrypted-at-rest history rows", async () => {
     mocks.invoke.mockResolvedValueOnce([{
       discord_message_id: "peer-0123456789abcdef0123456789abcdef",
