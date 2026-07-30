@@ -542,7 +542,10 @@ mod tests {
 
     fn assert_removed_target(report: &crate::cleanup::HubFullCleanupResult, target: &str) {
         assert!(
-            report.removed_targets.iter().any(|removed| removed == target),
+            report
+                .removed_targets
+                .iter()
+                .any(|removed| removed == target),
             "cleanup report did not include removed target {target}; report={:?}",
             report.removed_targets
         );
@@ -699,8 +702,16 @@ mod tests {
         std::fs::create_dir_all(&native_profiles).unwrap();
         std::fs::write(core_dir.join("peer_map.json"), br#"{}"#).unwrap();
         std::fs::write(core_dir.join("whitelist_state.json"), br#"{}"#).unwrap();
-        std::fs::write(service_profiles.join("profile-cache"), b"local profile bytes").unwrap();
-        std::fs::write(native_profiles.join("native-cache"), b"native profile bytes").unwrap();
+        std::fs::write(
+            service_profiles.join("profile-cache"),
+            b"local profile bytes",
+        )
+        .unwrap();
+        std::fs::write(
+            native_profiles.join("native-cache"),
+            b"native profile bytes",
+        )
+        .unwrap();
         std::fs::write(config_dir.join("service-registry.json"), br#"{}"#).unwrap();
         std::fs::write(config_dir.join("service-scope-index.json"), br#"{}"#).unwrap();
         std::fs::write(config_dir.join("preview-preferences.json"), br#"{}"#).unwrap();
@@ -734,6 +745,14 @@ mod tests {
         assert!(service_profiles.exists());
         ipc::main_password::set_file_storage_key(None);
 
+        let verification =
+            crate::startup_gate::verify_password_role(&state, duress_pin.to_owned()).unwrap();
+        assert_eq!(
+            verification.role,
+            crate::startup_gate::VerifiedGateRole::Burn
+        );
+        assert!(ipc::main_password::get_file_storage_key().is_none());
+
         let report = enter_duress_pin_for_full_wipe_report(
             &state,
             duress_pin.to_owned(),
@@ -742,10 +761,19 @@ mod tests {
             true,
         )
         .unwrap();
+        let unlock = crate::startup_gate::HubGateUnlockResult::burned(verification, report.clone());
+        let burn = unlock.burn.as_ref().expect("burn report is returned");
+
+        assert_eq!(unlock.outcome, "burned");
+        assert!(unlock.readiness.is_none());
+        assert!(burn.local_cleanup_complete);
+        assert!(burn.failed_targets.is_empty());
         assert!(report.local_cleanup_complete);
         assert!(report.failed_targets.is_empty());
         assert!(!report.restart_required);
         assert!(report.original_discord_data_untouched);
+        assert_eq!(report.remote_unregister.identities_found, 1);
+        assert_eq!(report.remote_unregister.unavailable, 1);
         for target in [
             "hub_core",
             "service_profiles",

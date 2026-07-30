@@ -1,7 +1,7 @@
 use keystore::{
     generate_identity, save_identity, save_password_record, save_prekey_state, Argon2Params,
-    DuressEngine, DuressHandlers, DuressJournal, DuressPaths, NoOpSealer, PasswordRecord,
-    PrekeyConfig, PrekeyState, StepOutcome, TpmEvictOutcome, WipeStep,
+    DuressEngine, DuressError, DuressHandlers, DuressJournal, DuressPaths, NoOpSealer,
+    PasswordRecord, PrekeyConfig, PrekeyState, StepOutcome, TpmEvictOutcome, WipeStep,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -475,6 +475,107 @@ fn resume_picks_up_partial_journal() {
     );
     // Zeroize handler did fire (it wasn't in the journal).
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn resume_pending_journal_completes_remaining_destructive_steps() {
+    let dir = TempDir::new().unwrap();
+    let (paths, journal_path) = build_paths(&dir);
+    let sealer = NoOpSealer::new();
+    let id = generate_identity("alice".into());
+    save_identity(&paths.identity_file, &id, &sealer).unwrap();
+    let pw = PasswordRecord::new("111111", None, fast()).unwrap();
+    save_password_record(&paths.password_file, &pw, &sealer).unwrap();
+    let prekey_state = PrekeyState::new(&id, PrekeyConfig::default(), 1_700_000_000);
+    let prekey_path = paths.prekey_file.clone().unwrap();
+    save_prekey_state(&prekey_path, &prekey_state, &sealer).unwrap();
+
+    let local_cache = dir.path().join("local-cache");
+    let anonymous_store = dir.path().join("anonymous-credential.token");
+    let opsec_file = dir.path().join("injection-config.js");
+    std::fs::create_dir_all(&local_cache).unwrap();
+    std::fs::write(local_cache.join("message-cache"), b"ciphertext").unwrap();
+    std::fs::write(&anonymous_store, b"token").unwrap();
+    std::fs::write(&opsec_file, b"config").unwrap();
+
+    std::fs::remove_file(&paths.identity_file).unwrap();
+    let journal = DuressJournal {
+        completed: vec![
+            (WipeStep::TpmEvict, StepOutcome::AlreadyClean),
+            (WipeStep::KeyringPurge, StepOutcome::Wiped),
+            (WipeStep::IdentityFile, StepOutcome::Wiped),
+        ],
+        started_at_unix_seconds: 1_700_000_001,
+    };
+    std::fs::write(&journal_path, serde_json::to_vec_pretty(&journal).unwrap()).unwrap();
+
+    let remove_path = |path: std::path::PathBuf| {
+        Box::new(move || match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_dir() => {
+                std::fs::remove_dir_all(&path).map_err(|e| DuressError::Io(e.to_string()))
+            }
+            Ok(_) => std::fs::remove_file(&path).map_err(|e| DuressError::Io(e.to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(DuressError::Io(e.to_string())),
+        }) as keystore::WipeFn
+    };
+    let callbacks = Arc::new(AtomicUsize::new(0));
+    let counted = |callbacks: Arc<AtomicUsize>| {
+        Box::new(move || {
+            callbacks.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }) as keystore::WipeFn
+    };
+    let handlers = DuressHandlers {
+        wipe_local_cache_dir: Some(remove_path(local_cache.clone())),
+        wipe_anonymous_credentials: Some(remove_path(anonymous_store.clone())),
+        wipe_prekeys: Some(counted(callbacks.clone())),
+        wipe_double_ratchet: Some(counted(callbacks.clone())),
+        wipe_sender_keys: Some(counted(callbacks.clone())),
+        wipe_peer_ratchets: Some(counted(callbacks.clone())),
+        zeroize_in_memory: Some(counted(callbacks.clone())),
+        strip_opsec_files: Some(remove_path(opsec_file.clone())),
+        ..Default::default()
+    };
+
+    let engine = DuressEngine::new(journal_path.clone(), paths, handlers);
+    let report = engine.resume_if_pending().unwrap().expect("resume ran");
+
+    assert!(report.completed);
+    assert!(report.failed_steps().is_empty());
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::IdentityFile),
+        &StepOutcome::Wiped,
+        "completed journal entries must not be replayed as already-clean"
+    );
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::PasswordHashes),
+        &StepOutcome::Wiped
+    );
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::PrekeyFile),
+        &StepOutcome::Wiped
+    );
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::LocalCacheDir),
+        &StepOutcome::Wiped
+    );
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::AnonymousCredentials),
+        &StepOutcome::Wiped
+    );
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::StripOpsecFiles),
+        &StepOutcome::Wiped
+    );
+    assert_eq!(callbacks.load(Ordering::SeqCst), 5);
+    assert!(!dir.path().join("identity.json").exists());
+    assert!(!dir.path().join("password.json").exists());
+    assert!(!prekey_path.exists());
+    assert!(!local_cache.exists());
+    assert!(!anonymous_store.exists());
+    assert!(!opsec_file.exists());
+    assert!(!journal_path.exists());
 }
 
 #[test]
