@@ -176,6 +176,11 @@ jobs:
           $releasedHash = (Get-FileHash $env:RELEASED_EXE -Algorithm SHA256).Hash.ToLowerInvariant()
           $rebuiltHash = (Get-FileHash $env:REBUILT_EXE -Algorithm SHA256).Hash.ToLowerInvariant()
           $installerHash = (Get-FileHash $env:RELEASE_INSTALLER -Algorithm SHA256).Hash.ToLowerInvariant()
+          $actualCommit = (git rev-parse HEAD).Trim()
+          $actualTree = (git rev-parse HEAD^{tree}).Trim()
+          if ($actualCommit -cne $env:SOURCE_COMMIT -or $actualTree -cne $env:SOURCE_TREE) {
+            throw "reproducibility proof was not produced from the resolved exact source"
+          }
           if ($proof.candidateTag -cne $env:CANDIDATE_TAG -or
               $proof.sourceCommit -cne $env:SOURCE_COMMIT -or
               $proof.sourceTree -cne $env:SOURCE_TREE) {
