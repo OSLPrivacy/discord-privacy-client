@@ -1205,5 +1205,14 @@ mod tests {
         let opened = bob.decrypt(&after, &mut rng).expect("bob after restore");
         assert_eq!(opened.msg_type, 9);
         assert_eq!(opened.plaintext, b"alice after restored gaps");
+
+        let bob_after = bob
+            .encrypt(10, b"bob after restored gaps", &mut rng)
+            .expect("bob after restore");
+        let opened = alice
+            .decrypt(&bob_after, &mut rng)
+            .expect("alice after restore");
+        assert_eq!(opened.msg_type, 10);
+        assert_eq!(opened.plaintext, b"bob after restored gaps");
     }
 }
