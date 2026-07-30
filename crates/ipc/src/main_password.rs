@@ -923,11 +923,10 @@ pub fn run_inactivity_auto_lock_timer_for_state(
     if get_file_storage_key().is_none() {
         return InactivityAutoLockOutcome::AlreadyLocked;
     }
-    let timer =
-        keystore::InactivityTimer::with_last_activity(
-            INACTIVITY_AUTO_LOCK_SECONDS as u64,
-            last_activity,
-        );
+    let timer = keystore::InactivityTimer::with_last_activity(
+        INACTIVITY_AUTO_LOCK_SECONDS as u64,
+        last_activity,
+    );
     if timer.should_reprompt_at(now) {
         lock_main_password_session(state);
         InactivityAutoLockOutcome::Locked
@@ -1020,9 +1019,7 @@ pub(crate) fn run_file_key_inactivity_auto_lock_timer_at(now: Instant) -> bool {
         // `Some(timer)` shadowed the outer guard, so `*timer = None` assigned to the
         // borrowed &InactivityTimer instead of the slot -- and as_ref() held an
         // immutable borrow across the write. Decide first, then clear the slot.
-        let expired = timer
-            .as_ref()
-            .is_some_and(|t| t.should_reprompt_at(now));
+        let expired = timer.as_ref().is_some_and(|t| t.should_reprompt_at(now));
         if expired {
             *timer = None;
             true
@@ -1937,7 +1934,9 @@ mod password_policy_tests {
         let dir = tempfile::tempdir().unwrap();
         let _guard = use_temp_config_dir(dir.path());
         let state = AppState::new_with_production_duress_engine(dir.path().to_path_buf());
-        state.install_identity(keystore::generate_identity("wrong-threshold-owner".to_owned()));
+        state.install_identity(keystore::generate_identity(
+            "wrong-threshold-owner".to_owned(),
+        ));
         set_file_storage_key(Some([0x55; 32]));
         let identity_file = dir.path().join("identity.json");
         let password_file = dir.path().join("password_marker.json");
@@ -2455,5 +2454,111 @@ mod password_policy_tests {
             lock.password_failed_attempts,
             keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD
         );
+    }
+
+    mod exact_unit_tests {
+        use super::*;
+
+        #[test]
+        fn run_inactivity_auto_lock_timer() {
+            let _guard = INACTIVITY_AUTO_LOCK_TEST_LOCK.lock().unwrap();
+            set_file_storage_key(None);
+            let unlocked_at = Instant::now();
+            let key = [0x31; 32];
+            set_file_storage_key_after_main_password_unlock_at(key, unlocked_at);
+
+            assert_eq!(
+                INACTIVITY_AUTO_LOCK_SECONDS,
+                15 * 60,
+                "main password unlocks must arm a 15-minute idle window"
+            );
+            assert!(
+                !run_file_key_inactivity_auto_lock_timer_at(
+                    unlocked_at + std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS - 1)
+                ),
+                "the idle timer must not lock before 15 full idle minutes"
+            );
+            assert_eq!(
+                get_file_storage_key(),
+                Some(key),
+                "the unlocked session key must remain installed before the idle threshold"
+            );
+
+            assert!(
+                run_file_key_inactivity_auto_lock_timer_at(
+                    unlocked_at + std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS)
+                ),
+                "the idle timer must lock at the 15-minute threshold"
+            );
+            assert_eq!(
+                get_file_storage_key(),
+                None,
+                "auto-lock must clear the unlocked file storage key"
+            );
+            assert!(
+                !super::super::run_inactivity_auto_lock_timer(),
+                "a disarmed timer must not report another fresh lock transition"
+            );
+        }
+
+        #[test]
+        fn tenth_wrong_password_attempt_triggers_duress() {
+            set_file_storage_key(None);
+            let dir = tempfile::tempdir().unwrap();
+            let _guard = use_temp_config_dir(dir.path());
+            let state = AppState::new_with_production_duress_engine(dir.path().to_path_buf());
+            state.install_identity(keystore::generate_identity(
+                "tenth-wrong-duress-owner".to_owned(),
+            ));
+            set_file_storage_key(Some([0x62; 32]));
+
+            let identity_file = dir.path().join("identity.json");
+            let password_file = dir.path().join("password_marker.json");
+            let prekey_file = dir.path().join("prekeys.json");
+            std::fs::write(&identity_file, b"identity").unwrap();
+            std::fs::write(&password_file, b"password").unwrap();
+            std::fs::write(&prekey_file, b"prekeys").unwrap();
+
+            let now = now_unix_secs();
+            let mut lock = LockoutState {
+                version: LOCKOUT_VERSION,
+                password_failed_attempts: DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 2,
+                password_locked_until: None,
+                ..Default::default()
+            };
+
+            assert_eq!(
+                record_wrong_password_attempt_or_duress(&state, &mut lock, now).unwrap(),
+                WrongPasswordAttemptAction::Wrong {
+                    attempts_used: DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 1,
+                    lockout_seconds_remaining: password_lockout_secs(
+                        DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 1
+                    ),
+                },
+                "the ninth wrong password attempt must not trigger duress"
+            );
+            assert!(identity_file.exists());
+            assert!(password_file.exists());
+            assert!(prekey_file.exists());
+            assert_eq!(get_file_storage_key(), Some([0x62; 32]));
+
+            assert_eq!(
+                record_wrong_password_attempt_or_duress(&state, &mut lock, now).unwrap(),
+                WrongPasswordAttemptAction::DuressTriggered {
+                    attempts_used: DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT,
+                },
+                "the tenth wrong password attempt must trigger duress"
+            );
+            assert_eq!(
+                lock.password_failed_attempts, DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT,
+                "duress must be driven by the real accumulated attempt counter"
+            );
+            assert!(!identity_file.exists());
+            assert!(!password_file.exists());
+            assert!(!prekey_file.exists());
+            assert_eq!(get_file_storage_key(), None);
+            assert!(!state.has_identity());
+            assert!(!state.has_prekey_state());
+        }
     }
 }
