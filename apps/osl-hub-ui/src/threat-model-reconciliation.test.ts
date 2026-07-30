@@ -2,56 +2,108 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
+type Reconciliation = {
+  v4_pairwise_dm: {
+    shipping_default: boolean;
+    retirement_reason: string;
+    fallback_wire: number;
+  };
+  rn_wire_in: {
+    production_encrypt_decrypt: boolean;
+    downgrade_refusal_guard: boolean;
+  };
+  v5_sender_keys: {
+    public_product_default: boolean;
+    ipc_owner_switch_default: boolean;
+    default_false_rationale: string;
+    remediation: string[];
+  };
+  v5_rotation_limits: {
+    implemented_triggers: string[];
+    unimplemented_triggers: string[];
+  };
+};
+
 function readRepo(relativePath: string): string {
-  return readFileSync(fileURLToPath(new URL(`../../../${relativePath}`, import.meta.url)), "utf8");
+  return readFileSync(
+    fileURLToPath(new URL(`../../../${relativePath}`, import.meta.url)),
+    "utf8",
+  );
 }
 
-function lineNumber(source: string, needle: string): number {
-  const index = source.indexOf(needle);
-  expect(index, `missing source anchor: ${needle}`).toBeGreaterThanOrEqual(0);
-  return source.slice(0, index).split("\n").length;
-}
-
-describe("THREAT_MODEL reconciliation for retired v4, v5 rationale, and RN guard", () => {
+function threatModelReconciliation(): Reconciliation {
   const threatModel = readRepo("docs/THREAT_MODEL.md");
-  const commands = readRepo("crates/ipc/src/commands.rs");
-  const wireRn = readRepo("crates/ipc/src/wire_rn.rs");
-  const state = readRepo("crates/ipc/src/state.rs");
-  const coreBridge = readRepo("apps/osl-hub/src/core_bridge.rs");
+  const blocks = [
+    ...threatModel.matchAll(
+      /```json threat-model-reconciliation-v1\n([\s\S]*?)\n```/gu,
+    ),
+  ];
+  expect(blocks).toHaveLength(1);
+  return JSON.parse(blocks[0][1]) as Reconciliation;
+}
 
-  it("documents RN as a downgrade-refusal guard, not a shipping ratchet", () => {
-    const rnGateLine = lineNumber(wireRn, "pub const RN_WIRE_IN_ENABLED: bool = false;");
-    const rnPinLine = lineNumber(commands, "// Unit b1: RnWirePath dispatch seam.");
-    const rnSendLine = lineNumber(wireRn, "pub fn send_rn(");
-    const rnInboundLine = lineNumber(commands, "fn accept_rn_bootstrap_inbound_unknown(");
+function rustBooleanInitializer(source: string, field: string): boolean {
+  const expression = new RegExp(
+    `${field}:\\s*AtomicBool::new\\((true|false)\\)`,
+    "u",
+  );
+  const match = source.match(expression);
+  expect(match, `${field} initializer must stay explicit`).not.toBeNull();
+  return match![1] === "true";
+}
 
-    expect(threatModel).toContain("downgrade-refusal guard, not RN traffic");
-    expect(threatModel).toContain("has no production encrypt/decrypt path");
-    expect(threatModel).toContain(`crates/ipc/src/wire_rn.rs:${rnGateLine}`);
-    expect(threatModel).toContain(`crates/ipc/src/commands.rs:${rnPinLine}`);
-    expect(threatModel).toContain(`crates/ipc/src/wire_rn.rs:${rnSendLine}`);
-    expect(threatModel).toContain(`crates/ipc/src/commands.rs:${rnInboundLine}`);
+function exportedBooleanLiteral(source: string, field: string): boolean {
+  const expression = new RegExp(`${field}:\\s*(true|false),`, "u");
+  const match = source.match(expression);
+  expect(match, `${field} status literal must stay explicit`).not.toBeNull();
+  return match![1] === "true";
+}
 
-    expect(threatModel).not.toContain("nothing uses `wire_rn`");
-    expect(threatModel).not.toContain("Its only reference outside its own tests");
+describe("THREAT_MODEL reconciliation for retired v4 and v5 limits", () => {
+  it("threat_model_reconciles_v4_retirement_and_v5_ratchet_limits", () => {
+    const model = threatModelReconciliation();
+
+    expect(model.v4_pairwise_dm).toEqual({
+      shipping_default: false,
+      retirement_reason: "ratchet_desynchronization_failures",
+      fallback_wire: 3,
+    });
+    expect(model.rn_wire_in).toEqual({
+      production_encrypt_decrypt: false,
+      downgrade_refusal_guard: true,
+    });
+    expect(model.v5_rotation_limits.implemented_triggers).toEqual([
+      "twenty_four_hours",
+      "membership_change",
+    ]);
+    expect(model.v5_rotation_limits.unimplemented_triggers).toEqual([
+      "one_hour",
+      "five_hundred_messages",
+      "suspicious_event",
+    ]);
   });
 
-  it("keeps the v4 retirement and v5 default-false rationale tied to source", () => {
-    const v4GateLine = lineNumber(commands, "let v4_dm_enabled = false;");
-    const v5GateLine = lineNumber(commands, "let v5_group_enabled = state");
-    const v5StateLine = lineNumber(state, "/// Temporary compatibility kill-switch for v=5");
-    const coreBridgeFalseLine = lineNumber(coreBridge, "group_sender_keys_enabled: false,");
+  it("v5_sender_keys_enabled_default_false_rationale_is_documented", () => {
+    const model = threatModelReconciliation();
+    const state = readRepo("crates/ipc/src/state.rs");
+    const coreBridge = readRepo("apps/osl-hub/src/core_bridge.rs");
 
-    expect(threatModel).toContain(`crates/ipc/src/commands.rs:${v4GateLine}`);
-    expect(threatModel).toContain(`crates/ipc/src/commands.rs:${v5GateLine}`);
-    expect(threatModel).toContain(`crates/ipc/src/state.rs:${v5StateLine}`);
-    expect(threatModel).toContain(`apps/osl-hub/src/core_bridge.rs:${coreBridgeFalseLine}`);
-    expect(threatModel).toContain("one account on two machines");
-    expect(threatModel).toContain("key receiver chains by `(account, device)`");
-
-    const relevantSources = [commands, state, coreBridge].join("\n");
-    expect(relevantSources).toContain("let v4_dm_enabled = false;");
-    expect(relevantSources).not.toMatch(/let\s+v4_dm_enabled\s*=\s*true\s*;/u);
-    expect(relevantSources).not.toMatch(/sender_keys_enabled\s*\.\s*store\s*\(\s*true\b/u);
+    expect(model.v5_sender_keys.public_product_default).toBe(false);
+    expect(model.v5_sender_keys.ipc_owner_switch_default).toBe(
+      rustBooleanInitializer(state, "sender_keys_enabled"),
+    );
+    expect(
+      exportedBooleanLiteral(coreBridge, "group_sender_keys_enabled"),
+    ).toBe(model.v5_sender_keys.public_product_default);
+    expect(model.v5_sender_keys.default_false_rationale).toBe(
+      "account_scoped_chain_state_is_not_device_bound",
+    );
+    expect(new Set(model.v5_sender_keys.remediation)).toEqual(
+      new Set([
+        "device_bound_sender_key_chains",
+        "multi_device_ordering_tests",
+        "rotation_claims_limited_to_implemented_triggers",
+      ]),
+    );
   });
 });

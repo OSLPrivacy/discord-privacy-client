@@ -16,6 +16,7 @@ pub mod cloud_autoscrub_authority;
 pub mod cloud_autoscrub_consent;
 pub mod cloud_autoscrub_execution;
 pub mod cloud_autoscrub_envelope;
+pub mod consent_ledger;
 pub mod control_contract;
 pub mod discord_carrier_geometry;
 pub mod execution_consent;
