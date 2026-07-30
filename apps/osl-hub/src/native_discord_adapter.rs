@@ -6224,6 +6224,49 @@ pub(crate) fn native_row_producer_batch_is_valid(
     })
 }
 
+/// Nonsecret qualification summary for one native visible-row read.
+///
+/// A row read is positive evidence only when every returned row carries
+/// producer-owned attribution. Public row text can still keep Discord visible,
+/// but the proof state is named here so receipt reducers and acceptance tests
+/// cannot confuse "rows were seen" with "rows were attributed".
+#[cfg(any(test, target_os = "windows", feature = "discord-qa-shell"))]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct NativeVisibleRowQualification {
+    rows_observed: usize,
+    proof_some: usize,
+    proof_none: usize,
+    own_rows: usize,
+    peer_rows: usize,
+}
+
+#[cfg(any(test, target_os = "windows", feature = "discord-qa-shell"))]
+fn qualify_native_visible_rows(rows: &[VisibleMessageRow]) -> NativeVisibleRowQualification {
+    let mut qualification = NativeVisibleRowQualification {
+        rows_observed: rows.len(),
+        ..NativeVisibleRowQualification::default()
+    };
+    for row in rows {
+        match row.attribution.as_ref() {
+            Some(evidence) => {
+                qualification.proof_some = qualification.proof_some.saturating_add(1);
+                match evidence.poster {
+                    NativeDiscordRowPoster::SelfAccount => {
+                        qualification.own_rows = qualification.own_rows.saturating_add(1);
+                    }
+                    NativeDiscordRowPoster::PeerAccount => {
+                        qualification.peer_rows = qualification.peer_rows.saturating_add(1);
+                    }
+                }
+            }
+            None => {
+                qualification.proof_none = qualification.proof_none.saturating_add(1);
+            }
+        }
+    }
+    qualification
+}
+
 /// Why one rehydration walk stopped.
 #[cfg(any(test, target_os = "windows"))]
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -6310,12 +6353,15 @@ fn finish_native_visible_rows(
             attribution: row.attribution,
         })
         .collect::<Vec<_>>();
+    let qualification = qualify_native_visible_rows(&visible_rows);
     let producer_proof_is_valid = root_identity_still_holds
         && native_row_producer_batch_is_valid(
             &visible_rows,
             scope_binding,
             window_generation,
-        );
+        )
+        && qualification.proof_some == visible_rows.len()
+        && qualification.proof_none == 0;
     if !producer_proof_is_valid {
         for row in &mut visible_rows {
             row.attribution = None;
@@ -6877,48 +6923,29 @@ fn native_visible_row_qa_receipt_from_rows(
     window_generation: u64,
     rows: Vec<VisibleMessageRow>,
 ) -> NativeVisibleRowQaReceipt {
-    let rows_observed = rows.len();
-    let mut proof_some = 0usize;
-    let mut proof_none = 0usize;
-    let mut own_rows = 0usize;
-    let mut peer_rows = 0usize;
-    for row in rows {
-        match row.attribution {
-            Some(evidence) => {
-                proof_some = proof_some.saturating_add(1);
-                match evidence.poster {
-                    NativeDiscordRowPoster::SelfAccount => {
-                        own_rows = own_rows.saturating_add(1);
-                    }
-                    NativeDiscordRowPoster::PeerAccount => {
-                        peer_rows = peer_rows.saturating_add(1);
-                    }
-                }
-            }
-            None => {
-                proof_none = proof_none.saturating_add(1);
-            }
-        }
-    }
+    let qualification = qualify_native_visible_rows(&rows);
     let refusal_reason_counts = NativeVisibleRowQaRefusalReasonCounts {
-        no_rows_observed: usize::from(rows_observed == 0),
-        native_proof_unavailable: proof_none,
+        no_rows_observed: usize::from(qualification.rows_observed == 0),
+        native_proof_unavailable: qualification.proof_none,
     };
-    let accepted = rows_observed > 0
-        && proof_some == rows_observed
-        && proof_none == 0
-        && own_rows.saturating_add(peer_rows) == proof_some;
+    let accepted = qualification.rows_observed > 0
+        && qualification.proof_some == qualification.rows_observed
+        && qualification.proof_none == 0
+        && qualification
+            .own_rows
+            .saturating_add(qualification.peer_rows)
+            == qualification.proof_some;
     NativeVisibleRowQaReceipt {
         schema_version: 1,
         build_hash,
         native_target_identity_sha256,
         scope_binding_sha256: native_row_attribution_scope_sha256(scope_binding),
         window_generation,
-        rows_observed,
-        proof_some,
-        proof_none,
-        own_rows,
-        peer_rows,
+        rows_observed: qualification.rows_observed,
+        proof_some: qualification.proof_some,
+        proof_none: qualification.proof_none,
+        own_rows: qualification.own_rows,
+        peer_rows: qualification.peer_rows,
         refusal_reason_counts,
         accepted,
     }
@@ -24510,6 +24537,72 @@ mod tests {
         );
         assert_eq!(visible[0].line, OWN_CARRIER);
         assert_eq!(visible[1].line, PEER_CARRIER);
+    }
+
+    #[test]
+    fn native_visible_row_qualification_distinguishes_seen_from_attributed_rows() {
+        const OWN_CARRIER: &str = "the quiet harbour keeps every lantern burning tonight";
+        const PEER_CARRIER: &str = "the winter garden waits beside the silver morning";
+        let (own, peer) = own_and_peer_provider_evidence();
+        let qualified = vec![
+            provider_visible_row(own.clone(), OWN_CARRIER),
+            provider_visible_row(peer.clone(), PEER_CARRIER),
+        ];
+        assert_eq!(
+            qualify_native_visible_rows(&qualified),
+            NativeVisibleRowQualification {
+                rows_observed: 2,
+                proof_some: 2,
+                proof_none: 0,
+                own_rows: 1,
+                peer_rows: 1,
+            }
+        );
+
+        let mut missing_peer = provider_visible_row(peer.clone(), PEER_CARRIER);
+        missing_peer.attribution = None;
+        let unqualified = vec![provider_visible_row(own.clone(), OWN_CARRIER), missing_peer];
+        assert_eq!(
+            qualify_native_visible_rows(&unqualified),
+            NativeVisibleRowQualification {
+                rows_observed: 2,
+                proof_some: 1,
+                proof_none: 1,
+                own_rows: 1,
+                peer_rows: 0,
+            }
+        );
+
+        let finished = finish_native_visible_rows(
+            RehydrateRead {
+                rows: vec![
+                    RehydratedRowRead {
+                        locator_sha256: own.native_locator_sha256.clone(),
+                        line: OWN_CARRIER.to_owned(),
+                        candidates: vec![OWN_CARRIER.to_owned()],
+                        bounds: Some([10, 10, 500, 40]),
+                        attribution: Some(own),
+                    },
+                    RehydratedRowRead {
+                        locator_sha256: peer.native_locator_sha256.clone(),
+                        line: PEER_CARRIER.to_owned(),
+                        candidates: vec![PEER_CARRIER.to_owned()],
+                        bounds: Some([10, 42, 500, 72]),
+                        attribution: None,
+                    },
+                ],
+                separators: 0,
+                unreadable: 0,
+                other_role: 0,
+                offscreen: 0,
+                outcome: RehydrateReadOutcome::Complete,
+            },
+            "trusted-scope",
+            7,
+            true,
+        );
+        assert_eq!(finished.len(), 2);
+        assert!(finished.iter().all(|row| row.attribution.is_none()));
     }
 
     #[test]
