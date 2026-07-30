@@ -188,6 +188,33 @@ handle, credential, profile, path, URL, conversation, plan, digest, row, or
 deletion verb, and absence of any required binding refuses instead of issuing an
 empty or permissive scan.
 
+### Independent Review Pass f78
+
+Verdict: pass, provided the registration stays limited to
+`open_hosted_session_scan` and `request_hosted_session_scan` and the command
+wrappers keep the renderer out of owner, scope, generation, operator-name,
+credential, profile, row-selection, preview, confirmation, and deletion inputs.
+
+The isolation boundary is acceptable because the only authority-bearing inputs
+listed above are native-held state or unavailable to the scan command. The
+renderer can request reachability only; it cannot name the account, hosted
+context, operator identity, row target, or deletion action. Missing identity
+unlock, active host, scope binding, attended operator binding, credential
+source, or delete authority therefore remains a refusal. It must not be mapped
+to an empty scan, best-effort scan, cached scan, local fixture, or permissive
+default.
+
+The authority bind is acceptable because the scan result remains content-free
+shape metadata: scope hash, generation, row counts, walk completeness, row
+shape, text length, and operator-authorship boolean. Those fields can support a
+later reviewed cleanup preview, but they are not row locators and do not grant
+preview, confirmation, platform input, or delete-own-item authority.
+
+Review non-goals: this pass does not approve generic cleanup execution, guided
+deletion preview, plan confirmation, mass cleanup, credential/profile access,
+service navigation, process/window handles, arbitrary URLs, or renderer-supplied
+account and conversation identifiers.
+
 ## Unit Tests To Add With The Registration
 
 Add a static reachability test under the UI test suite, for example
