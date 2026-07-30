@@ -6,6 +6,7 @@ umask 077
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT="${SCRIPT_DIR}/configure-telegram-reporting-bot.sh"
 readonly LEGACY_SCRIPT="${SCRIPT_DIR}/configure-telegram-operators.py"
+readonly TEST_NAME='Rotate Telegram credentials without changing operator allowlists.'
 TEST_DIR=''
 
 cleanup() {
@@ -183,6 +184,7 @@ fi
 grep -Fq 'Bot verified: @osl_report_test_bot' "${TRANSCRIPT}" || fail 'bounded bot validation output is missing'
 grep -Fq 'Webhook verified: https://keyserver.oslprivacy.com/v1/telegram/webhook' "${TRANSCRIPT}" || fail 'bounded webhook validation output is missing'
 grep -Fq 'Operator and viewer chat IDs were not changed.' "${TRANSCRIPT}" || fail 'allowlist-preservation confirmation is missing'
+printf 'PASS %s\n' "${TEST_NAME}"
 
 XTRACE_OUTPUT="${TEST_DIR}/xtrace-output"
 set +e

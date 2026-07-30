@@ -10511,6 +10511,7 @@ mod tauri_registration_surface_tests {
         }
         for forbidden in [
             "preview_discord_guided_deletion",
+            "request_hosted_session_scan_comman",
             "execute_discord_guided_deletion",
             "delete_own_item",
         ] {
