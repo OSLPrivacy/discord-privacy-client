@@ -426,7 +426,7 @@ struct PendingSentCarrierRow {
     line_count: u16,
 }
 
-#[cfg(any(test, feature = "discord-qa-shell"))]
+#[cfg(any(test, feature = "discord-qa-shell", target_os = "windows"))]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VerifiedCarrierPresentation {
     pub background_rgb: [u8; 3],
@@ -7182,7 +7182,7 @@ pub struct NativeVisibleRowQaReceipt {
 /// usable source row cannot prove that the corresponding mutation was rejected.
 /// A negative control earns its expected result only as `Refused`; a positive
 /// control earns its expected result only as `Accepted`.
-#[cfg(any(test, feature = "discord-qa-shell"))]
+#[cfg(any(test, feature = "discord-qa-shell", target_os = "windows"))]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NativeVisibleRowQaTriState {
@@ -7194,7 +7194,7 @@ pub enum NativeVisibleRowQaTriState {
 
 /// Nonsecret controls produced inside the same Windows accessibility walk as
 /// the real visible rows.
-#[cfg(any(test, feature = "discord-qa-shell"))]
+#[cfg(any(test, feature = "discord-qa-shell", target_os = "windows"))]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct NativeVisibleRowProducerControls {
     pub peer_anchor: NativeVisibleRowQaTriState,
