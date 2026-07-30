@@ -353,6 +353,32 @@ function disposable_discord_accounts_load_from_key_vault_without_logging_secrets
     throw 'disposable account receipt exposed secret material'
   }
 
+  $outsideVaultFetcher = {
+    param([string]$Name)
+    if ($Name -ceq 'osl-test-account-manifest') {
+      return '{"clients":{"1":"osl-test-discord-01"}}'
+    }
+    if ($Name -ceq 'osl-test-discord-01') {
+      return $fixtureCredential
+    }
+    throw 'unexpected secret request'
+  }
+  try {
+    Invoke-OslDisposableDiscordAccountLoad `
+      -VaultName 'customer-key-vault' `
+      -ClientNumber 1 `
+      -AccessToken 'fixture-token' `
+      -SecretFetcher $outsideVaultFetcher | Out-Null
+    throw 'non-OSL test-secrets vault was accepted for disposable Discord account loading'
+  } catch {
+    if ($_.Exception.Message -ceq 'non-OSL test-secrets vault was accepted for disposable Discord account loading') {
+      throw
+    }
+    if ($_.Exception.Message -cne 'test credential vault is outside the OSL test-secrets boundary') {
+      throw
+    }
+  }
+
   $blankFetcher = {
     param([string]$Name)
     if ($Name -ceq 'osl-test-account-manifest') {

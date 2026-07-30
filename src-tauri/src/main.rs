@@ -3335,9 +3335,11 @@ mod tests {
         let ticks_for_driver = ticks.clone();
         let fired_at_for_driver = fired_at.clone();
 
+        let interval = Duration::from_millis(40);
+
         tokio::time::timeout(
             Duration::from_secs(1),
-            drive_prekey_replenishment_timer(Duration::from_millis(10), Some(3), move || {
+            drive_prekey_replenishment_timer(interval, Some(3), move || {
                 let ticks_for_tick = ticks_for_driver.clone();
                 let fired_at_for_tick = fired_at_for_driver.clone();
                 async move {
@@ -3352,21 +3354,25 @@ mod tests {
         assert_eq!(ticks.load(Ordering::SeqCst), 3);
         let fired_at = fired_at.lock().unwrap();
         assert_eq!(fired_at.len(), 3);
+        assert!(
+            fired_at[0].duration_since(started) < interval / 2,
+            "the launch replenish tick must run immediately instead of waiting for the periodic interval"
+        );
         let total_periodic_wait = fired_at[2].duration_since(fired_at[0]);
         assert!(
-            total_periodic_wait >= Duration::from_millis(16),
+            total_periodic_wait >= interval + (interval / 2),
             "the two post-launch replenish ticks must be separated by two real timer intervals"
         );
         assert!(
-            fired_at[1].duration_since(fired_at[0]) >= Duration::from_millis(8),
+            fired_at[1].duration_since(fired_at[0]) >= interval - (interval / 5),
             "the first periodic replenish tick must wait for the real interval"
         );
         assert!(
-            fired_at[2].duration_since(fired_at[1]) >= Duration::from_millis(8),
+            fired_at[2].duration_since(fired_at[1]) >= interval - (interval / 5),
             "later replenish ticks must also wait for the real interval"
         );
         assert!(
-            started.elapsed() >= Duration::from_millis(15),
+            started.elapsed() >= interval + (interval / 2),
             "after the launch tick, two periodic ticks must be separated by the real interval"
         );
     }
