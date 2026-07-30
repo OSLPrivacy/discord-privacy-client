@@ -91,6 +91,40 @@ is still owned-file bound.
       "forbiddenSubstitute": "borrow_other_account",
       "expectedDecision": "refuse",
       "expectedReason": "failed live capacity check cannot be satisfied by borrowing authority"
+    },
+    {
+      "lane": "j14",
+      "historicalPoolLabel": "available",
+      "currentCapacityRecord": {
+        "observedAt": "2026-07-30T09:12:05Z",
+        "freshForDecisionAt": "2026-07-30T09:12:20Z",
+        "activeSessionCount": 3,
+        "blockedOrSleepingSessions": ["j6"],
+        "accountQuotaStatus": "verified_enough_for_expected_turn",
+        "machineHeadroom": "insufficient_for_focused_verification",
+        "ownedFileBound": true,
+        "contradictions": []
+      },
+      "forbiddenSubstitute": "change_CODEX_HOME",
+      "expectedDecision": "refuse",
+      "expectedReason": "failed machine headroom check cannot be satisfied by changing CODEX_HOME"
+    },
+    {
+      "lane": "j14",
+      "historicalPoolLabel": "available",
+      "currentCapacityRecord": {
+        "observedAt": "2026-07-30T09:12:05Z",
+        "freshForDecisionAt": "2026-07-30T09:12:20Z",
+        "activeSessionCount": 3,
+        "blockedOrSleepingSessions": ["j6"],
+        "accountQuotaStatus": "verified_enough_for_expected_turn",
+        "machineHeadroom": "verified_enough_for_focused_verification",
+        "ownedFileBound": false,
+        "contradictions": []
+      },
+      "forbiddenSubstitute": "speculative_background_child",
+      "expectedDecision": "standby",
+      "expectedReason": "unbounded ownership cannot be satisfied by speculative background work"
     }
   ]
 }
