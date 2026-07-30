@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import re
+import tempfile
+import unittest
 from pathlib import Path
 
 
@@ -22,12 +24,27 @@ def require(condition: bool, message: str) -> None:
         raise SystemExit(message)
 
 
-def main() -> None:
-    workflow = WORKFLOW.read_text(encoding="utf-8")
-    promotion = PROMOTION_WORKFLOW.read_text(encoding="utf-8")
-    hub = json.loads(HUB_CONFIG.read_text(encoding="utf-8"))
-    original = json.loads(ORIGINAL_CONFIG.read_text(encoding="utf-8"))
+def private_key_paths(root: Path) -> list[Path]:
+    return [
+        path for path in root.rglob("*")
+        if path.is_file()
+        and ".git" not in path.parts
+        and (path.name.endswith(".key") or "signing-private" in path.name.lower())
+    ]
 
+
+def require_object(value: object, message: str) -> dict[str, object]:
+    require(isinstance(value, dict), message)
+    return value
+
+
+def audit_release_policy(
+    workflow: str,
+    promotion: str,
+    hub: dict[str, object],
+    original: dict[str, object],
+    root: Path,
+) -> None:
     refs = ANY_ACTION.findall(workflow + "\n" + promotion)
     pins = PINNED_ACTION.findall(workflow + "\n" + promotion)
     require(refs and len(refs) == len(pins), "OSL Privacy release actions must use full commit SHAs")
@@ -36,6 +53,8 @@ def main() -> None:
             "OSL Privacy release job must reject branch and unscoped manual dispatches")
     require('if ("${{ github.ref_name }}" -ne $tag)' in workflow,
             "OSL Privacy release tag must exactly match the configured application version")
+    require("ref: ${{ github.ref }}" in workflow,
+            "OSL Privacy release checkout must bind to the exact triggering tag ref")
     require("HUB_TAURI_SIGNING_PRIVATE_KEY" in workflow, "OSL Privacy release must use its dedicated signing secret")
     require("TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" not in workflow,
             "OSL Privacy release must not use the original client's signing secret")
@@ -61,22 +80,102 @@ def main() -> None:
     require("gh release upload hub-latest candidate/latest.json --clobber" in promotion,
             "Only verified promotion may move the app updater feed")
 
-    updater = hub.get("plugins", {}).get("updater", {})
+    hub_plugins = require_object(hub.get("plugins"), "OSL Privacy plugin config must be an object")
+    updater = require_object(hub_plugins.get("updater"), "OSL Privacy updater config must be an object")
     endpoints = updater.get("endpoints")
     require(endpoints == [
         "https://github.com/OSLPrivacy/discord-privacy-client/releases/download/hub-latest/latest.json"
     ], "OSL Privacy updater endpoint must be the product-specific hub-latest feed")
     require(bool(updater.get("pubkey")), "OSL Privacy updater public key is missing")
-    original_key = original.get("plugins", {}).get("updater", {}).get("pubkey")
+    original_plugins = require_object(original.get("plugins"), "Original plugin config must be an object")
+    original_updater = require_object(original_plugins.get("updater"), "Original updater config must be an object")
+    original_key = original_updater.get("pubkey")
     require(updater["pubkey"] != original_key, "OSL Privacy and original client must not share an updater signing key")
 
-    forbidden = [
-        path for path in ROOT.rglob("*")
-        if path.is_file()
-        and ".git" not in path.parts
-        and (path.name.endswith(".key") or "signing-private" in path.name.lower())
-    ]
+    forbidden = private_key_paths(root)
     require(not forbidden, f"Private updater key material is present in the repository: {forbidden}")
+
+
+def main() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    promotion = PROMOTION_WORKFLOW.read_text(encoding="utf-8")
+    hub = json.loads(HUB_CONFIG.read_text(encoding="utf-8"))
+    original = json.loads(ORIGINAL_CONFIG.read_text(encoding="utf-8"))
+    audit_release_policy(workflow, promotion, hub, original, ROOT)
+
+
+class HubReleaseAuditTests(unittest.TestCase):
+    def fixture(self) -> tuple[str, str, dict[str, object], dict[str, object], Path]:
+        workflow = """
+jobs:
+  windows-release:
+    if: startsWith(github.ref, 'refs/tags/hub-v')
+    runs-on: windows-latest
+    environment: hub-release
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.ref }}
+      - name: Resolve and verify the app release version
+        run: |
+          if ("${{ github.ref_name }}" -ne $tag) {
+            throw "Tag mismatch"
+          }
+      - name: Build signed draft installer and updater manifest
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.HUB_TAURI_SIGNING_PRIVATE_KEY }}
+        with:
+          releaseDraft: true
+""".strip()
+        promotion = """
+on:
+  workflow_dispatch:
+jobs:
+  promote-tested-candidate:
+    environment: hub-vm-qa
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - run: gh release view "$CANDIDATE_TAG" --json isDraft --jq .isDraft
+      - run: gh release download "$CANDIDATE_TAG" --pattern hub-vm-qa-attestation.json --dir candidate
+      - run: python scripts/verify_hub_vm_qa_attestation.py
+      - run: gh release edit "$CANDIDATE_TAG" --draft=false
+      - run: gh release upload hub-latest candidate/latest.json --clobber
+""".strip()
+        hub = {
+            "plugins": {
+                "updater": {
+                    "endpoints": [
+                        "https://github.com/OSLPrivacy/discord-privacy-client/releases/download/hub-latest/latest.json"
+                    ],
+                    "pubkey": "hub-public-key",
+                }
+            }
+        }
+        original = {"plugins": {"updater": {"pubkey": "original-public-key"}}}
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        return workflow, promotion, hub, original, Path(temporary.name)
+
+    def test_accepts_exact_tag_draft_candidate_policy(self) -> None:
+        audit_release_policy(*self.fixture())
+
+    def test_rejects_checkout_not_bound_to_triggering_tag_ref(self) -> None:
+        workflow, promotion, hub, original, root = self.fixture()
+        workflow = workflow.replace("          ref: ${{ github.ref }}\n", "")
+        with self.assertRaises(SystemExit):
+            audit_release_policy(workflow, promotion, hub, original, root)
+
+    def test_rejects_candidate_workflow_that_publishes_directly(self) -> None:
+        workflow, promotion, hub, original, root = self.fixture()
+        workflow = workflow.replace("releaseDraft: true", "releaseDraft: false")
+        with self.assertRaises(SystemExit):
+            audit_release_policy(workflow, promotion, hub, original, root)
+
+    def test_rejects_stable_feed_mutation_from_candidate_workflow(self) -> None:
+        workflow, promotion, hub, original, root = self.fixture()
+        workflow = workflow + "\n      - run: gh release upload hub-latest latest.json"
+        with self.assertRaises(SystemExit):
+            audit_release_policy(workflow, promotion, hub, original, root)
 
 
 if __name__ == "__main__":
