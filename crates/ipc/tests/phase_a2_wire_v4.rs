@@ -296,6 +296,88 @@ fn v4_header_tamper_rejected_via_aad() {
 }
 
 #[test]
+fn v4_rejects_forged_sender_ik_pub_through_attribution_helper() {
+    let (alice_ik_sk, alice_ik_pub) = x25519::generate_keypair();
+    let (_mallory_ik_sk, mallory_ik_pub) = x25519::generate_keypair();
+    let (bob_ik_sk, bob_ik_pub) = x25519::generate_keypair();
+    let (bob_ratchet_sk, bob_ratchet_pub) = x25519::generate_keypair();
+    let (bob_mlkem_dk, bob_mlkem_ek) = ml_kem_768::generate_keypair();
+
+    let (session_key, handshake) =
+        pqxdh::initiate(&alice_ik_sk, &bob_ik_pub, &bob_ik_pub, None, &bob_mlkem_ek).unwrap();
+    assert!(
+        ipc::sender_attribution_proof::prove_resolved_sender_key(&alice_ik_pub, &mallory_ik_pub,)
+            .is_err(),
+        "fixture must model distinct honest and forged sender identity keys"
+    );
+
+    let conversation_id = b"wire-v4-sender-attribution".to_vec();
+    let alice_ctx = SessionContext {
+        local_ik_x25519_pub: alice_ik_pub,
+        local_ik_mlkem_pub: vec![0xaa; 1184],
+        peer_ik_x25519_pub: bob_ik_pub,
+        peer_ik_mlkem_pub: vec![0xbb; 1184],
+        conversation_id: conversation_id.clone(),
+        session_version: SESSION_VERSION_V1,
+    };
+    let mut alice =
+        DoubleRatchet::new_initiator(&session_key, &bob_ratchet_pub, alice_ctx).unwrap();
+    let em = alice.encrypt(b"v4 sender attribution").unwrap();
+    let bob_recipient = RecipientV3 {
+        x25519_pub: bob_ik_pub,
+        mlkem_pub: ml_kem_768::EncapsulationKey::from_bytes(&bob_mlkem_ek.to_bytes()),
+    };
+    let wire = encrypt_v4_from_ratchet(
+        &alice_ik_pub,
+        &bob_recipient,
+        &session_key,
+        &handshake,
+        ipc::wire_v2::MSG_TYPE_CONTENT,
+        true,
+        &em,
+    )
+    .unwrap();
+    let parsed = decrypt_v4(&wire, &bob_ik_sk, &bob_mlkem_dk).unwrap();
+    assert_eq!(parsed.sender_ik_pub.as_bytes(), alice_ik_pub.as_bytes());
+
+    let em_recovered = crypto::ratchet::EncryptedMessage {
+        header_nonce: parsed.enc_header_nonce,
+        enc_header: parsed.enc_header,
+        message_nonce: parsed.body_nonce,
+        ciphertext: parsed.body_ct,
+    };
+    let honest_bob_ctx = SessionContext {
+        local_ik_x25519_pub: bob_ik_pub,
+        local_ik_mlkem_pub: vec![0xbb; 1184],
+        peer_ik_x25519_pub: alice_ik_pub,
+        peer_ik_mlkem_pub: vec![0xaa; 1184],
+        conversation_id: conversation_id.clone(),
+        session_version: SESSION_VERSION_V1,
+    };
+    let mut honest_bob =
+        DoubleRatchet::new_responder(&parsed.session_key, &bob_ratchet_sk, honest_bob_ctx).unwrap();
+    assert_eq!(
+        honest_bob.decrypt(&em_recovered).unwrap(),
+        b"v4 sender attribution"
+    );
+
+    let forged_bob_ctx = SessionContext {
+        local_ik_x25519_pub: bob_ik_pub,
+        local_ik_mlkem_pub: vec![0xbb; 1184],
+        peer_ik_x25519_pub: mallory_ik_pub,
+        peer_ik_mlkem_pub: vec![0xcc; 1184],
+        conversation_id,
+        session_version: SESSION_VERSION_V1,
+    };
+    let mut forged_bob =
+        DoubleRatchet::new_responder(&parsed.session_key, &bob_ratchet_sk, forged_bob_ctx).unwrap();
+    assert!(
+        forged_bob.decrypt(&em_recovered).is_err(),
+        "v4 SessionContext must bind sender_ik_pub; a relabelled sender key must not decrypt"
+    );
+}
+
+#[test]
 fn v4_decode_with_v3_bytes_returns_clear_error() {
     // Build a v=3 wire, feed it to decrypt_v4. v=3's version byte is
     // 0x03; v=4 decode rejects with WrongVersion.
