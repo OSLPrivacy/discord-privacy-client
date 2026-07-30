@@ -250,6 +250,18 @@ setattr(
 )
 
 
+def reject_content_bearing_accessibility_bench_artifacts() -> None:
+    testcase = AccessibilityBenchRedactionTests(
+        "test_complete_non_content_evidence_is_allowed"
+    )
+    _reject_content_bearing_accessibility_bench_artifacts(testcase)
+
+
+globals()["Reject content-bearing accessibility bench artifacts"] = (
+    reject_content_bearing_accessibility_bench_artifacts
+)
+
+
 def load_tests(
     loader: unittest.TestLoader,
     tests: unittest.TestSuite,
