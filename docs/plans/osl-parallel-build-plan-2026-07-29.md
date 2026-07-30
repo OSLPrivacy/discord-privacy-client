@@ -36,3 +36,18 @@ Acceptance for this risk is a coordinator routing exercise, not a prose grep:
    turn.
 3. Attempt to satisfy a failed capacity check by borrowing another account, changing `CODEX_HOME`, or
    starting speculative background work. The routing decision must remain `refuse` or `standby`.
+
+### Fixed routing exercise
+
+The coordinator records the following cases as the local contract for this plan:
+
+| Case | Historical pool label | Fresh capacity record | Forbidden substitute attempted | Expected decision |
+| --- | --- | --- | --- | --- |
+| `stale-available-refuses` | `available` | absent or older than the current dispatch turn | none | `refuse` with `missing-current-capacity` |
+| `contradictory-quota-stands-by` | `available` | active-session count conflicts with account/quota status | none | `standby` with `contradictory-capacity` |
+| `fresh-owned-capacity-dispatches` | `available` | active sessions, blocked/sleeping sessions, verified account/quota status, machine headroom, and owned-file bound are all current and sufficient | none | `dispatch` |
+| `failed-capacity-cannot-borrow` | any value | quota or headroom is insufficient | borrowed account, changed `CODEX_HOME`, or speculative background child | `refuse` with `capacity-substitution-forbidden` |
+
+Inverting any expected decision above must fail the exercise. In particular, a stale `available`
+label cannot dispatch, a fresh capacity record cannot be ignored when it is sufficient and file-bound,
+and a borrowed account or changed `CODEX_HOME` cannot turn failed capacity into permission.
