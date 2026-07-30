@@ -1122,6 +1122,15 @@ fn native_discord_inbound_opens_once_and_refuses_foreign_malformed_and_replayed_
     );
     bob.set_decrypt_display(true);
 
+    let gets = relay.control_inbox_gets();
+    assert!(
+        gets.iter().any(|get| {
+            get.recipient_id == bob.identity_id
+                && get.sender_id.as_deref() == Some(alice.identity_id.as_str())
+        }),
+        "B's drain reads the live conversation through the sender-filtered inbox boundary"
+    );
+
     // 9. Nothing anywhere under either account root holds the plaintext.
     //    Checked as a byte-window search so a failure reports only the
     //    offending path, never the content.
