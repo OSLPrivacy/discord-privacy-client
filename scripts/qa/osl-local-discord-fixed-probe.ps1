@@ -34,7 +34,7 @@ param(
 
   [switch]$ConfirmOwnerApprovedSend,
 
-  [string]$PythonCommand = 'python'
+  [string]$PythonCommand = 'python3'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -673,7 +673,9 @@ function Drive-ApprovedShippingSend {
   Invoke-Checked $PythonCommand @(
     $script:Verifier,
     '--bundle', $bundlePath,
-    '--expected-target', $ExpectedConversation
+    '--expected-target', $ExpectedConversation,
+    '--expected-run-id', $runId,
+    '--not-before-unix-ms', ([string]$runStart)
   )
 }
 
@@ -683,10 +685,17 @@ function Verify-Evidence {
     throw 'VerifyEvidence requires EvidenceRoot and ExpectedConversation.'
   }
   $bundlePath = Join-Path ([IO.Path]::GetFullPath($EvidenceRoot)) 'bundle.json'
+  try {
+    $bundle = Get-Content -LiteralPath $bundlePath -Raw -Encoding UTF8 | ConvertFrom-Json
+  } catch {
+    throw 'Evidence bundle is absent or invalid JSON.'
+  }
   Invoke-Checked $PythonCommand @(
     $script:Verifier,
     '--bundle', $bundlePath,
-    '--expected-target', $ExpectedConversation
+    '--expected-target', $ExpectedConversation,
+    '--expected-run-id', ([string]$bundle.runId),
+    '--not-before-unix-ms', ([string]$bundle.runStartUnixMs)
   )
 }
 
