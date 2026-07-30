@@ -156,6 +156,9 @@ pub fn discover_signal_transcript(
     let Some(composer) = nodes.get(composer_index) else {
         return Err(SignalSelectorError::Missing);
     };
+    if !signal_composer_candidate(composer, window_bounds) {
+        return Err(SignalSelectorError::Invalid);
+    }
     let matches = nodes
         .iter()
         .enumerate()
@@ -466,6 +469,11 @@ mod tests {
         assert_eq!(
             discover_signal_transcript(&renamed, composer, window),
             Ok(1)
+        );
+
+        assert_eq!(
+            discover_signal_transcript(&renamed, 0, window),
+            Err(SignalSelectorError::Invalid)
         );
 
         let mut ambiguous = renamed;
