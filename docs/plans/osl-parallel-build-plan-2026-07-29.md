@@ -37,6 +37,15 @@ Acceptance for this risk is a coordinator routing exercise, not a prose grep:
 3. Attempt to satisfy a failed capacity check by borrowing another account, changing `CODEX_HOME`, or
    starting speculative background work. The routing decision must remain `refuse` or `standby`.
 
+The routing oracle is deliberately small: it accepts only the live decision record for the lane and
+the requested unit, then returns `{ "decision": "...", "reason": "..." }`. It must not consult pool
+labels as authority. The oracle treats these facts as required for dispatch: a current capacity
+record exists, the record is fresh for the decision time, it has no contradictions, quota/account
+status is verified enough for the expected turn, machine headroom is verified enough for focused
+verification, and the requested unit is still bound to the recipient's owned files. Any forbidden
+substitute (`borrow_other_account`, `change_CODEX_HOME`, or `start_speculative_background_work`)
+keeps the result at `refuse` or `standby`, even when the historical pool label is `available`.
+
 ### Routing exercise fixture
 
 Test name: `Update routing decisions from real Codex capacity instead of stale pools.`
@@ -91,6 +100,43 @@ is still owned-file bound.
       "forbiddenSubstitute": "borrow_other_account",
       "expectedDecision": "refuse",
       "expectedReason": "failed live capacity check cannot be satisfied by borrowing authority"
+    },
+    {
+      "lane": "j14",
+      "historicalPoolLabel": "green",
+      "currentCapacityRecord": {
+        "observedAt": "2026-07-30T09:12:00Z",
+        "freshForDecisionAt": "2026-07-30T09:12:20Z",
+        "activeSessionCount": 2,
+        "blockedOrSleepingSessions": [],
+        "accountQuotaStatus": "verified_enough_for_expected_turn",
+        "machineHeadroom": "verified_enough_for_focused_verification",
+        "ownedFileBound": false,
+        "contradictions": []
+      },
+      "forbiddenSubstitute": "change_CODEX_HOME",
+      "expectedDecision": "refuse",
+      "expectedReason": "owned-file bound is absent and account substitution is forbidden"
+    }
+  ],
+  "mustFailMutants": [
+    {
+      "mutant": "dispatch_from_historical_pool_label_only",
+      "caseIndex": 0,
+      "wrongDecision": "dispatch",
+      "expectedFailure": "current capacity signal absent"
+    },
+    {
+      "mutant": "ignore_quota_contradiction_when_substitute_exists",
+      "caseIndex": 2,
+      "wrongDecision": "dispatch",
+      "expectedFailure": "failed live capacity check cannot be satisfied by borrowing authority"
+    },
+    {
+      "mutant": "ignore_owned_file_bound_and_changed_CODEX_HOME",
+      "caseIndex": 3,
+      "wrongDecision": "dispatch",
+      "expectedFailure": "owned-file bound is absent and account substitution is forbidden"
     }
   ]
 }
