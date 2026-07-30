@@ -5,6 +5,8 @@ import {
   telegramReportingIsConfigured,
 } from "../lib/telegram.js";
 
+const TELEGRAM_NEUTRAL_ACK = Object.freeze({ ok: true });
+
 export async function handleTelegramWebhook(
   request: Request,
   env: Env,
@@ -16,5 +18,5 @@ export async function handleTelegramWebhook(
   await handleTelegramCommand(request, env, fetcher);
   // Always acknowledge handled updates without revealing whether any command
   // was authorized. Telegram will not retry an acknowledged update.
-  return json({ ok: true });
+  return json(TELEGRAM_NEUTRAL_ACK);
 }

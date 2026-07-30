@@ -26,6 +26,17 @@ while primary tabs are active. Check with `codex-usage` and the cx1/cx2/cx3 stat
 use separate authenticated accounts only after their isolated launcher is verified; do not copy
 OAuth tokens.
 
+## Shared memory-card adoption contract
+
+| Active account/window | Prompt source | Memory-card route | Volatile-status rule |
+|---|---|---|---|
+| Existing OSL Hub/UI window | Common update plus short coordination addendum | Common update is sent before the bounded task; addendum repeats first-read versus returning-account memory-card handling | Never copy the full master spec or volatile status into memory |
+| Existing two-way Opus test window | Common update plus short coordination addendum | Common update is sent before the bounded task; addendum repeats first-read versus returning-account memory-card handling | Never copy the full master spec or volatile status into memory |
+| Existing Scrub window | Common update plus Prompt A | Common update is sent before Prompt A; Prompt A repeats first-encounter versus returning-account memory-card handling | Never copy the full master spec or volatile status into memory |
+| Existing Discord testing window | Common update plus Prompt B | Common update is sent before Prompt B and supplies the shared memory-card rule for this active account | Never copy the full master spec or volatile status into memory |
+| New website/head-developer lane | Reusable new-window bootstrap plus Prompt C | Bootstrap loads the compact memory card before the bounded task; Prompt C repeats the first-read memory-card rule | Never copy the full master spec or volatile status into memory |
+| Coordinating Telegram `/osl` lane | Common update for this active lane; reusable bootstrap plus Prompt D only on handoff | Current lane receives the shared update; any handoff bootstrap loads the compact memory card before Prompt D | Never copy the full master spec or volatile status into memory |
+
 ## One update prompt for every active OSL tab
 
 Send this once to each existing tab before its individual prompt/addendum:
