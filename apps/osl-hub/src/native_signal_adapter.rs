@@ -115,6 +115,28 @@ pub fn discover_signal_composer(
     }
 }
 
+pub fn discover_signal_transcript(
+    nodes: &[SignalNode],
+    composer_index: usize,
+    window_bounds: SignalRect,
+) -> Result<usize, SignalSelectorError> {
+    let Some(composer) = nodes.get(composer_index) else {
+        return Err(SignalSelectorError::Missing);
+    };
+    let matches = nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, node)| {
+            signal_transcript_candidate(node, composer, window_bounds).then_some(index)
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [index] => Ok(*index),
+        [] => Err(SignalSelectorError::Missing),
+        _ => Err(SignalSelectorError::Ambiguous),
+    }
+}
+
 fn signal_composer_candidate(node: &SignalNode, window_bounds: SignalRect) -> bool {
     let right_pane_left = window_bounds.left.saturating_add(window_bounds.width() / 3);
     let lower_band_top = window_bounds
@@ -129,6 +151,20 @@ fn signal_composer_candidate(node: &SignalNode, window_bounds: SignalRect) -> bo
         && node.bounds.contained_by(window_bounds)
         && node.bounds.left >= right_pane_left
         && node.bounds.top >= lower_band_top
+}
+
+fn signal_transcript_candidate(
+    node: &SignalNode,
+    composer: &SignalNode,
+    window_bounds: SignalRect,
+) -> bool {
+    let required_overlap = composer.bounds.width().saturating_mul(2) / 3;
+    node.role == SignalRole::List
+        && node.visible
+        && node.bounds.contained_by(window_bounds)
+        && node.bounds.bottom <= composer.bounds.top
+        && node.bounds.height() >= window_bounds.height() / 4
+        && node.bounds.horizontal_overlap(composer.bounds) >= required_overlap
 }
 
 #[cfg(test)]
@@ -149,6 +185,12 @@ mod tests {
         node.focusable = true;
         node.editable = true;
         node.read_only = false;
+        node.localized_name = Some(localized_name.to_owned());
+        node
+    }
+
+    fn list(bounds: SignalRect, localized_name: &str) -> SignalNode {
+        let mut node = SignalNode::structural(SignalRole::List, bounds);
         node.localized_name = Some(localized_name.to_owned());
         node
     }
@@ -177,6 +219,34 @@ mod tests {
         ambiguous.push(editable(rect(480, 740, 1130, 825), "another locale"));
         assert_eq!(
             discover_signal_composer(&ambiguous, window),
+            Err(SignalSelectorError::Ambiguous)
+        );
+    }
+
+    #[test]
+    fn signal_transcript() {
+        let window = rect(0, 0, 1200, 900);
+        let nodes = vec![
+            list(rect(0, 90, 360, 850), "Chats"),
+            list(rect(430, 92, 1130, 710), "Nachrichtenverlauf"),
+            editable(rect(455, 735, 1125, 820), "Nachricht"),
+            list(rect(455, 832, 1125, 880), "suggestions below composer"),
+        ];
+        let composer = discover_signal_composer(&nodes, window).expect("composer is structural");
+
+        assert_eq!(discover_signal_transcript(&nodes, composer, window), Ok(1));
+
+        let mut renamed = nodes.clone();
+        renamed[1].localized_name = Some("Historial de mensajes".to_owned());
+        assert_eq!(
+            discover_signal_transcript(&renamed, composer, window),
+            Ok(1)
+        );
+
+        let mut ambiguous = renamed;
+        ambiguous.push(list(rect(440, 100, 1128, 700), "second paired list"));
+        assert_eq!(
+            discover_signal_transcript(&ambiguous, composer, window),
             Err(SignalSelectorError::Ambiguous)
         );
     }
