@@ -14,6 +14,7 @@ export class OverlaySendGesture {
   private mode: OverlaySendMode = "button";
   private enterDown = false;
   private armedUntil = 0;
+  private armedKeyReleased = false;
 
   setMode(mode: OverlaySendMode): void {
     this.mode = mode;
@@ -23,6 +24,7 @@ export class OverlaySendGesture {
   cancel(): void {
     this.enterDown = false;
     this.armedUntil = 0;
+    this.armedKeyReleased = false;
   }
 
   keydown(event: OverlayEnterGesture): OverlaySendGestureResult {
@@ -30,18 +32,24 @@ export class OverlaySendGesture {
     if (this.enterDown) return "none";
     this.enterDown = true;
     if (this.mode === "single") return "send";
-    return "none";
+    if (this.armedUntil >= event.now && this.armedKeyReleased) {
+      this.cancel();
+      return "send";
+    }
+    this.armedUntil = event.now + 1_200;
+    this.armedKeyReleased = false;
+    return "armed";
   }
 
   keyup(event: OverlayEnterGesture): OverlaySendGestureResult {
     if (!event.isTrusted || event.isComposing || event.repeat || event.key !== "Enter" || event.shiftKey || !this.enterDown) return "none";
     this.enterDown = false;
     if (this.mode !== "double") return "none";
-    if (this.armedUntil >= event.now) {
-      this.armedUntil = 0;
-      return "send";
+    if (this.armedUntil < event.now) {
+      this.cancel();
+      return "none";
     }
-    this.armedUntil = event.now + 1_200;
+    this.armedKeyReleased = true;
     return "armed";
   }
 
