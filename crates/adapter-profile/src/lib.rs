@@ -9,6 +9,7 @@ pub mod defaults;
 pub mod envelope;
 pub mod loader;
 pub mod schema;
+pub mod score;
 pub mod trust;
 
 pub use contract::{
@@ -36,6 +37,9 @@ pub use schema::{
     ProfilePayload, ProfileRevision, SelectorKind, SelectorStrategy, SignedProfileDoc,
     SupportLevel, TypedSelector, PROFILE_DOC_DOMAIN, PROFILE_DOC_ENVELOPE_VERSION,
     PROFILE_DOC_SCHEMA_VERSION,
+};
+pub use score::{
+    score, CandidateEvidence, CandidateSelection, CandidateSurface, EvidenceSignal, ScoredCandidate,
 };
 pub use trust::{
     verify_signed_profile, ShippedAnchorKey, TrustError, DISCORD_PROFILE_ROLLBACK_FLOOR,
