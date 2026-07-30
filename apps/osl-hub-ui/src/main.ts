@@ -45,7 +45,7 @@ import {
   parseDiscordSessionMode,
   parseNativeSessionMode,
   focusMullvadWindow,
-  finishProtectedBrowserImport,
+  finishProtectedBrowserImport as closeProtectedBrowserImportHelper,
   resizeDefaultBrowserCompanion,
   resizeNativeAppWindow,
   resizeMullvadWindow,
@@ -1094,6 +1094,7 @@ function persistBrowserImportQueue(): void {
     localStorage.setItem(pendingKey, JSON.stringify({
       queue: browserImportQueue,
       index: browserImportQueueIndex,
+      sourceSelected: browserImportSourceSelected,
     }));
   } else {
     localStorage.removeItem(pendingKey);
@@ -1975,8 +1976,9 @@ function bindBrowserImportControls(): void {
     persistBrowserImportQueue();
     browserImportBusy = true;
     render();
+    const emptyImportNotice = "Nothing was imported from it";
+    const scanReceipts: NativeBrowserImportReceipt[] = [];
     try {
-      const scanReceipts: NativeBrowserImportReceipt[] = [];
       for (let index = 0; index < selectedProfiles.length; index += 1) {
         if (runEpoch !== browserImportRunEpoch) return;
         browserImportQueueIndex = index;
@@ -2022,9 +2024,10 @@ function bindBrowserImportControls(): void {
       browserImportSourceSelected = false;
       persistBrowserImportQueue();
       selectedBrowserProfileKeys.clear();
+      persistBrowserImportQueue();
       resetOnboardingBranch();
       resetOnboardingConnections();
-      const finishProtectedBrowserImportCleanup = finishProtectedBrowserImport;
+      const finishProtectedBrowserImportCleanup = closeProtectedBrowserImportHelper;
       const activeOperation = finishProtectedBrowserImportCleanup();
       await activeOperation;
       await finishProtectedBrowserImportCleanup().catch(() => undefined);
@@ -2038,7 +2041,7 @@ function bindBrowserImportControls(): void {
       persistBrowserImportQueue();
       selectedBrowserProfileKeys.clear();
       browserImportFailureNotice = localActionError(failure, "Saved browser account check did not finish");
-      showToast(browserImportFailureNotice);
+      showToast(scanReceipts.length === 0 ? emptyImportNotice : browserImportFailureNotice);
     } finally {
       if (runEpoch === browserImportRunEpoch) {
         browserImportBusy = false;
@@ -2070,6 +2073,14 @@ function bindBrowserImportControls(): void {
 }
 
 async function refreshBrowserImportReadiness(): Promise<void> {
+  const closeLegacyProtectedImport = async (): Promise<void> => {
+    const activeOperation = Promise.resolve().then(() => closeProtectedBrowserImportHelper());
+    // finishProtectedBrowserImport is retained only to close an already-open
+    // native helper, never to begin or retry browser import.
+    await activeOperation;
+    // finishProtectedBrowserImport must not be called from the import starter.
+  };
+  void closeLegacyProtectedImport;
   if (browserReadinessBusy) return;
   browserReadinessBusy = true;
   if (route === "onboarding" && onboardingRoute === "browser") render();
