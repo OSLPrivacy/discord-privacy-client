@@ -97,7 +97,7 @@ pub enum HubConversationKind {
     Space,
 }
 
-#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HubConversationContext {
     pub service_id: String,
@@ -109,7 +109,21 @@ pub struct HubConversationContext {
     pub self_osl_id: String,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+impl core::fmt::Debug for HubConversationContext {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("HubConversationContext")
+            .field("service_id", &self.service_id)
+            .field("account_id", &"<redacted>")
+            .field("conversation_kind", &self.conversation_kind)
+            .field("conversation_id", &"<redacted>")
+            .field("space_id", &self.space_id.as_ref().map(|_| "<redacted>"))
+            .field("participant_count", &self.participant_osl_ids.len())
+            .field("self_osl_id", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextLease {
     pub generation: u64,
@@ -119,7 +133,19 @@ pub struct ContextLease {
     pub account_id: String,
 }
 
-#[derive(Debug, Clone)]
+impl core::fmt::Debug for ContextLease {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ContextLease")
+            .field("generation", &self.generation)
+            .field("host_generation", &self.host_generation)
+            .field("context_token", &"<redacted>")
+            .field("service_id", &self.service_id)
+            .field("account_id", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone)]
 struct ActiveContext {
     lease: ContextLease,
     context: HubConversationContext,
@@ -127,13 +153,39 @@ struct ActiveContext {
     manual_peer: Option<ManualPeerContext>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+impl core::fmt::Debug for ActiveContext {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ActiveContext")
+            .field("lease", &self.lease)
+            .field("context", &self.context)
+            .field("authority", &self.authority)
+            .field(
+                "manual_peer",
+                &self.manual_peer.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
 struct ManualPeerContext {
     service_id: String,
     account_id: String,
     person_id: String,
     peer_osl_user_id: String,
     scope: ScopeInput,
+}
+
+impl core::fmt::Debug for ManualPeerContext {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ManualPeerContext")
+            .field("service_id", &self.service_id)
+            .field("account_id", &"<redacted>")
+            .field("person_id", &"<redacted>")
+            .field("peer_osl_user_id", &"<redacted>")
+            .field("scope", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -682,7 +734,7 @@ pub fn activate_owned_local_loopback_context(
     broker.activate_local_loopback(owner_osl_user_id, &active, conversation_id)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ActivatedManualPeerContext {
     pub lease: ContextLease,
     pub person_id: String,
@@ -690,12 +742,34 @@ pub struct ActivatedManualPeerContext {
     pub scope: ScopeInput,
 }
 
-#[derive(Debug, Clone)]
+impl core::fmt::Debug for ActivatedManualPeerContext {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ActivatedManualPeerContext")
+            .field("lease", &self.lease)
+            .field("person_id", &"<redacted>")
+            .field("peer_osl_user_id", &"<redacted>")
+            .field("scope", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone)]
 pub struct ManualPeerBurnTarget {
     pub service_id: String,
     pub account_id: String,
     pub person_id: String,
     pub scope: ScopeInput,
+}
+
+impl core::fmt::Debug for ManualPeerBurnTarget {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ManualPeerBurnTarget")
+            .field("service_id", &self.service_id)
+            .field("account_id", &"<redacted>")
+            .field("person_id", &"<redacted>")
+            .field("scope", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Activate one renderer-selected existing friend without accepting any
@@ -1970,7 +2044,7 @@ pub enum RehydratedRowPoster {
 /// Exact agreement between native provider row identity and authenticated
 /// protected content. These are correlation identifiers only; no plaintext,
 /// poster label or renderer-authored ownership is represented.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RehydratedRowAttribution {
     pub discord_message_id: String,
@@ -1984,6 +2058,24 @@ pub struct RehydratedRowAttribution {
     pub scope_binding_sha256: String,
     pub window_generation: u64,
     pub orientation: RehydratedRowOrientation,
+}
+
+impl core::fmt::Debug for RehydratedRowAttribution {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RehydratedRowAttribution")
+            .field("discord_message_id", &"<redacted>")
+            .field("poster_identity_sha256", &self.poster_identity_sha256)
+            .field("poster", &self.poster)
+            .field("native_locator_sha256", &self.native_locator_sha256)
+            .field("carrier_sha256", &self.carrier_sha256)
+            .field("blob_id", &"<redacted>")
+            .field("ciphertext_sha256", &self.ciphertext_sha256)
+            .field("payload_id", &"<redacted>")
+            .field("scope_binding_sha256", &self.scope_binding_sha256)
+            .field("window_generation", &self.window_generation)
+            .field("orientation", &self.orientation)
+            .finish()
+    }
 }
 
 /// Exact command-boundary DTO for one rehydrated native Discord row.
@@ -10228,6 +10320,98 @@ mod tests {
             participant_osl_ids: vec!["peer-rose".to_owned(), "self-liam".to_owned()],
             self_osl_id: "self-liam".to_owned(),
         }
+    }
+
+    #[test]
+    fn broker_debug_redacts_account_peer_and_row_identifiers() {
+        let account_id = "native-discord-debug-account-secret";
+        let conversation_id = "debug-conversation-secret";
+        let context_token = "debug-context-token-secret";
+        let person_id = "person-debug-secret";
+        let peer_osl_user_id = "osl-peer-debug-secret";
+        let scope = ScopeInput {
+            kind: ScopeKind::Dm,
+            id: "scope-debug-secret".to_owned(),
+            server_id: None,
+            channel_id: Some(conversation_id.to_owned()),
+        };
+        let context = HubConversationContext {
+            service_id: "discord".to_owned(),
+            account_id: account_id.to_owned(),
+            conversation_kind: HubConversationKind::Dm,
+            conversation_id: conversation_id.to_owned(),
+            space_id: Some("space-debug-secret".to_owned()),
+            participant_osl_ids: vec![peer_osl_user_id.to_owned()],
+            self_osl_id: "osl-self-debug-secret".to_owned(),
+        };
+        let lease = ContextLease {
+            generation: 7,
+            host_generation: 8,
+            context_token: context_token.to_owned(),
+            service_id: "discord".to_owned(),
+            account_id: account_id.to_owned(),
+        };
+        let manual = ManualPeerContext {
+            service_id: "discord".to_owned(),
+            account_id: account_id.to_owned(),
+            person_id: person_id.to_owned(),
+            peer_osl_user_id: peer_osl_user_id.to_owned(),
+            scope: scope.clone(),
+        };
+        let active = ActiveContext {
+            lease: lease.clone(),
+            context: context.clone(),
+            authority: ContextAuthority::ManualPeer,
+            manual_peer: Some(manual.clone()),
+        };
+        let activated = ActivatedManualPeerContext {
+            lease,
+            person_id: person_id.to_owned(),
+            peer_osl_user_id: peer_osl_user_id.to_owned(),
+            scope: scope.clone(),
+        };
+        let burn = ManualPeerBurnTarget {
+            service_id: "discord".to_owned(),
+            account_id: account_id.to_owned(),
+            person_id: person_id.to_owned(),
+            scope,
+        };
+        let attribution = RehydratedRowAttribution {
+            discord_message_id: "discord-message-debug-secret".to_owned(),
+            poster_identity_sha256: "a".repeat(64),
+            poster: RehydratedRowPoster::PeerAccount,
+            native_locator_sha256: "b".repeat(64),
+            carrier_sha256: "c".repeat(64),
+            blob_id: "blob-debug-secret".to_owned(),
+            ciphertext_sha256: "d".repeat(64),
+            payload_id: "payload-debug-secret".to_owned(),
+            scope_binding_sha256: "e".repeat(64),
+            window_generation: 9,
+            orientation: RehydratedRowOrientation::Incoming,
+        };
+        let rendered = format!(
+            "{context:?}\n{manual:?}\n{active:?}\n{activated:?}\n{burn:?}\n{attribution:?}"
+        );
+
+        for raw in [
+            account_id,
+            conversation_id,
+            context_token,
+            person_id,
+            peer_osl_user_id,
+            "scope-debug-secret",
+            "space-debug-secret",
+            "osl-self-debug-secret",
+            "discord-message-debug-secret",
+            "blob-debug-secret",
+            "payload-debug-secret",
+        ] {
+            assert!(
+                !rendered.contains(raw),
+                "broker Debug output must redact account, peer, and row identifiers"
+            );
+        }
+        assert!(rendered.contains("<redacted>"));
     }
 
     fn temporary_registry() -> std::path::PathBuf {

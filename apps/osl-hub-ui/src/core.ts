@@ -94,7 +94,7 @@ export interface HubGateBurnResult {
 }
 
 export interface HubGateUnlockResult {
-  outcome: "unlocked" | "decoy" | "burned" | "wrong";
+  outcome: "unlocked" | "decoy" | "burned" | "duress" | "wrong";
   lockoutSecondsRemaining: number;
   attemptsUsed: number;
   readiness: CoreReadiness | null;
@@ -185,9 +185,14 @@ export function isValidNewMainPassword(password: string): boolean {
   return /^[\x20-\x7e]{6,128}$/.test(password);
 }
 
-export async function unlockHubPasswordGate(password: string): Promise<HubGateUnlockResult> {
-  if (!isTauriRuntime() || !isValidMainPassword(password)) throw new Error("unlock unavailable");
-  return parseHubGateUnlockResult(await invoke<unknown>("unlock_hub_password_gate", { password }));
+export async function unlockHubPasswordGate(password: string, duressPin?: string): Promise<HubGateUnlockResult> {
+  const hasPassword = isValidMainPassword(password);
+  const hasDuressPin = typeof duressPin === "string" && isValidMainPassword(duressPin);
+  if (!isTauriRuntime() || (!hasPassword && !hasDuressPin)) throw new Error("unlock unavailable");
+  return parseHubGateUnlockResult(await invoke<unknown>("unlock_hub_password_gate", {
+    password,
+    duressPin: hasDuressPin ? duressPin : null,
+  }));
 }
 
 export async function loadHubPasswordRoleStatus(): Promise<HubPasswordRoleStatus> {
@@ -210,13 +215,27 @@ export async function removeHubAlternatePassword(role: "stealth" | "burn", curre
   return parseHubPasswordRoleStatus(await invoke<unknown>(command, { currentMain }));
 }
 
-export async function createHubOslIdentity(): Promise<HubIdentitySetupResult> {
+function ownerAuthorizationSignoffFrom(authorization: true | HubIdentityCreationOwnerSignoff): HubIdentityCreationOwnerSignoff {
+  if (authorization === true) {
+    return {
+      ownerPresent: true,
+      reviewedNoExistingIdentityReplacement: true,
+      acceptsRecoveryPhraseResponsibility: true,
+    };
+  }
+  return authorization;
+}
+
+export async function createHubOslIdentity(ownerAuthorization: true | HubIdentityCreationOwnerSignoff = true): Promise<HubIdentitySetupResult> {
   if (!isTauriRuntime()) throw new Error("identity creation unavailable");
-  const ownerAuthorizationSignoff: HubIdentityCreationOwnerSignoff = {
-    ownerPresent: true,
-    reviewedNoExistingIdentityReplacement: true,
-    acceptsRecoveryPhraseResponsibility: true,
-  };
+  const ownerAuthorizationSignoff = ownerAuthorizationSignoffFrom(ownerAuthorization);
+  if (
+    ownerAuthorizationSignoff.ownerPresent !== true
+    || ownerAuthorizationSignoff.reviewedNoExistingIdentityReplacement !== true
+    || ownerAuthorizationSignoff.acceptsRecoveryPhraseResponsibility !== true
+  ) {
+    throw new Error("identity creation unavailable");
+  }
   return parseIdentitySetupResult(await invoke<unknown>("create_hub_osl_identity", { ownerAuthorizationSignoff }));
 }
 
@@ -277,7 +296,7 @@ export function parseHubGateUnlockResult(raw: unknown): HubGateUnlockResult {
   if (!isExactRecord(raw, ["outcome", "lockoutSecondsRemaining", "attemptsUsed", "readiness", "burn"])) {
     throw new Error("invalid password-gate response");
   }
-  const outcomes: readonly HubGateUnlockResult["outcome"][] = ["unlocked", "decoy", "burned", "wrong"];
+  const outcomes: readonly HubGateUnlockResult["outcome"][] = ["unlocked", "decoy", "burned", "duress", "wrong"];
   if (
     !outcomes.includes(raw.outcome as HubGateUnlockResult["outcome"])
     || !Number.isSafeInteger(raw.lockoutSecondsRemaining)

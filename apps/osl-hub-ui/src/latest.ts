@@ -3,6 +3,8 @@ export class LatestOnlyRunner {
   private requested = false;
   private latestTask: (() => Promise<void>) | null = null;
 
+  constructor(private readonly coalesceDelayMs = 4) {}
+
   cancelPending(): void {
     this.requested = false;
     this.latestTask = null;
@@ -15,11 +17,17 @@ export class LatestOnlyRunner {
     this.running = true;
     let failed = false;
     let failure: unknown;
+    let ranTask = false;
     try {
       while (this.requested) {
-        this.requested = false;
+        if (ranTask && this.coalesceDelayMs > 0) {
+          await new Promise<void>((resolve) => {
+            globalThis.setTimeout(resolve, this.coalesceDelayMs);
+          });
+        }
         const next = this.latestTask;
         this.latestTask = null;
+        this.requested = false;
         if (next) {
           try {
             await next();
@@ -30,6 +38,7 @@ export class LatestOnlyRunner {
             if (!failed) failure = error;
             failed = true;
           }
+          ranTask = true;
         }
       }
     } finally {

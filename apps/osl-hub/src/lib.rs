@@ -98,6 +98,7 @@ pub mod qa_selftest_request;
 #[cfg(feature = "core")]
 pub mod scrub_index;
 pub mod scrub_imap;
+pub mod scrub_receipt;
 #[cfg(feature = "core")]
 pub mod security;
 #[cfg(feature = "core")]
