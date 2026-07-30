@@ -323,6 +323,17 @@ impl From<ProductionDuressHandlers> for DuressHandlers {
     }
 }
 
+/// Convert explicitly-bound production wipe callbacks into the engine's
+/// complete handler table.
+///
+/// This function is the production assembly boundary: callers must supply each
+/// callback they have authority to run through [`ProductionDuressHandlers`].
+/// Any missing callback remains absent and is reported by [`DuressEngine`] as a
+/// skipped step; absence is never treated as permission.
+pub fn build_production_duress_handlers(production: ProductionDuressHandlers) -> DuressHandlers {
+    production.into_handlers()
+}
+
 fn remove_bound_paths_handler<I, P>(paths: I, empty_binding_error: &'static str) -> WipeFn
 where
     I: IntoIterator<Item = P>,
@@ -809,6 +820,80 @@ mod tests {
         );
         assert!(!anonymous_store.exists());
         assert!(!strip_file.exists());
+    }
+
+    #[test]
+    fn build_production_duress_handlers() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        std::fs::write(&paths.identity_file, b"identity").unwrap();
+        std::fs::write(&paths.password_file, b"password").unwrap();
+        if let Some(prekey_file) = paths.prekey_file.as_ref() {
+            std::fs::write(prekey_file, b"prekeys").unwrap();
+        }
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let handlers = super::build_production_duress_handlers(
+            ProductionDuressHandlers::new()
+                .with_purge_keyring(record_handler(Arc::clone(&calls), "purge_keyring"))
+                .with_unregister_account(record_handler(Arc::clone(&calls), "unregister"))
+                .with_wipe_local_cache_dir(record_handler(Arc::clone(&calls), "local_cache"))
+                .with_wipe_anonymous_credentials(record_handler(
+                    Arc::clone(&calls),
+                    "anonymous_credentials",
+                ))
+                .with_wipe_prekeys(record_handler(Arc::clone(&calls), "prekeys"))
+                .with_wipe_double_ratchet(record_handler(Arc::clone(&calls), "double_ratchet"))
+                .with_wipe_sender_keys(record_handler(Arc::clone(&calls), "sender_keys"))
+                .with_wipe_peer_ratchets(record_handler(Arc::clone(&calls), "peer_ratchets"))
+                .with_zeroize_in_memory(record_handler(Arc::clone(&calls), "zeroize"))
+                .with_strip_opsec_files(record_handler(Arc::clone(&calls), "strip_opsec")),
+        );
+        let engine = DuressEngine::new(journal_path, paths, handlers);
+
+        let report = engine
+            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
+            .unwrap();
+
+        assert!(report.completed);
+        assert!(report.failed_steps().is_empty());
+        assert!(report.skipped_steps().is_empty());
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::TpmEvict),
+            &StepOutcome::AlreadyClean
+        );
+        for step in [
+            WipeStep::KeyringPurge,
+            WipeStep::IdentityFile,
+            WipeStep::PasswordHashes,
+            WipeStep::UnregisterAccount,
+            WipeStep::PrekeyFile,
+            WipeStep::LocalCacheDir,
+            WipeStep::AnonymousCredentials,
+            WipeStep::Prekeys,
+            WipeStep::DoubleRatchet,
+            WipeStep::SenderKeys,
+            WipeStep::PeerRatchets,
+            WipeStep::InMemoryZeroize,
+            WipeStep::StripOpsecFiles,
+        ] {
+            assert_eq!(outcome_for(&report.steps, step), &StepOutcome::Wiped);
+        }
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            &[
+                "purge_keyring",
+                "unregister",
+                "local_cache",
+                "anonymous_credentials",
+                "prekeys",
+                "double_ratchet",
+                "sender_keys",
+                "peer_ratchets",
+                "zeroize",
+                "strip_opsec",
+            ],
+            "production handler assembly must preserve every concrete callback"
+        );
     }
 
     #[test]

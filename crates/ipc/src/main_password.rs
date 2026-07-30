@@ -45,7 +45,7 @@ use base64::Engine;
 use bip39::{Language, Mnemonic};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use zeroize::{Zeroize, Zeroizing};
 
 const MARKER_FILENAME: &str = "password_marker.json";
@@ -68,6 +68,7 @@ const NONCE_LEN: usize = 12;
 const ARGON_MEMORY_KB: u32 = 65_536; // 64 MiB
 const ARGON_ITERATIONS: u32 = 3;
 const ARGON_PARALLELISM: u32 = 1;
+pub const INACTIVITY_AUTO_LOCK_SECONDS: u64 = 15 * 60;
 
 // =====================================================================
 // On-disk schemas.
@@ -170,6 +171,24 @@ pub struct LockoutStatusDto {
     pub phrase_locked_until: Option<i64>,
     pub phrase_attempts_used: u32,
     pub now: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InactivityAutoLockOutcome {
+    StillUnlocked,
+    Locked,
+    AlreadyLocked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WrongPasswordAttemptAction {
+    Wrong {
+        attempts_used: u32,
+        lockout_seconds_remaining: i64,
+    },
+    DuressTriggered {
+        attempts_used: u32,
+    },
 }
 
 // =====================================================================
@@ -837,6 +856,62 @@ pub fn lockout_status(dir: &Path) -> LockoutStatusDto {
     }
 }
 
+pub fn record_wrong_password_attempt_or_duress(
+    state: &AppState,
+    lockout: &mut LockoutState,
+    now: i64,
+) -> Result<WrongPasswordAttemptAction, String> {
+    lockout.version = LOCKOUT_VERSION;
+    lockout.password_failed_attempts = lockout.password_failed_attempts.saturating_add(1);
+    if lockout.password_failed_attempts >= keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD {
+        lockout.password_locked_until = None;
+        let _ = state.execute_production_duress()?;
+        return Ok(WrongPasswordAttemptAction::DuressTriggered {
+            attempts_used: lockout.password_failed_attempts,
+        });
+    }
+
+    let secs = password_lockout_secs(lockout.password_failed_attempts);
+    lockout.password_locked_until = if secs > 0 { Some(now + secs) } else { None };
+    Ok(WrongPasswordAttemptAction::Wrong {
+        attempts_used: lockout.password_failed_attempts,
+        lockout_seconds_remaining: secs,
+    })
+}
+
+pub fn lock_main_password_session(state: &AppState) {
+    set_file_storage_key(None);
+    state.clear_identity();
+    state.clear_prekey_state();
+    state.sender_pubkey_cache.clear();
+    *state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned") = None;
+    *state
+        .recovery_token
+        .lock()
+        .expect("recovery_token mutex poisoned") = None;
+}
+
+pub fn run_inactivity_auto_lock_timer(
+    state: &AppState,
+    last_activity: Instant,
+    now: Instant,
+) -> InactivityAutoLockOutcome {
+    if get_file_storage_key().is_none() {
+        return InactivityAutoLockOutcome::AlreadyLocked;
+    }
+    let timer =
+        keystore::InactivityTimer::with_last_activity(INACTIVITY_AUTO_LOCK_SECONDS, last_activity);
+    if timer.should_reprompt_at(now) {
+        lock_main_password_session(state);
+        InactivityAutoLockOutcome::Locked
+    } else {
+        InactivityAutoLockOutcome::StillUnlocked
+    }
+}
+
 fn marker_phrase_hash(marker: &PasswordMarker) -> Option<String> {
     marker.phrase_hash_b64.clone()
 }
@@ -1453,6 +1528,115 @@ mod password_policy_tests {
     fn six_character_passwords_can_be_created_and_unlocked() {
         assert!(validate_password("aB3!z9").is_ok());
         assert!(validate_new_password("aB3!z9").is_ok());
+    }
+
+    #[test]
+    fn run_inactivity_auto_lock_timer() {
+        set_file_storage_key(None);
+        let state = AppState::new();
+        state.install_identity(keystore::generate_identity("idle-lock-owner".to_owned()));
+        set_file_storage_key(Some([0x7a; 32]));
+        let now = std::time::Instant::now();
+
+        assert_eq!(
+            super::run_inactivity_auto_lock_timer(
+                &state,
+                now - std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS - 1),
+                now,
+            ),
+            InactivityAutoLockOutcome::StillUnlocked
+        );
+        assert_eq!(get_file_storage_key(), Some([0x7a; 32]));
+        assert!(state.has_identity());
+        assert!(state.has_prekey_state());
+
+        assert_eq!(
+            super::run_inactivity_auto_lock_timer(
+                &state,
+                now - std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS),
+                now,
+            ),
+            InactivityAutoLockOutcome::Locked
+        );
+        assert_eq!(get_file_storage_key(), None);
+        assert!(
+            !state.has_identity(),
+            "auto-lock must clear the live decrypted identity, not only a UI flag"
+        );
+        assert!(!state.has_prekey_state());
+
+        assert_eq!(
+            super::run_inactivity_auto_lock_timer(
+                &state,
+                now - std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS * 2),
+                now,
+            ),
+            InactivityAutoLockOutcome::AlreadyLocked
+        );
+        set_file_storage_key(None);
+    }
+
+    #[test]
+    fn tenth_wrong_password_attempt_triggers_duress() {
+        set_file_storage_key(None);
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = use_temp_config_dir(dir.path());
+        let state = AppState::new_with_production_duress_engine(dir.path().to_path_buf());
+        state.install_identity(keystore::generate_identity("wrong-threshold-owner".to_owned()));
+        set_file_storage_key(Some([0x55; 32]));
+        let identity_file = dir.path().join("identity.json");
+        let password_file = dir.path().join("password_marker.json");
+        let prekey_file = dir.path().join("prekeys.json");
+        std::fs::write(&identity_file, b"identity").unwrap();
+        std::fs::write(&password_file, b"password").unwrap();
+        std::fs::write(&prekey_file, b"prekeys").unwrap();
+        let now = now_unix_secs();
+        let mut lock = LockoutState {
+            version: LOCKOUT_VERSION,
+            password_failed_attempts: keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD - 2,
+            password_locked_until: None,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            record_wrong_password_attempt_or_duress(&state, &mut lock, now).unwrap(),
+            WrongPasswordAttemptAction::Wrong {
+                attempts_used: keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD - 1,
+                lockout_seconds_remaining: password_lockout_secs(
+                    keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD - 1
+                ),
+            },
+            "the ninth wrong password must not trigger duress early"
+        );
+        assert!(identity_file.exists());
+        assert!(password_file.exists());
+        assert!(prekey_file.exists());
+        assert_eq!(get_file_storage_key(), Some([0x55; 32]));
+
+        lock.password_locked_until = Some(now - 1);
+        assert_eq!(
+            record_wrong_password_attempt_or_duress(&state, &mut lock, now).unwrap(),
+            WrongPasswordAttemptAction::DuressTriggered {
+                attempts_used: keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD,
+            },
+            "the tenth wrong password must trigger the production duress engine"
+        );
+
+        assert_eq!(
+            lock.password_failed_attempts,
+            keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD
+        );
+        assert_eq!(lock.password_locked_until, None);
+        assert!(!identity_file.exists());
+        assert!(!password_file.exists());
+        assert!(!prekey_file.exists());
+        assert_eq!(
+            get_file_storage_key(),
+            None,
+            "duress must clear the live storage key"
+        );
+        assert!(!state.has_identity());
+        assert!(!state.has_prekey_state());
     }
 
     #[test]

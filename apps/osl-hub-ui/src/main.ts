@@ -2542,7 +2542,7 @@ function bindPasswordForm(): void {
         onboardingRoute = "recovery";
         await proveRecoveryCaptureProtection();
       } else {
-        const gate = await unlockHubPasswordGate(secret);
+        const gate = await checkUnlockScreenCredential(secret);
         secret = "";
         if (gate.outcome === "wrong") {
           error.textContent = gate.lockoutSecondsRemaining > 0
@@ -2565,7 +2565,7 @@ function bindPasswordForm(): void {
           render();
           return;
         }
-        if (gate.outcome === "burned") {
+        if (unlockScreenDuressPinTriggeredWipe(gate)) {
           identityStorageMethod = null;
           localStorage.clear();
           onboardingComplete = false;
@@ -2662,6 +2662,14 @@ function bindPasswordForm(): void {
       password.focus();
     }
   });
+}
+
+async function checkUnlockScreenCredential(secret: string): Promise<Awaited<ReturnType<typeof unlockHubPasswordGate>>> {
+  return unlockHubPasswordGate(secret);
+}
+
+function unlockScreenDuressPinTriggeredWipe(gate: Awaited<ReturnType<typeof unlockHubPasswordGate>>): boolean {
+  return gate.outcome === "burned" && gate.burn !== null;
 }
 
 function bindImportForm(): void {
