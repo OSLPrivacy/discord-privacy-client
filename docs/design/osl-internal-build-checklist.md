@@ -894,10 +894,23 @@ timestamped deltas, not keep this number manually forever.
   `needs: all release features,H` `weight: 2` `earned: 0`
 - 🟨 **I6 · Repo governance/branch protection/PR cleanup/releases** — **held at 1; the lane proposed
   full marks and the writer declined.** Branch protection is genuinely enabled (see I2), which is a
-  real action. But this row also names **PR cleanup** and **releases**, and neither happened:
-  `gh pr list --state open` returns **6 open PRs** (#1–#6, several long-stale), and
-  `gh release list` returns **nothing at all — zero releases**. Full marks while two of the four
-  named items are untouched would be exactly the rubber-stamp this role exists to prevent.
+  real action. The stale PR cleanup half is now explicitly disposed: PRs #1-#6 were closed without
+  merge on 2026-07-30 after the preserved-work inventory and branch-protection prerequisites were
+  rechecked. Releases are still untouched: `gh release list` returns **nothing at all — zero
+  releases**. Full marks still wait for the release half of the row.
+  <!-- i15-pr-disposition:start -->
+  | PR | Title | Disposition | Rationale |
+  |---:|---|---|---|
+  | #1 | Harden Tauri remote capabilities | Closed without merge | Long-stale branch; preserved-work inventory is the retained source for any reusable changes. |
+  | #2 | Clean up stale docs and test warnings | Closed without merge | Long-stale branch; preserved-work inventory is the retained source for any reusable changes. |
+  | #3 | Upgrade keyserver Fastify dependencies | Closed without merge | Long-stale branch; preserved-work inventory is the retained source for any reusable changes. |
+  | #4 | Remove Discord password settings surface | Closed without merge | Long-stale branch; preserved-work inventory is the retained source for any reusable changes. |
+  | #5 | Scrub: onboarding redesign + session-reuse-first deletion engine | Closed without merge | Superseded by the current integration line; preserved-work inventory is the retained source for any reusable changes. |
+  | #6 | Make CI green and prove the release gate can refuse | Closed without merge | Superseded by enforced branch protection and current release-gate work; preserved-work inventory is the retained source for any reusable changes. |
+
+  Post-disposition check: `gh pr list --state open --json number --jq length` = **0**.
+  Local guard: `python3 scripts/verify_i15_pr_cleanup.py`.
+  <!-- i15-pr-disposition:end -->
   `needs: I2` `weight: 2` `earned: 1`
 - 🟨 **I7 · Safe storage cleanup/archive** — policy exists; cleanup not authorized/executed.
   `needs: I1,I2` `weight: 2` `earned: 1`
