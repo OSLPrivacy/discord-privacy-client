@@ -109,6 +109,7 @@ pub enum Predicate {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct SelfTestProbe {
     pub subsystem: Subsystem,
     pub predicate: Predicate,
@@ -187,6 +188,7 @@ impl UnverifiedCause {
 /// One measured self-test check, in report order.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct CheckOutcome {
     pub subsystem: Subsystem,
     pub predicate: Predicate,
@@ -287,6 +289,7 @@ impl<'de> Deserialize<'de> for SelfTestReport {
     {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
+        #[serde(deny_unknown_fields)]
         struct RawSelfTestReport {
             version: u16,
             verdict: ContractVerdict,
@@ -767,6 +770,19 @@ mod tests {
             assert_eq!(
                 object.get("verdict"),
                 Some(&Value::String("verified".to_owned()))
+            );
+            let mut telemetry_report = json.clone();
+            telemetry_report["providerTelemetry"] = Value::String("host-text".to_owned());
+            assert!(
+                serde_json::from_value::<SelfTestReport>(telemetry_report).is_err(),
+                "profile self-test reports must refuse adapter telemetry fields"
+            );
+            let mut nested_telemetry_report = json.clone();
+            nested_telemetry_report["checks"][0]["hostText"] =
+                Value::String("private account text".to_owned());
+            assert!(
+                serde_json::from_value::<SelfTestReport>(nested_telemetry_report).is_err(),
+                "profile self-test checks must refuse adapter telemetry fields"
             );
 
             let checks = object
