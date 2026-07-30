@@ -79,7 +79,7 @@ steps. Ownership is not advisory.
 | Lane | Owns exclusively | Working on |
 |---|---|---|
 | **crypto** | `apps/osl-hub/src/{security,broker,main}.rs`, `apps/osl-hub-ui/src/{overlay,security.test}.ts`, `crates/keystore/**`, `crates/ipc/**` | four VM agent verbs; control-inbox dead-letter |
-| **scrub** | all of `/home/liamw/osl-newest-integration` | review host-driver draft → verify loop → re-snapshot → film |
+| **scrub** | all of `/home/<user>/osl-newest-integration` | review host-driver draft → verify loop → re-snapshot → film |
 | **truth** | `oslprivacy-web`, `docs/**` except other lanes' report files. **Single writer of the checklist.** | applies points; website v1 reframe; zero-caller claim triage |
 | **release** | `.github/**`, `scripts/{ci,release}/**`, VM release gate doc, `rust-toolchain.toml` | cold snapshot lineage; signed candidate |
 | **keyserver** | `cipher-store-cf/**`, `keyserver-cf/**` | open-registration residual; smoke suite |
@@ -101,7 +101,7 @@ discard the whole import.
 | Attachment part upload | **`201`**. Was `500` for an unbounded period; verified fixed by live probe |
 | `0028` link-grant | applied but **dark** behind default-off `LINK_GRANT_ENABLED` in `src/index.ts` |
 | `0027` | deployed. The "NOT DEPLOYED" header in that migration file is stale — ignore it |
-| Backups | D1 pre-`0029` dump + tree snapshots under `/home/liamw/osl-backups/` |
+| Backups | D1 pre-`0029` dump + tree snapshots under `/home/<user>/osl-backups/` |
 
 **Not live:** exact `8802225` migration `0030`/reserved-namespace refusal and exact `e8fbd3f`
 stale-upload reclamation are local-only. Neither commit is mapped to the active Worker UUIDs, no

@@ -29,7 +29,7 @@ this lane.
 | Base commit | `16778b297d3ec8d0358b7d3812a95f4f8443e462` |
 | Base tree | `e85e4bd48bfaab810845e307614ab8af238a33d3` |
 | Worktree branch created by f11 | `unit-f11` |
-| Worktree path recorded by f11 | `/home/liamw/osl-unit-f11` |
+| Worktree path recorded by f11 | `/home/<user>/osl-unit-f11` |
 
 Verified merge-bases from f11:
 

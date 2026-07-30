@@ -11,10 +11,10 @@ etc.) will build on.
 | Field | Value |
 |---|---|
 | Branch | `unit-f11` |
-| Worktree path | `/home/liamw/osl-unit-f11` |
+| Worktree path | `/home/<user>/osl-unit-f11` |
 | Base SHA (per plan §2 "Base tree") | `16778b297d3ec8d0358b7d3812a95f4f8443e462` (main HEAD at time the plan was written) |
 | Tree hash at base | `e85e4bd48bfaab810845e307614ab8af238a33d3` |
-| Created via | `git -C /home/liamw/discord-privacy-client worktree add -b unit-f11 /home/liamw/osl-unit-f11 16778b297d3ec8d0358b7d3812a95f4f8443e462` |
+| Created via | `git -C /home/<user>/discord-privacy-client worktree add -b unit-f11 /home/<user>/osl-unit-f11 16778b297d3ec8d0358b7d3812a95f4f8443e462` |
 | Working tree state | clean (0 dirty files) immediately after creation |
 
 This branch currently contains **only** main's tree at the plan's pinned SHA — no
@@ -73,9 +73,9 @@ any existing checkout's HEAD, index, or working tree. Verified HEADs of all thre
 source repos immediately after worktree creation match their pre-creation values
 exactly:
 
-- `/home/liamw/discord-privacy-client` → `73dccd588a8e07c48d5165bb05b77150539ce0e9` (unchanged)
-- `/home/liamw/discord-privacy-client-f1-footprint` → `61933d3a4b50e410e3be1d5e05560d955ee72b4c` (unchanged)
-- `/home/liamw/osl-newest-integration` → `c08941e998bf9906e6629b39584c2630b48b542f` (unchanged)
+- `/home/<user>/discord-privacy-client` → `73dccd588a8e07c48d5165bb05b77150539ce0e9` (unchanged)
+- `/home/<user>/discord-privacy-client-f1-footprint` → `61933d3a4b50e410e3be1d5e05560d955ee72b4c` (unchanged)
+- `/home/<user>/osl-newest-integration` → `c08941e998bf9906e6629b39584c2630b48b542f` (unchanged)
 
 No stash, reset, checkout, clean, merge, or push was run in any of the three source
 repos.

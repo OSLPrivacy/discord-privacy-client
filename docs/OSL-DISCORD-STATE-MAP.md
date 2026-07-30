@@ -1,7 +1,7 @@
 # OSL Discord — State Map: Intended vs Actual
 
 **Status:** descriptive map only. No fixes are proposed here; a separate plan document owns that.
-**Date of survey:** 2026-07-25. **Tree:** `/home/liamw/discord-privacy-client`, branch `HEAD` (detached), working tree clean.
+**Date of survey:** 2026-07-25. **Tree:** `/home/<user>/discord-privacy-client`, branch `HEAD` (detached), working tree clean.
 **Method:** static read of source and doc comments. Nothing was built, run, or launched. Live-verified facts supplied by the owner are marked *(verified live)*.
 
 > ### Current correction — the 2026-07-25 eye findings are retracted as current claims

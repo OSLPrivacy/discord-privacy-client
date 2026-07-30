@@ -27,7 +27,9 @@ cycle = importlib.util.module_from_spec(RECEIPT_SPEC)
 RECEIPT_SPEC.loader.exec_module(cycle)
 
 PYTHON = Path("/usr/bin/python3")
-AZ = Path("/home/liamw/.local/bin/az")
+PRODUCTION_HOME = Path(os.environ.get("OSL_VMQA_PRODUCTION_HOME", "/home/osl-vmqa"))
+PRODUCTION_USER = os.environ.get("OSL_VMQA_PRODUCTION_USER", "osl-vmqa")
+AZ = Path(os.environ.get("OSL_VMQA_AZ", str(PRODUCTION_HOME / ".local/bin/az")))
 AZ_SHA256 = "bd6ddadadca89ca4b6583da52868047c84d24a706f7bf1b9022b6f904f378674"
 SUBSCRIPTION_ID = "a7d5d97b-3bf4-460a-8a7c-6bd11b5810b1"
 SHARE = SCRIPT_ROOT / "vmqa-share.sh"
@@ -84,10 +86,12 @@ def read_regular(path: Path, label: str, maximum: int) -> bytes:
 
 def fixed_environment() -> dict[str, str]:
     return {
-        "HOME": "/home/liamw",
-        "PATH": "/home/liamw/.local/bin:/usr/bin:/bin",
+        "HOME": PRODUCTION_HOME.as_posix(),
+        "PATH": f"{(PRODUCTION_HOME / '.local/bin').as_posix()}:/usr/bin:/bin",
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
+        "LOGNAME": PRODUCTION_USER,
+        "USER": PRODUCTION_USER,
     }
 
 

@@ -20,7 +20,7 @@ UI Automation.
 - The claim allowlist requires Signal, WhatsApp, Telegram and Outlook support claims to carry
   `Coming soon`, `Experimental`, or `Externally blocked` unless the relevant adapter evidence exists.
 - `t2` added `TelegramA11yRowProbe` to
-  `/home/liamw/osl-telegram-qa/infra/azure/telegram-qa/inspect-telegram-login-ui.ps1` at commit
+  `/home/<user>/osl-telegram-qa/infra/azure/telegram-qa/inspect-telegram-login-ui.ps1` at commit
   `0ee282e`. The probe emits only bounded row counts, control-type counts, timing, and a verdict:
   `supported`, `externally blocked`, or `unsupported`.
 

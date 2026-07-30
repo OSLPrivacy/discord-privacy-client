@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +57,53 @@ PERSONAL_PATH_PATTERNS = {
     "personal Windows path": re.compile(rb"(?i)[A-Z]:\\Users\\liamw(?:\\|/|\b)"),
     "personal WSL path": re.compile(rb"/(?:home|mnt/c/Users)/liamw(?:/|\b)"),
 }
+RELEASE_IDENTITY_PATH = ROOT / "docs/evidence/public-release/released-binary.json"
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+GIT_OBJECT_RE = re.compile(r"^[0-9a-f]{40}$")
+PUBLIC_CLAIM_SURFACES = {
+    "README.md",
+    "apps/osl-hub-ui/README.md",
+    "docs/prototypes/osl-hub/README.md",
+    "docs/prototypes/osl-hub/index.html",
+    "docs/prototypes/osl-hub/app.js",
+    "docs/prototypes/osl-chats-lab/README.md",
+    "docs/prototypes/osl-chats-lab/index.html",
+    "docs/prototypes/osl-chats-lab/app.js",
+}
+RELEASE_BINARY_REQUIRED_CLAIMS = {
+    "release proof without retained binary identity": re.compile(
+        r"\b(?:released?|shipping|production|named\s+release|exact\s+release)\s+"
+        r"(?:build|binary|app|artifact|candidate)?\b.{0,100}\b"
+        r"(?:proves?|verified|validated|demonstrated|works?|supports?|protects?|encrypts?|decrypts?|sends?|deletes?)\b",
+        re.I | re.S,
+    ),
+    "unqualified shipped channel/image support": re.compile(
+        r"\bit\s+works\s+for\s+direct\s+messages,\s+group\s+chats,\s+and\s+server\s+channels,\s+including\s+images\s+and\s+edits\b",
+        re.I,
+    ),
+    "unqualified cover transport claim": re.compile(
+        r"\bdiscord\s+stores\s+and\s+forwards\s+an\s+unreadable\s+cover\s+instead\s+of\s+your\s+text\b"
+        r"|\bthe\s+encrypted\s+bytes\s+do\s+not\s+get\s+posted\s+to\s+discord\s+as\s+an\s+obvious\s+blob\b"
+        r"|\bordinary\s+looking\s+chat\s+text\b",
+        re.I,
+    ),
+    "unqualified ratchet/group sender-key claim": re.compile(
+        r"\bdirect\s+messages\s+then\s+ride\s+a\s+double\s+ratchet\b"
+        r"|\bgroup\s+chats\s+and\s+server\s+channels\s+use\s+sender\s+keys\b",
+        re.I,
+    ),
+    "unqualified private-key storage claim": re.compile(
+        r"\bprivate\s+halves\s+never\s+leave\s+your\s+machine\s+and\s+are\s+sealed\s+at\s+rest\b",
+        re.I,
+    ),
+}
+HONEST_RELEASE_LIMIT_RE = re.compile(
+    r"\b(?:not\s+yet|no|without|unproved|unproven|unknown|planned|qa\s+builds?|must\s+recheck|must\s+be\s+aligned|before\s+(?:every|exposing|claiming))\b.{0,100}"
+    r"\b(?:release|released|shipping|production|named\s+release|exact\s+release)\b"
+    r"|\b(?:release|released|shipping|production|named\s+release|exact\s+release)\b.{0,100}"
+    r"\b(?:not\s+yet|no|without|unproved|unproven|unknown|planned|qa\s+builds?|must\s+recheck|must\s+be\s+aligned|before\s+(?:every|exposing|claiming))\b",
+    re.I | re.S,
+)
 
 
 def publishable_files() -> list[str]:
@@ -121,7 +170,9 @@ def audit_worker_privacy(errors: list[str]) -> None:
         if relative.parts[0] == "cipher-store-cf":
             for call in re.finditer(r"console\.(?:log|warn|error)\(\s*([^)]*?)\s*\)", text, re.S):
                 argument = call.group(1).strip()
-                if not re.fullmatch(r'''(?:"[^"\r\n]*"|'[^'\r\n]*')''', argument):
+                fixed_literal = re.fullmatch(r'''(?:"[^"\r\n]*"|'[^'\r\n]*')''', argument)
+                fixed_contract_marker = argument == "CYCLE_MARKER" and "import { CYCLE_MARKER }" in text
+                if not fixed_literal and not fixed_contract_marker:
                     errors.append(f"{relative}: cipher-store logging must use one fixed literal event name")
 
 
@@ -141,6 +192,122 @@ def audit_local_scanner(errors: list[str]) -> None:
             errors.append(f"{scanner_path.relative_to(ROOT)}: local scanner gained {label}")
     if "pub text: String" not in scanner or "persisted: false" not in scanner:
         errors.append("apps/osl-hub/src/privacy_scan.rs: scanner contract changed; review egress/persistence")
+
+
+def require_exact_keys(value: Any, keys: set[str], label: str, errors: list[str]) -> bool:
+    if not isinstance(value, dict):
+        errors.append(f"{label}: must be an object")
+        return False
+    actual = set(value.keys())
+    missing = sorted(keys - actual)
+    unknown = sorted(actual - keys)
+    if missing or unknown:
+        errors.append(
+            f"{label}: fields are not exact; missing={','.join(missing)} unknown={','.join(unknown)}"
+        )
+        return False
+    return True
+
+
+def load_release_binary_identity(errors: list[str]) -> dict[str, Any] | None:
+    if not RELEASE_IDENTITY_PATH.exists():
+        return None
+    try:
+        value = json.loads(RELEASE_IDENTITY_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        errors.append(f"{RELEASE_IDENTITY_PATH.relative_to(ROOT)}: invalid release identity: {error}")
+        return None
+
+    label = str(RELEASE_IDENTITY_PATH.relative_to(ROOT))
+    if not require_exact_keys(
+        value,
+        {"schemaVersion", "releaseTag", "sourceCommit", "sourceTree", "binarySha256", "binarySizeBytes", "claimProfile"},
+        label,
+        errors,
+    ):
+        return None
+    if value["schemaVersion"] != 1:
+        errors.append(f"{label}: schemaVersion must be 1")
+    if not isinstance(value["releaseTag"], str) or not re.fullmatch(r"v[0-9][0-9A-Za-z._-]*", value["releaseTag"]):
+        errors.append(f"{label}: releaseTag must be a nonempty public v-prefixed tag")
+    if not isinstance(value["sourceCommit"], str) or not GIT_OBJECT_RE.fullmatch(value["sourceCommit"]):
+        errors.append(f"{label}: sourceCommit must be a full lowercase Git object id")
+    if not isinstance(value["sourceTree"], str) or not GIT_OBJECT_RE.fullmatch(value["sourceTree"]):
+        errors.append(f"{label}: sourceTree must be a full lowercase Git object id")
+    if not isinstance(value["binarySha256"], str) or not SHA256_RE.fullmatch(value["binarySha256"]):
+        errors.append(f"{label}: binarySha256 must be lowercase SHA-256")
+    if not isinstance(value["binarySizeBytes"], int) or value["binarySizeBytes"] <= 0:
+        errors.append(f"{label}: binarySizeBytes must be a positive integer")
+    if value["claimProfile"] not in {"none", "qa-only", "release-proven"}:
+        errors.append(f"{label}: claimProfile must be none, qa-only, or release-proven")
+    return value if not any(error.startswith(f"{label}:") for error in errors) else None
+
+
+def line_at(text: str, offset: int) -> int:
+    return text.count("\n", 0, offset) + 1
+
+
+def release_claim_violations(text: str, release_identity: dict[str, Any] | None) -> list[tuple[int, str]]:
+    violations: list[tuple[int, str]] = []
+    release_claims_allowed = release_identity is not None and release_identity.get("claimProfile") == "release-proven"
+    for label, pattern in RELEASE_BINARY_REQUIRED_CLAIMS.items():
+        for match in pattern.finditer(text):
+            start = match.start()
+            sentence_start = max(
+                text.rfind(".", 0, start),
+                text.rfind("!", 0, start),
+                text.rfind("?", 0, start),
+                text.rfind("\n", 0, start),
+            ) + 1
+            sentence_end_candidates = [
+                index for index in (
+                    text.find(".", match.end()),
+                    text.find("!", match.end()),
+                    text.find("?", match.end()),
+                    text.find("\n", match.end()),
+                )
+                if index != -1
+            ]
+            sentence_end = min(sentence_end_candidates) if sentence_end_candidates else len(text)
+            sentence = text[sentence_start:sentence_end]
+            if release_claims_allowed or HONEST_RELEASE_LIMIT_RE.search(sentence):
+                continue
+            violations.append((line_at(text, start), label))
+    return violations
+
+
+def audit_public_release_claims(paths: list[str], errors: list[str]) -> None:
+    release_identity = load_release_binary_identity(errors)
+    scanned = 0
+    for relative in paths:
+        if relative not in PUBLIC_CLAIM_SURFACES:
+            continue
+        path = ROOT / relative
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        scanned += 1
+        for line, label in release_claim_violations(text, release_identity):
+            errors.append(
+                f"{relative}:{line}: {label}; public claim needs {RELEASE_IDENTITY_PATH.relative_to(ROOT)} with claimProfile=release-proven"
+            )
+
+    if scanned < 2:
+        errors.append("public release claim audit scanned too few public surfaces")
+
+
+def audit_public_release_claims_self_test(errors: list[str]) -> None:
+    bad_release = "This release build proves encrypted messages send through Discord."
+    bad_stale = "It works for direct messages, group chats, and server channels, including images and edits."
+    honest_limit = "Encrypted send is verified on QA builds, not yet on the release build."
+    release_identity = None
+    if not release_claim_violations(bad_release, release_identity):
+        errors.append("internal release-claim test did not catch unbound release proof")
+    if not release_claim_violations(bad_stale, release_identity):
+        errors.append("internal release-claim test did not catch stale shipped-feature wording")
+    if release_claim_violations(honest_limit, release_identity):
+        errors.append("internal release-claim test rejected honest release limitation")
 
 
 def main() -> int:
@@ -169,6 +336,8 @@ def main() -> int:
     audit_actions(paths, errors)
     audit_worker_privacy(errors)
     audit_local_scanner(errors)
+    audit_public_release_claims(paths, errors)
+    audit_public_release_claims_self_test(errors)
 
     if errors:
         print("Public-release audit failed:", file=sys.stderr)
