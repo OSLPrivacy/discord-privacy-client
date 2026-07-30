@@ -376,7 +376,12 @@ describe("trusted composer overlay", () => {
     expect(html).toContain('id="protected-ttl"');
     expect(html).toContain('id="protected-decrypt-display"');
     expect(html).toContain('id="current-expiry"');
-    expect(html).toContain("Single Enter · Experimental");
+    expect(html).toContain('id="protected-send-mode" aria-label="Send behavior"');
+    expect(html).toContain('<option value="button">Manual</option>');
+    expect(html).toContain('<option value="double">Double Enter</option>');
+    expect(html).toContain('<option value="single">Experimental Single Enter</option>');
+    expect(html).not.toContain(">Button</option>");
+    expect(html).not.toContain("Single Enter · Experimental");
     expect(html).toContain('id="osl-message-list"');
     expect(html).toContain('class="native-composer-backdrop"');
     expect(html).toContain('id="burn-protected-chat"');
@@ -659,7 +664,8 @@ describe("trusted composer overlay", () => {
       source.indexOf("result = atomic.prepared;"),
     );
     expect(source).toContain("if (result && discordMarkerAvailable && coverTextEnabled)");
-    expect(source).toContain("await sendNativeDiscordOverlayCarrier(requestedPlacement, charsPerSecond, measuredCarrierLayout())");
+    expect(source).toContain("const carrier = await captureC4NativeReceipt(");
+    expect(source).toContain("() => sendNativeDiscordOverlayCarrier(\n            requestedPlacement,\n            charsPerSecond,\n            measuredCarrierLayout(),\n          ),");
     expect(source).toContain('padding: "shapeMatched"');
     expect(source).toContain("Sent privately through OSL only. No Discord marker was attempted.");
     expect(source).toContain("Ready for OSL-only messages. Discord marker placement is unavailable.");
@@ -872,6 +878,7 @@ describe("trusted composer overlay", () => {
 
   it("keys the eye to every decodable Discord row, not to the messages this client sent", () => {
     const source = readRelative("./overlay.ts");
+    const rowProjection = readRelative("./discord-row-attribution.ts");
     const paint = source.slice(source.indexOf("function paintBoundRows"), source.indexOf("function decodedRowPresentation"));
     const apply = source.slice(source.indexOf("function applyDecodedTranscript"), source.indexOf("function clearDecodedTranscript"));
 
@@ -887,15 +894,13 @@ describe("trusted composer overlay", () => {
     // A row is painted only when OSL can decrypt it, place it, and carry the
     // backend's complete native-row/crypto agreement. Any missing half means
     // OSL owns no pixel there and Discord's own row shows through.
-    expect(apply).toContain(
-      "if (row.plaintext === null || row.row === null\n      || row.orientation === null || row.attribution === null) continue;",
-    );
-    expect(apply).toContain(
-      'author: row.orientation === "outgoing" ? localIdentity : verifiedFriendIdentity',
-    );
-    expect(apply).toContain(
-      "const key = `decoded-${row.attribution.nativeLocatorSha256}`",
-    );
+    expect(apply).toContain("const visible = projectNativeDiscordVisibleRow(row);");
+    expect(apply).toContain("if (visible === null) continue;");
+    expect(apply).toContain('author: visible.author === "self" ? localIdentity : verifiedFriendIdentity');
+    expect(apply).toContain("const key = visible.key;");
+    expect(rowProjection).toContain("if (plaintext === null || orientation === null || attribution === null || row === null)");
+    expect(rowProjection).toContain("if (attribution.orientation !== orientation) return null;");
+    expect(rowProjection).toContain("key: `decoded-${attribution.nativeLocatorSha256}`");
 
     // Rebuilt wholesale from one read, never accumulated: a row kept from an
     // earlier read is decrypted text sitting over whatever Discord has since
@@ -925,15 +930,14 @@ describe("trusted composer overlay", () => {
     // The coalescer never re-arms itself: the only setTimeout in the scheduler
     // calls runTranscriptRehydrate once, and a completed read arms nothing.
     expect(schedule.match(/setTimeout/gu)?.length).toBe(1);
-    // A COMPLETED read arms nothing. The one place a read may ask for another is
-    // its own watchdog -- the read that never came back, which is not a
-    // completion at all. Everything from the point the answer arrives onward is
-    // therefore chain-free, and that is what is asserted, rather than banning the
-    // call textually: the blunt ban is what left `rehydrateBusy` unbounded, so a
-    // single never-settling invoke latched the eye off for the whole session in
-    // silence.
+    // A completed read may replay exactly one edge that arrived mid-read, but it
+    // may not restart an already scheduled floor retry or coalesced read. That
+    // keeps completion chain-free while preserving the row-moved edge that often
+    // arrives during the first read of a newly grown overlay window.
     const settled = run.slice(run.indexOf("const result = await rehydrateNativeDiscordOverlayHistory"));
-    expect(settled).not.toContain("scheduleTranscriptRehydrate(");
+    expect(settled.match(/scheduleTranscriptRehydrate\(\)/gu)?.length).toBe(1);
+    expect(settled).toContain("if (rehydratePending) {");
+    expect(settled).toContain("if (rehydrateTimer === undefined) scheduleTranscriptRehydrate();");
     // And the watchdog is a per-request timeout, not a poll: armed by a read that
     // started, cleared by that read finishing, never re-arming itself.
     const watchdog = run.slice(run.indexOf("const watchdog = window.setTimeout"), run.indexOf("const result = await"));
@@ -949,15 +953,16 @@ describe("trusted composer overlay", () => {
     // watchdog gave up on it, and painting it would be decrypted text over
     // whatever Discord has since scrolled into place.
     expect(run).toContain("if (abandoned) return;");
-    expect(run).toContain("if (!abandoned) rehydrateBusy = false;");
+    expect(run).toContain("if (!abandoned) {\n      rehydrateBusy = false;");
 
     // A pending read is always replaced, never queued behind itself.
     expect(schedule).toContain("if (rehydrateTimer !== undefined) window.clearTimeout(rehydrateTimer);");
     // Nothing is claimed while there is nothing to paint: no session, or eye off.
     expect(schedule).toContain("if (!overlayReady || !decryptDisplayEnabled) return;");
-    // Concurrent reads are refused, so an edge during a read cannot stack a
-    // second bounded accessibility walk on top of the first.
+    // Concurrent reads are remembered, not stacked, so an edge during a read
+    // cannot start a second bounded accessibility walk on top of the first.
     expect(run).toContain("if (rehydrateBusy");
+    expect(run).toContain("rehydratePending = true;");
 
     // A refused edge is replaced exactly once, and the replacement may not arm
     // another -- by the time it runs the backend's floor has elapsed.
