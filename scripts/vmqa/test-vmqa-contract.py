@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -1145,6 +1147,56 @@ class CleanupContractTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(result.returncode, 9)
+
+    def test_rejects_coherent_source_archive_rewrite_from_non_producer_bytes(
+        self,
+    ) -> None:
+        source_tar = self.evidence / "source.tar"
+        with tarfile.open(source_tar, "a") as archive:
+            payload = b"tampered source bytes with coherent metadata\n"
+            info = tarfile.TarInfo("apps/osl-hub/src/vmqa-source-tamper.txt")
+            info.size = len(payload)
+            info.mode = 0o644
+            info.mtime = 0
+            info.uid = 0
+            info.gid = 0
+            info.uname = ""
+            info.gname = ""
+            archive.addfile(info, io.BytesIO(payload))
+
+        build_log_path = self.evidence / "build-log.json"
+        build_log = json.loads(build_log_path.read_text())
+        build_log["source"]["archiveSha256"] = self._file_sha(source_tar)
+        build_log_path.write_text(
+            json.dumps(build_log, sort_keys=True, separators=(",", ":")) + "\n"
+        )
+        self.identity["evidence"]["sourceArchiveSha256"] = self._file_sha(source_tar)
+        self.identity["evidence"]["buildLogSha256"] = self._file_sha(build_log_path)
+        self._write("build-identity.json", self.identity)
+        result = subprocess.run(
+            [
+                "python3",
+                str(SCRIPT),
+                "validate-build",
+                "--build-identity",
+                str(self.root / "build-identity.json"),
+                "--exe",
+                str(self.exe),
+                "--evidence-dir",
+                str(self.evidence),
+                "--internal-test-fixture",
+                "--internal-test-seal",
+                str(self.seal),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 9)
+        self.assertIn(
+            "source archive bytes do not reproduce the build-log tree",
+            result.stderr,
+        )
 
     def test_live_agent_v2_and_interrupted_blocked_producer_contract(self) -> None:
         agent_text = Path(__file__).with_name("vmqa-agent.ps1").read_text()

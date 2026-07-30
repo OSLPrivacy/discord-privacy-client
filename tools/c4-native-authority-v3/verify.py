@@ -217,6 +217,8 @@ def _validate_windows_path(value: Any, label: str, *, file: bool) -> str:
 
 
 def _validate_context(context: VerificationContext) -> None:
+    if type(context) is not VerificationContext:
+        raise VerificationError("verification context is invalid")
     if type(context.challenge) is not str or SHA256_RE.fullmatch(context.challenge) is None:
         raise VerificationError("expected challenge is invalid")
     if context.challenge == "0" * 64:

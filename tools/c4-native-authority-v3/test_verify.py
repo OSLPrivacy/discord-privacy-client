@@ -289,6 +289,28 @@ def reseal(receipt: dict) -> dict:
     return seal_receipt(receipt)
 
 
+def set_carrier(receipt: dict, carrier_bytes: bytes) -> None:
+    binding = receipt["target"]["bindingSha256"]
+    carrier_digest = sha256_hex(carrier_bytes)
+    carrier_text = carrier_bytes.decode("utf-8")
+    carrier_utf16 = len(carrier_text.encode("utf-16-le")) // 2
+    receipt["carrier"] = {
+        "targetBindingSha256": binding,
+        "utf8B64": base64.b64encode(carrier_bytes).decode("ascii"),
+        "sha256": carrier_digest,
+        "byteLength": len(carrier_bytes),
+        "utf16Length": carrier_utf16,
+    }
+    receipt["preSend"]["readback"] = {
+        "targetBindingSha256": binding,
+        "classification": "exact",
+        "complete": True,
+        "sha256": carrier_digest,
+        "byteLength": len(carrier_bytes),
+        "utf16Length": carrier_utf16,
+    }
+
+
 def rebind_target(receipt: dict) -> None:
     receipt["target"]["bindingSha256"] = ""
     binding = target_binding_digest(receipt["target"])
@@ -455,6 +477,41 @@ class NativeAuthorityV3Tests(unittest.TestCase):
                 receipt = reseal(receipt)
                 with self.assertRaises(VerificationError):
                     verify_receipt(encode(receipt), context(make_receipt()))
+
+    def test_verification_context_requires_all_independent_fact_sets(self) -> None:
+        receipt = make_receipt()
+        base = context(receipt)
+        cases = {
+            "expected-emitter": {
+                **base.__dict__,
+                "expected_emitter": None,
+            },
+            "pipe-client": {
+                **base.__dict__,
+                "pipe_client": None,
+            },
+            "expected-target": {
+                **base.__dict__,
+                "expected_target": None,
+            },
+        }
+        for name, fields in cases.items():
+            with self.subTest(missing=name):
+                with self.assertRaises(VerificationError):
+                    verify_receipt(encode(receipt), VerificationContext(**fields))
+
+        with self.assertRaisesRegex(
+            VerificationError,
+            "verification context is invalid",
+        ):
+            verify_receipt(encode(receipt), base.__dict__)  # type: ignore[arg-type]
+
+    def test_carrier_del_control_character_fails_closed(self) -> None:
+        receipt = make_receipt()
+        set_carrier(receipt, b"ordinary cover text\x7f")
+        receipt = reseal(receipt)
+        with self.assertRaises(VerificationError):
+            verify_receipt(encode(receipt), context(make_receipt()))
 
     def test_receipt_digest_mutation_is_rejected(self) -> None:
         receipt = make_receipt()

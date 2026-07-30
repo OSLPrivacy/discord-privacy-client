@@ -18,7 +18,7 @@ use crate::whitelist_state::WhitelistState;
 use crypto::x25519;
 use keystore::{Identity, KeyServerClient};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use store::MessageStore;
@@ -283,6 +283,13 @@ pub struct AppState {
     /// it explicitly while the v5 implementation remains covered.
     pub sender_keys_enabled: std::sync::atomic::AtomicBool,
 
+    /// Runtime gate for OSL-RN wire-in.
+    ///
+    /// Defaults false, is in-memory only, and is separate from
+    /// `wire_rn::RN_WIRE_IN_ENABLED`, which remains the compile-time review
+    /// fuse for builds that still must not wire OSL-RN into production flows.
+    pub rn_wire_in_enabled: AtomicBool,
+
     /// Phase 9-A3: in-memory cache of the current channel-member set
     /// per channel_id. Populated by `osl_membership_update` (boot.js
     /// pushes gateway-derived membership). Consulted by the v=5 send
@@ -460,6 +467,36 @@ impl AppState {
             4 => CloudRegistrationState::Offline,
             _ => CloudRegistrationState::NotAttempted,
         }
+    }
+
+    pub fn rn_wire_in_enabled(&self) -> bool {
+        self.rn_wire_in_enabled.load(Ordering::Acquire)
+    }
+
+    pub fn set_rn_wire_in_enabled(&self, enabled: bool) {
+        self.rn_wire_in_enabled.store(enabled, Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rn_wire_in_runtime_gate_defaults_to_refusal() {
+        let state = AppState::new();
+
+        assert!(!state.rn_wire_in_enabled());
+    }
+
+    #[test]
+    fn rn_wire_in_runtime_gate_is_app_state_controlled() {
+        let state = AppState::new();
+
+        state.set_rn_wire_in_enabled(true);
+        assert!(state.rn_wire_in_enabled());
+        state.set_rn_wire_in_enabled(false);
+        assert!(!state.rn_wire_in_enabled());
     }
 }
 
