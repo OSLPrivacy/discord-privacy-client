@@ -41,14 +41,29 @@ Acceptance for this risk is a coordinator routing exercise, not a prose grep:
 
 Test name: `Update routing decisions from real Codex capacity instead of stale pools.`
 
-The coordinator test replays these inputs through the routing decision function. A historical pool
-label is never sufficient authority; `dispatch` is valid only when the current capacity record is
-fresh, internally consistent, quota/account verified, machine headroom is sufficient, and the unit
-is still owned-file bound.
+The coordinator test replays these inputs through the routing decision function and compares the
+computed decision and reason with the expected fields. A historical pool label is never sufficient
+authority; `dispatch` is valid only when the current capacity record is fresh, internally
+consistent, quota/account verified, machine headroom is sufficient, and the unit is still owned-file
+bound.
+
+The replay evaluator uses these rules:
+
+- `currentCapacityRecord: null` means no live capacity authority exists, so `dispatch` must fail.
+- `observedAt` must be no more than 60 seconds before `freshForDecisionAt`.
+- `contradictions` must be empty.
+- `accountQuotaStatus` must be `verified_enough_for_expected_turn`.
+- `machineHeadroom` must be `verified_enough_for_focused_verification`.
+- `activeSessionCount` must be a non-negative integer and `blockedOrSleepingSessions` must be an
+  array, so the decision is based on an actual session inventory.
+- `ownedFileBound` must be `true`.
+- A failed live capacity check cannot be repaired by `borrow_other_account`, `change_codex_home`, or
+  `start_speculative_background_child`; those substitutes force `refuse`, not `dispatch`.
 
 ```json
 {
   "name": "Update routing decisions from real Codex capacity instead of stale pools.",
+  "freshnessWindowSeconds": 60,
   "cases": [
     {
       "lane": "j14",
@@ -91,6 +106,40 @@ is still owned-file bound.
       "forbiddenSubstitute": "borrow_other_account",
       "expectedDecision": "refuse",
       "expectedReason": "failed live capacity check cannot be satisfied by borrowing authority"
+    },
+    {
+      "lane": "j14",
+      "historicalPoolLabel": "available",
+      "currentCapacityRecord": {
+        "observedAt": "2026-07-30T09:12:00Z",
+        "freshForDecisionAt": "2026-07-30T09:12:20Z",
+        "activeSessionCount": 2,
+        "blockedOrSleepingSessions": [],
+        "accountQuotaStatus": "verified_enough_for_expected_turn",
+        "machineHeadroom": "verified_enough_for_focused_verification",
+        "ownedFileBound": false,
+        "contradictions": []
+      },
+      "forbiddenSubstitute": null,
+      "expectedDecision": "standby",
+      "expectedReason": "requested work is not bounded to owned files"
+    },
+    {
+      "lane": "j14",
+      "historicalPoolLabel": "available",
+      "currentCapacityRecord": {
+        "observedAt": "2026-07-30T09:12:00Z",
+        "freshForDecisionAt": "2026-07-30T09:12:20Z",
+        "activeSessionCount": 2,
+        "blockedOrSleepingSessions": [],
+        "accountQuotaStatus": "verified_enough_for_expected_turn",
+        "machineHeadroom": "failed_headroom_check",
+        "ownedFileBound": true,
+        "contradictions": []
+      },
+      "forbiddenSubstitute": "change_codex_home",
+      "expectedDecision": "refuse",
+      "expectedReason": "failed live capacity check cannot be satisfied by changing CODEX_HOME"
     }
   ]
 }
