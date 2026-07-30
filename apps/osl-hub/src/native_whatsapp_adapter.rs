@@ -48,6 +48,7 @@ pub struct WhatsAppStructuralNode {
     pub structural_id: String,
     pub parent_structural_id: Option<String>,
     pub process_kind: WhatsAppProcessKind,
+    pub store_package_family_name: Option<String>,
     pub window_class: Option<String>,
     pub control_type: WhatsAppControlType,
     pub automation_id: Option<String>,
@@ -184,6 +185,8 @@ pub fn trusted_whatsapp_content_root(
         .iter()
         .filter(|node| {
             node.process_kind == WhatsAppProcessKind::StoreAppRoot
+                && node.store_package_family_name.as_deref()
+                    == Some(crate::native_apps::whatsapp_store_package_family_name())
                 && node.parent_structural_id.is_none()
                 && node.window_class.as_deref() == Some(WHATSAPP_ROOT_WINDOW_CLASS)
                 && node.control_type == WhatsAppControlType::Window
@@ -563,6 +566,7 @@ mod tests {
             structural_id: id.to_owned(),
             parent_structural_id: parent.map(str::to_owned),
             process_kind: WhatsAppProcessKind::Other,
+            store_package_family_name: None,
             window_class: None,
             control_type,
             automation_id: None,
@@ -585,6 +589,9 @@ mod tests {
             structural_id: "app-root".to_owned(),
             parent_structural_id: None,
             process_kind: WhatsAppProcessKind::StoreAppRoot,
+            store_package_family_name: Some(
+                crate::native_apps::whatsapp_store_package_family_name().to_owned(),
+            ),
             window_class: Some(WHATSAPP_ROOT_WINDOW_CLASS.to_owned()),
             control_type: WhatsAppControlType::Window,
             automation_id: None,
@@ -679,6 +686,21 @@ mod tests {
         assert_eq!(trusted.webview_ancestor_id, "webview");
         assert_eq!(trusted.content_root_id, "content");
         assert_eq!(trusted.content_runtime_hash, "runtime-content");
+
+        let mut unbound_root = root.clone();
+        unbound_root.store_package_family_name = None;
+        assert_eq!(
+            trusted_whatsapp_content_root(&[unbound_root, bridge.clone(), content.clone()]),
+            Err(WhatsAppAdapterRefusal::MissingExactAppRoot)
+        );
+
+        let mut spoofed_root = root.clone();
+        spoofed_root.store_package_family_name =
+            Some("5319275A.WhatsAppDesktop_attacker".to_owned());
+        assert_eq!(
+            trusted_whatsapp_content_root(&[spoofed_root, bridge.clone(), content.clone()]),
+            Err(WhatsAppAdapterRefusal::MissingExactAppRoot)
+        );
 
         let mut not_webview = node(
             "plain-document",
