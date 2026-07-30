@@ -75,10 +75,14 @@ function outboundFetcher() {
 
 async function responseJson(response: Response): Promise<{
   ok?: boolean;
-  result?: string;
   error?: string;
 }> {
   return await response.json();
+}
+
+async function expectNeutralTelegramAck(response: Response): Promise<void> {
+  expect(response.status).toBe(200);
+  await expect(responseJson(response)).resolves.toEqual({ ok: true });
 }
 
 describe("Telegram operator webhook route", () => {
@@ -108,11 +112,7 @@ describe("Telegram operator webhook route", () => {
       fetcher,
     );
 
-    expect(response.status).toBe(200);
-    await expect(responseJson(response)).resolves.toEqual({
-      ok: true,
-      result: "ignored",
-    });
+    await expectNeutralTelegramAck(response);
     expect(fetcher).not.toHaveBeenCalled();
   });
 
@@ -124,12 +124,34 @@ describe("Telegram operator webhook route", () => {
       fetcher,
     );
 
-    expect(response.status).toBe(200);
-    await expect(responseJson(response)).resolves.toEqual({
-      ok: true,
-      result: "ignored",
-    });
+    await expectNeutralTelegramAck(response);
     expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("uses the same acknowledgement for accepted and unauthorized handled updates", async () => {
+    const acceptedFetcher = outboundFetcher();
+    const ignoredFetcher = outboundFetcher();
+    const accepted = await handleTelegramWebhook(
+      commandRequest("/downloads", ADMIN_CHAT_ID),
+      configuredEnv(),
+      acceptedFetcher,
+    );
+    const ignored = await handleTelegramWebhook(
+      commandRequest("/downloads", "99112233"),
+      configuredEnv(),
+      ignoredFetcher,
+    );
+
+    expect(accepted.status).toBe(200);
+    expect(ignored.status).toBe(200);
+    const [acceptedBody, ignoredBody] = await Promise.all([
+      accepted.text(),
+      ignored.text(),
+    ]);
+    expect(acceptedBody).toBe(ignoredBody);
+    expect(JSON.parse(acceptedBody)).toEqual({ ok: true });
+    expect(acceptedFetcher).toHaveBeenCalledTimes(1);
+    expect(ignoredFetcher).not.toHaveBeenCalled();
   });
 
   it.each([PRIVATE_CHAT_ONE, PRIVATE_CHAT_TWO])(
@@ -142,11 +164,7 @@ describe("Telegram operator webhook route", () => {
         fetcher,
       );
 
-      expect(response.status).toBe(200);
-      await expect(responseJson(response)).resolves.toEqual({
-        ok: true,
-        result: "accepted",
-      });
+      await expectNeutralTelegramAck(response);
       const telegramBody = JSON.parse(
         String(vi.mocked(fetcher).mock.calls[0]?.[1]?.body),
       ) as { chat_id: string; text: string };
@@ -164,11 +182,7 @@ describe("Telegram operator webhook route", () => {
       fetcher,
     );
 
-    expect(response.status).toBe(200);
-    await expect(responseJson(response)).resolves.toEqual({
-      ok: true,
-      result: "accepted",
-    });
+    await expectNeutralTelegramAck(response);
     const telegramBody = JSON.parse(
       String(vi.mocked(fetcher).mock.calls[0]?.[1]?.body),
     ) as { chat_id: string };
@@ -183,7 +197,7 @@ describe("Telegram operator webhook route", () => {
       configuredEnv({ TELEGRAM_VIEWER_CHAT_IDS: viewerChatId }),
       fetcher,
     );
-    expect(response.status).toBe(200);
+    await expectNeutralTelegramAck(response);
     const calls = vi.mocked(fetcher).mock.calls;
     expect(calls).toHaveLength(1);
     expect(String(calls[0]?.[0])).toContain("api.telegram.org");
@@ -338,11 +352,7 @@ describe("Telegram operator webhook route", () => {
       fetcher,
     );
 
-    expect(response.status).toBe(200);
-    await expect(responseJson(response)).resolves.toEqual({
-      ok: true,
-      result: "accepted",
-    });
+    await expectNeutralTelegramAck(response);
     const telegramBody = JSON.parse(
       String(vi.mocked(fetcher).mock.calls[0]?.[1]?.body),
     ) as { chat_id: string };
@@ -357,11 +367,7 @@ describe("Telegram operator webhook route", () => {
       fetcher,
     );
 
-    expect(response.status).toBe(200);
-    await expect(responseJson(response)).resolves.toEqual({
-      ok: true,
-      result: "ignored",
-    });
+    await expectNeutralTelegramAck(response);
     expect(fetcher).not.toHaveBeenCalled();
   });
 
@@ -373,11 +379,7 @@ describe("Telegram operator webhook route", () => {
       fetcher,
     );
 
-    expect(response.status).toBe(200);
-    await expect(responseJson(response)).resolves.toEqual({
-      ok: true,
-      result: "accepted",
-    });
+    await expectNeutralTelegramAck(response);
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(fetcher).toHaveBeenNthCalledWith(
       1,
@@ -406,11 +408,7 @@ describe("Telegram operator webhook route", () => {
       fetcher,
     );
 
-    expect(response.status).toBe(200);
-    await expect(responseJson(response)).resolves.toEqual({
-      ok: true,
-      result: "accepted",
-    });
+    await expectNeutralTelegramAck(response);
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(String(vi.mocked(fetcher).mock.calls[0]?.[0])).toBe(
       "https://api.stripe.com/v1/balance",
@@ -430,11 +428,7 @@ describe("Telegram operator webhook route", () => {
       fetcher,
     );
 
-    expect(response.status).toBe(200);
-    await expect(responseJson(response)).resolves.toEqual({
-      ok: true,
-      result: "accepted",
-    });
+    await expectNeutralTelegramAck(response);
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(String(vi.mocked(fetcher).mock.calls[0]?.[0])).toContain(
       "api.telegram.org/bot",
