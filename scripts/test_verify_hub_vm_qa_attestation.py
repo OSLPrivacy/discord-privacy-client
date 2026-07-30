@@ -40,6 +40,8 @@ class HubVmQaAttestationTests(unittest.TestCase):
                     "candidateSha256": hashlib.sha256(installer.read_bytes()).hexdigest(),
                     "completedAtUtc": "2026-07-17T23:00:00Z",
                     "operator": "qa-reviewer",
+                    "finalApprover": "qa-final-approver-second-session",
+                    "packageReproducedBySecondSession": True,
                     "captchaHandling": "paused_for_manual_completion",
                     "vms": [
                         {"name": "A", "goldenSnapshotId": "signed-a", "cleanRestore": True},
@@ -85,6 +87,78 @@ class HubVmQaAttestationTests(unittest.TestCase):
             attestation.write_text(json.dumps(document), encoding="utf-8")
             with self.assertRaises(SystemExit):
                 verify("hub-v0.1.0", root, attestation)
+
+
+def freeze_the_exact_signed_candidate_vm_attestation_contract() -> None:
+    testcase = unittest.TestCase()
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        installer, attestation = HubVmQaAttestationTests().candidate(root)
+
+        verify("hub-v0.1.0", root, attestation)
+
+        document = json.loads(attestation.read_text(encoding="utf-8"))
+
+        bad_hash = dict(document)
+        bad_hash["candidateSha256"] = hashlib.sha256(b"untested installer").hexdigest()
+        attestation.write_text(json.dumps(bad_hash), encoding="utf-8")
+        with testcase.assertRaises(SystemExit):
+            verify("hub-v0.1.0", root, attestation)
+
+        bad_manifest = dict(document)
+        attestation.write_text(json.dumps(bad_manifest), encoding="utf-8")
+        manifest_path = root / "latest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["platforms"]["windows-x86_64"]["url"] = (
+            "https://github.com/OSLPrivacy/discord-privacy-client/"
+            "releases/download/hub-latest/"
+            f"{installer.name}"
+        )
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        with testcase.assertRaises(SystemExit):
+            verify("hub-v0.1.0", root, attestation)
+
+        HubVmQaAttestationTests().candidate(root)
+        document = json.loads(attestation.read_text(encoding="utf-8"))
+        bad_vm = dict(document)
+        bad_vm["vms"] = [
+            {"name": "A", "goldenSnapshotId": "signed-a", "cleanRestore": True},
+        ]
+        attestation.write_text(json.dumps(bad_vm), encoding="utf-8")
+        with testcase.assertRaises(SystemExit):
+            verify("hub-v0.1.0", root, attestation)
+
+        bad_session = dict(document)
+        bad_session["finalApprover"] = bad_session["operator"]
+        attestation.write_text(json.dumps(bad_session), encoding="utf-8")
+        with testcase.assertRaises(SystemExit):
+            verify("hub-v0.1.0", root, attestation)
+
+        bad_matrix = dict(document)
+        bad_matrix["cases"] = dict(document["cases"])
+        bad_matrix["cases"]["fullCleanup"] = False
+        attestation.write_text(json.dumps(bad_matrix), encoding="utf-8")
+        with testcase.assertRaises(SystemExit):
+            verify("hub-v0.1.0", root, attestation)
+
+
+freeze_the_exact_signed_candidate_vm_attestation_contract.__name__ = (
+    "Freeze the exact signed-candidate VM attestation contract."
+)
+
+
+def load_tests(
+    loader: unittest.TestLoader,
+    tests: unittest.TestSuite,
+    pattern: str | None,
+) -> unittest.TestSuite:
+    del tests, pattern
+    suite = unittest.TestSuite()
+    suite.addTests(loader.loadTestsFromTestCase(HubVmQaAttestationTests))
+    suite.addTest(unittest.FunctionTestCase(
+        freeze_the_exact_signed_candidate_vm_attestation_contract,
+    ))
+    return suite
 
 
 if __name__ == "__main__":
