@@ -601,7 +601,11 @@ fn final_a6_dependency_source_guards() {
     assert_source_contains(
         "main.ts",
         &main_ts,
-        "void oslChatSecureStore.setItem(logicalKey, payload).catch(() => undefined);",
+        // The statement form changed from `void ...` to `return ...` in a refactor; both
+        // discard the rejection. What must not change is that the write is followed by
+        // .catch(() => undefined), so a storage failure can neither escape nor become an
+        // unhandled rejection. Assert that, not the leading keyword.
+        "oslChatSecureStore.setItem(logicalKey, payload).catch(() => undefined);",
     );
     assert_source_contains(
         "main.ts",
@@ -634,7 +638,11 @@ fn final_a6_dependency_source_guards() {
     assert_source_contains(
         "membership.rs",
         &membership,
-        "OSL: refusing to write plaintext membership.json",
+        // The refusal reads "...plaintext membership over encrypted file or create
+        // plaintext membership.json — file_storage_key not in slot", so the old needle
+        // was never contiguous. Match the contiguous prefix, which still disappears if
+        // the guard is removed.
+        "OSL: refusing to write plaintext membership",
     );
     assert_source_contains(
         "membership.rs",
