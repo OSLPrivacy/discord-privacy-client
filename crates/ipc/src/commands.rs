@@ -6789,6 +6789,209 @@ fn trusted_key_bundle(entry: &crate::peer_map::PeerEntry) -> Option<crate::tofu:
     })
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+fn verified_identity_bundle_from_fetch_response(
+    resp: &keystore::client::PubkeysResponse,
+    pinned_signer: &crypto::ed25519::PublicKey,
+    revision: u64,
+    identity_bundle_signature_b64: &str,
+    last_known_revision: Option<u64>,
+) -> IpcResult<keystore::identity_bundle::IdentityBundle> {
+    keystore::client::validate_peer_bundle(resp).map_err(|_| {
+        IpcError::InvalidArgument("keyserver identity record proof invalid".to_string())
+    })?;
+
+    let mut bundle = keystore::identity_bundle::IdentityBundle {
+        ed25519_identity_pub: b64_to_array(
+            "identity bundle Ed25519 key",
+            &resp.ik_ed25519_pub,
+        )?,
+        x25519_identity_pub: b64_to_array("identity bundle X25519 key", &resp.ik_x25519_pub)?,
+        mlkem768_identity_pub: b64_to_array(
+            "identity bundle ML-KEM key",
+            &resp.ik_mlkem768_pub,
+        )?,
+        capability_bundle: resp.rn_capabilities.unwrap_or(0),
+        revision,
+        signature: [0u8; crypto::ed25519::SIGNATURE_SIZE],
+    };
+    bundle.signature = b64_to_array(
+        "identity bundle signature",
+        identity_bundle_signature_b64,
+    )?;
+
+    keystore::identity_bundle::BundleVerifyPolicy::new()
+        .verify(&bundle, pinned_signer, last_known_revision)
+        .map_err(|_| {
+            IpcError::InvalidArgument("identity bundle verification failed".to_string())
+        })?;
+    Ok(bundle)
+}
+
+#[cfg(test)]
+mod production_identity_bundle_pipeline_tests {
+    use super::*;
+    use keystore::client::{PrekeyBundleOpk, PrekeyBundleResponse, PubkeysResponse};
+    use keystore::identity_bundle::{BundleField, BundleMergeError, IdentityBundle};
+    use keystore::{Identity, PrekeyConfig, PrekeyState};
+
+    fn fetched_pubkeys(identity: &Identity, capabilities: u32) -> PubkeysResponse {
+        let x25519 = STANDARD.encode(identity.x25519_public.as_bytes());
+        let ed25519 = STANDARD.encode(identity.ed25519_public.as_bytes());
+        let mlkem768 = STANDARD.encode(identity.mlkem_public_bytes);
+        let ratchet = identity
+            .ratchet_initial_pub
+            .as_ref()
+            .map(|p| STANDARD.encode(p.as_bytes()));
+        let reg_msg = keystore::client::reg_msg_with_capabilities(
+            &identity.user_id,
+            &x25519,
+            &ed25519,
+            &mlkem768,
+            ratchet.as_deref(),
+            capabilities,
+        );
+        let reg_sig = crypto::ed25519::sign(&identity.ed25519_secret, &reg_msg);
+
+        PubkeysResponse {
+            user_id: identity.user_id.clone(),
+            ik_x25519_pub: x25519,
+            ik_ed25519_pub: ed25519,
+            ik_mlkem768_pub: mlkem768,
+            registered_at: "2026-07-30T00:00:00Z".to_string(),
+            last_rotated_at: None,
+            ik_ratchet_initial_pub: ratchet,
+            rn_capabilities: Some(capabilities),
+            registration_sig: Some(STANDARD.encode(reg_sig.as_bytes())),
+        }
+    }
+
+    fn full_identity_bundle_signature(
+        identity: &Identity,
+        capabilities: u32,
+        revision: u64,
+    ) -> String {
+        let bundle = IdentityBundle {
+            ed25519_identity_pub: *identity.ed25519_public.as_bytes(),
+            x25519_identity_pub: *identity.x25519_public.as_bytes(),
+            mlkem768_identity_pub: identity.mlkem_public_bytes,
+            capability_bundle: capabilities,
+            revision,
+            signature: [0u8; crypto::ed25519::SIGNATURE_SIZE],
+        };
+        let sig = crypto::ed25519::sign(&identity.ed25519_secret, &bundle.signed_bytes());
+        STANDARD.encode(sig.as_bytes())
+    }
+
+    fn prekey_response(
+        identity: &Identity,
+        fetched: &PubkeysResponse,
+        prekeys: &PrekeyState,
+        remaining_opk_count: u32,
+    ) -> PrekeyBundleResponse {
+        let opk = prekeys.opk_pool.first().expect("prekey state has OPKs");
+        PrekeyBundleResponse {
+            user_id: identity.user_id.clone(),
+            ik_x25519_pub: fetched.ik_x25519_pub.clone(),
+            ik_ed25519_pub: fetched.ik_ed25519_pub.clone(),
+            ik_mlkem768_pub: fetched.ik_mlkem768_pub.clone(),
+            spk_pub: STANDARD.encode(prekeys.current_spk.public),
+            spk_signature: STANDARD.encode(prekeys.current_spk.signature),
+            spk_rotated_at: keystore::iso_8601_from_unix_seconds(
+                prekeys.current_spk.rotated_at_unix_seconds,
+            ),
+            opk: Some(PrekeyBundleOpk {
+                id: opk.id,
+                pub_b64: STANDARD.encode(opk.public),
+            }),
+            remaining_opk_count,
+            ik_ratchet_initial_pub: fetched.ik_ratchet_initial_pub.clone(),
+        }
+    }
+
+    #[test]
+    fn production_identity_bundle_pipeline() {
+        let state = AppState::new();
+        let peer_discord_id = "900000000000000001";
+        let capabilities = keystore::client::RN_CAP_WIRE_RN;
+        let revision = 1;
+        let peer = keystore::generate_identity("pipeline-peer".to_string());
+        let fetched = fetched_pubkeys(&peer, capabilities);
+        let signature = full_identity_bundle_signature(&peer, capabilities, revision);
+
+        let verified = verified_identity_bundle_from_fetch_response(
+            &fetched,
+            &peer.ed25519_public,
+            revision,
+            &signature,
+            None,
+        )
+        .expect("fetched production identity bundle verifies");
+        assert_eq!(verified.revision, revision);
+        assert_eq!(verified.capability_bundle, capabilities);
+
+        let mut tampered_fetch = fetched_pubkeys(&peer, capabilities);
+        tampered_fetch.ik_x25519_pub =
+            STANDARD.encode([0x55u8; crypto::x25519::PUBLIC_KEY_SIZE]);
+        let err = verified_identity_bundle_from_fetch_response(
+            &tampered_fetch,
+            &peer.ed25519_public,
+            revision,
+            &signature,
+            None,
+        )
+        .expect_err("registration proof tampering must be refused");
+        assert!(
+            err.to_string()
+                .contains("keyserver identity record proof invalid"),
+            "unexpected error: {err}"
+        );
+
+        let prekeys = PrekeyState::new(&peer, PrekeyConfig::default(), 1_700_000_000);
+        let response = prekey_response(&peer, &fetched, &prekeys, 99);
+        let merged = verified
+            .merge_prekey_bundle_response(&response, None)
+            .expect("prekey response identity fields match verified bundle");
+        assert_eq!(merged.identity, verified);
+        assert_eq!(merged.prekey.remaining_opk_count, 99);
+        assert_eq!(
+            merged.prekey.opk,
+            Some((prekeys.opk_pool[0].id, prekeys.opk_pool[0].public))
+        );
+
+        let attacker = keystore::generate_identity("pipeline-attacker".to_string());
+        let attacker_fetch = fetched_pubkeys(&attacker, capabilities);
+        let mut substituted = prekey_response(&peer, &fetched, &prekeys, 99);
+        substituted.ik_ed25519_pub = attacker_fetch.ik_ed25519_pub;
+        assert_eq!(
+            verified.merge_prekey_bundle_response(&substituted, None),
+            Err(BundleMergeError::IdentityKeyMismatch {
+                field: BundleField::Ed25519IdentityKey
+            })
+        );
+
+        populate_peer_from_fetch_response(&state, peer_discord_id, &fetched)
+            .expect("verified fetch populates peer_map");
+        let pm = state.peer_map.lock().unwrap();
+        let entry = pm.get(peer_discord_id).expect("peer cached");
+        assert_eq!(entry.osl_user_id.as_deref(), Some(peer.user_id.as_str()));
+        assert_eq!(entry.pubkey.as_deref(), Some(fetched.ik_x25519_pub.as_str()));
+        assert_eq!(
+            entry.tofu_key_bundle.as_ref(),
+            Some(&crate::tofu::KeyBundle {
+                ed25519_pub: fetched.ik_ed25519_pub.clone(),
+                x25519_pub: fetched.ik_x25519_pub.clone(),
+                mlkem768_pub: fetched.ik_mlkem768_pub.clone(),
+                ratchet_initial_pub: fetched.ik_ratchet_initial_pub.clone(),
+            })
+        );
+        assert!(
+            state.key_change_alerts.lock().unwrap().is_empty(),
+            "first verified fetch must seed TOFU without a false alert"
+        );
+    }
+}
+
 pub fn populate_peer_from_fetch_response(
     state: &AppState,
     discord_id: &str,
