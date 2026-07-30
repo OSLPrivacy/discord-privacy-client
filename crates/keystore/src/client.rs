@@ -1422,10 +1422,8 @@ impl KeyServerClient {
     /// capability observation and the durable local downgrade floor derived
     /// from it.
     ///
-    /// Before this account has ever observed the sender-filter capability, a
-    /// legacy Worker is still usable through the old page with a local sender
-    /// filter. Once the capability is observed, the durable floor is raised and
-    /// any later legacy observation is refused as a downgrade.
+    /// The active-peer receive path must never widen to an all-row page. A
+    /// legacy Worker that cannot prove sender-filter support is refused here.
     pub fn get_control_inbox_compatible_from(
         &self,
         identity: &Identity,
@@ -1442,48 +1440,15 @@ impl KeyServerClient {
             ));
         }
         let capability = self.probe_control_inbox_sender_filter_capability()?;
-        let floor_observed = match capability {
-            ControlInboxSenderFilterCapability::Legacy => {
-                sender_filter_capability_floor_was_observed()?
-            }
-            ControlInboxSenderFilterCapability::Version1 => false,
-        };
         match capability {
             ControlInboxSenderFilterCapability::Version1 => {
                 record_sender_filter_capability_floor()?;
                 self.get_control_inbox_from(identity, sender_id)
             }
-            ControlInboxSenderFilterCapability::Legacy if floor_observed => Err(Error::Transport(
-                "control-inbox sender-filter capability downgrade refused".into(),
+            ControlInboxSenderFilterCapability::Legacy => Err(Error::Transport(
+                "control-inbox sender-filter capability unavailable".into(),
             )),
-            ControlInboxSenderFilterCapability::Legacy => {
-                self.get_control_inbox_legacy_filtered(identity, sender_id)
-            }
         }
-    }
-
-    fn get_control_inbox_legacy_filtered(
-        &self,
-        identity: &Identity,
-        sender_id: &str,
-    ) -> Result<FilteredControlInbox> {
-        let items: Vec<ControlInboxItem> = self
-            .get_control_inbox(identity)?
-            .into_iter()
-            .filter(|item| item.sender_id == sender_id)
-            .collect();
-        let live = u64::try_from(items.len()).map_err(|_| {
-            Error::Transport("control-inbox live disposition count is invalid".into())
-        })?;
-        Ok(FilteredControlInbox {
-            items,
-            delivery: ControlInboxDeliveryDisposition {
-                live,
-                retryable: 0,
-                quarantined: 0,
-                retired: 0,
-            },
-        })
     }
 
     fn probe_control_inbox_sender_filter_capability(
