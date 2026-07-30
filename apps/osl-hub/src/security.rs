@@ -1612,6 +1612,10 @@ pub fn manual_peer_scope_id(
 
 fn validate_manual_peer_service_account(service_id: &str, account_id: &str) -> Result<(), String> {
     match service_id {
+        // First-party OSL chat is not a hosted web service, so it is absent from
+        // the service manifest. The broker still fixes production activation to
+        // `osl-main`; this helper only needs the account id to be a bounded,
+        // exact binding component.
         "osl-chat" => {
             crate::service_host::validate_opaque_id(account_id).map_err(|error| error.to_string())
         }
@@ -4642,7 +4646,11 @@ mod tests {
         assert_eq!(error, SAFETY_NUMBER_MISMATCH_REFUSAL);
         let people: PeopleFile = load_encrypted_json(&harness.path().join(PEOPLE_FILE)).unwrap();
         assert_eq!(
-            people.people.get(&person_id).unwrap().safety_number_verified,
+            people
+                .people
+                .get(&person_id)
+                .unwrap()
+                .safety_number_verified,
             false,
             "refusal must not mark the friend verified"
         );
@@ -4673,13 +4681,8 @@ mod tests {
         let security = HubSecurityState::default();
         install_self_identity(&core);
         let friend = keystore::generate_native_identity();
-        let added = add_friend_code(
-            &core,
-            &security,
-            friend_code_for_identity(&friend),
-            None,
-        )
-        .unwrap();
+        let added =
+            add_friend_code(&core, &security, friend_code_for_identity(&friend), None).unwrap();
         verify_friend_safety_number(
             &core,
             &security,
