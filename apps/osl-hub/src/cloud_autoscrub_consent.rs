@@ -16,6 +16,7 @@ const DATA_SCOPE_DOMAIN: &[u8] = b"OSL/cloud-autoscrub-data-scope/v1";
 const FINDING_DOMAIN: &[u8] = b"OSL/cloud-autoscrub-finding-set/v1";
 const GRANT_DOMAIN: &[u8] = b"OSL/cloud-autoscrub-grant/v1";
 const SCOPE_DOMAIN: &[u8] = b"OSL/cloud-autoscrub-scope/v1";
+const EXECUTION_CONSENT_DOMAIN: &[u8] = b"OSL/execution-consent-scope/v1";
 const MAX_SCOPE_BINDING_BYTES: usize = 256;
 const MAX_EXPLICIT_SCOPE_CONSENTS: usize = 128;
 const HIGH_SENSITIVITY_REQUIRED_ACKNOWLEDGEMENT_COUNT: usize = 5;
@@ -207,6 +208,115 @@ impl fmt::Debug for CloudAutoScrubFindingSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CloudAutoScrubFindingSet")
             .field("commitment", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ExecutionScopeFingerprint {
+    commitment: [u8; 32],
+}
+
+impl ExecutionScopeFingerprint {
+    pub fn derive(
+        provider_binding: &[u8],
+        account_binding: &[u8],
+        execution_scope_binding: &[u8],
+        finding_category_bindings: &[&[u8]],
+    ) -> Result<Self, CloudAutoScrubConsentError> {
+        validate_scope_binding(provider_binding)?;
+        validate_scope_binding(account_binding)?;
+        validate_scope_binding(execution_scope_binding)?;
+        if finding_category_bindings.is_empty()
+            || finding_category_bindings.len() > MAX_EXPLICIT_SCOPE_CONSENTS
+        {
+            return Err(CloudAutoScrubConsentError::InvalidFindingSet);
+        }
+
+        let mut findings = finding_category_bindings.to_vec();
+        findings.sort();
+        if findings.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(CloudAutoScrubConsentError::InvalidFindingSet);
+        }
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(EXECUTION_CONSENT_DOMAIN);
+        write_lp(&mut bytes, provider_binding)?;
+        write_lp(&mut bytes, account_binding)?;
+        write_lp(&mut bytes, execution_scope_binding)?;
+        let finding_count = u32::try_from(findings.len())
+            .map_err(|_| CloudAutoScrubConsentError::InvalidFindingSet)?;
+        bytes.extend_from_slice(&finding_count.to_be_bytes());
+        for finding in findings {
+            validate_scope_binding(finding)?;
+            write_lp(&mut bytes, finding)?;
+        }
+        Ok(Self {
+            commitment: Sha256::digest(bytes).into(),
+        })
+    }
+
+    pub fn commitment(&self) -> [u8; 32] {
+        self.commitment
+    }
+}
+
+impl fmt::Debug for ExecutionScopeFingerprint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExecutionScopeFingerprint")
+            .field("commitment", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct ExecutionConsent {
+    scope_fingerprint: ExecutionScopeFingerprint,
+    auth_epoch: u64,
+}
+
+impl ExecutionConsent {
+    pub fn grant(
+        scope_fingerprint: ExecutionScopeFingerprint,
+        auth_epoch: u64,
+    ) -> Result<Self, CloudAutoScrubConsentError> {
+        if auth_epoch == 0 {
+            return Err(CloudAutoScrubConsentError::LiveAuthEpochRequired);
+        }
+        Ok(Self {
+            scope_fingerprint,
+            auth_epoch,
+        })
+    }
+
+    pub fn require(
+        &self,
+        scope_fingerprint: ExecutionScopeFingerprint,
+        auth_epoch: u64,
+    ) -> Result<(), CloudAutoScrubConsentError> {
+        if auth_epoch == 0 || self.auth_epoch != auth_epoch {
+            return Err(CloudAutoScrubConsentError::LiveAuthEpochRequired);
+        }
+        if self.scope_fingerprint != scope_fingerprint {
+            return Err(CloudAutoScrubConsentError::ExplicitScopeConsentRequired);
+        }
+        Ok(())
+    }
+
+    pub fn auth_epoch(&self) -> u64 {
+        self.auth_epoch
+    }
+
+    pub fn scope_fingerprint(&self) -> ExecutionScopeFingerprint {
+        self.scope_fingerprint
+    }
+}
+
+impl fmt::Debug for ExecutionConsent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExecutionConsent")
+            .field("scope_fingerprint", &"<redacted>")
+            .field("auth_epoch", &self.auth_epoch)
             .finish()
     }
 }
@@ -751,6 +861,78 @@ mod tests {
             ),
             Ok(true)
         );
+    }
+
+    fn execution_scope(
+        provider: &[u8],
+        account: &[u8],
+        scope: &[u8],
+        findings: &[&[u8]],
+    ) -> ExecutionScopeFingerprint {
+        ExecutionScopeFingerprint::derive(provider, account, scope, findings).unwrap()
+    }
+
+    #[test]
+    fn execution_consent_scope_fingerprint_contract() {
+        let granted = execution_scope(
+            b"provider-local",
+            b"account-private",
+            b"visible-data",
+            &[b"credential".as_ref(), b"precise-location".as_ref()],
+        );
+        let reordered = execution_scope(
+            b"provider-local",
+            b"account-private",
+            b"visible-data",
+            &[b"precise-location".as_ref(), b"credential".as_ref()],
+        );
+        let other_account = execution_scope(
+            b"provider-local",
+            b"account-other",
+            b"visible-data",
+            &[b"credential".as_ref(), b"precise-location".as_ref()],
+        );
+        let other_scope = execution_scope(
+            b"provider-local",
+            b"account-private",
+            b"all-data",
+            &[b"credential".as_ref(), b"precise-location".as_ref()],
+        );
+
+        assert_eq!(granted, reordered);
+        assert_ne!(granted, other_account);
+        assert_ne!(granted, other_scope);
+
+        let consent = ExecutionConsent::grant(granted, 42).unwrap();
+        assert_eq!(consent.scope_fingerprint(), granted);
+        assert_eq!(consent.auth_epoch(), 42);
+        assert_eq!(consent.require(reordered, 42), Ok(()));
+        assert_eq!(
+            consent.require(other_account, 42),
+            Err(CloudAutoScrubConsentError::ExplicitScopeConsentRequired)
+        );
+        assert_eq!(
+            consent.require(granted, 41),
+            Err(CloudAutoScrubConsentError::LiveAuthEpochRequired)
+        );
+        assert_eq!(
+            ExecutionConsent::grant(granted, 0),
+            Err(CloudAutoScrubConsentError::LiveAuthEpochRequired)
+        );
+        assert_eq!(
+            ExecutionScopeFingerprint::derive(
+                b"provider-local",
+                b"account-private",
+                b"visible-data",
+                &[b"credential".as_ref(), b"credential".as_ref()],
+            ),
+            Err(CloudAutoScrubConsentError::InvalidFindingSet)
+        );
+
+        let debug = format!("{:?}", consent);
+        assert!(!debug.contains("provider-local"));
+        assert!(!debug.contains("account-private"));
+        assert!(!debug.contains("visible-data"));
     }
 
     #[test]
