@@ -43,6 +43,8 @@ export interface NativeApp {
   id: NativeAppId;
   displayName: string;
   availability: "installed" | "installable" | "unavailable";
+  supportStatus: "beta" | "comingSoon" | "externallyBlocked";
+  protectedMode: "assistOnly" | "unavailable";
   isolatedProfileAvailable: boolean;
   supportsOverlay: boolean;
 }
@@ -256,11 +258,11 @@ const firefoxServiceIds: readonly HomeAppId[] = [
   "instagram", "snapchat", "x", "messenger", "gmail", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
 ];
 const nativePreviewApps: readonly NativeApp[] = [
-  { id: "discord", displayName: "Discord", availability: "installable", isolatedProfileAvailable: true, supportsOverlay: false },
-  { id: "telegram", displayName: "Telegram", availability: "installable", isolatedProfileAvailable: true, supportsOverlay: false },
-  { id: "signal", displayName: "Signal", availability: "installable", isolatedProfileAvailable: true, supportsOverlay: false },
-  { id: "whatsapp", displayName: "WhatsApp", availability: "installable", isolatedProfileAvailable: false, supportsOverlay: false },
-  { id: "outlook", displayName: "Outlook", availability: "unavailable", isolatedProfileAvailable: false, supportsOverlay: false },
+  { id: "discord", displayName: "Discord", availability: "installable", supportStatus: "beta", protectedMode: "assistOnly", isolatedProfileAvailable: true, supportsOverlay: false },
+  { id: "telegram", displayName: "Telegram", availability: "installable", supportStatus: "comingSoon", protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false },
+  { id: "signal", displayName: "Signal", availability: "installable", supportStatus: "comingSoon", protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false },
+  { id: "whatsapp", displayName: "WhatsApp", availability: "installable", supportStatus: "comingSoon", protectedMode: "unavailable", isolatedProfileAvailable: false, supportsOverlay: false },
+  { id: "outlook", displayName: "Outlook", availability: "unavailable", supportStatus: "comingSoon", protectedMode: "unavailable", isolatedProfileAvailable: false, supportsOverlay: false },
 ];
 
 interface HomeAppDefinition {
@@ -609,15 +611,27 @@ export function parseNativeApps(raw: unknown): NativeApp[] {
   if (!Array.isArray(raw) || raw.length > nativeAppIds.length) throw new Error("invalid native app catalog");
   const seen = new Set<NativeAppId>();
   return raw.map((candidate) => {
-    if (!isExactRecord(candidate, ["id", "displayName", "availability", "isolatedProfileAvailable", "supportsOverlay"])) throw new Error("invalid native app catalog");
+    if (!isExactRecord(candidate, ["id", "displayName", "availability", "supportStatus", "protectedMode", "isolatedProfileAvailable", "supportsOverlay"])) throw new Error("invalid native app catalog");
     const id = candidate.id as NativeAppId;
     if (!nativeAppIds.includes(id) || seen.has(id) || !isDisplayString(candidate.displayName, 80)
       || !["installed", "installable", "unavailable"].includes(String(candidate.availability))
+      || !["beta", "comingSoon", "externallyBlocked"].includes(String(candidate.supportStatus))
+      || !["assistOnly", "unavailable"].includes(String(candidate.protectedMode))
       || typeof candidate.isolatedProfileAvailable !== "boolean" || typeof candidate.supportsOverlay !== "boolean") {
       throw new Error("invalid native app catalog");
     }
+    if (candidate.supportsOverlay) throw new Error("invalid native app catalog");
+    if (id !== "discord" && candidate.protectedMode !== "unavailable") throw new Error("invalid native app catalog");
     seen.add(id);
-    return { id, displayName: candidate.displayName as string, availability: candidate.availability as NativeApp["availability"], isolatedProfileAvailable: candidate.isolatedProfileAvailable, supportsOverlay: candidate.supportsOverlay };
+    return {
+      id,
+      displayName: candidate.displayName as string,
+      availability: candidate.availability as NativeApp["availability"],
+      supportStatus: candidate.supportStatus as NativeApp["supportStatus"],
+      protectedMode: candidate.protectedMode as NativeApp["protectedMode"],
+      isolatedProfileAvailable: candidate.isolatedProfileAvailable,
+      supportsOverlay: candidate.supportsOverlay,
+    };
   });
 }
 

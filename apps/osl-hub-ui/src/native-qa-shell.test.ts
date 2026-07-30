@@ -11,6 +11,8 @@ const app = (id: NativeQaProvider, availability: NativeApp["availability"] = "in
   id,
   displayName: id,
   availability,
+  supportStatus: id === "discord" ? "beta" : "comingSoon",
+  protectedMode: id === "discord" ? "assistOnly" : "unavailable",
   isolatedProfileAvailable: false,
   supportsOverlay: false,
 });

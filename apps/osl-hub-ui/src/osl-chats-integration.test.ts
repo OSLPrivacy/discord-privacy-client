@@ -99,7 +99,8 @@ describe("first-party OSL Chats integration", () => {
     expect(chatSettings).toContain("Hide message previews on this device.");
     expect(chatSettings).toContain('data-osl-chat-unmute="${escapeHtml(personId)}"');
     expect(chatSettings).not.toMatch(/keyserver|ratchet|receipt|browser profile|provider adapter/iu);
-    expect(binding).toContain("localStorage.setItem(oslChatPreviewStorageKey, String(oslChatPreviewsVisible))");
+    expect(binding).toContain("persistOslChatPreviewVisibility()");
+    expect(binding).not.toMatch(/localStorage\.setItem\(\s*oslChatPreviewStorageKey/u);
   });
 
   it("labels provider server capabilities as unavailable instead of faking support", () => {

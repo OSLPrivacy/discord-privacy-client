@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   desktopServicePolicies,
   desktopServicePolicy,
+  oslMailStage,
+  oslMailStages,
   requiresNativeDesktopSurface,
 } from "./desktop-service-policy";
 
@@ -66,5 +68,18 @@ describe("Windows desktop service policy", () => {
     const riskText = JSON.stringify(desktopServicePolicy("discord").sendModeRisk);
     expect(riskText).not.toMatch(/\d+\s*%|percentage|probability|ban rate/i);
     expect(riskText).not.toMatch(/undetectable|terms-safe|compliant because|allowed because/i);
+  });
+
+  it("models OSL Mail stages without promoting later mailbox promises", () => {
+    expect(oslMailStages.map((stage) => stage.id)).toEqual(["stageA", "stageB", "stageC"]);
+    expect(oslMailStage("stageA")).toMatchObject({
+      availability: "available",
+      externalEmailScope: "ordinaryExternalEmailUnlessSeparatelySupported",
+    });
+    expect(oslMailStage("stageA").boundary).toContain("explicitly authorizes");
+    expect(oslMailStage("stageA").excludes).toContain("OSL-operated mailbox");
+    expect(oslMailStage("stageB").availability).toBe("comingLater");
+    expect(oslMailStage("stageC").availability).toBe("comingLater");
+    expect(JSON.stringify(oslMailStages)).not.toMatch(/ordinary external email is OSL end-to-end encrypted|universal encrypted delivery available/i);
   });
 });

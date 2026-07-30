@@ -150,11 +150,9 @@ pub struct NativeAppStatus {
     pub protected_mode: NativeAppProtectedMode,
     /// True only when the current integration has a verified secondary-instance
     /// switch that keeps writable state inside an OSL-owned profile.
-    #[serde(skip_serializing)]
     pub isolated_profile_available: bool,
     /// Remains false until a service-specific Windows accessibility adapter
     /// can prove the exact account, conversation, recipients, and composer.
-    #[serde(skip_serializing)]
     pub supports_overlay: bool,
 }
 
@@ -2542,7 +2540,7 @@ mod tests {
     }
 
     #[test]
-    fn native_app_status_serializes_only_the_public_support_contract() {
+    fn native_app_status_serializes_the_public_support_contract_without_implying_overlay() {
         let status = NativeAppStatus {
             id: NativeAppId::Discord,
             display_name: "Discord",
@@ -2562,16 +2560,18 @@ mod tests {
                 "availability",
                 "displayName",
                 "id",
+                "isolatedProfileAvailable",
                 "protectedMode",
-                "supportStatus"
+                "supportStatus",
+                "supportsOverlay"
             ])
         );
         assert_eq!(json["id"], "discord");
         assert_eq!(json["availability"], "installed");
         assert_eq!(json["supportStatus"], "beta");
         assert_eq!(json["protectedMode"], "assistOnly");
-        assert!(json.get("isolatedProfileAvailable").is_none());
-        assert!(json.get("supportsOverlay").is_none());
+        assert_eq!(json["isolatedProfileAvailable"], true);
+        assert_eq!(json["supportsOverlay"], false);
     }
 
     #[test]
