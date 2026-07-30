@@ -5,6 +5,8 @@
 //! capability. Localized names and placeholder text are modeled only so tests
 //! can prove selectors do not depend on them.
 
+use sha2::{Digest, Sha256};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SignalRect {
     pub left: i32,
@@ -100,6 +102,7 @@ pub enum SignalSelectorError {
     Ambiguous,
     Invalid,
     LimitExceeded,
+    ProofMismatch,
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -107,6 +110,20 @@ pub struct SignalRowCandidate {
     pub node_index: usize,
     pub text: String,
     pub body_bounds: SignalRect,
+}
+
+pub struct SignalCarrierPlacementRequest<'a> {
+    pub composer_anchor_sha256: &'a str,
+    pub carrier: &'a str,
+    pub exact_prefix: &'a str,
+    pub prefix_proof_sha256: &'a str,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct SignalCarrierPlacement {
+    pub committed_text: String,
+    pub exact_prefix: String,
+    pub prefix_proof_sha256: String,
 }
 
 pub fn discover_signal_composer(
@@ -188,6 +205,50 @@ pub fn extract_signal_row_candidates(
     Ok(candidates)
 }
 
+pub fn place_signal_carrier(
+    request: SignalCarrierPlacementRequest<'_>,
+) -> Result<SignalCarrierPlacement, SignalSelectorError> {
+    if !canonical_sha256(request.composer_anchor_sha256)
+        || !canonical_sha256(request.prefix_proof_sha256)
+        || request.carrier.is_empty()
+        || request.exact_prefix.is_empty()
+        || !valid_candidate_text(request.carrier, 4096)
+        || !valid_candidate_text(request.exact_prefix, 4096)
+        || !request.carrier.starts_with(request.exact_prefix)
+    {
+        return Err(SignalSelectorError::Invalid);
+    }
+    let expected_proof = signal_carrier_prefix_proof_sha256(
+        request.composer_anchor_sha256,
+        request.exact_prefix,
+        request.carrier,
+    );
+    if expected_proof != request.prefix_proof_sha256 {
+        return Err(SignalSelectorError::ProofMismatch);
+    }
+    Ok(SignalCarrierPlacement {
+        committed_text: request.carrier.to_owned(),
+        exact_prefix: request.exact_prefix.to_owned(),
+        prefix_proof_sha256: expected_proof,
+    })
+}
+
+pub fn signal_carrier_prefix_proof_sha256(
+    composer_anchor_sha256: &str,
+    exact_prefix: &str,
+    carrier: &str,
+) -> String {
+    hash_joined(
+        "signal-carrier-prefix-proof-v1",
+        [
+            composer_anchor_sha256,
+            &exact_prefix.len().to_string(),
+            exact_prefix,
+            &hash_joined("signal-carrier-full-text-v1", [carrier]),
+        ],
+    )
+}
+
 fn signal_composer_candidate(node: &SignalNode, window_bounds: SignalRect) -> bool {
     let right_pane_left = window_bounds.left.saturating_add(window_bounds.width() / 3);
     let lower_band_top = window_bounds
@@ -243,6 +304,33 @@ fn valid_candidate_text(value: &str, max_text_bytes: usize) -> bool {
         && !value
             .chars()
             .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+}
+
+fn canonical_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn hash_joined<'a>(domain: &str, values: impl IntoIterator<Item = &'a str>) -> String {
+    let mut hash = Sha256::new();
+    hash.update(domain.as_bytes());
+    for value in values {
+        hash.update([0x1f]);
+        hash.update(value.as_bytes());
+    }
+    hex_lower(&hash.finalize())
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[usize::from(byte >> 4)] as char);
+        encoded.push(HEX[usize::from(byte & 0x0f)] as char);
+    }
+    encoded
 }
 
 #[cfg(test)]
@@ -370,6 +458,49 @@ mod tests {
         assert_eq!(
             extract_signal_row_candidates(&nodes, 0, 1, 128).map(|value| value.len()),
             Err(SignalSelectorError::LimitExceeded)
+        );
+    }
+
+    #[test]
+    fn signal_carrier() {
+        let composer_anchor = "a".repeat(64);
+        let carrier = "OSL: sealed carrier body follows";
+        let exact_prefix = "OSL: sealed";
+        let proof = signal_carrier_prefix_proof_sha256(&composer_anchor, exact_prefix, carrier);
+
+        let placement = place_signal_carrier(SignalCarrierPlacementRequest {
+            composer_anchor_sha256: &composer_anchor,
+            carrier,
+            exact_prefix,
+            prefix_proof_sha256: &proof,
+        })
+        .expect("exact prefix proof should place carrier");
+        assert_eq!(placement.committed_text, carrier);
+        assert_eq!(placement.exact_prefix, exact_prefix);
+        assert_eq!(placement.prefix_proof_sha256, proof);
+
+        let shorter_prefix_proof =
+            signal_carrier_prefix_proof_sha256(&composer_anchor, "OSL:", carrier);
+        assert_eq!(
+            place_signal_carrier(SignalCarrierPlacementRequest {
+                composer_anchor_sha256: &composer_anchor,
+                carrier,
+                exact_prefix,
+                prefix_proof_sha256: &shorter_prefix_proof,
+            })
+            .map(|placement| placement.prefix_proof_sha256),
+            Err(SignalSelectorError::ProofMismatch)
+        );
+
+        assert_eq!(
+            place_signal_carrier(SignalCarrierPlacementRequest {
+                composer_anchor_sha256: &composer_anchor,
+                carrier,
+                exact_prefix: "sealed",
+                prefix_proof_sha256: &proof,
+            })
+            .map(|placement| placement.committed_text),
+            Err(SignalSelectorError::Invalid)
         );
     }
 }
