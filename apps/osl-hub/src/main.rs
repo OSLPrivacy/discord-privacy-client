@@ -9913,6 +9913,10 @@ mod tauri_registration_surface_tests {
                 !permissions.values().any(|command| command == forbidden),
                 "{forbidden} must not be ACL-granted"
             );
+            assert!(
+                !capability.contains(&command_permission(forbidden)),
+                "{forbidden} must not be capability-granted"
+            );
         }
 
         let mut missing_request = handlers.clone();
