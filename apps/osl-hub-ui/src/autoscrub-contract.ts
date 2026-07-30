@@ -2,29 +2,12 @@ import type { ServiceId } from "./services";
 
 export const AUTOSCRUB_UNATTENDED_RUN_COMMAND = "autoscrub_unattended_run" as const;
 
-export function deepFreeze<T>(value: T): T {
-  if (typeof value !== "object" || value === null || Object.isFrozen(value)) {
-    return value;
-  }
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreeze(child);
-  }
-  return Object.freeze(value);
-}
-
 export interface AutoscrubUnattendedContract {
   readonly production: boolean;
   readonly unattendedAllowed: boolean;
   readonly reviewRequiredEveryBatch: boolean;
   readonly externalSecurityReviewPassed: boolean;
 }
-
-export const AUTOSCRUB_BASE_CONTRACT: AutoscrubUnattendedContract = deepFreeze({
-  production: true,
-  unattendedAllowed: false,
-  reviewRequiredEveryBatch: true,
-  externalSecurityReviewPassed: false,
-});
 
 export type AutoscrubUnattendedRefusalReason =
   | "invalid-contract"
@@ -56,29 +39,29 @@ export type AutoScrubQuitGuardState = "notRequested" | "checking" | "estimated" 
 export type AutoScrubDisplayTone = "neutral" | "working" | "warning" | "blocked";
 
 export interface AutoScrubRunSummary {
-  runId: string;
-  serviceId: ServiceId;
-  phase: AutoScrubRunPhase;
-  reviewedItemCount: number;
-  remainingItemCount: number;
-  stopRequested: boolean;
-  mutationAllowed: false;
-  lastOutcome: "none" | "prepared" | "confirmed" | "held" | "unknown";
+  readonly runId: string;
+  readonly serviceId: ServiceId;
+  readonly phase: AutoScrubRunPhase;
+  readonly reviewedItemCount: number;
+  readonly remainingItemCount: number;
+  readonly stopRequested: boolean;
+  readonly mutationAllowed: false;
+  readonly lastOutcome: "none" | "prepared" | "confirmed" | "held" | "unknown";
 }
 
 export interface AutoScrubQuitGuardEstimate {
-  state: AutoScrubQuitGuardState;
-  honestRemainingSecondsEstimate: number | null;
-  reason: string;
+  readonly state: AutoScrubQuitGuardState;
+  readonly honestRemainingSecondsEstimate: number | null;
+  readonly reason: string;
 }
 
 export interface AutoScrubFleetStatus {
-  contract: "autoscrubRunFleet.v1";
-  openRunCount: number;
-  globalStopRequested: boolean;
-  unattendedExecutionAllowed: false;
-  quitGuard: AutoScrubQuitGuardEstimate;
-  runs: AutoScrubRunSummary[];
+  readonly contract: "autoscrubRunFleet.v1";
+  readonly openRunCount: number;
+  readonly globalStopRequested: boolean;
+  readonly unattendedExecutionAllowed: false;
+  readonly quitGuard: AutoScrubQuitGuardEstimate;
+  readonly runs: readonly AutoScrubRunSummary[];
 }
 
 export interface AutoScrubStatusProjection {
@@ -89,12 +72,48 @@ export interface AutoScrubStatusProjection {
 }
 
 export interface AutoScrubReviewedRunRequest {
-  serviceId: ServiceId;
-  accountId: string;
-  reviewToken: string;
-  planDigest: string;
-  reviewedItemCount: number;
-  consent: "reviewedBatchOnly";
+  readonly serviceId: ServiceId;
+  readonly accountId: string;
+  readonly reviewToken: string;
+  readonly planDigest: string;
+  readonly reviewedItemCount: number;
+  readonly consent: "reviewedBatchOnly";
+}
+
+export type DeepReadonly<T> = T extends (...args: never[]) => unknown
+  ? T
+  : T extends readonly (infer U)[]
+    ? readonly DeepReadonly<U>[]
+    : T extends object
+      ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
+      : T;
+
+export function deepFreeze<T>(value: T): DeepReadonly<T> {
+  if (typeof value !== "object" || value === null || Object.isFrozen(value)) {
+    return value as DeepReadonly<T>;
+  }
+  for (const key of Reflect.ownKeys(value)) {
+    const child = (value as Record<PropertyKey, unknown>)[key];
+    if (typeof child === "object" && child !== null) {
+      deepFreeze(child);
+    }
+  }
+  return Object.freeze(value) as DeepReadonly<T>;
+}
+
+export const AUTOSCRUB_UNATTENDED_BASE_CONTRACT = deepFreeze({
+  production: true,
+  unattendedAllowed: false,
+  reviewRequiredEveryBatch: true,
+  externalSecurityReviewPassed: false,
+} satisfies AutoscrubUnattendedContract);
+
+export const AUTOSCRUB_BASE_CONTRACT: AutoscrubUnattendedContract = AUTOSCRUB_UNATTENDED_BASE_CONTRACT;
+
+export function createAutoscrubUnattendedContract(
+  overrides: Partial<AutoscrubUnattendedContract> = {},
+): AutoscrubUnattendedContract {
+  return deepFreeze({ ...AUTOSCRUB_UNATTENDED_BASE_CONTRACT, ...overrides });
 }
 
 const serviceIds: readonly ServiceId[] = [
@@ -167,7 +186,7 @@ function boundedText(value: unknown, max: number): value is string {
 }
 
 function boundedCount(value: unknown, max: number): value is number {
-  return Number.isInteger(value) && value >= 0 && value <= max;
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= max;
 }
 
 function opaqueIdentifier(value: unknown, max: number): value is string {
@@ -195,7 +214,7 @@ function parseRun(raw: unknown): AutoScrubRunSummary {
     || !outcomes.includes(raw.lastOutcome as AutoScrubRunSummary["lastOutcome"])) {
     throw new Error("invalid AutoScrub run");
   }
-  return {
+  return deepFreeze({
     runId: raw.runId,
     serviceId: raw.serviceId,
     phase: raw.phase,
@@ -204,7 +223,7 @@ function parseRun(raw: unknown): AutoScrubRunSummary {
     stopRequested: raw.stopRequested,
     mutationAllowed: false,
     lastOutcome: raw.lastOutcome,
-  } as AutoScrubRunSummary;
+  } as AutoScrubRunSummary);
 }
 
 function parseQuitGuard(raw: unknown): AutoScrubQuitGuardEstimate {
@@ -216,11 +235,11 @@ function parseQuitGuard(raw: unknown): AutoScrubQuitGuardEstimate {
     || !boundedText(raw.reason, 160)) {
     throw new Error("invalid AutoScrub quit guard");
   }
-  return {
+  return deepFreeze({
     state: raw.state,
     honestRemainingSecondsEstimate: raw.honestRemainingSecondsEstimate,
     reason: raw.reason,
-  } as AutoScrubQuitGuardEstimate;
+  } as AutoScrubQuitGuardEstimate);
 }
 
 export function parseAutoScrubFleetStatus(raw: unknown): AutoScrubFleetStatus {

@@ -1,8 +1,10 @@
 //! Loader that composes envelope trust and profile schema validation.
 
+use crate::defaults::{signal_default_profile, signal_default_trusted_signing_key_b64};
 use crate::envelope::{EnvelopeError, SignedProfile};
 use crate::schema::{
-    parse_profile_doc, AdapterService, ProfileDoc, ProfileValidationError, ValidatedProfile,
+    parse_profile_doc, verify_profile_doc, AdapterService, ProfileDoc, ProfileError,
+    ProfilePayload, ProfileValidationError, SignedProfileDoc, ValidatedProfile,
     PROFILE_DOC_VERSION,
 };
 use crate::trust::{
@@ -71,6 +73,50 @@ pub enum LoaderError {
     RollbackBelowFloor { sequence: u64, floor: u64 },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AdapterProfileSource {
+    Cached,
+    CompiledIn,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct LoadedSignedAdapterProfile {
+    signed: SignedProfileDoc,
+    payload: ProfilePayload,
+    source: AdapterProfileSource,
+}
+
+impl LoadedSignedAdapterProfile {
+    pub fn signed(&self) -> &SignedProfileDoc {
+        &self.signed
+    }
+
+    pub fn payload(&self) -> &ProfilePayload {
+        &self.payload
+    }
+
+    pub fn source(&self) -> AdapterProfileSource {
+        self.source
+    }
+}
+
+impl fmt::Debug for LoadedSignedAdapterProfile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LoadedSignedAdapterProfile")
+            .field("adapter_id", &"<redacted>")
+            .field("stable_id", &self.payload.app.stable_id)
+            .field("revision", &self.payload.revision.number)
+            .field("source", &self.source)
+            .finish()
+    }
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum SignedAdapterProfileLoaderError {
+    #[error(transparent)]
+    Profile(#[from] ProfileError),
+}
+
 impl From<EnvelopeError> for LoaderError {
     fn from(_: EnvelopeError) -> Self {
         Self::Envelope
@@ -90,6 +136,51 @@ pub fn load_trusted_profile(
     now_unix_seconds: u64,
 ) -> Result<LoadedProfile, LoaderError> {
     load_trusted_profile_with_anchors(signed, now_unix_seconds, SHIPPED_ANCHOR_KEYS)
+}
+
+pub fn load_signal_profile_or_compiled_in(
+    cached: Option<&SignedProfileDoc>,
+    now_unix_seconds: u64,
+) -> Result<LoadedSignedAdapterProfile, SignedAdapterProfileLoaderError> {
+    load_signed_adapter_profile_or_compiled_in(
+        cached,
+        signal_default_trusted_signing_key_b64(),
+        &signal_default_profile(),
+        signal_default_trusted_signing_key_b64(),
+        now_unix_seconds,
+    )
+}
+
+pub fn load_signed_adapter_profile_or_compiled_in(
+    cached: Option<&SignedProfileDoc>,
+    trusted_cached_signing_key_b64: &str,
+    compiled_in: &SignedProfileDoc,
+    trusted_compiled_in_signing_key_b64: &str,
+    now_unix_seconds: u64,
+) -> Result<LoadedSignedAdapterProfile, SignedAdapterProfileLoaderError> {
+    let compiled_payload = verify_profile_doc(
+        compiled_in,
+        trusted_compiled_in_signing_key_b64,
+        now_unix_seconds,
+    )?;
+
+    if let Some(cached) = cached {
+        let cached_payload =
+            verify_profile_doc(cached, trusted_cached_signing_key_b64, now_unix_seconds)?;
+        if cached_payload.revision.number >= compiled_payload.revision.number {
+            return Ok(LoadedSignedAdapterProfile {
+                signed: cached.clone(),
+                payload: cached_payload,
+                source: AdapterProfileSource::Cached,
+            });
+        }
+    }
+
+    Ok(LoadedSignedAdapterProfile {
+        signed: compiled_in.clone(),
+        payload: compiled_payload,
+        source: AdapterProfileSource::CompiledIn,
+    })
 }
 
 /// Testable/custom-anchor form of [`load_trusted_profile`]. Production callers
@@ -141,8 +232,10 @@ mod tests {
     use super::*;
     use crate::envelope::ED25519_SIGNATURE_LEN;
     use crate::schema::{
-        ActionLevel, AdapterAuthority, AdapterSurface, BindingRequirement, Capability,
-        CapabilityGrant, SendOutcomeContract,
+        ActionLevel, AdapterAuthority, AdapterSurface, AuthorityRequirements, BindingRequirement,
+        Capability, CapabilityGrant, HarmlessCanary, ProfileRevision, SelectorKind,
+        SelectorStrategy, SendOutcomeContract, SupportLevel, TypedSelector, PROFILE_DOC_DOMAIN,
+        PROFILE_DOC_SCHEMA_VERSION,
     };
     use crate::trust::DISCORD_PROFILE_ROLLBACK_FLOOR;
     use crypto::ed25519;
@@ -236,6 +329,61 @@ mod tests {
             *signature.as_bytes(),
         )
         .unwrap()
+    }
+
+    fn signed_doc_profile_payload(revision: u64, adapter_id: &str) -> ProfilePayload {
+        ProfilePayload {
+            domain: PROFILE_DOC_DOMAIN.to_string(),
+            schema_version: PROFILE_DOC_SCHEMA_VERSION,
+            adapter_id: adapter_id.to_string(),
+            app: crate::schema::AppDescriptor {
+                stable_id: adapter_id.to_string(),
+                display_name: "Reviewed App".to_string(),
+                service_family: "messaging".to_string(),
+                min_app_version: None,
+            },
+            revision: ProfileRevision {
+                number: revision,
+                label: format!("rev-{revision}"),
+            },
+            issued_at_unix_seconds: NOW - 60,
+            expires_at_unix_seconds: NOW + 60,
+            support: SupportLevel::Supported,
+            authority: AuthorityRequirements {
+                user_consent_required: true,
+                account_binding_required: true,
+                release_authority_required: true,
+                harmless_canary_required: true,
+            },
+            selectors: vec![TypedSelector {
+                kind: SelectorKind::MessageRow,
+                required: true,
+                strategy: SelectorStrategy::Accessibility {
+                    role: "row".to_string(),
+                    name: None,
+                    automation_id: Some("message-row".to_string()),
+                },
+            }],
+            fallbacks: Vec::new(),
+            canary: HarmlessCanary {
+                selector: SelectorKind::AppRoot,
+                expected_text: "Reviewed App".to_string(),
+                max_age_seconds: 300,
+            },
+        }
+    }
+
+    fn signed_doc(revision: u64, adapter_id: &str) -> (SignedProfileDoc, String) {
+        let (secret, public) = ed25519::generate_keypair();
+        let trusted = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            public.as_bytes(),
+        );
+        let payload = signed_doc_profile_payload(revision, adapter_id);
+        (
+            crate::schema::sign_profile_doc(&secret, &public, &payload).unwrap(),
+            trusted,
+        )
     }
 
     #[test]
@@ -338,5 +486,61 @@ mod tests {
         assert!(printed.contains("profile_sequence"));
         assert!(!printed.contains("discord/reviewed"));
         assert!(!printed.contains("0.0.1"));
+    }
+
+    mod loader {
+        use super::*;
+
+        #[test]
+        fn loads_signed_adapter_profile_or_falls_back_to_compiled_in_profile() {
+            let (compiled, trusted_compiled) = signed_doc(3, "signal.desktop.native");
+            let (cached, trusted_cached) = signed_doc(4, "signal.desktop.native");
+
+            let loaded = load_signed_adapter_profile_or_compiled_in(
+                Some(&cached),
+                &trusted_cached,
+                &compiled,
+                &trusted_compiled,
+                NOW,
+            )
+            .unwrap();
+
+            assert_eq!(loaded.source(), AdapterProfileSource::Cached);
+            assert_eq!(loaded.signed(), &cached);
+            assert_eq!(loaded.payload().revision.number, 4);
+
+            let fallback = load_signed_adapter_profile_or_compiled_in(
+                None,
+                &trusted_cached,
+                &compiled,
+                &trusted_compiled,
+                NOW,
+            )
+            .unwrap();
+
+            assert_eq!(fallback.source(), AdapterProfileSource::CompiledIn);
+            assert_eq!(fallback.signed(), &compiled);
+            assert_eq!(fallback.payload().revision.number, 3);
+        }
+    }
+
+    #[test]
+    fn loader() {
+        let (compiled, trusted_compiled) = signed_doc(9, "signal.desktop.native");
+        let (old_cached, trusted_cached) = signed_doc(8, "signal.desktop.native");
+
+        let loaded = load_signed_adapter_profile_or_compiled_in(
+            Some(&old_cached),
+            &trusted_cached,
+            &compiled,
+            &trusted_compiled,
+            NOW,
+        )
+        .unwrap();
+
+        assert_eq!(loaded.source(), AdapterProfileSource::CompiledIn);
+        assert_eq!(loaded.signed(), &compiled);
+        assert_eq!(loaded.payload().revision.number, 9);
+        assert_ne!(loaded.signed(), &old_cached);
     }
 }

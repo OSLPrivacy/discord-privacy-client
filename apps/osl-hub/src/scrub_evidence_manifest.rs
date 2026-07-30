@@ -6,7 +6,7 @@ use std::fmt;
 
 pub const SCRUB_EVIDENCE_MANIFEST_SCHEMA_VERSION: u32 = 1;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScrubEvidenceTarget {
     pub service_id: String,
@@ -14,7 +14,7 @@ pub struct ScrubEvidenceTarget {
     pub scope_key: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScrubEvidenceManifest {
     pub schema_version: u32,
@@ -208,6 +208,9 @@ mod tests {
 
         let invalid =
             ScrubEvidenceManifest::new("not-a-commit", "b".repeat(40), "c".repeat(64), target());
-        assert_eq!(invalid, Err(ScrubEvidenceManifestError::InvalidCommit));
+        match invalid {
+            Err(error) => assert_eq!(error, ScrubEvidenceManifestError::InvalidCommit),
+            Ok(_) => panic!("invalid commit must be refused"),
+        }
     }
 }

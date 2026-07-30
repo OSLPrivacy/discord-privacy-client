@@ -1246,6 +1246,52 @@ mod tests {
         let _ = std::fs::remove_dir_all(attacker_root);
     }
 
+    #[test]
+    fn staged_plaintext_remove_now_requires_matching_caller_root() {
+        let caller_root = root("plaintext-staged-caller-root");
+        let foreign_root = root("plaintext-foreign-root");
+        let caller_staging = caller_root.join(STAGING_DIRECTORY);
+        let foreign_staging = foreign_root.join(STAGING_DIRECTORY);
+        std::fs::create_dir_all(&caller_staging).unwrap();
+        std::fs::create_dir_all(&foreign_staging).unwrap();
+
+        let foreign_path = foreign_staging.join("opened-00112233445566778899aabbccddeeff.oslatt");
+        std::fs::write(&foreign_path, b"foreign plaintext").unwrap();
+        let refused = StagedPlaintext::new(StagedAttachment {
+            root: caller_root.clone(),
+            path: foreign_path.clone(),
+            original_filename: "notes.txt".to_owned(),
+            mime_type: "text/plain",
+            plaintext_len: 17,
+        })
+        .remove_now();
+        assert_eq!(
+            refused,
+            Err("staged attachment path is invalid".to_owned()),
+            "a caller-root mismatch must refuse before treating a foreign path as opened plaintext"
+        );
+        assert!(
+            foreign_path.exists(),
+            "the foreign staged plaintext must not be removed through the caller root"
+        );
+
+        let caller_path = caller_staging.join("opened-ffeeddccbbaa99887766554433221100.oslatt");
+        std::fs::write(&caller_path, b"caller plaintext").unwrap();
+        StagedPlaintext::new(StagedAttachment {
+            root: caller_root.clone(),
+            path: caller_path.clone(),
+            original_filename: "notes.txt".to_owned(),
+            mime_type: "text/plain",
+            plaintext_len: 16,
+        })
+        .remove_now()
+        .unwrap();
+        assert!(!caller_path.exists());
+
+        let _ = std::fs::remove_dir_all(caller_root);
+        let _ = std::fs::remove_dir_all(foreign_root);
+    }
+
     fn outbox_key() -> [u8; 32] {
         [0x31u8; 32]
     }
