@@ -1336,6 +1336,11 @@ setattr(
     "Verify retained VMQA build evidence from exact producer bytes.",
     _verify_retained_vmqa_build_evidence_from_exact_producer_bytes,
 )
+setattr(
+    CleanupContractTests,
+    "scripts/vmqa/test-vmqa-contract.py",
+    _verify_retained_vmqa_build_evidence_from_exact_producer_bytes,
+)
 
 
 def load_tests(
@@ -1349,6 +1354,7 @@ def load_tests(
             "Verify retained VMQA build evidence from exact producer bytes."
         )
     )
+    tests.addTest(CleanupContractTests("scripts/vmqa/test-vmqa-contract.py"))
     return tests
 
 
