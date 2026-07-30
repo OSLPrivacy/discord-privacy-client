@@ -7,6 +7,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tempfile::TempDir;
 
+const CRASH_AFTER_JOURNAL_WRITE_ENV: &str = "OSL_DURESS_TEST_CRASH_AFTER_JOURNAL_WRITE";
+const CRASH_AFTER_JOURNAL_WRITE_EXIT: i32 = 73;
+
 fn fast() -> Argon2Params {
     Argon2Params::fast_for_tests()
 }
@@ -59,6 +62,19 @@ fn write_journal_with_all_steps_except(journal_path: &std::path::Path, except: W
         started_at_unix_seconds: 0,
     };
     std::fs::write(journal_path, serde_json::to_vec_pretty(&journal).unwrap()).unwrap();
+}
+
+fn exit_after_writing_mid_wipe_journal_if_requested() {
+    let Some(root) = std::env::var_os(CRASH_AFTER_JOURNAL_WRITE_ENV) else {
+        return;
+    };
+    let journal_path = std::path::PathBuf::from(root).join("duress.journal");
+    let journal = DuressJournal {
+        completed: vec![(WipeStep::TpmEvict, StepOutcome::AlreadyClean)],
+        started_at_unix_seconds: 0,
+    };
+    std::fs::write(journal_path, serde_json::to_vec_pretty(&journal).unwrap()).unwrap();
+    std::process::exit(CRASH_AFTER_JOURNAL_WRITE_EXIT);
 }
 
 #[test]
@@ -382,6 +398,80 @@ fn resume_picks_up_partial_journal() {
     );
     // Zeroize handler did fire (it wasn't in the journal).
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn crash_mid_wipe_resume() {
+    exit_after_writing_mid_wipe_journal_if_requested();
+
+    let dir = TempDir::new().unwrap();
+    let (paths, journal_path) = build_paths(&dir);
+    let sealer = NoOpSealer::new();
+    let id = generate_identity("alice".into());
+    save_identity(&paths.identity_file, &id, &sealer).unwrap();
+    let pw = PasswordRecord::new("111111", None, fast()).unwrap();
+    save_password_record(&paths.password_file, &pw, &sealer).unwrap();
+    let prekey_state = PrekeyState::new(&id, PrekeyConfig::default(), 1_700_000_000);
+    save_prekey_state(paths.prekey_file.as_ref().unwrap(), &prekey_state, &sealer).unwrap();
+
+    let identity_file = paths.identity_file.clone();
+    let password_file = paths.password_file.clone();
+    let prekey_file = paths.prekey_file.clone().unwrap();
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .arg("--exact")
+        .arg("crash_mid_wipe_resume")
+        .arg("--nocapture")
+        .env(CRASH_AFTER_JOURNAL_WRITE_ENV, dir.path())
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(CRASH_AFTER_JOURNAL_WRITE_EXIT));
+    assert!(journal_path.exists());
+    let journal: DuressJournal =
+        serde_json::from_slice(&std::fs::read(&journal_path).unwrap()).unwrap();
+    assert_eq!(
+        journal.completed,
+        vec![(WipeStep::TpmEvict, StepOutcome::AlreadyClean)],
+        "helper must die immediately after a durable mid-wipe journal write"
+    );
+    assert!(identity_file.exists());
+    assert!(password_file.exists());
+    assert!(prekey_file.exists());
+
+    let handlers = DuressHandlers {
+        purge_keyring: Some(Box::new(|| Ok(()))),
+        wipe_local_cache_dir: Some(Box::new(|| Ok(()))),
+        wipe_anonymous_credentials: Some(Box::new(|| Ok(()))),
+        wipe_prekeys: Some(Box::new(|| Ok(()))),
+        wipe_double_ratchet: Some(Box::new(|| Ok(()))),
+        wipe_sender_keys: Some(Box::new(|| Ok(()))),
+        wipe_peer_ratchets: Some(Box::new(|| Ok(()))),
+        zeroize_in_memory: Some(Box::new(|| Ok(()))),
+        strip_opsec_files: Some(Box::new(|| Ok(()))),
+    };
+    let engine = DuressEngine::new(journal_path.clone(), paths, handlers);
+    let report = engine.resume_if_pending().unwrap().expect("resume ran");
+
+    assert!(report.completed);
+    assert!(report.failed_steps().is_empty());
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::IdentityFile),
+        &StepOutcome::Wiped
+    );
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::PasswordHashes),
+        &StepOutcome::Wiped
+    );
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::PrekeyFile),
+        &StepOutcome::Wiped
+    );
+    assert!(!identity_file.exists());
+    assert!(!password_file.exists());
+    assert!(!prekey_file.exists());
+    assert!(
+        !journal_path.exists(),
+        "successful crash recovery must clear the pending journal"
+    );
 }
 
 #[test]
