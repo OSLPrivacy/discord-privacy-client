@@ -264,6 +264,176 @@ function artifactProbe(
   };
 }
 
+function compareCanonicalSchemaRows(
+  left: { type: string; name: string; tbl_name: string; sql: string },
+  right: { type: string; name: string; tbl_name: string; sql: string },
+) {
+  const leftKey = canonicalJson([left.type, left.name, left.tbl_name, left.sql]);
+  const rightKey = canonicalJson([
+    right.type,
+    right.name,
+    right.tbl_name,
+    right.sql,
+  ]);
+  if (leftKey < rightKey) return -1;
+  if (leftKey > rightKey) return 1;
+  return 0;
+}
+
+function deploymentSchemaRows(artifact: "A" | "B") {
+  const baseRows = [
+    {
+      type: "index",
+      name: "idx_control_inbox_sender",
+      tbl_name: "control_inbox",
+      sql: "CREATE INDEX idx_control_inbox_sender ON control_inbox(sender_id)",
+    },
+    {
+      type: "table",
+      name: "control_inbox",
+      tbl_name: "control_inbox",
+      sql:
+        artifact === "B"
+          ? `CREATE TABLE control_inbox (
+              id BLOB PRIMARY KEY,
+              recipient_id TEXT NOT NULL,
+              sender_id TEXT NOT NULL,
+              scope_id TEXT NOT NULL,
+              bundle BLOB NOT NULL,
+              expires_at INTEGER NOT NULL,
+              created_at INTEGER NOT NULL,
+              kind TEXT NOT NULL DEFAULT '',
+              collapse_key TEXT,
+              delivery_status TEXT NOT NULL DEFAULT 'live'
+                CHECK (delivery_status IN ('live', 'retryable', 'quarantined', 'retired')),
+              delivery_reason TEXT
+                CHECK (delivery_reason IS NULL OR delivery_reason IN (
+                  'sender_lookup_disabled',
+                  'sender_lookup_retry_exhausted',
+                  'sender_identifier_malformed',
+                  'sender_discord_snowflake'
+                )),
+              delivery_attempts INTEGER NOT NULL DEFAULT 0
+                CHECK (delivery_attempts BETWEEN 0 AND 3),
+              sender_disabled_first_seen_at INTEGER,
+              delivery_next_retry_at INTEGER,
+              delivery_retain_until INTEGER
+            )`
+          : "CREATE TABLE control_inbox (id TEXT, sender_id TEXT)",
+    },
+    {
+      type: "table",
+      name: "d1_migrations",
+      tbl_name: "d1_migrations",
+      sql: "CREATE TABLE d1_migrations (id INTEGER, name TEXT)",
+    },
+  ];
+  if (artifact !== "B") {
+    return baseRows.sort(compareCanonicalSchemaRows);
+  }
+  return [
+    ...baseRows,
+    {
+      type: "index",
+      name: "idx_control_inbox_delivery_reconcile",
+      tbl_name: "control_inbox",
+      sql:
+        "CREATE INDEX idx_control_inbox_delivery_reconcile " +
+        "ON control_inbox (delivery_status, delivery_next_retry_at, created_at, id)",
+    },
+    {
+      type: "index",
+      name: "idx_control_inbox_sender_delivery",
+      tbl_name: "control_inbox",
+      sql:
+        "CREATE INDEX idx_control_inbox_sender_delivery " +
+        "ON control_inbox (recipient_id, sender_id, delivery_status, expires_at, delivery_retain_until)",
+    },
+    {
+      type: "index",
+      name: "idx_control_inbox_live_kind_expiry",
+      tbl_name: "control_inbox",
+      sql:
+        "CREATE INDEX idx_control_inbox_live_kind_expiry " +
+        "ON control_inbox (recipient_id, kind, delivery_status, expires_at)",
+    },
+    {
+      type: "index",
+      name: "idx_control_inbox_live_sender_kind_expiry",
+      tbl_name: "control_inbox",
+      sql:
+        "CREATE INDEX idx_control_inbox_live_sender_kind_expiry " +
+        "ON control_inbox (recipient_id, sender_id, kind, delivery_status, expires_at)",
+    },
+    {
+      type: "table",
+      name: "worker_schema_capabilities",
+      tbl_name: "worker_schema_capabilities",
+      sql:
+        "CREATE TABLE worker_schema_capabilities (" +
+        "capability TEXT PRIMARY KEY, version INTEGER NOT NULL CHECK (version >= 1)) WITHOUT ROWID",
+    },
+    {
+      type: "trigger",
+      name: "control_inbox_retention_delete_guard",
+      tbl_name: "control_inbox",
+      sql:
+        "CREATE TRIGGER control_inbox_retention_delete_guard BEFORE DELETE ON control_inbox " +
+        "WHEN (OLD.delivery_status = 'live' AND NOT EXISTS (" +
+        "SELECT 1 FROM users WHERE user_id = OLD.sender_id AND identity_lookup_enabled = 1)) " +
+        "OR (OLD.delivery_status = 'retryable') OR (OLD.delivery_status IN ('quarantined', 'retired') " +
+        "AND (OLD.delivery_retain_until IS NULL OR OLD.delivery_retain_until >= unixepoch())) " +
+        "BEGIN SELECT RAISE(IGNORE); END",
+    },
+    {
+      type: "trigger",
+      name: "control_inbox_delivery_lookup_insert_guard",
+      tbl_name: "control_inbox",
+      sql:
+        "CREATE TRIGGER control_inbox_delivery_lookup_insert_guard BEFORE INSERT ON control_inbox " +
+        "WHEN NEW.delivery_status <> 'live' AND NOT (NEW.delivery_status = 'retired' " +
+        "AND NEW.delivery_reason = 'sender_discord_snowflake') " +
+        "AND EXISTS (SELECT 1 FROM users WHERE user_id = NEW.sender_id AND identity_lookup_enabled = 1) " +
+        "BEGIN SELECT RAISE(ABORT, 'control inbox sender is lookup-enabled'); END",
+    },
+    {
+      type: "trigger",
+      name: "control_inbox_delivery_lookup_update_guard",
+      tbl_name: "control_inbox",
+      sql:
+        "CREATE TRIGGER control_inbox_delivery_lookup_update_guard BEFORE UPDATE OF delivery_status ON control_inbox " +
+        "WHEN NEW.delivery_status = 'live' BEGIN SELECT RAISE(ABORT, 'control inbox delivery state contradicts lookup'); END",
+    },
+    {
+      type: "trigger",
+      name: "control_inbox_delivery_transition_guard",
+      tbl_name: "control_inbox",
+      sql:
+        "CREATE TRIGGER control_inbox_delivery_transition_guard BEFORE UPDATE OF delivery_status ON control_inbox " +
+        "WHEN OLD.delivery_status = 'quarantined' AND NEW.delivery_status = 'retryable' " +
+        "BEGIN SELECT RAISE(ABORT, 'control inbox delivery transition is invalid'); END",
+    },
+    {
+      type: "trigger",
+      name: "control_inbox_delivery_state_insert_guard",
+      tbl_name: "control_inbox",
+      sql:
+        "CREATE TRIGGER control_inbox_delivery_state_insert_guard BEFORE INSERT ON control_inbox " +
+        "WHEN NEW.delivery_status <> 'live' AND NEW.delivery_retain_until <> NEW.sender_disabled_first_seen_at + 604800 " +
+        "BEGIN SELECT RAISE(ABORT, 'control inbox delivery state is inconsistent'); END",
+    },
+    {
+      type: "trigger",
+      name: "control_inbox_delivery_state_update_guard",
+      tbl_name: "control_inbox",
+      sql:
+        "CREATE TRIGGER control_inbox_delivery_state_update_guard BEFORE UPDATE OF delivery_status ON control_inbox " +
+        "WHEN NEW.delivery_status <> 'live' AND NEW.delivery_retain_until <> NEW.sender_disabled_first_seen_at + 604800 " +
+        "BEGIN SELECT RAISE(ABORT, 'control inbox delivery state is inconsistent'); END",
+    },
+  ].sort(compareCanonicalSchemaRows);
+}
+
 export function deploymentEvidencePayload(
   artifact: "A" | "B" = "B",
 ): Record<string, any> {
@@ -276,26 +446,7 @@ export function deploymentEvidencePayload(
       applied_order: index + 1,
       ...entry,
     }));
-  const schemaRows = [
-    {
-      type: "index",
-      name: "idx_control_inbox_sender",
-      tbl_name: "control_inbox",
-      sql: "CREATE INDEX idx_control_inbox_sender ON control_inbox(sender_id)",
-    },
-    {
-      type: "table",
-      name: "control_inbox",
-      tbl_name: "control_inbox",
-      sql: "CREATE TABLE control_inbox (id TEXT, sender_id TEXT)",
-    },
-    {
-      type: "table",
-      name: "d1_migrations",
-      tbl_name: "d1_migrations",
-      sql: "CREATE TABLE d1_migrations (id INTEGER, name TEXT)",
-    },
-  ];
+  const schemaRows = deploymentSchemaRows(artifact);
   const migrationRows = migrations.map((entry, index) => ({
     applied_at: `2026-07-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`,
     id: index + 30,
@@ -315,7 +466,7 @@ export function deploymentEvidencePayload(
       ? {
           filtered_sender_delivery: {
             live: 1,
-            quarantined: 0,
+            quarantined: 1,
             retired: 0,
             retryable: 0,
           },
