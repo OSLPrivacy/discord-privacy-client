@@ -447,6 +447,12 @@ fn keyserver_post_error_class(error: &keystore::Error) -> &'static str {
         // key substitution produces. Sharing a label with a decode failure would
         // make an active attack indistinguishable from a glitch.
         keystore::Error::PeerBundleProofInvalid => "peer_bundle_proof_invalid",
+        // Also its own class. A one-time prekey the handshake named is absent from
+        // local state, which is a key-availability fact, not a crypto failure and
+        // not local blob damage. Folding it into "crypto" would hide prekey
+        // exhaustion (a peer that can no longer be reached) behind a label that
+        // reads like a broken ciphertext.
+        keystore::Error::PrekeyMissing => "prekey_missing",
         keystore::Error::Sealer(_)
         | keystore::Error::BlobVersionMismatch { .. }
         | keystore::Error::BlobFieldLength { .. }
