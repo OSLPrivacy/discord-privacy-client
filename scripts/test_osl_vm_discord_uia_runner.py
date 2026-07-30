@@ -86,6 +86,25 @@ class OslVmDiscordUiaRunnerStaticTests(unittest.TestCase):
             r"if\s*\(Test-Path[^\r\n]+\$resultTemporary[^)]*\)\s*\{[^}]*Terminal\s*=\s*\$true",
         )
 
+    def test_d3_qualifies_discord_protected_send_tri_state(self) -> None:
+        adapter = (Path(__file__).parents[1] / "apps" / "osl-hub" / "src" / "native_discord_adapter.rs").read_text(encoding="utf-8")
+        self.assertRegex(
+            adapter,
+            r"pub\s+enum\s+DiscordProtectedSendOutcome\s*\{[^}]*Sent,([^}]*)NotSent,([^}]*)DeliveryUncertain,",
+        )
+        qualifier = adapter[
+            adapter.index("pub fn protected_send_outcome") :
+            adapter.index("#[derive(Debug, Clone, Eq, PartialEq, Serialize)]")
+        ]
+        self.assertRegex(
+            qualifier,
+            r"self\s*==\s*DiscordCarrierStatus::Sent\s*&&\s*placed\s*&&\s*enter_sent",
+        )
+        self.assertRegex(qualifier, r"DiscordProtectedSendOutcome::Sent")
+        self.assertRegex(qualifier, r"else\s+if\s+enter_sent\s*\{")
+        self.assertRegex(qualifier, r"DiscordProtectedSendOutcome::DeliveryUncertain")
+        self.assertRegex(qualifier, r"DiscordProtectedSendOutcome::NotSent")
+
 
 if __name__ == "__main__":
     unittest.main()
