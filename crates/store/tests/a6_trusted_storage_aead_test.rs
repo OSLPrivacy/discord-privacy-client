@@ -8,6 +8,7 @@
 use crypto::{aead, hkdf};
 use rusqlite::{params, Connection};
 use std::fs;
+use std::path::{Path, PathBuf};
 use store::{MessageStore, StoredMessage};
 use tempfile::TempDir;
 
@@ -105,10 +106,61 @@ fn attachment_meta_aad(ck_bi: &[u8], mid_bi: &[u8], seq: i64, version: i64) -> V
     out
 }
 
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+}
+
+fn read_named_artifacts(paths: &[PathBuf]) -> Vec<(String, Vec<u8>)> {
+    paths
+        .iter()
+        .map(|path| {
+            (
+                path.file_name().unwrap().to_string_lossy().into_owned(),
+                fs::read(path).unwrap(),
+            )
+        })
+        .collect()
+}
+
+fn copy_artifacts_to_backup(paths: &[PathBuf], backup_root: &Path) -> Vec<(String, Vec<u8>)> {
+    paths
+        .iter()
+        .map(|path| {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let backup_path = backup_root.join(&name);
+            fs::copy(path, &backup_path).unwrap();
+            (name, fs::read(backup_path).unwrap())
+        })
+        .collect()
+}
+
+fn assert_artifacts_exclude_plaintext(
+    boundary: &str,
+    artifacts: &[(String, Vec<u8>)],
+    label: &str,
+    needle: &[u8],
+) {
+    assert!(
+        !artifacts.is_empty(),
+        "{boundary} artifact scan must inspect at least one file"
+    );
+    for (name, bytes) in artifacts {
+        assert!(!bytes.is_empty(), "{boundary} artifact {name} is empty");
+        assert!(
+            !contains_bytes(bytes, needle),
+            "{label} was recoverable verbatim from {boundary} artifact {name}"
+        );
+    }
+}
+
 #[test]
 fn trusted_root_and_independent_aead_envelope_controls_are_nonvacuous() {
     let tmp = TempDir::new().unwrap();
     let decoy = TempDir::new().unwrap();
+    let backup = TempDir::new().unwrap();
     let first = message("a6-message-one", "a6 known plaintext one");
     let second = message("a6-message-two", "a6 known plaintext two");
     // `0xfb, 0xff` encode to Base64 `+/8=`: both alphabet positions 62/63
@@ -245,6 +297,23 @@ fn trusted_root_and_independent_aead_envelope_controls_are_nonvacuous() {
     assert!(artifacts
         .iter()
         .all(|path| path.file_name().unwrap() != "payload.sqlite"));
+
+    let live_artifact_bytes = read_named_artifacts(&artifacts);
+    let backup_artifact_bytes = copy_artifacts_to_backup(&artifacts, backup.path());
+    for (label, needle) in [
+        ("first message body", first.plaintext.as_bytes()),
+        ("second message body", second.plaintext.as_bytes()),
+        ("first attachment body", &attachment_a[..]),
+        ("second attachment body", &attachment_b[..]),
+    ] {
+        assert_artifacts_exclude_plaintext("physical_media", &live_artifact_bytes, label, needle);
+        assert_artifacts_exclude_plaintext(
+            "backup_rollback_copies",
+            &backup_artifact_bytes,
+            label,
+            needle,
+        );
+    }
 
     // This independent handle only reads rows after Store-owned artifact
     // binding has already succeeded; it is never used to select the root.

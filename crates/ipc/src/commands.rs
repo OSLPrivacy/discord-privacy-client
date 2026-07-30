@@ -9725,6 +9725,32 @@ const OSL_EXPORT_FILES: &[&str] = &[
     "store/messages.sqlite-shm",
 ];
 
+const OSL_EXPORT_STORE_FILES: &[&str] = &[
+    "store/messages.sqlite",
+    "store/messages.sqlite-wal",
+    "store/messages.sqlite-shm",
+];
+
+fn is_store_backup_file(rel: &str) -> bool {
+    OSL_EXPORT_STORE_FILES.contains(&rel)
+}
+
+pub fn guard_backup_destination(rel: &str, destination_encrypted: bool) -> Result<(), String> {
+    if !is_store_backup_file(rel) {
+        return Ok(());
+    }
+    crate::mandatory_storage_key_policy::MandatoryStorageKeyPolicy::new()
+        .authorize_write(rel, destination_encrypted)
+        .map_err(|_| {
+            format!(
+                "OSL: import: refusing to write {} backup for {rel} into {} without an encrypted destination",
+                crate::at_rest_boundary::AtRestBoundary::MessageStore,
+                crate::at_rest_boundary::AtRestBoundary::BackupRollbackCopies
+            )
+        })?;
+    Ok(())
+}
+
 fn export_aead_key(entropy: &[u8; 16]) -> Result<crypto::aead::Key, String> {
     let k = crypto::hkdf::derive_32(b"OSL-data-export-v1", entropy, b"aead-key")
         .map_err(|e| format!("OSL: export key derive: {e}"))?;
@@ -9893,6 +9919,8 @@ fn commit_staged_account_import(
         if !live.exists() {
             continue;
         }
+        guard_backup_destination(rel, crate::main_password::get_file_storage_key().is_some())
+            .map_err(|e| fail(e, &backed_up, &installed))?;
         let backup = backup_root.join(rel);
         if let Some(parent) = backup.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
@@ -10357,6 +10385,42 @@ mod account_transfer_tests {
             crate::main_password::decrypt_at_rest(&decoded[0].1, &[9; 32]).unwrap(),
             b"{}"
         );
+        crate::main_password::set_file_storage_key(None);
+    }
+
+    #[test]
+    fn guard_backup_destination_refuses_unencrypted_store_backup() {
+        let _guard = FILE_KEY_TEST_LOCK.lock().unwrap();
+        crate::main_password::set_file_storage_key(None);
+        let dir = TempDir::new().unwrap();
+        let stage = dir.path().join("stage");
+        std::fs::create_dir_all(stage.join("store")).unwrap();
+        std::fs::create_dir_all(dir.path().join("store")).unwrap();
+        std::fs::write(
+            dir.path().join("store/messages.sqlite"),
+            b"live store backup source",
+        )
+        .unwrap();
+        std::fs::write(stage.join("identity.json"), b"new staged identity").unwrap();
+
+        let err = commit_staged_account_import(dir.path(), &stage, &[]).unwrap_err();
+        assert!(err.contains("message_store"), "{err}");
+        assert!(err.contains("backup_rollback_copies"), "{err}");
+        assert!(err.contains("unencrypted destination"), "{err}");
+        assert_eq!(
+            std::fs::read(dir.path().join("store/messages.sqlite")).unwrap(),
+            b"live store backup source"
+        );
+        assert!(
+            !stage.join(".backup/store/messages.sqlite").exists(),
+            "refusal must happen before a plaintext Store rollback copy is written"
+        );
+        assert!(stage.join("identity.json").exists());
+
+        let direct_err = guard_backup_destination("store/messages.sqlite-wal", false).unwrap_err();
+        assert!(direct_err.contains("message_store"), "{direct_err}");
+        assert!(guard_backup_destination("store/messages.sqlite-shm", true).is_ok());
+        assert!(guard_backup_destination("peer_map.json", false).is_ok());
     }
 
     #[test]
