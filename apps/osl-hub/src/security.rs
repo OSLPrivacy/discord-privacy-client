@@ -5202,6 +5202,7 @@ mod tests {
     fn withdrawing_friend_grants_preserves_other_people_and_terminal_burns() {
         let harness = FileBackedSecurityHarness::new("withdraw-friend-grants");
         let core = HubCoreState::default();
+        install_self_identity(&core);
         let security = HubSecurityState::default();
         let (person_a, metadata_a, peer_a) = test_friend(21);
         let (person_b, metadata_b, peer_b) = test_friend(22);
