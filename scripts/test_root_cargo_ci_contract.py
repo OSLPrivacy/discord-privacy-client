@@ -86,8 +86,10 @@ def success_contract() -> None:
     cargo = _read_toml(ROOT / "Cargo.toml")
     workspace = cargo["workspace"]
     members = workspace["members"]
+    excludes = workspace.get("exclude", [])
     assert isinstance(members, list)
     assert members
+    assert isinstance(excludes, list)
 
     missing_member_manifests = [
         member
@@ -95,6 +97,9 @@ def success_contract() -> None:
         if not (ROOT / member / "Cargo.toml").is_file()
     ]
     assert missing_member_manifests == []
+    assert "src-tauri" not in members
+    assert "src-tauri" in excludes
+    assert (ROOT / "src-tauri" / "Cargo.toml").is_file()
 
     rust_version = cargo["workspace"]["package"]["rust-version"]
     rust_ci = ROOT / ".github" / "workflows" / "rust-test.yml"
