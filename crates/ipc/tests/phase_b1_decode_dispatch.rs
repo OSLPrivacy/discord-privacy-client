@@ -32,11 +32,17 @@ const DM_CHANNEL_ID: &str = "5550000000000000001";
 
 fn fresh_state_with_identity(name: &str, self_did: &str) -> AppState {
     let s = AppState::new();
-    *s.identity.lock().unwrap() = Some(generate_identity(name.into()));
+    let mut identity = generate_identity(name.into());
+    identity.discord_snowflake = Some(self_did.to_string());
+    let x25519_pub = identity.x25519_public;
+    let mlkem_pub = identity.mlkem_public_bytes;
+    *s.identity.lock().unwrap() = Some(identity);
     let mut pm = s.peer_map.lock().unwrap();
     let pe = pm.entry(self_did.to_string()).or_default();
     pe.is_self = Some(true);
     pe.discord_id = Some(self_did.to_string());
+    pe.pubkey = Some(STANDARD.encode(x25519_pub.as_bytes()));
+    pe.ik_mlkem768_pub = Some(STANDARD.encode(mlkem_pub));
     drop(pm);
     s
 }

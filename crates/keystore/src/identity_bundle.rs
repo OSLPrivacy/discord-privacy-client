@@ -423,6 +423,157 @@ fn verify_signature(
     matches!(ed25519::verify(&public_key, message, &signature), Ok(true))
 }
 
+/// Verify the canonical scheme-1 authority fields returned by `/v1/pubkeys`.
+///
+/// This checks the same full-bundle bytes as the production keyserver:
+/// immutable root proof plus current Ed25519 proof over the complete identity
+/// bundle. It deliberately does not compare against a local secret-bearing
+/// identity; callers use this when validating a peer record fetched from the
+/// keyserver.
+pub fn validate_scheme1_pubkeys_response(
+    resp: &crate::client::PubkeysResponse,
+) -> Result<(), IdentityBundleConstructionError> {
+    match resp.identity_scheme {
+        Some(CANONICAL_IDENTITY_SCHEME) => {}
+        Some(_) => return Err(IdentityBundleConstructionError::UnsupportedIdentityScheme),
+        None => return Err(IdentityBundleConstructionError::MissingCanonicalAuthority),
+    }
+    match resp.identity_bundle_version {
+        Some(CANONICAL_IDENTITY_BUNDLE_VERSION) => {}
+        Some(_) => return Err(IdentityBundleConstructionError::UnsupportedIdentityBundleVersion),
+        None => return Err(IdentityBundleConstructionError::MissingCanonicalAuthority),
+    }
+    let revision = resp
+        .identity_revision
+        .ok_or(IdentityBundleConstructionError::MissingCanonicalAuthority)?;
+    if revision == 0 || revision > JS_MAX_SAFE_INTEGER {
+        return Err(IdentityBundleConstructionError::InvalidIdentityRevision);
+    }
+    let capability_bundle = resp
+        .rn_capabilities
+        .ok_or(IdentityBundleConstructionError::MissingCapabilityBundle)?;
+    if capability_bundle > crate::client::RN_CAP_MAX {
+        return Err(IdentityBundleConstructionError::UnsupportedCapabilityBundle);
+    }
+
+    let root_b64 = resp
+        .ik_root_ed25519_pub
+        .as_deref()
+        .ok_or(IdentityBundleConstructionError::MissingCanonicalAuthority)?;
+    let root_ed25519_pub = decode_canonical_root(root_b64)?;
+    let root_proof_b64 = resp
+        .identity_bundle_proof_sig
+        .as_deref()
+        .ok_or(IdentityBundleConstructionError::MissingCanonicalAuthority)?;
+    let root_proof = decode_canonical_signature(root_proof_b64)?;
+    let current_proof_b64 = resp
+        .registration_sig
+        .as_deref()
+        .ok_or(IdentityBundleConstructionError::MissingCanonicalAuthority)?;
+    let current_proof = decode_canonical_signature(current_proof_b64)?;
+
+    let x25519_identity_pub =
+        decode_canonical_fixed::<32>(&resp.ik_x25519_pub, BundleField::X25519IdentityKey)?;
+    let ed25519_identity_pub = decode_canonical_fixed::<{ ed25519::PUBLIC_KEY_SIZE }>(
+        &resp.ik_ed25519_pub,
+        BundleField::Ed25519IdentityKey,
+    )?;
+    let mlkem768_identity_pub = decode_canonical_fixed::<
+        { crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE },
+    >(&resp.ik_mlkem768_pub, BundleField::MlKem768IdentityKey)?;
+    let ratchet_initial_pub = resp
+        .ik_ratchet_initial_pub
+        .as_deref()
+        .map(decode_canonical_ratchet)
+        .transpose()?;
+
+    let canonical = canonical_scheme1_bundle_bytes(
+        resp,
+        &root_ed25519_pub,
+        &x25519_identity_pub,
+        &ed25519_identity_pub,
+        &mlkem768_identity_pub,
+        ratchet_initial_pub.as_ref(),
+        capability_bundle,
+        revision,
+    );
+    if !verify_signature(root_ed25519_pub, &canonical, root_proof) {
+        return Err(IdentityBundleConstructionError::RootProofInvalid);
+    }
+    if !verify_signature(ed25519_identity_pub, &canonical, current_proof) {
+        return Err(IdentityBundleConstructionError::CurrentProofInvalid);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn scheme1_pubkeys_response_for_test(
+    identity: &crate::identity::Identity,
+    revision: u64,
+    capability_bundle: u32,
+) -> crate::client::PubkeysResponse {
+    let mut resp = crate::client::PubkeysResponse {
+        user_id: identity.user_id.clone(),
+        ik_x25519_pub: STANDARD.encode(identity.x25519_public.as_bytes()),
+        ik_ed25519_pub: STANDARD.encode(identity.ed25519_public.as_bytes()),
+        ik_mlkem768_pub: STANDARD.encode(identity.mlkem_public_bytes),
+        registered_at: "2026-07-29T00:00:00.000Z".to_string(),
+        last_rotated_at: None,
+        ik_ratchet_initial_pub: identity
+            .ratchet_initial_pub
+            .map(|key| STANDARD.encode(key.as_bytes())),
+        rn_capabilities: Some(capability_bundle),
+        registration_sig: None,
+        identity_scheme: Some(CANONICAL_IDENTITY_SCHEME),
+        identity_bundle_version: Some(CANONICAL_IDENTITY_BUNDLE_VERSION),
+        identity_revision: Some(revision),
+        ik_root_ed25519_pub: Some(STANDARD.encode(identity.ed25519_public.as_bytes())),
+        identity_bundle_proof_sig: None,
+    };
+    sign_scheme1_pubkeys_response_for_test(identity, &mut resp);
+    resp
+}
+
+#[cfg(test)]
+pub(crate) fn sign_scheme1_pubkeys_response_for_test(
+    signer: &crate::identity::Identity,
+    resp: &mut crate::client::PubkeysResponse,
+) {
+    let root = decode_canonical_root(resp.ik_root_ed25519_pub.as_deref().unwrap()).unwrap();
+    let x25519 =
+        decode_canonical_fixed::<32>(&resp.ik_x25519_pub, BundleField::X25519IdentityKey).unwrap();
+    let current_ed25519 = decode_canonical_fixed::<{ ed25519::PUBLIC_KEY_SIZE }>(
+        &resp.ik_ed25519_pub,
+        BundleField::Ed25519IdentityKey,
+    )
+    .unwrap();
+    let mlkem = decode_canonical_fixed::<{ crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE }>(
+        &resp.ik_mlkem768_pub,
+        BundleField::MlKem768IdentityKey,
+    )
+    .unwrap();
+    let ratchet = resp
+        .ik_ratchet_initial_pub
+        .as_deref()
+        .map(decode_canonical_ratchet)
+        .transpose()
+        .unwrap();
+    let canonical = canonical_scheme1_bundle_bytes(
+        resp,
+        &root,
+        &x25519,
+        &current_ed25519,
+        &mlkem,
+        ratchet.as_ref(),
+        resp.rn_capabilities.unwrap(),
+        resp.identity_revision.unwrap(),
+    );
+    let sig = ed25519::sign(&signer.ed25519_secret, &canonical);
+    let sig_b64 = STANDARD.encode(sig.as_bytes());
+    resp.registration_sig = Some(sig_b64.clone());
+    resp.identity_bundle_proof_sig = Some(sig_b64);
+}
+
 impl IdentityBundle {
     /// Construct this client's local full identity bundle from the
     /// local secret-bearing [`crate::identity::Identity`] and the

@@ -37,10 +37,26 @@ fn fresh_state(name: &str) -> AppState {
 }
 
 fn install_self(state: &AppState, did: &str) {
+    let (osl_user_id, x25519_pub, mlkem_pub, ratchet_pub) = {
+        let mut id = state.identity.lock().unwrap();
+        let id = id.as_mut().unwrap();
+        id.discord_snowflake = Some(did.to_string());
+        (
+            id.user_id.clone(),
+            id.x25519_public,
+            id.mlkem_public_bytes,
+            id.ratchet_initial_pub
+                .expect("fresh identity has ratchet pub"),
+        )
+    };
     let mut pm = state.peer_map.lock().unwrap();
     let pe = pm.entry(did.to_string()).or_default();
     pe.is_self = Some(true);
     pe.discord_id = Some(did.to_string());
+    pe.osl_user_id = Some(osl_user_id);
+    pe.pubkey = Some(STANDARD.encode(x25519_pub.as_bytes()));
+    pe.ik_mlkem768_pub = Some(STANDARD.encode(mlkem_pub));
+    pe.ik_ratchet_initial_pub = Some(STANDARD.encode(ratchet_pub.as_bytes()));
 }
 
 struct Pubkeys {

@@ -69,7 +69,11 @@ fn legit_peer_still_succeeds_guard_does_not_overblock() {
         .expect("whitelisting a real peer must still work");
     let pm = state.peer_map.lock().unwrap();
     let pe = pm.get(PEER_DID).expect("peer entry created");
-    assert_eq!(pe.osl_user_id.as_deref(), Some(PEER_DID));
+    assert_eq!(pe.discord_id.as_deref(), Some(PEER_DID));
+    assert!(
+        pe.osl_user_id.is_none(),
+        "a Discord snowflake observation must not become keyserver identity authority"
+    );
 }
 
 #[test]
