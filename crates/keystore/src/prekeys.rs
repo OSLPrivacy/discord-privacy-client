@@ -1,13 +1,15 @@
-//! Client-side prekey primitives (live state, publication unwired).
+//! Client-side prekey primitives.
 //!
 //! Spec: `docs/design/prekey-infrastructure.md` + the design doc's
 //! "Signed prekey" / "One-time prekey pool" subsections.
 //!
-//! Hub/IPC production state now constructs a live [`PrekeyState`] alongside
-//! the loaded identity. The keyserver prekey fetch/replenish methods remain
-//! explicit client APIs; this module implements state, persistence, canonical
-//! signing, rotation helpers, and the responder-side PQXDH path that removes a
-//! local OPK only after that handshake leg succeeds.
+//! IPC production registration now constructs [`PrekeyState`] and calls the
+//! keyserver initial replenish path after successful identity registration.
+//! This module implements state, persistence, canonical signing, and rotation
+//! helpers, plus the responder-side PQXDH path that removes a local OPK only
+//! after that handshake leg succeeds. IPC also owns server-count-driven
+//! replenish scheduling; broader receive-side product lifecycle work remains
+//! future integration work.
 //!
 //! Holds:
 //! - The current SPK keypair (X25519) + its Ed25519 signature + the

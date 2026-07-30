@@ -9,8 +9,8 @@
 //!   in this crate, but production disables the v4 DM branch and defaults the
 //!   v5 group branch off. They are implementation inventory, not current
 //!   forward-secrecy or group sender-key product guarantees.
-//! - The keystore prekey client is likewise not called by this production
-//!   command path.
+//! - Identity registration publishes the initial prekey batch. The messaging
+//!   send path still does not fetch peer prekey bundles or consume local OPKs.
 //!
 //! ## Design
 //!

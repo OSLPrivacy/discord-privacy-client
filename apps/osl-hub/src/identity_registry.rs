@@ -27,6 +27,7 @@ const SLOT_DOMAIN: &[u8] = b"OSL-HUB-IDENTITY-SLOT-v1";
 
 const ACCOUNT_ARTIFACTS: &[&str] = &[
     "identity.json",
+    "prekeys.json",
     "peer_map.json",
     "whitelist_state.json",
     "sender_key_state.json",
