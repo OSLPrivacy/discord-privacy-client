@@ -79,5 +79,18 @@ describe("OSL Chat unread secure storage", () => {
     expect([...encrypted.values.values()][0]).not.toContain("person-d");
     await expect((await secureStore(encrypted)).getItem("osl-chat-unread-v1"))
       .resolves.toBe(JSON.stringify({ "person-a": 3, "person-d": 9 }));
+
+    main.configureOslChatSecureLocalStore(await secureStore(encrypted));
+    await main.loadUiPreferences();
+    encrypted.clear();
+
+    await main.persistOslChatUnread();
+
+    expect(legacy.getItem("osl-chat-unread-v1")).toBeNull();
+    expect([...encrypted.values.values()]).toHaveLength(1);
+    expect([...encrypted.values.values()][0]).not.toContain("person-a");
+    expect([...encrypted.values.values()][0]).not.toContain("person-d");
+    await expect((await secureStore(encrypted)).getItem("osl-chat-unread-v1"))
+      .resolves.toBe(JSON.stringify({ "person-a": 3, "person-d": 9 }));
   });
 });

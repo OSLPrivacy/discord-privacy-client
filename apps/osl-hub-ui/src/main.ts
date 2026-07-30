@@ -610,17 +610,17 @@ function encodeOslChatPreviewVisibility(visible: boolean): string {
   return String(visible);
 }
 
-function persistSensitiveOslChatJson(logicalKey: string, payload: string): void {
-  if (!oslChatSecureStore) return;
-  void oslChatSecureStore.setItem(logicalKey, payload).catch(() => undefined);
+function persistSensitiveOslChatJson(logicalKey: string, payload: string): Promise<void> {
+  if (!oslChatSecureStore) return Promise.resolve();
+  return oslChatSecureStore.setItem(logicalKey, payload).catch(() => undefined);
 }
 
 function persistOslChatPreviewVisibility(): void {
-  persistSensitiveOslChatJson(oslChatPreviewStorageKey, encodeOslChatPreviewVisibility(oslChatPreviewsVisible));
+  void persistSensitiveOslChatJson(oslChatPreviewStorageKey, encodeOslChatPreviewVisibility(oslChatPreviewsVisible));
 }
 
 function persistOslChatMutedPeople(): void {
-  persistSensitiveOslChatJson(oslChatMutedStorageKey, encodeOslChatMutedPeople(oslChatMutedPeople));
+  void persistSensitiveOslChatJson(oslChatMutedStorageKey, encodeOslChatMutedPeople(oslChatMutedPeople));
 }
 
 async function secureOrLegacyOslChatPreference(
@@ -6072,7 +6072,7 @@ async function openOslChat(personId: string): Promise<void> {
     activeOslChatPersonId = personId;
     activeOslChatContext = context;
     oslChatUnread.delete(personId);
-    persistOslChatUnread();
+    void persistOslChatUnread();
     route = "osl-chat";
     if (context.scopeApproved) {
       const history = await listOslChatHistory();
@@ -6102,8 +6102,8 @@ async function openOslChat(personId: string): Promise<void> {
   if (shouldRefresh && epoch === oslChatOperationEpoch) await refreshOslChat();
 }
 
-function persistOslChatUnread(): void {
-  persistSensitiveOslChatJson(oslChatUnreadStorageKey, encodeOslChatUnread(oslChatUnread));
+export function persistOslChatUnread(): Promise<void> {
+  return persistSensitiveOslChatJson(oslChatUnreadStorageKey, encodeOslChatUnread(oslChatUnread));
 }
 
 function persistOslChatNotifications(): void {
@@ -6146,7 +6146,7 @@ function commitOslChatBatch(personId: string, batch: NativeDiscordOverlayOpenedB
   }
   oslChatMessages.set(personId, messages.slice(-200));
   if (background && batch.messages.length) {
-    persistOslChatUnread();
+    void persistOslChatUnread();
     if (notificationsEnabled) persistOslChatNotifications();
     renderWhenIdle();
   }
