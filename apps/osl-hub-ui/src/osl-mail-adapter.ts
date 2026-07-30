@@ -144,7 +144,8 @@ export function parseOslMailDeleteReceipt(value: unknown): OslMailDeleteReceipt 
 export function parseOslMailSendReceipt(value: unknown): OslMailSendReceipt | null {
   if (!record(value) || !exact(value, ["clientMessageId", "acceptedAt", "recipient", "transit", "receiptSha256"])
     || typeof value.clientMessageId !== "string" || !ID.test(value.clientMessageId) || !timestamp(value.acceptedAt)
-    || !address(value.recipient) || !transit(value.transit) || typeof value.receiptSha256 !== "string" || !RECEIPT.test(value.receiptSha256)) return null;
+    || typeof value.recipient !== "string" || !ADDRESS.test(value.recipient) || value.transit !== "oslE2ee"
+    || typeof value.receiptSha256 !== "string" || !RECEIPT.test(value.receiptSha256)) return null;
   return value as unknown as OslMailSendReceipt;
 }
 

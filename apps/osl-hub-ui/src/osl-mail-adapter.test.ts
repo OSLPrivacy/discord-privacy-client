@@ -4,7 +4,7 @@ const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 vi.mock("./preferences", () => ({ isTauriRuntime: () => true }));
 
-import { OSL_MAIL_STATUS_CONTRACT, acknowledgeOslMailRetrieval, burnOslMailbox, listOslMailThreads, loadOslMailStatus, parseOslMailDeleteReceipt, parseOslMailRetrievedThread, parseOslMailStatus, sendOslMail, type OslMailAddress, type OslMailProvisionedStatus, type OslMailStatus, type OslMailUnprovisionedStatus } from "./osl-mail-adapter";
+import { OSL_MAIL_STATUS_CONTRACT, acknowledgeOslMailRetrieval, burnOslMailbox, listOslMailThreads, loadOslMailStatus, parseOslMailDeleteReceipt, parseOslMailRetrievedThread, parseOslMailSendReceipt, parseOslMailStatus, sendOslMail, type OslMailAddress, type OslMailProvisionedStatus, type OslMailStatus, type OslMailUnprovisionedStatus } from "./osl-mail-adapter";
 
 const id = "abcdefghijkl";
 const hash = "a".repeat(64);
@@ -52,6 +52,15 @@ describe("OSL Mail strict adapter", () => {
   it("requires an explicit positive server deletion receipt", () => {
     expect(parseOslMailDeleteReceipt({ retrievalId: id, deletedMessageIds: [`${id}m`], deletedAt: 100, receiptSha256: hash, serverDeleteConfirmed: true })).not.toBeNull();
     expect(parseOslMailDeleteReceipt({ retrievalId: id, deletedMessageIds: [`${id}m`], deletedAt: 100, receiptSha256: hash, serverDeleteConfirmed: false })).toBeNull();
+  });
+
+  it("accepts only exact OSL E2EE send receipts", () => {
+    const valid = { clientMessageId: id, acceptedAt: 100, recipient: "friend@oslprivacy.com", transit: "oslE2ee", receiptSha256: hash };
+    expect(parseOslMailSendReceipt(valid)).toEqual(valid);
+    expect(parseOslMailSendReceipt({ ...valid, recipient: "outside@example.com" })).toBeNull();
+    expect(parseOslMailSendReceipt({ ...valid, transit: "externalSmtp" })).toBeNull();
+    expect(parseOslMailSendReceipt({ ...valid, receiptSha256: hash.toUpperCase() })).toBeNull();
+    expect(parseOslMailSendReceipt({ ...valid, authority: "external-outbound" })).toBeNull();
   });
 
   it("never invokes external outbound and accepts only OSL E2EE receipts", async () => {
