@@ -295,6 +295,7 @@ class OslVmDiscordUiaHarnessStaticTests(unittest.TestCase):
     def test_lifecycle_proves_c45_visual_matrix_axes(self) -> None:
         self.assertRegex(self.source, r"GetDpiForWindow")
         self.assertRegex(self.source, r"PostMouseWheel")
+        self.assertIn("Test-QaLogAdvancedContains", self.source)
 
         visual = function_body(self.source, "Get-OverlayVisualMatrixState")
         for required in (
@@ -309,11 +310,23 @@ class OslVmDiscordUiaHarnessStaticTests(unittest.TestCase):
         self.assertRegex(visual, r"(?i)osl-discord-qa-overlay-stage\.txt")
         self.assertRegex(visual, r"(?i)osl-discord-qa-overlay-style\.txt")
         self.assertRegex(visual, r"(?i)osl-discord-qa-composer-zorder\.txt")
+        self.assertRegex(visual, r"(?i)osl-discord-qa-native-surface\.txt")
+        for pattern in (
+            r"theme_sample=present",
+            r"nitro_sample=present",
+            r"typography=present",
+        ):
+            self.assertRegex(visual, pattern)
+        self.assertNotRegex(visual, r"ThemeSampleBound\s*=\s*\$nativeSurfaceCaptured")
+        self.assertNotRegex(visual, r"NitroSampleBound\s*=\s*\$nativeSurfaceCaptured")
+        self.assertNotRegex(visual, r"TypographyBound\s*=\s*\$nativeSurfaceCaptured")
 
         scroll = function_body(self.source, "Invoke-OverlayScrollProbe")
         self.assertRegex(scroll, r"PostMouseWheel")
         self.assertRegex(scroll, r"osl-discord-qa-rehydrate\.txt")
         self.assertRegex(scroll, r"LineCount|LastWriteUtcTicks")
+        self.assertRegex(scroll, r"rehydrate_\(entered\|rows_placed\|rows_unplaceable\|shipped\)")
+        self.assertRegex(scroll, r"RehydrateEdge")
 
         lifecycle = action_body(self.source, "ExerciseWindowLifecycle")
         for axis in (
@@ -331,9 +344,28 @@ class OslVmDiscordUiaHarnessStaticTests(unittest.TestCase):
         self.assertRegex(lifecycle, r"Set-QaProtectedComposerOpen\s+\$false")
         self.assertRegex(lifecycle, r"Set-QaProtectedComposerOpen\s+\$true")
         self.assertRegex(lifecycle, r"Invoke-OverlayScrollProbe")
+        self.assertRegex(lifecycle, r"\$adopted\s*=\s*Wait-SemanticPostcondition")
+        self.assertRegex(lifecycle, r"Adoption=\(\$initial\.Satisfied\s+-and\s+\$adopted\.Satisfied\)")
+        self.assertRegex(lifecycle, r"CloseReopen=\(\$closed\.Satisfied\s+-and\s+\$closed\.Changed\s+-and\s+\$reopened\.Satisfied\s+-and\s+\$reopened\.Changed\)")
         self.assertRegex(lifecycle, r"LifecycleMatrix")
         self.assertRegex(lifecycle, r"VisualEvidence")
         self.assertNotRegex(lifecycle, r"(?m)^\s*(?:OslHwnd|DiscordHwnd)\s*=")
+
+    def test_ExerciseWindowLifecycle_requires_content_free_native_surface_axis_log(self) -> None:
+        native_surface = Path(__file__).parents[1] / "apps" / "osl-hub" / "src" / "native_surface_capture.rs"
+        source = native_surface.read_text(encoding="utf-8")
+        body_match = re.search(
+            r"(?s)#\[cfg\(feature = \"discord-qa-shell\"\)\]\s*fn qa_record_native_surface_matrix\((.*?)\n\}",
+            source,
+        )
+        self.assertIsNotNone(body_match)
+        body = body_match.group(1)
+        self.assertIn("osl-discord-qa-native-surface.txt", source)
+        self.assertIn("theme_sample=present nitro_sample=present", body)
+        self.assertIn("typography={}", body)
+        self.assertIn("typography_values.is_some()", source)
+        self.assertNotRegex(body, r"image_data_url|input_background|font_family")
+        self.assertIn("never pixels", body)
 
 
 if __name__ == "__main__":
