@@ -23,7 +23,7 @@ describe("OSL Mail surface", () => {
     expect(scope).toContain('role="note"');
     expect(scope).toContain('aria-label="Email protection scope"');
     expect(scope).toContain("Before you send");
-    expect(scope).toContain("Ordinary external email is not OSL end-to-end encrypted.");
+    expect(scope).toContain("Ordinary external email uses the mail provider's delivery path.");
     expect(scope).toContain("Use OSL Chat for verified friends.");
     expect(scope).not.toMatch(/keyservers?|ratchets?|receipts?|browser profiles?|provider adapters?/i);
 
