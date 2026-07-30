@@ -884,6 +884,23 @@ pub fn initiate_and_persist_with_sealer(
     context: &[u8],
     params: SessionParams,
 ) -> Result<Session, RnError> {
+    let peer_for_handshake;
+    let peer = if context == RN_CONTEXT_DISCORD_MANUAL {
+        // The current command responder reconstructs receive-side prekeys from
+        // sealed identity fields only; it has no durable OPK consumption path
+        // in this manual Discord context. Do not create a bootstrap that the
+        // corresponding responder cannot authenticate. B5 adapter contexts keep
+        // their OPKs and remain covered by the local_prekeys_from_b5 tests.
+        peer_for_handshake = PeerBundle {
+            identity: peer.identity,
+            signed_prekey: peer.signed_prekey,
+            one_time_prekey: None,
+            pq_prekey: peer.pq_prekey.clone(),
+        };
+        &peer_for_handshake
+    } else {
+        peer
+    };
     let binding = initiator_binding(
         peer.identity.as_bytes(),
         peer_mlkem768_ek,
@@ -3436,6 +3453,52 @@ mod tests {
             .load_pin(alice_ik_pub.as_bytes())
             .expect("pin")
             .is_pinned_to_rn());
+    }
+
+    #[test]
+    fn manual_discord_context_does_not_consume_opk_without_responder_opk_state() {
+        let (_d, store) = fresh_store();
+        let sealer = MemorySealer::new();
+        let mut rng = seeded_rng(17);
+        let (bob_prekeys, bob_bundle) = fresh_bundle(&mut rng);
+        assert!(
+            bob_bundle.one_time_prekey.is_some(),
+            "fixture must include an OPK so this tests the context policy"
+        );
+        let bob_ek = bob_bundle.pq_prekey.to_bytes();
+        let (alice_ik, alice_ik_pub) = x25519_keypair(&mut rng);
+
+        let mut alice = initiate_and_persist_with_sealer(
+            &store,
+            &sealer,
+            &alice_ik,
+            alice_ik_pub.as_bytes(),
+            &bob_bundle,
+            PeerCapabilities::Verified(RN_CAP_WIRE_RN),
+            &bob_ek,
+            RN_CONTEXT_DISCORD_MANUAL,
+            SessionParams::default(),
+        )
+        .expect("manual-context initiate");
+        let wire = alice
+            .encrypt(0, b"manual context bootstrap", &mut rng)
+            .expect("encrypt");
+
+        let mut identity_only_prekeys = bob_prekeys.clone();
+        identity_only_prekeys.one_time_prekeys.clear();
+        let (_bob_dir, bob_store) = fresh_store();
+        let (_bob, opened) = accept_and_persist_with_sealer(
+            &bob_store,
+            &sealer,
+            &identity_only_prekeys,
+            bob_prekeys.identity.public().as_bytes(),
+            &bob_ek,
+            &wire,
+            RN_CONTEXT_DISCORD_MANUAL,
+            SessionParams::default(),
+        )
+        .expect("identity-only responder accepts manual-context bootstrap");
+        assert_eq!(opened.plaintext, b"manual context bootstrap");
     }
 
     /// A peer that does not speak OSL-RN: the accept path must reject a

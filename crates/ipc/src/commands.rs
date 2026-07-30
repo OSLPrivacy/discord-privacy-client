@@ -9969,6 +9969,9 @@ pub fn cmd_osl_set_whitelist(
     {
         let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
         let pe = pm_guard.entry(peer_discord_id.clone()).or_default();
+        if pe.discord_id.is_none() {
+            pe.discord_id = Some(peer_discord_id.clone());
+        }
         // De-dupe: remove any prior entry for the same scope
         // shape before appending the new one.
         pe.outgoing_whitelists
@@ -10118,6 +10121,35 @@ pub fn cmd_osl_bulk_set_whitelist(
     persist_whitelist_state_now(state);
 
     Ok(affected)
+}
+
+#[cfg(test)]
+mod whitelist_write_tests {
+    use super::cmd_osl_set_whitelist;
+    use crate::scope::{Scope, ScopeInput};
+    use crate::state::AppState;
+
+    #[test]
+    fn single_peer_whitelist_records_discord_id_without_identity_authority() {
+        let state = AppState::new();
+        let peer_did = "900000000000000001";
+
+        cmd_osl_set_whitelist(
+            &state,
+            peer_did.to_string(),
+            ScopeInput::from(&Scope::dm(peer_did)),
+            false,
+        )
+        .expect("single-peer whitelist succeeds");
+
+        let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let peer = pm.get(peer_did).expect("peer entry created");
+        assert_eq!(peer.discord_id.as_deref(), Some(peer_did));
+        assert!(
+            peer.osl_user_id.is_none(),
+            "observing a Discord snowflake must not create keyserver identity authority"
+        );
+    }
 }
 
 /// 9-C1 Stage 3: bulk-unwhitelist N peers from a single scope.
@@ -12196,6 +12228,7 @@ fn commit_staged_account_import(
     dir: &Path,
     stage: &Path,
     files: &[(String, Vec<u8>)],
+    destination_encrypted: bool,
 ) -> Result<(), String> {
     let backup_root = stage.join(".backup");
     let mut targets: Vec<&str> = OSL_EXPORT_FILES.to_vec();
@@ -12250,7 +12283,7 @@ fn commit_staged_account_import(
         if !live.exists() {
             continue;
         }
-        guard_backup_destination(rel, crate::main_password::get_file_storage_key().is_some())
+        guard_backup_destination(rel, destination_encrypted)
             .map_err(|e| fail(e, &backed_up, &installed))?;
         let backup = backup_root.join(rel);
         if let Some(parent) = backup.parent() {
@@ -12626,7 +12659,8 @@ fn cmd_osl_recover_account_from_export_with_dir(
     }
 
     let _store_pause = MessageStorePause::new(state, dir)?;
-    if let Err(e) = commit_staged_account_import(dir, &stage, &files) {
+    let destination_encrypted = crate::main_password::get_file_storage_key().is_some();
+    if let Err(e) = commit_staged_account_import(dir, &stage, &files, destination_encrypted) {
         // Keep the stage on every commit failure. It may contain the only
         // remaining rollback copy if Windows/AV held a destination file.
         return Err(e);
@@ -12734,7 +12768,7 @@ mod account_transfer_tests {
         .unwrap();
         std::fs::write(stage.join("identity.json"), b"new staged identity").unwrap();
 
-        let err = commit_staged_account_import(dir.path(), &stage, &[]).unwrap_err();
+        let err = commit_staged_account_import(dir.path(), &stage, &[], false).unwrap_err();
         assert!(err.contains("message_store"), "{err}");
         assert!(err.contains("backup_rollback_copies"), "{err}");
         assert!(err.contains("unencrypted destination"), "{err}");
@@ -12766,7 +12800,7 @@ mod account_transfer_tests {
         std::fs::write(stage.join("identity.json"), b"new-identity").unwrap();
         let files = vec![("peer_map.json".to_string(), b"new-peer".to_vec())];
 
-        commit_staged_account_import(dir.path(), &stage, &files).unwrap();
+        commit_staged_account_import(dir.path(), &stage, &files, false).unwrap();
 
         assert_eq!(
             std::fs::read(dir.path().join("peer_map.json")).unwrap(),

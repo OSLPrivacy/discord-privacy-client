@@ -756,6 +756,5 @@ dependency closure is integration proof only for the local `wire_rn` adapter
 and remains `test-proven-only` on an `implemented-unwired` path.
 
 B3 therefore stays exactly where the checklist places it: +1 at the structural
-boundary, with no real traffic, two-identity proof, runtime proof, or B6 point
-implied. This b11 documentation record does not enable RN; the production fuse
-remains `RN_WIRE_IN_ENABLED = false`.
+boundary, with no real traffic, two-identity proof, runtime proof, or B6 point implied.
+This b11 documentation record does not enable RN; the production fuse remains `RN_WIRE_IN_ENABLED = false`.
