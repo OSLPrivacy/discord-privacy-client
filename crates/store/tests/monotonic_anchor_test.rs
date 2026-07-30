@@ -289,6 +289,117 @@ fn anchored_open_refuses_a_coherent_stale_database_replay() {
 }
 
 #[test]
+fn independent_audit_scenario() {
+    let tmp = TempDir::new().unwrap();
+    let backup = TempDir::new().unwrap();
+    let anchor = Arc::new(TestAnchor::default());
+
+    {
+        let store = open(tmp.path(), anchor.clone());
+        store
+            .put(&message("audit-replay", "message generation one"))
+            .unwrap();
+        store
+            .put_attachment(
+                "audit-replay",
+                "audit.bin",
+                "application/octet-stream",
+                b"attachment generation one",
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .get_attachment("audit-replay", "audit.bin")
+                .unwrap()
+                .unwrap()
+                .1
+                .as_slice(),
+            b"attachment generation one"
+        );
+    }
+    checkpoint(tmp.path());
+    fs::copy(
+        tmp.path().join("messages.sqlite"),
+        backup.path().join("messages.sqlite"),
+    )
+    .unwrap();
+
+    {
+        let store = open(tmp.path(), anchor.clone());
+        store
+            .put(&message("audit-replay", "message generation two"))
+            .unwrap();
+        store
+            .put_attachment(
+                "audit-replay",
+                "audit.bin",
+                "application/octet-stream",
+                b"attachment generation two",
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .get_attachment("audit-replay", "audit.bin")
+                .unwrap()
+                .unwrap()
+                .1
+                .as_slice(),
+            b"attachment generation two"
+        );
+    }
+    checkpoint(tmp.path());
+
+    let compare_calls_before_replay = anchor.compare_calls();
+    fs::copy(
+        backup.path().join("messages.sqlite"),
+        tmp.path().join("messages.sqlite"),
+    )
+    .unwrap();
+
+    let error = match MessageStore::open_anchored(tmp.path(), SECRET_A, anchor.clone()) {
+        Ok(_) => panic!("independent-audit attachment row and manifest replay was accepted"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(&error, StoreError::Anchor(message) if message.contains("behind external anchor")),
+        "wrong independent-audit replay refusal: {error}"
+    );
+    assert_eq!(
+        compare_calls_before_replay, 5,
+        "setup must publish enrollment plus four anchored mutations before replay"
+    );
+    assert_eq!(
+        anchor.compare_calls(),
+        compare_calls_before_replay,
+        "stale replay must fail from load comparison before any provider advance"
+    );
+
+    let replayed = MessageStore::open(tmp.path(), SECRET_A).unwrap();
+    assert_eq!(
+        replayed.get("audit-replay").unwrap(),
+        Some(message("audit-replay", "message generation one")),
+        "the restored backup must be internally coherent, not partially corrupted"
+    );
+    assert_eq!(
+        replayed
+            .get_attachment("audit-replay", "audit.bin")
+            .unwrap()
+            .unwrap()
+            .1
+            .as_slice(),
+        b"attachment generation one",
+        "the exact old attachment row plus matching manifest must still authenticate \
+         without the external anchor"
+    );
+}
+
+#[test]
 fn anchored_v7_migration_enrolls_post_migration_state_then_refuses_replay() {
     let tmp = TempDir::new().unwrap();
     let backup = TempDir::new().unwrap();
