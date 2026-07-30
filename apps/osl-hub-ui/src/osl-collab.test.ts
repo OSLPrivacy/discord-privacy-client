@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseCircleAudience, parseLanSession, parseLanSync, parseSharedDocument } from "./osl-collab";
+import { composeCirclePost, parseCircleAudience, parseLanSession, parseLanSync, parseSharedDocument } from "./osl-collab";
 const document = { kind: "document", title: "Plan", body: "Private", folder: "Team", tags: ["lan"], favorite: false };
 const circleAudience = { audienceId: "c".repeat(32), name: "Close friends", memberCount: 2, membershipVisibility: "visible", visibleMembers: [{ memberId: "1".repeat(32), name: "Maya", verified: true }, { memberId: "2".repeat(32), name: "Theo", verified: false }], consentGranted: true, boundToCurrentCircle: true, postingAuthorized: true };
 describe("local-first collaboration IPC", () => {
@@ -30,5 +30,30 @@ describe("Circle audience contract", () => {
     expect(parseCircleAudience({ ...circleAudience, name: "" })).toBeNull();
     expect(parseCircleAudience({ ...circleAudience, visibleMembers: [{ memberId: "1".repeat(32), name: "@maya", verified: true }] })?.visibleMembers[0]?.name).toBe("@maya");
     expect(parseCircleAudience({ ...circleAudience, visibleMembers: [{ memberId: "1".repeat(32), name: "Maya\u0000", verified: true }] })).toBeNull();
+  });
+
+  it("Compose Circle posts with audience membership shown before posting", () => {
+    const composition = composeCirclePost(circleAudience, " Dinner is at 7.\nBring notes. ");
+
+    expect(composition.status).toBe("ready");
+    expect(composition).toMatchObject({
+      audienceId: "c".repeat(32),
+      audienceName: "Close friends",
+      body: "Dinner is at 7.\nBring notes.",
+      encryptedForAudience: true,
+      feedOrder: "chronological",
+      sendAuthority: "user-action-required",
+      membershipReview: {
+        audienceId: "c".repeat(32),
+        audienceName: "Close friends",
+        memberCount: 2,
+        shownBeforePosting: true,
+      },
+    });
+    expect(composition.membershipReview?.members.map((member) => member.name)).toEqual(["Maya", "Theo"]);
+    expect(composeCirclePost({ ...circleAudience, membershipVisibility: "count-only", visibleMembers: [] }, "Dinner is at 7.")).toMatchObject({ status: "refused", reason: "membership-review", encryptedForAudience: false, sendAuthority: "none", membershipReview: null });
+    expect(composeCirclePost({ ...circleAudience, memberCount: 3 }, "Dinner is at 7.")).toMatchObject({ status: "refused", reason: "membership-review" });
+    expect(composeCirclePost({ ...circleAudience, consentGranted: false }, "Dinner is at 7.")).toMatchObject({ status: "refused", reason: "consent", membershipReview: expect.objectContaining({ shownBeforePosting: true }) });
+    expect(composeCirclePost(circleAudience, " \n\t ")).toMatchObject({ status: "refused", reason: "draft", membershipReview: expect.objectContaining({ shownBeforePosting: true }) });
   });
 });
