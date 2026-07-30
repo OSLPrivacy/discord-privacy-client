@@ -322,6 +322,29 @@ pub fn peer_bundle_from_b5(
     })
 }
 
+/// Adapt a fetched prekey response only after it has been merged into
+/// a caller-authenticated identity bundle.
+fn peer_bundle_from_verified_b5(
+    merged: &keystore::identity_bundle::MergedIdentityBundle,
+) -> Result<PeerBundle, RnError> {
+    let one_time_prekey = merged
+        .prekey
+        .opk
+        .map(|(id, public)| {
+            let rn_id = b5_opk_id_to_rn(id)?;
+            Ok::<_, RnError>((rn_id, XPublic::from_bytes(public)))
+        })
+        .transpose()?;
+
+    Ok(PeerBundle {
+        identity: XPublic::from_bytes(merged.identity.x25519_identity_pub),
+        signed_prekey: XPublic::from_bytes(merged.prekey.spk_x25519_pub),
+        one_time_prekey,
+        pq_prekey: KemPublic::from_bytes(&merged.identity.mlkem768_identity_pub)
+            .map_err(|_| RnError::PrekeyAdapter("peer ML-KEM key is malformed"))?,
+    })
+}
+
 fn verify_spk_signature(
     ed25519_public: &[u8; 32],
     spk_public: &[u8; 32],
@@ -834,6 +857,92 @@ pub fn accept_and_persist(
     Ok((session, opened))
 }
 
+/// Result of fetching the peer's B5 prekey bundle and bootstrapping an
+/// OSL-RN first-contact session.
+///
+/// Deliberately no `Debug`: the live session is secret-bearing state.
+pub struct FirstContactRnSession {
+    pub session: Session,
+    pub remaining_opk_count: u32,
+    pub accepted_identity_revision: u64,
+}
+
+/// Fetch the peer's B5 prekey bundle and use it to start an OSL-RN
+/// first-contact handshake.
+///
+/// The trust order is load-bearing:
+/// 1. Verify the caller-provided identity bundle against the caller's
+///    pinned Ed25519 authority.
+/// 2. Select OSL-RN only from that authenticated capability bitmap.
+/// 3. Fetch the prekey response.
+/// 4. Merge the response into the authenticated bundle, refusing any
+///    substituted identity field or unauthenticated SPK.
+/// 5. Adapt the verified merge result into the RN handshake shape.
+///
+/// A server response, an absent capability, or a missing pinned signer
+/// never becomes authority for first contact.
+#[allow(clippy::too_many_arguments)]
+pub fn fetch_prekey_bundle_and_initiate_first_contact(
+    client: &keystore::KeyServerClient,
+    store: &RnSessionStore,
+    sealer: &dyn keystore::sealer::Sealer,
+    requester: &keystore::Identity,
+    recipient_user_id: &str,
+    peer_identity_bundle: &keystore::identity_bundle::IdentityBundle,
+    pinned_peer_signer: &crypto::ed25519::PublicKey,
+    last_known_revision: Option<u64>,
+    policy: RnPolicy,
+    context: &[u8],
+    params: SessionParams,
+) -> Result<FirstContactRnSession, RnError> {
+    if peer_identity_bundle.capability_bundle > keystore::client::RN_CAP_MAX {
+        return Err(RnError::PrekeyAdapter(
+            "peer capability bitmap is unsupported",
+        ));
+    }
+    let accepted_identity_revision = keystore::identity_bundle::BundleVerifyPolicy::new()
+        .verify(
+            peer_identity_bundle,
+            pinned_peer_signer,
+            last_known_revision,
+        )
+        .map_err(|_| RnError::PrekeyAdapter("peer identity bundle is not authenticated"))?;
+    let caps = keystore::client::PeerCapabilities::Verified(peer_identity_bundle.capability_bundle);
+    let pin = store.load_pin(&peer_identity_bundle.x25519_identity_pub)?;
+    if select_wire_version(&pin, caps, policy)? != SelectedVersion::Rn {
+        return Err(RnError::RnRequiredButUnsupported);
+    }
+
+    let response = client
+        .fetch_prekey_bundle(requester, recipient_user_id)
+        .map_err(|_| RnError::PrekeyAdapter("prekey bundle fetch failed"))?;
+    let remaining_opk_count = response.remaining_opk_count;
+    let merged = peer_identity_bundle
+        .merge_prekey_bundle_response(&response, last_known_revision)
+        .map_err(|_| {
+            RnError::PrekeyAdapter("fetched prekey bundle does not match authenticated identity")
+        })?;
+    let peer = peer_bundle_from_verified_b5(&merged)?;
+    let own_identity_secret = XSecret::from_bytes(*requester.x25519_secret.as_bytes());
+    let session = initiate_and_persist(
+        store,
+        sealer,
+        &own_identity_secret,
+        requester.x25519_public.as_bytes(),
+        &peer,
+        caps,
+        &merged.identity.mlkem768_identity_pub,
+        context,
+        params,
+    )?;
+
+    Ok(FirstContactRnSession {
+        session,
+        remaining_opk_count,
+        accepted_identity_revision,
+    })
+}
+
 /// Encrypt with a persisted OSL-RN session.
 ///
 /// The gate is checked before any state load or crypto operation. When
@@ -987,6 +1096,10 @@ mod tests {
     use keystore::sealer::{MemorySealer, NoOpSealer};
     use osl_ratchet_next::primitives::x25519_keypair;
     use osl_ratchet_next::test_support::{fresh_bundle, seeded_rng};
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::time::Duration;
     use tempfile::TempDir;
 
     const CTX: &[u8] = b"ipc/tests/wire_rn/v1";
@@ -1029,6 +1142,70 @@ mod tests {
             remaining_opk_count: prekeys.opk_pool.len() as u32,
             ik_ratchet_initial_pub: None,
         }
+    }
+
+    fn b5_identity_bundle(
+        identity: &keystore::Identity,
+        capability_bundle: u32,
+        revision: u64,
+    ) -> keystore::identity_bundle::IdentityBundle {
+        let mut bundle = keystore::identity_bundle::IdentityBundle {
+            ed25519_identity_pub: *identity.ed25519_public.as_bytes(),
+            x25519_identity_pub: *identity.x25519_public.as_bytes(),
+            mlkem768_identity_pub: identity.mlkem_public_bytes,
+            capability_bundle,
+            revision,
+            signature: [0u8; crypto::ed25519::SIGNATURE_SIZE],
+        };
+        let signature = crypto::ed25519::sign(&identity.ed25519_secret, &bundle.signed_bytes());
+        bundle.signature = *signature.as_bytes();
+        bundle
+    }
+
+    fn prekey_response_json(response: &PrekeyBundleResponse) -> Vec<u8> {
+        let opk = response.opk.as_ref().map(|opk| {
+            serde_json::json!({
+                "id": opk.id,
+                "pub_b64": &opk.pub_b64,
+            })
+        });
+        serde_json::to_vec(&serde_json::json!({
+            "user_id": &response.user_id,
+            "ik_x25519_pub": &response.ik_x25519_pub,
+            "ik_ed25519_pub": &response.ik_ed25519_pub,
+            "ik_mlkem768_pub": &response.ik_mlkem768_pub,
+            "spk_pub": &response.spk_pub,
+            "spk_signature": &response.spk_signature,
+            "spk_rotated_at": &response.spk_rotated_at,
+            "opk": opk,
+            "remaining_opk_count": response.remaining_opk_count,
+            "ik_ratchet_initial_pub": &response.ik_ratchet_initial_pub,
+        }))
+        .expect("serialize response")
+    }
+
+    fn one_shot_prekey_server(body: Vec<u8>) -> (String, mpsc::Receiver<Vec<u8>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("read timeout");
+            let mut request = Vec::new();
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).expect("read request");
+            request.extend_from_slice(&buf[..n]);
+            tx.send(request).expect("send request");
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(header.as_bytes()).expect("write header");
+            stream.write_all(&body).expect("write body");
+        });
+        (format!("http://{addr}"), rx)
     }
 
     #[test]
@@ -1138,6 +1315,142 @@ mod tests {
         assert!(!debug.contains("bob-sensitive-handle"));
         assert!(!display.contains(&response.ik_x25519_pub));
         assert!(!debug.contains(&response.ik_x25519_pub));
+    }
+
+    #[test]
+    fn first_contact_fetches_prekey_bundle_before_initiating_rn_session() {
+        let alice_id = b5_identity(46, "alice-fetch-rn");
+        let bob_id = b5_identity(47, "bob-fetch-rn");
+        let bob_state = keystore::PrekeyState::new(&bob_id, keystore::PrekeyConfig::default(), 50);
+        let bob_identity_bundle = b5_identity_bundle(&bob_id, RN_CAP_WIRE_RN, 7);
+        let response = b5_response(&bob_id, &bob_state, Some(0));
+        let expected_remaining = response.remaining_opk_count;
+        let (base_url, rx) = one_shot_prekey_server(prekey_response_json(&response));
+        let client = keystore::KeyServerClient::new(base_url).expect("client");
+        let (_d, store) = fresh_store();
+        let sealer = MemorySealer::new();
+
+        let first_contact = fetch_prekey_bundle_and_initiate_first_contact(
+            &client,
+            &store,
+            &sealer,
+            &alice_id,
+            &bob_id.user_id,
+            &bob_identity_bundle,
+            &bob_id.ed25519_public,
+            None,
+            RnPolicy::Opportunistic,
+            CTX,
+            SessionParams::default(),
+        )
+        .expect("first contact");
+
+        assert_eq!(first_contact.remaining_opk_count, expected_remaining);
+        assert_eq!(first_contact.accepted_identity_revision, 7);
+        assert!(
+            store
+                .load_session(bob_id.x25519_public.as_bytes(), &sealer)
+                .expect("load session")
+                .is_some(),
+            "successful first contact must persist the RN session"
+        );
+        assert!(
+            store
+                .load_pin(bob_id.x25519_public.as_bytes())
+                .expect("load pin")
+                .is_pinned_to_rn(),
+            "verified RN capability must raise the peer pin"
+        );
+
+        let request = String::from_utf8(rx.recv().expect("request")).expect("utf8");
+        assert!(
+            request.starts_with("GET /v1/prekey-bundle/bob-fetch-rn?"),
+            "first contact must fetch the recipient's prekey bundle"
+        );
+    }
+
+    #[test]
+    fn first_contact_refuses_without_authenticated_rn_capability_before_fetching() {
+        let alice_id = b5_identity(48, "alice-no-rn");
+        let bob_id = b5_identity(49, "bob-no-rn");
+        let bob_identity_bundle = b5_identity_bundle(&bob_id, 0, 1);
+        let client = keystore::KeyServerClient::new("http://127.0.0.1:9").expect("client");
+        let (_d, store) = fresh_store();
+        let sealer = MemorySealer::new();
+
+        assert!(matches!(
+            fetch_prekey_bundle_and_initiate_first_contact(
+                &client,
+                &store,
+                &sealer,
+                &alice_id,
+                &bob_id.user_id,
+                &bob_identity_bundle,
+                &bob_id.ed25519_public,
+                None,
+                RnPolicy::Opportunistic,
+                CTX,
+                SessionParams::default(),
+            ),
+            Err(RnError::RnRequiredButUnsupported)
+        ));
+        assert!(
+            store
+                .load_session(bob_id.x25519_public.as_bytes(), &sealer)
+                .expect("load session")
+                .is_none(),
+            "a refused first contact must not persist session state"
+        );
+    }
+
+    #[test]
+    fn first_contact_refuses_substituted_fetched_identity_fields() {
+        let alice_id = b5_identity(50, "alice-substitution");
+        let bob_id = b5_identity(51, "bob-sensitive-handle");
+        let attacker_id = b5_identity(52, "attacker-substitute");
+        let attacker_state =
+            keystore::PrekeyState::new(&attacker_id, keystore::PrekeyConfig::default(), 60);
+        let bob_identity_bundle = b5_identity_bundle(&bob_id, RN_CAP_WIRE_RN, 3);
+        let substituted_response = b5_response(&attacker_id, &attacker_state, Some(0));
+        let (base_url, _rx) = one_shot_prekey_server(prekey_response_json(&substituted_response));
+        let client = keystore::KeyServerClient::new(base_url).expect("client");
+        let (_d, store) = fresh_store();
+        let sealer = MemorySealer::new();
+
+        let err = match fetch_prekey_bundle_and_initiate_first_contact(
+            &client,
+            &store,
+            &sealer,
+            &alice_id,
+            &bob_id.user_id,
+            &bob_identity_bundle,
+            &bob_id.ed25519_public,
+            None,
+            RnPolicy::Opportunistic,
+            CTX,
+            SessionParams::default(),
+        ) {
+            Ok(_) => panic!("substituted prekey identity must refuse"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(
+            err,
+            RnError::PrekeyAdapter("fetched prekey bundle does not match authenticated identity")
+        ));
+        let display = err.to_string();
+        let debug = format!("{err:?}");
+        assert!(!display.contains("bob-sensitive-handle"));
+        assert!(!debug.contains("bob-sensitive-handle"));
+        assert!(!display.contains(&substituted_response.ik_x25519_pub));
+        assert!(!debug.contains(&substituted_response.ik_x25519_pub));
+        assert!(
+            store
+                .load_session(bob_id.x25519_public.as_bytes(), &sealer)
+                .expect("load session")
+                .is_none(),
+            "a refused substitution must not persist session state"
+        );
     }
 
     #[test]
