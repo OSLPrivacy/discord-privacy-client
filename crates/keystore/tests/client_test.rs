@@ -1078,6 +1078,7 @@ fn compatible_control_inbox_uses_signed_sender_filter_after_capability_probe() {
             "ok": true,
             "capabilities": {
                 "control_inbox_sender_disposition": 1,
+                "control_inbox_eviction_signal": 1,
             },
         })),
         control_inbox_response(Some("peer-a"), &["peer-a"]),
@@ -1098,6 +1099,32 @@ fn compatible_control_inbox_uses_signed_sender_filter_after_capability_probe() {
 
     keystore::set_active_account_dir(None);
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn compatible_control_inbox_refuses_wrong_sender_filter_capability_version_before_get() {
+    let identity = generate_identity("recipient".to_owned());
+    let (port, requests) = multi_response_server(vec![health_response(serde_json::json!({
+        "ok": true,
+        "capabilities": {
+            "control_inbox_sender_disposition": 0,
+            "control_inbox_eviction_signal": 1,
+        },
+    }))]);
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+    let error = client
+        .get_control_inbox_compatible_from(&identity, "peer-a")
+        .expect_err("a wrong sender-filter capability version must be refused");
+    assert!(matches!(
+        error,
+        Error::Transport(message)
+            if message.contains("sender-filter capability is unavailable, malformed, or transitional")
+    ));
+    assert_eq!(request_target(&requests.recv().unwrap()), "/v1/healthz");
+    assert!(
+        requests.try_recv().is_err(),
+        "a refused capability probe must not fall through to a filtered GET"
+    );
 }
 
 #[test]
