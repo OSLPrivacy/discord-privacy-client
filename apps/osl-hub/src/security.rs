@@ -1592,10 +1592,7 @@ pub fn manual_peer_scope_id(
     account_id: &str,
     person_id: &str,
 ) -> Result<String, String> {
-    if service_id != "osl-chat" || account_id != "osl-main" {
-        crate::service_host::service_manifest(service_id).map_err(|error| error.to_string())?;
-    }
-    crate::service_host::validate_opaque_id(account_id).map_err(|error| error.to_string())?;
+    validate_manual_peer_service_account(service_id, account_id)?;
     validate_person_id(person_id)?;
     let mut hash = Sha256::new();
     for part in [
@@ -1613,6 +1610,38 @@ pub fn manual_peer_scope_id(
     ))
 }
 
+fn validate_manual_peer_service_account(service_id: &str, account_id: &str) -> Result<(), String> {
+    match service_id {
+        "osl-chat" => {
+            crate::service_host::validate_opaque_id(account_id).map_err(|error| error.to_string())
+        }
+        "discord" if valid_native_discord_account_id(account_id) => Ok(()),
+        _ => {
+            crate::service_host::service_manifest(service_id).map_err(|error| error.to_string())?;
+            crate::service_host::validate_opaque_id(account_id).map_err(|error| error.to_string())
+        }
+    }
+}
+
+fn valid_native_discord_account_id(account_id: &str) -> bool {
+    let Some(suffix) = account_id.strip_prefix("native-discord-") else {
+        return false;
+    };
+    !suffix.is_empty()
+        && suffix.len() <= 64
+        && suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && suffix
+            .as_bytes()
+            .first()
+            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        && suffix
+            .as_bytes()
+            .last()
+            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+}
+
 fn require_exact_manual_peer_scope(
     service_id: &str,
     account_id: &str,
@@ -1624,7 +1653,7 @@ fn require_exact_manual_peer_scope(
     if scope.kind != ScopeKind::Dm
         || scope.id.as_str() != expected_id.as_str()
         || scope.server_id.is_some()
-        || scope.channel_id.as_deref() != Some(scope.id.as_str())
+        || !manual_peer_channel_id_is_allowed(&scope.id, scope.channel_id.as_deref())
     {
         return Err(error.to_owned());
     }
@@ -1638,14 +1667,29 @@ fn require_exact_manual_peer_scope_input(
     if scope_input.kind != ScopeKind::Dm
         || scope_input.id.is_empty()
         || scope_input.server_id.is_some()
-        || scope_input
-            .channel_id
-            .as_deref()
-            .is_some_and(|channel_id| channel_id != scope_input.id.as_str())
+        || !manual_peer_channel_id_is_allowed(&scope_input.id, scope_input.channel_id.as_deref())
     {
         return Err(error.to_owned());
     }
     Ok(())
+}
+
+fn manual_peer_channel_id_is_allowed(scope_id: &str, channel_id: Option<&str>) -> bool {
+    match channel_id {
+        None => true,
+        Some(channel_id) if channel_id == scope_id => true,
+        Some(channel_id) => valid_manual_dm_channel_binding(channel_id),
+    }
+}
+
+fn valid_manual_dm_channel_binding(channel_id: &str) -> bool {
+    let Some(suffix) = channel_id.strip_prefix("manual-dm-") else {
+        return false;
+    };
+    suffix.len() == 64
+        && suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 pub fn set_manual_peer_scope_permission(
@@ -4090,6 +4134,54 @@ mod tests {
     }
 
     #[test]
+    fn manual_peer_scope_accepts_broker_dm_channel_binding() {
+        let (person_id, _, _) = test_friend(6);
+        let binding = test_manual_binding(person_id.clone());
+        let account_id = "native-discord-00112233445566778899aabbccddeeff0011223344556677";
+        let scope_id = manual_peer_scope_id("discord", account_id, &person_id).unwrap();
+        let scope = ScopeInput {
+            kind: ScopeKind::Dm,
+            id: scope_id.clone(),
+            server_id: None,
+            channel_id: Some(format!("manual-dm-{}", "a".repeat(64))),
+        };
+
+        ScopedTrustGrant::for_manual_peer(
+            &binding,
+            "discord",
+            account_id,
+            scope,
+            ScopedTrustConsent::ExplicitUserAction,
+        )
+        .unwrap();
+
+        let wrong_channel = ScopedTrustGrant::for_manual_peer(
+            &binding,
+            "discord",
+            account_id,
+            ScopeInput {
+                kind: ScopeKind::Dm,
+                id: scope_id,
+                server_id: None,
+                channel_id: Some("other-channel".to_owned()),
+            },
+            ScopedTrustConsent::ExplicitUserAction,
+        )
+        .unwrap_err();
+        assert_eq!(wrong_channel, "OSL scoped trust scope is invalid");
+    }
+
+    #[test]
+    fn first_party_osl_chat_scope_hashes_account_as_exact_binding_component() {
+        let (person_id, _, _) = test_friend(8);
+        let main = manual_peer_scope_id("osl-chat", "osl-main", &person_id).unwrap();
+        let other = manual_peer_scope_id("osl-chat", "account-private-1", &person_id).unwrap();
+
+        assert_ne!(main, other);
+        assert!(manual_peer_scope_id("unknown-service", "account-private-1", &person_id).is_err());
+    }
+
+    #[test]
     fn scoped_trust_grant_requires_explicit_consent_and_exact_friend_scope() {
         let (person_id, _, _) = test_friend(7);
         let binding = test_manual_binding(person_id.clone());
@@ -4134,6 +4226,18 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(wrong_scope, "OSL scoped trust scope is invalid");
+
+        let (other_person_id, _, _) = test_friend(8);
+        let other_scope = manual_peer_scope_id("osl-chat", account_id, &other_person_id).unwrap();
+        let wrong_friend_scope = ScopedTrustGrant::for_manual_peer(
+            &binding,
+            "osl-chat",
+            account_id,
+            dm_scope_input(other_scope),
+            ScopedTrustConsent::ExplicitUserAction,
+        )
+        .unwrap_err();
+        assert_eq!(wrong_friend_scope, "OSL scoped trust scope is invalid");
 
         let wrong_channel = ScopedTrustGrant::for_manual_peer(
             &binding,

@@ -9210,40 +9210,25 @@ mod tests {
     }
 
     #[test]
-    fn shipping_receive_boundary_preserves_legacy_worker_then_refuses_downgrade_after_capability() {
+    fn shipping_receive_boundary_refuses_legacy_worker_without_unfiltered_fallback() {
         let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
-        let account_dir = install_sender_filter_test_account("legacy-downgrade");
+        let account_dir = install_sender_filter_test_account("legacy-refused");
         let identity = keystore::generate_identity("recipient".to_owned());
         let sender_a = "peer-a";
-        let sender_b = "peer-b";
 
         let (legacy_url, legacy_requests, legacy_server) = spawn_control_inbox_test_server(vec![
             serde_json::json!({ "ok": true }),
-            serde_json::json!({
-                "items": [
-                    control_inbox_test_row(
-                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                        sender_a,
-                        ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
-                    ),
-                    control_inbox_test_row(
-                        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                        sender_b,
-                        ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
-                    ),
-                ],
-            }),
         ]);
         let legacy_client = keystore::KeyServerClient::new(&legacy_url).expect("legacy client");
-        let legacy_page = fetch_peer_control_inbox(&identity, &legacy_client, sender_a)
-            .expect("legacy Worker remains available before capability");
-        assert_eq!(legacy_page.items.len(), 1);
-        assert_eq!(legacy_page.items[0].sender_id, sender_a);
+        let legacy_error = fetch_peer_control_inbox(&identity, &legacy_client, sender_a)
+            .expect_err("legacy Worker must not widen to an unfiltered page");
+        assert!(
+            legacy_error
+                .to_string()
+                .contains("sender-filter capability unavailable"),
+            "legacy capability absence is an explicit refusal"
+        );
         assert_health_request(&legacy_requests.recv().expect("capture legacy health"));
-        let legacy_get = legacy_requests.recv().expect("capture legacy GET");
-        let legacy_line = legacy_get.lines().next().expect("legacy request line");
-        assert!(legacy_line.starts_with("GET /v1/control-inbox/"));
-        assert!(!legacy_line.contains("&sender="));
         legacy_server.join().expect("legacy server exits");
 
         let (final_url, final_requests, final_server) = spawn_control_inbox_test_server(vec![
@@ -9279,10 +9264,12 @@ mod tests {
         let restarted_client =
             keystore::KeyServerClient::new(&rolled_back_url).expect("fresh client after restart");
         let error = fetch_peer_control_inbox(&identity, &restarted_client, sender_a)
-            .expect_err("a fresh client must retain the downgrade floor");
+            .expect_err("a fresh client must refuse a legacy sender-filter absence");
         assert!(
-            error.to_string().contains("capability downgrade refused"),
-            "rollback is refused by durable client state"
+            error
+                .to_string()
+                .contains("sender-filter capability unavailable"),
+            "rollback is refused before any unfiltered fallback GET"
         );
         assert_health_request(&rollback_requests.recv().expect("capture rollback health"));
         rollback_server.join().expect("rollback server exits");
@@ -10820,8 +10807,9 @@ mod tests {
             activated.scope.id,
             security::manual_peer_scope_id("osl-chat", "osl-main", "hub-person-bob").unwrap()
         );
-        assert!(
-            security::manual_peer_scope_id("osl-chat", "other-account", "hub-person-bob").is_err()
+        assert_ne!(
+            activated.scope.id,
+            security::manual_peer_scope_id("osl-chat", "other-account", "hub-person-bob").unwrap()
         );
         broker.clear_osl_chat_context().unwrap();
         assert!(broker.active_osl_chat_context_token().is_err());

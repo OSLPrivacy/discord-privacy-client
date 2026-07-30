@@ -26,23 +26,24 @@ describe("native overlay send gestures", () => {
   it("requires distinct trusted double-enter down/up gestures", () => {
     const gesture = new OverlaySendGesture();
     gesture.setMode("double");
-    expect(gesture.keydown(enter(10))).toBe("armed");
+    expect(gesture.keydown(enter(10))).toBe("none");
     expect(gesture.keydown(enter(11, { repeat: true }))).toBe("none");
     expect(gesture.keyup(enter(12))).toBe("armed");
-    expect(gesture.keydown(enter(20))).toBe("send");
-    expect(gesture.keyup(enter(21))).toBe("none");
+    expect(gesture.keydown(enter(20))).toBe("none");
+    expect(gesture.keyup(enter(21))).toBe("send");
   });
 
   it("does not let a held first Enter satisfy the second Enter", () => {
     const gesture = new OverlaySendGesture();
     gesture.setMode("double");
-    expect(gesture.keydown(enter(10))).toBe("armed");
+    expect(gesture.keydown(enter(10))).toBe("none");
     expect(gesture.keydown(enter(11))).toBe("none");
     expect(gesture.keydown(enter(12, { repeat: true }))).toBe("none");
     expect(gesture.keyup(enter(13))).toBe("armed");
     expect(gesture.keydown(enter(14, { repeat: true }))).toBe("none");
     expect(gesture.keyup(enter(15, { repeat: true }))).toBe("none");
-    expect(gesture.keydown(enter(20))).toBe("send");
+    expect(gesture.keydown(enter(20))).toBe("none");
+    expect(gesture.keyup(enter(21))).toBe("send");
   });
 
   it("d4 qualifies the Double Enter handoff as two release-completed gestures", () => {
@@ -61,10 +62,10 @@ describe("native overlay send gestures", () => {
     gesture.setMode("double");
     expect(gesture.keydown(enter(10, { isTrusted: false }))).toBe("none");
     expect(gesture.keyup(enter(11, { isTrusted: false }))).toBe("none");
-    expect(gesture.keydown(enter(20))).toBe("armed");
+    expect(gesture.keydown(enter(20))).toBe("none");
     expect(gesture.keyup(enter(21))).toBe("armed");
     expect(gesture.expire(1_221)).toBe(true);
-    expect(gesture.keydown(enter(1_222))).toBe("armed");
+    expect(gesture.keydown(enter(1_222))).toBe("none");
     expect(gesture.keyup(enter(1_223))).toBe("armed");
   });
 
@@ -97,7 +98,7 @@ describe("native overlay send gestures", () => {
     expect(gesture.keyup(enter(11))).toBe("armed");
     gesture.setMode("single");
     gesture.setMode("double");
-    gesture.keydown(enter(12));
+    expect(gesture.keydown(enter(12))).toBe("none");
     expect(gesture.keyup(enter(13))).toBe("armed");
   });
 });

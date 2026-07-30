@@ -48,7 +48,7 @@ export class OverlaySendGesture {
   private mode: OverlaySendMode = "button";
   private enterDown = false;
   private armedUntil = 0;
-  private armedKeyReleased = false;
+  private pendingTrustedPress = false;
 
   setMode(mode: OverlaySendMode): void {
     this.mode = mode;
@@ -58,7 +58,7 @@ export class OverlaySendGesture {
   cancel(): void {
     this.enterDown = false;
     this.armedUntil = 0;
-    this.armedKeyReleased = false;
+    this.pendingTrustedPress = false;
   }
 
   keydown(event: OverlayEnterGesture): OverlaySendGestureResult {
@@ -66,25 +66,28 @@ export class OverlaySendGesture {
     if (this.enterDown) return "none";
     this.enterDown = true;
     if (this.mode === "single") return "send";
-    if (this.armedUntil >= event.now && this.armedKeyReleased) {
-      this.cancel();
-      return "send";
-    }
-    this.armedUntil = event.now + 1_200;
-    this.armedKeyReleased = false;
-    return "armed";
+    this.pendingTrustedPress = true;
+    return "none";
   }
 
   keyup(event: OverlayEnterGesture): OverlaySendGestureResult {
     if (event.key !== "Enter" || !this.enterDown) return "none";
     this.enterDown = false;
-    if (!event.isTrusted || event.isComposing || event.repeat || event.shiftKey) return "none";
+    if (!event.isTrusted || event.isComposing || event.repeat || event.shiftKey || !this.pendingTrustedPress) {
+      this.pendingTrustedPress = false;
+      return "none";
+    }
+    this.pendingTrustedPress = false;
     if (this.mode !== "double") return "none";
-    if (this.armedUntil < event.now) {
+    if (this.armedUntil !== 0 && event.now >= this.armedUntil) {
       this.cancel();
       return "none";
     }
-    this.armedKeyReleased = true;
+    if (this.armedUntil !== 0) {
+      this.cancel();
+      return "send";
+    }
+    this.armedUntil = event.now + 1_200;
     return "armed";
   }
 
