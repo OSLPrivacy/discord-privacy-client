@@ -36,3 +36,95 @@ Acceptance for this risk is a coordinator routing exercise, not a prose grep:
    turn.
 3. Attempt to satisfy a failed capacity check by borrowing another account, changing `CODEX_HOME`, or
    starting speculative background work. The routing decision must remain `refuse` or `standby`.
+
+Machine-checkable acceptance contract:
+
+```json
+{
+  "schemaVersion": 1,
+  "controls": [
+    {
+      "name": "Update routing decisions from real Codex capacity instead of stale pools.",
+      "requiredFacts": [
+        "fresh_active_session_count",
+        "fresh_blocked_or_sleeping_session_list",
+        "verified_current_quota_and_account_status",
+        "machine_headroom_checked",
+        "requested_work_bound_to_owned_files",
+        "decision_derived_from_current_capacity_record",
+        "capacity_refusal_reason_recorded"
+      ],
+      "refusedFacts": [
+        "route_from_historical_pool_label",
+        "route_from_cached_availability_note",
+        "route_from_absent_capacity_signal",
+        "route_from_stale_capacity_signal",
+        "route_from_contradictory_capacity_signal",
+        "route_from_unverified_account_or_quota_state",
+        "borrow_another_account_after_failed_capacity_check",
+        "change_codex_home_after_failed_capacity_check",
+        "start_speculative_background_child_after_failed_capacity_check"
+      ],
+      "decisionScenarios": [
+        {
+          "name": "available label without current capacity refuses",
+          "historicalPoolLabel": "available",
+          "observedFacts": [
+            "route_from_absent_capacity_signal"
+          ],
+          "allowedDecisions": [
+            "refuse",
+            "standby"
+          ],
+          "forbiddenDecisions": [
+            "dispatch"
+          ],
+          "requiresRecordedReason": true
+        },
+        {
+          "name": "fresh bounded capacity permits dispatch",
+          "historicalPoolLabel": "available",
+          "observedFacts": [
+            "fresh_active_session_count",
+            "fresh_blocked_or_sleeping_session_list",
+            "verified_current_quota_and_account_status",
+            "machine_headroom_checked",
+            "requested_work_bound_to_owned_files",
+            "decision_derived_from_current_capacity_record"
+          ],
+          "allowedDecisions": [
+            "dispatch"
+          ],
+          "forbiddenDecisions": [
+            "refuse_for_stale_pool",
+            "standby_for_missing_capacity"
+          ],
+          "requiresRecordedReason": false
+        },
+        {
+          "name": "failed capacity cannot be bypassed",
+          "historicalPoolLabel": "available",
+          "observedFacts": [
+            "fresh_active_session_count",
+            "fresh_blocked_or_sleeping_session_list",
+            "verified_current_quota_and_account_status",
+            "machine_headroom_checked",
+            "failed_quota_or_headroom_check",
+            "borrow_another_account_after_failed_capacity_check",
+            "change_codex_home_after_failed_capacity_check",
+            "start_speculative_background_child_after_failed_capacity_check"
+          ],
+          "allowedDecisions": [
+            "refuse",
+            "standby"
+          ],
+          "forbiddenDecisions": [
+            "dispatch"
+          ],
+          "requiresRecordedReason": true
+        }
+      ]
+    }
+  ]
+}
+```
