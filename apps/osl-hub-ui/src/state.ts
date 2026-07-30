@@ -150,6 +150,57 @@ export const firstRunOnboardingStepContract: readonly FirstRunOnboardingStepDefi
   },
 ];
 
+export type HonestSendOutcome = "sent" | "not-sent" | "unknown";
+export type HonestSendAction = "prepare-manual" | "prepare-clipboard" | "place" | "send";
+export type HonestSendRefusalReason =
+  | "missing-consent"
+  | "missing-binding"
+  | "missing-authority"
+  | "missing-distinct-user-gesture";
+
+export interface HonestSendGateInput {
+  mode: SendMode;
+  phase: ComposerPhase;
+  consent: boolean;
+  binding: boolean;
+  authority: boolean;
+  distinctUserGesture: boolean;
+}
+
+export type HonestSendGateDecision =
+  | {
+    allowed: true;
+    action: HonestSendAction;
+    autoRetry: false;
+  }
+  | {
+    allowed: false;
+    action: "refuse";
+    reason: HonestSendRefusalReason;
+    outcome: "not-sent";
+    autoRetry: false;
+  };
+
+export interface HonestSendOutcomeReport {
+  outcome: HonestSendOutcome;
+  autoRetry: false;
+  preserveDraft: boolean;
+}
+
+export interface HonestSendModeRule {
+  ordinary: boolean;
+  firstAction: HonestSendAction;
+  finalAction: HonestSendAction | null;
+  requiresDistinctFinalGesture: boolean;
+}
+
+export interface HonestSendContractSpec {
+  outcomes: readonly HonestSendOutcome[];
+  modes: Record<SendMode, HonestSendModeRule>;
+  gate(input: HonestSendGateInput): HonestSendGateDecision;
+  reportOutcome(value: unknown): HonestSendOutcomeReport;
+}
+
 export interface SetupState {
   sendMode: SendMode;
   placementMode: PlacementMode;
@@ -196,6 +247,78 @@ export function parseFirstRunOnboardingStep(raw: unknown): FirstRunOnboardingSte
     ? raw as FirstRunOnboardingStep
     : firstRunOnboardingStepOrder[0];
 }
+
+const honestSendOutcomes: readonly HonestSendOutcome[] = ["sent", "not-sent", "unknown"];
+
+function refuseHonestSend(reason: HonestSendRefusalReason): HonestSendGateDecision {
+  return {
+    allowed: false,
+    action: "refuse",
+    reason,
+    outcome: "not-sent",
+    autoRetry: false,
+  };
+}
+
+function actionForHonestSendMode(mode: SendMode, phase: ComposerPhase): HonestSendAction {
+  if (mode === "manual") return "prepare-manual";
+  if (mode === "clipboard") return "prepare-clipboard";
+  if (mode === "double" && phase !== "placed") return "place";
+  return "send";
+}
+
+export const HonestSendContract: HonestSendContractSpec = {
+  outcomes: honestSendOutcomes,
+  modes: {
+    manual: {
+      ordinary: true,
+      firstAction: "prepare-manual",
+      finalAction: null,
+      requiresDistinctFinalGesture: false,
+    },
+    clipboard: {
+      ordinary: true,
+      firstAction: "prepare-clipboard",
+      finalAction: null,
+      requiresDistinctFinalGesture: false,
+    },
+    double: {
+      ordinary: true,
+      firstAction: "place",
+      finalAction: "send",
+      requiresDistinctFinalGesture: true,
+    },
+    single: {
+      ordinary: false,
+      firstAction: "send",
+      finalAction: "send",
+      requiresDistinctFinalGesture: false,
+    },
+  },
+  gate(input: HonestSendGateInput): HonestSendGateDecision {
+    if (!input.consent) return refuseHonestSend("missing-consent");
+    if (!input.binding) return refuseHonestSend("missing-binding");
+    if (!input.authority) return refuseHonestSend("missing-authority");
+    if (input.mode === "double" && input.phase === "placed" && !input.distinctUserGesture) {
+      return refuseHonestSend("missing-distinct-user-gesture");
+    }
+    return {
+      allowed: true,
+      action: actionForHonestSendMode(input.mode, input.phase),
+      autoRetry: false,
+    };
+  },
+  reportOutcome(value: unknown): HonestSendOutcomeReport {
+    const outcome = honestSendOutcomes.includes(value as HonestSendOutcome)
+      ? value as HonestSendOutcome
+      : "unknown";
+    return {
+      outcome,
+      autoRetry: false,
+      preserveDraft: outcome !== "sent",
+    };
+  },
+};
 
 export function parseSetupState(raw: string | null): SetupState {
   if (!raw) return { ...defaultSetup };
