@@ -146,12 +146,14 @@ pub enum StepOutcome {
 /// thread.
 pub type WipeFn = Box<dyn Fn() -> std::result::Result<(), DuressError> + Send + Sync + 'static>;
 
-/// Optional handlers for wipe steps that aren't yet self-contained
-/// in the keystore crate. Each `None` becomes a `Skipped` step at
-/// run time with a reason string in the report — never an
-/// `unimplemented!()`.
+/// Optional handlers and overrides for wipe steps. Deferred steps
+/// become `Skipped` when their handler is unset; the keyring purge
+/// override falls back to the production [`KeyringSealer`] purge.
 #[derive(Default)]
 pub struct DuressHandlers {
+    /// Override for Step 2. When unset, the engine purges the
+    /// production OS keyring entry through [`KeyringSealer`].
+    pub purge_keyring: Option<WipeFn>,
     pub wipe_local_cache_dir: Option<WipeFn>,
     pub wipe_anonymous_credentials: Option<WipeFn>,
     pub wipe_prekeys: Option<WipeFn>,
@@ -321,11 +323,7 @@ impl DuressEngine {
     {
         match step {
             WipeStep::TpmEvict => map_tpm_evict_result(tpm_evict()),
-            WipeStep::KeyringPurge => KeyringSealer::purge_keyring_entry()
-                .map(|_| StepOutcome::Wiped)
-                .unwrap_or_else(|e| StepOutcome::Failed {
-                    error: e.to_string(),
-                }),
+            WipeStep::KeyringPurge => self.run_keyring_purge(),
             WipeStep::IdentityFile => self.delete_file_idempotent(&self.paths.identity_file),
             WipeStep::PasswordHashes => self.delete_file_idempotent(&self.paths.password_file),
             WipeStep::PrekeyFile => match self.paths.prekey_file.as_deref() {
@@ -381,6 +379,22 @@ impl DuressEngine {
                 "OPSEC file strip not wired — caller passes injection \
                  script paths via DuressHandlers::strip_opsec_files",
             ),
+        }
+    }
+
+    fn run_keyring_purge(&self) -> StepOutcome {
+        match self.handlers.purge_keyring.as_ref() {
+            Some(handler) => match handler() {
+                Ok(_) => StepOutcome::Wiped,
+                Err(e) => StepOutcome::Failed {
+                    error: e.to_string(),
+                },
+            },
+            None => KeyringSealer::purge_keyring_entry()
+                .map(|_| StepOutcome::Wiped)
+                .unwrap_or_else(|e| StepOutcome::Failed {
+                    error: e.to_string(),
+                }),
         }
     }
 
