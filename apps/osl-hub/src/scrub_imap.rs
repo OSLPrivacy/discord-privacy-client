@@ -203,6 +203,43 @@ pub enum DeleteVerification {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrubReceiptStatus {
+    VerifiedGone,
+    StillPresent,
+    Unknown,
+}
+
+impl From<DeleteVerification> for ScrubReceiptStatus {
+    fn from(value: DeleteVerification) -> Self {
+        match value {
+            DeleteVerification::VerifiedGone => Self::VerifiedGone,
+            DeleteVerification::StillPresent => Self::StillPresent,
+            DeleteVerification::Unknown => Self::Unknown,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScrubReceiptStatusProjection {
+    pub item_ordinal: u64,
+    pub status: ScrubReceiptStatus,
+}
+
+pub fn project_scrub_receipt_statuses(
+    receipts: &[(u64, DeleteVerification)],
+) -> Vec<ScrubReceiptStatusProjection> {
+    receipts
+        .iter()
+        .map(|(item_ordinal, status)| ScrubReceiptStatusProjection {
+            item_ordinal: *item_ordinal,
+            status: (*status).into(),
+        })
+        .collect()
+}
+
 pub trait NativeImapAdapter {
     fn delete_message(&mut self, uid: u64) -> Result<(), ScrubImapError>;
     fn query_message(&mut self, uid: u64) -> Result<QueryAfterDelete, ScrubImapError>;
@@ -465,6 +502,41 @@ mod tests {
                 "delete:3".to_string(),
                 "query:3".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn scrub_receipt_projects_verified_gone_still_present_and_unknown_statuses() {
+        let projection = project_scrub_receipt_statuses(&[
+            (3, DeleteVerification::VerifiedGone),
+            (4, DeleteVerification::StillPresent),
+            (5, DeleteVerification::Unknown),
+        ]);
+
+        assert_eq!(
+            projection,
+            vec![
+                ScrubReceiptStatusProjection {
+                    item_ordinal: 3,
+                    status: ScrubReceiptStatus::VerifiedGone,
+                },
+                ScrubReceiptStatusProjection {
+                    item_ordinal: 4,
+                    status: ScrubReceiptStatus::StillPresent,
+                },
+                ScrubReceiptStatusProjection {
+                    item_ordinal: 5,
+                    status: ScrubReceiptStatus::Unknown,
+                },
+            ]
+        );
+        assert_eq!(
+            serde_json::to_value(&projection).unwrap(),
+            serde_json::json!([
+                {"itemOrdinal": 3, "status": "verified_gone"},
+                {"itemOrdinal": 4, "status": "still_present"},
+                {"itemOrdinal": 5, "status": "unknown"}
+            ])
         );
     }
 

@@ -435,6 +435,7 @@ impl SeededLocalImapFixture {
 #[derive(Clone, Default)]
 pub struct ImapMailbox {
     messages: BTreeMap<(String, String, String), ImapMessageSnapshot>,
+    duplicate_message_ids: BTreeSet<(String, String, String)>,
     deleted: BTreeSet<(String, String, String)>,
 }
 
@@ -442,6 +443,10 @@ impl fmt::Debug for ImapMailbox {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ImapMailbox")
             .field("message_count", &self.messages.len())
+            .field(
+                "duplicate_message_id_count",
+                &self.duplicate_message_ids.len(),
+            )
             .field("deleted_count", &self.deleted.len())
             .finish()
     }
@@ -453,22 +458,36 @@ impl ImapMailbox {
     }
 
     pub fn from_messages(messages: Vec<ImapMessageSnapshot>) -> Self {
+        let mut stored = BTreeMap::new();
+        let mut duplicate_message_ids = BTreeSet::new();
+        for message in messages {
+            let key = (
+                message.account_id.clone(),
+                message.mailbox.clone(),
+                message.message_id.clone(),
+            );
+            if stored.insert(key.clone(), message).is_some() {
+                duplicate_message_ids.insert(key);
+            }
+        }
         Self {
-            messages: messages
-                .into_iter()
-                .map(|message| {
-                    (
-                        (
-                            message.account_id.clone(),
-                            message.mailbox.clone(),
-                            message.message_id.clone(),
-                        ),
-                        message,
-                    )
-                })
-                .collect(),
+            messages: stored,
+            duplicate_message_ids,
             deleted: BTreeSet::new(),
         }
+    }
+
+    pub fn has_duplicate_message_id(
+        &self,
+        account_id: &str,
+        mailbox: &str,
+        message_id: &str,
+    ) -> bool {
+        self.duplicate_message_ids.contains(&(
+            account_id.to_owned(),
+            mailbox.to_owned(),
+            message_id.to_owned(),
+        ))
     }
 
     pub fn search_message(
@@ -514,6 +533,9 @@ pub fn prepare_delete(
     let message = mailbox
         .search_message(account_id, mailbox_name, message_id)
         .ok_or(ImapPolicyError::MessageNotFound)?;
+    if mailbox.has_duplicate_message_id(account_id, mailbox_name, message_id) {
+        return Err(ImapPolicyError::DuplicateMessageId);
+    }
     require_message_binding(
         message,
         owner_osl_user_id,
@@ -552,6 +574,13 @@ pub fn delete_prepared(
         )
         .cloned()
         .ok_or(ImapPolicyError::MessageNotFound)?;
+    if mailbox.has_duplicate_message_id(
+        &prepared.account_id,
+        &prepared.mailbox,
+        &prepared.message_id,
+    ) {
+        return Err(ImapPolicyError::DuplicateMessageId);
+    }
     require_message_binding(
         &message,
         &prepared.owner_osl_user_id,
@@ -895,6 +924,7 @@ pub fn may_start_imap_run(request: &ImapRunRequest) -> Result<(), ImapPolicyErro
 pub enum ImapPolicyError {
     InvalidBinding,
     MessageNotFound,
+    DuplicateMessageId,
     AccountBindingMismatch,
     FingerprintMismatch,
     OwnershipRequired,
@@ -912,6 +942,7 @@ impl fmt::Display for ImapPolicyError {
         let message = match self {
             Self::InvalidBinding => "IMAP request binding is invalid",
             Self::MessageNotFound => "IMAP message was not found",
+            Self::DuplicateMessageId => "IMAP Message-ID is duplicated",
             Self::AccountBindingMismatch => "IMAP account binding was not confirmed",
             Self::FingerprintMismatch => "IMAP message fingerprint changed",
             Self::OwnershipRequired => "IMAP message is not owned by the active user",
