@@ -1,7 +1,34 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), emitTo: vi.fn(), getCurrentWindow: vi.fn() }));
+vi.mock("@fontsource-variable/inter/wght.css", () => ({}));
+vi.mock("./logos", () => ({ browserLogo: (id: string) => `<span>${id}</span>`, providerLogo: (id: string) => `<span>${id}</span>`, serviceLogo: (id: string) => `<span>${id}</span>` }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
+vi.mock("@tauri-apps/api/event", () => ({ emitTo: mocks.emitTo, listen: mocks.listen }));
+vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: mocks.getCurrentWindow }));
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+
+async function loadUi() {
+  vi.resetModules();
+  const store = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => { store.set(key, value); },
+    removeItem: (key: string) => { store.delete(key); },
+    clear: () => { store.clear(); },
+  });
+  vi.stubGlobal("document", { querySelector: vi.fn(() => null), createElement: vi.fn(() => ({})), documentElement: { classList: { add: vi.fn() }, dataset: {} }, addEventListener: vi.fn(), visibilityState: "visible" });
+  vi.stubGlobal("window", { addEventListener: vi.fn(), matchMedia: vi.fn(() => ({ matches: false, addEventListener: vi.fn() })), setTimeout, confirm: vi.fn(() => false) });
+  vi.stubGlobal("requestAnimationFrame", () => 1);
+  vi.stubGlobal("cancelAnimationFrame", () => undefined);
+  return import("./main");
+}
+
+function visibleText(markup: string): string {
+  return markup.replace(/<[^>]*>/gu, " ").replace(/\s+/gu, " ").trim();
+}
 
 function functionSource(name: string, nextName: string): string {
   const start = source.indexOf(`function ${name}`);
@@ -12,8 +39,32 @@ function functionSource(name: string, nextName: string): string {
 }
 
 describe("public Circles network scope", () => {
-  const publicCircles = functionSource("publicCirclesUnavailableMarkup", "inboxDestinationContent");
+  const publicCircles = functionSource("publicCirclesUnavailableMarkup", "publicPostGuardCarrierPreviewMarkup");
   const inbox = functionSource("inboxDestinationContent", "oslChatContent");
+
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("Keep public Circles network scope visibly unavailable", async () => {
+    const { __oslHubUiTest } = await loadUi();
+    __oslHubUiTest.reset({ route: "inbox" });
+
+    const inboxHtml = __oslHubUiTest.renderWorkspaceContent("inbox");
+    const publicCard = inboxHtml.match(/<article class="inbox-surface-card unavailable"[^>]*data-public-circles-network="unavailable"[\s\S]*?<\/article>/u)?.[0] ?? "";
+    const publicCopy = visibleText(publicCard);
+
+    expect(publicCard).not.toBe("");
+    expect(publicCard).toContain('aria-disabled="true"');
+    expect(publicCopy).toMatch(/Public Circles network unavailable/iu);
+    expect(publicCopy).toMatch(/Private audience posts stay off/iu);
+    expect(publicCard).not.toMatch(/<button|href=|data-route|data-home-module/iu);
+    expect(publicCopy).not.toMatch(/global feed|available now|ready now|public .*end-to-end encrypted/iu);
+
+    expect(inboxHtml).toContain('data-circle-feeds="private-audiences"');
+    expect(inboxHtml).toContain('data-circle-posting="ready"');
+    expect(inboxHtml).toContain('data-circle-posting="refused"');
+  });
 
   it("keeps the public Circles network visibly unavailable", () => {
     expect(publicCircles).toContain('data-inbox-osl-surface="circles"');
