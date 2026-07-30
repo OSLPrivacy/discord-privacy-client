@@ -28,7 +28,7 @@ describe("Activity primary action", () => {
     vi.unstubAllGlobals();
   });
 
-  it("Route Activity primary action to attention review", async () => {
+  it("routes Activity primary action to attention review state", async () => {
     const { __oslHubUiTest, activityPrimaryAction } = await loadUi();
     __oslHubUiTest.reset({
       route: "activity",
@@ -50,7 +50,7 @@ describe("Activity primary action", () => {
     expect(__oslHubUiTest.renderWorkspaceContent()).toContain("Attention review");
   });
 
-  it("Builds the Activity primary action plan for attention review", async () => {
+  it("returns Activity primary action plan metadata", async () => {
     const { activityDestinationContent, activityPrimaryActionPlan } = await loadUi();
 
     const plan = activityPrimaryActionPlan(2);

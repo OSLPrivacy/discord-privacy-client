@@ -437,7 +437,7 @@ describe("scheme-1 Rust-client deployment admission", () => {
     },
   );
 
-  it("enroll the frozen shipping Rust client as a trusted evidence producer", () => {
+  it("keeps the frozen shipping Rust client producer immutable and usable", () => {
     const entries = Object.entries(TRUSTED_SCHEME1_CLIENT_EVIDENCE_PRODUCERS);
     expect(entries).toHaveLength(1);
     const [keyId, producer] = entries[0];
@@ -736,7 +736,7 @@ describe("scheme-1 Rust-client deployment admission", () => {
     expect(receipt.execution_authorized).toBe(false);
   });
 
-  it("run scheme1 client-preflight admission to generate admitted contract v", async () => {
+  it("validates migrate scheme1 client-preflight admission receipt", async () => {
     const files = await sourceValues();
     const frozenFiles = await frozenSourceValues();
     const receipt = await positiveReceipt("migrate-0033-0034");

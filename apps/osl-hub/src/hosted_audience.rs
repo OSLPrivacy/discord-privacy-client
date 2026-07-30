@@ -12,6 +12,7 @@ pub enum HostedAudience {
     PublicServerGroupDirect,
     PublicServer,
     GroupDirect,
+    Group,
     Direct,
 }
 
@@ -21,7 +22,8 @@ impl HostedAudience {
             Self::PublicServerGroupDirect => 0,
             Self::PublicServer => 1,
             Self::GroupDirect => 2,
-            Self::Direct => 3,
+            Self::Group => 3,
+            Self::Direct => 4,
         }
     }
 
@@ -47,18 +49,21 @@ mod tests {
     fn hosted_audience_widest_first_orders_public_server_group_direct() {
         let ordered = audiences_widest_first([
             HostedAudience::Direct,
+            HostedAudience::Group,
             HostedAudience::PublicServer,
             HostedAudience::PublicServerGroupDirect,
             HostedAudience::GroupDirect,
             HostedAudience::PublicServer,
+            HostedAudience::Direct,
         ]);
 
         assert_eq!(
             ordered,
-            [
+            vec![
                 HostedAudience::PublicServerGroupDirect,
                 HostedAudience::PublicServer,
                 HostedAudience::GroupDirect,
+                HostedAudience::Group,
                 HostedAudience::Direct,
             ]
         );
@@ -66,6 +71,9 @@ mod tests {
         assert!(
             HostedAudience::PublicServer.widest_first_rank()
                 < HostedAudience::GroupDirect.widest_first_rank()
+        );
+        assert!(
+            HostedAudience::Group.widest_first_rank() < HostedAudience::Direct.widest_first_rank()
         );
     }
 }

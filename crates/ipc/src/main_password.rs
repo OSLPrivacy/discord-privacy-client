@@ -2014,16 +2014,15 @@ mod password_policy_tests {
         ));
         assert_eq!(get_file_storage_key(), Some(key));
 
-        mark_activity_for_inactivity_auto_lock_at(
-            t0 + std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS - 30),
-        );
+        let t1 = t0 + std::time::Duration::from_secs(500);
+        assert!(mark_activity_for_inactivity_auto_lock_at(t1));
         assert!(!run_file_key_inactivity_auto_lock_timer_at(
-            t0 + std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS + 20)
+            t1 + std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS - 1)
         ));
         assert_eq!(get_file_storage_key(), Some(key));
 
         assert!(run_file_key_inactivity_auto_lock_timer_at(
-            t0 + std::time::Duration::from_secs((INACTIVITY_AUTO_LOCK_SECONDS * 2) + 1)
+            t1 + std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS)
         ));
         assert_eq!(get_file_storage_key(), None);
 

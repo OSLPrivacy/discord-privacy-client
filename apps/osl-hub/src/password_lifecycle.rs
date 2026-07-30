@@ -57,7 +57,7 @@ pub struct HubIdentitySetupResult {
     pub password_setup_required: bool,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct HubIdentityCreationOwnerSignoff {
     pub owner_present: bool,
@@ -250,6 +250,18 @@ fn create_native_identity_after_owner_authorization_signoff(
     )?;
     initialise_keyserver(&state.osl, &dir);
     Ok(result)
+}
+
+pub fn create_native_identity(
+    state: &HubCoreState,
+    authorization: Option<IdentityCreationOwnerAuthorization>,
+) -> Result<HubIdentitySetupResult, String> {
+    require_identity_creation_owner_authorization(authorization)
+        .map_err(|error| error.to_string())?;
+    create_native_identity_with_owner_authorization_signoff(
+        state,
+        HubIdentityCreationOwnerSignoff::owner_authorized_for_new_identity(),
+    )
 }
 
 fn create_native_identity_after_owner_authorization_signoff_using(

@@ -3168,7 +3168,14 @@ function settingsButtonMarkup(extraClass = ""): string {
   return `<button class="button compact home-settings ${extraClass}" data-route="settings" aria-label="Open Settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.6 3.4 10.2 2h3.6l.6 1.4 1.4.8 1.5-.2 1.8 3.1-.9 1.2v1.6l.9 1.2-1.8 3.1-1.5-.2-1.4.8-.6 1.4h-3.6l-.6-1.4-1.4-.8-1.5.2-1.8-3.1.9-1.2V8.3l-.9-1.2L6.7 4l1.5.2 1.4-.8Z"/><circle cx="12" cy="9.1" r="2.6"/></svg><span>Settings</span></button>`;
 }
 
-export type HomePrimaryIssue = "account-protection" | "local-storage" | "trusted-people-review" | "connections" | "trusted-person" | "activity" | "protected-chat";
+export type HomePrimaryIssue =
+  | "account-protection"
+  | "local-storage"
+  | "trusted-people-review"
+  | "connect-service"
+  | "add-trusted-person"
+  | "recent-activity"
+  | "protected-conversation";
 
 export interface HomePrimaryActionInput {
   coreReady: boolean;
@@ -3223,7 +3230,7 @@ export function homePrimaryActionPlan(input: HomePrimaryActionInput): HomePrimar
   }
   if (input.connectedApps === 0) {
     return {
-      issue: "connections",
+      issue: "connect-service",
       title: "Connect a service",
       detail: "No connected app is ready for protected use yet.",
       label: "Connect",
@@ -3232,7 +3239,7 @@ export function homePrimaryActionPlan(input: HomePrimaryActionInput): HomePrimar
   }
   if (input.verifiedFriends === 0) {
     return {
-      issue: "trusted-person",
+      issue: "add-trusted-person",
       title: "Add a trusted person",
       detail: "Protected conversations stay unavailable until someone is verified.",
       label: "Add friend",
@@ -3241,7 +3248,7 @@ export function homePrimaryActionPlan(input: HomePrimaryActionInput): HomePrimar
   }
   if (input.hasRecentActivity) {
     return {
-      issue: "activity",
+      issue: "recent-activity",
       title: "Review recent protection",
       detail: "New local OSL activity is waiting.",
       label: "Review",
@@ -3249,7 +3256,7 @@ export function homePrimaryActionPlan(input: HomePrimaryActionInput): HomePrimar
     };
   }
   return {
-    issue: "protected-chat",
+    issue: "protected-conversation",
     title: "Open a protected conversation",
     detail: "Your account, local storage and trusted people are ready.",
     label: "Open OSL Chat",
@@ -3305,6 +3312,12 @@ export function homePrimaryAction(): void {
     route = "people";
     activeOslChatPersonId = null;
     friendsDialogOpen = false;
+    render();
+    return;
+  }
+  if (plan.target.kind === "notifications") {
+    settingsSection = "notifications";
+    route = "settings";
     render();
     return;
   }
@@ -3523,9 +3536,9 @@ function publicCirclesUnavailableMarkup(): string {
   return `<article class="inbox-surface-card unavailable" data-inbox-osl-surface="circles" data-public-circles-network="unavailable" aria-disabled="true"><strong>OSL Circles</strong><small>Private audience feeds</small><p><span class="status-tag">Unavailable</span> Public Circles network unavailable. Private audience posts stay off until membership, posting, and moderation are complete.</p></article>`;
 }
 
-export function publicPostGuardCarrierPreviewMarkup(platform = "Public platform"): string {
+export function publicPostGuardCarrierPreviewMarkup(platform = "Public platforms"): string {
   const platformName = escapeHtml(platform);
-  return `<section class="public-post-guard public-post-guard-preview" data-public-platform-preview="encrypted-audience-carrier" data-public-post-guard="encrypted-audience-carrier" aria-labelledby="public-post-guard-title"><header><span class="privacy-local-mark">PUBLIC POST GUARD</span><h2 id="public-post-guard-title">Encrypted-audience carrier preview</h2><p>${platformName} stays a public surface. OSL shows the public carrier text separately from the protected audience preview before anything is placed.</p></header><div class="privacy-policy-grid carrier-preview-grid" aria-label="Public platform carrier preview"><article class="privacy-policy-card" data-public-post-kind="ordinary" data-carrier-part="public"><span class="status-tag">Public</span><h3>Public carrier</h3><p>Visible to the platform audience. Search, quoting, archiving, audience, location, and media metadata still need review.</p></article><article class="privacy-policy-card" data-public-post-kind="encrypted-audience-carrier" data-carrier-part="protected-audience"><span class="status-tag">Carrier preview</span><h3>Protected audience</h3><p>Plaintext is for the approved audience only, but the platform can still see the public carrier, timing, and engagement.</p></article></div><p class="scope-approval-note">If audience proof is missing or changes, OSL refuses the protected placement and keeps the draft local.</p></section>`;
+  return `<section class="public-post-guard public-post-guard-preview" data-public-platform-preview="encrypted-audience-carrier" data-public-post-guard="encrypted-audience-carrier" aria-labelledby="public-post-guard-title"><header><span class="privacy-local-mark">PUBLIC POST GUARD</span><h2 id="public-post-guard-title">Encrypted-audience carrier preview</h2><p>${platformName} stays a public surface. OSL shows the public carrier text separately from the protected audience preview before anything is placed.</p></header><div class="privacy-policy-grid carrier-preview-grid" aria-label="Public platform carrier preview"><article class="privacy-policy-card" data-public-post-kind="ordinary" data-carrier-part="public"><span class="status-tag">Public</span><h3>Public carrier</h3><p>Visible to the platform audience. Search, quoting, archiving, audience, location, and media metadata still need review. Visible carrier text stays visible and does not contain the protected message.</p></article><article class="privacy-policy-card" data-public-post-kind="encrypted-audience-carrier" data-carrier-part="protected-audience"><span class="status-tag">Carrier preview</span><h3>Protected audience</h3><p>Plaintext is for the approved audience only, but the platform can still see the public carrier, timing, and engagement.</p></article></div><p class="scope-approval-note">If audience proof is missing or changes, OSL refuses the protected placement and keeps the draft local.</p></section>`;
 }
 
 function inboxDestinationContent(): string {
@@ -3627,17 +3640,20 @@ export function mullvadConnectionCardMarkup(status: MullvadStatus = mullvadStatu
   return `<article class="connection-device-card connection-card mullvad-card" data-connection-card="mullvad" data-connection-kind="mullvad" data-privacy-scope="${status.privacyScope}" data-connection-state="${status.availability}"><div><span class="status-tag">${state}</span><strong>Mullvad</strong><small>Network privacy only · ${state}</small><p>Network privacy signal only. Use your existing Mullvad session as a separate network tool. OSL does not read its account state, connection state, or app content. Platforms and recipients can still see ordinary content you send there.</p></div>${action}</article>`;
 }
 
-export function androidWorkspaceCardMarkup(): string {
-  const workspace = AndroidSurface.preview().find((surface) => surface.id === "androidMobileWorkspace");
-  if (!workspace) return "";
-  return `<article class="connection-device-card connection-card android-workspace-card pro unavailable" data-android-surface="${workspace.id}" data-android-workspace-consent="${workspace.consent}" data-consent="${workspace.consent}" data-binding="${workspace.binding}" data-hosted-execution="${workspace.hostedExecution}" data-workspace-runtime="${workspace.workspace?.runtime ?? "localVirtualDevice"}" aria-disabled="true"><div><span class="status-tag">Coming later · Pro</span><strong>${escapeHtml(workspace.displayName)}</strong><small>Future Pro isolation · Coming later</small><p>Future isolated local workspace with encrypted local storage. A separate mobile workspace threat model review and explicit consent are required before any local workspace starts.</p><ul><li>Encrypted local virtual device storage.</li><li>clipboard, files, notifications, camera, microphone, and location start denied.</li><li>No hosted Android workspace runs from this card.</li></ul></div><button class="button compact" disabled>Consent required</button></article>`;
-}
-
 function androidWorkspaceConnectionCard(surface: AndroidSurface): string {
   if (surface.surface === "companion") {
     return `<article class="connection-device-card" data-android-surface="${surface.id}" data-consent="${surface.consent}" data-binding="${surface.binding}"><span class="status-tag">Coming later</span><h3>${escapeHtml(surface.displayName)}</h3><p>Phone approvals and OSL-owned mobile experiences stay separate from desktop account control.</p></article>`;
   }
-  return androidWorkspaceCardMarkup();
+  return `<article class="connection-device-card connection-card android-workspace-card pro unavailable" data-android-surface="${surface.id}" data-android-workspace-consent="${surface.consent}" data-consent="${surface.consent}" data-binding="${surface.binding}" data-hosted-execution="${surface.hostedExecution}" data-workspace-runtime="${surface.workspace?.runtime ?? "localVirtualDevice"}" aria-disabled="true"><div><span class="status-tag">Coming later · Pro</span><strong>${escapeHtml(surface.displayName)}</strong><small>Future Pro isolation · Coming later</small><p>Future isolated local workspace with encrypted local virtual device storage. A separate mobile workspace threat model review and explicit consent are required before any local workspace starts.</p><ul><li>Encrypted local virtual device storage.</li><li>clipboard, files, notifications, camera, microphone, and location start denied.</li><li>${hostedAndroidWorkspaceGate()}</li><li>No hosted Android workspace runs from this card.</li></ul></div><button class="button compact" disabled>Consent required</button></article>`;
+}
+
+function hostedAndroidWorkspaceGate(): string {
+  return "Hosted workspace is unavailable here; it requires a separate threat model, explicit consent, and a new audit before any claim changes.";
+}
+
+export function androidWorkspaceCardMarkup(): string {
+  const workspace = AndroidSurface.preview().find((surface) => surface.id === "androidMobileWorkspace");
+  return workspace ? androidWorkspaceConnectionCard(workspace) : "";
 }
 
 export function connectionsDestinationContent(): string {

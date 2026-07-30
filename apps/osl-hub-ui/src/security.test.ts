@@ -260,6 +260,9 @@ describe("bundled preview security boundary", () => {
       "allow-save-onboarding-preferences",
       "allow-scan-local-privacy",
       "allow-initialize-scrub-index",
+      "allow-set-scrub-index-manifest",
+      "allow-get-scrub-index-manifest",
+      "allow-get-scrub-index-scan",
       "allow-append-scrub-index-chunk",
       "allow-get-scrub-index-status",
       "allow-pause-scrub-index",
@@ -322,8 +325,6 @@ describe("bundled preview security boundary", () => {
       "allow-resize-native-app-window",
       "allow-focus-native-app-window",
       "allow-detach-native-app-window",
-      "allow-open-hosted-session-scan",
-      "allow-request-hosted-session-scan",
       "allow-activate-native-manual-peer-context",
       "allow-activate-osl-chat-context",
       "allow-close-osl-chat-context",
@@ -347,6 +348,8 @@ describe("bundled preview security boundary", () => {
       "allow-set-native-discord-covertext-enabled",
       "allow-create-service-account",
       "allow-open-service-host",
+      "allow-open-hosted-session-scan",
+      "allow-request-hosted-session-scan",
       "allow-request-hosted-session-scan-command",
       "allow-close-service-host",
       "allow-set-local-protected-sheet-open",
@@ -1706,9 +1709,16 @@ describe("bundled preview security boundary", () => {
     ]) {
       expect(password).toContain(implementationSymbol);
     }
-    expect(keystoreLib).toContain(
-      "DuressEngine, DuressError, DuressHandlers, DuressJournal, DuressPaths, DuressReport",
-    );
+    for (const exportedSymbol of [
+      "DuressEngine",
+      "DuressError",
+      "DuressHandlers",
+      "DuressJournal",
+      "DuressPaths",
+      "DuressReport",
+    ]) {
+      expect(keystoreLib).toContain(exportedSymbol);
+    }
     expect(keystoreLib).toContain(
       "verify_against_record, Argon2Params, InactivityTimer",
     );

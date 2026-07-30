@@ -47,7 +47,7 @@ describe("Connections destination", () => {
     vi.unstubAllGlobals();
   });
 
-  it("Implement Connections as the account and device destination", async () => {
+  it("renders Connections as the account and device destination", async () => {
     const { __oslHubUiTest } = await loadUi();
     __oslHubUiTest.reset({ route: "connections", services: [discordService], mullvadAvailability: "unavailable" });
 
@@ -62,7 +62,7 @@ describe("Connections destination", () => {
     expect(html).toContain('data-android-surface="androidMobileWorkspace"');
   });
 
-  it("Implements Connections as a fixed IA account and device destination preview", async () => {
+  it("exposes Connections IA route and direct destination markup", async () => {
     const { connectionsDestinationContent, fixedIaRoutePreview } = await loadUi();
 
     const route = fixedIaRoutePreview().find((target) => target.destination === "connections");

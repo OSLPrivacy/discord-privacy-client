@@ -500,7 +500,7 @@ commands.allow = ["detach_native_app_window"]
 
 [[permission]]
 identifier = "allow-open-hosted-session-scan"
-description = "Open the trusted hosted-session scan surface for the exact active native-hosted context; grants no preview, confirmation, deletion, navigation, credential, profile, process, path, URL, conversation, row, or network authority."
+description = "Borrow only the current native Discord session for a reviewed hosted-session scan; accepts no URL, profile, account, handle, credential, row, or takeover authority."
 commands.allow = ["open_hosted_session_scan"]
 
 [[permission]]

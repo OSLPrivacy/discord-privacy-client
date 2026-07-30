@@ -1197,11 +1197,11 @@ async fn unlock_hub_password_gate(
                 )
             })
             .await
-            .map_err(|_| "OSL burn worker failed".to_owned())??;
+            .map_err(|_| "OSL cleanup worker failed".to_owned())??;
             match verification.role {
                 VerifiedGateRole::Burn => Ok(HubGateUnlockResult::burned(verification, burn)),
                 VerifiedGateRole::Duress => Ok(HubGateUnlockResult::duress(verification, burn)),
-                _ => unreachable!("matched burn/duress role above"),
+                _ => unreachable!("cleanup branch only handles burn and duress"),
             }
         }
     }
@@ -8518,7 +8518,7 @@ mod b6_startup_gate_tests {
     }
 
     #[test]
-    fn p5_offline_queue_restart_textual_proof() {
+    fn p5_offline_queue_restart_source_audit() {
         let source = include_str!("main.rs");
         let broker = include_str!("broker.rs");
         let setup = between(
@@ -8794,6 +8794,188 @@ mod native_discord_carrier_command_tests {
     }
 }
 
+#[cfg(test)]
+mod tauri_command_acl_tests {
+    use super::review_ui_identity_binding_verifier_accepts_selection;
+    use osl_privacy_hub::identity_binding_verifier::{
+        AccountRef, BindingEvidence, BindingScope, IdentityBindingError, IdentityBindingVerifier,
+        PinnedOwner,
+    };
+    use osl_privacy_hub::scrub_index::ScrubAccountSelection;
+    use std::collections::BTreeSet;
+
+    fn registered_commands() -> BTreeSet<String> {
+        hub_tauri_commands!(hub_tauri_command_names)
+            .into_iter()
+            .collect()
+    }
+
+    fn permission_commands() -> BTreeSet<String> {
+        include_str!("../permissions/hub.toml")
+            .lines()
+            .map(str::trim)
+            .flat_map(|line| {
+                let value = line.strip_prefix("commands.allow = [")?;
+                let value = value.strip_suffix(']')?;
+                Some(value
+                    .split(',')
+                    .map(str::trim)
+                    .map(|part| part.trim_matches('"'))
+                    .filter(|part| !part.is_empty())
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>())
+            })
+            .flatten()
+            .collect()
+    }
+
+    fn capability_permissions() -> BTreeSet<String> {
+        let value: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/hub.json"))
+                .expect("hub capability json must parse");
+        value["permissions"]
+            .as_array()
+            .expect("hub capability permissions must be an array")
+            .iter()
+            .filter_map(|permission| permission.as_str().map(ToOwned::to_owned))
+            .collect()
+    }
+
+    fn assert_registered_and_acl_granted(commands: &[&str]) {
+        let registered = registered_commands();
+        let granted = permission_commands();
+        let capabilities = capability_permissions();
+        for command in commands {
+            assert!(
+                registered.contains(*command),
+                "Tauri handler must register command {command}"
+            );
+            assert!(
+                granted.contains(*command),
+                "permissions/hub.toml must grant command {command}"
+            );
+            let permission = format!("allow-{}", command.replace('_', "-"));
+            assert!(
+                capabilities.contains(&permission),
+                "hub capability must include permission {permission}"
+            );
+        }
+    }
+
+    #[test]
+    fn pw3_browser_session_commands_are_registered_and_acl_granted() {
+        assert_registered_and_acl_granted(&[
+            "list_browser_imports",
+            "open_browser_import",
+            "get_firefox_status",
+            "install_firefox",
+            "begin_browser_account_import",
+            "begin_protected_browser_import",
+            "finish_protected_browser_import",
+            "launch_firefox_service",
+            "get_default_browser_companion_status",
+            "host_default_browser_companion",
+            "resize_default_browser_companion",
+            "focus_default_browser_companion",
+            "detach_default_browser_companion",
+        ]);
+    }
+
+    #[test]
+    fn pw3_hosted_session_scan_commands_are_registered() {
+        assert_registered_and_acl_granted(&[
+            "open_hosted_session_scan",
+            "request_hosted_session_scan",
+            "request_hosted_session_scan_command",
+        ]);
+    }
+
+    #[test]
+    fn pw3_request_hosted_session_scan_command_routes_through_checked_host() {
+        assert_registered_and_acl_granted(&["request_hosted_session_scan_command"]);
+
+        let source = include_str!("main.rs");
+        let start = source
+            .find("async fn request_hosted_session_scan_command(")
+            .expect("hosted scan command must exist");
+        let end = source[start..]
+            .find("fn active_unlocked_osl_user_id(")
+            .map(|offset| start + offset)
+            .expect("hosted scan command must be bounded");
+        let command = &source[start..end];
+        let checked = command
+            .find("CheckedHost::for_hosted_session_scan(&app)?")
+            .expect("hosted scan command must derive checked native host state");
+        let attended_binding = command
+            .find("checked.attended_operator_names()?")
+            .expect("hosted scan command must require attended operator binding");
+        let native_scan = command
+            .find("scan_own_messages_for_deletion(")
+            .expect("hosted scan command must route to the native scan adapter");
+        assert!(
+            checked < attended_binding && attended_binding < native_scan,
+            "hosted scan must refuse before native scan unless CheckedHost proves the attended binding"
+        );
+    }
+
+    #[test]
+    fn review_ui_identity_binding_verifier_accepts_exact_scope_only() {
+        let identity = keystore::identity_from_entropy([72; 16], "review-ui".into());
+        let owner = PinnedOwner::from_identity(&identity);
+        let mut verifier = IdentityBindingVerifier::new(owner);
+        let selection = ScrubAccountSelection {
+            service_id: "discord".to_owned(),
+            account_id: "account-a".to_owned(),
+        };
+
+        assert_eq!(
+            review_ui_identity_binding_verifier_accepts_selection(
+                &verifier,
+                &selection,
+                BindingScope::ScrubIndex,
+            ),
+            Err(IdentityBindingError::NoBinding),
+            "absence of a review-UI identity binding must refuse"
+        );
+        verifier
+            .bind(
+                AccountRef {
+                    service_id: selection.service_id.clone(),
+                    account_id: selection.account_id.clone(),
+                },
+                BindingScope::ScrubIndex,
+                BindingEvidence::CallerAttested,
+            )
+            .expect("caller-attested binding is accepted");
+        assert_eq!(
+            review_ui_identity_binding_verifier_accepts_selection(
+                &verifier,
+                &selection,
+                BindingScope::ScrubIndex,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            review_ui_identity_binding_verifier_accepts_selection(
+                &verifier,
+                &selection,
+                BindingScope::ScrubDeletion,
+            ),
+            Err(IdentityBindingError::NoBinding),
+            "an index binding must not authorize destructive review actions"
+        );
+    }
+
+    #[test]
+    fn pw3_autoscrub_run_lifecycle_commands_are_registered_and_acl_granted() {
+        assert_registered_and_acl_granted(&[
+            "get_autoscrub_run_fl",
+            "start_autoscrub_reviewed_run",
+            "request_autoscrub_global_stop",
+        ]);
+    }
+}
+
 #[cfg(all(test, feature = "discord-qa-shell"))]
 mod native_visible_row_qa_command_tests {
     use super::{
@@ -8820,6 +9002,63 @@ mod native_visible_row_qa_command_tests {
             padding: DiscordCarrierPadding::ShapeMatched,
             row_kind: DiscordCarrierRowKind::PlainText,
         }
+    }
+
+    #[test]
+    fn native_visible_row_send_authority_closure_refuses_before_placement() {
+        let composer = NativeDiscordComposerState::default();
+        let placed = Cell::new(false);
+        let missing = with_native_discord_product_send_authority(
+            &composer,
+            "scope-a",
+            Some(measured_layout()),
+            |_| {
+                placed.set(true);
+                Ok(())
+            },
+        );
+        assert!(missing.is_err());
+        assert!(!placed.get());
+
+        composer.remember_prepared_visual_structure(
+            "scope-a",
+            deidentify_prepared_visual_structure("private"),
+            TEST_FLAGTEXT.to_owned(),
+        );
+        let wrong_scope = with_native_discord_product_send_authority(
+            &composer,
+            "scope-b",
+            Some(measured_layout()),
+            |_| {
+                placed.set(true);
+                Ok(())
+            },
+        );
+        assert!(wrong_scope.is_err());
+        assert!(!placed.get());
+
+        composer.remember_prepared_visual_structure(
+            "scope-a",
+            deidentify_prepared_visual_structure("private"),
+            TEST_FLAGTEXT.to_owned(),
+        );
+        let events = RefCell::new(Vec::<&'static str>::new());
+        let carrier = with_native_discord_product_send_authority(
+            &composer,
+            "scope-a",
+            Some(measured_layout()),
+            |authority| {
+                events.borrow_mut().push("authority");
+                placed.set(true);
+                Ok(authority.carrier)
+            },
+        )
+        .expect("same-scope prepared carrier authorizes native placement");
+        assert!(placed.get());
+        assert_eq!(events.into_inner(), ["authority"]);
+        assert!(carrier
+            .split_whitespace()
+            .eq(TEST_FLAGTEXT.split_whitespace()));
     }
 
     fn registered_commands() -> Vec<String> {
@@ -9057,6 +9296,60 @@ mod native_visible_row_qa_command_tests {
         assert!(
             require_native_discord_product_send_authority(
                 &composer,
+                "scope-a",
+                Some(measured_layout())
+            )
+            .is_err(),
+            "product send authority must be single-use"
+        );
+    }
+
+    #[test]
+    fn native_visible_row_product_send_authority_is_single_use() {
+        let state = NativeDiscordComposerState::default();
+        assert!(
+            require_native_discord_product_send_authority(
+                &state,
+                "scope-a",
+                Some(measured_layout())
+            )
+            .is_err(),
+            "absent product send authority must refuse before carrier placement"
+        );
+
+        state.remember_prepared_visual_structure(
+            "scope-a",
+            deidentify_prepared_visual_structure("private"),
+            TEST_FLAGTEXT.to_owned(),
+        );
+        assert!(
+            require_native_discord_product_send_authority(
+                &state,
+                "scope-b",
+                Some(measured_layout())
+            )
+            .is_err(),
+            "a prepared carrier for another scope must not authorize this send"
+        );
+
+        state.remember_prepared_visual_structure(
+            "scope-a",
+            deidentify_prepared_visual_structure("private"),
+            TEST_FLAGTEXT.to_owned(),
+        );
+        let authority = require_native_discord_product_send_authority(
+            &state,
+            "scope-a",
+            Some(measured_layout()),
+        )
+        .expect("same-scope prepared carrier authorizes one send");
+        assert!(authority
+            .carrier
+            .split_whitespace()
+            .eq(TEST_FLAGTEXT.split_whitespace()));
+        assert!(
+            require_native_discord_product_send_authority(
+                &state,
                 "scope-a",
                 Some(measured_layout())
             )

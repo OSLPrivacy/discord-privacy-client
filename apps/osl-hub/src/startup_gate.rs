@@ -106,11 +106,22 @@ pub fn verify_password_role(
         "wrong" => VerifiedGateRole::Wrong,
         _ => return Err("OSL password gate returned an invalid role".to_owned()),
     };
+    let role = role_after_duress_threshold(parsed_role, result.attempts_used);
     Ok(GatePasswordVerification {
-        role: parsed_role,
+        role,
         lockout_seconds_remaining: result.lockout_seconds_remaining,
         attempts_used: result.attempts_used,
     })
+}
+
+fn role_after_duress_threshold(role: VerifiedGateRole, attempts_used: u32) -> VerifiedGateRole {
+    if role == VerifiedGateRole::Wrong
+        && attempts_used >= ipc::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT
+    {
+        VerifiedGateRole::Duress
+    } else {
+        role
+    }
 }
 
 pub fn readiness_after_main(state: &HubCoreState) -> CoreReadiness {
@@ -204,7 +215,7 @@ mod tests {
             }
             VerifiedGateRole::Wrong => HubGateUnlockResult::wrong(verification),
             VerifiedGateRole::Main | VerifiedGateRole::Stealth => {
-                panic!("test only routes burn and wrong gate roles")
+                panic!("test only routes burn, duress, and wrong gate roles")
             }
         }
     }
@@ -274,7 +285,10 @@ mod tests {
         let state = HubCoreState::default();
 
         let below_threshold = GatePasswordVerification {
-            role: VerifiedGateRole::Wrong,
+            role: role_after_duress_threshold(
+                VerifiedGateRole::Wrong,
+                ipc::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 1,
+            ),
             lockout_seconds_remaining: 3600,
             attempts_used: ipc::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 1,
         };
@@ -286,7 +300,10 @@ mod tests {
             populate_cleanup_roots("threshold");
         keystore::set_base_dir_override(Some(threshold_core.clone()));
         let threshold_verification = GatePasswordVerification {
-            role: VerifiedGateRole::Duress,
+            role: role_after_duress_threshold(
+                VerifiedGateRole::Wrong,
+                ipc::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT,
+            ),
             lockout_seconds_remaining: 3600,
             attempts_used: ipc::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT,
         };

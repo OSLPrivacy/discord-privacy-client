@@ -32,7 +32,7 @@ describe("Public Post Guard", () => {
     vi.unstubAllGlobals();
   });
 
-  it("Render encrypted-audience carrier preview for public platforms", async () => {
+  it("renders encrypted-audience carrier preview for public platforms in Privacy", async () => {
     const { __oslHubUiTest } = await loadUi();
     __oslHubUiTest.reset({ route: "privacy" });
 
@@ -45,9 +45,8 @@ describe("Public Post Guard", () => {
     expect(html).toContain("the platform can still see the public carrier, timing, and engagement");
   });
 
-  it("Renders encrypted-audience carrier preview helper for public platforms", async () => {
+  it("exposes public-post guard carrier parts without protected-public claims", async () => {
     const { publicPostGuardCarrierPreviewMarkup } = await loadUi();
-
     const markup = publicPostGuardCarrierPreviewMarkup("X");
     const copy = visibleText(markup);
 

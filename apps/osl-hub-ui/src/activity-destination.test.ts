@@ -32,7 +32,7 @@ describe("Activity destination", () => {
     vi.unstubAllGlobals();
   });
 
-  it("Implement Activity as the proof destination", async () => {
+  it("renders Activity as the proof destination with recorded events", async () => {
     const { __oslHubUiTest } = await loadUi();
     __oslHubUiTest.reset({
       route: "activity",
@@ -51,7 +51,7 @@ describe("Activity destination", () => {
     expect(html).toContain("Connection failed");
   });
 
-  it("Implement Activity as a fixed IA proof destination preview", async () => {
+  it("exposes Activity IA route and avoids implementation-facing copy", async () => {
     const { activityDestinationContent, fixedIaRoutePreview } = await loadUi();
 
     const route = fixedIaRoutePreview().find((target) => target.destination === "activity");
@@ -62,6 +62,7 @@ describe("Activity destination", () => {
     expect(markup).toContain('class="content-viewport activity-destination"');
     expect(markup).toContain('aria-label="Recent OSL activity"');
     expect(markup).toContain('id="activity-attention-review"');
+    expect(markup).toContain('data-review-target="attention-review"');
     expect(copy).toMatch(/Local proof of what OSL actually did/iu);
     expect(copy).toMatch(/what it refused/iu);
     expect(copy).not.toMatch(/keyservers?|ratchets?|receipts?|browser profiles?|provider adapters?/iu);

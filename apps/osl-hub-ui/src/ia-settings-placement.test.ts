@@ -29,7 +29,7 @@ describe("IA settings placement", () => {
     vi.unstubAllGlobals();
   });
 
-  it("Pin Settings below the six IA destinations", async () => {
+  it("pins Settings below the six rendered IA destinations", async () => {
     const { __oslHubUiTest } = await loadUi();
     __oslHubUiTest.reset({ route: "home" });
 
@@ -45,7 +45,7 @@ describe("IA settings placement", () => {
     expect(sidebar).not.toContain('data-primary-destination="settings"');
   });
 
-  it("Pins Settings after the fixed IA preview destinations", async () => {
+  it("exposes Settings after the fixed IA order", async () => {
     const { fixedIaSidebarOrderPreview, primarySidebarMarkup } = await loadUi();
 
     const order = fixedIaSidebarOrderPreview();

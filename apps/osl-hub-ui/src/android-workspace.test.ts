@@ -32,7 +32,7 @@ describe("Android workspace rendering", () => {
     vi.unstubAllGlobals();
   });
 
-  it("Render Android Mobile Workspace as future Pro isolation", async () => {
+  it("renders Android Mobile Workspace as future Pro isolation", async () => {
     const { __oslHubUiTest } = await loadUi();
     __oslHubUiTest.reset({ route: "connections" });
 
@@ -42,17 +42,18 @@ describe("Android workspace rendering", () => {
     expect(html).toContain("Android Mobile Workspace");
     expect(html).toContain("Coming later · Pro");
     expect(html).toContain('data-workspace-runtime="localVirtualDevice"');
-    expect(html).toContain("encrypted local storage");
+    expect(html).toContain("encrypted local virtual device storage");
     expect(html).toContain("clipboard, files, notifications, camera, microphone, and location start denied");
   });
 
-  it("Keep hosted Android workspace behind separate threat model consent", async () => {
-    const { __oslHubUiTest } = await loadUi();
+  it("keeps hosted Android workspace behind separate threat model consent", async () => {
+    const { __oslHubUiTest, androidWorkspaceCardMarkup } = await loadUi();
     __oslHubUiTest.reset({ route: "connections" });
 
     const html = __oslHubUiTest.renderWorkspaceContent("connections");
+    const card = androidWorkspaceCardMarkup();
+    const copy = visibleText(card);
 
-    expect(html).toContain('data-android-surface="androidMobileWorkspace"');
     expect(html).toContain('data-hosted-execution="false"');
     expect(html).toContain('data-consent="required"');
     expect(html).toContain("separate mobile workspace threat model review and explicit consent");
@@ -91,6 +92,9 @@ describe("Android workspace destination card", () => {
     expect(markup).toContain("<button");
     expect(markup).toContain("disabled");
     expect(copy).toMatch(/separate mobile workspace threat model review and explicit consent/iu);
+    expect(markup).toContain('data-android-workspace-consent="required"');
+    expect(markup).toContain('aria-disabled="true"');
+    expect(copy).toMatch(/Hosted workspace is unavailable here/iu);
     expect(copy).toMatch(/No hosted Android workspace runs from this card/iu);
     expect(copy).not.toMatch(/open workspace|launch Android|enabled by default|hosted workspace ready/iu);
   });

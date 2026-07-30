@@ -9034,7 +9034,7 @@ mod sender_pubkey_resolution_tests {
     }
 
     #[test]
-    fn v2_resolve_sender_pubkey_rejects_forged_sender() {
+    fn v2_decrypt_rejects_forged_sender_attribution_cross_version_fixture() {
         let state = AppState::new();
         let forged_sender_discord_id = "123456789012345678";
         let (_attacker_secret, attacker_pub) = crypto::x25519::generate_keypair();

@@ -210,13 +210,27 @@ export async function removeHubAlternatePassword(role: "stealth" | "burn", curre
   return parseHubPasswordRoleStatus(await invoke<unknown>(command, { currentMain }));
 }
 
-export async function createHubOslIdentity(ownerAuthorized = true): Promise<HubIdentitySetupResult> {
-  if (!isTauriRuntime() || ownerAuthorized !== true) throw new Error("identity creation unavailable");
-  const ownerAuthorizationSignoff: HubIdentityCreationOwnerSignoff = {
-    ownerPresent: true,
-    reviewedNoExistingIdentityReplacement: true,
-    acceptsRecoveryPhraseResponsibility: true,
-  };
+function ownerAuthorizationSignoffFrom(authorization: true | HubIdentityCreationOwnerSignoff): HubIdentityCreationOwnerSignoff {
+  if (authorization === true) {
+    return {
+      ownerPresent: true,
+      reviewedNoExistingIdentityReplacement: true,
+      acceptsRecoveryPhraseResponsibility: true,
+    };
+  }
+  return authorization;
+}
+
+export async function createHubOslIdentity(ownerAuthorization: true | HubIdentityCreationOwnerSignoff = true): Promise<HubIdentitySetupResult> {
+  if (!isTauriRuntime()) throw new Error("identity creation unavailable");
+  const ownerAuthorizationSignoff = ownerAuthorizationSignoffFrom(ownerAuthorization);
+  if (
+    ownerAuthorizationSignoff.ownerPresent !== true
+    || ownerAuthorizationSignoff.reviewedNoExistingIdentityReplacement !== true
+    || ownerAuthorizationSignoff.acceptsRecoveryPhraseResponsibility !== true
+  ) {
+    throw new Error("identity creation unavailable");
+  }
   return parseIdentitySetupResult(await invoke<unknown>("create_hub_osl_identity", { ownerAuthorizationSignoff }));
 }
 

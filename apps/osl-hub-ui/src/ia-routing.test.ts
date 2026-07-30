@@ -29,7 +29,7 @@ describe("IA routing", () => {
     vi.unstubAllGlobals();
   });
 
-  it("Map application routes to the fixed IA destinations", async () => {
+  it("maps application routes to the fixed IA destinations in the rendered shell", async () => {
     const { __oslHubUiTest } = await loadUi();
     const expectations = [
       ["home", "Home"],
@@ -53,7 +53,7 @@ describe("IA routing", () => {
     }
   });
 
-  it("Maps fixed IA route previews to destination routes", async () => {
+  it("exposes fixed IA route preview helpers", async () => {
     const { fixedIaRoutePreview, primarySidebarMarkup } = await loadUi();
 
     const routes = fixedIaRoutePreview();

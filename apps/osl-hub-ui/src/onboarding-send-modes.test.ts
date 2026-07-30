@@ -32,7 +32,7 @@ describe("onboarding send modes", () => {
     vi.unstubAllGlobals();
   });
 
-  it("Implement ordinary send choices without Single Enter", async () => {
+  it("implements ordinary send choices without Single Enter in onboarding state", async () => {
     const { __oslHubUiTest } = await loadUi();
     __oslHubUiTest.reset();
 
@@ -47,9 +47,8 @@ describe("onboarding send modes", () => {
     expect(html).toContain("If OSL cannot prove the destination, it copies the encrypted text and sends nothing.");
   });
 
-  it("Exposes ordinary send choices without Single Enter through setup content", async () => {
+  it("exposes the direct send mode content without Single Enter", async () => {
     const { sendingSetupContent } = await loadUi();
-
     const markup = sendingSetupContent();
 
     expect(sendModeButtons(markup)).toEqual(["manual", "clipboard", "double"]);
