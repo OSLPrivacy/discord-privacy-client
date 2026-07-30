@@ -2967,6 +2967,114 @@ mod tests {
     }
 
     #[test]
+    fn receive_rn_evicts_skipped_keys_at_bounded_limits() {
+        let (_alice_dir, alice_store) = fresh_store();
+        let (bob_dir, bob_store) = fresh_store();
+        let sealer = MemorySealer::new();
+        let mut rng = seeded_rng(108);
+        let (bob_prekeys, bob_bundle) = fresh_bundle(&mut rng);
+        let (alice_ik, alice_ik_pub) = x25519_keypair(&mut rng);
+        let bob_ek = bob_bundle.pq_prekey.to_bytes();
+        let bob_peer = *bob_bundle.identity.as_bytes();
+        let alice_peer = *alice_ik_pub.as_bytes();
+        let capped_params = SessionParams {
+            skip: osl_ratchet_next::SkipParams {
+                max_skip_per_message: 4,
+                max_keys_per_chain: 2,
+                max_total_keys: 2,
+                max_chains: 1,
+                ..osl_ratchet_next::SkipParams::default()
+            },
+            ..SessionParams::default()
+        };
+
+        initiate_and_persist_with_sealer(
+            &alice_store,
+            &sealer,
+            &alice_ik,
+            alice_ik_pub.as_bytes(),
+            &bob_bundle,
+            PeerCapabilities::Verified(RN_CAP_WIRE_RN),
+            &bob_ek,
+            CTX,
+            capped_params,
+        )
+        .expect("alice initiates persisted RN session");
+
+        let bootstrap_wire = with_wire_in_enabled_for_test(true, || {
+            send_rn_with_sealer(&alice_store, &sealer, &bob_peer, 20, b"rn-bootstrap")
+                .expect("alice sends bootstrap")
+        });
+        accept_and_persist_with_sealer(
+            &bob_store,
+            &sealer,
+            &bob_prekeys,
+            bob_prekeys.identity.public().as_bytes(),
+            &bob_ek,
+            &bootstrap_wire,
+            CTX,
+            capped_params,
+        )
+        .expect("bob accepts bootstrap");
+
+        let wire_1 = with_wire_in_enabled_for_test(true, || {
+            send_rn_with_sealer(&alice_store, &sealer, &bob_peer, 21, b"rn-evicted")
+                .expect("alice sends m1")
+        });
+        let wire_2 = with_wire_in_enabled_for_test(true, || {
+            send_rn_with_sealer(&alice_store, &sealer, &bob_peer, 22, b"rn-retained-2")
+                .expect("alice sends m2")
+        });
+        let wire_3 = with_wire_in_enabled_for_test(true, || {
+            send_rn_with_sealer(&alice_store, &sealer, &bob_peer, 23, b"rn-retained-3")
+                .expect("alice sends m3")
+        });
+        let wire_4 = with_wire_in_enabled_for_test(true, || {
+            send_rn_with_sealer(&alice_store, &sealer, &bob_peer, 24, b"rn-delivered-first")
+                .expect("alice sends m4")
+        });
+
+        let delivered_first = with_wire_in_enabled_for_test(true, || {
+            receive_rn_with_sealer(&bob_store, &sealer, &alice_peer, &wire_4)
+                .expect("bob receives m4 first")
+        });
+        assert_eq!(delivered_first.msg_type, 24);
+        assert_eq!(delivered_first.plaintext, b"rn-delivered-first");
+
+        let reloaded_bob_store = RnSessionStore::new(bob_dir.path().join("rn"));
+        let stored = reloaded_bob_store
+            .load_session_with_sealer(&alice_peer, &sealer)
+            .expect("load persisted bob session")
+            .expect("persisted bob session");
+        assert_eq!(
+            stored.skipped_key_count(),
+            2,
+            "receive_rn must persist only the bounded skipped-key cache"
+        );
+
+        assert!(
+            with_wire_in_enabled_for_test(true, || {
+                receive_rn_with_sealer(&reloaded_bob_store, &sealer, &alice_peer, &wire_1)
+            })
+            .is_err(),
+            "the oldest delayed RN message must be evicted when the receive-side cache reaches its cap"
+        );
+
+        let delayed_2 = with_wire_in_enabled_for_test(true, || {
+            receive_rn_with_sealer(&reloaded_bob_store, &sealer, &alice_peer, &wire_2)
+                .expect("bob receives retained m2")
+        });
+        let delayed_3 = with_wire_in_enabled_for_test(true, || {
+            receive_rn_with_sealer(&reloaded_bob_store, &sealer, &alice_peer, &wire_3)
+                .expect("bob receives retained m3")
+        });
+        assert_eq!(delayed_2.msg_type, 22);
+        assert_eq!(delayed_2.plaintext, b"rn-retained-2");
+        assert_eq!(delayed_3.msg_type, 23);
+        assert_eq!(delayed_3.plaintext, b"rn-retained-3");
+    }
+
+    #[test]
     fn receive_rn_rejects_identical_wire_replay_second_path() {
         let (_alice_dir, alice_store) = fresh_store();
         let (_bob_dir, bob_store) = fresh_store();
