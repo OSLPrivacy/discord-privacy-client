@@ -23,5 +23,3 @@ if (-not $task) {
   exit 0
 }
 [pscustomobject]@{ Status='pending'; Terminal=$false; TaskState=[string]$task.State; LastTaskResult=if($taskInfo){[int]$taskInfo.LastTaskResult}else{$null}; ResultTemporaryPresent=(Test-Path -LiteralPath $resultTemporary) } | ConvertTo-Json -Compress
-
-

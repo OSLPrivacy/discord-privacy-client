@@ -13,6 +13,11 @@ import {
 import { getLatestSnapshot } from "../lib/crypto-prices.js";
 import { badRequest, json, serviceUnavailable, tooMany } from "../lib/http.js";
 import { callerIp, checkRateLimit } from "../lib/rate-limit.js";
+import {
+  prepaidRedemptionReady,
+  PREPAID_REDEMPTION_UNAVAILABLE,
+  type PrepaidRedemptionReadiness,
+} from "../lib/prepaid-redemption-readiness.js";
 
 const QUOTE_LIFETIME_SECONDS = 30 * 60;
 const INVOICE_RETENTION_SECONDS = 7 * 24 * 60 * 60;
@@ -22,7 +27,12 @@ export async function handleCryptoQuote(
   request: Request,
   env: Env,
   fetcher: typeof fetch = fetch,
+  readiness: PrepaidRedemptionReadiness = prepaidRedemptionReady,
 ): Promise<Response> {
+  if (!readiness()) {
+    return serviceUnavailable(PREPAID_REDEMPTION_UNAVAILABLE);
+  }
+
   const limit = await checkRateLimit(env, callerIp(request), 5, "crypto-quote-v2");
   if (!limit.ok) return tooMany(limit.retryAfter);
 

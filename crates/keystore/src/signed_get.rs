@@ -1,8 +1,12 @@
-//! Ed25519 authorization for keyserver GETs that consume server state.
+//! Canonical keyserver GET signing primitives.
 //!
-//! A client-wide bearer is not an identity credential. These canonical
-//! messages bind the registered requester, intended recipient, concrete
-//! destructive-read target and a short-lived timestamp.
+//! A client-wide bearer is not an identity credential. These helpers bind a
+//! supplied requester, intended recipient, concrete read target, and
+//! short-lived timestamp in the bytes they sign.
+//!
+//! Current IPC production uses wrapped-key GET for bounded attachment open;
+//! prekey-bundle GET remains outside production messaging. These primitives do
+//! not by themselves establish a live destructive-read flow.
 
 use crate::identity::Identity;
 use crypto::ed25519;

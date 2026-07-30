@@ -13,7 +13,24 @@ class HubVmQaAttestationTests(unittest.TestCase):
     def candidate(self, root: Path) -> tuple[Path, Path]:
         installer = root / "osl-hub-0.1.0-x64-nsis.exe"
         installer.write_bytes(b"signed candidate fixture")
-        (root / "latest.json").write_text("{}", encoding="utf-8")
+        (root / "latest.json").write_text(
+            json.dumps(
+                {
+                    "version": "0.1.0",
+                    "platforms": {
+                        "windows-x86_64": {
+                            "signature": "signed-update-fixture",
+                            "url": (
+                                "https://github.com/OSLPrivacy/discord-privacy-client/"
+                                "releases/download/hub-v0.1.0/"
+                                "osl-hub-0.1.0-x64-nsis.exe"
+                            ),
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
         attestation = root / "hub-vm-qa-attestation.json"
         attestation.write_text(
             json.dumps(

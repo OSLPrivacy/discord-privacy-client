@@ -1,0 +1,759 @@
+#!/usr/bin/env python3
+"""Mutation tests for the fail-closed C4 shipping evidence verifier."""
+
+from __future__ import annotations
+
+import copy
+import base64
+import hashlib
+import importlib.util
+import json
+import os
+import subprocess
+import struct
+import sys
+import tempfile
+import time
+import unittest
+import uuid
+import zlib
+from pathlib import Path
+
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent.parent
+RELEASE_REPORT = ROOT / "docs" / "reports" / "release-lane-2026-07-26.md"
+SPEC = importlib.util.spec_from_file_location(
+    "c4_shipping_evidence",
+    HERE / "c4-shipping-evidence.py",
+)
+assert SPEC and SPEC.loader
+VERIFIER = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(VERIFIER)
+
+
+def sha(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def png_bytes(width: int = 80, height: int = 64) -> bytes:
+    rows = bytearray()
+    for y in range(height):
+        rows.append(0)
+        for x in range(width):
+            rows.extend(((x * 3) % 256, (y * 5) % 256, ((x + y) * 7) % 256))
+
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        crc = zlib.crc32(kind)
+        crc = zlib.crc32(payload, crc) & 0xFFFFFFFF
+        return (
+            struct.pack(">I", len(payload))
+            + kind
+            + payload
+            + struct.pack(">I", crc)
+        )
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(bytes(rows)))
+        + chunk(b"IEND", b"")
+    )
+
+
+class ShippingEvidenceMutationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(prefix="osl-c4-shipping-")
+        self.root = Path(self.temporary.name)
+        self.target = "Deckard QA"
+        self.executable = self.root / "osl-privacy-hub.exe"
+        self.executable.write_bytes(b"MZ\x00shipping desktop fixture\x00")
+        self.screenshot = self.root / "after.png"
+        self.screenshot.write_bytes(png_bytes())
+        now = time.time_ns() // 1_000_000
+        self.start = now - 1_000
+        self.end = now + 1_000
+        os.utime(self.screenshot, ns=(now * 1_000_000, now * 1_000_000))
+        run_id = str(uuid.uuid4())
+        executable_sha = sha(self.executable.read_bytes())
+        carrier_bytes = b"shipping carrier"
+        carrier_sha = sha(carrier_bytes)
+        challenge = "1" * 64
+        emitter = {
+            "pid": 4102,
+            "processStartTime100ns": 133_100_000_000_000_000,
+            "sessionId": 2,
+            "executablePath": r"C:\OSL\osl-privacy-hub.exe",
+            "executableSha256": executable_sha,
+            "fileIdentity": {
+                "volumeSerialNumber": 7,
+                "fileIndex": 11,
+                "fileSize": len(self.executable.read_bytes()),
+                "lastWriteTime100ns": 133_100_000_000_000_001,
+            },
+        }
+        discord_sha = sha(b"discord executable")
+        target = {
+            "pid": 7331,
+            "processStartTime100ns": 133_100_000_000_000_100,
+            "sessionId": 2,
+            "executablePath": r"C:\Users\Owner\AppData\Local\Discord\Discord.exe",
+            "executableSha256": discord_sha,
+            "fileIdentity": {
+                "volumeSerialNumber": 7,
+                "fileIndex": 22,
+                "fileSize": 123_456,
+                "lastWriteTime100ns": 133_100_000_000_000_002,
+            },
+            "bindingSha256": "",
+            "hwnd": 0x123456,
+            "rootHwnd": 0x123456,
+            "hostGeneration": 9,
+            "publisher": "Discord Inc.",
+        }
+        target["bindingSha256"] = VERIFIER._target_binding_digest(target)
+        native_binding = target["bindingSha256"]
+        binding = sha(
+            f"{discord_sha}|{target['pid']}|{target['hwnd']}|{self.target}".encode(
+                "utf-8"
+            )
+        )
+        carrier_utf16 = len(carrier_bytes.decode("utf-8").encode("utf-16-le")) // 2
+        native_receipt = {
+            "schema": "osl.c4.native-placement-receipt",
+            "version": 3,
+            "evidenceKind": "native-placement",
+            "challenge": challenge,
+            "emittedAtUnixMs": self.start + 450,
+            "monotonicStagesMs": {
+                "challengeClaimed": 0,
+                "preSendReadback": 100,
+                "sendInjected": 200,
+                "postContextRevalidated": 300,
+                "receiptEmitted": 400,
+            },
+            "emitter": emitter,
+            "build": {
+                "features": ["core", "desktop"],
+                "debugAssertions": False,
+                "targetOs": "windows",
+                "targetArch": "x86_64",
+                "profile": "release",
+            },
+            "target": target,
+            "carrier": {
+                "targetBindingSha256": native_binding,
+                "utf8B64": base64.b64encode(carrier_bytes).decode("ascii"),
+                "sha256": carrier_sha,
+                "byteLength": len(carrier_bytes),
+                "utf16Length": carrier_utf16,
+            },
+            "preSend": {
+                "targetBindingSha256": native_binding,
+                "readback": {
+                    "targetBindingSha256": native_binding,
+                    "classification": "exact",
+                    "complete": True,
+                    "sha256": carrier_sha,
+                    "byteLength": len(carrier_bytes),
+                    "utf16Length": carrier_utf16,
+                },
+                "foreground": {
+                    "targetBindingSha256": native_binding,
+                    "foregroundHwnd": target["hwnd"],
+                    "foregroundRootHwnd": target["rootHwnd"],
+                    "foregroundPid": target["pid"],
+                    "targetRootHwnd": target["rootHwnd"],
+                    "keyboardFocusProven": True,
+                    "targetOwnedByTrustedProcess": True,
+                },
+            },
+            "action": {
+                "targetBindingSha256": native_binding,
+                "mechanism": "sendinput_enter",
+                "attempted": True,
+                "acceptedInputCount": 2,
+                "enterCertainty": "injected_once",
+                "retryPolicy": "never_auto_retry",
+                "actionSequence": 1,
+            },
+            "postSend": {
+                "targetBindingSha256": native_binding,
+                "readback": {
+                    "targetBindingSha256": native_binding,
+                    "classification": "empty",
+                    "complete": True,
+                    "sha256": sha(b""),
+                    "byteLength": 0,
+                    "utf16Length": 0,
+                },
+                "hostRevalidated": True,
+                "overlayContextUnchanged": True,
+                "carrierConsumed": True,
+                "sentRowProven": True,
+                "rowDelta": 1,
+                "status": "sent",
+            },
+            "receiptDigestSha256": "",
+        }
+        native_receipt["receiptDigestSha256"] = VERIFIER._receipt_object_digest(
+            native_receipt
+        )
+        receipt_frame_sha = sha(VERIFIER._canonical_json(native_receipt))
+        ledger_root = r"C:\ProgramData\OSL\C4\ledger"
+        ledger_record_path = (
+            ledger_root
+            + "\\"
+            + hashlib.sha256(bytes.fromhex(challenge)).hexdigest()
+            + ".json"
+        )
+        filesystem_attestation = {
+            "schema": "osl.c4.filesystem-authority-attestation",
+            "version": 3,
+            "authoritySource": "native_windows_owner",
+            "challenge": challenge,
+            "checkedAtUnixMs": self.start + 455,
+            "ledgerRoot": ledger_root,
+            "ledgerRecordPath": ledger_record_path,
+            "rootIdentity": {
+                "volumeSerialNumber": 7,
+                "fileIndex": 99,
+            },
+            "daclSha256": "d" * 64,
+            "ownerSidSha256": "e" * 64,
+        }
+        ledger = {
+            "version": 2,
+            "challengeSha256": hashlib.sha256(bytes.fromhex(challenge)).hexdigest(),
+            "state": "consumed",
+            "issuedAtUnixMs": self.start + 100,
+            "expiresAtUnixMs": self.start + 60_000,
+            "pipeBindingSha256": VERIFIER._pipe_binding_digest(emitter),
+            "receiptFrameSha256": receipt_frame_sha,
+            "updatedAtUnixMs": self.start + 465,
+            "recordDigestSha256": "",
+        }
+        ledger["recordDigestSha256"] = VERIFIER._ledger_record_digest(ledger)
+        self.bundle = {
+            "schema": VERIFIER.SCHEMA,
+            "runId": run_id,
+            "runStartUnixMs": self.start,
+            "runEndUnixMs": self.end,
+            "targetConversation": self.target,
+            "build": {
+                "frontendCommand": "npm --prefix apps/osl-hub-ui run build",
+                "cargoCommand": (
+                    "osl-cargo -C apps/osl-hub build --release "
+                    "--features desktop --target x86_64-pc-windows-msvc"
+                ),
+                "cargoFeatures": ["desktop"],
+                "qaShell": False,
+                "observedAtUnixMs": self.start - 100,
+                "executableSha256": executable_sha,
+            },
+            "executable": {
+                "path": str(self.executable.resolve()),
+                "sha256": executable_sha,
+                "processId": 4102,
+                "processStartedAtUnixMs": self.start + 50,
+            },
+            "commandReceipt": {
+                "runId": run_id,
+                "executableSha256": executable_sha,
+                "targetConversation": self.target,
+                "observedAtUnixMs": self.start + 400,
+                "source": "production-overlay-ui",
+                "receiptAuthority": "shipping-renderer-success-gate",
+                "uiControlAutomationId": "prepare-protected",
+                "backendCommand": "send_native_discord_overlay_carrier",
+                "status": "sent",
+                "placed": True,
+                "enterSent": True,
+                "qaShell": False,
+                "rendererStatus": VERIFIER.SUCCESS_STATUS,
+            },
+            "preEnterReadback": {
+                "runId": run_id,
+                "executableSha256": executable_sha,
+                "targetConversation": self.target,
+                "observedAtUnixMs": self.start + 300,
+                "authority": "native-pre-enter-exact-readback",
+                "relation": "rawExact",
+                "readCount": 1,
+                "utf8Bytes": len(b"shipping carrier"),
+                "composerTextSha256": carrier_sha,
+                "exact": True,
+            },
+            "postEnterComposer": {
+                "runId": run_id,
+                "executableSha256": executable_sha,
+                "targetConversation": self.target,
+                "observedAtUnixMs": self.start + 500,
+                "readCount": 1,
+                "utf8Bytes": 0,
+                "composerTextSha256": sha(b""),
+                "empty": True,
+            },
+            "conversationRows": {
+                "before": {
+                    "runId": run_id,
+                    "executableSha256": executable_sha,
+                    "targetConversation": self.target,
+                    "observedAtUnixMs": self.start + 100,
+                    "namedConversationMatches": 1,
+                    "transcriptMatches": 1,
+                    "readCount": 1,
+                    "rowCount": 7,
+                    "targetBindingSha256": binding,
+                },
+                "after": {
+                    "runId": run_id,
+                    "executableSha256": executable_sha,
+                    "targetConversation": self.target,
+                    "observedAtUnixMs": self.start + 600,
+                    "namedConversationMatches": 1,
+                    "transcriptMatches": 1,
+                    "readCount": 1,
+                    "rowCount": 8,
+                    "targetBindingSha256": binding,
+                },
+                "newRows": [
+                    {
+                        "targetConversation": self.target,
+                        "targetBindingSha256": binding,
+                        "carrierTextSha256": carrier_sha,
+                        "rowIdentitySha256": sha(b"unique row identity"),
+                        "matchCount": 1,
+                    }
+                ],
+            },
+            "nativeAuthority": {
+                "receipt": native_receipt,
+                "filesystemAuthorityAttestation": filesystem_attestation,
+                "verificationResult": {
+                    "schema": "osl.c4.native-verification-result",
+                    "version": 3,
+                    "source": "runtime_named_pipe",
+                    "status": "runtime-native-receipt-valid",
+                    "parserCryptoValid": True,
+                    "runtimeReceiptAccepted": True,
+                    "fullC4Success": False,
+                    "pointDelta": 0,
+                    "receiptFrameSha256": receipt_frame_sha,
+                },
+                "ledgerRecord": ledger,
+            },
+            "screenshot": {
+                "path": self.screenshot.name,
+                "sha256": sha(self.screenshot.read_bytes()),
+                "observedAtUnixMs": self.start + 700,
+                "targetConversation": self.target,
+                "namedConversationMatches": 1,
+                "newRowMatches": 1,
+            },
+        }
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def write(self, value: dict | None = None) -> Path:
+        path = self.root / "bundle.json"
+        path.write_text(
+            json.dumps(self.bundle if value is None else value, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        return path
+
+    def reject(self, mutation) -> str:
+        changed = copy.deepcopy(self.bundle)
+        mutation(changed)
+        with self.assertRaises(VERIFIER.EvidenceError) as raised:
+            VERIFIER.verify_bundle(self.write(changed), self.target)
+        return str(raised.exception)
+
+    def test_positive_fixture_reaches_every_required_seam(self) -> None:
+        verdict = VERIFIER.verify_bundle(
+            self.write(),
+            self.target,
+            expected_run_id=self.bundle["runId"],
+            not_before_unix_ms=self.start,
+        )
+        self.assertEqual(verdict["verdict"], "pass")
+        self.assertEqual(verdict["rowDelta"], 1)
+        self.assertEqual(verdict["productionReceipt"], "sent/placed/enterSent")
+        self.assertEqual(verdict["preEnterReadback"], "rawExact")
+        self.assertEqual(verdict["postEnterComposer"], "empty")
+        self.assertEqual(verdict["nativeReceipt"], "runtime-consumed")
+
+    def test_accept_cli_requires_expected_run_id_and_fresh_window(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(HERE / "c4-shipping-evidence.py"),
+                "--bundle",
+                str(self.write()),
+                "--expected-target",
+                self.target,
+                "--expected-run-id",
+                self.bundle["runId"],
+                "--not-before-unix-ms",
+                str(self.start),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn('"nativeReceipt":"runtime-consumed"', result.stdout)
+
+    def test_wrong_expected_run_id_is_rejected(self) -> None:
+        with self.assertRaisesRegex(VERIFIER.EvidenceError, "runId"):
+            VERIFIER.verify_bundle(
+                self.write(),
+                self.target,
+                expected_run_id=str(uuid.uuid4()),
+                not_before_unix_ms=self.start,
+            )
+
+    def test_not_before_after_run_start_is_rejected(self) -> None:
+        with self.assertRaisesRegex(VERIFIER.EvidenceError, "predates"):
+            VERIFIER.verify_bundle(
+                self.write(),
+                self.target,
+                expected_run_id=self.bundle["runId"],
+                not_before_unix_ms=self.start + 1,
+            )
+
+    def test_qa_shell_feature_is_rejected(self) -> None:
+        reason = self.reject(lambda value: value["build"].update(qaShell=True))
+        self.assertIn("QA-shell", reason)
+
+    def test_qa_shell_binary_marker_is_rejected_even_with_matching_hash(self) -> None:
+        marked = self.executable.read_bytes() + b"send_native_discord_qa_atomic_text"
+        self.executable.write_bytes(marked)
+        marked_sha = sha(marked)
+
+        def mutate(value):
+            value["build"]["executableSha256"] = marked_sha
+            value["executable"]["sha256"] = marked_sha
+            for label in ("commandReceipt", "preEnterReadback", "postEnterComposer"):
+                value[label]["executableSha256"] = marked_sha
+            for label in ("before", "after"):
+                value["conversationRows"][label]["executableSha256"] = marked_sha
+
+        reason = self.reject(mutate)
+        self.assertIn("forbidden QA-shell marker", reason)
+
+    def test_qa_atomic_command_receipt_is_rejected(self) -> None:
+        reason = self.reject(
+            lambda value: value["commandReceipt"].update(
+                backendCommand="send_native_discord_qa_atomic_text"
+            )
+        )
+        self.assertIn("shipping production evidence", reason)
+
+    def test_stale_receipt_is_rejected(self) -> None:
+        reason = self.reject(
+            lambda value: value["commandReceipt"].update(
+                observedAtUnixMs=value["runStartUnixMs"] - 1
+            )
+        )
+        self.assertIn("outside", reason)
+
+    def test_append_only_or_stale_trail_is_not_an_accepted_field(self) -> None:
+        reason = self.reject(
+            lambda value: value.update(
+                sendStageTrail="osl-discord-qa-send-stage.txt"
+            )
+        )
+        self.assertIn("extra=", reason)
+
+    def test_missing_row_evidence_is_rejected(self) -> None:
+        reason = self.reject(
+            lambda value: value["conversationRows"].update(newRows=[])
+        )
+        self.assertIn("exactly one row", reason)
+
+    def test_duplicate_row_evidence_is_rejected(self) -> None:
+        def mutate(value):
+            row = copy.deepcopy(value["conversationRows"]["newRows"][0])
+            value["conversationRows"]["newRows"].append(row)
+
+        reason = self.reject(mutate)
+        self.assertIn("exactly one row", reason)
+
+    def test_duplicate_named_conversation_is_rejected(self) -> None:
+        reason = self.reject(
+            lambda value: value["conversationRows"]["after"].update(
+                namedConversationMatches=2
+            )
+        )
+        self.assertIn("one unique named conversation", reason)
+
+    def test_wrong_target_is_rejected(self) -> None:
+        reason = self.reject(
+            lambda value: value["commandReceipt"].update(
+                targetConversation="Wrong DM"
+            )
+        )
+        self.assertIn("wrong target", reason)
+
+    def test_more_than_one_new_row_is_rejected(self) -> None:
+        reason = self.reject(
+            lambda value: value["conversationRows"]["after"].update(rowCount=9)
+        )
+        self.assertIn("exactly one row", reason)
+
+    def test_non_exact_pre_enter_readback_is_rejected(self) -> None:
+        reason = self.reject(
+            lambda value: value["preEnterReadback"].update(
+                relation="canonicalised", exact=False
+            )
+        )
+        self.assertIn("byte-exact", reason)
+
+    def test_nonempty_post_enter_composer_is_rejected(self) -> None:
+        reason = self.reject(
+            lambda value: value["postEnterComposer"].update(
+                utf8Bytes=3,
+                composerTextSha256=sha(b"bad"),
+                empty=False,
+            )
+        )
+        self.assertIn("not empty", reason)
+
+    def test_missing_native_authority_is_rejected(self) -> None:
+        reason = self.reject(lambda value: value.pop("nativeAuthority"))
+        self.assertIn("missing=", reason)
+
+    def test_native_challenge_must_be_consumed(self) -> None:
+        reason = self.reject(
+            lambda value: value["nativeAuthority"]["ledgerRecord"].update(
+                state="connected",
+                receiptFrameSha256=None,
+            )
+        )
+        self.assertIn("not consumed", reason)
+
+    def test_native_target_hwnd_must_match_transcript_binding(self) -> None:
+        reason = self.reject(
+            lambda value: value["nativeAuthority"]["receipt"]["target"].update(
+                hwnd=0x999999
+            )
+        )
+        self.assertIn("target binding", reason)
+
+    def test_native_runtime_result_must_name_same_receipt_frame(self) -> None:
+        reason = self.reject(
+            lambda value: value["nativeAuthority"]["verificationResult"].update(
+                receiptFrameSha256="f" * 64
+            )
+        )
+        self.assertIn("another receipt frame", reason)
+
+    def test_native_runtime_authority_must_include_filesystem_attestation(self) -> None:
+        reason = self.reject(
+            lambda value: value["nativeAuthority"].pop(
+                "filesystemAuthorityAttestation"
+            )
+        )
+        self.assertIn("missing=", reason)
+
+    def test_native_filesystem_attestation_must_bind_consumed_record(self) -> None:
+        reason = self.reject(
+            lambda value: value["nativeAuthority"][
+                "filesystemAuthorityAttestation"
+            ].update(
+                ledgerRecordPath=(
+                    "C:\\ProgramData\\OSL\\C4\\ledger\\"
+                    + "f" * 64
+                    + ".json"
+                )
+            )
+        )
+        self.assertIn("another ledger record", reason)
+
+    def test_native_filesystem_attestation_must_postdate_receipt(self) -> None:
+        emitted = self.bundle["nativeAuthority"]["receipt"]["emittedAtUnixMs"]
+        reason = self.reject(
+            lambda value: value["nativeAuthority"][
+                "filesystemAuthorityAttestation"
+            ].update(checkedAtUnixMs=emitted - 1)
+        )
+        self.assertIn("outside", reason)
+
+    def test_missing_screenshot_is_rejected(self) -> None:
+        self.screenshot.unlink()
+        with self.assertRaisesRegex(VERIFIER.EvidenceError, "missing"):
+            VERIFIER.verify_bundle(self.write(), self.target)
+
+    def test_signature_only_fake_screenshot_is_rejected(self) -> None:
+        fake = b"\x89PNG\r\n\x1a\nfixture"
+        self.screenshot.write_bytes(fake)
+        os.utime(
+            self.screenshot,
+            ns=(self.end * 1_000_000, self.end * 1_000_000),
+        )
+        reason = self.reject(
+            lambda value: value["screenshot"].update(sha256=sha(fake))
+        )
+        self.assertIn("screenshot PNG", reason)
+
+    def test_duplicate_json_key_is_rejected_before_semantics(self) -> None:
+        path = self.write()
+        raw = path.read_text(encoding="utf-8")
+        raw = raw.replace(
+            '"schema":"osl-c4-shipping-evidence-v1"',
+            '"schema":"osl-c4-shipping-evidence-v1","schema":"forged"',
+            1,
+        )
+        path.write_text(raw, encoding="utf-8")
+        with self.assertRaisesRegex(VERIFIER.EvidenceError, "duplicate JSON key"):
+            VERIFIER.verify_bundle(path, self.target)
+
+
+class ShippingHarnessSourceContractTests(unittest.TestCase):
+    @staticmethod
+    def assert_contract(source: str) -> None:
+        required = (
+            "[ValidateSet('BuildShipping', 'DriveApprovedSend', 'VerifyEvidence')]",
+            "[string]$PythonCommand = 'python3'",
+            "Assert-LiveDriveApproval",
+            "if (-not $ConfirmOwnerApprovedSend)",
+            "Invoke-Checked 'osl-cargo'",
+            "'--features', 'desktop'",
+            "Invoke-UiaButton $send",
+            "'protected-draft'",
+            "'prepare-protected'",
+            "Get-DiscordSnapshot $discord $ExpectedConversation",
+            "Get-UiaValue $before.Composer",
+            "Find-ExactCarrierInRow",
+            "$discord.Root.SetFocus()",
+            "Save-DiscordScreenshot",
+            "'--bundle', $bundlePath",
+            "'--expected-run-id', $runId",
+            "'--not-before-unix-ms', ([string]$runStart)",
+        )
+        for needle in required:
+            if needle not in source:
+                raise AssertionError(f"shipping harness seam is absent: {needle}")
+        forbidden_live_mechanisms = (
+            "PostFixedF12(",
+            "PostMessage(",
+            "VK_F12",
+            "sendNativeDiscordQaAtomicText(",
+            "send_native_discord_qa_probe",
+        )
+        for needle in forbidden_live_mechanisms:
+            if needle in source:
+                raise AssertionError(f"QA-only live mechanism is present: {needle}")
+        approval_at = source.index("Assert-LiveDriveApproval")
+        launch_at = source.index("Start-Process -FilePath $exactExe")
+        drive_body_at = source.index("function Drive-ApprovedShippingSend")
+        approval_call_at = source.index("Assert-LiveDriveApproval", drive_body_at)
+        send_lines = [
+            line for line in source.splitlines() if line == "  Invoke-UiaButton $send"
+        ]
+        if len(send_lines) != 1:
+            raise AssertionError("real Send invocation must be one top-level drive step")
+        if not (approval_at < drive_body_at < approval_call_at < launch_at):
+            raise AssertionError("owner approval must dominate every process launch")
+
+    def test_shipping_harness_uses_only_real_ui_send_path(self) -> None:
+        source = (HERE / "osl-local-discord-fixed-probe.ps1").read_text(
+            encoding="utf-8"
+        )
+        self.assert_contract(source)
+
+    def test_removing_owner_gate_or_real_button_drive_breaks_contract(self) -> None:
+        source = (HERE / "osl-local-discord-fixed-probe.ps1").read_text(
+            encoding="utf-8"
+        )
+        for mutation in (
+            source.replace("if (-not $ConfirmOwnerApprovedSend)", "if ($false)", 1),
+            source.replace("Invoke-UiaButton $send", "# removed", 1),
+            source.replace(
+                "  Invoke-UiaButton $send",
+                "  if ($false) { Invoke-UiaButton $send }",
+                1,
+            ),
+        ):
+            with self.assertRaises(AssertionError):
+                self.assert_contract(mutation)
+
+
+class DiscordReleaseQualificationReportTests(unittest.TestCase):
+    REQUIRED_PHRASES = (
+        "## Discord Release Qualification {#discord_release_qualification}",
+        "`discord_release_qualification: test-proven-only`",
+        "npm test -- overlay-send-gesture.test.ts discord-qa-send-stage.ts",
+        "python3 scripts/qa/c4-shipping-evidence-test.py",
+        "first trusted Enter is consumed",
+        "second Enter must be a distinct trusted press after key-up",
+        "intervening draft input or an invalid second Enter attempt cancels",
+        "no path auto-retries",
+        "osl-c4-shipping-evidence-v1",
+        "npm --prefix apps/osl-hub-ui run build",
+        "osl-cargo",
+        '["desktop"]',
+        "`qaShell` is `false`",
+        "send_native_discord_qa_atomic_text",
+        "discord-qa-send-stage-receipt.json",
+        "osl-discord-qa-send-stage.txt",
+        "production-overlay-ui",
+        "shipping-renderer-success-gate",
+        "prepare-protected",
+        "send_native_discord_overlay_carrier",
+        'status: "sent"',
+        "`placed: true`",
+        "`enterSent: true`",
+        "native-pre-enter-exact-readback",
+        "`rawExact`",
+        "`utf8Bytes: 0`",
+        "empty SHA-256",
+        "row count increases by exactly one",
+        "`newRows` contains exactly one row",
+        "screenshot is a PNG inside the evidence bundle",
+        "QA-shell trails, QA atomic command receipts",
+        "owner-approved run against the exact shipping executable",
+    )
+
+    @classmethod
+    def assert_release_qualification(cls, report: str) -> None:
+        normalized = " ".join(report.split())
+        for phrase in cls.REQUIRED_PHRASES:
+            if " ".join(phrase.split()) not in normalized:
+                raise AssertionError(f"release qualification report is missing: {phrase}")
+        section_start = report.index(
+            "## Discord Release Qualification {#discord_release_qualification}"
+        )
+        section = report[section_start:]
+        if "release-qualified" in section or "runtime-proven" in section:
+            raise AssertionError("local C4/Double Enter evidence must not be promoted")
+        if "QA-shell trails, QA atomic command receipts" not in section:
+            raise AssertionError("QA-only send evidence must be explicitly inadmissible")
+
+    def test_discord_release_qualification_publishes_production_only_evidence(self) -> None:
+        report = RELEASE_REPORT.read_text(encoding="utf-8")
+        self.assert_release_qualification(report)
+
+    def test_missing_production_receipt_or_double_enter_boundary_breaks_report(self) -> None:
+        report = RELEASE_REPORT.read_text(encoding="utf-8")
+        for mutation in (
+            report.replace(
+                "send_native_discord_overlay_carrier",
+                "send_native_discord_qa_atomic_text",
+            ),
+            report.replace("distinct trusted press", "trusted press", 1),
+            report.replace(
+                "QA-shell trails, QA atomic command receipts",
+                "QA-shell trails",
+                1,
+            ),
+        ):
+            with self.assertRaises(AssertionError):
+                self.assert_release_qualification(mutation)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

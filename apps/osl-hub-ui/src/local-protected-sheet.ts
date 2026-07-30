@@ -93,6 +93,20 @@ function ttlLabel(seconds: LocalTtlSeconds): string {
 
 export function localProtectedSheetMarkup(model: LocalProtectedSheetModel, sendMode: SendMode = "clipboard"): string {
   if (!model.open) return "";
+  void sendMode;
+  const maxCopyPayloadBytes = 1_000;
+  const utf8Length = (value: string): number => new TextEncoder().encode(value).length;
+  const boundedCopyPayload = (value: string): { value: string; bytes: number; clipped: boolean } => {
+    let bounded = "";
+    let bytes = 0;
+    for (const character of value) {
+      const characterBytes = utf8Length(character);
+      if (bytes + characterBytes > maxCopyPayloadBytes) return { value: bounded, bytes, clipped: true };
+      bounded += character;
+      bytes += characterBytes;
+    }
+    return { value: bounded, bytes, clipped: false };
+  };
   const close = `<button class="local-protected-close" id="local-protected-close" type="button" aria-label="Close local protection">×</button>`;
   if (!model.context) {
     return `<aside class="local-protected-sheet" aria-labelledby="local-protected-title">
@@ -108,18 +122,18 @@ export function localProtectedSheetMarkup(model: LocalProtectedSheetModel, sendM
   }
 
   const ttlOptions = LOCAL_TTL_OPTIONS.map((seconds) => `<option value="${seconds}" ${model.ttlSeconds === seconds ? "selected" : ""}>${ttlLabel(seconds)}</option>`).join("");
-  const primaryLabel = sendMode === "double"
-    ? "Prepare · Double Enter"
-    : sendMode === "single"
-      ? "Prepare · Single Enter"
-      : "Encrypt & copy";
-  const sendTruth = sendMode === "double" || sendMode === "single"
-    ? "OSL will stop at Copy until it can verify this app's exact chat and composer."
-    : "OSL copies encrypted text. It never presses Send.";
+  const boundedDraft = boundedCopyPayload(model.draft);
+  const draftLimitNotice = !boundedDraft.clipped
+    ? `${boundedDraft.bytes.toLocaleString("en-US")} / ${maxCopyPayloadBytes.toLocaleString("en-US")} bytes`
+    : `Draft shortened to ${maxCopyPayloadBytes.toLocaleString("en-US")} bytes for copy.`;
+  const primaryLabel = "Encrypt & copy";
+  const sendTruth = "OSL copies encrypted text only. You choose where to paste it and press Send yourself.";
   const write = `<form id="local-protect-form" class="local-protected-form">
       <label for="local-protected-draft">Message</label>
-      <textarea id="local-protected-draft" maxlength="1000" rows="5" autocomplete="off" spellcheck="true" placeholder="Write privately">${escapeHtml(model.draft)}</textarea>
-      <div class="local-protected-options"><label><span>Delete key after</span><select id="local-protected-ttl">${ttlOptions}</select></label><label class="local-view-once"><span>View once</span><input id="local-protected-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""}/></label></div>
+      <textarea id="local-protected-draft" maxlength="1000" data-max-bytes="${maxCopyPayloadBytes}" rows="5" autocomplete="off" spellcheck="true" aria-describedby="local-protected-draft-bytes" placeholder="Write privately">${escapeHtml(boundedDraft.value)}</textarea>
+      <small id="local-protected-draft-bytes" class="local-draft-bytes" aria-live="polite">${draftLimitNotice}</small>
+      <div class="local-protected-options"><label><span>Opening authorization expires after</span><select id="local-protected-ttl">${ttlOptions}</select></label><label class="local-view-once"><span>View once</span><input id="local-protected-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""}/></label></div>
+      <small class="local-authorization-truth">After expiry, OSL refuses to open this text on this device.</small>
       <button class="local-primary" type="submit" ${model.busy ? "disabled" : ""}>${model.busy ? "Encrypting…" : primaryLabel}</button>
       <small class="local-send-truth">${escapeHtml(sendTruth)}</small>
     </form>

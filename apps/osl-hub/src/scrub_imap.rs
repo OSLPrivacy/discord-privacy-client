@@ -1,1491 +1,667 @@
-//! Narrow, deletion-only IMAP transport for AutoScrub.
+//! Attended IMAP scrub primitives.
 //!
-//! Secrets are accepted only by the configuration command, verified against
-//! the server, and then written to the operating-system credential store.
-//! Runtime operations receive an account id and a fresh authentication epoch;
-//! they never accept or return credentials.
+//! This module is intentionally local and fail-closed. The UI can request a
+//! dry-run preview and later submit an attended delete request, but the
+//! executable path still has to pass a main-process ACL, spend a one-shot
+//! consent grant, call the native IMAP adapter, and re-query after deletion.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use zeroize::{Zeroize, Zeroizing};
 
-const KEYRING_SERVICE: &str = "org.open-source-labs.hub.scrub-imap";
-const DEFAULT_IMAP_PORT: u16 = 993;
-const COMMAND_INTERVAL: Duration = Duration::from_secs(1);
-const AUTH_EPOCH_LIFETIME: Duration = Duration::from_secs(5 * 60);
-const LIVE_TEST_OWNER: &str = "osl-imap-live-test-owner";
+const MAX_BINDING_FIELD_BYTES: usize = 256;
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum ImapAuthKind {
-    AppPassword,
-    OauthBearer,
+#[derive(Clone, Eq, PartialEq)]
+pub struct ConsentBinding {
+    owner: String,
+    account: String,
+    scope: String,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConfigureImapRequest {
-    pub account_id: String,
-    pub host: String,
-    pub port: Option<u16>,
-    pub username: String,
-    pub auth: ImapAuthInput,
-    pub default_mailbox: Option<String>,
-}
+impl ConsentBinding {
+    pub fn new(
+        owner: impl Into<String>,
+        account: impl Into<String>,
+        scope: impl Into<String>,
+    ) -> Result<Self, ScrubImapError> {
+        let binding = Self {
+            owner: owner.into(),
+            account: account.into(),
+            scope: scope.into(),
+        };
+        validate_binding_part(&binding.owner)?;
+        validate_binding_part(&binding.account)?;
+        validate_binding_part(&binding.scope)?;
+        Ok(binding)
+    }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ImapAuthInput {
-    pub kind: ImapAuthKind,
-    pub secret: String,
-}
+    pub fn owner(&self) -> &str {
+        &self.owner
+    }
 
-impl Drop for ImapAuthInput {
-    fn drop(&mut self) {
-        self.secret.zeroize();
+    pub fn account(&self) -> &str {
+        &self.account
     }
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ImapAccountRequest {
-    pub account_id: String,
+impl fmt::Debug for ConsentBinding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConsentBinding")
+            .field("owner", &"<redacted>")
+            .field("account", &"<redacted>")
+            .field("scope_present", &!self.scope.is_empty())
+            .finish()
+    }
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ImapItemRequest {
-    pub account_id: String,
-    pub expected_auth_epoch: String,
-    pub mailbox: String,
-    pub message_id: String,
-    pub since_date_unix_ms: Option<u64>,
-    /// Required for delete, ignored by enumerate/inspect/verify.
-    pub expected_content_fingerprint: Option<String>,
+#[derive(Clone, Eq, PartialEq)]
+pub struct ConsentGrant {
+    id: u64,
+    binding: ConsentBinding,
+    expires_at_unix: u64,
 }
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ImapCapability {
-    pub configured: bool,
-    pub live_confirmed: bool,
-    pub auth_epoch: Option<String>,
-    pub detail: String,
+impl ConsentGrant {
+    pub fn id(&self) -> u64 {
+        self.id
+    }
 }
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ImapEnumeration {
-    pub findings: Vec<ImapTransportFinding>,
-    pub auth_epoch: String,
+impl fmt::Debug for ConsentGrant {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConsentGrant")
+            .field("id", &self.id)
+            .field("binding", &self.binding)
+            .field("expires_at_unix", &self.expires_at_unix)
+            .finish()
+    }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ImapTransportFinding {
-    pub uid: u32,
-    pub mailbox: String,
-    pub message_id: String,
-    pub authored_by_self: bool,
-    pub content_fingerprint: String,
+#[derive(Debug, Default)]
+pub struct ConsentLedger {
+    next_id: u64,
+    grants: BTreeMap<u64, ConsentGrant>,
 }
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ImapInspection {
-    pub state: ImapPresence,
-    pub authored_by_self: bool,
-    pub content_fingerprint: Option<String>,
-    pub auth_epoch: String,
-    pub schema_version: &'static str,
-    pub retractable: bool,
-    pub detail: String,
+impl ConsentLedger {
+    pub fn mint(
+        &mut self,
+        binding: ConsentBinding,
+        now_unix: u64,
+        ttl_secs: u64,
+    ) -> Result<ConsentGrant, ScrubImapError> {
+        let id = self
+            .next_id
+            .checked_add(1)
+            .ok_or(ScrubImapError::ConsentIdOverflow)?;
+        self.next_id = id;
+        let grant = ConsentGrant {
+            id,
+            binding,
+            expires_at_unix: now_unix.saturating_add(ttl_secs),
+        };
+        self.grants.insert(id, grant.clone());
+        Ok(grant)
+    }
+
+    pub fn consume(
+        &mut self,
+        grant_id: u64,
+        binding: &ConsentBinding,
+        now_unix: u64,
+    ) -> Result<ConsentGrant, ScrubImapError> {
+        let stored = self
+            .grants
+            .get(&grant_id)
+            .ok_or(ScrubImapError::ConsentMissing)?;
+        if &stored.binding != binding {
+            return Err(ScrubImapError::ConsentBindingMismatch);
+        }
+        let grant = self
+            .grants
+            .remove(&grant_id)
+            .expect("grant was checked present above");
+        if now_unix > grant.expires_at_unix {
+            return Err(ScrubImapError::ConsentExpired);
+        }
+        Ok(grant)
+    }
 }
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum ImapPresence {
-    Present,
-    Absent,
-}
-
-#[derive(Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ImapDeleteResult {
-    pub accepted: bool,
-    pub auth_epoch: String,
-    pub detail: String,
-}
-
-#[derive(Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ImapVerification {
-    pub outcome: ImapVerificationOutcome,
-    pub auth_epoch: String,
-    pub detail: String,
-}
-
-#[derive(Debug, Serialize, PartialEq, Eq)]
-pub enum ImapVerificationOutcome {
-    #[serde(rename = "confirmed-deleted")]
-    ConfirmedDeleted,
-    #[serde(rename = "confirmed-not-deleted")]
-    ConfirmedNotDeleted,
-    #[serde(rename = "UNKNOWN")]
-    Unknown,
-}
-
-/// Read-only metadata surfaced by the local IMAP live-test harness.
-pub struct ImapLiveMessage {
-    pub uid: u32,
-    pub internal_date: String,
-    pub from: String,
+#[derive(Clone, Eq, PartialEq)]
+pub struct ImapMessageSummary {
+    pub uid: u64,
     pub subject: String,
-    pub message_id: Option<String>,
-    pub authored_by_self: bool,
-    pub content_fingerprint: Option<String>,
-    identity_headers: Vec<u8>,
+    pub sender: String,
 }
 
-/// A single inspected item that is ready for the harness to preview.
-pub struct ImapLivePreparedDelete {
-    pub uid: u32,
-    pub message_id: String,
-    request: ImapItemRequest,
+impl fmt::Debug for ImapMessageSummary {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ImapMessageSummary")
+            .field("uid", &self.uid)
+            .field("subject", &"<redacted>")
+            .field("sender", &"<redacted>")
+            .finish()
+    }
 }
 
-pub struct ImapLiveDeleteExecution {
-    pub delete_result: Result<ImapDeleteResult, String>,
-    pub verification: ImapVerification,
-}
-
-/// Credential-in-memory facade used only by the local live-test binary.
-///
-/// It delegates connection, authentication, inspection, deletion, scoped
-/// expunge, and readback to the production transport implementation. It never
-/// persists the supplied app password.
-pub struct ImapLiveTestTransport {
-    state: ScrubImapState,
-    account_id: String,
-    auth_epoch: String,
-    secret: Zeroizing<String>,
-}
-
-#[derive(Clone)]
-struct AccountConfig {
-    owner_scope: String,
-    host: String,
-    port: u16,
-    username: String,
-    auth_kind: ImapAuthKind,
-    default_mailbox: String,
-    auth_epoch: String,
-    auth_issued_at: Instant,
-}
-
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct StoredAccount {
-    host: String,
-    port: u16,
-    username: String,
-    auth_kind: ImapAuthKind,
-    default_mailbox: String,
-    secret: String,
+pub struct OwnerFacingDryRunPreview {
+    pub owner_account: String,
+    pub dry_run: bool,
+    pub total_messages: usize,
+    pub deletable_uids: Vec<u64>,
+    pub action_label: String,
 }
 
-impl Drop for StoredAccount {
-    fn drop(&mut self) {
-        self.secret.zeroize();
+impl fmt::Debug for OwnerFacingDryRunPreview {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OwnerFacingDryRunPreview")
+            .field("owner_account", &"<redacted>")
+            .field("dry_run", &self.dry_run)
+            .field("total_messages", &self.total_messages)
+            .field("deletable_uid_count", &self.deletable_uids.len())
+            .field("action_label", &self.action_label)
+            .finish()
     }
-}
-
-#[derive(Default)]
-pub struct ScrubImapState {
-    // Intentionally process-local. A restart always clears live confirmation.
-    accounts: Mutex<HashMap<String, AccountConfig>>,
-}
-
-trait MailboxSession {
-    fn select(&mut self, mailbox: &str) -> Result<(), TransportFailure>;
-    fn search(
-        &mut self,
-        message_id: &str,
-        since_date: Option<&str>,
-    ) -> Result<Vec<u32>, TransportFailure>;
-    fn fetch_identity_headers(&mut self, uid: u32) -> Result<Vec<u8>, TransportFailure>;
-    fn supports_uid_expunge(&mut self) -> Result<bool, TransportFailure>;
-    fn mark_deleted(&mut self, uid: u32) -> Result<(), TransportFailure>;
-    fn expunge_uid(&mut self, uid: u32) -> Result<(), TransportFailure>;
-    fn recent_messages(&mut self, _limit: usize) -> Result<Vec<ImapLiveMessage>, TransportFailure> {
-        Err(TransportFailure::Ambiguous)
-    }
-}
-
-trait SessionConnector {
-    fn connect(
-        &self,
-        config: &AccountConfig,
-        secret: &str,
-    ) -> Result<Box<dyn MailboxSession>, TransportFailure>;
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TransportFailure {
-    Authentication,
-    RateLimited,
-    TlsOrConnection,
-    Server,
-    Ambiguous,
-}
-
-impl TransportFailure {
-    fn public_detail(self) -> &'static str {
-        match self {
-            Self::Authentication => "IMAP authentication changed or expired",
-            Self::RateLimited => "IMAP server rate-limited the request; no automatic retry",
-            Self::TlsOrConnection => "IMAP TLS connection was unavailable",
-            Self::Server => "IMAP server rejected or could not complete the request",
-            Self::Ambiguous => "IMAP readback was ambiguous",
-        }
-    }
-}
-
-struct RealConnector;
-
-struct OAuthBearer<'a> {
-    username: &'a str,
-    token: &'a str,
-}
-
-impl imap::Authenticator for OAuthBearer<'_> {
-    type Response = Vec<u8>;
-
-    fn process(&self, _challenge: &[u8]) -> Self::Response {
-        format!(
-            "user={}\u{1}auth=Bearer {}\u{1}\u{1}",
-            self.username, self.token
-        )
-        .into_bytes()
-    }
-}
-
-impl SessionConnector for RealConnector {
-    fn connect(
-        &self,
-        config: &AccountConfig,
-        secret: &str,
-    ) -> Result<Box<dyn MailboxSession>, TransportFailure> {
-        let client = imap::ClientBuilder::new(&config.host, config.port)
-            .connect()
-            .map_err(classify_imap_error)?;
-        let session = match config.auth_kind {
-            ImapAuthKind::AppPassword => client
-                .login(&config.username, secret)
-                .map_err(|(error, _)| classify_imap_error(error))?,
-            ImapAuthKind::OauthBearer => client
-                .authenticate(
-                    "XOAUTH2",
-                    &OAuthBearer {
-                        username: &config.username,
-                        token: secret,
-                    },
-                )
-                .map_err(|(error, _)| classify_imap_error(error))?,
-        };
-        Ok(Box::new(RealMailbox {
-            session,
-            // Authentication is itself a server command. Pace SELECT and all
-            // subsequent commands from it instead of bursting after login.
-            last_command: Some(Instant::now()),
-        }))
-    }
-}
-
-struct RealMailbox {
-    session: imap::Session<imap::Connection>,
-    last_command: Option<Instant>,
-}
-
-impl RealMailbox {
-    fn pace(&mut self) {
-        if let Some(last) = self.last_command {
-            let elapsed = last.elapsed();
-            if elapsed < COMMAND_INTERVAL {
-                std::thread::sleep(COMMAND_INTERVAL - elapsed);
-            }
-        }
-        self.last_command = Some(Instant::now());
-    }
-}
-
-impl MailboxSession for RealMailbox {
-    fn select(&mut self, mailbox: &str) -> Result<(), TransportFailure> {
-        validate_mailbox(mailbox)?;
-        self.pace();
-        self.session
-            .select(mailbox)
-            .map(|_| ())
-            .map_err(classify_imap_error)
-    }
-
-    fn search(
-        &mut self,
-        message_id: &str,
-        since_date: Option<&str>,
-    ) -> Result<Vec<u32>, TransportFailure> {
-        validate_message_id(message_id)?;
-        if let Some(date) = since_date {
-            validate_imap_date(date)?;
-        }
-        let query = match since_date {
-            Some(date) => format!("HEADER Message-ID \"{message_id}\" SINCE {date}"),
-            None => format!("HEADER Message-ID \"{message_id}\""),
-        };
-        self.pace();
-        let mut uids: Vec<u32> = self
-            .session
-            .uid_search(query)
-            .map_err(classify_imap_error)?
-            .into_iter()
-            .collect();
-        uids.sort_unstable();
-        Ok(uids)
-    }
-
-    fn mark_deleted(&mut self, uid: u32) -> Result<(), TransportFailure> {
-        self.pace();
-        self.session
-            .uid_store(uid.to_string(), "+FLAGS.SILENT (\\Deleted)")
-            .map(|_| ())
-            .map_err(classify_imap_error)
-    }
-
-    fn fetch_identity_headers(&mut self, uid: u32) -> Result<Vec<u8>, TransportFailure> {
-        self.pace();
-        let fetches = self
-            .session
-            .uid_fetch(
-                uid.to_string(),
-                "BODY.PEEK[HEADER.FIELDS (MESSAGE-ID FROM)]",
-            )
-            .map_err(classify_imap_error)?;
-        let fetch = fetches.iter().next().ok_or(TransportFailure::Ambiguous)?;
-        fetch
-            .body()
-            .map(ToOwned::to_owned)
-            .ok_or(TransportFailure::Ambiguous)
-    }
-
-    fn supports_uid_expunge(&mut self) -> Result<bool, TransportFailure> {
-        self.pace();
-        self.session
-            .capabilities()
-            .map(|capabilities| capabilities.has_str("UIDPLUS"))
-            .map_err(classify_imap_error)
-    }
-
-    fn expunge_uid(&mut self, uid: u32) -> Result<(), TransportFailure> {
-        self.pace();
-        self.session
-            .uid_expunge(uid.to_string())
-            .map(|_| ())
-            .map_err(classify_imap_error)
-    }
-
-    fn recent_messages(&mut self, limit: usize) -> Result<Vec<ImapLiveMessage>, TransportFailure> {
-        self.pace();
-        let mut uids: Vec<u32> = self
-            .session
-            .uid_search("ALL")
-            .map_err(classify_imap_error)?
-            .into_iter()
-            .collect();
-        uids.sort_unstable_by(|left, right| right.cmp(left));
-        uids.truncate(limit);
-        if uids.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let sequence = uids
-            .iter()
-            .map(u32::to_string)
-            .collect::<Vec<_>>()
-            .join(",");
-        self.pace();
-        let fetches = self
-            .session
-            .uid_fetch(
-                sequence,
-                "(UID INTERNALDATE BODY.PEEK[HEADER.FIELDS (MESSAGE-ID FROM SUBJECT)])",
-            )
-            .map_err(classify_imap_error)?;
-        let mut messages = Vec::with_capacity(fetches.len());
-        for fetch in fetches.iter() {
-            let uid = fetch.uid.ok_or(TransportFailure::Ambiguous)?;
-            let headers = fetch
-                .body()
-                .map(ToOwned::to_owned)
-                .ok_or(TransportFailure::Ambiguous)?;
-            use mailparse::MailHeaderMap;
-            let (parsed, _) =
-                mailparse::parse_headers(&headers).map_err(|_| TransportFailure::Ambiguous)?;
-            messages.push(ImapLiveMessage {
-                uid,
-                internal_date: fetch
-                    .internal_date()
-                    .map(|date| date.to_rfc3339())
-                    .unwrap_or_else(|| "unknown".to_owned()),
-                from: parsed
-                    .get_first_value("From")
-                    .unwrap_or_else(|| "unknown".to_owned()),
-                subject: parsed
-                    .get_first_value("Subject")
-                    .unwrap_or_else(|| "(no subject)".to_owned()),
-                message_id: parsed
-                    .get_first_value("Message-ID")
-                    .map(|value| value.trim().to_owned())
-                    .filter(|value| !value.is_empty()),
-                authored_by_self: false,
-                content_fingerprint: None,
-                identity_headers: headers,
-            });
-        }
-        messages.sort_unstable_by(|left, right| right.uid.cmp(&left.uid));
-        Ok(messages)
-    }
-}
-
-fn classify_imap_error(error: imap::Error) -> TransportFailure {
-    // Do not return the provider's text to IPC: it can contain identifiers or
-    // authentication details. Classification only controls fail-closed UI copy.
-    let lower = error.to_string().to_ascii_lowercase();
-    if lower.contains("auth") || lower.contains("login") || lower.contains("credential") {
-        TransportFailure::Authentication
-    } else if lower.contains("rate") || lower.contains("too many") || lower.contains("try again") {
-        TransportFailure::RateLimited
-    } else if lower.contains("tls")
-        || lower.contains("certificate")
-        || lower.contains("connection")
-        || lower.contains("timed out")
-    {
-        TransportFailure::TlsOrConnection
-    } else {
-        TransportFailure::Server
-    }
-}
-
-fn validate_account_field(value: &str) -> Result<(), TransportFailure> {
-    if value.is_empty() || value.len() > 256 || value.chars().any(|c| c.is_control()) {
-        return Err(TransportFailure::Ambiguous);
-    }
-    Ok(())
-}
-
-fn validate_host(host: &str) -> Result<(), TransportFailure> {
-    validate_account_field(host)?;
-    if host.len() > 253
-        || !host
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
-    {
-        return Err(TransportFailure::Ambiguous);
-    }
-    Ok(())
-}
-
-fn validate_mailbox(mailbox: &str) -> Result<(), TransportFailure> {
-    validate_account_field(mailbox)
-}
-
-fn validate_message_id(message_id: &str) -> Result<(), TransportFailure> {
-    validate_account_field(message_id)?;
-    if message_id.contains(['"', '\\']) {
-        return Err(TransportFailure::Ambiguous);
-    }
-    Ok(())
-}
-
-fn validate_imap_date(date: &str) -> Result<(), TransportFailure> {
-    let bytes = date.as_bytes();
-    let valid = (bytes.len() == 10 || bytes.len() == 11)
-        && bytes
-            .iter()
-            .all(|b| b.is_ascii_alphanumeric() || *b == b'-')
-        && bytes.iter().filter(|b| **b == b'-').count() == 2;
-    if !valid {
-        return Err(TransportFailure::Ambiguous);
-    }
-    Ok(())
-}
-
-fn request_since_date(request: &ImapItemRequest) -> Result<Option<String>, TransportFailure> {
-    let Some(unix_ms) = request.since_date_unix_ms else {
-        return Ok(None);
-    };
-    let seconds = i64::try_from(unix_ms / 1_000).map_err(|_| TransportFailure::Ambiguous)?;
-    let date = chrono::DateTime::from_timestamp(seconds, 0)
-        .ok_or(TransportFailure::Ambiguous)?
-        .format("%d-%b-%Y")
-        .to_string();
-    validate_imap_date(&date)?;
-    Ok(Some(date))
-}
-
-fn owner_account_key(owner: &str, account_id: &str) -> Result<String, String> {
-    validate_account_field(owner).map_err(|error| error.public_detail().to_owned())?;
-    validate_account_field(account_id).map_err(|error| error.public_detail().to_owned())?;
-    let mut digest = Sha256::new();
-    digest.update(b"osl-scrub-imap-owner-account-v1\0");
-    digest.update((owner.len() as u64).to_le_bytes());
-    digest.update(owner.as_bytes());
-    digest.update((account_id.len() as u64).to_le_bytes());
-    digest.update(account_id.as_bytes());
-    Ok(format!("owner-account-{:x}", digest.finalize()))
-}
-
-fn owner_scope(owner: &str) -> Result<String, String> {
-    validate_account_field(owner).map_err(|error| error.public_detail().to_owned())?;
-    let mut digest = Sha256::new();
-    digest.update(b"osl-scrub-imap-owner-v1\0");
-    digest.update(owner.as_bytes());
-    Ok(format!("owner-{:x}", digest.finalize()))
-}
-
-fn keyring_entry(owner: &str, account_id: &str) -> Result<keyring::Entry, String> {
-    keyring::Entry::new(KEYRING_SERVICE, &owner_account_key(owner, account_id)?)
-        .map_err(|_| "OS credential storage is unavailable".to_owned())
-}
-
-fn load_stored_account(owner: &str, account_id: &str) -> Result<StoredAccount, String> {
-    let serialized = Zeroizing::new(
-        keyring_entry(owner, account_id)?
-            .get_password()
-            .map_err(|_| "Stored IMAP authentication is unavailable".to_owned())?,
-    );
-    serde_json::from_str(serialized.as_str())
-        .map_err(|_| "Stored IMAP account configuration is invalid".to_owned())
-}
-
-fn next_auth_epoch(owner: &str, account_id: &str) -> String {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let mut digest = Sha256::new();
-    digest.update(owner.as_bytes());
-    digest.update([0]);
-    digest.update(account_id.as_bytes());
-    digest.update(nanos.to_le_bytes());
-    digest.update(count.to_le_bytes());
-    format!("imap-{:x}", digest.finalize())
-}
-
-fn finding_from_headers(
-    config: &AccountConfig,
-    mailbox: &str,
-    uid: u32,
-    requested_message_id: &str,
-    headers: &[u8],
-) -> Result<ImapTransportFinding, TransportFailure> {
-    use mailparse::MailHeaderMap;
-
-    let (parsed, _) = mailparse::parse_headers(headers).map_err(|_| TransportFailure::Ambiguous)?;
-    let message_id = parsed
-        .get_first_value("Message-ID")
-        .ok_or(TransportFailure::Ambiguous)?;
-    if message_id.trim() != requested_message_id.trim() {
-        return Err(TransportFailure::Ambiguous);
-    }
-    let authored_by_self = parsed
-        .get_first_value("From")
-        .and_then(|from| mailparse::addrparse(&from).ok())
-        .map(|addresses| {
-            addresses.iter().any(|address| match address {
-                mailparse::MailAddr::Single(info) => {
-                    info.addr.eq_ignore_ascii_case(&config.username)
-                }
-                mailparse::MailAddr::Group(group) => group
-                    .addrs
-                    .iter()
-                    .any(|info| info.addr.eq_ignore_ascii_case(&config.username)),
-            })
-        })
-        .unwrap_or(false);
-    let mut digest = Sha256::new();
-    digest.update(b"osl-imap-finding-v1\0");
-    digest.update(mailbox.as_bytes());
-    digest.update([0]);
-    digest.update(uid.to_le_bytes());
-    digest.update(message_id.trim().as_bytes());
-    digest.update([0]);
-    digest.update(headers);
-    Ok(ImapTransportFinding {
-        uid,
-        mailbox: mailbox.to_owned(),
-        message_id: message_id.trim().to_owned(),
-        authored_by_self,
-        content_fingerprint: format!("sha256:{:x}", digest.finalize()),
-    })
-}
-
-impl ScrubImapState {
-    fn configure_with(
-        &self,
-        owner: &str,
-        mut request: ConfigureImapRequest,
-        connector: &dyn SessionConnector,
-        persist_secret: bool,
-    ) -> Result<ImapCapability, String> {
-        validate_account_field(&request.account_id).map_err(|e| e.public_detail())?;
-        validate_host(&request.host).map_err(|e| e.public_detail())?;
-        validate_account_field(&request.username).map_err(|e| e.public_detail())?;
-        let mailbox = request
-            .default_mailbox
-            .unwrap_or_else(|| "INBOX".to_owned());
-        validate_mailbox(&mailbox).map_err(|e| e.public_detail())?;
-        if request.auth.secret.is_empty()
-            || request.auth.secret.len() > 16_384
-            || request.auth.secret.chars().any(|c| c.is_control())
-        {
-            return Err("IMAP authentication secret is invalid".to_owned());
-        }
-
-        let secret = Zeroizing::new(std::mem::take(&mut request.auth.secret));
-        let mut config = AccountConfig {
-            owner_scope: owner_scope(owner)?,
-            host: request.host,
-            port: request.port.unwrap_or(DEFAULT_IMAP_PORT),
-            username: request.username,
-            auth_kind: request.auth.kind,
-            default_mailbox: mailbox,
-            auth_epoch: String::new(),
-            auth_issued_at: Instant::now(),
-        };
-        let mut session = connector
-            .connect(&config, secret.as_str())
-            .map_err(|e| e.public_detail().to_owned())?;
-        session
-            .select(&config.default_mailbox)
-            .map_err(|e| e.public_detail().to_owned())?;
-
-        if persist_secret {
-            let entry = keyring_entry(owner, &request.account_id)?;
-            let stored_account = StoredAccount {
-                host: config.host.clone(),
-                port: config.port,
-                username: config.username.clone(),
-                auth_kind: config.auth_kind,
-                default_mailbox: config.default_mailbox.clone(),
-                secret: secret.to_string(),
-            };
-            let serialized = Zeroizing::new(
-                serde_json::to_string(&stored_account)
-                    .map_err(|_| "IMAP account configuration could not be protected".to_owned())?,
-            );
-            entry
-                .set_password(serialized.as_str())
-                .map_err(|_| "OS credential storage rejected IMAP authentication".to_owned())?;
-            let stored = Zeroizing::new(
-                entry
-                    .get_password()
-                    .map_err(|_| "OS credential storage readback failed".to_owned())?,
-            );
-            if stored.as_str() != serialized.as_str() {
-                let _ = entry.delete_credential();
-                return Err("OS credential storage readback failed".to_owned());
-            }
-        }
-
-        config.auth_epoch = next_auth_epoch(owner, &request.account_id);
-        config.auth_issued_at = Instant::now();
-        let response = ImapCapability {
-            configured: true,
-            live_confirmed: true,
-            auth_epoch: Some(config.auth_epoch.clone()),
-            detail: "TLS, authentication, and mailbox selection confirmed in this session"
-                .to_owned(),
-        };
-        self.accounts
-            .lock()
-            .map_err(|_| "IMAP account state is unavailable".to_owned())?
-            .insert(owner_account_key(owner, &request.account_id)?, config);
-        Ok(response)
-    }
-
-    fn config_for_epoch(
-        &self,
-        owner: &str,
-        account_id: &str,
-        expected_auth_epoch: &str,
-    ) -> Result<AccountConfig, String> {
-        let accounts = self
-            .accounts
-            .lock()
-            .map_err(|_| "IMAP account state is unavailable".to_owned())?;
-        let key = owner_account_key(owner, account_id)?;
-        let config = accounts
-            .get(&key)
-            .ok_or_else(|| "IMAP transport is not live-confirmed in this session".to_owned())?;
-        if config.auth_epoch != expected_auth_epoch
-            || config.auth_issued_at.elapsed() > AUTH_EPOCH_LIFETIME
-        {
-            return Err("Fresh IMAP re-authentication is required".to_owned());
-        }
-        Ok(config.clone())
-    }
-
-    fn connect_for_item(
-        &self,
-        owner: &str,
-        request: &ImapItemRequest,
-        connector: &dyn SessionConnector,
-        secret_override: Option<&str>,
-    ) -> Result<(AccountConfig, Box<dyn MailboxSession>), String> {
-        validate_mailbox(&request.mailbox).map_err(|e| e.public_detail())?;
-        validate_message_id(&request.message_id).map_err(|e| e.public_detail())?;
-        request_since_date(request).map_err(|e| e.public_detail())?;
-        let config =
-            self.config_for_epoch(owner, &request.account_id, &request.expected_auth_epoch)?;
-        let stored;
-        let secret = match secret_override {
-            Some(value) => value,
-            None => {
-                let account = load_stored_account(owner, &request.account_id)?;
-                stored = Zeroizing::new(account.secret.clone());
-                stored.as_str()
-            }
-        };
-        let mut session = connector
-            .connect(&config, secret)
-            .map_err(|e| e.public_detail().to_owned())?;
-        session
-            .select(&request.mailbox)
-            .map_err(|e| e.public_detail().to_owned())?;
-        Ok((config, session))
-    }
-}
-
-pub fn configure(
-    state: &ScrubImapState,
-    owner: &str,
-    request: ConfigureImapRequest,
-) -> Result<ImapCapability, String> {
-    state.configure_with(owner, request, &RealConnector, true)
-}
-
-pub fn capability(state: &ScrubImapState, owner: &str, account_id: &str) -> ImapCapability {
-    let key = owner_account_key(owner, account_id).ok();
-    let config = state
-        .accounts
-        .lock()
-        .ok()
-        .and_then(|accounts| key.and_then(|key| accounts.get(&key).cloned()));
-    match config {
-        Some(config) => ImapCapability {
-            configured: true,
-            live_confirmed: true,
-            auth_epoch: Some(config.auth_epoch),
-            detail: "IMAP was live-confirmed in this process session".to_owned(),
-        },
-        None => ImapCapability {
-            configured: load_stored_account(owner, account_id).is_ok(),
-            live_confirmed: false,
-            auth_epoch: None,
-            detail: "Fresh IMAP authentication is required in this session".to_owned(),
-        },
-    }
-}
-
-pub fn reauthenticate(
-    state: &ScrubImapState,
-    owner: &str,
-    account_id: &str,
-) -> Result<ImapCapability, String> {
-    let key = owner_account_key(owner, account_id)?;
-    let in_memory = state
-        .accounts
-        .lock()
-        .map_err(|_| "IMAP account state is unavailable".to_owned())?
-        .get(&key)
-        .cloned();
-    let stored = load_stored_account(owner, account_id)?;
-    let mut config = in_memory.unwrap_or(AccountConfig {
-        owner_scope: owner_scope(owner)?,
-        host: stored.host.clone(),
-        port: stored.port,
-        username: stored.username.clone(),
-        auth_kind: stored.auth_kind,
-        default_mailbox: stored.default_mailbox.clone(),
-        auth_epoch: String::new(),
-        auth_issued_at: Instant::now(),
-    });
-    let secret = Zeroizing::new(stored.secret.clone());
-    let mut session = RealConnector
-        .connect(&config, secret.as_str())
-        .map_err(|e| e.public_detail().to_owned())?;
-    session
-        .select(&config.default_mailbox)
-        .map_err(|e| e.public_detail().to_owned())?;
-    config.auth_epoch = next_auth_epoch(owner, account_id);
-    config.auth_issued_at = Instant::now();
-    state
-        .accounts
-        .lock()
-        .map_err(|_| "IMAP account state is unavailable".to_owned())?
-        .insert(key, config.clone());
-    Ok(ImapCapability {
-        configured: true,
-        live_confirmed: true,
-        auth_epoch: Some(config.auth_epoch),
-        detail: "Fresh TLS, authentication, and mailbox selection confirmed".to_owned(),
-    })
-}
-
-impl ScrubImapState {
-    pub fn revoke_owner(&self, owner: &str) {
-        let Ok(scope) = owner_scope(owner) else {
-            return;
-        };
-        if let Ok(mut accounts) = self.accounts.lock() {
-            accounts.retain(|_, config| config.owner_scope != scope);
-        }
-    }
-
-    pub fn revoke_all(&self) {
-        if let Ok(mut accounts) = self.accounts.lock() {
-            accounts.clear();
-        }
-    }
-}
-
-fn enumerate_with(
-    state: &ScrubImapState,
-    owner: &str,
-    request: &ImapItemRequest,
-    connector: &dyn SessionConnector,
-    secret_override: Option<&str>,
-) -> Result<ImapEnumeration, String> {
-    let (config, mut session) =
-        state.connect_for_item(owner, request, connector, secret_override)?;
-    let since_date = request_since_date(request).map_err(|e| e.public_detail().to_owned())?;
-    let uids = session
-        .search(&request.message_id, since_date.as_deref())
-        .map_err(|e| e.public_detail().to_owned())?;
-    let mut findings = Vec::with_capacity(uids.len());
-    for uid in uids {
-        let headers = session
-            .fetch_identity_headers(uid)
-            .map_err(|e| e.public_detail().to_owned())?;
-        findings.push(
-            finding_from_headers(
-                &config,
-                &request.mailbox,
-                uid,
-                &request.message_id,
-                &headers,
-            )
-            .map_err(|e| e.public_detail().to_owned())?,
-        );
-    }
-    Ok(ImapEnumeration {
-        findings,
-        auth_epoch: config.auth_epoch,
-    })
-}
-
-pub fn enumerate(
-    state: &ScrubImapState,
-    owner: &str,
-    request: &ImapItemRequest,
-) -> Result<ImapEnumeration, String> {
-    enumerate_with(state, owner, request, &RealConnector, None)
-}
-
-fn inspect_with(
-    state: &ScrubImapState,
-    owner: &str,
-    request: &ImapItemRequest,
-    connector: &dyn SessionConnector,
-    secret_override: Option<&str>,
-) -> Result<ImapInspection, String> {
-    let result = enumerate_with(state, owner, request, connector, secret_override)?;
-    let (state_value, uid, authored_by_self, fingerprint) = match result.findings.as_slice() {
-        [] => (ImapPresence::Absent, None, false, None),
-        [finding] => (
-            ImapPresence::Present,
-            Some(finding.uid),
-            finding.authored_by_self,
-            Some(finding.content_fingerprint.clone()),
-        ),
-        _ => return Err(TransportFailure::Ambiguous.public_detail().to_owned()),
-    };
-    Ok(ImapInspection {
-        state: state_value,
-        authored_by_self,
-        content_fingerprint: fingerprint,
-        auth_epoch: result.auth_epoch,
-        schema_version: "imap-v1",
-        retractable: true,
-        detail: match uid {
-            Some(_) => "IMAP identity headers were read from the server".to_owned(),
-            None => "IMAP Message-ID/date search found no message".to_owned(),
-        },
-    })
 }
 
 pub fn inspect(
-    state: &ScrubImapState,
-    owner: &str,
-    request: &ImapItemRequest,
-) -> Result<ImapInspection, String> {
-    inspect_with(state, owner, request, &RealConnector, None)
-}
-
-fn delete_with(
-    state: &ScrubImapState,
-    owner: &str,
-    request: &ImapItemRequest,
-    connector: &dyn SessionConnector,
-    secret_override: Option<&str>,
-) -> Result<ImapDeleteResult, String> {
-    let (config, mut session) =
-        state.connect_for_item(owner, request, connector, secret_override)?;
-    let since_date = request_since_date(request).map_err(|e| e.public_detail().to_owned())?;
-    let uids = session
-        .search(&request.message_id, since_date.as_deref())
-        .map_err(|e| e.public_detail().to_owned())?;
-    let uid = match uids.as_slice() {
-        [uid] => *uid,
-        [] => {
-            return Ok(ImapDeleteResult {
-                accepted: false,
-                auth_epoch: config.auth_epoch,
-                detail: "Message was not present at delete time".to_owned(),
-            })
-        }
-        _ => return Err(TransportFailure::Ambiguous.public_detail().to_owned()),
-    };
-    let headers = session
-        .fetch_identity_headers(uid)
-        .map_err(|e| e.public_detail().to_owned())?;
-    let finding = finding_from_headers(
-        &config,
-        &request.mailbox,
-        uid,
-        &request.message_id,
-        &headers,
-    )
-    .map_err(|e| e.public_detail().to_owned())?;
-    if !finding.authored_by_self {
-        return Ok(ImapDeleteResult {
-            accepted: false,
-            auth_epoch: config.auth_epoch,
-            detail: "Delete refused because From did not match the configured account".to_owned(),
-        });
-    }
-    if request.expected_content_fingerprint.as_deref() != Some(finding.content_fingerprint.as_str())
-    {
-        return Ok(ImapDeleteResult {
-            accepted: false,
-            auth_epoch: config.auth_epoch,
-            detail: "Delete refused because the inspected message fingerprint changed".to_owned(),
-        });
-    }
-    if !session
-        .supports_uid_expunge()
-        .map_err(|e| e.public_detail().to_owned())?
-    {
-        return Ok(ImapDeleteResult {
-            accepted: false,
-            auth_epoch: config.auth_epoch,
-            detail: "Delete refused because the server does not advertise scoped UID EXPUNGE"
-                .to_owned(),
-        });
-    }
-    session
-        .mark_deleted(uid)
-        .map_err(|e| e.public_detail().to_owned())?;
-    session
-        .expunge_uid(uid)
-        .map_err(|e| e.public_detail().to_owned())?;
-    Ok(ImapDeleteResult {
-        accepted: true,
-        auth_epoch: config.auth_epoch,
-        detail: "Server accepted Deleted flag and EXPUNGE; readback still required".to_owned(),
+    owner_account: impl Into<String>,
+    messages: &[ImapMessageSummary],
+) -> Result<OwnerFacingDryRunPreview, ScrubImapError> {
+    let owner_account = owner_account.into();
+    validate_binding_part(&owner_account)?;
+    let mut deletable_uids = messages
+        .iter()
+        .map(|message| message.uid)
+        .collect::<Vec<_>>();
+    deletable_uids.sort_unstable();
+    Ok(OwnerFacingDryRunPreview {
+        owner_account,
+        dry_run: true,
+        total_messages: messages.len(),
+        deletable_uids,
+        action_label: "Review messages before deleting".to_string(),
     })
 }
 
-pub fn delete(
-    _state: &ScrubImapState,
-    _owner: &str,
-    _request: &ImapItemRequest,
-) -> Result<ImapDeleteResult, String> {
-    Err("Native IMAP deletion is disabled until one-shot reviewed consent is enforced".to_owned())
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum QueryAfterDelete {
+    Gone,
+    Present,
+    Unknown,
 }
 
-fn verify_with(
-    state: &ScrubImapState,
-    owner: &str,
-    request: &ImapItemRequest,
-    connector: &dyn SessionConnector,
-    secret_override: Option<&str>,
-) -> ImapVerification {
-    let epoch = request.expected_auth_epoch.clone();
-    match inspect_with(state, owner, request, connector, secret_override) {
-        Ok(inspection) if inspection.state == ImapPresence::Absent => ImapVerification {
-            outcome: ImapVerificationOutcome::ConfirmedDeleted,
-            auth_epoch: inspection.auth_epoch,
-            detail: "IMAP Message-ID/date readback found no message".to_owned(),
-        },
-        Ok(inspection) => ImapVerification {
-            outcome: ImapVerificationOutcome::ConfirmedNotDeleted,
-            auth_epoch: inspection.auth_epoch,
-            detail: "IMAP Message-ID/date readback still found the message".to_owned(),
-        },
-        Err(detail) => ImapVerification {
-            outcome: ImapVerificationOutcome::Unknown,
-            auth_epoch: epoch,
-            detail,
-        },
-    }
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeleteVerification {
+    VerifiedGone,
+    StillPresent,
+    Unknown,
 }
 
-pub fn verify(state: &ScrubImapState, owner: &str, request: &ImapItemRequest) -> ImapVerification {
-    verify_with(state, owner, request, &RealConnector, None)
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrubReceiptStatus {
+    VerifiedGone,
+    StillPresent,
+    Unknown,
 }
 
-impl ImapLiveTestTransport {
-    pub fn connect(
-        host: String,
-        port: u16,
-        username: String,
-        app_password: String,
-    ) -> Result<Self, String> {
-        let state = ScrubImapState::default();
-        let account_id = "imap-livetest".to_owned();
-        let secret = Zeroizing::new(app_password);
-        let capability = state.configure_with(
-            LIVE_TEST_OWNER,
-            ConfigureImapRequest {
-                account_id: account_id.clone(),
-                host,
-                port: Some(port),
-                username,
-                auth: ImapAuthInput {
-                    kind: ImapAuthKind::AppPassword,
-                    secret: secret.to_string(),
-                },
-                default_mailbox: Some("INBOX".to_owned()),
-            },
-            &RealConnector,
-            false,
-        )?;
-        let auth_epoch = capability
-            .auth_epoch
-            .ok_or_else(|| "IMAP authentication did not produce a live epoch".to_owned())?;
-        Ok(Self {
-            state,
-            account_id,
-            auth_epoch,
-            secret,
-        })
-    }
-
-    pub fn recent_messages(&self, limit: usize) -> Result<Vec<ImapLiveMessage>, String> {
-        let config =
-            self.state
-                .config_for_epoch(LIVE_TEST_OWNER, &self.account_id, &self.auth_epoch)?;
-        let mut session = RealConnector
-            .connect(&config, self.secret.as_str())
-            .map_err(|error| error.public_detail().to_owned())?;
-        session
-            .select("INBOX")
-            .map_err(|error| error.public_detail().to_owned())?;
-        let mut messages = session
-            .recent_messages(limit)
-            .map_err(|error| error.public_detail().to_owned())?;
-        for message in &mut messages {
-            let Some(message_id) = message.message_id.as_deref() else {
-                continue;
-            };
-            let finding = finding_from_headers(
-                &config,
-                "INBOX",
-                message.uid,
-                message_id,
-                &message.identity_headers,
-            )
-            .map_err(|error| error.public_detail().to_owned())?;
-            message.authored_by_self = finding.authored_by_self;
-            message.content_fingerprint = Some(finding.content_fingerprint);
+impl From<DeleteVerification> for ScrubReceiptStatus {
+    fn from(value: DeleteVerification) -> Self {
+        match value {
+            DeleteVerification::VerifiedGone => Self::VerifiedGone,
+            DeleteVerification::StillPresent => Self::StillPresent,
+            DeleteVerification::Unknown => Self::Unknown,
         }
-        Ok(messages)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScrubReceiptStatusProjection {
+    pub item_ordinal: u64,
+    pub status: ScrubReceiptStatus,
+}
+
+pub fn project_scrub_receipt_statuses(
+    receipts: &[(u64, DeleteVerification)],
+) -> Vec<ScrubReceiptStatusProjection> {
+    receipts
+        .iter()
+        .map(|(item_ordinal, status)| ScrubReceiptStatusProjection {
+            item_ordinal: *item_ordinal,
+            status: (*status).into(),
+        })
+        .collect()
+}
+
+pub trait NativeImapAdapter {
+    fn delete_message(&mut self, uid: u64) -> Result<(), ScrubImapError>;
+    fn query_message(&mut self, uid: u64) -> Result<QueryAfterDelete, ScrubImapError>;
+}
+
+pub fn delete_and_verify(
+    adapter: &mut dyn NativeImapAdapter,
+    uid: u64,
+) -> Result<DeleteVerification, ScrubImapError> {
+    adapter.delete_message(uid)?;
+    match adapter.query_message(uid)? {
+        QueryAfterDelete::Gone => Ok(DeleteVerification::VerifiedGone),
+        QueryAfterDelete::Present => Ok(DeleteVerification::StillPresent),
+        QueryAfterDelete::Unknown => Ok(DeleteVerification::Unknown),
+    }
+}
+
+#[derive(Clone, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UiScrubRequest {
+    pub owner: String,
+    pub account: String,
+    pub grant_id: u64,
+    pub approved_uids: Vec<u64>,
+}
+
+impl fmt::Debug for UiScrubRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UiScrubRequest")
+            .field("owner", &"<redacted>")
+            .field("account", &"<redacted>")
+            .field("grant_id", &self.grant_id)
+            .field("approved_uid_count", &self.approved_uids.len())
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EndToEndScrubReport {
+    pub preview: OwnerFacingDryRunPreview,
+    pub verified: Vec<(u64, DeleteVerification)>,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct MainOnlyAcl {
+    owner: String,
+}
+
+impl fmt::Debug for MainOnlyAcl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MainOnlyAcl")
+            .field("owner", &"<redacted>")
+            .finish()
+    }
+}
+
+impl MainOnlyAcl {
+    pub fn for_owner(owner: impl Into<String>) -> Self {
+        Self {
+            owner: owner.into(),
+        }
     }
 
-    pub fn prepare_delete(
-        &self,
-        message: &ImapLiveMessage,
-    ) -> Result<ImapLivePreparedDelete, String> {
-        let message_id = message.message_id.as_deref().ok_or_else(|| {
-            "Delete refused because the searched message has no Message-ID".to_owned()
-        })?;
-        let searched_fingerprint = message.content_fingerprint.as_deref().ok_or_else(|| {
-            "Delete refused because the searched message has no identity fingerprint".to_owned()
-        })?;
-        let mut request = ImapItemRequest {
-            account_id: self.account_id.clone(),
-            expected_auth_epoch: self.auth_epoch.clone(),
-            mailbox: "INBOX".to_owned(),
-            message_id: message_id.to_owned(),
-            since_date_unix_ms: None,
-            expected_content_fingerprint: None,
+    fn authorize(&self, request: &UiScrubRequest) -> Result<(), ScrubImapError> {
+        if self.owner == request.owner {
+            Ok(())
+        } else {
+            Err(ScrubImapError::AclRefused)
+        }
+    }
+}
+
+pub fn run_attended_fixture(
+    request: UiScrubRequest,
+    acl: &MainOnlyAcl,
+    ledger: &mut ConsentLedger,
+    adapter: &mut dyn NativeImapAdapter,
+    now_unix: u64,
+    messages: &[ImapMessageSummary],
+) -> Result<EndToEndScrubReport, ScrubImapError> {
+    acl.authorize(&request)?;
+    let binding = ConsentBinding::new(&request.owner, &request.account, "imap-attended-delete")?;
+    ledger.consume(request.grant_id, &binding, now_unix)?;
+    let preview = inspect(&request.account, messages)?;
+    let approved = request.approved_uids.into_iter().collect::<BTreeSet<_>>();
+    let mut verified = Vec::new();
+    for uid in preview
+        .deletable_uids
+        .iter()
+        .copied()
+        .filter(|uid| approved.contains(uid))
+    {
+        verified.push((uid, delete_and_verify(adapter, uid)?));
+    }
+    Ok(EndToEndScrubReport { preview, verified })
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ScrubImapError {
+    InvalidBinding,
+    ConsentIdOverflow,
+    ConsentMissing,
+    ConsentBindingMismatch,
+    ConsentExpired,
+    AclRefused,
+    NativeDeleteFailed,
+    NativeQueryFailed,
+}
+
+impl fmt::Display for ScrubImapError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::InvalidBinding => "email cleanup binding is invalid",
+            Self::ConsentIdOverflow => "email cleanup consent id overflow",
+            Self::ConsentMissing => "email cleanup consent grant is missing",
+            Self::ConsentBindingMismatch => "email cleanup consent binding mismatch",
+            Self::ConsentExpired => "email cleanup consent grant expired",
+            Self::AclRefused => "email cleanup request was refused by local authorization",
+            Self::NativeDeleteFailed => "email cleanup delete failed",
+            Self::NativeQueryFailed => "email cleanup verification failed",
         };
-        let inspection = inspect_with(
-            &self.state,
-            LIVE_TEST_OWNER,
-            &request,
-            &RealConnector,
-            Some(self.secret.as_str()),
-        )?;
-        if inspection.state != ImapPresence::Present {
-            return Err(
-                "Delete refused because the searched message is no longer present".to_owned(),
-            );
-        }
-        if !inspection.authored_by_self {
-            return Err(
-                "Delete refused because From did not match the configured account".to_owned(),
-            );
-        }
-        let inspected_fingerprint = inspection.content_fingerprint.ok_or_else(|| {
-            "Delete refused because inspection produced no content fingerprint".to_owned()
-        })?;
-        if inspected_fingerprint != searched_fingerprint {
-            return Err(
-                "Delete refused because the message changed after the prior search".to_owned(),
-            );
-        }
-        request.expected_content_fingerprint = Some(inspected_fingerprint);
-        Ok(ImapLivePreparedDelete {
-            uid: message.uid,
-            message_id: message_id.to_owned(),
-            request,
-        })
+        f.write_str(message)
     }
+}
 
-    pub fn delete_prepared(&self, prepared: &ImapLivePreparedDelete) -> ImapLiveDeleteExecution {
-        let delete_result = delete_with(
-            &self.state,
-            LIVE_TEST_OWNER,
-            &prepared.request,
-            &RealConnector,
-            Some(self.secret.as_str()),
-        );
-        let verification = verify_with(
-            &self.state,
-            LIVE_TEST_OWNER,
-            &prepared.request,
-            &RealConnector,
-            Some(self.secret.as_str()),
-        );
-        ImapLiveDeleteExecution {
-            delete_result,
-            verification,
-        }
+impl std::error::Error for ScrubImapError {}
+
+fn validate_binding_part(value: &str) -> Result<(), ScrubImapError> {
+    if value.is_empty() || value.len() > MAX_BINDING_FIELD_BYTES {
+        Err(ScrubImapError::InvalidBinding)
+    } else {
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
-    use std::sync::{Arc, Mutex};
 
-    const TEST_OWNER: &str = "osl-test-owner";
+    fn binding() -> ConsentBinding {
+        ConsentBinding::new("owner-a", "account-a", "imap-attended-delete").unwrap()
+    }
+
+    fn messages() -> Vec<ImapMessageSummary> {
+        vec![
+            ImapMessageSummary {
+                uid: 20,
+                subject: "Receipt".to_string(),
+                sender: "service@example.test".to_string(),
+            },
+            ImapMessageSummary {
+                uid: 10,
+                subject: "Alert".to_string(),
+                sender: "alerts@example.test".to_string(),
+            },
+        ]
+    }
+
+    fn ui_tauri_request(grant_id: u64) -> UiScrubRequest {
+        serde_json::from_str(&format!(
+            r#"{{
+                "owner": "owner-a",
+                "account": "account-a",
+                "grantId": {grant_id},
+                "approvedUids": [20, 10]
+            }}"#
+        ))
+        .unwrap()
+    }
 
     #[derive(Default)]
-    struct FakeMailboxState {
-        present: HashSet<u32>,
-        search_failure: Option<TransportFailure>,
-        retain_after_expunge: bool,
-        selected: Vec<String>,
-        marked: Vec<u32>,
-        headers: Option<Vec<u8>>,
-        uidplus: bool,
+    struct FixtureImap {
+        outcomes: BTreeMap<u64, QueryAfterDelete>,
+        calls: Vec<String>,
     }
 
-    struct FakeConnector(Arc<Mutex<FakeMailboxState>>);
-
-    struct FakeMailbox(Arc<Mutex<FakeMailboxState>>);
-
-    impl SessionConnector for FakeConnector {
-        fn connect(
-            &self,
-            _config: &AccountConfig,
-            _secret: &str,
-        ) -> Result<Box<dyn MailboxSession>, TransportFailure> {
-            Ok(Box::new(FakeMailbox(self.0.clone())))
-        }
-    }
-
-    impl MailboxSession for FakeMailbox {
-        fn select(&mut self, mailbox: &str) -> Result<(), TransportFailure> {
-            self.0.lock().unwrap().selected.push(mailbox.to_owned());
+    impl NativeImapAdapter for FixtureImap {
+        fn delete_message(&mut self, uid: u64) -> Result<(), ScrubImapError> {
+            self.calls.push(format!("delete:{uid}"));
             Ok(())
         }
 
-        fn search(
-            &mut self,
-            _message_id: &str,
-            _since_date: Option<&str>,
-        ) -> Result<Vec<u32>, TransportFailure> {
-            let state = self.0.lock().unwrap();
-            if let Some(error) = state.search_failure {
-                return Err(error);
-            }
-            Ok(state.present.iter().copied().collect())
+        fn query_message(&mut self, uid: u64) -> Result<QueryAfterDelete, ScrubImapError> {
+            self.calls.push(format!("query:{uid}"));
+            Ok(*self
+                .outcomes
+                .get(&uid)
+                .unwrap_or(&QueryAfterDelete::Unknown))
         }
-
-        fn fetch_identity_headers(&mut self, _uid: u32) -> Result<Vec<u8>, TransportFailure> {
-            Ok(self.0.lock().unwrap().headers.clone().unwrap_or_else(|| {
-                b"Message-ID: <message@example.test>\r\nFrom: self@example.test\r\n\r\n".to_vec()
-            }))
-        }
-
-        fn supports_uid_expunge(&mut self) -> Result<bool, TransportFailure> {
-            Ok(self.0.lock().unwrap().uidplus)
-        }
-
-        fn mark_deleted(&mut self, uid: u32) -> Result<(), TransportFailure> {
-            self.0.lock().unwrap().marked.push(uid);
-            Ok(())
-        }
-
-        fn expunge_uid(&mut self, uid: u32) -> Result<(), TransportFailure> {
-            let mut state = self.0.lock().unwrap();
-            if !state.retain_after_expunge {
-                state.present.remove(&uid);
-            }
-            Ok(())
-        }
-    }
-
-    fn configured(fake: Arc<Mutex<FakeMailboxState>>) -> (ScrubImapState, FakeConnector, String) {
-        let state = ScrubImapState::default();
-        let connector = FakeConnector(fake);
-        let capability = state
-            .configure_with(
-                TEST_OWNER,
-                ConfigureImapRequest {
-                    account_id: "mail".to_owned(),
-                    host: "imap.example.test".to_owned(),
-                    port: Some(993),
-                    username: "self@example.test".to_owned(),
-                    auth: ImapAuthInput {
-                        kind: ImapAuthKind::AppPassword,
-                        secret: "test-only-secret".to_owned(),
-                    },
-                    default_mailbox: Some("Sent".to_owned()),
-                },
-                &connector,
-                false,
-            )
-            .unwrap();
-        (state, connector, capability.auth_epoch.unwrap())
-    }
-
-    fn item(epoch: String) -> ImapItemRequest {
-        ImapItemRequest {
-            account_id: "mail".to_owned(),
-            expected_auth_epoch: epoch,
-            mailbox: "Sent".to_owned(),
-            message_id: "<message@example.test>".to_owned(),
-            since_date_unix_ms: Some(1_774_051_200_000),
-            expected_content_fingerprint: None,
-        }
-    }
-
-    fn authorize_delete(
-        state: &ScrubImapState,
-        connector: &FakeConnector,
-        request: &mut ImapItemRequest,
-    ) {
-        let inspection =
-            inspect_with(state, TEST_OWNER, request, connector, Some("secret")).unwrap();
-        assert!(inspection.authored_by_self);
-        request.expected_content_fingerprint = inspection.content_fingerprint;
     }
 
     #[test]
-    fn delete_then_readback_confirms_deleted() {
-        let fake = Arc::new(Mutex::new(FakeMailboxState {
-            present: HashSet::from([7]),
-            uidplus: true,
-            ..Default::default()
-        }));
-        let (state, connector, epoch) = configured(fake.clone());
-        let mut request = item(epoch);
-        authorize_delete(&state, &connector, &mut request);
+    fn inspect_produces_owner_facing_dry_run_preview() {
+        let preview = inspect("owner@example.test", &messages()).unwrap();
 
-        let deleted =
-            delete_with(&state, TEST_OWNER, &request, &connector, Some("secret")).unwrap();
-        assert!(deleted.accepted);
+        assert!(preview.dry_run);
+        assert_eq!(preview.owner_account, "owner@example.test");
+        assert_eq!(preview.total_messages, 2);
+        assert_eq!(preview.deletable_uids, vec![10, 20]);
+        assert_eq!(preview.action_label, "Review messages before deleting");
+    }
+
+    #[test]
+    fn consent_ledger_mints_consumes_and_rejects_replay() {
+        let mut ledger = ConsentLedger::default();
+        let grant = ledger.mint(binding(), 100, 30).unwrap();
+
+        let consumed = ledger.consume(grant.id(), &binding(), 110).unwrap();
+        assert_eq!(consumed.id(), grant.id());
         assert_eq!(
-            verify_with(&state, TEST_OWNER, &request, &connector, Some("secret")).outcome,
-            ImapVerificationOutcome::ConfirmedDeleted
+            ledger.consume(grant.id(), &binding(), 111),
+            Err(ScrubImapError::ConsentMissing),
+            "a spent grant must not be replayable"
         );
-        assert_eq!(fake.lock().unwrap().marked, vec![7]);
     }
 
     #[test]
-    fn server_acceptance_without_removal_confirms_not_deleted() {
-        let fake = Arc::new(Mutex::new(FakeMailboxState {
-            present: HashSet::from([8]),
-            retain_after_expunge: true,
-            uidplus: true,
-            ..Default::default()
-        }));
-        let (state, connector, epoch) = configured(fake);
-        let mut request = item(epoch);
-        authorize_delete(&state, &connector, &mut request);
+    fn consent_ledger_consume_spends_before_freshness_check() {
+        let mut ledger = ConsentLedger::default();
+        let grant = ledger.mint(binding(), 100, 5).unwrap();
+
+        assert_eq!(
+            ledger.consume(grant.id(), &binding(), 106),
+            Err(ScrubImapError::ConsentExpired)
+        );
+        assert_eq!(
+            ledger.consume(grant.id(), &binding(), 106),
+            Err(ScrubImapError::ConsentMissing),
+            "expired grants must be removed before the freshness check returns"
+        );
+    }
+
+    #[test]
+    fn delete_verification_requeries_and_distinguishes_verified_gone_still_present_unknown() {
+        let mut adapter = FixtureImap::default();
+        adapter.outcomes.insert(1, QueryAfterDelete::Gone);
+        adapter.outcomes.insert(2, QueryAfterDelete::Present);
+        adapter.outcomes.insert(3, QueryAfterDelete::Unknown);
+
+        assert_eq!(
+            delete_and_verify(&mut adapter, 1).unwrap(),
+            DeleteVerification::VerifiedGone
+        );
+        assert_eq!(
+            delete_and_verify(&mut adapter, 2).unwrap(),
+            DeleteVerification::StillPresent
+        );
+        assert_eq!(
+            delete_and_verify(&mut adapter, 3).unwrap(),
+            DeleteVerification::Unknown
+        );
+        assert_eq!(
+            adapter.calls,
+            vec![
+                "delete:1".to_string(),
+                "query:1".to_string(),
+                "delete:2".to_string(),
+                "query:2".to_string(),
+                "delete:3".to_string(),
+                "query:3".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn scrub_receipt_projects_verified_gone_still_present_and_unknown_statuses() {
+        let projection = project_scrub_receipt_statuses(&[
+            (3, DeleteVerification::VerifiedGone),
+            (4, DeleteVerification::StillPresent),
+            (5, DeleteVerification::Unknown),
+        ]);
+
+        assert_eq!(
+            projection,
+            vec![
+                ScrubReceiptStatusProjection {
+                    item_ordinal: 3,
+                    status: ScrubReceiptStatus::VerifiedGone,
+                },
+                ScrubReceiptStatusProjection {
+                    item_ordinal: 4,
+                    status: ScrubReceiptStatus::StillPresent,
+                },
+                ScrubReceiptStatusProjection {
+                    item_ordinal: 5,
+                    status: ScrubReceiptStatus::Unknown,
+                },
+            ]
+        );
+        assert_eq!(
+            serde_json::to_value(&projection).unwrap(),
+            serde_json::json!([
+                {"itemOrdinal": 3, "status": "verified_gone"},
+                {"itemOrdinal": 4, "status": "still_present"},
+                {"itemOrdinal": 5, "status": "unknown"}
+            ])
+        );
+    }
+
+    #[test]
+    fn scrub_imap_end_to_end_fixture_ui_tauri_acl_native() {
+        let mut ledger = ConsentLedger::default();
+        let binding = binding();
+        let grant = ledger.mint(binding, 100, 60).unwrap();
 
         assert!(
-            delete_with(&state, TEST_OWNER, &request, &connector, Some("secret"))
-                .unwrap()
-                .accepted
+            serde_json::from_str::<UiScrubRequest>(&format!(
+                r#"{{
+                    "owner": "owner-a",
+                    "account": "account-a",
+                    "grantId": {},
+                    "approvedUids": [10],
+                    "deleteEverything": true
+                }}"#,
+                grant.id()
+            ))
+            .is_err(),
+            "the Tauri command payload must reject renderer-supplied ambient authority"
         );
+
+        let acl = MainOnlyAcl::for_owner("owner-a");
+        let mut adapter = FixtureImap::default();
+
+        let wrong_owner = UiScrubRequest {
+            owner: "owner-b".to_string(),
+            account: "account-a".to_string(),
+            grant_id: grant.id(),
+            approved_uids: vec![10],
+        };
         assert_eq!(
-            verify_with(&state, TEST_OWNER, &request, &connector, Some("secret")).outcome,
-            ImapVerificationOutcome::ConfirmedNotDeleted
-        );
-    }
-
-    #[test]
-    fn readback_failure_is_unknown() {
-        let fake = Arc::new(Mutex::new(FakeMailboxState {
-            search_failure: Some(TransportFailure::TlsOrConnection),
-            ..Default::default()
-        }));
-        let (state, connector, epoch) = configured(fake);
-        let result = verify_with(&state, TEST_OWNER, &item(epoch), &connector, Some("secret"));
-        assert_eq!(result.outcome, ImapVerificationOutcome::Unknown);
-        assert!(result.detail.contains("TLS"));
-    }
-
-    #[test]
-    fn ambiguity_never_mutates_and_verifies_unknown() {
-        let fake = Arc::new(Mutex::new(FakeMailboxState {
-            present: HashSet::from([1, 2]),
-            ..Default::default()
-        }));
-        let (state, connector, epoch) = configured(fake.clone());
-        let request = item(epoch);
-        assert!(delete_with(&state, TEST_OWNER, &request, &connector, Some("secret")).is_err());
-        assert!(fake.lock().unwrap().marked.is_empty());
-        assert_eq!(
-            verify_with(&state, TEST_OWNER, &request, &connector, Some("secret")).outcome,
-            ImapVerificationOutcome::Unknown
-        );
-    }
-
-    #[test]
-    fn stale_auth_epoch_fails_before_connecting() {
-        let fake = Arc::new(Mutex::new(FakeMailboxState {
-            present: HashSet::from([4]),
-            ..Default::default()
-        }));
-        let (state, connector, _epoch) = configured(fake.clone());
-        let request = item("stale".to_owned());
-        assert!(delete_with(&state, TEST_OWNER, &request, &connector, Some("secret")).is_err());
-        assert_eq!(fake.lock().unwrap().selected, vec!["Sent"]);
-    }
-
-    #[test]
-    fn fresh_process_is_never_live_confirmed() {
-        let capability = capability(&ScrubImapState::default(), TEST_OWNER, "mail");
-        assert!(!capability.live_confirmed);
-        assert!(!capability.configured);
-    }
-
-    #[test]
-    fn same_account_is_owner_scoped_and_revocation_clears_live_epoch() {
-        assert_ne!(
-            owner_account_key("owner-a", "mail").unwrap(),
-            owner_account_key("owner-b", "mail").unwrap()
-        );
-        let fake = Arc::new(Mutex::new(FakeMailboxState::default()));
-        let (state, _connector, _epoch) = configured(fake);
-        assert!(capability(&state, TEST_OWNER, "mail").live_confirmed);
-        assert!(!capability(&state, "another-owner", "mail").live_confirmed);
-        state.revoke_owner(TEST_OWNER);
-        assert!(!capability(&state, TEST_OWNER, "mail").live_confirmed);
-    }
-
-    #[test]
-    fn production_delete_entrypoint_is_fail_closed() {
-        let request = item("epoch".to_owned());
-        let error = delete(&ScrubImapState::default(), TEST_OWNER, &request).unwrap_err();
-        assert!(error.contains("one-shot reviewed consent"));
-    }
-
-    #[test]
-    fn nested_auth_and_numeric_date_contract_deserialize() {
-        let configured: ConfigureImapRequest = serde_json::from_value(serde_json::json!({
-            "accountId": "mail",
-            "host": "imap.example.test",
-            "username": "self@example.test",
-            "auth": { "kind": "appPassword", "secret": "secret" }
-        }))
-        .unwrap();
-        assert_eq!(configured.auth.kind, ImapAuthKind::AppPassword);
-        let item: ImapItemRequest = serde_json::from_value(serde_json::json!({
-            "accountId": "mail",
-            "expectedAuthEpoch": "epoch",
-            "mailbox": "Sent",
-            "messageId": "<message@example.test>",
-            "sinceDateUnixMs": 1774051200000_u64
-        }))
-        .unwrap();
-        assert_eq!(item.since_date_unix_ms, Some(1_774_051_200_000));
-    }
-
-    #[test]
-    fn delete_refuses_non_self_message_and_missing_uidplus() {
-        let fake = Arc::new(Mutex::new(FakeMailboxState {
-            present: HashSet::from([9]),
-            headers: Some(
-                b"Message-ID: <message@example.test>\r\nFrom: other@example.test\r\n\r\n".to_vec(),
+            run_attended_fixture(
+                wrong_owner,
+                &acl,
+                &mut ledger,
+                &mut adapter,
+                110,
+                &messages()
             ),
-            uidplus: true,
-            ..Default::default()
-        }));
-        let (state, connector, epoch) = configured(fake.clone());
-        let mut request = item(epoch);
-        let inspection =
-            inspect_with(&state, TEST_OWNER, &request, &connector, Some("secret")).unwrap();
-        assert!(!inspection.authored_by_self);
-        request.expected_content_fingerprint = inspection.content_fingerprint;
-        let result = delete_with(&state, TEST_OWNER, &request, &connector, Some("secret")).unwrap();
-        assert!(!result.accepted);
-        assert!(fake.lock().unwrap().marked.is_empty());
+            Err(ScrubImapError::AclRefused)
+        );
+        assert!(
+            adapter.calls.is_empty(),
+            "main-only ACL refusal must happen before native IMAP is called"
+        );
 
-        let fake = Arc::new(Mutex::new(FakeMailboxState {
-            present: HashSet::from([10]),
-            uidplus: false,
-            ..Default::default()
-        }));
-        let (state, connector, epoch) = configured(fake.clone());
-        let mut request = item(epoch);
-        authorize_delete(&state, &connector, &mut request);
-        let result = delete_with(&state, TEST_OWNER, &request, &connector, Some("secret")).unwrap();
-        assert!(!result.accepted);
-        assert!(fake.lock().unwrap().marked.is_empty());
+        let wrong_binding = UiScrubRequest {
+            owner: "owner-a".to_string(),
+            account: "account-b".to_string(),
+            grant_id: grant.id(),
+            approved_uids: vec![10],
+        };
+        assert_eq!(
+            run_attended_fixture(
+                wrong_binding,
+                &acl,
+                &mut ledger,
+                &mut adapter,
+                111,
+                &messages()
+            ),
+            Err(ScrubImapError::ConsentBindingMismatch)
+        );
+        assert!(
+            adapter.calls.is_empty(),
+            "consent binding refusal must happen before native IMAP is called"
+        );
+
+        adapter.outcomes.insert(10, QueryAfterDelete::Gone);
+        adapter.outcomes.insert(20, QueryAfterDelete::Present);
+
+        let report = run_attended_fixture(
+            ui_tauri_request(grant.id()),
+            &acl,
+            &mut ledger,
+            &mut adapter,
+            120,
+            &messages(),
+        )
+        .unwrap();
+
+        assert!(report.preview.dry_run);
+        assert_eq!(report.preview.deletable_uids, vec![10, 20]);
+        assert_eq!(
+            report.verified,
+            vec![
+                (10, DeleteVerification::VerifiedGone),
+                (20, DeleteVerification::StillPresent)
+            ]
+        );
+        assert_eq!(
+            adapter.calls,
+            vec![
+                "delete:10".to_string(),
+                "query:10".to_string(),
+                "delete:20".to_string(),
+                "query:20".to_string(),
+            ],
+            "native IMAP must be reached only after UI payload parsing, ACL, and consent"
+        );
+        let tauri_response = serde_json::to_value(&report).unwrap();
+        assert_eq!(tauri_response["preview"]["dryRun"], true);
+        assert_eq!(
+            tauri_response["verified"],
+            serde_json::json!([[10, "verified_gone"], [20, "still_present"]])
+        );
+
+        let replay = UiScrubRequest {
+            owner: "owner-a".to_string(),
+            account: "account-a".to_string(),
+            grant_id: grant.id(),
+            approved_uids: vec![20],
+        };
+        let native_calls_after_success = adapter.calls.clone();
+        assert_eq!(
+            run_attended_fixture(replay, &acl, &mut ledger, &mut adapter, 121, &messages()),
+            Err(ScrubImapError::ConsentMissing),
+            "the UI-to-native path must not be reusable after the consent grant is spent"
+        );
+        assert_eq!(
+            adapter.calls, native_calls_after_success,
+            "replayed UI authority must not reach native IMAP"
+        );
     }
 }

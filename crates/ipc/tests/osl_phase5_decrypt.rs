@@ -52,7 +52,7 @@ fn base64_error_on_malformed_body() {
         "DPC0::!!!not-base64-at-all!!!",
     )
     .expect_err("garbage base64 should error");
-    assert!(matches!(err, DecodeError::Base64(_)), "got {err:?}");
+    assert!(matches!(&err, DecodeError::Base64(_)), "got {err:?}");
 }
 
 #[test]
@@ -159,7 +159,7 @@ fn message_aead_failed_when_msg_ciphertext_corrupted() {
     let err = decrypt_osl_phase4_from_wire(&recipient.x25519_secret, &sender.x25519_public, &raw)
         .expect_err("corrupted msg ct should fail");
     assert!(
-        matches!(err, DecodeError::MessageAeadFailed(_)),
+        matches!(&err, DecodeError::MessageAeadFailed(_)),
         "got {err:?}"
     );
 }

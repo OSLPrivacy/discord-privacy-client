@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Stub Azure CLI for scripts/vmqa/test-vmqa-fleet.sh.
+#
+# This never touches a real subscription: it is a fixture, not a mock of convenience. Every
+# invocation is appended to $AZ_STUB_LOG (required) so a test can assert not just the return
+# value but whether a call happened at all — the property that matters here is that a refused
+# provisioning action (unknown VM, bad snapshot label, VM not deallocated, missing confirm flag)
+# never reaches `az` in the first place, so it cannot cost a cent no matter what the real CLI
+# would have done with it.
+set -euo pipefail
+
+: "${AZ_STUB_LOG:?AZ_STUB_LOG must be set — refusing to run as a silent no-op}"
+printf 'az %s\n' "$*" >>"$AZ_STUB_LOG"
+
+sub="${1:-}"; verb="${2:-}"
+args="$*"
+
+case "$sub $verb" in
+  "vm get-instance-view")
+    case "$args" in
+      *vmAgent.statuses*) printf '%s\n' "${AZ_STUB_AGENT_READY:-Ready}" ;;
+      *) printf '%s\n' "${AZ_STUB_POWER_STATE:-VM deallocated}" ;;
+    esac
+    ;;
+  "vm show")
+    case "$args" in
+      *storageProfile.osDisk.managedDisk.id*)
+        printf '%s\n' "${AZ_STUB_DISK_ID:-/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/stub-rg/providers/Microsoft.Compute/disks/stub-osdisk}" ;;
+      *hardwareProfile.vmSize*) printf '%s\n' "${AZ_STUB_VM_SIZE:-Standard_D2s_v3}" ;;
+      *) printf '\n' ;;
+    esac
+    ;;
+  "disk show")
+    case "$args" in
+      *"--query id"*) printf '%s\n' "${AZ_STUB_SNAPSHOT_DISK_ID:-/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/stub-rg/providers/Microsoft.Compute/disks/stub-newdisk}" ;;
+      *) printf '%s\n' "${AZ_STUB_DISK_LOCATION:-centralus}" ;;
+    esac
+    ;;
+  "disk create") : ;;
+  "snapshot create") : ;;
+  "snapshot show")
+    case "$args" in
+      *"--query id"*) printf '%s\n' "${AZ_STUB_SNAPSHOT_ID:-/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/stub-rg/providers/Microsoft.Compute/snapshots/stub-snap}" ;;
+      *) printf '%s\n' "${AZ_STUB_DISK_LOCATION:-centralus}" ;;
+    esac
+    ;;
+  "vm update") : ;;
+  "vm list") printf '%b' "${AZ_STUB_LEAK_LIST:-}" ;;
+  "vm start") : ;;
+  "vm deallocate") : ;;
+  *)
+    echo "AZ STUB: unhandled invocation, fixture does not know how to answer: az $args" >&2
+    exit 90
+    ;;
+esac

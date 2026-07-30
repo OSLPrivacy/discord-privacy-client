@@ -1,15 +1,19 @@
 //! Phase 9-A2 Task 2: PeerEntry carries optional ratchet state.
 //!
-//! Verifies the new fields don't break legacy on-disk records and
-//! round-trip cleanly via serde for both DM (with ratchet) and
-//! GC/server (without ratchet) peers.
+//! Verifies the retired v4 fields don't break legacy on-disk records:
+//! raw entry serde still accepts old ratchet state, while the peer-map
+//! file loader retires it before returning.
 
 use crypto::pqxdh::SessionKey;
 use crypto::ratchet::{DoubleRatchet, RatchetStateOnDisk, SessionContext, SESSION_VERSION_V1};
 use crypto::{ml_kem_768, pqxdh, x25519};
+use ipc::main_password::{has_enc_magic, maybe_decrypt, set_file_storage_key};
 use ipc::peer_map::PeerEntry;
 use std::fs;
+use std::sync::Mutex;
 use tempfile::tempdir;
+
+static KEY_LOCK: Mutex<()> = Mutex::new(());
 
 fn build_ratchet_state() -> RatchetStateOnDisk {
     let (alice_ik_sk, alice_ik_pub) = x25519::generate_keypair();
@@ -93,10 +97,12 @@ fn peer_entry_without_ratchet_state_loads_as_legacy() {
 
 #[test]
 fn peer_map_file_roundtrip_with_mixed_dm_and_gc_peers() {
+    let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    set_file_storage_key(Some([0xA2; 32]));
+
     // Two peers: one DM (with ratchet), one GC member (no ratchet).
-    // Confirm both load+save through the encrypted-at-rest pipeline
-    // (no password installed → plain JSON path) without corrupting
-    // either record.
+    // Confirm the encrypted-at-rest pipeline retires the legacy v4
+    // session state while keeping the rest of both records intact.
     let dir = tempdir().unwrap();
     let path = dir.path().join("peer_map.json");
 
@@ -117,17 +123,33 @@ fn peer_map_file_roundtrip_with_mixed_dm_and_gc_peers() {
     map.insert("GC_PEER".to_string(), gc_peer.clone());
 
     ipc::peer_map::write_peer_map(&path, &map).expect("write");
-    let raw = fs::read_to_string(&path).expect("read raw");
+    let raw = fs::read(&path).expect("read raw");
+    assert!(has_enc_magic(&raw));
+    let raw = String::from_utf8(maybe_decrypt(&raw).unwrap()).unwrap();
     assert!(
         raw.contains("ratchet_state"),
         "DM peer's ratchet_state should serialize"
     );
 
     let reloaded = ipc::peer_map::load_peer_map_from_path(&path).expect("reload");
-    assert_eq!(reloaded.get("DM_PEER"), Some(&dm_peer));
+    let reloaded_dm = reloaded.get("DM_PEER").expect("dm peer retained");
+    assert_eq!(reloaded_dm.discord_id, dm_peer.discord_id);
+    assert!(
+        reloaded_dm.ratchet_state.is_none(),
+        "legacy v4 ratchet_state must be retired on peer_map load"
+    );
     assert_eq!(reloaded.get("GC_PEER"), Some(&gc_peer));
     assert!(
         reloaded.get("GC_PEER").unwrap().ratchet_state.is_none(),
         "GC peer must round-trip with ratchet_state still None"
     );
+    let rewritten_raw = fs::read(&path).expect("read retired file");
+    assert!(has_enc_magic(&rewritten_raw));
+    let rewritten = String::from_utf8(maybe_decrypt(&rewritten_raw).unwrap()).unwrap();
+    assert!(
+        !rewritten.contains("ratchet_state"),
+        "legacy v4 state must not remain at rest after load"
+    );
+
+    set_file_storage_key(None);
 }

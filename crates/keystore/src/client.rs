@@ -22,12 +22,18 @@
 
 use crate::burn::{sign_burn, BurnScope};
 use crate::control_inbox::{
-    sign_control_inbox_delete, sign_control_inbox_get, sign_control_inbox_post,
+    sign_control_inbox_delete, sign_control_inbox_get, sign_control_inbox_get_filtered,
+    sign_control_inbox_post_lane, sign_sender_filter_floor_get,
+};
+use crate::sender_filter_rollout::{
+    validate_sender_filter_capability_floor_observation, SenderFilterCapabilityFloor,
+    SenderFilterCapabilityFloorObservation, SENDER_FILTER_CAPABILITY_VERSION,
 };
 use crate::identity::Identity;
 use crate::prekeys::{
     sign_replenish_batch, OpkEntry, PrekeyState, ReplenishOpk, ReplenishSpk, SpkEntry,
 };
+use crate::proof_challenge::{ProofChallenge, PROOF_CHALLENGE_NONCE_BYTES};
 use crate::signed_get::{sign_prekey_bundle_get, sign_wrapped_key_get};
 use crate::unregister::sign_unregister;
 use crate::wrapped_key::{sign_wrapped_key_post, WrappedKeyUpload};
@@ -35,6 +41,7 @@ use crate::{Error, Result};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::time::Duration;
 
 /// Rotation proof for an authenticated key change (register
@@ -83,6 +90,10 @@ pub struct RegisterRequest {
     /// eligible" and fall through to v=3.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ik_ratchet_initial_pub: Option<String>,
+    /// Signed protocol-capability bitmap. Omitted by legacy request
+    /// builders until a caller signs the extended REG_MSG form.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rn_capabilities: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,30 +115,6 @@ pub struct RegisterResponse {
 pub const REG_DOMAIN: &str = "OSL-REGISTER-v1";
 /// Domain-separation + version tag for authenticated rotation.
 pub const ROT_DOMAIN: &str = "OSL-ROTATE-v1";
-pub const USERNAME_CLAIM_DOMAIN: &str = "OSL-USERNAME-CLAIM-v1";
-
-pub fn is_normalized_username(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    (3..=30).contains(&bytes.len())
-        && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
-        && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
-        && bytes
-            .iter()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'_')
-}
-
-pub fn username_claim_msg(
-    username: &str,
-    user_id: &str,
-    friend_code: &str,
-    request_id: &str,
-    timestamp_ms: i64,
-) -> Vec<u8> {
-    format!(
-        "{USERNAME_CLAIM_DOMAIN}\n{username}\n{user_id}\n{friend_code}\n{request_id}\n{timestamp_ms}"
-    )
-    .into_bytes()
-}
 
 /// REG_MSG bytes — byte-identical to the server's `buildRegMsg`:
 ///
@@ -152,6 +139,295 @@ pub fn reg_msg(
     .into_bytes()
 }
 
+// ---------------------------------------------------------------
+// Signed protocol-capability advertisement (keyserver migration 0026)
+// ---------------------------------------------------------------
+
+/// Bit 0 — the identity can send and receive OSL-RN, wire `0x10`.
+/// Mirrors `RN_CAP_WIRE_RN` in `keyserver-cf/src/lib/signed-request.ts`.
+pub const RN_CAP_WIRE_RN: u32 = 1;
+
+/// Upper bound on the bitmap, mirroring `RN_CAP_MAX`. Unknown bits
+/// inside the bound are ignored, not rejected: a peer newer than this
+/// build may advertise capabilities this build has no name for.
+pub const RN_CAP_MAX: u32 = 0xffff;
+
+/// The minimum capability bitmap this client signs into every new
+/// registration-shaped request it authors. Keeping registration and rotation on
+/// the same helper makes the client-side advertisement monotone: a rotation can
+/// change keys, but it cannot silently lower this build's protocol capability
+/// floor.
+pub const CLIENT_RN_CAPABILITY_FLOOR: u32 = RN_CAP_WIRE_RN;
+/// Compatibility name for callers/tests that refer to the signed capability
+/// bitmap directly. It must stay tied to the floor.
+pub const CLIENT_RN_CAPABILITIES: u32 = CLIENT_RN_CAPABILITY_FLOOR;
+
+/// REG_MSG bytes for a record that advertises a capability bitmap.
+///
+/// Byte-identical to `buildRegMsg` called *with* `rn_capabilities`: the
+/// legacy message with `"\n" || decimal(bitmap)` appended.
+/// [`reg_msg`] remains the no-bitmap form and is unchanged, so the two
+/// together reproduce both branches the server reconstructs.
+pub fn reg_msg_with_capabilities(
+    user_id: &str,
+    ik_x25519_pub_b64: &str,
+    ik_ed25519_pub_b64: &str,
+    ik_mlkem768_pub_b64: &str,
+    ik_ratchet_initial_pub_b64: Option<&str>,
+    rn_capabilities: u32,
+) -> Vec<u8> {
+    let mut bytes = reg_msg(
+        user_id,
+        ik_x25519_pub_b64,
+        ik_ed25519_pub_b64,
+        ik_mlkem768_pub_b64,
+        ik_ratchet_initial_pub_b64,
+    );
+    bytes.push(b'\n');
+    bytes.extend_from_slice(rn_capabilities.to_string().as_bytes());
+    bytes
+}
+
+/// What a peer's identity record says about its protocol capabilities,
+/// after this client has checked the signature itself.
+///
+/// There is deliberately **no variant meaning "unknown, assume
+/// capable"**. Every arm other than [`PeerCapabilities::Verified`]
+/// carries a bitmap of `0`, so a caller that ignores the distinction
+/// still fails closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerCapabilities {
+    /// The record advertises nothing (a legacy peer, or a server that
+    /// predates the advertisement). **No capability.**
+    Absent,
+    /// The record advertises a bitmap but the signature over it does not
+    /// verify, or was not served at all.
+    ///
+    /// This is the tampering signal: an attacker or a dishonest key
+    /// server altered the record. It resolves to **no capability** for
+    /// version-selection purposes — but a peer already pinned to OSL-RN
+    /// will then be refused a legacy send by
+    /// `ipc::wire_rn::select_wire_version`, so the downgrade attempt
+    /// surfaces as a refusal rather than as a silent v=3 send.
+    Unverified,
+    /// The bitmap is covered by a signature that verifies under the
+    /// record's own Ed25519 identity key.
+    Verified(u32),
+}
+
+impl PeerCapabilities {
+    /// The bitmap to act on. Anything unverified is `0`.
+    pub fn bitmap(self) -> u32 {
+        match self {
+            PeerCapabilities::Verified(bits) => bits,
+            _ => 0,
+        }
+    }
+
+    /// Does this peer verifiably speak OSL-RN?
+    pub fn supports_rn(self) -> bool {
+        self.bitmap() & RN_CAP_WIRE_RN != 0
+    }
+}
+
+/// Typed failure for validating a fetched identity key bundle.
+///
+/// The variants intentionally carry no response fields. Bundle responses
+/// include account identifiers and public-key material, so diagnostics stay
+/// categorical and do not echo caller- or server-supplied values.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum IdentityBundleError {
+    MissingRegistrationSignature,
+    MalformedEd25519PublicKey,
+    MalformedRegistrationSignature,
+    UnsupportedCapabilityBitmap,
+    CanonicalIdentityProofInvalid,
+    SignatureMismatch,
+}
+
+impl fmt::Display for IdentityBundleError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            IdentityBundleError::MissingRegistrationSignature => {
+                "identity bundle is missing its registration signature"
+            }
+            IdentityBundleError::MalformedEd25519PublicKey => {
+                "identity bundle Ed25519 public key is malformed"
+            }
+            IdentityBundleError::MalformedRegistrationSignature => {
+                "identity bundle registration signature is malformed"
+            }
+            IdentityBundleError::UnsupportedCapabilityBitmap => {
+                "identity bundle capability bitmap is unsupported"
+            }
+            IdentityBundleError::CanonicalIdentityProofInvalid => {
+                "canonical identity bundle proof invalid"
+            }
+            IdentityBundleError::SignatureMismatch => {
+                "identity bundle registration signature does not verify"
+            }
+        };
+        f.write_str(message)
+    }
+}
+
+impl std::error::Error for IdentityBundleError {}
+
+/// Verify the signature over every public key in a fetched identity
+/// record. This is required independently of capability negotiation:
+/// the keyserver is a carrier for the bundle, not its integrity
+/// authority.
+///
+/// A zero capability bitmap has two deployed canonical encodings:
+/// legacy clients omitted the field, while newer clients signed an
+/// explicit `0`. Both bind the same key bundle and advertise no
+/// capability, so either signature is accepted for zero only.
+pub fn validate_peer_bundle(
+    resp: &PubkeysResponse,
+) -> core::result::Result<(), IdentityBundleError> {
+    if has_canonical_identity_authority(resp) {
+        crate::identity_bundle::validate_scheme1_pubkeys_response(resp)
+            .map_err(|_| IdentityBundleError::CanonicalIdentityProofInvalid)?;
+        return Ok(());
+    }
+
+    let Some(sig_b64) = resp.registration_sig.as_deref() else {
+        return Err(IdentityBundleError::MissingRegistrationSignature);
+    };
+    let pub_bytes = STANDARD
+        .decode(&resp.ik_ed25519_pub)
+        .map_err(|_| IdentityBundleError::MalformedEd25519PublicKey)?;
+    let sig_bytes = STANDARD
+        .decode(sig_b64)
+        .map_err(|_| IdentityBundleError::MalformedRegistrationSignature)?;
+    let Ok(pub_arr) = <[u8; 32]>::try_from(pub_bytes.as_slice()) else {
+        return Err(IdentityBundleError::MalformedEd25519PublicKey);
+    };
+    let Ok(sig_arr) = <[u8; 64]>::try_from(sig_bytes.as_slice()) else {
+        return Err(IdentityBundleError::MalformedRegistrationSignature);
+    };
+    let verifying = crypto::ed25519::PublicKey::from_bytes(pub_arr);
+    let signature = crypto::ed25519::Signature::from_bytes(sig_arr);
+    let capabilities = resp.rn_capabilities.unwrap_or(0);
+    if capabilities > RN_CAP_MAX {
+        return Err(IdentityBundleError::UnsupportedCapabilityBitmap);
+    }
+    let extended = reg_msg_with_capabilities(
+        &resp.user_id,
+        &resp.ik_x25519_pub,
+        &resp.ik_ed25519_pub,
+        &resp.ik_mlkem768_pub,
+        resp.ik_ratchet_initial_pub.as_deref(),
+        capabilities,
+    );
+    if matches!(
+        crypto::ed25519::verify(&verifying, &extended, &signature),
+        Ok(true)
+    ) {
+        return Ok(());
+    }
+    if capabilities != 0 {
+        return Err(IdentityBundleError::SignatureMismatch);
+    }
+    let legacy = reg_msg(
+        &resp.user_id,
+        &resp.ik_x25519_pub,
+        &resp.ik_ed25519_pub,
+        &resp.ik_mlkem768_pub,
+        resp.ik_ratchet_initial_pub.as_deref(),
+    );
+    if matches!(
+        crypto::ed25519::verify(&verifying, &legacy, &signature),
+        Ok(true)
+    ) {
+        Ok(())
+    } else {
+        Err(IdentityBundleError::SignatureMismatch)
+    }
+}
+
+fn has_canonical_identity_authority(resp: &PubkeysResponse) -> bool {
+    resp.identity_scheme.is_some()
+        || resp.identity_bundle_version.is_some()
+        || resp.identity_revision.is_some()
+        || resp.ik_root_ed25519_pub.is_some()
+        || resp.identity_bundle_proof_sig.is_some()
+}
+
+/// Compatibility wrapper for existing callers that only need a fail-closed
+/// boolean.
+pub fn verify_peer_bundle(resp: &PubkeysResponse) -> bool {
+    validate_peer_bundle(resp).is_ok()
+}
+
+/// Verify a peer's advertised capability bitmap against the signature
+/// served alongside it.
+///
+/// This is the client half of layer **L1** in
+/// `crates/osl-ratchet-next/src/negotiate.rs`. The bitmap is a component
+/// of REG_MSG, so verifying the registration signature over the fields
+/// as served proves the bitmap is the one the peer's identity key
+/// actually signed — the key server is not trusted to report it.
+///
+/// Fail-closed rules, in order:
+///
+/// 1. No bitmap, or a bitmap of `0` → [`PeerCapabilities::Absent`].
+///    Indistinguishable from a legacy peer, and treated as one.
+/// 2. A bitmap out of range, or no signature served with it →
+///    [`PeerCapabilities::Unverified`].
+/// 3. A signature that does not verify over the extended REG_MSG built
+///    from the served fields → [`PeerCapabilities::Unverified`]. This is
+///    the case a stripped or lowered bitmap lands in: the reconstruction
+///    stops matching, so tampering cannot be laundered into "not
+///    capable, send v=3 instead" without also being visible.
+///
+/// The peer's Ed25519 identity key is taken from the record. That is the
+/// residual trust boundary and it is **not** closed here: an attacker
+/// who can substitute the whole record, identity key included, signs
+/// whatever bitmap they like. Detecting that is the identity/TOFU
+/// layer's job (`ipc::tofu`), exactly as it is for every other field in
+/// the record.
+pub fn verify_peer_capabilities(resp: &PubkeysResponse) -> PeerCapabilities {
+    let Some(bits) = resp.rn_capabilities else {
+        return PeerCapabilities::Absent;
+    };
+    if bits == 0 {
+        return PeerCapabilities::Absent;
+    }
+    if bits > RN_CAP_MAX {
+        return PeerCapabilities::Unverified;
+    }
+    let Some(sig_b64) = resp.registration_sig.as_deref() else {
+        return PeerCapabilities::Unverified;
+    };
+    let msg = reg_msg_with_capabilities(
+        &resp.user_id,
+        &resp.ik_x25519_pub,
+        &resp.ik_ed25519_pub,
+        &resp.ik_mlkem768_pub,
+        resp.ik_ratchet_initial_pub.as_deref(),
+        bits,
+    );
+    let Ok(pub_bytes) = STANDARD.decode(&resp.ik_ed25519_pub) else {
+        return PeerCapabilities::Unverified;
+    };
+    let Ok(sig_bytes) = STANDARD.decode(sig_b64) else {
+        return PeerCapabilities::Unverified;
+    };
+    let Ok(pub_arr) = <[u8; 32]>::try_from(pub_bytes.as_slice()) else {
+        return PeerCapabilities::Unverified;
+    };
+    let Ok(sig_arr) = <[u8; 64]>::try_from(sig_bytes.as_slice()) else {
+        return PeerCapabilities::Unverified;
+    };
+    let verifying = crypto::ed25519::PublicKey::from_bytes(pub_arr);
+    let signature = crypto::ed25519::Signature::from_bytes(sig_arr);
+    match crypto::ed25519::verify(&verifying, &msg, &signature) {
+        Ok(true) => PeerCapabilities::Verified(bits),
+        _ => PeerCapabilities::Unverified,
+    }
+}
+
 /// ROT_MSG bytes — byte-identical to the server's `buildRotMsg`:
 ///
 ///   "OSL-ROTATE-v1\n" || user_id "\n" || prev_ik_ed25519_pub_b64
@@ -173,7 +449,34 @@ pub fn rot_msg(
     .into_bytes()
 }
 
-#[derive(Debug, Deserialize)]
+/// ROT_MSG bytes for a rotation that advertises a capability bitmap.
+///
+/// Mirrors `buildRotMsg` called with `rn_capabilities` on the Worker: a
+/// rotation re-states the whole registered record, so the outgoing key must
+/// authorize the advertised bitmap as well as the replacement keys.
+pub fn rot_msg_with_capabilities(
+    user_id: &str,
+    prev_ik_ed25519_pub_b64: &str,
+    new_ik_x25519_pub_b64: &str,
+    new_ik_ed25519_pub_b64: &str,
+    new_ik_mlkem768_pub_b64: &str,
+    new_ik_ratchet_initial_pub_b64: Option<&str>,
+    rn_capabilities: u32,
+) -> Vec<u8> {
+    let mut bytes = rot_msg(
+        user_id,
+        prev_ik_ed25519_pub_b64,
+        new_ik_x25519_pub_b64,
+        new_ik_ed25519_pub_b64,
+        new_ik_mlkem768_pub_b64,
+        new_ik_ratchet_initial_pub_b64,
+    );
+    bytes.push(b'\n');
+    bytes.extend_from_slice(rn_capabilities.to_string().as_bytes());
+    bytes
+}
+
+#[derive(Deserialize)]
 pub struct PubkeysResponse {
     pub user_id: String,
     pub ik_x25519_pub: String,
@@ -188,18 +491,80 @@ pub struct PubkeysResponse {
     /// this field at all; `#[serde(default)]` lets them parse.
     #[serde(default)]
     pub ik_ratchet_initial_pub: Option<String>,
+    /// Signed protocol-capability bitmap (keyserver migration 0026).
+    ///
+    /// `None` from a key server that predates the advertisement.
+    /// `Some(0)` from a peer that has one but advertises nothing. Both
+    /// mean the same thing — **no capability** — and
+    /// [`verify_peer_capabilities`] collapses them into
+    /// [`PeerCapabilities::Absent`]. There is no encoding of "unknown,
+    /// assume capable".
+    #[serde(default)]
+    pub rn_capabilities: Option<u32>,
+    /// Ed25519 signature for this fetched record. Legacy scheme-0
+    /// records use REG_MSG. Canonical scheme-1 records use the
+    /// current key's proof over the full canonical identity bundle.
+    ///
+    /// Never trust `rn_capabilities` without checking the signature.
+    /// For scheme-0 records use [`verify_peer_capabilities`]; for
+    /// scheme-1 records use
+    /// [`crate::identity_bundle::IdentityBundle::from_identity_and_pubkeys_response`].
+    #[serde(default)]
+    pub registration_sig: Option<String>,
+    /// Canonical identity rollout scheme. Absent for legacy scheme-0
+    /// identities.
+    #[serde(default)]
+    pub identity_scheme: Option<u32>,
+    /// Version of the root-authenticated full identity bundle. Absent
+    /// for legacy scheme-0 identities.
+    #[serde(default)]
+    pub identity_bundle_version: Option<u32>,
+    /// Monotonic full-bundle revision. Absent for legacy scheme-0
+    /// identities.
+    #[serde(default)]
+    pub identity_revision: Option<u64>,
+    /// Immutable root Ed25519 public key for scheme-1 identities.
+    #[serde(default)]
+    pub ik_root_ed25519_pub: Option<String>,
+    /// Root Ed25519 signature over the canonical scheme-1 bundle.
+    #[serde(default)]
+    pub identity_bundle_proof_sig: Option<String>,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
-pub struct UsernameClaimResponse {
-    pub username: String,
-    pub user_id: String,
-}
-
-#[derive(Debug, Deserialize, PartialEq, Eq)]
-pub struct UsernameLookupResponse {
-    pub username: String,
-    pub friend_code: String,
+impl fmt::Debug for PubkeysResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PubkeysResponse")
+            .field("user_id", &"<redacted>")
+            .field("ik_x25519_pub", &"<redacted>")
+            .field("ik_ed25519_pub", &"<redacted>")
+            .field("ik_mlkem768_pub", &"<redacted>")
+            .field("registered_at", &self.registered_at)
+            .field("last_rotated_at", &self.last_rotated_at)
+            .field(
+                "ik_ratchet_initial_pub",
+                &self.ik_ratchet_initial_pub.as_ref().map(|_| "<redacted>"),
+            )
+            .field("rn_capabilities", &self.rn_capabilities)
+            .field(
+                "registration_sig",
+                &self.registration_sig.as_ref().map(|_| "<redacted>"),
+            )
+            .field("identity_scheme", &self.identity_scheme)
+            .field("identity_bundle_version", &self.identity_bundle_version)
+            .field("identity_revision", &self.identity_revision)
+            .field(
+                "ik_root_ed25519_pub",
+                &self.ik_root_ed25519_pub.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "identity_bundle_proof_sig",
+                &self
+                    .identity_bundle_proof_sig
+                    .as_ref()
+                    .map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 /// One-time prekey returned by `/v1/prekey-bundle/:user_id`. `None`
@@ -269,6 +634,21 @@ pub struct BurnResponse {
 #[derive(Serialize)]
 struct LicenseValidateRequest<'a> {
     license_key: &'a str,
+}
+
+#[derive(Serialize)]
+struct OwnershipChallengeRequest<'a> {
+    service_account_id: &'a str,
+    owner_user_id: &'a str,
+}
+
+#[derive(Deserialize)]
+struct OwnershipChallengeResponse {
+    nonce_b64: String,
+    service_account_id: String,
+    owner_user_id: String,
+    issued_at_unix_seconds: u64,
+    expires_at_unix_seconds: u64,
 }
 
 /// Response body for `POST /v1/license/validate`.
@@ -439,12 +819,14 @@ impl KeyServerClient {
             .ratchet_initial_pub
             .as_ref()
             .map(|p| STANDARD.encode(p.as_bytes()));
-        let msg = reg_msg(
+        let rn_capabilities = CLIENT_RN_CAPABILITY_FLOOR;
+        let msg = reg_msg_with_capabilities(
             &identity.user_id,
             &ik_x25519_pub,
             &ik_ed25519_pub,
             &ik_mlkem768_pub,
             ik_ratchet_initial_pub.as_deref(),
+            rn_capabilities,
         );
         let sig = crypto::ed25519::sign(&identity.ed25519_secret, &msg);
         RegisterRequest {
@@ -455,6 +837,7 @@ impl KeyServerClient {
             registration_sig: STANDARD.encode(sig.as_bytes()),
             rotation: None,
             ik_ratchet_initial_pub,
+            rn_capabilities: Some(rn_capabilities),
         }
     }
 
@@ -487,22 +870,25 @@ impl KeyServerClient {
         let prev_ed = STANDARD.encode(old_identity.ed25519_public.as_bytes());
 
         // new key proves possession over REG_MSG (Case-A/B shape).
-        let reg = reg_msg(
+        let rn_capabilities = CLIENT_RN_CAPABILITY_FLOOR;
+        let reg = reg_msg_with_capabilities(
             &user_id,
             &new_x,
             &new_ed,
             &new_mlkem,
             new_ratchet.as_deref(),
+            rn_capabilities,
         );
         let reg_sig = crypto::ed25519::sign(&new_identity.ed25519_secret, &reg);
         // old key authorises the change over ROT_MSG.
-        let rot = rot_msg(
+        let rot = rot_msg_with_capabilities(
             &user_id,
             &prev_ed,
             &new_x,
             &new_ed,
             &new_mlkem,
             new_ratchet.as_deref(),
+            rn_capabilities,
         );
         let prev_sig = crypto::ed25519::sign(&old_identity.ed25519_secret, &rot);
 
@@ -517,6 +903,7 @@ impl KeyServerClient {
                 prev_sig: STANDARD.encode(prev_sig.as_bytes()),
             }),
             ik_ratchet_initial_pub: new_ratchet,
+            rn_capabilities: Some(rn_capabilities),
         }
     }
 
@@ -575,81 +962,57 @@ impl KeyServerClient {
         Ok(serde_json::from_slice(&resp.body)?)
     }
 
-    /// Claim or update one already-normalized public username. The server
-    /// verifies this signature against the currently registered Ed25519 key
-    /// and independently verifies the exact signed friend invite.
-    pub fn claim_username(
+    /// `POST /v1/account-ownership/challenge`.
+    ///
+    /// This is only a nonce request. A returned value is useful only if it is
+    /// bound to the exact service account and local owner identity the caller
+    /// requested; a missing, malformed, expired-at-issue, or differently bound
+    /// response is refused as unusable challenge material.
+    pub fn request_ownership_challenge(
         &self,
-        identity: &Identity,
-        username: &str,
-        friend_code: &str,
-    ) -> Result<UsernameClaimResponse> {
-        if !is_normalized_username(username) {
+        service_account_id: &str,
+        owner_user_id: &str,
+    ) -> Result<ProofChallenge> {
+        if service_account_id.is_empty() || owner_user_id.is_empty() {
             return Err(Error::Transport(
-                "username must already be normalized (3-30 lowercase letters, digits, or interior underscores)".to_owned(),
+                "ownership challenge request binding is incomplete".into(),
             ));
         }
-        if !friend_code.starts_with("OSLFR1.") || friend_code.len() > 8199 {
-            return Err(Error::Transport("friend code is not valid".to_owned()));
-        }
-        let request_id = fresh_request_id();
-        let timestamp_ms = unix_timestamp_ms();
-        let message = username_claim_msg(
-            username,
-            &identity.user_id,
-            friend_code,
-            &request_id,
-            timestamp_ms,
-        );
-        let signature = crypto::ed25519::sign(&identity.ed25519_secret, &message);
-        #[derive(Serialize)]
-        struct ClaimBody<'a> {
-            username: &'a str,
-            user_id: &'a str,
-            friend_code: &'a str,
-            request_id: &'a str,
-            timestamp_ms: i64,
-            signature_b64: String,
-        }
-        let body = ClaimBody {
-            username,
-            user_id: &identity.user_id,
-            friend_code,
-            request_id: &request_id,
-            timestamp_ms,
-            signature_b64: STANDARD.encode(signature.as_bytes()),
+        let body = OwnershipChallengeRequest {
+            service_account_id,
+            owner_user_id,
         };
         let body_json = serde_json::to_vec(&body)?;
         let response = self.send_request(
             "POST",
-            "/v1/usernames/claim",
+            "/v1/account-ownership/challenge",
             Some(("application/json", &body_json)),
         )?;
-        check_2xx(&response)?;
-        Ok(serde_json::from_slice(&response.body)?)
-    }
-
-    /// Resolve one exact normalized username. There is no prefix, fuzzy, or
-    /// bulk search API, so callers cannot use this method for directory scans.
-    pub fn lookup_username(&self, username: &str) -> Result<UsernameLookupResponse> {
-        if !is_normalized_username(username) {
+        if !(200..300).contains(&response.status) {
+            return Err(Error::HttpStatus {
+                status: response.status,
+                body: "ownership challenge request refused".into(),
+            });
+        }
+        let wire: OwnershipChallengeResponse = serde_json::from_slice(&response.body)?;
+        if wire.service_account_id != service_account_id || wire.owner_user_id != owner_user_id {
             return Err(Error::Transport(
-                "username must already be normalized".to_owned(),
+                "ownership challenge response binding mismatch".into(),
             ));
         }
-        let path = format!("/v1/usernames/{}", urlencode_segment(username));
-        let response = self.send_request("GET", &path, None)?;
-        check_2xx(&response)?;
-        let parsed: UsernameLookupResponse = serde_json::from_slice(&response.body)?;
-        if parsed.username != username
-            || !parsed.friend_code.starts_with("OSLFR1.")
-            || parsed.friend_code.len() > 8199
-        {
-            return Err(Error::Transport(
-                "username lookup response was invalid".to_owned(),
-            ));
-        }
-        Ok(parsed)
+        let nonce_bytes = STANDARD.decode(&wire.nonce_b64)?;
+        let nonce: [u8; PROOF_CHALLENGE_NONCE_BYTES] = nonce_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::Transport("ownership challenge nonce length is invalid".into()))?;
+        ProofChallenge::new(
+            nonce,
+            wire.service_account_id,
+            wire.owner_user_id,
+            wire.issued_at_unix_seconds,
+            wire.expires_at_unix_seconds,
+        )
+        .ok_or_else(|| Error::Transport("ownership challenge lifetime is invalid".into()))
     }
 
     /// `GET /v1/prekey-bundle/:user_id`. Atomically pops one OPK
@@ -677,6 +1040,73 @@ impl KeyServerClient {
         let resp = self.send_request("GET", &path, None)?;
         check_2xx(&resp)?;
         Ok(serde_json::from_slice(&resp.body)?)
+    }
+
+    /// Fetch the public identity record and one prekey bundle as one usable
+    /// unit.
+    ///
+    /// The keyserver exposes these as two endpoints. This helper refuses to
+    /// return if the two responses disagree about the recipient identity fields,
+    /// if the public identity record's registration proof fails, or if the SPK
+    /// does not verify under the identity key from the public record. Callers
+    /// therefore cannot accidentally compose a pubkey response from one server
+    /// observation with prekey material from another.
+    pub fn fetch_identity_bundle(
+        &self,
+        identity: &Identity,
+        recipient_user_id: &str,
+    ) -> Result<crate::identity_bundle::MergedIdentityBundle> {
+        self.fetch_identity_bundle_since(identity, recipient_user_id, None)
+    }
+
+    /// Revision-aware variant of [`Self::fetch_identity_bundle`].
+    pub fn fetch_identity_bundle_since(
+        &self,
+        identity: &Identity,
+        recipient_user_id: &str,
+        last_known_revision: Option<u64>,
+    ) -> Result<crate::identity_bundle::MergedIdentityBundle> {
+        let pubkeys = self.fetch_pubkeys(recipient_user_id)?;
+        validate_peer_bundle(&pubkeys).map_err(|_| Error::PeerBundleProofInvalid)?;
+        let prekey = self.fetch_prekey_bundle(identity, recipient_user_id)?;
+        if pubkeys.user_id != recipient_user_id || prekey.user_id != recipient_user_id {
+            return Err(Error::Transport(
+                "identity bundle endpoint user binding mismatch".into(),
+            ));
+        }
+        if pubkeys.ik_x25519_pub != prekey.ik_x25519_pub
+            || pubkeys.ik_ed25519_pub != prekey.ik_ed25519_pub
+            || pubkeys.ik_mlkem768_pub != prekey.ik_mlkem768_pub
+            || pubkeys.ik_ratchet_initial_pub != prekey.ik_ratchet_initial_pub
+        {
+            return Err(Error::Transport(
+                "identity bundle endpoint key binding mismatch".into(),
+            ));
+        }
+        let bundle = crate::identity_bundle::IdentityBundle::from_identity_and_pubkeys_response(
+            identity, &pubkeys,
+        )
+        .map_err(|_| Error::PeerBundleProofInvalid)?;
+        bundle
+            .verify_full(&prekey, &identity.ed25519_public, last_known_revision)
+            .map_err(|_| Error::PeerBundleProofInvalid)
+    }
+
+    /// Fetch this identity's canonical public-key bundle and prekey bundle as
+    /// one usable unit.
+    ///
+    /// The caller receives a [`crate::identity_bundle::MergedIdentityBundle`]
+    /// only after the `/v1/pubkeys` response has canonical scheme-1 authority,
+    /// every fetched identity key matches `identity`, the identity bundle
+    /// signature verifies, and the `/v1/prekey-bundle` response matches that
+    /// same verified identity bundle. A mismatch on either endpoint is refused
+    /// as a bundle-proof failure rather than returning partially trusted data.
+    pub fn fetch_own_identity_bundle_since(
+        &self,
+        identity: &Identity,
+        last_known_revision: Option<u64>,
+    ) -> Result<crate::identity_bundle::MergedIdentityBundle> {
+        self.fetch_identity_bundle_since(identity, &identity.user_id, last_known_revision)
     }
 
     /// Authenticated wrapped-key fetch. Only the intended recipient can
@@ -910,11 +1340,53 @@ impl KeyServerClient {
         scope_id: &str,
         bundle: &[u8],
     ) -> Result<ControlInboxPostResponse> {
+        self.post_control_inbox_lane(sender, recipient_id, scope_id, bundle, None, None)
+    }
+
+    /// Enqueue on a named delivery lane.
+    ///
+    /// `None, None` is byte-identical to [`Self::post_control_inbox`] — same
+    /// signed bytes, same request body — so this is a strict superset.
+    ///
+    /// `Some(CONTROL_INBOX_KIND_REVOCATION)` posts a bilateral-burn notice on the
+    /// **non-evictable** lane. That lane exists because the ordinary one evicts:
+    /// `evictOldestPending` silently deletes the oldest undelivered rows at the
+    /// 32-row per-pair cap, so a burn queued to an offline peer used to be
+    /// destroyed by the sender's own next 32 messages, with no notice to anyone.
+    /// On the revocation lane a full lane is a **507 refusal** the caller can see
+    /// and retry, and a retry for the same `(scope, epoch)` collapses onto the
+    /// queued row rather than appending.
+    ///
+    /// `collapse_key` is required for a revocation and must be 64 lowercase hex
+    /// characters -- `ipc::revocation::lane_collapse_key` on the client side. It is a MAC
+    /// over (scope commitment, burn epoch) under a pair-specific key, so the
+    /// server learns neither.
+    ///
+    /// A 507 is returned to the caller rather than retried in-band: the condition
+    /// is durable (it clears when the recipient drains), and the sender's durable
+    /// revocation outbox is the right place to retry from.
+    pub fn post_control_inbox_lane(
+        &self,
+        sender: &Identity,
+        recipient_id: &str,
+        scope_id: &str,
+        bundle: &[u8],
+        kind: Option<&str>,
+        collapse_key: Option<&str>,
+    ) -> Result<ControlInboxPostResponse> {
         let timestamp_ms: i64 = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
-        let sig = sign_control_inbox_post(sender, recipient_id, scope_id, timestamp_ms, bundle);
+        let sig = sign_control_inbox_post_lane(
+            sender,
+            recipient_id,
+            scope_id,
+            timestamp_ms,
+            bundle,
+            kind,
+            collapse_key,
+        );
         let body = ControlInboxPostBody {
             sender_id: &sender.user_id,
             recipient_id,
@@ -922,13 +1394,45 @@ impl KeyServerClient {
             bundle_b64: STANDARD.encode(bundle),
             timestamp_ms,
             signature_b64: STANDARD.encode(sig.as_bytes()),
+            kind: kind.filter(|value| !value.is_empty()),
+            collapse_key,
         };
         let body_json = serde_json::to_vec(&body)?;
-        let resp = self.send_request(
-            "POST",
-            "/v1/control-inbox",
-            Some(("application/json", &body_json)),
-        )?;
+        // A 429 here is safe to retry, and retrying is the difference between a
+        // transient throttle and a message the operator believes they sent.
+        //
+        // The server rejects a rate-limited request *before* parsing the body
+        // (`checkRateLimit` is the first statement in `handleControlInboxPost`),
+        // so a 429 proves nothing was stored and a retry cannot double-post.
+        //
+        // Short and bounded on purpose. The limiter's window is 60s, but this
+        // runs on a keypress: stalling a send for a minute is worse than the
+        // failure it avoids. Cloudflare documents these counters as permissive
+        // and eventually consistent, so a brief pause clears an incidental
+        // burst; a genuine sustained limit still falls through to the caller,
+        // which reports it as a rate limit rather than a delivery failure.
+        const RATE_LIMIT_RETRY_BACKOFF_MS: [u64; 2] = [400, 1200];
+        let mut attempt = 0usize;
+        let resp = loop {
+            let resp = self.send_request(
+                "POST",
+                "/v1/control-inbox",
+                Some(("application/json", &body_json)),
+            )?;
+            // Only a genuine rate limit is worth waiting out. A full recipient
+            // inbox is a durable condition -- it clears when that recipient
+            // picks their messages up, not on a timer -- so retrying it just
+            // adds latency to a refusal that is already certain.
+            let inbox_full = resp.status == 429
+                && String::from_utf8_lossy(&resp.body).contains("recipient_inbox_full");
+            if resp.status != 429 || inbox_full || attempt >= RATE_LIMIT_RETRY_BACKOFF_MS.len() {
+                break resp;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(
+                RATE_LIMIT_RETRY_BACKOFF_MS[attempt],
+            ));
+            attempt += 1;
+        };
         check_2xx(&resp)?;
         Ok(serde_json::from_slice(&resp.body)?)
     }
@@ -958,6 +1462,203 @@ impl KeyServerClient {
         check_2xx(&resp)?;
         let parsed: ControlInboxGetResponse = serde_json::from_slice(&resp.body)?;
         Ok(parsed.items)
+    }
+
+    /// Shipping Worker/client boundary for one active peer.
+    ///
+    /// This method, rather than the broker, owns the live `/v1/healthz`
+    /// capability observation and the durable local downgrade floor derived
+    /// from it.
+    ///
+    /// The active-peer receive path must never widen to an all-row page. A
+    /// legacy Worker that cannot prove sender-filter support is refused here.
+    /// The sender filter is part of the signed request and the response must
+    /// echo the exact sender plus its delivery disposition. A legacy or
+    /// transitional worker that answers without those fields is refused by
+    /// [`Self::get_control_inbox_from`]; this boundary must never widen to an
+    /// unfiltered page and locally filter it.
+    pub fn get_control_inbox_compatible_from(
+        &self,
+        identity: &Identity,
+        sender_id: &str,
+    ) -> Result<FilteredControlInbox> {
+        if !valid_control_inbox_sender_id(&identity.user_id) {
+            return Err(Error::Transport(
+                "control-inbox recipient identity is invalid".into(),
+            ));
+        }
+        if !valid_control_inbox_sender_id(sender_id) {
+            return Err(Error::Transport(
+                "control-inbox sender filter is invalid".into(),
+            ));
+        }
+        let capability = self.probe_control_inbox_sender_filter_capability()?;
+        match capability {
+            ControlInboxSenderFilterCapability::Version1 => {
+                record_sender_filter_capability_floor()?;
+                self.get_control_inbox_from(identity, sender_id)
+            }
+            ControlInboxSenderFilterCapability::Legacy => Err(Error::Transport(
+                "control-inbox sender-filter capability unavailable".into(),
+            )),
+        }
+    }
+
+    fn probe_control_inbox_sender_filter_capability(
+        &self,
+    ) -> Result<ControlInboxSenderFilterCapability> {
+        let response = self.send_request("GET", "/v1/healthz", None)?;
+        let value: serde_json::Value = serde_json::from_slice(&response.body).map_err(|_| {
+            Error::Transport("control-inbox capability response is not exact JSON".into())
+        })?;
+        if response.status == 200 && value == serde_json::json!({ "ok": true }) {
+            return Ok(ControlInboxSenderFilterCapability::Legacy);
+        }
+        if response.status == 200
+            && value
+                == serde_json::json!({
+                    "ok": true,
+                    "capabilities": {
+                        "control_inbox_sender_disposition":
+                            SENDER_FILTER_CAPABILITY_VERSION
+                    }
+                })
+        {
+            return Ok(ControlInboxSenderFilterCapability::Version1);
+        }
+        Err(Error::Transport(
+            "control-inbox sender-filter capability is unavailable, malformed, or transitional"
+                .into(),
+        ))
+    }
+
+    fn observe_sender_filter_capability_floor(
+        &self,
+        identity: &Identity,
+    ) -> Result<SenderFilterCapabilityFloor> {
+        let timestamp_ms = unix_timestamp_ms();
+        let request_id = fresh_request_id();
+        let signature = sign_sender_filter_floor_get(identity, timestamp_ms, &request_id);
+        let path = format!(
+            "/v1/sender-filter-capability-floor/{}?ts={}&request_id={}&sig={}",
+            urlencode_segment(&identity.user_id),
+            timestamp_ms,
+            request_id,
+            urlencode_query_value(&STANDARD.encode(signature.as_bytes())),
+        );
+        let response = self.send_request("GET", &path, None)?;
+        check_2xx(&response)?;
+        let observation: SenderFilterCapabilityFloorObservation =
+            serde_json::from_slice(&response.body)?;
+        validate_sender_filter_capability_floor_observation(
+            identity,
+            timestamp_ms,
+            &request_id,
+            observation,
+        )
+    }
+
+    /// Drain only the rows one specific peer sent.
+    ///
+    /// # Why a caller should prefer this to [`Self::get_control_inbox`]
+    ///
+    /// The unfiltered drain returns one page of at most 64 rows in
+    /// `created_at` order, and a caller that processes only the
+    /// conversation it currently has open deletes only those rows — so
+    /// rows from peers whose conversations are closed accumulate at the
+    /// front of the page and never leave. Once 64 of them exist, rows
+    /// for the active conversation sit past the page boundary and are
+    /// **permanently unreachable**, and the drain cannot tell that from
+    /// an empty inbox. Two peers with unopened conversations are enough
+    /// (the server admits 32 pending rows per pair).
+    ///
+    /// Filtering by sender removes the coupling: what this peer can
+    /// deliver no longer depends on any other peer's backlog. Because
+    /// the server's per-pair admission cap (32) is below its page size
+    /// (64), a filtered drain is never truncated either, so there is no
+    /// pagination left to do.
+    ///
+    /// # Fail-closed behaviour
+    ///
+    /// The filter is a signed component of the request, so:
+    ///
+    /// - A worker that does not understand `?sender=` reconstructs the
+    ///   unfiltered canonical bytes, this signature does not verify, and
+    ///   the request is refused. It can never answer with an unfiltered
+    ///   page that the caller would mistake for a filtered one — which
+    ///   would silently reinstate the starvation.
+    /// - An attacker who strips or rewrites `?sender=` in flight is
+    ///   refused for the same reason.
+    ///
+    /// Belt and braces on top of that: the response must echo
+    /// `filtered_sender_id`, and a mismatch is an error rather than a
+    /// silently-accepted wider page.
+    pub fn get_control_inbox_from(
+        &self,
+        identity: &Identity,
+        sender_id: &str,
+    ) -> Result<FilteredControlInbox> {
+        if !valid_control_inbox_sender_id(&identity.user_id) {
+            return Err(Error::Transport(
+                "control-inbox recipient identity is invalid".into(),
+            ));
+        }
+        if !valid_control_inbox_sender_id(sender_id) {
+            return Err(Error::Transport(
+                "control-inbox sender filter is invalid".into(),
+            ));
+        }
+        let timestamp_ms = unix_timestamp_ms();
+        let sig = sign_control_inbox_get_filtered(identity, timestamp_ms, Some(sender_id));
+        let sig_q = urlencode_query_value(&STANDARD.encode(sig.as_bytes()));
+        let path = format!(
+            "/v1/control-inbox/{}?ts={}&sig={}&sender={}",
+            urlencode_segment(&identity.user_id),
+            timestamp_ms,
+            sig_q,
+            urlencode_query_value(sender_id),
+        );
+        let resp = self.send_request("GET", &path, None)?;
+        check_2xx(&resp)?;
+        let parsed: FilteredControlInboxGetResponse = serde_json::from_slice(&resp.body)?;
+        // The server must confirm which filter it applied. Absent or
+        // different means we are looking at a page we did not ask for.
+        match parsed.filtered_sender_id.as_deref() {
+            Some(echoed) if echoed == sender_id => {}
+            _ => {
+                // `Transport` rather than a new enum variant: adding a
+                // variant to the public `keystore::Error` could break an
+                // exhaustive match in a crate this change must not
+                // touch, and this genuinely is "the server's answer was
+                // not usable".
+                return Err(Error::Transport(
+                    "control-inbox drain did not confirm the sender filter it was asked for".into(),
+                ));
+            }
+        }
+        if parsed.items.iter().any(|item| item.sender_id != sender_id) {
+            return Err(Error::Transport(
+                "control-inbox drain returned a row outside its sender filter".into(),
+            ));
+        }
+        let delivery = parsed.filtered_sender_delivery.ok_or_else(|| {
+            Error::Transport(
+                "control-inbox drain did not return its sender delivery disposition".into(),
+            )
+        })?;
+        delivery.validate()?;
+        let live_rows = usize::try_from(delivery.live).map_err(|_| {
+            Error::Transport("control-inbox live disposition count is invalid".into())
+        })?;
+        if live_rows != parsed.items.len() {
+            return Err(Error::Transport(
+                "control-inbox live disposition does not match its deliverable rows".into(),
+            ));
+        }
+        Ok(FilteredControlInbox {
+            items: parsed.items,
+            delivery,
+        })
     }
 
     /// Phase 6.4: delete a specific inbox row after the caller has
@@ -1067,6 +1768,12 @@ struct HttpResponse {
     body: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ControlInboxSenderFilterCapability {
+    Legacy,
+    Version1,
+}
+
 fn check_2xx(resp: &HttpResponse) -> Result<()> {
     if (200..300).contains(&resp.status) {
         Ok(())
@@ -1116,8 +1823,52 @@ fn unix_timestamp_ms() -> i64 {
         .unwrap_or(0)
 }
 
+fn valid_control_inbox_sender_id(value: &str) -> bool {
+    const MAX_PROTOCOL_ID_BYTES: usize = 256;
+    !value.is_empty()
+        && value.len() <= MAX_PROTOCOL_ID_BYTES
+        && !value.chars().any(|character| {
+            let codepoint = character as u32;
+            codepoint <= 0x1f || (0x7f..=0x9f).contains(&codepoint)
+        })
+}
+
 fn fresh_request_id() -> String {
     URL_SAFE_NO_PAD.encode(crypto::random::random_bytes(32))
+}
+
+const SENDER_FILTER_CAPABILITY_FLOOR_FILE: &str = "sender-filter-capability-floor.json";
+const SENDER_FILTER_CAPABILITY_FLOOR_JSON: &[u8] = br#"{"control_inbox_sender_disposition":1}"#;
+
+fn sender_filter_capability_floor_path() -> Result<std::path::PathBuf> {
+    let mut path = crate::recipients::osl_config_dir()
+        .map_err(|_| Error::Transport("control-inbox sender-filter floor is unavailable".into()))?;
+    path.push(SENDER_FILTER_CAPABILITY_FLOOR_FILE);
+    Ok(path)
+}
+
+fn sender_filter_capability_floor_was_observed() -> Result<bool> {
+    let path = sender_filter_capability_floor_path()?;
+    match std::fs::read(path) {
+        Ok(bytes) if bytes == SENDER_FILTER_CAPABILITY_FLOOR_JSON => Ok(true),
+        Ok(_) => Err(Error::Transport(
+            "control-inbox sender-filter floor is malformed".into(),
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn record_sender_filter_capability_floor() -> Result<()> {
+    let path = sender_filter_capability_floor_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if sender_filter_capability_floor_was_observed()? {
+        return Ok(());
+    }
+    std::fs::write(path, SENDER_FILTER_CAPABILITY_FLOOR_JSON)?;
+    Ok(())
 }
 
 // ---- Phase 6.4 control-inbox payload shapes (used by post_control_inbox /
@@ -1132,6 +1883,16 @@ struct ControlInboxPostBody<'a> {
     bundle_b64: String,
     timestamp_ms: i64,
     signature_b64: String,
+    /// Delivery lane. Omitted entirely for ordinary traffic, so the serialized
+    /// body is byte-identical to the pre-lane one and a deployed worker sees no
+    /// change at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<&'a str>,
+    /// Opaque `(scope, epoch)` collapse key. Only ever present with
+    /// `kind = "revocation"`; the worker rejects it otherwise, because attaching
+    /// one to an ordinary row would move that row out of the evictable set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    collapse_key: Option<&'a str>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -1147,11 +1908,88 @@ pub struct ControlInboxItem {
     pub scope_id: String,
     pub bundle_b64: String,
     pub created_at: i64,
+    /// Delivery lane the server filed this row under: `""` (ordinary) or
+    /// `"revocation"`. Defaulted so a worker that predates lanes still
+    /// deserializes.
+    ///
+    /// A routing hint only. It lets a drain recognise a burn notice without
+    /// spending a decrypt, but it is server-supplied and unauthenticated, so the
+    /// `MSG_TYPE_*` byte inside the authenticated envelope is what decides how a
+    /// row is actually handled.
+    #[serde(default)]
+    pub kind: String,
+}
+
+/// Aggregate disposition for one authenticated recipient/sender pair.
+///
+/// These counts are deliberately nonexclusive: a filtered response may carry
+/// deliverable rows while older rows from the same sender are retained for a
+/// disabled identity. The values are server status, not payload
+/// authentication; every returned live row still goes through the broker's
+/// authenticated envelope checks before it can be applied or deleted.
+#[derive(Deserialize, Debug, Clone, Copy, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ControlInboxDeliveryDisposition {
+    pub live: u64,
+    pub retryable: u64,
+    pub quarantined: u64,
+    pub retired: u64,
+}
+
+impl ControlInboxDeliveryDisposition {
+    const MAX_JSON_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+
+    fn validate(self) -> Result<()> {
+        let counts = [self.live, self.retryable, self.quarantined, self.retired];
+        if counts
+            .iter()
+            .any(|count| *count > Self::MAX_JSON_SAFE_INTEGER)
+            || counts
+                .into_iter()
+                .try_fold(0u64, u64::checked_add)
+                .is_none()
+        {
+            return Err(Error::Transport(
+                "control-inbox sender delivery disposition is invalid".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn retained_disabled(self) -> u64 {
+        self.retryable
+            .saturating_add(self.quarantined)
+            .saturating_add(self.retired)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FilteredControlInbox {
+    pub items: Vec<ControlInboxItem>,
+    pub delivery: ControlInboxDeliveryDisposition,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ControlInboxGetResponse {
     items: Vec<ControlInboxItem>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FilteredControlInboxGetResponse {
+    items: Vec<ControlInboxItem>,
+    /// Echo of the `?sender=` filter the server applied. Absent on an
+    /// unfiltered drain, and absent from a worker that does not
+    /// implement the filter — which is why
+    /// `get_control_inbox_from` treats a missing echo as an error.
+    #[serde(default)]
+    filtered_sender_id: Option<String>,
+    /// Required for filtered drains served by the 0031 status-aware Worker.
+    /// A missing object is not legacy-compatible: it would make retained rows
+    /// indistinguishable from an actually empty sender inbox.
+    #[serde(default)]
+    filtered_sender_delivery: Option<ControlInboxDeliveryDisposition>,
 }
 
 #[derive(Serialize)]
@@ -1159,4 +1997,780 @@ struct ControlInboxDeleteBody<'a> {
     user_id: &'a str,
     timestamp_ms: i64,
     signature_b64: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::{generate_identity, Identity};
+    use crate::prekeys::{PrekeyConfig, PrekeyState};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::thread;
+
+    fn test_response(status_line: &[u8], body: impl AsRef<[u8]>) -> Vec<u8> {
+        let body = body.as_ref();
+        let mut response = Vec::new();
+        response.extend_from_slice(status_line);
+        response.extend_from_slice(format!("Content-Length: {}\r\n", body.len()).as_bytes());
+        response.extend_from_slice(b"Content-Type: application/json\r\n\r\n");
+        response.extend_from_slice(body);
+        response
+    }
+
+    fn read_http_request(stream: &mut std::net::TcpStream) -> Vec<u8> {
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut buf = [0u8; 4096];
+        let mut acc = Vec::new();
+        let header_end = loop {
+            let n = stream.read(&mut buf).unwrap();
+            assert!(n > 0, "request ended before headers");
+            acc.extend_from_slice(&buf[..n]);
+            if let Some(p) = acc.windows(4).position(|w| w == b"\r\n\r\n") {
+                break p;
+            }
+        };
+        let header_text = std::str::from_utf8(&acc[..header_end]).unwrap();
+        let content_length = header_text
+            .lines()
+            .find_map(|line| line.strip_prefix("Content-Length: "))
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        let mut body_so_far = acc[header_end + 4..].len();
+        while body_so_far < content_length {
+            let n = stream.read(&mut buf).unwrap();
+            if n == 0 {
+                break;
+            }
+            acc.extend_from_slice(&buf[..n]);
+            body_so_far += n;
+        }
+        acc
+    }
+
+    fn response_server(responses: Vec<Vec<u8>>) -> (u16, mpsc::Receiver<Vec<u8>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            for response in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_http_request(&mut stream);
+                tx.send(request).unwrap();
+                stream.write_all(&response).unwrap();
+            }
+        });
+        (port, rx)
+    }
+
+    fn request_target(request: &[u8]) -> String {
+        String::from_utf8_lossy(request)
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .expect("request line has target")
+            .to_owned()
+    }
+
+    fn query_value(target: &str, key: &str) -> String {
+        let url = reqwest::Url::parse(&format!("http://test{target}")).unwrap();
+        url.query_pairs()
+            .find(|(candidate, _)| candidate == key)
+            .map(|(_, value)| value.into_owned())
+            .unwrap_or_else(|| panic!("missing query key {key}"))
+    }
+
+    fn b64_ratchet(identity: &Identity) -> Option<String> {
+        identity
+            .ratchet_initial_pub
+            .as_ref()
+            .map(|key| STANDARD.encode(key.as_bytes()))
+    }
+
+    fn signed_pubkeys_json(identity: &Identity) -> String {
+        let resp = crate::identity_bundle::scheme1_pubkeys_response_for_test(
+            identity,
+            1,
+            CLIENT_RN_CAPABILITY_FLOOR,
+        );
+        serde_json::json!({
+            "user_id": resp.user_id,
+            "ik_x25519_pub": resp.ik_x25519_pub,
+            "ik_ed25519_pub": resp.ik_ed25519_pub,
+            "ik_mlkem768_pub": resp.ik_mlkem768_pub,
+            "registered_at": resp.registered_at,
+            "last_rotated_at": resp.last_rotated_at,
+            "ik_ratchet_initial_pub": resp.ik_ratchet_initial_pub,
+            "rn_capabilities": resp.rn_capabilities,
+            "registration_sig": resp.registration_sig,
+            "identity_scheme": resp.identity_scheme,
+            "identity_bundle_version": resp.identity_bundle_version,
+            "identity_revision": resp.identity_revision,
+            "ik_root_ed25519_pub": resp.ik_root_ed25519_pub,
+            "identity_bundle_proof_sig": resp.identity_bundle_proof_sig
+        })
+        .to_string()
+    }
+
+    fn prekey_bundle_json(identity: &Identity, x25519_override: Option<String>) -> String {
+        let state = PrekeyState::new(identity, PrekeyConfig::default(), 1_800_000_000);
+        let opk = state
+            .opk_pool
+            .first()
+            .expect("default prekey state has OPKs");
+        serde_json::json!({
+            "user_id": identity.user_id.as_str(),
+            "ik_x25519_pub": x25519_override.unwrap_or_else(|| {
+                STANDARD.encode(identity.x25519_public.as_bytes())
+            }),
+            "ik_ed25519_pub": STANDARD.encode(identity.ed25519_public.as_bytes()),
+            "ik_mlkem768_pub": STANDARD.encode(identity.mlkem_public_bytes),
+            "spk_pub": STANDARD.encode(state.current_spk.public),
+            "spk_signature": STANDARD.encode(state.current_spk.signature),
+            "spk_rotated_at": crate::prekeys::iso_8601_from_unix_seconds(
+                state.current_spk.rotated_at_unix_seconds
+            ),
+            "opk": {
+                "id": opk.id,
+                "pub_b64": STANDARD.encode(opk.public)
+            },
+            "remaining_opk_count": state.opk_pool.len() - 1,
+            "ik_ratchet_initial_pub": b64_ratchet(identity)
+        })
+        .to_string()
+    }
+
+    fn bundle_response(
+        identity: &Identity,
+        served_capabilities: Option<u32>,
+        signed_capabilities: Option<u32>,
+    ) -> PubkeysResponse {
+        let ik_x25519_pub = STANDARD.encode(identity.x25519_public.as_bytes());
+        let ik_ed25519_pub = STANDARD.encode(identity.ed25519_public.as_bytes());
+        let ik_mlkem768_pub = STANDARD.encode(&identity.mlkem_public_bytes[..]);
+        let signed_message = match signed_capabilities {
+            Some(capabilities) => reg_msg_with_capabilities(
+                &identity.user_id,
+                &ik_x25519_pub,
+                &ik_ed25519_pub,
+                &ik_mlkem768_pub,
+                None,
+                capabilities,
+            ),
+            None => reg_msg(
+                &identity.user_id,
+                &ik_x25519_pub,
+                &ik_ed25519_pub,
+                &ik_mlkem768_pub,
+                None,
+            ),
+        };
+        let signature = crypto::ed25519::sign(&identity.ed25519_secret, &signed_message);
+
+        PubkeysResponse {
+            user_id: identity.user_id.clone(),
+            ik_x25519_pub,
+            ik_ed25519_pub,
+            ik_mlkem768_pub,
+            registered_at: "2026-01-01T00:00:00.000Z".to_owned(),
+            last_rotated_at: None,
+            ik_ratchet_initial_pub: None,
+            rn_capabilities: served_capabilities,
+            registration_sig: Some(STANDARD.encode(signature.as_bytes())),
+            identity_scheme: None,
+            identity_bundle_version: None,
+            identity_revision: None,
+            ik_root_ed25519_pub: None,
+            identity_bundle_proof_sig: None,
+        }
+    }
+
+    mod pw4_tests {
+        use super::*;
+
+        fn http_json_response(status: &str, body: impl AsRef<[u8]>) -> Vec<u8> {
+            let body = body.as_ref();
+            let mut response = Vec::new();
+            response.extend_from_slice(format!("HTTP/1.1 {status}\r\n").as_bytes());
+            response.extend_from_slice(format!("Content-Length: {}\r\n", body.len()).as_bytes());
+            response.extend_from_slice(b"Content-Type: application/json\r\n\r\n");
+            response.extend_from_slice(body);
+            response
+        }
+
+        fn read_request(stream: &mut std::net::TcpStream) -> Vec<u8> {
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut buf = [0u8; 4096];
+            let mut acc = Vec::new();
+            let header_end = loop {
+                let n = stream.read(&mut buf).unwrap();
+                assert!(n > 0, "request ended before headers");
+                acc.extend_from_slice(&buf[..n]);
+                if let Some(pos) = acc.windows(4).position(|window| window == b"\r\n\r\n") {
+                    break pos;
+                }
+            };
+            let headers = std::str::from_utf8(&acc[..header_end]).unwrap();
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim())
+                })
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            while acc[header_end + 4..].len() < content_length {
+                let n = stream.read(&mut buf).unwrap();
+                assert!(n > 0, "request body ended early");
+                acc.extend_from_slice(&buf[..n]);
+            }
+            acc
+        }
+
+        fn one_shot_server(response: Vec<u8>) -> (u16, mpsc::Receiver<Vec<u8>>) {
+            multi_response_server(vec![response])
+        }
+
+        fn multi_response_server(responses: Vec<Vec<u8>>) -> (u16, mpsc::Receiver<Vec<u8>>) {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let (tx, rx) = mpsc::channel();
+            thread::spawn(move || {
+                for response in responses {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let request = read_request(&mut stream);
+                    tx.send(request).unwrap();
+                    stream.write_all(&response).unwrap();
+                }
+            });
+            (port, rx)
+        }
+
+        fn request_target(request: &[u8]) -> &str {
+            std::str::from_utf8(request)
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap()
+                .split_whitespace()
+                .nth(1)
+                .unwrap()
+        }
+
+        fn request_json_body(request: &[u8]) -> serde_json::Value {
+            let text = std::str::from_utf8(request).unwrap();
+            serde_json::from_str(text.split("\r\n\r\n").nth(1).unwrap()).unwrap()
+        }
+
+        fn pubkeys_response_json(response: &PubkeysResponse) -> Vec<u8> {
+            serde_json::to_vec(&serde_json::json!({
+                "user_id": &response.user_id,
+                "ik_x25519_pub": &response.ik_x25519_pub,
+                "ik_ed25519_pub": &response.ik_ed25519_pub,
+                "ik_mlkem768_pub": &response.ik_mlkem768_pub,
+                "registered_at": &response.registered_at,
+                "last_rotated_at": &response.last_rotated_at,
+                "ik_ratchet_initial_pub": &response.ik_ratchet_initial_pub,
+                "rn_capabilities": response.rn_capabilities,
+                "registration_sig": &response.registration_sig,
+                "identity_scheme": response.identity_scheme,
+                "identity_bundle_version": response.identity_bundle_version,
+                "identity_revision": response.identity_revision,
+                "ik_root_ed25519_pub": &response.ik_root_ed25519_pub,
+                "identity_bundle_proof_sig": &response.identity_bundle_proof_sig,
+            }))
+            .unwrap()
+        }
+
+        fn prekey_bundle_json(identity: &Identity, ed25519_pub_b64: Option<String>) -> Vec<u8> {
+            let spk_pub = [0x33u8; 32];
+            let spk_sig = crypto::ed25519::sign(&identity.ed25519_secret, &spk_pub);
+            serde_json::to_vec(&serde_json::json!({
+                "user_id": &identity.user_id,
+                "ik_x25519_pub": STANDARD.encode(identity.x25519_public.as_bytes()),
+                "ik_ed25519_pub": ed25519_pub_b64
+                    .unwrap_or_else(|| STANDARD.encode(identity.ed25519_public.as_bytes())),
+                "ik_mlkem768_pub": STANDARD.encode(identity.mlkem_public_bytes),
+                "ik_ratchet_initial_pub": identity.ratchet_initial_pub
+                    .as_ref()
+                    .map(|key| STANDARD.encode(key.as_bytes())),
+                "spk_pub": STANDARD.encode(spk_pub),
+                "spk_signature": STANDARD.encode(spk_sig.as_bytes()),
+                "spk_rotated_at": "2026-07-29T00:00:00.000Z",
+                "opk": {
+                    "id": 7,
+                    "pub_b64": STANDARD.encode([0x44u8; 32]),
+                },
+                "remaining_opk_count": 41,
+            }))
+            .unwrap()
+        }
+
+        #[test]
+        fn register_request_carries_nonzero_rn_capabilities() {
+            let identity = generate_identity("alice".to_owned());
+            let request = KeyServerClient::build_register_request(&identity);
+            let capabilities = request
+                .rn_capabilities
+                .expect("new client registrations must advertise capabilities");
+
+            assert_ne!(capabilities, 0);
+            assert_eq!(capabilities, CLIENT_RN_CAPABILITIES);
+            assert!(capabilities & RN_CAP_WIRE_RN != 0);
+            let json = serde_json::to_value(&request).unwrap();
+            assert_eq!(
+                json.get("rn_capabilities")
+                    .and_then(serde_json::Value::as_u64),
+                Some(u64::from(capabilities))
+            );
+
+            let signature_bytes = STANDARD.decode(&request.registration_sig).unwrap();
+            let signature = crypto::ed25519::Signature::from_bytes(
+                signature_bytes.as_slice().try_into().unwrap(),
+            );
+            let extended = reg_msg_with_capabilities(
+                &request.user_id,
+                &request.ik_x25519_pub,
+                &request.ik_ed25519_pub,
+                &request.ik_mlkem768_pub,
+                request.ik_ratchet_initial_pub.as_deref(),
+                capabilities,
+            );
+            assert!(
+                crypto::ed25519::verify(&identity.ed25519_public, &extended, &signature).unwrap(),
+                "registration_sig must cover the advertised capability bitmap"
+            );
+            let legacy = reg_msg(
+                &request.user_id,
+                &request.ik_x25519_pub,
+                &request.ik_ed25519_pub,
+                &request.ik_mlkem768_pub,
+                request.ik_ratchet_initial_pub.as_deref(),
+            );
+            assert!(
+                !crypto::ed25519::verify(&identity.ed25519_public, &legacy, &signature).unwrap(),
+                "stripping rn_capabilities must invalidate the registration signature"
+            );
+        }
+
+        #[test]
+        fn client_rotation_never_lowers_rn_capabilities() {
+            let old_identity = generate_identity("alice".to_owned());
+            let new_identity = generate_identity("alice".to_owned());
+            let request = KeyServerClient::build_rotation_request(&old_identity, &new_identity);
+            let rotation = request.rotation.as_ref().unwrap();
+            let capabilities = request
+                .rn_capabilities
+                .expect("rotation must re-advertise this client's capability floor");
+
+            assert_eq!(capabilities, CLIENT_RN_CAPABILITIES);
+            assert_ne!(capabilities, 0);
+
+            let registration_signature_bytes = STANDARD.decode(&request.registration_sig).unwrap();
+            let registration_signature = crypto::ed25519::Signature::from_bytes(
+                registration_signature_bytes.as_slice().try_into().unwrap(),
+            );
+            let registration_message = reg_msg_with_capabilities(
+                &request.user_id,
+                &request.ik_x25519_pub,
+                &request.ik_ed25519_pub,
+                &request.ik_mlkem768_pub,
+                request.ik_ratchet_initial_pub.as_deref(),
+                capabilities,
+            );
+            assert!(crypto::ed25519::verify(
+                &new_identity.ed25519_public,
+                &registration_message,
+                &registration_signature,
+            )
+            .unwrap());
+
+            let rotation_signature_bytes = STANDARD.decode(&rotation.prev_sig).unwrap();
+            let rotation_signature = crypto::ed25519::Signature::from_bytes(
+                rotation_signature_bytes.as_slice().try_into().unwrap(),
+            );
+            let rotation_message = rot_msg_with_capabilities(
+                &request.user_id,
+                &rotation.prev_ik_ed25519_pub,
+                &request.ik_x25519_pub,
+                &request.ik_ed25519_pub,
+                &request.ik_mlkem768_pub,
+                request.ik_ratchet_initial_pub.as_deref(),
+                capabilities,
+            );
+            assert!(crypto::ed25519::verify(
+                &old_identity.ed25519_public,
+                &rotation_message,
+                &rotation_signature,
+            )
+            .unwrap());
+
+            let legacy_rotation = rot_msg(
+                &request.user_id,
+                &rotation.prev_ik_ed25519_pub,
+                &request.ik_x25519_pub,
+                &request.ik_ed25519_pub,
+                &request.ik_mlkem768_pub,
+                request.ik_ratchet_initial_pub.as_deref(),
+            );
+            assert!(
+                !crypto::ed25519::verify(
+                    &old_identity.ed25519_public,
+                    &legacy_rotation,
+                    &rotation_signature,
+                )
+                .unwrap(),
+                "a rolled-back/stripped rotation must not verify as a lower-capability record"
+            );
+        }
+
+        #[test]
+        fn request_ownership_challenge_round_trips_through_mock_server() {
+            let nonce = [0x5au8; PROOF_CHALLENGE_NONCE_BYTES];
+            let body = serde_json::to_vec(&serde_json::json!({
+                "nonce_b64": STANDARD.encode(nonce),
+                "service_account_id": "service-account-1",
+                "owner_user_id": "owner-user-1",
+                "issued_at_unix_seconds": 1_800_000_000u64,
+                "expires_at_unix_seconds": 1_800_000_300u64,
+            }))
+            .unwrap();
+            let (port, rx) = one_shot_server(http_json_response("201 Created", body));
+            let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+
+            let challenge = client
+                .request_ownership_challenge("service-account-1", "owner-user-1")
+                .unwrap();
+
+            assert_eq!(challenge.nonce(), &nonce);
+            assert!(challenge.binds("service-account-1", "owner-user-1"));
+            assert_eq!(challenge.issued_at_unix_seconds(), 1_800_000_000);
+            assert_eq!(challenge.expires_at_unix_seconds(), 1_800_000_300);
+            assert!(!challenge.is_spent());
+            let request = rx.recv().unwrap();
+            assert_eq!(request_target(&request), "/v1/account-ownership/challenge");
+            let sent = request_json_body(&request);
+            assert_eq!(sent["service_account_id"], "service-account-1");
+            assert_eq!(sent["owner_user_id"], "owner-user-1");
+            assert_eq!(sent.as_object().unwrap().len(), 2);
+            assert!(!String::from_utf8_lossy(&request)
+                .to_ascii_lowercase()
+                .contains("authorization:"));
+        }
+
+        #[test]
+        fn fetch_identity_bundle_atomically_fetches_pubkeys_and_prekey_bundle() {
+            let identity = generate_identity("self-bundle".to_owned());
+            let pubkeys = crate::identity_bundle::scheme1_pubkeys_response_for_test(
+                &identity,
+                3,
+                RN_CAP_WIRE_RN,
+            );
+            let (port, rx) = multi_response_server(vec![
+                http_json_response("200 OK", pubkeys_response_json(&pubkeys)),
+                http_json_response("200 OK", prekey_bundle_json(&identity, None)),
+            ]);
+            let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+
+            let merged = client
+                .fetch_own_identity_bundle_since(&identity, None)
+                .unwrap();
+
+            assert_eq!(merged.identity.revision, 3);
+            assert_eq!(merged.identity.capability_bundle, RN_CAP_WIRE_RN);
+            assert_eq!(merged.prekey.spk_x25519_pub, [0x33u8; 32]);
+            assert_eq!(merged.prekey.opk, Some((7, [0x44u8; 32])));
+            assert_eq!(merged.prekey.remaining_opk_count, 41);
+            let pubkeys_request = rx.recv().unwrap();
+            let prekey_request = rx.recv().unwrap();
+            assert_eq!(request_target(&pubkeys_request), "/v1/pubkeys/self-bundle");
+            assert!(
+                request_target(&prekey_request).starts_with("/v1/prekey-bundle/self-bundle?"),
+                "prekey bundle fetch must happen through the authenticated consuming endpoint"
+            );
+
+            let other = generate_identity("self-bundle".to_owned());
+            let (port, _rx) = multi_response_server(vec![
+                http_json_response("200 OK", pubkeys_response_json(&pubkeys)),
+                http_json_response(
+                    "200 OK",
+                    prekey_bundle_json(
+                        &identity,
+                        Some(STANDARD.encode(other.ed25519_public.as_bytes())),
+                    ),
+                ),
+            ]);
+            let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+            assert!(matches!(
+                client.fetch_own_identity_bundle_since(&identity, None),
+                Err(Error::PeerBundleProofInvalid)
+            ));
+        }
+    }
+
+    #[test]
+    fn validate_peer_bundle_accepts_signed_legacy_and_zero_capability_forms() {
+        let identity = generate_identity("peer".to_owned());
+
+        let legacy = bundle_response(&identity, None, None);
+        assert_eq!(validate_peer_bundle(&legacy), Ok(()));
+        assert!(verify_peer_bundle(&legacy));
+
+        let explicit_zero = bundle_response(&identity, Some(0), Some(0));
+        assert_eq!(validate_peer_bundle(&explicit_zero), Ok(()));
+        assert!(verify_peer_bundle(&explicit_zero));
+    }
+
+    #[test]
+    fn validate_peer_bundle_accepts_canonical_scheme1_identity_proofs() {
+        let identity = generate_identity("peer".to_owned());
+        let scheme1 =
+            crate::identity_bundle::scheme1_pubkeys_response_for_test(&identity, 1, RN_CAP_WIRE_RN);
+
+        assert_eq!(validate_peer_bundle(&scheme1), Ok(()));
+        assert!(verify_peer_bundle(&scheme1));
+    }
+
+    #[test]
+    fn validate_peer_bundle_reports_missing_or_malformed_signature_material() {
+        let identity = generate_identity("peer".to_owned());
+
+        let mut missing_signature = bundle_response(&identity, None, None);
+        missing_signature.registration_sig = None;
+        assert_eq!(
+            validate_peer_bundle(&missing_signature),
+            Err(IdentityBundleError::MissingRegistrationSignature)
+        );
+
+        let mut malformed_key = bundle_response(&identity, None, None);
+        malformed_key.ik_ed25519_pub = "not base64".to_owned();
+        assert_eq!(
+            validate_peer_bundle(&malformed_key),
+            Err(IdentityBundleError::MalformedEd25519PublicKey)
+        );
+
+        let mut malformed_signature = bundle_response(&identity, None, None);
+        malformed_signature.registration_sig = Some(STANDARD.encode([0x42u8; 63]));
+        assert_eq!(
+            validate_peer_bundle(&malformed_signature),
+            Err(IdentityBundleError::MalformedRegistrationSignature)
+        );
+    }
+
+    #[test]
+    fn validate_peer_bundle_reports_capability_and_signature_failures() {
+        let identity = generate_identity("peer".to_owned());
+
+        let mut unsupported_capability = bundle_response(&identity, Some(RN_CAP_WIRE_RN), Some(0));
+        unsupported_capability.rn_capabilities = Some(RN_CAP_MAX + 1);
+        assert_eq!(
+            validate_peer_bundle(&unsupported_capability),
+            Err(IdentityBundleError::UnsupportedCapabilityBitmap)
+        );
+
+        let tampered_capability = bundle_response(&identity, Some(RN_CAP_WIRE_RN), Some(0));
+        assert_eq!(
+            validate_peer_bundle(&tampered_capability),
+            Err(IdentityBundleError::SignatureMismatch)
+        );
+        assert!(!verify_peer_bundle(&tampered_capability));
+
+        let mut tampered_scheme1 =
+            crate::identity_bundle::scheme1_pubkeys_response_for_test(&identity, 1, RN_CAP_WIRE_RN);
+        tampered_scheme1.ik_x25519_pub = STANDARD.encode([0x42u8; 32]);
+        assert_eq!(
+            validate_peer_bundle(&tampered_scheme1),
+            Err(IdentityBundleError::CanonicalIdentityProofInvalid)
+        );
+        assert!(!verify_peer_bundle(&tampered_scheme1));
+    }
+
+    #[test]
+    fn identity_bundle_error_text_does_not_echo_sensitive_values() {
+        let text = IdentityBundleError::SignatureMismatch.to_string();
+
+        assert!(text.contains("signature"));
+        assert!(!text.contains("peer"));
+        assert!(!text.contains("alice"));
+        assert!(!text.contains('@'));
+    }
+
+    #[test]
+    fn register_request_carries_nonzero_rn_capabilities() {
+        let identity = generate_identity("rn-advertiser".to_owned());
+        let request = KeyServerClient::build_register_request(&identity);
+
+        let capabilities = request
+            .rn_capabilities
+            .expect("registration must advertise a signed capability bitmap");
+        assert_ne!(capabilities, 0);
+        assert_eq!(capabilities, CLIENT_RN_CAPABILITY_FLOOR);
+        assert!(capabilities & RN_CAP_WIRE_RN != 0);
+
+        let encoded = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            encoded
+                .get("rn_capabilities")
+                .and_then(serde_json::Value::as_u64),
+            Some(u64::from(CLIENT_RN_CAPABILITY_FLOOR))
+        );
+
+        let sig_decoded = STANDARD.decode(&request.registration_sig).unwrap();
+        let mut sig_bytes = [0u8; 64];
+        sig_bytes.copy_from_slice(&sig_decoded);
+        let signature = crypto::ed25519::Signature::from_bytes(sig_bytes);
+        let extended = reg_msg_with_capabilities(
+            &request.user_id,
+            &request.ik_x25519_pub,
+            &request.ik_ed25519_pub,
+            &request.ik_mlkem768_pub,
+            request.ik_ratchet_initial_pub.as_deref(),
+            capabilities,
+        );
+        assert!(crypto::ed25519::verify(&identity.ed25519_public, &extended, &signature).unwrap());
+
+        let legacy = reg_msg(
+            &request.user_id,
+            &request.ik_x25519_pub,
+            &request.ik_ed25519_pub,
+            &request.ik_mlkem768_pub,
+            request.ik_ratchet_initial_pub.as_deref(),
+        );
+        assert!(
+            !crypto::ed25519::verify(&identity.ed25519_public, &legacy, &signature).unwrap(),
+            "signature must bind the capability bitmap, not just the legacy fields"
+        );
+    }
+
+    #[test]
+    fn client_rotation_never_lowers_rn_capabilities() {
+        let old_identity = generate_identity("rotating-owner".to_owned());
+        let new_identity = generate_identity("rotating-owner".to_owned());
+        let fresh = KeyServerClient::build_register_request(&new_identity);
+        let rotation = KeyServerClient::build_rotation_request(&old_identity, &new_identity);
+
+        let fresh_capabilities = fresh
+            .rn_capabilities
+            .expect("fresh registration advertises RN");
+        let rotation_capabilities = rotation
+            .rn_capabilities
+            .expect("rotation registration advertises RN");
+        assert_ne!(fresh_capabilities, 0);
+        assert_eq!(fresh_capabilities, CLIENT_RN_CAPABILITY_FLOOR);
+        assert!(
+            rotation_capabilities >= fresh_capabilities,
+            "rotation must not advertise below the fresh registration floor"
+        );
+
+        let mut sig_bytes = [0u8; 64];
+        sig_bytes.copy_from_slice(&STANDARD.decode(&rotation.registration_sig).unwrap());
+        let signature = crypto::ed25519::Signature::from_bytes(sig_bytes);
+        let signed = reg_msg_with_capabilities(
+            &rotation.user_id,
+            &rotation.ik_x25519_pub,
+            &rotation.ik_ed25519_pub,
+            &rotation.ik_mlkem768_pub,
+            rotation.ik_ratchet_initial_pub.as_deref(),
+            rotation_capabilities,
+        );
+        assert!(
+            crypto::ed25519::verify(&new_identity.ed25519_public, &signed, &signature).unwrap()
+        );
+    }
+
+    #[test]
+    fn request_ownership_challenge_round_trips_through_mock_server() {
+        let nonce = [0x5au8; PROOF_CHALLENGE_NONCE_BYTES];
+        let response_body = serde_json::json!({
+            "nonce_b64": STANDARD.encode(nonce),
+            "service_account_id": "hosted-account-1",
+            "owner_user_id": "owner-user-1",
+            "issued_at_unix_seconds": 1_800_000_000u64,
+            "expires_at_unix_seconds": 1_800_000_300u64
+        })
+        .to_string();
+        let (port, rx) = response_server(vec![test_response(
+            b"HTTP/1.1 201 Created\r\n",
+            response_body,
+        )]);
+
+        let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+        let challenge = client
+            .request_ownership_challenge("hosted-account-1", "owner-user-1")
+            .expect("mock server returns a bound challenge");
+
+        assert_eq!(challenge.nonce(), &nonce);
+        assert!(challenge.binds("hosted-account-1", "owner-user-1"));
+        assert!(!challenge.binds("hosted-account-1", "other-owner"));
+        assert_eq!(challenge.issued_at_unix_seconds(), 1_800_000_000);
+        assert_eq!(challenge.expires_at_unix_seconds(), 1_800_000_300);
+
+        let request = String::from_utf8(rx.recv().unwrap()).unwrap();
+        assert!(request
+            .to_ascii_lowercase()
+            .starts_with("post /v1/account-ownership/challenge http/1.1\r\n"));
+        assert!(!request.to_ascii_lowercase().contains("authorization:"));
+        let body = request.split("\r\n\r\n").nth(1).unwrap();
+        let value: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(value["service_account_id"], "hosted-account-1");
+        assert_eq!(value["owner_user_id"], "owner-user-1");
+    }
+
+    #[test]
+    fn fetch_identity_bundle_atomically_fetches_pubkeys_and_prekey_bundle() {
+        let identity = generate_identity("bundle-owner".to_owned());
+        let pubkeys_body = signed_pubkeys_json(&identity);
+        let prekey_body = prekey_bundle_json(&identity, None);
+        let (port, rx) = response_server(vec![
+            test_response(b"HTTP/1.1 200 OK\r\n", pubkeys_body),
+            test_response(b"HTTP/1.1 200 OK\r\n", prekey_body),
+        ]);
+
+        let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+        let merged = client
+            .fetch_identity_bundle(&identity, "bundle-owner")
+            .expect("matching pubkeys and prekey responses compose");
+
+        assert_eq!(
+            merged.identity.ed25519_identity_pub,
+            *identity.ed25519_public.as_bytes()
+        );
+        assert_eq!(
+            merged.identity.x25519_identity_pub,
+            *identity.x25519_public.as_bytes()
+        );
+        assert_eq!(
+            merged.identity.capability_bundle,
+            CLIENT_RN_CAPABILITY_FLOOR
+        );
+        assert!(merged.prekey.opk.is_some());
+
+        let first = rx.recv().unwrap();
+        let second = rx.recv().unwrap();
+        assert_eq!(request_target(&first), "/v1/pubkeys/bundle-owner");
+        let second_target = request_target(&second);
+        assert!(second_target.starts_with("/v1/prekey-bundle/bundle-owner?"));
+        assert_eq!(query_value(&second_target, "requester_id"), "bundle-owner");
+        assert_eq!(query_value(&second_target, "recipient_id"), "bundle-owner");
+
+        let mismatched_prekey = prekey_bundle_json(&identity, Some(STANDARD.encode([0x99u8; 32])));
+        let (port, _rx) = response_server(vec![
+            test_response(b"HTTP/1.1 200 OK\r\n", signed_pubkeys_json(&identity)),
+            test_response(b"HTTP/1.1 200 OK\r\n", mismatched_prekey),
+        ]);
+        let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+        match client.fetch_identity_bundle(&identity, "bundle-owner") {
+            Err(Error::Transport(message)) => {
+                assert!(message.contains("key binding"));
+                assert!(!message.contains("bundle-owner"));
+            }
+            other => panic!("expected endpoint key binding refusal, got {other:?}"),
+        }
+    }
 }

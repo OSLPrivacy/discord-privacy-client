@@ -1,5 +1,10 @@
-import { SELF } from "cloudflare:test";
+import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import {
+  canonicalIdentityBundleBytes,
+  deriveCanonicalOslIdentityId,
+  type CanonicalIdentityBundle,
+} from "../../src/lib/identity-authority.js";
 import { buildRegMsg, buildRotMsg } from "../../src/lib/signed-request.js";
 import {
   generateEd25519Pair,
@@ -12,13 +17,52 @@ import {
 
 let n = 0;
 const uid = () => `u-${Date.now()}-${n++}`;
+const testDb = (env as unknown as { DB: D1Database }).DB;
+const reservedDerivedId = "osl1_" + "a".repeat(32);
+let registrationIp = 1;
 
 async function post(body: unknown) {
+  const ip = registrationIp++;
   return SELF.fetch("http://test/v1/register", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      "cf-connecting-ip": `198.51.${Math.floor(ip / 254)}.${(ip % 254) + 1}`,
+    },
     body: JSON.stringify(body),
   });
+}
+
+async function userRowCount(userId: string): Promise<number | undefined> {
+  const row = await testDb
+    .prepare("SELECT COUNT(*) AS count FROM users WHERE user_id = ?")
+    .bind(userId)
+    .first<{ count: number }>();
+  return row?.count;
+}
+
+async function canonicalRegisterBody(
+  root: Awaited<ReturnType<typeof generateEd25519Pair>>,
+  current: Awaited<ReturnType<typeof generateEd25519Pair>>,
+): Promise<Record<string, unknown>> {
+  const bundle: CanonicalIdentityBundle = {
+    user_id: await deriveCanonicalOslIdentityId(root.publicKeyB64),
+    identity_scheme: 1,
+    identity_bundle_version: 1,
+    identity_revision: 1,
+    ik_root_ed25519_pub: root.publicKeyB64,
+    ik_x25519_pub: STUB_X25519_PUB_B64,
+    ik_ed25519_pub: current.publicKeyB64,
+    ik_mlkem768_pub: STUB_MLKEM_PUB_B64,
+    ik_ratchet_initial_pub: STUB_RATCHET_PUB_B64,
+    rn_capabilities: 1,
+  };
+  const canonical = canonicalIdentityBundleBytes(bundle);
+  return {
+    ...bundle,
+    identity_bundle_proof_sig: await signEd25519(root.signingKey, canonical),
+    registration_sig: await signEd25519(current.signingKey, canonical),
+  };
 }
 
 describe("POST /v1/register — OPEN + Ed25519-signed", () => {
@@ -28,6 +72,114 @@ describe("POST /v1/register — OPEN + Ed25519-signed", () => {
       const res = await post(await signedRegisterBody(userId, pair));
       expect(res.status).toBe(400);
     }
+  });
+
+  it("refuses the reserved derived-identity namespace without creating a row", async () => {
+    const pair = await generateEd25519Pair();
+    const res = await post(await signedRegisterBody(reservedDerivedId, pair));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe(
+      "reserved derived identity namespace requires root proof verification",
+    );
+    expect(await userRowCount(reservedDerivedId)).toBe(0);
+
+    const controlId = uid();
+    const control = await post(await signedRegisterBody(controlId, pair));
+    expect(control.status).toBe(201);
+    expect(await userRowCount(controlId)).toBe(1);
+  });
+
+  it("prove an unproven front-run registration cannot block the true owner's", async () => {
+    const attacker = await generateEd25519Pair();
+    const root = await generateEd25519Pair();
+    const current = await generateEd25519Pair();
+    const ownerBody = await canonicalRegisterBody(root, current);
+    const userId = ownerBody.user_id as string;
+    expect(userId).toMatch(/^osl1_[a-z2-7]{52}$/);
+
+    const frontRun = await post(await signedRegisterBody(userId, attacker));
+    expect(frontRun.status).toBe(400);
+    expect(((await frontRun.json()) as { error: string }).error).toBe(
+      "reserved derived identity namespace requires root proof verification",
+    );
+    expect(await userRowCount(userId)).toBe(0);
+
+    const owner = await post(ownerBody);
+    expect(owner.status).toBe(201);
+    expect(await userRowCount(userId)).toBe(1);
+
+    const stored = await testDb
+      .prepare(
+        `SELECT identity_scheme, ik_root_ed25519_pub, ik_ed25519_pub
+           FROM users
+          WHERE user_id = ?`,
+      )
+      .bind(userId)
+      .first<{
+        identity_scheme: number;
+        ik_root_ed25519_pub: string;
+        ik_ed25519_pub: string;
+      }>();
+    expect(stored).toEqual({
+      identity_scheme: 1,
+      ik_root_ed25519_pub: root.publicKeyB64,
+      ik_ed25519_pub: current.publicKeyB64,
+    });
+
+    const published = await SELF.fetch(
+      `http://test/v1/pubkeys/${encodeURIComponent(userId)}`,
+    );
+    expect(published.status).toBe(200);
+    expect(await published.json()).toMatchObject({
+      user_id: userId,
+      identity_scheme: 1,
+      ik_root_ed25519_pub: root.publicKeyB64,
+      ik_ed25519_pub: current.publicKeyB64,
+    });
+  });
+
+  it("accepts reserved-namespace near misses as ordinary opaque ids", async () => {
+    const cases = [
+      "osl1_" + "a".repeat(31),
+      "osl1_" + "A".repeat(32),
+      "osl1" + "a".repeat(32),
+      uid(),
+    ];
+    for (const userId of cases) {
+      const pair = await generateEd25519Pair();
+      const res = await post(await signedRegisterBody(userId, pair));
+      expect(res.status, `${userId} should register normally`).toBe(201);
+      expect(await userRowCount(userId)).toBe(1);
+    }
+  });
+
+  it("refuses Discord snowflakes instead of granting first-write-wins ownership", async () => {
+    const pair = await generateEd25519Pair();
+    const snowflake = "900000000000000001";
+    const res = await post(await signedRegisterBody(snowflake, pair));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe(
+      "Discord identifiers are not OSL identities",
+    );
+    expect(await userRowCount(snowflake)).toBe(0);
+  });
+
+  it("migration-disabled opaque rows remain invisible until current-key re-registration", async () => {
+    const pair = await generateEd25519Pair();
+    const userId = uid();
+    const body = await signedRegisterBody(userId, pair);
+    expect((await post(body)).status).toBe(201);
+    await testDb
+      .prepare("UPDATE users SET identity_lookup_enabled = 0 WHERE user_id = ?")
+      .bind(userId)
+      .run();
+    expect(
+      (await SELF.fetch(`http://test/v1/pubkeys/${userId}`)).status,
+    ).toBe(404);
+    expect((await post(body)).status).toBe(200);
+    expect(
+      (await SELF.fetch(`http://test/v1/pubkeys/${userId}`)).status,
+    ).toBe(200);
   });
 
   it("Case A: 201 on first registration with a valid signature (NO admin token)", async () => {

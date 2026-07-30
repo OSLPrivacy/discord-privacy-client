@@ -18,8 +18,14 @@ describe("bundled service marks", () => {
 
   it("uses clean vector provider marks instead of the old four-square placeholder", () => {
     const outlook = providerLogo("outlook");
+    const proton = providerLogo("proton");
     expect(outlook).toContain('aria-label="Microsoft Outlook"');
-    expect(outlook).not.toContain("#f25022");
+    expect(outlook).toContain("provider-logo-outlook");
+    expect(outlook).toContain('fill="#1490df"');
+    expect(proton).toContain('aria-label="Proton Mail"');
+    expect(proton).toContain("provider-logo-proton");
+    expect(proton).toContain('fill="#6d4aff"');
+    expect(proton).not.toContain('fill="currentColor"');
     expect(providerLogo("yahoo")).toContain('aria-label="Yahoo Mail"');
     expect(providerLogo("aol")).not.toContain("<text");
   });

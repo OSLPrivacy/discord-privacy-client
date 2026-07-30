@@ -141,7 +141,7 @@ pub fn migrate_whitelist_state_in_place(
             Some(s) => s,
             None => {
                 tracing::warn!(
-                    scope_key = %scope_key,
+                    scope_key = %crate::log_id::log_id(scope_key),
                     "OSL migration: legacy scope_key didn't parse; skipping peer projection"
                 );
                 continue;

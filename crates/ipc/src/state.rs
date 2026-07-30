@@ -18,9 +18,10 @@ use crate::whitelist_state::WhitelistState;
 use crypto::x25519;
 use keystore::{Identity, KeyServerClient};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use store::MessageStore;
 
 /// Time-to-live for cached sender public keys. Bounded staleness
@@ -150,11 +151,10 @@ impl SenderPubkeyCache {
     }
 }
 
-/// REGISTER-FIX (TOFU): one peer key-change the user must
-/// acknowledge. Raised when a peer's `ik_ed25519_pub` returned by
-/// `fetch_pubkeys` differs from the trusted first-seen baseline in
-/// `peer_map`. Surfaced (NOT warn-swallowed) and held until the user
-/// explicitly accepts (baseline → new) or declines (baseline kept).
+/// One complete peer-bundle change the user must acknowledge. Raised
+/// when any signed Ed25519, X25519, ML-KEM or ratchet-bootstrap key
+/// differs from the trusted baseline. The live keys remain unchanged
+/// until the user verifies the new bundle number and accepts it.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct KeyChangeAlert {
     pub discord_id: String,
@@ -163,19 +163,27 @@ pub struct KeyChangeAlert {
     pub old_ed25519_pub: String,
     /// base64 Ed25519 pub the keyserver just returned.
     pub new_ed25519_pub: String,
-    /// Safety number of the NEW key (for out-of-band comparison).
+    /// Safety number of the complete new bundle.
     pub new_safety_number: String,
     /// First time this change was observed (ISO-8601).
     pub first_observed: String,
+    /// Complete pending bundle. Public key material, but not part of
+    /// the renderer DTO; acceptance adopts exactly what the displayed
+    /// bundle safety number covered.
+    #[serde(skip_serializing)]
+    pub pending_bundle: crate::tofu::KeyBundle,
 }
 
-#[derive(Default)]
 pub struct AppState {
     /// Serializes in-process Discord-account switches. The active account
     /// directory is process-global, so two concurrent switch commands must
     /// never interleave validation, marker updates, and state reloads.
     pub account_switch_lock: Mutex<()>,
     pub identity: Mutex<Option<Identity>>,
+    /// Live prekey lifecycle for the loaded identity. This is absent
+    /// until an identity is explicitly installed; default AppState must
+    /// refuse prekey-dependent work rather than manufacturing authority.
+    pub prekey_state: Mutex<Option<keystore::PrekeyState>>,
     pub keyserver: Mutex<Option<KeyServerClient>>,
 
     /// Latest confirmed outcome of this process's remote public-key
@@ -219,6 +227,12 @@ pub struct AppState {
     /// `cmd_osl_load_channel_history` returns an empty list. See
     /// `crates/store` for the on-disk crypto + schema posture.
     pub message_store: Mutex<Option<MessageStore>>,
+
+    /// Sealed OSL-RN session and pin store for the active account. The sealer
+    /// is process-local and selected with the same best-available policy as
+    /// identity storage; callers must not construct ad hoc plaintext RN stores.
+    pub rn_session_store: crate::wire_rn::RnSessionStore,
+    pub rn_session_sealer: Box<dyn keystore::Sealer>,
 
     /// Per-scope whitelist + encryption-toggle state, mirroring
     /// `<config_dir>/whitelist_state.json`. Empty by default —
@@ -268,12 +282,17 @@ pub struct AppState {
     /// per-(scope, sender) receiver chain.
     pub sender_key_state: Mutex<crate::sender_key_state::SenderKeyStateFile>,
 
-    /// Temporary compatibility kill-switch for v=5 group sender chains.
-    /// Defaults false in production because the current chain key omits a
-    /// physical device id and therefore desynchronizes when one Discord
-    /// account is active on two machines. Protocol-focused tests may enable
-    /// it explicitly while the v5 implementation remains covered.
-    pub sender_keys_enabled: std::sync::atomic::AtomicBool,
+    /// Owner go/no-go switch for v=5 group sender chains. Defaults enabled so
+    /// group/server sends take the sender-key path unless a caller explicitly
+    /// disables it for compatibility testing.
+    pub sender_keys_enabled: AtomicBool,
+
+    /// Runtime gate for OSL-RN wire-in.
+    ///
+    /// Defaults false, is in-memory only, and is separate from
+    /// `wire_rn::RN_WIRE_IN_ENABLED`, which remains the compile-time review
+    /// fuse for builds that still must not wire OSL-RN into production flows.
+    pub rn_wire_in_enabled: AtomicBool,
 
     /// Phase 9-A3: in-memory cache of the current channel-member set
     /// per channel_id. Populated by `osl_membership_update` (boot.js
@@ -356,6 +375,12 @@ pub struct AppState {
     /// Option-B whitelist precedence + dynamic recipient resolution
     /// consult. Mirrors `membership.json`; safe to lose (re-accrues).
     pub scope_membership: Mutex<crate::membership::ScopeMembership>,
+
+    /// Production duress wipe engine for this AppState, installed only after
+    /// the caller binds a concrete config directory. The engine's callback
+    /// table captures an `Arc<AppState>` so duress can clear IPC-owned live
+    /// session state in addition to deleting fixed on-disk paths.
+    pub production_duress_engine: Mutex<Option<keystore::DuressEngine>>,
     // F3.6 pivot: `launch_time` and `free_tier_unlocked_until`
     // (added in F3.1 for the 60-min launch-window + ad-unlock
     // model) are removed. The new model has unlimited free text
@@ -363,15 +388,183 @@ pub struct AppState {
     // The license_state mutex above is the sole tier surface.
 }
 
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            account_switch_lock: Mutex::new(()),
+            identity: Mutex::new(None),
+            prekey_state: Mutex::new(None),
+            keyserver: Mutex::new(None),
+            cloud_registration_state: AtomicU8::new(CloudRegistrationState::NotAttempted as u8),
+            identity_regenerated_this_launch: AtomicBool::new(false),
+            registration_alert: Mutex::new(None),
+            key_change_alerts: Mutex::new(HashMap::new()),
+            sender_pubkey_cache: SenderPubkeyCache::default(),
+            peer_map: Mutex::new(PeerMap::default()),
+            message_store: Mutex::new(None),
+            rn_session_store: default_rn_session_store(),
+            rn_session_sealer: keystore::select_best_sealer(),
+            whitelist_state: Mutex::new(WhitelistState::default()),
+            recovery_token: Mutex::new(None),
+            stealth_active: Mutex::new(false),
+            burned_scopes: Mutex::new(crate::burned_scopes_file::BurnedScopesFile::default()),
+            sender_key_state: Mutex::new(crate::sender_key_state::SenderKeyStateFile::default()),
+            sender_keys_enabled: AtomicBool::new(true),
+            channel_members: Mutex::new(HashMap::new()),
+            app_preferences: Mutex::new(crate::app_preferences::AppPreferences::default()),
+            mode1_reassembly: Mutex::new(HashMap::new()),
+            friend_ids: Mutex::new(Vec::new()),
+            guild_list: Mutex::new(Vec::new()),
+            server_defaults: Mutex::new(HashMap::new()),
+            last_persist_error: Mutex::new(None),
+            license_state: Mutex::new(keystore::LicenseStateDto::default()),
+            recovery_guard: Mutex::new(crate::recovery::RecoveryGuard::default()),
+            scope_membership: Mutex::new(crate::membership::ScopeMembership::default()),
+            production_duress_engine: Mutex::new(None),
+            // RN starts unwired. wire_rn::RN_WIRE_IN_ENABLED is the compile-time
+            // fuse; this runtime flag must never default to a more permissive value.
+            rn_wire_in_enabled: AtomicBool::new(false),
+        }
+    }
+}
+
 impl AppState {
     pub fn new() -> Self {
         AppState::default()
+    }
+
+    pub fn new_with_production_duress_engine(config_dir: impl Into<PathBuf>) -> Arc<Self> {
+        let state = Arc::new(AppState::default());
+        state
+            .install_production_duress_engine(config_dir)
+            .expect("production_duress_engine mutex poisoned");
+        state
+    }
+
+    pub fn install_production_duress_engine(
+        self: &Arc<Self>,
+        config_dir: impl Into<PathBuf>,
+    ) -> Result<(), &'static str> {
+        let engine = build_production_duress_engine_for_state(Arc::clone(self), config_dir.into());
+        *self
+            .production_duress_engine
+            .lock()
+            .map_err(|_| "production_duress_engine mutex poisoned")? = Some(engine);
+        Ok(())
+    }
+
+    pub fn production_duress_engine_is_configured(&self) -> bool {
+        self.production_duress_engine
+            .lock()
+            .expect("production_duress_engine mutex poisoned")
+            .is_some()
+    }
+
+    pub fn execute_production_duress(&self) -> Result<keystore::DuressReport, String> {
+        let guard = self
+            .production_duress_engine
+            .lock()
+            .map_err(|_| "OSL: duress engine unavailable".to_owned())?;
+        let engine = guard
+            .as_ref()
+            .ok_or_else(|| "OSL: duress engine unavailable".to_owned())?;
+        engine
+            .execute()
+            .map_err(|_| "OSL: duress engine failed to run".to_owned())
+    }
+
+    /// Install an identity and construct its live prekey state in the
+    /// same AppState transition. Callers that bypass this helper leave
+    /// prekey-dependent production paths unavailable.
+    pub fn install_identity(&self, identity: Identity) {
+        self.try_install_identity(identity)
+            .expect("identity/prekey mutex poisoned");
+    }
+
+    pub fn try_install_identity(&self, identity: Identity) -> Result<(), &'static str> {
+        self.try_install_identity_at(identity, current_unix_seconds())
+    }
+
+    fn install_identity_at(&self, identity: Identity, now_unix_seconds: u64) {
+        self.try_install_identity_at(identity, now_unix_seconds)
+            .expect("identity/prekey mutex poisoned");
+    }
+
+    fn try_install_identity_at(
+        &self,
+        identity: Identity,
+        now_unix_seconds: u64,
+    ) -> Result<(), &'static str> {
+        let prekeys = keystore::PrekeyState::new(
+            &identity,
+            keystore::PrekeyConfig::default(),
+            now_unix_seconds,
+        );
+        self.try_install_identity_with_prekey_state(identity, prekeys)
+    }
+
+    /// Install an identity with a prekey state already loaded from durable
+    /// storage. Startup uses this to avoid replacing the published prekey pool
+    /// with a fresh, unpublished one.
+    pub fn install_identity_with_prekey_state(
+        &self,
+        identity: Identity,
+        prekeys: keystore::PrekeyState,
+    ) {
+        self.try_install_identity_with_prekey_state(identity, prekeys)
+            .expect("identity/prekey mutex poisoned");
+    }
+
+    pub fn try_install_identity_with_prekey_state(
+        &self,
+        identity: Identity,
+        prekeys: keystore::PrekeyState,
+    ) -> Result<(), &'static str> {
+        let mut identity_slot = self
+            .identity
+            .lock()
+            .map_err(|_| "identity mutex poisoned")?;
+        let mut prekey_slot = self
+            .prekey_state
+            .lock()
+            .map_err(|_| "prekey_state mutex poisoned")?;
+        *identity_slot = Some(identity);
+        *prekey_slot = Some(prekeys);
+        Ok(())
+    }
+
+    pub fn set_prekey_state(&self, prekeys: keystore::PrekeyState) {
+        *self
+            .prekey_state
+            .lock()
+            .expect("prekey_state mutex poisoned") = Some(prekeys);
+    }
+
+    pub fn clear_prekey_state(&self) {
+        *self
+            .prekey_state
+            .lock()
+            .expect("prekey_state mutex poisoned") = None;
+    }
+
+    /// Clear identity-owned live state. Account switches, imports, and burn
+    /// resets must not leave a stale prekey pool associated with no identity.
+    pub fn clear_identity(&self) {
+        *self.identity.lock().expect("identity mutex poisoned") = None;
+        self.clear_prekey_state();
     }
 
     pub fn has_identity(&self) -> bool {
         self.identity
             .lock()
             .expect("identity mutex poisoned")
+            .is_some()
+    }
+
+    pub fn has_prekey_state(&self) -> bool {
+        self.prekey_state
+            .lock()
+            .expect("prekey_state mutex poisoned")
             .is_some()
     }
 
@@ -395,5 +588,374 @@ impl AppState {
             4 => CloudRegistrationState::Offline,
             _ => CloudRegistrationState::NotAttempted,
         }
+    }
+
+    pub fn rn_wire_in_enabled(&self) -> bool {
+        self.rn_wire_in_enabled.load(Ordering::Acquire)
+    }
+
+    pub fn set_rn_wire_in_enabled(&self, enabled: bool) {
+        self.rn_wire_in_enabled.store(enabled, Ordering::Release);
+    }
+}
+
+fn build_production_duress_engine_for_state(
+    state: Arc<AppState>,
+    config_dir: PathBuf,
+) -> keystore::DuressEngine {
+    let paths = production_duress_paths(&config_dir);
+    let handlers = keystore::duress::build_production_duress_handlers(
+        keystore::ProductionDuressHandlers::new()
+            .with_wipe_local_cache_dir_path(config_dir.join("store"))
+            .with_wipe_anonymous_credentials_paths([config_dir.join("anonymous_credentials.json")])
+            .with_wipe_prekeys(wipe_prekeys_handler(Arc::clone(&state)))
+            .with_wipe_double_ratchet(crate::commands::wipe_double_ratchet_session_state_handler(
+                Arc::clone(&state),
+            ))
+            .with_wipe_sender_keys(crate::commands::wipe_sender_keys_session_state_handler(
+                Arc::clone(&state),
+            ))
+            .with_wipe_peer_ratchets(crate::commands::wipe_peer_ratchet_session_state_handler(
+                Arc::clone(&state),
+            ))
+            .with_zeroize_in_memory(zeroize_in_memory_handler(Arc::clone(&state)))
+            .with_strip_opsec_file_paths(production_strip_opsec_paths(&config_dir))
+            .with_unregister_account(unregister_account_handler(state)),
+    );
+    keystore::DuressEngine::new(config_dir.join("duress.journal"), paths, handlers)
+}
+
+fn production_duress_paths(config_dir: &Path) -> keystore::DuressPaths {
+    keystore::DuressPaths {
+        identity_file: config_dir.join("identity.json"),
+        password_file: config_dir.join("password_marker.json"),
+        prekey_file: Some(config_dir.join("prekeys.json")),
+    }
+}
+
+fn production_strip_opsec_paths(config_dir: &Path) -> Vec<PathBuf> {
+    vec![
+        config_dir.join("boot.js"),
+        config_dir.join("injection.js"),
+        config_dir.join("opsec"),
+    ]
+}
+
+fn wipe_prekeys_handler(state: Arc<AppState>) -> keystore::WipeFn {
+    Box::new(move || {
+        state.clear_prekey_state();
+        Ok(())
+    })
+}
+
+fn zeroize_in_memory_handler(state: Arc<AppState>) -> keystore::WipeFn {
+    Box::new(move || {
+        state.clear_identity();
+        crate::main_password::set_file_storage_key(None);
+        state.sender_pubkey_cache.clear();
+        Ok(())
+    })
+}
+
+fn unregister_account_handler(state: Arc<AppState>) -> keystore::WipeFn {
+    Box::new(move || unregister_account_for_duress(&state))
+}
+
+fn unregister_account_for_duress(state: &AppState) -> Result<(), keystore::DuressError> {
+    let (user_id, signature_b64, timestamp_ms) = {
+        let guard = state.identity.lock().map_err(|_| {
+            keystore::DuressError::Handler(
+                "identity mutex poisoned during duress unregister".to_owned(),
+            )
+        })?;
+        let identity = guard.as_ref().ok_or_else(|| {
+            keystore::DuressError::Handler(
+                "identity authority missing for duress unregister".to_owned(),
+            )
+        })?;
+        let timestamp_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let signature = keystore::sign_unregister(identity, timestamp_ms);
+        use base64::engine::general_purpose::STANDARD as B64;
+        use base64::Engine as _;
+        (
+            identity.user_id.clone(),
+            B64.encode(signature.as_bytes()),
+            timestamp_ms,
+        )
+    };
+    let client = state
+        .keyserver
+        .lock()
+        .map_err(|_| {
+            keystore::DuressError::Handler(
+                "keyserver mutex poisoned during duress unregister".to_owned(),
+            )
+        })?
+        .clone()
+        .ok_or_else(|| {
+            keystore::DuressError::Handler(
+                "keyserver authority missing for duress unregister".to_owned(),
+            )
+        })?;
+    client
+        .unregister_signed(&user_id, &signature_b64, timestamp_ms)
+        .map_err(|_| keystore::DuressError::Handler("keyserver unregister failed".to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct ConfigDirGuard;
+
+    impl Drop for ConfigDirGuard {
+        fn drop(&mut self) {
+            keystore::set_active_account_dir(None);
+            keystore::set_base_dir_override(None);
+            crate::main_password::set_file_storage_key(None);
+        }
+    }
+
+    fn use_temp_config_dir(dir: &Path) -> ConfigDirGuard {
+        keystore::set_active_account_dir(None);
+        keystore::set_base_dir_override(Some(dir.to_path_buf()));
+        crate::main_password::set_file_storage_key(None);
+        ConfigDirGuard
+    }
+
+    fn outcome_for<'a>(
+        steps: &'a [(keystore::WipeStep, keystore::StepOutcome)],
+        step: keystore::WipeStep,
+    ) -> &'a keystore::StepOutcome {
+        steps
+            .iter()
+            .find(|(candidate, _)| *candidate == step)
+            .map(|(_, outcome)| outcome)
+            .expect("duress report contains step")
+    }
+
+    #[test]
+    fn rn_wire_in_runtime_gate_defaults_to_refusal() {
+        let state = AppState::new();
+
+        assert!(!state.rn_wire_in_enabled());
+    }
+
+    #[test]
+    fn rn_wire_in_runtime_gate_is_app_state_controlled() {
+        let state = AppState::new();
+
+        state.set_rn_wire_in_enabled(true);
+        assert!(state.rn_wire_in_enabled());
+        state.set_rn_wire_in_enabled(false);
+        assert!(!state.rn_wire_in_enabled());
+    }
+
+    #[test]
+    fn app_state_constructs_production_duress_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = use_temp_config_dir(dir.path());
+        let state = AppState::new_with_production_duress_engine(dir.path().to_path_buf());
+        let identity = keystore::generate_identity("duress-state-owner".to_owned());
+        state.install_identity(identity);
+        {
+            let mut sender_keys = state
+                .sender_key_state
+                .lock()
+                .expect("sender_key_state mutex poisoned");
+            sender_keys.states.insert(
+                "gc:state-test".to_owned(),
+                crypto::sender_keys::SenderKeyStateOnDisk::default(),
+            );
+        }
+        std::fs::write(dir.path().join("identity.json"), b"identity").unwrap();
+        std::fs::write(dir.path().join("password_marker.json"), b"password").unwrap();
+        std::fs::write(dir.path().join("prekeys.json"), b"prekeys").unwrap();
+        std::fs::create_dir(dir.path().join("store")).unwrap();
+        std::fs::write(dir.path().join("store").join("messages.sqlite"), b"store").unwrap();
+        std::fs::write(dir.path().join("anonymous_credentials.json"), b"anonymous").unwrap();
+        std::fs::write(dir.path().join("boot.js"), b"opsec").unwrap();
+
+        assert!(
+            state.production_duress_engine_is_configured(),
+            "production AppState constructor must hold a DuressEngine"
+        );
+
+        let report = state
+            .execute_production_duress()
+            .expect("configured production duress engine runs to a report");
+
+        assert_eq!(
+            outcome_for(&report.steps, keystore::WipeStep::IdentityFile),
+            &keystore::StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, keystore::WipeStep::PasswordHashes),
+            &keystore::StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, keystore::WipeStep::PrekeyFile),
+            &keystore::StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, keystore::WipeStep::LocalCacheDir),
+            &keystore::StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, keystore::WipeStep::AnonymousCredentials),
+            &keystore::StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, keystore::WipeStep::SenderKeys),
+            &keystore::StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, keystore::WipeStep::Prekeys),
+            &keystore::StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, keystore::WipeStep::InMemoryZeroize),
+            &keystore::StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, keystore::WipeStep::StripOpsecFiles),
+            &keystore::StepOutcome::Wiped
+        );
+        assert!(matches!(
+            outcome_for(&report.steps, keystore::WipeStep::UnregisterAccount),
+            keystore::StepOutcome::Failed { error }
+                if error == "handler: keyserver authority missing for duress unregister"
+        ));
+        assert!(!dir.path().join("identity.json").exists());
+        assert!(!dir.path().join("password_marker.json").exists());
+        assert!(!dir.path().join("prekeys.json").exists());
+        assert!(!dir.path().join("store").exists());
+        assert!(!dir.path().join("anonymous_credentials.json").exists());
+        assert!(!dir.path().join("boot.js").exists());
+        assert!(!state.has_identity());
+        assert!(!state.has_prekey_state());
+        assert!(
+            state
+                .sender_key_state
+                .lock()
+                .expect("sender_key_state mutex poisoned")
+                .states
+                .is_empty(),
+            "production duress engine must use the sender-key wipe handler"
+        );
+    }
+}
+
+fn default_rn_session_store() -> crate::wire_rn::RnSessionStore {
+    let dir = keystore::osl_config_dir()
+        .unwrap_or_else(|_| std::env::temp_dir().join("osl-rn-session-store-unconfigured"));
+    crate::wire_rn::RnSessionStore::new(dir.join("rn_sessions"))
+}
+
+fn current_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+#[cfg(test)]
+mod prekey_authority_tests {
+    use super::*;
+
+    #[test]
+    fn default_state_has_no_prekey_authority() {
+        let state = AppState::new();
+
+        assert!(!state.has_identity());
+        assert!(!state.has_prekey_state());
+    }
+
+    #[test]
+    fn installing_identity_constructs_live_prekey_state() {
+        let state = AppState::new();
+        let identity = keystore::generate_identity("prekey-owner".to_owned());
+
+        state.install_identity_at(identity, 1_700_000_000);
+
+        assert!(state.has_identity());
+        let prekeys = state
+            .prekey_state
+            .lock()
+            .expect("prekey_state mutex poisoned");
+        let prekeys = prekeys.as_ref().expect("prekey state installed");
+        assert_eq!(prekeys.current_spk.rotated_at_unix_seconds, 1_700_000_000);
+        assert_eq!(
+            prekeys.opk_pool.len(),
+            keystore::PrekeyConfig::default().opk_pool_target as usize
+        );
+    }
+
+    #[test]
+    fn installing_identity_with_loaded_prekeys_preserves_persisted_state() {
+        let state = AppState::new();
+        let identity = keystore::generate_identity("prekey-owner".to_owned());
+        let persisted =
+            keystore::PrekeyState::new(&identity, keystore::PrekeyConfig::default(), 42);
+
+        state.install_identity_with_prekey_state(identity, persisted);
+
+        let prekeys = state
+            .prekey_state
+            .lock()
+            .expect("prekey_state mutex poisoned");
+        let prekeys = prekeys.as_ref().expect("prekey state installed");
+        assert_eq!(prekeys.current_spk.rotated_at_unix_seconds, 42);
+    }
+
+    #[test]
+    fn clearing_identity_also_clears_live_prekey_state() {
+        let state = AppState::new();
+        state.install_identity_at(
+            keystore::generate_identity("prekey-owner".to_owned()),
+            1_700_000_000,
+        );
+
+        state.clear_identity();
+
+        assert!(!state.has_identity());
+        assert!(!state.has_prekey_state());
+    }
+
+    #[test]
+    fn app_state_constructs_rn_session_store_with_sealer() {
+        let state = AppState::new();
+        let peer = [0x42u8; 32];
+
+        let absent_pin = state
+            .rn_session_store
+            .load_pin(&peer)
+            .expect("fresh RN store reads an absent pin");
+
+        assert_eq!(absent_pin, crate::wire_rn::RnPeerPin::UNKNOWN);
+        assert!(
+            !state.rn_session_sealer.requires_insecure_banner(),
+            "AppState RN sealer must not be a plaintext sealer"
+        );
+        assert_ne!(
+            state.rn_session_sealer.method_label(),
+            keystore::METHOD_NOOP
+        );
+    }
+
+    #[test]
+    fn sender_keys_enabled_defaults_to_enabled_after_owner_go() {
+        let state = AppState::new();
+
+        assert!(state.sender_keys_enabled.load(Ordering::Acquire));
+
+        state.sender_keys_enabled.store(false, Ordering::Release);
+        assert!(
+            !state.sender_keys_enabled.load(Ordering::Acquire),
+            "the test must exercise the AppState default, not a hardwired accessor"
+        );
     }
 }

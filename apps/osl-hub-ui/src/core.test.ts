@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { coreReadinessLabel, isActivationCode, isCoreProtectionReady, isRecoveryPhrase, isValidMainPassword, isValidNewMainPassword, loadCoreIntegrationFromNative, parseCoreFeatures, parseCoreReadiness, parseHubLicenseState, parseHubPasswordRoleStatus, parseIdentitySetupResult, parseMainPasswordSetupResult } from "./core";
+import { coreReadinessLabel, identityProtectionStatus, isActivationCode, isCoreProtectionReady, isRecoveryPhrase, isValidMainPassword, isValidNewMainPassword, loadCoreIntegrationFromNative, parseCoreFeatures, parseCoreReadiness, parseHubLicenseState, parseHubPasswordRoleStatus, parseIdentitySetupResult, parseMainPasswordSetupResult } from "./core";
 
 describe("original OSL core bridge", () => {
   it("accepts the exact non-sensitive readiness contract", () => {
@@ -45,9 +45,62 @@ describe("original OSL core bridge", () => {
       unlocked: true,
       activeOslUserId: "osl-user-preview",
       bootstrapStatus: "ready",
+      storageMethod: "keyring",
     });
     expect(isCoreProtectionReady(parsed)).toBe(true);
     expect(coreReadinessLabel(parsed)).toBe("OSL core ready · locally unlocked");
+    expect(identityProtectionStatus(parsed.storageMethod).state).toBe("protected");
+  });
+
+  it("identity-protection-status renders unknown or weak storage as not-secure", () => {
+    expect(identityProtectionStatus("tpm-pcp")).toMatchObject({
+      state: "protected",
+      label: "Account protected",
+    });
+    expect(identityProtectionStatus("keyring").state).toBe("protected");
+    expect(identityProtectionStatus("os-keyring").state).toBe("protected");
+    for (const storageMethod of [null, undefined, "noop-insecure", "memory-test", "memory-ephemeral", "future-device-vault"]) {
+      expect(identityProtectionStatus(storageMethod).state).toBe("not-secure");
+      expect(identityProtectionStatus(storageMethod).label).toBe("Account not secure");
+    }
+  });
+
+  it("identity-protection-status parses safe unknown storage without treating it as authority", () => {
+    const parsed = parseCoreReadiness({
+      originalCoreLinked: true,
+      identityLoaded: true,
+      keyserverInitialised: true,
+      cloudRegistrationState: "registered",
+      groupSenderKeysEnabled: false,
+      remoteServiceHasNativeAccess: false,
+      bootstrapAttempted: true,
+      passwordGateRequired: true,
+      unlocked: true,
+      activeOslUserId: "osl-user-preview",
+      bootstrapStatus: "ready",
+      storageMethod: "future-device-vault",
+    });
+    expect(isCoreProtectionReady(parsed)).toBe(true);
+    expect(identityProtectionStatus(parsed.storageMethod).state).toBe("not-secure");
+  });
+
+  it("identity-protection-status rejects impossible storage claims when no identity is loaded", () => {
+    const parsed = parseCoreReadiness({
+      originalCoreLinked: true,
+      identityLoaded: false,
+      keyserverInitialised: false,
+      cloudRegistrationState: "notAttempted",
+      groupSenderKeysEnabled: false,
+      remoteServiceHasNativeAccess: false,
+      bootstrapAttempted: true,
+      passwordGateRequired: false,
+      unlocked: false,
+      activeOslUserId: null,
+      bootstrapStatus: "setupRequired",
+      storageMethod: "keyring",
+    });
+    expect(parsed.originalCoreLinked).toBe(false);
+    expect(parsed.storageMethod).toBeNull();
   });
 
   it("recognizes an isolated identity setup requirement", () => {

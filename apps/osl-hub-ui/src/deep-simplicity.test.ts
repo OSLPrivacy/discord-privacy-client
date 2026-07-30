@@ -20,8 +20,9 @@ describe("radical simplicity on deep screens", () => {
     const about = functionSource("updateSettingsContent", "bindUpdateControls");
 
     expect(account).toContain("settings-disclosure");
-    expect(apps).toContain("How sign-ins stay private");
-    expect(notifications).toContain("For future unread support");
+    expect(apps).toContain("Browser for web apps");
+    expect(apps).not.toContain("How sign-ins stay private");
+    expect(notifications).toContain("Provider unread counts are not read");
     expect(about).toContain("Update privacy");
     expect(styles).toContain(".settings-disclosure");
   });

@@ -1,0 +1,48 @@
+-- 0026: signed protocol-capability advertisement.
+--
+-- WHY THIS EXISTS
+--
+-- OSL-RN (wire 0x10, `crates/osl-ratchet-next`) has no in-band version
+-- negotiation: a sender picks a wire version unilaterally from a peer
+-- record it fetched out of band. `crates/osl-ratchet-next/src/
+-- negotiate.rs` calls that layer "L1" and states plainly that it is
+-- specified but not implemented. This migration is L1.
+--
+-- The bitmap is stored here, but its integrity does NOT come from this
+-- table. It comes from being a component of REG_MSG / ROT_MSG, the
+-- Ed25519-signed strings `src/lib/signed-request.ts` reconstructs
+-- server-side. A request that adds, removes or alters the bitmap
+-- changes that reconstruction and the submitted signature stops
+-- verifying, so the write path cannot be tampered with by anyone who
+-- does not hold the identity's Ed25519 secret.
+--
+-- `ik_x25519_signature` (historically misnamed; it holds the
+-- registration signature) is what a *reader* verifies the bitmap
+-- against, which is why `GET /v1/pubkeys/:user_id` now returns it as
+-- `registration_sig` — but ONLY for records that actually advertise a
+-- capability. Records with `rn_capabilities = 0` keep the exact
+-- response shape they have today.
+--
+-- FAIL CLOSED
+--
+-- The default is 0 — "no OSL-RN capability". Every identity already in
+-- this table, including the owner's real one, therefore reads as
+-- non-capable until it deliberately re-registers with a signed bitmap.
+-- Absence never means "assume capable".
+--
+-- NOT DEPLOYED. See the deploy note at the bottom of this file.
+
+ALTER TABLE users
+  ADD COLUMN rn_capabilities INTEGER NOT NULL DEFAULT 0;
+
+-- Deploy sequence, for whoever runs it (NOT run by this change):
+--
+--   1. cd keyserver-cf
+--   2. npx wrangler d1 migrations apply osl-keyserver-prod --remote
+--   3. npx wrangler deploy
+--
+-- Migration BEFORE worker: the new worker code selects and binds
+-- `rn_capabilities`, so deploying it against the un-migrated schema
+-- would make every /v1/register and /v1/pubkeys request fail with a
+-- D1 "no such column" error. The reverse order is safe: the migration
+-- alone is inert, because no deployed code reads or writes the column.

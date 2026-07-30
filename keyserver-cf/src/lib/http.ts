@@ -54,6 +54,69 @@ export function tooMany(retryAfterSec: number): Response {
   });
 }
 
+/// Which pending-row cap was hit. Both mean the same thing to the sender
+/// (only the recipient draining clears it) but they are diagnostically
+/// different: "recipient" is the global per-recipient cap -- that inbox is
+/// swamped, possibly by many senders -- while "sender_recipient" is the
+/// per-pair cap, which is the one a normal conversation reaches first.
+export type InboxFullScope = "recipient" | "sender_recipient";
+
+/// 429, but NOT a rate limit. Pending-row quota exhaustion is durable: the
+/// rows only disappear when the recipient drains their inbox, or after the
+/// 7-day TTL. Telling the sender "rate_limited" says "slow down", which is
+/// actively false -- waiting will never help.
+///
+/// Status stays 429 (not 507/409) so already-deployed clients that branch
+/// on status alone keep working; the distinction is carried in the body.
+/// The kind is a secondary `scope` field rather than a second top-level
+/// error code so a client has exactly one string to match for "recipient
+/// cannot receive this" -- see the `recipient_inbox_full` match in
+/// crates/keystore/src/client.rs.
+export function recipientInboxFull(
+  retryAfterSec: number,
+  scope: InboxFullScope,
+): Response {
+  return new Response(JSON.stringify({ error: "recipient_inbox_full", scope }), {
+    status: 429,
+    headers: {
+      ...JSON_HEADERS,
+      "retry-after": String(retryAfterSec),
+    },
+  });
+}
+
+/// 507 Insufficient Storage — the bilateral-burn revocation lane for this
+/// recipient (or this sender/recipient pair) is full.
+///
+/// Deliberately NOT the 429 `recipientInboxFull` shape, and deliberately not an
+/// eviction:
+///
+/// - Revocation rows are never evicted. `evictOldestPending` silently deletes
+///   the oldest undelivered rows, which for a burn means the sender's own next
+///   32 messages destroy a burn queued to an offline peer, with no notice to
+///   anyone. Refusing is the only outcome that keeps the sender informed.
+/// - 507 rather than 429 because there is no deployed client to keep compatible:
+///   the lane is new, so its refusal can have an honest, unambiguous status
+///   instead of borrowing "rate limited" and being read as "slow down".
+///
+/// The sender retries from its durable revocation outbox, so a full lane delays
+/// a burn notice; it never loses one.
+export function revocationLaneFull(
+  retryAfterSec: number,
+  scope: InboxFullScope,
+): Response {
+  return new Response(
+    JSON.stringify({ error: "revocation_lane_full", scope }),
+    {
+      status: 507,
+      headers: {
+        ...JSON_HEADERS,
+        "retry-after": String(retryAfterSec),
+      },
+    },
+  );
+}
+
 export function serverError(message: string): Response {
   return error(500, message);
 }

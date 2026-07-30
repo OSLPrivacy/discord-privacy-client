@@ -45,12 +45,87 @@ migrations_dir = "migrations"
 # limiting is the only anti-abuse defence. Create with:
 #   wrangler kv namespace create RATE_LIMIT
 # then paste the id below.
+#
+# SCOPE CORRECTION (2026-07-26 audit). This namespace now serves READ buckets
+# only. The comment at the top of this file used to say rate-limit state lives
+# in KV and is "never persisted to D1"; that is no longer true, and leaving it
+# standing is exactly how the next auditor gets misled — see the same class of
+# defect corrected in migrations/0002_fetch_token.sql.
+#
+# What actually happens now:
+#
+#   * Mutation buckets (upload, delete, attachment-upload, attachment-session,
+#     attachment-delete, link-create) increment through one conditional D1
+#     statement against the `rate_counters` table (migration 0006). KV's
+#     read/modify/write was not atomic, so the ceiling this file claimed did not
+#     hold even inside one POP.
+#   * Read buckets (fetch, attachment-fetch, link-fetch) stay here. They bound
+#     cost, not integrity, they are the highest-volume routes, and they must
+#     fail OPEN so a limiter outage cannot make stored ciphertext unfetchable.
+#
+# The data-minimisation property is unchanged or better, in both stores:
+#
+#   * The stored key is the same opaque value either way — a truncated HMAC of
+#     (bucket, client address) under RATE_LIMIT_HASH_KEY. Neither store can be
+#     dumped to enumerate likely addresses.
+#   * D1 retention is SHORTER than KV's. KV entries live 2x the window; D1
+#     counters are deleted by the five-minute cron as soon as their window
+#     closes (`sweepRateCounters`).
+#
+# If that trade is ever revisited, the alternative is a Durable Object: same
+# atomicity, same opacity, but a DO class needs a [[migrations]] tag that
+# `wrangler rollback` cannot undo. That is why it was not chosen here.
 [[kv_namespaces]]
 binding = "RATE_LIMIT"
 id = "a65e8cc90cdc4cffa83b01fe12c6e47a"
 
-# Scheduled cron for the TTL sweep. Runs every 5 minutes -- deletes
-# rows where expires_at < unixepoch(). The cron handler logs ONLY
-# an aggregate "swept N rows" count, never individual IDs.
+# Encrypted attachment bodies. Provision this private bucket before deploy.
+# Never enable public bucket access or object logs.
+[[r2_buckets]]
+binding = "ATTACHMENTS"
+bucket_name = "osl-cipher-attachments-prod"
+
+# Scheduled cron for the TTL sweep. Runs every 5 minutes. The handler emits
+# only fixed, identifier-free completion markers (never row counts or IDs);
+# the D2 proof helper observes one marker through an ephemeral exact-message
+# tail and obtains stale-reservation counts from its fixed aggregate query.
 [triggers]
 crons = ["*/5 * * * *"]
+
+# ---------------------------------------------------------------------
+# Wave A3 — view-once link lane (`/v/<id>`)
+#
+# DOMAIN POSTURE. One neutral, unremarkable, aged domain. This is a
+# decision, not a default. Rotating a fleet of throwaway domains was
+# considered and rejected: a fleet is correlatable through public
+# Certificate Transparency logs, passive DNS and a shared origin IP, and
+# — more decisively — it is the textbook phishing/C2 signature. It risks
+# Safe Browsing flags, Discord's own link filter blocking the URL
+# outright, and registrar/Cloudflare enforcement against the ACCOUNT,
+# which would take down the cipher-store and the keyserver that the
+# strong OSL lane depends on. Per-link variety comes from the 16-byte
+# random path id, and optionally from random subdomains under a single
+# wildcard certificate.
+#
+# The route below is intentionally COMMENTED OUT. Enabling it is a
+# deliberate act by the operator once the aged domain and its wildcard
+# certificate exist; nothing in this repo should silently start serving
+# a public landing page.
+#
+# [[routes]]
+# pattern = "links.example.com/*"      # replace with the aged domain
+# custom_domain = true
+#
+# LINK CREATION IS FAIL-CLOSED. `POST /v1/link` is refused with 503
+# until `LINK_GRANT_PUBKEY_B64` is installed:
+#
+#   npx wrangler secret put LINK_GRANT_PUBKEY_B64
+#
+# It holds the base64 Ed25519 public key of the keyserver's link-grant
+# issuer. Without it this Worker will not create links at all — because
+# an ungated one-time link store is an open, logless, self-deleting file
+# host, i.e. a malware distribution service, and that is precisely what
+# gets the domain and the account taken down.
+#
+# ABUSE PATH. The landing page publishes `abuse@<host>`; that mailbox
+# must exist before the route is enabled.

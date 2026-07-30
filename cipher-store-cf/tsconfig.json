@@ -4,6 +4,7 @@
     "lib": ["ES2022"],
     "module": "ES2022",
     "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
@@ -18,5 +19,5 @@
     "types": ["@cloudflare/workers-types", "node"],
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts", "test-node/**/*.ts"]
 }

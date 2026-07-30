@@ -10,6 +10,7 @@ publish = false
 tauri-build = "=2.6.1"
 
 [dependencies]
+adapter-profile = { path = "../../crates/adapter-profile" }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.149"
 tauri = { version = "=2.11.1", features = ["unstable"], optional = true }
@@ -21,44 +22,35 @@ ipc = { path = "../../crates/ipc", optional = true }
 keystore = { path = "../../crates/keystore", optional = true }
 crypto = { path = "../../crates/crypto", optional = true }
 store = { path = "../../crates/store", optional = true }
+# The receipt state machine behind timed deletion and view-once expiry. Pure,
+# no I/O; `message_expiry` is the sealed-storage and scheduling shell around it.
+message-lifecycle = { path = "../../crates/message-lifecycle", optional = true }
 runtime = { path = "../../crates/runtime", optional = true }
+# The carrier planner shapes the payload-bearing cover to the protected row's
+# rendered line count (`stego::shape_cover`). `discord_carrier_geometry` is not
+# behind `core`, so this cannot be an optional dependency: the planner must obey
+# the same row contract in every build that can compile it.
+stego = { path = "../../crates/stego" }
 sha2 = "=0.10.9"
 tracing = { version = "=0.1.44", optional = true }
 bip39 = { version = "=2.2.2", default-features = false, features = ["std"], optional = true }
-base64 = "=0.22.1"
+base64 = { version = "=0.22.1", optional = true }
 url = "=2.5.8"
 zeroize = "=1.9.0"
-imap = { version = "=3.0.0-alpha.15", default-features = false, features = ["native-tls"] }
-keyring = { version = "=3.6.3" }
-mailparse = "=0.16.1"
-chrono = { version = "=0.4.45", default-features = false, features = ["clock"] }
-calamine = { version = "=0.36.0", default-features = false }
-flate2 = "=1.1.9"
-pdf-extract = "=0.12.0"
-quick-xml = "=0.41.0"
-tar = "=0.4.46"
-zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }
-
-[dev-dependencies]
-lopdf = { version = "=0.42.0", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "=0.59.0", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security_Cryptography", "Win32_Security_Cryptography_Catalog", "Win32_Security_Cryptography_Sip", "Win32_Security_WinTrust", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_Com", "Win32_System_DataExchange", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_StationsAndDesktops", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "=0.59.0", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security_Cryptography", "Win32_Security_Cryptography_Catalog", "Win32_Security_Cryptography_Sip", "Win32_Security_WinTrust", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_Com", "Win32_System_DataExchange", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 windows = { version = "=0.56.0", features = ["Win32_Foundation", "Win32_Graphics_Imaging", "Win32_System_Com", "Win32_System_Ole", "Win32_UI_Accessibility"] }
-keyring = { version = "=3.6.3", features = ["windows-native"] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-keyring = { version = "=3.6.3", features = ["linux-native-sync-persistent", "crypto-rust"] }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-keyring = { version = "=3.6.3", features = ["apple-native"] }
 
 [features]
 default = []
-core = ["dep:bip39", "dep:crypto", "dep:ipc", "dep:keystore", "dep:store", "dep:tracing"]
+core = ["dep:base64", "dep:bip39", "dep:crypto", "dep:ipc", "dep:keystore", "dep:message-lifecycle", "dep:store", "dep:tracing"]
 desktop = ["dep:runtime", "dep:tauri", "dep:tauri-plugin-dialog", "dep:tauri-plugin-single-instance", "dep:tauri-plugin-updater", "dep:tokio", "core"]
-signal-qa-shell = []
 custom-protocol = ["tauri/custom-protocol"]
+# Disposable two-VM Discord testing only. This is deliberately a native build
+# feature rather than a renderer/runtime switch, so production binaries cannot
+# enter the passwordless path from JavaScript or an environment variable.
+discord-qa-shell = []
 
 [[bin]]
 name = "osl-privacy-hub"
@@ -71,13 +63,3 @@ required-features = ["desktop"]
 # without editing the repository's root workspace manifest.
 [workspace]
 resolver = "2"
-
-# The Signal QA artifact is an authority-minimized binary, not a differently
-# routed full Hub. Whole-program optimization removes unreachable general OSL
-# code and symbol stripping prevents private implementation names from being
-# carried into the deployable executable.
-[profile.signal-qa]
-inherits = "release"
-lto = "fat"
-codegen-units = 1
-strip = "symbols"

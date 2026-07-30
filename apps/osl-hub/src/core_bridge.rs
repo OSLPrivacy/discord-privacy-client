@@ -7,28 +7,23 @@
 
 use ipc::AppState;
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::fmt;
+use std::sync::{Arc, Mutex};
 
 pub struct HubCoreState {
-    pub osl: AppState,
+    pub osl: Arc<AppState>,
     bootstrap_attempted: bool,
     /// Serialises trusted identity/password transitions so Create, Import,
     /// Setup, and Unlock cannot race each other into replacing disk state.
     pub(crate) lifecycle_lock: Mutex<()>,
-    /// Ensures launch/setup can schedule at most one best-effort registration
-    /// worker in this process. Explicit registration paths remain free to
-    /// retry after a later offline result.
-    registration_scheduled: AtomicBool,
 }
 
 impl Default for HubCoreState {
     fn default() -> Self {
         Self {
-            osl: AppState::new(),
+            osl: production_osl_state(),
             bootstrap_attempted: false,
             lifecycle_lock: Mutex::new(()),
-            registration_scheduled: AtomicBool::new(false),
         }
     }
 }
@@ -38,10 +33,9 @@ impl HubCoreState {
     /// configuration. Missing, locked, or corrupt state remains unavailable.
     pub fn bootstrap_from_disk() -> Self {
         let state = Self {
-            osl: AppState::new(),
+            osl: production_osl_state(),
             bootstrap_attempted: true,
             lifecycle_lock: Mutex::new(()),
-            registration_scheduled: AtomicBool::new(false),
         };
         crate::original_bootstrap::run_autostart_local(&state.osl);
         state
@@ -50,54 +44,15 @@ impl HubCoreState {
     pub fn register_after_local_bootstrap(&self) {
         crate::original_bootstrap::register_after_local_bootstrap(&self.osl);
     }
-
-    /// Claim the single deferred registration worker for this process.
-    ///
-    /// The identity check is deliberately local and bounded. Marking the
-    /// state pending before the worker is spawned keeps readiness truthful
-    /// even if the webview reads it before the blocking worker begins.
-    pub fn begin_deferred_registration(&self) -> bool {
-        let identity_loaded = self
-            .osl
-            .identity
-            .lock()
-            .map(|identity| identity.is_some())
-            .unwrap_or(false);
-        if !identity_loaded
-            || self
-                .registration_scheduled
-                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                .is_err()
-        {
-            return false;
-        }
-        self.osl
-            .set_cloud_registration_state(ipc::state::CloudRegistrationState::Pending);
-        true
-    }
-
-    /// A completed worker must never leave the UI claiming that registration
-    /// is still in progress. Normal network outcomes settle themselves in the
-    /// IPC core; this closes only panic/early-return paths.
-    pub fn settle_deferred_registration(&self) {
-        if self.osl.cloud_registration_state() != ipc::state::CloudRegistrationState::Pending {
-            return;
-        }
-        let identity_loaded = self
-            .osl
-            .identity
-            .lock()
-            .map(|identity| identity.is_some())
-            .unwrap_or(false);
-        self.osl.set_cloud_registration_state(if identity_loaded {
-            ipc::state::CloudRegistrationState::Offline
-        } else {
-            ipc::state::CloudRegistrationState::NotAttempted
-        });
-    }
 }
 
-#[derive(Debug, Serialize)]
+fn production_osl_state() -> Arc<AppState> {
+    let config_dir = keystore::osl_config_dir()
+        .unwrap_or_else(|_| std::env::temp_dir().join("osl-production-duress-unconfigured"));
+    AppState::new_with_production_duress_engine(config_dir)
+}
+
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CoreReadiness {
     pub original_core_linked: bool,
@@ -107,10 +62,37 @@ pub struct CoreReadiness {
     pub active_osl_user_id: Option<String>,
     pub bootstrap_status: &'static str,
     pub identity_loaded: bool,
+    pub storage_method: Option<String>,
     pub keyserver_initialised: bool,
     pub cloud_registration_state: &'static str,
     pub group_sender_keys_enabled: bool,
     pub remote_service_has_native_access: bool,
+}
+
+impl fmt::Debug for CoreReadiness {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CoreReadiness")
+            .field("original_core_linked", &self.original_core_linked)
+            .field("bootstrap_attempted", &self.bootstrap_attempted)
+            .field("password_gate_required", &self.password_gate_required)
+            .field("unlocked", &self.unlocked)
+            .field(
+                "active_osl_user_id",
+                &self.active_osl_user_id.as_ref().map(|_| "<redacted>"),
+            )
+            .field("bootstrap_status", &self.bootstrap_status)
+            .field("identity_loaded", &self.identity_loaded)
+            .field("storage_method", &self.storage_method)
+            .field("keyserver_initialised", &self.keyserver_initialised)
+            .field("cloud_registration_state", &self.cloud_registration_state)
+            .field("group_sender_keys_enabled", &self.group_sender_keys_enabled)
+            .field(
+                "remote_service_has_native_access",
+                &self.remote_service_has_native_access,
+            )
+            .finish()
+    }
 }
 
 /// Bounded license view for the trusted OSL Privacy UI. The activation code itself is
@@ -226,9 +208,13 @@ fn hub_license_state(value: keystore::LicenseStateDto) -> HubLicenseState {
 
 pub fn readiness(state: &HubCoreState) -> CoreReadiness {
     let status = ipc::commands::cmd_status(&state.osl);
-    let password_gate_required = ipc::commands::cmd_osl_password_status()
-        .map(|value| value.is_set)
-        .unwrap_or(true);
+    let password_gate_required = if cfg!(feature = "discord-qa-shell") {
+        false
+    } else {
+        ipc::commands::cmd_osl_password_status()
+            .map(|value| value.is_set)
+            .unwrap_or(true)
+    };
     let unlocked = !password_gate_required || ipc::main_password::get_file_storage_key().is_some();
     // The original Discord command resolves the identity through a
     // Discord-snowflake row in peer_map.json. A native OSL Privacy identity is
@@ -245,15 +231,34 @@ pub fn readiness(state: &HubCoreState) -> CoreReadiness {
     } else {
         None
     };
-    let bootstrap_status = classify_bootstrap_status(
-        state.bootstrap_attempted,
-        status.identity_loaded,
-        password_gate_required,
-        unlocked,
-        status.keyserver_initialised,
-        state.osl.cloud_registration_state() == ipc::state::CloudRegistrationState::Registered,
-        active_osl_user_id.is_some(),
-    );
+    // The disposable QA shell must paint and claim Discord while its freshly
+    // generated public identity registers in the background. Protected-send
+    // commands still enforce registration themselves; only the setup UI gate
+    // is bypassed in this compile-time-only build.
+    let bootstrap_status = if cfg!(feature = "discord-qa-shell")
+        && state.bootstrap_attempted
+        && status.identity_loaded
+        && unlocked
+        && active_osl_user_id.is_some()
+    {
+        "ready"
+    } else {
+        classify_bootstrap_status(
+            state.bootstrap_attempted,
+            status.identity_loaded,
+            // The disposable QA shell forces `password_gate_required` to
+            // false above regardless of on-disk state, so it no longer means
+            // "a password is set" there — it means "we don't use one". Treat
+            // that as satisfying the local password prerequisite rather than
+            // letting the classifier read it as "not set yet" and route back
+            // to setupRequired.
+            password_gate_required || cfg!(feature = "discord-qa-shell"),
+            unlocked,
+            status.keyserver_initialised,
+            state.osl.cloud_registration_state() == ipc::state::CloudRegistrationState::Registered,
+            active_osl_user_id.is_some(),
+        )
+    };
     CoreReadiness {
         original_core_linked: true,
         bootstrap_attempted: state.bootstrap_attempted,
@@ -262,6 +267,7 @@ pub fn readiness(state: &HubCoreState) -> CoreReadiness {
         active_osl_user_id,
         bootstrap_status,
         identity_loaded: status.identity_loaded,
+        storage_method: identity_storage_method(status.identity_loaded),
         keyserver_initialised: status.keyserver_initialised,
         cloud_registration_state: state.osl.cloud_registration_state().as_str(),
         // The original core deliberately leaves v5 disabled because one social
@@ -269,6 +275,16 @@ pub fn readiness(state: &HubCoreState) -> CoreReadiness {
         group_sender_keys_enabled: false,
         remote_service_has_native_access: false,
     }
+}
+
+fn identity_storage_method(identity_loaded: bool) -> Option<String> {
+    if !identity_loaded {
+        return None;
+    }
+    let path = keystore::osl_config_dir().ok()?.join("identity.json");
+    let bytes = std::fs::read(path).ok()?;
+    let on_disk: keystore::IdentityOnDisk = serde_json::from_slice(&bytes).ok()?;
+    Some(on_disk.method)
 }
 
 fn classify_bootstrap_status(
@@ -285,7 +301,10 @@ fn classify_bootstrap_status(
     } else if !identity_loaded || !password_set {
         // First-run Settings decides whether the missing local prerequisite is
         // identity creation/import or main-password setup. Keep this distinct
-        // from an existing password gate awaiting user input.
+        // from an existing password gate awaiting user input. `password_set`
+        // is the caller's job to define correctly (see `readiness()`, which
+        // treats the disposable QA shell's bypassed password gate as
+        // "satisfied" rather than mixing that build-time decision in here).
         "setupRequired"
     } else if !unlocked {
         "passwordRequired"
@@ -324,9 +343,20 @@ pub fn unlock_main_password(
             return Err("OSL encrypted state could not be reloaded safely".to_string());
         }
 
-        // Unlock is a local security transition. The desktop command schedules
-        // the process-wide deferred registration worker only after this reload
-        // succeeds, so an offline keyserver cannot hold the password gate.
+        // The cold-start bootstrap intentionally skips network work so the
+        // password screen paints immediately. Once unlock has loaded the
+        // sealed identity, prove its current public keys to Cloudflare before
+        // returning a protection-ready state. A client object alone is not a
+        // successful registration.
+        ipc::commands::ensure_keyserver_registered(
+            &state.osl,
+            &ipc::commands::resolve_keyserver_base_url(&config_dir),
+            None,
+        );
+
+        // An existing device password can legitimately be unlocked before a
+        // new isolated OSL Privacy identity is created/imported. Do not deadlock that
+        // safe setup path by requiring identity/keyserver readiness here.
         Ok(readiness(state))
     })();
     if outcome.is_err() {
@@ -499,38 +529,30 @@ mod tests {
         let status = readiness(&state);
         assert!(status.original_core_linked);
         assert!(!status.identity_loaded);
+        assert!(status.storage_method.is_none());
         assert!(!status.group_sender_keys_enabled);
         assert!(!status.remote_service_has_native_access);
     }
 
     #[test]
-    fn deferred_registration_requires_identity_and_is_claimed_once() {
-        let state = HubCoreState::default();
-        assert!(!state.begin_deferred_registration());
-        assert_eq!(
-            state.osl.cloud_registration_state(),
-            ipc::state::CloudRegistrationState::NotAttempted
-        );
-
-        *state.osl.identity.lock().unwrap() = Some(keystore::identity_from_entropy(
-            [23; 16],
-            "osl_registration_probe".to_owned(),
-        ));
-        assert!(state.begin_deferred_registration());
-        assert_eq!(
-            state.osl.cloud_registration_state(),
-            ipc::state::CloudRegistrationState::Pending
-        );
-        assert!(!state.begin_deferred_registration());
-        assert_eq!(
-            state.osl.cloud_registration_state(),
-            ipc::state::CloudRegistrationState::Pending
-        );
-        state.settle_deferred_registration();
-        assert_eq!(
-            state.osl.cloud_registration_state(),
-            ipc::state::CloudRegistrationState::Offline
-        );
+    fn core_readiness_debug_redacts_the_active_account_identifier() {
+        let status = CoreReadiness {
+            original_core_linked: true,
+            bootstrap_attempted: true,
+            password_gate_required: true,
+            unlocked: true,
+            active_osl_user_id: Some("osl_sensitive_account_identifier".to_owned()),
+            bootstrap_status: "ready",
+            identity_loaded: true,
+            storage_method: Some(keystore::METHOD_KEYRING.to_owned()),
+            keyserver_initialised: true,
+            cloud_registration_state: "registered",
+            group_sender_keys_enabled: false,
+            remote_service_has_native_access: false,
+        };
+        let debug = format!("{status:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("osl_sensitive_account_identifier"));
     }
 
     #[test]

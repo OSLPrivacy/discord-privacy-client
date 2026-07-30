@@ -45,13 +45,15 @@ use base64::Engine;
 use bip39::{Language, Mnemonic};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use zeroize::{Zeroize, Zeroizing};
 
 const MARKER_FILENAME: &str = "password_marker.json";
 const LOCKOUT_FILENAME: &str = "lockout_state.json";
+const DEVICE_BOUND_FALLBACK_KEY_FILENAME: &str = "file_storage_key_fallback.json";
 const MARKER_VERSION: u32 = 2;
 const LOCKOUT_VERSION: u32 = 1;
+const DEVICE_BOUND_FALLBACK_KEY_VERSION: u32 = 1;
 const ENC_MAGIC: &[u8; 8] = b"OSL-ENC1";
 
 pub const PASSWORD_MIN_LEN: usize = 6;
@@ -66,6 +68,7 @@ const NONCE_LEN: usize = 12;
 const ARGON_MEMORY_KB: u32 = 65_536; // 64 MiB
 const ARGON_ITERATIONS: u32 = 3;
 const ARGON_PARALLELISM: u32 = 1;
+pub const INACTIVITY_AUTO_LOCK_SECONDS: u64 = 15 * 60;
 
 // =====================================================================
 // On-disk schemas.
@@ -138,6 +141,13 @@ pub struct LockoutState {
     pub phrase_locked_until: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceBoundFallbackStorageKey {
+    pub version: u32,
+    pub sealer_method: String,
+    pub sealed_key_b64: String,
+}
+
 // =====================================================================
 // DTOs the Tauri layer surfaces.
 // =====================================================================
@@ -161,6 +171,24 @@ pub struct LockoutStatusDto {
     pub phrase_locked_until: Option<i64>,
     pub phrase_attempts_used: u32,
     pub now: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InactivityAutoLockOutcome {
+    StillUnlocked,
+    Locked,
+    AlreadyLocked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WrongPasswordAttemptAction {
+    Wrong {
+        attempts_used: u32,
+        lockout_seconds_remaining: i64,
+    },
+    DuressTriggered {
+        attempts_used: u32,
+    },
 }
 
 // =====================================================================
@@ -233,6 +261,10 @@ fn marker_path(dir: &Path) -> PathBuf {
 
 fn lockout_path(dir: &Path) -> PathBuf {
     dir.join(LOCKOUT_FILENAME)
+}
+
+fn device_bound_fallback_key_path(dir: &Path) -> PathBuf {
+    dir.join(DEVICE_BOUND_FALLBACK_KEY_FILENAME)
 }
 
 /// Reports whether a main password is configured (the marker file
@@ -318,6 +350,33 @@ fn write_lockout(dir: &Path, state: &LockoutState) -> Result<(), String> {
     let path = lockout_path(dir);
     let bytes =
         serde_json::to_vec_pretty(state).map_err(|e| format!("OSL: serialize lockout: {e}"))?;
+    std::fs::write(&path, &bytes).map_err(|e| format!("OSL: write {}: {e}", path.display()))
+}
+
+fn read_device_bound_fallback_key(dir: &Path) -> Result<DeviceBoundFallbackStorageKey, String> {
+    let path = device_bound_fallback_key_path(dir);
+    let bytes = std::fs::read(&path).map_err(|e| format!("OSL: read {}: {e}", path.display()))?;
+    let dto: DeviceBoundFallbackStorageKey = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("OSL: parse file_storage_key_fallback.json: {e}"))?;
+    if dto.version != DEVICE_BOUND_FALLBACK_KEY_VERSION {
+        return Err(format!(
+            "OSL: file_storage_key_fallback.json version mismatch (got {}, want {DEVICE_BOUND_FALLBACK_KEY_VERSION})",
+            dto.version
+        ));
+    }
+    Ok(dto)
+}
+
+fn write_device_bound_fallback_key(
+    dir: &Path,
+    dto: &DeviceBoundFallbackStorageKey,
+) -> Result<(), String> {
+    if !dir.exists() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("OSL: mkdir {}: {e}", dir.display()))?;
+    }
+    let path = device_bound_fallback_key_path(dir);
+    let bytes = serde_json::to_vec_pretty(dto)
+        .map_err(|e| format!("OSL: serialize file_storage_key_fallback: {e}"))?;
     std::fs::write(&path, &bytes).map_err(|e| format!("OSL: write {}: {e}", path.display()))
 }
 
@@ -797,6 +856,62 @@ pub fn lockout_status(dir: &Path) -> LockoutStatusDto {
     }
 }
 
+pub fn record_wrong_password_attempt_or_duress(
+    state: &AppState,
+    lockout: &mut LockoutState,
+    now: i64,
+) -> Result<WrongPasswordAttemptAction, String> {
+    lockout.version = LOCKOUT_VERSION;
+    lockout.password_failed_attempts = lockout.password_failed_attempts.saturating_add(1);
+    if lockout.password_failed_attempts >= keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD {
+        lockout.password_locked_until = None;
+        let _ = state.execute_production_duress()?;
+        return Ok(WrongPasswordAttemptAction::DuressTriggered {
+            attempts_used: lockout.password_failed_attempts,
+        });
+    }
+
+    let secs = password_lockout_secs(lockout.password_failed_attempts);
+    lockout.password_locked_until = if secs > 0 { Some(now + secs) } else { None };
+    Ok(WrongPasswordAttemptAction::Wrong {
+        attempts_used: lockout.password_failed_attempts,
+        lockout_seconds_remaining: secs,
+    })
+}
+
+pub fn lock_main_password_session(state: &AppState) {
+    set_file_storage_key(None);
+    state.clear_identity();
+    state.clear_prekey_state();
+    state.sender_pubkey_cache.clear();
+    *state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned") = None;
+    *state
+        .recovery_token
+        .lock()
+        .expect("recovery_token mutex poisoned") = None;
+}
+
+pub fn run_inactivity_auto_lock_timer(
+    state: &AppState,
+    last_activity: Instant,
+    now: Instant,
+) -> InactivityAutoLockOutcome {
+    if get_file_storage_key().is_none() {
+        return InactivityAutoLockOutcome::AlreadyLocked;
+    }
+    let timer =
+        keystore::InactivityTimer::with_last_activity(INACTIVITY_AUTO_LOCK_SECONDS, last_activity);
+    if timer.should_reprompt_at(now) {
+        lock_main_password_session(state);
+        InactivityAutoLockOutcome::Locked
+    } else {
+        InactivityAutoLockOutcome::StillUnlocked
+    }
+}
+
 fn marker_phrase_hash(marker: &PasswordMarker) -> Option<String> {
     marker.phrase_hash_b64.clone()
 }
@@ -821,10 +936,10 @@ fn marker_phrase_hash(marker: &PasswordMarker) -> Option<String> {
 // changes to existing readers.
 //
 // Plain JSON (no OSL-ENC1 prefix) is still accepted by loaders so
-// users without a password keep working, and so the migration to
-// encryption-at-rest on first `set_main_password` is a one-shot
-// re-write. `clear_file_storage_key()` is called from
-// `remove_main_password` to revert future writes to plain JSON.
+// old files can be migrated. Writes always encrypt: either with the
+// main-password-derived key already in the slot, or with a device-bound
+// fallback key opened from the active config dir when no main password is
+// configured.
 // =====================================================================
 
 use std::sync::{Mutex, OnceLock};
@@ -860,6 +975,71 @@ pub fn set_file_storage_key(key: Option<[u8; 32]>) {
     } else if !is_some && was_some {
         eprintln!("[OSL][crypto] file_storage_key cleared");
     }
+}
+
+/// Ensure this no-main-password install still has an encrypted
+/// `file_storage_key` rather than falling back to protected plaintext.
+///
+/// The fallback key is generated once, sealed with the existing device sealer
+/// stack, written under the OSL config dir, and installed in the process slot.
+/// It is available only when no main password marker exists; if the user has a
+/// main password, that password-derived key remains the only authority.
+pub fn ensure_device_bound_fallback_file_storage_key(dir: &Path) -> Result<[u8; 32], String> {
+    let sealer = keystore::select_best_sealer();
+    ensure_device_bound_fallback_file_storage_key_with_sealer(dir, sealer.as_ref())
+}
+
+pub fn ensure_device_bound_fallback_file_storage_key_with_sealer(
+    dir: &Path,
+    sealer: &dyn keystore::Sealer,
+) -> Result<[u8; 32], String> {
+    if marker_exists(dir) {
+        return Err(
+            "OSL: main password marker exists; refusing device-bound fallback storage key"
+                .to_owned(),
+        );
+    }
+
+    let key = if device_bound_fallback_key_path(dir).exists() {
+        let dto = read_device_bound_fallback_key(dir)?;
+        if dto.sealer_method != sealer.method_label() {
+            return Err(
+                "OSL: file_storage_key_fallback.json was sealed by a different device backend"
+                    .to_owned(),
+            );
+        }
+        let sealed = STANDARD
+            .decode(&dto.sealed_key_b64)
+            .map_err(|e| format!("OSL: fallback storage key b64: {e}"))?;
+        let opened = sealer
+            .unseal(&sealed)
+            .map_err(|e| format!("OSL: unseal fallback storage key: {e}"))?;
+        if opened.len() != KEY_LEN {
+            return Err("OSL: fallback storage key wrong length".to_owned());
+        }
+        let mut out = [0u8; KEY_LEN];
+        out.copy_from_slice(&opened[..KEY_LEN]);
+        out
+    } else {
+        let random = random_bytes(KEY_LEN);
+        let mut out = [0u8; KEY_LEN];
+        out.copy_from_slice(&random);
+        let sealed = sealer
+            .seal(&out)
+            .map_err(|e| format!("OSL: seal fallback storage key: {e}"))?;
+        write_device_bound_fallback_key(
+            dir,
+            &DeviceBoundFallbackStorageKey {
+                version: DEVICE_BOUND_FALLBACK_KEY_VERSION,
+                sealer_method: sealer.method_label().to_owned(),
+                sealed_key_b64: STANDARD.encode(sealed),
+            },
+        )?;
+        out
+    };
+
+    set_file_storage_key(Some(key));
+    Ok(key)
 }
 
 /// HKDF-Expand-SHA256 single-block expansion. Input `prk` is the
@@ -938,13 +1118,23 @@ pub fn maybe_decrypt(blob: &[u8]) -> Result<Vec<u8>, String> {
     decrypt_at_rest(blob, &key)
 }
 
-/// Convenience: write-side mirror of `maybe_decrypt`. If a key is
-/// in the slot, encrypt; otherwise return plaintext verbatim.
+/// Convenience: write-side mirror of `maybe_decrypt`.
+///
+/// Writes never fall back to plaintext. If no main-password-derived key is
+/// present in the process slot, open or create the device-bound fallback key
+/// for the active OSL config directory and use that. When a main-password
+/// marker exists but the user has not unlocked it, the fallback key is refused
+/// and the write fails closed.
 pub fn maybe_encrypt(plaintext: &[u8]) -> Result<Vec<u8>, String> {
-    match get_file_storage_key().map(Zeroizing::new) {
-        Some(key) => encrypt_at_rest(plaintext, &key),
-        None => Ok(plaintext.to_vec()),
-    }
+    let key = match get_file_storage_key() {
+        Some(key) => Zeroizing::new(key),
+        None => {
+            let dir = keystore::osl_config_dir()
+                .map_err(|e| format!("OSL: resolve config dir for at-rest encrypt: {e}"))?;
+            Zeroizing::new(ensure_device_bound_fallback_file_storage_key(&dir)?)
+        }
+    };
+    encrypt_at_rest(plaintext, &key)
 }
 
 pub fn has_enc_magic(blob: &[u8]) -> bool {
@@ -1318,10 +1508,135 @@ pub fn burn_wipe_all(dir: &Path) -> Result<(), String> {
 mod password_policy_tests {
     use super::*;
 
+    struct ConfigDirOverrideGuard;
+
+    impl Drop for ConfigDirOverrideGuard {
+        fn drop(&mut self) {
+            keystore::set_active_account_dir(None);
+            keystore::set_base_dir_override(None);
+            set_file_storage_key(None);
+        }
+    }
+
+    fn use_temp_config_dir(dir: &Path) -> ConfigDirOverrideGuard {
+        keystore::set_active_account_dir(None);
+        keystore::set_base_dir_override(Some(dir.to_path_buf()));
+        ConfigDirOverrideGuard
+    }
+
     #[test]
     fn six_character_passwords_can_be_created_and_unlocked() {
         assert!(validate_password("aB3!z9").is_ok());
         assert!(validate_new_password("aB3!z9").is_ok());
+    }
+
+    #[test]
+    fn run_inactivity_auto_lock_timer() {
+        set_file_storage_key(None);
+        let state = AppState::new();
+        state.install_identity(keystore::generate_identity("idle-lock-owner".to_owned()));
+        set_file_storage_key(Some([0x7a; 32]));
+        let now = std::time::Instant::now();
+
+        assert_eq!(
+            super::run_inactivity_auto_lock_timer(
+                &state,
+                now - std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS - 1),
+                now,
+            ),
+            InactivityAutoLockOutcome::StillUnlocked
+        );
+        assert_eq!(get_file_storage_key(), Some([0x7a; 32]));
+        assert!(state.has_identity());
+        assert!(state.has_prekey_state());
+
+        assert_eq!(
+            super::run_inactivity_auto_lock_timer(
+                &state,
+                now - std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS),
+                now,
+            ),
+            InactivityAutoLockOutcome::Locked
+        );
+        assert_eq!(get_file_storage_key(), None);
+        assert!(
+            !state.has_identity(),
+            "auto-lock must clear the live decrypted identity, not only a UI flag"
+        );
+        assert!(!state.has_prekey_state());
+
+        assert_eq!(
+            super::run_inactivity_auto_lock_timer(
+                &state,
+                now - std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS * 2),
+                now,
+            ),
+            InactivityAutoLockOutcome::AlreadyLocked
+        );
+        set_file_storage_key(None);
+    }
+
+    #[test]
+    fn tenth_wrong_password_attempt_triggers_duress() {
+        set_file_storage_key(None);
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = use_temp_config_dir(dir.path());
+        let state = AppState::new_with_production_duress_engine(dir.path().to_path_buf());
+        state.install_identity(keystore::generate_identity("wrong-threshold-owner".to_owned()));
+        set_file_storage_key(Some([0x55; 32]));
+        let identity_file = dir.path().join("identity.json");
+        let password_file = dir.path().join("password_marker.json");
+        let prekey_file = dir.path().join("prekeys.json");
+        std::fs::write(&identity_file, b"identity").unwrap();
+        std::fs::write(&password_file, b"password").unwrap();
+        std::fs::write(&prekey_file, b"prekeys").unwrap();
+        let now = now_unix_secs();
+        let mut lock = LockoutState {
+            version: LOCKOUT_VERSION,
+            password_failed_attempts: keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD - 2,
+            password_locked_until: None,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            record_wrong_password_attempt_or_duress(&state, &mut lock, now).unwrap(),
+            WrongPasswordAttemptAction::Wrong {
+                attempts_used: keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD - 1,
+                lockout_seconds_remaining: password_lockout_secs(
+                    keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD - 1
+                ),
+            },
+            "the ninth wrong password must not trigger duress early"
+        );
+        assert!(identity_file.exists());
+        assert!(password_file.exists());
+        assert!(prekey_file.exists());
+        assert_eq!(get_file_storage_key(), Some([0x55; 32]));
+
+        lock.password_locked_until = Some(now - 1);
+        assert_eq!(
+            record_wrong_password_attempt_or_duress(&state, &mut lock, now).unwrap(),
+            WrongPasswordAttemptAction::DuressTriggered {
+                attempts_used: keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD,
+            },
+            "the tenth wrong password must trigger the production duress engine"
+        );
+
+        assert_eq!(
+            lock.password_failed_attempts,
+            keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD
+        );
+        assert_eq!(lock.password_locked_until, None);
+        assert!(!identity_file.exists());
+        assert!(!password_file.exists());
+        assert!(!prekey_file.exists());
+        assert_eq!(
+            get_file_storage_key(),
+            None,
+            "duress must clear the live storage key"
+        );
+        assert!(!state.has_identity());
+        assert!(!state.has_prekey_state());
     }
 
     #[test]
@@ -1330,5 +1645,129 @@ mod password_policy_tests {
         assert!(validate_new_password("short").is_err());
         assert!(validate_new_password(&"x".repeat(PASSWORD_MAX_LEN + 1)).is_err());
         assert!(validate_new_password("twelve\nchars").is_err());
+    }
+
+    #[test]
+    fn device_bound_fallback_file_storage_key_round_trips_without_main_password() {
+        set_file_storage_key(None);
+        let dir = tempfile::tempdir().unwrap();
+        let sealer = keystore::MemorySealer::new();
+
+        let first = ensure_device_bound_fallback_file_storage_key_with_sealer(dir.path(), &sealer)
+            .expect("no marker: fallback key can be created");
+        assert_eq!(get_file_storage_key(), Some(first));
+
+        let fallback_path = device_bound_fallback_key_path(dir.path());
+        let raw = std::fs::read(&fallback_path).unwrap();
+        assert!(
+            !raw.windows(first.len())
+                .any(|window| window == first.as_slice()),
+            "sealed fallback artifact must not contain the raw storage key"
+        );
+
+        let sealed = maybe_encrypt(br#"{"protected":true}"#).unwrap();
+        assert!(has_enc_magic(&sealed));
+
+        set_file_storage_key(None);
+        assert!(maybe_decrypt(&sealed).is_err());
+
+        let reopened =
+            ensure_device_bound_fallback_file_storage_key_with_sealer(dir.path(), &sealer)
+                .expect("same device sealer can reopen fallback key");
+        assert_eq!(reopened, first);
+        assert_eq!(maybe_decrypt(&sealed).unwrap(), br#"{"protected":true}"#);
+
+        let marker = build_marker(
+            "main-secret",
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        )
+        .unwrap();
+        write_marker(dir.path(), &marker).unwrap();
+        assert!(
+            ensure_device_bound_fallback_file_storage_key_with_sealer(dir.path(), &sealer).is_err(),
+            "main-password installs must not also mint fallback authority"
+        );
+        set_file_storage_key(None);
+    }
+
+    #[test]
+    fn maybe_encrypt_always_encrypts() {
+        set_file_storage_key(None);
+        let dir = tempfile::tempdir().unwrap();
+        let _override = use_temp_config_dir(dir.path());
+
+        let plaintext = br#"{"protected":"without-main-password"}"#;
+        let sealed = maybe_encrypt(plaintext).unwrap();
+
+        assert!(
+            has_enc_magic(&sealed),
+            "maybe_encrypt with no main-password key must create an encrypted envelope"
+        );
+        assert_ne!(
+            sealed.as_slice(),
+            plaintext,
+            "maybe_encrypt must not return plaintext when the key slot starts empty"
+        );
+        assert!(
+            device_bound_fallback_key_path(dir.path()).exists(),
+            "no-main-password encryption must persist a sealed device-bound fallback key"
+        );
+        assert!(
+            get_file_storage_key().is_some(),
+            "device-bound fallback key should be installed for decrypting subsequent reads"
+        );
+        assert_eq!(maybe_decrypt(&sealed).unwrap(), plaintext);
+
+        set_file_storage_key(Some([0xA9; KEY_LEN]));
+        let sealed_with_main_key = maybe_encrypt(plaintext).unwrap();
+        assert!(
+            has_enc_magic(&sealed_with_main_key),
+            "maybe_encrypt with a main-password key must also encrypt"
+        );
+        assert_eq!(maybe_decrypt(&sealed_with_main_key).unwrap(), plaintext);
+    }
+
+    #[test]
+    fn maybe_decrypt_transparently_supports_both_device_bound_and_main_password() {
+        set_file_storage_key(None);
+
+        let main_dir = tempfile::tempdir().unwrap();
+        set_main_password(main_dir.path(), "main-secret").unwrap();
+        let main_password_blob = maybe_encrypt(br#"{"mode":"main-password"}"#).unwrap();
+        assert!(has_enc_magic(&main_password_blob));
+
+        set_file_storage_key(Some([0xA5; 32]));
+        assert!(maybe_decrypt(&main_password_blob).is_err());
+        set_file_storage_key(None);
+        assert!(maybe_decrypt(&main_password_blob).is_err());
+
+        verify_main_password(main_dir.path(), "main-secret").unwrap();
+        assert_eq!(
+            maybe_decrypt(&main_password_blob).unwrap(),
+            br#"{"mode":"main-password"}"#
+        );
+
+        set_file_storage_key(None);
+
+        let device_dir = tempfile::tempdir().unwrap();
+        let sealer = keystore::MemorySealer::new();
+        ensure_device_bound_fallback_file_storage_key_with_sealer(device_dir.path(), &sealer)
+            .unwrap();
+        let device_bound_blob = maybe_encrypt(br#"{"mode":"device-bound"}"#).unwrap();
+        assert!(has_enc_magic(&device_bound_blob));
+
+        set_file_storage_key(Some([0x5A; 32]));
+        assert!(maybe_decrypt(&device_bound_blob).is_err());
+        set_file_storage_key(None);
+        assert!(maybe_decrypt(&device_bound_blob).is_err());
+
+        ensure_device_bound_fallback_file_storage_key_with_sealer(device_dir.path(), &sealer)
+            .unwrap();
+        assert_eq!(
+            maybe_decrypt(&device_bound_blob).unwrap(),
+            br#"{"mode":"device-bound"}"#
+        );
+
+        set_file_storage_key(None);
     }
 }

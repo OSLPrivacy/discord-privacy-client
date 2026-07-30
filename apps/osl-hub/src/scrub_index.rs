@@ -13,10 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
-use crate::privacy_scan::{
-    scan_local_messages, validate_attachment_input_batch, LocalMessageCandidate,
-    LocalPrivacyScanResult, MAX_FINDINGS,
-};
+use crate::privacy_scan::{scan_local_messages, LocalMessageCandidate};
 
 const VERSION: u8 = 1;
 const INDEX_DIR: &str = "scrub-index-v1";
@@ -27,14 +24,8 @@ const MAX_INDEX_BYTES: u64 = 50 * 1024 * 1024;
 const JOURNAL_RESERVE_BYTES: u64 = 512 * 1024;
 const MAX_SELECTIONS: usize = 32;
 const MAX_MESSAGES_PER_CHUNK: usize = 256;
-// One UI-selected attachment may be up to 8 MiB. Base64 plus the bounded JSON
-// envelope fits within 12 MiB while the encrypted index remains globally
-// capped at 50 MiB.
-const MAX_PLAINTEXT_CHUNK_BYTES: usize = 12 * 1024 * 1024;
-const MAX_ENCRYPTED_CHUNK_BYTES: u64 = MAX_PLAINTEXT_CHUNK_BYTES as u64 + 64;
+const MAX_PLAINTEXT_CHUNK_BYTES: usize = 2 * 1024 * 1024;
 const MAX_CHUNKS: usize = 4_096;
-pub const MANUAL_EXPORT_SERVICE_ID: &str = "local_import";
-pub const MANUAL_EXPORT_ACCOUNT_ID: &str = "manual-export";
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -93,6 +84,31 @@ pub struct ScrubIndexStatus {
     pub deletion_enabled: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScrubIndexManifest {
+    pub version: u8,
+    pub import_id: String,
+    pub source: ScrubIndexSource,
+    pub phase: ScrubIndexPhase,
+    pub selections: Vec<ScrubAccountSelection>,
+    pub next_sequence: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScrubIndexScan {
+    pub import_id: String,
+    pub phase: ScrubIndexPhase,
+    pub messages_indexed: u64,
+    pub findings_indexed: u64,
+    pub rejected_messages: u64,
+    pub completed_chunks: u32,
+    pub analysis_location: &'static str,
+    pub persisted_encrypted: bool,
+    pub deletion_enabled: bool,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct JournalDocument {
@@ -119,15 +135,6 @@ struct StoredChunk<'a> {
     messages: &'a [LocalMessageCandidate],
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct LoadedChunk {
-    version: u8,
-    import_id: String,
-    sequence: u32,
-    messages: Vec<LocalMessageCandidate>,
-}
-
 #[derive(Clone, Default)]
 pub struct ScrubIndexState {
     transition: Arc<Mutex<()>>,
@@ -148,6 +155,7 @@ impl ScrubIndexState {
         let _guard = self.lock()?;
         validate_owner(owner)?;
         let selections = validate_selections(request.selections)?;
+        validate_source_selections(request.source, &selections)?;
         let root = self.root()?;
         let key = self.key()?;
         ensure_safe_root(&root, true)?;
@@ -178,6 +186,16 @@ impl ScrubIndexState {
         Ok(document.status())
     }
 
+    pub fn set_scrub_index_manifest(
+        &self,
+        owner: &str,
+        request: ScrubIndexInitializeRequest,
+    ) -> Result<ScrubIndexManifest, String> {
+        self.initialize(owner, request)?;
+        self.get_scrub_index_manifest(owner)?
+            .ok_or_else(|| "Scrub manifest was not persisted".to_owned())
+    }
+
     pub fn status(&self, owner: &str) -> Result<Option<ScrubIndexStatus>, String> {
         let _guard = self.lock()?;
         validate_owner(owner)?;
@@ -191,120 +209,33 @@ impl ScrubIndexState {
         Ok(Some(document.status()))
     }
 
-    /// Decrypt committed chunks and deterministically rebuild the bounded
-    /// review result. No plaintext cache or finding metadata is written.
-    pub fn read_scan(
+    pub fn get_scrub_index_manifest(
         &self,
         owner: &str,
-        import_id: &str,
-    ) -> Result<LocalPrivacyScanResult, String> {
+    ) -> Result<Option<ScrubIndexManifest>, String> {
         let _guard = self.lock()?;
         validate_owner(owner)?;
-        validate_import_id(import_id)?;
         let root = self.root()?;
         ensure_safe_root(&root, false)?;
-        let key = self.key()?;
-        let document =
-            load_journal(&root, &key)?.ok_or_else(|| "No Scrub index is initialized".to_owned())?;
+        let Some(document) = load_journal(&root, &self.key()?)? else {
+            return Ok(None);
+        };
         require_owner(&document, owner)?;
-        require_import(&document, import_id)?;
         recover_orphans(&root, document.next_sequence)?;
+        Ok(Some(document.manifest()))
+    }
 
-        let allowed: HashSet<_> = document.selections.iter().cloned().collect();
-        let mut findings = Vec::new();
-        let mut messages_scanned = 0usize;
-        let mut truncated = false;
-        let mut attachments_scanned = 0usize;
-        let mut attachment_types_scanned = Vec::new();
-        let mut uninspected_attachments = Vec::new();
-        for sequence in 0..document.next_sequence {
-            let sealed = crate::atomic_file::read_recoverable_bounded(
-                &chunk_path(&root, sequence),
-                MAX_ENCRYPTED_CHUNK_BYTES,
-                "encrypted Scrub chunk",
-            )?
-            .ok_or_else(|| "A committed Scrub chunk is missing".to_owned())?;
-            if !ipc::main_password::has_enc_magic(&sealed) {
-                return Err("Scrub chunk is not encrypted".into());
-            }
-            let mut plaintext = ipc::main_password::decrypt_at_rest(&sealed, &key)
-                .map_err(|_| "Scrub chunk authentication failed".to_owned())?;
-            let parsed = serde_json::from_slice::<LoadedChunk>(&plaintext)
-                .map_err(|_| "Scrub chunk is malformed".to_owned());
-            plaintext.zeroize();
-            let chunk = parsed?;
-            if chunk.version != VERSION
-                || chunk.import_id != document.import_id
-                || chunk.sequence != sequence
-                || chunk.messages.is_empty()
-                || chunk.messages.len() > MAX_MESSAGES_PER_CHUNK
-                || chunk.messages.iter().any(|message| {
-                    !allowed.contains(&ScrubAccountSelection {
-                        service_id: message.service_id.clone(),
-                        account_id: message.account_id.clone(),
-                    })
-                })
-            {
-                return Err("Scrub chunk is inconsistent with its journal".into());
-            }
-            let expected_digest = document
-                .committed_digests
-                .get(sequence as usize)
-                .ok_or_else(|| "Scrub chunk digest is missing from its journal".to_owned())?;
-            let loaded_digest = digest_request(&ScrubIndexChunkRequest {
-                import_id: chunk.import_id.clone(),
-                sequence,
-                final_chunk: sequence + 1 == document.next_sequence
-                    && document.phase == ScrubIndexPhase::Complete,
-                messages: chunk.messages.clone(),
-            })?;
-            if &loaded_digest != expected_digest {
-                return Err("Scrub chunk content does not match its committed digest".into());
-            }
-            let chunk_message_count = chunk.messages.len();
-            let chunk_scan = scan_local_messages(chunk.messages);
-            if chunk_scan.messages_rejected != 0
-                || chunk_scan.messages_scanned != chunk_message_count
-            {
-                return Err("Scrub chunk contains an invalid message".into());
-            }
-            messages_scanned = messages_scanned.saturating_add(chunk_scan.messages_scanned);
-            attachments_scanned =
-                attachments_scanned.saturating_add(chunk_scan.attachments_scanned);
-            attachment_types_scanned.extend(chunk_scan.attachment_types_scanned);
-            uninspected_attachments.extend(chunk_scan.uninspected_attachments);
-            let remaining = MAX_FINDINGS.saturating_sub(findings.len());
-            truncated |= chunk_scan.truncated || chunk_scan.findings.len() > remaining;
-            findings.extend(chunk_scan.findings.into_iter().take(remaining));
-        }
-        if messages_scanned as u64 != document.messages_indexed
-            || findings.len() as u64 != document.findings_indexed
-        {
-            return Err("Scrub index counters do not match committed chunks".into());
-        }
-        attachment_types_scanned.sort();
-        attachment_types_scanned.dedup();
-        let images_checked = attachment_types_scanned.iter().any(|kind| kind == "image")
-            && !uninspected_attachments
-                .iter()
-                .any(|item| item.detected_type == "image");
-        let videos_checked = attachment_types_scanned.iter().any(|kind| kind == "video")
-            && !uninspected_attachments
-                .iter()
-                .any(|item| item.detected_type == "video");
-        Ok(LocalPrivacyScanResult {
-            findings,
-            messages_scanned,
-            messages_rejected: 0,
-            truncated,
-            analysis_location: "this_device_only",
-            persisted: true,
-            attachments_scanned,
-            images_checked,
-            videos_checked,
-            attachment_types_scanned,
-            uninspected_attachments,
-        })
+    pub fn get_scrub_index_scan(&self, owner: &str) -> Result<Option<ScrubIndexScan>, String> {
+        let _guard = self.lock()?;
+        validate_owner(owner)?;
+        let root = self.root()?;
+        ensure_safe_root(&root, false)?;
+        let Some(document) = load_journal(&root, &self.key()?)? else {
+            return Ok(None);
+        };
+        require_owner(&document, owner)?;
+        recover_orphans(&root, document.next_sequence)?;
+        Ok(Some(document.scan()))
     }
 
     pub fn append_chunk(
@@ -318,7 +249,6 @@ impl ScrubIndexState {
         if request.messages.is_empty() || request.messages.len() > MAX_MESSAGES_PER_CHUNK {
             return Err("Scrub chunks must contain 1-256 messages".into());
         }
-        validate_attachment_input_batch(&request.messages)?;
         let root = self.root()?;
         ensure_safe_root(&root, false)?;
         let key = self.key()?;
@@ -360,7 +290,10 @@ impl ScrubIndexState {
             return Err("A message does not belong to a selected Scrub account".into());
         }
         let scan = scan_local_messages(request.messages.clone());
-        if scan.messages_rejected != 0 || scan.messages_scanned != request.messages.len() {
+        if scan.truncated
+            || scan.messages_rejected != 0
+            || scan.messages_scanned != request.messages.len()
+        {
             return Err(
                 "Scrub rejected an invalid message; no part of the chunk was stored".into(),
             );
@@ -393,11 +326,10 @@ impl ScrubIndexState {
         crate::atomic_file::write_recoverable(&path, &sealed, "encrypted Scrub chunk")?;
         document.messages_indexed = document
             .messages_indexed
-            .saturating_add(request.messages.len() as u64);
-        let remaining_findings = (MAX_FINDINGS as u64).saturating_sub(document.findings_indexed);
+            .saturating_add(scan.messages_scanned as u64);
         document.findings_indexed = document
             .findings_indexed
-            .saturating_add((scan.findings.len() as u64).min(remaining_findings));
+            .saturating_add(scan.findings.len() as u64);
         document.rejected_messages = document
             .rejected_messages
             .saturating_add(scan.messages_rejected as u64);
@@ -433,6 +365,19 @@ impl ScrubIndexState {
         require_owner(&document, owner)?;
         require_import(&document, import_id)?;
         remove_index_tree(&root)
+    }
+
+    pub fn revoke_for_owner(&self, owner: &str) -> Result<bool, String> {
+        let _guard = self.lock()?;
+        validate_owner(owner)?;
+        let root = self.root()?;
+        ensure_safe_root(&root, false)?;
+        let Some(document) = load_journal(&root, &self.key()?)? else {
+            return Ok(false);
+        };
+        require_owner(&document, owner)?;
+        remove_index_tree(&root)?;
+        Ok(true)
     }
 
     fn change_phase(
@@ -507,6 +452,20 @@ impl ScrubIndexState {
     }
 }
 
+fn validate_source_selections(
+    source: ScrubIndexSource,
+    selections: &[ScrubAccountSelection],
+) -> Result<(), String> {
+    if source == ScrubIndexSource::ExplicitExport
+        && (selections.len() != 1
+            || selections[0].service_id != "local_import"
+            || selections[0].account_id != "manual-export")
+    {
+        return Err("Explicit Scrub exports require the fixed local import scope".into());
+    }
+    Ok(())
+}
+
 fn scrub_index_root(config_dir: Option<PathBuf>) -> Result<PathBuf, String> {
     config_dir
         .map(|path| path.join(INDEX_DIR))
@@ -517,6 +476,31 @@ fn scrub_index_root(config_dir: Option<PathBuf>) -> Result<PathBuf, String> {
 const KEY_FOR_TESTS: [u8; 32] = [91; 32];
 
 impl JournalDocument {
+    fn manifest(&self) -> ScrubIndexManifest {
+        ScrubIndexManifest {
+            version: self.version,
+            import_id: self.import_id.clone(),
+            source: self.source,
+            phase: self.phase,
+            selections: self.selections.clone(),
+            next_sequence: self.next_sequence,
+        }
+    }
+
+    fn scan(&self) -> ScrubIndexScan {
+        ScrubIndexScan {
+            import_id: self.import_id.clone(),
+            phase: self.phase,
+            messages_indexed: self.messages_indexed,
+            findings_indexed: self.findings_indexed,
+            rejected_messages: self.rejected_messages,
+            completed_chunks: self.next_sequence,
+            analysis_location: "this_device_only",
+            persisted_encrypted: true,
+            deletion_enabled: false,
+        }
+    }
+
     fn status(&self) -> ScrubIndexStatus {
         ScrubIndexStatus {
             import_id: self.import_id.clone(),
@@ -581,7 +565,6 @@ fn validate_journal(document: &JournalDocument) -> Result<(), String> {
         || document.next_sequence as usize != document.committed_digests.len()
         || document.committed_digests.len() > MAX_CHUNKS
         || document.bytes_stored > MAX_INDEX_BYTES
-        || document.findings_indexed > MAX_FINDINGS as u64
     {
         return Err("Scrub journal is inconsistent".into());
     }
@@ -621,26 +604,6 @@ fn validate_selections(
             .then_with(|| left.account_id.cmp(&right.account_id))
     });
     Ok(selections)
-}
-
-/// Manual exports do not represent a linked provider account. This exact
-/// sentinel is accepted only for the explicit-export source; provider-backed
-/// selections must still be proved by the active identity's registry.
-pub fn selection_requires_registry_ownership(
-    source: ScrubIndexSource,
-    selection: &ScrubAccountSelection,
-) -> Result<bool, String> {
-    let exact_manual_export = selection.service_id == MANUAL_EXPORT_SERVICE_ID
-        && selection.account_id == MANUAL_EXPORT_ACCOUNT_ID;
-    let mentions_manual_export = selection.service_id == MANUAL_EXPORT_SERVICE_ID
-        || selection.account_id == MANUAL_EXPORT_ACCOUNT_ID;
-    if exact_manual_export && source == ScrubIndexSource::ExplicitExport {
-        Ok(false)
-    } else if mentions_manual_export {
-        Err("Scrub manual-export selection is invalid for this source".into())
-    } else {
-        Ok(true)
-    }
 }
 
 fn validate_owner(value: &str) -> Result<(), String> {
@@ -858,7 +821,6 @@ mod tests {
             authored_by_self: true,
             created_at_unix_ms: Some(1_700_000_000_000),
             text: text.into(),
-            attachments: Vec::new(),
         }
     }
 
@@ -871,7 +833,7 @@ mod tests {
                 OWNER,
                 ScrubIndexInitializeRequest {
                     selections: vec![selection()],
-                    source: ScrubIndexSource::ExplicitExport,
+                    source: ScrubIndexSource::OslVisibleData,
                 },
             )
             .unwrap();
@@ -885,8 +847,6 @@ mod tests {
         let indexed = state.append_chunk(OWNER, chunk.clone()).unwrap();
         assert_eq!(indexed.messages_indexed, 1);
         assert!(indexed.findings_indexed >= 1);
-        assert!(indexed.persisted_encrypted);
-        assert!(!indexed.deletion_enabled);
         assert_eq!(state.append_chunk(OWNER, chunk).unwrap(), indexed);
         for bytes in [
             fs::read(root.join(JOURNAL)).unwrap(),
@@ -894,18 +854,7 @@ mod tests {
         ] {
             assert!(ipc::main_password::has_enc_magic(&bytes));
             assert!(!String::from_utf8_lossy(&bytes).contains("ghp_abcdefghijklmnop"));
-            assert!(!String::from_utf8_lossy(&bytes).contains("message-1"));
-            assert!(!String::from_utf8_lossy(&bytes).contains("account-1"));
         }
-        let restored = ScrubIndexState::for_test(root.clone());
-        let persisted_scan = restored.read_scan(OWNER, &initial.import_id).unwrap();
-        assert!(persisted_scan.persisted);
-        assert_eq!(persisted_scan.messages_scanned, 1);
-        assert_eq!(
-            persisted_scan.findings.len() as u64,
-            indexed.findings_indexed
-        );
-        assert_eq!(persisted_scan.findings[0].message_locator, "message-1");
         state.pause(OWNER, &initial.import_id).unwrap();
         let paused = state.append_chunk(
             OWNER,
@@ -930,14 +879,12 @@ mod tests {
             )
             .unwrap();
         assert_eq!(complete.phase, ScrubIndexPhase::Complete);
-        let restored = ScrubIndexState::for_test(root.clone());
-        assert_eq!(restored.status(OWNER).unwrap().unwrap(), complete);
-        let complete_scan = restored.read_scan(OWNER, &initial.import_id).unwrap();
-        assert!(complete_scan.persisted);
-        assert_eq!(complete_scan.messages_scanned, 2);
         assert_eq!(
-            complete_scan.findings.len() as u64,
-            complete.findings_indexed
+            ScrubIndexState::for_test(root.clone())
+                .status(OWNER)
+                .unwrap()
+                .unwrap(),
+            complete
         );
         assert!(state.status(&"f".repeat(64)).is_err());
         state.cancel(OWNER, &initial.import_id).unwrap();
@@ -974,87 +921,6 @@ mod tests {
     }
 
     #[test]
-    fn persisted_review_rejects_authenticated_chunk_swap_against_journal_digest() {
-        let root = root("digest-swap");
-        let state = ScrubIndexState::for_test(root.clone());
-        let initial = state
-            .initialize(
-                OWNER,
-                ScrubIndexInitializeRequest {
-                    selections: vec![selection()],
-                    source: ScrubIndexSource::ExplicitExport,
-                },
-            )
-            .unwrap();
-        state
-            .append_chunk(
-                OWNER,
-                ScrubIndexChunkRequest {
-                    import_id: initial.import_id.clone(),
-                    sequence: 0,
-                    final_chunk: true,
-                    messages: vec![message("password: original")],
-                },
-            )
-            .unwrap();
-
-        let replacement = vec![message("password: swapped")];
-        let plaintext = serde_json::to_vec(&StoredChunk {
-            version: VERSION,
-            import_id: &initial.import_id,
-            sequence: 0,
-            messages: &replacement,
-        })
-        .unwrap();
-        let sealed = ipc::main_password::encrypt_at_rest(&plaintext, &KEY_FOR_TESTS).unwrap();
-        fs::write(chunk_path(&root, 0), sealed).unwrap();
-
-        let error = match state.read_scan(OWNER, &initial.import_id) {
-            Ok(_) => panic!("swapped chunk unexpectedly passed its committed digest"),
-            Err(error) => error,
-        };
-        assert!(error.contains("committed digest"));
-        state.cancel(OWNER, &initial.import_id).unwrap();
-    }
-
-    #[test]
-    fn persisted_review_and_status_share_the_global_finding_bound() {
-        let root = root("finding-bound");
-        let state = ScrubIndexState::for_test(root.clone());
-        let initial = state
-            .initialize(
-                OWNER,
-                ScrubIndexInitializeRequest {
-                    selections: vec![selection()],
-                    source: ScrubIndexSource::ExplicitExport,
-                },
-            )
-            .unwrap();
-        let dense = "password: sample; recovery phrase; card 4242 4242 4242 4242; passport number; my address is 123 Main; fuck; explicit photo; my diagnosis; cocaine; commit fraud; internal only";
-        let indexed = state
-            .append_chunk(
-                OWNER,
-                ScrubIndexChunkRequest {
-                    import_id: initial.import_id.clone(),
-                    sequence: 0,
-                    final_chunk: true,
-                    messages: (0..100).map(|_| message(dense)).collect(),
-                },
-            )
-            .unwrap();
-        assert_eq!(indexed.messages_indexed, 100);
-        assert_eq!(indexed.findings_indexed, MAX_FINDINGS as u64);
-        let review = ScrubIndexState::for_test(root.clone())
-            .read_scan(OWNER, &initial.import_id)
-            .unwrap();
-        assert_eq!(review.messages_scanned, 100);
-        assert_eq!(review.findings.len(), MAX_FINDINGS);
-        assert!(review.truncated);
-        assert!(review.persisted);
-        state.cancel(OWNER, &initial.import_id).unwrap();
-    }
-
-    #[test]
     fn locked_identity_cannot_create_even_an_empty_index_directory() {
         let root = root("locked");
         let state = ScrubIndexState::for_test_locked(root.clone());
@@ -1062,41 +928,11 @@ mod tests {
             OWNER,
             ScrubIndexInitializeRequest {
                 selections: vec![selection()],
-                source: ScrubIndexSource::ExplicitExport,
+                source: ScrubIndexSource::OslVisibleData,
             },
         );
         assert!(result.unwrap_err().contains("Unlock"));
         assert!(!root.exists());
-    }
-
-    #[test]
-    fn only_the_exact_explicit_export_sentinel_skips_registry_ownership() {
-        let manual = ScrubAccountSelection {
-            service_id: MANUAL_EXPORT_SERVICE_ID.into(),
-            account_id: MANUAL_EXPORT_ACCOUNT_ID.into(),
-        };
-        assert!(
-            !selection_requires_registry_ownership(ScrubIndexSource::ExplicitExport, &manual,)
-                .unwrap()
-        );
-        assert!(
-            selection_requires_registry_ownership(ScrubIndexSource::OslVisibleData, &manual,)
-                .is_err()
-        );
-        let provider = selection();
-        assert!(
-            selection_requires_registry_ownership(ScrubIndexSource::ExplicitExport, &provider,)
-                .unwrap()
-        );
-        let partial_sentinel = ScrubAccountSelection {
-            service_id: MANUAL_EXPORT_SERVICE_ID.into(),
-            account_id: "provider-account".into(),
-        };
-        assert!(selection_requires_registry_ownership(
-            ScrubIndexSource::ExplicitExport,
-            &partial_sentinel,
-        )
-        .is_err());
     }
 
     #[test]
@@ -1125,11 +961,190 @@ mod tests {
             OWNER,
             ScrubIndexInitializeRequest {
                 selections: vec![selection()],
-                source: ScrubIndexSource::ExplicitExport,
+                source: ScrubIndexSource::OslVisibleData,
             },
         );
         assert!(result.unwrap_err().contains("not a private directory"));
         assert_eq!(fs::read(target.join("keep")).unwrap(), b"safe");
         let _ = fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn explicit_exports_are_confined_to_the_fixed_local_scope() {
+        let root = root("explicit-scope");
+        let state = ScrubIndexState::for_test(root.clone());
+        let rejected = state.initialize(
+            OWNER,
+            ScrubIndexInitializeRequest {
+                selections: vec![selection()],
+                source: ScrubIndexSource::ExplicitExport,
+            },
+        );
+        assert!(rejected.unwrap_err().contains("fixed local import scope"));
+        assert!(!root.exists());
+
+        let accepted = state
+            .initialize(
+                OWNER,
+                ScrubIndexInitializeRequest {
+                    selections: vec![ScrubAccountSelection {
+                        service_id: "local_import".into(),
+                        account_id: "manual-export".into(),
+                    }],
+                    source: ScrubIndexSource::ExplicitExport,
+                },
+            )
+            .unwrap();
+        state.cancel(OWNER, &accepted.import_id).unwrap();
+    }
+
+    #[test]
+    fn scrub_index_manifest_and_scan_round_trip() {
+        let root = root("manifest-round-trip");
+        let state = ScrubIndexState::for_test(root.clone());
+        let manifest = state
+            .set_scrub_index_manifest(
+                OWNER,
+                ScrubIndexInitializeRequest {
+                    selections: vec![selection()],
+                    source: ScrubIndexSource::OslVisibleData,
+                },
+            )
+            .unwrap();
+        assert_eq!(manifest.version, VERSION);
+        assert_eq!(manifest.source, ScrubIndexSource::OslVisibleData);
+        assert_eq!(manifest.selections, vec![selection()]);
+        assert_eq!(manifest.next_sequence, 0);
+
+        let indexed = state
+            .append_chunk(
+                OWNER,
+                ScrubIndexChunkRequest {
+                    import_id: manifest.import_id.clone(),
+                    sequence: 0,
+                    final_chunk: true,
+                    messages: vec![message("token=ghp_abcdefghijklmnop")],
+                },
+            )
+            .unwrap();
+        assert_eq!(indexed.phase, ScrubIndexPhase::Complete);
+
+        let reopened = ScrubIndexState::for_test(root.clone());
+        assert_eq!(
+            reopened.get_scrub_index_manifest(OWNER).unwrap().unwrap(),
+            ScrubIndexManifest {
+                phase: ScrubIndexPhase::Complete,
+                next_sequence: 1,
+                import_id: manifest.import_id.clone(),
+                source: manifest.source,
+                selections: manifest.selections.clone(),
+                version: manifest.version,
+            }
+        );
+        let scan = reopened.get_scrub_index_scan(OWNER).unwrap().unwrap();
+        assert_eq!(scan.import_id, manifest.import_id);
+        assert_eq!(scan.messages_indexed, 1);
+        assert!(scan.findings_indexed >= 1);
+        assert_eq!(scan.rejected_messages, 0);
+        assert_eq!(scan.completed_chunks, 1);
+        assert_eq!(scan.analysis_location, "this_device_only");
+        assert!(scan.persisted_encrypted);
+        assert!(!scan.deletion_enabled);
+        assert!(reopened.get_scrub_index_scan(&"f".repeat(64)).is_err());
+    }
+
+    #[test]
+    fn revoke_for_owner_persists_deletion_before_cache_replace() {
+        let root = root("owner-revoke");
+        let state = ScrubIndexState::for_test(root.clone());
+        let initial = state
+            .initialize(
+                OWNER,
+                ScrubIndexInitializeRequest {
+                    selections: vec![selection()],
+                    source: ScrubIndexSource::OslVisibleData,
+                },
+            )
+            .unwrap();
+        state
+            .append_chunk(
+                OWNER,
+                ScrubIndexChunkRequest {
+                    import_id: initial.import_id.clone(),
+                    sequence: 0,
+                    final_chunk: false,
+                    messages: vec![message("token=ghp_abcdefghijklmnop")],
+                },
+            )
+            .unwrap();
+        assert!(chunk_path(&root, 0).exists());
+
+        let other_owner = "f".repeat(64);
+        assert!(state.revoke_for_owner(&other_owner).is_err());
+        assert!(root.join(JOURNAL).exists());
+        assert!(chunk_path(&root, 0).exists());
+
+        assert_eq!(state.revoke_for_owner(OWNER), Ok(true));
+        assert!(!root.exists());
+        assert_eq!(
+            ScrubIndexState::for_test(root.clone())
+                .get_scrub_index_manifest(OWNER)
+                .unwrap(),
+            None
+        );
+
+        let replacement = ScrubIndexState::for_test(root.clone())
+            .initialize(
+                &other_owner,
+                ScrubIndexInitializeRequest {
+                    selections: vec![selection()],
+                    source: ScrubIndexSource::OslVisibleData,
+                },
+            )
+            .unwrap();
+        assert_ne!(replacement.import_id, initial.import_id);
+        ScrubIndexState::for_test(root.clone())
+            .cancel(&other_owner, &replacement.import_id)
+            .unwrap();
+    }
+
+    #[test]
+    fn recover_orphans_removes_uncommitted_chunks_on_startup() {
+        let root = root("orphan-recovery");
+        let state = ScrubIndexState::for_test(root.clone());
+        let initial = state
+            .initialize(
+                OWNER,
+                ScrubIndexInitializeRequest {
+                    selections: vec![selection()],
+                    source: ScrubIndexSource::OslVisibleData,
+                },
+            )
+            .unwrap();
+        state
+            .append_chunk(
+                OWNER,
+                ScrubIndexChunkRequest {
+                    import_id: initial.import_id.clone(),
+                    sequence: 0,
+                    final_chunk: false,
+                    messages: vec![message("safe committed message")],
+                },
+            )
+            .unwrap();
+        ensure_safe_chunks_dir(&root).unwrap();
+        fs::write(chunk_path(&root, 1), b"uncommitted").unwrap();
+        fs::write(root.join(CHUNKS).join("chunk-00000002.tmp"), b"partial").unwrap();
+        assert!(chunk_path(&root, 1).exists());
+        assert!(root.join(CHUNKS).join("chunk-00000002.tmp").exists());
+
+        let startup_state = ScrubIndexState::for_test(root.clone());
+        let status = startup_state.status(OWNER).unwrap().unwrap();
+        assert_eq!(status.next_sequence, 1);
+        assert!(chunk_path(&root, 0).exists());
+        assert!(!chunk_path(&root, 1).exists());
+        assert!(!root.join(CHUNKS).join("chunk-00000002.tmp").exists());
+
+        startup_state.cancel(OWNER, &initial.import_id).unwrap();
     }
 }

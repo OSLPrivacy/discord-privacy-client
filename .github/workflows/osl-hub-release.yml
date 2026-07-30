@@ -18,6 +18,8 @@ jobs:
     environment: hub-release
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.ref }}
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -59,6 +61,7 @@ jobs:
       - name: Audit OSL Privacy updater supply-chain policy
         run: |
           python scripts/audit_hub_release.py
+          python -m unittest scripts/audit_hub_release.py
           python -m unittest scripts/test_verify_hub_vm_qa_attestation.py
 
       - name: Build signed draft installer and updater manifest

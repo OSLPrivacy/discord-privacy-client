@@ -37,10 +37,26 @@ fn fresh_state(name: &str) -> AppState {
 }
 
 fn install_self(state: &AppState, did: &str) {
+    let (osl_user_id, x25519_pub, mlkem_pub, ratchet_pub) = {
+        let mut id = state.identity.lock().unwrap();
+        let id = id.as_mut().unwrap();
+        id.discord_snowflake = Some(did.to_string());
+        (
+            id.user_id.clone(),
+            id.x25519_public,
+            id.mlkem_public_bytes,
+            id.ratchet_initial_pub
+                .expect("fresh identity has ratchet pub"),
+        )
+    };
     let mut pm = state.peer_map.lock().unwrap();
     let pe = pm.entry(did.to_string()).or_default();
     pe.is_self = Some(true);
     pe.discord_id = Some(did.to_string());
+    pe.osl_user_id = Some(osl_user_id);
+    pe.pubkey = Some(STANDARD.encode(x25519_pub.as_bytes()));
+    pe.ik_mlkem768_pub = Some(STANDARD.encode(mlkem_pub));
+    pe.ik_ratchet_initial_pub = Some(STANDARD.encode(ratchet_pub.as_bytes()));
 }
 
 struct Pubkeys {
@@ -199,25 +215,32 @@ fn deliver_skdm_synthetically(
     receiver_state: &AppState,
     scope_key: &str,
 ) {
-    // Read sender's chain_id + rotation_root.
-    let (chain_id, root) = {
+    // Read sender's chain_id + rotation_root + physical-device binding.
+    let (chain_id, root, physical_device_id) = {
         let g = sender_state.sender_key_state.lock().unwrap();
         let dump =
             crypto::sender_keys::SenderKeyState::try_from(g.states.get(scope_key).unwrap().clone())
                 .unwrap();
         let s = dump.sender_chain().unwrap();
-        (s.current_chain_id(), s.rotation_root_bytes())
+        (
+            s.current_chain_id(),
+            s.rotation_root_bytes(),
+            s.physical_device_id(),
+        )
     };
     // Install/rotate receiver on the peer's side.
     let mut g = receiver_state.sender_key_state.lock().unwrap();
     let entry = g.states.entry(scope_key.to_string()).or_default();
     let mut live = crypto::sender_keys::SenderKeyState::try_from(entry.clone()).unwrap();
     let sender_bytes = sender_did.as_bytes().to_vec();
-    if live.receiver_chain(&sender_bytes).is_some() {
-        live.rotate_receiver(&sender_bytes, chain_id, &root)
+    if live
+        .receiver_chain_for_physical_device(&sender_bytes, physical_device_id)
+        .is_some()
+    {
+        live.rotate_receiver(&sender_bytes, chain_id, &root, physical_device_id)
             .unwrap();
     } else {
-        live.install_receiver(sender_bytes, chain_id, &root)
+        live.install_receiver(sender_bytes, chain_id, &root, physical_device_id)
             .unwrap();
     }
     *entry = crypto::sender_keys::SenderKeyStateOnDisk::from(&live);
