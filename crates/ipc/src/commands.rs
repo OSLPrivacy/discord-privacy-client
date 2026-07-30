@@ -12102,6 +12102,45 @@ mod unit_a_sender_attribution_chain {
             "legacy v1 must not decrypt a Mallory wire attributed to Alice, got: {err}"
         );
     }
+
+    #[test]
+    fn v2_resolve_sender_pubkey_rejects_forged_sender() {
+        let f = attribution_fixture();
+        let wire = crate::wire_v2::encrypt_v2(
+            b"v2 honest mallory",
+            &[f.bob.x25519_public],
+            crate::wire_v2::MSG_TYPE_CONTENT,
+            &f.mallory.x25519_secret,
+        )
+        .unwrap();
+
+        let honest = cmd_osl_decrypt_message_v2(
+            &f.bob_state,
+            None,
+            CHANNEL_ID.to_string(),
+            MALLORY_DID.to_string(),
+            wire.clone(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(honest, "v2 honest mallory");
+
+        let err = cmd_osl_decrypt_message_v2(
+            &f.bob_state,
+            None,
+            CHANNEL_ID.to_string(),
+            ALICE_DID.to_string(),
+            wire,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("not a recipient") || err.contains("body"),
+            "v2 must resolve the claimed sender id to Alice's key and reject Mallory's wire, got: {err}"
+        );
+    }
 }
 
 #[cfg(test)]
