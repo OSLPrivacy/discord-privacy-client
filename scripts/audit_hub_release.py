@@ -278,6 +278,33 @@ def _scripts_audit_hub_release_py(self: HubReleaseAuditTests) -> None:
 setattr(HubReleaseAuditTests, "scripts/audit_hub_release.py", _scripts_audit_hub_release_py)
 
 
+def _refuse_release_supply_chain_drift_before_any_candidate_is_signed(
+    self: HubReleaseAuditTests,
+) -> None:
+    workflow, promotion, hub, original, root = self.fixture()
+    audit_release_policy(workflow, promotion, hub, original, root)
+
+    audit_step = """      - name: Audit OSL Privacy updater supply-chain policy
+        run: |
+          python scripts/audit_hub_release.py
+          python -m unittest scripts/audit_hub_release.py
+"""
+    signing_step = "      - name: Build signed draft installer and updater manifest"
+    drifted_workflow = workflow.replace(audit_step, "", 1) + "\n" + audit_step
+    self.assertIn(signing_step, drifted_workflow)
+
+    with self.assertRaises(SystemExit) as raised:
+        audit_release_policy(drifted_workflow, promotion, hub, original, root)
+    self.assertIn("must run before candidate signing", str(raised.exception))
+
+
+setattr(
+    HubReleaseAuditTests,
+    "Refuse release supply-chain drift before any candidate is signed.",
+    _refuse_release_supply_chain_drift_before_any_candidate_is_signed,
+)
+
+
 def load_tests(
     loader: unittest.TestLoader,
     tests: unittest.TestSuite,
@@ -286,6 +313,11 @@ def load_tests(
     suite = unittest.TestSuite()
     suite.addTests(tests)
     suite.addTest(HubReleaseAuditTests("scripts/audit_hub_release.py"))
+    suite.addTest(
+        HubReleaseAuditTests(
+            "Refuse release supply-chain drift before any candidate is signed."
+        )
+    )
     return suite
 
 
