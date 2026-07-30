@@ -36,6 +36,7 @@ const ALLOWLIST_PATH = path.join(
 const APP_SRC_ROOT = path.join(REPO_ROOT, "apps/osl-hub-ui/src");
 const RUST_APP_SRC_ROOT = path.join(REPO_ROOT, "apps/osl-hub/src");
 const README_PATH = path.join(REPO_ROOT, "README.md");
+const TS_TEST_WORKFLOW_PATH = path.join(REPO_ROOT, ".github/workflows/ts-test.yml");
 const SUPPORT_MATRIX_PATH = path.join(REPO_ROOT, "docs/status/support-matrix.json");
 const GATE_SOURCE_PATH = fileURLToPath(import.meta.url);
 const GATE_CONTRACT_PATTERN =
@@ -354,6 +355,46 @@ function supportMatrixClaimFailure(message) {
     expected: message,
     actual: "invalid support matrix",
   };
+}
+
+function validateClaimGateWorkflow(workflowText) {
+  const requiredStep = "- name: Claim-gate-in-app-copy-and-README";
+  const selfTestCommand = "node scripts/check-app-claims.mjs --self-test";
+  const repositoryScanCommand = "node scripts/check-app-claims.mjs";
+  const installStepPattern = /^\s*- name: Install\b/m;
+  const failures = [];
+  const stepIndex = workflowText.indexOf(requiredStep);
+  const selfTestIndex = stepIndex === -1
+    ? -1
+    : workflowText.indexOf(selfTestCommand, stepIndex);
+  const repositoryScanIndex = selfTestIndex === -1
+    ? -1
+    : workflowText.indexOf(repositoryScanCommand, selfTestIndex + selfTestCommand.length);
+  const firstInstallStepMatch = installStepPattern.exec(workflowText);
+  const firstInstallStepIndex = firstInstallStepMatch?.index ?? -1;
+
+  if (stepIndex === -1) {
+    failures.push("missing exact Claim-gate-in-app-copy-and-README workflow step");
+  }
+  if (selfTestIndex === -1) {
+    failures.push("missing app-claim self-test command in workflow step");
+  }
+  if (repositoryScanIndex === -1) {
+    failures.push("missing app-claim repository scan command in workflow step");
+  }
+  if (
+    firstInstallStepIndex !== -1
+    && (
+      stepIndex === -1
+      || selfTestIndex === -1
+      || repositoryScanIndex === -1
+      || repositoryScanIndex > firstInstallStepIndex
+    )
+  ) {
+    failures.push("app-claim gate must run before dependency installation");
+  }
+
+  return failures;
 }
 
 function normalizeSupportEvidenceStatus(value) {
@@ -3003,6 +3044,7 @@ async function scanRepository() {
 
 async function runSelfTest() {
   const allowlist = await readUtf8(ALLOWLIST_PATH);
+  const tsTestWorkflow = await readUtf8(TS_TEST_WORKFLOW_PATH);
   const bannedPhrases = parseBannedPhrases(allowlist);
   const fixtures = [
     {
@@ -3989,7 +4031,19 @@ async function runSelfTest() {
   const supportMatrixWithForgedPublicClaim = JSON.parse(JSON.stringify(productionSupportMatrix));
   supportMatrixWithForgedPublicClaim.versioned_public_support_matrix.rows
     .find((row) => row.id === "signal_desktop_public").claim_allowed = true;
+  const claimGateWorkflowWithoutScan = tsTestWorkflow.replace(
+    /\n\s+node scripts\/check-app-claims\.mjs\n/,
+    "\n",
+  );
   const inputCases = [
+    {
+      name: "Claim-gate-in-app-copy-and-README",
+      passed:
+        validateClaimGateWorkflow(tsTestWorkflow).length === 0
+        && validateClaimGateWorkflow(claimGateWorkflowWithoutScan).some(
+          (failure) => failure.includes("repository scan"),
+        ),
+    },
     {
       name: "real docs allowlist supplies every required attachment ban",
       passed: bannedPhraseInputFailures(bannedPhrases).length === 0,
