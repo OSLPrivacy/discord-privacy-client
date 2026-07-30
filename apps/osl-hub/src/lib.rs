@@ -9,6 +9,7 @@ pub mod browser_companion;
 pub mod browser_profile_scan;
 pub mod browser_footprint;
 pub mod burn_contract;
+pub mod cloud_autoscrub_authority;
 pub mod cloud_autoscrub_consent;
 pub mod cloud_autoscrub_execution;
 pub mod control_contract;
@@ -24,12 +25,14 @@ pub mod native_window_host;
 pub mod proprietary_module_boundary;
 pub mod hosted_port;
 pub mod hosted_provider_recipe;
+pub mod owner_presence;
 #[cfg(feature = "core")]
 pub mod peer_attachment_io;
 pub mod preferences;
 pub mod privacy_scan;
 #[cfg(feature = "core")]
 pub mod pro_context_cover;
+pub mod proprietary_module_boundary;
 pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;

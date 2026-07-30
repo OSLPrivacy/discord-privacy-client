@@ -365,6 +365,34 @@ fn now_secs() -> i64 {
 }
 
 #[test]
+fn sealed_relay_post_run_reset_cleanup() {
+    let relay = RelayServer::start();
+    let storage = TestStorage::new();
+    let root = storage.root.clone();
+    let account_dir = storage.account("cleanup-account", &relay.base_url());
+    TestStorage::activate(&account_dir);
+
+    assert_eq!(keystore::active_account_dir(), Some(account_dir));
+    assert!(ipc::main_password::get_file_storage_key().is_some());
+    assert!(root.exists());
+
+    drop(storage);
+
+    assert!(keystore::active_account_dir().is_none());
+    assert!(ipc::main_password::get_file_storage_key().is_none());
+    assert!(
+        keystore::osl_base_dir()
+            .map(|base| base != root)
+            .unwrap_or(true),
+        "base-dir override must be cleared after the sealed relay fixture"
+    );
+    assert!(
+        !root.exists(),
+        "isolated sealed relay fixture root must be removed after the run"
+    );
+}
+
+#[test]
 fn two_verified_identities_complete_sealed_relay_open_ack_and_replay_rejection() {
     let relay = RelayServer::start();
     let storage = TestStorage::new();

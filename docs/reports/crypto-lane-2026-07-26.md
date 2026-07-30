@@ -2183,3 +2183,92 @@ either the legacy engine or the separately reachable current Hub burn path.
 
 None. This corrects legacy source claims and proves the current source-level
 path distinction; it does not add runtime or destructive-wipe evidence.
+
+## Round 23 — crypto review package and plaintext-spill audit definitions
+
+This round adds audit definitions only. It does not claim a new runtime pass,
+deployment, browser run, or Cargo-built result.
+
+### decrypted_plaintext_spill_audit_apps_hub_and_ipc
+
+Audit scope: production Rust callers under `apps/osl-hub/src/**` and
+`crates/ipc/src/**` that can receive decrypted message, attachment, note,
+asset, scrub-index, service-state, or ratchet-session plaintext.
+
+Pass criteria:
+
+- Decrypted conversation/message plaintext may be returned to an in-memory
+  renderer DTO or opened in a bounded local viewer, but must not be written to
+  ordinary filesystem paths, localStorage, logs, debug strings, receipt files,
+  cache files, or keyserver/cipher-store request bodies.
+- Durable state writes that contain protected content must require an installed
+  at-rest key or a non-plaintext sealer. Absence of the key/sealer is refusal,
+  never plaintext fallback.
+- RN session state must be held through `AppState` with a selected sealer and
+  an `RnSessionStore`; ad hoc plaintext ratchet-session persistence is outside
+  the allowed package.
+- Non-image attachment opens must refuse before download/decrypt/replay
+  consumption. Supported image opens may hold plaintext in process for the
+  viewer but must not create a durable decrypted copy.
+- Report/debug/error values must not include account identifiers, handles,
+  credentials, decrypted message text, or raw key/sealer material.
+
+Negative control: a production path that decrypts and then calls
+`fs::write`, a localStorage write, a log/debug formatter, a receipt/cache
+writer, or a network upload with those decrypted bytes fails this audit even if
+cleanup usually runs later. A path that silently falls back to plaintext when a
+key is absent also fails.
+
+Current source classification from this pass:
+
+- `apps/osl-hub/src/peer_attachment_io.rs` and
+  `apps/osl-hub/src/native_attachment_transport.rs` keep non-image plaintext
+  out of durable staging and refuse unsupported external-viewer opens before
+  decrypt.
+- `apps/osl-hub/src/services.rs`, `service_scope_index.rs`,
+  `scrub_index.rs`, `message_expiry.rs`, `osl_assets.rs`, and `security.rs`
+  use explicit at-rest encryption helpers for protected durable JSON/state
+  writes.
+- `crates/ipc/src/secure_local_store.rs` and
+  `mandatory_storage_key_policy.rs` define the fail-closed local-storage
+  contract: missing key means refusal, not a permissive plaintext write.
+- `crates/ipc/src/state.rs` now constructs RN state with
+  `RnSessionStore` plus a selected non-plaintext sealer on `AppState`.
+
+Status: `audit-definition/source-reviewed-only`, `+0`.
+
+### crypto_review_package_bundle_definition
+
+The crypto review package is the frozen set of source contracts, tests, and
+audit receipts that a reviewer must evaluate together before promoting any
+claim about encrypted messaging, burn, identity, or at-rest secrecy. A package
+is valid only when every item below is present:
+
+- Exact commit, tree, branch, dirty-state statement, and date of review.
+- Exact source roots reviewed, including `apps/osl-hub/src/**`,
+  `crates/ipc/src/**`, `crates/keystore/src/**`, `crates/crypto/src/**`, and
+  every Worker endpoint/migration touched by the claimed behavior.
+- Behavior tests named in the owning units, with an explicit negative-control
+  statement explaining what inversion would fail them.
+- Reachability classification for any implemented-unwired primitive, including
+  production registration/caller search roots and the positive controls that
+  prove the detector can turn red.
+- At-rest and sealer posture: which paths require `file_storage_key`, which
+  paths use a `Sealer`, and which paths refuse when authority is absent.
+- Wire/API contract evidence: canonical byte coverage, signature or authority
+  checks, replay/single-use behavior, refusal on missing consent/binding, and
+  response schemas for browser-callable endpoints.
+- Explicit exclusions: no runtime/two-identity/deployment/user-visible claim is
+  earned unless that exact evidence is attached to the package.
+
+Invalid package conditions:
+
+- Any test that only asserts source text exists.
+- Any claim copied from an inherited test count without re-running the relevant
+  focused gate.
+- Any missing serde/call-site audit after changing an existing public type,
+  field, or signature.
+- Any path where absence of consent, binding, key, sealer, review gate, or
+  authority becomes permission.
+
+Status: `bundle-definition-only`, `+0`.
