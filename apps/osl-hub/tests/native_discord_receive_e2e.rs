@@ -19,7 +19,7 @@ use osl_privacy_hub::broker::{
     activate_owned_native_manual_peer_context, begin_native_overlay_attachment,
     deliver_native_overlay_attachment, drain_native_discord_overlay_text,
     list_native_overlay_attachments, prepare_native_discord_overlay_text,
-    take_native_overlay_attachment, HubBrokerState,
+    reveal_native_discord_overlay_view_once, take_native_overlay_attachment, HubBrokerState,
 };
 use osl_privacy_hub::core_bridge::HubCoreState;
 use osl_privacy_hub::security::{
@@ -1221,6 +1221,113 @@ fn view_once_list_appears_on_b() {
     assert!(
         relay.still_pending(&honest.id),
         "listing a view-once row must not consume the reveal row"
+    );
+    if let Some(leaked) = file_containing(&storage.root, FIXTURE.as_bytes()) {
+        panic!("view-once plaintext reached persistent storage at {leaked:?}");
+    }
+
+    drop(alice);
+    drop(bob);
+    drop(storage);
+}
+
+#[test]
+fn reveal_once_consumes_on_b() {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("view-once-reveal");
+    let relay_url = relay.base_url();
+
+    let alice = Peer::new(&storage, "alice", &relay_url, "b74a5050");
+    let bob = Peer::new(&storage, "bob", &relay_url, "b74b5050");
+    alice.open_native_context_to(&bob.friend_code, &bob.safety_number);
+    bob.open_native_context_to(&alice.friend_code, &alice.safety_number);
+
+    const FIXTURE: &str = "B74 native Discord reveal-once fixture";
+    alice.activate();
+    let prepared = prepare_native_discord_overlay_text(
+        &alice.core,
+        &alice.security,
+        &alice.broker,
+        FIXTURE.to_owned(),
+        true,
+    )
+    .expect("prepare the view-once protected message");
+    let honest = relay.posted_row(&alice.identity_id, &bob.identity_id);
+
+    bob.activate();
+    let listed = drain_native_discord_overlay_text(&bob.core, &bob.security, &bob.broker)
+        .expect("B lists the view-once row before reveal");
+    assert!(
+        listed.messages.is_empty(),
+        "listing must not reveal the view-once plaintext"
+    );
+    assert_eq!(
+        listed.pending_view_once.len(),
+        1,
+        "B sees one pending view-once row to reveal"
+    );
+    assert!(
+        listed.pending_view_once[0].message_id == prepared.prepared.message_id,
+        "B's pending entry names A's prepared message"
+    );
+    assert!(
+        relay.still_pending(&honest.id),
+        "the listing phase must leave the row available for reveal"
+    );
+
+    let opened = reveal_native_discord_overlay_view_once(
+        &bob.core,
+        &bob.security,
+        &bob.broker,
+        &prepared.prepared.message_id,
+    )
+    .expect("B reveals the listed view-once row");
+    assert!(
+        opened.plaintext == FIXTURE,
+        "the reveal returns exactly the protected plaintext"
+    );
+    assert!(
+        opened.view_once_consumed,
+        "the reveal reports that B consumed the view-once message"
+    );
+    assert!(
+        opened.message_id == prepared.prepared.message_id,
+        "the revealed message keeps the listed correlation id"
+    );
+    assert!(
+        !relay.still_pending(&honest.id),
+        "reveal consumes the relay row"
+    );
+
+    relay.inject(
+        &alice.identity_id,
+        &bob.identity_id,
+        &honest.scope_id,
+        &honest.bundle_b64,
+    );
+    let replay = reveal_native_discord_overlay_view_once(
+        &bob.core,
+        &bob.security,
+        &bob.broker,
+        &prepared.prepared.message_id,
+    );
+    assert!(
+        replay.is_err(),
+        "B must refuse a replayed copy of an already consumed view-once row"
+    );
+    let replay_drain = drain_native_discord_overlay_text(&bob.core, &bob.security, &bob.broker)
+        .expect("B drains the replayed already-consumed row");
+    assert!(
+        replay_drain.messages.is_empty() && replay_drain.pending_view_once.is_empty(),
+        "a consumed view-once replay must not become visible again"
+    );
+    assert_eq!(
+        relay.pending_for(&bob.identity_id),
+        0,
+        "the replayed row is retired after the refusal"
     );
     if let Some(leaked) = file_containing(&storage.root, FIXTURE.as_bytes()) {
         panic!("view-once plaintext reached persistent storage at {leaked:?}");
