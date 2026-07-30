@@ -39,6 +39,36 @@ describe("manual peer protected sheet", () => {
     expect(markup).not.toContain("Send");
   });
 
+  it("uses real OSL friend records instead of Discord relationship mirrors", () => {
+    const verified = person({ alias: "Rose", personId: "hub-person-rose", oslUserId: "osl1_rose" });
+    const relationshipMirror = person({
+      personId: "900000000000000001",
+      oslUserId: "900000000000000001",
+      alias: "Discord mirror",
+      safetyNumber: "mirrored relationship",
+      safetyNumberVerified: true,
+      pendingKeyChange: false,
+    });
+    const missingPeerIdentity = person({
+      personId: "hub-person-no-peer",
+      oslUserId: "",
+      alias: "No peer identity",
+      safetyNumberVerified: true,
+      pendingKeyChange: false,
+    });
+
+    expect(verifiedPeerFriends([relationshipMirror, verified, missingPeerIdentity])).toEqual([verified]);
+    const markup = peerProtectedSheetMarkup(blankPeerProtectedModel(true), [relationshipMirror, verified, missingPeerIdentity]);
+    expect(markup).toContain('aria-label="Trusted people"');
+    expect(markup).toContain('data-peer-person="hub-person-rose"');
+    expect(markup).toContain("Rose");
+    expect(markup).toContain("Verified in OSL");
+    expect(markup).not.toContain("Discord mirror");
+    expect(markup).not.toContain("900000000000000001");
+    expect(markup).not.toContain("No peer identity");
+    expect(markup).not.toContain("mirrored relationship");
+  });
+
   it("requires one explicit app-and-friend approval before write or open controls exist", () => {
     const model = blankPeerProtectedModel(true);
     model.displayName = "Rose";
