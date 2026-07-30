@@ -76,6 +76,7 @@ PY
 #!/usr/bin/env bash
 set -eu
 mkdir -p target/x86_64-pc-windows-gnu/debug
+printf '%s\n' "$*" > "${FAKE_CARGO_ARGS:?}"
 printf '%s\n' "${TAURI_CONFIG:-}" \
   > target/x86_64-pc-windows-gnu/debug/osl-privacy-hub.exe
 SH
@@ -86,6 +87,7 @@ SH
     out="$tmp/distinct.out"
     REPO="$repo" JSON_OUT="$json" LOG="$log" STAGE="$stage" \
       OSL_WIN_TEMP_ROOT="$temp_root" DLL_SRC="$dll" \
+      FAKE_CARGO_ARGS="$tmp/cargo-args.txt" \
       PATH="$fake_bin:$PATH" bash "$0" "org.oslprivacy.hubqab" \
       >"$out" 2>&1
     rc=$?
@@ -98,6 +100,13 @@ SH
       || { printf 'staged executable did not contain B identifier\n' >&2; return 1; }
     grep -qa -- "org.oslprivacy.hub\"" "$stage/osl-privacy-hub.exe" \
       && { printf 'staged executable retained A identifier\n' >&2; return 1; }
+    grep -qx -- "build --features desktop,discord-qa-shell --bin osl-privacy-hub --target x86_64-pc-windows-gnu" "$tmp/cargo-args.txt" \
+      || { printf 'fake cargo did not receive the instance-B build command\n' >&2; cat "$tmp/cargo-args.txt" >&2; return 1; }
+    python3 - "$stage/osl-privacy-hub.exe" <<'PY' || return 1
+import json, sys
+overlay = json.load(open(sys.argv[1], "r", encoding="utf-8"))
+assert overlay == {"identifier": "org.oslprivacy.hubqab"}
+PY
     python3 - "$json" <<'PY' || return 1
 import json, sys
 receipt = json.load(open(sys.argv[1], "r", encoding="utf-8"))
