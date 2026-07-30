@@ -20,17 +20,25 @@ Status: Living document. Updated as features ship.
 > this file is `verified-live` on a named release build.
 >
 > **What actually carries traffic today:** one stateless scheme, wire `v=3`
-> (`crates/ipc/src/wire_v2.rs:685`). Both the Double Ratchet DM path (`v=4`) and
-> the group sender-keys path (`v=5`) are present in source and switched off.
+> (`crates/ipc/src/wire_v2.rs:685`). The send dispatcher checks the sealed
+> OSL-RN version pin before allowing that legacy `v=3` path, but this is a
+> downgrade-refusal guard, not RN traffic: `RN_WIRE_IN_ENABLED` remains `false`.
+> Both the retired Double Ratchet DM path (`v=4`) and the group sender-keys path
+> (`v=5`) are present in source and switched off for production sends.
 >
-> **`osl-ratchet-next` has no production call path.** The crate is a workspace
-> member (`Cargo.toml:29`) and `crates/ipc/Cargo.toml:73` declares the dependency,
-> and its IPC adapter `crates/ipc/src/wire_rn.rs` genuinely uses it — but nothing
-> uses `wire_rn`. Its only reference outside its own tests is the module
-> declaration `pub mod wire_rn;` at `crates/ipc/src/lib.rs:76`; the two other
-> mentions in the tree (`crates/osl-ratchet-next/src/negotiate.rs:21`,
-> `crates/keystore/src/client.rs:190`) are doc comments. Status:
-> `implemented-unwired`. No forward-secrecy, post-compromise, or
+> **`osl-ratchet-next` has no production encrypt/decrypt path.** The crate is a
+> workspace member (`Cargo.toml:29`) and `crates/ipc/Cargo.toml:73` declares the
+> dependency, and its IPC adapter `crates/ipc/src/wire_rn.rs` genuinely uses it.
+> The production send dispatcher now calls `wire_rn::select_wire_version` and
+> reads `RnSessionStore` solely to refuse a silent downgrade if a peer is already
+> pinned to RN (`crates/ipc/src/commands.rs:3284-3320`). Capability
+> advertisement is absent, so normal peers are checked as
+> `PeerCapabilities::Absent`; because no production path raises RN pins and
+> `RN_WIRE_IN_ENABLED` is `false` (`crates/ipc/src/wire_rn.rs:83`), this guard is
+> inert unless existing local state already requires RN. `send_rn` and
+> `receive_rn` refuse while the gate is off (`crates/ipc/src/wire_rn.rs:843-875`),
+> and inbound RN wires are rejected before bootstrap (`crates/ipc/src/commands.rs:5216-5244`).
+> Status: `implemented-unwired`. No forward-secrecy, post-compromise, or
 > post-quantum-authentication claim may be made on its behalf.
 >
 > *Anchor drift note:* the root `Cargo.toml:25-28` comment still asserts that
@@ -57,8 +65,8 @@ Briar, or Cwtch. Onboarding states this explicitly.
 
 | Threat | v1 protection | Notes |
 | --- | --- | --- |
-| Discord reads message contents (DM) | Strong (confidentiality only) | **Stateless hybrid, not a ratchet.** Every DM uses wire `v=3`: a fresh per-message sender ephemeral X25519 plus an ML-KEM-768 encapsulation to the recipient's *long-term* key, HKDF-combined to wrap a fresh AES-256-GCM body key (`crates/ipc/src/wire_v2.rs:685-760`, `crates/crypto/src/pqxdh.rs:141-195`). The Double Ratchet DM path is compiled but dead: `crates/ipc/src/commands.rs:2842` sets `let v4_dm_enabled = false;` so the `if` on `:2843` never runs. See "Forward secrecy" below for exactly which compromise this survives. |
-| Discord reads message contents (group) | Strong (confidentiality only) | **Sender keys are off.** Groups use the same stateless `v=3` scheme as DMs. The `v=5` sender-keys router at `crates/ipc/src/commands.rs:2938` is gated on `AppState::sender_keys_enabled`, whose declaration at `crates/ipc/src/state.rs:280` documents it as defaulting false in production; no production code enables it (only `crates/ipc/tests/phase_a3_integration_sk_roundtrip.rs` does). `apps/osl-hub/src/core_bridge.rs:240` reports `group_sender_keys_enabled: false` to the UI. |
+| Discord reads message contents (DM) | Strong (confidentiality only) | **Stateless hybrid, not a ratchet.** Every normal DM uses wire `v=3`: a fresh per-message sender ephemeral X25519 plus an ML-KEM-768 encapsulation to the recipient's *long-term* key, HKDF-combined to wrap a fresh AES-256-GCM body key (`crates/ipc/src/wire_v2.rs:685-760`, `crates/crypto/src/pqxdh.rs:141-195`). Before `v=3` send, the dispatcher checks each non-self recipient's sealed RN version pin and refuses instead of downgrading if the peer is pinned to RN while RN wire-in is disabled (`crates/ipc/src/commands.rs:3284-3320`). The retired Double Ratchet DM path is compiled but dead: `crates/ipc/src/commands.rs:3170` sets `let v4_dm_enabled = false;` so the `if` on `:3171` never runs. See "Forward secrecy" below for exactly which compromise this survives. |
+| Discord reads message contents (group) | Strong (confidentiality only) | **Sender keys are off.** Groups use the same stateless `v=3` scheme as DMs unless the RN pin guard refuses legacy send for a previously pinned peer. The `v=5` sender-keys router at `crates/ipc/src/commands.rs:3268-3282` is gated on `AppState::sender_keys_enabled`, whose declaration at `crates/ipc/src/state.rs:279-284` documents it as defaulting false in production; no production code enables it (only tests do). `apps/osl-hub/src/core_bridge.rs:269` reports `group_sender_keys_enabled: false` to the UI. |
 | Discord reads image / file contents | Planned (source exists, unproven end-to-end) | Streaming XChaCha20-Poly1305 with bucketed padding exists (`crates/ipc/src/attachment_wire.rs:4`), but there is no "message-chain key" to wrap under — no chain exists. Master §10 finding 4 (non-image attachments staged as durable plaintext) is open, so the no-plaintext-at-rest promise is not met. |
 | Discord runs CSAM scanning on uploaded images | Defeated | Discord sees random AEAD ciphertext on its CDN |
 | Discord traffic-analyzes timing / sizes | Partial | Padding always on; jitter and cover traffic opt-in (v2.1) |
@@ -70,7 +78,7 @@ Briar, or Cwtch. Onboarding states this explicitly.
 | Modified client on recipient side | None | Document; cannot mitigate |
 | Hardware capture device | None | Document; cannot mitigate |
 | Endpoint malware | Partial | TPM seal helps; cannot fully prevent |
-| Past group messages outside current rotation window | **None** | Planned. There is no rotation window because sender keys are off (row 2 above). Every group message is an independent stateless `v=3` message, so a recipient's long-term keys decrypt all of them. Even when `v=5` is enabled the implemented triggers are **24 h or a membership change** (`SENDER_KEY_ROTATE_AFTER_SECS = 24 * 60 * 60` at `crates/ipc/src/commands.rs:2979`; `sender_key_needs_rotation` at `:2997`). No 500-message trigger and no suspicious-event trigger exist anywhere in the tree. |
+| Past group messages outside current rotation window | **None** | Planned. There is no rotation window because sender keys are off (row 2 above). Every group message is an independent stateless `v=3` message, so a recipient's long-term keys decrypt all of them. Even when `v=5` is enabled the implemented triggers are **24 h or a membership change** (`SENDER_KEY_ROTATE_AFTER_SECS = 24 * 60 * 60` at `crates/ipc/src/commands.rs:3348-3349`; `sender_key_needs_rotation` at `:3367-3383`). No 500-message trigger and no suspicious-event trigger exist anywhere in the tree. |
 | One-time RAM dump of group sender / recipient | None | Planned. Depends on the rotation window above, which does not exist. |
 | Casual hands-on access to unlocked device | **None (unwired)** | Planned. The primitives exist and are test-proven: threshold 10 (`DEFAULT_FAILED_ATTEMPT_THRESHOLD` at `crates/keystore/src/password.rs:62`) returns `VerifyOutcome::DuressByThreshold` (`:283-288`), and `InactivityTimer` defaults to 900 s. But **no production code calls them.** `verify_against_record`, `VerifyOutcome` and `InactivityTimer` are referenced only by the `crates/keystore/src/lib.rs:58-59` re-export and `crates/keystore/tests/password_test.rs`. `crates/keystore/src/duress.rs` likewise has no caller outside `crates/keystore/`. Nothing in `apps/osl-hub` or `crates/ipc` invokes the lockout, the duress flow, or the timer. |
 | Forced unlock under coercion | **None (unwired)** | Planned. `crates/keystore/src/duress.rs` implements the strip/wipe sequence and is test-proven (`crates/keystore/tests/duress_test.rs`), but no production caller exists — nothing outside `crates/keystore/` references it. There is no shipping path from typing a duress password to the flow running. When it is wired, the residual-forensics limits below still apply. |
@@ -122,24 +130,29 @@ previously claimed, it is restated below as `Planned` with the reason.
   ciphertext history. *Reason it is not implemented:* forward secrecy requires
   ratcheting state, and the ratchet was deliberately disabled — see below.
 - **Post-compromise security (DM) — `Planned`.** There is no ratchet step, so
-  nothing heals a compromised session. `crates/ipc/src/commands.rs:2842` reads
+  nothing heals a compromised session. `crates/ipc/src/commands.rs:3170` reads
   `let v4_dm_enabled = false;`, which makes the entire `v=4` Double Ratchet
-  branch beginning at `:2843` unreachable. The in-source rationale is explicit
+  branch beginning at `:3171` unreachable. The in-source rationale is explicit
   and deliberate: `v=4` was "the sole source of the recurring 'ratchet desync'
   DM failures", so DMs were routed to stateless `v=3` to eliminate the desync
-  class. A compromised recipient stays compromised until they rotate identity
-  keys out of band.
+  class. The replacement RN adapter is not a shipping ratchet yet:
+  `RN_WIRE_IN_ENABLED` is still `false`, so RN send/receive refuses before any
+  state load or crypto operation. A compromised recipient stays compromised
+  until they rotate identity keys out of band.
 - **Post-compromise security (group) — `Planned`.** Same reason; additionally
-  the sender-keys lane is off (`crates/ipc/src/commands.rs:2938`, gated on
+  the sender-keys lane is off (`crates/ipc/src/commands.rs:3268-3282`, gated on
   `AppState::sender_keys_enabled`, documented as defaulting false at
-  `crates/ipc/src/state.rs:280`). The stated reason there is multi-device
+  `crates/ipc/src/state.rs:279-284`). The stated reason there is multi-device
   safety: the chain key carries no device id, so one account on two machines
-  desynchronizes.
+  desynchronizes. Remediation is protocol-level: carry a signed device id and
+  key receiver chains by `(account, device)` before treating `v=5` as a product
+  guarantee.
 - **Bounded group blast radius / rotation window — `Planned`.** Does not exist
   today. When `v=5` is enabled the implemented triggers are 24 h
-  (`SENDER_KEY_ROTATE_AFTER_SECS`, `crates/ipc/src/commands.rs:2979`) or a
-  membership change (`sender_key_needs_rotation`, `:2997`). The "≤ 1 h",
-  "500 msgs", and "suspicious event" triggers were never implemented.
+  (`SENDER_KEY_ROTATE_AFTER_SECS`, `crates/ipc/src/commands.rs:3348-3349`) or a
+  membership change (`sender_key_needs_rotation`,
+  `crates/ipc/src/commands.rs:3367-3383`). The "≤ 1 h", "500 msgs", and
+  "suspicious event" triggers were never implemented.
 - **Sender attribution — `open-security-finding`.** The generic receive path
   authenticates an in-band key but attributes the plaintext to a
   caller-supplied identity (master §2 P0-2, §10 finding 2). Until fixed,
@@ -362,16 +375,16 @@ lives in [`ONBOARDING.md`](ONBOARDING.md).
 
 ## Audit status (v1 alpha vs v1 stable)
 
-**What needs auditing is the scheme that ships.** As of 2026-07-26 that is the
-stateless hybrid `v=3` scheme in `crates/ipc/src/wire_v2.rs`, plus its
-attribution defect (master §10 findings 1–2). The Double Ratchet and
-sender-keys constructions described below are switched off in source and are
-audit scope only for the release that turns them on.
+**What needs auditing is the scheme that ships.** As of this reconciliation
+that is the stateless hybrid `v=3` scheme in `crates/ipc/src/wire_v2.rs`, plus
+its attribution defect (master §10 findings 1–2), plus the narrow RN
+downgrade-refusal guard in `crates/ipc/src/commands.rs:3284-3320`. The retired
+`v=4` Double Ratchet DM path, disabled RN wire-in, and `v=5` sender-keys
+construction are audit scope only for a release that turns them on.
 
-The hybrid PQXDH + Double Ratchet construction is custom (not built
-on libsignal). The sender-keys construction for groups is custom and
-deviates from libsignal's standard pattern (TPM-sealed rotation
-root, suspicious-event auto-rotation, recipient-initiated rotation).
+The shipping hybrid construction is custom (not built on libsignal). The
+disabled sender-keys construction for groups is custom and currently lacks the
+device-id remediation needed for one account on two machines.
 
 ### v1 alpha ships unaudited
 
@@ -391,13 +404,13 @@ the user-facing readme. Alpha disclosure copy:
 Paid third-party cryptographic review of:
 
 - Hybrid PQXDH construction.
-- Double Ratchet integration (DM).
-- Prekey lifecycle.
-- Sender-keys construction for groups (TPM-sealed rotation root,
-  suspicious-event auto-rotation, recipient-initiated rotation,
-  encrypted headers, AD encoding, attachment-key wrapping).
-- **FS composition** between pairwise-ratchet FS and sender-key
-  chain FS (see "Independent unverified properties" below).
+- Identity-bundle binding and sender-attribution fixes before any stronger
+  authentication claim.
+- RN ratchet replacement before `RN_WIRE_IN_ENABLED` can become true.
+- Sender-keys construction for groups after signed device ids are carried and
+  receiver chains are keyed by `(account, device)`.
+- **FS composition** between any enabled pairwise ratchet and sender-key chain
+  FS (see "Independent unverified properties" below).
 
 Estimated $40k–$120k for a focused 4-week engagement (Trail of
 Bits, NCC Group, Cure53, Quarkslab tier). Sender keys add audit
@@ -407,10 +420,9 @@ project-level open items.
 
 ### Independent unverified properties (gated behind audit funding)
 
-- **Forward-secrecy composition** between pairwise PQXDH-Double-
-  Ratchet forward secrecy and sender-key chain forward secrecy.
-  v1 assumes soundness based on intuitive reasoning. Professional
-  cryptographic verification is gated behind audit funding.
+- **Forward-secrecy composition** between any future enabled pairwise ratchet
+  and sender-key chain forward secrecy. v1 makes no such claim today.
+  Professional cryptographic verification is gated behind audit funding.
 - **Side-channel and constant-time properties** of chain-step and
   message-key derivation paths.
 - **Memory-dump bound** for sender keys: stated property is
@@ -445,10 +457,11 @@ Practical impact for alpha users:
   silent fallback. If your external VPN drops, your IP is visible to
   Discord, ISP, and key server until you reconnect.
 - Whatever cryptographic protections are actually in effect (today: the
-  stateless hybrid `v=3` scheme and attachment AEAD — not the Double Ratchet
-  or sender keys, and not cryptographic burn) **are unaffected** by the missing
-  network layer. Content confidentiality holds whether or not a VPN is running.
-  The network layer only addresses metadata (who connects, from where, when).
+  stateless hybrid `v=3` scheme, attachment AEAD, and RN downgrade refusal —
+  not the retired v4 Double Ratchet, not enabled RN traffic or sender keys, and
+  not cryptographic burn) **are unaffected** by the missing network layer.
+  Content confidentiality holds whether or not a VPN is running. The network
+  layer only addresses metadata (who connects, from where, when).
 
 ### v2.2 brings (per original design)
 
@@ -484,8 +497,7 @@ see roadmap below.
   above and `ONBOARDING.md`).
 - **External-VPN disclosure copy in onboarding** ("Network-layer
   protection" above; bundled VPN deferred to v2.2).
-- Memory monitoring scaffold (sender-keys cache trip wire, ratchet
-  state).
+- Memory monitoring scaffold for future enabled sender-key and RN state.
 
 ## v1 stable hard prerequisites
 
@@ -520,9 +532,9 @@ All of the v1 alpha prerequisites, plus:
 ## Open
 
 - **Audit budget.** Estimate $40k–$120k for a focused 4-week
-  engagement on a custom hybrid PQXDH + Double Ratchet + sender-keys
-  construction (Trail of Bits, NCC Group, Cure53, Quarkslab tier).
-  Sender keys add audit scope beyond the previous round's estimate;
+  engagement on the shipping custom hybrid construction plus any release that
+  turns on RN or sender keys (Trail of Bits, NCC Group, Cure53, Quarkslab
+  tier). Sender keys add audit scope beyond the previous round's estimate;
   confirm with auditors before commitment.
 - **Funding model** for ongoing operations across 5 jurisdictions in
   v2.2.
