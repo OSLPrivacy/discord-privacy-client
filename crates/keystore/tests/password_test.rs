@@ -213,6 +213,20 @@ fn inactivity_timer_resets_on_activity() {
     assert!(timer.should_reprompt_at(check));
 }
 
+#[test]
+fn inactivity_timer_relocks_after_15_minutes_and_resets_on_activity() {
+    let t0 = Instant::now();
+    let mut timer = InactivityTimer::with_last_activity(DEFAULT_INACTIVITY_SECONDS, t0);
+
+    assert!(!timer.should_reprompt_at(t0 + Duration::from_secs(14 * 60 + 59)));
+    assert!(timer.should_reprompt_at(t0 + Duration::from_secs(15 * 60)));
+
+    let activity = t0 + Duration::from_secs(14 * 60);
+    timer.mark_activity_at(activity);
+    assert!(!timer.should_reprompt_at(activity + Duration::from_secs(14 * 60 + 59)));
+    assert!(timer.should_reprompt_at(activity + Duration::from_secs(15 * 60)));
+}
+
 // ---- persistence ----
 
 #[test]
