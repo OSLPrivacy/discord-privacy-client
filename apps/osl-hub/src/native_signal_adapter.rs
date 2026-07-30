@@ -507,11 +507,31 @@ mod tests {
         assert_eq!(candidates[0].text, "first visible body");
         assert_eq!(candidates[1].node_index, 3);
         assert_eq!(candidates[1].text, "second visible body");
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.node_index != 2),
+            "text without body evidence must not become a row candidate"
+        );
 
         let mut invalid = nodes.clone();
         invalid[1].text = Some("bad\u{0008}body".to_owned());
         assert_eq!(
             extract_signal_row_candidates(&invalid, 0, 4, 128).map(|value| value.len()),
+            Err(SignalSelectorError::Invalid)
+        );
+
+        let mut missing_body_text = nodes.clone();
+        missing_body_text[3].text = None;
+        assert_eq!(
+            extract_signal_row_candidates(&missing_body_text, 0, 4, 128).map(|value| value.len()),
+            Err(SignalSelectorError::Invalid)
+        );
+
+        let mut outside_row = nodes.clone();
+        outside_row[3].bounds = rect(500, 296, 1170, 320);
+        assert_eq!(
+            extract_signal_row_candidates(&outside_row, 0, 4, 128).map(|value| value.len()),
             Err(SignalSelectorError::Invalid)
         );
 
