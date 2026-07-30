@@ -13,7 +13,10 @@ independent UI Automation observations are the authorities.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import hashlib
+import hmac
 import json
 import re
 import sys
@@ -23,8 +26,11 @@ from typing import Any
 
 
 SCHEMA = "osl-c4-shipping-evidence-v1"
+NATIVE_RECEIPT_SCHEMA = "osl.c4.native-placement-receipt"
+NATIVE_RESULT_SCHEMA = "osl.c4.native-verification-result"
 MAX_BUNDLE_BYTES = 256 * 1024
 MAX_RUN_MS = 10 * 60 * 1000
+MAX_CARRIER_BYTES = 8 * 1024
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 QA_MARKERS = (
     b"discord-qa-shell",
@@ -90,6 +96,49 @@ def _sha256(value: Any, label: str) -> str:
     if not SHA256_RE.fullmatch(text):
         raise EvidenceError(f"{label} must be lowercase SHA-256")
     return text
+
+
+def _canonical_json(value: Any) -> bytes:
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError, UnicodeEncodeError) as error:
+        raise EvidenceError("native receipt cannot be canonically encoded") from error
+
+
+def _domain_sha256(domain: bytes, value: Any) -> str:
+    return hashlib.sha256(domain + _canonical_json(value)).hexdigest()
+
+
+def _receipt_object_digest(receipt: dict[str, Any]) -> str:
+    body = dict(receipt)
+    body.pop("receiptDigestSha256", None)
+    return _domain_sha256(b"OSL/C4/native-placement-receipt/v3\x00", body)
+
+
+def _target_binding_digest(target: dict[str, Any]) -> str:
+    body = dict(target)
+    body.pop("bindingSha256", None)
+    return _domain_sha256(b"OSL/C4/native-target-binding/v3\x00", body)
+
+
+def _pipe_binding_digest(process: dict[str, Any]) -> str:
+    return _domain_sha256(b"OSL/C4/pipe-client-binding/v1\x00", process)
+
+
+def _challenge_digest(challenge: str) -> str:
+    return hashlib.sha256(bytes.fromhex(challenge)).hexdigest()
+
+
+def _ledger_record_digest(record: dict[str, Any]) -> str:
+    body = dict(record)
+    body.pop("recordDigestSha256", None)
+    return _domain_sha256(b"OSL/C4/challenge-ledger/v2\x00", body)
 
 
 def _exact_keys(value: dict[str, Any], label: str, expected: set[str]) -> None:
@@ -158,6 +207,332 @@ def _scan_for_markers(path: Path) -> None:
             carry = searchable[-(longest - 1) :]
 
 
+def _verify_native_authority(
+    value: Any,
+    *,
+    run_start: int,
+    run_end: int,
+    not_before_unix_ms: int,
+    executable_sha: str,
+    executable_pid: int,
+    target: str,
+    transcript_binding: str,
+    carrier_sha: str,
+) -> dict[str, Any]:
+    authority = _object(value, "nativeAuthority")
+    _exact_keys(
+        authority,
+        "nativeAuthority",
+        {"receipt", "verificationResult", "ledgerRecord"},
+    )
+
+    receipt = _object(authority["receipt"], "nativeAuthority.receipt")
+    _exact_keys(
+        receipt,
+        "nativeAuthority.receipt",
+        {
+            "schema",
+            "version",
+            "evidenceKind",
+            "challenge",
+            "emittedAtUnixMs",
+            "monotonicStagesMs",
+            "emitter",
+            "build",
+            "target",
+            "carrier",
+            "preSend",
+            "action",
+            "postSend",
+            "receiptDigestSha256",
+        },
+    )
+    if receipt["schema"] != NATIVE_RECEIPT_SCHEMA:
+        raise EvidenceError("native receipt schema is invalid")
+    if receipt["version"] != 3 or receipt["evidenceKind"] != "native-placement":
+        raise EvidenceError("native receipt identity is invalid")
+    challenge = _sha256(receipt["challenge"], "nativeAuthority.receipt.challenge")
+    if challenge == "0" * 64:
+        raise EvidenceError("zero native challenge is forbidden")
+    emitted_at = _at(
+        receipt["emittedAtUnixMs"],
+        "nativeAuthority.receipt.emittedAtUnixMs",
+        run_start,
+        run_end,
+        after=not_before_unix_ms,
+    )
+
+    stages = _object(receipt["monotonicStagesMs"], "nativeAuthority.receipt.monotonicStagesMs")
+    _exact_keys(
+        stages,
+        "nativeAuthority.receipt.monotonicStagesMs",
+        {
+            "challengeClaimed",
+            "preSendReadback",
+            "sendInjected",
+            "postContextRevalidated",
+            "receiptEmitted",
+        },
+    )
+    ordered_stages = [
+        _integer(stages[name], f"nativeAuthority.receipt.monotonicStagesMs.{name}")
+        for name in (
+            "challengeClaimed",
+            "preSendReadback",
+            "sendInjected",
+            "postContextRevalidated",
+            "receiptEmitted",
+        )
+    ]
+    if ordered_stages[0] != 0 or ordered_stages != sorted(ordered_stages):
+        raise EvidenceError("native receipt monotonic stages are not ordered from zero")
+
+    emitter = _process(receipt["emitter"], "nativeAuthority.receipt.emitter")
+    if _integer(emitter["pid"], "nativeAuthority.receipt.emitter.pid") != executable_pid:
+        raise EvidenceError("native emitter PID does not match the exact OSL process")
+    if emitter["executableSha256"] != executable_sha:
+        raise EvidenceError("native emitter executable hash does not match the exact OSL binary")
+
+    build = _object(receipt["build"], "nativeAuthority.receipt.build")
+    _exact_keys(
+        build,
+        "nativeAuthority.receipt.build",
+        {"features", "debugAssertions", "targetOs", "targetArch", "profile"},
+    )
+    if build["features"] != ["core", "desktop"]:
+        raise EvidenceError("native receipt build features are not the shipping set")
+    if _boolean(build["debugAssertions"], "nativeAuthority.receipt.build.debugAssertions"):
+        raise EvidenceError("native receipt came from a debug-assertions build")
+    if build["targetOs"] != "windows" or build["targetArch"] != "x86_64":
+        raise EvidenceError("native receipt target platform is not Windows x86_64")
+    if build["profile"] != "release":
+        raise EvidenceError("native receipt build profile is not release")
+
+    native_target = _target(receipt["target"], "nativeAuthority.receipt.target")
+    native_binding = native_target["bindingSha256"]
+    if emitter["pid"] == native_target["pid"]:
+        raise EvidenceError("native receipt emitter and Discord target are the same process")
+    expected_transcript_binding = _legacy_target_binding(native_target, target)
+    if expected_transcript_binding != transcript_binding:
+        raise EvidenceError("native Discord process/HWND does not bind the transcript target")
+
+    carrier = _object(receipt["carrier"], "nativeAuthority.receipt.carrier")
+    _exact_keys(
+        carrier,
+        "nativeAuthority.receipt.carrier",
+        {"targetBindingSha256", "utf8B64", "sha256", "byteLength", "utf16Length"},
+    )
+    if _sha256(carrier["targetBindingSha256"], "nativeAuthority.receipt.carrier.targetBindingSha256") != native_binding:
+        raise EvidenceError("native carrier is not bound to the Discord target")
+    try:
+        carrier_bytes = base64.b64decode(
+            _string(carrier["utf8B64"], "nativeAuthority.receipt.carrier.utf8B64", maximum=16 * 1024),
+            validate=True,
+        )
+    except (ValueError, binascii.Error) as error:
+        raise EvidenceError("native carrier is not canonical base64") from error
+    if base64.b64encode(carrier_bytes).decode("ascii") != carrier["utf8B64"]:
+        raise EvidenceError("native carrier base64 is not canonical")
+    if not carrier_bytes or len(carrier_bytes) > MAX_CARRIER_BYTES:
+        raise EvidenceError("native carrier byte length is out of bounds")
+    try:
+        carrier_text = carrier_bytes.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise EvidenceError("native carrier is not strict UTF-8") from error
+    if any(ord(character) < 0x20 and character != "\n" for character in carrier_text):
+        raise EvidenceError("native carrier contains a forbidden control character")
+    native_carrier_sha = hashlib.sha256(carrier_bytes).hexdigest()
+    native_carrier_utf16 = len(carrier_text.encode("utf-16-le")) // 2
+    if _sha256(carrier["sha256"], "nativeAuthority.receipt.carrier.sha256") != native_carrier_sha:
+        raise EvidenceError("native carrier hash does not match its bytes")
+    if native_carrier_sha != carrier_sha:
+        raise EvidenceError("native carrier does not match the pre-Enter readback")
+    if _integer(carrier["byteLength"], "nativeAuthority.receipt.carrier.byteLength") != len(carrier_bytes):
+        raise EvidenceError("native carrier byte length does not match")
+    if _integer(carrier["utf16Length"], "nativeAuthority.receipt.carrier.utf16Length") != native_carrier_utf16:
+        raise EvidenceError("native carrier UTF-16 length does not match")
+
+    pre_send = _object(receipt["preSend"], "nativeAuthority.receipt.preSend")
+    _exact_keys(pre_send, "nativeAuthority.receipt.preSend", {"targetBindingSha256", "readback", "foreground"})
+    if _sha256(pre_send["targetBindingSha256"], "nativeAuthority.receipt.preSend.targetBindingSha256") != native_binding:
+        raise EvidenceError("native pre-send is not bound to the Discord target")
+    _readback(
+        pre_send["readback"],
+        "nativeAuthority.receipt.preSend.readback",
+        binding=native_binding,
+        classification="exact",
+        digest=native_carrier_sha,
+        byte_length=len(carrier_bytes),
+        utf16_length=native_carrier_utf16,
+    )
+    foreground = _object(pre_send["foreground"], "nativeAuthority.receipt.preSend.foreground")
+    _exact_keys(
+        foreground,
+        "nativeAuthority.receipt.preSend.foreground",
+        {
+            "targetBindingSha256",
+            "foregroundHwnd",
+            "foregroundRootHwnd",
+            "foregroundPid",
+            "targetRootHwnd",
+            "keyboardFocusProven",
+            "targetOwnedByTrustedProcess",
+        },
+    )
+    if _sha256(foreground["targetBindingSha256"], "nativeAuthority.receipt.preSend.foreground.targetBindingSha256") != native_binding:
+        raise EvidenceError("native foreground is not bound to the Discord target")
+    _integer(foreground["foregroundHwnd"], "nativeAuthority.receipt.preSend.foreground.foregroundHwnd", minimum=1)
+    foreground_root = _integer(foreground["foregroundRootHwnd"], "nativeAuthority.receipt.preSend.foreground.foregroundRootHwnd", minimum=1)
+    target_root = _integer(foreground["targetRootHwnd"], "nativeAuthority.receipt.preSend.foreground.targetRootHwnd", minimum=1)
+    if foreground_root != target_root or target_root != native_target["rootHwnd"]:
+        raise EvidenceError("native foreground root HWND is not the exact Discord root")
+    if _integer(foreground["foregroundPid"], "nativeAuthority.receipt.preSend.foreground.foregroundPid", minimum=1) != native_target["pid"]:
+        raise EvidenceError("native foreground PID is not the Discord target PID")
+    if not _boolean(foreground["keyboardFocusProven"], "nativeAuthority.receipt.preSend.foreground.keyboardFocusProven"):
+        raise EvidenceError("native receipt did not prove keyboard focus")
+    if not _boolean(foreground["targetOwnedByTrustedProcess"], "nativeAuthority.receipt.preSend.foreground.targetOwnedByTrustedProcess"):
+        raise EvidenceError("native receipt did not prove trusted target ownership")
+
+    action = _object(receipt["action"], "nativeAuthority.receipt.action")
+    _exact_keys(
+        action,
+        "nativeAuthority.receipt.action",
+        {
+            "targetBindingSha256",
+            "mechanism",
+            "attempted",
+            "acceptedInputCount",
+            "enterCertainty",
+            "retryPolicy",
+            "actionSequence",
+        },
+    )
+    if _sha256(action["targetBindingSha256"], "nativeAuthority.receipt.action.targetBindingSha256") != native_binding:
+        raise EvidenceError("native action is not bound to the Discord target")
+    required_action = {
+        "mechanism": "sendinput_enter",
+        "attempted": True,
+        "acceptedInputCount": 2,
+        "enterCertainty": "injected_once",
+        "retryPolicy": "never_auto_retry",
+        "actionSequence": 1,
+    }
+    for key, expected in required_action.items():
+        if action[key] != expected:
+            raise EvidenceError(f"native action.{key} does not prove one Enter send")
+
+    post_send = _object(receipt["postSend"], "nativeAuthority.receipt.postSend")
+    _exact_keys(
+        post_send,
+        "nativeAuthority.receipt.postSend",
+        {
+            "targetBindingSha256",
+            "readback",
+            "hostRevalidated",
+            "overlayContextUnchanged",
+            "carrierConsumed",
+            "sentRowProven",
+            "rowDelta",
+            "status",
+        },
+    )
+    if _sha256(post_send["targetBindingSha256"], "nativeAuthority.receipt.postSend.targetBindingSha256") != native_binding:
+        raise EvidenceError("native post-send is not bound to the Discord target")
+    _readback(
+        post_send["readback"],
+        "nativeAuthority.receipt.postSend.readback",
+        binding=native_binding,
+        classification="empty",
+        digest=EMPTY_SHA256,
+        byte_length=0,
+        utf16_length=0,
+    )
+    for key in ("hostRevalidated", "overlayContextUnchanged", "carrierConsumed", "sentRowProven"):
+        if not _boolean(post_send[key], f"nativeAuthority.receipt.postSend.{key}"):
+            raise EvidenceError(f"native post-send {key} is not proven")
+    if _integer(post_send["rowDelta"], "nativeAuthority.receipt.postSend.rowDelta") != 1:
+        raise EvidenceError("native post-send row delta is not exactly one")
+    if post_send["status"] != "sent":
+        raise EvidenceError("native post-send status is not sent")
+    if _sha256(receipt["receiptDigestSha256"], "nativeAuthority.receipt.receiptDigestSha256") != _receipt_object_digest(receipt):
+        raise EvidenceError("native receipt object digest is invalid")
+
+    frame_sha = hashlib.sha256(_canonical_json(receipt)).hexdigest()
+    result = _object(authority["verificationResult"], "nativeAuthority.verificationResult")
+    _exact_keys(
+        result,
+        "nativeAuthority.verificationResult",
+        {
+            "schema",
+            "version",
+            "source",
+            "status",
+            "parserCryptoValid",
+            "runtimeReceiptAccepted",
+            "fullC4Success",
+            "pointDelta",
+            "receiptFrameSha256",
+        },
+    )
+    if (
+        result["schema"] != NATIVE_RESULT_SCHEMA
+        or result["version"] != 3
+        or result["source"] != "runtime_named_pipe"
+        or result["status"] != "runtime-native-receipt-valid"
+    ):
+        raise EvidenceError("native verification result is not runtime authority")
+    if not _boolean(result["parserCryptoValid"], "nativeAuthority.verificationResult.parserCryptoValid"):
+        raise EvidenceError("native verification parser/crypto did not pass")
+    if not _boolean(result["runtimeReceiptAccepted"], "nativeAuthority.verificationResult.runtimeReceiptAccepted"):
+        raise EvidenceError("native runtime receipt was not accepted")
+    if _boolean(result["fullC4Success"], "nativeAuthority.verificationResult.fullC4Success"):
+        raise EvidenceError("native verifier may not claim full C4 success")
+    if _integer(result["pointDelta"], "nativeAuthority.verificationResult.pointDelta") != 0:
+        raise EvidenceError("native verifier may not award C4 points")
+    if _sha256(result["receiptFrameSha256"], "nativeAuthority.verificationResult.receiptFrameSha256") != frame_sha:
+        raise EvidenceError("native verification result names another receipt frame")
+
+    ledger = _object(authority["ledgerRecord"], "nativeAuthority.ledgerRecord")
+    _exact_keys(
+        ledger,
+        "nativeAuthority.ledgerRecord",
+        {
+            "version",
+            "challengeSha256",
+            "state",
+            "issuedAtUnixMs",
+            "expiresAtUnixMs",
+            "pipeBindingSha256",
+            "receiptFrameSha256",
+            "updatedAtUnixMs",
+            "recordDigestSha256",
+        },
+    )
+    if ledger["version"] != 2 or ledger["state"] != "consumed":
+        raise EvidenceError("native challenge ledger was not consumed")
+    issued_at = _integer(ledger["issuedAtUnixMs"], "nativeAuthority.ledgerRecord.issuedAtUnixMs")
+    expires_at = _integer(ledger["expiresAtUnixMs"], "nativeAuthority.ledgerRecord.expiresAtUnixMs", minimum=issued_at + 1)
+    updated_at = _integer(ledger["updatedAtUnixMs"], "nativeAuthority.ledgerRecord.updatedAtUnixMs", minimum=issued_at)
+    if issued_at < not_before_unix_ms or not (issued_at <= emitted_at <= updated_at <= run_end):
+        raise EvidenceError("native challenge consumption is outside this run")
+    if expires_at > issued_at + 60_000 or updated_at >= expires_at:
+        raise EvidenceError("native challenge lifetime is invalid")
+    if _sha256(ledger["challengeSha256"], "nativeAuthority.ledgerRecord.challengeSha256") != _challenge_digest(challenge):
+        raise EvidenceError("native ledger challenge does not match the receipt")
+    if _sha256(ledger["pipeBindingSha256"], "nativeAuthority.ledgerRecord.pipeBindingSha256") != _pipe_binding_digest(emitter):
+        raise EvidenceError("native ledger pipe binding does not match the emitter")
+    if _sha256(ledger["receiptFrameSha256"], "nativeAuthority.ledgerRecord.receiptFrameSha256") != frame_sha:
+        raise EvidenceError("native ledger consumed another receipt frame")
+    if _sha256(ledger["recordDigestSha256"], "nativeAuthority.ledgerRecord.recordDigestSha256") != _ledger_record_digest(ledger):
+        raise EvidenceError("native ledger record digest is invalid")
+
+    return {
+        "challengeSha256": ledger["challengeSha256"],
+        "receiptFrameSha256": frame_sha,
+        "discordRootHwnd": native_target["rootHwnd"],
+    }
+
+
 def _same_binding(
     value: dict[str, Any],
     label: str,
@@ -174,7 +549,116 @@ def _same_binding(
         raise EvidenceError(f"{label}.targetConversation is the wrong target")
 
 
-def verify_bundle(bundle_path: Path, expected_target: str) -> dict[str, Any]:
+def _file_identity(value: Any, label: str) -> None:
+    identity = _object(value, label)
+    _exact_keys(
+        identity,
+        label,
+        {"volumeSerialNumber", "fileIndex", "fileSize", "lastWriteTime100ns"},
+    )
+    _integer(identity["volumeSerialNumber"], f"{label}.volumeSerialNumber", minimum=1)
+    _integer(identity["fileIndex"], f"{label}.fileIndex", minimum=1)
+    _integer(identity["fileSize"], f"{label}.fileSize", minimum=1)
+    _integer(identity["lastWriteTime100ns"], f"{label}.lastWriteTime100ns", minimum=1)
+
+
+PROCESS_KEYS = {
+    "pid",
+    "processStartTime100ns",
+    "sessionId",
+    "executablePath",
+    "executableSha256",
+    "fileIdentity",
+}
+
+TARGET_KEYS = PROCESS_KEYS | {
+    "bindingSha256",
+    "hwnd",
+    "rootHwnd",
+    "hostGeneration",
+    "publisher",
+}
+
+
+def _process(value: Any, label: str) -> dict[str, Any]:
+    process = _object(value, label)
+    _exact_keys(process, label, PROCESS_KEYS)
+    _integer(process["pid"], f"{label}.pid", minimum=1)
+    _integer(process["processStartTime100ns"], f"{label}.processStartTime100ns", minimum=1)
+    _integer(process["sessionId"], f"{label}.sessionId")
+    _string(process["executablePath"], f"{label}.executablePath", maximum=1024)
+    _sha256(process["executableSha256"], f"{label}.executableSha256")
+    _file_identity(process["fileIdentity"], f"{label}.fileIdentity")
+    return process
+
+
+def _target(value: Any, label: str) -> dict[str, Any]:
+    target = _object(value, label)
+    _exact_keys(target, label, TARGET_KEYS)
+    _process({key: target[key] for key in PROCESS_KEYS}, f"{label}.process")
+    _integer(target["hwnd"], f"{label}.hwnd", minimum=1)
+    _integer(target["rootHwnd"], f"{label}.rootHwnd", minimum=1)
+    _integer(target["hostGeneration"], f"{label}.hostGeneration", minimum=1)
+    if target["publisher"] != "Discord Inc.":
+        raise EvidenceError("native target publisher is not Discord Inc.")
+    claimed = _sha256(target["bindingSha256"], f"{label}.bindingSha256")
+    if not hmac.compare_digest(claimed, _target_binding_digest(target)):
+        raise EvidenceError("native target binding digest is invalid")
+    return target
+
+
+def _readback(
+    value: Any,
+    label: str,
+    *,
+    binding: str,
+    classification: str,
+    digest: str,
+    byte_length: int,
+    utf16_length: int,
+) -> None:
+    readback = _object(value, label)
+    _exact_keys(
+        readback,
+        label,
+        {
+            "targetBindingSha256",
+            "classification",
+            "complete",
+            "sha256",
+            "byteLength",
+            "utf16Length",
+        },
+    )
+    if _sha256(readback["targetBindingSha256"], f"{label}.targetBindingSha256") != binding:
+        raise EvidenceError(f"{label} does not bind the native Discord target")
+    if readback["classification"] != classification:
+        raise EvidenceError(f"{label} classification is not {classification}")
+    if not _boolean(readback["complete"], f"{label}.complete"):
+        raise EvidenceError(f"{label} is incomplete")
+    if _sha256(readback["sha256"], f"{label}.sha256") != digest:
+        raise EvidenceError(f"{label} digest does not match")
+    if _integer(readback["byteLength"], f"{label}.byteLength") != byte_length:
+        raise EvidenceError(f"{label} byte length does not match")
+    if _integer(readback["utf16Length"], f"{label}.utf16Length") != utf16_length:
+        raise EvidenceError(f"{label} UTF-16 length does not match")
+
+
+def _legacy_target_binding(target: dict[str, Any], target_conversation: str) -> str:
+    material = (
+        f"{target['executableSha256']}|{target['pid']}|"
+        f"{target['hwnd']}|{target_conversation}"
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def verify_bundle(
+    bundle_path: Path,
+    expected_target: str,
+    *,
+    expected_run_id: str | None = None,
+    not_before_unix_ms: int = 0,
+) -> dict[str, Any]:
     bundle_path = bundle_path.resolve()
     if not bundle_path.is_file():
         raise EvidenceError("bundle is missing")
@@ -205,6 +689,7 @@ def verify_bundle(bundle_path: Path, expected_target: str) -> dict[str, Any]:
             "preEnterReadback",
             "postEnterComposer",
             "conversationRows",
+            "nativeAuthority",
             "screenshot",
         },
     )
@@ -216,10 +701,14 @@ def verify_bundle(bundle_path: Path, expected_target: str) -> dict[str, Any]:
         raise EvidenceError("runId must be a canonical UUID") from error
     if run_id != bundle["runId"]:
         raise EvidenceError("runId must be a canonical UUID")
+    if expected_run_id is not None and run_id != expected_run_id:
+        raise EvidenceError("bundle runId does not match the operator-approved run")
     run_start = _integer(bundle["runStartUnixMs"], "runStartUnixMs", minimum=1)
     run_end = _integer(bundle["runEndUnixMs"], "runEndUnixMs", minimum=run_start)
     if run_end - run_start > MAX_RUN_MS:
         raise EvidenceError("run exceeds the ten-minute evidence window")
+    if run_start < not_before_unix_ms:
+        raise EvidenceError("bundle predates the operator-approved evidence window")
     target = _string(bundle["targetConversation"], "targetConversation", maximum=128)
     if target != expected_target:
         raise EvidenceError("bundle target does not match the operator-approved target")
@@ -244,6 +733,8 @@ def verify_bundle(bundle_path: Path, expected_target: str) -> dict[str, Any]:
     cargo_command = _string(build["cargoCommand"], "build.cargoCommand")
     if "osl-cargo" not in cargo_command:
         raise EvidenceError("shipping desktop build did not use osl-cargo")
+    if "--release" not in cargo_command.split():
+        raise EvidenceError("shipping desktop build was not a release build")
     features = _list(build["cargoFeatures"], "build.cargoFeatures")
     if features != ["desktop"]:
         raise EvidenceError("shipping build features must be exactly ['desktop']")
@@ -270,7 +761,7 @@ def verify_bundle(bundle_path: Path, expected_target: str) -> dict[str, Any]:
     if _hash_file(executable_path) != executable_sha:
         raise EvidenceError("exact executable hash mismatch")
     _scan_for_markers(executable_path)
-    _integer(executable["processId"], "executable.processId", minimum=1)
+    executable_pid = _integer(executable["processId"], "executable.processId", minimum=1)
     process_started = _integer(
         executable["processStartedAtUnixMs"],
         "executable.processStartedAtUnixMs",
@@ -496,6 +987,18 @@ def verify_bundle(bundle_path: Path, expected_target: str) -> dict[str, Any]:
     if _integer(new_row["matchCount"], "newRow.matchCount") != 1:
         raise EvidenceError("new carrier row is missing or duplicated")
 
+    native = _verify_native_authority(
+        bundle["nativeAuthority"],
+        run_start=run_start,
+        run_end=run_end,
+        not_before_unix_ms=not_before_unix_ms,
+        executable_sha=executable_sha,
+        executable_pid=executable_pid,
+        target=target,
+        transcript_binding=before_binding,
+        carrier_sha=carrier_sha,
+    )
+
     screenshot = _object(bundle["screenshot"], "screenshot")
     _exact_keys(
         screenshot,
@@ -540,11 +1043,13 @@ def verify_bundle(bundle_path: Path, expected_target: str) -> dict[str, Any]:
         "schema": SCHEMA,
         "runId": run_id,
         "executableSha256": executable_sha,
-        "targetConversation": target,
         "rowDelta": 1,
         "productionReceipt": "sent/placed/enterSent",
         "preEnterReadback": "rawExact",
         "postEnterComposer": "empty",
+        "nativeReceipt": "runtime-consumed",
+        "nativeChallengeSha256": native["challengeSha256"],
+        "nativeReceiptFrameSha256": native["receiptFrameSha256"],
         "screenshotSha256": screenshot["sha256"],
     }
 
@@ -555,9 +1060,13 @@ def main() -> int:
     mode.add_argument("--bundle", type=Path)
     mode.add_argument("--check-executable", type=Path)
     parser.add_argument("--expected-target")
+    parser.add_argument("--expected-run-id")
+    parser.add_argument("--not-before-unix-ms", type=int, default=0)
     args = parser.parse_args()
     try:
         if args.check_executable is not None:
+            if args.expected_target or args.expected_run_id or args.not_before_unix_ms:
+                raise EvidenceError("bundle-only expectations are not valid with --check-executable")
             executable = args.check_executable.resolve()
             if not executable.is_file():
                 raise EvidenceError("exact executable path is absent")
@@ -571,7 +1080,22 @@ def main() -> int:
         else:
             if not args.expected_target:
                 raise EvidenceError("--expected-target is required with --bundle")
-            result = verify_bundle(args.bundle, args.expected_target)
+            if not args.expected_run_id:
+                raise EvidenceError("--expected-run-id is required with --bundle")
+            if args.not_before_unix_ms <= 0:
+                raise EvidenceError("--not-before-unix-ms is required with --bundle")
+            try:
+                expected_run_id = str(uuid.UUID(args.expected_run_id))
+            except (ValueError, AttributeError) as error:
+                raise EvidenceError("--expected-run-id must be a canonical UUID") from error
+            if expected_run_id != args.expected_run_id:
+                raise EvidenceError("--expected-run-id must be a canonical UUID")
+            result = verify_bundle(
+                args.bundle,
+                args.expected_target,
+                expected_run_id=expected_run_id,
+                not_before_unix_ms=args.not_before_unix_ms,
+            )
     except EvidenceError as error:
         print(
             json.dumps(
