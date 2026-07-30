@@ -648,6 +648,11 @@ mod tests {
             serde_json::to_value(verified.verdict()).unwrap(),
             Value::String("verified".to_owned())
         );
+        assert_eq!(
+            serde_json::from_value::<ContractVerdict>(Value::String("verified".to_owned()))
+                .unwrap(),
+            ContractVerdict::Verified
+        );
 
         let mut degraded_checks = required_checks();
         degraded_checks[1] = CheckOutcome::failed(
@@ -678,6 +683,17 @@ mod tests {
                 }
             })
         );
+        assert_eq!(
+            serde_json::from_value::<ContractVerdict>(serde_json::json!({
+                "degraded": {
+                    "failedSubsystem": "transcript",
+                    "failedPredicate": "transcriptDiscovery",
+                    "cause": "ambiguous"
+                }
+            }))
+            .unwrap(),
+            degraded.verdict()
+        );
 
         let mut refused_checks = required_checks();
         refused_checks[5] = CheckOutcome::failed(
@@ -707,6 +723,17 @@ mod tests {
                     "cause": "missingBinding"
                 }
             })
+        );
+        assert_eq!(
+            serde_json::from_value::<ContractVerdict>(serde_json::json!({
+                "refused": {
+                    "failedSubsystem": "binding",
+                    "failedPredicate": "scopeBinding",
+                    "cause": "missingBinding"
+                }
+            }))
+            .unwrap(),
+            refused.verdict()
         );
 
         assert!(!UnverifiedCause::NotObserved.requires_refusal());
