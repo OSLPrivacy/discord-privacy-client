@@ -40,7 +40,7 @@ describe("Discord disposable QA visual capture boundary", () => {
     expect(overlay).toMatch(/cfg\(not\(feature = "discord-qa-shell"\)\)[\s\S]*?ScreenshotProtection::On/u);
   });
 
-  it("production_binary_observability_check_on_a_non_discord_qa_shell_build", () => {
+  it("production-binary observability check on a non-discord-qa-shell build", () => {
     const main = read("../../osl-hub/src/main.rs");
     const overlay = read("../../osl-hub/src/native_discord_overlay.rs");
 

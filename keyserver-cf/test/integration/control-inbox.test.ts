@@ -21,6 +21,7 @@ async function signedPostBody(
   recipientId: string,
   signingKey: CryptoKey,
   timestampMs = Date.now(),
+  scopeId = `scope-${seq++}`,
 ): Promise<Record<string, unknown>> {
   const bundle = new TextEncoder().encode(`bundle-${seq++}`);
   const bundleHash = new Uint8Array(
@@ -29,7 +30,7 @@ async function signedPostBody(
   const fields = {
     sender_id: senderId,
     recipient_id: recipientId,
-    scope_id: `scope-${seq++}`,
+    scope_id: scopeId,
     timestamp_ms: timestampMs,
     bundle_sha256: bundleHash,
   };
@@ -203,6 +204,65 @@ describe("POST /v1/control-inbox hardening", () => {
       .bind(recipientId)
       .first<{ count: number }>();
     // Nothing was deleted to make room, and nothing was added.
+    expect(after?.count).toBe(512);
+  });
+
+  it("inbox eviction observability under D1 512-row backstop", async () => {
+    const senderId = userId("sender");
+    const recipientId = userId("recipient");
+    const sender = await registerTestUser(SELF, senderId);
+    await registerTestUser(SELF, recipientId);
+    const now = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(
+      `WITH RECURSIVE cnt(x) AS (
+         VALUES(1) UNION ALL SELECT x + 1 FROM cnt WHERE x < 512
+       )
+       INSERT INTO control_inbox
+         (id, recipient_id, sender_id, scope_id, bundle, expires_at, created_at)
+       SELECT randomblob(16), ?, 'b87-filler-' || x, 'b87-backstop', x'01', ?, ? FROM cnt`,
+    )
+      .bind(recipientId, now + 3600, now)
+      .run();
+
+    await expect(
+      env.DB.prepare(
+        `INSERT INTO control_inbox
+           (id, recipient_id, sender_id, scope_id, bundle, expires_at, created_at)
+         VALUES (randomblob(16), ?, ?, 'b87-direct-trigger', x'01', ?, ?)`,
+      )
+        .bind(recipientId, senderId, now + 3600, now + 1)
+        .run(),
+    ).rejects.toThrow(/control inbox recipient quota exceeded/u);
+
+    const res = await post(
+      await signedPostBody(
+        senderId,
+        recipientId,
+        sender.signingKey,
+        Date.now(),
+        "b87-public-post",
+      ),
+    );
+    expect(res.status).toBe(429);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      error: "recipient_inbox_full",
+      scope: "recipient",
+    });
+    expect(body).not.toHaveProperty("inbox_eviction_count");
+
+    const receipt = await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM control_inbox_requests WHERE sender_id = ?`,
+    )
+      .bind(senderId)
+      .first<{ count: number }>();
+    expect(receipt?.count).toBe(0);
+
+    const after = await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM control_inbox WHERE recipient_id = ?`,
+    )
+      .bind(recipientId)
+      .first<{ count: number }>();
     expect(after?.count).toBe(512);
   });
 
