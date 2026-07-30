@@ -787,6 +787,35 @@ mod tests {
             state.production_duress_engine_is_configured(),
             "production AppState constructor must hold a DuressEngine"
         );
+        {
+            let engine = state
+                .production_duress_engine
+                .lock()
+                .expect("production_duress_engine mutex poisoned");
+            let engine = engine.as_ref().expect("production duress engine installed");
+            assert_eq!(engine.journal_path(), dir.path().join("duress.journal"));
+            assert_eq!(
+                engine.paths().identity_file,
+                dir.path().join("identity.json")
+            );
+            assert_eq!(
+                engine.paths().password_file,
+                dir.path().join("password_marker.json")
+            );
+            assert_eq!(
+                engine.paths().prekey_file,
+                Some(dir.path().join("prekeys.json"))
+            );
+            assert!(engine.handler_wired(keystore::WipeStep::LocalCacheDir));
+            assert!(engine.handler_wired(keystore::WipeStep::AnonymousCredentials));
+            assert!(engine.handler_wired(keystore::WipeStep::Prekeys));
+            assert!(engine.handler_wired(keystore::WipeStep::DoubleRatchet));
+            assert!(engine.handler_wired(keystore::WipeStep::SenderKeys));
+            assert!(engine.handler_wired(keystore::WipeStep::PeerRatchets));
+            assert!(engine.handler_wired(keystore::WipeStep::InMemoryZeroize));
+            assert!(engine.handler_wired(keystore::WipeStep::StripOpsecFiles));
+            assert!(engine.handler_wired(keystore::WipeStep::UnregisterAccount));
+        }
 
         let report = state
             .execute_production_duress()
@@ -1031,6 +1060,8 @@ mod identity_authority_tests {
 
     #[test]
     fn app_state_constructs_rn_session_store_with_sealer() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = use_temp_config_dir(dir.path());
         let state = AppState::new();
         let peer = [0x42u8; 32];
 
@@ -1040,6 +1071,16 @@ mod identity_authority_tests {
             .expect("fresh RN store reads an absent pin");
 
         assert_eq!(absent_pin, crate::wire_rn::RnPeerPin::UNKNOWN);
+        let raised = state
+            .rn_session_store
+            .raise_pin_to_rn(&peer)
+            .expect("AppState RN store persists a raised pin");
+        assert!(raised.is_pinned_to_rn());
+        let reloaded = state
+            .rn_session_store
+            .load_pin(&peer)
+            .expect("AppState RN store reloads the persisted pin");
+        assert!(reloaded.is_pinned_to_rn());
         assert!(
             !state.rn_session_sealer.requires_insecure_banner(),
             "AppState RN sealer must not be a plaintext sealer"

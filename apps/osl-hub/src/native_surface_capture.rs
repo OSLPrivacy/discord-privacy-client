@@ -740,8 +740,14 @@ mod tests {
             session_epoch: 7,
             host_generation: 11,
         };
-        state.replace(key, capture).expect("store");
-        assert!(state.current(key).is_some());
+        state.replace(key, capture.clone()).expect("store");
+        assert_eq!(
+            state
+                .current(key)
+                .expect("same key returns capture")
+                .width_px,
+            320
+        );
         assert!(state
             .current(NativeSurfaceKey {
                 session_epoch: 8,
@@ -754,7 +760,25 @@ mod tests {
                 host_generation: 12,
             })
             .is_none());
-        state.clear();
+
+        let replacement_key = NativeSurfaceKey {
+            session_epoch: 7,
+            host_generation: 12,
+        };
+        let mut replacement = capture;
+        replacement.width_px = 640;
+        state
+            .replace(replacement_key, replacement)
+            .expect("replace capture");
         assert!(state.current(key).is_none());
+        assert_eq!(
+            state
+                .current(replacement_key)
+                .expect("replacement key returns capture")
+                .width_px,
+            640
+        );
+        state.clear();
+        assert!(state.current(replacement_key).is_none());
     }
 }
