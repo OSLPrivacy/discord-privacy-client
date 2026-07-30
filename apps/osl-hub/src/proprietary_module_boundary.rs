@@ -19,6 +19,51 @@ const PERMISSION_LOCAL_RISK_ADVICE: u16 = 1 << 0;
 const PERMISSION_SERVICE_LAYOUT_ADVICE: u16 = 1 << 1;
 const PERMISSION_RELIABILITY_SUMMARY: u16 = 1 << 2;
 
+const PROPRIETARY_RECIPE_MATRIX: &[ProprietaryRecipeDescriptor] = &[
+    ProprietaryRecipeDescriptor::new(
+        BoundaryService::X,
+        "x-native-autoscrub-visible-rows-v1",
+        BoundaryOperation::ServiceLayoutAdvice,
+        ProprietaryNetworkPolicy::NoNetwork,
+        ProprietaryRecipeAuthority::NativeAutoscrub,
+    ),
+    ProprietaryRecipeDescriptor::new(
+        BoundaryService::Instagram,
+        "instagram-native-autoscrub-visible-rows-v1",
+        BoundaryOperation::ServiceLayoutAdvice,
+        ProprietaryNetworkPolicy::NoNetwork,
+        ProprietaryRecipeAuthority::NativeAutoscrub,
+    ),
+    ProprietaryRecipeDescriptor::new(
+        BoundaryService::Facebook,
+        "facebook-native-autoscrub-visible-rows-v1",
+        BoundaryOperation::ServiceLayoutAdvice,
+        ProprietaryNetworkPolicy::NoNetwork,
+        ProprietaryRecipeAuthority::NativeAutoscrub,
+    ),
+    ProprietaryRecipeDescriptor::new(
+        BoundaryService::Messenger,
+        "messenger-native-autoscrub-visible-rows-v1",
+        BoundaryOperation::ServiceLayoutAdvice,
+        ProprietaryNetworkPolicy::NoNetwork,
+        ProprietaryRecipeAuthority::NativeAutoscrub,
+    ),
+    ProprietaryRecipeDescriptor::new(
+        BoundaryService::WhatsApp,
+        "whatsapp-native-autoscrub-visible-rows-v1",
+        BoundaryOperation::ServiceLayoutAdvice,
+        ProprietaryNetworkPolicy::NoNetwork,
+        ProprietaryRecipeAuthority::NativeAutoscrub,
+    ),
+    ProprietaryRecipeDescriptor::new(
+        BoundaryService::Snapchat,
+        "snapchat-native-autoscrub-visible-rows-v1",
+        BoundaryOperation::ServiceLayoutAdvice,
+        ProprietaryNetworkPolicy::NoNetwork,
+        ProprietaryRecipeAuthority::NativeAutoscrub,
+    ),
+];
+
 pub trait ProprietaryModule {
     fn evaluate(
         &self,
@@ -93,6 +138,12 @@ pub enum BoundaryService {
     BrowserCompanion,
     NativeApp,
     OslHub,
+    X,
+    Instagram,
+    Facebook,
+    Messenger,
+    WhatsApp,
+    Snapchat,
 }
 
 impl fmt::Debug for BoundaryService {
@@ -102,8 +153,105 @@ impl fmt::Debug for BoundaryService {
             Self::BrowserCompanion => "BoundaryService::BrowserCompanion",
             Self::NativeApp => "BoundaryService::NativeApp",
             Self::OslHub => "BoundaryService::OslHub",
+            Self::X => "BoundaryService::X",
+            Self::Instagram => "BoundaryService::Instagram",
+            Self::Facebook => "BoundaryService::Facebook",
+            Self::Messenger => "BoundaryService::Messenger",
+            Self::WhatsApp => "BoundaryService::WhatsApp",
+            Self::Snapchat => "BoundaryService::Snapchat",
         })
     }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProprietaryRecipeAuthority {
+    NativeAutoscrub,
+}
+
+impl fmt::Debug for ProprietaryRecipeAuthority {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::NativeAutoscrub => "ProprietaryRecipeAuthority::NativeAutoscrub",
+        })
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct ProprietaryRecipeDescriptor {
+    service: BoundaryService,
+    recipe_id: &'static str,
+    operation: BoundaryOperation,
+    network_policy: ProprietaryNetworkPolicy,
+    authority: ProprietaryRecipeAuthority,
+}
+
+impl ProprietaryRecipeDescriptor {
+    const fn new(
+        service: BoundaryService,
+        recipe_id: &'static str,
+        operation: BoundaryOperation,
+        network_policy: ProprietaryNetworkPolicy,
+        authority: ProprietaryRecipeAuthority,
+    ) -> Self {
+        Self {
+            service,
+            recipe_id,
+            operation,
+            network_policy,
+            authority,
+        }
+    }
+
+    pub fn service(&self) -> BoundaryService {
+        self.service
+    }
+
+    pub fn recipe_id(&self) -> &'static str {
+        self.recipe_id
+    }
+
+    pub fn operation(&self) -> BoundaryOperation {
+        self.operation
+    }
+
+    pub fn network_policy(&self) -> ProprietaryNetworkPolicy {
+        self.network_policy
+    }
+
+    pub fn authority(&self) -> ProprietaryRecipeAuthority {
+        self.authority
+    }
+
+    pub fn requires_native_authority(&self) -> bool {
+        self.authority == ProprietaryRecipeAuthority::NativeAutoscrub
+    }
+}
+
+impl fmt::Debug for ProprietaryRecipeDescriptor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProprietaryRecipeDescriptor")
+            .field("service", &self.service)
+            .field("recipe_id", &self.recipe_id)
+            .field("operation", &self.operation)
+            .field("network_policy", &self.network_policy)
+            .field("authority", &self.authority)
+            .finish()
+    }
+}
+
+pub fn proprietary_recipe_matrix() -> &'static [ProprietaryRecipeDescriptor] {
+    PROPRIETARY_RECIPE_MATRIX
+}
+
+pub fn proprietary_recipe_for_service(
+    service: BoundaryService,
+) -> Option<ProprietaryRecipeDescriptor> {
+    PROPRIETARY_RECIPE_MATRIX
+        .iter()
+        .copied()
+        .find(|recipe| recipe.service == service)
 }
 
 #[derive(Clone, Copy, Eq, PartialEq, Serialize)]
@@ -1290,6 +1438,62 @@ mod tests {
         assert!(rendered.contains("[redacted; module id]"));
         assert!(rendered.contains("ProprietaryLicenseTier::Pro"));
         assert!(rendered.contains("ProprietaryNetworkPolicy::NoNetwork"));
+    }
+
+    #[test]
+    fn recipe_matrix_expansion() {
+        let expected_services = [
+            BoundaryService::X,
+            BoundaryService::Instagram,
+            BoundaryService::Facebook,
+            BoundaryService::Messenger,
+            BoundaryService::WhatsApp,
+            BoundaryService::Snapchat,
+        ];
+        let matrix = proprietary_recipe_matrix();
+
+        assert_eq!(matrix.len(), expected_services.len());
+        let mut seen_ids = Vec::new();
+        for (recipe, expected_service) in matrix.iter().zip(expected_services) {
+            assert_eq!(recipe.service(), expected_service);
+            assert_eq!(
+                proprietary_recipe_for_service(expected_service),
+                Some(*recipe)
+            );
+            assert_eq!(recipe.operation(), BoundaryOperation::ServiceLayoutAdvice);
+            assert_eq!(recipe.network_policy(), ProprietaryNetworkPolicy::NoNetwork);
+            assert_eq!(
+                recipe.authority(),
+                ProprietaryRecipeAuthority::NativeAutoscrub
+            );
+            assert!(recipe.requires_native_authority());
+            assert!(
+                !seen_ids.contains(&recipe.recipe_id()),
+                "recipe ids must stay one-to-one with services"
+            );
+            seen_ids.push(recipe.recipe_id());
+        }
+
+        for unsupported_service in [
+            BoundaryService::Discord,
+            BoundaryService::BrowserCompanion,
+            BoundaryService::NativeApp,
+            BoundaryService::OslHub,
+        ] {
+            assert_eq!(proprietary_recipe_for_service(unsupported_service), None);
+        }
+
+        assert_eq!(
+            seen_ids,
+            vec![
+                "x-native-autoscrub-visible-rows-v1",
+                "instagram-native-autoscrub-visible-rows-v1",
+                "facebook-native-autoscrub-visible-rows-v1",
+                "messenger-native-autoscrub-visible-rows-v1",
+                "whatsapp-native-autoscrub-visible-rows-v1",
+                "snapchat-native-autoscrub-visible-rows-v1",
+            ]
+        );
     }
 
     #[test]
