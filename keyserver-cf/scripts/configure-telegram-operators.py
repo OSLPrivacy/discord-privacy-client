@@ -13,12 +13,18 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 
 WORKER_DIR = Path(__file__).resolve().parent.parent
 WEBHOOK_URL = "https://keyserver.oslprivacy.com/v1/telegram/webhook"
 TOKEN_RE = re.compile(r"^[0-9]{6,12}:[A-Za-z0-9_-]{30,80}$")
+BOT_COMMANDS = [
+    {"command": "osl", "description": "Command hierarchy"},
+    {"command": "stats", "description": "Live commerce summary"},
+    {"command": "payments", "description": "Payments and Pro licenses"},
+    {"command": "downloads", "description": "Download requests"},
+]
 
 
 def fail(message: str) -> "NoReturn":
@@ -70,17 +76,21 @@ def put_worker_secret(name: str, value: str) -> None:
 
 
 def display_name(chat: dict[str, Any]) -> str:
-    username = chat.get("username")
-    if isinstance(username, str) and username:
-        return f"@{username}"
-    parts = [chat.get("first_name"), chat.get("last_name"), chat.get("title")]
-    name = " ".join(part for part in parts if isinstance(part, str) and part)
-    return name or "unnamed account"
+    return "private account" if chat.get("type") == "private" else "account"
+
+
+def command_payload() -> str:
+    return json.dumps(BOT_COMMANDS, separators=(",", ":"))
 
 
 def main() -> None:
     print("OSL Telegram operator setup")
     print("The token is hidden, used in memory, and never written to disk.\n")
+    if not sys.stdin.isatty():
+        print("Live activation requires an interactive owner terminal.")
+        print("No Telegram or Cloudflare request was made.")
+        return
+
     token = getpass.getpass("Paste the replacement Telegram bot token: ").strip()
     if not TOKEN_RE.fullmatch(token):
         fail("the bot token format is invalid")
@@ -88,7 +98,7 @@ def main() -> None:
     identity = telegram(token, "getMe").get("result")
     if not isinstance(identity, dict) or not isinstance(identity.get("username"), str):
         fail("Telegram returned an invalid bot identity")
-    print(f"\nBot verified: @{identity['username']}")
+    print("\nBot identity verified.")
 
     webhook = telegram(token, "getWebhookInfo").get("result")
     if isinstance(webhook, dict) and webhook.get("url"):
@@ -96,7 +106,7 @@ def main() -> None:
         telegram(token, "deleteWebhook", drop_pending_updates="false")
 
     print("\nFrom every Telegram account that should receive OSL alerts:")
-    print(f"  1. Open @{identity['username']}")
+    print("  1. Open the Telegram bot account associated with this token")
     print("  2. Press Start, then send /stats")
     input("\nWhen every intended account has sent a message, press Enter here... ")
 
@@ -121,7 +131,7 @@ def main() -> None:
     candidates = sorted(chats.items(), key=lambda item: int(item[0]))
     print("\nAccounts that deliberately messaged this bot:")
     for index, (chat_id, chat) in enumerate(candidates, start=1):
-        print(f"  {index}. {display_name(chat)} (chat ID {chat_id})")
+        print(f"  {index}. {display_name(chat)} {index}")
 
     raw_selection = input(
         "\nEnter the numbers to authorize, comma-separated (or 'all'): "
@@ -137,6 +147,12 @@ def main() -> None:
             fail("selection is outside the displayed range")
         selected = [candidate for index, candidate in enumerate(candidates, 1) if index in indexes]
 
+    activation_consent = input(
+        "\nType ACTIVATE to store owner-approved credentials and register /osl live: "
+    ).strip()
+    if activation_consent != "ACTIVATE":
+        fail("owner activation consent was not provided")
+
     chat_ids = ",".join(chat_id for chat_id, _ in selected)
     webhook_secret = secrets.token_urlsafe(36)
     # Store the exact token used for getMe/setWebhook so the Worker cannot
@@ -148,15 +164,11 @@ def main() -> None:
     telegram(
         token,
         "setMyCommands",
-        commands=json.dumps(
-            [
-                {"command": "stats", "description": "Live commerce summary"},
-                {"command": "payments", "description": "Payments and Pro licenses"},
-                {"command": "downloads", "description": "Download requests"},
-            ],
-            separators=(",", ":"),
-        ),
+        commands=command_payload(),
     )
+    commands_info = telegram(token, "getMyCommands").get("result")
+    if commands_info != BOT_COMMANDS:
+        fail("Telegram did not retain the expected /osl command menu")
     telegram(
         token,
         "setWebhook",
@@ -170,6 +182,7 @@ def main() -> None:
         fail("Telegram did not retain the expected webhook URL")
 
     print(f"\nConfigured {len(selected)} approved operator account(s).")
+    print("Command menu verified: /osl")
     print(f"Webhook verified: {WEBHOOK_URL}")
     print("Send /stats from each approved account after the Worker deployment completes.")
 
