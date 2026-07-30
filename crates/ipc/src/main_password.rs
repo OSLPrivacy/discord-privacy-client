@@ -157,11 +157,12 @@ pub struct PasswordStatusDto {
     pub is_set: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifyFailureDto {
     pub ok: bool, // always false on this path
     pub attempts_used: u32,
     pub lockout_seconds_remaining: i64,
+    pub duress_triggered: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -410,6 +411,10 @@ fn phrase_lockout_secs(attempts: u32) -> i64 {
     }
 }
 
+fn password_duress_triggered(attempts: u32) -> bool {
+    attempts >= keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD
+}
+
 // =====================================================================
 // Recovery phrase ↔ AES-GCM.
 // =====================================================================
@@ -640,6 +645,7 @@ pub fn verify_main_password(dir: &Path, password: &str) -> Result<(), String> {
                 ok: false,
                 attempts_used: state.password_failed_attempts,
                 lockout_seconds_remaining: until - now,
+                duress_triggered: password_duress_triggered(state.password_failed_attempts),
             })
             .unwrap_or_else(|_| "OSL: lockout active".to_string()));
         }
@@ -676,6 +682,7 @@ pub fn verify_main_password(dir: &Path, password: &str) -> Result<(), String> {
                 ok: false,
                 attempts_used: state.password_failed_attempts,
                 lockout_seconds_remaining: secs,
+                duress_triggered: password_duress_triggered(state.password_failed_attempts),
             })
             .unwrap_or_else(|_| "OSL: bad password".to_string()))
         }
@@ -700,6 +707,7 @@ pub fn verify_recovery_phrase(
                 ok: false,
                 attempts_used: lock.phrase_failed_attempts,
                 lockout_seconds_remaining: until - now,
+                duress_triggered: false,
             })
             .unwrap_or_else(|_| "OSL: phrase lockout active".to_string()));
         }
@@ -775,6 +783,7 @@ pub fn verify_recovery_phrase(
             ok: false,
             attempts_used: lock.phrase_failed_attempts,
             lockout_seconds_remaining: secs,
+            duress_triggered: false,
         })
         .unwrap_or_else(|_| "OSL: bad recovery phrase".to_string()));
     }
@@ -1923,5 +1932,60 @@ mod password_policy_tests {
             "a disarmed timer must not repeatedly report fresh lock transitions"
         );
         set_file_storage_key(None);
+    }
+
+    #[test]
+    fn tenth_consecutive_wrong_main_password_attempt_sets_duress_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let salt = [0xA7; SALT_LEN];
+        let params = Argon2ParamsDto {
+            memory_kb: 8,
+            iterations: 1,
+            parallelism: 1,
+        };
+        let derived = derive("correct-password", &salt, &params).unwrap();
+        let marker = PasswordMarker {
+            version: MARKER_VERSION,
+            salt_b64: STANDARD.encode(salt),
+            params,
+            password_hash_b64: STANDARD.encode(&derived[..HASH_LEN]),
+            phrase_encrypted_b64: STANDARD.encode([0u8; 16]),
+            phrase_nonce_b64: STANDARD.encode([0u8; NONCE_LEN]),
+            phrase_hash_b64: None,
+            stealth_password_hash_b64: None,
+            burn_password_hash_b64: None,
+        };
+        write_marker(dir.path(), &marker).unwrap();
+
+        for attempt in 1..keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD {
+            let err = verify_main_password(dir.path(), "wrong-password").unwrap_err();
+            let failure: VerifyFailureDto = serde_json::from_str(&err).unwrap();
+            assert_eq!(failure.attempts_used, attempt);
+            assert!(
+                !failure.duress_triggered,
+                "attempt {attempt} must not trigger threshold duress"
+            );
+
+            let mut lock = read_lockout(dir.path());
+            lock.password_locked_until = Some(0);
+            write_lockout(dir.path(), &lock).unwrap();
+        }
+
+        let err = verify_main_password(dir.path(), "wrong-password").unwrap_err();
+        let failure: VerifyFailureDto = serde_json::from_str(&err).unwrap();
+        assert_eq!(
+            failure.attempts_used,
+            keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD
+        );
+        assert!(
+            failure.duress_triggered,
+            "the 10th consecutive wrong password attempt must trigger threshold duress"
+        );
+
+        let lock = read_lockout(dir.path());
+        assert_eq!(
+            lock.password_failed_attempts,
+            keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD
+        );
     }
 }
