@@ -16,6 +16,8 @@ from pathlib import Path
 
 
 HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent.parent
+RELEASE_REPORT = ROOT / "docs" / "reports" / "release-lane-2026-07-26.md"
 SPEC = importlib.util.spec_from_file_location(
     "c4_shipping_evidence",
     HERE / "c4-shipping-evidence.py",
@@ -346,6 +348,79 @@ class ShippingHarnessSourceContractTests(unittest.TestCase):
         ):
             with self.assertRaises(AssertionError):
                 self.assert_contract(mutation)
+
+
+class DiscordReleaseQualificationReportTests(unittest.TestCase):
+    REQUIRED_PHRASES = (
+        "## Discord Release Qualification {#discord_release_qualification}",
+        "`discord_release_qualification: test-proven-only`",
+        "npm test -- overlay-send-gesture.test.ts discord-qa-send-stage.ts",
+        "python3 scripts/qa/c4-shipping-evidence-test.py",
+        "first trusted Enter is consumed",
+        "second Enter must be a distinct trusted press after key-up",
+        "intervening draft input or an invalid second Enter attempt cancels",
+        "no path auto-retries",
+        "osl-c4-shipping-evidence-v1",
+        "npm --prefix apps/osl-hub-ui run build",
+        "osl-cargo",
+        '["desktop"]',
+        "`qaShell` is `false`",
+        "send_native_discord_qa_atomic_text",
+        "discord-qa-send-stage-receipt.json",
+        "osl-discord-qa-send-stage.txt",
+        "production-overlay-ui",
+        "shipping-renderer-success-gate",
+        "prepare-protected",
+        "send_native_discord_overlay_carrier",
+        'status: "sent"',
+        "`placed: true`",
+        "`enterSent: true`",
+        "native-pre-enter-exact-readback",
+        "`rawExact`",
+        "`utf8Bytes: 0`",
+        "empty SHA-256",
+        "row count increases by exactly one",
+        "`newRows` contains exactly one row",
+        "screenshot is a PNG inside the evidence bundle",
+        "QA-shell trails, QA atomic command receipts",
+        "owner-approved run against the exact shipping executable",
+    )
+
+    @classmethod
+    def assert_release_qualification(cls, report: str) -> None:
+        normalized = " ".join(report.split())
+        for phrase in cls.REQUIRED_PHRASES:
+            if " ".join(phrase.split()) not in normalized:
+                raise AssertionError(f"release qualification report is missing: {phrase}")
+        section_start = report.index(
+            "## Discord Release Qualification {#discord_release_qualification}"
+        )
+        section = report[section_start:]
+        if "release-qualified" in section or "runtime-proven" in section:
+            raise AssertionError("local C4/Double Enter evidence must not be promoted")
+        if "QA-shell trails, QA atomic command receipts" not in section:
+            raise AssertionError("QA-only send evidence must be explicitly inadmissible")
+
+    def test_discord_release_qualification_publishes_production_only_evidence(self) -> None:
+        report = RELEASE_REPORT.read_text(encoding="utf-8")
+        self.assert_release_qualification(report)
+
+    def test_missing_production_receipt_or_double_enter_boundary_breaks_report(self) -> None:
+        report = RELEASE_REPORT.read_text(encoding="utf-8")
+        for mutation in (
+            report.replace(
+                "send_native_discord_overlay_carrier",
+                "send_native_discord_qa_atomic_text",
+            ),
+            report.replace("distinct trusted press", "trusted press", 1),
+            report.replace(
+                "QA-shell trails, QA atomic command receipts",
+                "QA-shell trails",
+                1,
+            ),
+        ):
+            with self.assertRaises(AssertionError):
+                self.assert_release_qualification(mutation)
 
 
 if __name__ == "__main__":
