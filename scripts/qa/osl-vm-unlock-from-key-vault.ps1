@@ -1,15 +1,24 @@
+[CmdletBinding()]
 param(
+  [Parameter(Mandatory = $true, ParameterSetName = 'NamedSelfTest')]
   [ValidateSet('disposable_discord_accounts_load_from_key_vault_without_logging_secrets')]
   [string]$SelfTest,
 
+  [Parameter(Mandatory = $true, ParameterSetName = 'Run')]
   [ValidateSet(1, 2)]
   [int]$ClientNumber,
 
+  [Parameter(Mandatory = $true, ParameterSetName = 'Run')]
   [string]$OslExePath,
 
+  [Parameter(Mandatory = $true, ParameterSetName = 'Run')]
   [string]$OslExeSha256,
 
-  [int]$SessionId
+  [Parameter(Mandatory = $true, ParameterSetName = 'Run')]
+  [int]$SessionId,
+
+  [Parameter(Mandatory = $true, ParameterSetName = 'SelfTest')]
+  [switch]$RunInternalSelfTest
 )
 
 $ErrorActionPreference = 'Stop'
@@ -28,10 +37,18 @@ function Get-OslObjectProperty {
   return $null
 }
 
+function Assert-OslTestSecretsVault {
+  param([Parameter(Mandatory = $true)][string]$VaultName)
+  if ([string]::IsNullOrWhiteSpace($VaultName) -or
+      $VaultName -cnotmatch '^osl-test-secrets-[a-z0-9]+$') {
+    throw 'test credential vault is outside the OSL test-secrets boundary'
+  }
+}
+
 function Assert-OslDisposableDiscordSecretName {
   param([Parameter(Mandatory = $true)][string]$SecretName)
-  if ($SecretName -cnotmatch '^osl-test-discord-[0-9]{2}$') {
-    throw 'disposable Discord account manifest selected an invalid secret'
+  if ($SecretName -cnotmatch '^osl-test-discord-0[1-3]$') {
+    throw 'disposable Discord account assignment is unavailable'
   }
   return $SecretName
 }
@@ -41,6 +58,7 @@ function Read-OslManifestClientNumber {
   $raw = Get-OslObjectProperty $Value @(
     'clientNumber',
     'client_number',
+    'clientId',
     'client',
     'vmClientNumber'
   )
@@ -61,6 +79,7 @@ function Read-OslDiscordSecretNameFromNode {
     'discordSecretName',
     'discord_secret_name',
     'discordKeyVaultSecret',
+    'accountSecretName',
     'keyVaultSecretName',
     'secretName',
     'secret'
@@ -75,12 +94,14 @@ function Resolve-OslDisposableDiscordSecretName {
     [Parameter(Mandatory = $true)][ValidateSet(1, 2)][int]$ClientNumber
   )
 
+  $clientKey = [string]$ClientNumber
+
   foreach ($name in @(
       "client$ClientNumber",
       "client-$ClientNumber",
       "Client$ClientNumber",
       "OSL-Azure-Client-$ClientNumber",
-      [string]$ClientNumber
+      $clientKey
     )) {
     $node = Get-OslObjectProperty $Manifest @($name)
     if ($null -ne $node) {
@@ -89,7 +110,18 @@ function Resolve-OslDisposableDiscordSecretName {
     }
   }
 
-  foreach ($collectionName in @('clients', 'Clients', 'accounts', 'Accounts')) {
+  foreach ($mapName in @('clients', 'Clients', 'discord', 'Discord')) {
+    $map = Get-OslObjectProperty $Manifest @($mapName)
+    if ($null -ne $map -and $null -ne $map.PSObject) {
+      $property = $map.PSObject.Properties[$clientKey]
+      if ($null -ne $property) {
+        $resolved = Read-OslDiscordSecretNameFromNode $property.Value
+        if ($null -ne $resolved) { return $resolved }
+      }
+    }
+  }
+
+  foreach ($collectionName in @('clients', 'Clients', 'accounts', 'Accounts', 'assignments', 'Assignments')) {
     $collection = Get-OslObjectProperty $Manifest @($collectionName)
     foreach ($entry in @($collection)) {
       if ((Read-OslManifestClientNumber $entry) -eq $ClientNumber) {
@@ -102,17 +134,23 @@ function Resolve-OslDisposableDiscordSecretName {
     }
   }
 
-  foreach ($containerName in @('discord', 'Discord', 'assignments', 'Assignments')) {
+  foreach ($containerName in @('discord', 'Discord')) {
     $container = Get-OslObjectProperty $Manifest @($containerName)
     if ($null -ne $container) {
-      $resolved = Resolve-OslDisposableDiscordSecretName `
-        -Manifest $container `
-        -ClientNumber $ClientNumber
-      if ($null -ne $resolved) { return $resolved }
+      try {
+        $resolved = Resolve-OslDisposableDiscordSecretName `
+          -Manifest $container `
+          -ClientNumber $ClientNumber
+        if ($null -ne $resolved) { return $resolved }
+      } catch {
+        if ($_.Exception.Message -cne 'disposable Discord account assignment is unavailable') {
+          throw
+        }
+      }
     }
   }
 
-  throw 'disposable Discord account manifest does not assign this client'
+  throw 'disposable Discord account assignment is unavailable'
 }
 
 function Get-OslKeyVaultAccessToken {
@@ -131,18 +169,68 @@ function Get-OslKeyVaultSecretValue {
     [Parameter(Mandatory = $true)][string]$SecretName,
     [Parameter(Mandatory = $true)][string]$AccessToken
   )
+
+  Assert-OslTestSecretsVault $VaultName
+  if ($SecretName -cnotmatch '^(osl-client-[12]-primary-password|osl-test-account-manifest|osl-test-discord-0[1-3])$') {
+    throw 'requested test secret is outside the OSL disposable account allow-list'
+  }
   $encodedSecretName = [Uri]::EscapeDataString($SecretName)
   $secretUri = "https://$VaultName.vault.azure.net/secrets/$encodedSecretName`?api-version=7.4"
   try {
     $secretRecord = Invoke-RestMethod -Method Get -Uri $secretUri -Headers @{
       Authorization = "Bearer $AccessToken"
     } -TimeoutSec 15
+    return [string]$secretRecord.value
   } catch {
-    throw 'Key Vault secret retrieval failed'
+    throw 'Key Vault test secret retrieval failed'
+  } finally {
+    $secretRecord = $null
   }
-  $value = [string]$secretRecord.value
-  $secretRecord = $null
-  return $value
+}
+
+function Invoke-WithOslDisposableDiscordCredential {
+  param(
+    [Parameter(Mandatory = $true)][ValidateSet(1, 2)][int]$ClientNumber,
+    [Parameter(Mandatory = $true)][string]$VaultName,
+    [Parameter(Mandatory = $true)][scriptblock]$GetSecret,
+    [Parameter(Mandatory = $true)][scriptblock]$UseCredential
+  )
+
+  Assert-OslTestSecretsVault $VaultName
+  $manifestJson = [string](& $GetSecret $VaultName 'osl-test-account-manifest')
+  if ([string]::IsNullOrWhiteSpace($manifestJson) -or $manifestJson.Length -gt 16384) {
+    throw 'disposable account manifest is unavailable or invalid'
+  }
+  try {
+    $manifest = $manifestJson | ConvertFrom-Json -ErrorAction Stop
+  } catch {
+    throw 'disposable account manifest is invalid'
+  }
+  $manifestJson = $null
+
+  $accountSecretName = Resolve-OslDisposableDiscordSecretName `
+    -Manifest $manifest `
+    -ClientNumber $ClientNumber
+  $credential = [string](& $GetSecret $VaultName $accountSecretName)
+  try {
+    if ([string]::IsNullOrWhiteSpace($credential) -or $credential.Length -gt 4096) {
+      throw 'disposable Discord credential is unavailable or invalid'
+    }
+    $consumerAccepted = & $UseCredential $credential
+    if ($consumerAccepted -eq $false) {
+      throw 'disposable Discord credential consumer refused'
+    }
+    return [pscustomobject]@{
+      Status = 'loaded'
+      Service = 'discord'
+      ClientNumber = $ClientNumber
+      SecretValueExposed = $false
+    }
+  } finally {
+    $credential = $null
+    $accountSecretName = $null
+    $manifest = $null
+  }
 }
 
 function Invoke-OslDisposableDiscordAccountLoad {
@@ -162,36 +250,26 @@ function Invoke-OslDisposableDiscordAccountLoad {
     }
   }
 
-  $manifestText = [string](& $SecretFetcher 'osl-test-account-manifest')
-  if ([string]::IsNullOrWhiteSpace($manifestText) -or $manifestText.Length -gt 16384) {
-    throw 'disposable Discord account manifest is unavailable or invalid'
+  $receipt = Invoke-WithOslDisposableDiscordCredential `
+    -ClientNumber $ClientNumber `
+    -VaultName $VaultName `
+    -GetSecret {
+      param([string]$RequestedVault, [string]$RequestedSecret)
+      if ($RequestedVault -cne $VaultName) { throw 'wrong vault' }
+      & $SecretFetcher $RequestedSecret
+    } `
+    -UseCredential { param([string]$Credential) return ($Credential.Length -gt 0) }
+  if ($receipt.Status -cne 'loaded') {
+    throw 'disposable Discord credential did not load'
   }
-  try {
-    $manifest = $manifestText | ConvertFrom-Json -ErrorAction Stop
-  } catch {
-    throw 'disposable Discord account manifest is invalid JSON'
-  }
-  $manifestText = $null
-
-  $secretName = Resolve-OslDisposableDiscordSecretName `
-    -Manifest $manifest `
-    -ClientNumber $ClientNumber
-  $credential = [string](& $SecretFetcher $secretName)
-  try {
-    if ([string]::IsNullOrWhiteSpace($credential) -or $credential.Length -gt 8192) {
-      throw 'disposable Discord account credential is unavailable or invalid'
-    }
-    return [pscustomobject]@{
-      Loaded = $true
-      ClientNumber = $ClientNumber
-    }
-  } finally {
-    $credential = $null
-    $secretName = $null
+  return [pscustomobject]@{
+    Loaded = $true
+    ClientNumber = $ClientNumber
   }
 }
 
 function disposable_discord_accounts_load_from_key_vault_without_logging_secrets {
+  $vault = 'osl-test-secrets-a7d5d9'
   $requested = [System.Collections.Generic.List[string]]::new()
   $fixtureCredential = 'fixture-discord-credential-not-real'
   $fixtureHandle = 'fixture-user@example.invalid'
@@ -223,7 +301,7 @@ function disposable_discord_accounts_load_from_key_vault_without_logging_secrets
 
   $output = @(
     Invoke-OslDisposableDiscordAccountLoad `
-      -VaultName 'osl-test-secrets-a7d5d9' `
+      -VaultName $vault `
       -ClientNumber 1 `
       -AccessToken 'fixture-token' `
       -SecretFetcher $fetcher
@@ -245,6 +323,36 @@ function disposable_discord_accounts_load_from_key_vault_without_logging_secrets
     throw 'disposable Discord account load did not return the bounded public result'
   }
 
+  $objectMapRequested = [System.Collections.Generic.List[string]]::new()
+  $objectMapFetcher = {
+    param([string]$RequestedVault, [string]$RequestedSecret)
+    if ($RequestedVault -cne $vault) { throw 'wrong vault' }
+    [void]$objectMapRequested.Add($RequestedSecret)
+    switch -CaseSensitive ($RequestedSecret) {
+      'osl-test-account-manifest' { return '{"clients":{"1":"osl-test-discord-01","2":"osl-test-discord-02"}}' }
+      'osl-test-discord-01' { return $fixtureCredential }
+      default { throw 'unexpected secret request' }
+    }
+  }
+  $observedCredential = $null
+  $receipt = Invoke-WithOslDisposableDiscordCredential `
+    -ClientNumber 1 `
+    -VaultName $vault `
+    -GetSecret $objectMapFetcher `
+    -UseCredential { param([string]$Credential) $script:__oslVmUnlockSelfTestCredential = $Credential; return $true }
+  $rendered = $receipt | ConvertTo-Json -Compress
+  $observedCredential = $script:__oslVmUnlockSelfTestCredential
+  $script:__oslVmUnlockSelfTestCredential = $null
+  if ($observedCredential -cne $fixtureCredential) {
+    throw 'disposable credential was not handed to the consumer'
+  }
+  if (($objectMapRequested -join ',') -cne 'osl-test-account-manifest,osl-test-discord-01') {
+    throw 'disposable account manifest and assigned secret were not both loaded'
+  }
+  if ($rendered.Contains($fixtureCredential) -or $rendered.Contains('osl-test-discord-01')) {
+    throw 'disposable account receipt exposed secret material'
+  }
+
   $blankFetcher = {
     param([string]$Name)
     if ($Name -ceq 'osl-test-account-manifest') {
@@ -254,7 +362,7 @@ function disposable_discord_accounts_load_from_key_vault_without_logging_secrets
   }
   try {
     Invoke-OslDisposableDiscordAccountLoad `
-      -VaultName 'osl-test-secrets-a7d5d9' `
+      -VaultName $vault `
       -ClientNumber 1 `
       -AccessToken 'fixture-token' `
       -SecretFetcher $blankFetcher | Out-Null
@@ -267,35 +375,50 @@ function disposable_discord_accounts_load_from_key_vault_without_logging_secrets
       throw
     }
   }
+
+  $badManifest = '{"clients":{"1":"personal-discord-account"}}'
+  $badGetSecret = {
+    param([string]$RequestedVault, [string]$RequestedSecret)
+    if ($RequestedSecret -ceq 'osl-test-account-manifest') { return $badManifest }
+    throw 'bad manifest must not fetch an account credential'
+  }
+  $refused = $false
+  try {
+    Invoke-WithOslDisposableDiscordCredential `
+      -ClientNumber 1 `
+      -VaultName $vault `
+      -GetSecret $badGetSecret `
+      -UseCredential { param([string]$Credential) throw 'bad manifest reached credential consumer' } | Out-Null
+  } catch {
+    $refused = $_.Exception.Message -ceq 'disposable Discord account assignment is unavailable'
+  }
+  if (-not $refused) {
+    throw 'non-disposable Discord account assignment was not refused'
+  }
+  return $true
 }
 
 function Invoke-OslUnlockSelfTest {
   param([Parameter(Mandatory = $true)][string]$Name)
   switch ($Name) {
     'disposable_discord_accounts_load_from_key_vault_without_logging_secrets' {
-      disposable_discord_accounts_load_from_key_vault_without_logging_secrets
+      [void](disposable_discord_accounts_load_from_key_vault_without_logging_secrets)
       Write-Output "ok - $Name"
       return
     }
   }
 }
 
-if (-not [string]::IsNullOrWhiteSpace($SelfTest)) {
+if ($PSCmdlet.ParameterSetName -eq 'NamedSelfTest') {
   Invoke-OslUnlockSelfTest -Name $SelfTest
   return
 }
 
-$missing = @()
-if (-not $PSBoundParameters.ContainsKey('ClientNumber')) { $missing += 'ClientNumber' }
-if (-not $PSBoundParameters.ContainsKey('OslExePath') -or [string]::IsNullOrWhiteSpace($OslExePath)) {
-  $missing += 'OslExePath'
-}
-if (-not $PSBoundParameters.ContainsKey('OslExeSha256') -or [string]::IsNullOrWhiteSpace($OslExeSha256)) {
-  $missing += 'OslExeSha256'
-}
-if (-not $PSBoundParameters.ContainsKey('SessionId')) { $missing += 'SessionId' }
-if ($missing.Count -ne 0) {
-  throw ('missing required parameter(s): ' + ($missing -join ', '))
+if ($RunInternalSelfTest) {
+  [void](disposable_discord_accounts_load_from_key_vault_without_logging_secrets)
+  [pscustomobject]@{ Status = 'passed'; Test = 'disposable_discord_accounts_load_from_key_vault_without_logging_secrets' } |
+    ConvertTo-Json -Compress
+  return
 }
 
 $expectedPath = [IO.Path]::GetFullPath($OslExePath)
@@ -329,21 +452,21 @@ $secretName = if ($ClientNumber -eq 1) {
 } else {
   'osl-client-2-primary-password'
 }
-$token = Get-OslKeyVaultAccessToken
+$accessToken = Get-OslKeyVaultAccessToken
 $credential = Get-OslKeyVaultSecretValue `
   -VaultName $vaultName `
   -SecretName $secretName `
-  -AccessToken $token
-$disposableDiscordAccountLoad = Invoke-OslDisposableDiscordAccountLoad `
-  -VaultName $vaultName `
-  -ClientNumber $ClientNumber `
-  -AccessToken $token
-$disposableDiscordAccountLoaded = [bool]$disposableDiscordAccountLoad.Loaded
-$disposableDiscordAccountLoad = $null
-$token = $null
+  -AccessToken $accessToken
 if ([string]::IsNullOrWhiteSpace($credential) -or $credential.Length -gt 1024) {
   throw 'unlock credential is unavailable or invalid'
 }
+$disposableDiscordAccountLoad = Invoke-OslDisposableDiscordAccountLoad `
+  -VaultName $vaultName `
+  -ClientNumber $ClientNumber `
+  -AccessToken $accessToken
+$disposableDiscordAccountLoaded = [bool]$disposableDiscordAccountLoad.Loaded
+$disposableDiscordAccountLoad = $null
+$accessToken = $null
 
 $root = 'C:\ProgramData\OSL-QA\unlock'
 [void](New-Item -ItemType Directory -Path $root -Force)
