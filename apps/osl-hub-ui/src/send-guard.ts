@@ -9,6 +9,9 @@ export interface TrustedComposerSnapshot {
   focused: boolean;
   exactComposerVerified: boolean;
 }
+
+export type ImmutableTrustedComposerSnapshot = Readonly<TrustedComposerSnapshot>;
+
 export interface TrustedEnter {
   eventId: string;
   isTrusted: boolean;
@@ -17,12 +20,12 @@ export interface TrustedEnter {
 
 export type GuardedSendDecision =
   | { action: "copy" }
-  | { action: "place"; expiresAtMs: number }
-  | { action: "submit" }
+  | { action: "place"; expiresAtMs: number; snapshot: ImmutableTrustedComposerSnapshot }
+  | { action: "submit"; snapshot: ImmutableTrustedComposerSnapshot }
   | { action: "reject"; reason: "untrusted" | "unverified" | "expired" | "changed" | "repeated" };
 
 interface ArmedPlacement {
-  snapshot: TrustedComposerSnapshot;
+  snapshot: ImmutableTrustedComposerSnapshot;
   eventId: string;
   expiresAtMs: number;
 }
@@ -48,10 +51,23 @@ function verified(snapshot: TrustedComposerSnapshot): boolean {
     && snapshot.hostGeneration >= 0;
 }
 
+function immutableSnapshot(snapshot: TrustedComposerSnapshot): ImmutableTrustedComposerSnapshot {
+  return Object.freeze({
+    serviceId: snapshot.serviceId,
+    accountId: snapshot.accountId,
+    conversationId: snapshot.conversationId,
+    composerId: snapshot.composerId,
+    hostGeneration: snapshot.hostGeneration,
+    focused: snapshot.focused,
+    exactComposerVerified: snapshot.exactComposerVerified,
+  });
+}
+
 /**
  * A small fail-closed state machine for future trusted composer adapters.
  * It never synthesizes input. Callers must execute `place`/`submit` only after
- * their native adapter independently revalidates the same snapshot.
+ * their native adapter independently revalidates the immutable snapshot carried
+ * by each protected handoff decision.
  */
 export class TrustedSendGuard {
   private armed: ArmedPlacement | null = null;
@@ -69,25 +85,26 @@ export class TrustedSendGuard {
       this.cancel();
       return { action: "copy" };
     }
-    if (!verified(snapshot)) {
+    const protectedHandoff = immutableSnapshot(snapshot);
+    if (!verified(protectedHandoff)) {
       this.cancel();
       return { action: "reject", reason: "unverified" };
     }
     if (mode === "single") {
       this.cancel();
-      return { action: "submit" };
+      return { action: "submit", snapshot: protectedHandoff };
     }
 
     const armed = this.armed;
     if (!armed) {
       const expiresAtMs = event.occurredAtMs + DOUBLE_ENTER_WINDOW_MS;
-      this.armed = { snapshot: structuredClone(snapshot), eventId: event.eventId, expiresAtMs };
-      return { action: "place", expiresAtMs };
+      this.armed = { snapshot: protectedHandoff, eventId: event.eventId, expiresAtMs };
+      return { action: "place", expiresAtMs, snapshot: protectedHandoff };
     }
     this.cancel();
     if (event.eventId === armed.eventId) return { action: "reject", reason: "repeated" };
     if (event.occurredAtMs > armed.expiresAtMs) return { action: "reject", reason: "expired" };
-    if (!sameSnapshot(armed.snapshot, snapshot)) return { action: "reject", reason: "changed" };
-    return { action: "submit" };
+    if (!sameSnapshot(armed.snapshot, protectedHandoff)) return { action: "reject", reason: "changed" };
+    return { action: "submit", snapshot: armed.snapshot };
   }
 }
