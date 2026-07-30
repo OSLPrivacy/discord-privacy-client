@@ -638,17 +638,22 @@ struct LicenseValidateRequest<'a> {
 
 #[derive(Serialize)]
 struct OwnershipChallengeRequest<'a> {
+    service: &'static str,
     service_account_id: &'a str,
     owner_user_id: &'a str,
+    consent: bool,
 }
 
 #[derive(Deserialize)]
 struct OwnershipChallengeResponse {
-    nonce_b64: String,
+    challenge_version: u8,
+    service: String,
+    nonce: String,
     service_account_id: String,
     owner_user_id: String,
     issued_at_unix_seconds: u64,
     expires_at_unix_seconds: u64,
+    spent: bool,
 }
 
 /// Response body for `POST /v1/license/validate`.
@@ -966,21 +971,30 @@ impl KeyServerClient {
     ///
     /// This is only a nonce request. A returned value is useful only if it is
     /// bound to the exact service account and local owner identity the caller
-    /// requested; a missing, malformed, expired-at-issue, or differently bound
+    /// requested; consent must be explicit before the client makes the wire
+    /// call. A missing, malformed, expired-at-issue, or differently bound
     /// response is refused as unusable challenge material.
     pub fn request_ownership_challenge(
         &self,
         service_account_id: &str,
         owner_user_id: &str,
+        has_explicit_consent: bool,
     ) -> Result<ProofChallenge> {
         if service_account_id.is_empty() || owner_user_id.is_empty() {
             return Err(Error::Transport(
                 "ownership challenge request binding is incomplete".into(),
             ));
         }
+        if !has_explicit_consent {
+            return Err(Error::Transport(
+                "ownership challenge consent is absent".into(),
+            ));
+        }
         let body = OwnershipChallengeRequest {
+            service: "discord",
             service_account_id,
             owner_user_id,
+            consent: has_explicit_consent,
         };
         let body_json = serde_json::to_vec(&body)?;
         let response = self.send_request(
@@ -995,12 +1009,17 @@ impl KeyServerClient {
             });
         }
         let wire: OwnershipChallengeResponse = serde_json::from_slice(&response.body)?;
+        if wire.challenge_version != 1 || wire.service != "discord" || wire.spent {
+            return Err(Error::Transport(
+                "ownership challenge response shape mismatch".into(),
+            ));
+        }
         if wire.service_account_id != service_account_id || wire.owner_user_id != owner_user_id {
             return Err(Error::Transport(
                 "ownership challenge response binding mismatch".into(),
             ));
         }
-        let nonce_bytes = STANDARD.decode(&wire.nonce_b64)?;
+        let nonce_bytes = STANDARD.decode(&wire.nonce)?;
         let nonce: [u8; PROOF_CHALLENGE_NONCE_BYTES] = nonce_bytes
             .as_slice()
             .try_into()
@@ -2449,18 +2468,21 @@ mod tests {
         fn request_ownership_challenge_round_trips_through_mock_server() {
             let nonce = [0x5au8; PROOF_CHALLENGE_NONCE_BYTES];
             let body = serde_json::to_vec(&serde_json::json!({
-                "nonce_b64": STANDARD.encode(nonce),
+                "challenge_version": 1,
+                "service": "discord",
+                "nonce": STANDARD.encode(nonce),
                 "service_account_id": "service-account-1",
                 "owner_user_id": "owner-user-1",
                 "issued_at_unix_seconds": 1_800_000_000u64,
                 "expires_at_unix_seconds": 1_800_000_300u64,
+                "spent": false,
             }))
             .unwrap();
             let (port, rx) = one_shot_server(http_json_response("201 Created", body));
             let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
 
             let challenge = client
-                .request_ownership_challenge("service-account-1", "owner-user-1")
+                .request_ownership_challenge("service-account-1", "owner-user-1", true)
                 .unwrap();
 
             assert_eq!(challenge.nonce(), &nonce);
@@ -2471,9 +2493,11 @@ mod tests {
             let request = rx.recv().unwrap();
             assert_eq!(request_target(&request), "/v1/account-ownership/challenge");
             let sent = request_json_body(&request);
+            assert_eq!(sent["service"], "discord");
             assert_eq!(sent["service_account_id"], "service-account-1");
             assert_eq!(sent["owner_user_id"], "owner-user-1");
-            assert_eq!(sent.as_object().unwrap().len(), 2);
+            assert_eq!(sent["consent"], true);
+            assert_eq!(sent.as_object().unwrap().len(), 4);
             assert!(!String::from_utf8_lossy(&request)
                 .to_ascii_lowercase()
                 .contains("authorization:"));
@@ -2703,11 +2727,14 @@ mod tests {
     fn request_ownership_challenge_round_trips_hosted_account_through_mock_server() {
         let nonce = [0x5au8; PROOF_CHALLENGE_NONCE_BYTES];
         let response_body = serde_json::json!({
-            "nonce_b64": STANDARD.encode(nonce),
+            "challenge_version": 1,
+            "service": "discord",
+            "nonce": STANDARD.encode(nonce),
             "service_account_id": "hosted-account-1",
             "owner_user_id": "owner-user-1",
             "issued_at_unix_seconds": 1_800_000_000u64,
-            "expires_at_unix_seconds": 1_800_000_300u64
+            "expires_at_unix_seconds": 1_800_000_300u64,
+            "spent": false
         })
         .to_string();
         let (port, rx) = response_server(vec![test_response(
@@ -2717,7 +2744,7 @@ mod tests {
 
         let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
         let challenge = client
-            .request_ownership_challenge("hosted-account-1", "owner-user-1")
+            .request_ownership_challenge("hosted-account-1", "owner-user-1", true)
             .expect("mock server returns a bound challenge");
 
         assert_eq!(challenge.nonce(), &nonce);
@@ -2733,8 +2760,11 @@ mod tests {
         assert!(!request.to_ascii_lowercase().contains("authorization:"));
         let body = request.split("\r\n\r\n").nth(1).unwrap();
         let value: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(value["service"], "discord");
         assert_eq!(value["service_account_id"], "hosted-account-1");
         assert_eq!(value["owner_user_id"], "owner-user-1");
+        assert_eq!(value["consent"], true);
+        assert_eq!(value.as_object().unwrap().len(), 4);
     }
 
     #[test]
