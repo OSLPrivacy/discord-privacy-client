@@ -829,6 +829,13 @@ impl OpenPermissionSet {
         Self { bits: 0 }
     }
 
+    pub fn from_permissions(permissions: impl IntoIterator<Item = OpenPermission>) -> Self {
+        let bits = permissions
+            .into_iter()
+            .fold(0u16, |bits, permission| bits | permission.bit());
+        Self { bits }
+    }
+
     pub fn allows(&self, permission: OpenPermission) -> bool {
         self.bits & permission.bit() != 0
     }
@@ -839,10 +846,7 @@ impl OpenPermissionSet {
 
     #[cfg(test)]
     pub(crate) fn from_verified_permissions(permissions: &[OpenPermission]) -> Self {
-        let bits = permissions
-            .iter()
-            .fold(0u16, |bits, permission| bits | permission.bit());
-        Self { bits }
+        Self::from_permissions(permissions.iter().copied())
     }
 }
 
@@ -2016,6 +2020,143 @@ mod tests {
         assert!(!rendered.contains("https://"));
         assert!(!rendered.contains("B0B0"));
         assert!(rendered.contains("[redacted; sha256]"));
+    }
+
+    #[test]
+    fn proprietary_module_open_build_boundary() {
+        mod separately_built_proprietary_crate {
+            use crate::proprietary_module_boundary::{
+                AdvisoryDisposition, BoundaryOperation, BoundaryService, OpenPermission,
+                OpenPermissionSet, ProprietaryLicenseTier, ProprietaryModule,
+                ProprietaryModuleAdvice, ProprietaryModuleError, ProprietaryModuleManifest,
+                ProprietaryModuleRequest, ProprietaryNetworkPolicy,
+            };
+
+            pub struct ExternalRiskModule;
+
+            impl ExternalRiskModule {
+                pub fn manifest() -> ProprietaryModuleManifest {
+                    ProprietaryModuleManifest::new(
+                        "external-risk.module",
+                        "External Risk Module",
+                        ProprietaryLicenseTier::Pro,
+                        ProprietaryNetworkPolicy::NoNetwork,
+                        OpenPermissionSet::from_permissions([OpenPermission::LocalRiskAdvice]),
+                    )
+                    .expect("external module can build its manifest through the public boundary")
+                }
+            }
+
+            impl ProprietaryModule for ExternalRiskModule {
+                fn evaluate(
+                    &self,
+                    request: ProprietaryModuleRequest<'_>,
+                ) -> Result<ProprietaryModuleAdvice, ProprietaryModuleError> {
+                    assert_eq!(request.operation(), BoundaryOperation::LocalRiskAdvice);
+                    assert_eq!(request.context().service(), BoundaryService::Discord);
+                    assert_eq!(request.ciphertext_digest(), [0xC7; 32]);
+                    assert!(request.explicit_plaintext().is_none());
+                    assert!(request
+                        .permissions()
+                        .allows(OpenPermission::LocalRiskAdvice));
+                    assert!(!request
+                        .permissions()
+                        .allows(OpenPermission::ServiceLayoutAdvice));
+                    ProprietaryModuleAdvice::new(
+                        AdvisoryDisposition::ProceedWithOpenSourceDecision,
+                        77,
+                        2,
+                    )
+                }
+            }
+        }
+
+        let manifest = separately_built_proprietary_crate::ExternalRiskModule::manifest();
+        assert_eq!(
+            manifest.contract_version(),
+            PROPRIETARY_MODULE_CONTRACT_VERSION
+        );
+        assert_eq!(manifest.module_id(), "external-risk.module");
+        assert_eq!(
+            manifest.network_policy(),
+            ProprietaryNetworkPolicy::NoNetwork
+        );
+        assert!(manifest
+            .permissions()
+            .allows(OpenPermission::LocalRiskAdvice));
+        assert_eq!(
+            ProprietaryModuleManifest::new(
+                "permissionless.module",
+                "Permissionless Module",
+                ProprietaryLicenseTier::Pro,
+                ProprietaryNetworkPolicy::NoNetwork,
+                OpenPermissionSet::empty(),
+            ),
+            Err(BoundaryError::PermissionRefused)
+        );
+
+        let install = OptionalModuleInstallGrant::Installed {
+            manifest: manifest.clone(),
+        };
+        let consent = ConsentGrant::Present {
+            revision: nonzero_revision(31),
+        };
+        let binding = BindingGrant::Bound { digest: [0x22; 32] };
+        let authority = AuthorityGrant::Verified {
+            revision: nonzero_revision(37),
+        };
+
+        assert_eq!(
+            VerifiedOptionalModuleAccess::authorize(
+                OptionalModuleInstallGrant::Absent,
+                consent,
+                binding,
+                authority,
+            ),
+            Err(BoundaryError::ModuleNotInstalled)
+        );
+        assert_eq!(
+            VerifiedOptionalModuleAccess::authorize(
+                install.clone(),
+                ConsentGrant::Absent,
+                binding,
+                authority,
+            ),
+            Err(BoundaryError::MissingConsent)
+        );
+
+        let access = VerifiedOptionalModuleAccess::authorize(install, consent, binding, authority)
+            .expect("installed module with consent, binding, and authority is authorized");
+        let request = ProprietaryModuleRequest::sealed_only(
+            BoundaryOperation::LocalRiskAdvice,
+            context(),
+            access.access(),
+            [0xC7; 32],
+        )
+        .expect("public boundary types form an authorized sealed request");
+
+        let absent_slot: ProprietaryModuleSlot<
+            separately_built_proprietary_crate::ExternalRiskModule,
+        > = ProprietaryModuleSlot::default();
+        assert_eq!(
+            absent_slot.evaluate(request),
+            Ok(BoundaryOutcome::ModuleAbsent)
+        );
+
+        let expected_advice =
+            ProprietaryModuleAdvice::new(AdvisoryDisposition::ProceedWithOpenSourceDecision, 77, 2)
+                .unwrap();
+        assert_eq!(
+            ProprietaryModuleSlot::present(separately_built_proprietary_crate::ExternalRiskModule)
+                .evaluate(request),
+            Ok(BoundaryOutcome::Advice(expected_advice))
+        );
+
+        let rendered = format!("{manifest:?}\n{request:?}");
+        assert!(!rendered.contains("external-risk.module"));
+        assert!(!rendered.contains("External Risk Module"));
+        assert!(!rendered.contains("2222"));
+        assert!(rendered.contains("[redacted; module id]"));
     }
 
     #[test]
