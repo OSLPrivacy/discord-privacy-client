@@ -4378,6 +4378,52 @@ mod tests {
     }
 
     #[test]
+    fn verify_friend_safety_number_refuses_safety_number_mismatch_mutants() {
+        let harness = FileBackedSecurityHarness::new("safety-mismatch-refusal");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        let (person_id, mut metadata, peer) = test_friend(61);
+        metadata.safety_number_verified = false;
+        let expected =
+            safety_number_for_bundle(peer.tofu_key_bundle.as_ref().expect("fixture bundle"))
+                .unwrap();
+        let mut wrong = normalise_safety_number(&expected).into_bytes();
+        let last = wrong.last_mut().expect("fixture has safety-number digits");
+        *last = if *last == b'9' { b'8' } else { *last + 1 };
+        let wrong = String::from_utf8(wrong).unwrap();
+        write_people(harness.path(), &person_id, metadata.clone());
+        install_peer_map(&core, harness.path(), &person_id, peer.clone());
+
+        let error = verify_friend_safety_number(&core, &security, person_id.clone(), wrong)
+            .expect_err("mismatched safety number must refuse");
+        assert_eq!(error, SAFETY_NUMBER_MISMATCH_REFUSAL);
+        let people: PeopleFile = load_encrypted_json(&harness.path().join(PEOPLE_FILE)).unwrap();
+        assert_eq!(
+            people.people.get(&person_id).unwrap().safety_number_verified,
+            false,
+            "refusal must not mark the friend verified"
+        );
+        assert_eq!(
+            load_peer_map(harness.path()).get(&person_id),
+            Some(&peer),
+            "refusal must not rewrite trusted peer keys"
+        );
+
+        let verified =
+            verify_friend_safety_number(&core, &security, person_id.clone(), expected.clone())
+                .expect("matching safety number verifies the fixture");
+        assert!(verified.safety_number_verified);
+        let people: PeopleFile = load_encrypted_json(&harness.path().join(PEOPLE_FILE)).unwrap();
+        assert!(
+            people
+                .people
+                .get(&person_id)
+                .unwrap()
+                .safety_number_verified
+        );
+    }
+
+    #[test]
     fn every_transport_key_change_changes_the_ceremony_and_clears_verification() {
         let base = FriendCodeUnsigned {
             version: FRIEND_CODE_VERSION,
