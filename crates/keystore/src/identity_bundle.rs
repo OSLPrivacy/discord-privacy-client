@@ -1078,6 +1078,70 @@ mod tests {
     }
 
     #[test]
+    fn from_identity_and_pubkeys_response_builds_wire_merge_pipeline() {
+        let identity = generate_identity("pipeline-owner".to_owned());
+        let revision = 11;
+        let response = scheme1_pubkeys_response(&identity, revision, crate::client::RN_CAP_WIRE_RN);
+
+        let bundle = IdentityBundle::from_identity_and_pubkeys_response(&identity, &response)
+            .expect("canonical scheme-1 response must build a local full identity bundle");
+        assert_eq!(
+            bundle.ed25519_identity_pub,
+            *identity.ed25519_public.as_bytes()
+        );
+        assert_eq!(
+            bundle.x25519_identity_pub,
+            *identity.x25519_public.as_bytes()
+        );
+        assert_eq!(bundle.mlkem768_identity_pub, identity.mlkem_public_bytes);
+        assert_eq!(bundle.capability_bundle, crate::client::RN_CAP_WIRE_RN);
+        assert_eq!(bundle.revision, revision);
+        assert_eq!(
+            BundleVerifyPolicy::new()
+                .verify(&bundle, &identity.ed25519_public, Some(revision - 1),),
+            Ok(revision)
+        );
+
+        let spk_pub = [0x33; 32];
+        let opk_pub = [0x44; 32];
+        let prekey_response = matching_prekey_response(
+            &bundle,
+            &identity.ed25519_secret,
+            spk_pub,
+            Some((42, opk_pub)),
+            9,
+        );
+        let merged = bundle
+            .verify_full(
+                &prekey_response,
+                &identity.ed25519_public,
+                Some(revision - 1),
+            )
+            .expect("constructed identity bundle must verify and merge matching prekey material");
+
+        assert_eq!(merged.identity, bundle);
+        assert_eq!(merged.prekey.spk_x25519_pub, spk_pub);
+        assert_eq!(merged.prekey.opk, Some((42, opk_pub)));
+        assert_eq!(merged.prekey.remaining_opk_count, 9);
+
+        let mut substituted_prekey_response = prekey_response;
+        substituted_prekey_response.ik_mlkem768_pub =
+            STANDARD.encode([0x55; crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE]);
+        assert_eq!(
+            bundle.verify_full(
+                &substituted_prekey_response,
+                &identity.ed25519_public,
+                Some(revision - 1),
+            ),
+            Err(BundleFullVerifyError::Prekey(
+                BundleMergeError::IdentityKeyMismatch {
+                    field: BundleField::MlKem768IdentityKey,
+                }
+            ))
+        );
+    }
+
+    #[test]
     fn identity_bundle_from_local_identity_and_fetched_pubkeys_response() {
         let identity = generate_identity("peer".to_owned());
         let fetched = pubkeys_response_from_identity(&identity, Some(3));
