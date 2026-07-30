@@ -1317,7 +1317,7 @@ function defaultBrowserCompanionEligible(appId: HomeAppId | null): appId is Home
 function browserSessionModeChoices(): string {
   if (!defaultBrowserCompanionEligible(activeHomeAppId) || !selectedBrowserHasImportReceipt()) return "";
   const isolatedAvailable = selectedBrowserForLaunch() !== "duckduckgo";
-  return `<div class="saved-account-choices session-mode-choices" role="group" aria-label="Open browser account"><button type="button" class="account-launch-choice" data-browser-session-mode="existingBrowser">Use existing account</button><button type="button" class="account-launch-choice" data-browser-session-mode="isolatedOsl" ${isolatedAvailable ? "" : "disabled"}>Use separate account</button></div>`;
+  return `<div class="saved-account-choices session-mode-choices" role="group" aria-label="Open browser account"><button type="button" class="account-launch-choice" data-browser-session-mode="existingBrowser">Browser account</button><button type="button" class="account-launch-choice" data-browser-session-mode="isolatedOsl" ${isolatedAvailable ? "" : "disabled"}>New account</button></div>`;
 }
 
 function selectedBrowserForLaunch(): BrowserImportId | null {

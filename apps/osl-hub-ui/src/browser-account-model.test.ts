@@ -24,8 +24,10 @@ describe("browser account model", () => {
   it("shows two choices only after the selected browser has an import receipt", () => {
     const choices = functionSource("browserSessionModeChoices", "selectedBrowserForLaunch");
     expect(choices).toContain("selectedBrowserHasImportReceipt()");
-    expect(choices).toContain(">Use existing account</button>");
-    expect(choices).toContain(">Use separate account</button>");
+    expect(choices).toContain(">Browser account</button>");
+    expect(choices).toContain(">New account</button>");
+    expect(choices).not.toContain("Use existing account");
+    expect(choices).not.toContain("Use separate account");
     expect(choices).toContain('role="group"');
     expect(choices).not.toContain('role="radio"');
     expect(choices).toContain('selectedBrowserForLaunch() !== "duckduckgo"');

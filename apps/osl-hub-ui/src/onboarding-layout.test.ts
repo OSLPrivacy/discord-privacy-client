@@ -337,8 +337,10 @@ describe("fresh-account continuation", () => {
     expect(source).toContain('let useDefaultBrowserCompanion = localStorage.getItem("osl-default-browser-companion-v1") === "true"');
     expect(choices).toContain('data-browser-session-mode="isolatedOsl"');
     expect(choices).toContain('data-browser-session-mode="existingBrowser"');
-    expect(choices).toContain("Use existing account");
-    expect(choices).toContain("Use separate account");
+    expect(choices).toContain("Browser account");
+    expect(choices).toContain("New account");
+    expect(choices).not.toContain("Use existing account");
+    expect(choices).not.toContain("Use separate account");
     expect(binding).toContain('requested !== "isolatedOsl" && requested !== "existingBrowser"');
     expect(binding).toContain('useDefaultBrowserCompanion = requested === "existingBrowser"');
     expect(binding).toContain('localStorage.setItem("osl-default-browser-companion-v1", String(useDefaultBrowserCompanion))');
