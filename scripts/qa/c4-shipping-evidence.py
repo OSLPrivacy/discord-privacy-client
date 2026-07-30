@@ -19,8 +19,10 @@ import hashlib
 import hmac
 import json
 import re
+import struct
 import sys
 import uuid
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +46,38 @@ SUCCESS_STATUS = (
     "Sent privately through OSL. "
     "Discord received only the private-message marker."
 )
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+PNG_CHANNELS = {2: 3, 6: 4}
+MIN_SCREENSHOT_WIDTH = 64
+MIN_SCREENSHOT_HEIGHT = 64
+MIN_SCREENSHOT_DISTINCT_COLORS = 8
+FILESYSTEM_ATTESTATION_KEYS = {
+    "schema",
+    "version",
+    "authoritySource",
+    "challenge",
+    "checkedAtUnixMs",
+    "ledgerRoot",
+    "ledgerRecordPath",
+    "rootIdentity",
+    "daclSha256",
+    "ownerSidSha256",
+}
+ROOT_IDENTITY_KEYS = {"volumeSerialNumber", "fileIndex"}
+WINDOWS_DIRECTORY_RE = re.compile(
+    r"^[A-Za-z]:\\(?:[^\\/:*?\"<>|\x00]+\\)*[^\\/:*?\"<>|\x00]+$"
+)
+WINDOWS_LEDGER_RECORD_RE = re.compile(
+    r"^[A-Za-z]:\\(?:[^\\/:*?\"<>|\x00]+\\)*[0-9a-f]{64}\.json$"
+)
+WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
 
 
 class EvidenceError(ValueError):
@@ -207,6 +241,220 @@ def _scan_for_markers(path: Path) -> None:
             carry = searchable[-(longest - 1) :]
 
 
+def _validate_windows_path(value: Any, label: str, *, record: bool = False) -> str:
+    pattern = WINDOWS_LEDGER_RECORD_RE if record else WINDOWS_DIRECTORY_RE
+    path = _string(value, label, maximum=1100 if record else 1024)
+    parts = path[3:].split("\\")
+    if (
+        not path.isascii()
+        or not path.isprintable()
+        or pattern.fullmatch(path) is None
+        or "/" in path
+        or "\\\\" in path
+        or any(
+            not part
+            or part in {".", ".."}
+            or part.endswith((".", " "))
+            or part.split(".", 1)[0].upper() in WINDOWS_RESERVED_NAMES
+            for part in parts
+        )
+    ):
+        raise EvidenceError(f"{label} is not a canonical Windows path")
+    return path
+
+
+def _verify_filesystem_attestation(
+    value: Any,
+    *,
+    challenge: str,
+    emitted_at: int,
+    run_end: int,
+) -> dict[str, Any]:
+    attestation = _object(
+        value,
+        "nativeAuthority.filesystemAuthorityAttestation",
+    )
+    _exact_keys(
+        attestation,
+        "nativeAuthority.filesystemAuthorityAttestation",
+        FILESYSTEM_ATTESTATION_KEYS,
+    )
+    if (
+        attestation["schema"] != "osl.c4.filesystem-authority-attestation"
+        or attestation["version"] != 3
+        or attestation["authoritySource"] != "native_windows_owner"
+    ):
+        raise EvidenceError("native filesystem attestation identity is invalid")
+    if _sha256(attestation["challenge"], "nativeAuthority.filesystemAuthorityAttestation.challenge") != challenge:
+        raise EvidenceError("native filesystem attestation challenge does not match")
+    checked_at = _at(
+        attestation["checkedAtUnixMs"],
+        "nativeAuthority.filesystemAuthorityAttestation.checkedAtUnixMs",
+        emitted_at,
+        run_end,
+    )
+    root = _validate_windows_path(
+        attestation["ledgerRoot"],
+        "nativeAuthority.filesystemAuthorityAttestation.ledgerRoot",
+    )
+    record_path = _validate_windows_path(
+        attestation["ledgerRecordPath"],
+        "nativeAuthority.filesystemAuthorityAttestation.ledgerRecordPath",
+        record=True,
+    )
+    expected_record_path = root + "\\" + _challenge_digest(challenge) + ".json"
+    if record_path != expected_record_path:
+        raise EvidenceError("native filesystem attestation names another ledger record")
+    identity = _object(
+        attestation["rootIdentity"],
+        "nativeAuthority.filesystemAuthorityAttestation.rootIdentity",
+    )
+    _exact_keys(
+        identity,
+        "nativeAuthority.filesystemAuthorityAttestation.rootIdentity",
+        ROOT_IDENTITY_KEYS,
+    )
+    for key in ROOT_IDENTITY_KEYS:
+        _integer(
+            identity[key],
+            f"nativeAuthority.filesystemAuthorityAttestation.rootIdentity.{key}",
+            minimum=1,
+        )
+    _sha256(attestation["daclSha256"], "nativeAuthority.filesystemAuthorityAttestation.daclSha256")
+    _sha256(attestation["ownerSidSha256"], "nativeAuthority.filesystemAuthorityAttestation.ownerSidSha256")
+    return {
+        "checkedAtUnixMs": checked_at,
+        "ledgerRoot": root,
+        "ledgerRecordPath": record_path,
+    }
+
+
+def _paeth(left: int, up: int, upper_left: int) -> int:
+    prediction = left + up - upper_left
+    left_distance = abs(prediction - left)
+    up_distance = abs(prediction - up)
+    upper_left_distance = abs(prediction - upper_left)
+    if left_distance <= up_distance and left_distance <= upper_left_distance:
+        return left
+    if up_distance <= upper_left_distance:
+        return up
+    return upper_left
+
+
+def _png_facts(path: Path) -> dict[str, int]:
+    try:
+        data = path.read_bytes()
+    except OSError as error:
+        raise EvidenceError("screenshot bytes could not be read") from error
+    if not data.startswith(PNG_SIGNATURE):
+        raise EvidenceError("screenshot PNG signature is missing")
+
+    offset = len(PNG_SIGNATURE)
+    ihdr: tuple[int, int, int, int, int, int, int] | None = None
+    compressed = bytearray()
+    saw_iend = False
+    chunk_index = 0
+    while offset < len(data):
+        if offset + 12 > len(data):
+            raise EvidenceError("screenshot PNG is truncated")
+        length = struct.unpack(">I", data[offset : offset + 4])[0]
+        chunk_type = data[offset + 4 : offset + 8]
+        chunk_end = offset + 12 + length
+        if chunk_end > len(data):
+            raise EvidenceError("screenshot PNG chunk is truncated")
+        chunk_data = data[offset + 8 : offset + 8 + length]
+        claimed_crc = struct.unpack(">I", data[offset + 8 + length : chunk_end])[0]
+        actual_crc = zlib.crc32(chunk_type)
+        actual_crc = zlib.crc32(chunk_data, actual_crc) & 0xFFFFFFFF
+        if actual_crc != claimed_crc:
+            raise EvidenceError(f"screenshot PNG CRC mismatch in {chunk_type!r}")
+
+        if chunk_index == 0 and chunk_type != b"IHDR":
+            raise EvidenceError("screenshot PNG IHDR is not first")
+        if chunk_type == b"IHDR":
+            if ihdr is not None or length != 13:
+                raise EvidenceError("screenshot PNG IHDR is invalid")
+            ihdr = struct.unpack(">IIBBBBB", chunk_data)
+        elif chunk_type == b"IDAT":
+            compressed.extend(chunk_data)
+        elif chunk_type == b"IEND":
+            if length != 0:
+                raise EvidenceError("screenshot PNG IEND is invalid")
+            saw_iend = True
+            offset = chunk_end
+            break
+        offset = chunk_end
+        chunk_index += 1
+
+    if ihdr is None or not compressed or not saw_iend or offset != len(data):
+        raise EvidenceError("screenshot PNG is missing required chunks")
+    width, height, bit_depth, color_type, compression, filtering, interlace = ihdr
+    if width < 1 or height < 1:
+        raise EvidenceError("screenshot PNG dimensions are empty")
+    if (
+        bit_depth != 8
+        or color_type not in PNG_CHANNELS
+        or compression != 0
+        or filtering != 0
+        or interlace != 0
+    ):
+        raise EvidenceError("screenshot PNG encoding is unsupported")
+
+    channels = PNG_CHANNELS[color_type]
+    row_bytes = width * channels
+    try:
+        inflated = zlib.decompress(bytes(compressed))
+    except zlib.error as error:
+        raise EvidenceError("screenshot PNG IDAT cannot be decompressed") from error
+    expected = height * (row_bytes + 1)
+    if len(inflated) != expected:
+        raise EvidenceError("screenshot PNG inflated size is incoherent")
+
+    rows: list[bytes] = []
+    previous = bytes(row_bytes)
+    cursor = 0
+    for _ in range(height):
+        filter_type = inflated[cursor]
+        encoded = inflated[cursor + 1 : cursor + 1 + row_bytes]
+        cursor += row_bytes + 1
+        decoded = bytearray(row_bytes)
+        for index, value in enumerate(encoded):
+            left = decoded[index - channels] if index >= channels else 0
+            up = previous[index]
+            upper_left = previous[index - channels] if index >= channels else 0
+            if filter_type == 0:
+                predictor = 0
+            elif filter_type == 1:
+                predictor = left
+            elif filter_type == 2:
+                predictor = up
+            elif filter_type == 3:
+                predictor = (left + up) // 2
+            elif filter_type == 4:
+                predictor = _paeth(left, up, upper_left)
+            else:
+                raise EvidenceError("screenshot PNG filter is unsupported")
+            decoded[index] = (value + predictor) & 0xFF
+        previous = bytes(decoded)
+        rows.append(previous)
+
+    colors: set[bytes] = set()
+    for y in range(0, height, 4):
+        row = rows[y]
+        for x in range(0, width, 4):
+            start = x * channels
+            pixel = row[start : start + channels]
+            if color_type == 2:
+                pixel += b"\xff"
+            colors.add(pixel)
+
+    return {
+        "width": width,
+        "height": height,
+        "distinctColors": len(colors),
+    }
+
+
 def _verify_native_authority(
     value: Any,
     *,
@@ -223,7 +471,12 @@ def _verify_native_authority(
     _exact_keys(
         authority,
         "nativeAuthority",
-        {"receipt", "verificationResult", "ledgerRecord"},
+        {
+            "receipt",
+            "verificationResult",
+            "ledgerRecord",
+            "filesystemAuthorityAttestation",
+        },
     )
 
     receipt = _object(authority["receipt"], "nativeAuthority.receipt")
@@ -457,6 +710,13 @@ def _verify_native_authority(
     if _sha256(receipt["receiptDigestSha256"], "nativeAuthority.receipt.receiptDigestSha256") != _receipt_object_digest(receipt):
         raise EvidenceError("native receipt object digest is invalid")
 
+    filesystem = _verify_filesystem_attestation(
+        authority["filesystemAuthorityAttestation"],
+        challenge=challenge,
+        emitted_at=emitted_at,
+        run_end=run_end,
+    )
+
     frame_sha = hashlib.sha256(_canonical_json(receipt)).hexdigest()
     result = _object(authority["verificationResult"], "nativeAuthority.verificationResult")
     _exact_keys(
@@ -513,12 +773,22 @@ def _verify_native_authority(
     issued_at = _integer(ledger["issuedAtUnixMs"], "nativeAuthority.ledgerRecord.issuedAtUnixMs")
     expires_at = _integer(ledger["expiresAtUnixMs"], "nativeAuthority.ledgerRecord.expiresAtUnixMs", minimum=issued_at + 1)
     updated_at = _integer(ledger["updatedAtUnixMs"], "nativeAuthority.ledgerRecord.updatedAtUnixMs", minimum=issued_at)
-    if issued_at < not_before_unix_ms or not (issued_at <= emitted_at <= updated_at <= run_end):
+    if issued_at < not_before_unix_ms or not (
+        issued_at
+        <= emitted_at
+        <= filesystem["checkedAtUnixMs"]
+        <= updated_at
+        <= run_end
+    ):
         raise EvidenceError("native challenge consumption is outside this run")
     if expires_at > issued_at + 60_000 or updated_at >= expires_at:
         raise EvidenceError("native challenge lifetime is invalid")
     if _sha256(ledger["challengeSha256"], "nativeAuthority.ledgerRecord.challengeSha256") != _challenge_digest(challenge):
         raise EvidenceError("native ledger challenge does not match the receipt")
+    if filesystem["ledgerRecordPath"] != (
+        filesystem["ledgerRoot"] + "\\" + ledger["challengeSha256"] + ".json"
+    ):
+        raise EvidenceError("native filesystem attestation is not bound to the consumed ledger")
     if _sha256(ledger["pipeBindingSha256"], "nativeAuthority.ledgerRecord.pipeBindingSha256") != _pipe_binding_digest(emitter):
         raise EvidenceError("native ledger pipe binding does not match the emitter")
     if _sha256(ledger["receiptFrameSha256"], "nativeAuthority.ledgerRecord.receiptFrameSha256") != frame_sha:
@@ -1015,11 +1285,15 @@ def verify_bundle(
     screenshot_path = _resolve_artifact(bundle_path, screenshot["path"], "screenshot.path")
     if screenshot_path.suffix.lower() != ".png":
         raise EvidenceError("screenshot must be PNG")
-    with screenshot_path.open("rb") as handle:
-        if handle.read(8) != b"\x89PNG\r\n\x1a\n":
-            raise EvidenceError("screenshot does not have a PNG signature")
     if _hash_file(screenshot_path) != _sha256(screenshot["sha256"], "screenshot.sha256"):
         raise EvidenceError("screenshot hash mismatch")
+    screenshot_facts = _png_facts(screenshot_path)
+    if (
+        screenshot_facts["width"] < MIN_SCREENSHOT_WIDTH
+        or screenshot_facts["height"] < MIN_SCREENSHOT_HEIGHT
+        or screenshot_facts["distinctColors"] < MIN_SCREENSHOT_DISTINCT_COLORS
+    ):
+        raise EvidenceError("screenshot lacks semantic retained-pixel evidence")
     _at(
         screenshot["observedAtUnixMs"],
         "screenshot.observedAtUnixMs",

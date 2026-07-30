@@ -10,11 +10,13 @@ import importlib.util
 import json
 import os
 import subprocess
+import struct
 import sys
 import tempfile
 import time
 import unittest
 import uuid
+import zlib
 from pathlib import Path
 
 
@@ -34,6 +36,31 @@ def sha(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def png_bytes(width: int = 80, height: int = 64) -> bytes:
+    rows = bytearray()
+    for y in range(height):
+        rows.append(0)
+        for x in range(width):
+            rows.extend(((x * 3) % 256, (y * 5) % 256, ((x + y) * 7) % 256))
+
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        crc = zlib.crc32(kind)
+        crc = zlib.crc32(payload, crc) & 0xFFFFFFFF
+        return (
+            struct.pack(">I", len(payload))
+            + kind
+            + payload
+            + struct.pack(">I", crc)
+        )
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(bytes(rows)))
+        + chunk(b"IEND", b"")
+    )
+
+
 class ShippingEvidenceMutationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="osl-c4-shipping-")
@@ -42,7 +69,7 @@ class ShippingEvidenceMutationTests(unittest.TestCase):
         self.executable = self.root / "osl-privacy-hub.exe"
         self.executable.write_bytes(b"MZ\x00shipping desktop fixture\x00")
         self.screenshot = self.root / "after.png"
-        self.screenshot.write_bytes(b"\x89PNG\r\n\x1a\nfixture")
+        self.screenshot.write_bytes(png_bytes())
         now = time.time_ns() // 1_000_000
         self.start = now - 1_000
         self.end = now + 1_000
@@ -173,6 +200,28 @@ class ShippingEvidenceMutationTests(unittest.TestCase):
             native_receipt
         )
         receipt_frame_sha = sha(VERIFIER._canonical_json(native_receipt))
+        ledger_root = r"C:\ProgramData\OSL\C4\ledger"
+        ledger_record_path = (
+            ledger_root
+            + "\\"
+            + hashlib.sha256(bytes.fromhex(challenge)).hexdigest()
+            + ".json"
+        )
+        filesystem_attestation = {
+            "schema": "osl.c4.filesystem-authority-attestation",
+            "version": 3,
+            "authoritySource": "native_windows_owner",
+            "challenge": challenge,
+            "checkedAtUnixMs": self.start + 455,
+            "ledgerRoot": ledger_root,
+            "ledgerRecordPath": ledger_record_path,
+            "rootIdentity": {
+                "volumeSerialNumber": 7,
+                "fileIndex": 99,
+            },
+            "daclSha256": "d" * 64,
+            "ownerSidSha256": "e" * 64,
+        }
         ledger = {
             "version": 2,
             "challengeSha256": hashlib.sha256(bytes.fromhex(challenge)).hexdigest(),
@@ -181,7 +230,7 @@ class ShippingEvidenceMutationTests(unittest.TestCase):
             "expiresAtUnixMs": self.start + 60_000,
             "pipeBindingSha256": VERIFIER._pipe_binding_digest(emitter),
             "receiptFrameSha256": receipt_frame_sha,
-            "updatedAtUnixMs": self.start + 460,
+            "updatedAtUnixMs": self.start + 465,
             "recordDigestSha256": "",
         }
         ledger["recordDigestSha256"] = VERIFIER._ledger_record_digest(ledger)
@@ -280,6 +329,7 @@ class ShippingEvidenceMutationTests(unittest.TestCase):
             },
             "nativeAuthority": {
                 "receipt": native_receipt,
+                "filesystemAuthorityAttestation": filesystem_attestation,
                 "verificationResult": {
                     "schema": "osl.c4.native-verification-result",
                     "version": 3,
@@ -501,10 +551,53 @@ class ShippingEvidenceMutationTests(unittest.TestCase):
         )
         self.assertIn("another receipt frame", reason)
 
+    def test_native_runtime_authority_must_include_filesystem_attestation(self) -> None:
+        reason = self.reject(
+            lambda value: value["nativeAuthority"].pop(
+                "filesystemAuthorityAttestation"
+            )
+        )
+        self.assertIn("missing=", reason)
+
+    def test_native_filesystem_attestation_must_bind_consumed_record(self) -> None:
+        reason = self.reject(
+            lambda value: value["nativeAuthority"][
+                "filesystemAuthorityAttestation"
+            ].update(
+                ledgerRecordPath=(
+                    "C:\\ProgramData\\OSL\\C4\\ledger\\"
+                    + "f" * 64
+                    + ".json"
+                )
+            )
+        )
+        self.assertIn("another ledger record", reason)
+
+    def test_native_filesystem_attestation_must_postdate_receipt(self) -> None:
+        emitted = self.bundle["nativeAuthority"]["receipt"]["emittedAtUnixMs"]
+        reason = self.reject(
+            lambda value: value["nativeAuthority"][
+                "filesystemAuthorityAttestation"
+            ].update(checkedAtUnixMs=emitted - 1)
+        )
+        self.assertIn("outside", reason)
+
     def test_missing_screenshot_is_rejected(self) -> None:
         self.screenshot.unlink()
         with self.assertRaisesRegex(VERIFIER.EvidenceError, "missing"):
             VERIFIER.verify_bundle(self.write(), self.target)
+
+    def test_signature_only_fake_screenshot_is_rejected(self) -> None:
+        fake = b"\x89PNG\r\n\x1a\nfixture"
+        self.screenshot.write_bytes(fake)
+        os.utime(
+            self.screenshot,
+            ns=(self.end * 1_000_000, self.end * 1_000_000),
+        )
+        reason = self.reject(
+            lambda value: value["screenshot"].update(sha256=sha(fake))
+        )
+        self.assertIn("screenshot PNG", reason)
 
     def test_duplicate_json_key_is_rejected_before_semantics(self) -> None:
         path = self.write()
@@ -524,6 +617,7 @@ class ShippingHarnessSourceContractTests(unittest.TestCase):
     def assert_contract(source: str) -> None:
         required = (
             "[ValidateSet('BuildShipping', 'DriveApprovedSend', 'VerifyEvidence')]",
+            "[string]$PythonCommand = 'python3'",
             "Assert-LiveDriveApproval",
             "if (-not $ConfirmOwnerApprovedSend)",
             "Invoke-Checked 'osl-cargo'",
@@ -537,6 +631,8 @@ class ShippingHarnessSourceContractTests(unittest.TestCase):
             "$discord.Root.SetFocus()",
             "Save-DiscordScreenshot",
             "'--bundle', $bundlePath",
+            "'--expected-run-id', $runId",
+            "'--not-before-unix-ms', ([string]$runStart)",
         )
         for needle in required:
             if needle not in source:
@@ -555,6 +651,11 @@ class ShippingHarnessSourceContractTests(unittest.TestCase):
         launch_at = source.index("Start-Process -FilePath $exactExe")
         drive_body_at = source.index("function Drive-ApprovedShippingSend")
         approval_call_at = source.index("Assert-LiveDriveApproval", drive_body_at)
+        send_lines = [
+            line for line in source.splitlines() if line == "  Invoke-UiaButton $send"
+        ]
+        if len(send_lines) != 1:
+            raise AssertionError("real Send invocation must be one top-level drive step")
         if not (approval_at < drive_body_at < approval_call_at < launch_at):
             raise AssertionError("owner approval must dominate every process launch")
 
@@ -571,6 +672,11 @@ class ShippingHarnessSourceContractTests(unittest.TestCase):
         for mutation in (
             source.replace("if (-not $ConfirmOwnerApprovedSend)", "if ($false)", 1),
             source.replace("Invoke-UiaButton $send", "# removed", 1),
+            source.replace(
+                "  Invoke-UiaButton $send",
+                "  if ($false) { Invoke-UiaButton $send }",
+                1,
+            ),
         ):
             with self.assertRaises(AssertionError):
                 self.assert_contract(mutation)
