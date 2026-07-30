@@ -560,6 +560,50 @@ describe("Telegram operator webhook route", () => {
   });
 
   it("telegram'", async () => {
+    const acceptedFetcher = outboundFetcher();
+    const badSecretFetcher = outboundFetcher();
+    const wrongChatFetcher = outboundFetcher();
+    const malformedFetcher = outboundFetcher();
+    const acceptedResponse = await handleTelegramWebhook(
+      commandRequest("/downloads", ADMIN_CHAT_ID),
+      configuredEnv(),
+      acceptedFetcher,
+    );
+    const badSecretResponse = await handleTelegramWebhook(
+      commandRequest("/downloads", ADMIN_CHAT_ID, "wrong-webhook-secret"),
+      configuredEnv(),
+      badSecretFetcher,
+    );
+    const wrongChatResponse = await handleTelegramWebhook(
+      commandRequest("/downloads", "99112233"),
+      configuredEnv(),
+      wrongChatFetcher,
+    );
+    const malformedResponse = await handleTelegramWebhook(
+      updateRequest({ update_id: 1234, message: { text: "/downloads" } }),
+      configuredEnv(),
+      malformedFetcher,
+    );
+
+    expect([
+      acceptedResponse.status,
+      badSecretResponse.status,
+      wrongChatResponse.status,
+      malformedResponse.status,
+    ]).toEqual([200, 200, 200, 200]);
+    const ackBodies = await Promise.all([
+      acceptedResponse.text(),
+      badSecretResponse.text(),
+      wrongChatResponse.text(),
+      malformedResponse.text(),
+    ]);
+    expect(new Set(ackBodies).size).toBe(1);
+    expect(JSON.parse(ackBodies[0] ?? "")).toEqual({ ok: true });
+    expect(acceptedFetcher).toHaveBeenCalledTimes(1);
+    expect(badSecretFetcher).not.toHaveBeenCalled();
+    expect(wrongChatFetcher).not.toHaveBeenCalled();
+    expect(malformedFetcher).not.toHaveBeenCalled();
+
     const typoFetcher = outboundFetcher();
     const typoResponse = await handleTelegramWebhook(
       commandRequest("/osl paymnts private-note"),
