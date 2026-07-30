@@ -105,6 +105,12 @@ import { CoalescedRealignment, NativeCallGate } from "./native-realignment";
 import { FrameRenderScheduler } from "./render-scheduler";
 import { defaultScrubSignalGroups, enabledScrubFindings, parseScrubSignalGroups, scrubSignalDefinitions, scrubSignalGroupFor, type ScrubSignalGroup } from "./scrub";
 import { loadMassCleanupCapabilities, type MassCleanupCapabilityManifest } from "./mass-cleanup";
+export {
+  autoscrubUnattendedContractGate,
+  autoscrubUnattendedProductionRun,
+  type AutoscrubUnattendedGateResult,
+  type AutoscrubUnattendedRunResult,
+} from "./autoscrub-unattended-run";
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
 import { oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
 import { bindFriendRemovalControls, bindMainWindowFocusChanges, friendRemovalButtonMarkup, friendTrustAction, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat } from "./ui-behavior";
@@ -456,15 +462,6 @@ type AutoscrubStatusProjection = {
   readonly phase: "idle" | "running" | "completed" | "failed";
   readonly receipts: readonly AutoscrubReceiptProjection[];
 };
-type AutoscrubUnattendedContract = {
-  readonly production: boolean;
-  readonly unattendedAllowed: boolean;
-  readonly reviewRequiredEveryBatch: boolean;
-  readonly externalSecurityReviewPassed: boolean;
-};
-type AutoscrubUnattendedRunResult =
-  | { readonly state: "refused"; readonly reason: "not-production" | "unattended-disabled" | "review-required" | "external-review-required" }
-  | { readonly state: "ready"; readonly command: "autoscrub_unattended_run" };
 type DesktopCtaSurface = "desktop" | "phone-demo" | "mobile-companion";
 type DesktopCtaRoute = "desktop-app" | "phone-companion";
 let oslChatSecureStore: OslChatSecureStore | null = null;
@@ -733,14 +730,6 @@ export function autoscrubStatusProjectionMarkup(status: AutoscrubStatusProjectio
     return `<li data-cleanup-proof="${receipt.state}"><span>${escapeHtml(receipt.itemLabel)}</span><strong>${state}</strong></li>`;
   }).join("");
   return `<section class="activity-run-status completed" data-phase="completed"><h3>Cleanup activity</h3><ul>${rows}</ul></section>`;
-}
-
-export function autoscrubUnattendedProductionRun(contract: AutoscrubUnattendedContract): AutoscrubUnattendedRunResult {
-  if (!contract.production) return { state: "refused", reason: "not-production" };
-  if (!contract.unattendedAllowed) return { state: "refused", reason: "unattended-disabled" };
-  if (contract.reviewRequiredEveryBatch) return { state: "refused", reason: "review-required" };
-  if (!contract.externalSecurityReviewPassed) return { state: "refused", reason: "external-review-required" };
-  return { state: "ready", command: "autoscrub_unattended_run" };
 }
 
 export function revokeBrowserImportForSource(
