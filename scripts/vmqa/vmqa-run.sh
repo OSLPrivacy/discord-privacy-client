@@ -701,7 +701,8 @@ is_sha256() { [[ "${1:-}" =~ ^[0-9a-f]{64}$ ]]; }
 
 grade_f1_live_windows_walkthrough_import() {
   local file="$1" overall picker grant import receipt selected rows bytes receipt_rows
-  local grant_bound attended receipt_sha no_secrets
+  local grant_bound attended receipt_sha no_secrets receipt_artifact_count receipt_artifact_rel
+  local receipt_artifact_file receipt_artifact_sha receipt_artifact_size receipt_artifact_path
   [ -f "$file" ] || { echo "F1 INVALID: verdict file is missing" >&2; return 9; }
   overall="$(jq -r '.overall // empty' "$file" 2>/dev/null || true)"
   picker="$(step_status "$file" picker)"
@@ -716,6 +717,9 @@ grade_f1_live_windows_walkthrough_import() {
   receipt_rows="$(metric_from_step "$file" receipt importedRows)"
   receipt_sha="$(fact_from_step "$file" receipt receiptSha256)"
   no_secrets="$(fact_from_step "$file" receipt containsNoSecrets)"
+  receipt_artifact_count="$(jq -r '[.steps[]? | select(.verb == "receipt") | .artifacts[]?] | length' "$file" 2>/dev/null || printf '0\n')"
+  receipt_artifact_rel="$(jq -r '[.steps[]? | select(.verb == "receipt") | .artifacts[]?] | first // empty' "$file" 2>/dev/null || true)"
+  receipt_artifact_path="$(fact_from_step "$file" receipt receiptPath)"
 
   if [ "$overall" != "pass" ]; then
     echo "F1 FAIL: overall=$overall" >&2
@@ -743,16 +747,40 @@ grade_f1_live_windows_walkthrough_import() {
     echo "F1 FAIL: receipt is missing digest binding or secret redaction" >&2
     return 1
   fi
+  if [ "$receipt_artifact_count" -ne 1 ] || [ "$receipt_artifact_rel" != "$receipt_artifact_path" ]; then
+    echo "F1 FAIL: receipt must retain exactly one artifact bound by receiptPath" >&2
+    return 1
+  fi
+  case "$receipt_artifact_rel" in
+    artifacts/*.json)
+      case "${receipt_artifact_rel#artifacts/}" in ""|*/*|..*) echo "F1 FAIL: unsafe receipt artifact path" >&2; return 1 ;; esac
+      ;;
+    *) echo "F1 FAIL: receipt artifact is not a retained JSON artifact" >&2; return 1 ;;
+  esac
+  receipt_artifact_file="$(dirname -- "$file")/$receipt_artifact_rel"
+  if [ ! -f "$receipt_artifact_file" ]; then
+    echo "F1 FAIL: retained receipt artifact is missing" >&2
+    return 1
+  fi
+  receipt_artifact_size="$(wc -c <"$receipt_artifact_file" | tr -d ' ')"
+  receipt_artifact_sha="$(sha_file "$receipt_artifact_file")"
+  if [ "$receipt_artifact_size" -le 0 ] || [ "$receipt_artifact_sha" != "$receipt_sha" ]; then
+    echo "F1 FAIL: retained receipt artifact bytes do not match the verdict" >&2
+    return 1
+  fi
   return 0
 }
 
 grade_f2_real_vm_five_frame_walkthrough() {
-  local file="$1" overall frames shape unique_sha
+  local file="$1" overall frames shape unique_sha artifact_shape unique_artifacts
+  local frame_id artifact_rel claimed_sha artifact_file artifact_actual_sha artifact_size artifact_signature
   [ -f "$file" ] || { echo "F2 INVALID: verdict file is missing" >&2; return 9; }
   overall="$(jq -r '.overall // empty' "$file" 2>/dev/null || true)"
   frames="$(jq -r '[.steps[]? | select(.verb == "frame" and .status == "pass")] | length' "$file" 2>/dev/null || printf '0\n')"
   shape="$(jq -r '[.steps[]? | select(.verb == "frame") | (.id + ":" + ((.facts.frameOrdinal // 0) | tostring))] | join(",")' "$file" 2>/dev/null || true)"
   unique_sha="$(jq -r '[.steps[]? | select(.verb == "frame") | .facts.pngSha256] | unique | length' "$file" 2>/dev/null || printf '0\n')"
+  artifact_shape="$(jq -r '[.steps[]? | select(.verb == "frame") | (.artifacts | length)] | join(",")' "$file" 2>/dev/null || true)"
+  unique_artifacts="$(jq -r '[.steps[]? | select(.verb == "frame") | .artifacts[0]] | unique | length' "$file" 2>/dev/null || printf '0\n')"
   if [ "$overall" != "pass" ]; then
     echo "F2 FAIL: overall=$overall" >&2
     return 1
@@ -765,12 +793,18 @@ grade_f2_real_vm_five_frame_walkthrough() {
     echo "F2 FAIL: frame screenshots are absent or reused" >&2
     return 1
   fi
+  if [ "$artifact_shape" != "1,1,1,1,1" ] || [ "$unique_artifacts" -ne 5 ]; then
+    echo "F2 FAIL: each frame must retain one distinct screenshot artifact" >&2
+    return 1
+  fi
   if ! jq -e '
     [.steps[]? | select(.verb == "frame")] | all(
       (.facts.surfaceHwnd | type == "number" and . > 0)
       and (.facts.surfacePid | type == "number" and . > 0)
       and (.facts.captureDistinctColors | type == "number" and . >= 16)
       and (.facts.pngSha256 | type == "string" and test("^[0-9a-f]{64}$"))
+      and (.facts.artifactPath | type == "string")
+      and (.facts.artifactPath == .artifacts[0])
       and (.facts.requestSha256 | type == "string" and test("^[0-9a-f]{64}$"))
       and (.facts.exeSha256 | type == "string" and test("^[0-9a-f]{64}$"))
       and (.facts.foreground | type == "boolean" and .)
@@ -779,6 +813,28 @@ grade_f2_real_vm_five_frame_walkthrough() {
     echo "F2 FAIL: one or more frames lack VM surface, pixel, request, or executable binding" >&2
     return 1
   fi
+  while IFS=$'\t' read -r frame_id artifact_rel claimed_sha; do
+    [ -n "$frame_id" ] || continue
+    case "$artifact_rel" in
+      artifacts/*.png)
+        case "${artifact_rel#artifacts/}" in ""|*/*|..*) echo "F2 FAIL: unsafe frame artifact path" >&2; return 1 ;; esac
+        ;;
+      *) echo "F2 FAIL: frame artifact is not a retained PNG" >&2; return 1 ;;
+    esac
+    artifact_file="$(dirname -- "$file")/$artifact_rel"
+    if [ ! -f "$artifact_file" ]; then
+      echo "F2 FAIL: retained frame artifact is missing for $frame_id" >&2
+      return 1
+    fi
+    artifact_size="$(wc -c <"$artifact_file" | tr -d ' ')"
+    artifact_actual_sha="$(sha_file "$artifact_file")"
+    artifact_signature="$(od -An -tx1 -N8 "$artifact_file" 2>/dev/null | tr -d ' \n')"
+    if [ "$artifact_size" -le 8 ] || [ "$artifact_signature" != "89504e470d0a1a0a" ] \
+       || [ "$artifact_actual_sha" != "$claimed_sha" ]; then
+      echo "F2 FAIL: retained frame artifact bytes do not match the verdict for $frame_id" >&2
+      return 1
+    fi
+  done < <(jq -r '.steps[]? | select(.verb == "frame") | [.id, .artifacts[0], .facts.pngSha256] | @tsv' "$file")
   return 0
 }
 
@@ -787,7 +843,8 @@ vmqa_named_test_tmpdir() {
 }
 
 f1_live_windows_walkthrough_imports_nonempty_receipt() {
-  local tmp good bad_empty bad_grant bad_receipt bad_source bad_secret
+  local tmp good bad_empty bad_grant bad_receipt bad_source bad_secret bad_missing_artifact
+  local receipt_file receipt_sha
   tmp="$(vmqa_named_test_tmpdir)"
   good="$tmp/f1-good.json"
   bad_empty="$tmp/f1-empty.json"
@@ -795,13 +852,18 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
   bad_receipt="$tmp/f1-bad-receipt.json"
   bad_source="$tmp/f1-bad-source.json"
   bad_secret="$tmp/f1-secret-receipt.json"
-  jq -n --arg sha "$(printf receipt | sha256sum | awk '{print $1}')" '{
+  bad_missing_artifact="$tmp/f1-missing/f1-missing-receipt-artifact.json"
+  mkdir -p -- "$tmp/artifacts"
+  receipt_file="$tmp/artifacts/import-receipt.json"
+  printf '{"importedRows":2,"importedBytes":256,"source":"edge"}\n' >"$receipt_file"
+  receipt_sha="$(sha_file "$receipt_file")"
+  jq -n --arg sha "$receipt_sha" '{
     overall:"pass",
     steps:[
       {id:"P",verb:"picker",status:"pass",facts:{selectedSource:"edge"}},
       {id:"G",verb:"grant-ipc",status:"pass",facts:{grantBoundToRun:true,attendedOperator:true}},
       {id:"I",verb:"import",status:"pass",facts:{importedRows:2,importedBytes:256}},
-      {id:"R",verb:"receipt",status:"pass",facts:{importedRows:2,receiptSha256:$sha,containsNoSecrets:true}}
+      {id:"R",verb:"receipt",status:"pass",artifacts:["artifacts/import-receipt.json"],facts:{importedRows:2,receiptSha256:$sha,receiptPath:"artifacts/import-receipt.json",containsNoSecrets:true}}
     ]}' >"$good"
   jq '.steps[2].facts.importedRows=0 | .steps[3].facts.importedRows=0' "$good" >"$bad_empty"
   jq '.steps[1].facts.grantBoundToRun=false' "$good" >"$bad_grant"
@@ -809,6 +871,8 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
     "$good" >"$bad_receipt"
   jq '.steps[0].facts.selectedSource="unbounded-profile-path"' "$good" >"$bad_source"
   jq '.steps[3].facts.containsNoSecrets=false' "$good" >"$bad_secret"
+  mkdir -p -- "$(dirname -- "$bad_missing_artifact")"
+  cp -- "$good" "$bad_missing_artifact"
   grade_f1_live_windows_walkthrough_import "$good" >/dev/null \
     || { rm -rf -- "$tmp"; return 1; }
   grade_f1_live_windows_walkthrough_import "$bad_empty" >/dev/null 2>&1 \
@@ -821,41 +885,76 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
     && { rm -rf -- "$tmp"; return 1; }
   grade_f1_live_windows_walkthrough_import "$bad_secret" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_missing_artifact" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
   rm -rf -- "$tmp"
   return 0
 }
 
 f2_real_vm_five_frame_walkthrough() {
-  local tmp good bad_four bad_reused bad_unbound bad_weak_surface
+  local tmp good bad_four bad_reused bad_unbound bad_weak_surface bad_missing_artifact
+  local frame_path frame_sha frame_color missing_dir
   tmp="$(vmqa_named_test_tmpdir)"
   good="$tmp/f2-good.json"
   bad_four="$tmp/f2-four.json"
   bad_reused="$tmp/f2-reused.json"
   bad_unbound="$tmp/f2-unbound.json"
   bad_weak_surface="$tmp/f2-weak-surface.json"
-  jq -n '{
-      overall:"pass",
-      steps:[range(1;6) as $i | {
-        id:("F" + ($i|tostring)),
+  bad_missing_artifact="$tmp/f2-missing/verdict.json"
+  mkdir -p -- "$tmp/artifacts"
+  jq -n '{overall:"pass",steps:[]}' >"$good"
+  for frame in 1 2 3 4 5; do
+    frame_path="$tmp/artifacts/frame-$frame.png"
+    frame_color=$((30 + frame))
+    python3 - "$frame_path" "$frame_color" <<'PY'
+import binascii, struct, sys, zlib
+path, color = sys.argv[1], int(sys.argv[2])
+width, height = 4, 4
+def chunk(kind, body):
+    return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", binascii.crc32(kind + body) & 0xffffffff)
+rows = bytearray()
+for y in range(height):
+    rows.append(0)
+    for x in range(width):
+        rows.extend(((color + x) & 255, (color + y * 3) & 255, (color + x + y) & 255, 255))
+png = b"\x89PNG\r\n\x1a\n"
+png += chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+png += chunk(b"IDAT", zlib.compress(bytes(rows), 9))
+png += chunk(b"IEND", b"")
+open(path, "wb").write(png)
+PY
+    frame_sha="$(sha_file "$frame_path")"
+    jq --argjson ordinal "$frame" --arg artifact "artifacts/frame-$frame.png" --arg sha "$frame_sha" '
+      .steps += [{
+        id:("F" + ($ordinal|tostring)),
         verb:"frame",
         status:"pass",
+        artifacts:[$artifact],
         facts:{
-          frameOrdinal:$i,
-          surfaceHwnd:(900 + $i),
+          frameOrdinal:$ordinal,
+          surfaceHwnd:(900 + $ordinal),
           surfacePid:4242,
           captureDistinctColors:32,
-          pngSha256:(($i|tostring) * 64),
+          artifactPath:$artifact,
+          pngSha256:$sha,
           requestSha256:("b" * 64),
           exeSha256:("c" * 64),
           foreground:true
         }
       }]
-    }' >"$good"
+    ' "$good" >"$good.tmp"
+    mv -- "$good.tmp" "$good"
+  done
   jq '.steps=.steps[0:4]' "$good" >"$bad_four"
   jq '(.steps[] | .facts.pngSha256)=("d" * 64)' "$good" >"$bad_reused"
   jq '.steps[2].facts.foreground=false | .steps[2].facts.requestSha256=""' "$good" >"$bad_unbound"
   jq '.steps[4].facts.surfaceHwnd=0 | .steps[4].facts.captureDistinctColors=1' \
     "$good" >"$bad_weak_surface"
+  missing_dir="$(dirname -- "$bad_missing_artifact")"
+  mkdir -p -- "$missing_dir"
+  cp -- "$good" "$bad_missing_artifact"
+  cp -R -- "$tmp/artifacts" "$missing_dir/artifacts"
+  rm -f -- "$missing_dir/artifacts/frame-3.png"
   grade_f2_real_vm_five_frame_walkthrough "$good" >/dev/null \
     || { rm -rf -- "$tmp"; return 1; }
   grade_f2_real_vm_five_frame_walkthrough "$bad_four" >/dev/null 2>&1 \
@@ -865,6 +964,8 @@ f2_real_vm_five_frame_walkthrough() {
   grade_f2_real_vm_five_frame_walkthrough "$bad_unbound" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
   grade_f2_real_vm_five_frame_walkthrough "$bad_weak_surface" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
+  grade_f2_real_vm_five_frame_walkthrough "$bad_missing_artifact" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
   rm -rf -- "$tmp"
   return 0
