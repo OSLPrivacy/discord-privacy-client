@@ -41,3 +41,28 @@ implementation changes underneath it:
 This contract is user-facing behavior, not copy decoration. A design that teaches
 the user protocol, storage, automation, transport or service-plumbing concepts in
 order to operate OSL violates the design feel even if the underlying feature works.
+
+## Freeze the user-facing complexity-hiding product contract.
+
+This acceptance test passes only when a proposed user-facing surface preserves the
+contract above:
+
+1. A screen, onboarding step, warning, settings row, status label or navigation
+   item passes when its visible choices are product nouns: protection state,
+   trusted people, connected accounts, private conversations, cleanup actions and
+   activity history.
+2. The same surface fails when the user must choose, diagnose or trust OSL by
+   reading implementation nouns such as protocol state, storage layout,
+   automation internals, transport plumbing or service-adapter mechanics.
+3. A refusal passes when it gives a plain consequence and a safe action, such as
+   "protected send is not ready for this conversation" or "cleanup can only be
+   assisted here."
+4. A refusal fails when it exposes the internal mechanism as the answer, even if
+   the internal detail is accurate.
+5. Advanced support exports pass when implementation fields are machine-readable
+   and secondary; they fail when those fields replace the ordinary-language answer
+   on the main screen.
+
+Mentally invert the behavior before accepting a design: if replacing the product
+nouns with implementation machinery would still pass review, the test is
+vacuous and the design does not satisfy this contract.
