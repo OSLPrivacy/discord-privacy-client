@@ -70,10 +70,27 @@ describe("linked-service contract", () => {
   });
 
   it("strictly validates the narrow Mullvad availability receipt", () => {
-    expect(parseMullvadStatus({ availability: "installed" })).toEqual({ availability: "installed" });
-    expect(parseMullvadStatus({ availability: "installable" })).toEqual({ availability: "installable" });
+    expect(parseMullvadStatus({ availability: "installed" })).toEqual({
+      availability: "installed",
+      integrationState: "availableToOpen",
+      privacyScope: "networkOnly",
+      connectionState: "notObserved",
+    });
+    expect(parseMullvadStatus({ availability: "installable" })).toEqual({
+      availability: "installable",
+      integrationState: "installable",
+      privacyScope: "networkOnly",
+      connectionState: "notObserved",
+    });
+    expect(parseMullvadStatus({ availability: "unavailable" })).toEqual({
+      availability: "unavailable",
+      integrationState: "unavailable",
+      privacyScope: "networkOnly",
+      connectionState: "notObserved",
+    });
     expect(() => parseMullvadStatus({ availability: "connected" })).toThrow();
     expect(() => parseMullvadStatus({ availability: "installed", account: "secret" })).toThrow();
+    expect(() => parseMullvadStatus({ availability: "installed", connectionState: "connected" })).toThrow();
   });
 
   it("strictly validates a newly-created isolated account profile", () => {

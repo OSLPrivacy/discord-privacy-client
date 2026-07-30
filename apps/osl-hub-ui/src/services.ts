@@ -55,6 +55,9 @@ export interface NativeAppAction {
 
 export interface MullvadStatus {
   availability: "installed" | "installable" | "unavailable";
+  integrationState: "availableToOpen" | "installable" | "unavailable";
+  privacyScope: "networkOnly";
+  connectionState: "notObserved";
 }
 
 export interface MullvadAction {
@@ -257,7 +260,7 @@ export async function installNativeApp(appId: NativeAppId): Promise<NativeAppAct
 }
 
 export async function loadMullvadStatus(): Promise<MullvadStatus> {
-  if (!isTauriRuntime()) return { availability: "unavailable" };
+  if (!isTauriRuntime()) return mullvadStatusFromAvailability("unavailable");
   return parseMullvadStatus(await invoke<unknown>("get_mullvad_status"));
 }
 
@@ -276,7 +279,16 @@ export function parseMullvadStatus(raw: unknown): MullvadStatus {
     || !["installed", "installable", "unavailable"].includes(String(raw.availability))) {
     throw new Error("invalid Mullvad status");
   }
-  return raw as unknown as MullvadStatus;
+  return mullvadStatusFromAvailability(raw.availability as MullvadStatus["availability"]);
+}
+
+function mullvadStatusFromAvailability(availability: MullvadStatus["availability"]): MullvadStatus {
+  return {
+    availability,
+    integrationState: availability === "installed" ? "availableToOpen" : availability,
+    privacyScope: "networkOnly",
+    connectionState: "notObserved",
+  };
 }
 
 function parseMullvadAction(raw: unknown): MullvadAction {
