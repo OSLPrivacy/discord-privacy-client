@@ -563,6 +563,26 @@ impl IdentityBundle {
     }
 }
 
+/// Verify only the Ed25519 signature binding `bundle`'s complete
+/// canonical contents.
+///
+/// This intentionally takes the caller's pinned Ed25519 identity key
+/// instead of deriving trust from [`IdentityBundle::ed25519_identity_pub`].
+/// A self-consistent substitute bundle signed by a different identity
+/// must therefore fail unless the caller explicitly pinned that
+/// different identity.
+pub fn verify_identity_bundle_signature(
+    bundle: &IdentityBundle,
+    pinned_signer: &ed25519::PublicKey,
+) -> Result<(), BundleVerifyError> {
+    let signature = ed25519::Signature::from_bytes(bundle.signature);
+    let message = bundle.signed_bytes();
+    match ed25519::verify(pinned_signer, &message, &signature) {
+        Ok(true) => Ok(()),
+        _ => Err(BundleVerifyError::SignatureInvalid),
+    }
+}
+
 /// Why [`BundleVerifyPolicy::verify`] refused a bundle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum BundleVerifyError {
@@ -640,12 +660,8 @@ impl BundleVerifyPolicy {
             }
         }
 
-        let signature = ed25519::Signature::from_bytes(bundle.signature);
-        let message = bundle.signed_bytes();
-        match ed25519::verify(pinned_signer, &message, &signature) {
-            Ok(true) => Ok(bundle.revision),
-            _ => Err(BundleVerifyError::SignatureInvalid),
-        }
+        verify_identity_bundle_signature(bundle, pinned_signer)?;
+        Ok(bundle.revision)
     }
 }
 
@@ -1172,6 +1188,52 @@ mod tests {
         let policy = BundleVerifyPolicy::new();
         assert_eq!(
             policy.verify(&bundle, &owner_pub, None),
+            Err(BundleVerifyError::SignatureInvalid)
+        );
+    }
+
+    #[test]
+    fn a121_signature_verification_binds_every_identity_bundle_field() {
+        let (owner_secret, owner_pub) = ed25519::generate_keypair();
+        let bundle = signed_bundle(&owner_secret, &owner_pub, 7);
+
+        assert_eq!(
+            verify_identity_bundle_signature(&bundle, &owner_pub),
+            Ok(())
+        );
+
+        let mut tampered_ed25519 = bundle.clone();
+        tampered_ed25519.ed25519_identity_pub[0] ^= 0x01;
+        assert_eq!(
+            verify_identity_bundle_signature(&tampered_ed25519, &owner_pub),
+            Err(BundleVerifyError::SignatureInvalid)
+        );
+
+        let mut tampered_x25519 = bundle.clone();
+        tampered_x25519.x25519_identity_pub[0] ^= 0x01;
+        assert_eq!(
+            verify_identity_bundle_signature(&tampered_x25519, &owner_pub),
+            Err(BundleVerifyError::SignatureInvalid)
+        );
+
+        let mut tampered_mlkem = bundle.clone();
+        tampered_mlkem.mlkem768_identity_pub[0] ^= 0x01;
+        assert_eq!(
+            verify_identity_bundle_signature(&tampered_mlkem, &owner_pub),
+            Err(BundleVerifyError::SignatureInvalid)
+        );
+
+        let mut tampered_capability = bundle.clone();
+        tampered_capability.capability_bundle ^= 0x01;
+        assert_eq!(
+            verify_identity_bundle_signature(&tampered_capability, &owner_pub),
+            Err(BundleVerifyError::SignatureInvalid)
+        );
+
+        let mut tampered_revision = bundle.clone();
+        tampered_revision.revision += 1;
+        assert_eq!(
+            verify_identity_bundle_signature(&tampered_revision, &owner_pub),
             Err(BundleVerifyError::SignatureInvalid)
         );
     }
