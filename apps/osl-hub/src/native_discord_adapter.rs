@@ -282,7 +282,7 @@ impl ComposerDiscoveryProfile {
                     }
                 }
                 adapter_profile::SelectorStrategy::TextAnchor { starts_with } => {
-                    if valid_profile_anchor(starts_with) {
+                    if valid_profile_text_prefix(starts_with) {
                         composer_name_prefixes.push(starts_with.clone());
                     }
                 }
@@ -322,6 +322,19 @@ impl ComposerDiscoveryProfile {
 fn valid_profile_anchor(value: &str) -> bool {
     !value.trim().is_empty()
         && value.trim() == value
+        && value.len() <= 128
+        && !value.chars().any(char::is_control)
+}
+
+/// Same bounds as [`valid_profile_anchor`], but a composer TEXT PREFIX may end in a
+/// space. Discord's accessible composer is named "Message @user", so the prefix is
+/// literally "Message " -- which is also the shipped default. Requiring
+/// `trim() == value` here rejected the real format and left the profile with no
+/// usable composer anchor. Leading whitespace is still refused, as are empty,
+/// over-long and control-character values.
+fn valid_profile_text_prefix(value: &str) -> bool {
+    !value.trim().is_empty()
+        && value.trim_start() == value
         && value.len() <= 128
         && !value.chars().any(char::is_control)
 }
@@ -23442,7 +23455,29 @@ mod tests {
         );
         let locate = nested_function_body(source, "fn locate_with_timeout(");
         assert!(locate.contains("profile: &ComposerDiscoveryProfile"));
-        assert!(locate.contains("plausible_msaa_composer_for_profile(profile"));
+        // The profile-driven matcher moved out of locate_with_timeout in a refactor
+        // and now sits one call deeper, so assert the INVARIANT (the locate path
+        // matches through the signed profile) along the real chain instead of
+        // pinning it to one function's text.
+        assert!(
+            locate.contains("msaa_composer_candidates_from_points")
+                || locate.contains("msaa_composer_candidates_from_window"),
+            "locate must reach the composer candidate walk"
+        );
+        for candidates in [
+            nested_function_body(source, "fn msaa_composer_candidates_from_points("),
+            nested_function_body(source, "fn msaa_composer_candidates_from_window("),
+        ] {
+            assert!(
+                candidates.contains("msaa_composer_element("),
+                "the candidate walk must go through msaa_composer_element"
+            );
+        }
+        let element = nested_function_body(source, "fn msaa_composer_element(");
+        assert!(
+            element.contains("plausible_msaa_composer_for_profile(profile"),
+            "the composer must be matched through the signed profile, not a hardcoded rule"
+        );
         assert!(locate.contains(".conversation_from_composer_name(&composer_name)"));
         // No caller decides whether to WALK by feature. Every `require_header`
         // argument is now a plain literal or a forwarded parameter.
