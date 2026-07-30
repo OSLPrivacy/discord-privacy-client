@@ -158,6 +158,16 @@ fn assert_artifacts_exclude_plaintext(
 
 #[test]
 fn trusted_root_and_independent_aead_envelope_controls_are_nonvacuous() {
+    final_a6_storage_aead_and_boundary_proof();
+}
+
+#[test]
+fn final_a6_acceptance() {
+    final_a6_storage_aead_and_boundary_proof();
+    final_a6_dependency_source_guards();
+}
+
+fn final_a6_storage_aead_and_boundary_proof() {
     let tmp = TempDir::new().unwrap();
     let decoy = TempDir::new().unwrap();
     let backup = TempDir::new().unwrap();
@@ -522,6 +532,140 @@ fn trusted_root_and_independent_aead_envelope_controls_are_nonvacuous() {
             "application/octet-stream".to_string(),
             attachment_b.to_vec()
         ))
+    );
+}
+
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("store crate lives under <workspace>/crates/store")
+        .to_path_buf()
+}
+
+fn workspace_source(path: &str) -> String {
+    let path = workspace_root().join(path);
+    fs::read_to_string(&path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()))
+}
+
+fn assert_source_contains(source_name: &str, source: &str, needle: &str) {
+    assert!(
+        source.contains(needle),
+        "{source_name} must contain final A6 guard: {needle}"
+    );
+}
+
+fn assert_source_excludes(source_name: &str, source: &str, needle: &str) {
+    assert!(
+        !source.contains(needle),
+        "{source_name} must not contain final A6 regression: {needle}"
+    );
+}
+
+fn final_a6_dependency_source_guards() {
+    let secure_local_store = workspace_source("apps/osl-hub-ui/src/secure-local-store.ts");
+    assert_source_contains(
+        "secure-local-store.ts",
+        &secure_local_store,
+        "const ALGORITHM = \"AES-256-GCM\";",
+    );
+    assert!(
+        secure_local_store
+            .matches("additionalData: toArrayBuffer(this.#aad(logicalKey))")
+            .count()
+            >= 2,
+        "secure-local-store.ts must bind both seal and open to the logical key AAD"
+    );
+    assert_source_contains(
+        "secure-local-store.ts",
+        &secure_local_store,
+        "this.#storage.setItem(this.#storageKey(logicalKey), JSON.stringify(envelope));",
+    );
+    assert_source_contains(
+        "secure-local-store.ts",
+        &secure_local_store,
+        "if (!subtle || rawKey.byteLength !== RAW_KEY_BYTES) throw new SecureLocalStoreError();",
+    );
+    assert_source_excludes(
+        "secure-local-store.ts",
+        &secure_local_store,
+        "this.#storage.setItem(logicalKey, plaintext)",
+    );
+
+    let main_ts = workspace_source("apps/osl-hub-ui/src/main.ts");
+    assert_source_contains(
+        "main.ts",
+        &main_ts,
+        "import type { SecureLocalStore } from \"./secure-local-store\";",
+    );
+    assert_source_contains(
+        "main.ts",
+        &main_ts,
+        "void oslChatSecureStore.setItem(logicalKey, payload).catch(() => undefined);",
+    );
+    assert_source_contains(
+        "main.ts",
+        &main_ts,
+        "await loadOslChatSensitiveStateFromSecureStore();",
+    );
+    assert_source_contains(
+        "main.ts",
+        &main_ts,
+        "await store.setItem(oslChatUnreadStorageKey, encodeOslChatUnread(parsed));",
+    );
+    for sensitive_key in [
+        "oslChatPreviewStorageKey",
+        "oslChatMutedStorageKey",
+        "oslChatUnreadStorageKey",
+    ] {
+        assert_source_excludes(
+            "main.ts",
+            &main_ts,
+            &format!("localStorage.setItem({sensitive_key}"),
+        );
+    }
+
+    let membership = workspace_source("crates/ipc/src/membership.rs");
+    assert_source_contains(
+        "membership.rs",
+        &membership,
+        "crate::main_password::get_file_storage_key().ok_or_else",
+    );
+    assert_source_contains(
+        "membership.rs",
+        &membership,
+        "OSL: refusing to write plaintext membership.json",
+    );
+    assert_source_contains(
+        "membership.rs",
+        &membership,
+        "crate::main_password::encrypt_at_rest(&body, &key)",
+    );
+    assert_source_excludes("membership.rs", &membership, "maybe_encrypt(&body)");
+
+    let commands = workspace_source("crates/ipc/src/commands.rs");
+    for rel in [
+        "\"store/messages.sqlite\"",
+        "\"store/messages.sqlite-wal\"",
+        "\"store/messages.sqlite-shm\"",
+    ] {
+        assert_source_contains("commands.rs", &commands, rel);
+    }
+    assert_source_contains(
+        "commands.rs",
+        &commands,
+        "crate::mandatory_storage_key_policy::MandatoryStorageKeyPolicy::new()",
+    );
+    assert_source_contains(
+        "commands.rs",
+        &commands,
+        ".authorize_write(rel, destination_encrypted)",
+    );
+    assert_source_contains("commands.rs", &commands, "without an encrypted destination");
+    assert_source_contains(
+        "commands.rs",
+        &commands,
+        "refusal must happen before a plaintext Store rollback copy is written",
     );
 }
 
