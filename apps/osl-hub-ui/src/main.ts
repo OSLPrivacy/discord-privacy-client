@@ -610,6 +610,20 @@ function encodeOslChatPreviewVisibility(visible: boolean): string {
   return String(visible);
 }
 
+function parseOslChatNotifications(raw: string | null): AppNotification[] {
+  try {
+    const parsed = JSON.parse(raw ?? "[]") as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.slice(0, 20).filter((item): item is AppNotification => typeof item === "object" && item !== null
+      && typeof (item as AppNotification).id === "string" && (item as AppNotification).id.length <= 96
+      && typeof (item as AppNotification).title === "string" && (item as AppNotification).title.length <= 120
+      && (item as AppNotification).detail === "New encrypted message"
+      && typeof (item as AppNotification).createdAt === "string" && (item as AppNotification).createdAt.length <= 32);
+  } catch {
+    return [];
+  }
+}
+
 function persistSensitiveOslChatJson(logicalKey: string, payload: string): void {
   if (!oslChatSecureStore) return;
   void oslChatSecureStore.setItem(logicalKey, payload).catch(() => undefined);
@@ -661,6 +675,12 @@ function applyOslChatUiPreferences(preferences: OslChatUiPreferenceSnapshot): vo
 
 async function loadOslChatSensitiveStateFromSecureStore(): Promise<void> {
   applyOslChatUiPreferences(await loadMigratedOslChatUiPreferences(oslChatSecureStore, localStorage));
+  const notices = parseOslChatNotifications(await secureOrLegacyOslChatPreference(
+    oslChatSecureStore,
+    localStorage,
+    oslChatNotificationStorageKey,
+  ));
+  if (notices.length) appNotifications = notices;
 }
 
 export function configureOslChatSecureLocalStore(store: OslChatSecureStore | null): void {
@@ -978,17 +998,6 @@ export async function loadUiPreferences(): Promise<void> {
   notificationSecurityActivity = localStorage.getItem(notificationSecurityStorageKey) !== "false";
   rnWirePolicyRequested = localStorage.getItem(rnWirePolicyStorageKey) === "true";
   await loadOslChatSensitiveStateFromSecureStore();
-  try {
-    const notices = JSON.parse(localStorage.getItem(oslChatNotificationStorageKey) ?? "[]") as unknown;
-    if (Array.isArray(notices)) {
-      const parsed = notices.slice(0, 20).filter((item): item is AppNotification => typeof item === "object" && item !== null
-        && typeof (item as AppNotification).id === "string" && (item as AppNotification).id.length <= 96
-        && typeof (item as AppNotification).title === "string" && (item as AppNotification).title.length <= 120
-        && (item as AppNotification).detail === "New encrypted message"
-        && typeof (item as AppNotification).createdAt === "string" && (item as AppNotification).createdAt.length <= 32);
-      if (parsed.length) appNotifications = parsed;
-    }
-  } catch { /* malformed local notification metadata is ignored */ }
   screenshotProtectionEnabled = false;
   mullvadAutoStart = localStorage.getItem(mullvadAutoStartStorageKey) === "true";
   enabledScrubSignals = parseScrubSignalGroups(localStorage.getItem(scrubSignalsStorageKey));
@@ -6108,7 +6117,7 @@ function persistOslChatUnread(): void {
 
 function persistOslChatNotifications(): void {
   const metadata = (appNotifications ?? []).filter((item) => item.detail === "New encrypted message").slice(0, 20);
-  localStorage.setItem(oslChatNotificationStorageKey, JSON.stringify(metadata));
+  persistSensitiveOslChatJson(oslChatNotificationStorageKey, JSON.stringify(metadata));
 }
 
 function mergePersistedOslChatNotifications(items: AppNotification[] | null): AppNotification[] {
