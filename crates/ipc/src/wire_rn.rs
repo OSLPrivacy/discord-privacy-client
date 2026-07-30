@@ -524,9 +524,17 @@ pub fn responder_binding(
 /// One file per peer per kind. Per-peer granularity keeps a torn write
 /// from taking out more than one conversation and avoids rewriting every
 /// session on every message.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RnSessionStore {
     dir: PathBuf,
+}
+
+impl std::fmt::Debug for RnSessionStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RnSessionStore")
+            .field("dir", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -581,6 +589,15 @@ impl RnSessionStore {
     /// counter if the send then fails, which the ratchet tolerates as an
     /// ordinary skipped message.
     pub fn save_session(
+        &self,
+        peer_identity_x25519: &[u8; 32],
+        session: &Session,
+    ) -> Result<(), RnError> {
+        let sealer = keystore::select_best_sealer();
+        self.save_session_with_sealer(peer_identity_x25519, session, sealer.as_ref())
+    }
+
+    pub fn save_session_with_sealer(
         &self,
         peer_identity_x25519: &[u8; 32],
         session: &Session,
@@ -651,6 +668,14 @@ impl RnSessionStore {
     /// deliberately not the same thing as an error: a missing session is
     /// routine, a corrupt one is not.
     pub fn load_session(
+        &self,
+        peer_identity_x25519: &[u8; 32],
+    ) -> Result<Option<Session>, RnError> {
+        let sealer = keystore::select_best_sealer();
+        self.load_session_with_sealer(peer_identity_x25519, sealer.as_ref())
+    }
+
+    pub fn load_session_with_sealer(
         &self,
         peer_identity_x25519: &[u8; 32],
         sealer: &dyn keystore::sealer::Sealer,
@@ -776,6 +801,31 @@ impl RnSessionStore {
 #[allow(clippy::too_many_arguments)]
 pub fn initiate_and_persist(
     store: &RnSessionStore,
+    own_identity_secret: &osl_ratchet_next::XSecret,
+    own_identity_public: &[u8; 32],
+    peer: &PeerBundle,
+    caps: keystore::client::PeerCapabilities,
+    peer_mlkem768_ek: &[u8],
+    context: &[u8],
+    params: SessionParams,
+) -> Result<Session, RnError> {
+    let sealer = keystore::select_best_sealer();
+    initiate_and_persist_with_sealer(
+        store,
+        sealer.as_ref(),
+        own_identity_secret,
+        own_identity_public,
+        peer,
+        caps,
+        peer_mlkem768_ek,
+        context,
+        params,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn initiate_and_persist_with_sealer(
+    store: &RnSessionStore,
     sealer: &dyn keystore::sealer::Sealer,
     own_identity_secret: &osl_ratchet_next::XSecret,
     own_identity_public: &[u8; 32],
@@ -794,7 +844,7 @@ pub fn initiate_and_persist(
     let session = osl_ratchet_next::initiate_rn_bound(own_identity_secret, peer, &binding, params)
         .map_err(RnError::from)?;
     let peer_id = *peer.identity.as_bytes();
-    store.save_session(&peer_id, &session, sealer)?;
+    store.save_session_with_sealer(&peer_id, &session, sealer)?;
     if caps.supports_rn() {
         store.raise_pin_to_rn(&peer_id)?;
     }
@@ -808,6 +858,28 @@ pub fn initiate_and_persist(
 /// authenticated demonstrably speaks OSL-RN, which is stronger evidence
 /// than any advertisement.
 pub fn accept_and_persist(
+    store: &RnSessionStore,
+    local: &LocalPrekeys,
+    own_identity_public: &[u8; 32],
+    own_mlkem768_ek: &[u8],
+    wire: &str,
+    context: &[u8],
+    params: SessionParams,
+) -> Result<(Session, Opened), RnError> {
+    let sealer = keystore::select_best_sealer();
+    accept_and_persist_with_sealer(
+        store,
+        sealer.as_ref(),
+        local,
+        own_identity_public,
+        own_mlkem768_ek,
+        wire,
+        context,
+        params,
+    )
+}
+
+pub fn accept_and_persist_with_sealer(
     store: &RnSessionStore,
     sealer: &dyn keystore::sealer::Sealer,
     local: &LocalPrekeys,
@@ -829,7 +901,7 @@ pub fn accept_and_persist(
     let (session, opened) =
         osl_ratchet_next::accept_rn_bound(local, wire, &binding, params).map_err(RnError::from)?;
     let peer_id = *initiator.as_bytes();
-    store.save_session(&peer_id, &session, sealer)?;
+    store.save_session_with_sealer(&peer_id, &session, sealer)?;
     store.raise_pin_to_rn(&peer_id)?;
     Ok((session, opened))
 }
@@ -842,6 +914,22 @@ pub fn accept_and_persist(
 /// wire. If saving fails, the wire is not returned.
 pub fn send_rn(
     store: &RnSessionStore,
+    peer_identity_x25519: &[u8; 32],
+    msg_type: u8,
+    plaintext: &[u8],
+) -> Result<String, RnError> {
+    let sealer = keystore::select_best_sealer();
+    send_rn_with_sealer(
+        store,
+        sealer.as_ref(),
+        peer_identity_x25519,
+        msg_type,
+        plaintext,
+    )
+}
+
+pub fn send_rn_with_sealer(
+    store: &RnSessionStore,
     sealer: &dyn keystore::sealer::Sealer,
     peer_identity_x25519: &[u8; 32],
     msg_type: u8,
@@ -852,11 +940,11 @@ pub fn send_rn(
     }
 
     let mut session = store
-        .load_session(peer_identity_x25519, sealer)?
+        .load_session_with_sealer(peer_identity_x25519, sealer)?
         .ok_or_else(|| RnError::Protocol("no OSL-RN session on file".into()))?;
     let wire =
         osl_ratchet_next::encrypt_rn(&mut session, msg_type, plaintext).map_err(RnError::from)?;
-    store.save_session(peer_identity_x25519, &session, sealer)?;
+    store.save_session_with_sealer(peer_identity_x25519, &session, sealer)?;
     Ok(wire)
 }
 
@@ -867,6 +955,15 @@ pub fn send_rn(
 /// is persisted before the opened plaintext is returned.
 pub fn receive_rn(
     store: &RnSessionStore,
+    peer_identity_x25519: &[u8; 32],
+    wire: &str,
+) -> Result<Opened, RnError> {
+    let sealer = keystore::select_best_sealer();
+    receive_rn_with_sealer(store, sealer.as_ref(), peer_identity_x25519, wire)
+}
+
+pub fn receive_rn_with_sealer(
+    store: &RnSessionStore,
     sealer: &dyn keystore::sealer::Sealer,
     peer_identity_x25519: &[u8; 32],
     wire: &str,
@@ -876,10 +973,10 @@ pub fn receive_rn(
     }
 
     let mut session = store
-        .load_session(peer_identity_x25519, sealer)?
+        .load_session_with_sealer(peer_identity_x25519, sealer)?
         .ok_or_else(|| RnError::Protocol("no OSL-RN session on file".into()))?;
     let opened = osl_ratchet_next::decrypt_rn(&mut session, wire).map_err(RnError::from)?;
-    store.save_session(peer_identity_x25519, &session, sealer)?;
+    store.save_session_with_sealer(peer_identity_x25519, &session, sealer)?;
     Ok(opened)
 }
 
@@ -1070,7 +1167,7 @@ mod tests {
         let alice_id = b5_identity(42, "alice-b5-rn");
         let alice_secret = XSecret::from_bytes(*alice_id.x25519_secret.as_bytes());
         let mut rng = seeded_rng(41);
-        let mut alice = initiate_and_persist(
+        let mut alice = initiate_and_persist_with_sealer(
             &store,
             &sealer,
             &alice_secret,
@@ -1093,7 +1190,7 @@ mod tests {
         let wire = alice.encrypt(0, b"from b5", &mut rng).expect("encrypt");
 
         let (_d2, bob_store) = fresh_store();
-        let (_bob, opened) = accept_and_persist(
+        let (_bob, opened) = accept_and_persist_with_sealer(
             &bob_store,
             &sealer,
             &bob_local,
@@ -1382,6 +1479,17 @@ mod tests {
         (dir, store)
     }
 
+    #[test]
+    fn rn_session_store_debug_does_not_print_its_directory() {
+        let (_d, store) = fresh_store();
+        let rendered = format!("{store:?}");
+        assert!(rendered.contains("RnSessionStore"));
+        assert!(
+            !rendered.contains(store.dir.to_string_lossy().as_ref()),
+            "debug output must not include local account storage paths"
+        );
+    }
+
     fn with_wire_in_enabled_for_test<T>(enabled: bool, f: impl FnOnce() -> T) -> T {
         struct Reset(Option<bool>);
 
@@ -1474,11 +1582,11 @@ mod tests {
         let peer = [31u8; 32];
 
         assert!(matches!(
-            send_rn(&store, &sealer, &peer, 7, b"blocked"),
+            send_rn_with_sealer(&store, &sealer, &peer, 7, b"blocked"),
             Err(RnError::WireInDisabled)
         ));
         assert!(matches!(
-            receive_rn(&store, &sealer, &peer, "not touched"),
+            receive_rn_with_sealer(&store, &sealer, &peer, "not touched"),
             Err(RnError::WireInDisabled)
         ));
 
@@ -1499,20 +1607,22 @@ mod tests {
         let session =
             Session::initiate(&ik, &bundle, SessionParams::default(), &mut rng).expect("initiate");
         let peer = *bundle.identity.as_bytes();
-        store.save_session(&peer, &session, &sealer).expect("save");
+        store
+            .save_session_with_sealer(&peer, &session, &sealer)
+            .expect("save");
 
         let loaded_before = store
-            .load_session(&peer, &sealer)
+            .load_session_with_sealer(&peer, &sealer)
             .expect("load before")
             .expect("session before");
         let mut exported_before = SecureSession::export(&loaded_before).expect("export before");
         let wire = with_wire_in_enabled_for_test(true, || {
-            send_rn(&store, &sealer, &peer, 7, b"persist before return").expect("send")
+            send_rn_with_sealer(&store, &sealer, &peer, 7, b"persist before return").expect("send")
         });
         assert!(!wire.is_empty(), "send must return the wire after saving");
 
         let loaded_after = store
-            .load_session(&peer, &sealer)
+            .load_session_with_sealer(&peer, &sealer)
             .expect("load after")
             .expect("session after");
         let mut exported_after = SecureSession::export(&loaded_after).expect("export after");
@@ -1535,10 +1645,12 @@ mod tests {
         let session =
             Session::initiate(&ik, &bundle, SessionParams::default(), &mut rng).expect("initiate");
         let peer = *bundle.identity.as_bytes();
-        store.save_session(&peer, &session, &sealer).expect("save");
+        store
+            .save_session_with_sealer(&peer, &session, &sealer)
+            .expect("save");
 
         let result = with_wire_in_enabled_for_test(true, || {
-            send_rn(&store, &failing, &peer, 8, b"must not escape")
+            send_rn_with_sealer(&store, &failing, &peer, 8, b"must not escape")
         });
         assert!(
             result.is_err(),
@@ -1561,13 +1673,16 @@ mod tests {
         let session =
             Session::initiate(&ik, &bundle, SessionParams::default(), &mut rng).expect("initiate");
         let peer = *bundle.identity.as_bytes();
-        store.save_session(&peer, &session, &sealer).expect("save");
+        store
+            .save_session_with_sealer(&peer, &session, &sealer)
+            .expect("save");
 
         let wire1 = with_wire_in_enabled_for_test(true, || {
-            send_rn(&store, &sealer, &peer, 9, b"same plaintext").expect("first send")
+            send_rn_with_sealer(&store, &sealer, &peer, 9, b"same plaintext").expect("first send")
         });
         let wire2 = with_wire_in_enabled_for_test(true, || {
-            send_rn(&store, &sealer, &peer, 9, b"same plaintext").expect("second send after reload")
+            send_rn_with_sealer(&store, &sealer, &peer, 9, b"same plaintext")
+                .expect("second send after reload")
         });
 
         assert_ne!(
@@ -1587,14 +1702,48 @@ mod tests {
         let peer = *bundle.identity.as_bytes();
 
         assert!(matches!(
-            store.save_session(&peer, &session, &NoOpSealer),
+            store.save_session_with_sealer(&peer, &session, &NoOpSealer),
             Err(RnError::PlaintextSealerRefused)
         ));
         // And nothing was written.
         assert!(store
-            .load_session(&peer, &MemorySealer::new())
+            .load_session_with_sealer(&peer, &MemorySealer::new())
             .expect("load")
             .is_none());
+    }
+
+    #[test]
+    fn b42_rn_session_store_uses_select_best_sealer_for_at_rest_sessions() {
+        let (_d, store) = fresh_store();
+        let mut rng = seeded_rng(0xB42);
+        let (_prekeys, bundle) = fresh_bundle(&mut rng);
+        let (ik, _) = x25519_keypair(&mut rng);
+        let session =
+            Session::initiate(&ik, &bundle, SessionParams::default(), &mut rng).expect("initiate");
+        let peer = *bundle.identity.as_bytes();
+
+        store
+            .save_session(&peer, &session)
+            .expect("default save uses selected sealer");
+
+        let raw = std::fs::read(store.session_path(&peer)).expect("read file");
+        let blob: SealedBlob = serde_json::from_slice(&raw).expect("parse blob");
+        let production_methods = [
+            keystore::sealer::METHOD_TPM,
+            keystore::sealer::METHOD_KEYRING,
+            keystore::sealer::METHOD_EPHEMERAL,
+        ];
+        assert!(
+            production_methods.contains(&blob.method.as_str()),
+            "RnSessionStore default path must use select_best_sealer, got {}",
+            blob.method
+        );
+        assert_ne!(blob.method, keystore::sealer::METHOD_NOOP);
+        assert_ne!(blob.method, keystore::sealer::METHOD_MEMORY);
+        assert!(store
+            .load_session(&peer)
+            .expect("default load uses selected sealer")
+            .is_some());
     }
 
     #[test]
@@ -1611,10 +1760,12 @@ mod tests {
         let wire = alice
             .encrypt(0, b"before restart", &mut rng)
             .expect("encrypt");
-        store.save_session(&peer, &alice, &sealer).expect("save");
+        store
+            .save_session_with_sealer(&peer, &alice, &sealer)
+            .expect("save");
 
         let mut restored = store
-            .load_session(&peer, &sealer)
+            .load_session_with_sealer(&peer, &sealer)
             .expect("load")
             .expect("session present");
         let wire2 = restored
@@ -1641,7 +1792,9 @@ mod tests {
         let session =
             Session::initiate(&ik, &bundle, SessionParams::default(), &mut rng).expect("initiate");
         let peer = *bundle.identity.as_bytes();
-        store.save_session(&peer, &session, &sealer).expect("save");
+        store
+            .save_session_with_sealer(&peer, &session, &sealer)
+            .expect("save");
 
         let raw = std::fs::read(store.session_path(&peer)).expect("read file");
         // The plaintext export must not appear anywhere in the file.
@@ -1694,14 +1847,19 @@ mod tests {
             Session::initiate(&ik, &bundle, SessionParams::default(), &mut rng).expect("initiate");
         let peer = *bundle.identity.as_bytes();
 
-        store.save_session(&peer, &session, &sealer).expect("save");
+        store
+            .save_session_with_sealer(&peer, &session, &sealer)
+            .expect("save");
         store.raise_pin_to_rn(&peer).expect("pin");
 
         // Simulate total session loss (crash, corruption, manual wipe).
         store.delete_session(&peer).expect("delete");
 
         assert!(
-            store.load_session(&peer, &sealer).expect("load").is_none(),
+            store
+                .load_session_with_sealer(&peer, &sealer)
+                .expect("load")
+                .is_none(),
             "a lost session must read as absent, i.e. re-handshake"
         );
         let pin = store.load_pin(&peer).expect("load pin");
@@ -1725,10 +1883,12 @@ mod tests {
         let session =
             Session::initiate(&ik, &bundle, SessionParams::default(), &mut rng).expect("initiate");
         let peer = *bundle.identity.as_bytes();
-        store.save_session(&peer, &session, &sealer).expect("save");
+        store
+            .save_session_with_sealer(&peer, &session, &sealer)
+            .expect("save");
 
         std::fs::write(store.session_path(&peer), b"{\"not\": \"a blob\"}").expect("clobber");
-        assert!(store.load_session(&peer, &sealer).is_err());
+        assert!(store.load_session_with_sealer(&peer, &sealer).is_err());
     }
 
     #[test]
@@ -1759,7 +1919,9 @@ mod tests {
         let session =
             Session::initiate(&ik, &bundle, SessionParams::default(), &mut rng).expect("initiate");
         let peer = *bundle.identity.as_bytes();
-        store.save_session(&peer, &session, &sealer).expect("save");
+        store
+            .save_session_with_sealer(&peer, &session, &sealer)
+            .expect("save");
         store.raise_pin_to_rn(&peer).expect("pin");
 
         let path = store.session_path(&peer);
@@ -1770,7 +1932,7 @@ mod tests {
         lengths.push(whole.len().saturating_sub(1));
         for cut in lengths {
             std::fs::write(&path, &whole[..cut]).expect("truncate");
-            match store.load_session(&peer, &sealer) {
+            match store.load_session_with_sealer(&peer, &sealer) {
                 Err(_) => {}
                 Ok(None) => panic!("a truncated session must not read as absent"),
                 Ok(Some(_)) => panic!("a truncated session must not import"),
@@ -1783,7 +1945,10 @@ mod tests {
         // Deleting the unreadable file is the sanctioned recovery, and
         // it lands on "re-handshake", not on "v=3 is fine".
         store.delete_session(&peer).expect("delete");
-        assert!(store.load_session(&peer, &sealer).expect("load").is_none());
+        assert!(store
+            .load_session_with_sealer(&peer, &sealer)
+            .expect("load")
+            .is_none());
         assert!(matches!(
             select_wire_version(
                 &store.load_pin(&peer).expect("pin"),
@@ -1805,11 +1970,11 @@ mod tests {
         let path = store.session_path(&peer);
         std::fs::write(&path, vec![b'x'; MAX_SESSION_FILE_BYTES as usize + 1]).expect("write");
         assert!(matches!(
-            store.load_session(&peer, &sealer),
+            store.load_session_with_sealer(&peer, &sealer),
             Err(RnError::Storage(_))
         ));
         assert!(matches!(
-            store.load_session(&peer, &sealer),
+            store.load_session_with_sealer(&peer, &sealer),
             Err(RnError::Storage(message))
                 if message == format!(
                     "session file is {} bytes, over the {MAX_SESSION_FILE_BYTES}-byte bound",
@@ -1847,7 +2012,7 @@ mod tests {
             Session::initiate(&ik, &bundle, SessionParams::default(), &mut rng).expect("initiate");
         let incumbent_peer = *bundle.identity.as_bytes();
         store
-            .save_session(&incumbent_peer, &incumbent, &sealer)
+            .save_session_with_sealer(&incumbent_peer, &incumbent, &sealer)
             .expect("save");
 
         // Fill the remaining slots with placeholder records. Their
@@ -1862,19 +2027,19 @@ mod tests {
             .expect("initiate");
         let newcomer_peer = *bundle2.identity.as_bytes();
         assert!(matches!(
-            store.save_session(&newcomer_peer, &newcomer, &sealer),
+            store.save_session_with_sealer(&newcomer_peer, &newcomer, &sealer),
             Err(RnError::StoreFull { .. })
         ));
 
         // The incumbent is untouched and still loads.
         assert!(store
-            .load_session(&incumbent_peer, &sealer)
+            .load_session_with_sealer(&incumbent_peer, &sealer)
             .expect("load")
             .is_some());
         // Overwriting an existing record is still allowed at the cap:
         // an established conversation is never starved by it.
         store
-            .save_session(&incumbent_peer, &incumbent, &sealer)
+            .save_session_with_sealer(&incumbent_peer, &incumbent, &sealer)
             .expect("overwrite at cap");
     }
 
@@ -1896,10 +2061,12 @@ mod tests {
         };
         let session = Session::initiate(&ik, &bundle, loose, &mut rng).expect("initiate");
         let peer = *bundle.identity.as_bytes();
-        store.save_session(&peer, &session, &sealer).expect("save");
+        store
+            .save_session_with_sealer(&peer, &session, &sealer)
+            .expect("save");
 
         assert!(matches!(
-            store.load_session(&peer, &sealer),
+            store.load_session_with_sealer(&peer, &sealer),
             Err(RnError::SkippedCacheTooLarge { .. })
         ));
         // A session at the ceiling still loads.
@@ -1912,8 +2079,13 @@ mod tests {
         };
         let ok = Session::initiate(&ik, &bundle, at_ceiling, &mut rng).expect("initiate");
         let peer2 = [77u8; 32];
-        store.save_session(&peer2, &ok, &sealer).expect("save");
-        assert!(store.load_session(&peer2, &sealer).expect("load").is_some());
+        store
+            .save_session_with_sealer(&peer2, &ok, &sealer)
+            .expect("save");
+        assert!(store
+            .load_session_with_sealer(&peer2, &sealer)
+            .expect("load")
+            .is_some());
     }
 
     #[test]
@@ -1948,7 +2120,7 @@ mod tests {
         let bob_ek = bob_bundle.pq_prekey.to_bytes();
         let peer = *bob_bundle.identity.as_bytes();
 
-        initiate_and_persist(
+        initiate_and_persist_with_sealer(
             &store,
             &sealer,
             &alice_ik,
@@ -1985,7 +2157,7 @@ mod tests {
         let bob_ek = bob_bundle.pq_prekey.to_bytes();
         let peer = *bob_bundle.identity.as_bytes();
 
-        initiate_and_persist(
+        initiate_and_persist_with_sealer(
             &store,
             &sealer,
             &alice_ik,
@@ -2022,7 +2194,7 @@ mod tests {
         let bob_ek = bob_bundle.pq_prekey.to_bytes();
         let peer = *bob_bundle.identity.as_bytes();
 
-        initiate_and_persist(
+        initiate_and_persist_with_sealer(
             &store,
             &sealer,
             &alice_ik,
@@ -2059,7 +2231,7 @@ mod tests {
         let bob_ek = bob_bundle.pq_prekey.to_bytes();
         let peer = *bob_bundle.identity.as_bytes();
 
-        initiate_and_persist(
+        initiate_and_persist_with_sealer(
             &store,
             &sealer,
             &alice_ik,
@@ -2075,7 +2247,7 @@ mod tests {
 
         assert!(
             store
-                .load_session(&peer, &sealer)
+                .load_session_with_sealer(&peer, &sealer)
                 .expect("load session")
                 .is_none(),
             "session deletion must leave no persisted session"
@@ -2097,7 +2269,7 @@ mod tests {
         let (alice_ik, alice_ik_pub) = x25519_keypair(&mut rng);
         let bob_ek = bob_bundle.pq_prekey.to_bytes();
 
-        let mut alice = initiate_and_persist(
+        let mut alice = initiate_and_persist_with_sealer(
             &store,
             &sealer,
             &alice_ik,
@@ -2120,7 +2292,7 @@ mod tests {
         // Bob accepts through his own store.
         let (_d2, bob_store) = fresh_store();
         let bob_ik_pub = bob_prekeys.identity.public();
-        let (_bob, opened) = accept_and_persist(
+        let (_bob, opened) = accept_and_persist_with_sealer(
             &bob_store,
             &sealer,
             &bob_prekeys,
