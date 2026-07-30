@@ -861,10 +861,10 @@ fn marker_phrase_hash(marker: &PasswordMarker) -> Option<String> {
 // changes to existing readers.
 //
 // Plain JSON (no OSL-ENC1 prefix) is still accepted by loaders so
-// users without a password keep working, and so the migration to
-// encryption-at-rest on first `set_main_password` is a one-shot
-// re-write. `clear_file_storage_key()` is called from
-// `remove_main_password` to revert future writes to plain JSON.
+// old files can be migrated. Writes always encrypt: either with the
+// main-password-derived key already in the slot, or with a device-bound
+// fallback key opened from the active config dir when no main password is
+// configured.
 // =====================================================================
 
 use std::sync::{Mutex, OnceLock};
@@ -1043,13 +1043,23 @@ pub fn maybe_decrypt(blob: &[u8]) -> Result<Vec<u8>, String> {
     decrypt_at_rest(blob, &key)
 }
 
-/// Convenience: write-side mirror of `maybe_decrypt`. If a key is
-/// in the slot, encrypt; otherwise return plaintext verbatim.
+/// Convenience: write-side mirror of `maybe_decrypt`.
+///
+/// Writes never fall back to plaintext. If no main-password-derived key is
+/// present in the process slot, open or create the device-bound fallback key
+/// for the active OSL config directory and use that. When a main-password
+/// marker exists but the user has not unlocked it, the fallback key is refused
+/// and the write fails closed.
 pub fn maybe_encrypt(plaintext: &[u8]) -> Result<Vec<u8>, String> {
-    match get_file_storage_key().map(Zeroizing::new) {
-        Some(key) => encrypt_at_rest(plaintext, &key),
-        None => Ok(plaintext.to_vec()),
-    }
+    let key = match get_file_storage_key() {
+        Some(key) => Zeroizing::new(key),
+        None => {
+            let dir = keystore::osl_config_dir()
+                .map_err(|e| format!("OSL: resolve config dir for at-rest encrypt: {e}"))?;
+            Zeroizing::new(ensure_device_bound_fallback_file_storage_key(&dir)?)
+        }
+    };
+    encrypt_at_rest(plaintext, &key)
 }
 
 pub fn has_enc_magic(blob: &[u8]) -> bool {
@@ -1423,6 +1433,22 @@ pub fn burn_wipe_all(dir: &Path) -> Result<(), String> {
 mod password_policy_tests {
     use super::*;
 
+    struct ConfigDirOverrideGuard;
+
+    impl Drop for ConfigDirOverrideGuard {
+        fn drop(&mut self) {
+            keystore::set_active_account_dir(None);
+            keystore::set_base_dir_override(None);
+            set_file_storage_key(None);
+        }
+    }
+
+    fn use_temp_config_dir(dir: &Path) -> ConfigDirOverrideGuard {
+        keystore::set_active_account_dir(None);
+        keystore::set_base_dir_override(Some(dir.to_path_buf()));
+        ConfigDirOverrideGuard
+    }
+
     #[test]
     fn six_character_passwords_can_be_created_and_unlocked() {
         assert!(validate_password("aB3!z9").is_ok());
@@ -1478,6 +1504,43 @@ mod password_policy_tests {
             "main-password installs must not also mint fallback authority"
         );
         set_file_storage_key(None);
+    }
+
+    #[test]
+    fn maybe_encrypt_always_encrypts() {
+        set_file_storage_key(None);
+        let dir = tempfile::tempdir().unwrap();
+        let _override = use_temp_config_dir(dir.path());
+
+        let plaintext = br#"{"protected":"without-main-password"}"#;
+        let sealed = maybe_encrypt(plaintext).unwrap();
+
+        assert!(
+            has_enc_magic(&sealed),
+            "maybe_encrypt with no main-password key must create an encrypted envelope"
+        );
+        assert_ne!(
+            sealed.as_slice(),
+            plaintext,
+            "maybe_encrypt must not return plaintext when the key slot starts empty"
+        );
+        assert!(
+            device_bound_fallback_key_path(dir.path()).exists(),
+            "no-main-password encryption must persist a sealed device-bound fallback key"
+        );
+        assert!(
+            get_file_storage_key().is_some(),
+            "device-bound fallback key should be installed for decrypting subsequent reads"
+        );
+        assert_eq!(maybe_decrypt(&sealed).unwrap(), plaintext);
+
+        set_file_storage_key(Some([0xA9; KEY_LEN]));
+        let sealed_with_main_key = maybe_encrypt(plaintext).unwrap();
+        assert!(
+            has_enc_magic(&sealed_with_main_key),
+            "maybe_encrypt with a main-password key must also encrypt"
+        );
+        assert_eq!(maybe_decrypt(&sealed_with_main_key).unwrap(), plaintext);
     }
 
     #[test]
