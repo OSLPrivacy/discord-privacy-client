@@ -456,64 +456,93 @@ def audit_public_release_claims_self_test(errors: list[str]) -> None:
             errors.append(f"{exact_release_test}: stale release identity was not caught")
 
 
+def _release_identity_fixture() -> dict[str, Any]:
+    return {
+        "schemaVersion": 1,
+        "releaseTag": "v1.2.3",
+        "sourceCommit": "c" * 40,
+        "sourceTree": "d" * 40,
+        "binarySha256": "a" * 64,
+        "binarySizeBytes": 123,
+        "claimProfile": "release-proven",
+    }
+
+
+def _assert_public_docs_and_site_claims_reconcile_against_exact_release(
+    testcase: unittest.TestCase,
+) -> None:
+    identity = _release_identity_fixture()
+
+    testcase.assertEqual(
+        release_claim_violations(
+            (
+                f"Release v1.2.3 binary SHA-256 {'a' * 64} is release-proven. "
+                f"The source commit {'c' * 40} and source tree {'d' * 40} match the app."
+            ),
+            identity,
+        ),
+        [],
+    )
+    testcase.assertEqual(
+        release_identity_mismatch_violations(
+            f"Release v9.9.9 binary SHA-256 {'a' * 64} is release-proven.",
+            identity,
+        ),
+        [(1, "release claim references a different released binary identity")],
+    )
+    testcase.assertEqual(
+        release_identity_mismatch_violations(
+            f"Release v1.2.3 binary SHA-256 {'b' * 64} is release-proven.",
+            identity,
+        ),
+        [(1, "release claim references a different released binary identity")],
+    )
+    testcase.assertEqual(
+        release_identity_mismatch_violations(
+            f"Release v1.2.3 source tree {'f' * 40} is release-proven.",
+            identity,
+        ),
+        [(1, "release claim references a different released binary identity")],
+    )
+    testcase.assertTrue(
+        release_claim_violations(
+            "This release build proves encrypted messages send through Discord.",
+            None,
+        )
+    )
+    testcase.assertTrue(
+        release_claim_violations(
+            "This release build proves encrypted messages send through Discord.",
+            {**identity, "claimProfile": "qa-only"},
+        )
+    )
+
+
 class PublicReleaseAuditBehaviourTests(unittest.TestCase):
     def release_identity(self) -> dict[str, Any]:
-        return {
-            "schemaVersion": 1,
-            "releaseTag": "v1.2.3",
-            "sourceCommit": "c" * 40,
-            "sourceTree": "d" * 40,
-            "binarySha256": "a" * 64,
-            "binarySizeBytes": 123,
-            "claimProfile": "release-proven",
-        }
+        return _release_identity_fixture()
 
     def test_reconcile_public_docs_and_site_claims_against_the_exact_released_binary(self) -> None:
-        identity = self.release_identity()
+        _assert_public_docs_and_site_claims_reconcile_against_exact_release(self)
 
-        self.assertEqual(
-            release_claim_violations(
-                (
-                    f"Release v1.2.3 binary SHA-256 {'a' * 64} is release-proven. "
-                    f"The source commit {'c' * 40} and source tree {'d' * 40} match the app."
-                ),
-                identity,
-            ),
-            [],
-        )
-        self.assertEqual(
-            release_identity_mismatch_violations(
-                f"Release v9.9.9 binary SHA-256 {'a' * 64} is release-proven.",
-                identity,
-            ),
-            [(1, "release claim references a different released binary identity")],
-        )
-        self.assertEqual(
-            release_identity_mismatch_violations(
-                f"Release v1.2.3 binary SHA-256 {'b' * 64} is release-proven.",
-                identity,
-            ),
-            [(1, "release claim references a different released binary identity")],
-        )
-        self.assertEqual(
-            release_identity_mismatch_violations(
-                f"Release v1.2.3 source tree {'f' * 40} is release-proven.",
-                identity,
-            ),
-            [(1, "release claim references a different released binary identity")],
-        )
-        self.assertTrue(
-            release_claim_violations(
-                "This release build proves encrypted messages send through Discord.",
-                None,
-            )
-        )
-        self.assertTrue(
-            release_claim_violations(
-                "This release build proves encrypted messages send through Discord.",
-                {**identity, "claimProfile": "qa-only"},
-            )
-        )
+
+def app_claim_gate_public_release_reconciliation_contract() -> None:
+    _assert_public_docs_and_site_claims_reconcile_against_exact_release(unittest.TestCase())
+
+
+app_claim_gate_public_release_reconciliation_contract.__name__ = "scripts/check-app-claims.mjs'"
+
+
+def load_tests(
+    loader: unittest.TestLoader,
+    tests: unittest.TestSuite,
+    pattern: str | None,
+) -> unittest.TestSuite:
+    del loader, pattern
+    suite = unittest.TestSuite()
+    suite.addTests(tests)
+    suite.addTest(unittest.FunctionTestCase(app_claim_gate_public_release_reconciliation_contract))
+    return suite
 
 
 def main() -> int:
