@@ -179,9 +179,14 @@ export function isValidNewMainPassword(password: string): boolean {
   return /^[\x20-\x7e]{6,128}$/.test(password);
 }
 
-export async function unlockHubPasswordGate(password: string): Promise<HubGateUnlockResult> {
-  if (!isTauriRuntime() || !isValidMainPassword(password)) throw new Error("unlock unavailable");
-  return parseHubGateUnlockResult(await invoke<unknown>("unlock_hub_password_gate", { password }));
+export async function unlockHubPasswordGate(password: string, duressPin?: string): Promise<HubGateUnlockResult> {
+  const hasPassword = isValidMainPassword(password);
+  const hasDuressPin = typeof duressPin === "string" && isValidMainPassword(duressPin);
+  if (!isTauriRuntime() || (!hasPassword && !hasDuressPin)) throw new Error("unlock unavailable");
+  return parseHubGateUnlockResult(await invoke<unknown>("unlock_hub_password_gate", {
+    password,
+    duressPin: hasDuressPin ? duressPin : null,
+  }));
 }
 
 export async function loadHubPasswordRoleStatus(): Promise<HubPasswordRoleStatus> {

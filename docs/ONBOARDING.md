@@ -268,9 +268,9 @@ warning or promise a covert apparent unlock.
 
 At sign in, a verified Burn password closes OSL-owned service
 windows, runs the fixed-root local cleanup, returns to first-run
-setup, and reports whether local cleanup completed. The earlier
-apparent-unlock and feature-strip sequence remains a draft design.
-The current desktop app does not call that `DuressEngine`.
+setup, and reports whether local cleanup completed. The sign-in burn
+path also invokes the journaled `DuressEngine` held by the IPC app
+state. Apparent-unlock copy remains intentionally absent.
 
 ## Post-reinstall key verification
 

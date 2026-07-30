@@ -1,12 +1,12 @@
-//! Legacy duress-engine primitives (implemented-unwired).
+//! Legacy duress-engine primitives (production-held by the Hub burn path).
 //!
 //! Spec: `docs/design/unlock-and-duress.md` "Duress flow — full
 //! specification" + `docs/design/build-order.md` Layer B3.
 //!
-//! Current Hub/IPC and legacy Tauri production sources neither construct a
-//! [`DuressEngine`] nor call its execute/resume methods. The current Hub's
-//! separately implemented burn-password path uses `startup_gate` and
-//! `cleanup`, not this engine.
+//! The current Hub IPC AppState constructs a [`DuressEngine`] with
+//! production paths, and the standalone Hub's burn-code sign-in path invokes
+//! [`DuressEngine::execute`] before its fixed-root cleanup. No production
+//! startup path currently calls [`DuressEngine::resume_if_pending`].
 //!
 //! The engine contract, when explicitly driven, has four phases:
 //!

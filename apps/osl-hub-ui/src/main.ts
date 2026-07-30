@@ -2036,7 +2036,7 @@ function secureRecoveryOnboardingContent(): string {
 
 function identityPasswordForm(title: string, action: string, mode: "setup" | "unlock"): string {
   const setup = mode === "setup";
-  if (!setup) return `<section class="unlock-card" aria-labelledby="route-heading"><div class="unlock-logo-stage" aria-hidden="true"><img class="osl-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/></div><h1 id="route-heading" tabindex="-1">Enter your password</h1><form class="password-form unlock-form" id="identity-password-form" data-password-mode="unlock" novalidate><label class="sr-only" for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="current-password" placeholder="Password" required aria-describedby="password-error" autofocus/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><button class="button primary" id="identity-password-submit" type="submit" disabled>Unlock</button></form><button class="text-back" data-onboarding="welcome">← Back</button></section>`;
+  if (!setup) return `<section class="unlock-card" aria-labelledby="route-heading"><div class="unlock-logo-stage" aria-hidden="true"><img class="osl-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/></div><h1 id="route-heading" tabindex="-1">Enter your password</h1><form class="password-form unlock-form" id="identity-password-form" data-password-mode="unlock" novalidate><label class="sr-only" for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="current-password" placeholder="Password" aria-describedby="password-error" autofocus/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><details class="alternate-unlock"><summary>Use a burn code</summary><label class="sr-only" for="identity-duress-pin">Burn code</label><div class="password-input-row"><input id="identity-duress-pin" data-duress-pin type="password" minlength="6" maxlength="128" autocomplete="off" placeholder="Burn code" aria-describedby="password-error"/><button class="password-eye" type="button" data-password-toggle="identity-duress-pin" aria-controls="identity-duress-pin" aria-label="Show burn code">${passwordEyeIcon()}</button></div></details><p class="unlock-error" id="password-error" role="alert"></p><button class="button primary" id="identity-password-submit" type="submit" disabled>Unlock</button></form><button class="text-back" data-onboarding="welcome">← Back</button></section>`;
   return `<h1 id="route-heading" tabindex="-1">${title}</h1><form class="setup-surface password-form" id="identity-password-form" data-password-mode="setup" novalidate><label for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="new-password" required aria-describedby="password-help password-error"/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><small id="password-help">6 minimum. 12+ suggested.</small><label for="identity-password-confirm">Confirm</label><div class="password-input-row"><input id="identity-password-confirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="identity-password-confirm" aria-controls="identity-password-confirm" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><button class="button primary" id="identity-password-submit" type="submit" disabled>${action}</button></form><button class="text-back" data-onboarding="welcome">← Back</button>`;
 }
 
@@ -2483,18 +2483,22 @@ async function runMullvadSetupAction(action: "install" | "open"): Promise<void> 
 function bindPasswordForm(): void {
   const form = document.querySelector<HTMLFormElement>("#identity-password-form");
   const password = document.querySelector<HTMLInputElement>("#identity-password");
+  const duressPin = document.querySelector<HTMLInputElement>("#identity-duress-pin");
   const confirm = document.querySelector<HTMLInputElement>("#identity-password-confirm");
   const submit = document.querySelector<HTMLButtonElement>("#identity-password-submit");
   const error = document.querySelector<HTMLElement>("#password-error");
   if (!form || !password || !submit || !error) return;
   const validate = (): void => {
-    const valid = form.dataset.passwordMode === "setup"
+    const setupMode = form.dataset.passwordMode === "setup";
+    const passwordValid = setupMode
       ? isValidNewMainPassword(password.value)
       : isValidMainPassword(password.value);
-    submit.disabled = !valid || Boolean(confirm && confirm.value !== password.value);
+    const duressValid = !setupMode && duressPin ? isValidMainPassword(duressPin.value) : false;
+    submit.disabled = !(passwordValid || duressValid) || Boolean(confirm && confirm.value !== password.value);
     error.textContent = "";
   };
   password.addEventListener("input", validate);
+  duressPin?.addEventListener("input", validate);
   confirm?.addEventListener("input", validate);
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -2502,12 +2506,16 @@ function bindPasswordForm(): void {
     const setupMode = form.dataset.passwordMode === "setup";
     const idleLabel = submit.textContent ?? (setupMode ? "Create account" : "Unlock");
     let secret = password.value;
+    let duressSecret = !setupMode && duressPin ? duressPin.value : "";
+    const duressAttempt = duressSecret.length > 0;
     form.setAttribute("aria-busy", "true");
     password.disabled = true;
+    if (duressPin) duressPin.disabled = true;
     if (confirm) confirm.disabled = true;
     submit.disabled = true;
     submit.textContent = setupMode ? "Creating account…" : "Unlocking…";
     if (!setupMode) password.value = "";
+    if (duressPin) duressPin.value = "";
     try {
       if (setupMode) {
         const identity = core.readiness.identityLoaded ? null : await createHubOslIdentity();
@@ -2528,17 +2536,19 @@ function bindPasswordForm(): void {
         onboardingRoute = "recovery";
         await proveRecoveryCaptureProtection();
       } else {
-        const gate = await unlockHubPasswordGate(secret);
+        const gate = await unlockHubPasswordGate(secret, duressSecret || undefined);
         secret = "";
+        duressSecret = "";
         if (gate.outcome === "wrong") {
           error.textContent = gate.lockoutSecondsRemaining > 0
             ? `Try again in ${gate.lockoutSecondsRemaining} seconds.`
-            : "Password not recognized.";
+            : "Password or burn code not recognized.";
           form.removeAttribute("aria-busy");
           password.disabled = false;
+          if (duressPin) duressPin.disabled = false;
           submit.disabled = false;
           submit.textContent = idleLabel;
-          password.focus();
+          (duressAttempt ? duressPin : password)?.focus();
           return;
         }
         if (gate.outcome === "decoy") {
@@ -2580,7 +2590,9 @@ function bindPasswordForm(): void {
         else onboardingRoute = pendingOnboardingRoute() ?? onboardingRouteForBuild("pro");
       }
       secret = "";
+      duressSecret = "";
       password.value = "";
+      if (duressPin) duressPin.value = "";
       if (confirm) confirm.value = "";
       render();
       if (discordQaShell && core.readiness.unlocked) void startDiscordQaShell();
@@ -2590,9 +2602,11 @@ function bindPasswordForm(): void {
       const refreshedCore = await withNativeDeadline(loadCoreIntegration(), "Check OSL account", bootPreferenceDeadlineMs).catch(() => null);
       if (!refreshedCore) {
         secret = "";
+        duressSecret = "";
         error.textContent = "OSL could not verify the account state. Try again.";
         form.removeAttribute("aria-busy");
         password.disabled = false;
+        if (duressPin) duressPin.disabled = false;
         if (confirm) confirm.disabled = false;
         submit.disabled = false;
         submit.textContent = idleLabel;
@@ -2635,6 +2649,7 @@ function bindPasswordForm(): void {
         return;
       }
       secret = "";
+      duressSecret = "";
       if (setupMode && readiness.bootstrapStatus === "setupRequired" && readiness.identityLoaded) {
         error.textContent = "Account created. Create its password to continue.";
       } else {
@@ -2642,6 +2657,7 @@ function bindPasswordForm(): void {
       }
       form.removeAttribute("aria-busy");
       password.disabled = false;
+      if (duressPin) duressPin.disabled = false;
       if (confirm) confirm.disabled = false;
       submit.disabled = false;
       submit.textContent = idleLabel;

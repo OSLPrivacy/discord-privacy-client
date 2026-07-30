@@ -98,6 +98,48 @@ pub fn verify_password_role(
     })
 }
 
+pub fn verify_duress_pin(
+    _state: &HubCoreState,
+    pin: String,
+) -> Result<GatePasswordVerification, String> {
+    let dir =
+        keystore::osl_base_dir().map_err(|_| "OSL password storage is unavailable".to_owned())?;
+    let mut lock = ipc::main_password::read_lockout_pub(&dir);
+    let now = ipc::main_password::now_unix_secs_pub();
+    if let Some(until) = lock.password_locked_until {
+        if now < until {
+            return Ok(GatePasswordVerification {
+                role: VerifiedGateRole::Wrong,
+                lockout_seconds_remaining: until - now,
+                attempts_used: lock.password_failed_attempts,
+            });
+        }
+    }
+
+    let marker = ipc::main_password::read_marker_pub(&dir)?;
+    let outcome = ipc::main_password::verify_gate_password_with_marker(&marker, &pin)?;
+    if matches!(outcome, ipc::main_password::GateMatch::Burn) {
+        lock.password_failed_attempts = 0;
+        lock.password_locked_until = None;
+        let _ = ipc::main_password::write_lockout_pub(&dir, &lock);
+        return Ok(GatePasswordVerification {
+            role: VerifiedGateRole::Burn,
+            lockout_seconds_remaining: 0,
+            attempts_used: 0,
+        });
+    }
+
+    lock.password_failed_attempts = lock.password_failed_attempts.saturating_add(1);
+    let secs = ipc::main_password::password_lockout_secs_pub(lock.password_failed_attempts);
+    lock.password_locked_until = if secs > 0 { Some(now + secs) } else { None };
+    let _ = ipc::main_password::write_lockout_pub(&dir, &lock);
+    Ok(GatePasswordVerification {
+        role: VerifiedGateRole::Wrong,
+        lockout_seconds_remaining: secs,
+        attempts_used: lock.password_failed_attempts,
+    })
+}
+
 pub fn readiness_after_main(state: &HubCoreState) -> CoreReadiness {
     core_bridge::readiness(state)
 }

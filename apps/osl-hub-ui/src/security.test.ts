@@ -1327,7 +1327,7 @@ describe("bundled preview security boundary", () => {
     ).toBe(false);
   });
 
-  it("separates legacy duress primitives from the reachable Hub burn password", () => {
+  it("keeps the journaled duress engine behind the reachable Hub burn password", () => {
     const duress = readRelative("../../../crates/keystore/src/duress.rs");
     const password = readRelative("../../../crates/keystore/src/password.rs");
     const keystoreLib = readRelative("../../../crates/keystore/src/lib.rs");
@@ -1382,7 +1382,10 @@ describe("bundled preview security boundary", () => {
       "verify_against_record, Argon2Params, InactivityTimer",
     );
 
-    expect(productionReferencesLegacyDuress(productionRust)).toBe(false);
+    expect(productionReferencesLegacyDuress(productionRust)).toBe(true);
+    expect(rustProductionPrefix(readRelative("../../../crates/ipc/src/state.rs"))).toContain(
+      "pub duress_engine: keystore::DuressEngine",
+    );
 
     // Positive controls for the separate, reachable Hub implementation.
     const mainProduction = rustProductionPrefix(main);
@@ -1390,10 +1393,10 @@ describe("bundled preview security boundary", () => {
       mainProduction.indexOf("tauri::generate_handler!["),
     );
     expect(handler).toContain("unlock_hub_password_gate,");
-    expect(mainProduction).toContain(
-      "startup_gate::verify_password_role(&verify_app.state::<HubCoreState>(), password)",
-    );
+    expect(mainProduction).toContain("startup_gate::verify_duress_pin");
     expect(mainProduction).toContain("VerifiedGateRole::Burn => {");
+    expect(mainProduction).toContain(".duress_engine");
+    expect(mainProduction).toContain(".execute()");
     expect(mainProduction).toContain("cleanup::execute_verified_gate_burn(");
 
     const assertLegacyDuressTruth = (
@@ -1401,13 +1404,13 @@ describe("bundled preview security boundary", () => {
       passwordSource: string,
     ): void => {
       expect(duressSource).toContain(
-        "Legacy duress-engine primitives (implemented-unwired)",
+        "Legacy duress-engine primitives (production-held by the Hub burn path)",
       );
       expect(duressSource).toContain(
-        "neither construct a\n//! [`DuressEngine`] nor call",
+        "constructs a [`DuressEngine`] with",
       );
       expect(duressSource).toContain(
-        "separately implemented burn-password path uses `startup_gate` and",
+        "burn-code sign-in path invokes",
       );
       expect(duressSource).toContain(
         "No production startup path currently",
@@ -1419,13 +1422,13 @@ describe("bundled preview security boundary", () => {
         "After each step attempt, the engine records its",
       );
       expect(passwordSource).toContain(
-        "Legacy unlock/duress record primitives (implemented-unwired)",
+        "Legacy unlock/duress record primitives.",
       );
       expect(passwordSource).toContain(
-        "call neither\n//! [`verify_against_record`] nor [`InactivityTimer`]",
+        "do not call\n//! [`verify_against_record`]",
       );
       expect(passwordSource).toContain(
-        "separately\n//! implemented password gate uses `startup_gate` and `cleanup`",
+        "IPC does use [`InactivityTimer`]",
       );
       expect(passwordSource).toContain(
         "When invoked, this module's storage helpers serialize",
@@ -1449,7 +1452,7 @@ describe("bundled preview security boundary", () => {
     expect(() =>
       assertLegacyDuressTruth(
         duress.replace(
-          "Legacy duress-engine primitives (implemented-unwired)",
+          "Legacy duress-engine primitives (production-held by the Hub burn path)",
           "Shipping duress flow execution",
         ),
         password,
