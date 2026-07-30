@@ -30,9 +30,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod bootstrap;
+mod information_architecture;
 mod injection;
 mod screenshot;
 
+use information_architecture::get_information_architecture_destinations;
 use ipc::commands::{
     cmd_aead_open, cmd_aead_seal, cmd_fetch_pubkeys, cmd_generate_identity, cmd_init_keyserver,
     cmd_load_identity, cmd_osl_apply_burn, cmd_osl_bulk_set_whitelist,
@@ -3175,6 +3177,7 @@ fn main() {
             stego_encode,
             stego_decode,
             status,
+            get_information_architecture_destinations,
             x25519_diffie_hellman,
             set_screenshot_protection,
             osl_encrypt_message,
