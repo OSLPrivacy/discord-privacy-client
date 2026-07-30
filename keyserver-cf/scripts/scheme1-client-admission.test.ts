@@ -365,7 +365,7 @@ describe("scheme-1 Rust-client deployment admission", () => {
     },
   );
 
-  it("enrolls the frozen shipping Rust client producer in the committed registry", () => {
+  it("enroll the frozen shipping Rust client as a trusted evidence producer", () => {
     const entries = Object.entries(TRUSTED_SCHEME1_CLIENT_EVIDENCE_PRODUCERS);
     expect(entries).toHaveLength(1);
     const [keyId, producer] = entries[0];

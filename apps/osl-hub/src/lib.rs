@@ -43,6 +43,7 @@ pub mod privacy_scan;
 #[cfg(feature = "core")]
 pub mod pro_context_cover;
 pub mod service_host;
+pub mod scrub_evidence_manifest;
 #[cfg(feature = "core")]
 pub mod services;
 pub mod updates;

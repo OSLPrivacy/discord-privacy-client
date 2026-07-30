@@ -2,12 +2,29 @@ import type { ServiceId } from "./services";
 
 export const AUTOSCRUB_UNATTENDED_RUN_COMMAND = "autoscrub_unattended_run" as const;
 
+export function deepFreeze<T>(value: T): T {
+  if (typeof value !== "object" || value === null || Object.isFrozen(value)) {
+    return value;
+  }
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    deepFreeze(child);
+  }
+  return Object.freeze(value);
+}
+
 export interface AutoscrubUnattendedContract {
   readonly production: boolean;
   readonly unattendedAllowed: boolean;
   readonly reviewRequiredEveryBatch: boolean;
   readonly externalSecurityReviewPassed: boolean;
 }
+
+export const AUTOSCRUB_BASE_CONTRACT: AutoscrubUnattendedContract = deepFreeze({
+  production: true,
+  unattendedAllowed: false,
+  reviewRequiredEveryBatch: true,
+  externalSecurityReviewPassed: false,
+});
 
 export type AutoscrubUnattendedRefusalReason =
   | "invalid-contract"
@@ -99,12 +116,18 @@ export function parseAutoscrubUnattendedContract(raw: unknown): AutoscrubUnatten
   if (!exactRecord(raw, ["production", "unattendedAllowed", "reviewRequiredEveryBatch", "externalSecurityReviewPassed"])) {
     return null;
   }
-  return typeof raw.production === "boolean"
-    && typeof raw.unattendedAllowed === "boolean"
-    && typeof raw.reviewRequiredEveryBatch === "boolean"
-    && typeof raw.externalSecurityReviewPassed === "boolean"
-    ? raw as unknown as AutoscrubUnattendedContract
-    : null;
+  if (typeof raw.production !== "boolean"
+    || typeof raw.unattendedAllowed !== "boolean"
+    || typeof raw.reviewRequiredEveryBatch !== "boolean"
+    || typeof raw.externalSecurityReviewPassed !== "boolean") {
+    return null;
+  }
+  return deepFreeze({
+    production: raw.production,
+    unattendedAllowed: raw.unattendedAllowed,
+    reviewRequiredEveryBatch: raw.reviewRequiredEveryBatch,
+    externalSecurityReviewPassed: raw.externalSecurityReviewPassed,
+  });
 }
 
 export function autoscrubUnattendedContractGate(raw: unknown): AutoscrubUnattendedGateResult {
@@ -129,13 +152,13 @@ export function parseAutoscrubUnattendedRunStarted(raw: unknown): AutoscrubUnatt
     || Number(raw.totalRuns) > 2) {
     return null;
   }
-  return {
+  return deepFreeze({
     state: "started",
     command: AUTOSCRUB_UNATTENDED_RUN_COMMAND,
     runId: raw.runId,
     working: Number(raw.working),
     totalRuns: Number(raw.totalRuns),
-  };
+  });
 }
 
 
@@ -172,7 +195,16 @@ function parseRun(raw: unknown): AutoScrubRunSummary {
     || !outcomes.includes(raw.lastOutcome as AutoScrubRunSummary["lastOutcome"])) {
     throw new Error("invalid AutoScrub run");
   }
-  return raw as unknown as AutoScrubRunSummary;
+  return {
+    runId: raw.runId,
+    serviceId: raw.serviceId,
+    phase: raw.phase,
+    reviewedItemCount: raw.reviewedItemCount,
+    remainingItemCount: raw.remainingItemCount,
+    stopRequested: raw.stopRequested,
+    mutationAllowed: false,
+    lastOutcome: raw.lastOutcome,
+  } as AutoScrubRunSummary;
 }
 
 function parseQuitGuard(raw: unknown): AutoScrubQuitGuardEstimate {
@@ -184,7 +216,11 @@ function parseQuitGuard(raw: unknown): AutoScrubQuitGuardEstimate {
     || !boundedText(raw.reason, 160)) {
     throw new Error("invalid AutoScrub quit guard");
   }
-  return raw as unknown as AutoScrubQuitGuardEstimate;
+  return {
+    state: raw.state,
+    honestRemainingSecondsEstimate: raw.honestRemainingSecondsEstimate,
+    reason: raw.reason,
+  } as AutoScrubQuitGuardEstimate;
 }
 
 export function parseAutoScrubFleetStatus(raw: unknown): AutoScrubFleetStatus {
@@ -202,7 +238,14 @@ export function parseAutoScrubFleetStatus(raw: unknown): AutoScrubFleetStatus {
   if (new Set(runs.map((run) => run.runId)).size !== runs.length) {
     throw new Error("invalid AutoScrub fleet status");
   }
-  return { ...raw, quitGuard, runs } as AutoScrubFleetStatus;
+  return deepFreeze({
+    contract: "autoscrubRunFleet.v1",
+    openRunCount: raw.openRunCount,
+    globalStopRequested: raw.globalStopRequested,
+    unattendedExecutionAllowed: false,
+    quitGuard,
+    runs,
+  } as AutoScrubFleetStatus);
 }
 
 export function parseAutoScrubReviewedRunRequest(raw: unknown): AutoScrubReviewedRunRequest {
@@ -216,7 +259,14 @@ export function parseAutoScrubReviewedRunRequest(raw: unknown): AutoScrubReviewe
     || raw.consent !== "reviewedBatchOnly") {
     throw new Error("invalid AutoScrub reviewed run request");
   }
-  return raw as unknown as AutoScrubReviewedRunRequest;
+  return deepFreeze({
+    serviceId: raw.serviceId,
+    accountId: raw.accountId,
+    reviewToken: raw.reviewToken,
+    planDigest: raw.planDigest,
+    reviewedItemCount: raw.reviewedItemCount,
+    consent: "reviewedBatchOnly",
+  } as AutoScrubReviewedRunRequest);
 }
 
 function formatEstimate(seconds: number | null): string {

@@ -34,6 +34,7 @@ pub mod prekeys;
 pub mod proof_challenge;
 pub mod recipients;
 pub mod sealer;
+pub mod sensitive_memory;
 mod sender_filter_rollout;
 pub mod signed_get;
 pub mod storage;
