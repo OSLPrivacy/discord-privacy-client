@@ -288,6 +288,36 @@ impl AnchorBinding {
     }
 }
 
+pub(crate) fn validate_restored_backup_against_anchor(
+    conn: &Connection,
+    identity_secret: &[u8; 32],
+    provider: Arc<dyn MonotonicAnchor>,
+) -> Result<(), StoreError> {
+    let (store_id, digest_key) = cipher::derive_anchor_material(identity_secret)?;
+    let local = record(conn, &digest_key)?;
+    let remote = provider.load(store_id)?;
+    match (local, remote) {
+        (None, None) => Ok(()),
+        (Some(local), Some(remote)) if local == remote => Ok(()),
+        (None, Some(_)) => Err(StoreError::Anchor(
+            "restored backup has no local anchor but provider has state; refusing replay"
+                .to_string(),
+        )),
+        (Some(_), None) => Err(StoreError::Anchor(
+            "restored backup has local anchor state but provider is absent; refusing unverifiable restore"
+                .to_string(),
+        )),
+        (Some(local), Some(remote)) if local.generation < remote.generation => {
+            Err(StoreError::Anchor(
+                "restored backup generation is behind external anchor; refusing replay".to_string(),
+            ))
+        }
+        (Some(_), Some(_)) => Err(StoreError::Anchor(
+            "restored backup and external anchor disagree; refusing restore".to_string(),
+        )),
+    }
+}
+
 fn record(conn: &Connection, digest_key: &[u8; 32]) -> Result<Option<AnchorRecord>, StoreError> {
     let raw = raw_record(conn)?;
     let Some(record) = raw else {
@@ -534,6 +564,10 @@ mod tests {
             *self.calls.lock().unwrap() = 0;
             *self.fault.lock().unwrap() = fault;
         }
+
+        fn calls(&self) -> usize {
+            *self.calls.lock().unwrap()
+        }
     }
 
     impl MonotonicAnchor for Provider {
@@ -579,7 +613,9 @@ mod tests {
 
     impl MonotonicAnchor for RejectingLoadProvider {
         fn load(&self, _store_id: [u8; 32]) -> Result<Option<AnchorRecord>, StoreError> {
-            Err(StoreError::Anchor("test provider rejected preflight load".to_string()))
+            Err(StoreError::Anchor(
+                "test provider rejected preflight load".to_string(),
+            ))
         }
 
         fn compare_and_advance(
@@ -626,7 +662,9 @@ mod tests {
         ) -> Result<(), StoreError> {
             let mut records = self.records.lock().unwrap();
             if records.get(&store_id).cloned() != expected {
-                return Err(StoreError::Anchor("test stale compare-and-advance".to_string()));
+                return Err(StoreError::Anchor(
+                    "test stale compare-and-advance".to_string(),
+                ));
             }
             records.insert(store_id, next);
             Ok(())
@@ -708,6 +746,60 @@ mod tests {
         artifacts
     }
 
+    fn checkpoint(dir: &std::path::Path) {
+        let conn = Connection::open(dir.join("messages.sqlite")).unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .unwrap();
+    }
+
+    #[test]
+    fn validate_restored_backup_against_anchor() {
+        let provider = Arc::new(Provider::new());
+        let tmp = TempDir::new().unwrap();
+        let backup = TempDir::new().unwrap();
+        {
+            let store = MessageStore::open_anchored(tmp.path(), SECRET, provider.clone()).unwrap();
+            store.put(&message()).unwrap();
+        }
+        checkpoint(tmp.path());
+        std::fs::copy(
+            tmp.path().join("messages.sqlite"),
+            backup.path().join("messages.sqlite"),
+        )
+        .unwrap();
+        {
+            let store = MessageStore::open_anchored(tmp.path(), SECRET, provider.clone()).unwrap();
+            store
+                .put(&StoredMessage {
+                    discord_message_id: "post-backup".to_string(),
+                    plaintext: "newer than backup".to_string(),
+                    ..message()
+                })
+                .unwrap();
+        }
+        checkpoint(tmp.path());
+        let calls_before_restore_validation = provider.calls();
+        std::fs::copy(
+            backup.path().join("messages.sqlite"),
+            tmp.path().join("messages.sqlite"),
+        )
+        .unwrap();
+        let conn = Connection::open(tmp.path().join("messages.sqlite")).unwrap();
+        let error =
+            validate_restored_backup_against_anchor(&conn, SECRET, provider.clone()).unwrap_err();
+        assert!(
+            matches!(error, StoreError::Anchor(message) if message.contains("behind external anchor")),
+            "wrong restored-backup refusal: {error}"
+        );
+        assert_eq!(
+            provider.calls(),
+            calls_before_restore_validation,
+            "restore validation must not turn a restored backup into provider recovery"
+        );
+        assert_eq!(schema::inspect_schema_version(&conn).unwrap(), Some(8));
+        assert!(read_journal(&conn).unwrap().is_none());
+    }
+
     #[test]
     fn anchored_v7_reconciles_before_any_persistent_open_mutation() {
         let _serial = TEST_MIGRATION_SERIAL.lock().unwrap();
@@ -719,7 +811,10 @@ mod tests {
             conn.pragma_update(None, "secure_delete", "OFF").unwrap();
         }
         let before = store_artifacts(tmp.path());
-        assert!(!before.is_empty(), "nonempty v7 fixture must exist before refusal");
+        assert!(
+            !before.is_empty(),
+            "nonempty v7 fixture must exist before refusal"
+        );
 
         let error = match MessageStore::open_anchored(
             tmp.path(),
@@ -783,7 +878,10 @@ mod tests {
         let outcomes = [a.join().unwrap(), b.join().unwrap()];
         let winners = outcomes.iter().filter(|outcome| outcome.is_ok()).count();
         let losers = outcomes.iter().filter(|outcome| outcome.is_err()).count();
-        assert_eq!(winners, 1, "exactly one concurrently reconciled opener may win");
+        assert_eq!(
+            winners, 1,
+            "exactly one concurrently reconciled opener may win"
+        );
         assert_eq!(losers, 1, "the stale concurrent opener must fail closed");
         let loser = outcomes.into_iter().find_map(Result::err).unwrap();
         assert!(
