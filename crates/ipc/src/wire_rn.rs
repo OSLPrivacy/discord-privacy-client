@@ -2275,29 +2275,64 @@ mod tests {
         );
     }
 
-    /// The downgrade attempt: a pinned peer suddenly "does not support"
-    /// OSL-RN. Selection must refuse, not fall back.
+    /// The downgrade attempt: a pinned peer later presents an
+    /// authenticated identity bundle whose capability bitmap no longer
+    /// advertises OSL-RN. First contact must refuse at the sticky pin
+    /// before fetching prekeys or falling back to v=3.
     #[test]
     fn a_pinned_peer_can_never_be_downgraded_to_v3() {
-        let mut pin = RnPeerPin::UNKNOWN;
-        pin.raise_to_rn();
-        for caps in [
-            PeerCapabilities::Verified(RN_CAP_WIRE_RN),
-            PeerCapabilities::Absent,
-        ] {
-            for policy in [RnPolicy::Opportunistic, RnPolicy::Required] {
-                let got = select_wire_version(&pin, caps, policy);
-                assert_ne!(
-                    got.ok(),
-                    Some(SelectedVersion::LegacyV3),
-                    "a pinned peer must never select v=3"
-                );
-            }
-        }
+        let alice_id = b5_identity(82, "alice-pinned-downgrade");
+        let bob_id = b5_identity(83, "bob-pinned-downgrade");
+        let bob_state = keystore::PrekeyState::new(&bob_id, keystore::PrekeyConfig::default(), 82);
+        let response = b5_response(&bob_id, &bob_state, Some(0));
+        let (base_url, rx) = one_shot_prekey_server(prekey_response_json(&response));
+        let client = keystore::KeyServerClient::new(base_url).expect("client");
+        let (_dir, store) = fresh_store();
+        let sealer = MemorySealer::new();
+        let peer = *bob_id.x25519_public.as_bytes();
+
+        store.raise_pin_to_rn(&peer).expect("seed pinned peer");
+        let pin = store.load_pin(&peer).expect("load seeded pin");
+        assert!(pin.is_pinned_to_rn(), "test fixture must start pinned");
+
+        let downgraded_identity_bundle = b5_identity_bundle(&bob_id, 0, 82);
+        let err = match fetch_prekey_bundle_and_initiate_first_contact(
+            &client,
+            &store,
+            &sealer,
+            &alice_id,
+            &bob_id.user_id,
+            &downgraded_identity_bundle,
+            &bob_id.ed25519_public,
+            None,
+            RnPolicy::Opportunistic,
+            CTX,
+            SessionParams::default(),
+        ) {
+            Ok(_) => panic!("pinned peer with stripped RN capability must refuse"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(err, RnError::PinnedToRn));
         assert!(matches!(
             select_wire_version(&pin, PeerCapabilities::Absent, RnPolicy::Opportunistic),
             Err(RnError::PinnedToRn)
         ));
+        assert!(
+            rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "downgraded capabilities must be refused before any prekey fetch"
+        );
+        assert!(
+            store
+                .load_session_with_sealer(&peer, &sealer)
+                .expect("load session")
+                .is_none(),
+            "a refused downgrade must not persist an RN session"
+        );
+        assert!(
+            store.load_pin(&peer).expect("reload pin").is_pinned_to_rn(),
+            "refusing the downgrade must not lower the existing RN pin"
+        );
     }
 
     #[test]
