@@ -2181,7 +2181,7 @@ fn borrowed_owner_requires_repair(current_owner: isize, expected_owner: isize) -
     current_owner != expected_owner
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 #[cfg(target_os = "windows")]
 pub(crate) struct NativeDiscordAccessibilityTarget {
     pub(crate) generation: u64,
@@ -11459,6 +11459,18 @@ mod tests {
 
     #[test]
     fn existing_discord_session_considers_every_fixed_official_channel() {
+        let source = include_str!("native_window_host.rs");
+        let forbidden_debug_derive = [
+            "#[derive(Debug, Clone, Copy)]",
+            "\n#[cfg(target_os = \"windows\")]\n",
+            "pub(crate) struct NativeDiscordAccessibilityTarget",
+        ]
+        .join("");
+        assert!(
+            !source.contains(&forbidden_debug_derive),
+            "NativeDiscordAccessibilityTarget carries a native window handle and must not derive Debug"
+        );
+
         let paths = existing_discord_channel_executables(|channel| match channel.channel {
             DiscordChannel::Stable => vec![
                 PathBuf::from("C:/Discord/app-2/Discord.exe"),
