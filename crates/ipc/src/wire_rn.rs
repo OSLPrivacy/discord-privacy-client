@@ -1000,7 +1000,7 @@ pub fn fetch_prekey_bundle_and_initiate_first_contact(
         })?;
     let peer = peer_bundle_from_verified_b5(&merged)?;
     let own_identity_secret = XSecret::from_bytes(*requester.x25519_secret.as_bytes());
-    let session = initiate_and_persist(
+    let session = initiate_and_persist_with_sealer(
         store,
         sealer,
         &own_identity_secret,
@@ -1500,7 +1500,7 @@ mod tests {
         assert_eq!(first_contact.accepted_identity_revision, 7);
         assert!(
             store
-                .load_session(bob_id.x25519_public.as_bytes(), &sealer)
+                .load_session_with_sealer(bob_id.x25519_public.as_bytes(), &sealer)
                 .expect("load session")
                 .is_some(),
             "successful first contact must persist the RN session"
@@ -1547,7 +1547,7 @@ mod tests {
         ));
         assert!(
             store
-                .load_session(bob_id.x25519_public.as_bytes(), &sealer)
+                .load_session_with_sealer(bob_id.x25519_public.as_bytes(), &sealer)
                 .expect("load session")
                 .is_none(),
             "a refused first contact must not persist session state"
@@ -1597,7 +1597,7 @@ mod tests {
         assert!(!debug.contains(&substituted_response.ik_x25519_pub));
         assert!(
             store
-                .load_session(bob_id.x25519_public.as_bytes(), &sealer)
+                .load_session_with_sealer(bob_id.x25519_public.as_bytes(), &sealer)
                 .expect("load session")
                 .is_none(),
             "a refused substitution must not persist session state"
@@ -1965,6 +1965,21 @@ mod tests {
     }
 
     #[test]
+    fn rn_wire_default_wrappers_keep_selected_sealer_signature() {
+        let (_d, store) = fresh_store();
+        let peer = [30u8; 32];
+
+        assert!(matches!(
+            send_rn(&store, &peer, 7, b"default send wrapper"),
+            Err(RnError::WireInDisabled)
+        ));
+        assert!(matches!(
+            receive_rn(&store, &peer, "not touched"),
+            Err(RnError::WireInDisabled)
+        ));
+    }
+
+    #[test]
     fn app_state_runtime_gate_is_separate_from_the_compile_time_fuse() {
         let state = crate::AppState::new();
 
@@ -2019,7 +2034,9 @@ mod tests {
         let session =
             Session::initiate(&ik, &bundle, SessionParams::default(), &mut rng).expect("initiate");
         let peer = *bundle.identity.as_bytes();
-        store.save_session(&peer, &session, &sealer).expect("save");
+        store
+            .save_session_with_sealer(&peer, &session, &sealer)
+            .expect("save");
 
         let wire = send_rn_for_state(&state, &store, &sealer, &peer, 7, b"state enabled")
             .expect("state-enabled send");
@@ -2133,7 +2150,7 @@ mod tests {
         let bob_peer = *bob_bundle.identity.as_bytes();
         let alice_peer = *alice_ik_pub.as_bytes();
 
-        initiate_and_persist(
+        initiate_and_persist_with_sealer(
             &alice_store,
             &sealer,
             &alice_ik,
@@ -2147,10 +2164,10 @@ mod tests {
         .expect("alice initiates persisted RN session");
 
         let bootstrap_wire = with_wire_in_enabled_for_test(true, || {
-            send_rn(&alice_store, &sealer, &bob_peer, 10, b"rn-bootstrap")
+            send_rn_with_sealer(&alice_store, &sealer, &bob_peer, 10, b"rn-bootstrap")
                 .expect("alice sends bootstrap")
         });
-        let (_bob_session, opened_bootstrap) = accept_and_persist(
+        let (_bob_session, opened_bootstrap) = accept_and_persist_with_sealer(
             &bob_store,
             &sealer,
             &bob_prekeys,
@@ -2165,29 +2182,32 @@ mod tests {
         assert_eq!(opened_bootstrap.plaintext, b"rn-bootstrap");
 
         let wire_1 = with_wire_in_enabled_for_test(true, || {
-            send_rn(&alice_store, &sealer, &bob_peer, 11, b"rn-delayed-1").expect("alice sends m1")
+            send_rn_with_sealer(&alice_store, &sealer, &bob_peer, 11, b"rn-delayed-1")
+                .expect("alice sends m1")
         });
         let wire_2 = with_wire_in_enabled_for_test(true, || {
-            send_rn(&alice_store, &sealer, &bob_peer, 12, b"rn-delayed-2").expect("alice sends m2")
+            send_rn_with_sealer(&alice_store, &sealer, &bob_peer, 12, b"rn-delayed-2")
+                .expect("alice sends m2")
         });
         let wire_3 = with_wire_in_enabled_for_test(true, || {
-            send_rn(&alice_store, &sealer, &bob_peer, 13, b"rn-delivered-first")
+            send_rn_with_sealer(&alice_store, &sealer, &bob_peer, 13, b"rn-delivered-first")
                 .expect("alice sends m3")
         });
 
         let delivered_first = with_wire_in_enabled_for_test(true, || {
-            receive_rn(&bob_store, &sealer, &alice_peer, &wire_3).expect("bob receives m3 first")
+            receive_rn_with_sealer(&bob_store, &sealer, &alice_peer, &wire_3)
+                .expect("bob receives m3 first")
         });
         assert_eq!(delivered_first.msg_type, 13);
         assert_eq!(delivered_first.plaintext, b"rn-delivered-first");
 
         let reloaded_bob_store = RnSessionStore::new(bob_dir.path().join("rn"));
         let delayed_1 = with_wire_in_enabled_for_test(true, || {
-            receive_rn(&reloaded_bob_store, &sealer, &alice_peer, &wire_1)
+            receive_rn_with_sealer(&reloaded_bob_store, &sealer, &alice_peer, &wire_1)
                 .expect("bob receives delayed m1 from persisted skipped cache")
         });
         let delayed_2 = with_wire_in_enabled_for_test(true, || {
-            receive_rn(&reloaded_bob_store, &sealer, &alice_peer, &wire_2)
+            receive_rn_with_sealer(&reloaded_bob_store, &sealer, &alice_peer, &wire_2)
                 .expect("bob receives delayed m2 from persisted skipped cache")
         });
         assert_eq!(delayed_1.msg_type, 11);
@@ -2197,7 +2217,7 @@ mod tests {
 
         assert!(
             with_wire_in_enabled_for_test(true, || {
-                receive_rn(&reloaded_bob_store, &sealer, &alice_peer, &wire_3)
+                receive_rn_with_sealer(&reloaded_bob_store, &sealer, &alice_peer, &wire_3)
             })
             .is_err(),
             "a previously opened RN message must not replay after delayed delivery"
