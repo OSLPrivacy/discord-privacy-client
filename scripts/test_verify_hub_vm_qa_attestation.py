@@ -220,6 +220,15 @@ freeze_the_exact_signed_candidate_vm_attestation_contract.__name__ = (
 )
 
 
+def verify_hub_vm_qa_attestation_py_contract() -> None:
+    freeze_the_exact_signed_candidate_vm_attestation_contract()
+
+
+verify_hub_vm_qa_attestation_py_contract.__name__ = (
+    "scripts/test_verify_hub_vm_qa_attestation.py"
+)
+
+
 def load_tests(
     loader: unittest.TestLoader,
     tests: unittest.TestSuite,
@@ -230,6 +239,9 @@ def load_tests(
     suite.addTests(loader.loadTestsFromTestCase(HubVmQaAttestationTests))
     suite.addTest(unittest.FunctionTestCase(
         freeze_the_exact_signed_candidate_vm_attestation_contract,
+    ))
+    suite.addTest(unittest.FunctionTestCase(
+        verify_hub_vm_qa_attestation_py_contract,
     ))
     return suite
 
