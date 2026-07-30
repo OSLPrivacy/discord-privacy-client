@@ -1708,6 +1708,7 @@ pub fn set_manual_peer_scope_permission(
     let binding = manual_peer_binding(core, person_id)?;
     require_exact_manual_peer_scope_input(&scope_input, "OSL manual peer scope is invalid")?;
     let scope: Scope = scope_input
+        .clone()
         .try_into()
         .map_err(|_| "OSL manual peer scope is invalid".to_owned())?;
     require_exact_manual_peer_scope(
@@ -1717,6 +1718,16 @@ pub fn set_manual_peer_scope_permission(
         &scope,
         "OSL manual peer scope is invalid",
     )?;
+    if enabled {
+        let grant = ScopedTrustGrant::for_manual_peer(
+            &binding,
+            service_id,
+            account_id,
+            scope_input,
+            ScopedTrustConsent::ExplicitUserAction,
+        )?;
+        return apply_scoped_trust_grant(security, &binding, &grant);
+    }
     let _transition = security
         .transition
         .lock()
@@ -1725,19 +1736,38 @@ pub fn set_manual_peer_scope_permission(
     let path = dir.join(SECURITY_PREFS_FILE);
     let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
     let storage_key = scope.storage_key();
-    if enabled && prefs.burned_manual_scopes.contains(&storage_key) {
+    prefs.version = 2;
+    prefs.manual_approved_scopes.remove(&storage_key);
+    prefs.manual_approved_scope_people.remove(&storage_key);
+    write_encrypted_json(&path, &prefs)
+}
+
+/// Apply one already-minted scoped trust grant to the hub's manual approval
+/// preferences, preserving the friend attribution needed for later refusal or
+/// revocation.
+pub fn apply_scoped_trust_grant(
+    security: &HubSecurityState,
+    binding: &ManualPeerBinding,
+    grant: &ScopedTrustGrant,
+) -> Result<(), String> {
+    grant.require_binding(Some(binding))?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL manual peer settings are unavailable".to_owned())?;
+    let dir = config_dir()?;
+    let path = dir.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    if prefs.burned_manual_scopes.contains(grant.storage_key()) {
         return Err("This manual conversation was burned and cannot be reapproved".to_owned());
     }
     prefs.version = 2;
-    if enabled {
-        prefs.manual_approved_scopes.insert(storage_key.clone());
-        prefs
-            .manual_approved_scope_people
-            .insert(storage_key, binding.person_id.clone());
-    } else {
-        prefs.manual_approved_scopes.remove(&storage_key);
-        prefs.manual_approved_scope_people.remove(&storage_key);
-    }
+    prefs
+        .manual_approved_scopes
+        .insert(grant.storage_key().to_owned());
+    prefs
+        .manual_approved_scope_people
+        .insert(grant.storage_key().to_owned(), grant.person_id().to_owned());
     write_encrypted_json(&path, &prefs)
 }
 
@@ -4354,7 +4384,7 @@ mod tests {
     }
 
     #[test]
-    fn scoped_trust_acceptance_friend_request_grant_roundtrip() {
+    fn scoped_trust_grant() {
         let harness = FileBackedSecurityHarness::new("scoped-trust-friend-request");
         let core = HubCoreState::default();
         let security = HubSecurityState::default();
@@ -4424,16 +4454,79 @@ mod tests {
         assert_eq!(grant.account_id(), "osl-main");
         assert_eq!(grant.storage_key(), format!("dm:{scope_id}"));
 
-        set_manual_peer_scope_permission(
-            &core,
-            &security,
-            "osl-chat",
-            "osl-main",
-            added.person_id.clone(),
+        let requester_discord_id = scope_id.clone();
+        core.osl.peer_map.lock().unwrap().insert(
+            requester_discord_id.clone(),
+            PeerEntry {
+                discord_id: Some(requester_discord_id.clone()),
+                tofu_key_bundle: Some(KeyBundle {
+                    ed25519_pub: "requester-ed25519".to_owned(),
+                    x25519_pub: "requester-x25519".to_owned(),
+                    mlkem768_pub: "requester-mlkem768".to_owned(),
+                    ratchet_initial_pub: Some("requester-ratchet".to_owned()),
+                }),
+                ..PeerEntry::default()
+            },
+        );
+        let typed_request = ipc::commands::cmd_osl_send_friend_request(
+            &core.osl,
+            requester_discord_id.clone(),
             scope_input.clone(),
-            true,
         )
-        .expect("accepted friend request persists the scoped grant");
+        .expect("trusted peer binding mints typed friend request")
+        .request;
+        ipc::commands::cmd_osl_accept_friend_request(
+            &core.osl,
+            requester_discord_id.clone(),
+            typed_request,
+        )
+        .expect("typed friend request adopts its scoped grant in the original core");
+        {
+            let peer_map = core.osl.peer_map.lock().unwrap();
+            let requester = peer_map
+                .get(&requester_discord_id)
+                .expect("friend request acceptance records the requester binding");
+            assert!(
+                requester.outgoing_whitelists.iter().any(|entry| matches!(
+                    entry,
+                    WhitelistEntry::Dm {
+                        broadened: false,
+                        ..
+                    }
+                )),
+                "accepted request must adopt the exact scoped trust grant"
+            );
+        }
+        {
+            let whitelist_state = core.osl.whitelist_state.lock().unwrap();
+            let adopted = whitelist_state
+                .get(grant.storage_key())
+                .expect("accepted request enables the granted scope");
+            assert!(adopted.encrypt_toggle);
+            assert!(adopted.auto_enabled);
+        }
+        assert_eq!(
+            require_manual_peer_scope_approved(
+                &core,
+                "osl-chat",
+                "osl-main",
+                added.person_id.clone(),
+                scope_input.clone(),
+            )
+            .unwrap_err(),
+            "Approve encryption for this friend before continuing",
+            "IPC adoption alone must not bypass the hub's friend-attributed scoped grant"
+        );
+
+        let mut wrong_binding = binding.clone();
+        wrong_binding.peer_x25519_public[0] ^= 1;
+        assert_eq!(
+            apply_scoped_trust_grant(&security, &wrong_binding, &grant).unwrap_err(),
+            "OSL scoped trust binding does not match"
+        );
+
+        apply_scoped_trust_grant(&security, &binding, &grant)
+            .expect("accepted friend request persists the scoped grant");
 
         let approved_binding = require_manual_peer_scope_approved(
             &core,

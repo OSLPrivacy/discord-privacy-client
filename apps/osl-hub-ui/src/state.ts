@@ -29,7 +29,7 @@ export const oslPrimaryDestinations = [
     id: "inbox",
     label: "Inbox",
     userQuestion: "Where are my conversations?",
-    mainContent: "Conversations across OSL Chat, OSL Circles, OSL Mail, and supported connected-account views.",
+    mainContent: "OSL Chat, OSL Circles, OSL Mail, and connected-account conversations.",
     primaryAction: "Start a private conversation",
   },
   {
