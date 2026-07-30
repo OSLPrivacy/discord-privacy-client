@@ -36,3 +36,68 @@ Acceptance for this risk is a coordinator routing exercise, not a prose grep:
    turn.
 3. Attempt to satisfy a failed capacity check by borrowing another account, changing `CODEX_HOME`, or
    starting speculative background work. The routing decision must remain `refuse` or `standby`.
+
+Machine-checkable acceptance contract:
+
+```json
+{
+  "schemaVersion": 1,
+  "tests": [
+    {
+      "name": "Update routing decisions from real Codex capacity instead of stale pools.",
+      "evaluator": "coordinator-routing-capacity-v1",
+      "cases": [
+        {
+          "name": "stale available pool refuses",
+          "historicalPoolLabel": "available",
+          "currentCapacityRecord": {
+            "status": "absent"
+          },
+          "attemptedSubstitutes": [],
+          "expectedDecisions": ["refuse", "standby"],
+          "requiredReason": "missing_current_capacity_signal"
+        },
+        {
+          "name": "fresh verified capacity permits dispatch",
+          "historicalPoolLabel": "available",
+          "currentCapacityRecord": {
+            "status": "fresh",
+            "activeSessionCount": 1,
+            "blockedOrSleepingSessionsRecorded": true,
+            "accountQuotaStatus": "verified_enough_for_expected_turn",
+            "machineHeadroom": "enough_for_focused_verification",
+            "ownedFileBound": true
+          },
+          "attemptedSubstitutes": [],
+          "expectedDecisions": ["dispatch"],
+          "requiredReason": "live_capacity_verified"
+        },
+        {
+          "name": "failed live capacity cannot be bypassed",
+          "historicalPoolLabel": "available",
+          "currentCapacityRecord": {
+            "status": "fresh",
+            "activeSessionCount": 1,
+            "blockedOrSleepingSessionsRecorded": true,
+            "accountQuotaStatus": "verified_insufficient_for_expected_turn",
+            "machineHeadroom": "insufficient_for_focused_verification",
+            "ownedFileBound": true
+          },
+          "attemptedSubstitutes": [
+            "borrow_account",
+            "change_codex_home",
+            "start_speculative_background_work"
+          ],
+          "expectedDecisions": ["refuse", "standby"],
+          "requiredReason": "capacity_check_failed"
+        }
+      ],
+      "refusedSubstitutes": [
+        "borrow_account",
+        "change_codex_home",
+        "start_speculative_background_work"
+      ]
+    }
+  ]
+}
+```
