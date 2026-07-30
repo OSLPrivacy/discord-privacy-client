@@ -361,6 +361,9 @@ pub fn enter_duress_pin_for_full_wipe_report(
         crate::startup_gate::VerifiedGateRole::Wrong => {
             Err("OSL duress PIN was rejected".to_owned())
         }
+        crate::startup_gate::VerifiedGateRole::Duress => {
+            Err("OSL duress action requires the burn password".to_owned())
+        }
         crate::startup_gate::VerifiedGateRole::Main
         | crate::startup_gate::VerifiedGateRole::Stealth => {
             Err("OSL duress action requires the burn password".to_owned())
