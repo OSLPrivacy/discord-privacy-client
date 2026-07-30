@@ -7,6 +7,7 @@ pub mod autoscrub_run;
 pub mod browser_companion;
 #[cfg(feature = "core")]
 pub mod browser_profile_scan;
+pub mod browser_footprint;
 pub mod burn_contract;
 pub mod cloud_autoscrub_consent;
 pub mod cloud_autoscrub_execution;

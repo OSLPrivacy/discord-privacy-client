@@ -140,6 +140,16 @@ export interface LocalPrivacyScanResult {
   analysisLocation: "this_device_only";
   persisted: false;
 }
+export interface ReviewedItemIdentity {
+  reviewId: string;
+  serviceId: string;
+  accountId: string;
+  conversationId: string;
+  messageLocator: string;
+}
+export interface ReviewedItemIdentityBinding extends ReviewedItemIdentity {
+  selected: true;
+}
 
 export const LOCAL_PROTECTED_TEXT_MAX_BYTES = 1_000;
 export const HUB_PLAINTEXT_MAX_BYTES = 1_000;
@@ -702,6 +712,31 @@ export async function scanLocalPrivacy(messages: LocalMessageCandidate[]): Promi
   catch (error) { recordBackendFailure("scan_local_privacy", error); return null; }
 }
 
+export function bindReviewedItemIdentities(
+  reviewedItems: readonly ReviewedItemIdentity[],
+  selectedReviewIds: readonly string[],
+): ReviewedItemIdentityBinding[] | null {
+  if (!Array.isArray(reviewedItems)
+    || !Array.isArray(selectedReviewIds)
+    || reviewedItems.length > 2_000
+    || selectedReviewIds.length > reviewedItems.length) return null;
+  const byReviewId = new Map<string, ReviewedItemIdentity>();
+  for (const item of reviewedItems) {
+    if (!validReviewedItemIdentity(item) || byReviewId.has(item.reviewId)) return null;
+    byReviewId.set(item.reviewId, item);
+  }
+  const seen = new Set<string>();
+  const bound: ReviewedItemIdentityBinding[] = [];
+  for (const reviewId of selectedReviewIds) {
+    if (!safePlaintext(reviewId, 128) || seen.has(reviewId)) return null;
+    const item = byReviewId.get(reviewId);
+    if (!item) return null;
+    bound.push({ ...item, selected: true });
+    seen.add(reviewId);
+  }
+  return bound;
+}
+
 export async function burnActiveHubContext(contextToken: string): Promise<boolean> {
   if (!isTauriRuntime() || !safe(contextToken, 180)) return false;
   try { await invoke("burn_active_hub_context", { contextToken }); return true; }
@@ -1082,6 +1117,16 @@ function validLocalCandidate(candidate: LocalMessageCandidate): boolean {
     && typeof candidate.authoredBySelf === "boolean"
     && (candidate.createdAtUnixMs === null || Number.isSafeInteger(candidate.createdAtUnixMs))
     && safePlaintext(candidate.text, 8 * 1024);
+}
+
+function validReviewedItemIdentity(item: ReviewedItemIdentity): boolean {
+  return isRecord(item)
+    && exact(item, ["reviewId", "serviceId", "accountId", "conversationId", "messageLocator"])
+    && safePlaintext(item.reviewId, 128)
+    && safeId(item.serviceId, 32)
+    && isContextId(item.accountId)
+    && isContextId(item.conversationId)
+    && safePlaintext(item.messageLocator, 512);
 }
 
 function parseIdentityCreation(raw: unknown): HubIdentityCreation | null {
