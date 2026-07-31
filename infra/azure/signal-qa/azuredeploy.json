@@ -1,0 +1,248 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "location": { "type": "string", "defaultValue": "southcentralus" },
+    "adminUsername": { "type": "string", "defaultValue": "osltest" },
+    "adminPassword1": { "type": "secureString" },
+    "adminPassword2": { "type": "secureString" },
+    "rdpSource": { "type": "string" },
+    "vmSize": { "type": "string", "defaultValue": "Standard_B2als_v2" },
+    "imageVersion": { "type": "string", "defaultValue": "26100.8875.260711" },
+    "availabilityZone": { "type": "string", "defaultValue": "3" },
+    "qaSecretsKeyVaultResourceId": { "type": "string" },
+    "safeScreenshotContainerResourceId": { "type": "string" }
+  },
+  "variables": {
+    "prefix": "osl-signal",
+    "vnetName": "[format('{0}-vnet', variables('prefix'))]",
+    "subnetName": "signal-clients",
+    "nsgName": "[format('{0}-nsg', variables('prefix'))]",
+    "vm1Name": "OSL-Signal-Client-1",
+    "vm2Name": "OSL-Signal-Client-2",
+    "pip1Name": "[format('{0}-client-1-pip', variables('prefix'))]",
+    "pip2Name": "[format('{0}-client-2-pip', variables('prefix'))]",
+    "nic1Name": "[format('{0}-client-1-nic', variables('prefix'))]",
+    "nic2Name": "[format('{0}-client-2-nic', variables('prefix'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2024-05-01",
+      "name": "[variables('nsgName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "securityRules": [
+          {
+            "name": "rdp-from-liam",
+            "properties": {
+              "priority": 100,
+              "access": "Allow",
+              "direction": "Inbound",
+              "protocol": "Tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "3389",
+              "sourceAddressPrefix": "[parameters('rdpSource')]",
+              "destinationAddressPrefix": "*"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2024-05-01",
+      "name": "[variables('vnetName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "addressSpace": { "addressPrefixes": ["10.52.0.0/16"] },
+        "subnets": [
+          {
+            "name": "[variables('subnetName')]",
+            "properties": {
+              "addressPrefix": "10.52.1.0/24",
+              "networkSecurityGroup": {
+                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]"
+              }
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2024-05-01",
+      "name": "[variables('pip1Name')]",
+      "location": "[parameters('location')]",
+      "sku": { "name": "Standard" },
+      "properties": { "publicIPAllocationMethod": "Static" }
+    },
+    {
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2024-05-01",
+      "name": "[variables('pip2Name')]",
+      "location": "[parameters('location')]",
+      "sku": { "name": "Standard" },
+      "properties": { "publicIPAllocationMethod": "Static" }
+    },
+    {
+      "type": "Microsoft.Network/networkInterfaces",
+      "apiVersion": "2024-05-01",
+      "name": "[variables('nic1Name')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "privateIPAllocationMethod": "Dynamic",
+              "subnet": {
+                "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('subnetName'))]"
+              },
+              "publicIPAddress": {
+                "id": "[resourceId('Microsoft.Network/publicIPAddresses', variables('pip1Name'))]"
+              }
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]",
+        "[resourceId('Microsoft.Network/publicIPAddresses', variables('pip1Name'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/networkInterfaces",
+      "apiVersion": "2024-05-01",
+      "name": "[variables('nic2Name')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "privateIPAllocationMethod": "Dynamic",
+              "subnet": {
+                "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('subnetName'))]"
+              },
+              "publicIPAddress": {
+                "id": "[resourceId('Microsoft.Network/publicIPAddresses', variables('pip2Name'))]"
+              }
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]",
+        "[resourceId('Microsoft.Network/publicIPAddresses', variables('pip2Name'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines",
+      "apiVersion": "2024-07-01",
+      "name": "[variables('vm1Name')]",
+      "location": "[parameters('location')]",
+      "zones": ["[parameters('availabilityZone')]"],
+      "identity": { "type": "SystemAssigned" },
+      "properties": {
+        "hardwareProfile": { "vmSize": "[parameters('vmSize')]" },
+        "securityProfile": {
+          "securityType": "TrustedLaunch",
+          "uefiSettings": { "secureBootEnabled": true, "vTpmEnabled": true }
+        },
+        "storageProfile": {
+          "imageReference": {
+            "publisher": "MicrosoftWindowsDesktop",
+            "offer": "windows-11",
+            "sku": "win11-24h2-pro",
+            "version": "[parameters('imageVersion')]"
+          },
+          "osDisk": {
+            "createOption": "FromImage",
+            "caching": "ReadWrite",
+            "managedDisk": { "storageAccountType": "StandardSSD_LRS" }
+          }
+        },
+        "osProfile": {
+          "computerName": "OSLSIGCLIENT1",
+          "adminUsername": "[parameters('adminUsername')]",
+          "adminPassword": "[parameters('adminPassword1')]",
+          "windowsConfiguration": {
+            "provisionVMAgent": true,
+            "enableAutomaticUpdates": true,
+            "patchSettings": { "patchMode": "AutomaticByOS", "assessmentMode": "ImageDefault" }
+          }
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            { "id": "[resourceId('Microsoft.Network/networkInterfaces', variables('nic1Name'))]" }
+          ]
+        },
+        "diagnosticsProfile": { "bootDiagnostics": { "enabled": true } }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkInterfaces', variables('nic1Name'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines",
+      "apiVersion": "2024-07-01",
+      "name": "[variables('vm2Name')]",
+      "location": "[parameters('location')]",
+      "zones": ["[parameters('availabilityZone')]"],
+      "identity": { "type": "SystemAssigned" },
+      "properties": {
+        "hardwareProfile": { "vmSize": "[parameters('vmSize')]" },
+        "securityProfile": {
+          "securityType": "TrustedLaunch",
+          "uefiSettings": { "secureBootEnabled": true, "vTpmEnabled": true }
+        },
+        "storageProfile": {
+          "imageReference": {
+            "publisher": "MicrosoftWindowsDesktop",
+            "offer": "windows-11",
+            "sku": "win11-24h2-pro",
+            "version": "[parameters('imageVersion')]"
+          },
+          "osDisk": {
+            "createOption": "FromImage",
+            "caching": "ReadWrite",
+            "managedDisk": { "storageAccountType": "StandardSSD_LRS" }
+          }
+        },
+        "osProfile": {
+          "computerName": "OSLSIGCLIENT2",
+          "adminUsername": "[parameters('adminUsername')]",
+          "adminPassword": "[parameters('adminPassword2')]",
+          "windowsConfiguration": {
+            "provisionVMAgent": true,
+            "enableAutomaticUpdates": true,
+            "patchSettings": { "patchMode": "AutomaticByOS", "assessmentMode": "ImageDefault" }
+          }
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            { "id": "[resourceId('Microsoft.Network/networkInterfaces', variables('nic2Name'))]" }
+          ]
+        },
+        "diagnosticsProfile": { "bootDiagnostics": { "enabled": true } }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkInterfaces', variables('nic2Name'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "vmNames": { "type": "array", "value": ["[variables('vm1Name')]", "[variables('vm2Name')]"] },
+    "managedIdentityPrincipalIds": {
+      "type": "array",
+      "value": [
+        "[reference(resourceId('Microsoft.Compute/virtualMachines', variables('vm1Name')), '2024-07-01', 'Full').identity.principalId]",
+        "[reference(resourceId('Microsoft.Compute/virtualMachines', variables('vm2Name')), '2024-07-01', 'Full').identity.principalId]"
+      ]
+    }
+  }
+}

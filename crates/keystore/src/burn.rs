@@ -4,11 +4,14 @@
 //! `keyserver/src/db.js` `burnWrappedKeys`.
 //!
 //! This module supplies the request scope, canonical bytes, and Ed25519
-//! signature helper. Current Hub/IPC production code does not construct a
-//! [`BurnScope`] or call `KeyServerClient::burn`; the reachable product burn
-//! path performs local-row cleanup and best-effort cipher-store blob deletion
-//! instead. These primitives therefore do not establish that a product burn
-//! deletes server-held wrapped keys.
+//! signature helper. IPC production code uses it only from the in-Discord
+//! unwhitelist burn path, after posting the burn marker and applying local-row
+//! cleanup. That path addresses a verified OSL user id and refuses Discord-only
+//! identifiers rather than guessing remote keyserver authority.
+//!
+//! The separate active-context product burn still performs local-row cleanup and
+//! best-effort cipher-store blob deletion; it must not be described as
+//! cryptographic erasure of every server-held wrapped key.
 //!
 //! ## Wire format (must match the server byte-for-byte)
 //!

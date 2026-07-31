@@ -3,15 +3,19 @@ import { fileURLToPath } from "node:url";
 
 export default defineConfig(({ mode }) => ({
   base: "./",
-  define: mode === "discord-qa"
-    ? { "import.meta.env.VITE_OSL_DISCORD_QA_SHELL": JSON.stringify("1") }
-    : {},
+  define: {
+    "import.meta.env.VITE_OSL_DISCORD_QA_SHELL": JSON.stringify(mode === "discord-qa" ? "1" : "0"),
+    "import.meta.env.VITE_OSL_SIGNAL_QA_SHELL": JSON.stringify(mode === "signal-qa" ? "1" : "0"),
+  },
   build: {
     outDir: "dist",
     emptyOutDir: true,
     modulePreload: false,
     rollupOptions: {
       input: {
+        ...(mode === "signal-qa" ? {
+          "/src/main.ts": fileURLToPath(new URL("./src/signal-qa-main.ts", import.meta.url)),
+        } : {}),
         whatsappQa: fileURLToPath(new URL("./whatsapp-qa.html", import.meta.url)),
         whatsappOverlay: fileURLToPath(new URL("./whatsapp-overlay.html", import.meta.url)),
         overlay: fileURLToPath(new URL("./overlay.html", import.meta.url)),
