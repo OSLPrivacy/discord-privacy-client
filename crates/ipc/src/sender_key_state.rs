@@ -30,7 +30,7 @@ pub fn load_sender_key_state(path: &Path) -> SenderKeyStateFile {
     let Ok(blob) = std::fs::read(path) else {
         return SenderKeyStateFile::default();
     };
-    let plain = match crate::main_password::maybe_decrypt(&blob) {
+    let plain = match crate::main_password::maybe_decrypt_file(path, &blob) {
         Ok(p) => p,
         Err(e) => {
             tracing::warn!(error = %e, "OSL: load sender_key_state.json decrypt failed");

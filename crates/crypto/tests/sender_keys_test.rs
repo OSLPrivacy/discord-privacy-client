@@ -477,3 +477,47 @@ fn setup() -> (SenderChain, ReceiverChain, SenderContext) {
     let ctx = make_sender_ctx(0xaa, b"group-default", SESSION_VERSION_V1);
     (sender, receiver, ctx)
 }
+
+#[test]
+fn a_replayed_skdm_cannot_rewind_the_receiver_chain() {
+    // A captured SKDM is replayable by any channel observer, so `rotate_to` must
+    // refuse to move the receiver BACKWARDS or sideways. Before the monotone
+    // guard, replaying an SKDM with its original chain_id re-derived ck_0 and
+    // reset n to 0, after which every message already delivered on that chain
+    // decrypted again -- rewinding the very counter the replay refusal depends on.
+    let (mut sender, mut receiver, ctx) = setup();
+
+    let m0 = sender.encrypt(b"m0", &ctx).unwrap();
+    receiver.decrypt(&m0, &ctx).unwrap();
+
+    let old_chain = sender.current_chain_id();
+    let old_root = sender.rotation_root_bytes();
+
+    // A legitimate forward rotation is still accepted.
+    sender.rotate().unwrap();
+    receiver
+        .rotate_to(sender.current_chain_id(), &sender.rotation_root_bytes())
+        .expect("a forward rotation must still be accepted");
+    let now_chain = sender.current_chain_id();
+    assert!(now_chain > old_chain);
+
+    // Replaying the ORIGINAL SKDM must be refused, not silently honoured.
+    assert!(
+        receiver.rotate_to(old_chain, &old_root).is_err(),
+        "replaying an older SKDM must be refused"
+    );
+    // Re-offering the CURRENT chain must be a NO-OP, not an error: the send loop
+    // periodically re-emits the same (chain_id, rotation_root) so a receiver that
+    // missed the first SKDM recovers, and apply_skdm_recv is specified idempotent.
+    // Erroring here turns every self-heal re-emit into a dispatch failure.
+    receiver
+        .rotate_to(now_chain, &sender.rotation_root_bytes())
+        .expect("re-applying the current chain must be an idempotent no-op");
+
+    // And the refusal must have left the receiver's state untouched, so the
+    // replayed m0 still cannot be re-decrypted.
+    assert!(
+        receiver.decrypt(&m0, &ctx).is_err(),
+        "a message already delivered must not decrypt again after a refused rotation"
+    );
+}

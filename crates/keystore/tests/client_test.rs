@@ -560,6 +560,123 @@ fn ownership_challenge_refuses_missing_request_binding_without_wire_call() {
     }
 }
 
+/// Build a proof for `service_account_id` owned by `identity`, from a
+/// challenge shaped exactly like the one the keyserver issues.
+fn ownership_proof_for(
+    identity: &keystore::Identity,
+    service_account_id: &str,
+) -> (keystore::AccountOwnershipProof, [u8; 32]) {
+    let nonce = [0x3cu8; 32];
+    let mut challenge = keystore::ProofChallenge::new(
+        nonce,
+        service_account_id,
+        &identity.user_id,
+        1_800_000_000,
+        1_800_000_300,
+    )
+    .expect("challenge lifetime is valid");
+    let proof =
+        keystore::AccountOwnershipProof::from_challenge(identity, &mut challenge, 1_800_000_001)
+            .expect("owner can answer its own challenge");
+    (proof, nonce)
+}
+
+#[test]
+fn ownership_proof_submission_round_trips_through_mock_worker() {
+    let identity = generate_identity("osl1_owner".to_string());
+    let (proof, nonce) = ownership_proof_for(&identity, "123456789012345678");
+
+    let response_body = br#"{"result":"account_ownership_proof_recorded","service":"discord","owner_user_id":"osl1_owner","verified_at_unix_seconds":1800000005}"#;
+    let mut response = Vec::new();
+    response.extend_from_slice(b"HTTP/1.1 201 Created\r\n");
+    response
+        .extend_from_slice(format!("Content-Length: {}\r\n", response_body.len()).as_bytes());
+    response.extend_from_slice(b"Content-Type: application/json\r\n\r\n");
+    response.extend_from_slice(response_body);
+    let (port, rx) = one_shot_server(response);
+
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+    let verified_at = client
+        .submit_ownership_proof("123456789012345678", "osl1_owner", &proof)
+        .expect("mock worker accepts the proof");
+    assert_eq!(verified_at, 1_800_000_005);
+
+    let request = String::from_utf8(rx.recv().unwrap()).unwrap();
+    let lower = request.to_ascii_lowercase();
+    assert!(lower.starts_with("post /v1/account-ownership/proof http/1.1\r\n"));
+    assert!(lower.contains("content-type: application/json"));
+    let body = request.split("\r\n\r\n").nth(1).unwrap();
+    let value: serde_json::Value = serde_json::from_str(body).unwrap();
+    assert_eq!(value.as_object().unwrap().len(), 4);
+    assert_eq!(value["service"], "discord");
+    assert_eq!(value["service_account_id"], "123456789012345678");
+    assert_eq!(value["owner_user_id"], "osl1_owner");
+    assert_eq!(value["proof"]["platform_id"], "123456789012345678");
+    assert_eq!(
+        value["proof"]["proof_type"],
+        "ed25519_identity_challenge_v1"
+    );
+    assert_eq!(value["proof"]["e"]["owner_user_id"], "osl1_owner");
+    assert_eq!(value["proof"]["e"]["nonce_b64"], STANDARD.encode(nonce));
+    assert_eq!(value["proof"]["e"]["issued_at_unix_seconds"], 1_800_000_000u64);
+    assert_eq!(
+        value["proof"]["e"]["expires_at_unix_seconds"],
+        1_800_000_300u64
+    );
+    let signature = value["proof"]["e"]["signature_b64"].as_str().unwrap();
+    assert_eq!(STANDARD.decode(signature).unwrap().len(), 64);
+}
+
+#[test]
+fn ownership_proof_submission_surfaces_a_server_refusal() {
+    let identity = generate_identity("osl1_owner".to_string());
+    let (proof, _) = ownership_proof_for(&identity, "123456789012345678");
+
+    let response_body =
+        br#"{"error":"account ownership proof rejected: proof_replayed 123456789012345678"}"#;
+    let mut response = Vec::new();
+    response.extend_from_slice(b"HTTP/1.1 409 Conflict\r\n");
+    response
+        .extend_from_slice(format!("Content-Length: {}\r\n\r\n", response_body.len()).as_bytes());
+    response.extend_from_slice(response_body);
+    let (port, _rx) = one_shot_server(response);
+
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+    match client.submit_ownership_proof("123456789012345678", "osl1_owner", &proof) {
+        Err(Error::HttpStatus { status, body }) => {
+            assert_eq!(status, 409);
+            assert_eq!(body, "ownership proof submission refused");
+            assert!(!body.contains("123456789012345678"));
+        }
+        other => panic!("expected a surfaced server refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn ownership_proof_submission_refuses_unbound_material_without_wire_call() {
+    let identity = generate_identity("osl1_owner".to_string());
+    let (proof, _) = ownership_proof_for(&identity, "123456789012345678");
+
+    // Nothing is listening: any refusal that arrives is a local one.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+
+    match client.submit_ownership_proof("999999999999999999", "osl1_owner", &proof) {
+        Err(Error::Transport(message)) => assert!(message.contains("different account")),
+        other => panic!("expected a different-account refusal, got {other:?}"),
+    }
+    match client.submit_ownership_proof("123456789012345678", "osl1_other", &proof) {
+        Err(Error::Transport(message)) => assert!(message.contains("different owner")),
+        other => panic!("expected a different-owner refusal, got {other:?}"),
+    }
+    match client.submit_ownership_proof("", "osl1_owner", &proof) {
+        Err(Error::Transport(message)) => assert!(message.contains("incomplete")),
+        other => panic!("expected an incomplete-binding refusal, got {other:?}"),
+    }
+}
+
 #[test]
 fn prekey_fetch_carries_registered_identity_signature() {
     let response_body = br#"{"user_id":"bob","ik_x25519_pub":"AA","ik_ed25519_pub":"CC","ik_mlkem768_pub":"BB","ik_ratchet_initial_pub":null,"spk_pub":"DD","spk_signature":"EE","spk_rotated_at":"2026-05-08T11:00:00Z","opk":null,"remaining_opk_count":0}"#;

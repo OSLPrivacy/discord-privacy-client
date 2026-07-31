@@ -131,12 +131,137 @@ textarea:disabled {
   opacity: .48;
 }
 
-input[type="checkbox"] {
-  transform: scale(.92);
-  transition: transform var(--motion-fast) var(--ease-out), outline-color var(--motion-fast) linear;
+/* Native form controls are drawn by the platform, not by this sheet: on the
+   shipped WebView the checkbox rendered as the OS blue square against OSL's
+   cyan-on-black chrome, and `accent-color` only recolours that platform
+   widget where it is honoured at all. These rules replace the widget, and
+   they have to live here rather than in main.ts because the shipped CSP
+   (apps/osl-hub/tauri.conf.json, `style-src 'self'`) drops runtime <style>
+   elements and inline style= attributes outright.
+
+   The input element itself is kept: it stays focusable, Space still toggles
+   it, and assistive technology still reads the real checked state. */
+/* `:not(.sr-only)` is load-bearing. `input[type="checkbox"]` outweighs
+   `.sr-only`, so without it these rules gave the visually-hidden radios inside
+   the protection-preset labels a real 18px box and painted them on screen. */
+input[type="checkbox"]:not(.sr-only),
+input[type="radio"]:not(.sr-only) {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  min-height: 18px;
+  flex: 0 0 auto;
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1px solid var(--muted);
+  border-radius: 4px;
+  background: var(--panel-2);
+  cursor: pointer;
+  transition: border-color var(--motion-fast) var(--ease-standard), background-color var(--motion-fast) var(--ease-standard);
 }
 
-input[type="checkbox"]:checked { transform: scale(1); }
+input[type="radio"]:not(.sr-only) { border-radius: 50%; }
+
+input[type="checkbox"]:not(.sr-only):hover:not(:disabled),
+input[type="radio"]:not(.sr-only):hover:not(:disabled) { border-color: var(--brand); }
+
+/* The checked state is carried by a mark, not only by the fill colour: the
+   tick (checkbox) and the centre dot (radio) are shape, so the state survives
+   a monochrome display and forced-colours. */
+input[type="checkbox"]:not(.sr-only)::after {
+  position: absolute;
+  top: 1px;
+  left: 5px;
+  width: 5px;
+  height: 9px;
+  content: "";
+  border: solid transparent;
+  border-width: 0 2px 2px 0;
+  transform: rotate(42deg);
+  transition: border-color var(--motion-fast) var(--ease-standard);
+}
+
+input[type="radio"]:not(.sr-only)::after {
+  position: absolute;
+  inset: 3px;
+  content: "";
+  border-radius: 50%;
+  background: transparent;
+  transition: background-color var(--motion-fast) var(--ease-standard);
+}
+
+input[type="checkbox"]:not(.sr-only):checked,
+input[type="radio"]:not(.sr-only):checked {
+  border-color: var(--brand);
+  background: var(--brand);
+}
+
+input[type="checkbox"]:not(.sr-only):checked::after { border-color: var(--brand-ink); }
+input[type="radio"]:not(.sr-only):checked::after { background: var(--brand-ink); }
+
+input[type="checkbox"]:not(.sr-only):indeterminate {
+  border-color: var(--brand);
+  background: var(--brand);
+}
+
+input[type="checkbox"]:not(.sr-only):indeterminate::after {
+  top: 7px;
+  left: 3px;
+  width: 10px;
+  height: 0;
+  border-width: 0 0 2px;
+  border-color: var(--brand-ink);
+  transform: none;
+}
+
+/* Select and range are the other two platform widgets this app renders. */
+select {
+  padding: 0 28px 0 10px;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background-color: var(--panel-2);
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8' fill='none' stroke='%239aa0a6' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1 1.5 6 6.5l5-5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  background-size: 11px 8px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+select:hover:not(:disabled) { border-color: var(--muted); }
+
+input[type="range"] {
+  width: 160px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--panel-3);
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1px solid var(--brand-hover);
+  border-radius: 50%;
+  background: var(--brand);
+}
 
 h1,
 h2,
@@ -458,9 +583,32 @@ code {
   text-transform: uppercase;
 }
 
+/* A status chip is a claim about state, so its colour has to agree with the
+   word inside it. Painted green unconditionally, this element rendered
+   "UNAVAILABLE", "NEEDS ATTENTION", "REFUSED" and "DELETION OFF" in the success
+   colour -- colour contradicting the text it sits on. The default is now
+   neutral, because an unclassified state is not a good one, and a tone is
+   applied only where the label has been resolved to one. Colour is never the
+   only signal: the label always spells the state out. */
 .status-tag {
+  border-color: var(--line);
+  color: var(--muted);
+}
+
+.status-tag.ok,
+.status-tag.active {
   border-color: color-mix(in srgb, var(--success) 55%, var(--line));
   color: var(--success);
+}
+
+.status-tag.warn {
+  border-color: color-mix(in srgb, var(--warn) 55%, var(--line));
+  color: var(--warn);
+}
+
+.status-tag.danger {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--line));
+  color: var(--danger);
 }
 
 .dot {
@@ -503,14 +651,17 @@ code {
   cursor: pointer;
 }
 
+/* Size only. The paint comes from the base input[type="checkbox"] rules, so
+   every checkbox in the app is the same control -- the "Resist Windows
+   capture" row was outside this selector list and was therefore the one that
+   fell all the way back to the platform widget. */
 .check input,
 .decrypt-toggle input,
 .switch-label input,
 .setting-line input {
   width: 18px;
   height: 18px;
-  min-height: 0;
-  accent-color: var(--brand);
+  min-height: 18px;
 }
 
 .warning,
@@ -1149,24 +1300,29 @@ code {
   border-bottom: 0;
   background: var(--brand-wash);
 }
-.browser-detected-item input { width: 18px; min-height: 18px; margin-left: auto; flex: 0 0 18px; accent-color: var(--brand); }
+.browser-detected-item input { margin-left: auto; }
 .browser-detected-item:nth-child(3n) { border-right: 0; }
 .browser-detected-item .company-logo { width: 27px; height: 27px; flex: 0 0 auto; }
 .browser-detected-item strong,
 .browser-detected-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .browser-detected-item small { margin-top: 2px; color: var(--muted); font-size: 11px; }
 .browser-import-actions-primary { flex-direction: column; align-items: center; }
+/* Identical to .text-button, which is what every other onboarding step's
+   secondary action ("Not now" on Stealth / Burn / Mullvad) already renders as.
+   This one was grey while those were cyan, so the same affordance read as two
+   different kinds of control depending on the step. */
 .browser-import-skip {
   min-height: 32px;
   padding: 0 8px;
   border: 0;
   background: transparent;
-  color: var(--muted);
+  color: var(--brand);
   cursor: pointer;
   font: inherit;
-  font-size: 12px;
+  font-size: 11px;
+  font-weight: 600;
 }
-.browser-import-skip:hover { color: var(--text); }
+.browser-import-skip:hover { color: var(--brand-hover); }
 .saved-account-browser-disclosure { margin-top: 12px; border-top: 1px solid var(--line-soft); }
 .saved-account-browser-disclosure > summary { min-height: 42px; display: flex; align-items: center; color: var(--muted); cursor: pointer; }
 .saved-account-browser-disclosure > div { padding-bottom: 4px; color: var(--muted); font-size: 11px; line-height: 1.5; }
@@ -1584,7 +1740,7 @@ code {
   min-height: 48px;
   padding: 6px 8px;
   display: grid;
-  grid-template-columns: 26px minmax(0, 1fr);
+  grid-template-columns: 30px minmax(0, 1fr);
   align-items: center;
   gap: 8px;
   border-left: 2px solid transparent;
@@ -1605,8 +1761,10 @@ code {
   border-left-color: var(--brand);
 }
 
+/* Wide enough for the two-letter badge that People and Privacy need to stop
+   sharing a "P" -- see primarySidebarBadge() in main.ts. */
 .primary-sidebar-icon {
-  width: 24px;
+  width: 28px;
   height: 24px;
   display: grid;
   place-items: center;
@@ -1630,11 +1788,22 @@ code {
 
 /* 11px is the project-wide floor for OSL's own chrome (see typography.test.ts).
    The inert inline copy in main.ts used 10px, which never had to clear that
-   floor because the test only reads the stylesheets. */
+   floor because the test only reads the stylesheets.
+
+   The subtitle wraps rather than ellipsising. Three of the six destinations
+   have a question longer than the 232px rail ("Am I protected, and what ne...",
+   "Who do I trust and where d...", "Which accounts and device..."), and an
+   explanatory line cut off before its own verb explains nothing. Wrapping is
+   the fix that neither widens the rail -- which would come straight out of the
+   content column -- nor shortens copy that is shared with the IA contract. */
 .primary-sidebar-item small {
   margin-top: 2px;
+  overflow: visible;
   color: var(--subtle);
   font-size: 11px;
+  line-height: 1.35;
+  white-space: normal;
+  text-overflow: clip;
 }
 
 .primary-sidebar-settings {
@@ -1853,13 +2022,16 @@ code {
   text-transform: uppercase;
 }
 
+/* `background-color`, not the `background` shorthand: the shorthand resets
+   background-image and would erase the chevron the base `select` rule draws,
+   leaving an appearance:none select with no arrow at all. */
 .app-selector select,
 .account-switcher {
   min-height: 42px;
   padding: 0 30px 0 10px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: var(--panel-2);
+  background-color: var(--panel-2);
   color: var(--text);
   font-family: var(--font-ui);
   font-size: 12px;
@@ -1911,6 +2083,9 @@ code {
 .trust-state.not-secure .dot { background: var(--danger); }
 .trust-state strong,
 .trust-state small { display: block; }
+/* The detail line is amber because it normally explains an unfinished state;
+   when the state is Ready it is ordinary supporting copy, not a warning. */
+.trust-state.ready small { color: var(--muted); }
 .trust-state strong { font-size: 11px; }
 .trust-state small {
   max-width: 150px;
@@ -2581,9 +2756,27 @@ code {
   gap: 10px;
 }
 
+/* The old `auto minmax(0, 1fr)` sized column 1 off the "Add or verify a
+   person" button that auto-placed beneath Back, which pushed the title block
+   ~200px to the right of the body underneath it and left Back centred in a
+   dead column between the two. Back now takes its own full-width row, and the
+   title block starts on the same left edge as every other destination header
+   with the primary action opposite it. */
 .people-destination-header {
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: start;
+}
+
+.people-destination-header > .text-button {
+  grid-column: 1 / -1;
+  justify-self: start;
+  min-height: 24px;
+  text-align: left;
+}
+
+.people-destination-header > .button {
+  grid-column: 2;
+  justify-self: end;
 }
 
 .people-destination-header h1,
@@ -3898,7 +4091,7 @@ code {
   cursor: pointer;
 }
 .scrub-category-picker label:has(input:checked) { border-left: 3px solid var(--brand); background: var(--panel-2); }
-.scrub-category-picker input { width: 16px; height: 16px; flex: 0 0 auto; accent-color: var(--brand); }
+.scrub-category-picker input { margin-top: 1px; }
 .scrub-category-picker strong,
 .scrub-category-picker small { display: block; }
 .scrub-category-picker strong { font-size: 11px; }
@@ -3947,7 +4140,7 @@ code {
 .privacy-finding blockquote { margin: 9px 0; padding: 9px 10px; border-left: 2px solid var(--line); overflow-wrap: anywhere; background: var(--panel); color: var(--text); font-size: 11px; }
 .privacy-finding small { margin-top: 5px; display: block; color: var(--subtle); font-size: 11px; }
 .scrub-finding-select { display: flex; align-items: center; gap: 9px; cursor: pointer; }
-.scrub-finding-select input { width: 16px; height: 16px; flex: 0 0 auto; accent-color: var(--brand); }
+.scrub-finding-select input { margin-top: 0; }
 .scrub-finding-select strong,
 .scrub-finding-select small { display: block; }
 .scrub-finding-select strong { text-transform: capitalize; }
@@ -4603,6 +4796,30 @@ code {
    left untouched; every OSL-owned surface and control has hard corners. */
 * { border-radius: 0 !important; }
 
+/* The decision above is about corners, and these elements have none: they are
+   discs, not rounded rectangles. Written flat, `*` won on `!important` at equal
+   specificity and silently flattened every one of them -- the Home avatar dock
+   became a square tile, and the status dots became squares. A class selector
+   outranks `*`, so these keep their shape while every corner in the product
+   stays hard. Anything with an actual corner is deliberately absent from this
+   list. */
+.home-profile-dock,
+.home-profile-dock > span,
+.dot,
+.app-account-dot,
+.home-command-dot,
+.icon-button,
+.friends-add,
+.guide-login-note > span,
+.discord-qa-burn-flame,
+.native-discord-composer-unreachable-mark { border-radius: 50% !important; }
+
+/* ...and the one place that deliberately squares a disc off again. It said so
+   without `!important` and so was already losing to `*`; now that `.icon-button`
+   wins, this has to say it at the same volume to keep meaning what it says. */
+.burn-card .icon-button,
+.owned-confirmation-card .icon-button { border-radius: 0 !important; }
+
 .ui-recovery {
   min-height: 100vh;
   display: grid;
@@ -4685,10 +4902,10 @@ code {
 .onboarding-panel h1 { margin: 0 0 22px; text-align: center; font-size: clamp(25px, 4vw, 34px); letter-spacing: -.025em; }
 .onboarding-panel > .text-back,
 .unlock-card > .text-back { width: 100%; margin: 10px 0 0; }
-.onboarding-back-dock,
 .onboarding-skip-dock {
   position: fixed;
   z-index: 30;
+  right: 20px;
   bottom: 16px;
   min-height: 40px;
   padding: 0 8px;
@@ -4698,12 +4915,31 @@ code {
   cursor: pointer;
   font-size: 11px;
 }
-.onboarding-back-dock { left: 20px; }
-.onboarding-skip-dock { right: 20px; }
-.onboarding-back-dock:hover,
 .onboarding-skip-dock:hover { color: var(--text); }
-.onboarding-actions { justify-content: center; }
+
+/* One action row per onboarding step. Back is folded into it by
+   dockOnboardingBackControl() where the step renders a Continue of its own,
+   and the row is the step's own footer where it does not, so the two controls
+   are never separated by the height of the window. The rule bar above it is
+   what makes the row read as navigation rather than as loose buttons. */
+.onboarding-actions {
+  margin-top: 26px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  justify-content: center;
+  gap: 12px;
+}
 .onboarding-actions .button { min-width: 170px; }
+.onboarding-actions .onboarding-back {
+  min-width: 104px;
+  order: -1;
+  color: var(--muted);
+}
+.onboarding-actions .onboarding-back:hover:not(:disabled) { color: var(--text); }
+/* The nav row is the fallback footer for steps that render no Continue of
+   their own (the Pro code form, the stealth/burn password forms), so Back sits
+   in the same place on every step. */
+.onboarding-nav { justify-content: center; }
 .onboarding-centered-copy { margin-right: auto; margin-left: auto; text-align: center; }
 .setup-list { margin-top: 18px; border-top: 1px solid var(--line); }
 .setup-status-row {
@@ -5159,7 +5395,6 @@ code {
   .browser-detected-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .browser-detected-item:nth-child(3n) { border-right: 1px solid var(--line-soft); }
   .browser-detected-item:nth-child(2n) { border-right: 0; }
-  .onboarding-back-dock { left: 10px; bottom: 8px; }
   .onboarding-skip-dock { right: 10px; bottom: 8px; }
   .home-header { height: 62px; min-height: 62px; padding: 0 12px; }
   .home-brand-mark { width: 42px; height: 42px; flex-basis: 42px; }
@@ -5580,3 +5815,1026 @@ code {
 }
 .whitelist-roster-truncated,
 .whitelist-roster-note { color: var(--muted); }
+
+/* ---------------------------------------------------------------------------
+   IA destination surfaces.
+
+   Everything below was already being rendered by main.ts and had no rule
+   anywhere in the shipped sheet, so four of the six destinations painted as
+   raw HTML: <strong> and <span> ran together into "This computerAvailable",
+   filter tabs fell back to the native OS button with its 3D bevel, and 16
+   accounts stacked in a single column. The shipped CSP is `style-src 'self'`,
+   so a runtime <style> element or an inline style= attribute is dropped on the
+   floor -- these rules can only live here.
+
+   Tokens only. No new palette.
+   --------------------------------------------------------------------------- */
+
+/* --- Shared destination chrome ------------------------------------------- */
+
+.inbox-destination,
+.activity-destination,
+.connections-destination,
+.privacy-destination {
+  padding: 22px 24px 32px;
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+
+.destination-header {
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.destination-header > div {
+  min-width: 0;
+  max-width: 720px;
+  display: grid;
+  gap: 4px;
+}
+
+.destination-header h1 { margin: 0; font-size: 27px; }
+.destination-header p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.destination-header .eyebrow { margin: 0; }
+.destination-header > .button { flex: 0 0 auto; }
+
+/* The logo/avatar column in front of a conversation or account row. */
+.source-mark {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}
+
+.source-mark > svg,
+.source-mark > img,
+.source-mark > .company-logo { width: 20px; height: 20px; display: block; }
+
+/* --- Inbox ---------------------------------------------------------------- */
+
+/* These were native <button>s with no rule at all: light grey, bevelled, and
+   nothing to say which filter was live. */
+.inbox-filter-tabs {
+  margin: 0;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.inbox-filter-tabs > button {
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  background: var(--panel-2);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.inbox-filter-tabs > button:hover:not(:disabled) { background: var(--panel-3); color: var(--text); }
+
+/* The live filter is marked twice: the panel-coloured face joins it to the
+   content below, and the brand rail names it without relying on colour alone
+   -- aria-pressed carries the same fact to assistive tech. */
+.inbox-filter-tabs > button[aria-pressed="true"] {
+  border-top: 2px solid var(--brand);
+  background: var(--panel);
+  color: var(--text);
+}
+
+.inbox-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+  gap: 10px;
+  align-items: start;
+}
+
+.inbox-panel {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  background: var(--panel);
+}
+
+.inbox-panel > h2 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.inbox-surface-grid { display: grid; gap: 8px; }
+
+.inbox-surface-card {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+  background: var(--panel-2);
+}
+
+.inbox-surface-card > strong { font-size: 13px; }
+.inbox-surface-card > small { color: var(--muted); font-size: 11px; }
+/* The status tag is a sibling column, not an inline run inside the sentence:
+   inline, the paragraph wrapped back underneath the badge and every line after
+   the first started at a different x than the card's own left edge. */
+.inbox-surface-card > p {
+  margin: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.inbox-surface-card > p > .status-tag { flex: 0 0 auto; margin-top: 1px; }
+.inbox-surface-card > ul { margin: 0; padding-left: 17px; display: grid; gap: 4px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.inbox-surface-card.unavailable { opacity: .68; }
+.mail-stage-card { border-left: 3px solid var(--line); }
+
+.inbox-row {
+  min-height: 56px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line-soft);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.inbox-row > div {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: grid;
+  gap: 2px;
+}
+
+.inbox-row strong { font-size: 12px; }
+.inbox-row small { display: block; color: var(--muted); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+.inbox-row > .button,
+.inbox-row > .status-tag { flex: 0 0 auto; }
+
+/* The whole row is the hit target for an OSL conversation, so it has to lose
+   the native button chrome without losing its own text alignment. */
+.inbox-conversation-open {
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  padding: 0;
+  border: 0;
+  display: grid;
+  gap: 2px;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.inbox-conversation-open:hover strong { color: var(--brand); }
+
+.connected-source .source-mark,
+.osl-chat-source .source-mark,
+.request-source .source-mark,
+.circle-feed-item .source-mark { color: var(--muted); }
+
+.circle-feed-list { display: grid; }
+.circle-feed-item:first-child { border-top: 1px solid var(--line); }
+
+/* A setting-line is a two-column row; this card adds a third block of prose,
+   which flex would otherwise squeeze onto the same line as the status chip. */
+.circle-audience-card {
+  min-height: 0;
+  padding: 11px 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 5px 12px;
+}
+.circle-audience-card > span { grid-column: 1; grid-row: 1; min-width: 0; }
+.circle-audience-card > .status-tag { grid-column: 2; grid-row: 1; justify-self: end; }
+.circle-audience-card > p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.circle-audience-card.unavailable { opacity: .72; }
+
+/* --- Connections ---------------------------------------------------------- */
+
+.connections-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 10px;
+  align-items: start;
+}
+
+.connections-grid > section {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.connections-grid > section > header { display: grid; gap: 4px; margin-bottom: 4px; }
+.connections-grid > section > header h2 { margin: 0; font-size: 15px; }
+.connections-grid > section > header p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+
+/* This is the row that rendered as "DiscordNot set up" with the logo orphaned
+   on its own line above it. */
+.connection-row {
+  min-height: 58px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line-soft);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.connection-row > div {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.connection-row > div > span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.connection-row > div > img,
+.connection-row > div > svg,
+.connection-row > div > .company-logo { width: 22px; height: 22px; flex: 0 0 auto; display: block; }
+.connection-row strong { font-size: 12px; }
+.connection-row small { color: var(--muted); font-size: 11px; }
+.connection-row > .button { flex: 0 0 auto; }
+
+.connection-device-card {
+  min-width: 0;
+  margin-top: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  background: var(--panel-2);
+}
+
+.connection-device-card > div > h3 { margin: 0; font-size: 15px; }
+.connection-device-card > div {
+  min-width: 0;
+  flex: 1 1 240px;
+  display: grid;
+  gap: 5px;
+  justify-items: start;
+}
+
+.connection-device-card h3 { margin: 0; font-size: 13px; }
+.connection-device-card strong { font-size: 13px; }
+.connection-device-card small { color: var(--muted); font-size: 11px; }
+.connection-device-card p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.connection-device-card ul { margin: 0; padding-left: 17px; display: grid; gap: 4px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.connection-device-card > .button { flex: 0 0 auto; }
+.connection-device-card.unavailable { opacity: .68; }
+
+.mullvad-card { border-left: 3px solid var(--line); }
+.android-workspace-card { border-left: 3px solid var(--warn); }
+
+/* --- Activity ------------------------------------------------------------- */
+
+/* Four counters that rendered as "0Need attention" / "LocalProof source". */
+.activity-proof-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 8px;
+}
+
+.activity-proof-summary > article {
+  min-width: 0;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 3px;
+  background: var(--panel);
+}
+
+.activity-proof-summary > article > strong {
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+.activity-proof-summary > article > span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.activity-review-panel {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--warn);
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  background: var(--panel-2);
+}
+
+.activity-review-panel h2 { margin: 0; font-size: 15px; }
+.activity-review-panel p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+.activity-attention-review > header { display: grid; gap: 4px; padding-bottom: 8px; }
+.activity-attention-review > header h2 { margin: 0; font-size: 15px; }
+.activity-attention-review > header p { margin: 0; color: var(--muted); font-size: 12px; }
+
+.activity-proof-row { gap: 12px; }
+.activity-proof-row > .status-tag { flex: 0 0 auto; order: 2; }
+.activity-proof-row > div { min-width: 0; flex: 1 1 auto; order: 1; }
+.activity-proof-row.selected { border-left: 3px solid var(--brand); padding-left: 9px; }
+
+.activity-run-status {
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 7px;
+  background: var(--panel);
+}
+
+.activity-run-status > h3 { margin: 0; font-size: 13px; }
+.activity-run-status > strong { font-size: 13px; }
+.activity-run-status ul { margin: 0; padding-left: 17px; display: grid; gap: 5px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.activity-run-status[data-phase="failed"] { border-left: 3px solid var(--danger); }
+.activity-run-status[data-phase="running"] { border-left: 3px solid var(--brand); }
+.activity-run-status.completed { border-left: 3px solid var(--success); }
+
+/* --- Privacy -------------------------------------------------------------- */
+
+.privacy-preset-panel {
+  padding: 14px;
+  border: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  background: var(--panel);
+}
+
+.privacy-preset-panel > div {
+  min-width: 0;
+  max-width: 720px;
+  flex: 1 1 320px;
+  display: grid;
+  gap: 5px;
+  justify-items: start;
+}
+
+.privacy-preset-panel h2 { margin: 0; font-size: 19px; }
+.privacy-preset-panel p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.privacy-preset-panel > .button { flex: 0 0 auto; }
+
+.privacy-policy-stack {
+  padding: 14px;
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 10px;
+  background: var(--panel);
+}
+
+.privacy-policy-stack > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.privacy-policy-stack > header > div { min-width: 0; display: grid; gap: 3px; }
+.privacy-policy-stack > header h2 { margin: 0; font-size: 15px; }
+.privacy-policy-stack > header p { margin: 0; color: var(--muted); font-size: 12px; }
+
+.privacy-policy-path {
+  margin: 0;
+  padding: 7px 10px;
+  border-left: 2px solid var(--line);
+  background: var(--panel-2);
+  color: var(--subtle);
+  font-size: 11px;
+}
+
+.privacy-policy-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(236px, 1fr));
+  gap: 8px;
+  align-items: stretch;
+}
+
+.privacy-policy-card {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+  align-content: start;
+  background: var(--panel-2);
+}
+
+.privacy-policy-card h3 { margin: 0; font-size: 13px; }
+.privacy-policy-card p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+.privacy-tool-row { flex-wrap: wrap; }
+
+.public-post-guard {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--warn);
+  display: grid;
+  gap: 10px;
+  background: var(--panel);
+}
+
+.public-post-guard > header { display: grid; gap: 4px; justify-items: start; }
+.public-post-guard > header h2 { margin: 0; font-size: 15px; }
+.public-post-guard > header p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.public-post-guard > .scope-approval-note { margin: 0; }
+.carrier-preview-grid { grid-template-columns: repeat(auto-fit, minmax(258px, 1fr)); }
+.public-post-guard-preview .privacy-policy-card { background: var(--panel-2); }
+
+/* --- Home ----------------------------------------------------------------- */
+
+.home-protection-summary { min-width: 0; display: grid; }
+.home-protection-summary > h1 { margin: 0 0 12px; }
+.home-overall-state > span > strong { font-size: 15px; }
+.home-protection-facts { margin-top: 0; }
+
+/* The one row on Home that is a warning. It said so in the chip only; the rail
+   makes it findable while scanning, and the words still carry the meaning. */
+.home-status-row { padding-left: 10px; border-left: 3px solid var(--warn); }
+
+/* --- Burn ----------------------------------------------------------------- */
+
+/* The five reach surfaces. Each item is a title, a reach state and a sentence
+   of explanation, and all three ran together into one line: "This
+   computerAvailable", "Other person's appUnavailable". This is the surface a
+   user reads to decide whether Burn can undo something, so the state has to be
+   separable from the name at a glance. */
+.burn-guarantees > ul {
+  margin: 12px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 7px;
+  list-style: none;
+}
+
+.burn-guarantees > ul > li {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.burn-guarantees > ul > li > strong {
+  grid-column: 1;
+  grid-row: 1;
+  align-self: center;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* The reach state, read as a chip so it cannot be mistaken for the title. */
+.burn-guarantees > ul > li > span {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+  align-self: center;
+  min-height: 22px;
+  padding: 2px 7px;
+  border: 1px solid var(--line);
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.burn-guarantees > ul > li > p {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  margin: 0;
+}
+
+/* Reach is the safety-critical fact here, so it is stated three ways: the word
+   in the chip, the data attribute a probe can read, and a rail colour. The word
+   is always present -- the colour only agrees with it. */
+.burn-guarantees > ul > li[data-burn-reach="available"] { border-left-color: var(--success); }
+.burn-guarantees > ul > li[data-burn-reach="available"] > span { border-color: color-mix(in srgb, var(--success) 55%, var(--line)); color: var(--success); }
+.burn-guarantees > ul > li[data-burn-reach="request_only"] { border-left-color: var(--warn); }
+.burn-guarantees > ul > li[data-burn-reach="request_only"] > span { border-color: color-mix(in srgb, var(--warn) 55%, var(--line)); color: var(--warn); }
+.burn-guarantees > ul > li[data-burn-reach="unavailable"],
+.burn-guarantees > ul > li[data-burn-reach="not_possible"] { border-left-color: var(--danger); }
+.burn-guarantees > ul > li[data-burn-reach="unavailable"] > span,
+.burn-guarantees > ul > li[data-burn-reach="not_possible"] > span { border-color: color-mix(in srgb, var(--danger) 55%, var(--line)); color: var(--danger); }
+
+.burn-result { min-width: 0; }
+
+/* --- Identity storage protection ------------------------------------------ */
+
+/* "Software fallback storage" is a warning, and it was rendering as an
+   unstyled div with its heading and its explanation on one line. */
+.storage-protection-status {
+  padding: 12px;
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 3px;
+  background: var(--panel-2);
+}
+
+.storage-protection-status > strong { font-size: 12px; }
+.storage-protection-status > small { color: var(--muted); font-size: 11px; line-height: 1.45; }
+.storage-protection-status.secure { border-left: 3px solid var(--success); }
+.storage-protection-status.insecure { border-left: 3px solid var(--danger); }
+.storage-protection-status.insecure > strong { color: var(--danger); }
+
+/* --- Onboarding and setup ------------------------------------------------- */
+
+.setup-section-heading {
+  margin: 18px 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.capture-setup-inline > .setup-section-heading { margin-top: 0; }
+.capture-preference { align-items: flex-start; }
+
+.onboarding-app-section { margin-top: 16px; display: grid; gap: 8px; }
+.onboarding-app-section > h2 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.account-opening-choice { margin-top: 8px; }
+
+.password-role-ready {
+  margin: 14px 0 0;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--success);
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+  background: var(--panel-2);
+}
+
+.password-role-ready > p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+.owned-confirmation-entry { display: grid; gap: 6px; }
+.owned-confirmation-entry > span { color: var(--muted); font-size: 11px; line-height: 1.45; }
+.owned-confirmation-entry > input { width: 100%; }
+
+.defaults-review-list { margin-top: 14px; }
+
+/* The blank workspace shown under a duress password. It has to look like an
+   ordinary empty app window, not like an OSL surface. */
+.decoy-workspace {
+  min-height: 100vh;
+  padding: 32px;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 12px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.decoy-workspace > h1 { margin: 0; font-size: 27px; }
+.decoy-workspace > p { margin: 0; color: var(--muted); font-size: 13px; }
+
+/* --- Native app pages ----------------------------------------------------- */
+
+.native-app-secondary {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.native-companion-card { max-width: 560px; }
+
+/* --- OSL Chat attachments ------------------------------------------------- */
+
+.osl-chat-attachments {
+  padding: 12px;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 8px;
+  background: var(--panel);
+}
+
+.osl-chat-attachments > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.osl-chat-attachments > header > strong { font-size: 12px; }
+.osl-chat-attachments > p { margin: 0; color: var(--muted); font-size: 11px; }
+.osl-chat-attachments > small { color: var(--subtle); font-size: 11px; line-height: 1.45; }
+.osl-chat-attachments > .setting-line {
+  width: 100%;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+/* --- Small state marks ---------------------------------------------------- */
+
+/* The struck-through eye means "the transcript is not showing plaintext". Drawn
+   at the eye's own stroke weight the slash read as another eye stroke. */
+.qa-icon-slash { stroke-width: 2.2; }
+
+/* A character counter that has passed its limit. */
+.is-over { color: var(--danger); font-weight: 600; }
+
+/* ---------------------------------------------------------------------------
+   OSL Mail.
+
+   The whole client -- header, thread list, reading pane, compose form and
+   settings -- had no rule in any sheet, so it rendered as a stack of raw
+   headings, bare <button>s in the native OS chrome, and form fields with no
+   layout. It is reachable from the Home tile, so it ships.
+   --------------------------------------------------------------------------- */
+
+.osl-mail-page {
+  padding: 0;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  background: var(--bg);
+}
+
+.osl-mail-header {
+  min-height: 62px;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  background: var(--panel);
+}
+
+.osl-mail-header > div {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+
+.osl-mail-header h1 { margin: 0; font-size: 19px; }
+.osl-mail-header small { color: var(--muted); font-size: 11px; }
+.osl-mail-header > nav { display: flex; gap: 4px; flex: 0 0 auto; }
+
+.osl-mail-header > nav > button {
+  min-height: 36px;
+  padding: 0 13px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.osl-mail-header > nav > button:hover:not(:disabled) { background: var(--panel-3); color: var(--text); }
+.osl-mail-header > nav > button.active { border-color: var(--brand); background: var(--brand-wash); color: var(--brand); }
+.osl-mail-header > nav > button:disabled { cursor: not-allowed; opacity: .5; }
+
+.osl-mail-back { font-size: 19px; line-height: 1; }
+
+/* The mailbox mark. Not the OSL logo -- a plain lettered plate. */
+.osl-mail-mark {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--brand) 18%, var(--panel-2));
+  color: var(--brand);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.osl-mail-error {
+  margin: 0;
+  padding: 11px 18px;
+  border-bottom: 1px solid var(--line);
+  border-left: 3px solid var(--danger);
+  background: var(--panel-2);
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.osl-mail-confirmation-strip {
+  padding: 9px 18px;
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.osl-mail-confirmation {
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--success);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  background: var(--panel-2);
+  font-size: 11px;
+}
+
+.osl-mail-confirmation > code { color: var(--muted); font-family: var(--font-mono); }
+
+/* Loading / unavailable / provisioning: one centred column, so a refusal reads
+   as a state and not as a broken page. */
+.osl-mail-state {
+  min-height: 0;
+  padding: 40px 24px;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 11px;
+  text-align: center;
+}
+
+.osl-mail-state h2 { margin: 0; font-size: 17px; }
+.osl-mail-state p { max-width: 460px; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+/* "Checking OSL Mail". A spinner would be a second kind of repeating motion in
+   a product that has exactly one (motion-system.test.ts pins the list), so this
+   is the same loading bar every other pending surface uses. */
+.mail-spinner {
+  width: 170px;
+  height: 7px;
+  display: block;
+  background: var(--panel-3);
+  transform-origin: left center;
+  animation: loading-line 1.35s var(--ease-standard) infinite;
+}
+
+.osl-mail-inbox {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+}
+
+.osl-mail-list {
+  min-height: 0;
+  border-right: 1px solid var(--line);
+  display: grid;
+  grid-template-rows: auto;
+  align-content: start;
+  overflow: auto;
+  background: var(--panel);
+}
+
+.osl-mail-list > header {
+  min-height: 52px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+}
+
+.osl-mail-list > header > div { display: grid; gap: 2px; }
+.osl-mail-list > header strong { font-size: 13px; }
+.osl-mail-list > header span { color: var(--muted); font-size: 11px; }
+
+.osl-mail-thread {
+  width: 100%;
+  padding: 11px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.osl-mail-thread:hover { background: var(--panel-2); }
+.osl-mail-thread-copy { min-width: 0; display: grid; gap: 3px; }
+.osl-mail-thread-copy > strong { font-size: 12px; }
+.osl-mail-thread-copy > span { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.osl-mail-thread-meta { flex: 0 0 auto; display: grid; gap: 4px; justify-items: end; }
+.osl-mail-thread-meta > time { color: var(--subtle); font-size: 11px; }
+
+/* Unread is marked by a rail and by weight, so it survives greyscale. */
+.osl-mail-thread.is-unread { border-left: 3px solid var(--brand); padding-left: 9px; }
+.osl-mail-thread.is-unread .osl-mail-thread-copy > strong { font-weight: 700; }
+
+/* Whether a message was protected between OSL identities or is ordinary email
+   is the single most consequential fact in this client, so it is a labelled
+   chip, never a colour on its own. */
+.osl-mail-transit {
+  padding: 2px 7px;
+  border: 1px solid var(--line);
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.osl-mail-transit.is-e2ee { border-color: color-mix(in srgb, var(--brand) 55%, var(--line)); color: var(--brand); }
+.osl-mail-transit.is-standard-email { border-color: color-mix(in srgb, var(--warn) 55%, var(--line)); color: var(--warn); }
+
+.osl-mail-empty {
+  padding: 24px 14px;
+  display: grid;
+  gap: 4px;
+  justify-items: center;
+  text-align: center;
+}
+
+.osl-mail-empty > strong { font-size: 13px; }
+.osl-mail-empty > span { color: var(--muted); font-size: 11px; }
+
+.osl-mail-reading {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.osl-mail-reading.is-empty {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 10px;
+  color: var(--muted);
+}
+
+.osl-mail-reading.is-empty > p { margin: 0; font-size: 12px; }
+
+.osl-mail-retrieval {
+  min-height: 56px;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.osl-mail-retrieval strong { display: block; font-size: 12px; }
+.osl-mail-retrieval small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
+.osl-mail-retrieval > time { flex: 0 0 auto; color: var(--subtle); font-size: 11px; }
+
+.osl-mail-message-list { min-height: 0; padding: 16px 18px; display: grid; gap: 10px; align-content: start; overflow: auto; }
+
+.osl-mail-message {
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 7px;
+  background: var(--panel);
+}
+
+.osl-mail-message > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.osl-mail-message > header > div { min-width: 0; display: grid; gap: 2px; }
+.osl-mail-message > header strong { font-size: 12px; }
+.osl-mail-message > header span { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.osl-mail-message h3 { margin: 0; font-size: 14px; }
+.osl-mail-message p { margin: 0; font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.osl-mail-message > time { color: var(--subtle); font-size: 11px; }
+
+.osl-mail-reading > footer {
+  padding: 12px 18px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: var(--panel);
+}
+
+.osl-mail-compose,
+.osl-mail-settings {
+  min-height: 0;
+  padding: 20px 24px 32px;
+  display: grid;
+  gap: 14px;
+  align-content: start;
+  overflow: auto;
+}
+
+.osl-mail-compose > header { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.osl-mail-compose h2,
+.osl-mail-settings h2 { margin: 0; font-size: 19px; }
+.osl-mail-compose form { max-width: 720px; display: grid; gap: 10px; }
+.osl-mail-compose label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.osl-mail-compose input,
+.osl-mail-compose textarea { width: 100%; padding: 9px 11px; border: 1px solid var(--line); background: var(--panel-2); color: var(--text); }
+.osl-mail-compose .mail-body { align-content: start; }
+.osl-mail-compose .mail-body > textarea { min-height: 200px; resize: vertical; line-height: 1.55; }
+.osl-mail-compose > form > .button { justify-self: start; }
+
+.osl-mail-transit-guide {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 6px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.osl-mail-transit-guide > span { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.osl-mail-transit-guide > .is-disabled { color: var(--subtle); }
+
+.osl-mail-settings .settings-list { max-width: 720px; }
+.osl-mail-settings .settings-disclosure { max-width: 720px; }
+.osl-mail-settings .danger-disclosure > summary { color: var(--danger); }
+.osl-mail-settings .danger-disclosure form { padding: 12px; display: grid; gap: 9px; justify-items: start; }
+.osl-mail-settings .danger-disclosure label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.osl-mail-settings .danger-disclosure input { padding: 9px 11px; border: 1px solid var(--line); background: var(--panel-2); color: var(--text); }
+
+@media (max-width: 860px) {
+  .osl-mail-inbox { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(140px, 240px) minmax(0, 1fr); }
+  .osl-mail-list { border-right: 0; border-bottom: 1px solid var(--line); }
+}
+
+/* --- OSL Chat leftovers --------------------------------------------------- */
+
+.osl-chat-friends-empty { margin: 0; padding: 16px 12px; color: var(--muted); font-size: 11px; text-align: center; }
+
+/* Per-message delivery state under the bubble. The label is always the word --
+   "Failed", "Expired" -- and the tone only agrees with it. */
+.osl-chat-message-state { color: var(--subtle); font-size: 11px; }
+.osl-chat-message-state.is-opened { color: var(--muted); }
+.osl-chat-message-state.is-expired { color: var(--warn); }
+.osl-chat-message-state.is-failed { color: var(--danger); font-weight: 600; }

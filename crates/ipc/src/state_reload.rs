@@ -219,6 +219,15 @@ pub fn reload_encrypted_state_after_unlock(
     let bs_path = config_dir.join("burned_scopes.json");
     if bs_path.exists() {
         let bs = crate::burned_scopes_file::load_burned_scopes(&bs_path);
+        if crate::burned_scopes_file::burn_state_unreadable() {
+            // Fail closed and say so. The empty list below is NOT authoritative
+            // while this holds — `is_message_in_burn_kill_list` reports every
+            // message as burned and writes are refused.
+            report.errors.push(
+                "burned_scopes: kill list unreadable — all scopes treated as still burned"
+                    .to_string(),
+            );
+        }
         report.burned_scopes_count = bs.scopes.len();
         report.burned_scopes_loaded = true;
         *state
@@ -471,8 +480,16 @@ fn quarantine_if_wrong_key(path: &Path) -> Result<Option<std::path::PathBuf>, St
         // absence as the normal fresh-install case.
         Err(_) => return Ok(None),
     };
-    // Plaintext (no OSL-ENC1 magic) decrypts fine by definition.
+    // Plaintext (no OSL-ENC1 magic). On a never-enrolled install that is the
+    // legitimate pre-encryption file and must be left alone. On an ENROLLED
+    // install nothing this app writes is ever magic-less, so a plaintext file
+    // here is a substitution: quarantine it rather than let the loader adopt
+    // attacker-chosen state (and then re-seal it under the victim's key).
     if !crate::main_password::has_enc_magic(&blob) {
+        let dir = path.parent().unwrap_or_else(|| Path::new("."));
+        if crate::main_password::at_rest_encryption_enrolled(dir) {
+            return quarantine_aside(path).map(Some).map_err(|e| e.to_string());
+        }
         return Ok(None);
     }
     // No key in the slot ⇒ expected pre-gate path. Leave UNTOUCHED;

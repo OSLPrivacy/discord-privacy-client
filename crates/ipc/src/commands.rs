@@ -15903,6 +15903,13 @@ pub(crate) fn is_message_in_burn_kill_list(
     scope: &crate::scope::Scope,
     message_id: &str,
 ) -> bool {
+    // Fail closed: if this process could not read the on-disk kill list, the
+    // in-memory list is not evidence of anything. An unreadable burn ledger
+    // means every message is treated as still burned rather than silently
+    // becoming decryptable again.
+    if crate::burned_scopes_file::burn_state_unreadable() {
+        return true;
+    }
     let scope_kind = scope_kind_to_str(scope.kind);
     let scope_id = scope.id.as_str();
     let g = state

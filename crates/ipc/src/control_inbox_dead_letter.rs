@@ -106,7 +106,7 @@ pub fn load_control_inbox_dead_letter(path: &Path) -> ControlInboxDeadLetterFile
     let Ok(blob) = std::fs::read(path) else {
         return ControlInboxDeadLetterFile::default();
     };
-    let plain = match crate::main_password::maybe_decrypt(&blob) {
+    let plain = match crate::main_password::maybe_decrypt_file(path, &blob) {
         Ok(p) => p,
         Err(e) => {
             tracing::warn!(error = %e, "OSL: load control_inbox_dead_letter.json decrypt failed");

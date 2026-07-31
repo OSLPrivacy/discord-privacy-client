@@ -48,7 +48,7 @@ pub fn load_scope_ttls(path: &Path) -> ScopeTtlFile {
     let Ok(blob) = std::fs::read(path) else {
         return ScopeTtlFile::default();
     };
-    let plain = match crate::main_password::maybe_decrypt(&blob) {
+    let plain = match crate::main_password::maybe_decrypt_file(path, &blob) {
         Ok(p) => p,
         Err(e) => {
             tracing::warn!(error = %e, "OSL: load scope_ttl.json decrypt failed");

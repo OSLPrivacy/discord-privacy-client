@@ -100,7 +100,7 @@ export interface PreparedEncryptedText {
   controlMessages: string[];
   sessionId: number | null;
 }
-export interface HubIdentitySlot { slotId: string; label: string; oslUserId: string; safetyNumber: string; active: boolean; }
+export interface HubIdentitySlot { slotId: string; label: string; oslUserId: string; active: boolean; }
 export interface HubIdentityCreation { identity: HubIdentitySlot; identityRecoveryPhrase: string | null; storageMethod: string; }
 export interface ScopeSecurity { storageKey: string; ttlSeconds: number; decryptDisplayEnabled: boolean; }
 export interface HubPersonWhitelistScope { kind: "dm" | "group" | "channel" | "space"; contextId: string | null; storageKey: string; userSpecific: boolean; }
@@ -1546,8 +1546,8 @@ function parseIdentityCreation(raw: unknown): HubIdentityCreation | null {
 }
 
 function parseIdentitySlot(raw: unknown): HubIdentitySlot | null {
-  if (!isRecord(raw) || !exact(raw, ["slotId", "label", "oslUserId", "safetyNumber", "active"])) return null;
-  if (!/^[A-Za-z0-9_-]{8,80}$/.test(String(raw.slotId)) || !safe(raw.label, 80) || !safe(raw.oslUserId, 180) || !safe(raw.safetyNumber, 180) || typeof raw.active !== "boolean") return null;
+  if (!isRecord(raw) || !exact(raw, ["slotId", "label", "oslUserId", "active"])) return null;
+  if (!/^[A-Za-z0-9_-]{8,80}$/.test(String(raw.slotId)) || !safe(raw.label, 80) || !safe(raw.oslUserId, 180) || typeof raw.active !== "boolean") return null;
   return raw as unknown as HubIdentitySlot;
 }
 

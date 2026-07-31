@@ -159,7 +159,7 @@ pub fn load_whitelist_state_file(path: &Path) -> Result<WhitelistStateFile, Whit
             });
         }
     };
-    let plain = crate::main_password::maybe_decrypt(&blob).map_err(|e| {
+    let plain = crate::main_password::maybe_decrypt_file(path, &blob).map_err(|e| {
         WhitelistStateError::ParseFailed {
             path: path.to_path_buf(),
             source: serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),

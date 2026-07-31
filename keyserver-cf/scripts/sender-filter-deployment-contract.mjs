@@ -32,8 +32,11 @@ export const SENDER_FILTER_SOURCE_FILES = Object.freeze({
     }),
   "keyserver-cf/src/index.ts": Object.freeze({
     role: "worker-route-registration",
+    // Re-pinned when POST /v1/account-ownership/proof was registered. The
+    // route table is pinned so a new Worker route cannot land without a
+    // deliberate re-admission of this closure.
     sha256:
-      "24e97ba8253992ddcbb0bac797d0c2b58d29e6b526982a323ba30687604c1247",
+      "1f090308a02338443b9d9d735133ac89b8f559a23b8e468e5e3ddf21e9239c34",
   }),
   "keyserver-cf/src/endpoints/register.ts": Object.freeze({
     role: "shipping-canonical-identity-registration-caller",

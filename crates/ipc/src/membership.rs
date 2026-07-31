@@ -231,7 +231,7 @@ pub fn load_scope_membership_from_path(
             });
         }
     };
-    let plain = crate::main_password::maybe_decrypt(&blob).map_err(|e| {
+    let plain = crate::main_password::maybe_decrypt_file(path, &blob).map_err(|e| {
         ScopeMembershipError::ParseFailed {
             path: path.display().to_string(),
             reason: e,

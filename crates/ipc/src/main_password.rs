@@ -132,6 +132,26 @@ pub struct PasswordMarker {
     /// journaled DuressEngine path, separate from the full-account burn role.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duress_password_hash_b64: Option<String>,
+    /// A1-1: the at-rest `file_storage_key` for THIS marker, wrapped under a
+    /// key derived from the recovery phrase (see `phrase_file_key_wrap_key`).
+    ///
+    /// Account recovery replaces the password, so the password-derived file key
+    /// is gone; without this wrap there is no material at recovery time that can
+    /// open the at-rest state files, and writing a fresh-salt marker silently
+    /// orphans peer_map / whitelist / burned_scopes. With it, recovery unwraps
+    /// the old file key, rotates every at-rest file onto the new one, and
+    /// re-wraps under the same phrase.
+    ///
+    /// `None` on markers written before this field existed. Recovery REFUSES
+    /// for those rather than orphaning state (see
+    /// `set_main_password_after_recovery`). The field is additive and optional,
+    /// so `MARKER_VERSION` deliberately stays at 2 — an older build still parses
+    /// a marker carrying it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_key_phrase_wrapped_b64: Option<String>,
+    /// AES-GCM nonce for `file_key_phrase_wrapped_b64`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_key_phrase_nonce_b64: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -460,16 +480,38 @@ fn generate_phrase() -> Result<String, String> {
     Ok(mnemonic.to_string())
 }
 
-fn encrypt_phrase(phrase: &str, key: &[u8; KEY_LEN]) -> Result<(Vec<u8>, [u8; NONCE_LEN]), String> {
+/// AES-256-GCM with a fresh random nonce. Returns `(ciphertext, nonce)`.
+fn encrypt_bytes(
+    plaintext: &[u8],
+    key: &[u8; KEY_LEN],
+) -> Result<(Vec<u8>, [u8; NONCE_LEN]), String> {
     let mut nonce_bytes = [0u8; NONCE_LEN];
     let r = random_bytes(NONCE_LEN);
     nonce_bytes.copy_from_slice(&r);
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ct = cipher
-        .encrypt(nonce, phrase.as_bytes())
+        .encrypt(nonce, plaintext)
         .map_err(|e| format!("OSL: aes-gcm encrypt: {e}"))?;
     Ok((ct, nonce_bytes))
+}
+
+fn decrypt_bytes(
+    ciphertext: &[u8],
+    nonce_bytes: &[u8; NONCE_LEN],
+    key: &[u8; KEY_LEN],
+) -> Result<Zeroizing<Vec<u8>>, String> {
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+    let nonce = Nonce::from_slice(nonce_bytes);
+    Ok(Zeroizing::new(
+        cipher
+            .decrypt(nonce, ciphertext)
+            .map_err(|e| format!("OSL: aes-gcm decrypt: {e}"))?,
+    ))
+}
+
+fn encrypt_phrase(phrase: &str, key: &[u8; KEY_LEN]) -> Result<(Vec<u8>, [u8; NONCE_LEN]), String> {
+    encrypt_bytes(phrase.as_bytes(), key)
 }
 
 fn decrypt_phrase(
@@ -477,13 +519,7 @@ fn decrypt_phrase(
     nonce_bytes: &[u8; NONCE_LEN],
     key: &[u8; KEY_LEN],
 ) -> Result<String, String> {
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
-    let nonce = Nonce::from_slice(nonce_bytes);
-    let pt = Zeroizing::new(
-        cipher
-            .decrypt(nonce, ciphertext)
-            .map_err(|e| format!("OSL: aes-gcm decrypt: {e}"))?,
-    );
+    let pt = decrypt_bytes(ciphertext, nonce_bytes, key)?;
     // The returned String intentionally survives so the trusted caller can
     // show the recovery phrase. The temporary AEAD plaintext buffer is wiped.
     String::from_utf8(pt.to_vec()).map_err(|e| format!("OSL: phrase utf8: {e}"))
@@ -510,6 +546,15 @@ fn build_marker(password: &str, phrase: &str) -> Result<PasswordMarker, String> 
     // derived from the password, not the phrase).
     let phrase_derived = derive(phrase, &salt, &params)?;
     let phrase_hash_b64 = STANDARD.encode(&phrase_derived[..HASH_LEN]);
+    // A1-1: wrap this marker's file_storage_key under the phrase so recovery
+    // (which has the phrase but not the password) can re-key the at-rest files.
+    // The wrap key uses the SECOND half of argon2id(phrase, salt) — the first
+    // half is already spent on `phrase_hash_b64`, and argon2id output is
+    // uniformly random, so splitting is safe (same argument as the password
+    // hash/key split documented at the top of this file).
+    let file_key = Zeroizing::new(derive_file_storage_key(&derived[HASH_LEN..]));
+    let wrap_key = phrase_file_key_wrap_key(&phrase_derived);
+    let (file_key_ct, file_key_nonce) = encrypt_bytes(&*file_key, &wrap_key)?;
     Ok(PasswordMarker {
         version: MARKER_VERSION,
         salt_b64: STANDARD.encode(salt),
@@ -521,7 +566,75 @@ fn build_marker(password: &str, phrase: &str) -> Result<PasswordMarker, String> 
         stealth_password_hash_b64: None,
         burn_password_hash_b64: None,
         duress_password_hash_b64: None,
+        file_key_phrase_wrapped_b64: Some(STANDARD.encode(&file_key_ct)),
+        file_key_phrase_nonce_b64: Some(STANDARD.encode(file_key_nonce)),
     })
+}
+
+/// A1-1: the AES key that wraps the at-rest `file_storage_key` inside the
+/// marker. Derived from the tail of argon2id(phrase, salt, params) through the
+/// same HKDF-expand used for the password-derived key, with its own info string
+/// so the two wraps stay domain-separated.
+fn phrase_file_key_wrap_key(phrase_derived: &[u8; ARGON_OUTPUT_LEN]) -> Zeroizing<[u8; KEY_LEN]> {
+    Zeroizing::new(hkdf_expand_32(
+        &phrase_derived[HASH_LEN..],
+        b"OSL/file-storage/phrase-wrap/v1",
+    ))
+}
+
+/// The at-rest `file_storage_key` implied by a marker + the password that
+/// opens it. Single definition so no caller can repeat the
+/// derive-with-the-wrong-salt defect: the salt ALWAYS comes from the marker
+/// the key is being derived for.
+fn file_storage_key_for_marker(
+    marker: &PasswordMarker,
+    password: &str,
+) -> Result<Zeroizing<[u8; KEY_LEN]>, String> {
+    let salt = STANDARD
+        .decode(&marker.salt_b64)
+        .map_err(|e| format!("OSL: salt b64: {e}"))?;
+    let derived = derive(password, &salt, &marker.params)?;
+    Ok(Zeroizing::new(derive_file_storage_key(
+        &derived[HASH_LEN..],
+    )))
+}
+
+/// A1-1: recover a marker's at-rest `file_storage_key` from the recovery
+/// phrase alone. `Ok(None)` means this marker predates the phrase wrap — the
+/// caller must decide, loudly, what to do about state it can no longer re-key.
+fn file_storage_key_from_phrase(
+    marker: &PasswordMarker,
+    phrase: &str,
+) -> Result<Option<Zeroizing<[u8; KEY_LEN]>>, String> {
+    let (Some(ct_b64), Some(nonce_b64)) = (
+        marker.file_key_phrase_wrapped_b64.as_ref(),
+        marker.file_key_phrase_nonce_b64.as_ref(),
+    ) else {
+        return Ok(None);
+    };
+    let salt = STANDARD
+        .decode(&marker.salt_b64)
+        .map_err(|e| format!("OSL: salt b64: {e}"))?;
+    let phrase_derived = derive(phrase, &salt, &marker.params)?;
+    let wrap_key = phrase_file_key_wrap_key(&phrase_derived);
+    let ct = STANDARD
+        .decode(ct_b64)
+        .map_err(|e| format!("OSL: wrapped file key b64: {e}"))?;
+    let nonce_bytes = STANDARD
+        .decode(nonce_b64)
+        .map_err(|e| format!("OSL: wrapped file key nonce b64: {e}"))?;
+    if nonce_bytes.len() != NONCE_LEN {
+        return Err("OSL: wrapped file key nonce wrong len".to_string());
+    }
+    let mut nonce = [0u8; NONCE_LEN];
+    nonce.copy_from_slice(&nonce_bytes);
+    let plain = decrypt_bytes(&ct, &nonce, &wrap_key)?;
+    if plain.len() != KEY_LEN {
+        return Err("OSL: wrapped file key wrong len".to_string());
+    }
+    let mut key = Zeroizing::new([0u8; KEY_LEN]);
+    key.copy_from_slice(&plain);
+    Ok(Some(key))
 }
 
 /// Return Ok(aes_key) when password matches, Err(reason) otherwise.
@@ -576,15 +689,20 @@ pub fn set_main_password(dir: &Path, password: &str) -> Result<String, String> {
     write_marker(dir, &marker)?;
     let _ = reset_password_lockout(dir);
     let _ = reset_phrase_lockout(dir);
-    // 7d-B4 (scoped): derive the file_storage_key, encrypt the 3
-    // existing-plain JSONs in place, install the key into the
-    // process-global slot so subsequent writes auto-encrypt.
-    let salt = STANDARD
-        .decode(&marker.salt_b64)
-        .map_err(|e| format!("OSL: salt b64: {e}"))?;
-    let derived = derive(password, &salt, &marker.params)?;
-    let file_key = Zeroizing::new(derive_file_storage_key(&derived[HASH_LEN..]));
-    encrypt_existing_state_files(dir, &file_key)?;
+    // 7d-B4: derive the file_storage_key, bring every at-rest state file onto
+    // it, install the key into the process-global slot so subsequent writes
+    // auto-encrypt.
+    let file_key = file_storage_key_for_marker(&marker, password)?;
+    // The files may already be sealed — a user who removed their password is
+    // sealed under the device-bound fallback key, and
+    // `encrypt_existing_state_files` SKIPS anything that already carries the
+    // magic. Skipping here would leave every file readable only by the fallback
+    // key while the slot holds the password key: the same silent-orphan defect
+    // as A1-1, reached by remove-then-set instead of by recovery.
+    match device_bound_fallback_key_if_present(dir)? {
+        Some(fallback) => rotate_state_files(dir, &fallback, &file_key)?,
+        None => encrypt_existing_state_files(dir, &file_key)?,
+    }
     set_file_storage_key_after_main_password_unlock(*file_key);
     Ok(phrase)
 }
@@ -598,17 +716,24 @@ pub fn change_main_password(dir: &Path, current: &str, new: &str) -> Result<Stri
     let _key = verify_with_marker(&marker, current)
         .map_err(|_| "OSL: current password incorrect".to_string())?;
     // 7d-B4: derive old + new file_storage_keys so we can rotate
-    // the at-rest encryption on the 3 JSONs before swapping marker.
-    let salt = STANDARD
-        .decode(&marker.salt_b64)
-        .map_err(|e| format!("OSL: salt b64: {e}"))?;
-    let old_derived = derive(current, &salt, &marker.params)?;
-    let old_file_key = Zeroizing::new(derive_file_storage_key(&old_derived[HASH_LEN..]));
+    // the at-rest encryption on the state JSONs before swapping marker.
+    let old_file_key = file_storage_key_for_marker(&marker, current)?;
     let new_phrase = generate_phrase()?;
     let new_marker = build_marker(new, &new_phrase)?;
-    let new_derived = derive(new, &salt, &new_marker.params)?;
-    let new_file_key = Zeroizing::new(derive_file_storage_key(&new_derived[HASH_LEN..]));
-    // Rotate the 3 JSONs (old → new key). If any file fails to
+    // Derive with the NEW marker's salt, not the old one. `build_marker` mints a
+    // fresh random salt, and `verify_main_password` later derives the session key
+    // from `marker.salt_b64` -- i.e. the new salt. Deriving here from the OLD
+    // salt produced a key that re-encrypted every at-rest file and could then
+    // never open them again. `file_storage_key_for_marker` is now the only way
+    // to derive a file key, and it always reads the salt off the marker it is
+    // handed, so the mismatch is unrepresentable.
+    //
+    // That was not merely data loss. `load_burned_scopes` used to FAIL OPEN: a
+    // decrypt error was swallowed and an EMPTY kill list returned, so a password
+    // change silently un-burned every previously burned message, and the next
+    // write persisted the empty list under the new key, making it permanent.
+    let new_file_key = file_storage_key_for_marker(&new_marker, new)?;
+    // Rotate the state files (old → new key). If any file fails to
     // rotate we bail BEFORE writing the new marker, leaving disk
     // in a consistent (old-marker, old-key-encrypted) state.
     rotate_state_files(dir, &old_file_key, &new_file_key)?;
@@ -623,17 +748,35 @@ pub fn remove_main_password(dir: &Path, current: &str) -> Result<(), String> {
     let marker = read_marker(dir)?;
     verify_with_marker(&marker, current)
         .map_err(|_| "OSL: current password incorrect".to_string())?;
-    // 7d-B4: decrypt the 3 JSONs back to plain on disk before we
-    // drop the key — otherwise subsequent reads (with no key) would
-    // fail to parse the OSL-ENC1 blob.
-    let salt = STANDARD
-        .decode(&marker.salt_b64)
-        .map_err(|e| format!("OSL: salt b64: {e}"))?;
-    let derived = derive(current, &salt, &marker.params)?;
-    let file_key = Zeroizing::new(derive_file_storage_key(&derived[HASH_LEN..]));
-    let _ = decrypt_existing_state_files(dir, &file_key);
-    set_file_storage_key(None);
+    // Removing the main password must NOT leave state in cleartext.
+    //
+    // This used to call `decrypt_existing_state_files`, writing peer_map.json and
+    // whitelist_state.json back to disk as PLAINTEXT -- the full Discord-snowflake
+    // to OSL-handle map and the whitelist, readable by anyone with disk access,
+    // from a shipping Settings action. The justification ("subsequent reads with
+    // no key would fail to parse the OSL-ENC1 blob") was stale:
+    // `ensure_device_bound_fallback_file_storage_key` exists for exactly the
+    // no-marker case and refuses only WHILE a marker exists (see its doc).
+    //
+    // So: drop the marker first, then establish the device-bound fallback key and
+    // ROTATE the files onto it. At no point are they written unencrypted. If the
+    // fallback cannot be established we bail BEFORE deleting anything, leaving the
+    // install password-protected rather than silently downgraded.
+    let old_file_key = file_storage_key_for_marker(&marker, current)?;
     delete_marker(dir)?;
+    let fallback = match ensure_device_bound_fallback_file_storage_key(dir) {
+        Ok(key) => Zeroizing::new(key),
+        Err(e) => {
+            // Restore the marker so the install is not left in a half-removed,
+            // keyless state with encrypted files nothing can open.
+            let _ = write_marker(dir, &marker);
+            return Err(format!(
+                "OSL: refusing to remove the main password without a device-bound key: {e}"
+            ));
+        }
+    };
+    rotate_state_files(dir, &old_file_key, &fallback)?;
+    set_file_storage_key(Some(*fallback));
     let _ = reset_password_lockout(dir);
     let _ = reset_phrase_lockout(dir);
     Ok(())
@@ -859,8 +1002,52 @@ pub fn set_main_password_after_recovery(
     if now > expiry {
         return Err("OSL: recovery token expired — re-enter the recovery phrase".to_string());
     }
-    let marker = build_marker(new_password, &phrase)?;
-    write_marker(dir, &marker)?;
+    // A1-1: recovery replaces the password, so the OLD password-derived
+    // file_storage_key is gone. Writing a fresh-salt marker and stopping there
+    // (what this used to do) leaves every at-rest state file sealed under a key
+    // nothing can produce again — and because the burn kill-list loader used to
+    // fail open, "un-decryptable" silently read back as "nothing was ever
+    // burned". Account recovery un-burned every burned message.
+    //
+    // The marker carries the file key wrapped under the recovery phrase, which
+    // IS present here, so the honest fix is to unwrap it, rotate every at-rest
+    // file onto the new password's key, and let `build_marker` re-wrap under the
+    // same phrase.
+    let old_marker = read_marker(dir)?;
+    let recovered_file_key = file_storage_key_from_phrase(&old_marker, &phrase)?;
+    let new_marker = build_marker(new_password, &phrase)?;
+    let new_file_key = file_storage_key_for_marker(&new_marker, new_password)?;
+    match recovered_file_key {
+        Some(old_file_key) => {
+            // Rotate BEFORE the marker swap: a failure here leaves the account
+            // exactly as it was (old marker, old key) instead of half-migrated.
+            rotate_state_files(dir, &old_file_key, &new_file_key)?;
+        }
+        None => {
+            // Marker predates the phrase wrap. There is no material anywhere on
+            // this device that can open the existing at-rest files, so proceeding
+            // would silently discard the burn kill-list, the whitelist and the
+            // peer map. FAIL LOUDLY instead: refusing recovery is recoverable
+            // (the user can still unlock with their password if they find it, or
+            // deliberately start fresh); silently resurrecting burned messages is
+            // not. Nothing has been written at this point.
+            let orphans = at_rest_state_files_present(dir);
+            if !orphans.is_empty() {
+                return Err(format!(
+                    "OSL: cannot complete recovery — this account's encrypted state \
+                     ({}) was sealed before recovery re-keying existed, so it cannot be \
+                     re-opened without the old password. Burned messages CANNOT be proven \
+                     still burned, so recovery is refused rather than silently clearing the \
+                     burn list. Unlock with your existing password to change it normally, or \
+                     use Settings → Fresh Start to abandon this state deliberately.",
+                    orphans.join(", ")
+                ));
+            }
+            // Nothing on disk to orphan (fresh install): recovery is safe.
+        }
+    }
+    write_marker(dir, &new_marker)?;
+    set_file_storage_key_after_main_password_unlock(*new_file_key);
     let _ = reset_password_lockout(dir);
     let _ = reset_phrase_lockout(dir);
     Ok(())
@@ -1218,12 +1405,79 @@ pub fn decrypt_at_rest(blob: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("OSL: at-rest decrypt: {e}"))
 }
 
-/// Convenience: caller doesn't need to thread the key through —
-/// reads from the process-global slot. Returns plaintext for
-/// either a plain blob (no magic) or an encrypted blob (decrypts).
-/// Used by JSON loaders.
+/// True once at-rest encryption is enrolled for `dir`: either a main-password
+/// marker exists, or a device-bound fallback key has been established. In both
+/// cases every state file this app writes into `dir` carries the `OSL-ENC1`
+/// magic, so a magic-less file there is not a legacy file — it is a
+/// substitution.
+pub fn at_rest_encryption_enrolled(dir: &Path) -> bool {
+    marker_exists(dir) || device_bound_fallback_key_path(dir).exists()
+}
+
+/// B3-F1: read side of the at-rest envelope, for a file living in `dir`.
+///
+/// Returns plaintext for an `OSL-ENC1` blob (decrypting with the installed
+/// key), and for a magic-less blob ONLY when this install has never enrolled
+/// at-rest encryption — the genuine pre-encryption migration case.
+///
+/// Accepting magic-less bytes unconditionally (what this used to do) meant an
+/// attacker with write access to the config dir could replace peer_map.json —
+/// the trust root — with plaintext of their choosing and have it loaded as
+/// authentic. Worse, the loaders re-write what they load, so the very next
+/// write RE-SEALED the attacker's file under the victim's key: substitution
+/// was not only accepted, it was laundered into an authentic-looking encrypted
+/// file. The `marker_exists` latch that closes this already existed; the read
+/// path simply never consulted it.
+pub fn maybe_decrypt_in_dir(dir: &Path, blob: &[u8]) -> Result<Vec<u8>, String> {
+    if !has_enc_magic(blob) {
+        if at_rest_encryption_enrolled(dir) {
+            return Err(format!(
+                "OSL: refusing unencrypted at-rest file in {}: this install has \
+                 encryption-at-rest enrolled, so a file with no OSL-ENC1 header did not \
+                 come from this app (substituted or truncated)",
+                dir.display()
+            ));
+        }
+        return Ok(blob.to_vec());
+    }
+    let key = Zeroizing::new(get_file_storage_key().ok_or_else(|| {
+        "OSL: encrypted at-rest file but no key in slot (password not entered?)".to_string()
+    })?);
+    decrypt_at_rest(blob, &key)
+}
+
+/// `maybe_decrypt_in_dir` keyed off the file's own directory. This is the form
+/// every on-disk loader should use: the state files live beside
+/// `password_marker.json` / `file_storage_key_fallback.json`, so the file's
+/// parent directory is exactly the enrolment scope that governs it.
+pub fn maybe_decrypt_file(path: &Path, blob: &[u8]) -> Result<Vec<u8>, String> {
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    maybe_decrypt_in_dir(dir, blob)
+}
+
+/// `maybe_decrypt_in_dir` for callers that hold bytes but no path. Prefer the
+/// path-aware form for anything read off disk: it latches on the directory the
+/// file actually lives in rather than on the process-wide active account.
 pub fn maybe_decrypt(blob: &[u8]) -> Result<Vec<u8>, String> {
     if !has_enc_magic(blob) {
+        // No directory to consult. A key in the slot is itself proof that this
+        // process is operating an encrypted account, so magic-less bytes are
+        // still refused; only a genuinely keyless (never-enrolled) process gets
+        // the passthrough.
+        if get_file_storage_key().is_some() {
+            return Err(
+                "OSL: refusing unencrypted at-rest bytes while a file storage key is \
+                 installed (substituted or truncated file)"
+                    .to_string(),
+            );
+        }
+        if let Ok(dir) = keystore::osl_config_dir() {
+            if at_rest_encryption_enrolled(&dir) {
+                return Err("OSL: refusing unencrypted at-rest bytes: this install has \
+                     encryption-at-rest enrolled"
+                    .to_string());
+            }
+        }
         return Ok(blob.to_vec());
     }
     let key = Zeroizing::new(get_file_storage_key().ok_or_else(|| {
@@ -1255,7 +1509,71 @@ pub fn has_enc_magic(blob: &[u8]) -> bool {
     blob.len() >= ENC_MAGIC.len() && &blob[..ENC_MAGIC.len()] == ENC_MAGIC
 }
 
-/// Best-effort re-write of the 3 unencrypted JSONs as encrypted
+/// Every JSON state file sealed at rest under the `file_storage_key`, i.e.
+/// every file whose writer goes through `maybe_encrypt`.
+///
+/// This list is what a key rotation has to cover. It used to be spelled out
+/// per call site, and the three spellings disagreed: `rotate_state_files`
+/// carried only peer_map + whitelist_state, so a password change re-keyed
+/// those two and left `burned_scopes.json` sealed under the OLD key — which
+/// (with the loader failing open) un-burned every burned message, the exact
+/// defect the rotation was added to prevent. One list, used by all three
+/// sweeps, is the only way that stays true.
+pub const AT_REST_STATE_FILES: &[&str] = &[
+    "peer_map.json",
+    "whitelist_state.json",
+    "burned_scopes.json",
+    "app_preferences.json",
+    "sender_key_state.json",
+    "membership.json",
+    "scope_ttl.json",
+    "scope_blobs.json",
+    "control_inbox_dead_letter.json",
+    "friend_request_state.json",
+];
+
+/// Names from `AT_REST_STATE_FILES` that currently exist in `dir`. Used to
+/// decide whether an operation that cannot re-key them would orphan real data.
+pub fn at_rest_state_files_present(dir: &Path) -> Vec<&'static str> {
+    AT_REST_STATE_FILES
+        .iter()
+        .copied()
+        .filter(|name| dir.join(name).exists())
+        .collect()
+}
+
+/// Open the device-bound fallback storage key if one has already been
+/// established for `dir`, without the `marker_exists` refusal that
+/// `ensure_device_bound_fallback_file_storage_key` applies — used by
+/// `set_main_password`, which needs the OLD key precisely because it has just
+/// written a marker. Returns `Ok(None)` when no fallback key file exists.
+fn device_bound_fallback_key_if_present(dir: &Path) -> Result<Option<Zeroizing<[u8; 32]>>, String> {
+    if !device_bound_fallback_key_path(dir).exists() {
+        return Ok(None);
+    }
+    let sealer = keystore::select_best_sealer();
+    let dto = read_device_bound_fallback_key(dir)?;
+    if dto.sealer_method != sealer.method_label() {
+        return Err(
+            "OSL: file_storage_key_fallback.json was sealed by a different device backend"
+                .to_owned(),
+        );
+    }
+    let sealed = STANDARD
+        .decode(&dto.sealed_key_b64)
+        .map_err(|e| format!("OSL: fallback storage key b64: {e}"))?;
+    let opened = sealer
+        .unseal(&sealed)
+        .map_err(|e| format!("OSL: unseal fallback storage key: {e}"))?;
+    if opened.len() != KEY_LEN {
+        return Err("OSL: fallback storage key wrong length".to_owned());
+    }
+    let mut out = Zeroizing::new([0u8; KEY_LEN]);
+    out.copy_from_slice(&opened[..KEY_LEN]);
+    Ok(Some(out))
+}
+
+/// Best-effort re-write of the unencrypted state JSONs as encrypted
 /// blobs using the supplied key. Called from `set_main_password`
 /// after the marker is written. Plain files become encrypted in
 /// place; already-encrypted files are skipped. Per-file failure
@@ -1263,11 +1581,7 @@ pub fn has_enc_magic(blob: &[u8]) -> bool {
 /// the spec wants this fail-soft (peer_map missing is normal in a
 /// fresh install).
 pub fn encrypt_existing_state_files(dir: &Path, key: &[u8; 32]) -> Result<(), String> {
-    for name in [
-        "peer_map.json",
-        "whitelist_state.json",
-        "burned_scopes.json",
-    ] {
+    for name in AT_REST_STATE_FILES.iter().copied() {
         let path = dir.join(name);
         if !path.exists() {
             eprintln!("[OSL][crypto] migrate skip {name}: not present");
@@ -1298,11 +1612,14 @@ pub fn encrypt_existing_state_files(dir: &Path, key: &[u8; 32]) -> Result<(), St
     Ok(())
 }
 
-/// Decrypt the 3 state JSONs back to plain bytes on disk using
-/// the supplied (old) key. Called from `remove_main_password`
-/// before clearing the global key.
+/// Decrypt the state JSONs back to plain bytes on disk using the supplied
+/// (old) key.
+///
+/// No shipping path calls this any more — `remove_main_password` rotates onto
+/// the device-bound fallback key instead of writing cleartext. Kept for
+/// explicit, user-initiated export-style flows only.
 pub fn decrypt_existing_state_files(dir: &Path, key: &[u8; 32]) -> Result<(), String> {
-    for name in ["peer_map.json", "whitelist_state.json"] {
+    for name in AT_REST_STATE_FILES.iter().copied() {
         let path = dir.join(name);
         if !path.exists() {
             continue;
@@ -1320,17 +1637,18 @@ pub fn decrypt_existing_state_files(dir: &Path, key: &[u8; 32]) -> Result<(), St
     Ok(())
 }
 
-/// Rotate the at-rest encryption from `old_key` to `new_key` for
-/// the 3 state JSONs. Called from `change_main_password`. Each
-/// file: read, decrypt with old, re-encrypt with new, write.
-/// Files that are unexpectedly plain are silently re-encrypted
-/// with new (covers the "user upgraded mid-session" case).
+/// Rotate the at-rest encryption from `old_key` to `new_key` for every file in
+/// `AT_REST_STATE_FILES`. Called from `change_main_password`,
+/// `remove_main_password`, `set_main_password` (fallback → password key) and
+/// `set_main_password_after_recovery`. Each file: read, decrypt with old,
+/// re-encrypt with new, write. Files that are unexpectedly plain are
+/// re-encrypted with new (covers the "user upgraded mid-session" case).
 pub fn rotate_state_files(
     dir: &Path,
     old_key: &[u8; 32],
     new_key: &[u8; 32],
 ) -> Result<(), String> {
-    for name in ["peer_map.json", "whitelist_state.json"] {
+    for name in AT_REST_STATE_FILES.iter().copied() {
         let path = dir.join(name);
         if !path.exists() {
             continue;
@@ -1864,6 +2182,8 @@ mod password_policy_tests {
             phrase_encrypted_b64: STANDARD.encode(&ct),
             phrase_nonce_b64: STANDARD.encode(nonce),
             phrase_hash_b64: Some(STANDARD.encode(&phrase_derived[..HASH_LEN])),
+            file_key_phrase_wrapped_b64: None,
+            file_key_phrase_nonce_b64: None,
             stealth_password_hash_b64: None,
             burn_password_hash_b64: None,
             duress_password_hash_b64: None,
@@ -2452,6 +2772,8 @@ mod password_policy_tests {
             phrase_encrypted_b64: STANDARD.encode([0u8; 16]),
             phrase_nonce_b64: STANDARD.encode([0u8; NONCE_LEN]),
             phrase_hash_b64: None,
+            file_key_phrase_wrapped_b64: None,
+            file_key_phrase_nonce_b64: None,
             stealth_password_hash_b64: None,
             burn_password_hash_b64: None,
             duress_password_hash_b64: None,

@@ -48,7 +48,15 @@ describe("public Circles network scope", () => {
 
   it("Keep public Circles network scope visibly unavailable", async () => {
     const { __oslHubUiTest } = await loadUi();
-    __oslHubUiTest.reset({ route: "inbox" });
+    // Seed two real audiences so the posting-state attributes below are
+    // exercised against given state rather than a shipped fixture.
+    __oslHubUiTest.reset({
+      route: "inbox",
+      circleAudienceRecords: [
+        { audienceId: "a".repeat(32), name: "Hiking group", memberCount: 1, membershipVisibility: "visible", visibleMembers: [{ memberId: "1".repeat(32), name: "Robin", verified: true }], consentGranted: true, boundToCurrentCircle: true, postingAuthorized: true },
+        { audienceId: "d".repeat(32), name: "Choir", memberCount: 2, membershipVisibility: "count-only", visibleMembers: [], consentGranted: false, boundToCurrentCircle: true, postingAuthorized: true },
+      ],
+    });
 
     const inboxHtml = __oslHubUiTest.renderWorkspaceContent("inbox");
     const publicCard = inboxHtml.match(/<article class="inbox-surface-card unavailable"[^>]*data-public-circles-network="unavailable"[\s\S]*?<\/article>/u)?.[0] ?? "";
@@ -70,7 +78,11 @@ describe("public Circles network scope", () => {
     expect(publicCircles).toContain('data-inbox-osl-surface="circles"');
     expect(publicCircles).toContain('data-public-circles-network="unavailable"');
     expect(publicCircles).toContain("<strong>OSL Circles</strong>");
-    expect(publicCircles).toContain('<span class="status-tag">Unavailable</span>');
+    // The chip says "Unavailable", and now the colour has to agree: it used to
+    // render that word in the success colour. statusTag() resolves the tone
+    // from the word itself, so both halves of that claim are checked.
+    expect(publicCircles).toContain('${statusTag("Unavailable")}');
+    expect(source).toMatch(/\["danger", \[[^\]]*"unavailable"/u);
     expect(publicCircles).toContain("Public Circles network unavailable.");
     expect(publicCircles).toContain("Private audience posts stay off");
     expect(source).toContain("function circlesDestinationContent");

@@ -18,7 +18,7 @@ describe("Circles destination content", () => {
 
   it("renders OSL Circles as private audience feeds in the Inbox", () => {
     expect(source).toContain('import { parseCircleAudience, type CircleAudience } from "./osl-collab"');
-    expect(source).toContain("const privateCircleAudiences: CircleAudience[]");
+    expect(source).toContain("let privateCircleAudiences: CircleAudience[]");
     expect(source).toContain(".map((record) => parseCircleAudience(record))");
     expect(circles).toContain('data-inbox-osl-surface="circles"');
     expect(circles).toContain('data-circle-feeds="private-audiences"');

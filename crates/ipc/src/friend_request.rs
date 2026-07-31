@@ -498,8 +498,8 @@ pub fn load_friend_request_file_state(
     if !path.exists() {
         return Ok(FriendRequestFileState::new());
     }
-    let blob = fs::read(path).map_err(|_| FriendRequestError::StorageUnavailable)?;
-    let plain = crate::main_password::maybe_decrypt(&blob)
+    let blob = fs::read(&path).map_err(|_| FriendRequestError::StorageUnavailable)?;
+    let plain = crate::main_password::maybe_decrypt_in_dir(dir, &blob)
         .map_err(|_| FriendRequestError::StorageUnavailable)?;
     let state: FriendRequestFileState =
         serde_json::from_slice(&plain).map_err(|_| FriendRequestError::StorageUnavailable)?;

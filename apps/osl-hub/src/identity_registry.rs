@@ -50,13 +50,22 @@ pub struct HubIdentityRegistryState {
     transition: Mutex<()>,
 }
 
+/// One identity slot as the settings surface sees it.
+///
+/// Deliberately carries no safety number. A comparable safety number is
+/// derived from a complete key bundle (Ed25519 + X25519 + ML-KEM-768, plus the
+/// ratchet bootstrap key when present); the registry record stores only the
+/// Ed25519 half, so no such number exists here. The previous field called
+/// `ipc::tofu::safety_number` on that bare Ed25519 string, which resolves to
+/// the legacy `str` sink and always returned an empty string — a value the
+/// renderer's response validator then rejected, taking the whole identity list
+/// with it.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HubIdentitySlotDto {
     pub slot_id: String,
     pub label: String,
     pub osl_user_id: String,
-    pub safety_number: String,
     pub active: bool,
 }
 
@@ -671,7 +680,6 @@ fn slot_dto(record: &IdentitySlotRecord, active: bool) -> HubIdentitySlotDto {
         slot_id: record.slot_id.clone(),
         label: record.label.clone(),
         osl_user_id: record.osl_user_id.clone(),
-        safety_number: ipc::tofu::safety_number(&record.ed25519_public_b64),
         active,
     }
 }
@@ -1011,6 +1019,38 @@ mod tests {
         std::fs::rename(marker_path(&base), marker_path(&base).with_extension("bak")).unwrap();
         assert_eq!(read_active_marker(&base).as_deref(), Some(slot.as_str()));
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    /// The renderer validates `list_hub_identities` against an exact key set
+    /// and rejects the whole list on any mismatch. This slot DTO used to ship
+    /// `safetyNumber`, filled from `ipc::tofu::safety_number` applied to the
+    /// bare Ed25519 string — the legacy `str` sink, which always answers with
+    /// an empty string. Every real account therefore failed validation and
+    /// Settings rendered "unlock OSL" at a session that was already unlocked.
+    #[test]
+    fn slot_dto_emits_only_the_fields_the_renderer_accepts() {
+        let identity = keystore::identity_from_entropy([19; 16], "osl_9c1f2b".to_owned());
+        let slot = slot_id_for_identity(&identity);
+        let record = record_for_identity(&identity, slot, "Primary identity".to_owned());
+
+        // The value the removed field used to carry, on real key material.
+        let legacy: String = ipc::tofu::safety_number(&record.ed25519_public_b64);
+        assert!(
+            legacy.is_empty(),
+            "a bare Ed25519 key cannot produce a comparable safety number",
+        );
+
+        let json = serde_json::to_value(slot_dto(&record, true)).unwrap();
+        let mut keys: Vec<&str> = json
+            .as_object()
+            .expect("slot DTO serializes to an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["active", "label", "oslUserId", "slotId"]);
+        assert_eq!(json["label"], "Primary identity");
+        assert_eq!(json["active"], true);
     }
 
     #[test]

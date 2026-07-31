@@ -25,6 +25,7 @@ use crate::control_inbox::{
     sign_control_inbox_delete, sign_control_inbox_get, sign_control_inbox_get_filtered,
     sign_control_inbox_post_lane, sign_sender_filter_floor_get,
 };
+use crate::account_ownership_proof::AccountOwnershipProof;
 use crate::identity::Identity;
 use crate::prekeys::{
     sign_replenish_batch, OpkEntry, PrekeyState, ReplenishOpk, ReplenishSpk, SpkEntry,
@@ -698,6 +699,25 @@ struct OwnershipChallengeResponse {
     spent: bool,
 }
 
+/// Body of `POST /v1/account-ownership/proof`.
+///
+/// The clear binding tuple travels with the proof because the keyserver keeps
+/// only `sha256` commitments of the challenge it issued; it has to recompute
+/// the commitment to find the row the proof answers.
+#[derive(Serialize)]
+struct OwnershipProofRequest<'a> {
+    service: &'static str,
+    service_account_id: &'a str,
+    owner_user_id: &'a str,
+    proof: &'a AccountOwnershipProof,
+}
+
+#[derive(Deserialize)]
+struct OwnershipProofResponse {
+    result: String,
+    verified_at_unix_seconds: u64,
+}
+
 /// Response body for `POST /v1/license/validate`.
 ///
 /// The endpoint always returns HTTP 200 on a parseable request,
@@ -1088,6 +1108,70 @@ impl KeyServerClient {
             wire.expires_at_unix_seconds,
         )
         .ok_or_else(|| Error::Transport("ownership challenge lifetime is invalid".into()))
+    }
+
+    /// `POST /v1/account-ownership/proof` — redeem an issued challenge.
+    ///
+    /// The proof is single-use SERVER-SIDE: the keyserver spends the challenge
+    /// row and records the binding, and refuses a replay. A client cannot
+    /// observe that enforcement. A 201 here means "the keyserver said yes"; it
+    /// is NOT independent evidence that the signature was checked, that the
+    /// challenge was spent, or that a binding row exists. Treat this call as a
+    /// submission, never as verification.
+    ///
+    /// What the client CAN do is refuse to submit material that is not bound
+    /// to what it is claiming, which is what the pre-flight checks below do —
+    /// no wire call happens when the proof answers a different account or a
+    /// different owner.
+    pub fn submit_ownership_proof(
+        &self,
+        service_account_id: &str,
+        owner_user_id: &str,
+        proof: &AccountOwnershipProof,
+    ) -> Result<u64> {
+        if service_account_id.is_empty() || owner_user_id.is_empty() {
+            return Err(Error::Transport(
+                "ownership proof submission binding is incomplete".into(),
+            ));
+        }
+        proof
+            .validate_shape()
+            .map_err(|_| Error::Transport("ownership proof is malformed".into()))?;
+        if proof.platform_id != service_account_id {
+            return Err(Error::Transport(
+                "ownership proof answers a different account".into(),
+            ));
+        }
+        if proof.e.owner_user_id != owner_user_id {
+            return Err(Error::Transport(
+                "ownership proof answers a different owner".into(),
+            ));
+        }
+        let body = OwnershipProofRequest {
+            service: "discord",
+            service_account_id,
+            owner_user_id,
+            proof,
+        };
+        let body_json = serde_json::to_vec(&body)?;
+        let response = self.send_request(
+            "POST",
+            "/v1/account-ownership/proof",
+            Some(("application/json", &body_json)),
+        )?;
+        if !(200..300).contains(&response.status) {
+            return Err(Error::HttpStatus {
+                status: response.status,
+                body: "ownership proof submission refused".into(),
+            });
+        }
+        let wire: OwnershipProofResponse = serde_json::from_slice(&response.body)?;
+        if wire.result != "account_ownership_proof_recorded" || wire.verified_at_unix_seconds == 0 {
+            return Err(Error::Transport(
+                "ownership proof submission response shape mismatch".into(),
+            ));
+        }
+        Ok(wire.verified_at_unix_seconds)
     }
 
     /// `GET /v1/prekey-bundle/:user_id`. Atomically pops one OPK

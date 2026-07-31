@@ -12,6 +12,7 @@
 ///   GET    /v1/selector-manifest
 ///   POST   /v1/link-grant           (anonymous view-once link grant)
 ///   POST   /v1/account-ownership/challenge
+///   POST   /v1/account-ownership/proof
 ///
 /// F1.2 (Stripe + licenses):
 ///   POST   /v1/checkout-session
@@ -32,6 +33,7 @@
 
 import type { Env } from "./env.js";
 import { handleAccountOwnershipChallenge } from "./endpoints/account-ownership-challenge.js";
+import { handleAccountOwnershipProof } from "./endpoints/account-ownership-proof.js";
 import { handleCheckout } from "./endpoints/checkout.js";
 import { handleStripeDonationSession } from "./endpoints/donation-stripe.js";
 import { handleCheckoutClaim } from "./endpoints/checkout-claim.js";
@@ -377,6 +379,9 @@ async function dispatch(
   if (method === "POST") {
     if (path === "/v1/account-ownership/challenge") {
       return await handleAccountOwnershipChallenge(request, env);
+    }
+    if (path === "/v1/account-ownership/proof") {
+      return await handleAccountOwnershipProof(request, env);
     }
     if (path === "/v1/register") return await handleRegister(request, env);
     if (path === "/v1/mail/address") return await handleMailProvision(request, env);

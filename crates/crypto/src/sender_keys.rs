@@ -644,6 +644,34 @@ impl ReceiverChain {
     /// The skipped-key cache is **retained** so late-arriving messages
     /// from the previous chain can still decrypt.
     pub fn rotate_to(&mut self, chain_id: u32, rotation_root: &[u8; 32]) -> Result<()> {
+        // Rotation is MONOTONE, and re-applying the CURRENT chain is a NO-OP.
+        //
+        // The attack: replaying a captured SKDM re-derived ck_0 and reset `n` to 0,
+        // after which every message already delivered on that chain decrypted
+        // again -- defeating the chain-counter refusal by rewinding the counter it
+        // depends on.
+        //
+        // But rejecting `chain_id == self.chain_id` outright breaks a documented
+        // liveness contract: the send loop periodically RE-EMITS the same
+        // (chain_id, rotation_root) so a receiver who missed the first SKDM can
+        // recover, and `apply_skdm_recv` is specified as idempotent. Erroring
+        // there turns every self-heal re-emit into a dispatch failure -> backoff
+        // -> dead letter.
+        //
+        // So: forward rotations apply, the current chain is accepted and ignored
+        // (leaving `n` intact, which is what closes the replay), and anything
+        // older is refused. A different rotation_root offered under the CURRENT
+        // chain_id is also ignored rather than installed -- an attacker must not
+        // be able to re-seed a live chain.
+        if chain_id < self.chain_id {
+            return Err(Error::Internal(format!(
+                "sender keys: refusing to rewind receiver chain (have chain_id {}, offered {})",
+                self.chain_id, chain_id
+            )));
+        }
+        if chain_id == self.chain_id {
+            return Ok(());
+        }
         let root = RotationRoot::from_bytes(*rotation_root);
         let ck_0 = derive_ck_0(&root, chain_id)?;
         self.chain_id = chain_id;

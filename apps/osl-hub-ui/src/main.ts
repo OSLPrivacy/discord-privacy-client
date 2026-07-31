@@ -93,6 +93,7 @@ import {
   unconfiguredLicenseState,
   unlockHubPasswordGate,
   validateHubActivationCode,
+  type BootstrapStatus,
   type CoreIntegration,
   type HubLicenseState,
   type HubPasswordRoleStatus,
@@ -154,6 +155,40 @@ import {
 import type { SecureLocalStore } from "./secure-local-store";
 
 export type Route = "onboarding" | "home" | "inbox" | "people" | "privacy" | "activity" | "connections" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-mail" | "osl-servers" | "signal-qa";
+
+/**
+ * The colour a status chip is allowed to claim, resolved from the word printed
+ * inside it.
+ *
+ * Every chip used to be painted with the success colour unconditionally, so
+ * "UNAVAILABLE", "NEEDS ATTENTION", "REFUSED" and "DELETION OFF" all rendered
+ * green: colour contradicting the only thing on screen that was telling the
+ * truth. Colour is never the sole signal here -- the label always spells the
+ * state out, and this only decides whether the chip's colour agrees with it.
+ *
+ * A label this table does not recognise gets no tone at all. An unclassified
+ * state is not a verified-good one, and silence is the only honest default.
+ */
+const STATUS_TAG_TONES: ReadonlyArray<readonly [tone: "ok" | "warn" | "danger", labels: readonly string[]]> = [
+  ["ok", ["active", "allowed", "applied", "available", "encrypted", "fail closed", "on", "private", "pro active", "protected", "quiet", "ready", "recorded", "set", "verified"]],
+  ["warn", ["ask first", "carrier preview", "coming later", "coming later · pro", "installable", "limit shown", "manual", "needs review", "open a supported chat first", "pending", "pro", "pro planned", "request only", "review", "review first", "reviewing"]],
+  ["danger", ["blocked", "deletion off", "failed", "needs attention", "no auto delete", "no cleanup run", "not possible", "not set up", "off", "refused", "revoked", "unavailable"]],
+];
+
+function statusTagTone(label: string): string {
+  const normalized = label.trim().toLowerCase();
+  for (const [tone, labels] of STATUS_TAG_TONES) if (labels.includes(normalized)) return tone;
+  return "";
+}
+
+/**
+ * A status chip whose colour is derived from its own text. `extra` carries any
+ * caller-supplied modifier class through unchanged.
+ */
+function statusTag(label: string, extra = ""): string {
+  const classes = ["status-tag", statusTagTone(label), extra].filter(Boolean).join(" ");
+  return `<span class="${classes}">${label}</span>`;
+}
 const PROTECTED_DISPLAY_VISIBILITY_CHANGED_EVENT = "osl://protected-display-visibility-changed";
 const NATIVE_DISCORD_OVERLAY_CLOSED_EVENT = "osl://native-discord-overlay-closed";
 const MAIN_WINDOW_CAPTURE_REFUSED_EVENT = "hub-main-capture-protection-refused";
@@ -400,6 +435,13 @@ let onboardingComplete = false;
 let screenshotProtectionEnabled = false;
 let windowCaptureEnabled = true;
 let hubIdentities: HubIdentitySlot[] = [];
+// An empty `hubIdentities` used to be read as "OSL is locked", which is a
+// different question answered by a different source of truth. Track the load
+// itself so "never loaded", "the backend refused", and "genuinely empty" stay
+// three separate states and none of them can masquerade as a lock.
+type IdentityListLoad = "pending" | "loaded" | "unavailable";
+let hubIdentitiesLoad: IdentityListLoad = "pending";
+let identityListRefreshInFlight = false;
 let newIdentityRecoveryPhrase: string | null = null;
 const recoveryCaptureGate = new RecoveryCaptureGate();
 const RECOVERY_PROTECTION_REFUSAL = "OSL cannot show recovery secrets because Windows capture resistance is not proven for this window";
@@ -1476,7 +1518,32 @@ async function reopenActiveNativeCompanion(): Promise<void> {
 }
 
 function onboardingShellMarkup(setupNavigation = ""): string {
-  return `<div class="app-frame with-titlebar">${desktopTitlebar()}<div class="onboarding-shell"><main class="onboarding-panel onboarding-${onboardingRoute}">${onboardingContent()}</main>${setupNavigation}</div>${scrubReviewDialogMarkup()}</div>`;
+  return `<div class="app-frame with-titlebar">${desktopTitlebar()}<div class="onboarding-shell"><main class="onboarding-panel onboarding-${onboardingRoute}">${onboardingContent()}${setupNavigation}</main></div>${scrubReviewDialogMarkup()}</div>`;
+}
+
+/**
+ * Back used to render as a bare link pinned to the viewport's bottom-left
+ * corner while the step's own Continue sat centred in the middle of the panel;
+ * at 1440x900 they were ~680px apart and Back read as a stray link rather than
+ * as navigation. It now renders as a real action row inside the panel and is
+ * folded into the step's own action row where the step has one, so the two
+ * controls are always adjacent with Continue as the primary.
+ *
+ * The move is structural, not stylistic: the shipped CSP is `style-src 'self'`
+ * (apps/osl-hub/tauri.conf.json), which drops inline style attributes, so every
+ * rule involved lives in styles.css.
+ */
+function dockOnboardingBackControl(): void {
+  const nav = root.querySelector<HTMLElement>(".onboarding-panel > .onboarding-nav");
+  const back = nav?.querySelector<HTMLButtonElement>("#onboarding-back");
+  if (!nav || !back) return;
+  const primaryRow = [...root.querySelectorAll<HTMLElement>(".onboarding-panel .setup-footer.onboarding-actions")]
+    .find((row) => row !== nav);
+  // Steps with no action row of their own (Pro code, the password-role forms)
+  // keep the nav row itself, which is already a footer in the same position.
+  if (!primaryRow) return;
+  primaryRow.prepend(back);
+  nav.remove();
 }
 
 function renderOnboarding(): void {
@@ -1484,7 +1551,7 @@ function renderOnboarding(): void {
   persistCurrentOnboardingRoute();
   const setupScreen = ["pro", "privacy", "defaults", "sending", "cover", "passwords", "burnpass", "browser", "tutorial", "detected", "install", "apps", "mullvad"].includes(onboardingRoute);
   const setupNavigation = setupScreen
-    ? `<button class="onboarding-back-dock" id="onboarding-back" type="button">Back</button>`
+    ? `<div class="setup-footer onboarding-actions onboarding-nav"><button class="button ghost onboarding-back" id="onboarding-back" type="button">Back</button></div>`
     : "";
   const markup = onboardingShellMarkup(setupNavigation);
   lastWorkspaceMarkup = null;
@@ -1501,6 +1568,7 @@ function renderOnboarding(): void {
   lastOnboardingMarkup = markup;
   renderedOnboardingRoute = onboardingRoute;
   root.innerHTML = markup;
+  dockOnboardingBackControl();
   bindOnboarding();
   openScrubReviewDialogAfterRender();
 }
@@ -1550,7 +1618,7 @@ function welcomeOnboardingContent(): string {
 
 function proSetupContent(): string {
   const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
-  if (pro) return `<section class="pro-setup" aria-labelledby="route-heading"><span class="status-tag active">Pro active</span><h1 id="route-heading" tabindex="-1">OSL Pro is ready</h1><button class="button primary" data-onboarding="sending" type="button">Continue</button></section>`;
+  if (pro) return `<section class="pro-setup" aria-labelledby="route-heading">${statusTag("Pro active", "active")}<h1 id="route-heading" tabindex="-1">OSL Pro is ready</h1><button class="button primary" data-onboarding="sending" type="button">Continue</button></section>`;
   return `<section class="pro-setup" aria-labelledby="route-heading"><p class="eyebrow">Optional</p><h1 id="route-heading" tabindex="-1">Enter Pro code</h1><form id="activation-form" class="pro-setup-form" novalidate><label class="sr-only" for="activation-code">Pro activation code</label><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><button class="button primary" type="submit">Continue</button></form><button class="text-button" data-onboarding="sending" type="button">Skip</button></section>`;
 }
 
@@ -2236,11 +2304,11 @@ export function sendingSetupContent(): string {
 
 function captureSetupMarkup(): string {
   const applied = windowCaptureEnabled && screenshotProtectionEnabled;
-  return `<section class="setup-list capture-setup-inline" aria-labelledby="capture-setup-heading"><h2 id="capture-setup-heading" class="setup-section-heading">Screen capture</h2><label class="setup-status-row capture-preference"><span><strong>Resist Windows capture</strong><small>Excludes OSL from ordinary screenshots and recording when Windows supports it. Cameras, malware, and modified devices can still capture content.</small></span><input id="window-capture-enabled" type="checkbox" ${windowCaptureEnabled ? "checked" : ""}/></label><div class="setup-status-row"><span><strong>Current device</strong><small>Protected messages appear only after OSL enables this protection.</small></span><span class="status-tag ${applied ? "active" : ""}">${windowCaptureEnabled ? (applied ? "Active" : "Unavailable") : "Off"}</span></div></section>`;
+  return `<section class="setup-list capture-setup-inline" aria-labelledby="capture-setup-heading"><h2 id="capture-setup-heading" class="setup-section-heading">Screen capture</h2><label class="setup-status-row capture-preference"><span><strong>Resist Windows capture</strong><small>Excludes OSL from ordinary screenshots and recording when Windows supports it. Cameras, malware, and modified devices can still capture content.</small></span><input id="window-capture-enabled" type="checkbox" ${windowCaptureEnabled ? "checked" : ""}/></label><div class="setup-status-row"><span><strong>Current device</strong><small>Protected messages appear only after OSL enables this protection.</small></span>${statusTag(windowCaptureEnabled ? (applied ? "Active" : "Unavailable") : "Off", applied ? "active" : "")}</div></section>`;
 }
 
 export function reviewDefaultsOnboardingContent(): string {
-  const row = (title: string, detail: string, state: string, active = false) => `<div class="setup-status-row"><span><strong>${title}</strong><small>${detail}</small></span><span class="status-tag ${active ? "active" : ""}">${state}</span></div>`;
+  const row = (title: string, detail: string, state: string, active = false) => `<div class="setup-status-row"><span><strong>${title}</strong><small>${detail}</small></span>${statusTag(state, active ? "active" : "")}</div>`;
   return `<h1 id="route-heading" tabindex="-1">Review defaults</h1><p class="compact-lead onboarding-centered-copy">Balanced starts with local warnings, visible attachment cleaning, and review-only cleanup. You can change these later in Privacy.</p><section class="setup-list defaults-review-list" aria-label="Default protection review">${row("Warn before sending", "Checks drafts on this device for selected risks before you send.", "On", true)}${row("Clean attachments", "Offers a visible cleaning step for files and media; nothing changes without your consent.", "Ask first")}${row("Keep protected drafts", "Keeps encrypted local drafts and private activity on this device for recovery.", "On", true)}${row("Delete or clean up history", "Timed deletion, bulk cleanup, and account cleanup do not run during onboarding.", "Off")}${row("Send behavior", "Manual handoff is the default: OSL prepares, then you place and send.", formatSendMode(defaultSetup.sendMode), true)}</section><p class="send-mode-truth">No destructive action starts from setup. Cleanup requires a separate review and confirmation.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-defaults-review" type="button">Continue</button></div>`;
 }
 
@@ -2256,7 +2324,7 @@ function onboardingPasswordRoleContent(role: "stealth" | "burn"): string {
   const detail = stealth ? "Opens an empty workspace without loading your private data." : "Erases OSL data from this device when entered at sign in.";
   const next = stealth ? "burnpass" : "mullvad";
   if (configured) {
-    return `<h1 id="route-heading" tabindex="-1">${title}</h1><div class="password-role-ready"><span class="status-tag">Set</span><p>${detail}</p></div><div class="setup-footer onboarding-actions"><button class="button primary" data-password-role-next="${next}" type="button">Continue</button></div>`;
+    return `<h1 id="route-heading" tabindex="-1">${title}</h1><div class="password-role-ready">${statusTag("Set")}<p>${detail}</p></div><div class="setup-footer onboarding-actions"><button class="button primary" data-password-role-next="${next}" type="button">Continue</button></div>`;
   }
   return `<h1 id="route-heading" tabindex="-1">${title}</h1><p class="compact-lead onboarding-centered-copy">${detail}</p><form class="setup-surface password-form onboarding-role-form" data-onboarding-password-role="${role}" data-onboarding-password-next="${next}" novalidate><label for="setup-${role}-current">Current password</label><div class="password-input-row"><input id="setup-${role}-current" name="current" type="password" minlength="6" maxlength="128" autocomplete="current-password" required/><button class="password-eye" type="button" data-password-toggle="setup-${role}-current" aria-label="Show current password">${passwordEyeIcon()}</button></div><label for="setup-${role}-alternate">New ${stealth ? "stealth" : "burn"} password</label><div class="password-input-row"><input id="setup-${role}-alternate" name="alternate" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="setup-${role}-alternate" aria-label="Show new password">${passwordEyeIcon()}</button></div><label for="setup-${role}-confirm">Confirm</label><div class="password-input-row"><input id="setup-${role}-confirm" name="confirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="setup-${role}-confirm" aria-label="Show password confirmation">${passwordEyeIcon()}</button></div><p class="unlock-error" data-onboarding-role-error role="alert"></p><button class="button primary" type="submit" disabled>Set password</button></form><button class="text-button onboarding-role-skip" type="button" data-skip-onboarding-password-role="${next}">Not now</button>`;
 }
@@ -2291,7 +2359,7 @@ function protectionPresetOnboardingContent(): string {
     const badge = "badge" in preset ? `<small class="send-mode-badge">${preset.badge}</small>` : "";
     return `<label class="send-mode-option ${selected ? "selected" : ""}" data-protection-preset="${preset.id}"><span><input class="sr-only" type="radio" name="protection-preset" value="${preset.id}" ${selected ? "checked" : ""}/><strong>${preset.title}</strong>${badge}</span><small>${preset.detail}</small></label>`;
   }).join("");
-  return `<h1 id="route-heading" tabindex="-1">Choose protection</h1><p class="compact-lead onboarding-centered-copy">Balanced starts on and is safe without more setup.</p><div class="send-mode-list protection-preset-list" role="group" aria-label="Protection preset">${presetChoices}</div><section class="setup-list" aria-labelledby="balanced-defaults-heading"><h2 id="balanced-defaults-heading" class="setup-section-heading">Balanced defaults</h2><div class="setup-status-row"><span><strong>Warn before risky sends</strong><small>OSL checks locally before protected handoff.</small></span><span class="status-tag active">On</span></div><div class="setup-status-row"><span><strong>Clean attachments by choice</strong><small>OSL can prepare a cleaned copy when you ask.</small></span><span class="status-tag active">On</span></div><div class="setup-status-row"><span><strong>Review cleanup monthly</strong><small>Deletion automation starts off. You review first.</small></span><span class="status-tag">Manual</span></div><div class="setup-status-row"><span><strong>Require clear authority</strong><small>No consent, account binding, or send/delete authority means Unavailable.</small></span><span class="status-tag active">Fail closed</span></div></section><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-onboarding-privacy" type="button">Continue</button></div>`;
+  return `<h1 id="route-heading" tabindex="-1">Choose protection</h1><p class="compact-lead onboarding-centered-copy">Balanced starts on and is safe without more setup.</p><div class="send-mode-list protection-preset-list" role="group" aria-label="Protection preset">${presetChoices}</div><section class="setup-list" aria-labelledby="balanced-defaults-heading"><h2 id="balanced-defaults-heading" class="setup-section-heading">Balanced defaults</h2><div class="setup-status-row"><span><strong>Warn before risky sends</strong><small>OSL checks locally before protected handoff.</small></span>${statusTag("On", "active")}</div><div class="setup-status-row"><span><strong>Clean attachments by choice</strong><small>OSL can prepare a cleaned copy when you ask.</small></span>${statusTag("On", "active")}</div><div class="setup-status-row"><span><strong>Review cleanup monthly</strong><small>Deletion automation starts off. You review first.</small></span>${statusTag("Manual")}</div><div class="setup-status-row"><span><strong>Require clear authority</strong><small>No consent, account binding, or send/delete authority means Unavailable.</small></span>${statusTag("Fail closed", "active")}</div></section><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-onboarding-privacy" type="button">Continue</button></div>`;
 }
 
 function mullvadSetupContent(): string {
@@ -2686,7 +2754,16 @@ function bindPasswordForm(): void {
       ? passwordValid || (Boolean(duressPin?.value) && duressValid)
       : passwordValid;
     submit.disabled = !valid || !duressValid || Boolean(confirm && confirm.value !== password.value);
-    error.textContent = "";
+    // A submit button that silently stays dead reads as a broken app. Two
+    // mismatched password fields already disabled it above, but this line used
+    // to clear the error region on every keystroke, so nothing ever said why --
+    // measured in the running Linux build: both fields filled, "Create account"
+    // inert, no message, no red field, no toast, no focus move. The disabled
+    // condition above is deliberately unchanged; this only explains it. Stay
+    // quiet until the user has actually typed a confirmation, because an empty
+    // second field is not yet a mismatch.
+    const confirmMismatch = Boolean(confirm && confirm.value.length > 0 && confirm.value !== password.value);
+    error.textContent = confirmMismatch ? "Both passwords must match." : "";
   };
   password.addEventListener("input", validate);
   duressPin?.addEventListener("input", validate);
@@ -2788,7 +2865,7 @@ function bindPasswordForm(): void {
           route = "home";
           void openMullvadOnStartup();
           void refreshUpdateStatus();
-          void refreshIdentitySlots();
+          void refreshIdentitySlots(true);
           void loadFriendProfile().then((profile) => { friendCode = profile?.friendCode ?? null; friendDisplayId = profile?.oslUserId ?? null; if (route === "home") render(); });
           void listHubPeople().then((people) => { hubPeople = people ?? []; if (route === "home") render(); });
         }
@@ -3024,7 +3101,23 @@ export function fixedIaSidebarOrderPreview(): string[] {
   return [...oslPrimaryDestinations.map((destination) => destination.id), oslSettingsDestination];
 }
 
+/**
+ * The rail badge for one destination.
+ *
+ * `label.slice(0, 1)` gave People and Privacy the same "P", so for two of the
+ * six destinations the badge distinguished nothing. The collision is detected
+ * from the labels rather than hardcoded, so a seventh destination that starts
+ * with an existing letter is disambiguated on sight instead of silently
+ * duplicating an existing badge.
+ */
+export function primarySidebarBadge(label: string, labels: readonly string[]): string {
+  const initial = label.slice(0, 1).toLocaleUpperCase("en-US");
+  const shares = labels.filter((other) => other.slice(0, 1).toLocaleUpperCase("en-US") === initial).length > 1;
+  return shares ? `${initial}${label.slice(1, 2).toLocaleLowerCase("en-US")}` : initial;
+}
+
 export function primarySidebarMarkup(): string {
+  const destinationLabels = oslPrimaryDestinations.map((destination) => destination.label);
   const activeDestination = (id: OslPrimaryDestination): boolean => {
     if (id === "home") return route === "home" && !friendsDialogOpen;
     if (id === "inbox") return route === "inbox" || route === "osl-chat" || route === "osl-mail";
@@ -3040,7 +3133,7 @@ export function primarySidebarMarkup(): string {
   };
   const items = oslPrimaryDestinations.map((destination) => {
     const current = activeDestination(destination.id);
-    return `<button class="primary-sidebar-item ${current ? "active" : ""}" type="button" data-primary-destination="${destination.id}" ${destinationAttributes(destination.id)} ${current ? 'aria-current="page"' : ""}><span class="primary-sidebar-icon" aria-hidden="true">${escapeHtml(destination.label.slice(0, 1))}</span><span><strong>${escapeHtml(destination.label)}</strong><small>${escapeHtml(destination.userQuestion)}</small></span></button>`;
+    return `<button class="primary-sidebar-item ${current ? "active" : ""}" type="button" data-primary-destination="${destination.id}" ${destinationAttributes(destination.id)} ${current ? 'aria-current="page"' : ""}><span class="primary-sidebar-icon" aria-hidden="true">${escapeHtml(primarySidebarBadge(destination.label, destinationLabels))}</span><span><strong>${escapeHtml(destination.label)}</strong><small>${escapeHtml(destination.userQuestion)}</small></span></button>`;
   }).join("");
   // Styling lives in styles.css (`.hub-layout.with-primary-sidebar` /
   // `.primary-sidebar*`), NOT in a runtime <style> element. The shipped CSP is
@@ -3064,7 +3157,10 @@ function simpleDeviceStatusMarkup(): string {
   const protection = identityProtectionStatus(core.readiness.storageMethod);
   const ready = coreReady && protection.state === "protected";
   const label = ready ? "Ready" : "Needs attention";
-  const detail = label;
+  // The detail line used to be assigned `label`, so the header read "Ready"
+  // stacked on "Ready". It says what the state means instead, and never
+  // repeats the label.
+  const detail = ready ? "Protected on this device" : coreReady ? "Device protection not confirmed" : "Finish setup";
   return `<div class="trust-state ${ready ? "ready" : "pending"} ${coreReady && !ready ? "not-secure" : ""}" role="status" data-identity-protection="${protection.state}"><span class="dot"></span><span><strong>${escapeHtml(label)}</strong><small>${escapeHtml(detail)}</small></span></div>`;
 }
 
@@ -3463,7 +3559,7 @@ function homeDestinationContent(): string {
   const recommended = homePrimaryRecommendation();
   const recommendedAction = primaryActionButton(recommended, `data-home-primary-issue="${recommended.issue}"`);
   const attention = !deviceProtected || pendingFriendReviews > 0 || connectedApps.length === 0 || verifiedFriends === 0
-    ? `<div class="setting-line home-status-row" role="status"><span><strong>${escapeHtml(recommended.title)}</strong><small>${escapeHtml(recommended.detail)}</small></span><span class="status-tag">Needs attention</span></div>`
+    ? `<div class="setting-line home-status-row" role="status"><span><strong>${escapeHtml(recommended.title)}</strong><small>${escapeHtml(recommended.detail)}</small></span>${statusTag("Needs attention")}</div>`
     : "";
   const activityDetail = recentActivity
     ? "New local OSL activity"
@@ -3472,8 +3568,8 @@ function homeDestinationContent(): string {
       : "Local activity is off";
   const activityAction = recentActivity || !notificationsEnabled
     ? `<button class="button compact" data-notification-settings type="button">${recentActivity ? "Review" : "Turn on"}</button>`
-    : `<span class="status-tag">Quiet</span>`;
-  return `<section class="home-protection-summary" aria-labelledby="route-heading" data-home-destination="protection-status"><h1 id="route-heading" tabindex="-1">Home</h1><div class="setting-line home-overall-state" data-home-protection-state="${deviceProtected ? "protected" : "needs-attention"}"><span><strong>${deviceProtected ? "Protected" : "Needs attention"}</strong><small>${escapeHtml(coreReady ? protection.detail : coreReadinessLabel(core.readiness))}</small></span>${recommendedAction}</div>${attention}<div class="settings-list home-protection-facts" aria-label="Protection status"><div class="setting-line"><span><strong>Connected apps</strong><small>${connectedApps.length.toLocaleString("en-US")} of ${launchableApps.length.toLocaleString("en-US")} ready</small></span><span class="status-tag">${connectedApps.length ? "Ready" : "Unavailable"}</span></div><div class="setting-line"><span><strong>Trusted people</strong><small>${verifiedFriends.toLocaleString("en-US")} verified${pendingFriendReviews ? `, ${pendingFriendReviews.toLocaleString("en-US")} need review` : ""}</small></span><button class="button compact" data-open-friends type="button">${pendingFriendReviews ? "Review" : "Manage"}</button></div><div class="setting-line"><span><strong>Recent protection</strong><small>${escapeHtml(activityDetail)}</small></span>${activityAction}</div></div></section>`;
+    : `${statusTag("Quiet")}`;
+  return `<section class="home-protection-summary" aria-labelledby="route-heading" data-home-destination="protection-status"><h1 id="route-heading" tabindex="-1">Home</h1><div class="setting-line home-overall-state" data-home-protection-state="${deviceProtected ? "protected" : "needs-attention"}"><span><strong>${deviceProtected ? "Protected" : "Needs attention"}</strong><small>${escapeHtml(coreReady ? protection.detail : coreReadinessLabel(core.readiness))}</small></span>${recommendedAction}</div>${attention}<div class="settings-list home-protection-facts" aria-label="Protection status"><div class="setting-line"><span><strong>Connected apps</strong><small>${connectedApps.length.toLocaleString("en-US")} of ${launchableApps.length.toLocaleString("en-US")} ready</small></span>${statusTag(connectedApps.length ? "Ready" : "Unavailable")}</div><div class="setting-line"><span><strong>Trusted people</strong><small>${verifiedFriends.toLocaleString("en-US")} verified${pendingFriendReviews ? `, ${pendingFriendReviews.toLocaleString("en-US")} need review` : ""}</small></span><button class="button compact" data-open-friends type="button">${pendingFriendReviews ? "Review" : "Manage"}</button></div><div class="setting-line"><span><strong>Recent protection</strong><small>${escapeHtml(activityDetail)}</small></span>${activityAction}</div></div></section>`;
 }
 
 function workspaceContent(): string {
@@ -3533,17 +3629,33 @@ function workspaceContent(): string {
   return `<main id="home-navigation" class="content-viewport home-dashboard ${homeEditMode ? "editing" : ""}"><section class="home-primary">${homeDestinationContent()}<section class="home-apps" aria-labelledby="route-heading"><div class="home-app-groups">${oslSection}${socialTiles ? `<section class="home-app-section"><header><h2>Social</h2>${organizeButton("social apps")}</header><div class="app-grid" aria-label="Social apps">${socialTiles}</div></section>` : ""}${emailTiles ? `<section class="home-app-section"><header><h2>Email</h2>${organizeButton("email apps")}</header><div class="app-grid" aria-label="Email apps">${emailTiles}</div></section>` : ""}</div></section></section><button class="home-profile-dock" data-route="settings" data-profile-settings type="button" aria-label="Open your OSL profile" title="${escapeHtml(profileName)}"><span aria-hidden="true">${escapeHtml(profileInitial)}</span><strong>${escapeHtml(profileName)}</strong></button></main>`;
 }
 
-const privateCircleAudienceRecords = [
-  { audienceId: "c".repeat(32), name: "Close friends", memberCount: 3, membershipVisibility: "visible", visibleMembers: [{ memberId: "1".repeat(32), name: "Maya", verified: true }, { memberId: "2".repeat(32), name: "Theo", verified: true }, { memberId: "3".repeat(32), name: "Rina", verified: true }], consentGranted: true, boundToCurrentCircle: true, postingAuthorized: true },
-  { audienceId: "f".repeat(32), name: "Family", memberCount: 5, membershipVisibility: "visible", visibleMembers: [{ memberId: "4".repeat(32), name: "Ari", verified: true }, { memberId: "5".repeat(32), name: "Sam", verified: false }], consentGranted: false, boundToCurrentCircle: true, postingAuthorized: true },
-  { audienceId: "b".repeat(32), name: "Book club", memberCount: 8, membershipVisibility: "count-only", visibleMembers: [], consentGranted: true, boundToCurrentCircle: false, postingAuthorized: true },
-  { audienceId: "w".repeat(32), name: "Work", memberCount: 4, membershipVisibility: "count-only", visibleMembers: [], consentGranted: true, boundToCurrentCircle: true, postingAuthorized: true },
-  { audienceId: "n".repeat(32), name: "Neighborhood", memberCount: 12, membershipVisibility: "hidden", visibleMembers: [], consentGranted: true, boundToCurrentCircle: true, postingAuthorized: false },
-] as const;
+// A Circle audience is real trust state: it names the people a post would
+// actually reach. Nothing on this device can enumerate audiences yet — there
+// is no backend command behind them — so on a real account the only honest
+// value is "none", and the surface has to say so rather than showing anyone.
+//
+// Demo audiences exist only for local design work. `import.meta.env.DEV` is
+// statically false for every `vite build` (the default `main` mode plus the
+// `discord-qa` and `signal-qa` modes), so the records below cannot reach any
+// shipped bundle even if the opt-in variable were set at build time.
+const circleDemoAudiencesEnabled = import.meta.env.DEV === true
+  && import.meta.env.VITE_OSL_CIRCLE_DEMO_AUDIENCES === "1";
 
-const privateCircleAudiences: CircleAudience[] = privateCircleAudienceRecords
-  .map((record) => parseCircleAudience(record))
-  .filter((audience): audience is CircleAudience => audience !== null);
+function demoCircleAudienceRecords(): unknown[] {
+  if (!circleDemoAudiencesEnabled) return [];
+  return [
+    { audienceId: "c".repeat(32), name: "Demo audience A", memberCount: 1, membershipVisibility: "visible", visibleMembers: [{ memberId: "1".repeat(32), name: "Demo member", verified: true }], consentGranted: true, boundToCurrentCircle: true, postingAuthorized: true },
+    { audienceId: "f".repeat(32), name: "Demo audience B", memberCount: 1, membershipVisibility: "count-only", visibleMembers: [], consentGranted: false, boundToCurrentCircle: true, postingAuthorized: true },
+  ];
+}
+
+function parsedCircleAudiences(records: unknown[]): CircleAudience[] {
+  return records
+    .map((record) => parseCircleAudience(record))
+    .filter((audience): audience is CircleAudience => audience !== null);
+}
+
+let privateCircleAudiences: CircleAudience[] = parsedCircleAudiences(demoCircleAudienceRecords());
 
 function circleAudienceMembershipDetail(audience: CircleAudience): string {
   if (audience.membershipVisibility === "visible") {
@@ -3564,10 +3676,13 @@ function circleAudienceStatus(audience: CircleAudience): { label: "Ready" | "Ref
 function circlesDestinationContent(): string {
   const audienceCards = privateCircleAudiences.map((audience) => {
     const status = circleAudienceStatus(audience);
-    return `<article class="setting-line circle-audience-card ${audience.canPost ? "" : "unavailable"}" data-circle-audience="${escapeHtml(audience.audienceId)}" data-circle-posting="${audience.canPost ? "ready" : "refused"}" data-circle-refusal="${audience.refusal ?? "none"}" aria-disabled="${audience.canPost ? "false" : "true"}"><span><strong>${escapeHtml(audience.name)}</strong><small>${escapeHtml(circleAudienceMembershipDetail(audience))}</small></span><span class="status-tag">${status.label}</span><p>${escapeHtml(status.detail)}</p></article>`;
+    return `<article class="setting-line circle-audience-card ${audience.canPost ? "" : "unavailable"}" data-circle-audience="${escapeHtml(audience.audienceId)}" data-circle-posting="${audience.canPost ? "ready" : "refused"}" data-circle-refusal="${audience.refusal ?? "none"}" aria-disabled="${audience.canPost ? "false" : "true"}"><span><strong>${escapeHtml(audience.name)}</strong><small>${escapeHtml(circleAudienceMembershipDetail(audience))}</small></span>${statusTag(status.label)}<p>${escapeHtml(status.detail)}</p></article>`;
   }).join("");
-  const feedItems = privateCircleAudiences.filter((audience) => audience.canPost).map((audience, index) => `<article class="inbox-row circle-feed-item" data-circle-feed-item="${index}" data-circle-feed-order="chronological" data-circle-audience="${escapeHtml(audience.audienceId)}"><span class="source-mark">${homeModuleIcon("osl-chats")}</span><div><strong>${escapeHtml(audience.name)}</strong><small>Chronological private feed · ${audience.memberCount.toLocaleString("en-US")} people · no ranking or behavioral advertising</small></div><span class="status-tag">Encrypted</span></article>`).join("");
-  return `<section class="inbox-surface-card circles-destination" data-inbox-osl-surface="circles" data-circle-feeds="private-audiences"><strong>OSL Circles</strong><small>Private audience feeds</small><p><span class="status-tag">Private</span> Posts and comments are encrypted for the selected audience. Audience membership is shown before posting.</p><div class="settings-list circle-audience-list" aria-label="Private Circle audiences">${audienceCards}</div><div class="circle-feed-list" aria-label="Chronological private Circle feeds">${feedItems}</div>${publicCirclesUnavailableMarkup()}</section>`;
+  const feedItems = privateCircleAudiences.filter((audience) => audience.canPost).map((audience, index) => `<article class="inbox-row circle-feed-item" data-circle-feed-item="${index}" data-circle-feed-order="chronological" data-circle-audience="${escapeHtml(audience.audienceId)}"><span class="source-mark">${homeModuleIcon("osl-chats")}</span><div><strong>${escapeHtml(audience.name)}</strong><small>Chronological private feed · ${audience.memberCount.toLocaleString("en-US")} people · no ranking or behavioral advertising</small></div>${statusTag("Encrypted")}</article>`).join("");
+  const audienceList = audienceCards
+    ? `<div class="settings-list circle-audience-list" aria-label="Private Circle audiences">${audienceCards}</div><div class="circle-feed-list" aria-label="Chronological private Circle feeds">${feedItems}</div>`
+    : `<div class="empty-state" data-circle-audiences="none"><strong>No Circle audiences yet</strong><p>An audience appears here after you create one on this device. Until then there is nobody to post to.</p></div>`;
+  return `<section class="inbox-surface-card circles-destination" data-inbox-osl-surface="circles" data-circle-feeds="private-audiences" data-circle-audience-count="${privateCircleAudiences.length}"><strong>OSL Circles</strong><small>Private audience feeds</small><p>${statusTag("Private")} Posts and comments are encrypted for the selected audience. Audience membership is shown before posting.</p>${audienceList}${publicCirclesUnavailableMarkup()}</section>`;
 }
 
 type OslMailboxStageCReview = {
@@ -3625,7 +3740,7 @@ export function oslMailStageAContent(
   mailboxGate: OslMailboxStageCGateResult = oslMailboxStageCGate(),
 ): string {
   if (stage.id !== "stageA" || stage.availability !== "available") {
-    return `<article class="inbox-surface-card unavailable" data-inbox-osl-surface="mail" data-osl-mail-stage-a="unavailable" data-osl-mail-protection="private-client" data-osl-mailbox-stage-c-gate="${mailboxGate.reason ?? "reviewed"}" data-mailbox-operations="refused" aria-disabled="true"><strong>OSL Mail</strong><small>Private client protection</small><p><span class="status-tag">Coming later</span> OSL Mail client protection is unavailable until Stage A review accepts it.</p></article>`;
+    return `<article class="inbox-surface-card unavailable" data-inbox-osl-surface="mail" data-osl-mail-stage-a="unavailable" data-osl-mail-protection="private-client" data-osl-mailbox-stage-c-gate="${mailboxGate.reason ?? "reviewed"}" data-mailbox-operations="refused" aria-disabled="true"><strong>OSL Mail</strong><small>Private client protection</small><p>${statusTag("Coming later")} OSL Mail client protection is unavailable until Stage A review accepts it.</p></article>`;
   }
   const capabilities = [
     "Connect an existing mailbox only after authorization",
@@ -3633,7 +3748,7 @@ export function oslMailStageAContent(
     "Sanitize selected links and attachments",
     "Organize retention on this device",
   ];
-  return `<article class="inbox-surface-card" data-inbox-osl-surface="mail" data-osl-mail-stage-a="available" data-osl-mail-protection="private-client" data-osl-mailbox-stage-c-gate="${mailboxGate.reason ?? "reviewed"}" data-mailbox-operations="${mailboxGate.operationsAllowed ? "allowed" : "refused"}" aria-disabled="false"><strong>OSL Mail</strong><small>Private client protection</small><p><span class="status-tag">Available</span> Protect mailboxes you already control after explicit authorization.</p><ul>${capabilities.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul><p><span class="status-tag">${mailboxGate.label}</span> ${escapeHtml(mailboxGate.detail)} External email remains ordinary email unless a supported encrypted path is selected before send.</p></article>`;
+  return `<article class="inbox-surface-card" data-inbox-osl-surface="mail" data-osl-mail-stage-a="available" data-osl-mail-protection="private-client" data-osl-mailbox-stage-c-gate="${mailboxGate.reason ?? "reviewed"}" data-mailbox-operations="${mailboxGate.operationsAllowed ? "allowed" : "refused"}" aria-disabled="false"><strong>OSL Mail</strong><small>Private client protection</small><p>${statusTag("Available")} Protect mailboxes you already control after explicit authorization.</p><ul>${capabilities.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul><p>${statusTag(mailboxGate.label)} ${escapeHtml(mailboxGate.detail)} External email remains ordinary email unless a supported encrypted path is selected before send.</p></article>`;
 }
 
 export function oslMailStageBContent(
@@ -3650,16 +3765,16 @@ export function oslMailStageBContent(
   const detail = ready
     ? "Aliases and reply routing are available only for this reviewed mail setup."
     : "Aliases and relay come after client protection, once abuse handling, deliverability, reply routing, account recovery, and support operations pass review.";
-  return `<article class="inbox-surface-card mail-stage-card" data-inbox-osl-surface="mail" data-osl-mail-stage-b="${state}" data-osl-mail-stage-b-after="client-protection" data-osl-mail-aliases="${ready ? "available" : "refused"}" data-osl-mail-relay="${ready ? "available" : "refused"}" aria-disabled="${ready ? "false" : "true"}"><strong>Aliases and relay</strong><small>After client protection</small><p><span class="status-tag">${label}</span> ${escapeHtml(detail)}</p><ul>${capabilities.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul><p>External email remains ordinary email unless a supported encrypted path is selected before send.</p></article>`;
+  return `<article class="inbox-surface-card mail-stage-card" data-inbox-osl-surface="mail" data-osl-mail-stage-b="${state}" data-osl-mail-stage-b-after="client-protection" data-osl-mail-aliases="${ready ? "available" : "refused"}" data-osl-mail-relay="${ready ? "available" : "refused"}" aria-disabled="${ready ? "false" : "true"}"><strong>Aliases and relay</strong><small>After client protection</small><p>${statusTag(label)} ${escapeHtml(detail)}</p><ul>${capabilities.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul><p>External email remains ordinary email unless a supported encrypted path is selected before send.</p></article>`;
 }
 
 function publicCirclesUnavailableMarkup(): string {
-  return `<article class="inbox-surface-card unavailable" data-inbox-osl-surface="circles" data-public-circles-network="unavailable" aria-disabled="true"><strong>OSL Circles</strong><small>Private audience feeds</small><p><span class="status-tag">Unavailable</span> Public Circles network unavailable. Private audience posts stay off until membership, posting, and moderation are complete.</p></article>`;
+  return `<article class="inbox-surface-card unavailable" data-inbox-osl-surface="circles" data-public-circles-network="unavailable" aria-disabled="true"><strong>OSL Circles</strong><small>Private audience feeds</small><p>${statusTag("Unavailable")} Public Circles network unavailable. Private audience posts stay off until membership, posting, and moderation are complete.</p></article>`;
 }
 
 export function publicPostGuardCarrierPreviewMarkup(platform = "Public platforms"): string {
   const platformName = escapeHtml(platform);
-  return `<section class="public-post-guard public-post-guard-preview" data-public-platform-preview="encrypted-audience-carrier" data-public-post-guard="encrypted-audience-carrier" aria-labelledby="public-post-guard-title"><header><span class="privacy-local-mark">PUBLIC POST GUARD</span><h2 id="public-post-guard-title">Encrypted-audience carrier preview</h2><p>${platformName} stays a public surface. OSL shows the public carrier text separately from the protected audience preview before anything is placed.</p></header><div class="privacy-policy-grid carrier-preview-grid" aria-label="Public platform carrier preview"><article class="privacy-policy-card" data-public-post-kind="ordinary" data-carrier-part="public"><span class="status-tag">Public</span><h3>Public carrier</h3><p>Visible to the platform audience. Search, quoting, archiving, audience, location, and media metadata still need review. Visible carrier text stays visible and does not contain the protected message.</p></article><article class="privacy-policy-card" data-public-post-kind="encrypted-audience-carrier" data-carrier-part="protected-audience"><span class="status-tag">Carrier preview</span><h3>Protected audience</h3><p>Plaintext is for the approved audience only, but the platform can still see the public carrier, timing, and engagement.</p></article></div><p class="scope-approval-note">If audience proof is missing or changes, OSL refuses the protected placement and keeps the draft local.</p></section>`;
+  return `<section class="public-post-guard public-post-guard-preview" data-public-platform-preview="encrypted-audience-carrier" data-public-post-guard="encrypted-audience-carrier" aria-labelledby="public-post-guard-title"><header><span class="privacy-local-mark">PUBLIC POST GUARD</span><h2 id="public-post-guard-title">Encrypted-audience carrier preview</h2><p>${platformName}: still a public surface. OSL shows the public carrier text separately from the protected audience preview before anything is placed.</p></header><div class="privacy-policy-grid carrier-preview-grid" aria-label="Public platform carrier preview"><article class="privacy-policy-card" data-public-post-kind="ordinary" data-carrier-part="public">${statusTag("Public")}<h3>Public carrier</h3><p>Visible to the platform audience. Search, quoting, archiving, audience, location, and media metadata still need review. Visible carrier text stays visible and does not contain the protected message.</p></article><article class="privacy-policy-card" data-public-post-kind="encrypted-audience-carrier" data-carrier-part="protected-audience">${statusTag("Carrier preview")}<h3>Protected audience</h3><p>Plaintext is for the approved audience only, but the platform can still see the public carrier, timing, and engagement.</p></article></div><p class="scope-approval-note">If audience proof is missing or changes, OSL refuses the protected placement and keeps the draft local.</p></section>`;
 }
 
 export function inboxDestinationContent(): string {
@@ -3725,11 +3840,11 @@ export function activityDestinationContent(): string {
   const rows = activity.length
     ? activity.slice(0, 8).map((item, index) => {
         const needsAttention = attentionItems.includes(item) || index === 0;
-        return `<article class="notification-event activity-proof-row ${index === 0 && activityAttentionReviewOpen ? "selected" : ""}" data-activity-item="${index}" data-activity-proof="${escapeHtml(item.id)}" ${needsAttention ? 'data-activity-attention="true"' : ""}><span class="status-tag">${index === 0 && activityAttentionReviewOpen ? "Reviewing" : needsAttention ? "Needs review" : "Recorded"}</span><div><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(notificationPreviewContent ? item.detail : "Private OSL activity")} · ${escapeHtml(item.createdAt)}</small></div></article>`;
+        return `<article class="notification-event activity-proof-row ${index === 0 && activityAttentionReviewOpen ? "selected" : ""}" data-activity-item="${index}" data-activity-proof="${escapeHtml(item.id)}" ${needsAttention ? 'data-activity-attention="true"' : ""}>${statusTag(index === 0 && activityAttentionReviewOpen ? "Reviewing" : needsAttention ? "Needs review" : "Recorded")}<div><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(notificationPreviewContent ? item.detail : "Private OSL activity")} · ${escapeHtml(item.createdAt)}</small></div></article>`;
       }).join("")
     : `<div class="empty-state"><strong>${notificationsEnabled ? "No activity needs attention" : "Activity is off"}</strong><p>${notificationsEnabled ? "Warnings, connection failures, cleanup checks, and verified outcomes appear here after OSL creates them on this device." : "Turn on local activity before OSL records local outcomes here."}</p></div>`;
   const attention = attentionItems.length
-    ? attentionItems.slice(0, 5).map((item, index) => `<article class="setting-line" data-attention-review-item="${index}"><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(notificationPreviewContent ? item.detail : "Private OSL activity")}</small></span><span class="status-tag">Review</span></article>`).join("")
+    ? attentionItems.slice(0, 5).map((item, index) => `<article class="setting-line" data-attention-review-item="${index}"><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(notificationPreviewContent ? item.detail : "Private OSL activity")}</small></span>${statusTag("Review")}</article>`).join("")
     : `<div class="empty-state"><strong>No items need review</strong><p>Proof of local protection work stays here when OSL has something to report.</p></div>`;
   const review = activityAttentionReviewOpen && activity.length
     ? `<section class="activity-review-panel" data-activity-attention-review="${escapeHtml(activity[0].id)}" aria-labelledby="activity-review-title"><h2 id="activity-review-title">Attention review</h2><p>Review the local event before changing protection, trust, or cleanup settings.</p><button class="button compact" data-notification-settings type="button">Open Activity settings</button></section>`
@@ -3758,14 +3873,18 @@ export function mullvadConnectionCardMarkup(status: MullvadStatus = mullvadStatu
     : status.availability === "installable"
       ? `<button class="button compact" id="install-mullvad-from-connections" type="button">Install</button>`
       : `<button class="button compact" disabled>Unavailable</button>`;
-  return `<article class="connection-device-card connection-card mullvad-card" data-connection-card="mullvad" data-connection-kind="mullvad" data-privacy-scope="${status.privacyScope}" data-connection-state="${status.availability}"><div><span class="status-tag">${state}</span><strong>Mullvad</strong><small>Network privacy only · ${state}</small><p>Network privacy signal only. Use your existing Mullvad session as a separate network tool. OSL does not read its account state, connection state, or app content. Platforms and recipients can still see ordinary content you send there.</p></div>${action}</article>`;
+  return `<article class="connection-device-card connection-card mullvad-card" data-connection-card="mullvad" data-connection-kind="mullvad" data-privacy-scope="${status.privacyScope}" data-connection-state="${status.availability}"><div>${statusTag(state)}<strong>Mullvad</strong><small>Network privacy only · ${state}</small><p>Network privacy signal only. Use your existing Mullvad session as a separate network tool. OSL does not read its account state, connection state, or app content. Platforms and recipients can still see ordinary content you send there.</p></div>${action}</article>`;
 }
 
 function androidWorkspaceConnectionCard(surface: AndroidSurface): string {
   if (surface.surface === "companion") {
-    return `<article class="connection-device-card" data-android-surface="${surface.id}" data-consent="${surface.consent}" data-binding="${surface.binding}"><span class="status-tag">Coming later</span><h3>${escapeHtml(surface.displayName)}</h3><p>Phone approvals and OSL-owned mobile experiences stay separate from desktop account control.</p></article>`;
+    // The content is wrapped exactly like the sibling workspace card below.
+    // Without the wrapper the card's own `justify-content: space-between`
+    // treated the badge and the title as the two ends of one row and threw
+    // "Android Companion" to the right while every sibling stayed left.
+    return `<article class="connection-device-card" data-android-surface="${surface.id}" data-consent="${surface.consent}" data-binding="${surface.binding}"><div>${statusTag("Coming later")}<h3>${escapeHtml(surface.displayName)}</h3><p>Phone approvals and OSL-owned mobile experiences stay separate from desktop account control.</p></div></article>`;
   }
-  return `<article class="connection-device-card connection-card android-workspace-card pro unavailable" data-android-surface="${surface.id}" data-android-workspace-consent="${surface.consent}" data-consent="${surface.consent}" data-binding="${surface.binding}" data-hosted-execution="${surface.hostedExecution}" data-workspace-runtime="${surface.workspace?.runtime ?? "localVirtualDevice"}" aria-disabled="true"><div><span class="status-tag">Coming later · Pro</span><strong>${escapeHtml(surface.displayName)}</strong><small>Future Pro isolation · Coming later</small><p>Future isolated local workspace with encrypted local virtual device storage. A separate mobile workspace threat model review and explicit consent are required before any local workspace starts.</p><ul><li>Encrypted local virtual device storage.</li><li>clipboard, files, notifications, camera, microphone, and location start denied.</li><li>${hostedAndroidWorkspaceGate()}</li><li>No hosted Android workspace runs from this card.</li></ul></div><button class="button compact" disabled>Consent required</button></article>`;
+  return `<article class="connection-device-card connection-card android-workspace-card pro unavailable" data-android-surface="${surface.id}" data-android-workspace-consent="${surface.consent}" data-consent="${surface.consent}" data-binding="${surface.binding}" data-hosted-execution="${surface.hostedExecution}" data-workspace-runtime="${surface.workspace?.runtime ?? "localVirtualDevice"}" aria-disabled="true"><div>${statusTag("Coming later · Pro")}<strong>${escapeHtml(surface.displayName)}</strong><small>Future Pro isolation · Coming later</small><p>Future isolated local workspace with encrypted local virtual device storage. A separate mobile workspace threat model review and explicit consent are required before any local workspace starts.</p><ul><li>Encrypted local virtual device storage.</li><li>clipboard, files, notifications, camera, microphone, and location start denied.</li><li>${hostedAndroidWorkspaceGate()}</li><li>No hosted Android workspace runs from this card.</li></ul></div><button class="button compact" disabled>Consent required</button></article>`;
 }
 
 function hostedAndroidWorkspaceGate(): string {
@@ -3789,7 +3908,7 @@ export function connectionsDestinationContent(): string {
       }).join("")
     : `<div class="empty-state"><strong>No account catalog loaded</strong><p>Reconnect when apps are available on this device.</p></div>`;
   const nativeRows = nativeApps.length
-    ? nativeApps.map((app) => `<article class="setting-line" data-device-connection="${app.id}"><span><strong>${escapeHtml(app.displayName)}</strong><small>${app.availability === "installed" ? "Installed native app" : app.availability === "installable" ? "Can be installed" : "Unavailable on this device"}</small></span><span class="status-tag">${app.availability === "installed" ? "Ready" : app.availability === "installable" ? "Installable" : "Unavailable"}</span></article>`).join("")
+    ? nativeApps.map((app) => `<article class="setting-line" data-device-connection="${app.id}"><span><strong>${escapeHtml(app.displayName)}</strong><small>${app.availability === "installed" ? "Installed native app" : app.availability === "installable" ? "Can be installed" : "Unavailable on this device"}</small></span>${statusTag(app.availability === "installed" ? "Ready" : app.availability === "installable" ? "Installable" : "Unavailable")}</article>`).join("")
     : `<div class="empty-state"><strong>No native app status yet</strong><p>Native app status appears after OSL checks this device.</p></div>`;
   const androidCards = AndroidSurface.preview().map((surface) => androidWorkspaceConnectionCard(surface)).join("");
   return `<main class="content-viewport connections-destination" aria-labelledby="route-heading"><header class="destination-header"><div><p class="eyebrow">Connections</p><h1 id="route-heading" tabindex="-1">Connections</h1><p>Accounts, local app windows, network tools, and planned device surfaces OSL can connect to or refuse safely.</p></div><button class="button primary" data-connections-primary-action type="button">Connect a service</button></header><section class="connections-grid"><section class="settings-list connected-accounts connections-accounts" aria-labelledby="connected-accounts-title"><header><h2 id="connected-accounts-title">Connected accounts</h2><p>Each profile stays separate. OSL never merges accounts from names, avatars, addresses, or shared contacts.</p></header>${accountRows}</section><section class="settings-list connected-devices connections-devices" aria-labelledby="connected-devices-title"><header><h2 id="connected-devices-title">Devices and app windows</h2><p>Local devices and companion windows require explicit user action before use.</p></header>${nativeRows}${mullvadConnectionCardMarkup()}${androidCards}</section></section></main>`;
@@ -3828,7 +3947,7 @@ function oslChatContent(): string {
   const settingsPerson = oslChatSettingsPersonId ? hubPeople.find((person) => person.personId === oslChatSettingsPersonId) ?? null : null;
   const settings = settingsPerson ? oslChatFriendSettingsMarkup(settingsPerson, pro) : "";
   const attachments = activeOslChatContext?.scopeApproved && pro
-    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header>${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button"><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span><span class="status-tag">Open</span></button>`).join("") : `<p>No pending attachments.</p>`}<small>Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
+    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header>${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button"><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
     : "";
   return `<main class="content-viewport osl-chat-page"><header class="osl-chat-page-header"><button class="text-button" id="osl-chat-back" type="button" ${oslChatBusy ? "disabled" : ""}>Back</button><h1 id="route-heading" tabindex="-1">OSL Chats</h1><button class="text-button" id="osl-chat-refresh" type="button" ${activeOslChatContext?.scopeApproved && !oslChatBusy ? "" : "disabled"}>Refresh</button></header>${approval}${oslChatsViewMarkup({
     friends,
@@ -3855,7 +3974,7 @@ function oslServersContent(): string {
     ["Signal groups", "Not available yet"],
     ["Snapchat groups", "Not available yet"],
   ];
-  return `<main class="content-viewport osl-servers-page"><header class="osl-chat-page-header"><button class="text-button" data-route="home" type="button">Back</button><h1 id="route-heading" tabindex="-1">Servers</h1></header><p>Shared encrypted spaces will appear here when their sender, membership, delivery, and history security are complete.</p><section class="settings-list" aria-label="Planned server capabilities">${capabilities.map(([name, state]) => `<div class="setting-line"><span><strong>${name}</strong><small>${state}</small></span><span class="status-tag">Coming later</span></div>`).join("")}</section><p class="scope-approval-note">OSL does not claim provider-server access or read provider pages. Direct OSL Chats are available now.</p></main>`;
+  return `<main class="content-viewport osl-servers-page"><header class="osl-chat-page-header"><button class="text-button" data-route="home" type="button">Back</button><h1 id="route-heading" tabindex="-1">Servers</h1></header><p>Shared encrypted spaces will appear here when their sender, membership, delivery, and history security are complete.</p><section class="settings-list" aria-label="Planned server capabilities">${capabilities.map(([name, state]) => `<div class="setting-line"><span><strong>${name}</strong><small>${state}</small></span>${statusTag("Coming later")}</div>`).join("")}</section><p class="scope-approval-note">OSL does not claim provider-server access or read provider pages. Direct OSL Chats are available now.</p></main>`;
 }
 
 function homeModuleIcon(id: "osl-chats" | "osl-mail" | "osl-servers" | "scrub" | "activity" | "osl-notes"): string {
@@ -3965,8 +4084,8 @@ function peopleListMarkup(mode: PeopleListMode, limit?: number, offset = 0): str
       ? mode === "service"
         ? activeContextToken
           ? `<button class="button compact" data-allow-person="${escapeHtml(person.personId)}">Approve for this chat</button>`
-          : `<span class="status-tag">Open a supported chat first</span>`
-        : `<span class="status-tag">Verified</span>`
+          : `${statusTag("Open a supported chat first")}`
+        : `${statusTag("Verified")}`
       : `<button class="button compact" data-verify-person="${escapeHtml(person.personId)}">${person.pendingKeyChange ? "Re-verify key" : "Review request"}</button>`;
     if (mode === "home") {
       const lastMessage = oslChatMessages.get(person.personId)?.at(-1);
@@ -4186,7 +4305,10 @@ function burnGuaranteeMarkup(effects: string): string {
     }
   };
   const items = BurnGuaranteeCopy.items.map((item) => (
-    `<li data-burn-guarantee="${escapeHtml(item.id)}"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(stateLabel(item.state))}</span><p>${escapeHtml(item.body)}</p></li>`
+    // data-burn-reach carries the reach state to the sheet, which is the only
+    // place a rule can live under `style-src 'self'`. The label beside it says
+    // the same thing in words, so nothing here depends on colour being seen.
+    `<li data-burn-guarantee="${escapeHtml(item.id)}" data-burn-reach="${escapeHtml(item.state)}"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(stateLabel(item.state))}</span><p>${escapeHtml(item.body)}</p></li>`
   )).join("");
   return `<section class="burn-truth burn-guarantees" aria-labelledby="burn-guarantee-title"><strong id="burn-guarantee-title">Before you continue</strong><p>${escapeHtml(effects)}</p><p><strong>${escapeHtml(BurnGuaranteeCopy.summary)}</strong> ${escapeHtml(BurnGuaranteeCopy.intro)}</p><ul>${items}</ul><p>${escapeHtml(BurnGuaranteeCopy.limit)}</p></section>`;
 }
@@ -4341,13 +4463,13 @@ export function privacyDestinationContent(): string {
     ["Data Removal", "Guide broker requests and verify results instead of counting requests as success."],
     ["Encrypted Capsule", "Send protected files or notes when the recipient does not use OSL."],
   ] as const;
-  const policyCards = policyGroups.map(([name, detail, state]) => `<article class="privacy-policy-card"><span class="status-tag">${state}</span><h3>${name}</h3><p>${detail}</p></article>`).join("");
-  const toolRows = tools.map(([name, detail], index) => `<article class="setting-line privacy-tool-row"><span><strong>${name}</strong><small>${detail}</small></span><span class="status-tag">${index === 0 ? "Available" : proActive ? "Pro planned" : "Pro"}</span></article>`).join("");
+  const policyCards = policyGroups.map(([name, detail, state]) => `<article class="privacy-policy-card">${statusTag(state)}<h3>${name}</h3><p>${detail}</p></article>`).join("");
+  const toolRows = tools.map(([name, detail], index) => `<article class="setting-line privacy-tool-row"><span><strong>${name}</strong><small>${detail}</small></span>${statusTag(index === 0 ? "Available" : proActive ? "Pro planned" : "Pro")}</article>`).join("");
   const cleanupState = proActive ? "Manual queue planned" : "Pro manual queue";
   const protectionReview = privacyProtectionReviewOpen
     ? `<section class="privacy-review-card" data-privacy-protection-review><div><span class="privacy-local-mark">PROTECTION REVIEW</span><h2>Review or change protection</h2><p>Check the Balanced policy, app exceptions, cleanup limits, and local warning choices before OSL changes anything.</p></div><button class="button compact" data-route="settings" data-settings="scrub" type="button">Open detailed review</button></section>`
     : "";
-  return `<main class="content-viewport privacy-destination"><header class="destination-header"><div><p class="eyebrow">Privacy</p><h1 id="route-heading" tabindex="-1">Privacy</h1><p>Review what OSL will do before it changes anything.</p></div><button class="button primary" data-privacy-primary-action data-route="${primary.route}" data-review-target="${primary.reviewTarget}" type="button">Review or change protection</button></header>${protectionReview}<section class="privacy-preset-panel" aria-labelledby="privacy-preset-title"><div><span class="privacy-local-mark">ACTIVE PRESET</span><h2 id="privacy-preset-title">Balanced</h2><p>Basic account health plus local before-send warnings, attachment cleaning, monthly cleanup review, and private OSL suggestions for verified contacts.</p></div><button class="button compact" type="button" disabled>Change preset</button></section><section class="privacy-policy-stack" id="privacy-protection-review" aria-labelledby="privacy-policy-title"><header><div><h2 id="privacy-policy-title">Global policy</h2><p>Inherited from Balanced until you make an exception.</p></div><span class="status-tag">Deletion off</span></header><p class="privacy-policy-path">Balanced preset / app / account / conversation exception</p><div class="privacy-policy-grid">${policyCards}</div></section>${publicPostGuardCarrierPreviewMarkup()}<section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h2>Recommended action</h2><h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review. Nothing is deleted by this build.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup(true)}${privacyScanResultsMarkup()}<section class="settings-list privacy-tools" aria-labelledby="privacy-tools-title"><header><h2 id="privacy-tools-title">Solo privacy tools</h2><p>Useful even when nobody else uses OSL.</p></header>${toolRows}</section><section class="settings-list privacy-limits" aria-labelledby="privacy-limits-title"><header><h2 id="privacy-limits-title">Proof and limits</h2><p>OSL refuses actions it cannot verify.</p></header><div class="setting-line"><span><strong>Cleanup</strong><small>${cleanupState}; every batch must be scanned, shown, previewed, confirmed, executed, and checked.</small></span><span class="status-tag">No auto delete</span></div><div class="setting-line"><span><strong>Service messages</strong><small>Apps, people, exports, backups, and opened copies may retain content.</small></span><span class="status-tag">Limit shown</span></div><div class="setting-line"><span><strong>Window protection</strong><small>Applied to OSL's own window when available. Cameras, malware, and modified recipients can still capture content.</small></span><span class="status-tag">${screenshotProtectionEnabled ? "Active" : "Unavailable"}</span></div></section></main>`;
+  return `<main class="content-viewport privacy-destination"><header class="destination-header"><div><p class="eyebrow">Privacy</p><h1 id="route-heading" tabindex="-1">Privacy</h1><p>Review what OSL will do before it changes anything.</p></div><button class="button primary" data-privacy-primary-action data-route="${primary.route}" data-review-target="${primary.reviewTarget}" type="button">Review or change protection</button></header>${protectionReview}<section class="privacy-preset-panel" aria-labelledby="privacy-preset-title"><div><span class="privacy-local-mark">ACTIVE PRESET</span><h2 id="privacy-preset-title">Balanced</h2><p>Basic account health plus local before-send warnings, attachment cleaning, monthly cleanup review, and private OSL suggestions for verified contacts.</p></div><button class="button compact" type="button" disabled>Change preset</button></section><section class="privacy-policy-stack" id="privacy-protection-review" aria-labelledby="privacy-policy-title"><header><div><h2 id="privacy-policy-title">Global policy</h2><p>Inherited from Balanced until you make an exception.</p></div>${statusTag("Deletion off")}</header><p class="privacy-policy-path">Balanced preset / app / account / conversation exception</p><div class="privacy-policy-grid">${policyCards}</div></section>${publicPostGuardCarrierPreviewMarkup()}<section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h2>Recommended action</h2><h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review. Nothing is deleted by this build.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup(true)}${privacyScanResultsMarkup()}<section class="settings-list privacy-tools" aria-labelledby="privacy-tools-title"><header><h2 id="privacy-tools-title">Solo privacy tools</h2><p>Useful even when nobody else uses OSL.</p></header>${toolRows}</section><section class="settings-list privacy-limits" aria-labelledby="privacy-limits-title"><header><h2 id="privacy-limits-title">Proof and limits</h2><p>OSL refuses actions it cannot verify.</p></header><div class="setting-line"><span><strong>Cleanup</strong><small>${cleanupState}; every batch must be scanned, shown, previewed, confirmed, executed, and checked.</small></span>${statusTag("No auto delete")}</div><div class="setting-line"><span><strong>Service messages</strong><small>Apps, people, exports, backups, and opened copies may retain content.</small></span>${statusTag("Limit shown")}</div><div class="setting-line"><span><strong>Window protection</strong><small>Applied to OSL's own window when available. Cameras, malware, and modified recipients can still capture content.</small></span>${statusTag(screenshotProtectionEnabled ? "Active" : "Unavailable")}</div></section></main>`;
 }
 
 function massCleanupActionLabel(action: string): string {
@@ -4426,6 +4548,18 @@ async function stopAutoScrubFleet(): Promise<void> {
 
 function settingsDivider(): string {
   return `<hr class="settings-divider"/>`;
+}
+
+/**
+ * The single authority on "is this session unlocked?" for Settings. Every
+ * surface that makes a lock claim has to route through this, or two panels on
+ * one page can disagree about the same session — which is exactly how Settings
+ * came to render "Unlock OSL" directly above "Password configured and
+ * unlocked".
+ */
+function accountUnlocked(): boolean {
+  return core.readiness.bootstrapStatus !== "setupRequired"
+    && core.readiness.bootstrapStatus !== "passwordRequired";
 }
 
 function passwordSecuritySettingsContent(): string {
@@ -4777,15 +4911,49 @@ function identityStorageProtectionMarkup(protection: IdentityStorageProtection):
 }
 
 function identitySettingsContent(): string {
-  const identities = hubIdentities.length
-    ? hubIdentities.map((identity) => `<article class="identity-row"><div><strong>${escapeHtml(identity.label)}</strong><small>${escapeHtml(identity.oslUserId)} · ${escapeHtml(identity.safetyNumber)}</small></div>${identity.active ? `<span class="status-tag">Active</span>` : `<button class="button compact" data-switch-identity="${escapeHtml(identity.slotId)}">Switch</button>`}</article>`).join("")
-    : `<div class="empty-state"><strong>Identity list unavailable</strong><p>Unlock OSL to manage encrypted identity slots.</p></div>`;
+  // A list that was never loaded (startup skipped it because the route was
+  // still onboarding) is loaded from the surface that shows it. A refused load
+  // is NOT retried here: it settles on "unavailable", whose own button asks
+  // again, so a failing backend cannot drive render -> refresh -> render.
+  if (!runningUnderVitest && accountUnlocked() && hubIdentitiesLoad === "pending") void refreshIdentitySlots(true);
+  const identities = identityListMarkup();
   const recovery = newIdentityRecoveryPhrase
     ? recoveryCaptureGate.canRender()
       ? `<div class="warning recovery-secret"><strong>Save the new identity recovery phrase now</strong><code>${escapeHtml(newIdentityRecoveryPhrase)}</code><p>Visible only on this page. It clears if you leave or hide OSL.</p></div>`
       : `<div class="warning recovery-secret" role="alert"><strong>Recovery phrase hidden</strong><p>${RECOVERY_PROTECTION_REFUSAL}.</p><button class="button compact" id="retry-recovery-protection" type="button">Retry protection</button></div>`
     : "";
   return `<h2>Account</h2><p>One active identity on this device.</p>${identityStorageProtectionMarkup(classifyIdentityStorageProtection(identityStorageMethod))}<div class="identity-list">${identities}</div>${recovery}<form class="inline-form identity-create-form" id="identity-slot-form"><input id="identity-slot-label" maxlength="80" placeholder="New identity label" required/><button class="button primary">Create identity</button></form><details class="recovery-import settings-disclosure"><summary>Recover another identity</summary><form id="identity-recover-form" class="setup-surface"><input id="identity-recover-label" maxlength="80" placeholder="Identity label" required/><textarea id="identity-recover-phrase" rows="3" placeholder="12-word recovery phrase" required></textarea><button class="button">Recover identity</button></form></details>${activationSettingsContent()}`;
+}
+
+/**
+ * Whether OSL is locked is answered by `core.readiness` — the same value the
+ * "Password configured and unlocked" indicator reads. The identity list must
+ * answer it from there too; inferring a lock from an empty array made Settings
+ * tell the user to unlock a session that was already unlocked.
+ */
+function identityListState(): "locked" | "loading" | "unavailable" | "empty" | "list" {
+  if (!accountUnlocked()) return "locked";
+  if (hubIdentities.length) return "list";
+  if (hubIdentitiesLoad === "pending") return "loading";
+  if (hubIdentitiesLoad === "unavailable") return "unavailable";
+  return "empty";
+}
+
+function identityListMarkup(): string {
+  const state = identityListState();
+  if (state === "list") {
+    return hubIdentities.map((identity) => `<article class="identity-row"><div><strong>${escapeHtml(identity.label)}</strong><small>${escapeHtml(identity.oslUserId)}</small></div>${identity.active ? `${statusTag("Active")}` : `<button class="button compact" data-switch-identity="${escapeHtml(identity.slotId)}">Switch</button>`}</article>`).join("");
+  }
+  if (state === "locked") {
+    return `<div class="empty-state" data-identity-list="locked"><strong>Identity list locked</strong><p>Unlock OSL to manage encrypted identity slots.</p></div>`;
+  }
+  if (state === "loading") {
+    return `<div class="empty-state" data-identity-list="loading"><strong>Reading identity slots</strong><p>OSL is opening the encrypted identity registry on this device.</p></div>`;
+  }
+  if (state === "unavailable") {
+    return `<div class="empty-state" data-identity-list="unavailable"><strong>Identity list could not be read</strong><p>OSL is unlocked, but this device did not return a usable identity registry. Nothing was changed.</p><button class="button compact" id="retry-identity-list" type="button">Try again</button></div>`;
+  }
+  return `<div class="empty-state" data-identity-list="empty"><strong>No identity slots yet</strong><p>Create an identity below to start using OSL on this device.</p></div>`;
 }
 
 function activationSettingsContent(): string {
@@ -4797,7 +4965,7 @@ function activationSettingsContent(): string {
     : "Optional Pro module: separate install and license required; base OSL stays available.";
   const period = licenseState.currentPeriodEnd === null ? "" : `<small>${licenseState.status === "CANCELLED" ? "Access through" : "Current period ends"} ${formatUnixDate(licenseState.currentPeriodEnd)}</small>`;
   const clear = licenseState.status === "UNCONFIGURED" ? "" : `<button class="button compact" id="clear-activation-code" type="button">Clear activation</button>`;
-  return `<details class="license-card settings-disclosure"><summary><span><strong>Plan</strong><small>${accessLabel}</small>${period}</span><span class="status-tag ${pro ? "active" : ""}">${escapeHtml(licenseState.status === "UNCONFIGURED" ? "Free" : licenseState.status)}</span></summary><div><p>Paste the activation code shown after checkout. No email is required.</p><p class="quiet-note">${moduleAccess}</p><form id="activation-form" class="license-form"><label for="activation-code">Activation code</label><div><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><button class="button primary" type="submit">Activate Pro</button>${clear}</div></form></div></details>`;
+  return `<details class="license-card settings-disclosure"><summary><span><strong>Plan</strong><small>${accessLabel}</small>${period}</span>${statusTag(escapeHtml(licenseState.status === "UNCONFIGURED" ? "Free" : licenseState.status), pro ? "active" : "")}</summary><div><p>Paste the activation code shown after checkout. No email is required.</p><p class="quiet-note">${moduleAccess}</p><form id="activation-form" class="license-form"><label for="activation-code">Activation code</label><div><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><button class="button primary" type="submit">Activate Pro</button>${clear}</div></form></div></details>`;
 }
 
 function formatUnixDate(seconds: number): string {
@@ -6047,6 +6215,11 @@ function bindWorkspace(): void {
     await proveRecoveryCaptureProtection();
     render();
   });
+  document.querySelector<HTMLButtonElement>("#retry-identity-list")?.addEventListener("click", () => {
+    hubIdentitiesLoad = "pending";
+    render();
+    void refreshIdentitySlots(true);
+  });
   document.querySelector<HTMLFormElement>("#identity-slot-form")?.addEventListener("submit", (event) => void createAdditionalIdentity(event));
   document.querySelector<HTMLFormElement>("#identity-recover-form")?.addEventListener("submit", (event) => void recoverAdditionalIdentity(event));
   document.querySelectorAll<HTMLButtonElement>("[data-switch-identity]").forEach((button) => button.addEventListener("click", () => void switchIdentity(button.dataset.switchIdentity ?? "")));
@@ -7127,8 +7300,20 @@ async function changeNotifications(input: HTMLInputElement): Promise<void> {
   render();
 }
 
-async function refreshIdentitySlots(): Promise<void> {
-  hubIdentities = await listHubIdentities() ?? [];
+async function refreshIdentitySlots(rerenderAccountSettings = false): Promise<void> {
+  if (identityListRefreshInFlight) return;
+  identityListRefreshInFlight = true;
+  try {
+    const loaded = await listHubIdentities();
+    // `null` means the command failed or the response did not match the
+    // expected shape. That is not an empty account and it is not a lock, so it
+    // must never be collapsed into `[]` and reported as either one.
+    hubIdentities = loaded ?? [];
+    hubIdentitiesLoad = loaded ? "loaded" : "unavailable";
+  } finally {
+    identityListRefreshInFlight = false;
+  }
+  if (rerenderAccountSettings && route === "settings" && settingsSection === "account") renderWhenIdle();
 }
 
 async function refreshIdentityScopedState(): Promise<void> {
@@ -7136,9 +7321,9 @@ async function refreshIdentityScopedState(): Promise<void> {
     throw new Error("OSL Chat could not close before changing identity state");
   }
   resetOslChatUiState(true);
-  const [nextCore, nextIdentities, profile, people, linkedServices, notifications] = await Promise.all([
+  const [nextCore, loadedIdentities, profile, people, linkedServices, notifications] = await Promise.all([
     loadCoreIntegration().catch(() => structuredClone(unavailableCoreIntegration)),
-    listHubIdentities().then((value) => value ?? []),
+    listHubIdentities(),
     loadFriendProfile().then(async (value) => {
       await getOslUsernameStatus("osl").catch(() => null);
       return value;
@@ -7149,7 +7334,8 @@ async function refreshIdentityScopedState(): Promise<void> {
   ]);
   core = nextCore;
   refreshActiveBrowserAccountsReady();
-  hubIdentities = nextIdentities;
+  hubIdentities = loadedIdentities ?? [];
+  hubIdentitiesLoad = loadedIdentities ? "loaded" : "unavailable";
   friendCode = profile?.friendCode ?? null;
   friendDisplayId = profile?.oslUserId ?? null;
   hubPeople = people;
@@ -7631,7 +7817,7 @@ function startReadyWorkspaceLoads(): void {
     appNotifications = enabled ? mergePersistedOslChatNotifications(await loadAppNotifications()) : null;
     if (route === "home") renderWhenIdle();
   });
-  void refreshIdentitySlots().then(() => { if (route === "settings" && settingsSection === "account") renderWhenIdle(); });
+  void refreshIdentitySlots(true);
 }
 
 async function recoverNativeHostAfterRendererLoad(): Promise<void> {
@@ -8391,6 +8577,10 @@ type OslHubUiTestStatePatch = {
   mullvadAvailability?: MullvadStatus["availability"];
   licenseAccess?: HubLicenseState["access"];
   autoScrubFleetStatus?: AutoScrubFleetStatus | null;
+  hubIdentities?: HubIdentitySlot[];
+  hubIdentitiesLoad?: IdentityListLoad;
+  bootstrapStatus?: BootstrapStatus;
+  circleAudienceRecords?: unknown[];
 };
 
 function testHubPerson(person: Partial<HubPerson> & { personId: string }): HubPerson {
@@ -8410,7 +8600,7 @@ function testHubPerson(person: Partial<HubPerson> & { personId: string }): HubPe
   };
 }
 
-function applyTestCoreState(ready: boolean, storageMethod: string | null): void {
+function applyTestCoreState(ready: boolean, storageMethod: string | null, bootstrapStatus?: BootstrapStatus): void {
   core = structuredClone(unavailableCoreIntegration);
   core.readiness = {
     ...core.readiness,
@@ -8422,7 +8612,7 @@ function applyTestCoreState(ready: boolean, storageMethod: string | null): void 
     passwordGateRequired: !ready,
     unlocked: ready,
     activeOslUserId: ready ? "test-osl-user" : null,
-    bootstrapStatus: ready ? "ready" : "notAttempted",
+    bootstrapStatus: bootstrapStatus ?? (ready ? "ready" : "notAttempted"),
     storageMethod,
   };
 }
@@ -8445,6 +8635,10 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   peoplePrimaryActionFocus = null;
   services = patch.services ?? [];
   hubPeople = (patch.hubPeople ?? []).map(testHubPerson);
+  hubIdentities = patch.hubIdentities ?? [];
+  hubIdentitiesLoad = patch.hubIdentitiesLoad ?? (patch.hubIdentities ? "loaded" : "pending");
+  identityListRefreshInFlight = false;
+  privateCircleAudiences = parsedCircleAudiences(patch.circleAudienceRecords ?? demoCircleAudienceRecords());
   notificationsEnabled = patch.notificationsEnabled ?? false;
   notificationPreviewContent = patch.notificationPreviewContent ?? true;
   appNotifications = patch.appNotifications ?? [];
@@ -8458,7 +8652,7 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
     privacyScope: "networkOnly",
     connectionState: "notObserved",
   };
-  applyTestCoreState(patch.coreReady ?? false, patch.storageMethod ?? null);
+  applyTestCoreState(patch.coreReady ?? false, patch.storageMethod ?? null, patch.bootstrapStatus);
 }
 
 export const __oslHubUiTest = {

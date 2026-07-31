@@ -92,7 +92,7 @@ pub fn load_app_preferences(path: &Path) -> AppPreferences {
     let Ok(blob) = std::fs::read(path) else {
         return AppPreferences::default();
     };
-    let plain = match crate::main_password::maybe_decrypt(&blob) {
+    let plain = match crate::main_password::maybe_decrypt_file(path, &blob) {
         Ok(p) => p,
         Err(e) => {
             tracing::warn!(error = %e, "OSL: load app_preferences.json decrypt failed");

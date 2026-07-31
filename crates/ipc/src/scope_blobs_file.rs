@@ -36,7 +36,7 @@ pub fn load(path: &Path) -> ScopeBlobsFile {
     let Ok(blob) = std::fs::read(path) else {
         return ScopeBlobsFile::default();
     };
-    let plain = match crate::main_password::maybe_decrypt(&blob) {
+    let plain = match crate::main_password::maybe_decrypt_file(path, &blob) {
         Ok(p) => p,
         Err(e) => {
             tracing::warn!(error = %e, "OSL: load scope_blobs.json decrypt failed");

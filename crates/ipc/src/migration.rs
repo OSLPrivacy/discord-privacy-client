@@ -62,7 +62,7 @@ fn read_and_decrypt(path: &Path) -> Result<FileStatus, MigrationError> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(FileStatus::Missing),
         Err(e) => return Err(MigrationError::Read(e)),
     };
-    let plain = crate::main_password::maybe_decrypt(&raw)
+    let plain = crate::main_password::maybe_decrypt_file(path, &raw)
         .map_err(|e| MigrationError::Decrypt(e.to_string()))?;
     let value: serde_json::Value = serde_json::from_slice(&plain)?;
     Ok(FileStatus::Present(value))

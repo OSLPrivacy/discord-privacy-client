@@ -24,6 +24,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BurnedScopesFile {
@@ -51,21 +52,79 @@ pub struct BurnedScopeEntry {
     pub burned_message_ids: Vec<String>,
 }
 
+/// A1-1 / fail-closed: set once a `burned_scopes.json` that EXISTS could not be
+/// decrypted or parsed. See `load_burned_scopes` for why this is a latch and
+/// not a per-call return value.
+static BURN_STATE_UNREADABLE: AtomicBool = AtomicBool::new(false);
+
+/// True when this process has seen a burn kill-list it could not read.
+///
+/// While set, `is_message_in_burn_kill_list` treats EVERY message as still
+/// burned and `write_burned_scopes` refuses to write. Callers must not
+/// interpret an empty in-memory list as "nothing is burned" while this holds.
+pub fn burn_state_unreadable() -> bool {
+    BURN_STATE_UNREADABLE.load(Ordering::SeqCst)
+}
+
+/// Test-only escape hatch: the latch is a process global, so a test that
+/// deliberately corrupts a kill list has to put the process back.
+pub fn reset_burn_state_unreadable_for_tests() {
+    BURN_STATE_UNREADABLE.store(false, Ordering::SeqCst);
+}
+
+/// Load the burn kill list.
+///
+/// FAIL CLOSED. This used to swallow a decrypt failure and return an EMPTY
+/// `BurnedScopesFile`, which reads downstream as "no scope was ever burned":
+/// every burned conversation silently became decryptable again, and the next
+/// write persisted the empty list, making the loss permanent. That is how a
+/// key-derivation bug in `change_main_password` turned into "changing your
+/// password un-burns every burned message".
+///
+/// The safe reading of "I cannot open the kill list" is EVERYTHING IS STILL
+/// BURNED, not "nothing is burned" — a burn is a promise not to decrypt, and a
+/// promise you cannot read is not a promise you may ignore. Because the
+/// consumers iterate the list rather than query it, "everything" cannot be
+/// expressed as rows; it is expressed as the `BURN_STATE_UNREADABLE` latch,
+/// which `is_message_in_burn_kill_list` honours by returning `true`
+/// unconditionally and which blocks writes so the unreadable file on disk is
+/// never overwritten by an empty one. A missing file is still the ordinary
+/// fresh-install case and clears nothing.
 pub fn load_burned_scopes(path: &Path) -> BurnedScopesFile {
     let Ok(blob) = std::fs::read(path) else {
+        // Absent file: fresh install. Deliberately does NOT clear the latch —
+        // deleting an unreadable kill list must not be a way to unburn.
         return BurnedScopesFile::default();
     };
-    let plain = match crate::main_password::maybe_decrypt(&blob) {
+    let plain = match crate::main_password::maybe_decrypt_file(path, &blob) {
         Ok(p) => p,
         Err(e) => {
-            tracing::warn!(error = %e, "OSL: load burned_scopes.json decrypt failed");
+            tracing::error!(error = %e, "OSL: burned_scopes.json unreadable — treating all scopes as still burned");
+            BURN_STATE_UNREADABLE.store(true, Ordering::SeqCst);
             return BurnedScopesFile::default();
         }
     };
-    serde_json::from_slice(&plain).unwrap_or_default()
+    match serde_json::from_slice::<BurnedScopesFile>(&plain) {
+        Ok(file) => {
+            BURN_STATE_UNREADABLE.store(false, Ordering::SeqCst);
+            file
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "OSL: burned_scopes.json unparseable — treating all scopes as still burned");
+            BURN_STATE_UNREADABLE.store(true, Ordering::SeqCst);
+            BurnedScopesFile::default()
+        }
+    }
 }
 
 pub fn write_burned_scopes(path: &Path, file: &BurnedScopesFile) -> Result<(), String> {
+    if burn_state_unreadable() {
+        return Err(
+            "OSL: refusing to write burned_scopes.json — the existing kill list could not be \
+             read, so writing would replace it with an incomplete list and un-burn messages"
+                .to_string(),
+        );
+    }
     let body = serde_json::to_vec_pretty(file)
         .map_err(|e| format!("OSL: serialize burned_scopes: {e}"))?;
     let out = crate::main_password::maybe_encrypt(&body)
