@@ -2371,6 +2371,30 @@ mod outgoing_encrypt_api_surface_tests {
             attachment_err.to_string().contains("displayName"),
             "attachment displayName rejection should identify the refused field: {attachment_err}"
         );
+
+        for key in [
+            "displayName",
+            "display_name",
+            "senderDisplayName",
+            "recipientDisplayName",
+        ] {
+            let mut attachment = serde_json::json!({
+                "attKeyB64": STANDARD.encode([7u8; 32]),
+                "originalFilename": "photo.png",
+                "randomFilename": "sealed.bin",
+                "mimeType": "image/png"
+            });
+            attachment
+                .as_object_mut()
+                .unwrap()
+                .insert(key.to_string(), serde_json::Value::String("Mallory".into()));
+            let err = serde_json::from_value::<AttachmentEnvelopeInput>(attachment)
+                .expect_err("attachment envelope input must deny caller-supplied display fields");
+            assert!(
+                err.to_string().contains(key),
+                "attachment display-field rejection should identify {key}: {err}"
+            );
+        }
     }
 }
 
@@ -3702,7 +3726,7 @@ mod rn_send_selection_tests {
     fn verify_peer_capabilities_feeds_pre_send_select_wire_version() {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let store = crate::wire_rn::RnSessionStore::new(dir.path().join("rn"));
-        let peer_identity = keystore::generate_identity("b24-exact-peer".to_string());
+        let peer_identity = keystore::generate_identity("b24-peer-exact".to_string());
         let x25519 = STANDARD.encode(peer_identity.x25519_public.as_bytes());
         let ed25519 = STANDARD.encode(peer_identity.ed25519_public.as_bytes());
         let mlkem = STANDARD.encode(peer_identity.mlkem_public_bytes);
@@ -3732,22 +3756,11 @@ mod rn_send_selection_tests {
             ik_root_ed25519_pub: None,
             identity_bundle_proof_sig: None,
         };
+
         let verified = keystore::client::verify_peer_capabilities(&response);
         assert!(
             verified.supports_rn(),
-            "signed keyserver capabilities must verify before send selection"
-        );
-
-        let err = select_rn_wire_path_for_send(
-            &store,
-            "123456789012345678",
-            peer_identity.x25519_public.as_bytes(),
-            verified,
-        )
-        .expect_err("verified RN capability must reach the RN selector and hit the disabled gate");
-        assert!(
-            err.contains("wire-in is disabled"),
-            "verified capability reached the wrong send-time decision: {err}"
+            "fixture must prove capabilities via the signed keyserver response"
         );
 
         let legacy = select_rn_wire_path_for_send(
@@ -3756,8 +3769,24 @@ mod rn_send_selection_tests {
             peer_identity.x25519_public.as_bytes(),
             keystore::client::PeerCapabilities::Absent,
         )
-        .expect("unverified/absent capability remains eligible for legacy while unpinned");
-        assert_eq!(legacy, RnWirePath::LegacyV3);
+        .expect("unverified capabilities must not select RN for an unpinned peer");
+        assert_eq!(
+            legacy,
+            RnWirePath::LegacyV3,
+            "without verified capabilities the pre-send selector must stay legacy"
+        );
+
+        let err = select_rn_wire_path_for_send(
+            &store,
+            "123456789012345678",
+            peer_identity.x25519_public.as_bytes(),
+            verified,
+        )
+        .expect_err("verified RN capability must be fed into send-time selection");
+        assert!(
+            err.contains("wire-in is disabled"),
+            "verified RN capability reached the wrong selection/refusal: {err}"
+        );
     }
 
     #[test]
@@ -4781,8 +4810,7 @@ mod rn_first_contact_command_tests {
             .is_some());
     }
 
-    #[test]
-    fn first_contact_handshake_fetches_prekey_bundle_from_keyserver() {
+    fn assert_first_contact_handshake_fetches_prekey_bundle() {
         let local = keystore::generate_identity("b34-local".to_string());
         let peer = keystore::generate_identity("b34-peer".to_string());
         let prekeys =
@@ -4871,24 +4899,39 @@ mod rn_first_contact_command_tests {
 
     #[test]
     fn first_contact_handshake_fetches_prekey_bundle() {
-        let local = keystore::generate_identity("b34-exact-local".to_string());
-        let peer = keystore::generate_identity("b34-exact-peer".to_string());
+        let local = keystore::generate_identity("b34-local-exact".to_string());
+        let peer = keystore::generate_identity("b34-peer-exact".to_string());
         let prekeys =
             keystore::PrekeyState::new(&peer, keystore::PrekeyConfig::default(), 1_700_000_000);
         let opk = prekeys.opk_pool.first().expect("OPK exists");
+        let bundle = PrekeyBundleResponse {
+            user_id: peer.user_id.clone(),
+            ik_x25519_pub: STANDARD.encode(peer.x25519_public.as_bytes()),
+            ik_ed25519_pub: STANDARD.encode(peer.ed25519_public.as_bytes()),
+            ik_mlkem768_pub: STANDARD.encode(peer.mlkem_public_bytes),
+            spk_pub: STANDARD.encode(prekeys.current_spk.public),
+            spk_signature: STANDARD.encode(prekeys.current_spk.signature),
+            spk_rotated_at: "2026-07-30T00:00:00Z".to_string(),
+            opk: Some(PrekeyBundleOpk {
+                id: opk.id,
+                pub_b64: STANDARD.encode(opk.public),
+            }),
+            remaining_opk_count: 42,
+            ik_ratchet_initial_pub: None,
+        };
         let response_body = serde_json::json!({
-            "user_id": peer.user_id.clone(),
-            "ik_x25519_pub": STANDARD.encode(peer.x25519_public.as_bytes()),
-            "ik_ed25519_pub": STANDARD.encode(peer.ed25519_public.as_bytes()),
-            "ik_mlkem768_pub": STANDARD.encode(peer.mlkem_public_bytes),
-            "spk_pub": STANDARD.encode(prekeys.current_spk.public),
-            "spk_signature": STANDARD.encode(prekeys.current_spk.signature),
-            "spk_rotated_at": "2026-07-30T00:00:00Z",
+            "user_id": bundle.user_id.clone(),
+            "ik_x25519_pub": bundle.ik_x25519_pub.clone(),
+            "ik_ed25519_pub": bundle.ik_ed25519_pub.clone(),
+            "ik_mlkem768_pub": bundle.ik_mlkem768_pub.clone(),
+            "spk_pub": bundle.spk_pub.clone(),
+            "spk_signature": bundle.spk_signature.clone(),
+            "spk_rotated_at": bundle.spk_rotated_at.clone(),
             "opk": {
                 "id": opk.id,
                 "pub_b64": STANDARD.encode(opk.public),
             },
-            "remaining_opk_count": 42,
+            "remaining_opk_count": bundle.remaining_opk_count,
             "ik_ratchet_initial_pub": null,
         })
         .to_string();
@@ -4896,20 +4939,22 @@ mod rn_first_contact_command_tests {
         let port = listener.local_addr().unwrap().port();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(2)))
-                .unwrap();
-            let mut buf = [0u8; 8192];
-            let n = stream.read(&mut buf).unwrap_or(0);
-            tx.send(String::from_utf8_lossy(&buf[..n]).to_string())
-                .unwrap();
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                response_body.len(),
-                response_body
-            );
-            stream.write_all(response.as_bytes()).unwrap();
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut buf = [0u8; 8192];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                tx.send(String::from_utf8_lossy(&buf[..n]).to_string())
+                    .unwrap();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
         });
 
         let state = AppState::new();
@@ -4929,21 +4974,53 @@ mod rn_first_contact_command_tests {
             ..Default::default()
         };
 
+        let mut mismatched_entry = peer_entry.clone();
+        mismatched_entry.pubkey = Some(STANDARD.encode([0x5au8; 32]));
+        let mismatch = fetch_rn_prekey_bundle_for_peer(
+            &state,
+            &local,
+            "900000000000034000",
+            &mismatched_entry,
+        )
+        .expect_err("first-contact prekey fetch must reject a bundle not bound to trusted keys");
+        assert!(
+            mismatch.contains("does not match trusted keys"),
+            "unexpected mismatch refusal: {mismatch}"
+        );
+
         let fetched =
-            fetch_rn_prekey_bundle_for_peer(&state, &local, "900000000000000035", &peer_entry)
+            fetch_rn_prekey_bundle_for_peer(&state, &local, "900000000000034000", &peer_entry)
                 .expect("fetch prekey bundle")
                 .expect("bundle present");
+
         assert_eq!(fetched.user_id, peer.user_id);
         assert_eq!(fetched.remaining_opk_count, 42);
         assert_eq!(
             fetched.ik_x25519_pub,
             STANDARD.encode(peer.x25519_public.as_bytes())
         );
+        let requests: Vec<String> = (0..2)
+            .map(|_| rx.recv_timeout(Duration::from_secs(2)).unwrap())
+            .collect();
+        assert!(requests
+            .iter()
+            .all(|request| request.starts_with("GET /v1/prekey-bundle/b34-peer-exact?")));
+        assert!(requests
+            .iter()
+            .all(|request| request.contains("requester_id=b34-local-exact")));
+        assert!(requests
+            .iter()
+            .all(|request| request.contains("recipient_id=b34-peer-exact")));
+    }
 
-        let request = rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        assert!(request.starts_with("GET /v1/prekey-bundle/b34-exact-peer?"));
-        assert!(request.contains("requester_id=b34-exact-local"));
-        assert!(request.contains("recipient_id=b34-exact-peer"));
+    #[test]
+    fn first_contact_handshake_fetches_prekey_bundle_from_keyserver() {
+        assert_first_contact_handshake_fetches_prekey_bundle();
+    }
+
+    #[test]
+    fn first_contact_handshake_fetches_prekey_bundle_helper_fixture() {
+        assert_first_contact_handshake_fetches_prekey_bundle();
     }
 
     #[test]
@@ -5525,6 +5602,23 @@ mod retired_v4_outbound_tests {
                 "DM dispatch must not select the retired v4 send path"
             );
         }
+
+        for scope in [
+            crate::scope::Scope::dm("peer"),
+            crate::scope::Scope::gc("group"),
+            crate::scope::Scope::server_channel("server", "channel"),
+            crate::scope::Scope::server_full("server"),
+        ] {
+            for non_self_peer_count in [0, 1, 2] {
+                for sender_keys_enabled in [false, true] {
+                    assert_ne!(
+                        ratchet_policy_decision(&scope, non_self_peer_count, sender_keys_enabled),
+                        RatchetPolicyDecision::LegacyV4Dm,
+                        "outbound dispatch must not select the retired v4 send path"
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -6041,7 +6135,7 @@ where
 /// empty cover from `open_attachment_v2_split`) — falls back to the
 /// caller-supplied legacy `att_key_b64` argument for V1 only. If
 /// that legacy local key is absent, the V1 branch fetches the
-/// keyserver wrapped-key row for the bound sender/content id.
+/// sender/recipient/content-bound keyserver wrapped-key row.
 ///
 /// Phase 8e: open path now chains V3 → V2 → V1 magic detection via
 /// `open_attachment_v3_split`. JS callers don't need to know which
@@ -6172,9 +6266,9 @@ pub fn cmd_osl_open_attachment_v2(
             k.copy_from_slice(&key_bytes);
             k
         } else {
-            let content_id = discord_message_id
-                .as_deref()
-                .ok_or_else(|| "OSL: V1 file with no local attachment key supplied".to_string())?;
+            let content_id = discord_message_id.as_deref().ok_or_else(|| {
+                "OSL: V1 file with no local attachment key or content id supplied".to_string()
+            })?;
             fetch_wrapped_attachment_key_for_open(state, content_id, &sender_discord_id)?
         }
     };
@@ -6310,18 +6404,19 @@ mod wrapped_key_open_tests {
             None,
             Some("content-1".to_string()),
         )
-        .expect("missing local V1 key should be recovered from the wrapped-key server");
+        .expect("V1 attachment should open by fetching its wrapped key");
 
         assert_eq!(
-            opened.plaintext_b64,
-            STANDARD.encode(b"wrapped-key plaintext")
+            STANDARD.decode(opened.plaintext_b64).unwrap(),
+            b"wrapped-key plaintext"
         );
         assert_eq!(opened.original_filename, "wrapped.png");
         assert_eq!(opened.mime_type, "image/png");
         let request = rx
             .recv_timeout(Duration::from_millis(100))
-            .expect("wrapped-key fetch must be issued when the local key is absent");
+            .expect("open must fetch the missing wrapped attachment key");
         assert!(request.starts_with("GET /v1/wrapped-keys/content-1?"));
+        assert!(request.contains("requester_id=recipient-osl"));
         assert!(request.contains("recipient_id=recipient-osl"));
     }
 
@@ -11005,6 +11100,8 @@ mod friend_request_acceptance_tests {
         load_pending_friend_requests, pending_friend_requests_path,
         persist_typed_friend_request_with_dir,
     };
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
     use crate::friend_request::{
         FriendPeer, FriendRequest, FriendScopeGrant, VerifiedFriendAuthority,
     };
@@ -11027,6 +11124,18 @@ mod friend_request_acceptance_tests {
 
     fn authority(label: &str) -> VerifiedFriendAuthority {
         VerifiedFriendAuthority::from_tofu_trusted_key_bundle(&bundle(label)).unwrap()
+    }
+
+    fn identity_bundle(identity: &keystore::Identity) -> KeyBundle {
+        KeyBundle {
+            ed25519_pub: STANDARD.encode(identity.ed25519_public.as_bytes()),
+            x25519_pub: STANDARD.encode(identity.x25519_public.as_bytes()),
+            mlkem768_pub: STANDARD.encode(identity.mlkem_public_bytes),
+            ratchet_initial_pub: identity
+                .ratchet_initial_pub
+                .as_ref()
+                .map(|p| STANDARD.encode(p.as_bytes())),
+        }
     }
 
     fn request_for(scope: Scope) -> FriendRequest {
@@ -11094,6 +11203,69 @@ mod friend_request_acceptance_tests {
         let pending = load_pending_friend_requests(&pending_friend_requests_path(dir.path()))
             .expect("pending file loads");
         assert!(pending == vec![result.pending.clone()]);
+    }
+
+    #[test]
+    fn cmd_osl_send_friend_request_persists_pending_and_rejects_duplicate_request() {
+        let _guard = ACTIVE_ACCOUNT_DIR_TEST_LOCK.lock().unwrap();
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        keystore::set_active_account_dir(Some(dir.path().to_path_buf()));
+        let _reset = ActiveAccountDirReset;
+        let state = AppState::new();
+        state.install_identity(keystore::generate_identity("requester-osl-a62".to_string()));
+        let trusted_peer = keystore::generate_identity("trusted-peer-a62".to_string());
+        let scope = Scope::dm(REQUESTER_DID);
+        state.peer_map.lock().unwrap().insert(
+            REQUESTER_DID.to_string(),
+            crate::peer_map::PeerEntry {
+                discord_id: Some(REQUESTER_DID.to_string()),
+                tofu_key_bundle: Some(identity_bundle(&trusted_peer)),
+                ..Default::default()
+            },
+        );
+
+        let sent = cmd_osl_send_friend_request(
+            &state,
+            REQUESTER_DID.to_string(),
+            (&scope).into(),
+        )
+        .expect("public friend request command should persist a pending row");
+
+        assert!(sent.request.grants_scope(&scope));
+        assert_eq!(sent.pending.peer_discord_id, REQUESTER_DID);
+        assert_eq!(sent.pending.scope_storage_key, scope.storage_key());
+        assert!(
+            state
+                .peer_map
+                .lock()
+                .unwrap()
+                .get(REQUESTER_DID)
+                .unwrap()
+                .outgoing_whitelists
+                .is_empty(),
+            "sending a request must not adopt the requested scope"
+        );
+        assert!(
+            state.whitelist_state.lock().unwrap().is_empty(),
+            "sending a request must not turn the requested scope on locally"
+        );
+
+        let pending = load_pending_friend_requests(&pending_friend_requests_path(dir.path()))
+            .expect("pending request file should load");
+        assert!(
+            pending == vec![sent.pending.clone()],
+            "pending file must contain exactly the created request"
+        );
+
+        let duplicate = match cmd_osl_send_friend_request(
+            &state,
+            REQUESTER_DID.to_string(),
+            (&scope).into(),
+        ) {
+            Ok(_) => panic!("same pending friend request must not be duplicated"),
+            Err(err) => err,
+        };
+        assert_eq!(duplicate, "OSL: friend request already exists");
     }
 
     #[test]
@@ -13715,6 +13887,29 @@ mod inactivity_command_activity_tests {
     static INACTIVITY_COMMAND_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
+    fn record_activity_on_every_command_marks_inactivity_timer() {
+        let _guard = INACTIVITY_COMMAND_TEST_LOCK.lock().unwrap();
+        crate::main_password::set_file_storage_key(None);
+        let t0 = Instant::now();
+        let key = [0xA7; 32];
+        crate::main_password::set_file_storage_key_after_main_password_unlock(key);
+
+        let command_at = t0 + Duration::from_secs(keystore::DEFAULT_INACTIVITY_SECONDS - 30);
+        assert!(
+            record_activity_on_every_command_at(command_at),
+            "command activity inside the idle window should be accepted"
+        );
+        assert!(
+            !crate::main_password::run_file_key_inactivity_auto_lock_timer_at(
+                t0 + Duration::from_secs(keystore::DEFAULT_INACTIVITY_SECONDS + 1)
+            ),
+            "the command mark must move the inactivity deadline forward"
+        );
+        assert_eq!(crate::main_password::get_file_storage_key(), Some(key));
+        crate::main_password::set_file_storage_key(None);
+    }
+
+    #[test]
     fn record_activity_on_every_command_extends_file_key_timer_window() {
         let _guard = INACTIVITY_COMMAND_TEST_LOCK.lock().unwrap();
         crate::main_password::set_file_storage_key(None);
@@ -13752,7 +13947,7 @@ mod inactivity_command_activity_tests {
     }
 
     #[test]
-    fn record_activity_on_every_command_marks_inactivity_timer() {
+    fn record_activity_on_every_command_marks_short_inactivity_timer_window() {
         let _guard = INACTIVITY_COMMAND_TEST_LOCK.lock().unwrap();
         crate::main_password::set_file_storage_key(None);
         let t0 = Instant::now();

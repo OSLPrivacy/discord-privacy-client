@@ -1345,6 +1345,11 @@ setattr(
 globals()["Freeze the retained VMQA evidence schema"] = unittest.TestSuite(
     [CleanupContractTests("Freeze the retained VMQA evidence schema")]
 )
+setattr(
+    CleanupContractTests,
+    "scripts/vmqa/test-vmqa-contract.py retained producer bytes",
+    _verify_retained_vmqa_build_evidence_from_exact_producer_bytes,
+)
 
 
 def load_tests(
@@ -1359,6 +1364,11 @@ def load_tests(
         )
     )
     tests.addTest(CleanupContractTests("scripts/vmqa/test-vmqa-contract.py"))
+    tests.addTest(
+        CleanupContractTests(
+            "scripts/vmqa/test-vmqa-contract.py retained producer bytes"
+        )
+    )
     return tests
 
 

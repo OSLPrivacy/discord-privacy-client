@@ -28,6 +28,8 @@ exclude = [
     # legacy src-tauri shell out of root `cargo --workspace` gates so the
     # protected Rust check named "success'" reports the shared-crate line.
     "src-tauri",
+    "apps/osl-hub",
+    "services/crypto-watcher",
 ]
 
 [workspace.package]

@@ -69,6 +69,28 @@ async function accountFixture(): Promise<{
 }
 
 describe("account ownership proof verification", () => {
+  it("keyserver-cf/test/unit/account-ownership-proof.test.ts", async () => {
+    const { account } = await accountFixture();
+
+    await expect(verify_ownership_proof(account, NOW)).resolves.toEqual({
+      ok: true,
+    });
+    expect(account.proof_challenge.spent).toBe(true);
+
+    const replayed = await verify_ownership_proof(account, NOW);
+    expect(replayed).toEqual({
+      ok: false,
+      error: "proof_replayed",
+    });
+
+    const wrongAccount = (await accountFixture()).account;
+    wrongAccount.proof_challenge.platform_id = "different-platform-id";
+    await expect(verify_ownership_proof(wrongAccount, NOW)).resolves.toEqual({
+      ok: false,
+      error: "proof_for_different_account",
+    });
+  });
+
   it("server-side verify_ownership_proof validates a submitted Account", async () => {
     const { account } = await accountFixture();
 

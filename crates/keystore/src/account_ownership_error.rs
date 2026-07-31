@@ -220,7 +220,17 @@ mod tests {
     #[test]
     fn all_variants_implement_std_error() {
         fn assert_error<E: std::error::Error>(_: &E) {}
-        assert_error(&AccountOwnershipError::NoProofPresented);
+        for err in [
+            AccountOwnershipError::NoProofPresented,
+            AccountOwnershipError::ProofForDifferentAccount,
+            AccountOwnershipError::ProofForDifferentOwner,
+            AccountOwnershipError::ProofStale,
+            AccountOwnershipError::ProofReplayed,
+            AccountOwnershipError::ProofMalformed,
+            AccountOwnershipError::UnsupportedService { service: "discord" },
+        ] {
+            assert_error(&err);
+        }
     }
 
     #[test]

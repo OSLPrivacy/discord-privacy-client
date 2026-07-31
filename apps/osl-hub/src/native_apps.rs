@@ -2637,6 +2637,30 @@ mod tests {
     }
 
     #[test]
+    fn native_apps() {
+        let status = NativeAppStatus {
+            id: NativeAppId::Discord,
+            display_name: "Discord",
+            availability: NativeAppAvailability::Installed,
+            support_status: NativeAppSupportStatus::Beta,
+            protected_mode: NativeAppProtectedMode::AssistOnly,
+            isolated_profile_available: true,
+            supports_overlay: false,
+        };
+
+        let json = serde_json::to_value(status).unwrap();
+        assert_eq!(json["id"], "discord");
+        assert_eq!(json["availability"], "installed");
+        assert_eq!(json["supportStatus"], "beta");
+        assert_eq!(json["protectedMode"], "assistOnly");
+        assert_eq!(json["isolatedProfileAvailable"], true);
+        assert_eq!(
+            json["supportsOverlay"], false,
+            "native app support must not imply overlay support"
+        );
+    }
+
+    #[test]
     fn dedicated_discord_fallback_is_one_fixed_official_channel() {
         assert_eq!(DISCORD_DEDICATED_PACKAGE_ID, "Discord.Discord.PTB");
         assert!(install_discord_dedicated_channel().is_err());
@@ -3192,6 +3216,26 @@ mod tests {
                 NativeAppAvailability::Installable
             };
             assert_eq!(status.availability, expected, "{:?}", status.id);
+        }
+    }
+
+    #[test]
+    fn list_native_apps() {
+        let statuses = super::list_native_apps();
+
+        assert_eq!(statuses.len(), NATIVE_APPS.len());
+        for (status, manifest) in statuses.iter().zip(NATIVE_APPS) {
+            assert_eq!(status.id, manifest.id);
+            assert_eq!(status.display_name, manifest.display_name);
+            assert_eq!(
+                status.isolated_profile_available,
+                isolated_native_profile_available(manifest.id)
+            );
+            assert!(
+                !status.supports_overlay,
+                "{:?} must expose status without implying overlay support",
+                status.id
+            );
         }
     }
 

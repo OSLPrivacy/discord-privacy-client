@@ -274,6 +274,10 @@ function Invoke-OslDisposableDiscordAccountLoad {
 }
 
 function disposable_discord_accounts_load_from_key_vault_without_logging_secrets {
+  $VerbosePreference = 'Continue'
+  $DebugPreference = 'Continue'
+  $InformationPreference = 'Continue'
+  $WarningPreference = 'Continue'
   $vault = 'osl-test-secrets-a7d5d9'
   $requested = [System.Collections.Generic.List[string]]::new()
   $fixtureCredential = 'fixture-discord-credential-not-real'
@@ -326,6 +330,10 @@ function disposable_discord_accounts_load_from_key_vault_without_logging_secrets
     $InformationPreference = $oldInformationPreference
   }
   $public = $output | ConvertTo-Json -Compress -Depth 8
+  $loadReceipts = @($output | Where-Object {
+    $null -ne $_.PSObject.Properties['Loaded'] -and
+    $_.Loaded -eq $true
+  })
   if (($requested -join '|') -cne 'osl-test-account-manifest|osl-test-discord-02') {
     throw 'disposable Discord account loader did not use the manifest-selected Key Vault secret'
   }
@@ -338,7 +346,7 @@ function disposable_discord_accounts_load_from_key_vault_without_logging_secrets
   if ($public -cmatch 'osl-test-discord-02') {
     throw 'disposable Discord Key Vault secret name was emitted'
   }
-  if (@($output).Count -ne 1 -or $output[0].Loaded -ne $true -or [int]$output[0].ClientNumber -ne 1) {
+  if (@($loadReceipts).Count -ne 1 -or [int]$loadReceipts[0].ClientNumber -ne 1) {
     throw 'disposable Discord account load did not return the bounded public result'
   }
 
@@ -403,16 +411,25 @@ function disposable_discord_accounts_load_from_key_vault_without_logging_secrets
     }
   }
   $observedCredential = $null
-  $receipt = Invoke-WithOslDisposableDiscordCredential `
-    -ClientNumber 1 `
-    -VaultName $vault `
-    -GetSecret $objectMapFetcher `
-    -UseCredential { param([string]$Credential) $script:__oslVmUnlockSelfTestCredential = $Credential; return $true }
-  $rendered = $receipt | ConvertTo-Json -Compress
+  $receiptOutput = @(
+    Invoke-WithOslDisposableDiscordCredential `
+      -ClientNumber 1 `
+      -VaultName $vault `
+      -GetSecret $objectMapFetcher `
+      -UseCredential { param([string]$Credential) $script:__oslVmUnlockSelfTestCredential = $Credential; return $true } *>&1
+  )
+  $receipt = @($receiptOutput | Where-Object {
+    $null -ne $_.PSObject.Properties['Status'] -and
+    [string]$_.Status -ceq 'loaded'
+  })
+  $rendered = $receiptOutput | ConvertTo-Json -Compress -Depth 8
   $observedCredential = $script:__oslVmUnlockSelfTestCredential
   $script:__oslVmUnlockSelfTestCredential = $null
   if ($observedCredential -cne $fixtureCredential) {
     throw 'disposable credential was not handed to the consumer'
+  }
+  if (@($receipt).Count -ne 1) {
+    throw 'disposable account load did not return exactly one bounded receipt'
   }
   if (($objectMapRequested -join ',') -cne 'osl-test-account-manifest,osl-test-discord-01') {
     throw 'disposable account manifest and assigned secret were not both loaded'

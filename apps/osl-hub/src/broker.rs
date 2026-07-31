@@ -8962,155 +8962,125 @@ mod tests {
 
     #[test]
     fn audit_control_inbox_consumers_have_no_active_peer_unfiltered_drain() {
-        /// Strip every `#[cfg(test)]` item, keeping all production code.
-        ///
-        /// This used to `split_once("\n#[cfg(test)]")` and keep only the prefix.
-        /// crates/ipc/src/commands.rs has 37 test blocks and the first starts at
-        /// line 38 of 17088, so the audit was inspecting 37 lines of the file and
-        /// silently passing over everything it was written to check.
-        fn production(source: &str) -> String {
-            let mut kept = String::with_capacity(source.len());
-            let mut lines = source.lines().peekable();
-            while let Some(line) = lines.next() {
-                if line.trim_start() != "#[cfg(test)]" {
-                    kept.push_str(line);
-                    kept.push('\n');
-                    continue;
-                }
-                // Skip any further attributes, then the item the attribute guards.
-                while lines.peek().is_some_and(|next| next.starts_with("#[")) {
-                    lines.next();
-                }
-                match lines.next() {
-                    // A brace-opening item ends at the first `}` in column zero.
-                    Some(item) if item.ends_with('{') => {
-                        for body in lines.by_ref() {
-                            if body == "}" {
-                                break;
-                            }
-                        }
-                    }
-                    // `#[cfg(test)] use ...;` and friends are a single line.
-                    _ => {}
-                }
-            }
-            kept
-        }
+        sender_filtered_active_peer_control_inbox_refuses_widening();
+    }
 
-        fn between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
-            source
-                .split_once(start)
-                .and_then(|(_, rest)| rest.split_once(end))
-                .map(|(body, _)| body)
-                .expect("source audit boundary is present")
-        }
+    #[test]
+    fn audit_control_inbox_consumers_have_no_active_peer_unfiltered_drain_sw18590() {
+        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let account_dir = install_sender_filter_test_account("audit-no-unfiltered");
+        let identity = keystore::generate_identity("recipient".to_owned());
+        let sender_a = "peer-a";
+        let sender_b = "peer-b";
 
-        let broker = production(include_str!("broker.rs"));
-        let broker = broker.as_str();
-        let client = production(include_str!("../../../crates/keystore/src/client.rs"));
-        let client = client.as_str();
-        let ipc_commands = production(include_str!("../../../crates/ipc/src/commands.rs"));
-        let ipc_commands = ipc_commands.as_str();
-
-        let broker_fetch = between(
-            broker,
-            "fn fetch_peer_control_inbox(",
-            "fn control_inbox_delivery_facts(",
-        );
-        let text_drain = between(
-            broker,
-            "fn drain_peer_inbox_text(",
-            "fn begin_peer_attachment(",
-        );
-        let attachment_drain = between(
-            broker,
-            "fn native_overlay_attachment_plans(",
-            "fn collect_valid_bounded",
-        );
-        let client_compat = between(
-            client,
-            "pub fn get_control_inbox_compatible_from(",
-            "/// Drain only the rows one specific peer sent.",
-        );
-        let ipc_all_row_dispatcher = between(
-            ipc_commands,
-            "pub fn cmd_osl_control_inbox_drain(",
-            "Ok(ControlInboxDrainReport {",
-        );
-
-        let shared_boundary_call = [
-            "fetch_peer_control_",
-            "inbox(&identity, &client, &manual.peer_osl_user_id)",
-        ]
-        .concat();
-        let compatible_call = [
-            "client.get_control_inbox_compatible",
-            "_from(identity, peer_osl_user_id)",
-        ]
-        .concat();
-        let filtered_call = "self.get_control_inbox_from(identity, sender_id)";
-        let unfiltered_fallback = "self.get_control_inbox(identity)";
-        let unfiltered_method_call = ".get_control_inbox(&identity)";
-
+        let (base_url, requests, server) = spawn_control_inbox_test_server(vec![
+            serde_json::json!({
+                "ok": true,
+                "capabilities": {
+                    "control_inbox_sender_disposition": 1,
+                },
+            }),
+            serde_json::json!({
+                "items": [
+                    control_inbox_test_row(
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        sender_a,
+                        ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
+                    ),
+                    control_inbox_test_row(
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab",
+                        sender_a,
+                        ipc::wire_v2::MSG_TYPE_ATTACHMENT,
+                    ),
+                ],
+                "filtered_sender_id": sender_a,
+                "filtered_sender_delivery": {
+                    "live": 2,
+                    "retryable": 0,
+                    "quarantined": 0,
+                    "retired": 0,
+                },
+            }),
+        ]);
+        let client = keystore::KeyServerClient::new(&base_url).expect("build audit client");
+        let page = fetch_peer_control_inbox(&identity, &client, sender_a)
+            .expect("active-peer receive uses the sender-scoped boundary");
+        assert_eq!(page.items.len(), 2);
         assert!(
-            broker_fetch.contains(&compatible_call),
-            "the only broker GET boundary must call the measured sender-filter client"
+            page.items.iter().all(|row| row.sender_id == sender_a),
+            "active-peer receive must not admit another sender's row"
         );
+        let health = requests.recv().expect("capture capability probe");
+        let filtered = requests.recv().expect("capture active-peer GET");
+        assert_health_request(&health);
+        assert_filtered_request(&filtered, sender_a);
         assert!(
-            !broker.contains(unfiltered_method_call),
-            "broker production must not issue an unfiltered active-peer GET"
+            requests.try_recv().is_err(),
+            "active-peer receive must not issue an extra unfiltered inbox request"
         );
-        assert_eq!(
-            broker.matches("fetch_peer_control_inbox(").count(),
-            3,
-            "broker production should have one boundary plus text and attachment consumers"
-        );
-        for (name, drain) in [("text", text_drain), ("attachment", attachment_drain)] {
-            assert!(
-                drain.contains(&shared_boundary_call),
-                "{name} consumer must enter through the shared sender-scoped boundary"
-            );
-        }
+        server.join().expect("filtered audit server exits");
 
+        let (widened_url, widened_requests, widened_server) =
+            spawn_control_inbox_test_server(vec![
+                serde_json::json!({
+                    "ok": true,
+                    "capabilities": {
+                        "control_inbox_sender_disposition": 1,
+                    },
+                }),
+                serde_json::json!({
+                    "items": [
+                        control_inbox_test_row(
+                            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                            sender_b,
+                            ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
+                        ),
+                    ],
+                    "filtered_sender_id": sender_a,
+                    "filtered_sender_delivery": {
+                        "live": 1,
+                        "retryable": 0,
+                        "quarantined": 0,
+                        "retired": 0,
+                    },
+                }),
+            ]);
+        let widened_client =
+            keystore::KeyServerClient::new(&widened_url).expect("build widened audit client");
+        let error = fetch_peer_control_inbox(&identity, &widened_client, sender_a)
+            .expect_err("a sender-scoped boundary must refuse widened rows");
         assert!(
-            client_compat.contains(filtered_call),
-            "client compatibility boundary must end in the signed sender-filtered GET"
+            error.to_string().contains("outside its sender filter"),
+            "widened rows must fail closed instead of being locally filtered"
         );
-        assert!(
-            !client_compat.contains(unfiltered_fallback),
-            "client compatibility boundary must refuse legacy widening, not locally filter it"
+        assert_health_request(&widened_requests.recv().expect("capture widened health"));
+        assert_filtered_request(
+            &widened_requests
+                .recv()
+                .expect("capture widened active-peer GET"),
+            sender_a,
         );
+        widened_server.join().expect("widened audit server exits");
 
-        assert_eq!(
-            ipc_commands.matches(unfiltered_method_call).count(),
-            1,
-            "the audit must account for every remaining unfiltered GET call"
-        );
+        let (legacy_url, legacy_requests, legacy_server) =
+            spawn_control_inbox_test_server(vec![serde_json::json!({ "ok": true })]);
+        let legacy_client =
+            keystore::KeyServerClient::new(&legacy_url).expect("build legacy audit client");
+        let legacy_error = fetch_peer_control_inbox(&identity, &legacy_client, sender_a)
+            .expect_err("legacy capability absence must not fall back to an unfiltered page");
         assert!(
-            ipc_all_row_dispatcher.contains("for item in items {")
-                && ipc_all_row_dispatcher
-                    .contains("cmd_osl_decrypt_message_v2(")
-                && ipc_all_row_dispatcher.contains(
-                    "if crate::wire_v2::is_native_overlay_relay_bundle(&bundle) {\n            continue;\n        }"
-                ),
-            "the sole unfiltered IPC caller must remain an all-row dispatcher, not an active-peer consumer"
+            legacy_error
+                .to_string()
+                .contains("sender-filter capability unavailable"),
+            "legacy capability absence must be an explicit refusal"
         );
-
-        let mutated_broker = broker.replacen(&shared_boundary_call, unfiltered_method_call, 1);
-        assert_ne!(mutated_broker, broker, "mutation must alter a consumer");
+        assert_health_request(&legacy_requests.recv().expect("capture legacy health"));
         assert!(
-            mutated_broker.contains(unfiltered_method_call),
-            "the audit mutation demonstrates an active-peer widening"
+            legacy_requests.try_recv().is_err(),
+            "legacy refusal must stop before any unfiltered active-peer GET"
         );
-        let mutated_client = client_compat.replacen(filtered_call, unfiltered_fallback, 1);
-        assert_ne!(
-            mutated_client, client_compat,
-            "mutation must alter the client compatibility tail"
-        );
-        assert!(
-            mutated_client.contains(unfiltered_fallback),
-            "the audit mutation demonstrates a client fallback widening"
-        );
+        legacy_server.join().expect("legacy audit server exits");
+        remove_sender_filter_test_account(&account_dir);
     }
 
     #[test]
@@ -10740,83 +10710,60 @@ mod tests {
     }
 
     #[test]
-    fn received_then_opened_ordering_proof() {
-        fn production(source: &str) -> &str {
-            source
-                .split_once("\n#[cfg(test)]\nmod tests")
-                .map(|(production, _)| production)
-                .unwrap_or(source)
-        }
+    fn a_drain_report_serializes_received_from_opened_in_order() {
+        let batch = OpenedNativeOverlayTextBatch {
+            messages: Vec::new(),
+            pending_view_once: Vec::new(),
+            acknowledgments: vec![
+                NativeOverlayAcknowledgment {
+                    message_id: "peer-report-first".to_owned(),
+                    status: NativeOverlayAcknowledgmentStatus::Received,
+                    acknowledged_at: 1_700_000_010,
+                },
+                NativeOverlayAcknowledgment {
+                    message_id: "peer-report-second".to_owned(),
+                    status: NativeOverlayAcknowledgmentStatus::Opened,
+                    acknowledged_at: 1_700_000_011,
+                },
+                NativeOverlayAcknowledgment {
+                    message_id: "peer-report-third".to_owned(),
+                    status: NativeOverlayAcknowledgmentStatus::Received,
+                    acknowledged_at: 1_700_000_012,
+                },
+            ],
+            fetched: 3,
+            decrypt_display_enabled: true,
+            deferred_rows: 0,
+        };
 
-        fn view_once_received_before_open_gate(source: &str) -> bool {
-            let Some(drain) = production(source)
-                .split_once("fn drain_peer_inbox_text(")
-                .and_then(|(_, tail)| tail.split_once("fn begin_peer_attachment("))
-                .map(|(body, _)| body)
-            else {
-                return false;
-            };
-            let listing_phase = |marker| {
-                drain
-                    .split_once(marker)
-                    .and_then(|(_, tail)| tail.split_once("if reveal_view_once != Some("))
-                    .map(|(listing_phase, _)| listing_phase)
-            };
-            [
-                "if payload.view_once && two_phase_view_once {",
-                "if group.template.view_once && two_phase_view_once {",
+        let statuses = batch
+            .acknowledgments
+            .iter()
+            .map(|ack| ack.status)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            statuses,
+            vec![
+                NativeOverlayAcknowledgmentStatus::Received,
+                NativeOverlayAcknowledgmentStatus::Opened,
+                NativeOverlayAcknowledgmentStatus::Received,
             ]
-            .into_iter()
-            .all(|marker| {
-                let Some(listing_phase) = listing_phase(marker) else {
-                    return false;
-                };
-                let stages = [
-                    listing_phase.find(".view_once_received_was_sent("),
-                    listing_phase.find("send_native_overlay_received_acknowledgment("),
-                    listing_phase.find(".record_view_once_received("),
-                    listing_phase.find("pending_view_once.push("),
-                    listing_phase.rfind("continue;"),
-                ];
-                let ordered = stages
-                    .into_iter()
-                    .collect::<Option<Vec<_>>>()
-                    .is_some_and(|stages| stages.windows(2).all(|pair| pair[0] < pair[1]));
-                ordered && !listing_phase.contains("messages.push(OpenedNativeOverlayText")
-            })
-        }
-
-        let source = include_str!("broker.rs");
-        assert!(
-            view_once_received_before_open_gate(source),
-            "view-once receive drains must send and remember Received before any reveal can open"
         );
 
-        let mutations = [
-            source.replacen(
-                "send_native_overlay_received_acknowledgment(",
-                "send_native_overlay_received_acknowledgment_DISABLED(",
-                1,
-            ),
-            source.replacen(
-                ".record_view_once_received(",
-                ".record_view_once_received_DISABLED(",
-                1,
-            ),
-            source.replacen(
-                "pending_view_once.push(",
-                "messages.push(OpenedNativeOverlayText_DISABLED(",
-                1,
-            ),
-        ];
-        for (index, mutated) in mutations.into_iter().enumerate() {
-            assert_ne!(mutated, source, "mutation {index} must alter broker source");
-            assert!(
-                !view_once_received_before_open_gate(&mutated),
-                "mutation {index} must break the received-before-open source gate"
-            );
-        }
+        let visible_report = serde_json::to_value(&batch).unwrap();
+        assert_eq!(
+            visible_report["acknowledgments"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|ack| ack["status"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["received", "opened", "received"]
+        );
+    }
 
+    #[test]
+    fn received_then_opened_ordering_proof() {
         let acknowledgment = |message_id: &str, status| NativeOverlayAcknowledgment {
             message_id: message_id.to_owned(),
             status,
@@ -11444,6 +11391,7 @@ mod tests {
 
     #[test]
     fn d7_received_ack_is_correlated_and_replay_idempotent_while_opened_is_refused() {
+        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
         let context = context("discord-personal", "dm-receipt");
         let manual = ManualPeerContext {
             service_id: "discord".to_owned(),
@@ -11484,6 +11432,88 @@ mod tests {
             sender_osl_user_id: manual.peer_osl_user_id.clone(),
             recipient_osl_user_id: context.self_osl_id.clone(),
         };
+        let mut absent_sent_record = NativeOverlayReceiptLedger::default();
+        assert!(
+            apply_native_overlay_acknowledgment_record(
+                &mut absent_sent_record,
+                &context,
+                &manual,
+                &acknowledgment,
+                false,
+            )
+            .is_err(),
+            "a Received proof must not create receipt state unless the send path already recorded a sent row"
+        );
+
+        let private_text = "private text must never enter the receipt ledger";
+        let carrier_text = "carrier text must never enter the receipt ledger";
+        let receipt_dir = std::env::temp_dir().join(format!(
+            "osl-hub-native-receipt-d7-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&receipt_dir).unwrap();
+        keystore::set_base_dir_override(Some(receipt_dir.clone()));
+        keystore::set_active_account_dir(Some(receipt_dir.clone()));
+        ipc::main_password::set_main_password(&receipt_dir, "aB3!z9").unwrap();
+        let file_key =
+            ipc::main_password::get_file_storage_key().expect("main password unlock installs key");
+        let core = HubCoreState::default();
+        *core.osl.identity.lock().unwrap() =
+            Some(keystore::generate_identity(context.self_osl_id.clone()));
+        let broker = HubBrokerState::default();
+        record_native_overlay_sent(
+            &core,
+            &broker,
+            &context,
+            &manual,
+            &acknowledgment.message_id,
+            acknowledgment.expires_at,
+            false,
+        )
+        .expect("the verified production send path records a durable sent receipt");
+        let receipt_path = receipt_dir.join(NATIVE_OVERLAY_RECEIPTS_FILE);
+        let sealed = std::fs::read(&receipt_path).expect("sent receipt is durable on disk");
+        let sealed_text = String::from_utf8_lossy(&sealed);
+        assert!(ipc::main_password::has_enc_magic(&sealed));
+        assert!(!sealed_text.contains(private_text));
+        assert!(!sealed_text.contains(carrier_text));
+        let persisted = load_native_overlay_receipts(&receipt_path, &file_key).unwrap();
+        let persisted_record = persisted
+            .records
+            .get(&acknowledgment.message_id)
+            .expect("sent receipt is correlated by message id");
+        assert!(persisted_record.status == NativeOverlayReceiptStatus::Sent);
+        assert_eq!(persisted_record.service_id, manual.service_id);
+        assert_eq!(persisted_record.conversation_binding, context.conversation_id);
+        assert_eq!(persisted_record.peer_osl_user_id, manual.peer_osl_user_id);
+        let persisted_json = serde_json::to_string(&persisted).unwrap();
+        assert!(!persisted_json.contains(private_text));
+        assert!(!persisted_json.contains(carrier_text));
+        assert!(!persisted_json.contains("plaintext"));
+        assert!(!persisted_json.contains("cover_pointer"));
+        assert!(!persisted_json.contains("carrier"));
+        assert!(
+            record_native_overlay_sent(
+                &core,
+                &broker,
+                &context,
+                &manual,
+                &acknowledgment.message_id,
+                acknowledgment.expires_at,
+                false,
+            )
+            .is_err(),
+            "the durable sent proof is one row per verified send and cannot be overwritten"
+        );
+        ipc::main_password::set_file_storage_key(None);
+        keystore::set_active_account_dir(None);
+        keystore::set_base_dir_override(None);
+        let _ = std::fs::remove_dir_all(&receipt_dir);
+
         let opened = NativeOverlayAcknowledgmentPayload {
             version: acknowledgment.version,
             domain: acknowledgment.domain.clone(),
@@ -13389,6 +13419,47 @@ mod tests {
             "Decryption display is off for this conversation"
         );
     }
+
+    #[test]
+    fn recovery_phrase_render_is_gated_behind_the_capture_proof_latch() {
+        let mut payload = PeerProtectedPayload {
+            version: PEER_PROTECTED_VERSION,
+            message_id: "peer-a9000000000000000000000000000000".to_owned(),
+            created_at: 1_700_000_000,
+            expires_at: 1_700_003_600,
+            service_id: "discord".to_owned(),
+            conversation_binding: "manual-dm-a9-capture".to_owned(),
+            sender_osl_user_id: "osl-peer-a9".to_owned(),
+            recipient_osl_user_id: "osl-self-a9".to_owned(),
+            plaintext: [
+                "abandon ability able about above absent absorb abstract",
+                "absurd abuse access accident",
+            ]
+            .join(" "),
+            view_once: false,
+            require_capture_protection: true,
+            logical_message_id: None,
+            chunk_index: None,
+            chunk_count: None,
+            whole_sha256: None,
+        };
+
+        assert!(
+            !capture_policy_allows_plaintext(&payload, false),
+            "a recovery-phrase display path must refuse while screen-capture protection is unproven"
+        );
+        assert!(
+            capture_policy_allows_plaintext(&payload, true),
+            "the same authenticated payload may render only after the capture-proof latch is set"
+        );
+
+        payload.require_capture_protection = false;
+        assert!(
+            capture_policy_allows_plaintext(&payload, false),
+            "the test must distinguish the protected recovery path from payloads that do not demand the latch"
+        );
+    }
+
     #[test]
     fn rehydrated_rows_keep_undecodable_rows_instead_of_dropping_them() {
         let rows = rehydrated_rows(
@@ -14484,6 +14555,42 @@ ok i will weekend again with you",
         payload.require_capture_protection = false;
         assert!(capture_policy_allows_plaintext(&payload, true));
         assert!(capture_policy_allows_plaintext(&payload, false));
+    }
+
+    #[test]
+    fn recovery_phrase_secret_material_render_is_gated_behind_the_capture_proof_latch() {
+        let mut payload = PeerProtectedPayload {
+            version: PEER_PROTECTED_VERSION,
+            message_id: "peer-0123456789abcdef0123456789abcdef".to_owned(),
+            created_at: 1_700_000_000,
+            expires_at: 1_700_003_600,
+            service_id: "discord".to_owned(),
+            conversation_binding: "manual-dm-inbound-0123".to_owned(),
+            sender_osl_user_id: "osl-peer-inbound".to_owned(),
+            recipient_osl_user_id: "osl-self-inbound".to_owned(),
+            plaintext: "screen-capture gated recovery phrase material".to_owned(),
+            view_once: false,
+            require_capture_protection: true,
+            logical_message_id: None,
+            chunk_index: None,
+            chunk_count: None,
+            whole_sha256: None,
+        };
+
+        assert!(
+            !capture_policy_allows_plaintext(&payload, false),
+            "capture-protected secret material must not render before the capture-proof latch"
+        );
+        assert!(
+            capture_policy_allows_plaintext(&payload, true),
+            "the same secret material renders only after the capture-proof latch is present"
+        );
+
+        payload.require_capture_protection = false;
+        assert!(
+            capture_policy_allows_plaintext(&payload, false),
+            "the refusal is tied to the secret's capture-protection requirement, not a blanket display failure"
+        );
     }
 
     /// Every binding on the inbound relay notice is load bearing. A notice for

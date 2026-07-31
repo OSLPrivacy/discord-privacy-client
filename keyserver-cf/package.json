@@ -6,7 +6,7 @@
   "description": "OSL keyserver on Cloudflare Workers + D1. F1.1 baseline: ports the existing keyserver/ (Fastify + better-sqlite3) endpoint surface 1:1. F1.2 layers Stripe + license issuance on top.",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run && vitest run --config vitest.node.config.ts",
+    "test": "sh -c 'vitest run \"$@\" && vitest run --config vitest.node.config.ts --passWithNoTests \"$@\"' --",
     "test:scheme1-mutants": "node scripts/scheme1-contract-mutants.mjs",
     "test:scheme1-client-admission-mutants": "node scripts/scheme1-client-admission-mutants.mjs",
     "test:watch": "vitest",

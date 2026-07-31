@@ -78,6 +78,12 @@ function expectSharedMemoryCardsAcrossActiveAccounts(prompts: string): void {
   }
 }
 
+function fencedJsonBlocks(source: string): unknown[] {
+  return [...source.matchAll(/```json\n([\s\S]*?)\n```/gu)].map((match) =>
+    JSON.parse(match[1]!),
+  );
+}
+
 function listItems(source: string): string[] {
   const items: string[] = [];
   for (const line of source.split("\n")) {
@@ -154,6 +160,63 @@ function reviewComplexityHidingSurface(surface: UserFacingSurfaceReview): {
   };
 }
 
+type CodexCapacityCase = {
+  name: string;
+  historicalPoolLabel: string;
+  currentCapacity: {
+    fresh: boolean;
+    activeSessionCount: number | null;
+    blockedOrSleepingSessions: string[] | null;
+    quotaAccountStatus: string;
+    expectedTurnCapacity: string;
+    machineHeadroom: string;
+    ownedFileBound: boolean;
+  };
+  forbiddenSubstitute: string;
+  expectedDecision: "dispatch" | "refuse" | "standby";
+  expectedReason: string;
+};
+
+function isCodexCapacityExercise(value: unknown): value is { schema: string; cases: CodexCapacityCase[] } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "schema" in value &&
+    (value as { schema?: unknown }).schema === "osl-codex-routing-capacity-v1" &&
+    Array.isArray((value as { cases?: unknown }).cases)
+  );
+}
+
+function routeCodexCapacity(
+  exerciseCase: CodexCapacityCase,
+): { decision: "dispatch" | "refuse" | "standby"; reason: string } {
+  if (exerciseCase.forbiddenSubstitute !== "none") {
+    return { decision: "refuse", reason: "forbidden-substitute" };
+  }
+
+  const capacity = exerciseCase.currentCapacity;
+  const hasLiveCapacityRecord =
+    capacity.fresh === true &&
+    typeof capacity.activeSessionCount === "number" &&
+    capacity.activeSessionCount >= 0 &&
+    Array.isArray(capacity.blockedOrSleepingSessions) &&
+    capacity.quotaAccountStatus.startsWith("verified-") &&
+    capacity.ownedFileBound === true;
+  if (!hasLiveCapacityRecord) {
+    return { decision: "standby", reason: "missing-current-capacity" };
+  }
+
+  if (
+    capacity.quotaAccountStatus !== "verified-enough" ||
+    capacity.expectedTurnCapacity !== "enough" ||
+    capacity.machineHeadroom !== "enough"
+  ) {
+    return { decision: "standby", reason: "insufficient-current-capacity" };
+  }
+
+  return { decision: "dispatch", reason: "fresh-capacity-and-owned-files" };
+}
+
 describe("QA documentation contracts", () => {
   it("warm_agent_baseline_snapshot_for_osl_azure_clients_1_and_2", () => {
     const workflow = readDoc("docs/testing/azure-vm-qa-workflow.md");
@@ -228,6 +291,49 @@ describe("QA documentation contracts", () => {
       ["docs/design/build-order.md", "f83"],
       ["apps/osl-hub/src/cloud_autoscrub_envelope.rs", "f149"],
     ]));
+  });
+
+  it("Update routing decisions from real Codex capacity instead of stale pools.", () => {
+    const plan = readDoc("docs/plans/osl-parallel-build-plan-2026-07-29.md");
+    const exercise = fencedJsonBlocks(plan).find(isCodexCapacityExercise);
+    expect(exercise).toBeDefined();
+
+    const cases = exercise!.cases;
+    expect(cases.map((entry) => entry.expectedDecision).sort()).toEqual([
+      "dispatch",
+      "refuse",
+      "refuse",
+      "refuse",
+      "standby",
+    ]);
+
+    for (const exerciseCase of cases) {
+      expect(routeCodexCapacity(exerciseCase), exerciseCase.name).toEqual({
+        decision: exerciseCase.expectedDecision,
+        reason: exerciseCase.expectedReason,
+      });
+    }
+
+    const dispatchCase = cases.find((entry) => entry.expectedDecision === "dispatch");
+    expect(dispatchCase).toBeDefined();
+    expect(routeCodexCapacity({
+      ...dispatchCase!,
+      currentCapacity: {
+        ...dispatchCase!.currentCapacity,
+        fresh: false,
+      },
+    }).decision).toBe("standby");
+    expect(routeCodexCapacity({
+      ...dispatchCase!,
+      forbiddenSubstitute: "borrowed-account",
+    }).decision).toBe("refuse");
+    expect(routeCodexCapacity({
+      ...dispatchCase!,
+      currentCapacity: {
+        ...dispatchCase!.currentCapacity,
+        ownedFileBound: false,
+      },
+    }).decision).toBe("standby");
   });
 
   it("frontend_dist_is_embedded_after_frontend_build", () => {

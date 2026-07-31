@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::Mutex;
 
+const TS_TEST_WORKFLOW: &str = include_str!("../../../.github/workflows/ts-test.yml");
 const SELF_TEST_COMMAND_NAME: &str = "--self-test";
 const REPOSITORY_SCAN_TEST_NAME: &str = "scripts/check-app-claims.mjs";
 const SELF_TEST_RELEASE_WORKFLOW_NAME: &str =
@@ -133,6 +134,129 @@ fn scripts_check_app_claims_mjs() {
             "{REPOSITORY_SCAN_TEST_NAME} did not report `{required}` for the negative fixture\n{combined}"
         );
     }
+}
+
+#[test]
+fn success() {
+    let script = ts_test_success_script();
+    let required_checks = [
+        ("TEST_RESULT", "TypeScript workflow"),
+        ("SELECTOR_CHECK_RESULT", "Selector check"),
+        (
+            "TELEGRAM_REPORTING_BOT_RESULT",
+            "Telegram reporting bot script check",
+        ),
+        ("PUBLIC_AUDIT_RESULT", "Public audit"),
+    ];
+
+    let all_green = run_ts_test_success_script(
+        &script,
+        required_checks
+            .iter()
+            .map(|(name, _label)| (*name, "success"))
+            .collect(),
+    );
+    assert_success(&all_green, "ts-test success aggregator");
+
+    for (failed_name, failed_label) in required_checks {
+        let output = run_ts_test_success_script(
+            &script,
+            required_checks
+                .iter()
+                .map(|(name, _label)| {
+                    (
+                        *name,
+                        if *name == failed_name {
+                            "failure"
+                        } else {
+                            "success"
+                        },
+                    )
+                })
+                .collect(),
+        );
+        assert_failure(
+            &output,
+            "ts-test success aggregator",
+            "must fail when a required upstream job is not green",
+        );
+        let combined = combined_output(&output);
+        let expected = format!("{failed_label} failed with result: failure");
+        assert!(
+            combined.contains(&expected),
+            "ts-test success aggregator did not identify `{failed_label}` as failed\n{combined}"
+        );
+    }
+}
+
+fn ts_test_success_script() -> String {
+    let mut in_success_job = false;
+    let mut in_success_step = false;
+    let mut in_run_block = false;
+    let mut script = String::new();
+
+    for line in TS_TEST_WORKFLOW.lines() {
+        if line.starts_with("  ") && !line.starts_with("    ") && line.ends_with(':') {
+            in_success_job = line.trim() == "success:";
+            in_success_step = false;
+            in_run_block = false;
+            continue;
+        }
+        if !in_success_job {
+            continue;
+        }
+        if line.trim() == "- name: \"success'\"" {
+            in_success_step = true;
+            continue;
+        }
+        if in_success_step && line.trim() == "run: |" {
+            in_run_block = true;
+            continue;
+        }
+        if in_run_block {
+            if line.starts_with("          ") || line.trim().is_empty() {
+                if !script.is_empty() {
+                    script.push('\n');
+                }
+                script.push_str(line.strip_prefix("          ").unwrap_or(""));
+            } else {
+                break;
+            }
+        }
+    }
+
+    assert!(
+        !script.trim().is_empty(),
+        "ts-test workflow must have one runnable success' step"
+    );
+    script
+}
+
+fn run_ts_test_success_script(script: &str, env: Vec<(&str, &str)>) -> Output {
+    let repo = repo_root();
+    let script_path = repo.join("target").join(format!(
+        "ts-test-success-{}-{}.sh",
+        std::process::id(),
+        monotonic_suffix()
+    ));
+    fs::create_dir_all(script_path.parent().expect("script has parent"))
+        .expect("create target directory for workflow script test");
+    fs::write(&script_path, script).expect("write workflow script fixture");
+    let output = Command::new("bash")
+        .arg("-e")
+        .arg(&script_path)
+        .envs(env)
+        .current_dir(&repo)
+        .output()
+        .expect("run ts-test success workflow script");
+    let _ = fs::remove_file(script_path);
+    output
+}
+
+fn monotonic_suffix() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 #[test]
