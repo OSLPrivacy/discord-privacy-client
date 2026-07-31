@@ -15613,7 +15613,7 @@ pub fn cmd_osl_verify_gate_password(
                     server_defaults_entries = r.server_defaults_entries,
                     burned_scopes_count = r.burned_scopes_count,
                     sender_keys_count = r.sender_keys_count,
-                    membership_loaded = r.membership_loaded,
+                    membership_loaded = r.scope_membership_loaded,
                     app_prefs_loaded = r.app_prefs_loaded,
                     "OSL: state reloaded post-gate"
                 ),
