@@ -7990,6 +7990,7 @@ mod qa_selftest {
             assert_eq!(decline_record["action"], "left-for-its-owner");
             let _ = std::fs::remove_file(&decline_path);
 
+            DECLINED_REQUEST_FINGERPRINT.store(0, Ordering::SeqCst);
             let decline_path = temp_path(&addressed_name(ADDRESSED_DECLINE_FORMAT, &instance_b));
             let _ = std::fs::remove_file(&decline_path);
             record_decline(&instance_b, &instance_a, &shared_for_a);
@@ -8001,17 +8002,29 @@ mod qa_selftest {
                 declined["declaredInstance"].as_str(),
                 Some(instance_a.as_str())
             );
+            assert_eq!(declined["trigger"].as_str(), Some(TRIGGER_FILE));
             assert_eq!(
                 declined["requestStatus"].as_str(),
                 Some("declined-wrong-instance")
             );
-            assert_eq!(declined["action"].as_str(), Some("left-for-its-owner"));
+            assert_eq!(
+                declined["action"].as_str(),
+                Some("left-for-its-owner"),
+                "B must durably prove it left A's shared restart trigger for A"
+            );
+            let first_decline = std::fs::read(&decline_path).expect("read first decline record");
+            record_decline(&instance_b, &instance_a, &shared_for_a);
+            assert_eq!(
+                std::fs::read(&decline_path).expect("read repeated decline record"),
+                first_decline,
+                "re-seeing the same wrong-instance trigger must not rewrite B's decline proof"
+            );
+            DECLINED_REQUEST_FINGERPRINT.store(0, Ordering::SeqCst);
             let _ = std::fs::remove_file(&decline_path);
 
-            let legacy_drain = format!(r#"{{"verb":"drain","instance":"{}"}}"#, instance_b);
             assert_eq!(
-                select_trigger_body(&instance_b, None, Some(legacy_drain.as_str())),
-                TriggerSelection::Legacy(legacy_drain.as_str()),
+                select_trigger_body(&instance_b, None, Some(addressed_drain.as_str())),
+                TriggerSelection::Legacy(addressed_drain.as_str()),
                 "B may consume the shared trigger only when it is addressed to B"
             );
 
