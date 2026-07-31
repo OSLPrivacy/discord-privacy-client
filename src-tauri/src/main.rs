@@ -1335,6 +1335,21 @@ async fn osl_lockout_status() -> Result<LockoutStatusDto, String> {
         .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+/// A7: manual "Lock now". Drops every live secret immediately — identity,
+/// prekeys, peer map (including any persisted ratchet state), whitelist,
+/// sender-key chains, the file storage key — and closes the MessageStore.
+/// The next secret-bearing command fails until the password gate runs again.
+#[tauri::command]
+async fn osl_lock_session(app: tauri::AppHandle) -> Result<ipc::commands::SessionLockDto, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_lock_session(state.inner())
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 // ===== Phase 7d-B2: stealth password commands. =====
 
 #[tauri::command]
@@ -3246,6 +3261,7 @@ fn main() {
             osl_verify_recovery_phrase,
             osl_set_main_password_after_recovery,
             osl_lockout_status,
+            osl_lock_session,
             osl_set_stealth_password,
             osl_remove_stealth_password,
             osl_stealth_password_status,

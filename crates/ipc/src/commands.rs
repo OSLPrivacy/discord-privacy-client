@@ -43,6 +43,70 @@ fn record_activity_on_command_entry() {
     #[cfg(test)]
     COMMAND_ACTIVITY_MARK_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     crate::main_password::mark_inactivity_timer_activity();
+    // A7: the password gate's own timer only ever clears the file storage
+    // key. Feed the session-lock clock from the same hook so the idle window
+    // is measured against real command traffic.
+    crate::session_lock::note_activity();
+}
+
+/// A7 lock enforcement for a secret-bearing command.
+///
+/// `record_activity_on_command_entry` alone was never a lock: its only
+/// consequence on expiry was clearing the file storage key, which leaves the
+/// identity secret, peer map, whitelist, sender chains and the open
+/// `MessageStore` live and decrypting. This runs the *real*
+/// [`crate::session_lock::lock_session`] when the idle window has elapsed and
+/// then refuses the command, so an idle session cannot decrypt.
+///
+/// Commands that touch no secret (status, preferences, update checks) keep the
+/// plain activity hook — locking on those would fight the user without
+/// protecting anything.
+fn guard_session_on_command_entry(state: &AppState) -> Result<(), String> {
+    if crate::session_lock::run_idle_session_lock(state) {
+        return Err(crate::session_lock::SESSION_LOCKED_ERROR.to_string());
+    }
+    record_activity_on_command_entry();
+    Ok(())
+}
+
+/// Manual "Lock now": drop every live secret immediately, without waiting for
+/// the idle window. This is the Settings action; it is also the correct thing
+/// to call from an OS session-lock notification.
+pub fn cmd_osl_lock_session(state: &AppState) -> Result<SessionLockDto, String> {
+    let report = crate::session_lock::lock_session(state, crate::session_lock::SessionLockTrigger::Manual);
+    Ok(SessionLockDto::from(&report))
+}
+
+/// UI-visible summary of what a lock actually removed. Counts, not booleans
+/// about intent — a regression that stops clearing a slot shows up here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionLockDto {
+    pub locked: bool,
+    pub already_locked: bool,
+    pub identity_cleared: bool,
+    pub message_store_closed: bool,
+    pub file_storage_key_cleared: bool,
+    pub peer_entries_cleared: usize,
+    pub ratchet_states_zeroized: usize,
+    pub whitelist_scopes_cleared: usize,
+    pub sender_key_chains_cleared: usize,
+}
+
+impl From<&crate::session_lock::SessionLockReport> for SessionLockDto {
+    fn from(r: &crate::session_lock::SessionLockReport) -> Self {
+        SessionLockDto {
+            locked: true,
+            already_locked: r.trigger_was_noop,
+            identity_cleared: r.identity_cleared,
+            message_store_closed: r.message_store_closed,
+            file_storage_key_cleared: r.file_storage_key_cleared,
+            peer_entries_cleared: r.peer_entries_cleared,
+            ratchet_states_zeroized: r.peer_ratchet_states_zeroized,
+            whitelist_scopes_cleared: r.whitelist_scopes_cleared,
+            sender_key_chains_cleared: r.sender_key_chains_cleared,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2428,7 +2492,7 @@ pub fn cmd_osl_encrypt_message(
     plaintext: String,
     options: serde_json::Value,
 ) -> Result<String, String> {
-    record_activity_on_command_entry();
+    guard_session_on_command_entry(state)?;
     let _options = parse_outgoing_encrypt_options(options)?;
     let recipients =
         keystore::get_recipients(&channel_id).map_err(|e| format!("OSL: recipient lookup: {e}"))?;
@@ -2909,7 +2973,7 @@ pub fn cmd_osl_decrypt_message(
     sender_discord_id: String,
     content: String,
 ) -> Result<String, String> {
-    record_activity_on_command_entry();
+    guard_session_on_command_entry(state)?;
     cmd_osl_decrypt_message_with_id(state, None, channel_id, sender_discord_id, content)
 }
 
@@ -2931,7 +2995,7 @@ pub fn cmd_osl_decrypt_message_with_id(
     sender_discord_id: String,
     content: String,
 ) -> Result<String, String> {
-    record_activity_on_command_entry();
+    guard_session_on_command_entry(state)?;
     let id_guard = state.identity.lock().expect("identity mutex poisoned");
     let identity = id_guard
         .as_ref()
@@ -3389,7 +3453,7 @@ pub fn cmd_osl_load_channel_history(
     channel_id: String,
     limit: Option<u32>,
 ) -> Result<Vec<StoredMessageDto>, String> {
-    record_activity_on_command_entry();
+    guard_session_on_command_entry(state)?;
     let guard = state
         .message_store
         .lock()
@@ -4204,7 +4268,7 @@ pub fn cmd_osl_encrypt_message_v2(
     channel_members: Vec<String>,
     self_discord_id: String,
 ) -> Result<EncryptOutput, String> {
-    record_activity_on_command_entry();
+    guard_session_on_command_entry(state)?;
     // F3.6 pivot: text encryption is unconditional for everyone.
     // The F3.2 launch-window gate that lived here is retired
     // alongside the 60-min model; the surviving tier gate fires
@@ -4355,7 +4419,7 @@ pub fn cmd_osl_encrypt_message_v2_wire(
     channel_members: Vec<String>,
     self_discord_id: String,
 ) -> Result<EncryptWire, String> {
-    record_activity_on_command_entry();
+    guard_session_on_command_entry(state)?;
     // F3.6 pivot: text encryption is unconditional. The F3.2
     // gate here is retired; see the matching note at
     // `cmd_osl_encrypt_message_v2`.
@@ -6980,7 +7044,7 @@ pub fn cmd_osl_decrypt_message_v2(
     scope_input: Option<crate::scope::ScopeInput>,
     config_dir: Option<std::path::PathBuf>,
 ) -> Result<String, String> {
-    record_activity_on_command_entry();
+    guard_session_on_command_entry(state)?;
     // 9-B1: Mode 1 envelope handling. If the cover string carries
     // a `DPC1::` prefix, decode it as a Mode 1 chunk and push to
     // the per-channel reassembly buffer. When the buffer completes,
@@ -15616,25 +15680,33 @@ pub fn cmd_osl_verify_gate_password(
             // every unlock. (app_preferences is device-level and the
             // reload reads it from the base internally.)
             let account_dir = keystore::osl_config_dir().unwrap_or_else(|_| dir.clone());
-            let reload =
-                crate::state_reload::reload_encrypted_state_after_unlock(state, &account_dir);
+            // A7: full session unlock. Re-reading the encrypted files is not
+            // enough once locking actually drops secrets — the identity and
+            // the MessageStore have to come back too, or the gate would return
+            // "main" for a session that still cannot decrypt anything.
+            let reload = crate::session_lock::unlock_session(state, &account_dir);
             match reload {
-                Ok(ref r) if r.errors.is_empty() => tracing::info!(
-                    peer_map_entries = r.peer_map_entries,
-                    whitelist_scopes = r.whitelist_scopes,
-                    server_defaults_entries = r.server_defaults_entries,
-                    burned_scopes_count = r.burned_scopes_count,
-                    sender_keys_count = r.sender_keys_count,
-                    membership_loaded = r.scope_membership_loaded,
-                    app_prefs_loaded = r.app_prefs_loaded,
-                    "OSL: state reloaded post-gate"
+                Ok(ref u) if u.reload.errors.is_empty() => tracing::info!(
+                    identity_reloaded = u.identity_reloaded,
+                    message_store_reopened = u.message_store_reopened,
+                    peer_map_entries = u.reload.peer_map_entries,
+                    whitelist_scopes = u.reload.whitelist_scopes,
+                    server_defaults_entries = u.reload.server_defaults_entries,
+                    burned_scopes_count = u.reload.burned_scopes_count,
+                    sender_keys_count = u.reload.sender_keys_count,
+                    membership_loaded = u.reload.scope_membership_loaded,
+                    app_prefs_loaded = u.reload.app_prefs_loaded,
+                    "OSL: session unlocked post-gate"
                 ),
-                Ok(ref r) => {
+                Ok(ref u) => {
                     tracing::error!(
-                        errors = ?r.errors,
+                        errors = ?u.reload.errors,
                         "OSL: required post-gate state reload failed; keeping session locked"
                     );
-                    crate::main_password::set_file_storage_key(None);
+                    crate::session_lock::lock_session(
+                        state,
+                        crate::session_lock::SessionLockTrigger::Internal,
+                    );
                     return Err(
                         "OSL encrypted security state could not be reloaded safely".to_owned()
                     );
@@ -15644,7 +15716,10 @@ pub fn cmd_osl_verify_gate_password(
                         error = %error,
                         "OSL: required post-gate state reload failed; keeping session locked"
                     );
-                    crate::main_password::set_file_storage_key(None);
+                    crate::session_lock::lock_session(
+                        state,
+                        crate::session_lock::SessionLockTrigger::Internal,
+                    );
                     return Err(
                         "OSL encrypted security state could not be reloaded safely".to_owned()
                     );

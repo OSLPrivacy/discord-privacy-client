@@ -336,9 +336,14 @@ pub fn unlock_main_password(
     let outcome = (|| {
         let config_dir = keystore::osl_config_dir()
             .map_err(|_| "OSL account storage is unavailable".to_string())?;
-        let report =
-            ipc::state_reload::reload_encrypted_state_after_unlock(&state.osl, &config_dir)
-                .map_err(|_| "OSL encrypted state could not be reloaded".to_string())?;
+        // A7: a full session unlock, not just the encrypted-file reload. After
+        // a lock the identity secret and the MessageStore are gone from
+        // memory, so re-reading peer_map alone would leave the session unable
+        // to decrypt anything. `unlock_session` restores identity → files →
+        // store in that order and re-arms the inactivity clock.
+        let unlock = ipc::session_lock::unlock_session(&state.osl, &config_dir)
+            .map_err(|_| "OSL encrypted state could not be reloaded".to_string())?;
+        let report = &unlock.reload;
         if !report.errors.is_empty() {
             return Err("OSL encrypted state could not be reloaded safely".to_string());
         }

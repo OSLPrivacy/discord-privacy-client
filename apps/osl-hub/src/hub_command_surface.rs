@@ -404,6 +404,7 @@ macro_rules! hub_tauri_commands {
             create_hub_osl_identity,
             import_hub_osl_identity_phrase,
             setup_hub_main_password,
+            lock_hub_session,
             get_hub_password_role_status,
             set_hub_stealth_password,
             remove_hub_stealth_password,

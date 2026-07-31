@@ -195,6 +195,15 @@ export async function unlockHubPasswordGate(password: string, duressPin?: string
   }));
 }
 
+/// A7 manual lock. Ends the unlocked session immediately: the identity secret,
+/// peer map, whitelist, sender-key chains and file storage key are dropped and
+/// the message store is closed, so nothing decrypts until the password gate
+/// runs again. Nothing on disk is deleted.
+export async function lockHubSession(): Promise<void> {
+  if (!isTauriRuntime()) throw new Error("lock unavailable");
+  await invoke<unknown>("lock_hub_session");
+}
+
 export async function loadHubPasswordRoleStatus(): Promise<HubPasswordRoleStatus> {
   if (!isTauriRuntime()) throw new Error("password roles unavailable");
   return parseHubPasswordRoleStatus(await invoke<unknown>("get_hub_password_role_status"));

@@ -86,6 +86,7 @@ import {
   loadCoreIntegration,
   loadHubLicenseState,
   loadHubPasswordRoleStatus,
+  lockHubSession,
   removeHubAlternatePassword,
   setHubAlternatePassword,
   setupHubMainPassword,
@@ -4433,7 +4434,7 @@ function passwordSecuritySettingsContent(): string {
     ? `<button class="button primary" data-onboarding-action="create">Create password</button>`
     : core.readiness.bootstrapStatus === "passwordRequired"
       ? `<button class="button primary" data-onboarding-action="unlock">Unlock OSL</button>`
-      : `<span class="setting-status"><span class="dot"></span>Password configured and unlocked</span>`;
+      : `<span class="setting-status"><span class="dot"></span>Password configured and unlocked</span><button class="button" type="button" data-lock-session="now">Lock now</button>`;
   const roleForm = (role: "stealth" | "burn", configured: boolean, wired: boolean): string => {
     const title = role === "stealth" ? "Stealth password" : "Burn password";
     const consequence = role === "stealth" ? "decoy screen" : "account burn";
@@ -6038,6 +6039,7 @@ function bindWorkspace(): void {
   bindScrubControls();
   document.querySelector<HTMLFormElement>("#activation-form")?.addEventListener("submit", (event) => void activatePro(event));
   document.querySelectorAll<HTMLFormElement>("[data-password-role]").forEach((form) => form.addEventListener("submit", (event) => void submitPasswordRole(event)));
+  document.querySelectorAll<HTMLButtonElement>("[data-lock-session]").forEach((button) => button.addEventListener("click", () => void lockSessionNow(button)));
   document.querySelector<HTMLInputElement>("#activation-code")?.addEventListener("pointerdown", (event) => {
     event.stopPropagation();
     (event.currentTarget as HTMLInputElement).focus({ preventScroll: true });
@@ -7156,6 +7158,24 @@ async function refreshIdentityScopedState(): Promise<void> {
   services = linkedServices;
   appNotifications = mergePersistedOslChatNotifications(notifications);
   passwordRoleStatus = await loadHubPasswordRoleStatus().catch(() => null);
+}
+
+/// A7: manual "Lock now". The backend drops every live secret; the UI just has
+/// to stop showing an unlocked session. Deliberately no confirmation dialog —
+/// locking is non-destructive and hesitating is the wrong default when someone
+/// is walking away from the machine.
+async function lockSessionNow(button: HTMLButtonElement): Promise<void> {
+  button.disabled = true;
+  try {
+    await lockHubSession();
+    passwordRoleStatus = null;
+    core = await loadCoreIntegration().catch(() => structuredClone(unavailableCoreIntegration));
+    render();
+    showToast("OSL locked. Your main password is required to continue.");
+  } catch (failure) {
+    button.disabled = false;
+    showToast(localActionError(failure, "OSL could not be locked"));
+  }
 }
 
 async function submitPasswordRole(event: SubmitEvent): Promise<void> {
