@@ -521,6 +521,60 @@ class NativeAuthorityV3Tests(unittest.TestCase):
                 with self.assertRaises(VerificationError):
                     verify_receipt(encode(receipt), context(make_receipt()))
 
+    def readback(self) -> None:
+        receipt = make_receipt()
+        validate_receipt(receipt)
+
+        binding_mutations = {
+            "carrier": lambda value: value["carrier"].__setitem__(
+                "targetBindingSha256", "f" * 64
+            ),
+            "preSend": lambda value: value["preSend"].__setitem__(
+                "targetBindingSha256", "f" * 64
+            ),
+            "preSend.readback": lambda value: value["preSend"][
+                "readback"
+            ].__setitem__("targetBindingSha256", "f" * 64),
+            "postSend": lambda value: value["postSend"].__setitem__(
+                "targetBindingSha256", "f" * 64
+            ),
+            "postSend.readback": lambda value: value["postSend"][
+                "readback"
+            ].__setitem__("targetBindingSha256", "f" * 64),
+        }
+        for name, mutate in binding_mutations.items():
+            with self.subTest(binding=name):
+                mutated = make_receipt()
+                mutate(mutated)
+                mutated = reseal(mutated)
+                with self.assertRaisesRegex(
+                    SchemaError,
+                    "does not match the Discord target binding",
+                ):
+                    validate_receipt(mutated)
+
+        readback_mutations = {
+            "pre-readback digest": lambda value: value["preSend"][
+                "readback"
+            ].__setitem__("sha256", "f" * 64),
+            "pre-readback byte length": lambda value: value["preSend"][
+                "readback"
+            ].__setitem__("byteLength", value["carrier"]["byteLength"] + 1),
+            "post-readback digest": lambda value: value["postSend"][
+                "readback"
+            ].__setitem__("sha256", value["carrier"]["sha256"]),
+            "post-readback byte length": lambda value: value["postSend"][
+                "readback"
+            ].__setitem__("byteLength", value["carrier"]["byteLength"]),
+        }
+        for name, mutate in readback_mutations.items():
+            with self.subTest(readback=name):
+                mutated = make_receipt()
+                mutate(mutated)
+                mutated = reseal(mutated)
+                with self.assertRaisesRegex(SchemaError, "does not match"):
+                    validate_receipt(mutated)
+
     def test_verification_context_requires_all_independent_fact_sets(self) -> None:
         receipt = make_receipt()
         base = context(receipt)
@@ -1709,7 +1763,7 @@ validate_carrier_and_pre_post_readbacks_against_one_discord_target_binding.__nam
 )
 
 
-def readback() -> None:
+def readback_contract() -> None:
     validate_carrier_and_pre_post_readbacks_against_one_discord_target_binding()
 
 
@@ -1721,6 +1775,7 @@ def load_tests(
     del loader, pattern
     suite = unittest.TestSuite()
     suite.addTests(tests)
+    suite.addTest(NativeAuthorityV3Tests("readback"))
     suite.addTest(unittest.FunctionTestCase(ledger))
     suite.addTest(unittest.FunctionTestCase(
         define_c4_one_shot_challenge_ledger_contract,
@@ -1734,7 +1789,7 @@ def load_tests(
     suite.addTest(unittest.FunctionTestCase(
         validate_carrier_and_pre_post_readbacks_against_one_discord_target_binding,
     ))
-    suite.addTest(unittest.FunctionTestCase(readback))
+    suite.addTest(unittest.FunctionTestCase(readback_contract))
     return suite
 
 
