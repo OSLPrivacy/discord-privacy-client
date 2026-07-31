@@ -736,6 +736,79 @@ mod tests {
             refused.verdict()
         );
 
+        assert_eq!(
+            [
+                Subsystem::Composer.label(),
+                Subsystem::Transcript.label(),
+                Subsystem::RowText.label(),
+                Subsystem::WriteProof.label(),
+                Subsystem::Consent.label(),
+                Subsystem::Binding.label(),
+                Subsystem::Authority.label(),
+            ],
+            [
+                "subsystem_composer",
+                "subsystem_transcript",
+                "subsystem_row_text",
+                "subsystem_write_proof",
+                "subsystem_consent",
+                "subsystem_binding",
+                "subsystem_authority",
+            ]
+        );
+        assert_eq!(
+            [
+                Predicate::ProfileValidity.label(),
+                Predicate::RouteAvailability.label(),
+                Predicate::ComposerDiscovery.label(),
+                Predicate::TranscriptDiscovery.label(),
+                Predicate::RowTextExtraction.label(),
+                Predicate::WritePrefixProof.label(),
+                Predicate::OperatorConsent.label(),
+                Predicate::ScopeBinding.label(),
+                Predicate::HostAuthority.label(),
+            ],
+            [
+                "contract_profile_validity",
+                "contract_route_availability",
+                "contract_composer_discovery",
+                "contract_transcript_discovery",
+                "contract_row_text_extraction",
+                "contract_write_prefix_proof",
+                "contract_operator_consent",
+                "contract_scope_binding",
+                "contract_host_authority",
+            ]
+        );
+        assert_eq!(
+            [
+                UnverifiedCause::NotObserved.label(),
+                UnverifiedCause::Ambiguous.label(),
+                UnverifiedCause::Unsupported.label(),
+                UnverifiedCause::TimedOut.label(),
+                UnverifiedCause::InvalidProfile.label(),
+                UnverifiedCause::BoundsExceeded.label(),
+                UnverifiedCause::MissingWriteProof.label(),
+                UnverifiedCause::MissingConsent.label(),
+                UnverifiedCause::MissingBinding.label(),
+                UnverifiedCause::MissingAuthority.label(),
+                UnverifiedCause::OperatorRefused.label(),
+            ],
+            [
+                "cause_not_observed",
+                "cause_ambiguous",
+                "cause_unsupported",
+                "cause_timed_out",
+                "cause_invalid_profile",
+                "cause_bounds_exceeded",
+                "cause_missing_write_proof",
+                "cause_missing_consent",
+                "cause_missing_binding",
+                "cause_missing_authority",
+                "cause_operator_refused",
+            ]
+        );
+
         assert!(!UnverifiedCause::NotObserved.requires_refusal());
         assert!(!UnverifiedCause::Ambiguous.requires_refusal());
         assert!(!UnverifiedCause::Unsupported.requires_refusal());
