@@ -441,6 +441,7 @@ struct Ledger {
     runs: BTreeMap<RunSlot, ActiveRun>,
     attended: BTreeMap<AttendedSlot, AttendedAuthorization>,
     snapshot_root: Option<PathBuf>,
+    next_sequence: u64,
 }
 
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
@@ -460,6 +461,7 @@ struct ActiveRun {
     run_id: String,
     provider_id: String,
     account_id: String,
+    opened_sequence: u64,
     manifest_digest: String,
     consent_digest: String,
     consent_recorded_at: Instant,
@@ -570,12 +572,15 @@ impl AutoScrubRunState {
             max_items: manifest.max_items,
             expires_in_ms,
         };
+        ledger.next_sequence = ledger.next_sequence.saturating_add(1);
+        let opened_sequence = ledger.next_sequence;
         ledger.runs.insert(
             slot,
             ActiveRun {
                 run_id: manifest.run_id.clone(),
                 provider_id: manifest.provider_id.clone(),
                 account_id: manifest.account_id.clone(),
+                opened_sequence,
                 manifest_digest,
                 consent_digest,
                 consent_recorded_at: Instant::now(),
@@ -628,8 +633,8 @@ impl AutoScrubRunState {
             return Err(AutoScrubRunError::ConsentBindingDrifted);
         }
         if now >= run.deadline {
-            run.finish(RunPhase::Completed);
-            return Err(AutoScrubRunError::RunFinished);
+            run.finish(RunPhase::Halted(StopReason::Deadline));
+            return Err(AutoScrubRunError::RunHalted);
         }
         let key = item_key(&request.channel_id, &request.item_id);
         let Some(batch_index) = run.batches.iter().position(|batch| {
@@ -712,12 +717,14 @@ impl AutoScrubRunState {
             .ledger
             .lock()
             .map_err(|_| AutoScrubRunError::StateUnavailable)?;
-        let runs: Vec<RunStatus> = ledger
+        let mut runs: Vec<(u64, RunStatus)> = ledger
             .runs
             .iter()
             .filter(|(slot, _)| slot.owner_scope == scope)
-            .map(|(_, run)| run.status())
+            .map(|(_, run)| (run.opened_sequence, run.status()))
             .collect();
+        runs.sort_by_key(|(opened_sequence, _)| *opened_sequence);
+        let runs: Vec<RunStatus> = runs.into_iter().map(|(_, run)| run).collect();
         let working = runs
             .iter()
             .filter(|run| run.phase == RunPhaseDto::Active)
@@ -2041,7 +2048,7 @@ mod tests {
     fn autoscrub_status_refuses_ambiguous_runs_and_fleet_status_lists_latest() {
         let ledger = AutoScrubRunState::default();
         open_run(&ledger, "run-a", ACCOUNT);
-        open_run(&ledger, "run-b", SECOND_ACCOUNT);
+        open_run(&ledger, "run-b", "acct-alpha-latest");
 
         assert!(matches!(
             ledger.status(OWNER),
@@ -2233,9 +2240,11 @@ mod tests {
         std::thread::sleep(Duration::from_millis(300));
         assert!(matches!(
             expired.step(OWNER, NativeEntitlement::Confirmed, &step_for(&opened)),
-            Err(AutoScrubRunError::RunFinished)
+            Err(AutoScrubRunError::RunHalted)
         ));
-        assert_eq!(expired.status(OWNER).unwrap().phase, RunPhaseDto::Completed);
+        let status = expired.status(OWNER).unwrap();
+        assert_eq!(status.phase, RunPhaseDto::Halted);
+        assert_eq!(status.halted_reason, Some("deadline"));
     }
 
     #[test]
