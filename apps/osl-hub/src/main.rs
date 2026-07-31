@@ -1106,6 +1106,20 @@ fn get_autoscrub_run_fl(state: State<'_, HubCoreState>) -> Result<AutoScrubFleet
     autoscrub_run::fleet_status(&state.osl)
 }
 
+fn build_review_ui_identity_binding_verifier(
+    core: &HubCoreState,
+) -> Result<IdentityBindingVerifier, String> {
+    let identity = core
+        .osl
+        .identity
+        .lock()
+        .map_err(|_| "OSL identity state is unavailable".to_owned())?
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "Unlock an OSL identity before starting AutoScrub".to_owned())?;
+    Ok(IdentityBindingVerifier::new(PinnedOwner::from_identity(&identity)))
+}
+
 fn require_review_ui_identity_binding_from_verifier(
     verifier: &IdentityBindingVerifier,
     request: &AutoScrubReviewedRunRequest,
@@ -1143,18 +1157,28 @@ fn start_autoscrub_reviewed_run_inner(
     core: &HubCoreState,
     request: AutoScrubReviewedRunRequest,
 ) -> Result<AutoScrubFleetStatus, String> {
-    let identity = core
-        .osl
-        .identity
-        .lock()
-        .map_err(|_| "OSL identity state is unavailable".to_owned())?
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| "Unlock an OSL identity before starting AutoScrub".to_owned())?;
-    let verifier = IdentityBindingVerifier::new(PinnedOwner::from_identity(&identity));
-    start_autoscrub_reviewed_run_after_review_ui_binding(&verifier, request, |request| {
-        autoscrub_run::start_reviewed_run(&core.osl, request)
-    })
+    start_autoscrub_reviewed_run_checked(
+        core,
+        request,
+        build_review_ui_identity_binding_verifier,
+        |core, request| autoscrub_run::start_reviewed_run(&core.osl, request),
+    )
+}
+
+fn start_autoscrub_reviewed_run_checked<BuildVerifier, Start>(
+    core: &HubCoreState,
+    request: AutoScrubReviewedRunRequest,
+    build_verifier: BuildVerifier,
+    start: Start,
+) -> Result<AutoScrubFleetStatus, String>
+where
+    BuildVerifier: FnOnce(&HubCoreState) -> Result<IdentityBindingVerifier, String>,
+    Start:
+        FnOnce(&HubCoreState, AutoScrubReviewedRunRequest) -> Result<AutoScrubFleetStatus, String>,
+{
+    let verifier = build_verifier(core)?;
+    require_review_ui_identity_binding_from_verifier(&verifier, &request)?;
+    start(core, request)
 }
 
 #[tauri::command]
@@ -8437,6 +8461,17 @@ mod qa_selftest {
             let addressed_drain = format!(r#"{{"verb":"drain","instance":"{}"}}"#, instance_b);
             let shared_for_a = format!(r#"{{"verb":"send","instance":"{}"}}"#, instance_a);
 
+            assert_ne!(
+                addressed_name(ADDRESSED_TRIGGER_FORMAT, &instance_a),
+                addressed_name(ADDRESSED_TRIGGER_FORMAT, &instance_b),
+                "a restart trigger for A and B must be different files"
+            );
+            assert_ne!(
+                addressed_name(ADDRESSED_VERDICT_FORMAT, &instance_a),
+                addressed_name(ADDRESSED_VERDICT_FORMAT, &instance_b),
+                "a relaunched B must write a verdict file that A cannot satisfy"
+            );
+
             assert_eq!(
                 select_trigger_body(
                     &instance_b,
@@ -8455,25 +8490,71 @@ mod qa_selftest {
                 &instance_b
             ));
 
-            let addressed_for_a = r#"{"verb":"drain","instance":"org.oslprivacy.hub.qa-a"}"#;
+            let addressed_for_a = format!(r#"{{"verb":"drain","instance":"{}"}}"#, instance_a);
             assert_eq!(
-                select_trigger_body(instance_b, Some(addressed_for_a), Some(shared_for_a)),
-                TriggerSelection::Addressed(addressed_for_a),
+                select_trigger_body(&instance_b, Some(addressed_for_a.as_str()), None),
+                TriggerSelection::Addressed(addressed_for_a.as_str()),
+                "an addressed trigger is this process's responsibility even if its body is contradictory"
+            );
+            let ParsedRequest::Accepted(wrong_instance) = parse_request(&addressed_for_a) else {
+                panic!("contradictory addressed request must still parse");
+            };
+            assert!(
+                !osl_privacy_hub::qa_selftest_request::request_is_for_me(
+                    wrong_instance.instance.as_deref(),
+                    &instance_b
+                ),
+                "B must refuse a relaunched trigger whose body still declares A"
+            );
+            let mut wrong_instance_detail = VerbOutcome::new(
+                wrong_instance.verb.label(),
+                &instance_b,
+                &addressed_name(ADDRESSED_TRIGGER_FORMAT, &instance_b),
+            )
+            .refused("declined-wrong-instance");
+            wrong_instance_detail.request_format = wrong_instance.format.clone();
+            let wrong_instance_verdict = refused_verdict(
+                "refused",
+                "This self-test request was addressed to another instance",
+                wrong_instance_detail,
+            );
+            assert_eq!(wrong_instance_verdict.instance, instance_b);
+            assert_eq!(wrong_instance_verdict.request_format, "json");
+            assert_eq!(
+                wrong_instance_verdict.request_status,
+                "declined-wrong-instance"
+            );
+            assert_eq!(
+                wrong_instance_verdict.refusal,
+                Some("declined-wrong-instance")
+            );
+            assert!(
+                !wrong_instance_verdict.pass,
+                "a wrong-instance restart request must not produce green proof for B"
+            );
+
+            assert_eq!(
+                select_trigger_body(
+                    &instance_b,
+                    Some(addressed_for_a.as_str()),
+                    Some(shared_for_a.as_str()),
+                ),
+                TriggerSelection::Addressed(addressed_for_a.as_str()),
                 "B's private restart trigger must be answered by B, even when its body is wrong"
             );
-            let ParsedRequest::Accepted(wrong_instance) = parse_request(addressed_for_a) else {
+            let ParsedRequest::Accepted(wrong_instance) = parse_request(&addressed_for_a) else {
                 panic!("wrong-instance addressed drain request must parse");
             };
             assert!(
                 !osl_privacy_hub::qa_selftest_request::request_is_for_me(
                     wrong_instance.instance.as_deref(),
-                    instance_b
+                    &instance_b
                 ),
                 "an addressed trigger whose body names A must refuse before B drains"
             );
             let mut wrong_instance_detail = VerbOutcome::new(
                 wrong_instance.verb.label(),
-                instance_b,
+                &instance_b,
                 "osl-qa-selftest.b.request",
             )
             .refused("declined-wrong-instance");
@@ -8523,6 +8604,7 @@ mod qa_selftest {
             assert_eq!(decline_record["action"], "left-for-its-owner");
             let _ = std::fs::remove_file(&decline_path);
 
+            DECLINED_REQUEST_FINGERPRINT.store(0, Ordering::SeqCst);
             let decline_path = temp_path(&addressed_name(ADDRESSED_DECLINE_FORMAT, &instance_b));
             let _ = std::fs::remove_file(&decline_path);
             record_decline(&instance_b, &instance_a, &shared_for_a);
@@ -8534,40 +8616,55 @@ mod qa_selftest {
                 declined["declaredInstance"].as_str(),
                 Some(instance_a.as_str())
             );
+            assert_eq!(declined["trigger"].as_str(), Some(TRIGGER_FILE));
             assert_eq!(
                 declined["requestStatus"].as_str(),
                 Some("declined-wrong-instance")
             );
-            assert_eq!(declined["action"].as_str(), Some("left-for-its-owner"));
+            assert_eq!(
+                declined["action"].as_str(),
+                Some("left-for-its-owner"),
+                "B must durably prove it left A's shared restart trigger for A"
+            );
+            let first_decline = std::fs::read(&decline_path).expect("read first decline record");
+            record_decline(&instance_b, &instance_a, &shared_for_a);
+            assert_eq!(
+                std::fs::read(&decline_path).expect("read repeated decline record"),
+                first_decline,
+                "re-seeing the same wrong-instance trigger must not rewrite B's decline proof"
+            );
+            DECLINED_REQUEST_FINGERPRINT.store(0, Ordering::SeqCst);
             let _ = std::fs::remove_file(&decline_path);
 
-            let legacy_drain = format!(r#"{{"verb":"drain","instance":"{}"}}"#, instance_b);
             assert_eq!(
-                select_trigger_body(&instance_b, None, Some(legacy_drain.as_str())),
-                TriggerSelection::Legacy(legacy_drain.as_str()),
+                select_trigger_body(&instance_b, None, Some(addressed_drain.as_str())),
+                TriggerSelection::Legacy(addressed_drain.as_str()),
                 "B may consume the shared trigger only when it is addressed to B"
             );
 
-            let addressed_for_a = r#"{"verb":"drain","instance":"org.oslprivacy.hub.qa-a"}"#;
+            let fixed_instance_b = "org.oslprivacy.hub.qa-b";
+            let fixed_addressed_for_a =
+                r#"{"verb":"drain","instance":"org.oslprivacy.hub.qa-a"}"#;
             assert_eq!(
-                select_trigger_body(instance_b, Some(addressed_for_a), None),
-                TriggerSelection::Addressed(addressed_for_a),
+                select_trigger_body(fixed_instance_b, Some(fixed_addressed_for_a), None),
+                TriggerSelection::Addressed(fixed_addressed_for_a),
                 "an addressed trigger is B's responsibility even when the body contradicts it"
             );
-            let ParsedRequest::Accepted(wrong_instance_request) = parse_request(addressed_for_a)
+            let ParsedRequest::Accepted(wrong_instance_request) =
+                parse_request(fixed_addressed_for_a)
             else {
                 panic!("wrong-instance addressed drain request must parse");
             };
             assert!(
                 !osl_privacy_hub::qa_selftest_request::request_is_for_me(
                     wrong_instance_request.instance.as_deref(),
-                    instance_b
+                    fixed_instance_b
                 ),
                 "a trigger body addressed to A must not authorize B's restart proof"
             );
             let mut wrong_instance_detail = VerbOutcome::new(
                 wrong_instance_request.verb.label(),
-                instance_b,
+                fixed_instance_b,
                 "osl-qa-selftest.b.request",
             )
             .refused("declined-wrong-instance");
@@ -8577,7 +8674,7 @@ mod qa_selftest {
                 "This self-test request was addressed to another instance",
                 wrong_instance_detail,
             );
-            assert_eq!(wrong_instance_refusal.instance, instance_b);
+            assert_eq!(wrong_instance_refusal.instance, fixed_instance_b);
             assert_eq!(wrong_instance_refusal.verb, "drain");
             assert_eq!(
                 wrong_instance_refusal.request_status,
@@ -8630,6 +8727,9 @@ mod qa_selftest {
             ));
             std::fs::write(&verdict_path, br#"{"pass":true,"outcome":"completed"}"#)
                 .expect("seed stale verdict");
+            let mut partial_path = verdict_path.as_os_str().to_owned();
+            partial_path.push(VERDICT_PARTIAL_SUFFIX);
+            let partial_path = std::path::PathBuf::from(partial_path);
             write_verdict(&refused, &verdict_path);
             let durable: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(&verdict_path).expect("read verdict"))
@@ -8641,6 +8741,10 @@ mod qa_selftest {
             assert_eq!(
                 durable["criteria"]["send_completed"]["pass"], false,
                 "a restarted B that is still draining must replace stale green evidence"
+            );
+            assert!(
+                !partial_path.exists(),
+                "the restart proof must not leave a partial verdict for the harness to read"
             );
             let _ = std::fs::remove_file(&verdict_path);
         }
@@ -9986,6 +10090,9 @@ mod tauri_command_acl_tests {
         AccountRef, BindingEvidence, BindingScope, IdentityBindingError, IdentityBindingVerifier,
         PinnedOwner,
     };
+    use osl_privacy_hub::native_discord_adapter::guided_deletion::{
+        DeletionScan, WalkCompleteness,
+    };
     use osl_privacy_hub::scrub_index::ScrubAccountSelection;
     use std::cell::RefCell;
     use std::collections::BTreeSet;
@@ -10075,6 +10182,31 @@ mod tauri_command_acl_tests {
         }
     }
 
+    fn test_checked_host() -> CheckedHost {
+        CheckedHost {
+            context_epoch: 42,
+            active: ActiveServiceHost {
+                service_id: "discord".to_owned(),
+                account_id: "acct-1".to_owned(),
+                generation: 9,
+                owner_namespace: "owner-ns".to_owned(),
+            },
+            owner_osl_user_id: "owner-1".to_owned(),
+            scope_binding: "scope-binding".to_owned(),
+        }
+    }
+
+    fn test_deletion_scan() -> DeletionScan {
+        DeletionScan {
+            scope_binding_hash: "scan-hash".to_owned(),
+            generation: 9,
+            rows_seen: 1,
+            rows_unreadable: 0,
+            walk: WalkCompleteness::Complete,
+            candidates: Vec::new(),
+        }
+    }
+
     #[test]
     fn pw3_browser_session_commands_are_registered_and_acl_granted() {
         assert_registered_and_acl_granted(&[
@@ -10131,7 +10263,7 @@ mod tauri_command_acl_tests {
                 Ok(())
             },
         )
-        .expect("checked hosted scan succeeds only after all gates");
+        .expect("checked scan succeeds only after every gate");
         assert_eq!(scan.generation, 9);
         assert_eq!(
             events.into_inner(),
@@ -10140,25 +10272,26 @@ mod tauri_command_acl_tests {
                 "attended-binding",
                 "native-scan",
                 "context-recheck"
-            ]
+            ],
+            "scan must be checked host -> attended binding -> native scan -> context recheck"
         );
 
-        let refused_events = RefCell::new(Vec::<&'static str>::new());
+        let refusal_events = RefCell::new(Vec::<&'static str>::new());
         let refused = checked_hosted_session_scan_flow(
             || {
-                refused_events.borrow_mut().push("checked-host");
+                refusal_events.borrow_mut().push("checked-host");
                 Ok(test_checked_host())
             },
             |_checked| {
-                refused_events.borrow_mut().push("attended-binding");
+                refusal_events.borrow_mut().push("attended-binding");
                 Err("missing attended binding".to_owned())
             },
             |_checked, _operator_names| {
-                refused_events.borrow_mut().push("native-scan");
+                refusal_events.borrow_mut().push("native-scan");
                 Ok(test_deletion_scan())
             },
             |_checked| {
-                refused_events.borrow_mut().push("context-recheck");
+                refusal_events.borrow_mut().push("context-recheck");
                 Ok(())
             },
         );
@@ -10167,9 +10300,9 @@ mod tauri_command_acl_tests {
             Ok(_) => panic!("missing attended binding must refuse"),
         }
         assert_eq!(
-            refused_events.into_inner(),
+            refusal_events.into_inner(),
             ["checked-host", "attended-binding"],
-            "missing attended binding must refuse before native scan"
+            "absence of attended binding must refuse before native scan or context success"
         );
     }
 
@@ -10468,6 +10601,33 @@ mod native_visible_row_qa_command_tests {
             ]
         );
 
+        let stale_after_events = RefCell::new(Vec::<&'static str>::new());
+        let stale_after = finish_native_visible_row_qa_request(
+            &context,
+            runtime_receipt_fixture(),
+            || {
+                stale_after_events.borrow_mut().push("lock-after");
+                Ok(())
+            },
+            |_epoch, _host| {
+                stale_after_events.borrow_mut().push("context-after");
+                Err("stale native context".to_owned())
+            },
+            |_receipt| {
+                stale_after_events.borrow_mut().push("persist");
+                Ok(())
+            },
+        );
+        match stale_after {
+            Err(error) => assert_eq!(error, "stale native context"),
+            Ok(_) => panic!("stale native context must refuse the QA receipt"),
+        }
+        assert_eq!(
+            stale_after_events.into_inner(),
+            ["context-after"],
+            "a stale post-read context must refuse before the lock-after gate or persistence"
+        );
+
         let refused_events = RefCell::new(Vec::<&'static str>::new());
         let refused = prepare_native_visible_row_qa_request(
             || {
@@ -10717,42 +10877,60 @@ mod tauri_registration_surface_tests {
             .collect()
     }
 
+    fn toml_string_field(line: &str, field: &str) -> Option<String> {
+        let value = line.strip_prefix(field)?.trim_start();
+        let value = value.strip_prefix('=')?.trim_start();
+        let value = value.strip_prefix('"')?.strip_suffix('"')?;
+        Some(value.to_owned())
+    }
+
+    fn toml_string_array_field(line: &str, field: &str) -> Option<Vec<String>> {
+        let value = line.strip_prefix(field)?.trim_start();
+        let value = value.strip_prefix('=')?.trim_start();
+        let value = value.strip_prefix('[')?.strip_suffix(']')?;
+        Some(
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .map(|part| {
+                    part.strip_prefix('"')
+                        .and_then(|part| part.strip_suffix('"'))
+                        .expect("commands.allow entries must be TOML strings")
+                        .to_owned()
+                })
+                .collect(),
+        )
+    }
+
     fn permission_commands(source: &str) -> BTreeMap<String, String> {
-        let mut current_identifier = None::<String>;
         let mut permissions = BTreeMap::new();
-        for line in source.lines().map(str::trim) {
-            if line == "[[permission]]" {
-                current_identifier = None;
+        for block in source.split("[[permission]]").skip(1) {
+            let mut identifier = None::<String>;
+            let mut allowed_commands = None::<Vec<String>>;
+            for line in block.lines().map(str::trim).filter(|line| !line.is_empty()) {
+                if identifier.is_none() {
+                    identifier = toml_string_field(line, "identifier");
+                }
+                if allowed_commands.is_none() {
+                    allowed_commands = toml_string_array_field(line, "commands.allow");
+                }
+            }
+            let Some(identifier) = identifier else {
                 continue;
-            }
-            if let Some(value) = line
-                .strip_prefix("identifier = \"")
-                .and_then(|tail| tail.strip_suffix('"'))
-            {
-                current_identifier = Some(value.to_owned());
-                continue;
-            }
-            if let Some(commands) = line
-                .strip_prefix("commands.allow = [")
-                .and_then(|tail| tail.strip_suffix(']'))
-            {
-                let identifier = current_identifier
-                    .take()
-                    .expect("command permission has an identifier");
-                let commands = commands
-                    .split(',')
-                    .map(str::trim)
-                    .map(|command| command.trim_matches('"'))
-                    .filter(|command| !command.is_empty())
-                    .map(ToOwned::to_owned)
-                    .collect::<Vec<_>>();
-                assert_eq!(
-                    commands.len(),
-                    1,
-                    "{identifier} must grant exactly one Tauri command"
-                );
-                permissions.insert(identifier, commands[0].clone());
-            }
+            };
+            let commands = allowed_commands
+                .unwrap_or_else(|| panic!("permission {identifier} must declare commands.allow"));
+            assert_eq!(
+                commands.len(),
+                1,
+                "permission {identifier} must grant exactly one command"
+            );
+            let previous = permissions.insert(identifier.clone(), commands[0].clone());
+            assert!(
+                previous.is_none(),
+                "permission identifier {identifier} must be unique"
+            );
         }
         permissions
     }
@@ -10824,6 +11002,39 @@ mod tauri_registration_surface_tests {
         );
     }
 
+    fn assert_each_registration_surface_is_required(
+        handlers: &BTreeSet<String>,
+        permissions: &BTreeMap<String, String>,
+        capability: &BTreeSet<String>,
+        commands: &[&str],
+    ) {
+        for command in commands {
+            let command = *command;
+            let permission = command_permission(command);
+
+            let mut missing_handler = handlers.clone();
+            missing_handler.remove(command);
+            assert!(
+                !is_registered_and_granted(&missing_handler, permissions, capability, command),
+                "removing {command} from generate_handler must fail the registration proof"
+            );
+
+            let mut missing_permission = permissions.clone();
+            missing_permission.remove(&permission);
+            assert!(
+                !is_registered_and_granted(handlers, &missing_permission, capability, command),
+                "removing {permission} from hub.toml must fail the registration proof"
+            );
+
+            let mut missing_capability = capability.clone();
+            missing_capability.remove(&permission);
+            assert!(
+                !is_registered_and_granted(handlers, permissions, &missing_capability, command),
+                "removing {permission} from hub.json must fail the registration proof"
+            );
+        }
+    }
+
     fn registration_inputs() -> (BTreeSet<String>, BTreeMap<String, String>, BTreeSet<String>) {
         (
             handler_commands(),
@@ -10838,6 +11049,24 @@ mod tauri_registration_surface_tests {
         "scan_consented_browser_profile",
         "load_detected_browser_footprint",
         "revoke_detected_browser_footprint",
+    ];
+
+    const BROWSER_CONSENT_TAURI_COMMANDS: [&str; 15] = [
+        "list_browser_imports",
+        "open_browser_import",
+        "get_firefox_status",
+        "install_firefox",
+        "begin_browser_account_import",
+        "begin_protected_browser_import",
+        "finish_protected_browser_import",
+        "launch_firefox_service",
+        "get_default_browser_companion_status",
+        "host_default_browser_companion",
+        "resize_default_browser_companion",
+        "focus_default_browser_companion",
+        "detach_default_browser_companion",
+        "native_app_takeover_requires_consent",
+        "host_native_app_window",
     ];
 
     const F1_FOOTPRINT_NATIVE_COMMANDS: [&str; 2] = [
@@ -10932,6 +11161,12 @@ mod tauri_registration_surface_tests {
         for command in BROWSER_CONSENT_COMMANDS {
             assert_registered_and_granted(&handlers, &permissions, &capability, command);
         }
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &BROWSER_CONSENT_COMMANDS,
+        );
 
         let declared_browser_consent_permissions = permissions
             .iter()
@@ -10988,6 +11223,57 @@ mod tauri_registration_surface_tests {
             ),
             "removing a browser-consent capability grant must make the proof fail"
         );
+
+        let request = BrowserFootprintConsentRequest {
+            browser_id: BrowserImportId::Chrome,
+            browser_profile_account: "browser-account".to_owned(),
+            browser_profile_id: "profile-id".to_owned(),
+            import_run_id: "import-run".to_owned(),
+            consent: true,
+        };
+        let observation = FootprintObservation {
+            owner_osl_user_id: "owner-1".to_owned(),
+            browser_id: request.browser_id,
+            browser_profile_account: request.browser_profile_account.clone(),
+            browser_profile_id: request.browser_profile_id.clone(),
+            import_run_id: request.import_run_id.clone(),
+            observed_at_unix_ms: 12,
+        };
+        let mut state = browser_footprint::BrowserFootprintState {
+            observations: vec![observation],
+            bindings: vec![
+                checked_browser_footprint_binding("owner-1", &request, false)
+                    .expect("well-formed browser footprint binding"),
+            ],
+        };
+        assert!(
+            browser_footprint::hydrate_consented_for_owner(
+                &state,
+                "owner-1",
+                request.browser_id,
+                &request.browser_profile_account,
+                &request.browser_profile_id,
+                &request.import_run_id,
+            )
+            .is_none(),
+            "a browser footprint binding without explicit consent must refuse hydration"
+        );
+        state.bindings = vec![checked_browser_footprint_binding("owner-1", &request, true)
+            .expect("explicit browser footprint consent binding")];
+        assert_eq!(
+            browser_footprint::hydrate_consented_for_owner(
+                &state,
+                "owner-1",
+                request.browser_id,
+                &request.browser_profile_account,
+                &request.browser_profile_id,
+                &request.import_run_id,
+            )
+            .expect("explicit consent hydrates the exact footprint")
+            .len(),
+            1,
+            "explicit consent must hydrate only the exact owner/browser/profile/import scope"
+        );
     }
 
     fn test_checked_host() -> CheckedHost {
@@ -11020,26 +11306,29 @@ mod tauri_registration_surface_tests {
     #[test]
     fn browser_consent_tauri_commands_and_acl_are_registered() {
         let (handlers, permissions, capability) = registration_inputs();
-        let expected_permissions = BROWSER_NATIVE_CONSENT_COMMANDS
+        let browser_consent_surface = BROWSER_CONSENT_TAURI_COMMANDS;
+        assert_eq!(
+            BROWSER_NATIVE_CONSENT_COMMANDS, browser_consent_surface,
+            "the legacy browser/native consent alias must match the reconciled Tauri command surface"
+        );
+        let expected_permissions = browser_consent_surface
             .iter()
             .map(|command| command_permission(command))
             .collect::<BTreeSet<_>>();
-
-        for command in BROWSER_NATIVE_CONSENT_COMMANDS {
+        for command in browser_consent_surface {
             assert_registered_and_granted(&handlers, &permissions, &capability, command);
         }
-
         let declared_permissions = permissions
             .iter()
             .filter_map(|(permission, command)| {
-                BROWSER_NATIVE_CONSENT_COMMANDS
+                browser_consent_surface
                     .contains(&command.as_str())
                     .then_some(permission.clone())
             })
             .collect::<BTreeSet<_>>();
         assert_eq!(
             declared_permissions, expected_permissions,
-            "the browser/native consent command group must use exactly its fixed permission identifiers"
+            "the reconciled browser-consent Tauri surface must keep exactly its fixed permission identifiers"
         );
 
         let granted_permissions = capability
@@ -11048,7 +11337,13 @@ mod tauri_registration_surface_tests {
             .collect::<BTreeSet<_>>();
         assert_eq!(
             granted_permissions, expected_permissions,
-            "the main-window capability must grant every browser/native consent permission"
+            "the main-window capability must grant the full reconciled browser-consent Tauri surface"
+        );
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &browser_consent_surface,
         );
 
         let mut missing_consent_probe = handlers.clone();
@@ -11100,19 +11395,51 @@ mod tauri_registration_surface_tests {
     #[test]
     fn hosted_session_scan_commands_are_registered() {
         let (handlers, permissions, capability) = registration_inputs();
-        for command in [
+        const HOSTED_SESSION_SCAN_COMMANDS: [&str; 3] = [
             "open_hosted_session_scan",
             "request_hosted_session_scan",
             "request_hosted_session_scan_command",
-        ] {
+        ];
+        let expected_permissions = HOSTED_SESSION_SCAN_COMMANDS
+            .iter()
+            .map(|command| command_permission(command))
+            .collect::<BTreeSet<_>>();
+        for command in HOSTED_SESSION_SCAN_COMMANDS {
             assert_registered_and_granted(&handlers, &permissions, &capability, command);
         }
+        let declared_permissions = permissions
+            .iter()
+            .filter_map(|(permission, command)| {
+                HOSTED_SESSION_SCAN_COMMANDS
+                    .contains(&command.as_str())
+                    .then_some(permission.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            declared_permissions, expected_permissions,
+            "hosted session scan commands must keep exactly their fixed permission identifiers"
+        );
+        let granted_permissions = capability
+            .intersection(&expected_permissions)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            granted_permissions, expected_permissions,
+            "hosted session scan commands must all be granted by the main-window capability"
+        );
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &HOSTED_SESSION_SCAN_COMMANDS,
+        );
         for forbidden in [
             "preview_discord_guided_deletion",
             "request_hosted_session_scan_comman",
             "execute_discord_guided_deletion",
             "delete_own_item",
         ] {
+            let forbidden_permission = command_permission(forbidden);
             assert!(
                 !handlers.contains(forbidden),
                 "{forbidden} must not be registered"
@@ -11122,8 +11449,8 @@ mod tauri_registration_surface_tests {
                 "{forbidden} must not be ACL-granted"
             );
             assert!(
-                !capability.contains(&command_permission(forbidden)),
-                "{forbidden} must not be granted by the main-window capability"
+                !capability.contains(&forbidden_permission),
+                "{forbidden} must not have a capability grant"
             );
         }
         for forbidden_permission in [
@@ -11141,40 +11468,6 @@ mod tauri_registration_surface_tests {
                 "{forbidden_permission} must not be granted by the main-window capability"
             );
         }
-
-        let mut missing_request = handlers.clone();
-        missing_request.remove("request_hosted_session_scan");
-        assert!(
-            !is_registered_and_granted(
-                &missing_request,
-                &permissions,
-                &capability,
-                "request_hosted_session_scan",
-            ),
-            "removing the scan request command must make the proof fail"
-        );
-        let mut missing_permission = permissions.clone();
-        missing_permission.remove("allow-request-hosted-session-scan-command");
-        assert!(
-            !is_registered_and_granted(
-                &handlers,
-                &missing_permission,
-                &capability,
-                "request_hosted_session_scan_command",
-            ),
-            "removing the scan command permission declaration must make the proof fail"
-        );
-        let mut missing_capability = capability.clone();
-        missing_capability.remove("allow-open-hosted-session-scan");
-        assert!(
-            !is_registered_and_granted(
-                &handlers,
-                &permissions,
-                &missing_capability,
-                "open_hosted_session_scan",
-            ),
-            "removing the scan open ACL grant must make the proof fail"
-        );
     }
 
     #[test]
@@ -11185,6 +11478,39 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             "request_hosted_session_scan_command",
+        );
+
+        let missing_checked_host_events = RefCell::new(Vec::<&'static str>::new());
+        let missing_checked_host = checked_hosted_session_scan_flow(
+            || {
+                missing_checked_host_events.borrow_mut().push("checked-host");
+                Err("missing checked host".to_owned())
+            },
+            |_checked| {
+                missing_checked_host_events
+                    .borrow_mut()
+                    .push("attended-binding");
+                Ok(vec!["operator".to_owned()])
+            },
+            |_checked, _operator_names| {
+                missing_checked_host_events.borrow_mut().push("native-scan");
+                Ok(test_deletion_scan())
+            },
+            |_checked| {
+                missing_checked_host_events
+                    .borrow_mut()
+                    .push("context-recheck");
+                Ok(())
+            },
+        );
+        match missing_checked_host {
+            Err(error) => assert_eq!(error, "missing checked host"),
+            Ok(_) => panic!("missing checked host must refuse the hosted scan"),
+        }
+        assert_eq!(
+            missing_checked_host_events.into_inner(),
+            ["checked-host"],
+            "the hosted scan command must build CheckedHost before binding operators or scanning"
         );
 
         let events = RefCell::new(Vec::<&'static str>::new());
@@ -11212,6 +11538,8 @@ mod tauri_registration_surface_tests {
         )
         .expect("checked scan succeeds only after every gate");
         assert_eq!(scan.generation, 9);
+        assert_eq!(scan.scope_binding_hash, "scan-hash");
+        assert_eq!(scan.rows_seen, 1);
         assert_eq!(
             events.into_inner(),
             [
@@ -11268,12 +11596,12 @@ mod tauri_registration_surface_tests {
             },
             |_checked| {
                 stale_context_events.borrow_mut().push("context-recheck");
-                Err("stale native context".to_owned())
+                Err("stale hosted context".to_owned())
             },
         );
         match stale_context {
-            Err(error) => assert_eq!(error, "stale native context"),
-            Ok(_) => panic!("stale native context must refuse the hosted scan result"),
+            Err(error) => assert_eq!(error, "stale hosted context"),
+            Ok(_) => panic!("stale hosted context must refuse after native scan"),
         }
         assert_eq!(
             stale_context_events.into_inner(),
@@ -11283,7 +11611,40 @@ mod tauri_registration_surface_tests {
                 "native-scan",
                 "context-recheck"
             ],
-            "a stale context after native scan must refuse before the result is returned"
+            "a stale hosted context must refuse after native scan and before returning data"
+        );
+
+        let native_scan_refusal_events = RefCell::new(Vec::<&'static str>::new());
+        let native_scan_refused = checked_hosted_session_scan_flow(
+            || {
+                native_scan_refusal_events.borrow_mut().push("checked-host");
+                Ok(test_checked_host())
+            },
+            |_checked| {
+                native_scan_refusal_events
+                    .borrow_mut()
+                    .push("attended-binding");
+                Ok(vec!["operator".to_owned()])
+            },
+            |_checked, _operator_names| {
+                native_scan_refusal_events.borrow_mut().push("native-scan");
+                Err("native scan refused".to_owned())
+            },
+            |_checked| {
+                native_scan_refusal_events
+                    .borrow_mut()
+                    .push("context-recheck");
+                Ok(())
+            },
+        );
+        match native_scan_refused {
+            Err(error) => assert_eq!(error, "native scan refused"),
+            Ok(_) => panic!("native scan refusal must not be converted into success"),
+        }
+        assert_eq!(
+            native_scan_refusal_events.into_inner(),
+            ["checked-host", "attended-binding", "native-scan"],
+            "native scan refusal must stop before context recheck or result return"
         );
 
         let missing_checked_host_events = RefCell::new(Vec::<&'static str>::new());
@@ -11353,8 +11714,29 @@ mod tauri_registration_surface_tests {
             .as_ref()
             .cloned()
             .expect("test identity installed");
-        let mut verifier =
-            IdentityBindingVerifier::new(PinnedOwner::from_identity(&owner_identity));
+        let owner = PinnedOwner::from_identity(&owner_identity);
+        let mut verifier = IdentityBindingVerifier::new(owner);
+        let refused_before_start = Cell::new(false);
+        let refused_checked = start_autoscrub_reviewed_run_checked(
+            &state,
+            request.clone(),
+            |_| Ok(IdentityBindingVerifier::new(owner)),
+            |_, _| {
+                refused_before_start.set(true);
+                Ok(before.clone())
+            },
+        );
+        match refused_checked {
+            Err(error) => assert_eq!(
+                error, "A reviewed identity binding is required before starting AutoScrub",
+                "the production review gate must refuse before the reviewed-run start callback"
+            ),
+            Ok(_) => panic!("missing review binding must refuse before starting AutoScrub"),
+        }
+        assert!(
+            !refused_before_start.get(),
+            "missing review binding must stop before any AutoScrub run can open"
+        );
         assert_eq!(
             require_review_ui_identity_binding_from_verifier(&verifier, &request),
             Err("A reviewed identity binding is required before starting AutoScrub".to_owned()),
@@ -11442,6 +11824,37 @@ mod tauri_registration_surface_tests {
         assert_eq!(started, 1);
         assert_eq!(start_events.into_inner(), ["start"]);
 
+        let mut accepted_verifier = IdentityBindingVerifier::new(owner);
+        accepted_verifier
+            .bind(
+                AccountRef {
+                    service_id: "discord".to_owned(),
+                    account_id: "acct-1".to_owned(),
+                },
+                BindingScope::ScrubDeletion,
+                BindingEvidence::CallerAttested,
+            )
+            .expect("exact deletion binding can be recorded for checked path");
+        let accepted_start = Cell::new(false);
+        let accepted = start_autoscrub_reviewed_run_checked(
+            &state,
+            request.clone(),
+            |_| Ok(accepted_verifier),
+            |_, accepted_request| {
+                accepted_start.set(true);
+                assert!(
+                    accepted_request.account_id == "acct-1",
+                    "accepted request must target the reviewed account"
+                );
+                Ok(before.clone())
+            },
+        )
+        .expect("an exact reviewed binding reaches the reviewed-run start callback");
+        assert_eq!(accepted.open_run_count, before.open_run_count);
+        assert!(
+            accepted_start.get(),
+            "exact ScrubDeletion binding must be enough to reach the reviewed-run start callback"
+        );
         match start_autoscrub_reviewed_run_inner(&state, request) {
             Err(error) => assert_eq!(
                 error, "A reviewed identity binding is required before starting AutoScrub",
@@ -11460,46 +11873,43 @@ mod tauri_registration_surface_tests {
     #[test]
     fn autoscrub_run_lifecycle_commands_are_registered_and_acl_granted() {
         let (handlers, permissions, capability) = registration_inputs();
-        for command in [
+        const AUTOSCRUB_RUN_LIFECYCLE_COMMANDS: [&str; 3] = [
             "get_autoscrub_run_fl",
             "start_autoscrub_reviewed_run",
             "request_autoscrub_global_stop",
-        ] {
+        ];
+        let expected_permissions = AUTOSCRUB_RUN_LIFECYCLE_COMMANDS
+            .iter()
+            .map(|command| command_permission(command))
+            .collect::<BTreeSet<_>>();
+        for command in AUTOSCRUB_RUN_LIFECYCLE_COMMANDS {
             assert_registered_and_granted(&handlers, &permissions, &capability, command);
         }
-
-        let mut missing_start = capability.clone();
-        missing_start.remove("allow-start-autoscrub-reviewed-run");
-        assert!(
-            !is_registered_and_granted(
-                &handlers,
-                &permissions,
-                &missing_start,
-                "start_autoscrub_reviewed_run",
-            ),
-            "removing the start-run ACL grant must make the proof fail"
+        let declared_permissions = permissions
+            .iter()
+            .filter_map(|(permission, command)| {
+                AUTOSCRUB_RUN_LIFECYCLE_COMMANDS
+                    .contains(&command.as_str())
+                    .then_some(permission.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            declared_permissions, expected_permissions,
+            "AutoScrub lifecycle commands must keep exactly their fixed permission identifiers"
         );
-        let mut missing_handler = handlers.clone();
-        missing_handler.remove("request_autoscrub_global_stop");
-        assert!(
-            !is_registered_and_granted(
-                &missing_handler,
-                &permissions,
-                &capability,
-                "request_autoscrub_global_stop",
-            ),
-            "removing the stop command handler must make the proof fail"
+        let granted_permissions = capability
+            .intersection(&expected_permissions)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            granted_permissions, expected_permissions,
+            "AutoScrub lifecycle commands must all be granted by the main-window capability"
         );
-        let mut missing_permission = permissions.clone();
-        missing_permission.remove("allow-get-autoscrub-run-fl");
-        assert!(
-            !is_registered_and_granted(
-                &handlers,
-                &missing_permission,
-                &capability,
-                "get_autoscrub_run_fl",
-            ),
-            "removing the fleet-status permission declaration must make the proof fail"
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &AUTOSCRUB_RUN_LIFECYCLE_COMMANDS,
         );
     }
 }
