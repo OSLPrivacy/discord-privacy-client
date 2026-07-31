@@ -9801,6 +9801,72 @@ mod b6_startup_gate_tests {
             ],
             "host drift must refuse before the opened receipt is recorded"
         );
+
+        let stale_after_events = RefCell::new(Vec::<&'static str>::new());
+        let stale_after = poll_native_discord_headless_qa_restart_proof_flow(
+            "main",
+            || {
+                stale_after_events.borrow_mut().push("owner");
+                Ok("osl-b".to_owned())
+            },
+            || {
+                stale_after_events.borrow_mut().push("reload-context-token");
+                Ok("token-after-b-relaunch".to_owned())
+            },
+            |_| {
+                stale_after_events.borrow_mut().push("host-before");
+                Ok(relaunched_host())
+            },
+            |_, _| {
+                stale_after_events.borrow_mut().push("validate-before");
+                Ok(())
+            },
+            || {
+                stale_after_events.borrow_mut().push("drain-production-inbox");
+                Ok(FakeOpened {
+                    opened_count: 1,
+                    pending_view_once_count: 0,
+                    acknowledgment_count: 0,
+                    fetched: 1,
+                })
+            },
+            |opened| {
+                stale_after_events.borrow_mut().push("poll-receipt");
+                assert!(opened.is_ok());
+                Ok(())
+            },
+            |_| {
+                stale_after_events.borrow_mut().push("host-after");
+                Ok(relaunched_host())
+            },
+            |_, _| {
+                stale_after_events.borrow_mut().push("validate-after");
+                Err("stale native context after drain".to_owned())
+            },
+            |_| {
+                stale_after_events.borrow_mut().push("opened-receipt");
+                Ok(())
+            },
+            summarize,
+        );
+        match stale_after {
+            Err(error) => assert_eq!(error, "stale native context after drain"),
+            Ok(_) => panic!("post-drain host validation failure must refuse the restart proof"),
+        }
+        assert_eq!(
+            stale_after_events.into_inner(),
+            [
+                "owner",
+                "reload-context-token",
+                "host-before",
+                "validate-before",
+                "drain-production-inbox",
+                "poll-receipt",
+                "host-after",
+                "validate-after",
+            ],
+            "post-drain validation must refuse before recording opened receipt success"
+        );
     }
 
     #[test]
