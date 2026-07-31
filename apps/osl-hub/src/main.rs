@@ -10628,6 +10628,39 @@ mod native_visible_row_qa_command_tests {
             "a stale post-read context must refuse before the lock-after gate or persistence"
         );
 
+        let finish_refused_events = RefCell::new(Vec::<&'static str>::new());
+        let finish_persisted = Cell::new(false);
+        let stale_finish = finish_native_visible_row_qa_request(
+            &context,
+            runtime_receipt_fixture(),
+            || {
+                finish_refused_events.borrow_mut().push("lock-after");
+                Ok(())
+            },
+            |_epoch, _host| {
+                finish_refused_events.borrow_mut().push("context-after");
+                Err("stale native context".to_owned())
+            },
+            |_| {
+                finish_refused_events.borrow_mut().push("persist");
+                finish_persisted.set(true);
+                Ok(())
+            },
+        );
+        match stale_finish {
+            Err(error) => assert_eq!(error, "stale native context"),
+            Ok(_) => panic!("stale post-read context must refuse the QA receipt"),
+        }
+        assert_eq!(
+            finish_refused_events.into_inner(),
+            ["context-after"],
+            "post-read context drift must refuse before lock recheck or persistence"
+        );
+        assert!(
+            !finish_persisted.get(),
+            "a stale post-read context must not persist a native visible-row receipt"
+        );
+
         let refused_events = RefCell::new(Vec::<&'static str>::new());
         let refused = prepare_native_visible_row_qa_request(
             || {
