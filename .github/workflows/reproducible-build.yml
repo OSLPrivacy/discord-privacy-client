@@ -215,10 +215,21 @@ jobs:
           } finally {
             Pop-Location
           }
-          $rebuilt = Join-Path $PWD "apps/osl-hub/target/release/osl-privacy-hub.exe"
-          if (!(Test-Path $rebuilt -PathType Leaf)) {
-            throw "rebuilt OSL Privacy Hub executable is missing"
+          # Compare what the installer actually carries. The bundler patches the
+          # copy it stages, so the pre-bundle link output at target/release still
+          # reads __TAURI_BUNDLE_TYPE_VAR_UNK where the shipped copy reads NSS -
+          # measured, three bytes, the only difference between the two.
+          $bundles = @(Get-ChildItem apps/osl-hub/target/release/bundle/nsis -File -Filter "*.exe")
+          if ($bundles.Count -ne 1) {
+            throw "rebuild must produce exactly one Windows installer, got $($bundles.Count)"
           }
+          New-Item -ItemType Directory -Path rebuilt-extracted | Out-Null
+          7z x "$($bundles[0].FullName)" -orebuilt-extracted -y | Out-Null
+          $executables = @(Get-ChildItem rebuilt-extracted -Recurse -File -Filter "osl-privacy-hub.exe")
+          if ($executables.Count -ne 1) {
+            throw "rebuilt installer must contain exactly one OSL Privacy Hub executable, got $($executables.Count)"
+          }
+          $rebuilt = $executables[0].FullName
           $hash = (Get-FileHash $rebuilt -Algorithm SHA256).Hash.ToLowerInvariant()
           "REBUILT_EXE=$rebuilt" >> $env:GITHUB_ENV
           "REBUILT_EXE_SHA256=$hash" >> $env:GITHUB_ENV

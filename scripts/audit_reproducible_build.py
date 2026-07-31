@@ -374,6 +374,12 @@ def audit_text(text: str, release_text: str | None = None) -> list[str]:
         errors,
     )
     require(
+        "7z x \"$($bundles[0].FullName)\" -orebuilt-extracted" in text
+        and "rebuilt installer must contain exactly one OSL Privacy Hub executable" in text,
+        "workflow must compare the installer-staged executable, not the pre-bundle link output",
+        errors,
+    )
+    require(
         "reproducible build target directory already exists" in text
         and "CARGO_TARGET_DIR" not in text,
         "workflow must rebuild into a born-empty target directory at the release path",
@@ -520,6 +526,16 @@ jobs:
         self.assertIn(
             "rebuild must run the same Tauri build arguments the release used",
             audit_text(self.workflow(), release),
+        )
+
+    def test_refuses_comparing_the_pre_bundle_link_output(self) -> None:
+        mutant = self.workflow().replace(
+            "7z x \"$($bundles[0].FullName)\" -orebuilt-extracted -y | Out-Null",
+            "# staged extraction omitted",
+        )
+        self.assertIn(
+            "workflow must compare the installer-staged executable, not the pre-bundle link output",
+            audit_text(mutant),
         )
 
     def test_refuses_missing_release_download(self) -> None:
