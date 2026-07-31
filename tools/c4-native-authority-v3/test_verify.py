@@ -1615,6 +1615,7 @@ define_the_c4_v3_native_authority_receipt_schema_for_exact_shipping_builds.__nam
 
 
 def c4_v3_native_authority_receipt_schema_test_verify_py() -> None:
+    define_c4_one_shot_challenge_ledger_contract()
     define_the_c4_v3_native_authority_receipt_schema_for_exact_shipping_builds()
 
 
