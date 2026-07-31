@@ -1790,7 +1790,7 @@ mod prekey_replenishment_production_caller_tests {
     }
 
     #[test]
-    fn observed_remaining_at_threshold_triggers_replenish_using_state_path() {
+    fn observed_remaining_at_threshold_triggers_production_replenish_caller() {
         let dir = tempfile::tempdir().unwrap();
         let identity = keystore::generate_identity("prekey-prod-caller".to_string());
         let prekeys = PrekeyState::new(&identity, PrekeyConfig::default(), 1_700_000_000);
@@ -17674,7 +17674,7 @@ mod unit_b1_rn_wire_path_dispatch {
     /// build). Dispatch must select the v3 path, unchanged from
     /// pre-unit-b1 behavior.
     #[test]
-    fn gate_off_unpinned_peer_dispatches_legacy_v3_unchanged() {
+    fn gate_off_unpinned_peer_dispatches_unit_b1_legacy_v3_unchanged() {
         assert!(
             !crate::wire_rn::RN_WIRE_IN_ENABLED,
             "this test asserts against the real production gate value"
