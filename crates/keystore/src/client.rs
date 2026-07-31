@@ -1512,13 +1512,17 @@ impl KeyServerClient {
             ));
         }
         let capability = self.probe_control_inbox_sender_filter_capability()?;
-        match capability {
-            ControlInboxSenderFilterCapability::Version1 => {
-                record_sender_filter_capability_floor()?;
-                self.get_control_inbox_from(identity, sender_id)
-            }
-            ControlInboxSenderFilterCapability::Legacy => Err(Error::Transport(
-                "control-inbox sender-filter capability unavailable".into(),
+        let measured_floor = self.observe_sender_filter_capability_floor(identity)?;
+        match (capability, measured_floor) {
+            (
+                ControlInboxSenderFilterCapability::Version1,
+                SenderFilterCapabilityFloor::Version1,
+            ) => self.get_control_inbox_from(identity, sender_id),
+            (
+                ControlInboxSenderFilterCapability::Legacy,
+                SenderFilterCapabilityFloor::Version1,
+            ) => Err(Error::Transport(
+                "control-inbox sender-filter capability downgrade refused".into(),
             )),
         }
     }
@@ -1869,40 +1873,6 @@ fn valid_control_inbox_sender_id(value: &str) -> bool {
 
 fn fresh_request_id() -> String {
     URL_SAFE_NO_PAD.encode(crypto::random::random_bytes(32))
-}
-
-const SENDER_FILTER_CAPABILITY_FLOOR_FILE: &str = "sender-filter-capability-floor.json";
-const SENDER_FILTER_CAPABILITY_FLOOR_JSON: &[u8] = br#"{"control_inbox_sender_disposition":1}"#;
-
-fn sender_filter_capability_floor_path() -> Result<std::path::PathBuf> {
-    let mut path = crate::recipients::osl_config_dir()
-        .map_err(|_| Error::Transport("control-inbox sender-filter floor is unavailable".into()))?;
-    path.push(SENDER_FILTER_CAPABILITY_FLOOR_FILE);
-    Ok(path)
-}
-
-fn sender_filter_capability_floor_was_observed() -> Result<bool> {
-    let path = sender_filter_capability_floor_path()?;
-    match std::fs::read(path) {
-        Ok(bytes) if bytes == SENDER_FILTER_CAPABILITY_FLOOR_JSON => Ok(true),
-        Ok(_) => Err(Error::Transport(
-            "control-inbox sender-filter floor is malformed".into(),
-        )),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error.into()),
-    }
-}
-
-fn record_sender_filter_capability_floor() -> Result<()> {
-    let path = sender_filter_capability_floor_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    if sender_filter_capability_floor_was_observed()? {
-        return Ok(());
-    }
-    std::fs::write(path, SENDER_FILTER_CAPABILITY_FLOOR_JSON)?;
-    Ok(())
 }
 
 // ---- Phase 6.4 control-inbox payload shapes (used by post_control_inbox /

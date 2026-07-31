@@ -312,9 +312,12 @@ describe("shipping sender-filter Worker/client rollout closure", () => {
     const filteredLegacyCall = structuredClone(files);
     filteredLegacyCall["crates/keystore/src/client.rs"] =
       filteredLegacyCall["crates/keystore/src/client.rs"].replace(
-        'Err(Error::Transport(\n                    "control-inbox sender-filter capability downgrade refused".into(),\n                ))',
+        /Err\s*\(\s*Error\s*::\s*Transport\s*\(\s*"control-inbox sender-filter capability downgrade refused"\s*\.\s*into\s*\(\s*\)\s*,\s*\)\s*\)/,
         "Ok(FilteredControlInbox { delivery: ControlInboxDeliveryDisposition { live: 0, retryable: 0, quarantined: 0, retired: 0 }, items: self.get_control_inbox(identity)?.into_iter().filter(|item| item.sender_id == sender_id).collect() })",
       );
+    expect(filteredLegacyCall["crates/keystore/src/client.rs"]).not.toBe(
+      files["crates/keystore/src/client.rs"],
+    );
     expect(() =>
       validateRolloutSourceClosure(filteredLegacyCall),
     ).toThrow(/live-tail measured floor|legacy\/direct bypass/);

@@ -5,6 +5,7 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use keystore::{generate_identity, Error, KeyServerClient, WrappedKeyUpload};
+use sha2::Digest;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::mpsc;
@@ -303,6 +304,38 @@ fn multi_response_server(responses: Vec<Vec<u8>>) -> (u16, mpsc::Receiver<Vec<u8
                     break;
                 }
             }
+            let _ = tx.send(acc);
+            stream.write_all(&response).unwrap();
+        }
+    });
+    (port, rx)
+}
+
+type ResponseHandler = Box<dyn FnMut(&[u8]) -> Vec<u8> + Send>;
+
+fn multi_response_server_from_requests(
+    handlers: Vec<ResponseHandler>,
+) -> (u16, mpsc::Receiver<Vec<u8>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        for mut handler in handlers {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut buf = [0u8; 4096];
+            let mut acc = Vec::new();
+            loop {
+                let n = stream.read(&mut buf).unwrap();
+                assert!(n > 0, "request ended before headers");
+                acc.extend_from_slice(&buf[..n]);
+                if acc.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let response = handler(&acc);
             let _ = tx.send(acc);
             stream.write_all(&response).unwrap();
         }
@@ -1105,6 +1138,51 @@ fn health_response(value: serde_json::Value) -> Vec<u8> {
     control_inbox_json_response(value)
 }
 
+fn write_lp(output: &mut Vec<u8>, value: &[u8]) {
+    output.extend_from_slice(&(value.len() as u32).to_be_bytes());
+    output.extend_from_slice(value);
+}
+
+fn sender_filter_floor_identity_anchor_sha256(
+    user_id: &str,
+    ed25519_public: &[u8],
+) -> String {
+    let mut canonical = Vec::new();
+    write_lp(
+        &mut canonical,
+        b"OSL-SENDER-FILTER-FLOOR-IDENTITY-v1\0",
+    );
+    write_lp(&mut canonical, user_id.as_bytes());
+    write_lp(&mut canonical, ed25519_public);
+    let digest = sha2::Sha256::digest(canonical);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn sender_filter_floor_response(
+    user_id: &str,
+    ed25519_public: &[u8],
+    target: &str,
+) -> Vec<u8> {
+    assert!(target.starts_with("/v1/sender-filter-capability-floor/"));
+    let timestamp_ms = query_value(target, "ts").parse::<i64>().unwrap();
+    let request_id = query_value(target, "request_id");
+    assert_eq!(request_id.len(), 43);
+    assert!(!query_value(target, "sig").is_empty());
+    control_inbox_json_response(serde_json::json!({
+        "format": "osl.keyserver.sender-filter-capability-floor.v3",
+        "recipient_user_id": user_id,
+        "identity_anchor_sha256": sender_filter_floor_identity_anchor_sha256(
+            user_id,
+            ed25519_public,
+        ),
+        "capability_version": 1,
+        "monotonic_version": 1,
+        "first_observed_at_ms": timestamp_ms,
+        "request_timestamp_ms": timestamp_ms,
+        "request_id": request_id,
+    }))
+}
+
 fn control_inbox_json_response(body: serde_json::Value) -> Vec<u8> {
     let body = serde_json::to_vec(&body).unwrap();
     let mut response = Vec::new();
@@ -1139,17 +1217,28 @@ fn compatible_control_inbox_uses_signed_sender_filter_after_capability_probe() {
     std::fs::create_dir_all(&dir).unwrap();
     keystore::set_active_account_dir(Some(dir.clone()));
 
-    let (port, requests) = multi_response_server(vec![
-        health_response(serde_json::json!({
-            "ok": true,
-            "capabilities": {
-                "control_inbox_sender_disposition": 1,
-                "control_inbox_eviction_signal": 1,
-            },
-        })),
-        control_inbox_response(Some("peer-a"), &["peer-a"]),
-    ]);
     let identity = generate_identity("recipient".to_owned());
+    let floor_user_id = identity.user_id.clone();
+    let floor_ed25519_public = identity.ed25519_public.as_bytes().to_vec();
+    let (port, requests) = multi_response_server_from_requests(vec![
+        Box::new(|_| {
+            health_response(serde_json::json!({
+                "ok": true,
+                "capabilities": {
+                    "control_inbox_sender_disposition": 1,
+                    "control_inbox_eviction_signal": 1,
+                },
+            }))
+        }),
+        Box::new(move |request| {
+            sender_filter_floor_response(
+                &floor_user_id,
+                &floor_ed25519_public,
+                request_target(request),
+            )
+        }),
+        Box::new(|_| control_inbox_response(Some("peer-a"), &["peer-a"])),
+    ]);
     let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
 
     let page = client
@@ -1159,6 +1248,12 @@ fn compatible_control_inbox_uses_signed_sender_filter_after_capability_probe() {
     assert_eq!(page.items[0].sender_id, "peer-a");
     assert_eq!(page.delivery.live, 1);
     assert_eq!(request_target(&requests.recv().unwrap()), "/v1/healthz");
+    let floor_get = request_target(&requests.recv().unwrap()).to_owned();
+    assert!(floor_get.starts_with(&format!(
+        "/v1/sender-filter-capability-floor/{}?",
+        identity.user_id
+    )));
+    assert_eq!(query_value(&floor_get, "request_id").len(), 43);
     let filtered_get = request_target(&requests.recv().unwrap()).to_owned();
     assert!(filtered_get.starts_with(&format!("/v1/control-inbox/{}?", identity.user_id)));
     assert_eq!(query_value(&filtered_get, "sender"), "peer-a");
@@ -1208,14 +1303,25 @@ fn compatible_control_inbox_refuses_legacy_shape_after_capability_probe() {
     keystore::set_active_account_dir(Some(dir.clone()));
 
     let identity = generate_identity("recipient".to_owned());
-    let (port, requests) = multi_response_server(vec![
-        health_response(serde_json::json!({
-            "ok": true,
-            "capabilities": {
-                "control_inbox_sender_disposition": 1,
-            },
-        })),
-        legacy_control_inbox_response(&["peer-b", "peer-a"]),
+    let floor_user_id = identity.user_id.clone();
+    let floor_ed25519_public = identity.ed25519_public.as_bytes().to_vec();
+    let (port, requests) = multi_response_server_from_requests(vec![
+        Box::new(|_| {
+            health_response(serde_json::json!({
+                "ok": true,
+                "capabilities": {
+                    "control_inbox_sender_disposition": 1,
+                },
+            }))
+        }),
+        Box::new(move |request| {
+            sender_filter_floor_response(
+                &floor_user_id,
+                &floor_ed25519_public,
+                request_target(request),
+            )
+        }),
+        Box::new(|_| legacy_control_inbox_response(&["peer-b", "peer-a"])),
     ]);
     let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
     assert!(matches!(
@@ -1224,6 +1330,11 @@ fn compatible_control_inbox_refuses_legacy_shape_after_capability_probe() {
             if message.contains("did not confirm the sender filter")
     ));
     assert_eq!(request_target(&requests.recv().unwrap()), "/v1/healthz");
+    let floor_get = request_target(&requests.recv().unwrap()).to_owned();
+    assert!(floor_get.starts_with(&format!(
+        "/v1/sender-filter-capability-floor/{}?",
+        identity.user_id
+    )));
     assert!(request_target(&requests.recv().unwrap()).contains("&sender=peer-a"));
 
     keystore::set_active_account_dir(None);

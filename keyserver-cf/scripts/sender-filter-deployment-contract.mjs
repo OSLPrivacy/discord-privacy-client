@@ -33,7 +33,7 @@ export const SENDER_FILTER_SOURCE_FILES = Object.freeze({
   "keyserver-cf/src/index.ts": Object.freeze({
     role: "worker-route-registration",
     sha256:
-      "c07c2f84f8cae9443047fbfa69b8588918a7c066328462d6bf12b92b37de1d4f",
+      "24e97ba8253992ddcbb0bac797d0c2b58d29e6b526982a323ba30687604c1247",
   }),
   "keyserver-cf/src/endpoints/register.ts": Object.freeze({
     role: "shipping-canonical-identity-registration-caller",
