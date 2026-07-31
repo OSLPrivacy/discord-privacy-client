@@ -466,6 +466,18 @@ pub fn unlock_session(
 /// Reopen `<account_dir>/store` under the loaded identity secret. Returns
 /// whether a store is now installed.
 ///
+/// The reopen goes through [`crate::commands::open_production_message_store`],
+/// i.e. `MessageStore::open_anchored` with `KeystoreBackedAnchor::production()`
+/// — the same path bootstrap and `MessageStorePause` use. This is not a
+/// stylistic preference. `MessageStore::open` passes `provider: None`, which
+/// (a) skips `AnchorBinding::reconcile_existing`, so a coherent SQLite
+/// rollback/replay staged while the session was locked is never detected, and
+/// (b) leaves the live store with `anchor == None`, so every write for the rest
+/// of the session commits without advancing the keystore anchor — desynchronizing
+/// the persisted anchor from the database for the next anchored open. An
+/// unanchored reopen would therefore make "lock, then unlock" a way to strip
+/// rollback protection off a running session.
+///
 /// A failed open is deliberately non-fatal and mirrors bootstrap: the decrypt
 /// path swallows persistence errors, so a store outage must not take the
 /// unlocked session down with it. It is NOT silently ignored — the caller can
@@ -479,7 +491,7 @@ fn reopen_message_store(state: &AppState, account_dir: &Path) -> bool {
         }
     };
     let store_dir = account_dir.join("store");
-    match store::MessageStore::open(&store_dir, &secret_bytes) {
+    match crate::commands::open_production_message_store(&store_dir, &secret_bytes) {
         Ok(store) => {
             *state
                 .message_store

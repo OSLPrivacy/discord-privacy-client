@@ -14906,7 +14906,7 @@ impl<'a> MessageStorePause<'a> {
     }
 }
 
-fn open_production_message_store(
+pub(crate) fn open_production_message_store(
     app_data_dir: &Path,
     identity_secret: &[u8; 32],
 ) -> Result<MessageStore, StoreError> {

@@ -332,6 +332,23 @@ fn reset_process_globals() {
     session_lock::disarm_idle_lock();
 }
 
+/// The anchored open bootstrap actually uses in production
+/// (`commands::open_production_message_store`). Kept here so the anchored
+/// regression test starts from an enrolled store rather than a bare one.
+fn open_bob_store_anchored(bob_state: &AppState, account_dir: &Path) {
+    let secret: [u8; 32] = {
+        let guard = bob_state.identity.lock().unwrap();
+        *guard.as_ref().unwrap().x25519_secret.as_bytes()
+    };
+    let store = store::MessageStore::open_anchored(
+        &account_dir.join("store"),
+        &secret,
+        std::sync::Arc::new(keystore::KeystoreBackedAnchor::production()),
+    )
+    .expect("open bob store anchored");
+    *bob_state.message_store.lock().unwrap() = Some(store);
+}
+
 fn open_bob_store(bob_state: &AppState, account_dir: &Path) {
     let secret: [u8; 32] = {
         let guard = bob_state.identity.lock().unwrap();
@@ -553,6 +570,92 @@ fn an_expired_idle_window_locks_the_session_at_the_command_boundary() {
     assert!(
         ipc::main_password::get_file_storage_key().is_none(),
         "the idle lock must clear the file storage key too"
+    );
+
+    reset_process_globals();
+}
+
+/// `unlock_session` must reopen the store through the ANCHORED production
+/// path, not `MessageStore::open`.
+///
+/// This is not hygiene. An enrolled store keeps `anchor_generation` and
+/// `anchor_digest` in `_meta`, and `AnchorBinding::record` recomputes the
+/// digest over live database state on every anchored open. A session that
+/// reopened the store unanchored would keep writing rows while the stored
+/// digest stood still, so the NEXT anchored open — an ordinary app restart —
+/// fails with "database anchor digest does not bind current state". Locking
+/// and unlocking would quietly strip rollback protection off the session and
+/// then brick the store at next launch.
+///
+/// The bite: swap `unlock_session`'s reopen back to `store::MessageStore::open`
+/// and the final anchored reopen below fails.
+#[test]
+fn unlock_reopens_the_store_anchored_so_the_next_anchored_open_still_binds() {
+    let _globals = serialize_process_globals();
+    reset_process_globals();
+    let tmp = TempDir::new().expect("tempdir");
+    let account_dir = tmp.path().join("account");
+    std::fs::create_dir_all(&account_dir).unwrap();
+    keystore::set_base_dir_override(Some(account_dir.clone()));
+    keystore::set_active_account_dir(Some(account_dir.clone()));
+
+    let file_key = [0xA7u8; 32];
+    ipc::main_password::set_file_storage_key_after_main_password_unlock(file_key);
+    session_lock::arm_idle_lock();
+
+    let (alice_state, bob_state) = setup_alice_bob_dm();
+    persist_bob_account(&bob_state, &account_dir);
+
+    // Bootstrap opens the production store ANCHORED
+    // (`open_production_message_store` → `KeystoreBackedAnchor::production()`),
+    // so the session under test starts from an enrolled store, exactly as a
+    // real install does.
+    open_bob_store_anchored(&bob_state, &account_dir);
+
+    let wire_before = alice_sends(&alice_state, "anchored: before the lock").unwrap();
+    assert_eq!(
+        bob_decrypts(&bob_state, &wire_before, "a7-anch-1").unwrap(),
+        "anchored: before the lock"
+    );
+
+    session_lock::lock_session(&bob_state, SessionLockTrigger::Manual);
+    ipc::main_password::set_file_storage_key_after_main_password_unlock(file_key);
+    let unlock = session_lock::unlock_session(&bob_state, &account_dir).expect("unlock");
+    assert!(
+        unlock.message_store_reopened,
+        "the anchored reopen must succeed, not fall back to no store"
+    );
+
+    // Write through the reopened handle. An unanchored handle commits these
+    // rows without advancing `anchor_digest`.
+    let wire_after = alice_sends(&alice_state, "anchored: after the unlock").unwrap();
+    assert_eq!(
+        bob_decrypts(&bob_state, &wire_after, "a7-anch-2").unwrap(),
+        "anchored: after the unlock"
+    );
+    assert!(
+        !ipc::commands::cmd_osl_load_channel_history(&bob_state, CHANNEL.to_string(), None)
+            .unwrap()
+            .is_empty(),
+        "the post-unlock decrypt must actually have persisted"
+    );
+
+    // Close the session's handle, then do what the next app launch does.
+    drop(bob_state.message_store.lock().unwrap().take());
+    let secret: [u8; 32] = {
+        let guard = bob_state.identity.lock().unwrap();
+        *guard.as_ref().unwrap().x25519_secret.as_bytes()
+    };
+    let reopened = store::MessageStore::open_anchored(
+        &account_dir.join("store"),
+        &secret,
+        std::sync::Arc::new(keystore::KeystoreBackedAnchor::production()),
+    );
+    assert!(
+        reopened.is_ok(),
+        "post-unlock writes left the store unbindable by the anchor — \
+         unlock_session reopened it unanchored: {:?}",
+        reopened.err()
     );
 
     reset_process_globals();

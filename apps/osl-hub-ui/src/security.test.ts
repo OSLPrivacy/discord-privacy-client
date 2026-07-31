@@ -398,6 +398,14 @@ describe("bundled preview security boundary", () => {
       "allow-get-hub-service-burn-readiness",
       "allow-burn-hub-service-account",
       "allow-burn-active-hub-context",
+      // A7 manual "Lock now" (Settings → Password & security). Purely local
+      // and purely destructive-to-memory: it drops the identity, prekeys,
+      // peer map (including persisted ratchet state), whitelist, sender-key
+      // chains and file storage key, and closes the MessageStore. No network,
+      // no keyserver, no shell, and nothing on disk is deleted — the session
+      // just needs the main password again. It belongs inside the local
+      // main-window boundary this test protects.
+      "allow-lock-hub-session",
     ];
     expect(new Set(capability.permissions)).toEqual(new Set(expectedPermissions));
     expect(capability.permissions).toHaveLength(expectedPermissions.length);
