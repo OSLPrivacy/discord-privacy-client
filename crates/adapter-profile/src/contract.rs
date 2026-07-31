@@ -812,6 +812,21 @@ mod tests {
             ]
         );
 
+        let missing_binding_checks = required_checks()
+            .into_iter()
+            .filter(|check| check.predicate != Predicate::ScopeBinding)
+            .collect();
+        let missing_binding = SelfTestReport::from_checks(missing_binding_checks).unwrap();
+        assert_eq!(
+            missing_binding.verdict(),
+            ContractVerdict::Refused {
+                failed_subsystem: Subsystem::Binding,
+                failed_predicate: Predicate::ScopeBinding,
+                cause: UnverifiedCause::MissingBinding,
+            }
+        );
+        assert!(!missing_binding.verdict().permits_protected_path());
+
         assert!(!UnverifiedCause::NotObserved.requires_refusal());
         assert!(!UnverifiedCause::Ambiguous.requires_refusal());
         assert!(!UnverifiedCause::Unsupported.requires_refusal());
