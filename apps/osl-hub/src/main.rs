@@ -10097,7 +10097,7 @@ mod tauri_command_acl_tests {
     use std::cell::RefCell;
     use std::collections::BTreeSet;
 
-    fn test_checked_host() -> CheckedHost {
+    fn acl_test_checked_host() -> CheckedHost {
         CheckedHost {
             context_epoch: 42,
             active: ActiveServiceHost {
@@ -10196,7 +10196,7 @@ mod tauri_command_acl_tests {
         }
     }
 
-    fn test_deletion_scan() -> DeletionScan {
+    fn acl_test_deletion_scan() -> DeletionScan {
         DeletionScan {
             scope_binding_hash: "scan-hash".to_owned(),
             generation: 9,
@@ -10243,7 +10243,7 @@ mod tauri_command_acl_tests {
         let scan = checked_hosted_session_scan_flow(
             || {
                 events.borrow_mut().push("checked-host");
-                Ok(test_checked_host())
+                Ok(acl_test_checked_host())
             },
             |checked| {
                 events.borrow_mut().push("attended-binding");
@@ -10255,7 +10255,7 @@ mod tauri_command_acl_tests {
                 assert_eq!(checked.owner_osl_user_id, "owner-1");
                 assert_eq!(checked.scope_binding, "scope-binding");
                 assert_eq!(operator_names, ["operator".to_owned()]);
-                Ok(test_deletion_scan())
+                Ok(acl_test_deletion_scan())
             },
             |checked| {
                 events.borrow_mut().push("context-recheck");
@@ -10280,7 +10280,7 @@ mod tauri_command_acl_tests {
         let refused = checked_hosted_session_scan_flow(
             || {
                 refusal_events.borrow_mut().push("checked-host");
-                Ok(test_checked_host())
+                Ok(acl_test_checked_host())
             },
             |_checked| {
                 refusal_events.borrow_mut().push("attended-binding");
@@ -10288,7 +10288,7 @@ mod tauri_command_acl_tests {
             },
             |_checked, _operator_names| {
                 refusal_events.borrow_mut().push("native-scan");
-                Ok(test_deletion_scan())
+                Ok(acl_test_deletion_scan())
             },
             |_checked| {
                 refusal_events.borrow_mut().push("context-recheck");
