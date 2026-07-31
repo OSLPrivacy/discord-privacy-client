@@ -13,9 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
-use crate::privacy_scan::{
-    scan_local_messages, LocalMessageCandidate, LocalPrivacyScanResult, MAX_FINDINGS,
-};
+use crate::privacy_scan::{scan_local_messages, LocalMessageCandidate};
 
 const VERSION: u8 = 1;
 const INDEX_DIR: &str = "scrub-index-v1";

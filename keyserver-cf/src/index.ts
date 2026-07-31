@@ -57,12 +57,18 @@ import { handleSelectorManifest } from "./endpoints/selector-manifest.js";
 import { handleStripeWebhook } from "./endpoints/stripe-webhook.js";
 import { handleTelegramWebhook } from "./endpoints/telegram.js";
 import { handleUnregister } from "./endpoints/unregister.js";
+import {
+  handleMailCapabilities,
+  handleMailConsent,
+  handleMailExternalOutbound,
+  handleMailProvision,
+  handleMailRead,
+  handleMailSendOsl,
+} from "./endpoints/mail.js";
+import { handleInboundEmail } from "./mail/inbound.js";
+export { Mailbox } from "./mail/mailbox.js";
 import { handleUsernameCoverage } from "./endpoints/username-coverage.js";
 import { handleUsernameClaim, handleUsernameLookup } from "./endpoints/usernames.js";
-import {
-  handleUsernameClaim,
-  handleUsernameLookup,
-} from "./endpoints/usernames.js";
 import {
   handleControlInboxDelete,
   handleControlInboxGet,
@@ -107,6 +113,22 @@ export default {
     } catch {
       console.error("[fetch] unhandled failure");
       return serverError("internal error");
+    }
+  },
+
+  async email(
+    message: ForwardableEmailMessage,
+    env: Env,
+    ctx: ExecutionContext,
+  ): Promise<void> {
+    void ctx;
+    try {
+      await handleInboundEmail(message, env);
+    } catch {
+      // Throwing asks the upstream SMTP sender to retry. Never log envelope,
+      // header, address, or content data from this privacy-sensitive path.
+      console.error("[mail] inbound processing failed");
+      throw new Error("inbound processing failed");
     }
   },
 
@@ -305,6 +327,7 @@ async function dispatch(
 
   if (method === "GET") {
     if (path === "/v1/healthz") return await handleHealthz(env);
+    if (path === "/v1/mail/capabilities") return handleMailCapabilities();
     if (path === "/v1/download/windows") return await handleWindowsDownload(request, env);
     if (path === "/v1/selector-manifest") return handleSelectorManifest(env);
     const pubkeysUserId = matchParam(path, /^\/v1\/pubkeys\/([^/]+)$/);
@@ -323,10 +346,6 @@ async function dispatch(
     }
     const inboxUserId = matchParam(path, /^\/v1\/control-inbox\/([^/]+)$/);
     if (inboxUserId !== null) return await handleControlInboxGet(request, env, inboxUserId);
-    const username = matchParam(path, /^\/v1\/usernames\/([^/]+)$/);
-    if (username !== null) {
-      return await handleUsernameLookup(request, env, username);
-    }
     const floorUserId = matchParam(
       path,
       /^\/v1\/sender-filter-capability-floor\/([^/]+)$/,
@@ -360,6 +379,16 @@ async function dispatch(
       return await handleAccountOwnershipChallenge(request, env);
     }
     if (path === "/v1/register") return await handleRegister(request, env);
+    if (path === "/v1/usernames/claim") return await handleUsernameClaim(request, env);
+    if (path === "/v1/mail/address") return await handleMailProvision(request, env);
+    if (path === "/v1/mail/consent") return await handleMailConsent(request, env);
+    if (path === "/v1/mail/send/osl") return await handleMailSendOsl(request, env);
+    if (path === "/v1/mail/send/external") return handleMailExternalOutbound();
+    if (path === "/v1/mail/list") return await handleMailRead(request, env, "LIST");
+    if (path === "/v1/mail/fetch") return await handleMailRead(request, env, "FETCH");
+    if (path === "/v1/mail/ack") return await handleMailRead(request, env, "ACK");
+    if (path === "/v1/mail/delete") return await handleMailRead(request, env, "DELETE");
+    if (path === "/v1/mail/burn") return await handleMailRead(request, env, "BURN");
     if (path === "/v1/internal/sender-filter-rollout-root/provision") {
       return await handleSenderFilterRolloutRootProvision(request, env);
     }
