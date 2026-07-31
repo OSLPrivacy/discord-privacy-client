@@ -1524,6 +1524,20 @@ mod tests {
             policy.verify(&tampered_capability, &owner_pub, None),
             Err(BundleVerifyError::SignatureInvalid)
         );
+
+        let mut tampered_ed25519 = bundle.clone();
+        tampered_ed25519.ed25519_identity_pub[0] ^= 0x01;
+        assert_eq!(
+            policy.verify(&tampered_ed25519, &owner_pub, None),
+            Err(BundleVerifyError::SignatureInvalid)
+        );
+
+        let mut tampered_revision = bundle.clone();
+        tampered_revision.revision += 1;
+        assert_eq!(
+            policy.verify(&tampered_revision, &owner_pub, None),
+            Err(BundleVerifyError::SignatureInvalid)
+        );
     }
 
     #[test]
