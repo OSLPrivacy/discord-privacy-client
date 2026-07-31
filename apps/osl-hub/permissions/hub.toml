@@ -534,6 +534,11 @@ description = "Restore ownership, styles, and bounds only for the exact OSL-spaw
 commands.allow = ["detach_native_app_window"]
 
 [[permission]]
+identifier = "allow-get-signal-protected-send-readiness"
+description = "Read only the redacted, fail-closed Signal protected-send readiness state."
+commands.allow = ["get_signal_protected_send_readiness"]
+
+[[permission]]
 identifier = "allow-open-hosted-session-scan"
 description = "Borrow only the current native Discord session for a reviewed hosted-session scan; accepts no URL, profile, account, handle, credential, row, or takeover authority."
 commands.allow = ["open_hosted_session_scan"]

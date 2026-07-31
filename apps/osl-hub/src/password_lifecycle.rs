@@ -234,10 +234,7 @@ pub fn create_native_identity_with_owner_authorization_signoff(
     state: &HubCoreState,
     owner_authorization_signoff: HubIdentityCreationOwnerSignoff,
 ) -> Result<HubIdentitySetupResult, String> {
-    create_native_identity_after_owner_authorization_signoff(
-        state,
-        owner_authorization_signoff,
-    )
+    create_native_identity_after_owner_authorization_signoff(state, owner_authorization_signoff)
 }
 
 pub fn create_native_identity(
@@ -270,7 +267,6 @@ fn create_native_identity_after_owner_authorization_signoff(
         sealer.as_ref(),
         owner_authorization_signoff,
     )?;
-    initialise_keyserver(&state.osl, &dir);
     Ok(result)
 }
 
@@ -340,7 +336,6 @@ pub fn import_native_identity_phrase(
         None,
         !current.main_password_set,
     )?;
-    initialise_keyserver(&state.osl, &dir);
     Ok(result)
 }
 
@@ -374,8 +369,11 @@ pub fn setup_main_password(
     // a just-created identity). Re-run the original bootstrap now that the
     // file key is installed; this is the same production load path used by the
     // original client, not an OSL Privacy-specific partial approximation.
-    crate::original_bootstrap::run_autostart(&state.osl);
-    initialise_keyserver(&state.osl, account_dir.as_path());
+    // Keep first-password completion entirely local. The Tauri command
+    // schedules one best-effort registration worker only after this verified
+    // reload/bootstrap has completed, so offline networking cannot hold the
+    // account-creation UI behind the keyserver client's timeout.
+    crate::original_bootstrap::run_autostart_local(&state.osl);
     Ok(HubMainPasswordSetupResult {
         password_recovery_phrase: outcome.password_recovery_phrase,
         encrypted_state_reload_complete: outcome.reload_issue_count == 0,
@@ -571,11 +569,6 @@ pub(crate) fn parse_identity_phrase(phrase: &str) -> Result<[u8; 16], String> {
     let mut bytes = [0u8; 16];
     bytes.copy_from_slice(&entropy);
     Ok(bytes)
-}
-
-fn initialise_keyserver(state: &AppState, dir: &Path) {
-    let base_url = ipc::commands::resolve_keyserver_base_url(dir);
-    ipc::commands::ensure_keyserver_registered(state, &base_url, None);
 }
 
 #[cfg(test)]

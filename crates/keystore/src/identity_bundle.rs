@@ -1447,6 +1447,19 @@ mod tests {
                 }
             ))
         );
+
+        let mut substituted_pubkeys_response = response;
+        substituted_pubkeys_response.ik_x25519_pub = STANDARD.encode([0x66; 32]);
+        sign_scheme1_pubkeys_response(&identity, &mut substituted_pubkeys_response);
+        assert_eq!(
+            IdentityBundle::from_identity_and_pubkeys_response(
+                &identity,
+                &substituted_pubkeys_response,
+            ),
+            Err(IdentityBundleConstructionError::LocalIdentityMismatch {
+                field: BundleField::X25519IdentityKey,
+            })
+        );
     }
 
     #[test]
@@ -1552,6 +1565,14 @@ mod tests {
             policy.verify(&tampered_revision, &owner_pub, None),
             Err(BundleVerifyError::SignatureInvalid)
         );
+
+        assert_eq!(
+            policy.verify(&bundle, &owner_pub, Some(1)),
+            Err(BundleVerifyError::RevisionNotMonotonic {
+                got: 1,
+                last_known: 1,
+            })
+        );
     }
 
     #[test]
@@ -1595,6 +1616,16 @@ mod tests {
         assert_eq!(
             IdentityBundle::from_wire(&trailing),
             Err(IdentityBundleWireError::TrailingBytes { trailing: 1 })
+        );
+
+        let mut tampered_wire = bundle.to_wire();
+        let x25519_start = IDENTITY_BUNDLE_WIRE_MAGIC.len() + ed25519::PUBLIC_KEY_SIZE;
+        tampered_wire[x25519_start] ^= 0x01;
+        let tampered = IdentityBundle::from_wire(&tampered_wire)
+            .expect("field-level tampering keeps the wire frame parseable");
+        assert_eq!(
+            BundleVerifyPolicy::new().verify(&tampered, &owner_pub, Some(20)),
+            Err(BundleVerifyError::SignatureInvalid)
         );
     }
 
@@ -1938,6 +1969,17 @@ mod tests {
             bundle.verify_full(&forged_response, &owner_pub, Some(8)),
             Err(BundleFullVerifyError::Prekey(
                 BundleMergeError::SpkSignatureInvalid
+            ))
+        );
+
+        let mut substituted_identity_response = response;
+        substituted_identity_response.ik_ed25519_pub = STANDARD.encode([0x77; 32]);
+        assert_eq!(
+            bundle.verify_full(&substituted_identity_response, &owner_pub, Some(8)),
+            Err(BundleFullVerifyError::Prekey(
+                BundleMergeError::IdentityKeyMismatch {
+                    field: BundleField::Ed25519IdentityKey,
+                }
             ))
         );
     }

@@ -1414,7 +1414,10 @@ fn bootstrap_whatsapp_qa_device_identity(
 
     let before = password_lifecycle::readiness(state);
     if !before.identity_loaded && !before.main_password_set {
-        let mut identity = password_lifecycle::create_native_identity(state)?;
+        let mut identity = password_lifecycle::create_native_identity(
+            state,
+            Some(password_lifecycle::IdentityCreationOwnerAuthorization::ExplicitOwnerSignoff),
+        )?;
         if let Some(phrase) = identity.identity_recovery_phrase.as_mut() {
             phrase.zeroize();
         }
@@ -2168,8 +2171,20 @@ async fn host_native_app_window(
         return Err("An existing native session is not supported for this app".to_owned());
     }
     let owner = {
-        let _session = session.transition.lock().await;
-        active_unlocked_osl_user_id(&core)?
+        #[cfg(feature = "signal-qa-shell")]
+        if app_id == NativeAppId::Signal
+            && discord_session_mode == DiscordSessionMode::ExistingSession
+        {
+            "signal-qa-shell".to_owned()
+        } else {
+            let _session = session.transition.lock().await;
+            active_unlocked_osl_user_id(&core)?
+        }
+        #[cfg(not(feature = "signal-qa-shell"))]
+        {
+            let _session = session.transition.lock().await;
+            active_unlocked_osl_user_id(&core)?
+        }
     };
     let parent = main_window_hwnd(&app)?;
     let profile_root = app
@@ -2262,6 +2277,13 @@ fn detach_native_app_window(app: tauri::AppHandle) -> NativeWindowHostResult {
     native_discord_overlay::clear_and_hide(&app);
     app.state::<NativeDiscordComposerState>().clear();
     app.state::<NativeWindowHostState>().detach()
+}
+
+#[tauri::command]
+fn get_signal_protected_send_readiness(
+    state: State<'_, osl_privacy_hub::signal_destination_binding::SignalDestinationBindingState>,
+) -> osl_privacy_hub::signal_destination_binding::SignalBindingReceipt {
+    state.readiness()
 }
 
 #[tauri::command]
@@ -8937,6 +8959,7 @@ macro_rules! hub_tauri_commands {
             resize_native_app_window,
             focus_native_app_window,
             detach_native_app_window,
+            get_signal_protected_send_readiness,
             claim_whatsapp_qa_window,
             resize_whatsapp_qa_window,
             get_whatsapp_qa_protection_status,
@@ -9044,6 +9067,33 @@ macro_rules! hub_tauri_command_names {
     }};
 }
 
+#[cfg(feature = "signal-qa-shell")]
+fn main() {
+    let builder = tauri::Builder::default().setup(|app| {
+        app.manage(HubCoreState::default());
+        app.manage(HubAccountSessionState::default());
+        app.manage(NativeWindowHostState::default());
+        app.manage(NativeDiscordComposerState::default());
+        app.manage(
+            osl_privacy_hub::signal_destination_binding::SignalDestinationBindingState::default(),
+        );
+        Ok(())
+    });
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        list_native_apps,
+        host_native_app_window,
+        resize_native_app_window,
+        focus_native_app_window,
+        detach_native_app_window,
+        get_signal_protected_send_readiness,
+    ]);
+    let app = builder
+        .build(tauri::generate_context!("tauri.signal-qa.conf.json"))
+        .expect("error while running OSL Signal QA");
+    app.run(|_app_handle, _event| {});
+}
+
+#[cfg(not(feature = "signal-qa-shell"))]
 fn main() {
     #[cfg(feature = "discord-qa-shell")]
     {
@@ -9319,6 +9369,9 @@ fn main() {
         startup_breadcrumb("setup_step_28_service_host_state_managed"); // STARTUP-TRACE
         app.manage(NativeWindowHostState::default());
         startup_breadcrumb("setup_step_29_native_window_host_state_managed"); // STARTUP-TRACE
+        app.manage(
+            osl_privacy_hub::signal_destination_binding::SignalDestinationBindingState::default(),
+        );
         app.manage(NativeDiscordComposerState::default());
         startup_breadcrumb("setup_step_30_native_discord_composer_state_managed"); // STARTUP-TRACE
         app.manage(WhatsAppQaHostState::default());
@@ -9432,7 +9485,9 @@ mod b6_startup_gate_tests {
     #[test]
     fn b6_gate_is_textually_before_every_qa_startup_side_effect() {
         let source = include_str!("main.rs");
-        let main_start = source.find("fn main()").expect("main must exist");
+        let main_start = source
+            .find("#[cfg(not(feature = \"signal-qa-shell\"))]\nfn main()")
+            .expect("full OSL main must exist");
         let source = &source[main_start..];
         let gate = source
             .find("match discord_qa_b6_startup_gate()")
@@ -9803,6 +9858,72 @@ mod b6_startup_gate_tests {
                 "host-after",
             ],
             "host drift must refuse before the opened receipt is recorded"
+        );
+
+        let stale_after_events = RefCell::new(Vec::<&'static str>::new());
+        let stale_after = poll_native_discord_headless_qa_restart_proof_flow(
+            "main",
+            || {
+                stale_after_events.borrow_mut().push("owner");
+                Ok("osl-b".to_owned())
+            },
+            || {
+                stale_after_events.borrow_mut().push("reload-context-token");
+                Ok("token-after-b-relaunch".to_owned())
+            },
+            |_| {
+                stale_after_events.borrow_mut().push("host-before");
+                Ok(relaunched_host())
+            },
+            |_, _| {
+                stale_after_events.borrow_mut().push("validate-before");
+                Ok(())
+            },
+            || {
+                stale_after_events.borrow_mut().push("drain-production-inbox");
+                Ok(FakeOpened {
+                    opened_count: 1,
+                    pending_view_once_count: 0,
+                    acknowledgment_count: 0,
+                    fetched: 1,
+                })
+            },
+            |opened| {
+                stale_after_events.borrow_mut().push("poll-receipt");
+                assert!(opened.is_ok());
+                Ok(())
+            },
+            |_| {
+                stale_after_events.borrow_mut().push("host-after");
+                Ok(relaunched_host())
+            },
+            |_, _| {
+                stale_after_events.borrow_mut().push("validate-after");
+                Err("stale native context after drain".to_owned())
+            },
+            |_| {
+                stale_after_events.borrow_mut().push("opened-receipt");
+                Ok(())
+            },
+            summarize,
+        );
+        match stale_after {
+            Err(error) => assert_eq!(error, "stale native context after drain"),
+            Ok(_) => panic!("post-drain host validation failure must refuse the restart proof"),
+        }
+        assert_eq!(
+            stale_after_events.into_inner(),
+            [
+                "owner",
+                "reload-context-token",
+                "host-before",
+                "validate-before",
+                "drain-production-inbox",
+                "poll-receipt",
+                "host-after",
+                "validate-after",
+            ],
+            "post-drain validation must refuse before recording opened receipt success"
         );
     }
 

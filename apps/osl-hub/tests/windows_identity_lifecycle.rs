@@ -83,6 +83,11 @@ fn create_and_lock(root: &Path) {
         Some(password_lifecycle::IdentityCreationOwnerAuthorization::ExplicitOwnerSignoff),
     )
     .expect("create isolated native identity");
+    assert_eq!(
+        state.osl.cloud_registration_state(),
+        ipc::state::CloudRegistrationState::NotAttempted,
+        "identity creation must remain local-only"
+    );
     assert_eq!(created.storage_method, keystore::METHOD_KEYRING);
     let identity_phrase = created
         .identity_recovery_phrase
@@ -94,6 +99,11 @@ fn create_and_lock(root: &Path) {
 
     let setup = password_lifecycle::setup_main_password(&state, PASSWORD.to_owned())
         .expect("set isolated strong passphrase");
+    assert_eq!(
+        state.osl.cloud_registration_state(),
+        ipc::state::CloudRegistrationState::NotAttempted,
+        "password setup must finish its verified local bootstrap before the shell schedules registration"
+    );
     assert_eq!(
         setup.password_recovery_phrase.split_whitespace().count(),
         12
