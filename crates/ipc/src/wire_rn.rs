@@ -621,6 +621,13 @@ impl RnSessionStore {
             .join(format!("{}.pin", Self::peer_key(peer_identity_x25519)))
     }
 
+    fn pin_floor_path(&self, peer_identity_x25519: &[u8; 32]) -> PathBuf {
+        self.dir.join(format!(
+            "{}.pin-floor",
+            Self::peer_key(peer_identity_x25519)
+        ))
+    }
+
     // ---- session state ----
 
     /// Persist a session, sealed.
@@ -799,25 +806,16 @@ impl RnSessionStore {
     /// Load a peer's pin. An absent file is [`RnPeerPin::UNKNOWN`]; a
     /// present but unparseable one is an error, never a silent reset.
     pub fn load_pin(&self, peer_identity_x25519: &[u8; 32]) -> Result<RnPeerPin, RnError> {
-        let path = self.pin_path(peer_identity_x25519);
-        let bytes = match read_bounded(&path, MAX_PIN_FILE_BYTES, "pin")? {
-            Some(b) => b,
-            None => return Ok(RnPeerPin::UNKNOWN),
-        };
-        #[derive(serde::Deserialize)]
-        struct PinFile {
-            version: u32,
-            pin: RnPeerPin,
+        let pin = self.load_pin_file(&self.pin_path(peer_identity_x25519), "pin")?;
+        let floor = self.load_pin_floor(peer_identity_x25519)?;
+        match (pin, floor) {
+            (Some(pin), Some(floor)) if pin.min_wire_version() < floor.min_wire_version() => Err(
+                RnError::Storage("pin file is below the persisted RN downgrade floor".into()),
+            ),
+            (Some(pin), _) => Ok(pin),
+            (None, Some(floor)) => Ok(floor),
+            (None, None) => Ok(RnPeerPin::UNKNOWN),
         }
-        let file: PinFile = serde_json::from_slice(&bytes)
-            .map_err(|e| RnError::Storage(format!("parse pin: {e}")))?;
-        if file.version != PIN_BLOB_VERSION {
-            return Err(RnError::Storage(format!(
-                "pin version {} != {PIN_BLOB_VERSION}",
-                file.version
-            )));
-        }
-        file.pin.validated()
     }
 
     /// Raise a peer's pin to OSL-RN and persist it.
@@ -828,9 +826,11 @@ impl RnSessionStore {
     pub fn raise_pin_to_rn(&self, peer_identity_x25519: &[u8; 32]) -> Result<RnPeerPin, RnError> {
         let mut pin = self.load_pin(peer_identity_x25519)?;
         if pin.is_pinned_to_rn() {
+            self.persist_pin_floor_to_rn(peer_identity_x25519)?;
             return Ok(pin);
         }
         pin.raise_to_rn();
+        self.persist_pin_floor_to_rn(peer_identity_x25519)?;
         let json = serde_json::to_vec(&serde_json::json!({
             "version": PIN_BLOB_VERSION,
             "pin": pin,
@@ -838,6 +838,57 @@ impl RnSessionStore {
         .map_err(|e| RnError::Storage(format!("serialize pin: {e}")))?;
         atomic_write(&self.pin_path(peer_identity_x25519), &json)?;
         Ok(pin)
+    }
+
+    fn load_pin_floor(
+        &self,
+        peer_identity_x25519: &[u8; 32],
+    ) -> Result<Option<RnPeerPin>, RnError> {
+        let Some(floor) =
+            self.load_pin_file(&self.pin_floor_path(peer_identity_x25519), "pin floor")?
+        else {
+            return Ok(None);
+        };
+        if floor.is_pinned_to_rn() {
+            Ok(Some(floor))
+        } else {
+            Err(RnError::Storage(
+                "pin floor file is below the RN downgrade floor".into(),
+            ))
+        }
+    }
+
+    fn load_pin_file(&self, path: &Path, what: &str) -> Result<Option<RnPeerPin>, RnError> {
+        let bytes = match read_bounded(path, MAX_PIN_FILE_BYTES, what)? {
+            Some(b) => b,
+            None => return Ok(None),
+        };
+        #[derive(serde::Deserialize)]
+        struct PinFile {
+            version: u32,
+            pin: RnPeerPin,
+        }
+        let file: PinFile = serde_json::from_slice(&bytes)
+            .map_err(|e| RnError::Storage(format!("parse {what}: {e}")))?;
+        if file.version != PIN_BLOB_VERSION {
+            return Err(RnError::Storage(format!(
+                "{what} version {} != {PIN_BLOB_VERSION}",
+                file.version
+            )));
+        }
+        file.pin.validated().map(Some)
+    }
+
+    fn persist_pin_floor_to_rn(&self, peer_identity_x25519: &[u8; 32]) -> Result<(), RnError> {
+        let floor = RnPeerPin {
+            min_wire_version: WIRE_VERSION_RN,
+        };
+        let json = serde_json::to_vec(&serde_json::json!({
+            "version": PIN_BLOB_VERSION,
+            "pin": floor,
+        }))
+        .map_err(|e| RnError::Storage(format!("serialize pin floor: {e}")))?;
+        atomic_write(&self.pin_floor_path(peer_identity_x25519), &json)
     }
 }
 
@@ -2515,6 +2566,39 @@ mod tests {
         // Raising again is idempotent and cannot lower.
         pin.raise_to_rn();
         assert_eq!(pin.min_wire_version(), WIRE_VERSION_RN);
+
+        let (_d, store) = fresh_store();
+        let peer = [94u8; 32];
+        let old_v3_pin = serde_json::to_vec(&serde_json::json!({
+            "version": PIN_BLOB_VERSION,
+            "pin": RnPeerPin::UNKNOWN,
+        }))
+        .expect("serialize old pin");
+        store.raise_pin_to_rn(&peer).expect("persist raised pin");
+        assert!(store
+            .load_pin(&peer)
+            .expect("load raised pin")
+            .is_pinned_to_rn());
+
+        std::fs::write(store.pin_path(&peer), old_v3_pin).expect("replay old pin file");
+        let replay = store.load_pin(&peer);
+        assert!(
+            matches!(&replay, Err(RnError::Storage(message)) if message.contains("downgrade floor")),
+            "replaying an older valid v3 pin file must be refused, got {replay:?}"
+        );
+        assert!(
+            matches!(
+                select_wire_version(
+                    &RnPeerPin {
+                        min_wire_version: WIRE_VERSION_RN,
+                    },
+                    PeerCapabilities::Absent,
+                    RnPolicy::Opportunistic,
+                ),
+                Err(RnError::PinnedToRn)
+            ),
+            "the only permitted downgrade outcome after an RN pin is refusal"
+        );
     }
 
     // ---- persistence ----
