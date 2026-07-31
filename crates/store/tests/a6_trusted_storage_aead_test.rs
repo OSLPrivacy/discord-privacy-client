@@ -302,10 +302,20 @@ fn final_a6_storage_aead_and_boundary_proof() {
             .all(|path| fs::metadata(path).unwrap().len() > 0),
         "the live connection must have attributable nonempty DB/WAL/SHM files"
     );
+    // `MessageStore::open` canonicalizes its bound storage path on purpose, so
+    // the artifact paths come back canonical while `tmp.path()` does not.
+    // On Linux those two spellings happen to be identical and the raw
+    // comparison passed; on Windows the runner's TEMP is the 8.3 short form
+    // (`C:\Users\RUNNER~1\...`) and canonicalize returns the verbatim long
+    // form (`\\?\C:\Users\runneradmin\...`), so the same directory compared
+    // unequal. Canonicalize both sides -- the property is that the artifacts
+    // live in *this* Store's root, which is about directory identity, not
+    // about how the path happens to be spelled.
+    let expected_root = tmp.path().canonicalize().unwrap();
     assert!(
         artifacts
             .iter()
-            .all(|path| path.parent() == Some(tmp.path())),
+            .all(|path| path.parent() == Some(expected_root.as_path())),
         "wrong-root files must not be attributed to this Store"
     );
     assert!(
