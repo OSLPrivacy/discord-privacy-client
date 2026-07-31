@@ -158,7 +158,7 @@ export function parseOslMailThreadSummary(value: unknown): OslMailThreadSummary 
 function parseMessage(value: unknown): OslMailThreadMessage | null {
   if (!record(value) || !exact(value, ["messageId", "from", "to", "subject", "body", "receivedAt", "transit"])
     || typeof value.messageId !== "string" || !OSL_MAIL_ID.test(value.messageId) || !emailAddress(value.from)
-    || !Array.isArray(value.to) || value.to.length < 1 || value.to.length > 100 || !value.to.every(emailAddress)
+    || !Array.isArray(value.to) || value.to.length < 1 || value.to.length > 100 || !denseArray(value.to) || !value.to.every(emailAddress)
     || !text(value.subject, 512, true) || !text(value.body, MAX_BODY_BYTES, true)
     || !timestamp(value.receivedAt) || !transit(value.transit)) return null;
   return value as unknown as OslMailThreadMessage;

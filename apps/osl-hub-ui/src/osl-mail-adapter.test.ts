@@ -83,6 +83,14 @@ describe("OSL Mail strict adapter", () => {
     const messagesWithHiddenExpando = [{ ...valid.messages[0] }];
     Object.defineProperty(messagesWithHiddenExpando, "capability", { value: "external-send" });
     expect(parseOslMailRetrievedThread({ ...valid, messages: messagesWithHiddenExpando })).toBeNull();
+    const sparseRecipients = Array(1) as unknown[];
+    expect(parseOslMailRetrievedThread({ ...valid, messages: [{ ...valid.messages[0], to: sparseRecipients }] })).toBeNull();
+    const recipientsWithExpando = ["liam@oslprivacy.com"] as string[] & { hidden?: boolean };
+    recipientsWithExpando.hidden = true;
+    expect(parseOslMailRetrievedThread({ ...valid, messages: [{ ...valid.messages[0], to: recipientsWithExpando }] })).toBeNull();
+    const recipientsWithHiddenExpando = ["liam@oslprivacy.com"];
+    Object.defineProperty(recipientsWithHiddenExpando, "capability", { value: "external-send" });
+    expect(parseOslMailRetrievedThread({ ...valid, messages: [{ ...valid.messages[0], to: recipientsWithHiddenExpando }] })).toBeNull();
   });
 
   it("requires an explicit positive server deletion receipt", () => {
