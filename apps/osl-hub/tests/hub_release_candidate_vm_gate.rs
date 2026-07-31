@@ -59,6 +59,26 @@ fn f1_live_windows_walkthrough_imports_nonempty_receipt() {
 }
 
 #[test]
+fn f2_real_vm_five_frame_walkthrough() {
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let script = repo_root.join("scripts/vmqa/vmqa-run.sh");
+    let output = std::process::Command::new("bash")
+        .arg(&script)
+        .arg("f2_real_vm_five_frame_walkthrough")
+        .current_dir(&repo_root)
+        .output()
+        .expect("run F2 real-VM five-frame walkthrough behavior harness");
+
+    assert!(
+        output.status.success(),
+        "F2 walkthrough behavior harness failed with status {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn second_session_rebuild_reproduces_recorded_executable_hash() {
     let agent = include_str!("../../../scripts/vmqa/vmqa-agent.ps1");
     let win32 = include_str!("../../../scripts/vmqa/vmqa-win32.ps1");
