@@ -1014,6 +1014,17 @@ class _VerifySelfTests(unittest.TestCase):
             **good_context.__dict__,
             "expected_target": mismatched_target,
         }
+        for field in (
+            "pipe_first_instance",
+            "pipe_remote_clients_rejected",
+            "pipe_acl_exact_user",
+        ):
+            cases[f"{field} not independently proven"] = {
+                **good_context.__dict__,
+                "source": "runtime_named_pipe",
+                "filesystem_authority_attestation": {},
+                field: False,
+            }
 
         for name, fields in cases.items():
             with self.subTest(name):
