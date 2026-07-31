@@ -751,7 +751,10 @@ mod tests {
         mutated_restored.width_px = 999;
         assert_eq!(mutated_restored.width_px, 999);
         assert_eq!(
-            state.current(key).expect("stored capture remains intact").width_px,
+            state
+                .current(key)
+                .expect("stored capture remains intact")
+                .width_px,
             capture.width_px,
             "callers must not be able to mutate the capture held for the exact key"
         );
