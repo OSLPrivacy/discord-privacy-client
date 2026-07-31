@@ -2371,6 +2371,30 @@ mod outgoing_encrypt_api_surface_tests {
             attachment_err.to_string().contains("displayName"),
             "attachment displayName rejection should identify the refused field: {attachment_err}"
         );
+
+        for key in [
+            "displayName",
+            "display_name",
+            "senderDisplayName",
+            "recipientDisplayName",
+        ] {
+            let mut attachment = serde_json::json!({
+                "attKeyB64": STANDARD.encode([7u8; 32]),
+                "originalFilename": "photo.png",
+                "randomFilename": "sealed.bin",
+                "mimeType": "image/png"
+            });
+            attachment
+                .as_object_mut()
+                .unwrap()
+                .insert(key.to_string(), serde_json::Value::String("Mallory".into()));
+            let err = serde_json::from_value::<AttachmentEnvelopeInput>(attachment)
+                .expect_err("attachment envelope input must deny caller-supplied display fields");
+            assert!(
+                err.to_string().contains(key),
+                "attachment display-field rejection should identify {key}: {err}"
+            );
+        }
     }
 }
 
@@ -5578,6 +5602,23 @@ mod retired_v4_outbound_tests {
                 "DM dispatch must not select the retired v4 send path"
             );
         }
+
+        for scope in [
+            crate::scope::Scope::dm("peer"),
+            crate::scope::Scope::gc("group"),
+            crate::scope::Scope::server_channel("server", "channel"),
+            crate::scope::Scope::server_full("server"),
+        ] {
+            for non_self_peer_count in [0, 1, 2] {
+                for sender_keys_enabled in [false, true] {
+                    assert_ne!(
+                        ratchet_policy_decision(&scope, non_self_peer_count, sender_keys_enabled),
+                        RatchetPolicyDecision::LegacyV4Dm,
+                        "outbound dispatch must not select the retired v4 send path"
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -6365,7 +6406,10 @@ mod wrapped_key_open_tests {
         )
         .expect("V1 attachment should open with the fetched wrapped key");
 
-        assert_eq!(opened.plaintext_b64, STANDARD.encode(b"wrapped-key plaintext"));
+        assert_eq!(
+            opened.plaintext_b64,
+            STANDARD.encode(b"wrapped-key plaintext")
+        );
         assert_eq!(opened.original_filename, "wrapped.png");
         assert_eq!(opened.mime_type, "image/png");
         let request = rx
