@@ -3,6 +3,16 @@ use keystore::{
     Zeroizing, METHOD_EPHEMERAL, METHOD_MEMORY, METHOD_NOOP,
 };
 
+// `KeyringSealer::new()` writes a key to one machine-global Windows
+// Credential Manager entry and then re-reads it through a fresh `Entry` to
+// prove the backend actually persists. Two tests doing that at the same
+// time overwrite each other's key, so the probe reads the other test's
+// bytes and reports "keyring backend not persistent" -- which is how CI
+// failed. It never reproduced on the Linux dev host because there the
+// keyring resolves to a backend this probe rejects anyway, so nothing
+// contends. Serialize every test that reaches the real credential store.
+static CREDENTIAL_STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 struct SealFailure;
 
 impl Sealer for SealFailure {
@@ -136,6 +146,9 @@ fn readiness_probe_accepts_complete_round_trip_only() {
 
 #[test]
 fn select_best_sealer_returns_some_implementation() {
+    let _credential_store = CREDENTIAL_STORE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     // On WSL: TPM unavailable, keyring may or may not work depending
     // on DBus. The fallback must remain encrypted in process memory;
     // it must never silently downgrade to NoOp/plaintext.
@@ -155,6 +168,9 @@ fn select_best_sealer_returns_some_implementation() {
 #[cfg(windows)]
 #[test]
 fn windows_credential_manager_survives_fresh_entry() {
+    let _credential_store = CREDENTIAL_STORE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let writer = keystore::KeyringSealer::new().expect("Windows Credential Manager available");
     let ciphertext = writer.seal(b"fixed public persistence probe").unwrap();
     let reader = keystore::KeyringSealer::new().expect("fresh credential entry can read key");
