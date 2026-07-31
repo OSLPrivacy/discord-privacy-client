@@ -1386,7 +1386,7 @@ pub mod scan_selectors {
         }
 
         #[test]
-        fn whatsapp_pair() {
+        fn whatsapp_selector_pair() {
             let window = rect(0, 0, 1280, 900);
             let nodes = vec![
                 transcript(rect(0, 85, 360, 840), "Chats"),
@@ -1434,7 +1434,7 @@ pub mod scan_selectors {
         }
 
         #[test]
-        fn whatsapp_body_candidates() {
+        fn whatsapp_selector_body_candidates() {
             let mut row = WhatsAppNode::structural(WhatsAppRole::Row, rect(430, 210, 1210, 330));
             row.children = vec![1, 2, 3, 4];
             let mut nested =
