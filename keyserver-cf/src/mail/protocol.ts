@@ -82,4 +82,3 @@ export function randomRequestId(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   return base64Encode(bytes).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
-

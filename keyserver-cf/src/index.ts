@@ -379,7 +379,6 @@ async function dispatch(
       return await handleAccountOwnershipChallenge(request, env);
     }
     if (path === "/v1/register") return await handleRegister(request, env);
-    if (path === "/v1/usernames/claim") return await handleUsernameClaim(request, env);
     if (path === "/v1/mail/address") return await handleMailProvision(request, env);
     if (path === "/v1/mail/consent") return await handleMailConsent(request, env);
     if (path === "/v1/mail/send/osl") return await handleMailSendOsl(request, env);

@@ -41,4 +41,3 @@ CREATE TABLE mail_control_receipts (
   PRIMARY KEY (user_id, request_id),
   FOREIGN KEY (user_id) REFERENCES users (user_id)
 ) WITHOUT ROWID;
-
