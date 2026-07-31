@@ -422,10 +422,7 @@ def simple_spec_burn_contract() -> None:
         _errors_for_send_contract(optimistic_uncertain_delivery, gui),
     )
 
-    synthetic_second_enter = markdown.replace(
-        "Key repeat, a\nheld key, a synthetic event or OSL's own placement action cannot satisfy the\nsecond Enter.",
-        "Key repeat and a\nheld key may satisfy the second Enter.",
-    )
+    synthetic_second_enter = markdown.replace("synthetic event", "automation event")
     testcase.assertIn(
         "missing simple Double Enter rule: synthetic event",
         _errors_for_send_contract(synthetic_second_enter, gui),
