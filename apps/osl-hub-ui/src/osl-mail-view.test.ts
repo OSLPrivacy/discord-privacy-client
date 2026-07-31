@@ -60,4 +60,19 @@ describe("OSL Mail view", () => {
     expect(html).toContain("Acknowledge device copy & delete server copy");
     expect(html).not.toContain("Server deletion confirmed");
   });
+
+  it("keeps confirmation markup product-facing", () => {
+    const activeThread = { threadId: "abcdefghijkl", retrievalId: "abcdefghijklx", expiresAt: 200, messages: [{ messageId: "abcdefghijklm", from: "friend@oslprivacy.com", to: ["liam@oslprivacy.com"], subject: "Hi", body: "Private", receivedAt: 100, transit: "oslE2ee" as const }] };
+    const html = oslMailViewMarkup({
+      ...base,
+      available: true,
+      status: { ...status, unreadCount: 1 },
+      activeThread,
+      deleteReceipt: { retrievalId: "abcdefghijklx", deletedMessageIds: ["abcdefghijklm"], deletedAt: 300, receiptSha256: "a".repeat(64), serverDeleteConfirmed: true },
+      burnReceipt: { address: "liam@oslprivacy.com", burnedAt: 400, deletedMessages: 1, receiptSha256: "b".repeat(64), mailboxDisabled: true },
+    });
+    expect(html).toContain("Server deletion confirmed");
+    expect(html).toContain("Mailbox burn confirmed");
+    expect(html).not.toMatch(/keyservers?|ratchets?|receipts?|browser profiles?|provider adapters?/iu);
+  });
 });
