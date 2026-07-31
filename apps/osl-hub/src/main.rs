@@ -11944,5 +11944,25 @@ mod tauri_registration_surface_tests {
             &capability,
             &AUTOSCRUB_RUN_LIFECYCLE_COMMANDS,
         );
+        for forbidden in [
+            "open_autoscrub_reviewed_run",
+            "step_autoscrub_reviewed_run",
+            "halt_autoscrub_reviewed_run",
+            "start_autoscrub_reviewed_run_command",
+        ] {
+            let forbidden_permission = command_permission(forbidden);
+            assert!(
+                !handlers.contains(forbidden),
+                "{forbidden} must not be registered as an AutoScrub lifecycle command"
+            );
+            assert!(
+                !permissions.values().any(|command| command == forbidden),
+                "{forbidden} must not be declared in the AutoScrub lifecycle ACL"
+            );
+            assert!(
+                !capability.contains(&forbidden_permission),
+                "{forbidden_permission} must not be granted by the main-window capability"
+            );
+        }
     }
 }
