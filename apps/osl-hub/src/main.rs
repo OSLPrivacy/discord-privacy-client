@@ -10663,6 +10663,39 @@ mod tauri_registration_surface_tests {
             "request_hosted_session_scan_command",
         );
 
+        let missing_checked_host_events = RefCell::new(Vec::<&'static str>::new());
+        let missing_checked_host = checked_hosted_session_scan_flow(
+            || {
+                missing_checked_host_events.borrow_mut().push("checked-host");
+                Err("missing checked host".to_owned())
+            },
+            |_checked| {
+                missing_checked_host_events
+                    .borrow_mut()
+                    .push("attended-binding");
+                Ok(vec!["operator".to_owned()])
+            },
+            |_checked, _operator_names| {
+                missing_checked_host_events.borrow_mut().push("native-scan");
+                Ok(test_deletion_scan())
+            },
+            |_checked| {
+                missing_checked_host_events
+                    .borrow_mut()
+                    .push("context-recheck");
+                Ok(())
+            },
+        );
+        match missing_checked_host {
+            Err(error) => assert_eq!(error, "missing checked host"),
+            Ok(_) => panic!("missing checked host must refuse the hosted scan"),
+        }
+        assert_eq!(
+            missing_checked_host_events.into_inner(),
+            ["checked-host"],
+            "the hosted scan command must build CheckedHost before binding operators or scanning"
+        );
+
         let events = RefCell::new(Vec::<&'static str>::new());
         let scan = checked_hosted_session_scan_flow(
             || {
@@ -10688,6 +10721,8 @@ mod tauri_registration_surface_tests {
         )
         .expect("checked scan succeeds only after every gate");
         assert_eq!(scan.generation, 9);
+        assert_eq!(scan.scope_binding_hash, "scan-hash");
+        assert_eq!(scan.rows_seen, 1);
         assert_eq!(
             events.into_inner(),
             [
