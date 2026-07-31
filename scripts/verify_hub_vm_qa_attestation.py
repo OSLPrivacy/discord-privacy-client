@@ -79,11 +79,11 @@ def verify_updater_manifest(tag: str, manifest_path: Path, installer: Path) -> N
     parsed = urlparse(url)
     require(parsed.scheme == "https" and parsed.netloc == "github.com",
             "signed updater manifest must use the GitHub draft release URL")
+    require("/hub-latest/" not in parsed.path,
+            "signed updater manifest URL must not point at the stable feed")
     expected_path_prefix = f"{RELEASE_DOWNLOAD_PREFIX}{tag}/"
     require(parsed.path.startswith(expected_path_prefix),
             "signed updater manifest URL does not point at the candidate draft")
-    require("/hub-latest/" not in parsed.path,
-            "signed updater manifest URL must not point at the stable feed")
     require(unquote(basename(parsed.path)) == installer.name,
             "signed updater manifest URL does not name the tested installer")
 
