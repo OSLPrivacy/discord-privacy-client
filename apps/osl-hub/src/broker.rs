@@ -814,17 +814,28 @@ pub fn activate_owned_native_manual_peer_context(
 /// Activate a first-party OSL direct chat. The renderer selects only an
 /// already verified friend; every service/account/conversation identifier is
 /// fixed or derived inside Rust.
+/// The synthetic host OSL Chat runs under.
+///
+/// OSL Chat is not a connected third-party service, so it has NO entry in
+/// `ServiceHostState` -- this host exists only inside the broker lease. Callers
+/// that need to re-derive it (to hand to `validate_active_host`) must use this
+/// function rather than rebuilding the literals, because a drift between the
+/// two spellings silently revokes every OSL Chat authority check.
+pub fn owned_osl_chat_host(owner_osl_user_id: &str) -> ActiveServiceHost {
+    ActiveServiceHost {
+        service_id: "osl-chat".to_owned(),
+        account_id: "osl-main".to_owned(),
+        generation: 1,
+        owner_namespace: owner_osl_user_id.to_owned(),
+    }
+}
+
 pub fn activate_owned_osl_chat_context(
     broker: &HubBrokerState,
     owner_osl_user_id: &str,
     binding: ManualPeerBinding,
 ) -> Result<ActivatedManualPeerContext, String> {
-    let active = ActiveServiceHost {
-        service_id: "osl-chat".to_owned(),
-        account_id: "osl-main".to_owned(),
-        generation: 1,
-        owner_namespace: owner_osl_user_id.to_owned(),
-    };
+    let active = owned_osl_chat_host(owner_osl_user_id);
     activate_manual_peer_from_trusted_host(broker, owner_osl_user_id, &active, binding)
 }
 
@@ -12739,6 +12750,113 @@ mod tests {
             },
         )
         .is_err());
+    }
+
+    #[test]
+    fn the_osl_chat_host_authorises_its_own_lease_and_nothing_else() {
+        // Regression guard. `activate_owned_osl_chat_context` mints a SYNTHETIC
+        // host that lives only in the broker lease -- OSL Chat has no
+        // ServiceHostState entry. `require_current_context_host` therefore has to
+        // re-derive that host via `owned_osl_chat_host` to authorise a chat
+        // action. It did not, so it fell through to "OSL broker requires an
+        // active trusted host" and two VERIFIED, PAIRED identities could not
+        // enable encrypted chat at all ("Encrypted chat approval could not be
+        // saved"; Send stayed disabled). Measured on two Windows VMs 2026-07-31.
+        //
+        // No test covered it because sealed_relay_e2e drives the same two-identity
+        // flow through `set_manual_peer_scope_permission` directly, bypassing the
+        // command that performs this check.
+        let broker = HubBrokerState::default();
+        let activated = activate_owned_osl_chat_context(
+            &broker,
+            "osl-alice",
+            ManualPeerBinding {
+                person_id: "hub-person-bob".to_owned(),
+                peer_osl_user_id: "osl-bob".to_owned(),
+                peer_x25519_public: [2; 32],
+                peer_mlkem768_public: [2; 1184],
+            },
+        )
+        .unwrap();
+        let token = activated.lease.context_token.as_str();
+
+        // The re-derived host must authorise its own lease.
+        broker
+            .validate_active_host(token, &owned_osl_chat_host("osl-alice"))
+            .expect("the OSL Chat host must authorise the lease it created");
+
+        // ...and it must NOT be a rubber stamp. Each of these differs from the
+        // lease in exactly one field that `validate_active_host` compares, and
+        // each must still be refused, so the fix cannot be mistaken for
+        // "accept any synthetic host".
+        //
+        // Note deliberately NOT asserted here: a different `owner_namespace`.
+        // `validate_active_host` does not compare that field, and it does not
+        // need to -- the context TOKEN is derived from the conversation context,
+        // which carries `self_osl_id`, so a different owner cannot obtain this
+        // token in the first place. That binding is asserted directly below.
+        for wrong in [
+            ActiveServiceHost {
+                service_id: "discord".to_owned(),
+                account_id: "osl-main".to_owned(),
+                generation: 1,
+                owner_namespace: "osl-alice".to_owned(),
+            },
+            ActiveServiceHost {
+                service_id: "osl-chat".to_owned(),
+                account_id: "someone-elses-account".to_owned(),
+                generation: 1,
+                owner_namespace: "osl-alice".to_owned(),
+            },
+            ActiveServiceHost {
+                service_id: "osl-chat".to_owned(),
+                account_id: "osl-main".to_owned(),
+                generation: 2,
+                owner_namespace: "osl-alice".to_owned(),
+            },
+        ] {
+            assert!(
+                broker.validate_active_host(token, &wrong).is_err(),
+                "a host differing in one compared field must be refused: {wrong:?}"
+            );
+        }
+
+        // Owner binding, asserted where it actually lives: activating as a
+        // different owner yields a DIFFERENT context token, so one owner's token
+        // is never usable as another's.
+        let other = HubBrokerState::default();
+        let other_activated = activate_owned_osl_chat_context(
+            &other,
+            "osl-mallory",
+            ManualPeerBinding {
+                person_id: "hub-person-bob".to_owned(),
+                peer_osl_user_id: "osl-bob".to_owned(),
+                peer_x25519_public: [2; 32],
+                peer_mlkem768_public: [2; 1184],
+            },
+        )
+        .unwrap();
+        assert_ne!(
+            other_activated.lease.context_token, activated.lease.context_token,
+            "a different owner must not derive the same context token"
+        );
+        assert!(
+            broker
+                .validate_active_host(
+                    other_activated.lease.context_token.as_str(),
+                    &owned_osl_chat_host("osl-alice"),
+                )
+                .is_err(),
+            "another owner's context token must not authorise this broker"
+        );
+
+        // An unrelated context token must not be authorised either.
+        assert!(
+            broker
+                .validate_active_host("not-a-real-token", &owned_osl_chat_host("osl-alice"))
+                .is_err(),
+            "an unknown context token must be refused"
+        );
     }
 
     #[test]
