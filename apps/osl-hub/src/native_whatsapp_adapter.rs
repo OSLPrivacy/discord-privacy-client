@@ -673,6 +673,170 @@ mod tests {
     }
 
     #[test]
+    fn whatsapp_content_root() {
+        let root = app_root();
+        let bridge = webview("webview", "app-root");
+        let mut content = webview("content", "webview");
+        content.control_type = WhatsAppControlType::Document;
+        content.runtime_hash = Some("runtime-content".to_owned());
+
+        let trusted =
+            trusted_whatsapp_content_root(&[root.clone(), bridge.clone(), content.clone()])
+                .expect("one trusted WhatsApp WebView2 content root should be discovered");
+        assert_eq!(trusted.app_root_id, "app-root");
+        assert_eq!(trusted.webview_ancestor_id, "webview");
+        assert_eq!(trusted.content_root_id, "content");
+        assert_eq!(trusted.content_runtime_hash, "runtime-content");
+
+        let mut plain_document = node(
+            "plain-document",
+            Some("app-root"),
+            WhatsAppControlType::Document,
+        );
+        plain_document.runtime_hash = Some("runtime-plain-document".to_owned());
+        assert_eq!(
+            trusted_whatsapp_content_root(&[root.clone(), plain_document]),
+            Err(WhatsAppAdapterRefusal::MissingWebView2ContentRoot),
+            "a document under the WhatsApp root is not trusted unless WebView2 is in its lineage"
+        );
+
+        let mut spoofed_root = root;
+        spoofed_root.store_package_family_name = Some("not.whatsapp".to_owned());
+        assert_eq!(
+            trusted_whatsapp_content_root(&[spoofed_root, bridge, content]),
+            Err(WhatsAppAdapterRefusal::MissingExactAppRoot),
+            "a WebView2 child under a non-WhatsApp root must not be trusted"
+        );
+    }
+
+    #[test]
+    fn whatsapp_pair() {
+        let nodes = trusted_nodes_with_pair();
+        let pair = discover_whatsapp_pair(&nodes).expect("one composer/transcript pair exists");
+        assert_eq!(pair.content_root.content_root_id, "content");
+        assert_eq!(pair.composer.node_id, "composer");
+        assert_eq!(pair.composer.runtime_hash, "runtime-composer");
+        assert_eq!(pair.transcript.node_id, "transcript");
+        assert_eq!(pair.transcript.runtime_hash, "runtime-transcript");
+
+        let mut missing_composer = nodes.clone();
+        missing_composer.retain(|node| node.structural_id != "composer");
+        assert_eq!(
+            discover_whatsapp_pair(&missing_composer),
+            Err(WhatsAppAdapterRefusal::MissingComposer),
+            "transcript-only discovery must refuse instead of returning a partial pair"
+        );
+
+        let mut ambiguous_transcript = nodes;
+        let mut second = node(
+            "second-transcript",
+            Some("content"),
+            WhatsAppControlType::Document,
+        );
+        second.automation_id = Some("conversation-messages".to_owned());
+        ambiguous_transcript.push(second);
+        assert_eq!(
+            discover_whatsapp_pair(&ambiguous_transcript),
+            Err(WhatsAppAdapterRefusal::AmbiguousTranscript),
+            "more than one matching transcript must refuse the pair"
+        );
+    }
+
+    #[test]
+    fn whatsapp_body_candidates() {
+        let pair = discovered_pair();
+        let rows = vec![
+            row("timestamp", WhatsAppTextFragmentRole::Timestamp, "10:41"),
+            exact_body_row("body", "  exact\r\nbody  "),
+        ];
+
+        let candidates = extract_whatsapp_body_candidates(&pair, &rows)
+            .expect("one exact body row should be extracted");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].row_id, "body");
+        assert_eq!(candidates[0].row_runtime_hash, "runtime-body");
+        assert_eq!(candidates[0].body, "exact\nbody");
+
+        assert!(
+            matches!(
+                extract_whatsapp_body_candidates(
+                    &pair,
+                    &[row(
+                        "preview",
+                        WhatsAppTextFragmentRole::LinkPreviewDescription,
+                        "preview text"
+                    )],
+                ),
+                Err(WhatsAppAdapterRefusal::BodyCandidateSupportBlocked)
+            ),
+            "preview text cannot be promoted into an exact body candidate"
+        );
+
+        assert!(
+            matches!(
+                extract_whatsapp_body_candidates(
+                    &pair,
+                    &[row(
+                        "metadata",
+                        WhatsAppTextFragmentRole::Reaction,
+                        "thumbs up"
+                    )],
+                ),
+                Err(WhatsAppAdapterRefusal::MissingExactBodyCandidate)
+            ),
+            "metadata-only rows are not body candidates"
+        );
+    }
+
+    #[test]
+    fn whatsapp_carrier() {
+        let pair = discovered_pair();
+        let placed = place_whatsapp_carrier(
+            &pair,
+            "publiccover",
+            &[exact_body_row("carrier-row", "OSL1.WA.publiccover")],
+        )
+        .expect("prefixed exact body row should prove carrier placement");
+        assert_eq!(placed.composer_node_id, "composer");
+        assert_eq!(placed.composer_runtime_hash, "runtime-composer");
+        assert_eq!(placed.carrier, "OSL1.WA.publiccover");
+        assert_eq!(placed.row_proof.row_id, "carrier-row");
+        assert_eq!(placed.row_proof.row_runtime_hash, "runtime-carrier-row");
+        assert!(placed.row_proof.carrier_sha256_label.starts_with("sha256:"));
+
+        assert!(
+            matches!(
+                place_whatsapp_carrier(
+                    &pair,
+                    "publiccover",
+                    &[exact_body_row("unprefixed", "publiccover")]
+                ),
+                Err(WhatsAppAdapterRefusal::MissingCarrierRowProof)
+            ),
+            "the carrier proof must include the OSL WhatsApp prefix"
+        );
+
+        assert!(
+            matches!(
+                place_whatsapp_carrier(
+                    &pair,
+                    "publiccover",
+                    &[
+                        exact_body_row("carrier-a", "OSL1.WA.publiccover"),
+                        exact_body_row("carrier-b", "OSL1.WA.publiccover"),
+                    ],
+                ),
+                Err(WhatsAppAdapterRefusal::AmbiguousCarrierRowProof)
+            ),
+            "duplicate matching rows cannot prove one write"
+        );
+        assert!(matches!(
+            place_whatsapp_carrier(&pair, "has spaces", &[]),
+            Err(WhatsAppAdapterRefusal::InvalidCarrier)
+        ));
+    }
+
+    #[test]
     fn whatsapp_content_root_trusts_only_webview2_descendant_of_exact_whatsapp_root() {
         let root = app_root();
         let bridge = webview("webview", "app-root");
@@ -1085,7 +1249,9 @@ pub mod scan_selectors {
             let node = &nodes[index];
             match node.evidence {
                 WhatsAppNodeEvidence::None => continue,
-                WhatsAppNodeEvidence::AmbiguousBody => return Err(WhatsAppSelectorError::Unsupported),
+                WhatsAppNodeEvidence::AmbiguousBody => {
+                    return Err(WhatsAppSelectorError::Unsupported)
+                }
                 WhatsAppNodeEvidence::ExactBody => {
                     let Some(text) = node.text.as_ref() else {
                         return Err(WhatsAppSelectorError::Unsupported);
@@ -1147,7 +1313,10 @@ pub mod scan_selectors {
             && node.bounds.horizontal_overlap(composer.bounds) >= required_overlap
     }
 
-    fn descendants(nodes: &[WhatsAppNode], root: usize) -> Result<Vec<usize>, WhatsAppSelectorError> {
+    fn descendants(
+        nodes: &[WhatsAppNode],
+        root: usize,
+    ) -> Result<Vec<usize>, WhatsAppSelectorError> {
         let Some(root_node) = nodes.get(root) else {
             return Err(WhatsAppSelectorError::Missing);
         };
@@ -1268,7 +1437,8 @@ pub mod scan_selectors {
         fn whatsapp_body_candidates() {
             let mut row = WhatsAppNode::structural(WhatsAppRole::Row, rect(430, 210, 1210, 330));
             row.children = vec![1, 2, 3, 4];
-            let mut nested = WhatsAppNode::structural(WhatsAppRole::Pane, rect(500, 276, 1000, 322));
+            let mut nested =
+                WhatsAppNode::structural(WhatsAppRole::Pane, rect(500, 276, 1000, 322));
             nested.children = vec![5];
             let nodes = vec![
                 row,
