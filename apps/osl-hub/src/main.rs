@@ -10659,7 +10659,7 @@ mod tauri_registration_surface_tests {
             );
             assert!(
                 !capability.contains(&command_permission(forbidden)),
-                "{forbidden} must not be granted by the main-window capability"
+                "{forbidden} must not be capability-granted"
             );
         }
         for forbidden_permission in [
