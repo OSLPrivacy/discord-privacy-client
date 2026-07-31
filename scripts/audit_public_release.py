@@ -533,18 +533,6 @@ def app_claim_gate_public_release_reconciliation_contract() -> None:
 app_claim_gate_public_release_reconciliation_contract.__name__ = "scripts/check-app-claims.mjs'"
 
 
-def load_tests(
-    loader: unittest.TestLoader,
-    tests: unittest.TestSuite,
-    pattern: str | None,
-) -> unittest.TestSuite:
-    del loader, pattern
-    suite = unittest.TestSuite()
-    suite.addTests(tests)
-    suite.addTest(unittest.FunctionTestCase(app_claim_gate_public_release_reconciliation_contract))
-    return suite
-
-
 def _scripts_check_app_claims_mjs(
     self: PublicReleaseAuditBehaviourTests,
 ) -> None:
@@ -588,8 +576,10 @@ def load_tests(
     tests: unittest.TestSuite,
     pattern: str | None,
 ) -> unittest.TestSuite:
+    del loader, pattern
     suite = unittest.TestSuite()
     suite.addTests(tests)
+    suite.addTest(unittest.FunctionTestCase(app_claim_gate_public_release_reconciliation_contract))
     suite.addTest(PublicReleaseAuditBehaviourTests("scripts/check-app-claims.mjs'"))
     return suite
 
