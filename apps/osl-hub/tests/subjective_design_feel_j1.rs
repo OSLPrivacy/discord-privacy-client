@@ -48,7 +48,9 @@ enum Expected {
     Fail,
 }
 
-fn extract_json_block(markdown: &str, heading: &str) -> &str {
+// The returned slice borrows from `markdown` only, so tie the lifetime to that
+// rather than to both parameters.
+fn extract_json_block<'a>(markdown: &'a str, heading: &str) -> &'a str {
     let mut after_heading = false;
     let mut json_start = None;
     let mut offset = 0;
