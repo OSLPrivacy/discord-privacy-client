@@ -9,6 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 GUI_PLAN = ROOT / "docs" / "design" / "osl-gui-final-plan.md"
 SIMPLE_SPEC = ROOT / "docs" / "design" / "osl-simple-spec.md"
+DESIGN_FEEL = ROOT / "docs" / "design" / "osl-subjective-design-feel.md"
 
 
 def _section(markdown: str, heading: str) -> str:
@@ -209,6 +210,84 @@ def _errors_for_burn_contract(markdown: str) -> list[str]:
     }
     if banned != expected_banned:
         errors.append("Burn banned phrases changed")
+    return errors
+
+
+def _errors_for_complexity_hiding_design_feel(markdown: str) -> list[str]:
+    complexity = _section(markdown, "## Complexity belongs behind the product")
+    frozen = _section(markdown, "## Frozen user-facing contract")
+    complexity_plain = _plain(complexity)
+    frozen_plain = _plain(frozen)
+    errors: list[str] = []
+
+    product_model = {
+        "protection state",
+        "trusted people",
+        "connected accounts",
+        "private conversations",
+        "cleanup actions",
+        "activity history",
+    }
+    product_model_hits = {
+        noun for noun in product_model if noun in complexity_plain and noun in frozen_plain
+    }
+    if product_model_hits != product_model:
+        errors.append("user-facing product model is not the exact frozen set")
+
+    hidden_terms = {
+        "keyservers",
+        "ratchets",
+        "receipts",
+        "browser profiles",
+        "provider adapters",
+    }
+    if not all(term in complexity_plain for term in hidden_terms):
+        errors.append("hidden implementation terms are not explicitly behind product nouns")
+
+    forbidden_contexts = {
+        "navigation",
+        "onboarding choices",
+        "warning labels",
+        "settings names",
+        "status labels",
+    }
+    if not all(context in complexity_plain for context in forbidden_contexts):
+        errors.append("implementation terms are not banned from all decision surfaces")
+
+    if "refuses to expose implementation machinery" not in frozen_plain:
+        errors.append("implementation machinery can become a user decision")
+
+    consequence_sentence = next(
+        (
+            sentence.lower()
+            for sentence in _sentences(complexity)
+            if "plain consequence" in sentence.lower()
+        ),
+        "",
+    )
+    if not {"plain", "consequence", "safe", "action"}.issubset(
+        set(re.findall(r"[a-z]+", consequence_sentence))
+    ):
+        errors.append("implementation detail is not translated into consequence plus action")
+
+    if "explicit unknown state" not in frozen_plain:
+        errors.append("unknown protection state is not preserved")
+
+    diagnostics_words = set(
+        re.findall(
+            r"[a-z]+",
+            " ".join(
+                sentence.lower()
+                for sentence in _sentences(complexity + "\n" + frozen)
+                if "diagnostic" in sentence.lower()
+            ),
+        )
+    )
+    if not {"advanced", "implementation", "fields", "visible", "ui", "product", "answer"}.issubset(
+        diagnostics_words
+    ):
+        errors.append("advanced diagnostics can replace the main product answer")
+
     return errors
 
 
@@ -488,6 +567,25 @@ def simple_spec_burn_contract() -> None:
 simple_spec_burn_contract.__name__ = "docs/design/osl-simple-spec.md'"
 
 
+def freeze_the_user_facing_complexity_hiding_product_contract() -> None:
+    markdown = DESIGN_FEEL.read_text(encoding="utf-8")
+    broken = markdown.replace("trusted people", "trusted key material", 1).replace(
+        "They must not appear as navigation,",
+        "They may appear as navigation,",
+        1,
+    ).replace("including an explicit unknown state", "without an unknown state", 1)
+    _assert_contract(
+        _errors_for_complexity_hiding_design_feel,
+        markdown,
+        broken_documents=(broken,),
+    )
+
+
+freeze_the_user_facing_complexity_hiding_product_contract.__name__ = (
+    "Freeze the user-facing complexity-hiding product contract."
+)
+
+
 def load_tests(
     loader: unittest.TestLoader,
     tests: unittest.TestSuite,
@@ -502,6 +600,7 @@ def load_tests(
         gui_final_plan_document_contract,
         encode_burns_five_guarantees_and_banned_phrases,
         simple_spec_burn_contract,
+        freeze_the_user_facing_complexity_hiding_product_contract,
     ):
         suite.addTest(unittest.FunctionTestCase(test))
     return suite
