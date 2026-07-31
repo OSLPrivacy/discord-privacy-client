@@ -532,7 +532,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("peer_map.json");
         let err = load_peer_map_from_path(&path).expect_err("missing file should error");
-        assert!(matches!(err, PeerMapError::NotFound { .. }), "got {err:?}");
+        assert!(matches!(&err, PeerMapError::NotFound { .. }), "got {err:?}");
     }
 
     #[test]

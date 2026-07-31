@@ -39,7 +39,7 @@ fn bad_prefix_when_cover_lacks_dpc0() {
         "this is not an OSL cover string",
     )
     .expect_err("non-DPC0 should be BadPrefix");
-    assert!(matches!(err, DecodeError::BadPrefix), "got {err:?}");
+    assert!(matches!(&err, DecodeError::BadPrefix), "got {err:?}");
 }
 
 #[test]
@@ -63,7 +63,7 @@ fn too_short_when_wire_below_minimum() {
     let cover = format!("DPC0::{}", STANDARD.encode([0u8; 8]));
     let err = decrypt_osl_phase4_cover(&recipient.x25519_secret, &sender.x25519_public, &cover)
         .expect_err("undersized wire should error");
-    assert!(matches!(err, DecodeError::TooShort { .. }), "got {err:?}");
+    assert!(matches!(&err, DecodeError::TooShort { .. }), "got {err:?}");
 }
 
 #[test]
@@ -97,7 +97,7 @@ fn zero_recipients_in_header() {
     wire[1] = 0;
     let err = decrypt_osl_phase4_from_wire(&recipient.x25519_secret, &sender.x25519_public, &wire)
         .expect_err("N=0 should error");
-    assert!(matches!(err, DecodeError::ZeroRecipients), "got {err:?}");
+    assert!(matches!(&err, DecodeError::ZeroRecipients), "got {err:?}");
 }
 
 #[test]
