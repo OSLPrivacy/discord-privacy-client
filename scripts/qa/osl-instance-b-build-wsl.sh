@@ -131,6 +131,11 @@ overlay = json.load(open(sys.argv[1], "r", encoding="utf-8"))
 assert overlay == {"identifier": "org.oslprivacy.hubqab"}, overlay
 assert overlay["identifier"] != "org.oslprivacy.hub"
 PY
+    python3 - "$stage/osl-privacy-hub.exe" <<'PY' || return 1
+import json, sys
+overlay = json.load(open(sys.argv[1], "r", encoding="utf-8"))
+assert overlay == {"identifier": "org.oslprivacy.hubqab"}, overlay
+PY
     python3 - "$json" <<'PY' || return 1
 import json, sys
 receipt = json.load(open(sys.argv[1], "r", encoding="utf-8"))
