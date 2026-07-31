@@ -814,6 +814,10 @@ mod tests {
                 50_001,
             )
             .is_err());
+        assert!(
+            state.grants.is_empty(),
+            "a scan attempt that presents the exact grant must consume it even when the profile root is unavailable"
+        );
         assert!(state
             .consume_profile_consent(
                 "owner-a",
@@ -880,12 +884,14 @@ mod tests {
         ] {
             let (mut state, _root, _roots) =
                 inventory_with_profile("non-revoke-transitions", "Default");
+            state.set_firefox_login_decryption_consent(true);
             state
                 .grant_profile_consent("owner-a", BrowserImportId::Chrome, "Default", 1)
                 .unwrap();
             state.apply_transition(transition);
             assert_eq!(state.grants.len(), 1);
             assert_eq!(state.listed_profiles.len(), 1);
+            assert!(state.firefox_login_decryption_consent());
         }
     }
 
@@ -935,6 +941,10 @@ mod tests {
                 expired.expires_at_unix_ms,
             )
             .is_err());
+        assert!(
+            state.grants.is_empty(),
+            "an expired consent grant must be removed when a scan attempts to spend it"
+        );
     }
 
     #[test]
@@ -1018,6 +1028,11 @@ mod tests {
                 1_001,
             )
             .is_err());
+        assert_eq!(
+            state.grants.len(),
+            1,
+            "wrong owner, browser, or profile must not consume the matching grant"
+        );
         let receipt = state
             .scan_consented_profile(
                 "owner-a",
@@ -1029,6 +1044,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(receipt.observation_count, 1);
+        assert!(
+            state.grants.is_empty(),
+            "the successful exact scan must consume the matching grant"
+        );
         assert!(state
             .scan_consented_profile(
                 "owner-a",
