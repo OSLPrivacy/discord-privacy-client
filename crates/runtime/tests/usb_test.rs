@@ -207,14 +207,30 @@ fn monitor_start_with_callback_compiles_on_all_targets() {
     // The non-Windows stub never fires the callback; on Windows the
     // monitor spawns a message-pump thread but no events arrive in
     // CI. Either way, construction must succeed.
+    //
+    // Bounded on purpose. `UsbMonitor::start` deadlocked outright on
+    // Windows -- it waited for a thread id the monitor thread only sent
+    // once its message pump had exited, and nothing but `Monitor::drop`
+    // could stop that pump -- and with no bound here the symptom was a CI
+    // job sitting for 45 minutes on "has been running for over 60
+    // seconds" rather than a test that failed. Completing is part of the
+    // contract, so assert it.
     let counter = Arc::new(AtomicUsize::new(0));
     let counter_for_cb = counter.clone();
-    let cb: ArrivalCallback = Box::new(move || {
-        counter_for_cb.fetch_add(1, Ordering::SeqCst);
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let lifecycle = std::thread::spawn(move || {
+        let cb: ArrivalCallback = Box::new(move || {
+            counter_for_cb.fetch_add(1, Ordering::SeqCst);
+        });
+        let monitor = UsbMonitor::start(cb).expect("monitor start");
+        // Drop the monitor; no events are expected on Linux.
+        drop(monitor);
+        let _ = done_tx.send(());
     });
-    let _monitor = UsbMonitor::start(cb).expect("monitor start");
-    // Drop the monitor; no events are expected on Linux.
-    drop(_monitor);
+    done_rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("UsbMonitor start + drop must finish, not block forever");
+    lifecycle.join().expect("monitor lifecycle thread panicked");
     assert_eq!(counter.load(Ordering::SeqCst), 0);
 }
 

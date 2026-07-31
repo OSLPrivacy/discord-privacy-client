@@ -165,13 +165,23 @@ mod imp {
         let cb_for_thread = cb.clone();
         let (tx, rx) = std::sync::mpsc::channel::<Result<u32>>();
 
+        let tx_for_failure = tx.clone();
         let join = std::thread::Builder::new()
             .name("dpc-usb-monitor".into())
             .spawn(move || {
                 // Run on this thread: register class, create window,
                 // register device notifications, run the pump.
-                let res = run_pump(cb_for_thread);
-                let _ = tx.send(res.map(|_| current_thread_id()));
+                // `run_pump` reports its own readiness through `tx` once
+                // setup is done and before it blocks in `GetMessageW`.
+                let res = run_pump(cb_for_thread, tx);
+                // Only reachable with an `Err` when setup failed before
+                // readiness was reported, in which case `start` is still
+                // waiting on `recv`. Once readiness has been sent, `start`
+                // has returned and dropped the receiver, so this send fails
+                // and is correctly ignored.
+                if let Err(e) = res {
+                    let _ = tx_for_failure.send(Err(e));
+                }
             })
             .map_err(|e| UsbMonitorError::Win32(format!("spawn monitor thread: {e}")))?;
 
@@ -236,7 +246,27 @@ mod imp {
         "DPC_UsbMonitor_v1\0".encode_utf16().collect()
     }
 
-    fn run_pump(callback: Arc<ArrivalCallback>) -> Result<()> {
+    /// Set up the hidden message window and device-notification
+    /// registration, report readiness on `ready`, then pump messages
+    /// until `WM_QUIT`.
+    ///
+    /// Reporting readiness *before* entering the pump is load-bearing.
+    /// The previous version sent the thread id only after `run_pump`
+    /// returned, so `start` blocked on `recv` waiting for a pump that
+    /// exits only on the `WM_QUIT` that `Monitor::drop` posts -- and
+    /// `drop` cannot run until `start` returns. `UsbMonitor::start` could
+    /// therefore never return on Windows; it hung the CI job for 45
+    /// minutes ("has been running for over 60 seconds") once the test
+    /// binary ahead of it stopped failing and let this one run at all.
+    ///
+    /// The send has to come after `CreateWindowExW`: creating a window is
+    /// what gives this thread a message queue, and without one the
+    /// `PostThreadMessageW(WM_QUIT)` in `drop` would be dropped on the
+    /// floor and the pump would never be told to stop.
+    fn run_pump(
+        callback: Arc<ArrivalCallback>,
+        ready: std::sync::mpsc::Sender<Result<u32>>,
+    ) -> Result<()> {
         unsafe {
             let hinstance = GetModuleHandleW(PCWSTR::null())
                 .map_err(|e| UsbMonitorError::Win32(format!("GetModuleHandleW: {e}")))?;
@@ -315,6 +345,14 @@ mod imp {
                 hinstance,
                 _state: state,
             };
+
+            // Startup is complete and this thread owns a message queue,
+            // so `Monitor::drop` can now reach us with WM_QUIT. A send
+            // error means the caller gave up waiting; unwind so `_bundle`
+            // tears the window down rather than pumping forever.
+            if ready.send(Ok(current_thread_id())).is_err() {
+                return Ok(());
+            }
 
             // Run message pump until WM_QUIT.
             let mut msg = MSG::default();
