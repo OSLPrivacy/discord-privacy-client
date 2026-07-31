@@ -8962,7 +8962,7 @@ mod tests {
 
     #[test]
     fn audit_control_inbox_consumers_have_no_active_peer_unfiltered_drain() {
-        sender_filtered_active_peer_control_inbox_refuses_widening();
+        audit_control_inbox_consumers_have_no_active_peer_unfiltered_drain_sw18590();
     }
 
     #[test]
