@@ -293,6 +293,11 @@ fn a_restored_session_cannot_reuse_a_consumed_message_key() {
         before_replay,
         "rejected replay mutated the restored in-order session"
     );
+    assert_eq!(
+        restored.export_state().expect("export after replay"),
+        before_replay,
+        "consumed-key replay mutated the restored session"
+    );
     let fresh = alice
         .encrypt(0, b"after consumed replay", &mut rng)
         .expect("fresh send");
@@ -327,6 +332,7 @@ fn a_restored_session_cannot_reuse_a_consumed_message_key() {
     let mut restored = Session::import_state(&after_skipped_use).expect("import skipped state");
     let before_skipped_replay = restored.export_state().expect("export skipped restored");
     let restored_before_skipped_replay = before_skipped_replay.clone();
+    let branch_before_skipped_replay = before_skipped_replay.clone();
     assert_eq!(restored.decrypt(&first, &mut rng), Err(Error::AuthFailed));
     assert_eq!(
         restored
@@ -341,6 +347,13 @@ fn a_restored_session_cannot_reuse_a_consumed_message_key() {
             .expect("export after rejected skipped replay"),
         before_skipped_replay,
         "rejected replay mutated the restored skipped-key session"
+    );
+    assert_eq!(
+        restored
+            .export_state()
+            .expect("export after skipped replay"),
+        branch_before_skipped_replay,
+        "consumed skipped-key replay mutated the restored session"
     );
     assert_eq!(
         restored
