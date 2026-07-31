@@ -9,6 +9,27 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 GUI_PLAN = ROOT / "docs" / "design" / "osl-gui-final-plan.md"
 SIMPLE_SPEC = ROOT / "docs" / "design" / "osl-simple-spec.md"
+DESIGN_FEEL = ROOT / "docs" / "design" / "osl-subjective-design-feel.md"
+CURRENT_WINDOW_PROMPTS = (
+    ROOT / "docs" / "design" / "osl-current-window-prompts-2026-07-26.md"
+)
+
+PRODUCT_MODEL_TERMS = {
+    "protection state",
+    "trusted people",
+    "connected accounts",
+    "private conversations",
+    "cleanup actions",
+    "activity history",
+}
+
+IMPLEMENTATION_TERMS = {
+    "keyservers",
+    "ratchets",
+    "receipts",
+    "browser profiles",
+    "provider adapters",
+}
 
 
 def _section(markdown: str, heading: str) -> str:
@@ -53,6 +74,38 @@ def _ordered_items(section: str) -> list[tuple[str, str]]:
             current_body.append(line.strip())
     if current_label is not None:
         items.append((current_label, " ".join(current_body)))
+    return items
+
+
+def _unordered_items(section: str) -> list[str]:
+    items: list[str] = []
+    current: list[str] | None = None
+    for line in section.splitlines():
+        if line.startswith("- "):
+            if current is not None:
+                items.append(" ".join(current))
+            current = [line.removeprefix("- ").strip()]
+            continue
+        if current is not None and line.startswith("  "):
+            current.append(line.strip())
+    if current is not None:
+        items.append(" ".join(current))
+    return items
+
+
+def _bullet_items(section: str) -> list[str]:
+    items: list[str] = []
+    current: list[str] = []
+    for line in section.splitlines():
+        if line.startswith("- "):
+            if current:
+                items.append(" ".join(current))
+            current = [line.removeprefix("- ").strip()]
+            continue
+        if current and line.startswith("  "):
+            current.append(line.strip())
+    if current:
+        items.append(" ".join(current))
     return items
 
 
@@ -212,6 +265,84 @@ def _errors_for_burn_contract(markdown: str) -> list[str]:
     return errors
 
 
+def _errors_for_complexity_hiding_design_feel(markdown: str) -> list[str]:
+    complexity = _section(markdown, "## Complexity belongs behind the product")
+    frozen = _section(markdown, "## Frozen user-facing contract")
+    complexity_plain = _plain(complexity)
+    frozen_plain = _plain(frozen)
+    errors: list[str] = []
+
+    product_model = {
+        "protection state",
+        "trusted people",
+        "connected accounts",
+        "private conversations",
+        "cleanup actions",
+        "activity history",
+    }
+    product_model_hits = {
+        noun for noun in product_model if noun in complexity_plain and noun in frozen_plain
+    }
+    if product_model_hits != product_model:
+        errors.append("user-facing product model is not the exact frozen set")
+
+    hidden_terms = {
+        "keyservers",
+        "ratchets",
+        "receipts",
+        "browser profiles",
+        "provider adapters",
+    }
+    if not all(term in complexity_plain for term in hidden_terms):
+        errors.append("hidden implementation terms are not explicitly behind product nouns")
+
+    forbidden_contexts = {
+        "navigation",
+        "onboarding choices",
+        "warning labels",
+        "settings names",
+        "status labels",
+    }
+    if not all(context in complexity_plain for context in forbidden_contexts):
+        errors.append("implementation terms are not banned from all decision surfaces")
+
+    if "refuses to expose implementation machinery" not in frozen_plain:
+        errors.append("implementation machinery can become a user decision")
+
+    consequence_sentence = next(
+        (
+            sentence.lower()
+            for sentence in _sentences(complexity)
+            if "plain consequence" in sentence.lower()
+        ),
+        "",
+    )
+    if not {"plain", "consequence", "safe", "action"}.issubset(
+        set(re.findall(r"[a-z]+", consequence_sentence))
+    ):
+        errors.append("implementation detail is not translated into consequence plus action")
+
+    if "explicit unknown state" not in frozen_plain:
+        errors.append("unknown protection state is not preserved")
+
+    diagnostics_words = set(
+        re.findall(
+            r"[a-z]+",
+            " ".join(
+                sentence.lower()
+                for sentence in _sentences(complexity + "\n" + frozen)
+                if "diagnostic" in sentence.lower()
+            ),
+        )
+    )
+    if not {"advanced", "implementation", "fields", "visible", "ui", "product", "answer"}.issubset(
+        diagnostics_words
+    ):
+        errors.append("advanced diagnostics can replace the main product answer")
+
+    return errors
+
+
 def _errors_for_browser_and_monetization(markdown: str) -> list[str]:
     connections = _section(markdown, "## Connections")
     errors: list[str] = []
@@ -265,6 +396,296 @@ def _errors_for_browser_and_monetization(markdown: str) -> list[str]:
         for sentence in monetization_sentences
     ):
         errors.append("monetization can interrupt safety or capability refusal")
+    return errors
+
+
+def _errors_for_subjective_design_feel(markdown: str) -> list[str]:
+    complexity = _section(markdown, "## Complexity belongs behind the product")
+    frozen = _section(markdown, "## Frozen user-facing contract")
+    normalized_complexity = re.sub(r"\s+", " ", complexity)
+    lower_complexity = normalized_complexity.lower()
+    errors: list[str] = []
+
+    product_match = re.search(
+        r"user-facing model is (.+?)\.", normalized_complexity, flags=re.IGNORECASE
+    )
+    product_nouns = set()
+    if product_match:
+        product_nouns = {
+            item.strip()
+            for item in re.split(
+                r",\s+| and ",
+                product_match.group(1),
+            )
+            if item.strip()
+        }
+    expected_product_nouns = {
+        "protection state",
+        "trusted people",
+        "connected accounts",
+        "private conversations",
+        "cleanup actions",
+        "activity history",
+    }
+    if product_nouns != expected_product_nouns:
+        errors.append("product mental model is not the frozen six nouns")
+
+    machinery_match = re.search(
+        r"Engineering concepts such as (.+?)\s+belong behind",
+        normalized_complexity,
+        flags=re.IGNORECASE,
+    )
+    implementation_terms = set()
+    if machinery_match:
+        implementation_terms = {
+            item.strip().removeprefix("or ")
+            for item in re.split(r",\s+|\s+or\s+", machinery_match.group(1))
+            if item.strip()
+        }
+    expected_implementation_terms = {
+        "keyservers",
+        "ratchets",
+        "receipts",
+        "browser profiles",
+        "provider adapters",
+    }
+    if implementation_terms != expected_implementation_terms:
+        errors.append("implementation machinery is not fully hidden")
+
+    hidden_context_sentence = next(
+        (
+            sentence.lower()
+            for sentence in _sentences(complexity)
+            if sentence.startswith("They must not appear")
+        ),
+        "",
+    )
+    for required in (
+        "navigation",
+        "onboarding choices",
+        "warning labels",
+        "settings names",
+        "status labels",
+        "user-facing concepts",
+    ):
+        if required not in hidden_context_sentence:
+            errors.append(f"hidden machinery context missing: {required}")
+
+    consequence_sentence = next(
+        (
+            sentence.lower()
+            for sentence in _sentences(complexity)
+            if sentence.startswith("When an implementation detail affects")
+        ),
+        "",
+    )
+    if not {"plain consequence", "safe action"}.issubset(
+        set(re.findall(r"[a-z]+(?: [a-z]+)?", consequence_sentence))
+    ):
+        errors.append("implementation details are not translated into outcomes")
+    for forbidden in (
+        "protocol names",
+        "storage layouts",
+        "automation internals",
+        "service-specific plumbing",
+    ):
+        if forbidden not in lower_complexity:
+            errors.append(f"user is not protected from {forbidden}")
+
+    bullets = [_plain(item) for item in _unordered_items(frozen)]
+    if len(bullets) != 4:
+        errors.append("frozen contract must remain four explicit commitments")
+    if not bullets or not all(noun in bullets[0] for noun in expected_product_nouns):
+        errors.append("frozen contract does not speak in product nouns")
+    if len(bullets) < 2 or not all(
+        phrase in bullets[1]
+        for phrase in (
+            "refuses",
+            "implementation machinery",
+            "decision",
+            "understand",
+        )
+    ):
+        errors.append("frozen contract does not refuse machinery-as-decision")
+    if len(bullets) < 3 or not all(
+        phrase in bullets[2]
+        for phrase in (
+            "plain consequence",
+            "next safe action",
+            "explicit unknown state",
+        )
+    ):
+        errors.append("frozen contract does not preserve the unknown-state refusal")
+    if len(bullets) < 4 or not all(
+        phrase in bullets[3]
+        for phrase in (
+            "advanced exports",
+            "implementation fields",
+            "main ui",
+            "product answer",
+            "ordinary language",
+        )
+    ):
+        errors.append("frozen contract does not keep diagnostics behind UI language")
+
+    final_sentence = [sentence.lower() for sentence in _sentences(frozen) if sentence][-1]
+    if not all(
+        phrase in final_sentence
+        for phrase in (
+            "protocol",
+            "storage",
+            "automation",
+            "transport",
+            "service-plumbing",
+            "violates the design feel",
+        )
+    ):
+        errors.append("final contract violation rule is incomplete")
+    return errors
+
+
+def _comma_and_terms(text: str) -> set[str]:
+    return {
+        item.strip(" .")
+        for item in re.split(r",\s+|\s+and\s+", text)
+        if item.strip(" .")
+    }
+
+
+def _errors_for_subjective_design_feel_fixed_terms(markdown: str) -> list[str]:
+    complexity = _section(markdown, "## Complexity belongs behind the product")
+    frozen = _section(markdown, "## Frozen user-facing contract")
+    combined = f"{complexity}\n{frozen}"
+    lower_complexity = _plain(complexity)
+    lower_combined = _plain(combined)
+    errors: list[str] = []
+
+    model_sentence = next(
+        (
+            sentence
+            for sentence in _sentences(complexity)
+            if sentence.startswith("The user-facing model is ")
+        ),
+        "",
+    )
+    model_terms = _comma_and_terms(
+        model_sentence.removeprefix("The user-facing model is "),
+    )
+    if model_terms != PRODUCT_MODEL_TERMS:
+        errors.append("user-facing model is not the fixed product vocabulary")
+
+    bullets = _bullet_items(frozen)
+    if len(bullets) != 4:
+        errors.append("frozen contract must have four behavioral promises")
+    if bullets:
+        first_terms = _comma_and_terms(
+            bullets[0].removeprefix("The app speaks in "),
+        )
+        if first_terms != PRODUCT_MODEL_TERMS:
+            errors.append("frozen contract does not speak in the product model")
+
+    if not (
+        all(term in lower_complexity for term in IMPLEMENTATION_TERMS)
+        and "belong behind those product nouns" in lower_complexity
+        and "must not appear" in lower_complexity
+        and all(
+            surface in lower_complexity
+            for surface in (
+                "navigation",
+                "onboarding choices",
+                "warning labels",
+                "settings names",
+                "status labels",
+                "user-facing concepts",
+            )
+        )
+    ):
+        errors.append("implementation machinery is not hidden from user-facing decisions")
+
+    decision_sentence = next(
+        (
+            sentence.lower()
+            for sentence in _sentences(complexity)
+            if sentence.lower().startswith("when an implementation detail affects")
+        ),
+        "",
+    )
+    if not all(
+        phrase in decision_sentence
+        for phrase in ("plain consequence", "safe action")
+    ):
+        errors.append("implementation details are not translated into consequence and action")
+    if any(
+        phrase not in lower_combined
+        for phrase in (
+            "explicit unknown state",
+            "main ui",
+            "ordinary language",
+            "violates the design feel",
+        )
+    ):
+        errors.append("contract does not preserve unknown/main-UI accountability")
+    if not any(
+        "refuses to expose implementation machinery" in bullet.lower()
+        and "before acting" in bullet.lower()
+        for bullet in bullets
+    ):
+        errors.append("frozen contract does not refuse implementation decisions")
+    return errors
+
+
+def _errors_for_current_window_prompt_rollout(markdown: str) -> list[str]:
+    layout = _section(markdown, "## Recommended live layout")
+    adoption = _section(markdown, "## Shared memory-card adoption contract")
+    update = _section(markdown, "## One update prompt for every active OSL tab")
+    rows = _table_rows(adoption, "Active account/window")
+    errors: list[str] = []
+    expected_windows = [
+        "Existing OSL Hub/UI window",
+        "Existing two-way Opus test window",
+        "Existing Scrub window",
+        "Existing Discord testing window",
+        "New website/head-developer lane",
+        "Coordinating Telegram `/osl` lane",
+    ]
+    observed_windows = [row["Active account/window"] for row in rows]
+    if observed_windows != expected_windows:
+        errors.append("active account/window rollout list is not exact")
+
+    layout_items = re.findall(r"^\d+\.\s+(.+)$", layout, flags=re.MULTILINE)
+    if len(layout_items) != len(expected_windows):
+        errors.append("recommended live layout does not cover six active windows")
+    layout_words = " ".join(layout_items).lower()
+    for required in ("hub/ui", "opus", "scrub", "discord", "website", "telegram"):
+        if required not in layout_words:
+            errors.append(f"recommended live layout omits {required}")
+
+    for row in rows:
+        route = row.get("Memory-card route", "").lower()
+        prompt_source = row.get("Prompt source", "").lower()
+        volatile_rule = row.get("Volatile-status rule", "").lower()
+        if "never copy the full master spec or volatile status into memory" != volatile_rule:
+            errors.append(f"volatile-status rule is not uniform for {row['Active account/window']}")
+        if (
+            "common update" in prompt_source
+            and "common update is sent before" not in route
+            and "current lane receives the shared update" not in route
+        ):
+            errors.append(f"common update is not first for {row['Active account/window']}")
+        if "bootstrap" in prompt_source and "loads the compact memory card before" not in route:
+            errors.append(f"bootstrap does not preload memory card for {row['Active account/window']}")
+        if "memory-card" not in route and "memory card" not in route:
+            errors.append(f"memory-card route is missing for {row['Active account/window']}")
+
+    update_plain = _plain(update)
+    for required in (
+        "if this ai/account has never read it, read it fully once",
+        "save the compact memory card",
+        "read only the revision digest, active deadlines, and task-linked sections/reports",
+        "never copy the giant spec or volatile status into memory",
+    ):
+        if required not in update_plain:
+            errors.append(f"common update prompt is missing memory-card rule: {required}")
     return errors
 
 
@@ -377,6 +798,107 @@ def gui_final_plan_document_contract() -> None:
 gui_final_plan_document_contract.__name__ = "docs/design/osl-gui-final-plan.md'"
 
 
+def gui_final_plan_fixed_information_architecture_contract() -> None:
+    markdown = GUI_PLAN.read_text(encoding="utf-8")
+    testcase = unittest.TestCase()
+    testcase.assertEqual(_errors_for_information_architecture(markdown), [])
+
+    seventh_destination = markdown.replace(
+        "| **Connections** | Which accounts and devices are connected?",
+        "| **Connections** | Which accounts and devices are connected?\n"
+        "| **Settings** | How do I configure OSL?",
+    )
+    testcase.assertIn(
+        "primary destinations are not exactly the fixed six",
+        _errors_for_information_architecture(seventh_destination),
+    )
+
+    promoted_settings = markdown.replace(
+        "Settings remains a fixed item at the bottom of the sidebar rather than a seventh competing destination.",
+        "Settings is a primary destination in the sidebar.",
+    )
+    testcase.assertIn(
+        "Settings is not fixed at the bottom outside the six",
+        _errors_for_information_architecture(promoted_settings),
+    )
+
+
+gui_final_plan_fixed_information_architecture_contract.__name__ = (
+    "docs/design/osl-gui-final-plan.md'"
+)
+
+
+def gui_final_plan_browser_import_and_monetization_contract() -> None:
+    markdown = GUI_PLAN.read_text(encoding="utf-8")
+    testcase = unittest.TestCase()
+    testcase.assertEqual(_errors_for_browser_and_monetization(markdown), [])
+
+    third_browser_choice = markdown.replace(
+        "a web app shows only `Browser account` and `New account`",
+        "a web app shows only `Browser account`, `Existing profile` and `New account`",
+    )
+    testcase.assertIn(
+        "browser import receipt path must expose exactly two choices",
+        _errors_for_browser_and_monetization(third_browser_choice),
+    )
+
+    interrupting_upsell = markdown.replace(
+        "they must never interrupt a safety warning, destructive confirmation or honest capability refusal",
+        "they may interrupt a safety warning, destructive confirmation or honest capability refusal",
+        1,
+    )
+    testcase.assertIn(
+        "monetization can interrupt safety or capability refusal",
+        _errors_for_browser_and_monetization(interrupting_upsell),
+    )
+
+
+gui_final_plan_browser_import_and_monetization_contract.__name__ = (
+    "docs/design/osl-gui-final-plan.md'"
+)
+
+
+def simple_spec_sending_contract() -> None:
+    simple = SIMPLE_SPEC.read_text(encoding="utf-8")
+    gui = GUI_PLAN.read_text(encoding="utf-8")
+    testcase = unittest.TestCase()
+    testcase.assertEqual(_errors_for_send_contract(simple, gui), [])
+
+    optimistic_outcome = simple.replace(
+        "sent, not sent, or delivery uncertain",
+        "sent or failed",
+    )
+    testcase.assertIn(
+        "sending outcomes are not the honest tri-state",
+        _errors_for_send_contract(optimistic_outcome, gui),
+    )
+
+    auto_retry = simple.replace(
+        "never auto-retries it",
+        "automatically retries it",
+    ).replace(
+        "never retries\nautomatically",
+        "retries\nautomatically",
+    )
+    errors = _errors_for_send_contract(auto_retry, gui)
+    testcase.assertTrue(
+        any("auto-retr" in error for error in errors),
+        errors,
+    )
+
+    synthetic_second_enter = gui.replace(
+        "The second Enter must be a separate, trusted user key press after key-up.",
+        "OSL may synthesize the second Enter after placement.",
+    )
+    testcase.assertIn(
+        "missing GUI Double Enter refusal: second enter must be a separate, trusted user key press after key-up",
+        _errors_for_send_contract(simple, synthetic_second_enter),
+    )
+
+
+simple_spec_sending_contract.__name__ = "docs/design/osl-simple-spec.md'"
+
+
 def encode_burns_five_guarantees_and_banned_phrases() -> None:
     markdown = SIMPLE_SPEC.read_text(encoding="utf-8")
     optimistic_result = markdown.replace(
@@ -446,6 +968,23 @@ def simple_spec_burn_contract() -> None:
         _errors_for_send_contract(synthetic_second_enter, gui),
     )
 
+    permissive_second_enter = re.sub(
+        r"Key repeat, a\s+held key, a synthetic event or OSL's own placement action cannot satisfy the\s+second Enter\.",
+        "Key repeat and a held key may satisfy the second Enter.",
+        markdown,
+        count=1,
+    )
+    permissive_second_enter = re.sub(
+        r"key repeat, a\s+held\s+key, a synthetic event, OSL's own placement action,\s+",
+        "key repeat and a held key ",
+        permissive_second_enter,
+        count=1,
+    )
+    testcase.assertIn(
+        "missing simple Double Enter rule: synthetic event",
+        _errors_for_send_contract(permissive_second_enter, gui),
+    )
+
     missing_peer_refusal = markdown.replace(
         "absence of consent, binding, authority, transport delivery or\n   verification means the peer cleanup is refused or reported as unavailable.",
         "peer cleanup is attempted whenever transport delivery is available.",
@@ -471,6 +1010,101 @@ def simple_spec_burn_contract() -> None:
 simple_spec_burn_contract.__name__ = "docs/design/osl-simple-spec.md'"
 
 
+def freeze_the_user_facing_complexity_hiding_product_contract() -> None:
+    markdown = DESIGN_FEEL.read_text(encoding="utf-8")
+    broken = markdown.replace("trusted people", "trusted key material", 1).replace(
+        "They must not appear as navigation,",
+        "They may appear as navigation,",
+        1,
+    ).replace("including an explicit unknown state", "without an unknown state", 1)
+    _assert_contract(
+        _errors_for_complexity_hiding_design_feel,
+        markdown,
+        broken_documents=(broken,),
+    )
+
+
+freeze_the_user_facing_complexity_hiding_product_contract.__name__ = (
+    "Freeze the user-facing complexity-hiding product contract."
+)
+
+
+def freeze_user_facing_complexity_hiding_product_contract() -> None:
+    markdown = DESIGN_FEEL.read_text(encoding="utf-8")
+    broken = markdown.replace(
+        "protection state, trusted people, connected accounts, private conversations, cleanup actions and activity history",
+        "keyservers, ratchets, receipts, browser profiles, provider adapters and activity history",
+        1,
+    ).replace(
+        "including an explicit unknown state when certainty is unavailable",
+        "including implementation detail when certainty is unavailable",
+        1,
+    )
+    _assert_contract(
+        _errors_for_subjective_design_feel,
+        markdown,
+        broken_documents=(broken,),
+    )
+
+
+freeze_user_facing_complexity_hiding_product_contract.__name__ = (
+    "docs/design/osl-subjective-design-feel.md"
+)
+
+
+def freeze_subjective_design_feel_branch_cases() -> None:
+    markdown = DESIGN_FEEL.read_text(encoding="utf-8")
+    broken_model = markdown.replace(
+        "protection state",
+        "keyservers",
+        1,
+    )
+    broken_exposure = markdown.replace(
+        "They must not appear as navigation,",
+        "They may appear as navigation,",
+        1,
+    )
+    _assert_contract(
+        _errors_for_subjective_design_feel_fixed_terms,
+        markdown,
+        broken_documents=(broken_model,),
+    )
+    testcase = unittest.TestCase()
+    testcase.assertNotEqual(_errors_for_subjective_design_feel_fixed_terms(broken_exposure), [])
+
+
+freeze_subjective_design_feel_branch_cases.__name__ = (
+    "docs/design/osl-subjective-design-feel.md"
+)
+
+
+def adopt_shared_memory_cards_across_every_active_account() -> None:
+    markdown = CURRENT_WINDOW_PROMPTS.read_text(encoding="utf-8")
+    broken = markdown.replace(
+        "| Existing Discord testing window | Common update plus Prompt B | Common update is sent before Prompt B and supplies the shared memory-card rule for this active account | Never copy the full master spec or volatile status into memory |\n",
+        "",
+    )
+    _assert_contract(
+        _errors_for_current_window_prompt_rollout,
+        markdown,
+        broken_documents=(broken,),
+    )
+    broken_route = markdown.replace(
+        "Common update is sent before Prompt A; Prompt A repeats first-encounter versus returning-account memory-card handling",
+        "Prompt A is sent directly",
+    )
+    testcase = unittest.TestCase()
+    testcase.assertNotEqual(
+        _errors_for_current_window_prompt_rollout(broken_route),
+        [],
+    )
+
+
+adopt_shared_memory_cards_across_every_active_account.__name__ = (
+    "docs/design/osl-current-window-prompts-2026-07-26.md"
+)
+
+
 def load_tests(
     loader: unittest.TestLoader,
     tests: unittest.TestSuite,
@@ -483,8 +1117,15 @@ def load_tests(
         encode_honest_tri_state_sending_and_double_enter_without_auto_retry,
         encode_browser_import_choices_and_noninterrupting_monetization,
         gui_final_plan_document_contract,
+        gui_final_plan_fixed_information_architecture_contract,
+        gui_final_plan_browser_import_and_monetization_contract,
+        simple_spec_sending_contract,
         encode_burns_five_guarantees_and_banned_phrases,
         simple_spec_burn_contract,
+        freeze_the_user_facing_complexity_hiding_product_contract,
+        freeze_user_facing_complexity_hiding_product_contract,
+        freeze_subjective_design_feel_branch_cases,
+        adopt_shared_memory_cards_across_every_active_account,
     ):
         suite.addTest(unittest.FunctionTestCase(test))
     return suite
