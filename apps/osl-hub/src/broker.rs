@@ -7115,7 +7115,7 @@ pub struct DiscordQaB6RuntimeFacts {
 /// run inadmissible. `unmeasurable` means the proof could exist, but this
 /// retained receipt does not contain it. A missing proof is never a pass.
 #[cfg(any(feature = "discord-qa-shell", test))]
-#[derive(Clone, Copy, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum B6ProofOutcome {
     Pass,
@@ -8084,6 +8084,10 @@ mod tests {
             .map(|step| step["outcome"].as_str().expect("outcome is text"))
             .collect();
         assert_eq!(outcomes, vec!["pass", "fail", "unmeasurable", "blocked"]);
+        assert!(
+            serde_json::from_value::<B6ProofOutcome>(serde_json::json!("maybe")).is_err(),
+            "B6 proof outcomes must stay closed to pass/fail/unmeasurable/blocked"
+        );
     }
 
     #[test]
