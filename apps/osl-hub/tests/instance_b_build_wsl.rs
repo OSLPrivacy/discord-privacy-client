@@ -275,6 +275,7 @@ printf '%s\n' "${TAURI_CONFIG:-}" > target/x86_64-pc-windows-gnu/debug/osl-priva
 }
 
 #[test]
+#[cfg_attr(not(feature = "never"), ignore = "runs a real cargo/frontend build; under nextest it deadlocks on the global osl-cargo lock. Run explicitly: cargo test -p osl-privacy-hub --test instance_b_build_wsl -- --ignored")]
 fn frontend_dist_is_embedded_after_frontend_build() {
     let root = repo_root();
     let script = root.join("scripts/qa/osl-instance-b-build-wsl.sh");

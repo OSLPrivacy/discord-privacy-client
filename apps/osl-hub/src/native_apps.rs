@@ -3327,7 +3327,7 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn process_actions_fail_closed_off_windows() {
-        assert!(list_native_apps()
+        assert!(super::list_native_apps()
             .iter()
             .all(|app| app.availability == NativeAppAvailability::Unavailable
                 && !app.supports_overlay));
