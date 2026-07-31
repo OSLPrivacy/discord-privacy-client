@@ -17,6 +17,22 @@ export async function d1Run(sql: string, ...values: Bound[]): Promise<D1Result> 
   return env.DB.prepare(sql).bind(...values).run();
 }
 
+/// Run one statement over many bind sets in D1 batches instead of one
+/// round trip per row. Seeding a few hundred rows one `await` at a time is
+/// the dominant cost in the quota/sweep fixtures.
+export async function d1BatchRun(
+  sql: string,
+  rows: Bound[][],
+  chunkSize = 64,
+): Promise<void> {
+  const statement = env.DB.prepare(sql);
+  for (let start = 0; start < rows.length; start += chunkSize) {
+    await env.DB.batch(
+      rows.slice(start, start + chunkSize).map((values) => statement.bind(...values)),
+    );
+  }
+}
+
 export async function d1First<T>(sql: string, ...values: Bound[]): Promise<T> {
   const row = await env.DB.prepare(sql).bind(...values).first<T>();
   if (!row) throw new Error(`missing D1 row for query: ${sql}`);

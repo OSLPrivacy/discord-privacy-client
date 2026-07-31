@@ -714,7 +714,7 @@ fn unregister_account_for_duress(state: &AppState) -> Result<(), keystore::Dures
 mod tests {
     use super::*;
 
-    struct ConfigDirGuard;
+    struct ConfigDirGuard(#[allow(dead_code)] crate::test_process_globals::SerialGuard);
 
     impl Drop for ConfigDirGuard {
         fn drop(&mut self) {
@@ -725,10 +725,11 @@ mod tests {
     }
 
     fn use_temp_config_dir(dir: &Path) -> ConfigDirGuard {
+        let serial = crate::test_process_globals::serialize();
         keystore::set_active_account_dir(None);
         keystore::set_base_dir_override(Some(dir.to_path_buf()));
         crate::main_password::set_file_storage_key(None);
-        ConfigDirGuard
+        ConfigDirGuard(serial)
     }
 
     fn outcome_for(
@@ -892,6 +893,7 @@ mod tests {
             }
         }
 
+        let _serial = crate::test_process_globals::serialize();
         let dir = tempfile::tempdir().unwrap();
         let base_dir = dir.path().join("base");
         let account_dir = dir.path().join("accounts").join("active");
@@ -948,7 +950,7 @@ fn current_unix_seconds() -> u64 {
 mod identity_authority_tests {
     use super::*;
 
-    struct ConfigDirGuard;
+    struct ConfigDirGuard(#[allow(dead_code)] crate::test_process_globals::SerialGuard);
 
     impl Drop for ConfigDirGuard {
         fn drop(&mut self) {
@@ -959,10 +961,11 @@ mod identity_authority_tests {
     }
 
     fn use_temp_config_dir(dir: &Path) -> ConfigDirGuard {
+        let serial = crate::test_process_globals::serialize();
         keystore::set_active_account_dir(None);
         keystore::set_base_dir_override(Some(dir.to_path_buf()));
         crate::main_password::set_file_storage_key(None);
-        ConfigDirGuard
+        ConfigDirGuard(serial)
     }
 
     #[test]

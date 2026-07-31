@@ -267,7 +267,6 @@ mod tests {
     use super::*;
     use crate::main_password::{has_enc_magic, set_file_storage_key};
     use crate::scope::Scope;
-    use std::sync::Mutex;
     use tempfile::tempdir;
 
     const A: &str = "111111111111111111";
@@ -277,7 +276,6 @@ mod tests {
     const CH1: &str = "900000000000000010";
     const CH2: &str = "900000000000000011";
     const GC: &str = "900000000000000099";
-    static KEY_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn channel_observation_rolls_up_to_server() {
@@ -362,7 +360,7 @@ mod tests {
 
     #[test]
     fn file_round_trip_and_missing_is_notfound() {
-        let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::test_process_globals::serialize();
         set_file_storage_key(Some([0x44; 32]));
         let dir = std::env::temp_dir().join(format!("osl_mem_test_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
@@ -386,7 +384,7 @@ mod tests {
 
     #[test]
     fn write_scope_membership() {
-        let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::test_process_globals::serialize();
         set_file_storage_key(None);
 
         let dir = tempdir().unwrap();
@@ -448,7 +446,7 @@ mod tests {
 
     #[test]
     fn writes_are_encrypted_when_key_present() {
-        let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::test_process_globals::serialize();
         crate::main_password::set_file_storage_key(Some([0x45u8; 32]));
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("membership.json");
@@ -466,7 +464,7 @@ mod tests {
 
     #[test]
     fn write_refuses_to_clobber_encrypted_membership_with_plaintext() {
-        let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::test_process_globals::serialize();
         let key = [0x46u8; 32];
         crate::main_password::set_file_storage_key(Some(key));
         let dir = tempfile::tempdir().unwrap();
@@ -493,7 +491,7 @@ mod tests {
 
     #[test]
     fn reload_reencrypts_plaintext_membership_when_key_now_present() {
-        let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::test_process_globals::serialize();
         crate::main_password::set_file_storage_key(None);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("membership.json");

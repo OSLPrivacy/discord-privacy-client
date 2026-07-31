@@ -85,6 +85,68 @@ pub mod wire_v2;
 // additive — the v=2/v=3/v=4/v=5 paths above are untouched.
 pub mod wire_rn;
 
+// A handful of things this crate reaches for are genuinely process-global:
+// `keystore::set_base_dir_override` / `set_active_account_dir` (an `RwLock`
+// inside `keystore`), the file-storage-key slot and the inactivity auto-lock
+// timer slot. `cargo test` runs the unit tests of one binary on N threads by
+// default, so two tests that each point those globals at their own `TempDir`
+// clobber each other: one test's teardown resets the override to `None` while
+// another is mid-assertion, and the victim silently resolves to the real user
+// config dir (or to a `TempDir` that has already been deleted).
+//
+// That is exactly how CI failed on `windows-latest`: the duress-gate tests read
+// `C:\Users\runneradmin\AppData\Roaming\osl\password_marker.json` and a stale
+// `...\Temp\.tmpXXXXXX\base\...`. It never reproduced locally because the local
+// runs use `--test-threads=1`.
+//
+// Every test that installs one of those globals takes this lock, so they run
+// one at a time regardless of the harness's thread count. It is re-entrant per
+// thread: several tests take the lock and then call a helper (e.g.
+// `use_temp_config_dir`) that takes it again, and a plain `Mutex` would
+// self-deadlock there.
+#[cfg(test)]
+pub(crate) mod test_process_globals {
+    use std::cell::Cell;
+    use std::sync::{Mutex, MutexGuard};
+
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    thread_local! {
+        static DEPTH: Cell<u32> = const { Cell::new(0) };
+    }
+
+    /// Held for as long as the caller owns the process globals. The inner
+    /// guard is `None` for re-entrant acquisitions on the same thread.
+    pub(crate) struct SerialGuard(Option<MutexGuard<'static, ()>>);
+
+    impl Drop for SerialGuard {
+        fn drop(&mut self) {
+            // Release the re-entrancy count before the real guard, so the next
+            // thread in never observes a stale depth.
+            DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+            self.0.take();
+        }
+    }
+
+    /// Serialize this test against every other test that mutates the
+    /// process-global config-dir overrides, file storage key or auto-lock
+    /// timer. Poisoning is recovered from: a panicking test still leaves the
+    /// globals reset by its own guard, and failing every later test with
+    /// "mutex poisoned" would hide the original failure.
+    pub(crate) fn serialize() -> SerialGuard {
+        let outermost = DEPTH.with(|depth| {
+            let current = depth.get();
+            depth.set(current + 1);
+            current == 0
+        });
+        if outermost {
+            SerialGuard(Some(LOCK.lock().unwrap_or_else(|err| err.into_inner())))
+        } else {
+            SerialGuard(None)
+        }
+    }
+}
+
 pub use at_rest_boundary::AtRestBoundary;
 pub use commands::{
     AeadOpenRequest, AeadSealRequest, AeadSealResponse, FetchPubkeysResponse,

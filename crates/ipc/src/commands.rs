@@ -284,7 +284,7 @@ mod production_duress_session_wipe_tests {
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
 
-    struct ConfigDirGuard;
+    struct ConfigDirGuard(#[allow(dead_code)] crate::test_process_globals::SerialGuard);
 
     impl Drop for ConfigDirGuard {
         fn drop(&mut self) {
@@ -295,10 +295,11 @@ mod production_duress_session_wipe_tests {
     }
 
     fn use_temp_config_dir(dir: &Path) -> ConfigDirGuard {
+        let serial = crate::test_process_globals::serialize();
         keystore::set_active_account_dir(None);
         keystore::set_base_dir_override(Some(dir.to_path_buf()));
         crate::main_password::set_file_storage_key(None);
-        ConfigDirGuard
+        ConfigDirGuard(serial)
     }
 
     fn test_ratchet_state() -> crypto::ratchet::RatchetStateOnDisk {
@@ -9043,6 +9044,7 @@ mod control_inbox_dead_letter_policy_tests {
 
     #[test]
     fn snowflake_sender_dead_letters_before_retirement_and_is_not_retried() {
+        let _serial = crate::test_process_globals::serialize();
         let _reset = FileKeyReset;
         crate::main_password::set_file_storage_key(Some([0x4d; 32]));
         let dir = tempfile::tempdir().unwrap();
@@ -10969,13 +10971,10 @@ pub fn cmd_osl_apply_burn(
 #[cfg(test)]
 mod burn_wrapped_key_command_tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static CONFIG_DIR_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn burn_posts_control_inbox_and_deletes_wrapped_keys() {
-        let _guard = CONFIG_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::test_process_globals::serialize();
         const SELF: &str = "900000000000000060";
         const PEER: &str = "900000000000000061";
         let dir = tempfile::TempDir::new().expect("tempdir");
@@ -11406,7 +11405,6 @@ mod friend_request_acceptance_tests {
     use base64::Engine;
 
     const REQUESTER_DID: &str = "900000000000000001";
-    static ACTIVE_ACCOUNT_DIR_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn bundle(label: &str) -> KeyBundle {
         KeyBundle {
@@ -11455,7 +11453,7 @@ mod friend_request_acceptance_tests {
 
     #[test]
     fn cmd_osl_send_friend_request_creates_and_persists_pending_friend_request() {
-        let _guard = ACTIVE_ACCOUNT_DIR_TEST_LOCK.lock().unwrap();
+        let _guard = crate::test_process_globals::serialize();
         let _reset = ActiveAccountDirReset;
         let dir = tempfile::TempDir::new().expect("tempdir");
         keystore::set_active_account_dir(Some(dir.path().to_path_buf()));
@@ -11502,7 +11500,7 @@ mod friend_request_acceptance_tests {
 
     #[test]
     fn cmd_osl_send_friend_request_persists_pending_and_rejects_duplicate_request() {
-        let _guard = ACTIVE_ACCOUNT_DIR_TEST_LOCK.lock().unwrap();
+        let _guard = crate::test_process_globals::serialize();
         let dir = tempfile::TempDir::new().expect("tempdir");
         keystore::set_active_account_dir(Some(dir.path().to_path_buf()));
         let _reset = ActiveAccountDirReset;
@@ -14152,11 +14150,9 @@ mod inactivity_command_activity_tests {
     use super::*;
     use std::time::{Duration, Instant};
 
-    static INACTIVITY_COMMAND_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[test]
     fn record_activity_on_every_command_marks_inactivity_timer() {
-        let _guard = INACTIVITY_COMMAND_TEST_LOCK.lock().unwrap();
+        let _guard = crate::test_process_globals::serialize();
         crate::main_password::set_file_storage_key(None);
         let t0 = Instant::now();
         let key = [0xA7; 32];
@@ -14179,7 +14175,7 @@ mod inactivity_command_activity_tests {
 
     #[test]
     fn record_activity_on_every_command_extends_file_key_timer_window() {
-        let _guard = INACTIVITY_COMMAND_TEST_LOCK.lock().unwrap();
+        let _guard = crate::test_process_globals::serialize();
         crate::main_password::set_file_storage_key(None);
         let t0 = Instant::now();
         let key = [0x5A; 32];
@@ -14216,7 +14212,7 @@ mod inactivity_command_activity_tests {
 
     #[test]
     fn record_activity_on_every_command_marks_short_inactivity_timer_window() {
-        let _guard = INACTIVITY_COMMAND_TEST_LOCK.lock().unwrap();
+        let _guard = crate::test_process_globals::serialize();
         crate::main_password::set_file_storage_key(None);
         let t0 = Instant::now();
         let key = [0x6B; 32];
@@ -15136,9 +15132,6 @@ mod account_transfer_tests {
     use super::*;
     use tempfile::TempDir;
 
-    static FILE_KEY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    static PRODUCTION_STORE_OPEN_HOOK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     struct FileKeyReset;
 
     impl Drop for FileKeyReset {
@@ -15181,7 +15174,7 @@ mod account_transfer_tests {
 
     #[test]
     fn production_store_opens_use_keystore_backed_anchor() {
-        let _serial = PRODUCTION_STORE_OPEN_HOOK_TEST_LOCK.lock().unwrap();
+        let _serial = crate::test_process_globals::serialize();
         let _reset = ProductionStoreOpenHookReset;
         let dir = TempDir::new().unwrap();
         let state = AppState::new();
@@ -15226,7 +15219,7 @@ mod account_transfer_tests {
 
     #[test]
     fn encrypted_export_is_normalized_to_plaintext_inside_outer_aead() {
-        let _guard = FILE_KEY_TEST_LOCK.lock().unwrap();
+        let _guard = crate::test_process_globals::serialize();
         let _reset = FileKeyReset;
         let dir = TempDir::new().unwrap();
         let entropy = [7; 16];
@@ -15247,7 +15240,7 @@ mod account_transfer_tests {
 
     #[test]
     fn locked_export_of_encrypted_state_fails() {
-        let _guard = FILE_KEY_TEST_LOCK.lock().unwrap();
+        let _guard = crate::test_process_globals::serialize();
         let _reset = FileKeyReset;
         let dir = TempDir::new().unwrap();
         std::fs::write(
@@ -15263,7 +15256,7 @@ mod account_transfer_tests {
 
     #[test]
     fn import_reencrypts_state_json_for_destination_key() {
-        let _guard = FILE_KEY_TEST_LOCK.lock().unwrap();
+        let _guard = crate::test_process_globals::serialize();
         let _reset = FileKeyReset;
         crate::main_password::set_file_storage_key(Some([9; 32]));
         let mut files = serde_json::Map::new();
@@ -15283,7 +15276,7 @@ mod account_transfer_tests {
 
     #[test]
     fn guard_backup_destination_refuses_unencrypted_store_backup() {
-        let _guard = FILE_KEY_TEST_LOCK.lock().unwrap();
+        let _guard = crate::test_process_globals::serialize();
         let _reset = FileKeyReset;
         crate::main_password::set_file_storage_key(None);
         let dir = TempDir::new().unwrap();
@@ -15435,7 +15428,7 @@ pub fn cmd_osl_lockout_status() -> Result<LockoutStatusDto, String> {
 mod duress_gate_tests {
     use super::*;
 
-    struct OslDirOverrideGuard;
+    struct OslDirOverrideGuard(#[allow(dead_code)] crate::test_process_globals::SerialGuard);
 
     impl Drop for OslDirOverrideGuard {
         fn drop(&mut self) {
@@ -15452,7 +15445,11 @@ mod duress_gate_tests {
         let account_dir = temp.path().join("account");
         std::fs::create_dir_all(account_dir.join("store")).unwrap();
         std::fs::create_dir_all(&base_dir).unwrap();
-        let _guard = OslDirOverrideGuard;
+        // Serialized against every other test that installs these
+        // process-global overrides: with `cargo test`'s default thread count a
+        // sibling test's teardown was resetting them mid-gate, so the duress
+        // gate read a `TempDir` that had already been deleted.
+        let _guard = OslDirOverrideGuard(crate::test_process_globals::serialize());
         keystore::set_base_dir_override(Some(base_dir.clone()));
         keystore::set_active_account_dir(Some(account_dir.clone()));
 

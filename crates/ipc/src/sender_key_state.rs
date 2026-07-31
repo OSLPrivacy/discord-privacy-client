@@ -83,6 +83,7 @@ mod tests {
 
     #[test]
     fn v5_device_bound_sender_keys_do_not_desync_across_two_devices() {
+        let _serial = crate::test_process_globals::serialize();
         let _reset = FileKeyReset;
         crate::main_password::set_file_storage_key(Some([0x51; 32]));
         let peer = b"same-peer-account".to_vec();

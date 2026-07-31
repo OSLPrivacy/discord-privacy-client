@@ -490,12 +490,9 @@ mod tests {
     use crypto::ratchet::{DoubleRatchet, RatchetStateOnDisk, SessionContext, SESSION_VERSION_V1};
     use crypto::{ml_kem_768, pqxdh, x25519};
     use std::fs;
-    use std::sync::Mutex;
     use tempfile::tempdir;
 
     use crate::main_password::{has_enc_magic, maybe_decrypt, set_file_storage_key};
-
-    static KEY_LOCK: Mutex<()> = Mutex::new(());
 
     fn build_test_ratchet_state() -> RatchetStateOnDisk {
         let (alice_ik_sk, alice_ik_pub) = x25519::generate_keypair();
@@ -537,7 +534,7 @@ mod tests {
 
     #[test]
     fn legacy_string_values_upgrade_in_place() {
-        let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::test_process_globals::serialize();
         set_file_storage_key(Some([0x21; 32]));
 
         let dir = tempdir().unwrap();
@@ -602,7 +599,7 @@ mod tests {
 
     #[test]
     fn reload_reencrypts_plaintext_peer_map_when_key_now_present() {
-        let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::test_process_globals::serialize();
         set_file_storage_key(Some([0x71; 32]));
 
         let dir = tempdir().unwrap();
@@ -644,7 +641,7 @@ mod tests {
 
     #[test]
     fn b80_legacy_v4_ratchet_state_is_retired_on_load_and_written_back() {
-        let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::test_process_globals::serialize();
         set_file_storage_key(Some([0x80; 32]));
 
         let dir = tempdir().unwrap();

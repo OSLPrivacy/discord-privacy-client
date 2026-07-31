@@ -228,6 +228,7 @@ mod tests {
 
     #[test]
     fn control_inbox_dead_letter_round_trips_through_encryption_path_unchanged() {
+        let _serial = crate::test_process_globals::serialize();
         use crate::main_password::{has_enc_magic, set_file_storage_key};
 
         let _reset = FileKeyReset;

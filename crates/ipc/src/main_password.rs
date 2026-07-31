@@ -1819,7 +1819,10 @@ pub fn burn_wipe_all(dir: &Path) -> Result<(), String> {
 mod password_policy_tests {
     use super::*;
 
-    struct ConfigDirOverrideGuard;
+    /// Holds the process-global serialization lock for as long as the
+    /// overrides it installed are live, so a parallel `cargo test` cannot
+    /// reset another test's config dir mid-assertion.
+    struct ConfigDirOverrideGuard(#[allow(dead_code)] crate::test_process_globals::SerialGuard);
 
     impl Drop for ConfigDirOverrideGuard {
         fn drop(&mut self) {
@@ -1830,12 +1833,11 @@ mod password_policy_tests {
     }
 
     fn use_temp_config_dir(dir: &Path) -> ConfigDirOverrideGuard {
+        let serial = crate::test_process_globals::serialize();
         keystore::set_active_account_dir(None);
         keystore::set_base_dir_override(Some(dir.to_path_buf()));
-        ConfigDirOverrideGuard
+        ConfigDirOverrideGuard(serial)
     }
-
-    static INACTIVITY_AUTO_LOCK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     const TEST_MAIN_PASSWORD: &str = "main-secret";
     const TEST_PHRASE: &str =
@@ -1882,11 +1884,19 @@ mod password_policy_tests {
 
     #[test]
     fn stateful_inactivity_auto_lock_timer_clears_session() {
+        let _serial = crate::test_process_globals::serialize();
         set_file_storage_key(None);
         let state = AppState::new();
         state.install_identity(keystore::generate_identity("idle-lock-owner".to_owned()));
         set_file_storage_key(Some([0x7a; 32]));
-        let now = std::time::Instant::now();
+        // `Instant` is monotonic-since-boot, so `Instant::now() - 30min` panics
+        // ("overflow when subtracting duration from instant") on a machine that
+        // has been up for less than 30 minutes. A freshly-booted `windows-latest`
+        // runner is exactly that machine, which is why this only ever failed in
+        // CI. Anchor `now` far enough forward instead and derive the
+        // last-activity instants by subtraction from it, which cannot underflow.
+        let idle_window = std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS);
+        let now = std::time::Instant::now() + idle_window * 2;
 
         assert_eq!(
             super::run_inactivity_auto_lock_timer_for_state(
@@ -2001,7 +2011,7 @@ mod password_policy_tests {
 
     #[test]
     fn command_activity_extends_file_key_inactivity_timer_window() {
-        let _guard = INACTIVITY_AUTO_LOCK_TEST_LOCK.lock().unwrap();
+        let _guard = crate::test_process_globals::serialize();
         set_file_storage_key(None);
         let t0 = Instant::now();
         let key = [0x42; 32];
@@ -2038,11 +2048,17 @@ mod password_policy_tests {
             }
         }
 
+        // Taken before the overrides are installed and released after
+        // `OverrideReset` has torn them down, so no parallel test can point
+        // `password_dir()` back at the real per-user config dir while this one
+        // is driving the duress gate.
+        let _serial = crate::test_process_globals::serialize();
         set_file_storage_key(None);
         let dir = tempfile::tempdir().unwrap();
         let base_dir = dir.path().join("base");
         let account_dir = dir.path().join("accounts").join("active");
         std::fs::create_dir_all(&account_dir).unwrap();
+        std::fs::create_dir_all(&base_dir).unwrap();
         keystore::set_base_dir_override(Some(base_dir.clone()));
         keystore::set_active_account_dir(Some(account_dir.clone()));
         let _reset = OverrideReset;
@@ -2080,6 +2096,7 @@ mod password_policy_tests {
 
     #[test]
     fn device_bound_fallback_file_storage_key_round_trips_without_main_password() {
+        let _serial = crate::test_process_globals::serialize();
         set_file_storage_key(None);
         let dir = tempfile::tempdir().unwrap();
         let sealer = keystore::MemorySealer::new();
@@ -2160,6 +2177,7 @@ mod password_policy_tests {
 
     #[test]
     fn maybe_decrypt_transparently_supports_both_device_bound_and_main_password() {
+        let _serial = crate::test_process_globals::serialize();
         set_file_storage_key(None);
 
         let main_dir = tempfile::tempdir().unwrap();
@@ -2203,6 +2221,7 @@ mod password_policy_tests {
 
     #[test]
     fn gate_attempt_tenth_wrong_password_triggers_marker_duress_wipe() {
+        let _serial = crate::test_process_globals::serialize();
         set_file_storage_key(None);
         let dir = tempfile::tempdir().unwrap();
         write_marker(dir.path(), &build_fast_test_marker(TEST_MAIN_PASSWORD)).unwrap();
@@ -2240,6 +2259,7 @@ mod password_policy_tests {
 
     #[test]
     fn tenth_consecutive_wrong_password_attempt_triggers_duress() {
+        let _serial = crate::test_process_globals::serialize();
         set_file_storage_key(None);
         let dir = tempfile::tempdir().unwrap();
         write_marker(dir.path(), &build_fast_test_marker(TEST_MAIN_PASSWORD)).unwrap();
@@ -2274,6 +2294,7 @@ mod password_policy_tests {
 
     #[test]
     fn correct_password_before_tenth_attempt_resets_counter() {
+        let _serial = crate::test_process_globals::serialize();
         set_file_storage_key(None);
         let dir = tempfile::tempdir().unwrap();
         let password = "correct-password";
@@ -2309,7 +2330,7 @@ mod password_policy_tests {
 
     #[test]
     fn file_key_inactivity_auto_lock_timer_clears_key_at_threshold() {
-        let _guard = INACTIVITY_AUTO_LOCK_TEST_LOCK.lock().unwrap();
+        let _guard = crate::test_process_globals::serialize();
         set_file_storage_key(None);
         let t0 = Instant::now();
         let key = [0xA5; 32];
@@ -2346,6 +2367,7 @@ mod password_policy_tests {
 
     #[test]
     fn gate_attempt_correct_password_before_tenth_attempt_resets_counter() {
+        let _serial = crate::test_process_globals::serialize();
         set_file_storage_key(None);
         let dir = tempfile::tempdir().unwrap();
         write_marker(dir.path(), &build_fast_test_marker(TEST_MAIN_PASSWORD)).unwrap();
@@ -2459,7 +2481,7 @@ mod password_policy_tests {
 
         #[test]
         fn run_inactivity_auto_lock_timer() {
-            let _guard = INACTIVITY_AUTO_LOCK_TEST_LOCK.lock().unwrap();
+            let _guard = crate::test_process_globals::serialize();
             set_file_storage_key(None);
             let unlocked_at = Instant::now();
             let key = [0x31; 32];

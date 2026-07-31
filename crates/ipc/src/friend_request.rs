@@ -988,6 +988,7 @@ mod tests {
 
     #[test]
     fn friend_request_file_state_round_trips_through_main_password_storage() {
+        let _serial = crate::test_process_globals::serialize();
         crate::main_password::set_file_storage_key(None);
         let dir = tempfile::tempdir().unwrap();
         let state = FriendRequestFileState {
