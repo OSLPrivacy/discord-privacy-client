@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import re
 import unittest
 from pathlib import Path
@@ -82,8 +83,7 @@ def _command_words(commands: list[str]) -> set[tuple[str, ...]]:
     return words
 
 
-def success_contract() -> None:
-    cargo = _read_toml(ROOT / "Cargo.toml")
+def _assert_root_cargo_ci_contract(cargo: dict) -> None:
     workspace = cargo["workspace"]
     members = workspace["members"]
     excludes = workspace.get("exclude", [])
@@ -139,6 +139,23 @@ def success_contract() -> None:
         "--test",
         "windows_identity_lifecycle",
     ) in protected_commands
+
+
+def success_contract() -> None:
+    cargo = _read_toml(ROOT / "Cargo.toml")
+    _assert_root_cargo_ci_contract(cargo)
+
+    testcase = unittest.TestCase()
+
+    tauri_in_workspace = copy.deepcopy(cargo)
+    tauri_in_workspace["workspace"]["members"].append("src-tauri")
+    with testcase.assertRaises(AssertionError):
+        _assert_root_cargo_ci_contract(tauri_in_workspace)
+
+    missing_legacy_exclusion = copy.deepcopy(cargo)
+    missing_legacy_exclusion["workspace"]["exclude"].remove("src-tauri")
+    with testcase.assertRaises(AssertionError):
+        _assert_root_cargo_ci_contract(missing_legacy_exclusion)
 
 
 success_contract.__name__ = "success'"
