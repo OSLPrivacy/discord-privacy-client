@@ -1599,6 +1599,23 @@ mod tests {
         let result = policy.verify(&substitute_bundle, &owner_pub, None);
 
         assert_eq!(result, Err(BundleVerifyError::SignatureInvalid));
+
+        let (owner_secret, owner_pub) = ed25519::generate_keypair();
+        let owner_bundle = signed_bundle(&owner_secret, &owner_pub, 2);
+
+        let mut substituted_x25519 = owner_bundle.clone();
+        substituted_x25519.x25519_identity_pub[0] ^= 0x40;
+        assert_eq!(
+            policy.verify(&substituted_x25519, &owner_pub, None),
+            Err(BundleVerifyError::SignatureInvalid)
+        );
+
+        let mut substituted_mlkem = owner_bundle;
+        substituted_mlkem.mlkem768_identity_pub[0] ^= 0x40;
+        assert_eq!(
+            policy.verify(&substituted_mlkem, &owner_pub, None),
+            Err(BundleVerifyError::SignatureInvalid)
+        );
     }
 
     #[test]
