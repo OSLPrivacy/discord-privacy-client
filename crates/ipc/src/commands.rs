@@ -6041,7 +6041,7 @@ where
 /// empty cover from `open_attachment_v2_split`) — falls back to the
 /// caller-supplied legacy `att_key_b64` argument for V1 only. If
 /// that legacy local key is absent, the V1 branch fetches the
-/// keyserver wrapped-key row for the bound sender/content id.
+/// sender/recipient/content-bound wrapped key from the keyserver.
 ///
 /// Phase 8e: open path now chains V3 → V2 → V1 magic detection via
 /// `open_attachment_v3_split`. JS callers don't need to know which
@@ -6310,18 +6310,16 @@ mod wrapped_key_open_tests {
             None,
             Some("content-1".to_string()),
         )
-        .expect("missing local V1 key should be recovered from the wrapped-key server");
+        .expect("V1 attachment should open with the fetched wrapped key");
 
-        assert_eq!(
-            opened.plaintext_b64,
-            STANDARD.encode(b"wrapped-key plaintext")
-        );
+        assert_eq!(opened.plaintext_b64, STANDARD.encode(b"wrapped-key plaintext"));
         assert_eq!(opened.original_filename, "wrapped.png");
         assert_eq!(opened.mime_type, "image/png");
         let request = rx
             .recv_timeout(Duration::from_millis(100))
-            .expect("wrapped-key fetch must be issued when the local key is absent");
+            .expect("missing local V1 key must fetch the wrapped key");
         assert!(request.starts_with("GET /v1/wrapped-keys/content-1?"));
+        assert!(request.contains("requester_id=recipient-osl"));
         assert!(request.contains("recipient_id=recipient-osl"));
     }
 
