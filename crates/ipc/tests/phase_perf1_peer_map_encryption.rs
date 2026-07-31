@@ -274,6 +274,8 @@ fn write_peer_map_migrates_existing_plaintext_when_key_absent() {
 #[test]
 fn reload_reencrypts_plaintext_peer_map_when_key_now_present() {
     let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _base = tempfile::TempDir::new().unwrap();
+    keystore::set_base_dir_override(Some(_base.path().to_path_buf()));
 
     let dir = tempdir().unwrap();
     let path = dir.path().join("peer_map.json");

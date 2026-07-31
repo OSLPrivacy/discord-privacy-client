@@ -587,6 +587,10 @@ fn v3_open_chain_still_decodes_v2_and_v1() {
 
 #[test]
 fn v2_open_without_legacy_key_fails_on_v1_bundle() {
+    let _base = tempfile::TempDir::new().unwrap();
+    keystore::set_base_dir_override(Some(_base.path().to_path_buf()));
+    ipc::main_password::set_file_storage_key(None);
+
     // Seal via the V1 path and confirm open_v2 rejects without
     // a legacy key.
     let liam_state = fresh_state_for_liam();
