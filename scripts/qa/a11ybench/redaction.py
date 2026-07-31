@@ -26,13 +26,20 @@ ALLOWED_ARTIFACT_FIELDS = frozenset(
 )
 CONTENT_BEARING_ARTIFACT_KINDS = frozenset(
     (
+        "cleartext",
+        "content",
         "dom",
         "html",
         "image",
         "jpeg",
         "jpg",
         "log",
+        "message",
+        "messages",
         "png",
+        "payload",
+        "plaintext",
+        "raw",
         "rawlog",
         "screenshot",
         "snapshot",
