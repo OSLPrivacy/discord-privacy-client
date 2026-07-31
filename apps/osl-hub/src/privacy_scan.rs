@@ -1,9 +1,9 @@
 //! Bounded, deterministic, local-only message risk scanning.
 //!
 //! This module deliberately has no HTTP/model dependency and performs no I/O.
-//! A trusted service adapter may provide messages that the signed-in user can
-//! already view. Findings exist only in the caller's memory unless a separate,
-//! encrypted persistence layer is explicitly added later.
+//! A trusted caller may provide messages from an explicit local export or data
+//! already visible to the signed-in user. The separate Scrub index can persist
+//! those inputs encrypted and deterministically reproduce findings from disk.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -12,7 +12,7 @@ const MAX_MESSAGES: usize = 2_000;
 const MAX_TEXT_BYTES: usize = 8 * 1024;
 const MAX_LOCATOR_BYTES: usize = 256;
 const MAX_PREVIEW_CHARS: usize = 120;
-const MAX_FINDINGS: usize = 1_000;
+pub(crate) const MAX_FINDINGS: usize = 1_000;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -109,9 +109,6 @@ pub fn scan_local_messages(messages: Vec<LocalMessageCandidate>) -> LocalPrivacy
                 local_preview: preview(&message.text),
                 can_request_delete: message.authored_by_self,
             });
-        }
-        if findings.len() >= MAX_FINDINGS {
-            break;
         }
     }
 

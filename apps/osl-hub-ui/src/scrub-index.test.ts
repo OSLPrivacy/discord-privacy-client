@@ -12,6 +12,7 @@ import {
   appendScrubIndexChunk,
   cancelScrubIndex,
   getScrubIndexStatus,
+  getScrubIndexScan,
   initializeScrubIndex,
   parseScrubIndexStatus,
   pauseScrubIndex,
@@ -85,6 +86,18 @@ describe("Scrub index IPC", () => {
     await expect(resumeScrubIndex(importId)).resolves.toMatchObject({ phase: "running" });
     await expect(cancelScrubIndex(importId)).resolves.toBeUndefined();
     expect(mocks.invoke).toHaveBeenLastCalledWith("cancel_scrub_index", { importId });
+  });
+
+  it("reads only a strict persisted scan from the encrypted index", async () => {
+    const scan = {
+      findings: [], messagesScanned: 1, messagesRejected: 0, truncated: false,
+      analysisLocation: "this_device_only", persisted: true,
+    } as const;
+    mocks.invoke.mockResolvedValue(scan);
+    await expect(getScrubIndexScan(importId)).resolves.toEqual(scan);
+    expect(mocks.invoke).toHaveBeenCalledWith("get_scrub_index_scan", { importId });
+    mocks.invoke.mockResolvedValue({ ...scan, persisted: false });
+    await expect(getScrubIndexScan(importId)).rejects.toThrow("invalid persisted");
   });
 
   it("fails closed outside the signed desktop runtime", async () => {
