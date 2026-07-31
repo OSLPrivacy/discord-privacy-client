@@ -7989,6 +7989,16 @@ mod tests {
     use crate::service_host::owner_profile_namespace;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    struct KeystoreGlobalsGuard;
+
+    impl Drop for KeystoreGlobalsGuard {
+        fn drop(&mut self) {
+            ipc::main_password::set_file_storage_key(None);
+            keystore::set_active_account_dir(None);
+            keystore::set_base_dir_override(None);
+        }
+    }
+
     #[test]
     fn b6_preflight_names_every_current_runtime_blocker_without_network_or_state_mutation() {
         let state = ipc::AppState::new();
@@ -11442,6 +11452,7 @@ mod tests {
     #[test]
     fn d7_received_ack_is_correlated_and_replay_idempotent_while_opened_is_refused() {
         let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _globals = KeystoreGlobalsGuard;
         let context = context("discord-personal", "dm-receipt");
         let manual = ManualPeerContext {
             service_id: "discord".to_owned(),
@@ -11599,9 +11610,6 @@ mod tests {
             .is_err(),
             "the durable sent proof is one row per verified send and cannot be overwritten"
         );
-        ipc::main_password::set_file_storage_key(None);
-        keystore::set_active_account_dir(None);
-        keystore::set_base_dir_override(None);
         let _ = std::fs::remove_dir_all(&receipt_dir);
 
         let opened = NativeOverlayAcknowledgmentPayload {
@@ -11734,6 +11742,7 @@ mod tests {
     #[test]
     fn c32_send_proof_is_recorded_only_after_control_inbox_post_succeeds() {
         let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _globals = KeystoreGlobalsGuard;
         let receipt_dir = std::env::temp_dir().join(format!(
             "osl-hub-native-receipt-post-gate-{}-{}",
             std::process::id(),
@@ -11822,9 +11831,6 @@ mod tests {
         let ledger = load_native_overlay_receipts(&receipt_path, &file_key).unwrap();
         assert!(ledger.records["msg-post-gate"].status == NativeOverlayReceiptStatus::Sent);
 
-        ipc::main_password::set_file_storage_key(None);
-        keystore::set_active_account_dir(None);
-        keystore::set_base_dir_override(None);
         let _ = std::fs::remove_dir_all(&receipt_dir);
     }
 

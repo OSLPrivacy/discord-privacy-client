@@ -1815,7 +1815,7 @@ mod tests {
 
         let err = peer_bundle_from_b5(&response).expect_err("invalid signature must refuse");
         assert!(matches!(
-            err,
+            &err,
             RnError::PrekeyAdapter("peer signed prekey signature is invalid")
         ));
         let display = err.to_string();
@@ -2102,7 +2102,7 @@ mod tests {
         };
 
         assert!(matches!(
-            err,
+            &err,
             RnError::PrekeyAdapter("fetched prekey bundle does not match authenticated identity")
         ));
         let display = err.to_string();
