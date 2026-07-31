@@ -970,7 +970,7 @@ mod tests {
             Err(error) => error,
         };
         assert!(
-            matches!(error, StoreError::Anchor(ref message) if message.contains("rejected preflight load")),
+            matches!(&error, StoreError::Anchor(message) if message.contains("rejected preflight load")),
             "wrong error before anchor reconciliation: {error}"
         );
         assert_eq!(
@@ -997,7 +997,7 @@ mod tests {
             Err(error) => error,
         };
         assert!(
-            matches!(error, StoreError::Anchor(ref message) if message.contains("local database is absent")),
+            matches!(&error, StoreError::Anchor(message) if message.contains("local database is absent")),
             "wrong missing-local refusal: {error}"
         );
         assert!(
@@ -1082,7 +1082,7 @@ mod tests {
         assert_eq!(losers, 1, "the stale concurrent opener must fail closed");
         let loser = outcomes.into_iter().find_map(Result::err).unwrap();
         assert!(
-            matches!(loser, StoreError::Anchor(ref message) if message.contains("stale")),
+            matches!(&loser, StoreError::Anchor(message) if message.contains("stale")),
             "concurrent loser returned the wrong error: {loser}"
         );
         let reopened = MessageStore::open_anchored(tmp.path(), SECRET, provider).unwrap();
