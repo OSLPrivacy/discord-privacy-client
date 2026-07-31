@@ -3286,6 +3286,7 @@ fn prepare_peer_inbox_text(
     })?;
     let logical_message_id = random_peer_message_id();
     let whole_sha256 = sha256_hex(plaintext.as_bytes());
+    let mut verified_native_posts = 0u16;
     #[cfg(feature = "discord-qa-shell")]
     record_fixed_discord_qa_broker_stage(is_fixed_discord_qa_probe, "scope", "ready", None)?;
     #[cfg(feature = "discord-qa-shell")]
@@ -3485,8 +3486,11 @@ fn prepare_peer_inbox_text(
             crate::discord_qa_inbound_receipt::record_headless_post_control_stage("entered", None)?;
         }
         match client.post_control_inbox(&identity, &manual.peer_osl_user_id, &scope_id, &bundle) {
-            Ok(_) =>
-            {
+            Ok(response) => {
+                verified_native_overlay_post(&response)?;
+                verified_native_posts = verified_native_posts.checked_add(1).ok_or_else(|| {
+                    "OSL could not save the protected message receipt safely".to_owned()
+                })?;
                 #[cfg(feature = "discord-qa-shell")]
                 if is_fixed_discord_qa_probe {
                     crate::discord_qa_inbound_receipt::record_headless_post_control_stage(
@@ -3549,7 +3553,9 @@ fn prepare_peer_inbox_text(
     }
     #[cfg(feature = "discord-qa-shell")]
     record_fixed_discord_qa_broker_stage(is_fixed_discord_qa_probe, "record", "entered", None)?;
-    let record_result = record_native_overlay_sent(
+    let record_result = record_native_overlay_sent_after_verified_native_posts(
+        verified_native_posts,
+        chunk_count,
         core,
         broker,
         &context,
@@ -5206,6 +5212,41 @@ fn prune_native_overlay_receipts(ledger: &mut NativeOverlayReceiptLedger, now: i
         let Some(oldest) = oldest else { break };
         ledger.records.remove(&oldest);
     }
+}
+
+fn verified_native_overlay_post(
+    response: &keystore::ControlInboxPostResponse,
+) -> Result<(), String> {
+    if response.id.trim().is_empty() || response.expires_at <= 0 {
+        return Err("OSL could not save the protected message receipt safely".to_owned());
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_native_overlay_sent_after_verified_native_posts(
+    verified_native_posts: u16,
+    expected_native_posts: u16,
+    core: &HubCoreState,
+    broker: &HubBrokerState,
+    context: &HubConversationContext,
+    manual: &ManualPeerContext,
+    message_id: &str,
+    expires_at: i64,
+    allow_device_bound_qa_key: bool,
+) -> Result<(), String> {
+    if expected_native_posts == 0 || verified_native_posts != expected_native_posts {
+        return Err("OSL could not save the protected message receipt safely".to_owned());
+    }
+    record_native_overlay_sent(
+        core,
+        broker,
+        context,
+        manual,
+        message_id,
+        expires_at,
+        allow_device_bound_qa_key,
+    )
 }
 
 fn record_native_overlay_sent(
@@ -8971,7 +9012,7 @@ mod tests {
 
     #[test]
     fn audit_control_inbox_consumers_have_no_active_peer_unfiltered_drain() {
-        sender_filtered_active_peer_control_inbox_refuses_widening();
+        audit_control_inbox_consumers_have_no_active_peer_unfiltered_drain_sw18590();
     }
 
     #[test]
@@ -11474,7 +11515,43 @@ mod tests {
         *core.osl.identity.lock().unwrap() =
             Some(keystore::generate_identity(context.self_osl_id.clone()));
         let broker = HubBrokerState::default();
-        record_native_overlay_sent(
+        let receipt_path = receipt_dir.join(NATIVE_OVERLAY_RECEIPTS_FILE);
+        assert!(
+            verified_native_overlay_post(&keystore::ControlInboxPostResponse {
+                id: String::new(),
+                expires_at: acknowledgment.expires_at,
+            })
+            .is_err(),
+            "a native post proof with no accepted row id is not verified"
+        );
+        assert!(
+            record_native_overlay_sent_after_verified_native_posts(
+                0,
+                1,
+                &core,
+                &broker,
+                &context,
+                &manual,
+                &acknowledgment.message_id,
+                acknowledgment.expires_at,
+                false,
+            )
+            .is_err(),
+            "the sent ledger must refuse to record before every native post is verified"
+        );
+        assert!(
+            !receipt_path.exists(),
+            "a refused sent proof must not create a durable receipt file"
+        );
+        let verified_post = keystore::ControlInboxPostResponse {
+            id: "d7-control-inbox-row".to_owned(),
+            expires_at: acknowledgment.expires_at,
+        };
+        verified_native_overlay_post(&verified_post)
+            .expect("accepted control-inbox row verifies the native post proof");
+        record_native_overlay_sent_after_verified_native_posts(
+            1,
+            1,
             &core,
             &broker,
             &context,
@@ -11484,7 +11561,6 @@ mod tests {
             false,
         )
         .expect("the verified production send path records a durable sent receipt");
-        let receipt_path = receipt_dir.join(NATIVE_OVERLAY_RECEIPTS_FILE);
         let sealed = std::fs::read(&receipt_path).expect("sent receipt is durable on disk");
         let sealed_text = String::from_utf8_lossy(&sealed);
         assert!(ipc::main_password::has_enc_magic(&sealed));
@@ -11497,7 +11573,10 @@ mod tests {
             .expect("sent receipt is correlated by message id");
         assert!(persisted_record.status == NativeOverlayReceiptStatus::Sent);
         assert_eq!(persisted_record.service_id, manual.service_id);
-        assert_eq!(persisted_record.conversation_binding, context.conversation_id);
+        assert_eq!(
+            persisted_record.conversation_binding,
+            context.conversation_id
+        );
         assert_eq!(persisted_record.peer_osl_user_id, manual.peer_osl_user_id);
         let persisted_json = serde_json::to_string(&persisted).unwrap();
         assert!(!persisted_json.contains(private_text));
@@ -11506,7 +11585,9 @@ mod tests {
         assert!(!persisted_json.contains("cover_pointer"));
         assert!(!persisted_json.contains("carrier"));
         assert!(
-            record_native_overlay_sent(
+            record_native_overlay_sent_after_verified_native_posts(
+                1,
+                1,
                 &core,
                 &broker,
                 &context,
@@ -11652,25 +11733,99 @@ mod tests {
 
     #[test]
     fn c32_send_proof_is_recorded_only_after_control_inbox_post_succeeds() {
-        let source = include_str!("broker.rs");
-        let prepare = source
-            .split_once("fn prepare_peer_inbox_text(")
-            .expect("send path exists")
-            .1
-            .split_once("\nfn split_native_overlay_text(")
-            .expect("send path boundary exists")
-            .0;
-        let post = prepare
-            .find("client.post_control_inbox(")
-            .expect("send path posts the encrypted control row");
-        let record = prepare
-            .find("record_native_overlay_sent(")
-            .expect("send path records a sent proof");
+        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let receipt_dir = std::env::temp_dir().join(format!(
+            "osl-hub-native-receipt-post-gate-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&receipt_dir).unwrap();
+        keystore::set_base_dir_override(Some(receipt_dir.clone()));
+        keystore::set_active_account_dir(Some(receipt_dir.clone()));
+        ipc::main_password::set_main_password(&receipt_dir, "aB3!z9").unwrap();
+        let context = context("discord-personal", "dm-post-gate");
+        let manual = ManualPeerContext {
+            service_id: "discord".to_owned(),
+            account_id: context.account_id.clone(),
+            person_id: "friend-post-gate".to_owned(),
+            peer_osl_user_id: "osl-peer-post-gate".to_owned(),
+            scope: ScopeInput {
+                kind: ScopeKind::Dm,
+                id: "scope-post-gate".to_owned(),
+                server_id: None,
+                channel_id: Some(context.conversation_id.clone()),
+            },
+        };
+        let core = HubCoreState::default();
+        *core.osl.identity.lock().unwrap() =
+            Some(keystore::generate_identity(context.self_osl_id.clone()));
+        let broker = HubBrokerState::default();
+        let receipt_path = receipt_dir.join(NATIVE_OVERLAY_RECEIPTS_FILE);
 
         assert!(
-            post < record,
-            "the send-proof ledger must not claim a message before the encrypted row is accepted"
+            record_native_overlay_sent_after_verified_native_posts(
+                0,
+                1,
+                &core,
+                &broker,
+                &context,
+                &manual,
+                "msg-post-gate",
+                1_700_003_600,
+                false,
+            )
+            .is_err(),
+            "a failed post must not be promoted into a durable sent proof"
         );
+        assert!(
+            record_native_overlay_sent_after_verified_native_posts(
+                1,
+                2,
+                &core,
+                &broker,
+                &context,
+                &manual,
+                "msg-post-gate",
+                1_700_003_600,
+                false,
+            )
+            .is_err(),
+            "a partially posted chunk set must not be promoted into a durable sent proof"
+        );
+        assert!(
+            !receipt_path.exists(),
+            "refused post proofs must not create a receipt file"
+        );
+
+        let response = keystore::ControlInboxPostResponse {
+            id: "post-gate-control-row".to_owned(),
+            expires_at: 1_700_003_600,
+        };
+        verified_native_overlay_post(&response).expect("accepted control-inbox row verifies");
+        record_native_overlay_sent_after_verified_native_posts(
+            1,
+            1,
+            &core,
+            &broker,
+            &context,
+            &manual,
+            "msg-post-gate",
+            1_700_003_600,
+            false,
+        )
+        .expect("a fully verified post set records exactly one sent proof");
+        let file_key =
+            ipc::main_password::get_file_storage_key().expect("main password installs a file key");
+        let ledger = load_native_overlay_receipts(&receipt_path, &file_key).unwrap();
+        assert!(ledger.records["msg-post-gate"].status == NativeOverlayReceiptStatus::Sent);
+
+        ipc::main_password::set_file_storage_key(None);
+        keystore::set_active_account_dir(None);
+        keystore::set_base_dir_override(None);
+        let _ = std::fs::remove_dir_all(&receipt_dir);
     }
 
     #[test]
@@ -12057,6 +12212,23 @@ mod tests {
 
     #[test]
     fn b53_drain_entrypoints_are_reachable_after_process_reactivation() {
+        fn batch_error(result: Result<OpenedNativeOverlayTextBatch, String>) -> String {
+            match result {
+                Ok(_) => panic!("drain unexpectedly opened a batch"),
+                Err(error) => error,
+            }
+        }
+
+        fn opened_error(result: Result<OpenedNativeOverlayText, String>) -> String {
+            match result {
+                Ok(_) => panic!("reveal unexpectedly opened a message"),
+                Err(error) => error,
+            }
+        }
+
+        let core = HubCoreState::default();
+        let security_state = HubSecurityState::default();
+        const VALID_VIEW_ONCE_ID: &str = "peer-b5300000000000000000000000000000";
         let native_binding = ManualPeerBinding {
             person_id: "hub-person-bob".to_owned(),
             peer_osl_user_id: "osl-bob".to_owned(),
@@ -12090,6 +12262,25 @@ mod tests {
         assert!(relaunched_process
             .manual_peer_for(&first_native.lease.context_token)
             .is_err());
+        assert_eq!(
+            batch_error(drain_native_discord_overlay_text(
+                &core,
+                &security_state,
+                &relaunched_process,
+            )),
+            "OSL native Discord protection is not active",
+            "a relaunched process must not drain through a stale native context"
+        );
+        assert_eq!(
+            opened_error(reveal_native_discord_overlay_view_once(
+                &core,
+                &security_state,
+                &relaunched_process,
+                VALID_VIEW_ONCE_ID,
+            )),
+            "OSL native Discord protection is not active",
+            "a relaunched process must not reveal through a stale native context"
+        );
 
         let second_native_host = ActiveServiceHost {
             service_id: "discord".to_owned(),
@@ -12121,8 +12312,37 @@ mod tests {
                 .peer_osl_user_id,
             "osl-bob"
         );
+        let reactivated_drain_error = batch_error(drain_native_discord_overlay_text(
+            &core,
+            &security_state,
+            &relaunched_process,
+        ));
+        assert_ne!(
+            reactivated_drain_error, "OSL native Discord protection is not active",
+            "after reactivation the public native drain must resolve the current active context and reach the next receive gate"
+        );
+        let reactivated_reveal_error = opened_error(reveal_native_discord_overlay_view_once(
+            &core,
+            &security_state,
+            &relaunched_process,
+            VALID_VIEW_ONCE_ID,
+        ));
+        assert_ne!(
+            reactivated_reveal_error, "OSL native Discord protection is not active",
+            "after reactivation the public reveal path must resolve the current active context and reach the next receive gate"
+        );
 
         let chat_process = HubBrokerState::default();
+        assert_eq!(
+            batch_error(drain_osl_chat_text(
+                &core,
+                &security_state,
+                &chat_process,
+                true,
+            )),
+            "OSL Chat is not active",
+            "an inactive OSL Chat process must refuse before any receive work"
+        );
         let chat = activate_owned_osl_chat_context(
             &chat_process,
             "osl-alice",
@@ -12139,6 +12359,16 @@ mod tests {
             chat.lease.context_token
         );
         assert!(chat_process.active_native_manual_context_token().is_err());
+        let chat_drain_error = batch_error(drain_osl_chat_text(
+            &core,
+            &security_state,
+            &chat_process,
+            true,
+        ));
+        assert_ne!(
+            chat_drain_error, "OSL Chat is not active",
+            "after activation the public OSL Chat drain must resolve the current active context and reach the next receive gate"
+        );
     }
 
     #[test]
