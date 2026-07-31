@@ -111,6 +111,7 @@ def instance_b_launcher_uses_private_temp_root_and_preserves_instance_a() -> Non
         assert completed.returncode == 2, completed.stderr
         assert payload["overall"]["verdict"] == "blocked"
         assert _step(payload, "temp-isolation")["result"] == "failed"
+        assert payload["steps"][-1]["step"] == "temp-isolation"
         assert not (Path(str(fixture["tempRootA"])) / "osl-startup-trace.txt").exists()
 
     with tempfile.TemporaryDirectory() as raw_tmp:
@@ -123,6 +124,7 @@ def instance_b_launcher_uses_private_temp_root_and_preserves_instance_a() -> Non
         assert completed.returncode == 1, completed.stderr
         assert payload["overall"]["verdict"] == "failed"
         assert _step(payload, "assert/instance-a-untouched")["result"] == "failed"
+        assert payload["steps"][-1]["step"] == "assert/instance-a-untouched"
 
 
 def instance_b_confirm_creates_identity_registers_second_identity() -> None:
@@ -163,6 +165,7 @@ def instance_b_confirm_creates_identity_registers_second_identity() -> None:
         assert payload["overall"]["diagnosis"] == (
             "consented instance B launch did not register exactly one additional identity"
         )
+        assert payload["steps"][-1]["step"] == "identity/keyserver-registration"
 
 
 def load_tests(
