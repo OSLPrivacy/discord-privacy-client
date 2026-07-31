@@ -100,7 +100,28 @@ describe("Discord QA whitelist revoke warning", () => {
   });
 
   it("matches the house style of its sibling status chips", () => {
-    expect(whitelistWarningBlock).toContain('color:#ffb347');
-    expect(whitelistWarningBlock).toContain("border:1px solid currentColor;border-radius:7px");
+    // Asserted in styles.css, where the styling now lives and where it is the
+    // only copy. The shipped CSP (tauri.conf.json, app.security.csp) is
+    // `style-src 'self'` with no `'unsafe-inline'`, no nonce and no hash, and
+    // CSP style-src governs inline style *attributes* as well as <style>
+    // blocks -- so the inline copy this used to assert on was dropped by the
+    // WebView and styled nothing. Reading it out of main.ts therefore reported
+    // green while the chip rendered as bare unstyled text.
+    const styles = fs.readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+    const declarations = styles.replace(/\/\*[\s\S]*?\*\//gu, "");
+    // The shared chip rule the four header-strip chips are declared against.
+    const chipStart = declarations.indexOf("\n.native-discord-composer-unreachable,\n");
+    expect(chipStart, "the shared header-strip chip rule should exist").toBeGreaterThanOrEqual(0);
+    const chipRule = declarations.slice(chipStart, declarations.indexOf("}", chipStart));
+    expect(chipRule).toContain(".discord-qa-whitelist-warning,");
+    expect(chipRule).toContain("border: 1px solid currentColor;");
+    expect(chipRule).toContain("border-radius: 7px;");
+    // Its own tone, taken from the palette token rather than a loose hex.
+    const ownStart = declarations.indexOf("\n.discord-qa-whitelist-warning {");
+    expect(ownStart, ".discord-qa-whitelist-warning should be a top-level rule").toBeGreaterThanOrEqual(0);
+    const ownRule = declarations.slice(ownStart, declarations.indexOf("}", ownStart));
+    expect(ownRule).toContain("color: var(--warn);");
+    // And the CSP-dead copy may not come back.
+    expect(whitelistWarningBlock).not.toContain("style=");
   });
 });

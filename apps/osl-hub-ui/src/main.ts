@@ -3042,29 +3042,15 @@ export function primarySidebarMarkup(): string {
     const current = activeDestination(destination.id);
     return `<button class="primary-sidebar-item ${current ? "active" : ""}" type="button" data-primary-destination="${destination.id}" ${destinationAttributes(destination.id)} ${current ? 'aria-current="page"' : ""}><span class="primary-sidebar-icon" aria-hidden="true">${escapeHtml(destination.label.slice(0, 1))}</span><span><strong>${escapeHtml(destination.label)}</strong><small>${escapeHtml(destination.userQuestion)}</small></span></button>`;
   }).join("");
-  return `<style>
-    .hub-layout.with-primary-sidebar { grid-template-columns: 232px minmax(0, 1fr); }
-    .primary-sidebar { width: 232px; min-height: 0; padding: 14px 10px; border-right: 1px solid var(--line); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 12px; background: var(--panel); }
-    .primary-sidebar-brand, .primary-sidebar-settings, .primary-sidebar-item { appearance: none; width: 100%; border: 0; background: transparent; color: var(--muted); font: inherit; text-align: left; cursor: pointer; }
-    .primary-sidebar-brand { min-height: 42px; padding: 0 8px; display: flex; align-items: center; gap: 9px; color: var(--text); font-weight: 700; }
-    .primary-sidebar-brand img { width: 28px; height: 28px; object-fit: contain; }
-    .primary-sidebar-nav { display: grid; align-content: start; gap: 3px; overflow: auto; }
-    .primary-sidebar-item { min-height: 48px; padding: 6px 8px; border-left: 2px solid transparent; display: grid; grid-template-columns: 26px minmax(0, 1fr); align-items: center; gap: 8px; }
-    .primary-sidebar-item:hover, .primary-sidebar-item.active, .primary-sidebar-settings:hover, .primary-sidebar-settings.active { background: var(--panel-2); color: var(--text); }
-    .primary-sidebar-item.active, .primary-sidebar-settings.active { border-left-color: var(--brand); }
-    .primary-sidebar-icon { width: 24px; height: 24px; border: 1px solid var(--line); display: grid; place-items: center; color: var(--text); font-size: 11px; font-weight: 750; }
-    .primary-sidebar-item strong, .primary-sidebar-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .primary-sidebar-item strong { font-size: 13px; }
-    .primary-sidebar-item small { margin-top: 2px; color: var(--subtle); font-size: 10px; }
-    .primary-sidebar-settings { min-height: 40px; padding: 0 8px; border-left: 2px solid transparent; font-size: 13px; font-weight: 700; }
-    @media (max-width: 760px) {
-      .hub-layout.with-primary-sidebar { grid-template-columns: 64px minmax(0, 1fr); }
-      .primary-sidebar { width: 64px; padding-inline: 8px; }
-      .primary-sidebar-brand span, .primary-sidebar-item span:last-child, .primary-sidebar-settings span { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-      .primary-sidebar-item { min-height: 44px; padding: 6px 0; grid-template-columns: 1fr; justify-items: center; }
-      .primary-sidebar-settings { text-align: center; }
-    }
-  </style><aside class="primary-sidebar" aria-label="OSL navigation"><button class="primary-sidebar-brand" type="button" data-route="home" aria-label="OSL Privacy home"><img class="osl-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/><span>OSL</span></button><nav class="primary-sidebar-nav" aria-label="Primary destinations">${items}</nav><button class="primary-sidebar-settings ${route === "settings" ? "active" : ""}" type="button" data-route="${oslSettingsDestination}" ${route === "settings" ? 'aria-current="page"' : ""}><span>Settings</span></button></aside>`;
+  // Styling lives in styles.css (`.hub-layout.with-primary-sidebar` /
+  // `.primary-sidebar*`), NOT in a runtime <style> element. The shipped CSP is
+  // `style-src 'self'` with no `'unsafe-inline'`, no nonce and no hash, so the
+  // WebView blocks runtime <style> elements (and inline `style` attributes)
+  // outright; the inert copy that used to sit here styled nothing while the
+  // navigation rendered as unstyled native buttons wrapping across the top of
+  // the window. ia-sidebar.test.ts now asserts the layout rule against
+  // styles.css, where it actually applies.
+  return `<aside class="primary-sidebar" aria-label="OSL navigation"><button class="primary-sidebar-brand" type="button" data-route="home" aria-label="OSL Privacy home"><img class="osl-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/><span>OSL</span></button><nav class="primary-sidebar-nav" aria-label="Primary destinations">${items}</nav><button class="primary-sidebar-settings ${route === "settings" ? "active" : ""}" type="button" data-route="${oslSettingsDestination}" ${route === "settings" ? 'aria-current="page"' : ""}><span>Settings</span></button></aside>`;
 }
 
 function appLauncherStrip(): string {
@@ -3092,7 +3078,12 @@ function fleetIndicatorMarkup(): string {
   const openRunCount = autoScrubFleetStatus?.openRunCount ?? 0;
   const runNames = openRunNames.length ? openRunNames.join(", ") : "No cleanup running";
   const ariaLabel = `Cleanup monitor: ${status.label}; ${runNames}`;
-  return `<aside class="fleet-indicator fleet-indicator-${status.tone}" data-fleet-indicator data-open-run-count="${openRunCount}" data-open-run-names="${escapeHtml(runNames)}" role="status" aria-label="${escapeHtml(ariaLabel)}" title="${escapeHtml(ariaLabel)}" style="align-self:center;max-width:min(34ch,28vw);min-height:30px;padding:3px 8px;border:1px solid var(--line);border-radius:7px;display:grid;grid-template-columns:auto minmax(0,1fr);column-gap:8px;align-items:center;background:var(--panel-2);color:var(--text);font-size:11px;line-height:1.15"><span aria-hidden="true" style="width:8px;height:8px;border-radius:999px;background:currentColor;opacity:${status.tone === "neutral" ? "0.45" : "1"}"></span><span style="min-width:0"><strong style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(status.label)}</strong><small style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--subtle)">${escapeHtml(runNames)}</small></span></aside>`;
+  // Styling lives in styles.css (`.fleet-indicator`), NOT in an inline `style`
+  // attribute. The shipped CSP is `style-src 'self'` with no `'unsafe-inline'`,
+  // which blocks inline style attributes as well as <style> blocks, so the
+  // previous inline-styled version rendered as two unstyled text runs jammed
+  // against the window controls: no pill, no border, no vertical stacking.
+  return `<aside class="fleet-indicator fleet-indicator-${status.tone}" data-fleet-indicator data-open-run-count="${openRunCount}" data-open-run-names="${escapeHtml(runNames)}" role="status" aria-label="${escapeHtml(ariaLabel)}" title="${escapeHtml(ariaLabel)}"><span class="fleet-indicator-dot" aria-hidden="true"></span><span class="fleet-indicator-text"><strong>${escapeHtml(status.label)}</strong><small>${escapeHtml(runNames)}</small></span></aside>`;
 }
 
 /**
@@ -3126,7 +3117,13 @@ function nativeDiscordComposerUnreachableNotice(): string {
     : nativeDiscordComposerUnreachableReason === "keyboard-focus"
       ? "Windows refused OSL the keyboard"
       : "Windows refused it focus, or Discord is drawing above it";
-  return `<span class="native-discord-composer-unreachable" id="native-discord-composer-unreachable" role="alert" data-composer-input-state="unreachable" title="OSL's protected composer is visible but is not receiving keyboard input — ${cause}. Anything you type now goes to Discord unencrypted. Stop typing, click the composer with the cyan lock ring, and confirm the ring before every message." style="align-self:center;max-width:min(52ch,44vw);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 8px;border:1px solid currentColor;border-radius:7px;font-size:11px;line-height:30px;font-weight:600;color:#ff6b6b"><span aria-hidden="true" style="font-weight:700">!</span> Your typing is going to Discord, not OSL — check the cyan ring</span>`;
+  // Styling lives in styles.css (`.native-discord-composer-unreachable`), NOT in
+  // an inline `style` attribute. The shipped CSP is `style-src 'self'` with no
+  // `'unsafe-inline'`, and CSP style-src governs inline style *attributes* as
+  // well as <style> blocks, so every declaration on this element was dropped:
+  // the one chip that says plaintext is leaving the app right now rendered as
+  // bare unstyled text with no border, no alarm colour and no chip shape.
+  return `<span class="native-discord-composer-unreachable" id="native-discord-composer-unreachable" role="alert" data-composer-input-state="unreachable" title="OSL's protected composer is visible but is not receiving keyboard input — ${cause}. Anything you type now goes to Discord unencrypted. Stop typing, click the composer with the cyan lock ring, and confirm the ring before every message."><span class="native-discord-composer-unreachable-mark" aria-hidden="true">!</span> Your typing is going to Discord, not OSL — check the cyan ring</span>`;
 }
 
 function nativeDiscordHeaderControls(): string {
@@ -3157,9 +3154,12 @@ function nativeDiscordHeaderControls(): string {
   // says so up front, in the one surface that draws above the borrowed
   // native Discord window. It is a fixed literal — never interpolated draft
   // or message text — and never claims anything about whether the other
-  // person has an OSL account, which this app cannot know.
+  // person has an OSL account, which this app cannot know. Its styling lives in
+  // styles.css (`.discord-qa-whitelist-warning`), not in an inline `style`
+  // attribute: the shipped CSP is `style-src 'self'` with no `'unsafe-inline'`,
+  // which drops inline style attributes too, so the inline copy styled nothing.
   const whitelistWarningNotice = nativeDiscordProtectionActive && verifiedPeer && !scopeApproved
-    ? `<span class="discord-qa-whitelist-warning" id="discord-qa-whitelist-warning" role="status" data-whitelist-state="revoked" title="Press the + button to allow this chat again. Until then, every message you send in it will fail to send." style="align-self:center;max-width:min(48ch,40vw);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 8px;border:1px solid currentColor;border-radius:7px;font-size:11px;line-height:30px;color:#ffb347">Encryption revoked for this chat — sends will fail until you allow it again</span>`
+    ? `<span class="discord-qa-whitelist-warning" id="discord-qa-whitelist-warning" role="status" data-whitelist-state="revoked" title="Press the + button to allow this chat again. Until then, every message you send in it will fail to send.">Encryption revoked for this chat — sends will fail until you allow it again</span>`
     : "";
   const transcriptVisible = peerProtectedSheet.decryptDisplayEnabled;
   const flame = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13.4 2.8c.5 3.6-2.6 4.8-2.6 7.4 0 1.1.7 2 1.8 2.4-.2-1.8.8-3.2 2.3-4.4 2.4 1.8 4 4.2 4 7.1A6.9 6.9 0 0 1 12 22a6.9 6.9 0 0 1-6.9-6.7c0-3.8 2.3-7.2 6.9-10.3-.1 2.5.6 3.3 1.4 4.1.8-1.8 1-3.9 0-6.3Z"/></svg>`;
@@ -3192,9 +3192,9 @@ function nativeDiscordHeaderControls(): string {
   // borrowed native Discord window covers this webview's toast layer, so a
   // toast alone would leave the control looking inert.
   const transcriptNotice = transcriptFailed || transcriptUnapplied
-    ? `<span class="discord-qa-visibility-notice" id="discord-qa-transcript-visibility-notice" role="status" data-transcript-state="${transcriptOutcome}" style="align-self:center;padding:0 8px;border:1px solid currentColor;border-radius:7px;font-size:11px;line-height:30px;color:${transcriptFailed ? "#ffb347" : "#8bdbea"}">${transcriptFailed ? "Eye failed — transcript unchanged" : "Eye saved — no display surface open"}</span>`
+    ? `<span class="discord-qa-visibility-notice" id="discord-qa-transcript-visibility-notice" role="status" data-transcript-state="${transcriptOutcome}">${transcriptFailed ? "Eye failed — transcript unchanged" : "Eye saved — no display surface open"}</span>`
     : "";
-  const transcriptVisibilityControl = `<button class="discord-qa-icon-control ${transcriptVisible ? "visible" : "hidden"}${transcriptFailed ? " transcript-failed" : ""}" id="discord-qa-transcript-visibility" type="button" aria-pressed="${transcriptVisible}" data-transcript-mode="${transcriptMode}" data-transcript-state="${transcriptOutcome}" ${transcriptFailed ? 'aria-invalid="true" ' : ""}aria-label="${transcriptVisible ? "Hide protected transcript" : "Show protected transcript"}" title="${transcriptTitle}"${transcriptFailed ? ' style="border-color:#ffb347;color:#ffb347"' : ""} ${!verifiedPeer || visibilityBusy ? "disabled" : ""}>${eye}</button>`;
+  const transcriptVisibilityControl = `<button class="discord-qa-icon-control ${transcriptVisible ? "visible" : "hidden"}${transcriptFailed ? " transcript-failed" : ""}" id="discord-qa-transcript-visibility" type="button" aria-pressed="${transcriptVisible}" data-transcript-mode="${transcriptMode}" data-transcript-state="${transcriptOutcome}" ${transcriptFailed ? 'aria-invalid="true" ' : ""}aria-label="${transcriptVisible ? "Hide protected transcript" : "Show protected transcript"}" title="${transcriptTitle}" ${!verifiedPeer || visibilityBusy ? "disabled" : ""}>${eye}</button>`;
   const lock = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="${nativeDiscordProtectionActive ? "M8 10V7a4 4 0 0 1 8 0v3" : "M8 10V7a4 4 0 0 1 7.7-1.5"}"/></svg>`;
   // "Refused" only survives while protection is still off: an open composer
   // answers the question the refusal was asking. The four states are otherwise
@@ -3218,22 +3218,27 @@ function nativeDiscordHeaderControls(): string {
         ? `Protected composer refused — ${escapeHtml(composerRefusal.message)} (${escapeHtml(composerRefusal.reason)})`
         : "Protected composer off — open";
   // Shape, not colour: a refused lock carries a bang mark, so the state reads
-  // the same way with any theme or colour vision.
+  // the same way with any theme or colour vision. Its `position: absolute` and
+  // the `position: relative` that used to sit inline on the button below both
+  // live in styles.css now (`.discord-qa-icon-control.composer-refused` /
+  // `.discord-qa-composer-refused-mark`): the shipped CSP is `style-src 'self'`
+  // with no `'unsafe-inline'`, which drops inline style attributes too, so the
+  // badge was being laid out in normal flow and the shape affordance was gone.
   const composerRefusedMark = composerRefusal
-    ? `<span aria-hidden="true" style="position:absolute;top:0;right:3px;font-size:11px;line-height:1.2;font-weight:700">!</span>`
+    ? `<span class="discord-qa-composer-refused-mark" aria-hidden="true">!</span>`
     : "";
   // Pages with no message composer (e.g. Friends) report discordMarkerAvailable
   // false; the lock is hidden there. Protection already open stays shown so it
   // always has a control to turn back off, even if the view changes under it.
   const composerControl = discordMarkerAvailable || nativeDiscordProtectionActive
-    ? `<button class="discord-qa-icon-control composer ${nativeDiscordProtectionActive ? "locked" : "unlocked"}${composerRefusal ? " composer-refused" : ""}" id="discord-qa-toggle-composer" type="button" aria-pressed="${nativeDiscordProtectionActive}" aria-label="${composerProtectionLabel}" title="${composerProtectionLabel}" ${discordQaComposerBusy ? "disabled" : ""} data-lock-state="${composerLockState}"${composerRefusal ? ' aria-invalid="true" style="position:relative;border-color:#ffb347;color:#ffb347"' : ""}>${lock}${composerRefusedMark}</button>`
+    ? `<button class="discord-qa-icon-control composer ${nativeDiscordProtectionActive ? "locked" : "unlocked"}${composerRefusal ? " composer-refused" : ""}" id="discord-qa-toggle-composer" type="button" aria-pressed="${nativeDiscordProtectionActive}" aria-label="${composerProtectionLabel}" title="${composerProtectionLabel}" ${discordQaComposerBusy ? "disabled" : ""} data-lock-state="${composerLockState}"${composerRefusal ? ' aria-invalid="true"' : ""}>${lock}${composerRefusedMark}</button>`
     : "";
   // Persistent, plain-language refusal in the header strip — the one surface
   // that draws above the borrowed native Discord window. It stays until the
   // next operator attempt or a successful open, so a reason can no longer be
   // produced and lost, and it is never populated by an automatic retry.
   const composerRefusalNotice = composerRefusal
-    ? `<span class="discord-qa-composer-refusal" id="discord-qa-composer-refusal" role="status" data-lock-state="refused" title="${escapeHtml(composerRefusal.reason)}" style="align-self:center;max-width:min(48ch,40vw);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 8px;border:1px solid currentColor;border-radius:7px;font-size:11px;line-height:30px;color:#ffb347">${escapeHtml(composerRefusal.message)}</span>`
+    ? `<span class="discord-qa-composer-refusal" id="discord-qa-composer-refusal" role="status" data-lock-state="refused" title="${escapeHtml(composerRefusal.reason)}">${escapeHtml(composerRefusal.message)}</span>`
     : "";
   const rowProofLabel = discordQaRowProofState === "accepted"
     ? "Row proof passed"

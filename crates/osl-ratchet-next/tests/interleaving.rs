@@ -233,13 +233,18 @@ fn an_entire_chain_lost_forever_does_not_wedge_the_ratchet() {
             .encrypt(0, format!("bob {i}").as_bytes(), &mut rng)
             .expect("encrypt");
         assert_eq!(
-            alice.decrypt(&w, &mut rng).expect("alice decrypt").plaintext,
+            alice
+                .decrypt(&w, &mut rng)
+                .expect("alice decrypt")
+                .plaintext,
             format!("bob {i}").as_bytes()
         );
     }
     // Alice ratchets and sends again; Bob must be able to catch up in
     // one step even though 50 of her messages are gone forever.
-    let w = alice.encrypt(0, b"after the void", &mut rng).expect("encrypt");
+    let w = alice
+        .encrypt(0, b"after the void", &mut rng)
+        .expect("encrypt");
     assert_eq!(
         bob.decrypt(&w, &mut rng).expect("bob decrypt").plaintext,
         b"after the void"
@@ -264,7 +269,9 @@ fn previous_chain_inflight_messages_survive_later_dh_ratchet_step() {
         first_old_body
     );
 
-    let bob_reply = bob.encrypt(0, b"force Alice ratchet", &mut rng).expect("encrypt");
+    let bob_reply = bob
+        .encrypt(0, b"force Alice ratchet", &mut rng)
+        .expect("encrypt");
     assert_eq!(
         alice
             .decrypt(&bob_reply, &mut rng)
@@ -353,10 +360,7 @@ fn bootstrap_phase_tolerates_reordering_and_loss() {
         assert!(h.alice.has_bootstrap_pending());
 
         // Drop a random half, shuffle the rest.
-        let mut kept: Vec<_> = wires
-            .into_iter()
-            .filter(|_| driver.gen_bool(0.5))
-            .collect();
+        let mut kept: Vec<_> = wires.into_iter().filter(|_| driver.gen_bool(0.5)).collect();
         for i in (1..kept.len()).rev() {
             let j = driver.gen_range(0..=i);
             kept.swap(i, j);
@@ -425,7 +429,19 @@ fn state_export_import_survives_an_interleaved_run() {
             if inflight.len() <= 24 {
                 break;
             }
-            let idx = driver.gen_range(0..inflight.len());
+            // Bias toward the oldest in-flight message. A purely random pick
+            // has unbounded tail latency, so a message could linger past
+            // SkipParams::max_chains (5) DH chains -- at which point the
+            // receiver has legitimately evicted its skipped-key bucket and
+            // AuthFailed is the CORRECT answer, not a persistence bug. This
+            // test is about export/import not corrupting the session, so it
+            // keeps delivery strict and instead stops the queue from
+            // demanding retention the crate deliberately refuses to promise.
+            let idx = if driver.gen_bool(0.5) {
+                0
+            } else {
+                driver.gen_range(0..inflight.len())
+            };
             let msg = inflight.remove(idx);
             deliver(&mut alice, &mut bob, &mut rng, &msg).expect("deliver after restore");
             delivered += 1;

@@ -284,6 +284,12 @@ pub fn respond_bound(
     out
 }
 
+// The crate denies clippy::indexing_slicing (lib.rs:49) because a panic on
+// attacker-controlled input in a ratchet is a DoS. That policy is for
+// PRODUCTION code. These tests index deliberately and provably in bounds
+// (truncation loops over 0..bytes.len(), a bit-flip on a non-empty
+// ciphertext); rewriting them with get() would obscure what they prove.
+#[allow(clippy::indexing_slicing)]
 #[cfg(test)]
 mod tests {
     use super::*;

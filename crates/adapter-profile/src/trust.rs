@@ -4,9 +4,7 @@
 //! release anchor and its sequence is at or above the compiled rollback floor.
 //! The profile body remains untrusted data until this module succeeds.
 
-use crate::envelope::{
-    EnvelopeError, SignedProfile, ED25519_PUBLIC_KEY_LEN, ED25519_SIGNATURE_LEN,
-};
+use crate::envelope::{EnvelopeError, SignedProfile, ED25519_PUBLIC_KEY_LEN};
 use crypto::ed25519;
 use std::fmt;
 use thiserror::Error;
@@ -127,7 +125,7 @@ pub(crate) fn verify_signed_profile_with_anchors<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::envelope::SignedProfile;
+    use crate::envelope::{SignedProfile, ED25519_SIGNATURE_LEN};
 
     const NOW: u64 = 1_780_000_000;
 
@@ -161,7 +159,7 @@ mod tests {
             [1u8; ED25519_SIGNATURE_LEN],
         )
         .unwrap();
-        let signature = ed25519::sign(&secret, &unsigned.signing_payload().unwrap());
+        let signature = ed25519::sign(secret, &unsigned.signing_payload().unwrap());
         SignedProfile::new(
             1,
             "discord/reviewed",

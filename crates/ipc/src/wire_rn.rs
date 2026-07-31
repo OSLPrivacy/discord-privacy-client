@@ -741,7 +741,7 @@ impl RnSessionStore {
         };
         let blob: SealedBlob = match serde_json::from_slice(&bytes) {
             Ok(blob) => blob,
-            Err(e) if looks_like_legacy_v4_session_blob(&bytes) => {
+            Err(_) if looks_like_legacy_v4_session_blob(&bytes) => {
                 retire_legacy_v4_session_file(&path)?;
                 return Ok(None);
             }
@@ -1000,6 +1000,10 @@ pub fn accept_and_persist(
     )
 }
 
+// Eight separate arguments on purpose. This is the testable accept/persist
+// boundary: store, sealer, local prekeys, public identity material, wire
+// payload, context, and session params are independently supplied inputs.
+#[allow(clippy::too_many_arguments)]
 pub fn accept_and_persist_with_sealer(
     store: &RnSessionStore,
     sealer: &dyn keystore::sealer::Sealer,
@@ -1516,6 +1520,9 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), RnError> {
 
 #[cfg(test)]
 mod tests {
+    // These tests intentionally assert the shipped compile-time RN fuse.
+    #![allow(clippy::assertions_on_constants)]
+
     use super::*;
     use keystore::client::{
         PeerCapabilities, PrekeyBundleOpk, PrekeyBundleResponse, RN_CAP_WIRE_RN,
@@ -2905,7 +2912,7 @@ mod tests {
             result.is_err(),
             "save failure must not return a wire string"
         );
-        let err = result.err().expect("checked err");
+        let err = result.expect_err("checked err");
         assert!(
             matches!(&err, RnError::Storage(msg) if msg.contains("forced save failure")),
             "expected forced save failure, got {err:?}"

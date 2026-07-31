@@ -258,7 +258,10 @@ impl SkippedKeys {
     /// Take (and remove) a skipped key. Removal on use is what makes
     /// replay of an out-of-order message fail.
     pub fn take(&mut self, header_key: &[u8; AEAD_KEY], counter: u32) -> Option<Secret32> {
-        let idx = self.chains.iter().position(|c| &c.header_key == header_key)?;
+        let idx = self
+            .chains
+            .iter()
+            .position(|c| &c.header_key == header_key)?;
         let chain = self.chains.get_mut(idx)?;
         let (mk, _) = chain.keys.remove(&counter)?;
         self.total = self.total.saturating_sub(1);
@@ -347,10 +350,7 @@ mod tests {
         let hk = [1u8; 32];
         s.insert(&hk, 5, Secret32::from_bytes([7u8; 32]));
         assert_eq!(s.total_keys(), 1);
-        assert_eq!(
-            s.take(&hk, 5),
-            Some(Secret32::from_bytes([7u8; 32]))
-        );
+        assert_eq!(s.take(&hk, 5), Some(Secret32::from_bytes([7u8; 32])));
         assert_eq!(s.total_keys(), 0);
         // Removal on use: a second take fails, which is what makes
         // replay of a skipped message fail.

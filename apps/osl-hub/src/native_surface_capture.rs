@@ -3,7 +3,7 @@
 //! Pixels remain in memory and are never written to disk, logged, or receipted.
 
 use base64::Engine as _;
-use osl_privacy_hub::native_discord_adapter::VerifiedComposerTextPresentation;
+use crate::native_discord_adapter::VerifiedComposerTextPresentation;
 use serde::Serialize;
 use std::sync::Mutex;
 
@@ -13,7 +13,7 @@ const MAX_SURFACE_BYTES: usize = 8_192 * 1_024 * 4;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct NativeSurfaceCapture {
+pub struct NativeSurfaceCapture {
     version: &'static str,
     image_data_url: String,
     width_px: u32,
@@ -44,7 +44,7 @@ struct SurfaceInsets {
 }
 
 impl NativeSurfaceCapture {
-    pub(crate) fn presentation_bounds(&self, outer: [i32; 4]) -> Option<[i32; 4]> {
+    pub fn presentation_bounds(&self, outer: [i32; 4]) -> Option<[i32; 4]> {
         let left = outer[0].checked_add(i32::try_from(self.presentation_insets.left).ok()?)?;
         let top = outer[1].checked_add(i32::try_from(self.presentation_insets.top).ok()?)?;
         let right = outer[2].checked_sub(i32::try_from(self.presentation_insets.right).ok()?)?;
@@ -57,14 +57,14 @@ impl NativeSurfaceCapture {
 /// pixels and verified geometry; renderer code never receives provider
 /// selectors, native handles, account identifiers, or message contents.
 #[derive(Default)]
-pub(crate) struct NativeSurfaceCaptureState {
+pub struct NativeSurfaceCaptureState {
     current: Mutex<Option<(NativeSurfaceKey, NativeSurfaceCapture)>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct NativeSurfaceKey {
-    pub(crate) session_epoch: u64,
-    pub(crate) host_generation: u64,
+pub struct NativeSurfaceKey {
+    pub session_epoch: u64,
+    pub host_generation: u64,
 }
 
 #[cfg(feature = "discord-qa-shell")]
@@ -110,7 +110,7 @@ fn qa_record_native_surface_matrix(
 }
 
 impl NativeSurfaceCaptureState {
-    pub(crate) fn replace(
+    pub fn replace(
         &self,
         key: NativeSurfaceKey,
         capture: NativeSurfaceCapture,
@@ -123,7 +123,7 @@ impl NativeSurfaceCaptureState {
         Ok(())
     }
 
-    pub(crate) fn current(&self, key: NativeSurfaceKey) -> Option<NativeSurfaceCapture> {
+    pub fn current(&self, key: NativeSurfaceKey) -> Option<NativeSurfaceCapture> {
         self.current.lock().ok().and_then(|current| {
             current
                 .as_ref()
@@ -132,7 +132,7 @@ impl NativeSurfaceCaptureState {
         })
     }
 
-    pub(crate) fn clear(&self) {
+    pub fn clear(&self) {
         if let Ok(mut current) = self.current.lock() {
             *current = None;
         }
@@ -383,7 +383,7 @@ fn crop_bottom_up_bgra(
 }
 
 #[cfg(target_os = "windows")]
-pub(crate) fn capture_verified_surface(
+pub fn capture_verified_surface(
     outer: [i32; 4],
     input: [i32; 4],
     text_presentation: Option<VerifiedComposerTextPresentation>,
@@ -597,7 +597,7 @@ pub(crate) fn capture_verified_surface(
 
 /// Capture only while the provider adapter independently proves that the same
 /// exact native target still owns the supplied screen-space geometry.
-pub(crate) fn capture_verified_surface_guarded(
+pub fn capture_verified_surface_guarded(
     outer: [i32; 4],
     input: [i32; 4],
     text_presentation: Option<VerifiedComposerTextPresentation>,
@@ -614,7 +614,7 @@ pub(crate) fn capture_verified_surface_guarded(
 }
 
 #[cfg(not(target_os = "windows"))]
-pub(crate) fn capture_verified_surface(
+pub fn capture_verified_surface(
     _outer: [i32; 4],
     _input: [i32; 4],
     _text_presentation: Option<VerifiedComposerTextPresentation>,

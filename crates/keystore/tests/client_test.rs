@@ -1143,26 +1143,16 @@ fn write_lp(output: &mut Vec<u8>, value: &[u8]) {
     output.extend_from_slice(value);
 }
 
-fn sender_filter_floor_identity_anchor_sha256(
-    user_id: &str,
-    ed25519_public: &[u8],
-) -> String {
+fn sender_filter_floor_identity_anchor_sha256(user_id: &str, ed25519_public: &[u8]) -> String {
     let mut canonical = Vec::new();
-    write_lp(
-        &mut canonical,
-        b"OSL-SENDER-FILTER-FLOOR-IDENTITY-v1\0",
-    );
+    write_lp(&mut canonical, b"OSL-SENDER-FILTER-FLOOR-IDENTITY-v1\0");
     write_lp(&mut canonical, user_id.as_bytes());
     write_lp(&mut canonical, ed25519_public);
     let digest = sha2::Sha256::digest(canonical);
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn sender_filter_floor_response(
-    user_id: &str,
-    ed25519_public: &[u8],
-    target: &str,
-) -> Vec<u8> {
+fn sender_filter_floor_response(user_id: &str, ed25519_public: &[u8], target: &str) -> Vec<u8> {
     assert!(target.starts_with("/v1/sender-filter-capability-floor/"));
     let timestamp_ms = query_value(target, "ts").parse::<i64>().unwrap();
     let request_id = query_value(target, "request_id");

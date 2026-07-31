@@ -1560,7 +1560,7 @@ fn run_prekey_replenishment_tick_at(
     }
 }
 
-#[cfg(all(test))]
+#[cfg(test)]
 mod prekey_replenishment_scheduler_tests {
     use super::{
         decide_prekey_replenishment, run_prekey_replenishment_tick_at, PrekeyReplenishmentDecision,
@@ -1750,7 +1750,7 @@ mod prekey_replenishment_scheduler_tests {
     }
 }
 
-#[cfg(all(test))]
+#[cfg(test)]
 mod prekey_replenishment_production_caller_tests {
     use super::{run_prekey_replenishment_tick_at, PrekeyReplenishmentOutcome};
     use crate::state::AppState;
@@ -1825,9 +1825,8 @@ mod prekey_replenishment_production_caller_tests {
         *state.keyserver.lock().unwrap() =
             Some(KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap());
 
-        let outcome =
-            run_prekey_replenishment_tick_at(&state, dir.path(), Some(25), 1_700_000_001)
-                .expect("threshold observation should trigger production replenish caller");
+        let outcome = run_prekey_replenishment_tick_at(&state, dir.path(), Some(25), 1_700_000_001)
+            .expect("threshold observation should trigger production replenish caller");
         assert!(
             matches!(
                 outcome,
@@ -1840,13 +1839,13 @@ mod prekey_replenishment_production_caller_tests {
             .recv_timeout(Duration::from_secs(2))
             .expect("scheduler tick must call the keyserver replenish endpoint");
         assert!(request.starts_with("POST /v1/prekey-bundle/replenish "));
-        let body = request
-            .split_once("\r\n\r\n")
-            .expect("request has body")
-            .1;
+        let body = request.split_once("\r\n\r\n").expect("request has body").1;
         let body: serde_json::Value = serde_json::from_str(body).expect("JSON body");
         assert_eq!(body["user_id"], "prekey-prod-caller");
-        assert!(body["spk"].is_null(), "fresh SPK must not rotate before due");
+        assert!(
+            body["spk"].is_null(),
+            "fresh SPK must not rotate before due"
+        );
         assert_eq!(
             body["opks"].as_array().expect("OPK batch").len(),
             75,
@@ -1859,7 +1858,14 @@ mod prekey_replenishment_production_caller_tests {
                 .expect("reloaded replenished state");
         assert_eq!(reloaded.opk_pool.len(), prekeys.opk_pool.len() + 75);
         assert_eq!(
-            state.prekey_state.lock().unwrap().as_ref().unwrap().opk_pool.len(),
+            state
+                .prekey_state
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .opk_pool
+                .len(),
             reloaded.opk_pool.len()
         );
     }
@@ -2505,51 +2511,47 @@ pub fn cmd_osl_encrypt_message(
 #[cfg(test)]
 mod outgoing_encrypt_api_surface_tests {
     use super::*;
-    use base64::Engine as _;
+
+    type EncryptV2Fn = fn(
+        &AppState,
+        String,
+        crate::scope::ScopeInput,
+        Vec<String>,
+        String,
+    ) -> Result<EncryptOutput, String>;
+    type EncryptV2WireFn = fn(
+        &AppState,
+        String,
+        crate::scope::ScopeInput,
+        Vec<String>,
+        String,
+    ) -> Result<EncryptWire, String>;
+    type AttachmentEnvelopeFn = fn(
+        &AppState,
+        crate::scope::ScopeInput,
+        Vec<String>,
+        String,
+        Vec<AttachmentEnvelopeInput>,
+    ) -> Result<String, String>;
+    type SealAttachmentFn = fn(
+        &AppState,
+        crate::scope::ScopeInput,
+        Vec<String>,
+        String,
+        String,
+        String,
+        String,
+    ) -> Result<SealedAttachmentV2, String>;
 
     #[test]
     fn outgoing_encrypt_api_surface() {
         let _: fn(&AppState, String, String, serde_json::Value) -> Result<String, String> =
             cmd_osl_encrypt_message;
-        let _: fn(
-            &AppState,
-            String,
-            crate::scope::ScopeInput,
-            Vec<String>,
-            String,
-        ) -> Result<EncryptOutput, String> = cmd_osl_encrypt_message_v2;
-        let _: fn(
-            &AppState,
-            String,
-            crate::scope::ScopeInput,
-            Vec<String>,
-            String,
-        ) -> Result<EncryptWire, String> = cmd_osl_encrypt_message_v2_wire;
-        let _: fn(
-            &AppState,
-            crate::scope::ScopeInput,
-            Vec<String>,
-            String,
-            Vec<AttachmentEnvelopeInput>,
-        ) -> Result<String, String> = cmd_osl_encrypt_attachment_envelope;
-        let _: fn(
-            &AppState,
-            crate::scope::ScopeInput,
-            Vec<String>,
-            String,
-            String,
-            String,
-            String,
-        ) -> Result<SealedAttachmentV2, String> = cmd_osl_seal_attachment_with_cover_v2;
-        let _: fn(
-            &AppState,
-            crate::scope::ScopeInput,
-            Vec<String>,
-            String,
-            String,
-            String,
-            String,
-        ) -> Result<SealedAttachmentV2, String> = cmd_osl_seal_attachment_with_cover_v3;
+        let _: EncryptV2Fn = cmd_osl_encrypt_message_v2;
+        let _: EncryptV2WireFn = cmd_osl_encrypt_message_v2_wire;
+        let _: AttachmentEnvelopeFn = cmd_osl_encrypt_attachment_envelope;
+        let _: SealAttachmentFn = cmd_osl_seal_attachment_with_cover_v2;
+        let _: SealAttachmentFn = cmd_osl_seal_attachment_with_cover_v3;
 
         assert_eq!(
             parse_outgoing_encrypt_options(serde_json::json!({})),
@@ -3854,8 +3856,11 @@ fn encrypt_rn_content_send(
     })
 }
 
-#[cfg(all(test))]
+#[cfg(test)]
 mod rn_send_selection_tests {
+    // These tests intentionally assert the shipped compile-time RN fuse.
+    #![allow(clippy::assertions_on_constants)]
+
     use super::*;
 
     #[test]
@@ -4858,7 +4863,6 @@ fn try_encrypt_rn_first_contact_with_bundle(
 #[cfg(test)]
 mod rn_first_contact_command_tests {
     use super::*;
-    use base64::Engine as _;
     use keystore::client::{
         PeerCapabilities, PrekeyBundleOpk, PrekeyBundleResponse, RN_CAP_WIRE_RN,
     };
@@ -6358,9 +6362,9 @@ fn expected_wrapped_attachment_sender_osl_id(
                 .then(|| sender_ref.to_string())
         })
         .or_else(|| {
-            if sender_ref == identity.user_id.as_str() {
-                Some(identity.user_id.clone())
-            } else if identity.discord_snowflake.as_deref() == Some(sender_ref) {
+            if sender_ref == identity.user_id.as_str()
+                || identity.discord_snowflake.as_deref() == Some(sender_ref)
+            {
                 Some(identity.user_id.clone())
             } else {
                 None
@@ -6369,6 +6373,7 @@ fn expected_wrapped_attachment_sender_osl_id(
         .ok_or_else(|| "OSL: wrapped-key open sender is not bound".to_string())
 }
 
+#[cfg(test)]
 fn post_wrapped_key_before_producing_link<F>(
     state: &AppState,
     upload: keystore::WrappedKeyUpload,
@@ -6397,6 +6402,7 @@ where
     produce_link()
 }
 
+#[cfg(test)]
 fn produce_view_once_link_after_wrapped_key_post<P, L>(
     post_wrapped_key: P,
     deliver_link: L,
@@ -6531,27 +6537,25 @@ pub fn cmd_osl_open_attachment_v2(
         let mut k = [0u8; 32];
         k.copy_from_slice(&key_bytes);
         k
-    } else {
-        if let Some(b64) = legacy_att_key_b64 {
-            // V1 local-key compatibility path.
-            let key_bytes = STANDARD
-                .decode(&b64)
-                .map_err(|e| format!("OSL: legacy att_key b64: {e}"))?;
-            if key_bytes.len() != 32 {
-                return Err(format!(
-                    "OSL: legacy att_key length {} != 32",
-                    key_bytes.len()
-                ));
-            }
-            let mut k = [0u8; 32];
-            k.copy_from_slice(&key_bytes);
-            k
-        } else {
-            let content_id = discord_message_id.as_deref().ok_or_else(|| {
-                "OSL: V1 file with no local attachment key or content id supplied".to_string()
-            })?;
-            fetch_wrapped_attachment_key_for_open(state, content_id, &sender_discord_id)?
+    } else if let Some(b64) = legacy_att_key_b64 {
+        // V1 local-key compatibility path.
+        let key_bytes = STANDARD
+            .decode(&b64)
+            .map_err(|e| format!("OSL: legacy att_key b64: {e}"))?;
+        if key_bytes.len() != 32 {
+            return Err(format!(
+                "OSL: legacy att_key length {} != 32",
+                key_bytes.len()
+            ));
         }
+        let mut k = [0u8; 32];
+        k.copy_from_slice(&key_bytes);
+        k
+    } else {
+        let content_id = discord_message_id.as_deref().ok_or_else(|| {
+            "OSL: V1 file with no local attachment key or content id supplied".to_string()
+        })?;
+        fetch_wrapped_attachment_key_for_open(state, content_id, &sender_discord_id)?
     };
     let file_key = crypto::aead::Key::from_bytes(att_key_arr);
     let plaintext = crypto::attachment::decrypt_attachment(file_key, &payload_bytes)
@@ -6565,7 +6569,7 @@ pub fn cmd_osl_open_attachment_v2(
     })
 }
 
-#[cfg(all(test))]
+#[cfg(test)]
 mod wrapped_key_open_tests {
     use super::*;
     use std::cell::Cell;
@@ -7360,6 +7364,7 @@ fn accept_rn_bootstrap_inbound_unknown_with_selected_sealer(
     })
 }
 
+#[cfg(test)]
 fn accept_rn_bootstrap_inbound_unknown_with_sealer(
     state: &AppState,
     content: &str,
@@ -7402,8 +7407,11 @@ fn accept_rn_bootstrap_inbound_unknown_with_sealer(
     })
 }
 
-#[cfg(all(test))]
+#[cfg(test)]
 mod rn_inbound_unknown_tests {
+    // These tests intentionally assert the shipped compile-time RN fuse.
+    #![allow(clippy::assertions_on_constants)]
+
     use super::*;
     use keystore::sealer::MemorySealer;
     use osl_ratchet_next::test_support::{fresh_bundle, seeded_rng};
@@ -8480,6 +8488,9 @@ fn apply_session_reset_recv(
 
 #[cfg(test)]
 mod unit_b20_independent_review_remediation {
+    // This test intentionally asserts the shipped compile-time RN fuse.
+    #![allow(clippy::assertions_on_constants)]
+
     use super::*;
 
     const PEER: &str = "900000000000000020";
@@ -10738,6 +10749,7 @@ fn refresh_peer_pubkeys_from_keyserver(state: &AppState, discord_id: &str) -> Re
 ///   skipped).
 /// - Shred matching sender rows in local `messages.sqlite`
 ///   (best-effort; failures logged, not propagated).
+///
 /// Legacy `MSG_TYPE_BURN` (0x01) receive handler.
 ///
 /// # Two separate properties
@@ -11022,6 +11034,7 @@ mod burn_wrapped_key_command_tests {
 /// Record an already-typed outgoing friend request without adopting its scoped
 /// grant. The public command mints this typed request from local and peer
 /// authority first; this helper keeps the typed-recording path testable.
+#[cfg(test)]
 fn cmd_osl_send_typed_friend_request_with_dir(
     state: &AppState,
     peer_discord_id: String,
@@ -11243,6 +11256,7 @@ fn cmd_osl_send_friend_request_with_dir(
     Ok(SendFriendRequestResult { request, pending })
 }
 
+#[cfg(test)]
 fn persist_typed_friend_request_with_dir(
     state: &AppState,
     peer_discord_id: String,
@@ -13742,27 +13756,7 @@ pub fn ensure_keyserver_registered(state: &AppState, base_url: &str, client_toke
     }
 }
 
-fn ensure_prekeys_after_registration(client: &KeyServerClient, identity: &keystore::Identity) {
-    let dir = match keystore::osl_config_dir() {
-        Ok(dir) => dir,
-        Err(error) => {
-            tracing::warn!(
-                error = %error,
-                "OSL: prekey onboarding: cannot resolve config directory; \
-                 skipping prekey publish"
-            );
-            return;
-        }
-    };
-    if let Err(error) = provision_initial_prekeys(client, identity, &dir) {
-        tracing::warn!(
-            error = %error,
-            "OSL: prekey onboarding: initial prekey publish failed \
-             (non-fatal; identity registration remains authoritative)"
-        );
-    }
-}
-
+#[cfg(test)]
 fn provision_initial_prekeys(
     client: &KeyServerClient,
     identity: &keystore::Identity,
@@ -15125,11 +15119,13 @@ fn cmd_osl_recover_account_from_export_with_dir(
 
     let _store_pause = MessageStorePause::new(state, dir)?;
     let destination_encrypted = crate::main_password::get_file_storage_key().is_some();
-    if let Err(e) = commit_staged_account_import(dir, &stage, &files, destination_encrypted) {
-        // Keep the stage on every commit failure. It may contain the only
-        // remaining rollback copy if Windows/AV held a destination file.
-        return Err(e);
-    }
+    // Keep the stage on every commit failure. It may contain the only
+    // remaining rollback copy if Windows/AV held a destination file -- `?`
+    // returns before the remove_dir_all below, exactly as the old
+    // `if let Err(e) = ... { return Err(e) }` did. Written this way because
+    // CI runs clippy with `-D warnings` and `clippy::question_mark` rejects
+    // the longhand; that single lint is what has kept main red since 07-22.
+    commit_staged_account_import(dir, &stage, &files, destination_encrypted)?;
     let _ = std::fs::remove_dir_all(&stage);
     state.install_identity(id);
     Ok(())
@@ -17382,7 +17378,6 @@ pub enum UpdateInstallResult {
 mod unit_a_sender_attribution_chain {
     use super::*;
     use base64::engine::general_purpose::STANDARD;
-    use base64::Engine as _;
     use keystore::{generate_identity, Identity};
 
     const ALICE_DID: &str = "1000000000000000001";
@@ -17428,7 +17423,7 @@ mod unit_a_sender_attribution_chain {
         let pe = pm.entry(did.to_string()).or_default();
         pe.osl_user_id = Some(osl_user_id.to_string());
         pe.pubkey = Some(STANDARD.encode(identity.x25519_public.as_bytes()));
-        pe.ik_mlkem768_pub = Some(STANDARD.encode(&identity.mlkem_public_bytes));
+        pe.ik_mlkem768_pub = Some(STANDARD.encode(identity.mlkem_public_bytes));
         pe.ik_ratchet_initial_pub = identity
             .ratchet_initial_pub
             .map(|pk| STANDARD.encode(pk.as_bytes()));
@@ -17666,6 +17661,9 @@ mod unit_a_sender_attribution_chain {
 
 #[cfg(test)]
 mod unit_b1_rn_wire_path_dispatch {
+    // These tests intentionally assert the shipped compile-time RN fuse.
+    #![allow(clippy::assertions_on_constants)]
+
     use super::*;
     use crate::wire_rn::{RnPeerPin, RnPolicy};
     use keystore::client::{PeerCapabilities, RN_CAP_WIRE_RN};

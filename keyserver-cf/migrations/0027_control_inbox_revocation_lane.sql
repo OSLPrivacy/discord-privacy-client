@@ -1,9 +1,17 @@
 -- 0027: a non-evictable, collapsible priority lane for bilateral-burn
 -- revocation notices.
 --
--- NOT DEPLOYED. This Worker serves the owner's real identity; applying it is
--- their decision. See keyserver-cf/DEPLOY.md and the deploy command in the
--- bilateral-burn report.
+-- DEPLOYED. Confirmed 2026-07-31 against production: `SELECT name FROM
+-- d1_migrations` on osl-keyserver-prod lists 0027_control_inbox_revocation_lane.
+-- (This header previously read "NOT DEPLOYED" and stayed stale after the apply,
+-- which led a QA lane to conclude the revocation lane was unavailable server-side.
+-- It is available. What is still missing is the CLIENT: see below.)
+--
+-- CLIENT-SIDE GAP, still open as of 2026-07-31: the schema exists but nothing
+-- uses it. `apply_peer_revocation` (apps/osl-hub/src/security.rs:2124) and
+-- `record_revocation_ack` (:2421) have NO production callers, and the drain path
+-- never tests `is_revocation_bundle`. So a bilateral burn issued by A is not
+-- applied on B. Deploying this migration did not make the lane live.
 --
 -- WHY THIS EXISTS
 --

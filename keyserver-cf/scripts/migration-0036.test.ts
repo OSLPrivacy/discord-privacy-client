@@ -30,6 +30,9 @@ async function preProofRequiredDb(): Promise<D1Database> {
   miniflareInstances.add(mf);
   const db = await mf.getD1Database("DB");
   await applyMigration(db, "0001_keyserver_baseline.sql");
+  // 0037, not a second 0036: this migration reads FROM account_ownership_challenges,
+  // which 0036 creates. Both files previously claimed 0036 and only ran in the
+  // right order because "challenges" happens to sort before "proof_required".
   await applyMigration(db, "0036_account_ownership_challenges.sql");
   return db;
 }
@@ -114,7 +117,7 @@ describe("migration 0036 account ownership proof required", () => {
   it("(new) migration 0035 adding a proof-required constraint to the keyserv", async () => {
     const db = await preProofRequiredDb();
     await seedUser(db, "owner-osl-id");
-    await applyMigration(db, "0036_account_ownership_proof_required.sql");
+    await applyMigration(db, "0037_account_ownership_proof_required.sql");
 
     const nonce = "7".repeat(64);
     const binding = "8".repeat(64);
@@ -191,7 +194,7 @@ describe("migration 0036 account ownership proof required", () => {
     const binding = "8".repeat(64);
     await insertChallenge(db, { nonce, binding });
     await spendChallenge(db, nonce, 1_900_000_030);
-    await applyMigration(db, "0036_account_ownership_proof_required.sql");
+    await applyMigration(db, "0037_account_ownership_proof_required.sql");
 
     await expect(
       insertProofBinding(db, {
@@ -233,7 +236,7 @@ describe("migration 0036 account ownership proof required", () => {
   it("requires a matching spent challenge before durable proof binding", async () => {
     const db = await preProofRequiredDb();
     await seedUser(db, "owner-osl-id");
-    await applyMigration(db, "0036_account_ownership_proof_required.sql");
+    await applyMigration(db, "0037_account_ownership_proof_required.sql");
 
     const capability = await db.prepare(
       `SELECT version FROM worker_schema_capabilities
@@ -276,7 +279,7 @@ describe("migration 0036 account ownership proof required", () => {
   it("refuses mismatched, expired, and non-user proof bindings", async () => {
     const db = await preProofRequiredDb();
     await seedUser(db, "owner-osl-id");
-    await applyMigration(db, "0036_account_ownership_proof_required.sql");
+    await applyMigration(db, "0037_account_ownership_proof_required.sql");
 
     const nonceA = "c".repeat(64);
     const bindingA = "d".repeat(64);
@@ -325,7 +328,7 @@ describe("migration 0036 account ownership proof required", () => {
   it("makes durable proof binding history immutable", async () => {
     const db = await preProofRequiredDb();
     await seedUser(db, "owner-osl-id");
-    await applyMigration(db, "0036_account_ownership_proof_required.sql");
+    await applyMigration(db, "0037_account_ownership_proof_required.sql");
 
     const nonce = "5".repeat(64);
     const binding = "6".repeat(64);

@@ -7,16 +7,58 @@ fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-fn powershell() -> Option<&'static str> {
-    for candidate in ["pwsh", "powershell.exe", "powershell"] {
-        if Command::new(candidate)
-            .args(["-NoProfile", "-Command", "$PSVersionTable.PSVersion.Major"])
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false)
-        {
-            return Some(candidate);
+/// Which interpreter runs the script, and whether it needs Windows-visible paths.
+///
+/// A Windows PowerShell reached from WSL resolves a Linux-style absolute path
+/// (`/home/...`) against its *current location* instead of treating it as rooted,
+/// so `Out-File -LiteralPath /tmp/x.json` silently lands under the UNC working
+/// directory and the write fails. A native Unix `pwsh` must be given the Linux
+/// path unchanged. Ask the interpreter which world it lives in rather than
+/// guessing from the executable name.
+struct Shell {
+    command: &'static str,
+    windows_paths: bool,
+}
+
+impl Shell {
+    fn path(&self, path: &Path) -> String {
+        if !self.windows_paths || cfg!(windows) {
+            return path.display().to_string();
         }
+        Command::new("wslpath")
+            .arg("-w")
+            .arg(path)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+            .filter(|translated| !translated.is_empty())
+            .unwrap_or_else(|| path.display().to_string())
+    }
+}
+
+const HOST_KIND_PROBE: &str =
+    "if ($PSVersionTable.PSVersion.Major -le 5 -or $IsWindows) { 'windows' } else { 'unix' }";
+
+fn powershell() -> Option<Shell> {
+    for candidate in ["pwsh", "powershell.exe", "powershell"] {
+        let Ok(output) = Command::new(candidate)
+            .args(["-NoProfile", "-Command", HOST_KIND_PROBE])
+            .output()
+        else {
+            continue;
+        };
+        if !output.status.success() {
+            continue;
+        }
+        let kind = String::from_utf8_lossy(&output.stdout).trim().to_lowercase();
+        if kind != "windows" && kind != "unix" {
+            continue;
+        }
+        return Some(Shell {
+            command: candidate,
+            windows_paths: kind == "windows",
+        });
     }
     None
 }
@@ -40,7 +82,7 @@ fn b6_controllers_read_the_retained_preflight_before_consent_or_drive() {
 
     let script = repo_root().join("scripts/qa/osl-p2p-loop.ps1");
     let missing_json = temp_root.join("missing.json");
-    let missing = run_precondition_child(ps, &script, &missing_a, &missing_b, &missing_json);
+    let missing = run_precondition_child(&ps, &script, &missing_a, &missing_b, &missing_json);
     assert_blocked(&missing, "b6-preflight");
     assert_eq!(
         missing["preconditionGate"][0]["gate"], "b6-preflight",
@@ -56,7 +98,7 @@ fn b6_controllers_read_the_retained_preflight_before_consent_or_drive() {
     write_b6_receipt(&valid_a);
     write_b6_receipt(&valid_b);
     let valid_json = temp_root.join("valid-no-consent.json");
-    let valid = run_precondition_child(ps, &script, &valid_a, &valid_b, &valid_json);
+    let valid = run_precondition_child(&ps, &script, &valid_a, &valid_b, &valid_json);
     assert_blocked(&valid, "consent");
     assert_eq!(
         valid["preconditionGate"][0]["gate"], "b6-preflight",
@@ -75,25 +117,25 @@ fn b6_controllers_read_the_retained_preflight_before_consent_or_drive() {
 }
 
 fn run_precondition_child(
-    ps: &str,
+    ps: &Shell,
     script: &Path,
     temp_root_a: &Path,
     temp_root_b: &Path,
     json_out: &Path,
 ) -> Value {
-    let output = Command::new(ps)
+    let output = Command::new(ps.command)
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-        .arg(script)
+        .arg(ps.path(script))
         .arg("-BundleB")
         .arg("org.oslprivacy.hub.selftest.b")
         .arg("-ExeB")
-        .arg(script)
+        .arg(ps.path(script))
         .arg("-TempRootA")
-        .arg(temp_root_a)
+        .arg(ps.path(temp_root_a))
         .arg("-TempRootB")
-        .arg(temp_root_b)
+        .arg(ps.path(temp_root_b))
         .arg("-JsonOut")
-        .arg(json_out)
+        .arg(ps.path(json_out))
         .arg("-SelfTestPreconditionChild")
         .arg("-Quiet")
         .output()

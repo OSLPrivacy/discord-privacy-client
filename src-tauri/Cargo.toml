@@ -1,15 +1,16 @@
 [package]
 name = "discord-privacy-client"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-rust-version.workspace = true
+version = "0.0.1"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.88"
+publish = false
 
 [build-dependencies]
-tauri-build = { workspace = true }
+tauri-build = "=2.6.1"
 
 [dependencies]
-tauri = { workspace = true }
+tauri = { version = "=2.11.1", features = [] }
 
 # Phase F0: deep-link plugin + single-instance plugin.
 # - `tauri-plugin-deep-link`: registers the `osl://` URL scheme and
@@ -22,23 +23,23 @@ tauri = { workspace = true }
 #   instance via the deep-link plugin's event channel, then exits
 #   the spawned process. Without this, every osl://... activation
 #   would open a duplicate OSL window.
-tauri-plugin-deep-link = { workspace = true }
-tauri-plugin-single-instance = { workspace = true }
+tauri-plugin-deep-link = "=2.4.9"
+tauri-plugin-single-instance = { version = "=2.4.2", features = ["deep-link"] }
 
 # G3.1: auto-updater (check-only this phase; see workspace Cargo.toml).
-tauri-plugin-updater = { workspace = true }
+tauri-plugin-updater = "=2.9.0"
 
-serde = { workspace = true }
+serde = { version = "=1.0.228", features = ["derive"] }
 # Layer 10 / Phase 3: `osl_encrypt_message` accepts an opaque
 # `options: serde_json::Value` so the JS-side hook can pass through
 # arbitrary metadata (reply context, attachments) without a fixed
 # schema during the stub phase. Phase 4 may tighten this to a typed
 # struct once the Rust crypto pipeline knows what fields it needs.
-serde_json = { workspace = true }
-tokio = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-thiserror = { workspace = true }
+serde_json = "=1.0.149"
+tokio = { version = "=1.52.3", features = ["full"] }
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", features = ["env-filter"] }
+thiserror = "=1.0.69"
 
 # Phase 8d-FIX5: Discord's CSP blocks browser-side fetch to
 # cdn.discordapp.com (cross-subdomain from discord.com). The
@@ -81,3 +82,12 @@ default = []
 [[bin]]
 name = "discord-privacy-client"
 path = "src/main.rs"
+
+# The root manifest lists this directory in `exclude`, so it cannot inherit
+# anything from the root `[workspace]` (excluded + inheriting = "failed to find
+# a workspace root"). Declare a standalone workspace root here — the same
+# pattern apps/osl-hub already uses — with literal dependency pins copied from
+# the root workspace's resolved Cargo.lock. This keeps `cargo -C src-tauri`
+# buildable without adding src-tauri back to the root `cargo --workspace` gate.
+[workspace]
+resolver = "2"

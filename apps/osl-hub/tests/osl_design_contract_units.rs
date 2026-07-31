@@ -157,9 +157,17 @@ fn send_contract_errors(simple_markdown: &str, gui_markdown: &str) -> Vec<String
         errors.push("sending outcomes are not the honest tri-state".to_string());
     }
 
-    let uncertainty_sentence = sending_sentences
-        .iter()
-        .find(|sentence| words(sentence).contains("uncertain"));
+    // The refusal sentence, not the outcome sentence. "## Sending" opens with
+    // "Sending has three honest outcomes: sent, not sent, or delivery
+    // uncertain.", which also contains "uncertain" -- matching on that word
+    // alone reads the enumeration and reports every refusal below as missing
+    // even when the document states all three. The refusals are the sentence
+    // that says what OSL will never do with an uncertain outcome, so require
+    // both words and let the enumeration fall through to its own check above.
+    let uncertainty_sentence = sending_sentences.iter().find(|sentence| {
+        let sentence_words = words(sentence);
+        sentence_words.contains("uncertain") && sentence_words.contains("never")
+    });
     let uncertainty_words = uncertainty_sentence
         .map(|sentence| words(sentence))
         .unwrap_or_default();
@@ -298,9 +306,20 @@ fn browser_and_monetization_errors(markdown: &str) -> Vec<String> {
         errors.push("browser import receipt path must expose exactly two choices".to_string());
     }
 
+    // The import-receipt sentence, not merely the first sentence in
+    // "## Connections" that happens to use the word "without" -- the
+    // self-healing paragraph ("...disable one broken capability without
+    // failing the whole service.") sits earlier in the same section and would
+    // otherwise be read as the browser-import rule, reporting the fixed-origin
+    // fallback as missing while the document states it. Requiring "receipt"
+    // too pins the one sentence that owns both halves of this contract: the
+    // two choices with a receipt, and the fixed official origin without one.
     let without_receipt = connection_sentences
         .iter()
-        .find(|sentence| words(sentence).contains("without"))
+        .find(|sentence| {
+            let sentence_words = words(sentence);
+            sentence_words.contains("without") && sentence_words.contains("receipt")
+        })
         .map(|sentence| words(sentence))
         .unwrap_or_default();
     if !["fixed", "official", "sign", "in", "origin", "directly"]
@@ -514,6 +533,17 @@ fn encode_browser_import_choices_and_noninterrupting_monetization() {
             .iter()
             .any(|error| error == "browser import receipt path must expose exactly two choices"),
         "test must reject a third browser-import choice"
+    );
+
+    let receiptless_path_without_fixed_origin = GUI_PLAN.replace(
+        "without one, the tile opens the fixed official sign-in origin directly",
+        "without one, the tile opens whatever page the connector used last",
+    );
+    assert!(
+        browser_and_monetization_errors(&receiptless_path_without_fixed_origin)
+            .iter()
+            .any(|error| error == "missing direct fixed-origin behavior without import receipt"),
+        "test must reject a receipt-less browser path that does not open the fixed official sign-in origin directly"
     );
 
     let interrupting_paid_state = GUI_PLAN.replace("must never interrupt", "may interrupt");

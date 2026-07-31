@@ -234,7 +234,8 @@ mod tests {
 
         // Export/import through the trait keeps the session usable.
         let blob = SecureSession::export(&h.alice).expect("export");
-        let mut restored = <crate::session::Session as SecureSession>::import(&blob).expect("import");
+        let mut restored =
+            <crate::session::Session as SecureSession>::import(&blob).expect("import");
         let wire = restored
             .encrypt(0, b"after restore", &mut h.rng)
             .expect("send");

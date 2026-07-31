@@ -377,7 +377,8 @@ impl AnchorBinding {
     }
 }
 
-pub(crate) fn validate_restored_backup_against_anchor(
+#[cfg(test)]
+fn validate_restored_backup_against_anchor(
     conn: &Connection,
     identity_secret: &[u8; 32],
     provider: Arc<dyn MonotonicAnchor>,

@@ -611,7 +611,10 @@ fn v2_open_without_legacy_key_fails_on_v1_bundle() {
     )
     .unwrap_err();
     assert!(
-        err.contains("V1 file with no local attachment key supplied"),
+        // Match the stable core of the refusal, not its full tail: the message
+        // legitimately gained "or content id" when that second input was added.
+        // The gate itself is unchanged -- the call above still has to return Err.
+        err.contains("V1 file with no local attachment key"),
         "expected legacy-key-required error, got: {err}"
     );
 

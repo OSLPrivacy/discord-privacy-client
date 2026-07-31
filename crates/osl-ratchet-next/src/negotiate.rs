@@ -159,7 +159,9 @@ impl<'a> Negotiation<'a> {
     /// session.
     pub fn digest(&self) -> Result<[u8; 32]> {
         if self.selected_version != WIRE_VERSION_RN {
-            return Err(Error::PolicyBound("negotiation: selected version is not OSL-RN"));
+            return Err(Error::PolicyBound(
+                "negotiation: selected version is not OSL-RN",
+            ));
         }
         if self.min_acceptable_version < WIRE_VERSION_RN {
             return Err(Error::PolicyBound(
@@ -177,7 +179,9 @@ impl<'a> Negotiation<'a> {
             ));
         }
         if self.context.is_empty() || self.context.len() > MAX_CONTEXT_BYTES {
-            return Err(Error::PolicyBound("negotiation: context length out of range"));
+            return Err(Error::PolicyBound(
+                "negotiation: context length out of range",
+            ));
         }
 
         let mut h = Sha256::new();
@@ -224,7 +228,9 @@ mod tests {
 
         // Swapping the two identities must change the digest: the
         // construction is not symmetric in the parties.
-        let swapped = Negotiation::for_rn(&i, &EK, &r, CTX).digest().expect("digest");
+        let swapped = Negotiation::for_rn(&i, &EK, &r, CTX)
+            .digest()
+            .expect("digest");
         assert_ne!(a, swapped);
 
         // A different context is a different digest.

@@ -118,7 +118,10 @@ impl core::fmt::Display for LinkError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             LinkError::TooLarge { max, got } => {
-                write!(f, "view-once payload too large (max {max} bytes, got {got})")
+                write!(
+                    f,
+                    "view-once payload too large (max {max} bytes, got {got})"
+                )
             }
             LinkError::BadMime => write!(f, "view-once MIME type is malformed"),
             LinkError::BadFrame => write!(f, "view-once frame is malformed"),
@@ -258,7 +261,9 @@ pub fn decode_frame(frame: &[u8]) -> Result<LinkPayload> {
         frame[mime_end + 3],
     ]) as usize;
     let body_start = mime_end + 4;
-    let body_end = body_start.checked_add(body_len).ok_or(LinkError::BadFrame)?;
+    let body_end = body_start
+        .checked_add(body_len)
+        .ok_or(LinkError::BadFrame)?;
     if frame.len() != body_end {
         return Err(LinkError::BadFrame);
     }
@@ -437,10 +442,8 @@ pub fn grant_signing_bytes(payload_json: &[u8]) -> Vec<u8> {
 /// Canonical grant payload. Field order is fixed so the issuer and any
 /// test agree byte-for-byte.
 pub fn grant_payload_json(exp_unix_seconds: i64, jti_hex: &str) -> Vec<u8> {
-    format!(
-        "{{\"aud\":\"{GRANT_AUDIENCE}\",\"exp\":{exp_unix_seconds},\"jti\":\"{jti_hex}\"}}"
-    )
-    .into_bytes()
+    format!("{{\"aud\":\"{GRANT_AUDIENCE}\",\"exp\":{exp_unix_seconds},\"jti\":\"{jti_hex}\"}}")
+        .into_bytes()
 }
 
 /// Assemble the `Authorization` header value from an already-signed
@@ -508,9 +511,7 @@ mod tests {
         assert!(link.sealed_body.len() > NONCE_SIZE + TAG_SIZE);
         let haystack = link.sealed_body.clone();
         assert!(
-            haystack
-                .windows(text.len())
-                .all(|w| w != text.as_bytes()),
+            haystack.windows(text.len()).all(|w| w != text.as_bytes()),
             "plaintext must not survive in the sealed body"
         );
         // The frame magic must not be visible either.
@@ -601,7 +602,10 @@ mod tests {
         assert!(before_hash.ends_with(id));
         assert!(!before_hash.contains("k="));
         assert!(!before_hash.contains("t="));
-        assert!(!before_hash.contains('?'), "no query string may carry a secret");
+        assert!(
+            !before_hash.contains('?'),
+            "no query string may carry a secret"
+        );
         assert!(after_hash.contains(&link.fetch_token.to_hex()));
         assert!(after_hash.contains(&URL_SAFE_NO_PAD.encode(link.key.as_bytes())));
         // The manage capability is sender-only and must never be in the URL.
@@ -619,7 +623,12 @@ mod tests {
             );
         }
         assert_eq!(
-            link_url("https://example.com", "nothex", &link.key, &link.fetch_token),
+            link_url(
+                "https://example.com",
+                "nothex",
+                &link.key,
+                &link.fetch_token
+            ),
             Err(LinkError::BadHost)
         );
     }
@@ -669,7 +678,9 @@ mod tests {
             let lowered = label.to_lowercase();
             for banned in BANNED_STATUS_WORDS {
                 assert!(
-                    !lowered.split(|c: char| !c.is_alphanumeric()).any(|w| w == *banned),
+                    !lowered
+                        .split(|c: char| !c.is_alphanumeric())
+                        .any(|w| w == *banned),
                     "sender label {label:?} must not use the word {banned:?}"
                 );
             }

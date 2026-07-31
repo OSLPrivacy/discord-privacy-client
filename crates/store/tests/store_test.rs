@@ -14,6 +14,18 @@ use tempfile::TempDir;
 const SECRET_A: &[u8; 32] = &[1u8; 32];
 const SECRET_B: &[u8; 32] = &[2u8; 32];
 
+type StoredMessageRow = (
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    i64,
+    i64,
+);
+
 fn open_a(dir: &Path) -> MessageStore {
     MessageStore::open(dir, SECRET_A).expect("open with SECRET_A should succeed")
 }
@@ -474,7 +486,10 @@ fn mark_burned_is_idempotent() {
     // This rejects an idempotency shortcut that reports success for every
     // later call once *any* row is burned, instead of still selecting the
     // requested blind index and reporting an unknown id.
-    assert!(matches!(&wrong_id, StoreError::NotFound(_)), "got {wrong_id:?}");
+    assert!(
+        matches!(&wrong_id, StoreError::NotFound(_)),
+        "got {wrong_id:?}"
+    );
     let still_live = store
         .get("untouched")
         .unwrap()
@@ -701,17 +716,7 @@ fn reopen_with_future_schema_version_refuses() {
         .unwrap();
     }
     let before_version = schema_version(&path);
-    let before_row: (
-        Vec<u8>,
-        Vec<u8>,
-        Vec<u8>,
-        Vec<u8>,
-        Vec<u8>,
-        Vec<u8>,
-        Vec<u8>,
-        i64,
-        i64,
-    ) = {
+    let before_row: StoredMessageRow = {
         let conn = rusqlite::Connection::open(path.join("messages.sqlite")).unwrap();
         conn.query_row(
             "SELECT mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct, ciphertext, nonce, seq, burned FROM messages",
@@ -727,17 +732,7 @@ fn reopen_with_future_schema_version_refuses() {
     // This rejects a future-version handler that performs a partial migration
     // (or quietly downgrades the stamp) before returning its refusal.
     assert_eq!(schema_version(&path), before_version);
-    let after_row: (
-        Vec<u8>,
-        Vec<u8>,
-        Vec<u8>,
-        Vec<u8>,
-        Vec<u8>,
-        Vec<u8>,
-        Vec<u8>,
-        i64,
-        i64,
-    ) = {
+    let after_row: StoredMessageRow = {
         let conn = rusqlite::Connection::open(path.join("messages.sqlite")).unwrap();
         conn.query_row(
             "SELECT mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct, ciphertext, nonce, seq, burned FROM messages",
@@ -931,7 +926,10 @@ fn attachment_wrong_secret_cannot_unseal() {
     assert_eq!(own.1, b"other store bytes");
     assert_eq!(
         store_b.get_attachment("msg2", "f.bin").unwrap(),
-        Some(("text/plain".to_string(), b"unaffected sibling bytes".to_vec())),
+        Some((
+            "text/plain".to_string(),
+            b"unaffected sibling bytes".to_vec()
+        )),
         "the non-tampered sibling is a nonempty selected-row control"
     );
     {
@@ -955,7 +953,10 @@ fn attachment_wrong_secret_cannot_unseal() {
     assert!(matches!(&err, StoreError::Corrupted(_)), "got {err:?}");
     assert_eq!(
         store_b.get_attachment("msg2", "f.bin").unwrap(),
-        Some(("text/plain".to_string(), b"unaffected sibling bytes".to_vec())),
+        Some((
+            "text/plain".to_string(),
+            b"unaffected sibling bytes".to_vec()
+        )),
         "tampering msg1 must not corrupt a valid sibling"
     );
 }

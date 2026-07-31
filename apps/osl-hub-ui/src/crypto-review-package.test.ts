@@ -54,7 +54,8 @@ type UsernameOnlyScaffoldContract = {
   schemaVersion: number;
   test: string;
   websiteRepo: {
-    path: string;
+    repo: string;
+    pathEnv: string;
     role: string;
     located: boolean;
   };
@@ -367,11 +368,18 @@ describe("crypto review report contracts", () => {
     const contract = extractUsernameOnlyScaffoldContract();
     expect(contract.schemaVersion).toBe(1);
     expect(contract.test).toBe("test/integration/username-only-worker-scaffold.test.ts");
+    // The website checkout is outside this repo, so it is pinned by repo name
+    // plus an env-var locator rather than an absolute developer path: this
+    // file ships publicly and must not leak a maintainer username or machine
+    // layout (enforced by scripts/audit_public_release.py).
     expect(contract.websiteRepo).toEqual({
-      path: "/home/liamw/projects/oslprivacy-web",
+      repo: "oslprivacy-web",
+      pathEnv: "OSL_WEBSITE_REPO",
       role: "static_pages_checkout",
       located: true,
     });
+    expect(contract.websiteRepo.repo).not.toMatch(/[\\/]/u);
+    expect(contract.websiteRepo.pathEnv).toMatch(/^[A-Z][A-Z0-9_]*$/u);
     expect(contract.workerScaffold).toEqual({
       repo: "this_worktree",
       route: "POST /v1/username-coverage",

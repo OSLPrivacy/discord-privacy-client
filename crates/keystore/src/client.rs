@@ -836,17 +836,31 @@ impl KeyServerClient {
         }
 
         let base_url = parsed.as_str().trim_end_matches('/').to_string();
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(30))
-            // Never follow an origin-changing redirect with signed protocol
-            // bodies. Production is already HTTPS and local tests do not need
-            // an upgrade redirect.
-            .redirect(reqwest::redirect::Policy::none())
-            // User-Agent string mirrors the prior hand-rolled
-            // value so server-side log greps continue working.
-            .user_agent("discord-privacy-client/0.0.1")
-            .build()
-            .map_err(|e| Error::Transport(format!("reqwest client build: {e}")))?;
+        // `reqwest::blocking::Client::builder().build()` stands up a private
+        // tokio runtime for the handshake and then drops it. Dropping a
+        // runtime while another runtime's context is active aborts with
+        // "Cannot drop a runtime in a context where blocking is not allowed",
+        // so any caller that happens to sit inside an async task (a timer
+        // driver tick, a `#[tokio::test]`, a Tauri async command) would take
+        // the process down at construction time. Build on a dedicated OS
+        // thread: a fresh thread carries no runtime thread-locals, so the
+        // private runtime is created and dropped in a clean context. The
+        // resulting client is identical for the existing sync callers.
+        let client = std::thread::spawn(|| {
+            reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(30))
+                // Never follow an origin-changing redirect with signed protocol
+                // bodies. Production is already HTTPS and local tests do not need
+                // an upgrade redirect.
+                .redirect(reqwest::redirect::Policy::none())
+                // User-Agent string mirrors the prior hand-rolled
+                // value so server-side log greps continue working.
+                .user_agent("discord-privacy-client/0.0.1")
+                .build()
+        })
+        .join()
+        .map_err(|_| Error::Transport("reqwest client build panicked".to_string()))?
+        .map_err(|e| Error::Transport(format!("reqwest client build: {e}")))?;
         Ok(KeyServerClient { base_url, client })
     }
 
@@ -1553,6 +1567,18 @@ impl KeyServerClient {
                 "control-inbox sender filter is invalid".into(),
             ));
         }
+        // Deliberately NESTED, not a match on a (capability, floor) pair: the
+        // floor endpoint is only consulted once the server has claimed v1. A
+        // legacy server refuses here without being sent a floor request it may
+        // not implement -- issuing one would turn a clean "capability
+        // unavailable" refusal into an opaque transport error. Refusal is the
+        // outcome either way, so measuring first buys no safety.
+        // NOTE: keyserver-cf/scripts/sender-filter-rollout-contract.mjs
+        // (requireShippingClientDataflow) demands the flattened tuple shape and
+        // therefore fails against this function. That is a real, unresolved
+        // disagreement between the rollout contract and the shipping client --
+        // see broker.rs::audit_control_inbox_consumers_have_no_active_peer_unfiltered_drain,
+        // which asserts a legacy refusal stops before any further request.
         match self.probe_control_inbox_sender_filter_capability()? {
             ControlInboxSenderFilterCapability::Version1 => {
                 match self.observe_sender_filter_capability_floor(identity)? {

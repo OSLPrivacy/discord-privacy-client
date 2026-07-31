@@ -3,6 +3,10 @@ import { describe, expect, it } from "vitest";
 
 const broker = readFileSync(new URL("../../osl-hub/src/broker.rs", import.meta.url), "utf8");
 const nativeMain = readFileSync(new URL("../../osl-hub/src/main.rs", import.meta.url), "utf8");
+const nativeCommandSurface = readFileSync(
+  new URL("../../osl-hub/src/hub_command_surface.rs", import.meta.url),
+  "utf8",
+);
 const nativeAdapter = readFileSync(
   new URL("../../osl-hub/src/native_discord_adapter.rs", import.meta.url),
   "utf8",
@@ -26,13 +30,38 @@ function between(source: string, start: string, end: string): string {
   return source.slice(startIndex, endIndex);
 }
 
-function commandRegistrationSurface(source: string): string {
-  const macroStart = source.indexOf("macro_rules! hub_tauri_commands");
-  const macroEnd = source.indexOf("macro_rules! hub_tauri_generate_handler", macroStart);
+// The authoritative `hub_tauri_commands!` list moved out of
+// apps/osl-hub/src/main.rs into the library module
+// apps/osl-hub/src/hub_command_surface.rs, because main.rs is a `[[bin]]` with
+// `required-features = ["desktop"]` that CI never compiles — everything proven
+// only there was proven by nothing. main.rs kept the `#[tauri::command]`
+// wrappers (still read from `mainSource` below) plus one literal handler list
+// for the signal-qa shell binary.
+//
+// Registration is therefore its own injectable source: reading main.rs alone
+// now yields the expansion macro's definition text, which names no commands, so
+// both the positive registration check and the "unregistered" stage-removal
+// mutation would be vacuous against it.
+function commandRegistrationSurface(surfaceModule: string, main: string): string {
+  const macroStart = surfaceModule.indexOf("macro_rules! hub_tauri_commands");
+  const macroEnd = surfaceModule.indexOf("macro_rules! hub_tauri_command_names", macroStart);
   expect(macroStart, "hub command macro should exist").toBeGreaterThanOrEqual(0);
-  expect(macroEnd, "handler macro should follow command macro").toBeGreaterThan(macroStart);
-  return source.slice(macroStart, macroEnd);
+  expect(macroEnd, "handler-name macro should follow command macro").toBeGreaterThan(macroStart);
+  const marker = "invoke_handler(tauri::generate_handler![";
+  const lists: string[] = [];
+  for (
+    let cursor = main.indexOf(marker);
+    cursor >= 0;
+    cursor = main.indexOf(marker, cursor + 1)
+  ) {
+    const end = main.indexOf("]);", cursor + marker.length);
+    if (end < 0) continue;
+    lists.push(main.slice(cursor + marker.length, end));
+  }
+  return [surfaceModule.slice(macroStart, macroEnd), ...lists].join("\n");
 }
+
+const hubCommandSurface = commandRegistrationSurface(nativeCommandSurface, nativeMain);
 
 type AttributionGate = {
   productionReachable: boolean;
@@ -67,13 +96,14 @@ function detectAttributionGate(
   tokenSource: string,
   overlaySource: string,
   uiProofSource: string,
+  commandSurfaceSource: string,
 ): AttributionGate {
   const command = between(
     mainSource,
     "async fn rehydrate_native_discord_overlay_history(",
     "\n#[tauri::command]",
   );
-  const handlers = commandRegistrationSurface(mainSource);
+  const handlers = commandSurfaceSource;
   const nativeEvidence = between(
     adapterSource,
     "pub struct NativeDiscordRowAttributionEvidence {",
@@ -504,6 +534,7 @@ const detect = (
   adapterSource = nativeAdapter,
   overlaySource = overlay,
   uiProofSource = uiProof,
+  commandSurfaceSource = hubCommandSurface,
 ): AttributionGate => detectAttributionGate(
   brokerSource,
   mainSource,
@@ -511,6 +542,7 @@ const detect = (
   proseToken,
   overlaySource,
   uiProofSource,
+  commandSurfaceSource,
 );
 
 describe("native Discord visible-row attribution contract", () => {
@@ -523,17 +555,22 @@ describe("native Discord visible-row attribution contract", () => {
   });
 
   it("has failure-capable reachability and missing-proof controls", () => {
-    const unregistered = nativeMain.replace(
-      "        rehydrate_native_discord_overlay_history,\n",
+    // Registration lives in hub_command_surface.rs, so that is the text this
+    // stage-removal proof has to starve; mutating main.rs would be a no-op.
+    const unregistered = hubCommandSurface.replace(
+      "            rehydrate_native_discord_overlay_history,\n",
       "",
     );
     const acceptsMissing = broker.replace(
       "let Some(evidence) = row.attribution.as_ref() else {\n            return false;\n        };",
       "let evidence = row.attribution.as_ref().expect(\"mutation accepts missing proof\");",
     );
-    expect(unregistered).not.toBe(nativeMain);
+    expect(unregistered).not.toBe(hubCommandSurface);
     expect(acceptsMissing).not.toBe(broker);
-    expect(detect(broker, unregistered).productionReachable).toBe(false);
+    expect(
+      detect(broker, nativeMain, nativeAdapter, overlay, uiProof, unregistered)
+        .productionReachable,
+    ).toBe(false);
     expect(detect(acceptsMissing).missingProofRefuses).toBe(false);
   });
 

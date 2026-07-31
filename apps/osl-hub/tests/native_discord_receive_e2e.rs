@@ -510,6 +510,49 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
                 json_response(403, json!({ "error": "fetch_token_mismatch" }))
             }
         }
+        // The shipping receive boundary observes a signed sender-filter
+        // capability floor before it will drain, exactly as
+        // `keyserver-cf/src/endpoints/sender-filter-capability-floor.ts`
+        // serves it. The fixture answers only for identities it was told
+        // about and only for a signed request, so a drain can never reach a
+        // filtered page through an unauthenticated or unknown-recipient floor.
+        ("GET", route) if route.starts_with("/v1/sender-filter-capability-floor/") => {
+            let target = url::Url::parse(&format!("http://relay.invalid{path}"))
+                .expect("parse sender-filter floor request target");
+            let recipient = target
+                .path()
+                .trim_start_matches("/v1/sender-filter-capability-floor/")
+                .to_owned();
+            let query = |name: &str| {
+                target
+                    .query_pairs()
+                    .find_map(|(key, value)| (key == name).then(|| value.into_owned()))
+                    .unwrap_or_default()
+            };
+            let timestamp_ms = query("ts").parse::<i64>().unwrap_or_default();
+            let request_id = query("request_id");
+            let anchor = floor_identities()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(&recipient)
+                .map(|public| floor_identity_anchor_sha256(&recipient, public));
+            match anchor {
+                Some(anchor) if timestamp_ms > 0 && !query("sig").is_empty() => json_response(
+                    200,
+                    json!({
+                        "format": "osl.keyserver.sender-filter-capability-floor.v3",
+                        "recipient_user_id": recipient,
+                        "identity_anchor_sha256": anchor,
+                        "capability_version": 1,
+                        "monotonic_version": 1,
+                        "first_observed_at_ms": timestamp_ms,
+                        "request_timestamp_ms": timestamp_ms,
+                        "request_id": request_id,
+                    }),
+                ),
+                _ => json_response(404, json!({ "error": "not_found" })),
+            }
+        }
         ("POST", "/v1/control-inbox") => {
             let value: Value = serde_json::from_slice(&body).expect("valid control-inbox post");
             let mut state = state.lock().unwrap();
@@ -688,6 +731,32 @@ fn read_request(
     ))
 }
 
+/// Public identity anchors the fixture key server needs in order to answer the
+/// signed sender-filter capability-floor observation the production receive
+/// boundary makes before every drain. `serve_request` is a free function and
+/// every test in this binary is serialized by `fixture_lock`, so a single
+/// process-wide registry is enough; `Peer::new` is the only writer.
+fn floor_identities() -> &'static Mutex<BTreeMap<String, Vec<u8>>> {
+    static IDENTITIES: OnceLock<Mutex<BTreeMap<String, Vec<u8>>>> = OnceLock::new();
+    IDENTITIES.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+/// `keystore::sender_filter_rollout::sender_filter_floor_identity_anchor_sha256`,
+/// recomputed here from public inputs only so the fixture proves the anchor the
+/// client independently derives rather than echoing one the client supplied.
+fn floor_identity_anchor_sha256(user_id: &str, ed25519_public: &[u8]) -> String {
+    fn length_prefixed(output: &mut Vec<u8>, value: &[u8]) {
+        output.extend_from_slice(&(value.len() as u32).to_be_bytes());
+        output.extend_from_slice(value);
+    }
+    let mut canonical = Vec::new();
+    length_prefixed(&mut canonical, b"OSL-SENDER-FILTER-FLOOR-IDENTITY-v1\0");
+    length_prefixed(&mut canonical, user_id.as_bytes());
+    length_prefixed(&mut canonical, ed25519_public);
+    let digest = <sha2::Sha256 as sha2::Digest>::digest(canonical);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 fn json_response(status: u16, body: Value) -> Vec<u8> {
     bytes_response(
         status,
@@ -746,6 +815,15 @@ impl Peer {
         let dir = storage.account(name, relay_url);
         let identity = keystore::generate_identity(format!("osl-{name}-native-receive"));
         let identity_id = identity.user_id.clone();
+        // Tell the fixture key server this identity's public anchor so it can
+        // answer the signed capability-floor observation the drain makes.
+        floor_identities()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(
+                identity_id.clone(),
+                identity.ed25519_public.as_bytes().to_vec(),
+            );
         let core = core(identity, relay_url);
         TestStorage::activate(&dir);
         let exported = export_friend_code(&core).expect("export friend code");

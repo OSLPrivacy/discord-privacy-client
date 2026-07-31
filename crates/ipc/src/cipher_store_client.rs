@@ -145,10 +145,14 @@ impl<R: Read> Read for ExactPartReader<R> {
         if self.remaining == 0 || buffer.is_empty() {
             return Ok(0);
         }
-        let maximum = usize::try_from(self.remaining.min(buffer.len() as u64)).unwrap_or(buffer.len());
+        let maximum =
+            usize::try_from(self.remaining.min(buffer.len() as u64)).unwrap_or(buffer.len());
         let read = self.inner.read(&mut buffer[..maximum])?;
         if read == 0 {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "attachment part truncated"));
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "attachment part truncated",
+            ));
         }
         self.remaining -= read as u64;
         Ok(read)
@@ -356,7 +360,9 @@ impl CipherStoreClient {
             || session.max_parts != ATTACHMENT_MULTIPART_MAX_PARTS
         {
             let _ = self.delete_attachment(&session.id, fetch_token);
-            return Err(CipherStoreError::ParseError("multipart session has unexpected shape".to_owned()));
+            return Err(CipherStoreError::ParseError(
+                "multipart session has unexpected shape".to_owned(),
+            ));
         }
         let plan = match multipart_plan(length, session.max_part_bytes, session.max_parts) {
             Ok(plan) => plan,
@@ -369,10 +375,16 @@ impl CipherStoreClient {
             for (part_number, offset, part_length) in plan {
                 let mut part_file = sealed.try_clone()?;
                 part_file.seek(SeekFrom::Start(offset))?;
-                let reader = ExactPartReader { inner: part_file, remaining: part_length };
+                let reader = ExactPartReader {
+                    inner: part_file,
+                    remaining: part_length,
+                };
                 let response = self
                     .http
-                    .put(format!("{}/v1/attachment/{}/part/{part_number}", self.base_url, session.id))
+                    .put(format!(
+                        "{}/v1/attachment/{}/part/{part_number}",
+                        self.base_url, session.id
+                    ))
                     .timeout(ATTACHMENT_REQUEST_TIMEOUT)
                     .header("content-type", "application/octet-stream")
                     .header("content-length", part_length)
@@ -381,7 +393,9 @@ impl CipherStoreClient {
                     .send()?;
                 let receipt: AttachmentPartResponse = parse_bounded_json(response)?;
                 if receipt.part_number != part_number || receipt.size_bytes != part_length {
-                    return Err(CipherStoreError::ParseError("multipart part receipt mismatch".to_owned()));
+                    return Err(CipherStoreError::ParseError(
+                        "multipart part receipt mismatch".to_owned(),
+                    ));
                 }
             }
             if sealed.metadata()?.len() != length {
@@ -392,16 +406,27 @@ impl CipherStoreClient {
             }
             let response = self
                 .http
-                .post(format!("{}/v1/attachment/{}/complete", self.base_url, session.id))
+                .post(format!(
+                    "{}/v1/attachment/{}/complete",
+                    self.base_url, session.id
+                ))
                 .timeout(ATTACHMENT_REQUEST_TIMEOUT)
                 .header("content-length", 0)
                 .header("x-osl-fetch-token", &token)
                 .send()?;
             let complete: AttachmentCompleteResponse = parse_bounded_json(response)?;
-            if complete.id != session.id || complete.expires_at != session.expires_at || complete.size_bytes != length {
-                return Err(CipherStoreError::ParseError("multipart completion receipt mismatch".to_owned()));
+            if complete.id != session.id
+                || complete.expires_at != session.expires_at
+                || complete.size_bytes != length
+            {
+                return Err(CipherStoreError::ParseError(
+                    "multipart completion receipt mismatch".to_owned(),
+                ));
             }
-            Ok(UploadResult { id_hex: complete.id, expires_at: complete.expires_at })
+            Ok(UploadResult {
+                id_hex: complete.id,
+                expires_at: complete.expires_at,
+            })
         })();
         if result.is_err() {
             let _ = self.delete_attachment(&session.id, fetch_token);
@@ -501,7 +526,9 @@ fn status_error(response: reqwest::blocking::Response) -> CipherStoreError {
     CipherStoreError::Status { status, body }
 }
 
-fn parse_bounded_json<T: DeserializeOwned>(response: reqwest::blocking::Response) -> Result<T, CipherStoreError> {
+fn parse_bounded_json<T: DeserializeOwned>(
+    response: reqwest::blocking::Response,
+) -> Result<T, CipherStoreError> {
     if response.status() == StatusCode::TOO_MANY_REQUESTS {
         return Err(CipherStoreError::RateLimited);
     }
@@ -524,13 +551,16 @@ fn multipart_plan(
         || max_parts == 0
         || max_parts > ATTACHMENT_MULTIPART_MAX_PARTS
     {
-        return Err(CipherStoreError::ParseError("invalid multipart bounds".to_owned()));
+        return Err(CipherStoreError::ParseError(
+            "invalid multipart bounds".to_owned(),
+        ));
     }
     let count = length.div_ceil(part_bytes);
     if count > u64::from(max_parts) {
         return Err(CipherStoreError::BlobTooLarge {
             got: usize::try_from(length).unwrap_or(usize::MAX),
-            max: usize::try_from(part_bytes.saturating_mul(u64::from(max_parts))).unwrap_or(usize::MAX),
+            max: usize::try_from(part_bytes.saturating_mul(u64::from(max_parts)))
+                .unwrap_or(usize::MAX),
         });
     }
     let mut plan = Vec::with_capacity(count as usize);
@@ -619,16 +649,27 @@ mod tests {
         )
         .unwrap();
         assert_eq!(plan.len(), 65);
-        assert!(plan.iter().all(|(_, _, size)| *size <= ATTACHMENT_MULTIPART_PART_BYTES));
-        assert_eq!(plan.iter().map(|(_, _, size)| *size).sum::<u64>(), MAX_SEALED_ATTACHMENT_BYTES);
+        assert!(plan
+            .iter()
+            .all(|(_, _, size)| *size <= ATTACHMENT_MULTIPART_PART_BYTES));
+        assert_eq!(
+            plan.iter().map(|(_, _, size)| *size).sum::<u64>(),
+            MAX_SEALED_ATTACHMENT_BYTES
+        );
         assert_eq!(plan.last().unwrap().0, 65);
     }
 
     #[test]
     fn exact_part_reader_detects_truncation_without_large_allocation() {
-        let mut reader = ExactPartReader { inner: io::Cursor::new(vec![1u8; 7]), remaining: 8 };
+        let mut reader = ExactPartReader {
+            inner: io::Cursor::new(vec![1u8; 7]),
+            remaining: 8,
+        };
         let mut output = [0u8; 8];
         assert_eq!(reader.read(&mut output).unwrap(), 7);
-        assert_eq!(reader.read(&mut output).unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(
+            reader.read(&mut output).unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
     }
 }

@@ -148,7 +148,9 @@ pub fn seeded_identity(seed: u64) -> XSecret {
 pub fn tamper_byte(wire: &str, byte_index: usize, xor: u8) -> Option<String> {
     use base64::Engine as _;
     let body = wire.strip_prefix(crate::session::WIRE_PREFIX)?;
-    let mut raw = base64::engine::general_purpose::STANDARD.decode(body).ok()?;
+    let mut raw = base64::engine::general_purpose::STANDARD
+        .decode(body)
+        .ok()?;
     let b = raw.get_mut(byte_index)?;
     *b ^= xor;
     Some(format!(

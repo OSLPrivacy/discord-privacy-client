@@ -240,10 +240,9 @@ pub fn kem_encapsulate<R: RngCore + CryptoRng>(
     ek: &KemPublic,
     rng: &mut R,
 ) -> Result<([u8; MLKEM_CT], Secret32)> {
-    let (ct, mut ss) = ek
-        .0
-        .encapsulate(rng)
-        .map_err(|_| Error::Internal("ML-KEM encapsulate"))?;
+    let (ct, mut ss) =
+        ek.0.encapsulate(rng)
+            .map_err(|_| Error::Internal("ML-KEM encapsulate"))?;
     let mut ct_bytes = [0u8; MLKEM_CT];
     ct_bytes.copy_from_slice(ct.as_slice());
     let mut ss_bytes = [0u8; SECRET_BYTES];
@@ -255,12 +254,11 @@ pub fn kem_encapsulate<R: RngCore + CryptoRng>(
 /// Implicit-rejection decapsulation (FIPS 203 §6.3): never fails on a
 /// tampered ciphertext, returns unrelated bytes instead.
 pub fn kem_decapsulate(dk: &KemSecret, ct: &[u8; MLKEM_CT]) -> Result<Secret32> {
-    let typed = Ct768::try_from(ct.as_slice())
-        .map_err(|_| Error::Internal("MLKEM_CT length mismatch"))?;
-    let mut ss = dk
-        .0
-        .decapsulate(&typed)
-        .map_err(|_| Error::Internal("ML-KEM decapsulate"))?;
+    let typed =
+        Ct768::try_from(ct.as_slice()).map_err(|_| Error::Internal("MLKEM_CT length mismatch"))?;
+    let mut ss =
+        dk.0.decapsulate(&typed)
+            .map_err(|_| Error::Internal("ML-KEM decapsulate"))?;
     let mut ss_bytes = [0u8; SECRET_BYTES];
     ss_bytes.copy_from_slice(ss.as_slice());
     ss.zeroize();
@@ -328,6 +326,12 @@ pub fn aead_open(
         .map_err(|_| Error::AuthFailed)
 }
 
+// The crate denies clippy::indexing_slicing (lib.rs:49) because a panic on
+// attacker-controlled input in a ratchet is a DoS. That policy is for
+// PRODUCTION code. These tests index deliberately and provably in bounds
+// (truncation loops over 0..bytes.len(), a bit-flip on a non-empty
+// ciphertext); rewriting them with get() would obscure what they prove.
+#[allow(clippy::indexing_slicing)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -425,8 +429,14 @@ mod tests {
         bad[0] ^= 1;
         assert_eq!(aead_open(&key, &nonce, b"ad", &bad), Err(Error::AuthFailed));
         assert_eq!(aead_open(&key, &nonce, b"AD", &ct), Err(Error::AuthFailed));
-        assert_eq!(aead_open(&key, &[9u8; AEAD_NONCE], b"ad", &ct), Err(Error::AuthFailed));
-        assert_eq!(aead_open(&[9u8; AEAD_KEY], &nonce, b"ad", &ct), Err(Error::AuthFailed));
+        assert_eq!(
+            aead_open(&key, &[9u8; AEAD_NONCE], b"ad", &ct),
+            Err(Error::AuthFailed)
+        );
+        assert_eq!(
+            aead_open(&[9u8; AEAD_KEY], &nonce, b"ad", &ct),
+            Err(Error::AuthFailed)
+        );
     }
 
     fn hex_arr(s: &str) -> [u8; 32] {

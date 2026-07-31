@@ -1,10 +1,9 @@
 use keystore::{
     build_partial_duress_handlers, build_production_duress_config_handlers,
-    build_production_duress_paths,
-    generate_identity, save_identity, save_password_record, save_prekey_state, Argon2Params,
-    DuressEngine, DuressError, DuressHandlers, DuressJournal, DuressPaths, NoOpSealer,
-    PasswordRecord, PrekeyConfig, PrekeyState, ProductionDuressConfig, ProductionDuressHandlers,
-    StepOutcome, WipeStep,
+    build_production_duress_paths, generate_identity, save_identity, save_password_record,
+    save_prekey_state, Argon2Params, DuressEngine, DuressError, DuressHandlers, DuressJournal,
+    DuressPaths, NoOpSealer, PasswordRecord, PrekeyConfig, PrekeyState, ProductionDuressConfig,
+    ProductionDuressHandlers, StepOutcome, WipeStep,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -345,7 +344,11 @@ fn handlers_run_in_canonical_order() {
     assert!(report.failed_steps().is_empty());
     assert!(report.skipped_steps().is_empty());
     assert_eq!(
-        report.steps.iter().map(|(step, _)| *step).collect::<Vec<_>>(),
+        report
+            .steps
+            .iter()
+            .map(|(step, _)| *step)
+            .collect::<Vec<_>>(),
         WipeStep::ordered().to_vec()
     );
 
@@ -512,7 +515,11 @@ fn partial_duress_handlers_wipe_bound_cache_and_opsec_paths() {
     assert!(report.failed_steps().is_empty());
 
     assert_eq!(
-        report.steps.iter().map(|(step, _)| *step).collect::<Vec<_>>(),
+        report
+            .steps
+            .iter()
+            .map(|(step, _)| *step)
+            .collect::<Vec<_>>(),
         WipeStep::ordered().to_vec()
     );
     assert_eq!(

@@ -923,10 +923,8 @@ pub fn run_inactivity_auto_lock_timer_for_state(
     if get_file_storage_key().is_none() {
         return InactivityAutoLockOutcome::AlreadyLocked;
     }
-    let timer = keystore::InactivityTimer::with_last_activity(
-        INACTIVITY_AUTO_LOCK_SECONDS as u64,
-        last_activity,
-    );
+    let timer =
+        keystore::InactivityTimer::with_last_activity(INACTIVITY_AUTO_LOCK_SECONDS, last_activity);
     if timer.should_reprompt_at(now) {
         lock_main_password_session(state);
         InactivityAutoLockOutcome::Locked
@@ -1893,7 +1891,7 @@ mod password_policy_tests {
         assert_eq!(
             super::run_inactivity_auto_lock_timer_for_state(
                 &state,
-                now - std::time::Duration::from_secs((INACTIVITY_AUTO_LOCK_SECONDS - 1) as u64),
+                now - std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS - 1),
                 now,
             ),
             InactivityAutoLockOutcome::StillUnlocked
@@ -1905,7 +1903,7 @@ mod password_policy_tests {
         assert_eq!(
             super::run_inactivity_auto_lock_timer_for_state(
                 &state,
-                now - std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS as u64),
+                now - std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS),
                 now,
             ),
             InactivityAutoLockOutcome::Locked
@@ -1920,7 +1918,7 @@ mod password_policy_tests {
         assert_eq!(
             super::run_inactivity_auto_lock_timer_for_state(
                 &state,
-                now - std::time::Duration::from_secs((INACTIVITY_AUTO_LOCK_SECONDS * 2) as u64),
+                now - std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS * 2),
                 now,
             ),
             InactivityAutoLockOutcome::AlreadyLocked

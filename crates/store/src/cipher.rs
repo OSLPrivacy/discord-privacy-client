@@ -343,6 +343,10 @@ fn attachment_manifest_aad(mid_bi: &[u8], complete: bool, generation: i64) -> Ve
     aad
 }
 
+// Eight separate arguments on purpose. This constructs the canonical manifest
+// entry from independently authenticated attachment fields; wrapping them would
+// make it easier to bind a digest to the wrong row field or version.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn attachment_manifest_entry(
     ck_bi: Vec<u8>,
     seq: i64,
@@ -490,6 +494,11 @@ pub(crate) fn seal_attachment_body(
     })
 }
 
+// Ten separate arguments on purpose. This verifies the wrapper and body AEAD
+// against the exact externally supplied attachment selectors, counters, nonce,
+// metadata, and ciphertext; a bundle would add another fallible construction
+// path without reducing the cryptographic inputs.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn unseal_attachment_body(
     master_key: &aead::Key,
     ck_bi: &[u8],

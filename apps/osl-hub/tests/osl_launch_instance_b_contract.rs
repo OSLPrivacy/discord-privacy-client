@@ -7,16 +7,58 @@ fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-fn powershell() -> Option<&'static str> {
-    for candidate in ["pwsh", "powershell.exe", "powershell"] {
-        if Command::new(candidate)
-            .args(["-NoProfile", "-Command", "$PSVersionTable.PSVersion.Major"])
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false)
-        {
-            return Some(candidate);
+/// Which interpreter runs the script, and whether it needs Windows-visible paths.
+///
+/// A Windows PowerShell reached from WSL resolves a Linux-style absolute path
+/// (`/home/...`) against its *current location* instead of treating it as rooted,
+/// so `Out-File -LiteralPath /tmp/x.json` silently lands under the UNC working
+/// directory and the write fails. A native Unix `pwsh` must be given the Linux
+/// path unchanged. Ask the interpreter which world it lives in rather than
+/// guessing from the executable name.
+struct Shell {
+    command: &'static str,
+    windows_paths: bool,
+}
+
+impl Shell {
+    fn path(&self, path: &Path) -> String {
+        if !self.windows_paths || cfg!(windows) {
+            return path.display().to_string();
         }
+        Command::new("wslpath")
+            .arg("-w")
+            .arg(path)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+            .filter(|translated| !translated.is_empty())
+            .unwrap_or_else(|| path.display().to_string())
+    }
+}
+
+const HOST_KIND_PROBE: &str =
+    "if ($PSVersionTable.PSVersion.Major -le 5 -or $IsWindows) { 'windows' } else { 'unix' }";
+
+fn powershell() -> Option<Shell> {
+    for candidate in ["pwsh", "powershell.exe", "powershell"] {
+        let Ok(output) = Command::new(candidate)
+            .args(["-NoProfile", "-Command", HOST_KIND_PROBE])
+            .output()
+        else {
+            continue;
+        };
+        if !output.status.success() {
+            continue;
+        }
+        let kind = String::from_utf8_lossy(&output.stdout).trim().to_lowercase();
+        if kind != "windows" && kind != "unix" {
+            continue;
+        }
+        return Some(Shell {
+            command: candidate,
+            windows_paths: kind == "windows",
+        });
     }
     None
 }
@@ -73,30 +115,43 @@ fn run_fixture(
     fs::create_dir_all(root).expect("create launcher fixture root");
     let fixture_path = root.join("fixture.json");
     let out_path = root.join("launch-result.json");
+
+    // The temp roots inside the fixture are consumed by the script itself, so
+    // they have to be spelled the way the interpreter can see them, exactly like
+    // every path passed on the command line.
+    let mut fixture = fixture.clone();
+    for key in ["tempRootA", "tempRootB"] {
+        let raw = fixture[key]
+            .as_str()
+            .unwrap_or_else(|| panic!("fixture {key} is a string"))
+            .to_string();
+        fixture[key] = serde_json::json!(ps.path(Path::new(&raw)));
+    }
+    let temp_root_b = fixture["tempRootB"]
+        .as_str()
+        .expect("fixture tempRootB is a string")
+        .to_string();
+
     fs::write(
         &fixture_path,
-        serde_json::to_vec(fixture).expect("serialize launcher fixture"),
+        serde_json::to_vec(&fixture).expect("serialize launcher fixture"),
     )
     .expect("write launcher fixture");
 
     let script = repo_root().join("scripts/qa/osl-launch-instance-b.ps1");
-    let mut command = Command::new(ps);
+    let mut command = Command::new(ps.command);
     command.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
-    command.arg(&script);
+    command.arg(ps.path(&script));
     command.arg("-ExeB");
-    command.arg(root.join("unused-fixture-exe.exe"));
+    command.arg(ps.path(&root.join("unused-fixture-exe.exe")));
     command.arg("-BundleB");
     command.arg("org.oslprivacy.hubqab");
     command.arg("-JsonOut");
-    command.arg(&out_path);
+    command.arg(ps.path(&out_path));
     command.arg("-TempRootB");
-    command.arg(
-        fixture["tempRootB"]
-            .as_str()
-            .expect("fixture tempRootB is a string"),
-    );
+    command.arg(&temp_root_b);
     command.arg("-ContractFixtureJson");
-    command.arg(&fixture_path);
+    command.arg(ps.path(&fixture_path));
     command.arg("-Quiet");
     if confirm {
         command.arg("-ConfirmCreatesIdentity");

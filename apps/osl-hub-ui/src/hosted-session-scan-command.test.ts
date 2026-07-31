@@ -14,19 +14,48 @@ function sourceBetween(source: string, startNeedle: string, endNeedle: string): 
   return source.slice(start, end);
 }
 
+// The registered command surface and the checked-host helpers no longer live
+// in apps/osl-hub/src/main.rs. That file is a `[[bin]]` with
+// `required-features = ["desktop"]` which CI cannot compile, so the gates that
+// lived there were compiled and run by nothing; they were moved into the
+// library module apps/osl-hub/src/hub_command_surface.rs, which is. main.rs
+// kept only the `#[tauri::command]` wrappers that call them, plus one literal
+// handler list for the signal-qa shell build.
+//
+// Registration assertions therefore read the surface (macro list + main.rs's
+// literal lists); assertions about the wrapper command still read main.rs.
 function commandSurface(source: string): string {
   return sourceBetween(
     source,
     "macro_rules! hub_tauri_commands",
-    "macro_rules! hub_tauri_generate_handler",
+    "macro_rules! hub_tauri_command_names",
   );
+}
+
+function literalInvokeHandlerLists(source: string): string {
+  const marker = "invoke_handler(tauri::generate_handler![";
+  const lists: string[] = [];
+  for (
+    let cursor = source.indexOf(marker);
+    cursor >= 0;
+    cursor = source.indexOf(marker, cursor + 1)
+  ) {
+    const end = source.indexOf("]);", cursor + marker.length);
+    if (end < 0) continue;
+    lists.push(source.slice(cursor + marker.length, end));
+  }
+  return lists.join("\n");
 }
 
 describe("hosted session scan command handler", () => {
   const main = readRelative("../../osl-hub/src/main.rs");
+  const surfaceModule = readRelative("../../osl-hub/src/hub_command_surface.rs");
 
   it("registers and grants only the scan command", () => {
-    const handler = commandSurface(main);
+    const handler = [
+      commandSurface(surfaceModule),
+      literalInvokeHandlerLists(main),
+    ].join("\n");
     const permissions = readRelative("../../osl-hub/permissions/hub.toml");
     const capability = JSON.parse(readRelative("../../osl-hub/capabilities/hub.json")) as {
       permissions: string[];
@@ -48,9 +77,9 @@ describe("hosted session scan command handler", () => {
       "\nfn active_unlocked_osl_user_id(",
     );
     const helper = sourceBetween(
-      main,
+      surfaceModule,
       "fn checked_hosted_session_scan_flow",
-      "\n/// Open the hosted-session scan surface",
+      "\npub struct NativeDiscordProductSendAuthority {",
     );
     const checkIndex = helper.indexOf("let checked = build_checked()?;");
     const bindingIndex = helper.indexOf("let operator_names = bind_operators(&checked)?;");
@@ -66,7 +95,7 @@ describe("hosted session scan command handler", () => {
   });
 
   it("refuses missing attended operator binding instead of permitting an empty scan", () => {
-    const checkedHost = sourceBetween(main, "struct CheckedHost {", "\n/// Scan the exact checked native-hosted Discord context.");
+    const checkedHost = sourceBetween(surfaceModule, "struct CheckedHost {", "\npub fn checked_hosted_session_scan_flow");
     expect(checkedHost).toContain("fn attended_operator_names(&self) -> Result<Vec<String>, String>");
     expect(checkedHost).toContain("Err(\"Hosted session scan requires a reviewed attended operator-name binding\".to_owned())");
     expect(checkedHost).not.toMatch(/Ok\s*\(\s*Vec::new\s*\(\s*\)\s*\)|Ok\s*\(\s*vec!\s*!\s*\[/u);

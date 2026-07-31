@@ -157,7 +157,6 @@ pub fn delete_pending_rotation(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::rot_msg;
     use crate::identity::generate_identity;
     use crate::sealer::{MemorySealer, NoOpSealer};
     use crypto::ed25519;

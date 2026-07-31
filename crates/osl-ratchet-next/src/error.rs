@@ -81,10 +81,9 @@ impl fmt::Display for Error {
             }
             Error::Malformed(what) => write!(f, "malformed wire: {what}"),
             Error::PolicyBound(what) => write!(f, "policy bound exceeded: {what}"),
-            Error::SkipLimitExceeded { requested, limit } => write!(
-                f,
-                "skip of {requested} message keys exceeds limit {limit}"
-            ),
+            Error::SkipLimitExceeded { requested, limit } => {
+                write!(f, "skip of {requested} message keys exceeds limit {limit}")
+            }
             Error::MissingPqEpoch { epoch } => {
                 write!(f, "peer announced PQ epoch {epoch} we do not hold")
             }

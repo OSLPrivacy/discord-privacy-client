@@ -21,6 +21,10 @@ const capability = readFileSync(
 );
 const uiAdapter = readFileSync(new URL("./discord-headless-qa-adapter.ts", import.meta.url), "utf8");
 const renderer = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+const commandSurfaceModule = readFileSync(
+  new URL("../../osl-hub/src/hub_command_surface.rs", import.meta.url),
+  "utf8",
+);
 
 type Sources = {
   nativeMain: string;
@@ -30,6 +34,15 @@ type Sources = {
   capability: string;
   uiAdapter: string;
   renderer: string;
+  // The registered command list is its own source, not a slice of main.rs.
+  // A refactor moved `hub_tauri_commands!` into the library module
+  // apps/osl-hub/src/hub_command_surface.rs because main.rs is a `[[bin]]`
+  // with `required-features = ["desktop"]` that CI never compiles. main.rs
+  // keeps only the `#[tauri::command]` wrappers plus the signal-qa shell's
+  // literal handler list, so registration has to be read (and, for the
+  // stage-removal proof below, starved) here rather than in `nativeMain` —
+  // mutating `nativeMain` can no longer remove a registered command at all.
+  commandSurface: string;
 };
 
 type RuntimeReceiptGate = {
@@ -46,6 +59,25 @@ type RuntimeReceiptGate = {
   privacy: boolean;
 };
 
+function commandRegistrationSurface(surfaceModule: string, main: string): string {
+  const macroStart = surfaceModule.indexOf("macro_rules! hub_tauri_commands");
+  const macroEnd = surfaceModule.indexOf("macro_rules! hub_tauri_command_names", macroStart);
+  expect(macroStart, "hub command macro should exist").toBeGreaterThanOrEqual(0);
+  expect(macroEnd, "handler-name macro should follow command macro").toBeGreaterThan(macroStart);
+  const literal = "invoke_handler(tauri::generate_handler![";
+  const lists: string[] = [];
+  for (
+    let cursor = main.indexOf(literal);
+    cursor >= 0;
+    cursor = main.indexOf(literal, cursor + 1)
+  ) {
+    const end = main.indexOf("]);", cursor + literal.length);
+    if (end < 0) continue;
+    lists.push(main.slice(cursor + literal.length, end));
+  }
+  return [surfaceModule.slice(macroStart, macroEnd), ...lists].join("\n");
+}
+
 const baseline: Sources = {
   nativeMain,
   adapter,
@@ -54,6 +86,7 @@ const baseline: Sources = {
   capability,
   uiAdapter,
   renderer,
+  commandSurface: commandRegistrationSurface(commandSurfaceModule, nativeMain),
 };
 
 function between(source: string, start: string, end: string): string {
@@ -64,21 +97,13 @@ function between(source: string, start: string, end: string): string {
   return source.slice(from, to);
 }
 
-function commandRegistrationSurface(source: string): string {
-  const macroStart = source.indexOf("macro_rules! hub_tauri_commands");
-  const macroEnd = source.indexOf("macro_rules! hub_tauri_generate_handler", macroStart);
-  expect(macroStart, "hub command macro should exist").toBeGreaterThanOrEqual(0);
-  expect(macroEnd, "handler macro should follow command macro").toBeGreaterThan(macroStart);
-  return source.slice(macroStart, macroEnd);
-}
-
 function detect(sources: Sources): RuntimeReceiptGate {
   const command = between(
     sources.nativeMain,
     "#[cfg(feature = \"discord-qa-shell\")]\n#[tauri::command]\nasync fn request_native_discord_visible_row_qa_receipt(",
     "\n#[tauri::command]\nfn send_native_discord_overlay_carrier(",
   );
-  const handlers = commandRegistrationSurface(sources.nativeMain);
+  const handlers = sources.commandSurface;
   const probe = between(
     sources.adapter,
     "pub(crate) fn request_native_visible_row_qa_probe(",
@@ -230,7 +255,7 @@ describe("native visible-row Windows runtime receipt", () => {
   it("fails each requested source stage when its production edge is removed", () => {
     const mutations: Array<[keyof RuntimeReceiptGate, Sources]> = [
       ["registration", mutate(
-        "nativeMain",
+        "commandSurface",
         "            request_native_discord_visible_row_qa_receipt,",
         "            request_native_discord_visible_row_qa_receipt_DISABLED,",
       )],

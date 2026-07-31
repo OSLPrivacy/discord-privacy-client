@@ -2991,6 +2991,19 @@ fn install_protected_frame_hook(_window: &tauri::WebviewWindow) -> Result<(), St
     Ok(())
 }
 
+/// Non-Windows twin. The frame enforcement above is pure Win32
+/// (`GWL_STYLE` / `GWL_EXSTYLE` read-write-verify), so there is nothing to
+/// enforce here. It REFUSES rather than returning Ok: the return value feeds a
+/// path that treats success as "this window is a verified frameless protected
+/// overlay", and claiming that on a platform where no style word was ever
+/// checked would be a false green. OSL ships on Windows only; non-Windows
+/// builds exist so the binary can be built and screenshotted locally, because
+/// capture protection is compile-time and Windows-only.
+#[cfg(not(target_os = "windows"))]
+fn enforce_native_frameless_overlay(_window: &tauri::WebviewWindow) -> Result<bool, String> {
+    Err("The native Discord overlay frame is only enforced on Windows".to_owned())
+}
+
 /// Strip and prove the entire non-client frame on a protected window.
 ///
 /// Both style words are corrected here. tao rebuilds `GWL_STYLE` from its own
@@ -3011,6 +3024,7 @@ fn install_protected_frame_hook(_window: &tauri::WebviewWindow) -> Result<(), St
 /// change is what can clear the composer's per-pixel alpha, so the transparency
 /// contract below is re-asserted exactly when one was issued and never on a
 /// cadence.
+#[cfg(target_os = "windows")]
 fn enforce_native_frameless_overlay(window: &tauri::WebviewWindow) -> Result<bool, String> {
     let hwnd = window
         .hwnd()

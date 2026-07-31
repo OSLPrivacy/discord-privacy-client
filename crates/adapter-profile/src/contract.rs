@@ -245,6 +245,10 @@ pub enum ContractVerdict {
     /// At least one required check passed and at least one non-authority check
     /// failed. Callers may keep unrelated, independently proven read-only
     /// behavior, but not the failed subsystem.
+    // rename_all on the enum renames VARIANTS, not the fields inside them, so these
+    // serialized as failed_subsystem/failed_predicate while the contract fixture and
+    // every consumer expect camelCase. Rename per variant.
+    #[serde(rename_all = "camelCase")]
     Degraded {
         failed_subsystem: Subsystem,
         failed_predicate: Predicate,
@@ -252,6 +256,7 @@ pub enum ContractVerdict {
     },
     /// The protected path is refused. This is mandatory when no check passed or
     /// when consent, binding, or authority is absent.
+    #[serde(rename_all = "camelCase")]
     Refused {
         failed_subsystem: Subsystem,
         failed_predicate: Predicate,
@@ -1421,14 +1426,26 @@ mod tests {
         ])
         .unwrap();
 
-        assert!(matches!(
-            report.verdict(),
-            ContractVerdict::Refused {
-                failed_subsystem: Subsystem::Composer,
-                failed_predicate: Predicate::ComposerDiscovery,
-                cause: UnverifiedCause::NotObserved,
-            }
-        ));
+        // Refusal is the invariant, and the REASON must be the one that mandates it.
+        // These two checks fail with NotObserved and MissingWriteProof, neither of
+        // which requires refusal on its own; the report also omits the consent and
+        // binding checks entirely, and THOSE absences do mandate it. Naming Composer
+        // here would report an ordinary observation miss while silently outranking a
+        // missing-consent refusal.
+        assert!(
+            matches!(
+                report.verdict(),
+                ContractVerdict::Refused {
+                    cause: UnverifiedCause::MissingConsent
+                        | UnverifiedCause::MissingBinding
+                        | UnverifiedCause::MissingAuthority
+                        | UnverifiedCause::OperatorRefused,
+                    ..
+                }
+            ),
+            "no successful check must refuse, citing a refusal-mandating cause: {:?}",
+            report.verdict()
+        );
     }
 
     #[test]

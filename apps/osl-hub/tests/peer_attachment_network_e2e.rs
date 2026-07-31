@@ -184,6 +184,11 @@ struct RelayState {
     reject_part: Option<u32>,
     counts: Counts,
     rate_limit: BTreeMap<&'static str, u32>,
+    /// Public Ed25519 identity keys this relay has been told about, keyed by
+    /// user id. Only these identities get a sender-filter capability-floor
+    /// observation, so an unknown recipient cannot obtain one and no drain can
+    /// reach a filtered page through a floor the server never issued.
+    floor_identities: BTreeMap<String, Vec<u8>>,
 }
 
 impl RelayState {
@@ -251,6 +256,16 @@ impl RelayServer {
     fn with_state<T>(&self, act: impl FnOnce(&mut RelayState) -> T) -> T {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         act(&mut state)
+    }
+
+    /// Publish one identity's PUBLIC signing key so this relay can answer the
+    /// signed sender-filter capability-floor observation the receive boundary
+    /// makes before every drain. Nothing secret crosses this boundary: the
+    /// anchor is recomputed server-side from the user id and this public key.
+    fn register_floor_identity(&self, identity: &keystore::Identity) {
+        let user_id = identity.user_id.clone();
+        let public = identity.ed25519_public.as_bytes().to_vec();
+        self.with_state(|state| state.floor_identities.insert(user_id, public));
     }
 
     fn object_present(&self, id: &str) -> bool {
@@ -1220,6 +1235,69 @@ fn serve_legacy_request(
             state.inbox.retain(|row| row.id != id);
             raw_response(204, "application/json", Vec::new(), None, false)
         }
+        // The shipping receive boundary observes a signed sender-filter
+        // capability floor before it will drain a filtered page, exactly as
+        // `keyserver-cf/src/endpoints/sender-filter-capability-floor.ts` serves
+        // it. This fixture answers only for an identity it was told about and
+        // only for a signed, timestamped request, and it recomputes the anchor
+        // from public inputs rather than echoing anything the caller sent -- so
+        // the floor stays a real authority check rather than a rubber stamp.
+        ("GET", route) if route.starts_with("/v1/sender-filter-capability-floor/") => {
+            sender_filter_capability_floor_response(state, target)
+        }
+        _ => not_found(),
+    }
+}
+
+/// `keystore::sender_filter_rollout::sender_filter_floor_identity_anchor_sha256`,
+/// recomputed here from public inputs only, so the fixture proves the anchor the
+/// client independently derives instead of echoing one the client supplied.
+fn floor_identity_anchor_sha256(user_id: &str, ed25519_public: &[u8]) -> String {
+    fn length_prefixed(output: &mut Vec<u8>, value: &[u8]) {
+        output.extend_from_slice(&(value.len() as u32).to_be_bytes());
+        output.extend_from_slice(value);
+    }
+    let mut canonical = Vec::new();
+    length_prefixed(&mut canonical, b"OSL-SENDER-FILTER-FLOOR-IDENTITY-v1\0");
+    length_prefixed(&mut canonical, user_id.as_bytes());
+    length_prefixed(&mut canonical, ed25519_public);
+    let digest = Sha256::digest(canonical);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn sender_filter_capability_floor_response(state: &RelayState, target: &str) -> Vec<u8> {
+    let parsed = url::Url::parse(&format!("http://relay.invalid{target}"))
+        .expect("parse sender-filter floor request target");
+    let recipient = parsed
+        .path()
+        .trim_start_matches("/v1/sender-filter-capability-floor/")
+        .to_owned();
+    let query = |name: &str| {
+        parsed
+            .query_pairs()
+            .find_map(|(key, value)| (key == name).then(|| value.into_owned()))
+            .unwrap_or_default()
+    };
+    let timestamp_ms = query("ts").parse::<i64>().unwrap_or_default();
+    let request_id = query("request_id");
+    let anchor = state
+        .floor_identities
+        .get(&recipient)
+        .map(|public| floor_identity_anchor_sha256(&recipient, public));
+    match anchor {
+        Some(anchor) if timestamp_ms > 0 && !query("sig").is_empty() => json_response(
+            200,
+            json!({
+                "format": "osl.keyserver.sender-filter-capability-floor.v3",
+                "recipient_user_id": recipient,
+                "identity_anchor_sha256": anchor,
+                "capability_version": 1,
+                "monotonic_version": 1,
+                "first_observed_at_ms": timestamp_ms,
+                "request_timestamp_ms": timestamp_ms,
+                "request_id": request_id,
+            }),
+        ),
         _ => not_found(),
     }
 }
@@ -1304,12 +1382,16 @@ struct Peer {
 }
 
 impl Peer {
-    fn new(storage: &TestStorage, name: &str, relay_url: &str) -> Self {
-        let dir = storage.account(name, relay_url);
+    fn new(storage: &TestStorage, name: &str, relay: &RelayServer) -> Self {
+        let relay_url = relay.base_url();
+        let dir = storage.account(name, &relay_url);
         let local_root = storage.local_root(name);
         let identity = keystore::generate_identity(format!("osl-{name}-attachment-net"));
         let identity_id = identity.user_id.clone();
-        let core = core(identity, relay_url);
+        // Tell the fixture key server this identity's public anchor so it can
+        // answer the signed capability-floor observation a drain makes.
+        relay.register_floor_identity(&identity);
+        let core = core(identity, &relay_url);
         TestStorage::activate(&dir);
         let exported =
             osl_privacy_hub::security::export_friend_code(&core).expect("export friend code");
@@ -1372,9 +1454,9 @@ impl Peer {
 }
 
 /// Both sides, mutually verified, sharing one loopback backend.
-fn verified_pair(storage: &TestStorage, relay_url: &str) -> (Peer, Peer) {
-    let alice = Peer::new(storage, "alice", relay_url);
-    let bob = Peer::new(storage, "bob", relay_url);
+fn verified_pair(storage: &TestStorage, relay: &RelayServer) -> (Peer, Peer) {
+    let alice = Peer::new(storage, "alice", relay);
+    let bob = Peer::new(storage, "bob", relay);
     alice.open_context_to(&bob.friend_code, &bob.safety_number);
     bob.open_context_to(&alice.friend_code, &alice.safety_number);
     (alice, bob)
@@ -1732,7 +1814,7 @@ fn direct_upload_round_trip_recovers_byte_identical_plaintext_and_leaves_no_plai
     let relay = RelayServer::start();
     let storage = TestStorage::new("direct");
     let relay_url = relay.base_url();
-    let (alice, bob) = verified_pair(&storage, &relay_url);
+    let (alice, bob) = verified_pair(&storage, &relay);
     let client = CipherStoreClient::new(&relay_url).expect("build cipher-store client");
 
     let source = write_plaintext_source(&storage.root.join("source.txt"), 200 * 1024);
@@ -2033,7 +2115,7 @@ fn tampered_expired_deleted_and_capability_rejected_fetches_are_each_refused_dis
     let relay = RelayServer::start();
     let storage = TestStorage::new("refusals");
     let relay_url = relay.base_url();
-    let (alice, bob) = verified_pair(&storage, &relay_url);
+    let (alice, bob) = verified_pair(&storage, &relay);
     let client = CipherStoreClient::new(&relay_url).expect("build cipher-store client");
 
     let source = write_plaintext_source(&storage.root.join("source.txt"), 64 * 1024);
@@ -2217,7 +2299,7 @@ fn view_once_open_is_replay_safe_and_a_failed_burn_is_recovered_by_the_deletion_
     let relay = RelayServer::start();
     let storage = TestStorage::new("viewonce");
     let relay_url = relay.base_url();
-    let (alice, bob) = verified_pair(&storage, &relay_url);
+    let (alice, bob) = verified_pair(&storage, &relay);
     let client = CipherStoreClient::new(&relay_url).expect("build cipher-store client");
 
     let source = write_plaintext_source(&storage.root.join("source.png"), 96 * 1024);
@@ -2631,7 +2713,7 @@ fn full_crypto_multipart_round_trip_at_the_fifty_mebibyte_bucket() {
     let relay = RelayServer::start();
     let storage = TestStorage::new("bigmultipart");
     let relay_url = relay.base_url();
-    let (alice, bob) = verified_pair(&storage, &relay_url);
+    let (alice, bob) = verified_pair(&storage, &relay);
     let client = CipherStoreClient::new(&relay_url).expect("build cipher-store client");
 
     // Just past the 25 MiB bucket, so padding selects the 50 MiB bucket.

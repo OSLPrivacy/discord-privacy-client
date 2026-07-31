@@ -109,6 +109,20 @@ pub fn reload_encrypted_state_after_unlock(
                      quarantined (rename, not delete), recreating under \
                      current key"
                 );
+                // A successful quarantine must be SURFACED, not just logged.
+                // Quarantining means a sealed file would not decrypt under the
+                // installed key, so the loader is about to fall back to
+                // Default. For peer_map/whitelist/burned_scopes/membership
+                // that Default IS an empty security policy: unlocking would
+                // silently proceed with no peers, no whitelist and an empty
+                // burn kill-list. The gate treats a reload error as fatal and
+                // keeps the session locked, which is the correct outcome —
+                // previously only a failed RENAME was reported, so the
+                // ordinary success path lost the file quietly.
+                report.errors.push(format!(
+                    "{name}: sealed by a different key; quarantined to {}",
+                    q.display()
+                ));
             }
             Ok(None) => {}
             Err(e) => report.errors.push(format!("{name} quarantine: {e}")),
@@ -139,6 +153,16 @@ pub fn reload_encrypted_state_after_unlock(
     // peer_map.json — explicit error variants distinguish missing
     // (fresh install, normal) from decrypt/parse failure.
     let pm_path = config_dir.join("peer_map.json");
+    // 9-PEER-MAP-ENC: sniff the envelope BEFORE the loader runs.
+    // `load_peer_map_from_path` now performs the plaintext → OSL-ENC1
+    // migration itself whenever a storage key is in slot, so the
+    // post-load sniff further down can no longer observe that a
+    // migration happened — by then the magic is already there. Record
+    // the pre-load state so the report still flags the one-shot
+    // re-encryption regardless of which layer actually did the write.
+    let peer_map_was_plaintext = std::fs::read(&pm_path)
+        .map(|blob| !crate::main_password::has_enc_magic(&blob))
+        .unwrap_or(false);
     match load_peer_map_from_path(&pm_path) {
         Ok(map) => {
             report.peer_map_entries = map.len();
@@ -289,6 +313,11 @@ pub fn reload_encrypted_state_after_unlock(
                     }
                     Err(e) => report.errors.push(format!("peer_map re-encrypt: {e}")),
                 }
+            } else if peer_map_was_plaintext {
+                // The loader's own migration already sealed the file
+                // during this reload. Still a one-shot re-encryption of
+                // a plaintext peer_map, so report it as one.
+                report.peer_map_reencrypted = true;
             }
         }
     }

@@ -486,6 +486,7 @@ impl AppState {
         self.try_install_identity_at(identity, current_unix_seconds())
     }
 
+    #[cfg(test)]
     fn install_identity_at(&self, identity: Identity, now_unix_seconds: u64) {
         self.try_install_identity_at(identity, now_unix_seconds)
             .expect("identity/prekey mutex poisoned");
@@ -730,10 +731,10 @@ mod tests {
         ConfigDirGuard
     }
 
-    fn outcome_for<'a>(
-        steps: &'a [(keystore::WipeStep, keystore::StepOutcome)],
+    fn outcome_for(
+        steps: &[(keystore::WipeStep, keystore::StepOutcome)],
         step: keystore::WipeStep,
-    ) -> &'a keystore::StepOutcome {
+    ) -> &keystore::StepOutcome {
         steps
             .iter()
             .find(|(candidate, _)| *candidate == step)

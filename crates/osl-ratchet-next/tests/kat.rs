@@ -45,14 +45,12 @@ fn replay() -> ([u8; 16], Vec<String>, Vec<u8>, Vec<u8>) {
     let mut rng = seeded_rng(KAT_SEED);
     let (bob_prekeys, bob_bundle) = fresh_bundle(&mut rng);
     let (alice_ik, _) = osl_ratchet_next::primitives::x25519_keypair(&mut rng);
-    let mut alice =
-        Session::initiate(&alice_ik, &bob_bundle, params, &mut rng).expect("initiate");
+    let mut alice = Session::initiate(&alice_ik, &bob_bundle, params, &mut rng).expect("initiate");
 
     let mut wires = Vec::new();
     let w = alice.encrypt(0, b"one", &mut rng).expect("encrypt");
     wires.push(w.clone());
-    let (mut bob, opened) =
-        Session::accept(&bob_prekeys, &w, params, &mut rng).expect("accept");
+    let (mut bob, opened) = Session::accept(&bob_prekeys, &w, params, &mut rng).expect("accept");
     assert_eq!(opened.plaintext, b"one");
 
     // Alternate directions so the vectors cover both a same-chain
@@ -146,10 +144,12 @@ fn a_frozen_wire_blob_still_decrypts() {
     let mut rng = seeded_rng(KAT_SEED);
     let (bob_prekeys, bob_bundle) = fresh_bundle(&mut rng);
     let (alice_ik, _) = osl_ratchet_next::primitives::x25519_keypair(&mut rng);
-    let mut alice =
-        Session::initiate(&alice_ik, &bob_bundle, params, &mut rng).expect("initiate");
+    let mut alice = Session::initiate(&alice_ik, &bob_bundle, params, &mut rng).expect("initiate");
     let w0 = alice.encrypt(0, b"one", &mut rng).expect("encrypt");
-    assert_eq!(KAT_WIRE_SHA.first().copied(), Some(sha(w0.as_bytes()).as_str()));
+    assert_eq!(
+        KAT_WIRE_SHA.first().copied(),
+        Some(sha(w0.as_bytes()).as_str())
+    );
 
     let (_bob, opened) = Session::accept(&bob_prekeys, &w0, params, &mut rng).expect("accept");
     assert_eq!(opened.plaintext, b"one");

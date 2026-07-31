@@ -329,6 +329,12 @@ fn write_lp(buf: &mut Vec<u8>, bytes: &[u8]) {
 ///
 /// where `LP(x) = u32_be(x.len()) || x`. Deterministic for fixed
 /// inputs.
+// Eight separate arguments on purpose. This builds a CANONICAL associated-data
+// encoding, and every argument is a distinct domain-separated input. Collapsing
+// them into a struct would add a way to construct the AD with a field unset or
+// in the wrong order, which is exactly the failure this function exists to make
+// impossible.
+#[allow(clippy::too_many_arguments)]
 pub fn canonical_ad_sender_keys(
     sender_ik_x25519_pub: &[u8; 32],
     sender_ik_mlkem_pub: &[u8],
@@ -1087,9 +1093,9 @@ impl From<&SenderKeyState> for SenderKeyStateOnDisk {
                 .receivers
                 .iter()
                 .flat_map(|(peer_id, chains)| {
-                    chains
-                        .iter()
-                        .map(move |chain| (STANDARD.encode(peer_id), ReceiverChainOnDisk::from(chain)))
+                    chains.iter().map(move |chain| {
+                        (STANDARD.encode(peer_id), ReceiverChainOnDisk::from(chain))
+                    })
                 })
                 .collect(),
         }
@@ -1299,6 +1305,22 @@ impl fmt::Debug for SkippedKeyOnDisk {
     }
 }
 
+fn decode_32(s: &str, field: &'static str) -> std::result::Result<[u8; 32], SenderKeyPersistError> {
+    let bytes = STANDARD
+        .decode(s)
+        .map_err(|source| SenderKeyPersistError::Base64 { field, source })?;
+    if bytes.len() != 32 {
+        return Err(SenderKeyPersistError::BadLength {
+            field,
+            got: bytes.len(),
+            want: 32,
+        });
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes);
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1412,20 +1434,4 @@ mod tests {
         assert!(!debug.contains(&disk.sender.as_ref().unwrap().ck_n_b64));
         assert!(!debug.contains(&disk.sender.as_ref().unwrap().physical_device_id_b64));
     }
-}
-
-fn decode_32(s: &str, field: &'static str) -> std::result::Result<[u8; 32], SenderKeyPersistError> {
-    let bytes = STANDARD
-        .decode(s)
-        .map_err(|source| SenderKeyPersistError::Base64 { field, source })?;
-    if bytes.len() != 32 {
-        return Err(SenderKeyPersistError::BadLength {
-            field,
-            got: bytes.len(),
-            want: 32,
-        });
-    }
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&bytes);
-    Ok(out)
 }

@@ -5,12 +5,60 @@ function readRelative(relativePath: string): string {
   return readFileSync(new URL(relativePath, import.meta.url), "utf8");
 }
 
-function handlerCommands(source: string): Set<string> {
+// The authoritative `hub_tauri_commands!` list was moved out of
+// apps/osl-hub/src/main.rs into the library module
+// apps/osl-hub/src/hub_command_surface.rs: main.rs is a `[[bin]]` with
+// `required-features = ["desktop"]` that CI never compiles, so nothing that
+// lived there was ever proven. main.rs kept only the `#[tauri::command]`
+// wrappers, the `hub_tauri_commands!(hub_tauri_generate_handler)` invocation,
+// and one literal handler list for the signal-qa shell binary. Registration
+// proofs therefore have to read both files — reading main.rs alone now yields
+// the expansion macro's definition text, which contains no command names at
+// all and would silently make every registration assertion vacuous.
+function tauriCommandMacroBody(source: string): string {
   const start = source.indexOf("macro_rules! hub_tauri_commands");
   if (start < 0) throw new Error("hub_tauri_commands macro missing");
-  const end = source.indexOf("macro_rules! hub_tauri_generate_handler", start);
-  if (end < 0) throw new Error("hub_tauri_commands terminator missing");
-  return new Set(source.slice(start, end)
+  // Two spellings of the terminator exist because the surface is split:
+  // main.rs follows the list with `hub_tauri_generate_handler`, the library
+  // module with its test-only `hub_tauri_command_names` counterpart.
+  const end = [
+    "macro_rules! hub_tauri_generate_handler",
+    "macro_rules! hub_tauri_command_names",
+  ]
+    .map((terminator) => source.indexOf(terminator, start + 1))
+    .filter((index) => index >= 0)
+    .sort((a, b) => a - b)[0];
+  if (end === undefined) throw new Error("hub_tauri_commands terminator missing");
+  return source.slice(start, end);
+}
+
+// Every `invoke_handler(tauri::generate_handler![...])` list written out
+// literally in a source file — main.rs still registers one such list directly
+// for the signal-qa shell build.
+function literalInvokeHandlerLists(source: string): string {
+  const marker = "invoke_handler(tauri::generate_handler![";
+  const lists: string[] = [];
+  for (
+    let cursor = source.indexOf(marker);
+    cursor >= 0;
+    cursor = source.indexOf(marker, cursor + 1)
+  ) {
+    const end = source.indexOf("]);", cursor + marker.length);
+    if (end < 0) continue;
+    lists.push(source.slice(cursor + marker.length, end));
+  }
+  return lists.join("\n");
+}
+
+function hubCommandSurface(): string {
+  return [
+    tauriCommandMacroBody(readRelative("../../osl-hub/src/hub_command_surface.rs")),
+    literalInvokeHandlerLists(readRelative("../../osl-hub/src/main.rs")),
+  ].join("\n");
+}
+
+function handlerCommands(source: string): Set<string> {
+  return new Set(source
     .split("\n")
     .map((line) => line.trim().replace(/,$/u, ""))
     .filter((name) => /^[a-z_]+$/u.test(name)));
@@ -52,8 +100,7 @@ function registeredAndGranted(
 
 describe("Scrub index registration", () => {
   it("src/scrub-index-registration.test.ts", () => {
-    const main = readRelative("../../osl-hub/src/main.rs");
-    const handlers = handlerCommands(main);
+    const handlers = handlerCommands(hubCommandSurface());
     const permissions = permissionCommands(readRelative("../../osl-hub/permissions/hub.toml"));
     const capability = JSON.parse(readRelative("../../osl-hub/capabilities/hub.json")) as {
       permissions: string[];

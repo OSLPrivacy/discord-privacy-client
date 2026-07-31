@@ -38,6 +38,9 @@ use std::path::{Path, PathBuf};
 use store::{MessageStore, StoredMessage};
 use tempfile::TempDir;
 
+type LegacyBurnedRow = (Vec<u8>, Vec<u8>, Option<Vec<u8>>, i64);
+type MigratedAttachmentRow = (Vec<u8>, Vec<u8>, Option<Vec<u8>>, Option<Vec<u8>>, i64);
+
 #[path = "fixtures/adff4e45_schema_reader.rs"]
 mod adff4e45_schema_reader;
 
@@ -1083,7 +1086,7 @@ fn assert_legacy_privacy_migration(stamped: bool) {
 
     assert_eq!(schema_version(&db_path), 8);
     let conn = rusqlite::Connection::open(&db_path).unwrap();
-    let burned_rows: Vec<(Vec<u8>, Vec<u8>, Option<Vec<u8>>, i64)> = {
+    let burned_rows: Vec<LegacyBurnedRow> = {
         let mut stmt = conn
             .prepare("SELECT ciphertext, nonce, wrapped_key, burned FROM messages WHERE burned = 1")
             .unwrap();
@@ -1262,13 +1265,7 @@ fn v1_database_migrates_all_the_way_to_v8() {
         )
         .unwrap();
     assert_eq!(u32::from_le_bytes(version.try_into().unwrap()), 8);
-    let (ciphertext, nonce, wrapped_key_nonce, wrapped_key, content_version): (
-        Vec<u8>,
-        Vec<u8>,
-        Option<Vec<u8>>,
-        Option<Vec<u8>>,
-        i64,
-    ) = conn
+    let (ciphertext, nonce, wrapped_key_nonce, wrapped_key, content_version): MigratedAttachmentRow = conn
         .query_row(
             "SELECT ciphertext, nonce, wrapped_key_nonce, wrapped_key, content_version \
                FROM messages ORDER BY seq ASC LIMIT 1",
@@ -1889,17 +1886,47 @@ fn all_equality_lookups_still_work_after_blinding() {
 #[test]
 fn attachment_lookup_requires_exact_parent_and_filename_after_restart() {
     let tmp = TempDir::new().unwrap();
-    let first = sample("lookup-parent-a", "lookup-channel-a", "sender-a", "alice", "one", 1);
-    let second = sample("lookup-parent-b", "lookup-channel-b", "sender-b", "bob", "two", 2);
+    let first = sample(
+        "lookup-parent-a",
+        "lookup-channel-a",
+        "sender-a",
+        "alice",
+        "one",
+        1,
+    );
+    let second = sample(
+        "lookup-parent-b",
+        "lookup-channel-b",
+        "sender-b",
+        "bob",
+        "two",
+        2,
+    );
     {
         let store = open_a(tmp.path());
         store.put(&first).unwrap();
         store.put(&second).unwrap();
         store
-            .put_attachment("lookup-parent-a", "same.png", "image/png", b"A-BYTES", None, None, None)
+            .put_attachment(
+                "lookup-parent-a",
+                "same.png",
+                "image/png",
+                b"A-BYTES",
+                None,
+                None,
+                None,
+            )
             .unwrap();
         store
-            .put_attachment("lookup-parent-b", "same.png", "image/png", b"B-BYTES", None, None, None)
+            .put_attachment(
+                "lookup-parent-b",
+                "same.png",
+                "image/png",
+                b"B-BYTES",
+                None,
+                None,
+                None,
+            )
             .unwrap();
         assert_eq!(
             store.get_attachment("lookup-parent-a", "same.png").unwrap(),
@@ -1923,12 +1950,16 @@ fn attachment_lookup_requires_exact_parent_and_filename_after_restart() {
         Some(("image/png".to_string(), b"B-BYTES".to_vec()))
     );
     assert_eq!(
-        store.get_attachment("lookup-parent-a", "other.png").unwrap(),
+        store
+            .get_attachment("lookup-parent-a", "other.png")
+            .unwrap(),
         None,
         "wrong filename must not return the parent’s other attachment"
     );
     assert_eq!(
-        store.get_attachment("lookup-parent-missing", "same.png").unwrap(),
+        store
+            .get_attachment("lookup-parent-missing", "same.png")
+            .unwrap(),
         None,
         "unknown parent must not return an attachment from another message"
     );

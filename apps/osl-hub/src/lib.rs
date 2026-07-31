@@ -98,6 +98,20 @@ pub mod password_lifecycle;
 // and never run.
 #[cfg(all(feature = "core", feature = "discord-qa-shell"))]
 pub mod qa_selftest_request;
+// Provider-neutral off-screen surface capture. Same reason as
+// `qa_selftest_request` above: it was a private module of `main.rs`, so its
+// bounded-geometry and exact-session-binding tests were compiled by nothing and
+// run by nothing. The module has no Tauri surface at all, so the library is
+// where it belongs; `main.rs` keeps only the command that calls it.
+#[cfg(feature = "core")]
+pub mod native_surface_capture;
+// The pure half of the desktop binary's Tauri command surface: send authority,
+// checked-host ordering, reviewed-run identity binding, the restart-proof drain
+// order, and the registered-command/ACL proofs. Same reason as the two modules
+// above -- nothing inside `main.rs` is ever compiled or run by `--features
+// core`, which is the only configuration CI and the accept commands can build.
+#[cfg(feature = "core")]
+pub mod hub_command_surface;
 #[cfg(feature = "core")]
 pub mod scrub_index;
 pub mod scrub_imap;

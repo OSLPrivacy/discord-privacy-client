@@ -764,6 +764,12 @@ honest tri-state outcome is a refusal, not a degraded pass.
   browser-profile access, or calibrated risk percentages without supporting evidence.
   Fail condition: a marketing-only page, mock-only JSON, unlocated repo, unbound Worker route,
   permissive credential input, or schema drift counts as unimplemented, not partial proof.
+  Repo location note: the website checkout lives outside this repository, so it is identified by
+  repo name plus the `OSL_WEBSITE_REPO` environment variable that points at the local checkout —
+  never by an absolute developer path. This file ships publicly; a hardcoded `/home/<user>/...`
+  path would leak the maintainer's username and machine layout, and `scripts/audit_public_release.py`
+  fails the release if one reappears. `"located": true` still means the repo was resolved
+  unambiguously (single named repo, one env-var locator), not that the path is universal.
   Current scaffold confirmation:
 
   ```json
@@ -771,7 +777,8 @@ honest tri-state outcome is a refusal, not a degraded pass.
     "schemaVersion": 1,
     "test": "test/integration/username-only-worker-scaffold.test.ts",
     "websiteRepo": {
-      "path": "/home/liamw/projects/oslprivacy-web",
+      "repo": "oslprivacy-web",
+      "pathEnv": "OSL_WEBSITE_REPO",
       "role": "static_pages_checkout",
       "located": true
     },

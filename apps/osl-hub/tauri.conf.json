@@ -11,8 +11,8 @@
     "windows": [
       {
         "label": "main",
-        "title": "OSL WhatsApp Desktop QA",
-        "url": "whatsapp-qa.html",
+        "title": "OSL Privacy",
+        "url": "index.html",
         "width": 1440,
         "height": 900,
         "minWidth": 960,
@@ -21,8 +21,7 @@
         "decorations": false,
         "shadow": false,
         "resizable": true,
-        "fullscreen": false,
-        "focus": false
+        "fullscreen": false
       }
     ],
     "security": {
@@ -31,7 +30,9 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "createUpdaterArtifacts": true,
     "windows": {
       "webviewInstallMode": {

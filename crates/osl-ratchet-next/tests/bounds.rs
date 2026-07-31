@@ -160,7 +160,9 @@ fn evicted_keys_fail_closed_and_do_not_corrupt_the_session() {
     assert_eq!(refused, 23, "the evicted remainder must fail closed");
 
     // And the session still works perfectly afterwards.
-    let w = alice.encrypt(0, b"after eviction", &mut rng).expect("encrypt");
+    let w = alice
+        .encrypt(0, b"after eviction", &mut rng)
+        .expect("encrypt");
     assert_eq!(
         bob.decrypt(&w, &mut rng).expect("decrypt").plaintext,
         b"after eviction"

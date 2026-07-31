@@ -402,7 +402,10 @@ fn choose_split_that_adds_a_row(
         if word_count < 2 {
             continue;
         }
-        if best.as_ref().is_some_and(|(_, best_words)| word_count <= *best_words) {
+        if best
+            .as_ref()
+            .is_some_and(|(_, best_words)| word_count <= *best_words)
+        {
             continue;
         }
         let (left, right) = split_group(words, *group);
@@ -475,10 +478,7 @@ fn balance_groups(widths: &[usize], groups: &mut [(usize, usize)], capacity: usi
         let mut moved = false;
         for index in 0..groups.len() - 1 {
             let (left, right) = (groups[index], groups[index + 1]);
-            let (left_width, right_width) = (
-                group_width(widths, left),
-                group_width(widths, right),
-            );
+            let (left_width, right_width) = (group_width(widths, left), group_width(widths, right));
             let spread = left_width.abs_diff(right_width);
 
             // Slide the boundary word down into the right-hand row.

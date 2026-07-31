@@ -197,6 +197,11 @@ impl LogicalMessageLifecycle {
     /// The result is a snapshot in [`ReceiptStatus::Received`] that
     /// [`Self::validate_snapshot`] accepts, so it can be sealed to disk and
     /// re-loaded like any other.
+    #[allow(clippy::too_many_arguments)]
+    // Each argument is an independent, externally-supplied lifecycle fact
+    // (identity, scope, the two timestamps, the TTL, the parts, the delivery
+    // evidence and the limits). Bundling them would let a caller omit or
+    // default one silently.
     pub fn receive(
         message_id: [u8; 32],
         scope_digest: [u8; 32],
@@ -207,7 +212,8 @@ impl LogicalMessageLifecycle {
         delivery: TransitionEvidence,
         limits: LifecycleLimits,
     ) -> Result<Self, LifecycleError> {
-        let expected_parts = u16::try_from(parts.len()).map_err(|_| LifecycleError::BoundsExceeded)?;
+        let expected_parts =
+            u16::try_from(parts.len()).map_err(|_| LifecycleError::BoundsExceeded)?;
         let now = delivery.observed_at.max(created_at);
         let mut state = Self::prepare_with_open_ttl(
             message_id,
@@ -257,9 +263,9 @@ impl LogicalMessageLifecycle {
     /// immortal.
     pub fn effective_expires_at(&self) -> u64 {
         match (self.open_ttl_seconds(), self.first_authenticated_open_at()) {
-            (Some(ttl), Some(opened_at)) => {
-                self.expires_at.min(opened_at.saturating_add(u64::from(ttl)))
-            }
+            (Some(ttl), Some(opened_at)) => self
+                .expires_at
+                .min(opened_at.saturating_add(u64::from(ttl))),
             _ => self.expires_at,
         }
     }
@@ -903,7 +909,9 @@ mod tests {
         state.prepare_manifest(21).unwrap();
         state.record_relay_accepted(evidence(6, 21), 21).unwrap();
         state.record_received(evidence(7, 22), 22).unwrap();
-        state.record_opened(evidence(8, opened_at), opened_at).unwrap();
+        state
+            .record_opened(evidence(8, opened_at), opened_at)
+            .unwrap();
         state
     }
 
@@ -957,12 +965,24 @@ mod tests {
     #[test]
     fn the_manifest_binds_the_open_clock() {
         let mut absolute_only = LogicalMessageLifecycle::prepare_with_open_ttl(
-            [1; 32], [2; 32], 1, 10, 100_000, 0, limits(),
+            [1; 32],
+            [2; 32],
+            1,
+            10,
+            100_000,
+            0,
+            limits(),
         )
         .unwrap();
         absolute_only.accept_part(part(0, 3), 20).unwrap();
         let mut relative = LogicalMessageLifecycle::prepare_with_open_ttl(
-            [1; 32], [2; 32], 1, 10, 100_000, 50, limits(),
+            [1; 32],
+            [2; 32],
+            1,
+            10,
+            100_000,
+            50,
+            limits(),
         )
         .unwrap();
         relative.accept_part(part(0, 3), 20).unwrap();

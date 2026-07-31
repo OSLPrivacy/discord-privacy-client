@@ -1,0 +1,186 @@
+########## PKG=osl-ratchet-next ##########
+        PASS [   0.008s] ( 51/108) osl-ratchet-next skipped::tests::check_skip_refuses_absurd_counters
+        PASS [   0.008s] ( 52/108) osl-ratchet-next skipped::tests::export_import_roundtrips
+        PASS [   0.016s] ( 53/108) osl-ratchet-next skipped::tests::global_cap_is_never_exceeded
+        PASS [   0.008s] ( 54/108) osl-ratchet-next skipped::tests::import_rejects_over_cap_state
+        PASS [   0.008s] ( 55/108) osl-ratchet-next skipped::tests::insert_and_take_roundtrip
+        PASS [   0.008s] ( 56/108) osl-ratchet-next skipped::tests::invalid_params_are_rejected
+        PASS [   0.009s] ( 57/108) osl-ratchet-next skipped::tests::per_chain_cap_is_never_exceeded
+        PASS [   0.069s] ( 58/108) osl-ratchet-next::bounds a_message_larger_than_the_wire_budget_is_refused_on_send
+        PASS [   0.257s] ( 59/108) osl-ratchet-next::bounds a_single_absurd_gap_is_refused_without_deriving_anything
+        PASS [   0.088s] ( 60/108) osl-ratchet-next::bounds evicted_keys_fail_closed_and_do_not_corrupt_the_session
+        PASS [   0.044s] ( 61/108) osl-ratchet-next::bounds oversized_blobs_are_refused_before_any_crypto
+        PASS [   9.638s] ( 62/108) osl-ratchet-next::bounds skipped_storage_stays_bounded_over_a_long_lossy_run
+        PASS [   0.373s] ( 63/108) osl-ratchet-next::bounds trial_decryption_candidate_set_stays_small
+        PASS [   0.045s] ( 64/108) osl-ratchet-next::carrier_budget a_steady_state_message_fits_in_two_chunks
+        PASS [   0.057s] ( 65/108) osl-ratchet-next::carrier_budget carrier_constants_match_their_documented_derivation
+        PASS [   1.738s] ( 66/108) osl-ratchet-next::carrier_budget larger_fragments_are_cheaper_because_round_trips_dominate
+        PASS [   1.065s] ( 67/108) osl-ratchet-next::carrier_budget one_pq_epoch_costs_this_many_discord_messages
+        PASS [   0.032s] ( 68/108) osl-ratchet-next::carrier_budget the_bootstrap_message_costs_this_much
+        PASS [   5.346s] ( 69/108) osl-ratchet-next::healing_latency pq_healing_latency_at_default_settings
+        PASS [   4.938s] ( 70/108) osl-ratchet-next::healing_latency pq_healing_latency_degrades_gracefully_under_loss
+        PASS [   2.427s] ( 71/108) osl-ratchet-next::healing_latency pq_healing_latency_is_tunable
+        PASS [   0.057s] ( 72/108) osl-ratchet-next::interleaving an_entire_chain_lost_forever_does_not_wedge_the_ratchet
+        PASS [   0.235s] ( 73/108) osl-ratchet-next::interleaving bootstrap_phase_tolerates_reordering_and_loss
+        PASS [   0.962s] ( 74/108) osl-ratchet-next::interleaving duplicates_are_rejected_and_leave_the_session_usable
+        PASS [   2.857s] ( 75/108) osl-ratchet-next::interleaving long_unidirectional_run
+        PASS [   5.365s] ( 76/108) osl-ratchet-next::interleaving permanent_loss_never_stalls_the_session
+        PASS [   0.040s] ( 77/108) osl-ratchet-next::interleaving previous_chain_inflight_messages_survive_later_dh_ratchet_step
+        PASS [   5.127s] ( 78/108) osl-ratchet-next::interleaving random_interleavings_deliver_correctly
+        PASS [   0.201s] ( 79/108) osl-ratchet-next::interleaving reverse_order_delivery_within_a_chain
+        PASS [   0.498s] ( 80/108) osl-ratchet-next::interleaving state_export_import_survives_an_interleaved_run
+        PASS [   0.026s] ( 81/108) osl-ratchet-next::kat a_frozen_wire_blob_still_decrypts
+        PASS [   0.034s] ( 82/108) osl-ratchet-next::kat known_answer_vectors
+        PASS [   0.034s] ( 83/108) osl-ratchet-next::kat message_sizes_match_the_documented_budget
+        PASS [   0.073s] ( 84/108) osl-ratchet-next::kat protocol_is_fully_deterministic_given_its_randomness
+        PASS [   0.072s] ( 85/108) osl-ratchet-next::negative a_forged_bootstrap_cannot_establish_a_session
+        PASS [   0.029s] ( 86/108) osl-ratchet-next::negative a_header_from_one_message_on_the_body_of_another_is_rejected
+        PASS [   0.047s] ( 87/108) osl-ratchet-next::negative a_message_from_a_different_session_is_rejected
+        PASS [   0.026s] ( 88/108) osl-ratchet-next::negative a_non_bootstrap_message_cannot_start_a_session
+        PASS [   0.053s] ( 89/108) osl-ratchet-next::negative a_restored_session_cannot_reuse_a_consumed_message_key
+        PASS [   0.077s] ( 90/108) osl-ratchet-next::negative corrupt_session_state_is_refused_not_mis_parsed
+        PASS [   0.136s] ( 91/108) osl-ratchet-next::negative every_single_bit_flip_is_rejected_and_the_session_survives
+        PASS [   0.027s] ( 92/108) osl-ratchet-next::negative malformed_framing_is_rejected_by_category
+        PASS [   0.043s] ( 93/108) osl-ratchet-next::negative random_garbage_never_panics_and_never_opens
+        PASS [   0.027s] ( 94/108) osl-ratchet-next::negative sender_rollback_replays_send_state_but_receiver_rejects_and_recovers
+        PASS [   0.028s] ( 95/108) osl-ratchet-next::negative skipped_message_replay_stays_rejected_after_restart
+        PASS [   0.040s] ( 96/108) osl-ratchet-next::negative truncation_at_every_length_is_rejected
+        PASS [   0.027s] ( 97/108) osl-ratchet-next::negotiation a_bound_handshake_succeeds_when_both_sides_agree
+        PASS [   0.024s] ( 98/108) osl-ratchet-next::negotiation a_floor_disagreement_fails_closed
+        PASS [   0.029s] ( 99/108) osl-ratchet-next::negotiation a_rewritten_initiator_identity_fails_closed
+        PASS [   0.037s] (100/108) osl-ratchet-next::negotiation bound_and_unbound_sessions_are_not_interchangeable
+        PASS [   0.043s] (101/108) osl-ratchet-next::negotiation peeking_the_initiator_identity_is_total
+        PASS [   0.028s] (102/108) osl-ratchet-next::negotiation substituting_the_responder_kem_key_fails_closed
+        PASS [   2.545s] (103/108) osl-ratchet-next::pq_healing pq_epochs_advance_and_both_sides_agree
+        PASS [   3.782s] (104/108) osl-ratchet-next::pq_healing pq_healing_survives_heavy_permanent_loss
+        PASS [  18.131s] (105/108) osl-ratchet-next::pq_healing pq_healing_survives_periodic_loss
+        PASS [   2.368s] (106/108) osl-ratchet-next::pq_healing pq_healing_survives_reordering
+        PASS [   4.356s] (107/108) osl-ratchet-next::pq_healing pq_wire_cost_is_amortised
+        PASS [   1.921s] (108/108) osl-ratchet-next::pq_healing unidirectional_traffic_cannot_complete_a_pq_epoch
+────────────
+     Summary [  76.376s] 108 tests run: 108 passed, 0 skipped
+########## EXIT=0 ##########
+########## PKG=crypto ##########
+        PASS [   0.023s] (144/201) crypto::ratchet_test replay_rejection_within_chain
+        PASS [   0.023s] (145/201) crypto::ratchet_test responder_cannot_send_before_receive
+        PASS [   0.033s] (146/201) crypto::ratchet_test round_trip_multiple_messages_one_chain
+        PASS [   0.023s] (147/201) crypto::ratchet_test round_trip_single_message
+        PASS [   0.022s] (148/201) crypto::ratchet_test sending_counter_advances_per_message
+        PASS [   0.026s] (149/201) crypto::ratchet_test skipped_header_keys_decode_cross_chain_out_of_order
+        PASS [   0.022s] (150/201) crypto::ratchet_test tampered_ciphertext_rejection
+        PASS [   0.021s] (151/201) crypto::ratchet_test wrong_session_version_rejected
+        PASS [   0.010s] (152/201) crypto::sender_keys_persist_test mirror_handles_empty_receivers_map
+        PASS [   0.006s] (153/201) crypto::sender_keys_persist_test mirror_roundtrip_preserves_chain_started_at
+        PASS [   0.005s] (154/201) crypto::sender_keys_persist_test mirror_roundtrip_preserves_last_known_members
+        PASS [   0.008s] (155/201) crypto::sender_keys_persist_test mirror_roundtrip_preserves_send_decrypt_pairing
+        PASS [   0.008s] (156/201) crypto::sender_keys_persist_test mirror_roundtrip_preserves_skipped_keys
+        PASS [   0.006s] (157/201) crypto::sender_keys_persist_test mirror_serde_json_roundtrip
+        PASS [   0.007s] (158/201) crypto::sender_keys_persist_test mirror_version_byte_present_and_correct
+        PASS [   0.978s] (159/201) crypto::sender_keys_test cache_evicts_oldest_at_cap
+        PASS [   0.155s] (160/201) crypto::sender_keys_test cached_keys_expire_after_ttl
+        PASS [   0.006s] (161/201) crypto::sender_keys_test canonical_ad_encoding_deterministic_and_lp_correct
+        PASS [   0.006s] (162/201) crypto::sender_keys_test chain_advance_is_one_way
+        PASS [   0.621s] (163/201) crypto::sender_keys_test excessive_gap_rejected_without_cache_pollution
+        PASS [   0.178s] (164/201) crypto::sender_keys_test header_tamper_rejection
+        PASS [   0.176s] (165/201) crypto::sender_keys_test multiple_peer_senders_to_same_receiver
+        PASS [   0.012s] (166/201) crypto::sender_keys_test out_of_order_within_window
+        PASS [   0.181s] (167/201) crypto::sender_keys_test replay_rejection
+        PASS [   0.008s] (168/201) crypto::sender_keys_test rotation_old_chain_messages_decode_via_cache
+        PASS [   0.174s] (169/201) crypto::sender_keys_test rotation_state_cannot_decrypt_old_chain_without_cache
+        PASS [   0.016s] (170/201) crypto::sender_keys_test round_trip_multiple_messages_one_chain
+        PASS [   0.007s] (171/201) crypto::sender_keys_test round_trip_single_message
+        PASS [   0.008s] (172/201) crypto::sender_keys_test wrong_session_version_rejected
+        PASS [   0.012s] (173/201) crypto::wire_test empty_enc_header_and_ciphertext_round_trip
+        PASS [   0.017s] (174/201) crypto::wire_test handshake_decode_rejects_bad_magic
+        PASS [   0.018s] (175/201) crypto::wire_test handshake_decode_rejects_invalid_no_opk_byte
+        PASS [   0.018s] (176/201) crypto::wire_test handshake_decode_rejects_invalid_opk_flag_byte
+        PASS [   0.017s] (177/201) crypto::wire_test handshake_decode_rejects_no_opk_with_opk_id_present
+        PASS [   0.018s] (178/201) crypto::wire_test handshake_decode_rejects_truncated
+        PASS [   0.018s] (179/201) crypto::wire_test handshake_decode_rejects_wrong_mlkem_ciphertext_length
+        PASS [   0.017s] (180/201) crypto::wire_test handshake_round_trip_no_opk
+        PASS [   0.018s] (181/201) crypto::wire_test handshake_round_trip_with_opk
+        PASS [   0.035s] (182/201) crypto::wire_test ratchet_decode_rejects_bad_magic
+        PASS [   0.025s] (183/201) crypto::wire_test ratchet_decode_rejects_oversized_length_prefix
+        PASS [   0.029s] (184/201) crypto::wire_test ratchet_decode_rejects_trailing_garbage
+        PASS [   0.030s] (185/201) crypto::wire_test ratchet_decode_rejects_truncated_input
+        PASS [   0.028s] (186/201) crypto::wire_test ratchet_decode_rejects_wrong_version_byte
+        PASS [   0.007s] (187/201) crypto::wire_test ratchet_header_byte_round_trip
+        PASS [   0.006s] (188/201) crypto::wire_test ratchet_header_decode_rejects_wrong_length
+        PASS [   0.027s] (189/201) crypto::wire_test ratchet_message_round_trip_through_wire
+        PASS [   0.007s] (190/201) crypto::wire_test ratchet_message_with_random_byte_payloads_round_trips
+        PASS [   0.025s] (191/201) crypto::wire_test sender_keys_and_ratchet_have_distinct_magic
+        PASS [   0.007s] (192/201) crypto::wire_test sender_keys_header_byte_round_trip
+        PASS [   0.007s] (193/201) crypto::wire_test sender_keys_header_decode_rejects_wrong_length
+        PASS [   0.008s] (194/201) crypto::wire_test sender_keys_message_round_trip_through_wire
+        PASS [   0.011s] (195/201) crypto::x25519_test dh_is_symmetric
+        PASS [   0.007s] (196/201) crypto::x25519_test dh_rejects_identity_point
+        PASS [   0.008s] (197/201) crypto::x25519_test dh_rejects_known_low_order_point
+        PASS [   0.008s] (198/201) crypto::x25519_test different_keypairs_yield_different_publics
+        PASS [   0.008s] (199/201) crypto::x25519_test different_keypairs_yield_different_shared_secrets
+        PASS [   0.008s] (200/201) crypto::x25519_test keypair_public_matches_derive_public
+        PASS [   0.009s] (201/201) crypto::x25519_test rfc7748_section_6_1_alice_bob
+────────────
+     Summary [  33.905s] 201 tests run: 201 passed, 0 skipped
+########## EXIT=0 ##########
+########## PKG=keystore ##########
+        PASS [   0.613s] (232/289) keystore::prekeys_e2e_test prekey_bundle_roundtrip_replenish_fetch_consumed_by_rn_handshake
+        PASS [   0.771s] (233/289) keystore::prekeys_e2e_test prekey_round_trip_through_real_keyserver
+        PASS [   0.601s] (234/289) keystore::prekeys_e2e_test replenish_using_state_tops_up_to_target
+        PASS [   0.048s] (235/289) keystore::prekeys_test add_opk_batch_extends_pool_with_fresh_keys
+        PASS [   0.033s] (236/289) keystore::prekeys_test batch_signature_invalid_with_other_identity
+        PASS [   0.024s] (237/289) keystore::prekeys_test batch_signature_verifies_with_identity_ed25519_pub
+        PASS [   0.008s] (238/289) keystore::prekeys_test canonical_bytes_change_with_opk_order
+        PASS [   0.007s] (239/289) keystore::prekeys_test canonical_bytes_change_with_spk_presence
+        PASS [   0.006s] (240/289) keystore::prekeys_test canonical_bytes_change_with_user_id
+        PASS [   0.007s] (241/289) keystore::prekeys_test canonical_bytes_deterministic_for_identical_input
+        PASS [   0.034s] (242/289) keystore::prekeys_test consume_opk_removes_only_matching_id
+        PASS [   0.008s] (243/289) keystore::prekeys_test iso_8601_round_trips_for_known_unix_seconds
+        PASS [   0.032s] (244/289) keystore::prekeys_test new_state_generates_target_pool_and_initial_spk
+        PASS [   0.030s] (245/289) keystore::prekeys_test opk_ids_are_unique_and_monotonic
+        PASS [   0.031s] (246/289) keystore::prekeys_test replenish_count_to_target_caps_at_zero
+        PASS [   0.043s] (247/289) keystore::prekeys_test rotate_spk_moves_current_to_previous
+        PASS [   0.056s] (248/289) keystore::prekeys_test save_load_round_trip_with_memory_sealer
+        PASS [   0.044s] (249/289) keystore::prekeys_test save_with_memory_sealer_does_not_leak_secrets
+        PASS [   0.037s] (250/289) keystore::prekeys_test save_with_noop_sealer_writes_insecure_banner
+        PASS [   0.025s] (251/289) keystore::prekeys_test should_replenish_at_or_below_threshold
+        PASS [   0.026s] (252/289) keystore::prekeys_test should_rotate_spk_after_interval
+        PASS [   0.038s] (253/289) keystore::prekeys_test spk_signature_verifies_against_identity_ed25519_pub
+        PASS [   0.018s] (254/289) keystore::recovery_reseal_test absent_matching_sealer_is_refused_via_method_mismatch
+        PASS [   0.025s] (255/289) keystore::recovery_reseal_test memory_sealer_round_trips_through_save_load
+        PASS [   0.023s] (256/289) keystore::recovery_reseal_test noop_sealer_round_trips_through_save_load
+        PASS [   0.019s] (257/289) keystore::recovery_reseal_test tampered_sealed_blob_is_refused
+        PASS [   0.019s] (258/289) keystore::recovery_reseal_test wrong_sealer_key_is_refused_not_silently_different
+        PASS [   0.009s] (259/289) keystore::sealer_test cross_sealer_unseal_fails
+        PASS [   0.007s] (260/289) keystore::sealer_test empty_plaintext_round_trips
+        PASS [   0.007s] (261/289) keystore::sealer_test memory_method_label_and_no_banner
+        PASS [   0.008s] (262/289) keystore::sealer_test memory_round_trip
+        PASS [   0.006s] (263/289) keystore::sealer_test memory_seal_is_unique_per_call_via_random_nonce
+        PASS [   0.007s] (264/289) keystore::sealer_test memory_unseal_rejects_tampered_ciphertext
+        PASS [   0.008s] (265/289) keystore::sealer_test memory_unseal_rejects_truncated_blob
+        PASS [   0.008s] (266/289) keystore::sealer_test noop_method_label_and_banner
+        PASS [   0.007s] (267/289) keystore::sealer_test noop_round_trip
+        PASS [   0.007s] (268/289) keystore::sealer_test readiness_probe_accepts_complete_round_trip_only
+        PASS [   0.008s] (269/289) keystore::sealer_test select_best_sealer_returns_some_implementation
+        PASS [   0.010s] (270/289) keystore::storage_test _marker_traits_for_sealer
+        PASS [   0.017s] (271/289) keystore::storage_test insecure_banner_absent_for_memory_sealer
+        PASS [   0.017s] (272/289) keystore::storage_test insecure_banner_present_for_noop_sealer
+        PASS [   0.021s] (273/289) keystore::storage_test load_preserves_pub_when_disk_field_matches_secret
+        PASS [   0.027s] (274/289) keystore::storage_test load_recovers_when_x25519_public_disagrees_with_secret
+        PASS [   0.018s] (275/289) keystore::storage_test load_rejects_method_mismatch
+        PASS [   0.016s] (276/289) keystore::storage_test load_rejects_short_inner_field
+        PASS [   0.018s] (277/289) keystore::storage_test load_rejects_version_mismatch
+        PASS [   0.024s] (278/289) keystore::storage_test round_trip_to_disk_with_memory_sealer
+        PASS [   0.027s] (279/289) keystore::storage_test round_trip_to_disk_with_noop_sealer
+        PASS [   0.019s] (280/289) keystore::storage_test save_creates_parent_directories
+        PASS [   0.026s] (281/289) keystore::storage_test save_overwrites_existing_file
+        PASS [   0.017s] (282/289) keystore::storage_test sealed_blob_is_opaque_on_disk_for_memory_sealer
+        PASS [   0.014s] (283/289) keystore::storage_test user_id_visible_on_disk_for_noop_sealer
+        PASS [   0.009s] (284/289) keystore::username_client username_claim_vector_matches_worker
+        PASS [   0.007s] (285/289) keystore::username_client username_validation_never_silently_normalizes
+        PASS [   0.016s] (286/289) keystore::zeroization_test cloned_identity_also_zeroizes_its_recovery_entropy
+        PASS [   0.012s] (287/289) keystore::zeroization_test recovery_entropy_is_zeroized_when_identity_drops
+        PASS [   0.007s] (288/289) keystore::zeroization_test unseal_returns_a_zeroizing_buffer
+        PASS [   0.006s] (289/289) keystore::zeroization_test unseal_through_trait_object_is_also_zeroizing
+────────────
+     Summary [  11.319s] 289 tests run: 289 passed, 2 skipped
+########## EXIT=0 ##########

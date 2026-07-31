@@ -226,11 +226,7 @@ impl Outbox {
         self.cursor = self.cursor.wrapping_add(1);
         let start = (idx as usize).saturating_mul(self.chunk);
         let end = start.saturating_add(self.chunk).min(self.payload.len());
-        let data = self
-            .payload
-            .get(start..end)
-            .unwrap_or(&[])
-            .to_vec();
+        let data = self.payload.get(start..end).unwrap_or(&[]).to_vec();
         Fragment {
             kind: self.kind,
             epoch: self.epoch,
@@ -460,11 +456,7 @@ impl PqRatchet {
     /// the real peer can reach this code. The validation below still
     /// treats the peer as untrusted: a buggy or malicious *peer* must
     /// not be able to grow our memory or spin our CPU.
-    pub fn on_fragment<R: RngCore + CryptoRng>(
-        &mut self,
-        f: &Fragment,
-        rng: &mut R,
-    ) -> Result<()> {
+    pub fn on_fragment<R: RngCore + CryptoRng>(&mut self, f: &Fragment, rng: &mut R) -> Result<()> {
         // Ownership sanity: only the owner publishes an EK, only the
         // non-owner replies with a CT.
         match f.kind {

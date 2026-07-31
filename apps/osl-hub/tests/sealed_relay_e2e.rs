@@ -45,6 +45,11 @@ struct RelayState {
     posted: Vec<InboxRow>,
     blobs: BTreeMap<String, BlobRow>,
     wrapped_keys: BTreeMap<String, WrappedKeyRow>,
+    /// Public Ed25519 identity keys this relay has been told about, keyed by
+    /// user id. Only these identities get a sender-filter capability-floor
+    /// observation, so an unknown recipient cannot obtain one and no drain can
+    /// reach a filtered page through a floor the server never issued.
+    floor_identities: BTreeMap<String, Vec<u8>>,
 }
 
 /// One uploaded wrapped share. A share is readable ONLY by its recipient, and a
@@ -142,6 +147,17 @@ impl RelayServer {
 
     fn remove_inbox(&self, id: &str) {
         self.state.lock().unwrap().inbox.retain(|row| row.id != id);
+    }
+
+    /// Publish one identity's PUBLIC signing key so this relay can answer the
+    /// signed sender-filter capability-floor observation the receive boundary
+    /// makes before every drain. Nothing secret crosses this boundary: the
+    /// anchor is recomputed server-side from the user id and this public key.
+    fn register_floor_identity(&self, identity: &keystore::Identity) {
+        self.state.lock().unwrap().floor_identities.insert(
+            identity.user_id.clone(),
+            identity.ed25519_public.as_bytes().to_vec(),
+        );
     }
 }
 
@@ -440,6 +456,16 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
             state.lock().unwrap().inbox.retain(|row| row.id != id);
             bytes_response(204, "application/json", Vec::new())
         }
+        // The shipping receive boundary observes a signed sender-filter
+        // capability floor before it will drain a filtered page, exactly as
+        // `keyserver-cf/src/endpoints/sender-filter-capability-floor.ts` serves
+        // it. This fixture answers only for an identity it was told about and
+        // only for a signed, timestamped request, and it recomputes the anchor
+        // from public inputs rather than echoing anything the caller sent -- so
+        // the floor stays a real authority check rather than a rubber stamp.
+        ("GET", route) if route.starts_with("/v1/sender-filter-capability-floor/") => {
+            sender_filter_capability_floor_response(&path, state)
+        }
         _ => json_response(404, json!({ "error": "not_found" })),
     };
     let _ = stream.write_all(&response);
@@ -492,6 +518,61 @@ fn read_request(
         headers,
         request[header_end..header_end + content_length].to_vec(),
     ))
+}
+
+/// `keystore::sender_filter_rollout::sender_filter_floor_identity_anchor_sha256`,
+/// recomputed here from public inputs only, so the fixture proves the anchor the
+/// client independently derives instead of echoing one the client supplied.
+fn floor_identity_anchor_sha256(user_id: &str, ed25519_public: &[u8]) -> String {
+    fn length_prefixed(output: &mut Vec<u8>, value: &[u8]) {
+        output.extend_from_slice(&(value.len() as u32).to_be_bytes());
+        output.extend_from_slice(value);
+    }
+    let mut canonical = Vec::new();
+    length_prefixed(&mut canonical, b"OSL-SENDER-FILTER-FLOOR-IDENTITY-v1\0");
+    length_prefixed(&mut canonical, user_id.as_bytes());
+    length_prefixed(&mut canonical, ed25519_public);
+    let digest = <sha2::Sha256 as sha2::Digest>::digest(canonical);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn sender_filter_capability_floor_response(path: &str, state: &Arc<Mutex<RelayState>>) -> Vec<u8> {
+    let target = url::Url::parse(&format!("http://relay.invalid{path}"))
+        .expect("parse sender-filter floor request target");
+    let recipient = target
+        .path()
+        .trim_start_matches("/v1/sender-filter-capability-floor/")
+        .to_owned();
+    let query = |name: &str| {
+        target
+            .query_pairs()
+            .find_map(|(key, value)| (key == name).then(|| value.into_owned()))
+            .unwrap_or_default()
+    };
+    let timestamp_ms = query("ts").parse::<i64>().unwrap_or_default();
+    let request_id = query("request_id");
+    let anchor = state
+        .lock()
+        .unwrap()
+        .floor_identities
+        .get(&recipient)
+        .map(|public| floor_identity_anchor_sha256(&recipient, public));
+    match anchor {
+        Some(anchor) if timestamp_ms > 0 && !query("sig").is_empty() => json_response(
+            200,
+            json!({
+                "format": "osl.keyserver.sender-filter-capability-floor.v3",
+                "recipient_user_id": recipient,
+                "identity_anchor_sha256": anchor,
+                "capability_version": 1,
+                "monotonic_version": 1,
+                "first_observed_at_ms": timestamp_ms,
+                "request_timestamp_ms": timestamp_ms,
+                "request_id": request_id,
+            }),
+        ),
+        _ => json_response(404, json!({ "error": "not_found" })),
+    }
 }
 
 fn json_response(status: u16, body: Value) -> Vec<u8> {
@@ -573,6 +654,8 @@ fn two_verified_identities_complete_sealed_relay_open_ack_and_replay_rejection()
     let bob_identity = keystore::generate_identity("osl-bob-sealed-e2e".to_owned());
     let alice_id = alice_identity.user_id.clone();
     let bob_id = bob_identity.user_id.clone();
+    relay.register_floor_identity(&alice_identity);
+    relay.register_floor_identity(&bob_identity);
     let alice = core(alice_identity, &relay_url);
     let bob = core(bob_identity, &relay_url);
     let alice_security = HubSecurityState::default();

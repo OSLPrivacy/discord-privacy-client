@@ -52,6 +52,18 @@ zeroize = "=1.9.0"
 windows-sys = { version = "=0.59.0", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security_Cryptography", "Win32_Security_Cryptography_Catalog", "Win32_Security_Cryptography_Sip", "Win32_Security_WinTrust", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_Com", "Win32_System_DataExchange", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 windows = { version = "=0.56.0", features = ["Win32_Foundation", "Win32_Graphics_Imaging", "Win32_System_Com", "Win32_System_Ole", "Win32_UI_Accessibility"] }
 
+# Linux-only, and only so the desktop binary can be BUILT and screenshotted on
+# this machine. `tauri-plugin-dialog` is declared with default-features = false,
+# which leaves its `rfd` dependency with no backend on Linux and fails the build
+# with "You need to choose at least one backend". Windows is unaffected: rfd uses
+# the Win32 backend unconditionally, so the shipping artifact is unchanged. This
+# exists because capture protection is compile-time and Windows-only, so a
+# production Windows window cannot be screenshotted at all.
+[target.'cfg(target_os = "linux")'.dependencies]
+# NOT optional: an optional dep is inert unless a feature turns it on, so the
+# gtk3 backend never reached the transitive rfd and the build still failed.
+rfd = { version = "=0.16.0", default-features = false, features = ["gtk3"] }
+
 [features]
 default = []
 core = ["dep:base64", "dep:bip39", "dep:crypto", "dep:ipc", "dep:keystore", "dep:message-lifecycle", "dep:store", "dep:tracing"]

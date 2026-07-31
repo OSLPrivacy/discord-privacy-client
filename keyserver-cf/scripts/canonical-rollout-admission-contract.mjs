@@ -34,10 +34,13 @@ export const CANONICAL_ROLLOUT_MAX_EVIDENCE_AGE_MS = 120_000;
 // not authority while this independent producer registry remains empty.
 //
 // Enrolled 2026-07-29 by owner-authorized release-producer signing-chain
-// setup (see /home/liamw/osl-plan/release-producer-key.md for provenance:
-// generation time, fingerprint, and custody). The private half never
-// leaves /home/liamw/.osl-secrets/release-producer-key/ on the generating
-// machine and is not present anywhere in this repository or its history.
+// setup (see `release-producer-key.md` in the owner's out-of-repo osl-plan
+// working set for provenance: generation time, fingerprint, and custody).
+// The private half never leaves `~/.osl-secrets/release-producer-key/` on the
+// generating machine and is not present anywhere in this repository or its
+// history. Both locations are intentionally written machine-relative: this
+// file ships publicly and must not carry a developer username or the on-disk
+// layout of the signing machine.
 export const TRUSTED_CANONICAL_ROLLOUT_EVIDENCE_PRODUCERS =
   Object.freeze({
     "osl-release-producer-20260729-ff7d51bda2c8": Object.freeze({

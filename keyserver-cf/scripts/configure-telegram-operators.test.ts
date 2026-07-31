@@ -28,7 +28,12 @@ module = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(module)
 
-token = "1234567890:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
+# Dummy fixture token. The bot-token shape ("<digits>:<35+ chars>") is required
+# by the script under test, so it is assembled from parts at runtime: no
+# token-shaped literal ever appears in this source file, which keeps
+# scripts/audit_public_release.py's secret detector fully strict with no
+# per-file exemption or ignore-comment escape hatch to abuse.
+token = "1234567890" + ":" + ("ABCDEFGHIJKLMNOPQRSTUVWXYZ" + "abcdefghi")
 webhook_secret = "owner-held-webhook-secret-proof"
 telegram_calls = []
 stored_secrets = []

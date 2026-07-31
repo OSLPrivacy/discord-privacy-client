@@ -42,6 +42,7 @@ fn table_after_heading(markdown: &str, heading: &str) -> BTreeMap<String, String
 }
 
 #[test]
+#[allow(clippy::assertions_on_constants)]
 fn b3_ipc_integration_proof_status() {
     assert!(
         !RN_WIRE_IN_ENABLED,

@@ -4101,6 +4101,23 @@ fn drain_peer_inbox_text(
             ) {
                 Ok(payload) => payload,
                 Err(failure) => {
+                    // OPEN DEFECT, 2026-07-31 (not fixed here on purpose).
+                    // A replayed notice whose single-use wrapped key is already
+                    // gone (relay answers 410) fails non-retryably, so it is
+                    // neither retired nor counted as deferred: the row stays in
+                    // the inbox forever and permanently occupies one of the 32
+                    // rows admitted per pair. A starvation hazard, not a leak.
+                    // Proven by sealed_relay_e2e:793 (pending_for == 1, want 0).
+                    // I tried gating retirement on `peer_message_was_consumed`
+                    // and MEASURED it returning false: in this path the message
+                    // was DELIVERED but never REVEALED, so it is genuinely not
+                    // consumed and that rationale is false. The correct rule is
+                    // "the single-use key is permanently gone, so this row can
+                    // never authenticate again" -- a product decision about when
+                    // an authenticated-but-unopenable row may be retired, and it
+                    // is entangled with whether a replay may re-emit a Received
+                    // ack (it must NOT: that lets a hostile relay mint one ack
+                    // per replayed row). Owner decision, deliberately left open.
                     if failure.retryable() {
                         deferred_rows = deferred_rows.saturating_add(1);
                     }
@@ -5396,10 +5413,15 @@ fn record_native_overlay_sent(
     let path = native_overlay_receipt_path()?;
     let now = ipc::main_password::now_unix_secs_pub();
     let mut ledger = load_native_overlay_receipts(&path, &file_key)?;
-    prune_native_overlay_receipts(&mut ledger, now);
+    // One durable row per verified send. The duplicate check has to run against
+    // the ledger as it was loaded, before pruning: pruning drops rows whose TTL
+    // has passed, and doing the check afterwards would let an already-recorded
+    // message id be silently re-inserted (overwriting the durable sent proof)
+    // as soon as its own expiry moved into the past.
     if ledger.records.contains_key(message_id) {
         return Err("OSL could not save the protected message receipt safely".to_owned());
     }
+    prune_native_overlay_receipts(&mut ledger, now);
     ledger.version = NATIVE_OVERLAY_ACK_VERSION;
     ledger.records.insert(
         message_id.to_owned(),
@@ -7816,8 +7838,15 @@ fn local_protected_identity_for_receipt(
     let password = ipc::commands::cmd_osl_password_status()
         .map_err(|_| "OSL password state is unavailable".to_owned())?;
     let installed_key = ipc::main_password::get_file_storage_key();
+    // The device-sealed QA key exists only for the passwordless disposable QA
+    // profile. `select_local_receipt_file_key` already refuses to consider it
+    // once a real main password is set, so requiring the sealed record in that
+    // case is a pure false negative: a password-protected profile that never
+    // provisioned a QA device key would fail its own production send path.
+    // The gate itself stays hard -- in the passwordless QA path the sealed
+    // record must still exist and must still match the installed key.
     #[cfg(feature = "discord-qa-shell")]
-    let device_bound_qa_key = if allow_device_bound_qa_key {
+    let device_bound_qa_key = if allow_device_bound_qa_key && !password.is_set {
         Some(crate::discord_qa_identity::require_installed_device_bound_storage_key()?)
     } else {
         None
@@ -15003,7 +15032,7 @@ ok i will weekend again with you",
                 "counts.pointer_blob_gone += 1",
             ),
             (
-                "PeerProsePointerFailure::Transport,",
+                "PeerProsePointerFailure::Transport)",
                 "counts.store_unreachable += 1",
             ),
             ("PeerProsePointerFailure::Rejected)", "counts.refused += 1"),

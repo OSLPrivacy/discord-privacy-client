@@ -131,7 +131,8 @@ fn a_revocation_round_trips_through_a_real_v3_envelope_with_its_type_intact() {
     for seq in 1..=12 {
         record_content_accepted(&mut ledger, &received.scope_commitment, seq).unwrap();
     }
-    let outcome = apply_inbound_revocation(&mut ledger, &bob_key, &received, 1_700_000_001).unwrap();
+    let outcome =
+        apply_inbound_revocation(&mut ledger, &bob_key, &received, 1_700_000_001).unwrap();
     assert_eq!(outcome.decision, InboundDecision::Applied);
     assert_eq!(outcome.destroy_upto_seq, 12);
     assert!(outcome.ack.applied);
@@ -272,7 +273,10 @@ fn replaying_a_genuine_revocation_cannot_reach_later_content() {
     );
 
     for seq in 5..=9 {
-        assert_eq!(accept_content(&ledger, &commitment, seq), ContentDecision::Accept);
+        assert_eq!(
+            accept_content(&ledger, &commitment, seq),
+            ContentDecision::Accept
+        );
         record_content_accepted(&mut ledger, &commitment, seq).unwrap();
     }
 
@@ -289,10 +293,16 @@ fn replaying_a_genuine_revocation_cannot_reach_later_content() {
         .unwrap();
         assert_eq!(out.decision, InboundDecision::AlreadyApplied);
         assert_eq!(out.destroy_upto_seq, 0);
-        assert!(out.ack.applied, "an ack must not distinguish already-applied");
+        assert!(
+            out.ack.applied,
+            "an ack must not distinguish already-applied"
+        );
     }
     for seq in 5..=9 {
-        assert_eq!(accept_content(&ledger, &commitment, seq), ContentDecision::Accept);
+        assert_eq!(
+            accept_content(&ledger, &commitment, seq),
+            ContentDecision::Accept
+        );
     }
 }
 
@@ -327,7 +337,10 @@ fn a_legacy_burn_marker_is_honoured_but_never_permanent() {
         record_content_accepted(&mut ledger, &commitment, seq).unwrap();
     }
     let converted = legacy_burn_notice(&ledger, &key, &commitment, 1_700_000_001);
-    assert_eq!(converted.burn_upto_seq, 3, "bounded at what we currently hold");
+    assert_eq!(
+        converted.burn_upto_seq, 3,
+        "bounded at what we currently hold"
+    );
     let out = apply_inbound_revocation(&mut ledger, &key, &converted, 1_700_000_001).unwrap();
     assert_eq!(out.decision, InboundDecision::Applied);
     assert_eq!(out.destroy_upto_seq, 3);
@@ -335,7 +348,10 @@ fn a_legacy_burn_marker_is_honoured_but_never_permanent() {
     // The conversation is NOT dead. This is the legacy defect, and its absence
     // is the whole point of converting rather than flagging.
     for seq in 4..=8 {
-        assert_eq!(accept_content(&ledger, &commitment, seq), ContentDecision::Accept);
+        assert_eq!(
+            accept_content(&ledger, &commitment, seq),
+            ContentDecision::Accept
+        );
         record_content_accepted(&mut ledger, &commitment, seq).unwrap();
     }
 }
@@ -345,10 +361,15 @@ fn a_legacy_burn_marker_is_honoured_but_never_permanent() {
 /// classify them as a burn.
 #[test]
 fn retired_type_bytes_are_never_classified_as_a_revocation() {
-    for msg_type in [0x00u8, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x80] {
+    for msg_type in [
+        0x00u8, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x80,
+    ] {
         let raw = [0x03u8, msg_type, 0, 0];
         assert!(!is_revocation_bundle(&raw), "0x{msg_type:02X} is not 0x0A");
-        assert!(!is_revocation_ack_bundle(&raw), "0x{msg_type:02X} is not 0x0B");
+        assert!(
+            !is_revocation_ack_bundle(&raw),
+            "0x{msg_type:02X} is not 0x0B"
+        );
     }
     assert!(is_revocation_bundle(&[0x03, MSG_TYPE_REVOCATION]));
     assert!(is_revocation_ack_bundle(&[0x03, MSG_TYPE_REVOCATION_ACK]));

@@ -465,6 +465,11 @@ fn lp_extend(buf: &mut Vec<u8>, bytes: &[u8]) {
     buf.extend_from_slice(bytes);
 }
 
+// Eight separate arguments on purpose. This builds the canonical signed bytes
+// for a peer identity bundle from independently supplied key material,
+// capabilities, and revision; a wrapper would add another construction path
+// that could omit or reorder signed fields.
+#[allow(clippy::too_many_arguments)]
 fn canonical_scheme1_bundle_bytes(
     resp: &crate::client::PubkeysResponse,
     root_ed25519_pub: &[u8; ed25519::PUBLIC_KEY_SIZE],

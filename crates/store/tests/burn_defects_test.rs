@@ -30,6 +30,8 @@ use tempfile::TempDir;
 
 const SECRET_A: &[u8; 32] = &[1u8; 32];
 
+type BurnedMessageStub = (Vec<u8>, Vec<u8>, Option<Vec<u8>>, Option<Vec<u8>>, i64);
+
 fn open_a(dir: &Path) -> MessageStore {
     MessageStore::open(dir, SECRET_A).expect("open with SECRET_A should succeed")
 }
@@ -171,15 +173,41 @@ fn put_cannot_resurrect_a_burned_message() {
 fn unknown_burn_refuses_without_mutating_a_nonempty_store() {
     let tmp = TempDir::new().unwrap();
     let store = open_a(tmp.path());
-    let first = sample("known-burn-a", "burn-channel-a", "sender-a", "first survives");
-    let second = sample("known-burn-b", "burn-channel-b", "sender-b", "second survives");
+    let first = sample(
+        "known-burn-a",
+        "burn-channel-a",
+        "sender-a",
+        "first survives",
+    );
+    let second = sample(
+        "known-burn-b",
+        "burn-channel-b",
+        "sender-b",
+        "second survives",
+    );
     store.put(&first).unwrap();
     store.put(&second).unwrap();
     store
-        .put_attachment("known-burn-a", "a.png", "image/png", b"A-PIXELS", None, None, None)
+        .put_attachment(
+            "known-burn-a",
+            "a.png",
+            "image/png",
+            b"A-PIXELS",
+            None,
+            None,
+            None,
+        )
         .unwrap();
     store
-        .put_attachment("known-burn-b", "b.png", "image/png", b"B-PIXELS", None, None, None)
+        .put_attachment(
+            "known-burn-b",
+            "b.png",
+            "image/png",
+            b"B-PIXELS",
+            None,
+            None,
+            None,
+        )
         .unwrap();
     assert_eq!(store.get("known-burn-a").unwrap(), Some(first.clone()));
     assert_eq!(store.get("known-burn-b").unwrap(), Some(second.clone()));
@@ -323,9 +351,11 @@ fn mark_burned_shreds_a_row_left_live_by_an_older_build() {
     let (_target_rowid, old_ciphertext, old_nonce): (i64, Vec<u8>, Vec<u8>) = {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         let old = conn
-            .query_row("SELECT rowid, ciphertext, nonce FROM messages ORDER BY rowid LIMIT 1", [], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })
+            .query_row(
+                "SELECT rowid, ciphertext, nonce FROM messages ORDER BY rowid LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
             .unwrap();
         // m4b was inserted first. Fail if that fixture assumption changes,
         // rather than manufacturing the legacy state on its live sibling.
@@ -346,9 +376,16 @@ fn mark_burned_shreds_a_row_left_live_by_an_older_build() {
 
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     let burned_rows: i64 = conn
-        .query_row("SELECT COUNT(*) FROM messages WHERE burned = 1", [], |row| row.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE burned = 1",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
-    assert_eq!(burned_rows, 1, "only the pre-fix target may become terminal");
+    assert_eq!(
+        burned_rows, 1,
+        "only the pre-fix target may become terminal"
+    );
     drop(conn);
     // This rejects a repair that reports shredding the legacy target by
     // zeroing or deleting every live row in the database.
@@ -385,7 +422,7 @@ fn repeat_mark_burned_is_safe_and_keeps_the_terminal_row_exact() {
     assert!(store.get("m5").unwrap().is_some(), "positive path");
     store.mark_burned("m5").unwrap();
 
-    let first_stub: (Vec<u8>, Vec<u8>, Option<Vec<u8>>, Option<Vec<u8>>, i64) = {
+    let first_stub: BurnedMessageStub = {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         assert_eq!(
             conn.query_row(
@@ -417,7 +454,7 @@ fn repeat_mark_burned_is_safe_and_keeps_the_terminal_row_exact() {
 
     store.mark_burned("m5").unwrap();
 
-    let second_stub: (Vec<u8>, Vec<u8>, Option<Vec<u8>>, Option<Vec<u8>>, i64) = {
+    let second_stub: BurnedMessageStub = {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         conn.query_row(
             "SELECT ciphertext, nonce, wrapped_key_nonce, wrapped_key, burned \
@@ -461,7 +498,12 @@ fn scope_burn_wipes_legacy_unscoped_attachments() {
         .put_attachment("m6", "rnd.png", "image/png", b"PIXELS", None, None, None)
         .unwrap();
     store
-        .put(&sample("m6-survivor", "other-chan", "sender2", "other attachment"))
+        .put(&sample(
+            "m6-survivor",
+            "other-chan",
+            "sender2",
+            "other attachment",
+        ))
         .unwrap();
     store
         .put_attachment(
@@ -509,7 +551,9 @@ fn sender_scoped_burn_wipes_that_senders_legacy_attachments() {
     store
         .put_attachment("m7", "mine.png", "image/png", b"MINE", None, None, None)
         .unwrap();
-    store.put(&sample("m7-other", "chan9", "other", "theirs")).unwrap();
+    store
+        .put(&sample("m7-other", "chan9", "other", "theirs"))
+        .unwrap();
     store
         .put_attachment(
             "m7-other",

@@ -189,8 +189,8 @@ pub enum RevocationError {
 type HmacSha256 = Hmac<Sha256>;
 
 fn mac(key: &[u8; 32], parts: &[&[u8]]) -> [u8; 32] {
-    let mut m = <HmacSha256 as Mac>::new_from_slice(key)
-        .expect("HMAC-SHA256 accepts a 32-byte key");
+    let mut m =
+        <HmacSha256 as Mac>::new_from_slice(key).expect("HMAC-SHA256 accepts a 32-byte key");
     for part in parts {
         // Length-prefix every component so no two distinct tuples can produce
         // the same MAC input.
@@ -272,11 +272,7 @@ pub fn burn_id(
 /// The server sees only 32 opaque bytes: it learns neither the scope nor the
 /// epoch, and cannot link one pair's lane to another's, because the key is
 /// pair-specific.
-pub fn lane_collapse_key(
-    key: &[u8; 32],
-    scope_commitment: &[u8; 32],
-    burn_epoch: u64,
-) -> [u8; 32] {
+pub fn lane_collapse_key(key: &[u8; 32], scope_commitment: &[u8; 32], burn_epoch: u64) -> [u8; 32] {
     mac(
         key,
         &[LABEL_LANE, scope_commitment, &burn_epoch.to_be_bytes()],
@@ -607,7 +603,10 @@ pub fn legacy_burn_notice(
 ) -> RevocationNotice {
     let state = ledger.state(scope_commitment);
     let upto = state.map(|s| s.high_water).unwrap_or(0);
-    let epoch = state.map(|s| s.last_burn_epoch).unwrap_or(0).saturating_add(1);
+    let epoch = state
+        .map(|s| s.last_burn_epoch)
+        .unwrap_or(0)
+        .saturating_add(1);
     RevocationNotice {
         scope_commitment: *scope_commitment,
         burn_epoch: epoch,
@@ -641,18 +640,12 @@ impl SendCounters {
     /// Allocate the next content sequence for a scope. Strictly increasing,
     /// starting at 1 — zero is reserved so "no sequence" and "the first
     /// message" are distinguishable.
-    pub fn next_send_seq(
-        &mut self,
-        scope_commitment: &[u8; 32],
-    ) -> Result<u64, RevocationError> {
+    pub fn next_send_seq(&mut self, scope_commitment: &[u8; 32]) -> Result<u64, RevocationError> {
         Self::bump(&mut self.send_seq, scope_commitment)
     }
 
     /// Allocate the next burn epoch for a scope. Strictly increasing.
-    pub fn next_burn_epoch(
-        &mut self,
-        scope_commitment: &[u8; 32],
-    ) -> Result<u64, RevocationError> {
+    pub fn next_burn_epoch(&mut self, scope_commitment: &[u8; 32]) -> Result<u64, RevocationError> {
         Self::bump(&mut self.burn_epoch, scope_commitment)
     }
 
@@ -674,7 +667,9 @@ impl SendCounters {
             return Err(RevocationError::CountersFull);
         }
         let entry = map.entry(slot).or_insert(0);
-        let next = entry.checked_add(1).ok_or(RevocationError::CounterExhausted)?;
+        let next = entry
+            .checked_add(1)
+            .ok_or(RevocationError::CounterExhausted)?;
         *entry = next;
         Ok(next)
     }
@@ -787,7 +782,11 @@ impl RevocationOutbox {
 
     /// Record a failed or unconfirmed attempt and schedule the next one.
     pub fn record_attempt(&mut self, burn_id_hex: &str, now: i64) {
-        if let Some(e) = self.entries.iter_mut().find(|e| e.burn_id_hex == burn_id_hex) {
+        if let Some(e) = self
+            .entries
+            .iter_mut()
+            .find(|e| e.burn_id_hex == burn_id_hex)
+        {
             e.attempts = e.attempts.saturating_add(1);
             let idx = (e.attempts as usize).min(OUTBOX_BACKOFF_SECS.len() - 1);
             e.next_attempt_at = now.saturating_add(OUTBOX_BACKOFF_SECS[idx]);
@@ -797,7 +796,11 @@ impl RevocationOutbox {
 
     /// Record a peer ack. Idempotent.
     pub fn record_acknowledged(&mut self, burn_id_hex: &str) {
-        if let Some(e) = self.entries.iter_mut().find(|e| e.burn_id_hex == burn_id_hex) {
+        if let Some(e) = self
+            .entries
+            .iter_mut()
+            .find(|e| e.burn_id_hex == burn_id_hex)
+        {
             e.acknowledged = true;
             self.version = 1;
         }
@@ -906,7 +909,10 @@ mod tests {
         assert_ne!(a, b);
         // And the label is not recoverable by inspection: no byte of the
         // commitment equals the label's bytes in position.
-        assert_ne!(&a[..SCOPE.len().min(32)], &SCOPE.as_bytes()[..SCOPE.len().min(32)]);
+        assert_ne!(
+            &a[..SCOPE.len().min(32)],
+            &SCOPE.as_bytes()[..SCOPE.len().min(32)]
+        );
     }
 
     #[test]
@@ -936,7 +942,10 @@ mod tests {
         );
         assert_eq!(out.destroy_upto_seq, 0);
         assert!(!out.ack.applied);
-        assert!(ledger.scopes.is_empty(), "a refusal must not consume ledger space");
+        assert!(
+            ledger.scopes.is_empty(),
+            "a refusal must not consume ledger space"
+        );
     }
 
     /// Adversarial: a notice whose `burn_upto_seq` was edited upward in transit.
@@ -981,7 +990,10 @@ mod tests {
         let out = apply_inbound_revocation(&mut ledger, &k, &first, 200).unwrap();
         assert_eq!(out.decision, InboundDecision::AlreadyApplied);
         assert_eq!(out.destroy_upto_seq, 0);
-        assert!(out.ack.applied, "already-applied acks the same value as applied");
+        assert!(
+            out.ack.applied,
+            "already-applied acks the same value as applied"
+        );
         // Floor never moved, so 6..10 survive.
         assert_eq!(ledger.scopes[&hex32(&c)].burn_floor, 5);
         for seq in 6..=10 {
@@ -1049,7 +1061,10 @@ mod tests {
             .unwrap();
         // The other author's content in the very same conversation is untouched.
         for seq in 1..=5 {
-            assert_eq!(accept_content(&ledger, &c_other, seq), ContentDecision::Accept);
+            assert_eq!(
+                accept_content(&ledger, &c_other, seq),
+                ContentDecision::Accept
+            );
         }
         // And peer B's notice does not verify under peer C's key, so it cannot
         // be re-aimed by swapping the commitment.
@@ -1150,13 +1165,8 @@ mod tests {
         let k = key();
         let c = scope_commitment(&k, SCOPE);
         let mut ledger = RevocationLedger::default();
-        let out = apply_inbound_revocation(
-            &mut ledger,
-            &k,
-            &notice(&k, &c, 1, u64::MAX),
-            100,
-        )
-        .unwrap();
+        let out =
+            apply_inbound_revocation(&mut ledger, &k, &notice(&k, &c, 1, u64::MAX), 100).unwrap();
         assert_eq!(
             out.decision,
             InboundDecision::Refused(RefusalReason::UptoSeqOutOfRange)
@@ -1324,7 +1334,10 @@ mod tests {
         assert_eq!(outbox.pending_for_scope(SCOPE), 0);
         assert_eq!(outbox.acknowledged_for_scope(SCOPE), 2);
         // Another conversation is unaffected.
-        assert_eq!(outbox.status_for_scope("dm:elsewhere"), STATUS_NOT_ACKNOWLEDGED);
+        assert_eq!(
+            outbox.status_for_scope("dm:elsewhere"),
+            STATUS_NOT_ACKNOWLEDGED
+        );
     }
 
     /// Adversarial: offline peer. The entry stays queued, is retried with
@@ -1419,7 +1432,11 @@ mod tests {
         assert!(CLAIM_RECIPIENT_COPIES.contains("no guarantee"));
         assert!(CLAIM_RECIPIENT_COPIES.contains("no bound on when"));
         // Nothing claims the platform removed anything.
-        for claim in [CLAIM_CONTENT_EXPIRY, CLAIM_LOCAL_REMOVAL, CLAIM_RECIPIENT_COPIES] {
+        for claim in [
+            CLAIM_CONTENT_EXPIRY,
+            CLAIM_LOCAL_REMOVAL,
+            CLAIM_RECIPIENT_COPIES,
+        ] {
             let lowered = claim.to_lowercase();
             assert!(!lowered.contains("discord"));
             assert!(!lowered.contains("from the platform"));

@@ -602,16 +602,12 @@ impl MessageStore {
         // is still the provider's current state.
         let inspected_version = schema::inspect_schema_version(&conn)?;
         let existing_anchor = match provider.as_ref() {
-            Some(provider) => anchor::AnchorBinding::reconcile_existing(
-                &conn,
-                identity_secret,
-                provider.clone(),
-            )?,
+            Some(provider) => {
+                anchor::AnchorBinding::reconcile_existing(&conn, identity_secret, provider.clone())?
+            }
             None => None,
         };
-        if existing_anchor.is_some()
-            && !matches!(inspected_version, Some(7) | Some(8))
-        {
+        if existing_anchor.is_some() && !matches!(inspected_version, Some(7) | Some(8)) {
             return Err(StoreError::Anchor(
                 "anchored migration before v7 is not journal-supported; refusing mutation"
                     .to_string(),
@@ -2091,7 +2087,7 @@ mod storage_binding_tests {
             .unwrap();
 
         let error = match MessageStore::open_with_connection_factory(
-            &trusted_root,
+            trusted_root,
             &[7u8; 32],
             None,
             |_trusted_path| Ok(Connection::open(&decoy_db)?),

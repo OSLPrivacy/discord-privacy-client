@@ -335,6 +335,42 @@ function generatedHandlerBodies(source: string): string[] {
     .map((match) => match[1]);
 }
 
+// The real Hub binary's registered command surface, read from BOTH files that
+// own a piece of it.
+//
+// A refactor moved the single authoritative command list out of
+// apps/osl-hub/src/main.rs into the library module
+// apps/osl-hub/src/hub_command_surface.rs, which now defines
+// `macro_rules! hub_tauri_commands`. main.rs is a `[[bin]]` with
+// `required-features = ["desktop"]` that CI cannot compile, so nothing proven
+// only there was proven at all. main.rs kept the `#[tauri::command]` wrappers,
+// the `hub_tauri_commands!(hub_tauri_generate_handler)` invocation, and one
+// literal handler list for the signal-qa shell binary.
+//
+// `generatedHandlerBodies` cannot be used on the real main.rs any more: its
+// only remaining `tauri::generate_handler![` occurrences are the expansion
+// macro's `[$($(#[$meta])* $command,)*]` body — which names no command at all —
+// and the six-command signal-qa list, so a registration assertion against it
+// would silently prove nothing about the product surface.
+function hubCommandSurface(surfaceModule: string, main: string): string {
+  const macroStart = surfaceModule.indexOf("macro_rules! hub_tauri_commands");
+  const macroEnd = surfaceModule.indexOf("macro_rules! hub_tauri_command_names", macroStart);
+  expect(macroStart, "hub_tauri_commands macro should exist").toBeGreaterThanOrEqual(0);
+  expect(macroEnd, "handler-name macro should follow command macro").toBeGreaterThan(macroStart);
+  const marker = "invoke_handler(tauri::generate_handler![";
+  const lists: string[] = [];
+  for (
+    let cursor = main.indexOf(marker);
+    cursor >= 0;
+    cursor = main.indexOf(marker, cursor + 1)
+  ) {
+    const end = main.indexOf("]);", cursor + marker.length);
+    if (end < 0) continue;
+    lists.push(main.slice(cursor + marker.length, end));
+  }
+  return [surfaceModule.slice(macroStart, macroEnd), ...lists].join("\n");
+}
+
 function hasLifecycleCacheClearEdge(source: string): boolean {
   const namesTheLifecycle =
     /\b(?:context_(?:lost|changed)|context loss|app_switch|app switch|switch_app)\b/iu.test(source);
@@ -1923,7 +1959,13 @@ describe("generic external overlay production reachability", () => {
     }
 
     // A separate production native Discord overlay remains the shipping positive control.
-    const handlerBody = generatedHandlerBodies(rustMain).join("\n");
+    const handlerBody = hubCommandSurface(
+      readFileSync(
+        new URL("../../osl-hub/src/hub_command_surface.rs", import.meta.url),
+        "utf8",
+      ),
+      rustMain,
+    );
     expect(rustMain).toContain("mod native_discord_overlay;");
     expect(rustMain).toMatch(/\bfn get_native_discord_overlay_state\s*\(/u);
     expect(rustMain).toMatch(/\basync fn prepare_native_discord_overlay_text\s*\(/u);

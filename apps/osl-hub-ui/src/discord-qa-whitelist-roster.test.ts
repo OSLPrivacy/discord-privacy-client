@@ -5,12 +5,45 @@ const source = fs.readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 const adapters = fs.readFileSync(new URL("./adapters.ts", import.meta.url), "utf8");
 const styles = fs.readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 const hubMain = fs.readFileSync(new URL("../../osl-hub/src/main.rs", import.meta.url), "utf8");
+const hubCommandSurfaceModule = fs.readFileSync(
+  new URL("../../osl-hub/src/hub_command_surface.rs", import.meta.url),
+  "utf8",
+);
 const hubBroker = fs.readFileSync(new URL("../../osl-hub/src/broker.rs", import.meta.url), "utf8");
 const hubSecurity = fs.readFileSync(new URL("../../osl-hub/src/security.rs", import.meta.url), "utf8");
 const hubPermissions = fs.readFileSync(new URL("../../osl-hub/permissions/hub.toml", import.meta.url), "utf8");
 const hubCapability = fs.readFileSync(new URL("../../osl-hub/capabilities/hub.json", import.meta.url), "utf8");
 const settingsWindow = fs.readFileSync(new URL("../../../src-tauri/assets/settings_window.html", import.meta.url), "utf8");
 const ipcCommands = fs.readFileSync(new URL("../../../crates/ipc/src/commands.rs", import.meta.url), "utf8");
+
+// The authoritative `hub_tauri_commands!` list moved out of
+// apps/osl-hub/src/main.rs into the library module
+// apps/osl-hub/src/hub_command_surface.rs: main.rs is a `[[bin]]` with
+// `required-features = ["desktop"]` that CI never compiles, so anything proven
+// only there was proven by nothing. main.rs keeps the `#[tauri::command]`
+// wrappers (still asserted against `hubMain` below) plus one literal handler
+// list for the signal-qa shell build; registration is asserted against both.
+const hubCommandSurface = ((): string => {
+  const macroStart = hubCommandSurfaceModule.indexOf("macro_rules! hub_tauri_commands");
+  const macroEnd = hubCommandSurfaceModule.indexOf(
+    "macro_rules! hub_tauri_command_names",
+    macroStart,
+  );
+  expect(macroStart).toBeGreaterThan(-1);
+  expect(macroEnd).toBeGreaterThan(macroStart);
+  const marker = "invoke_handler(tauri::generate_handler![";
+  const lists: string[] = [];
+  for (
+    let cursor = hubMain.indexOf(marker);
+    cursor >= 0;
+    cursor = hubMain.indexOf(marker, cursor + 1)
+  ) {
+    const end = hubMain.indexOf("]);", cursor + marker.length);
+    if (end < 0) continue;
+    lists.push(hubMain.slice(cursor + marker.length, end));
+  }
+  return [hubCommandSurfaceModule.slice(macroStart, macroEnd), ...lists].join("\n");
+})();
 
 function body(startNeedle: string, endNeedle: string, text = source): string {
   const start = text.indexOf(startNeedle);
@@ -151,8 +184,8 @@ describe("whitelist roster", () => {
     const revokeCommand = body("async fn revoke_active_hub_friend_scope(", "async fn get_active_hub_context_security(", hubMain);
     expect(revokeCommand).toContain("broker_state.manual_reach_target(&context_token, &person_id)?");
     expect(revokeCommand).toContain("security::revoke_friend_scope_entry(&core, &security_state, person_id, storage_key)?");
-    expect(hubMain).toContain("            set_active_hub_friend_reach,");
-    expect(hubMain).toContain("            revoke_active_hub_friend_scope,");
+    expect(hubCommandSurface).toContain("            set_active_hub_friend_reach,");
+    expect(hubCommandSurface).toContain("            revoke_active_hub_friend_scope,");
     expect(hubPermissions).toContain('commands.allow = ["set_active_hub_friend_reach"]');
     expect(hubPermissions).toContain('commands.allow = ["revoke_active_hub_friend_scope"]');
     expect(hubCapability).toContain('"allow-set-active-hub-friend-reach"');

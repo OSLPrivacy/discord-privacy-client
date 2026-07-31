@@ -67,7 +67,10 @@ fn round_trip_small_payload() {
 
 #[test]
 fn round_trip_at_each_bucket_max_capacity() {
-    for &bucket in ATTACHMENT_BUCKETS.iter().filter(|bucket| **bucket <= 25 * 1024 * 1024) {
+    for &bucket in ATTACHMENT_BUCKETS
+        .iter()
+        .filter(|bucket| **bucket <= 25 * 1024 * 1024)
+    {
         let plaintext_len = bucket as usize - LENGTH_PREFIX_SIZE;
         let plaintext = vec![0xAB; plaintext_len];
         let key = random_aead_key();
@@ -96,7 +99,8 @@ fn large_streaming_buckets_are_selected_without_large_allocations() {
         (100 * 1024 * 1024, 250 * 1024 * 1024),
         (512 * 1024 * 1024, 512 * 1024 * 1024 + 16 * 1024),
     ] {
-        let (encryptor, _) = StreamEncryptor::new(key.clone(), declared, b"cid".to_vec(), 0).unwrap();
+        let (encryptor, _) =
+            StreamEncryptor::new(key.clone(), declared, b"cid".to_vec(), 0).unwrap();
         assert_eq!(encryptor.header().bucket_size, expected_bucket);
     }
     assert_eq!(max_attachment_plaintext_size(), 512 * 1024 * 1024);

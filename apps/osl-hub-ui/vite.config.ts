@@ -17,6 +17,10 @@ export default defineConfig(({ mode }) => ({
     modulePreload: false,
     rollupOptions: {
       input: {
+        // Naming any input disables Vite's implicit index.html entry, so the
+        // main window's page silently stopped being built when the QA pages
+        // were added. It must stay listed explicitly.
+        main: fileURLToPath(new URL("./index.html", import.meta.url)),
         ...(mode === "signal-qa" ? {
           "/src/main.ts": fileURLToPath(new URL("./src/signal-qa-main.ts", import.meta.url)),
         } : {}),

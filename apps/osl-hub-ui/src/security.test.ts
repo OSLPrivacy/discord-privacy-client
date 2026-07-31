@@ -53,10 +53,70 @@ function rustProductionPrefix(source: string): string {
 function tauriCommandSurface(source: string): string {
   const macroStart = source.indexOf("macro_rules! hub_tauri_commands");
   if (macroStart >= 0) {
-    const macroEnd = source.indexOf("macro_rules! hub_tauri_generate_handler", macroStart);
-    if (macroEnd >= 0) return source.slice(macroStart, macroEnd);
+    // The authoritative command list ends where the next macro definition
+    // begins. Two spellings exist because the surface was split across files:
+    // main.rs follows the list with `hub_tauri_generate_handler` (the callback
+    // that expands it into a real `tauri::generate_handler!`), while
+    // hub_command_surface.rs follows it with the test-only
+    // `hub_tauri_command_names` counterpart.
+    const macroEnd = [
+      "macro_rules! hub_tauri_generate_handler",
+      "macro_rules! hub_tauri_command_names",
+    ]
+      .map((terminator) => source.indexOf(terminator, macroStart + 1))
+      .filter((index) => index >= 0)
+      .sort((a, b) => a - b)[0];
+    if (macroEnd !== undefined) return source.slice(macroStart, macroEnd);
   }
   return source.slice(source.indexOf("tauri::generate_handler!["));
+}
+
+// Every `invoke_handler(tauri::generate_handler![...])` list written out
+// literally in a source file. main.rs still registers one such list directly
+// (the signal-qa shell binary); the product binary registers through the
+// `hub_tauri_commands!` macro instead.
+function literalInvokeHandlerLists(source: string): string {
+  const marker = "invoke_handler(tauri::generate_handler![";
+  const lists: string[] = [];
+  for (
+    let cursor = source.indexOf(marker);
+    cursor >= 0;
+    cursor = source.indexOf(marker, cursor + 1)
+  ) {
+    const end = source.indexOf("]);", cursor + marker.length);
+    if (end < 0) continue;
+    lists.push(source.slice(cursor + marker.length, end));
+  }
+  return lists.join("\n");
+}
+
+// The registered Tauri command surface of the Hub binary, read from BOTH files
+// that own a piece of it.
+//
+// A refactor moved the single authoritative command list out of
+// apps/osl-hub/src/main.rs into the library module
+// apps/osl-hub/src/hub_command_surface.rs, which now defines
+// `macro_rules! hub_tauri_commands`. The reason is stated in that module's
+// header: main.rs is a `[[bin]]` with `required-features = ["desktop"]` that CI
+// cannot compile at all, so nothing inside it is ever proven; the library is.
+// main.rs kept only the `#[tauri::command]` wrappers plus the
+// `hub_tauri_commands!(hub_tauri_generate_handler)` invocation that turns the
+// list into the real `invoke_handler`, and one literal handler list for the
+// signal-qa shell build.
+//
+// So any assertion about whether a command is *registered* (and therefore about
+// which ACL entry must exist for it) has to search the combination: reading
+// main.rs alone now yields the macro's definition text, not command names, which
+// would silently make both the positive and the negative registration proofs
+// vacuous. Assertions about code that genuinely lives in main.rs (the
+// `#[tauri::command]` wrappers, the gate/burn call sites) still read main.rs.
+function hubCommandSurface(): string {
+  const surfaceModule = readRelative("../../osl-hub/src/hub_command_surface.rs");
+  const main = readRelative("../../osl-hub/src/main.rs");
+  return [
+    tauriCommandSurface(rustWithoutComments(surfaceModule)),
+    literalInvokeHandlerLists(rustWithoutComments(main)),
+  ].join("\n");
 }
 
 function classifyMessagingProductionPath(
@@ -65,6 +125,10 @@ function classifyMessagingProductionPath(
   commands: string,
   state: string,
   extraProductionRust = "",
+  // Injectable so the stage-removal proofs below can starve registration:
+  // the command list no longer lives in main.rs, so mutating `main` can no
+  // longer make `registeredPrepareCommand` false. Mutate this instead.
+  commandSurface: string = hubCommandSurface(),
 ): MessagingProductionFacts {
   const mainProduction = rustWithoutComments(main);
   const brokerProduction = rustProductionPrefix(broker);
@@ -99,7 +163,7 @@ function classifyMessagingProductionPath(
     extraProduction.length > 0
     && !extraProduction.includes("pub fn cmd_osl_encrypt_message_v2_wire(")
     && !extraProduction.includes("pub fn run_prekey_replenishment_tick(");
-  const handler = tauriCommandSurface(mainProduction);
+  const handler = commandSurface;
 
   return {
     registeredPrepareCommand: handler.includes("prepare_encrypted_text,"),
@@ -307,6 +371,15 @@ describe("bundled preview security boundary", () => {
       "allow-open-hub-attachment",
       "allow-export-hub-friend-code",
       "allow-add-hub-friend",
+      // Local, read-only username lookup used by the add-friend-by-username
+      // flow (adapters.ts `get_hub_username_status`). The Rust handler
+      // (apps/osl-hub/src/main.rs) requires an unlocked active identity,
+      // validates the username, and resolves it through the in-process
+      // `lookup_username` helper — there is no network, keyserver, or
+      // cross-app reach, so it stays inside the local main-window boundary
+      // this test protects. The write-side siblings (`claim_hub_username`,
+      // `add_hub_friend_by_username`) are deliberately NOT granted here.
+      "allow-get-hub-username-status",
       "allow-verify-hub-friend-safety-number",
       "allow-remove-hub-friend",
       "allow-list-hub-people",
@@ -337,7 +410,7 @@ describe("bundled preview security boundary", () => {
     );
 
     const hubMain = readRelative("../../osl-hub/src/main.rs");
-    const handler = tauriCommandSurface(hubMain);
+    const handler = hubCommandSurface();
     const permissions = readRelative("../../osl-hub/permissions/hub.toml");
     for (const [permission, command] of [
       ["allow-get-firefox-status", "get_firefox_status"],
@@ -549,10 +622,14 @@ describe("bundled preview security boundary", () => {
     // mutations proving all three dormant-subsystem detectors can turn on.
     expect(
       classifyMessagingProductionPath(
-        main.replace("prepare_encrypted_text,", ""),
+        main,
         broker,
         commands,
         state,
+        "",
+        // Registration now lives in hub_command_surface.rs, so that is the text
+        // this stage-removal mutation has to starve.
+        hubCommandSurface().replace("prepare_encrypted_text,", ""),
       ).registeredPrepareCommand,
     ).toBe(false);
     expect(
@@ -756,11 +833,15 @@ describe("bundled preview security boundary", () => {
       mainSource: string,
       securitySource: string,
       commandSource: string,
+      // Injectable for the same reason as above: `burn_active_hub_context` is
+      // registered in hub_command_surface.rs, not in main.rs, so the
+      // stage-removal proof has to mutate the surface text.
+      commandSurface: string = hubCommandSurface(),
     ) => {
       const mainProduction = rustWithoutComments(mainSource);
       const securityProduction = rustProductionPrefix(securitySource);
       const commandProduction = rustProductionPrefix(commandSource);
-      const handler = tauriCommandSurface(mainProduction);
+      const handler = commandSurface;
       return {
         registered: handler.includes("burn_active_hub_context"),
         mainCallsSecurity: mainProduction.includes("security::burn_scope("),
@@ -839,9 +920,10 @@ describe("bundled preview security boundary", () => {
     // One stage-removal mutation per reachable burn stage.
     expect(
       classifyBurnPath(
-        main.replaceAll("burn_active_hub_context", "removed_command"),
+        main,
         security,
         commands,
+        hubCommandSurface().replaceAll("burn_active_hub_context", "removed_command"),
       ).registered,
     ).toBe(false);
     expect(
@@ -945,7 +1027,7 @@ describe("bundled preview security boundary", () => {
 
     // Positive controls for the separate reachable product burn.
     const mainProduction = rustWithoutComments(main);
-    const handler = tauriCommandSurface(mainProduction);
+    const handler = hubCommandSurface();
     expect(handler).toContain("burn_active_hub_context");
     expect(mainProduction).toContain("security::burn_scope(");
     expect(rustProductionPrefix(security)).toContain(
@@ -1540,7 +1622,7 @@ describe("bundled preview security boundary", () => {
     expect(productionRust).toContain("DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT");
 
     const mainProduction = rustWithoutComments(main);
-    const handler = tauriCommandSurface(mainProduction);
+    const handler = hubCommandSurface();
     expect(handler).toContain("unlock_hub_password_gate,");
     expect(mainProduction).toContain(
       "startup_gate::verify_password_role(&verify_app.state::<HubCoreState>(), password)",

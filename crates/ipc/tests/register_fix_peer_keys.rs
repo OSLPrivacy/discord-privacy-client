@@ -55,13 +55,7 @@ fn peer_pubkeys_response_for(id: keystore::Identity) -> PubkeysResponse {
     let ratchet = id
         .ratchet_initial_pub
         .map(|key| STANDARD.encode(key.as_bytes()));
-    let msg = keystore::client::reg_msg(
-        &id.user_id,
-        &x,
-        &ed,
-        &mlkem,
-        ratchet.as_deref(),
-    );
+    let msg = keystore::client::reg_msg(&id.user_id, &x, &ed, &mlkem, ratchet.as_deref());
     let sig = crypto::ed25519::sign(&id.ed25519_secret, &msg);
     PubkeysResponse {
         // `Identity` zeroizes on drop, so fields are cloned, not moved out.
@@ -217,8 +211,7 @@ fn populate_sets_osl_user_id_and_ratchet_and_no_false_tofu_alert() {
     .unwrap();
 
     let response = peer_pubkeys_response();
-    populate_peer_from_fetch_response(&state, PEER_DID, &response)
-        .expect("populate ok");
+    populate_peer_from_fetch_response(&state, PEER_DID, &response).expect("populate ok");
 
     let pm = state.peer_map.lock().unwrap();
     let pe = pm.get(PEER_DID).unwrap();
@@ -258,15 +251,26 @@ fn keyserver_cannot_replace_encryption_keys_under_an_unchanged_identity() {
     let state = fresh_state();
     let response = peer_pubkeys_response();
     populate_peer_from_fetch_response(&state, PEER_DID, &response).unwrap();
-    let before = state.peer_map.lock().unwrap().get(PEER_DID).unwrap().clone();
+    let before = state
+        .peer_map
+        .lock()
+        .unwrap()
+        .get(PEER_DID)
+        .unwrap()
+        .clone();
 
     let mut substituted = response;
     substituted.ik_x25519_pub = STANDARD.encode([0xafu8; 32]);
-    let err =
-        populate_peer_from_fetch_response(&state, PEER_DID, &substituted).unwrap_err();
+    let err = populate_peer_from_fetch_response(&state, PEER_DID, &substituted).unwrap_err();
     assert_eq!(err, "OSL: keyserver bundle proof invalid");
 
-    let after = state.peer_map.lock().unwrap().get(PEER_DID).unwrap().clone();
+    let after = state
+        .peer_map
+        .lock()
+        .unwrap()
+        .get(PEER_DID)
+        .unwrap()
+        .clone();
     assert_eq!(after.pubkey, before.pubkey);
     assert_eq!(after.ik_mlkem768_pub, before.ik_mlkem768_pub);
     assert_eq!(after.tofu_key_bundle, before.tofu_key_bundle);
@@ -296,7 +300,10 @@ fn accept_key_change_requires_verified_safety_number() {
         .clone();
     assert_ne!(
         alert.pending_bundle,
-        before.tofu_key_bundle.clone().expect("fixture has TOFU bundle"),
+        before
+            .tofu_key_bundle
+            .clone()
+            .expect("fixture has TOFU bundle"),
         "fixture must exercise a real bundle rotation"
     );
 
@@ -326,7 +333,11 @@ fn accept_key_change_requires_verified_safety_number() {
         assert_eq!(after_refusals.ik_mlkem768_pub, before.ik_mlkem768_pub);
         assert_eq!(after_refusals.tofu_key_bundle, before.tofu_key_bundle);
         assert!(
-            state.key_change_alerts.lock().unwrap().contains_key(PEER_DID),
+            state
+                .key_change_alerts
+                .lock()
+                .unwrap()
+                .contains_key(PEER_DID),
             "failed ceremonies must leave the pending alert available"
         );
     }

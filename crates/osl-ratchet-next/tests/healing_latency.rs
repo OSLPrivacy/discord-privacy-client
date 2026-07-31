@@ -63,7 +63,10 @@ fn healing_marks(rekey_interval: u32, loss: f64, round_trips: u32) -> Vec<u32> {
 }
 
 fn gaps(marks: &[u32]) -> Vec<u32> {
-    marks.windows(2).map(|w| w[1].saturating_sub(w[0])).collect()
+    marks
+        .windows(2)
+        .map(|w| w[1].saturating_sub(w[0]))
+        .collect()
 }
 
 #[test]

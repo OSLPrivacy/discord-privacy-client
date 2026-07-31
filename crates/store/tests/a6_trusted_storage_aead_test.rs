@@ -24,6 +24,17 @@ const ATTACHMENT_WRAP: &[u8] = b"osl-store/wrap/v6/attachment";
 const ATTACHMENT_META: &[u8] = b"osl-store/meta/v6/attachment";
 const ATTACHMENT_COMMITMENT: &[u8] = b"osl-store/commitment/v6/attachment";
 
+type AttachmentEnvelopeRow = (
+    Vec<u8>,
+    Vec<u8>,
+    i64,
+    i64,
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+);
+
 fn message(id: &str, body: &str) -> StoredMessage {
     StoredMessage {
         discord_message_id: id.to_string(),
@@ -414,7 +425,7 @@ fn final_a6_storage_aead_and_boundary_proof() {
         let cache_key = format!("{}/{}", first.discord_message_id, filename);
         let ck = blind(BI_CACHE, &cache_key);
         let mid = blind(BI_MESSAGE, &first.discord_message_id);
-        let (ct, body_nonce, seq, version, meta_nonce, meta_ct, wrap_nonce, wrapped): (Vec<u8>, Vec<u8>, i64, i64, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) = conn
+        let (ct, body_nonce, seq, version, meta_nonce, meta_ct, wrap_nonce, wrapped): AttachmentEnvelopeRow = conn
             .query_row(
                 "SELECT ciphertext, nonce, seq, content_version, meta_nonce, meta_ct, wrapped_key_nonce, wrapped_key FROM attachments WHERE ck_bi=?1",
                 params![ck.clone()],

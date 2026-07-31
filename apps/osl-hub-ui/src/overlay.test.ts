@@ -706,6 +706,14 @@ describe("trusted composer overlay", () => {
 
   it("gates the deterministic P2P probe to the disposable native QA build", () => {
     const native = readRelative("../../osl-hub/src/main.rs");
+    // The Tauri command *list* was refactored out of main.rs into the library
+    // module hub_command_surface.rs (`macro_rules! hub_tauri_commands`), which
+    // is the code CI actually compiles; main.rs keeps only the
+    // `#[tauri::command]` wrappers and the macro invocation. So the
+    // `#[cfg(feature = "discord-qa-shell")]` registration entries below have to
+    // be read from the surface module, while the annotated function bodies are
+    // still asserted against main.rs.
+    const commandSurface = readRelative("../../osl-hub/src/hub_command_surface.rs");
     const nativeOverlay = readRelative("../../osl-hub/src/native_discord_overlay.rs");
     const adapter = readRelative("./native-overlay-adapter.ts");
     const overlay = readRelative("./overlay.ts");
@@ -769,8 +777,8 @@ describe("trusted composer overlay", () => {
     );
     expect(composerOpen).toContain("wait_for_registered_transport(");
     expect(native).toContain("caller.label() != native_discord_overlay::OVERLAY_LABEL");
-    expect(native).toContain('#[cfg(feature = "discord-qa-shell")]\n            send_native_discord_qa_probe,');
-    expect(native).toContain('#[cfg(feature = "discord-qa-shell")]\n            send_native_discord_qa_atomic_text,');
+    expect(commandSurface).toContain('#[cfg(feature = "discord-qa-shell")]\n            send_native_discord_qa_probe,');
+    expect(commandSurface).toContain('#[cfg(feature = "discord-qa-shell")]\n            send_native_discord_qa_atomic_text,');
     expect(permissions).toContain('commands.allow = ["send_native_discord_qa_probe"]');
     expect(permissions).toContain('commands.allow = ["send_native_discord_qa_atomic_text"]');
     expect(adapter).toContain('if (import.meta.env.VITE_OSL_DISCORD_QA_SHELL !== "1") return null;');

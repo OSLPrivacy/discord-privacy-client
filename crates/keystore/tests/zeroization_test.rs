@@ -44,7 +44,10 @@ fn recovery_entropy_is_zeroized_when_identity_drops() {
     // Sanity: the bytes really are there before the drop. Without this the
     // test could pass against an identity that never stored them.
     let before = unsafe { std::ptr::read_volatile(addr as *const [u8; 16]) };
-    assert_eq!(before, entropy, "precondition: entropy is held in the clear");
+    assert_eq!(
+        before, entropy,
+        "precondition: entropy is held in the clear"
+    );
 
     unsafe { ManuallyDrop::drop(&mut identity) };
 

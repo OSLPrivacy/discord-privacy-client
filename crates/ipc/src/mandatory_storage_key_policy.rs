@@ -207,7 +207,11 @@ mod tests {
         // The three confirmed-leaking files from A6: absent an explicit
         // allowlist entry, all of them classify as mandatory-encrypt.
         let policy = MandatoryStorageKeyPolicy::new();
-        for name in ["peer_map.json", "whitelist_state.json", "burned_scopes.json"] {
+        for name in [
+            "peer_map.json",
+            "whitelist_state.json",
+            "burned_scopes.json",
+        ] {
             assert_eq!(policy.classify(name), StorageClass::MandatoryEncrypt);
         }
     }

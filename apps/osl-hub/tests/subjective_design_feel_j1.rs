@@ -94,11 +94,22 @@ fn lower_set(values: &[String]) -> BTreeSet<String> {
     values.iter().map(|value| value.to_lowercase()).collect()
 }
 
+/// Banned concepts are declared in the plural product form the contract names
+/// them by ("receipts", "provider adapters", "automation internals"). A surface
+/// exposes exactly the same implementation machinery when it names one of them
+/// in the singular, so comparing against the plural literal alone is a hole in
+/// the gate that covers every entry in the list rather than one fixture: it let
+/// "Ratchet receipt is missing for this provider adapter" through as if it were
+/// product language. Match the singular stem so both forms are caught.
+fn banned_concept_stem(concept: &str) -> &str {
+    concept.strip_suffix('s').unwrap_or(concept)
+}
+
 fn has_banned_language(text: &str, banned_concepts: &BTreeSet<String>) -> bool {
     let normalized = text.to_lowercase();
     banned_concepts
         .iter()
-        .any(|concept| normalized.contains(concept))
+        .any(|concept| normalized.contains(banned_concept_stem(concept)))
 }
 
 fn case_preserves_product_contract(

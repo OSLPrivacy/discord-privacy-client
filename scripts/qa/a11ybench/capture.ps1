@@ -31,15 +31,19 @@ function Invoke-OslA11yBenchCapture {
 
     function Get-Field {
         param([AllowNull()]$Value, [Parameter(Mandatory)][string]$Name)
+        # `return $x` UNROLLS a collection: a one-element array comes back as a
+        # bare object, so a record with exactly one measurement was refused as
+        # "not an array" while two or more passed. `,$x` wraps it so the
+        # unrolling yields the original value unchanged -- for scalars too.
         if ($Value -is [System.Collections.IDictionary]) {
             if ($Value.Contains($Name)) {
-                return $Value[$Name]
+                return ,$Value[$Name]
             }
             return $null
         }
         foreach ($property in $Value.PSObject.Properties) {
             if ($property.Name -ceq $Name) {
-                return $property.Value
+                return ,$property.Value
             }
         }
         return $null
@@ -208,13 +212,13 @@ function Invoke-OslA11yBenchCapture {
     function ConvertTo-ArrayValue {
         param([AllowNull()]$Value, [Parameter(Mandatory)][string]$Label)
         if ($null -eq $Value) {
-            return @()
+            return ,@()
         }
         if ($Value -is [string] -or $Value -is [System.Collections.IDictionary]) {
             Refuse $Label
         }
         if ($Value -is [array]) {
-            return @($Value)
+            return ,@($Value)
         }
         Refuse $Label
     }

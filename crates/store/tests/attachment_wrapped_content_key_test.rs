@@ -20,6 +20,8 @@ const BI_SENDER_ID: &[u8] = b"osl-store-bi/sender_discord_id-v1";
 const ATTACHMENT_BODY_DOMAIN: &[u8] = b"osl-store/body/v6/attachment";
 const ATTACHMENT_WRAP_DOMAIN: &[u8] = b"osl-store/wrap/v6/attachment";
 
+type BurnedAttachmentRow = (i64, Option<Vec<u8>>, Option<Vec<u8>>, Vec<u8>, Vec<u8>);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RawAttachment {
     ck_bi: Vec<u8>,
@@ -449,7 +451,7 @@ fn selected_burn_shreds_message_and_all_attachment_envelopes_atomically() {
     );
 
     let conn = rusqlite::Connection::open(tmp.path().join("messages.sqlite")).unwrap();
-    let burned: Vec<(i64, Option<Vec<u8>>, Option<Vec<u8>>, Vec<u8>, Vec<u8>)> = conn
+    let burned: Vec<BurnedAttachmentRow> = conn
         .prepare(
             "SELECT burned, wrapped_key_nonce, wrapped_key, nonce, ciphertext \
                FROM attachments WHERE mid_bi = \

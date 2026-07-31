@@ -41,6 +41,11 @@ pub struct SignedProfile {
 }
 
 impl SignedProfile {
+    // Nine separate arguments on purpose. The signed envelope binds
+    // independently supplied versioning, identity, freshness, body, signer,
+    // and signature fields; a builder or bag struct would add invalid partial
+    // construction states at this trust boundary.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         profile_schema_version: u32,
         profile_id: impl Into<String>,

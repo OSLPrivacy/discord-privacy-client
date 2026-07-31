@@ -316,7 +316,7 @@ mod tests {
             [1u8; ED25519_SIGNATURE_LEN],
         )
         .unwrap();
-        let signature = ed25519::sign(&secret, &unsigned.signing_payload().unwrap());
+        let signature = ed25519::sign(secret, &unsigned.signing_payload().unwrap());
         SignedProfile::new(
             PROFILE_DOC_VERSION,
             doc.profile_id.clone(),

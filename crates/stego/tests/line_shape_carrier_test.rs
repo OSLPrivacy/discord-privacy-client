@@ -7,9 +7,9 @@
 //! quoted the cover would leak the carrier for that message.
 
 use stego::{
-    decode_mode1, decode_token, encode_mode1_shaped, encode_token_shaped, is_mode1,
-    rendered_rows, rows_for_hard_lines, shape_cover, ConversationCipher, RowBudget, RowMatch,
-    CHUNK_PAYLOAD_BYTES, MAX_SHAPED_ROWS, MODE1_MAX_RAW_LEN, TOKEN_ID_BYTES,
+    decode_mode1, decode_token, encode_mode1_shaped, encode_token_shaped, is_mode1, rendered_rows,
+    rows_for_hard_lines, shape_cover, ConversationCipher, RowBudget, RowMatch, CHUNK_PAYLOAD_BYTES,
+    MAX_SHAPED_ROWS, MODE1_MAX_RAW_LEN, TOKEN_ID_BYTES,
 };
 
 /// Discord's message column at 100% zoom on a default window is roughly 85
@@ -177,7 +177,10 @@ fn a_one_line_plaintext_is_the_floor_case_and_is_reported_not_faked() {
     let worst = *floors.iter().max().unwrap();
     let best = *floors.iter().min().unwrap();
     println!("token floor at column {WIDE_COLUMN}: min={best} max={worst} rows for a 1-row target");
-    assert!(worst <= 4, "the token floor must stay within a couple of rows");
+    assert!(
+        worst <= 4,
+        "the token floor must stay within a couple of rows"
+    );
 }
 
 #[test]
@@ -195,7 +198,10 @@ fn a_plaintext_at_the_planner_hard_line_limit_is_reported_honestly() {
         RowBudget::new(target, WIDE_COLUMN),
     );
     assert_survives_the_round_trip(shaped.text());
-    assert_eq!(decode_token(&cipher, mac_key, shaped.text()), Some(pointer(5)));
+    assert_eq!(
+        decode_token(&cipher, mac_key, shaped.text()),
+        Some(pointer(5))
+    );
     assert!(shaped.rows <= PLANNER_MAX_TARGET_LINES);
     // A 12-byte pointer does not have 64 words in it, so the carrier cannot be
     // stretched that tall. It must say so rather than silently misalign.

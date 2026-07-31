@@ -6,9 +6,20 @@ const read = (path: string): string => readFileSync(fileURLToPath(new URL(path, 
 
 describe("dedicated WhatsApp QA build surface", () => {
   it("routes the retained main window only to the dedicated local entry", () => {
-    const config = JSON.parse(read("../../osl-hub/tauri.conf.json")) as { app: { windows: Array<{ label: string; url: string; focus: boolean }> } };
+    // The WhatsApp QA surface gets its OWN config, exactly as the Signal QA lane
+    // does. It previously overwrote the shipping tauri.conf.json, which pointed
+    // the PRODUCTION main window at whatsapp-qa.html -- so the real app opened
+    // the QA harness instead of its own UI. Both halves are asserted here so
+    // neither can regress: the QA entry stays wired, and production stays clean.
+    const qa = JSON.parse(read("../../osl-hub/tauri.whatsapp-qa.conf.json")) as { app: { windows: Array<{ label: string; url: string; focus: boolean }> } };
+    expect(qa.app.windows).toHaveLength(1);
+    expect(qa.app.windows[0]).toMatchObject({ label: "main", url: "whatsapp-qa.html", focus: false });
+
+    const config = JSON.parse(read("../../osl-hub/tauri.conf.json")) as { productName: string; app: { windows: Array<{ label: string; url: string }> } };
+    expect(config.productName).toBe("OSL Privacy");
     expect(config.app.windows).toHaveLength(1);
-    expect(config.app.windows[0]).toMatchObject({ label: "main", url: "whatsapp-qa.html", focus: false });
+    expect(config.app.windows[0]).toMatchObject({ label: "main", url: "index.html" });
+
     expect(read("../whatsapp-qa.html")).toContain('src="/src/whatsapp-qa.ts"');
   });
 

@@ -657,19 +657,20 @@ impl Session {
         }
 
         match which {
-            Opener::Stored(hk) => self
-                .skipped
-                .take(hk, header.n)
-                .ok_or(Error::AuthFailed),
+            Opener::Stored(hk) => self.skipped.take(hk, header.n).ok_or(Error::AuthFailed),
 
             Opener::Current => {
-                let hk = self.hkr.ok_or(Error::Internal("current chain without key"))?;
+                let hk = self
+                    .hkr
+                    .ok_or(Error::Internal("current chain without key"))?;
                 self.message_key_in_current_chain(&hk, header.n)
             }
 
             Opener::Next => {
                 self.dh_ratchet(header, rng)?;
-                let hk = self.hkr.ok_or(Error::Internal("ratchet left no header key"))?;
+                let hk = self
+                    .hkr
+                    .ok_or(Error::Internal("ratchet left no header key"))?;
                 self.message_key_in_current_chain(&hk, header.n)
             }
         }
@@ -677,11 +678,7 @@ impl Session {
 
     /// Derive (or recover) the message key for counter `n` in the
     /// current receiving chain, caching anything skipped.
-    fn message_key_in_current_chain(
-        &mut self,
-        hk: &[u8; AEAD_KEY],
-        n: u32,
-    ) -> Result<Secret32> {
+    fn message_key_in_current_chain(&mut self, hk: &[u8; AEAD_KEY], n: u32) -> Result<Secret32> {
         if n < self.nr {
             // Older than the chain head: it can only be a cached skip.
             // A replay lands here too, and fails, because taking a
@@ -1043,6 +1040,12 @@ fn base64_decode(s: &str) -> Result<Vec<u8>> {
         .map_err(|_| Error::Base64)
 }
 
+// The crate denies clippy::indexing_slicing (lib.rs:49) because a panic on
+// attacker-controlled input in a ratchet is a DoS. That policy is for
+// PRODUCTION code. These tests index deliberately and provably in bounds
+// (truncation loops over 0..bytes.len(), a bit-flip on a non-empty
+// ciphertext); rewriting them with get() would obscure what they prove.
+#[allow(clippy::indexing_slicing)]
 #[cfg(test)]
 mod tests {
     use super::*;

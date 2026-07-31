@@ -846,4 +846,3 @@ mod tests {
         assert_eq!(adler32(b""), 1);
     }
 }
-
