@@ -83,15 +83,15 @@ The equivalent API contract is:
 When configuring by API, verify the `test` context came from the Rust Test
 workflow run. Absence of that Rust source means refusal, not permission.
 
-Source contract checks for this file:
+Local behavioral contract check for this file:
 
 ```sh
-grep -F "Rust Test" .github/BRANCH_PROTECTION.md
-grep -F "test" .github/BRANCH_PROTECTION.md
-grep -F "quality-checks" .github/BRANCH_PROTECTION.md
-grep -F "Do not allow bypassing the above settings" .github/BRANCH_PROTECTION.md
-grep -F "Admin bypass is a refusal" .github/BRANCH_PROTECTION.md
+node scripts/check-app-claims.mjs --self-test
 ```
+
+That self-test parses the JSON contract above and then mutates it to prove the
+validator refuses a TypeScript-sourced `test` context and any admin-bypass
+configuration.
 
 ## When to update
 

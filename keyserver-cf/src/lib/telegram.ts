@@ -157,7 +157,23 @@ async function constantTimeEqual(left: string, right: string): Promise<boolean> 
     crypto.subtle.digest("SHA-256", encoder.encode(left)),
     crypto.subtle.digest("SHA-256", encoder.encode(right)),
   ]);
-  return crypto.subtle.timingSafeEqual(leftDigest, rightDigest);
+  return constantTimeDigestEqual(leftDigest, rightDigest);
+}
+
+function constantTimeDigestEqual(left: ArrayBuffer, right: ArrayBuffer): boolean {
+  const subtle = crypto.subtle as SubtleCrypto & {
+    timingSafeEqual?: (left: ArrayBuffer, right: ArrayBuffer) => boolean;
+  };
+  if (typeof subtle.timingSafeEqual === "function") {
+    return subtle.timingSafeEqual(left, right);
+  }
+  const leftBytes = new Uint8Array(left);
+  const rightBytes = new Uint8Array(right);
+  let diff = leftBytes.length ^ rightBytes.length;
+  for (let index = 0; index < Math.max(leftBytes.length, rightBytes.length); index += 1) {
+    diff |= (leftBytes[index] ?? 0) ^ (rightBytes[index] ?? 0);
+  }
+  return diff === 0;
 }
 
 async function authorizedTelegramChatId(
@@ -175,7 +191,7 @@ async function authorizedTelegramChatId(
   for (let index = 0; index < allowedDigests.length; index += 1) {
     // Check every entry without an early exit. Returning the deployment-owned
     // value also ensures the public update never chooses a send destination.
-    if (crypto.subtle.timingSafeEqual(suppliedDigest, allowedDigests[index]!)) {
+    if (constantTimeDigestEqual(suppliedDigest, allowedDigests[index]!)) {
       matched = allowedChatIds[index]!;
     }
   }
@@ -512,4 +528,181 @@ export async function handleTelegramCommand(
   }
   await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, authorizedChatId, message, fetcher);
   return "accepted";
+}
+
+type TelegramSourceVitest = {
+  describe: (name: string, fn: () => void) => void;
+  it: (name: string, fn: () => Promise<void>) => void;
+  expect: typeof import("vitest")["expect"];
+};
+
+declare global {
+  interface ImportMeta {
+    vitest?: TelegramSourceVitest;
+  }
+}
+
+function registerTelegramSourceTests(vitest: TelegramSourceVitest): void {
+  const { describe, expect, it } = vitest;
+  const botToken = "1234567890:abcdefghijklmnopqrstuvwxyzABCDE";
+
+  function testEnv(overrides: Partial<Env> = {}): Env {
+    return {
+      DB: {} as D1Database,
+      RATE_LIMIT_5: {} as RateLimit,
+      RATE_LIMIT_10: {} as RateLimit,
+      RATE_LIMIT_120: {} as RateLimit,
+      RATE_LIMIT_1200: {} as RateLimit,
+      RATE_LIMIT_3600: {} as RateLimit,
+      TELEGRAM_BOT_TOKEN: botToken,
+      TELEGRAM_WEBHOOK_SECRET: "telegram-webhook-secret",
+      TELEGRAM_OPERATOR_CHAT_IDS: "2222222222",
+      ...overrides,
+    };
+  }
+
+  function telegramRequest(
+    chatId: number | string,
+    text: string,
+    secret = "telegram-webhook-secret",
+  ): Request {
+    return new Request("https://keyserver.test/v1/telegram/webhook", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-telegram-bot-api-secret-token": secret,
+      },
+      body: JSON.stringify({ message: { chat: { id: chatId }, text } }),
+    });
+  }
+
+  function captureTelegramSends(): {
+    fetcher: typeof fetch;
+    sent: Array<{ chat_id: unknown; text: string }>;
+  } {
+    const sent: Array<{ chat_id: unknown; text: string }> = [];
+    const fetcher: typeof fetch = async (_input, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        chat_id?: unknown;
+        text?: unknown;
+      };
+      sent.push({
+        chat_id: body.chat_id,
+        text: typeof body.text === "string" ? body.text : "",
+      });
+      return Response.json({ ok: true });
+    };
+    return { fetcher, sent };
+  }
+
+  describe("Telegram source contract", () => {
+    it("keyserver-cf/src/lib/telegram.ts", async () => {
+      const env = testEnv({
+        TELEGRAM_OPERATOR_CHAT_IDS: "2222222222,-1002222222222",
+        TELEGRAM_VIEWER_CHAT_IDS: "3333333333",
+        TELEGRAM_ADMIN_CHAT_ID: "4444444444",
+      });
+      const unauthorized = captureTelegramSends();
+
+      expect(telegramReportingIsConfigured(env)).toBe(true);
+      await expect(
+        handleTelegramCommand(
+          telegramRequest("4444444444", "/osl status"),
+          env,
+          unauthorized.fetcher,
+        ),
+      ).resolves.toBe("ignored");
+      expect(unauthorized.sent).toEqual([]);
+
+      const viewer = captureTelegramSends();
+      await expect(
+        handleTelegramCommand(
+          telegramRequest("3333333333", "/osl off"),
+          env,
+          viewer.fetcher,
+        ),
+      ).resolves.toBe("accepted");
+      expect(viewer.sent).toHaveLength(1);
+      expect(viewer.sent[0]?.chat_id).toBe("3333333333");
+      expect(viewer.sent[0]?.text).toContain(
+        "Cannot change /osl coordination state from this chat.",
+      );
+      expect(viewer.sent[0]?.text).not.toContain("Owner binding is required");
+
+      const operator = captureTelegramSends();
+      await expect(
+        handleTelegramCommand(
+          telegramRequest("-1002222222222", "/osl off"),
+          env,
+          operator.fetcher,
+        ),
+      ).resolves.toBe("accepted");
+      expect(operator.sent).toHaveLength(1);
+      expect(operator.sent[0]?.chat_id).toBe("-1002222222222");
+      expect(operator.sent[0]?.text).toContain(
+        "Owner binding is required before coordination controls can run.",
+      );
+
+      const alert = captureTelegramSends();
+      await expect(sendTelegramOperatorMessage(env, "operator-only aggregate", alert.fetcher))
+        .resolves.toBeUndefined();
+      expect(alert.sent.map((row) => row.chat_id)).toEqual(["2222222222", "-1002222222222"]);
+      expect(alert.sent.map((row) => row.chat_id)).not.toContain("3333333333");
+
+      const invalid = testEnv({
+        TELEGRAM_OPERATOR_CHAT_IDS: "0",
+        TELEGRAM_ADMIN_CHAT_ID: "2222222222",
+      });
+      expect(telegramReportingIsConfigured(invalid)).toBe(false);
+      expect(telegramOperatorAlertsAreConfigured(invalid)).toBe(false);
+      await expect(
+        handleTelegramCommand(
+          telegramRequest("2222222222", "/osl status"),
+          invalid,
+          captureTelegramSends().fetcher,
+        ),
+      ).rejects.toThrow("Telegram reporting is not configured");
+    });
+
+    it("telegram'", async () => {
+      const env = testEnv();
+
+      const help = captureTelegramSends();
+      await expect(
+        handleTelegramCommand(telegramRequest("2222222222", "/osl"), env, help.fetcher),
+      ).resolves.toBe("accepted");
+      expect(help.sent[0]?.text).toContain("OSL operator commands");
+      expect(help.sent[0]?.text).toContain("/osl progress: project progress block");
+      expect(help.sent[0]?.text).toContain("OSL progress  unavailable");
+
+      const progress = captureTelegramSends();
+      await expect(
+        handleTelegramCommand(
+          telegramRequest("2222222222", "/osl@osl_bot progress"),
+          env,
+          progress.fetcher,
+        ),
+      ).resolves.toBe("accepted");
+      expect(progress.sent[0]?.text).toContain(
+        "Verified work: unavailable until the checklist source is connected",
+      );
+      expect(progress.sent[0]?.text).toContain("Updated:");
+
+      const typo = captureTelegramSends();
+      await expect(
+        handleTelegramCommand(
+          telegramRequest("2222222222", "/osl progres"),
+          env,
+          typo.fetcher,
+        ),
+      ).resolves.toBe("accepted");
+      expect(typo.sent[0]?.text).toContain("Unknown /osl command.");
+      expect(typo.sent[0]?.text).toContain("Suggestion: /osl progress");
+      expect(typo.sent[0]?.text).toContain("OSL progress  unavailable");
+    });
+  });
+}
+
+if (import.meta.vitest) {
+  registerTelegramSourceTests(import.meta.vitest);
 }

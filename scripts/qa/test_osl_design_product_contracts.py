@@ -340,6 +340,15 @@ def gui_final_plan_document_contract() -> None:
         _errors_for_information_architecture(settings_destination),
     )
 
+    missing_fixed_settings = markdown.replace(
+        "Settings remains a fixed item at the bottom of the sidebar rather than a seventh competing destination.",
+        "Settings is available from the sidebar.",
+    )
+    testcase.assertIn(
+        "Settings is not fixed at the bottom outside the six",
+        _errors_for_information_architecture(missing_fixed_settings),
+    )
+
     widened_import_choices = markdown.replace(
         "a web app shows only `Browser account` and `New account`",
         "a web app shows `Browser account`, `Existing profile` and `New account`",
@@ -347,6 +356,15 @@ def gui_final_plan_document_contract() -> None:
     testcase.assertIn(
         "browser import receipt path must expose exactly two choices",
         _errors_for_browser_and_monetization(widened_import_choices),
+    )
+
+    permissive_renderer_browser = markdown.replace(
+        "OSL never accepts a renderer-provided executable, URL, profile path or browser argument",
+        "OSL may accept a renderer-provided URL",
+    )
+    testcase.assertIn(
+        "renderer-provided browser launch authority is not refused",
+        _errors_for_browser_and_monetization(permissive_renderer_browser),
     )
 
     interrupting_paid_state = markdown.replace("must never interrupt", "may interrupt", 1)
@@ -361,15 +379,33 @@ gui_final_plan_document_contract.__name__ = "docs/design/osl-gui-final-plan.md'"
 
 def encode_burns_five_guarantees_and_banned_phrases() -> None:
     markdown = SIMPLE_SPEC.read_text(encoding="utf-8")
-    broken = markdown.replace(
+    optimistic_result = markdown.replace(
         '5. **Honest result:** OSL reports what it actually verified.',
         '5. **Optimistic result:** OSL reports cleanup requests as success.',
     ).replace('"gone for good"', '"secure cleanup"')
-    _assert_contract(_errors_for_burn_contract, markdown, broken_documents=(broken,))
+    missing_local_cleanup = markdown.replace(
+        "1. **Local cleanup:** OSL shreds its local stored ciphertext and nonce for the\n"
+        "   selected scope, marks the rows burned so sync cannot resurrect them, and drops\n"
+        "   cached attachments for those rows.",
+        "1. **Local cleanup:** OSL updates the conversation state for the selected scope.",
+    )
+    testcase = unittest.TestCase()
+    testcase.assertEqual(_errors_for_burn_contract(markdown), [])
+    testcase.assertIn(
+        "Burn guarantee is incomplete: Honest result",
+        _errors_for_burn_contract(optimistic_result),
+    )
+    testcase.assertIn(
+        "Burn guarantee is incomplete: Local cleanup",
+        _errors_for_burn_contract(missing_local_cleanup),
+    )
 
 
 encode_burns_five_guarantees_and_banned_phrases.__name__ = (
     "Encode Burn's five guarantees and banned phrases."
+)
+globals()["Encode Burn's five guarantees and banned phrases."] = (
+    encode_burns_five_guarantees_and_banned_phrases
 )
 
 
@@ -395,10 +431,16 @@ def simple_spec_burn_contract() -> None:
         _errors_for_send_contract(auto_retry, gui),
     )
 
-    synthetic_second_enter = markdown.replace(
-        "Key repeat, a\nheld key, a synthetic event or OSL's own placement action cannot satisfy the\nsecond Enter.",
-        "Key repeat and a\nheld key may satisfy the second Enter.",
+    optimistic_uncertain_delivery = markdown.replace(
+        "never treats delivery uncertain as sent",
+        "treats delivery uncertain as sent",
     )
+    testcase.assertIn(
+        "missing sending refusal: never treats delivery uncertain as sent",
+        _errors_for_send_contract(optimistic_uncertain_delivery, gui),
+    )
+
+    synthetic_second_enter = markdown.replace("synthetic event", "automation event")
     testcase.assertIn(
         "missing simple Double Enter rule: synthetic event",
         _errors_for_send_contract(synthetic_second_enter, gui),

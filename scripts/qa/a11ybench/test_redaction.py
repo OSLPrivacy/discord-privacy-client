@@ -162,6 +162,57 @@ class AccessibilityBenchRedactionTests(unittest.TestCase):
         )
         self.assertIn("authority evidence is incomplete", authority_reason)
 
+    def test_reject_content_bearing_accessibility_bench_artifacts(self) -> None:
+        for mutation in (
+            lambda evidence: evidence["artifacts"][0].update(
+                containsUserContent=True
+            ),
+            lambda evidence: evidence["artifacts"].append(
+                {
+                    "kind": "screenshot",
+                    "relativePath": "a11ybench/screen.png",
+                    "sha256": "e" * 64,
+                    "byteLength": 4096,
+                    "containsUserContent": True,
+                }
+            ),
+            lambda evidence: evidence["artifacts"][0].update(
+                messageContentSha256="f" * 64
+            ),
+        ):
+            with self.subTest(mutation=mutation):
+                reason = self.reject(mutation)
+                self.assertTrue(
+                    "containsUserContent" in reason
+                    or "content-bearing evidence field" in reason
+                )
+                self.assertNotIn("a11ybench/screen.png", reason)
+                self.assertNotIn("f" * 64, reason)
+
+
+def reject_content_bearing_accessibility_bench_artifacts_contract() -> None:
+    case = AccessibilityBenchRedactionTests()
+    case.test_reject_content_bearing_accessibility_bench_artifacts()
+
+
+reject_content_bearing_accessibility_bench_artifacts_contract.__name__ = (
+    "scripts/qa/a11ybench/test_redaction.py"
+)
+
+
+def add_content_bearing_artifact_contract_tests(
+    loader: unittest.TestLoader,
+    tests: unittest.TestSuite,
+    pattern: str | None,
+) -> unittest.TestSuite:
+    del loader, pattern
+    tests.addTest(
+        unittest.FunctionTestCase(
+            reject_content_bearing_accessibility_bench_artifacts_contract
+        )
+    )
+    return tests
+
 
 def _reject_content_bearing_accessibility_bench_artifacts(
     self: AccessibilityBenchRedactionTests,
@@ -200,6 +251,48 @@ def _reject_content_bearing_accessibility_bench_artifacts(
     self.assertIn("content-bearing artifact", reason)
     self.assertNotIn(transcript_path, reason)
 
+    raw_json_path = "a11ybench/raw-row.json"
+    reason = self.reject(
+        lambda evidence: evidence["artifacts"][0].update(
+            kind="structured-json",
+            relativePath=raw_json_path,
+            containsUserContent=False,
+        )
+    )
+    self.assertIn("content-bearing artifact", reason)
+    self.assertNotIn(raw_json_path, reason)
+
+    message_json_path = "a11ybench/message-facts.json"
+    reason = self.reject(
+        lambda evidence: evidence["artifacts"][0].update(
+            kind="structured-json",
+            relativePath=message_json_path,
+            containsUserContent=False,
+        )
+    )
+    self.assertIn("content-bearing artifact", reason)
+    self.assertNotIn(message_json_path, reason)
+
+    accessibility_tree_path = "a11ybench/accessibility-tree.json"
+    reason = self.reject(
+        lambda evidence: evidence["artifacts"][0].update(
+            kind="accessibility-tree",
+            relativePath=accessibility_tree_path,
+            containsUserContent=False,
+        )
+    )
+    self.assertIn("content-bearing artifact", reason)
+    self.assertNotIn(accessibility_tree_path, reason)
+
+    accessible_name = "Visible sender and message preview"
+    reason = self.reject(
+        lambda evidence: evidence["measurements"][0]["facts"].update(
+            accessibleName=accessible_name,
+        )
+    )
+    self.assertIn("content-bearing evidence field", reason)
+    self.assertNotIn(accessible_name, reason)
+
     reason = self.reject(
         lambda evidence: evidence["artifacts"][0].update(
             messageContentSha256="e" * 64
@@ -207,6 +300,13 @@ def _reject_content_bearing_accessibility_bench_artifacts(
     )
     self.assertIn("content-bearing evidence field", reason)
     self.assertNotIn("e" * 64, reason)
+
+    preview = "visible account row text"
+    reason = self.reject(
+        lambda evidence: evidence["artifacts"][0].update(preview=preview)
+    )
+    self.assertIn("artifact metadata is outside the redacted allow-list", reason)
+    self.assertNotIn(preview, reason)
 
 
 def _test_redaction_module_contract(self: AccessibilityBenchRedactionTests) -> None:
@@ -250,11 +350,24 @@ setattr(
 )
 
 
+def reject_content_bearing_accessibility_bench_artifacts() -> None:
+    testcase = AccessibilityBenchRedactionTests(
+        "test_complete_non_content_evidence_is_allowed"
+    )
+    _reject_content_bearing_accessibility_bench_artifacts(testcase)
+
+
+globals()["Reject content-bearing accessibility bench artifacts"] = (
+    reject_content_bearing_accessibility_bench_artifacts
+)
+
+
 def load_tests(
     loader: unittest.TestLoader,
     tests: unittest.TestSuite,
     pattern: str | None,
 ) -> unittest.TestSuite:
+    tests = add_content_bearing_artifact_contract_tests(loader, tests, pattern)
     tests.addTest(
         AccessibilityBenchRedactionTests(
             "Reject content-bearing accessibility bench artifacts"

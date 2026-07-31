@@ -44,7 +44,7 @@ pub enum ProfileEffect {
     Shimmer,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HubProfileInput {
     pub display_name: String,
@@ -57,7 +57,7 @@ pub struct HubProfileInput {
     pub status: String,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[derive(Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HubProfileDto {
     pub display_name: String,

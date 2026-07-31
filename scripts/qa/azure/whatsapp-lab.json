@@ -1,0 +1,163 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "adminUsername": { "type": "string", "defaultValue": "osltest" },
+    "client1AdminPassword": { "type": "secureString" },
+    "client2AdminPassword": { "type": "secureString" },
+    "rdpSourcePrefix": { "type": "string" }
+  },
+  "variables": {
+    "subnetName": "clients",
+    "vmNames": ["OSL-WhatsApp-Client-1", "OSL-WhatsApp-Client-2"],
+    "computerNames": ["OSLWAClient1", "OSLWAClient2"],
+    "clientLocations": ["centralus", "northcentralus"],
+    "vmSizes": ["Standard_D2s_v4", "Standard_D2s_v3"],
+    "addressPrefixes": ["10.84.0.0/24", "10.85.0.0/24"]
+  },
+  "resources": [
+    {
+      "copy": { "name": "nsgCopy", "count": 2 },
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}-nsg', variables('vmNames')[copyIndex()])]",
+      "location": "[variables('clientLocations')[copyIndex()]]",
+      "properties": {
+        "securityRules": [
+          {
+            "name": "rdp-from-owner",
+            "properties": {
+              "priority": 100,
+              "access": "Allow",
+              "direction": "Inbound",
+              "protocol": "Tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "3389",
+              "sourceAddressPrefix": "[parameters('rdpSourcePrefix')]",
+              "destinationAddressPrefix": "*"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "copy": { "name": "vnetCopy", "count": 2 },
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}-vnet', variables('vmNames')[copyIndex()])]",
+      "location": "[variables('clientLocations')[copyIndex()]]",
+      "dependsOn": ["[resourceId('Microsoft.Network/networkSecurityGroups', format('{0}-nsg', variables('vmNames')[copyIndex()]))]"],
+      "properties": {
+        "addressSpace": { "addressPrefixes": ["[variables('addressPrefixes')[copyIndex()]]"] },
+        "subnets": [
+          {
+            "name": "[variables('subnetName')]",
+            "properties": {
+              "addressPrefix": "[variables('addressPrefixes')[copyIndex()]]",
+              "networkSecurityGroup": {
+                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', format('{0}-nsg', variables('vmNames')[copyIndex()]))]"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "copy": { "name": "publicIpCopy", "count": 2 },
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}-pip', variables('vmNames')[copyIndex()])]",
+      "location": "[variables('clientLocations')[copyIndex()]]",
+      "sku": { "name": "Standard" },
+      "properties": { "publicIPAllocationMethod": "Static", "idleTimeoutInMinutes": 15 }
+    },
+    {
+      "copy": { "name": "nicCopy", "count": 2 },
+      "type": "Microsoft.Network/networkInterfaces",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}-nic', variables('vmNames')[copyIndex()])]",
+      "location": "[variables('clientLocations')[copyIndex()]]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks', format('{0}-vnet', variables('vmNames')[copyIndex()]))]",
+        "[resourceId('Microsoft.Network/publicIPAddresses', format('{0}-pip', variables('vmNames')[copyIndex()]))]"
+      ],
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "primary",
+            "properties": {
+              "primary": true,
+              "privateIPAllocationMethod": "Dynamic",
+              "subnet": {
+                "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', format('{0}-vnet', variables('vmNames')[copyIndex()]), variables('subnetName'))]"
+              },
+              "publicIPAddress": {
+                "id": "[resourceId('Microsoft.Network/publicIPAddresses', format('{0}-pip', variables('vmNames')[copyIndex()]))]"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "copy": { "name": "vmCopy", "count": 2 },
+      "type": "Microsoft.Compute/virtualMachines",
+      "apiVersion": "2024-07-01",
+      "name": "[variables('vmNames')[copyIndex()]]",
+      "location": "[variables('clientLocations')[copyIndex()]]",
+      "identity": { "type": "SystemAssigned" },
+      "tags": {
+        "owner": "liam",
+        "purpose": "osl-whatsapp-desktop-qa",
+        "provider": "whatsapp",
+        "profile-policy": "preserve"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkInterfaces', format('{0}-nic', variables('vmNames')[copyIndex()]))]"
+      ],
+      "properties": {
+        "hardwareProfile": { "vmSize": "[variables('vmSizes')[copyIndex()]]" },
+        "securityProfile": {
+          "securityType": "TrustedLaunch",
+          "uefiSettings": { "secureBootEnabled": true, "vTpmEnabled": true }
+        },
+        "osProfile": {
+          "computerName": "[variables('computerNames')[copyIndex()]]",
+          "adminUsername": "[parameters('adminUsername')]",
+          "adminPassword": "[if(equals(copyIndex(), 0), parameters('client1AdminPassword'), parameters('client2AdminPassword'))]",
+          "windowsConfiguration": {
+            "provisionVMAgent": true,
+            "enableAutomaticUpdates": true,
+            "patchSettings": { "patchMode": "AutomaticByOS", "assessmentMode": "ImageDefault" }
+          }
+        },
+        "storageProfile": {
+          "imageReference": {
+            "publisher": "MicrosoftWindowsDesktop",
+            "offer": "windows-11",
+            "sku": "win11-24h2-pro",
+            "version": "latest"
+          },
+          "osDisk": {
+            "createOption": "FromImage",
+            "caching": "ReadWrite",
+            "managedDisk": { "storageAccountType": "StandardSSD_LRS" },
+            "deleteOption": "Delete"
+          }
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces', format('{0}-nic', variables('vmNames')[copyIndex()]))]",
+              "properties": { "primary": true, "deleteOption": "Delete" }
+            }
+          ]
+        },
+        "diagnosticsProfile": { "bootDiagnostics": { "enabled": true } }
+      }
+    }
+  ],
+  "outputs": {
+    "vmNames": { "type": "array", "value": "[variables('vmNames')]" }
+  }
+}

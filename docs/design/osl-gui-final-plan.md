@@ -806,6 +806,28 @@ Before production implementation:
 
 The GUI plan is ready to implement when these statements are all accepted:
 
+Behavioral acceptance test:
+`docs/design/osl-gui-final-plan.md'`.
+
+Exercise the product shell from a fresh profile and assert behavior, not prose:
+the primary sidebar exposes exactly Home, Inbox, People, Privacy, Activity and
+Connections as top-level destinations, with Settings fixed separately at the
+bottom. Attempting to add Settings, Advanced, Servers, Mail, Android Workspace or
+any connector internals as a seventh primary destination must fail the test.
+
+Using a genuinely web-backed service tile, the same acceptance test must assert
+that the launch choice is limited to the existing browser account when an
+import-source receipt exists, or a new owner-scoped OSL browser profile. Without a
+completed import-source receipt, opening the tile must go directly to the fixed
+official sign-in origin. No renderer-supplied executable, URL, profile path or
+browser argument can become an accepted launch choice.
+
+Run the same flow through a safety warning, a destructive confirmation and an
+unsupported protected-action refusal while the account is Free. The warning,
+confirmation or refusal must remain the foreground decision and must not be
+replaced, blocked or delayed by an upgrade prompt. Inverting any of these
+behaviors must fail the test.
+
 - One OSL Privacy plus thin overlays is the core form.
 - The Windows-first companion list includes Discord, Telegram, WhatsApp, Instagram, Snapchat, Signal, selected email providers, X and Facebook Messenger. Slack and LinkedIn Messaging are later integrations.
 - Every service supports multiple isolated accounts with the active identity always visible.

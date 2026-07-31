@@ -100,7 +100,7 @@ import {
 import { checkHubForUpdates, installHubUpdate, openHubReleasesPage, type UpdateStatus } from "./updates";
 import { createDiscordQaGeometryKeeper } from "./discord-qa-geometry";
 import { browserLogo, serviceLogo, providerLogo } from "./logos";
-import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, burnActiveHubContext, burnHubServiceAccount, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubServiceBurnReadiness, isHubPlaintext, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, scanLocalPrivacy, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext } from "./adapters";
+import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, burnActiveHubContext, burnHubServiceAccount, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, scanLocalPrivacy, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext } from "./adapters";
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import { blankPeerProtectedModel, boundedPeerProtectedDraft, peerProtectedDraftByteFeedback, peerProtectedSheetMarkup, type PeerProtectedPane, type PeerProtectedSheetModel } from "./peer-protected-sheet";
 import oslLogoUrl from "../../osl-hub/icons/icon-cyan.png";
@@ -115,6 +115,22 @@ import { loadMassCleanupCapabilities, type MassCleanupCapabilityManifest } from 
 import { projectAutoScrubFleetStatus, type AutoScrubFleetStatus } from "./autoscrub-contract";
 import { loadAutoScrubRunFleetStatus, requestAutoScrubGlobalStop } from "./autoscrub-unattended-run";
 import { oslMailStage, type OslMailStage } from "./desktop-service-policy";
+import {
+  acknowledgeOslMailRetrieval,
+  burnOslMailbox,
+  listOslMailThreads,
+  loadOslMailStatus,
+  provisionOslMail,
+  retrieveOslMailThread,
+  sendOslMail,
+  type OslMailBurnReceipt,
+  type OslMailDeleteReceipt,
+  type OslMailRetrievedThread,
+  type OslMailSendReceipt,
+  type OslMailStatus,
+  type OslMailThreadSummary,
+} from "./osl-mail-adapter";
+import { oslMailViewMarkup, type OslMailPane } from "./osl-mail-view";
 export {
   autoscrubUnattendedContractGate,
   autoscrubUnattendedProductionRun,
@@ -136,7 +152,7 @@ import {
 } from "./discord-headless-qa-adapter";
 import type { SecureLocalStore } from "./secure-local-store";
 
-export type Route = "onboarding" | "home" | "inbox" | "people" | "privacy" | "activity" | "connections" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-servers";
+export type Route = "onboarding" | "home" | "inbox" | "people" | "privacy" | "activity" | "connections" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-mail" | "osl-servers";
 const PROTECTED_DISPLAY_VISIBILITY_CHANGED_EVENT = "osl://protected-display-visibility-changed";
 const NATIVE_DISCORD_OVERLAY_CLOSED_EVENT = "osl://native-discord-overlay-closed";
 const MAIN_WINDOW_CAPTURE_REFUSED_EVENT = "hub-main-capture-protection-refused";
@@ -305,6 +321,17 @@ let hiddenHomeTiles = new Set<string>();
 let draggingHomeTileId: string | null = null;
 let friendCode: string | null = null;
 let friendDisplayId: string | null = null;
+let claimedOslUsername: string | null = null;
+let oslMailLoading = false;
+let oslMailStatus: OslMailStatus | null = null;
+let oslMailThreads: OslMailThreadSummary[] = [];
+let oslMailActiveThread: OslMailRetrievedThread | null = null;
+let oslMailPane: OslMailPane = "inbox";
+let oslMailNotifications = true;
+let oslMailDeleteReceipt: OslMailDeleteReceipt | null = null;
+let oslMailSendReceipt: OslMailSendReceipt | null = null;
+let oslMailBurnReceipt: OslMailBurnReceipt | null = null;
+let oslMailError: string | null = null;
 let appNotifications: AppNotification[] | null = null;
 let notificationsEnabled = false;
 let notificationAppPreferences: Partial<Record<ServiceId, boolean>> = {};
@@ -2945,7 +2972,7 @@ export function fixedIaSidebarOrderPreview(): string[] {
 export function primarySidebarMarkup(): string {
   const activeDestination = (id: OslPrimaryDestination): boolean => {
     if (id === "home") return route === "home" && !friendsDialogOpen;
-    if (id === "inbox") return route === "inbox" || route === "osl-chat";
+    if (id === "inbox") return route === "inbox" || route === "osl-chat" || route === "osl-mail";
     if (id === "people") return route === "people" || friendsDialogOpen;
     if (id === "privacy") return route === "privacy" || (route === "settings" && (settingsSection === "scrub" || settingsSection === "cleanup" || settingsSection === "appearance"));
     if (id === "activity") return route === "activity" || (route === "settings" && settingsSection === "notifications");
@@ -3168,7 +3195,7 @@ function nativeDiscordHeaderControls(): string {
 
 function trustedHeader(): string {
   // Service controls stay compact; deeper setup remains progressively disclosed.
-  if (route === "home" || route === "inbox" || route === "people" || route === "privacy" || route === "activity" || route === "connections" || route === "osl-chat") return homeHeader();
+  if (route === "home" || route === "inbox" || route === "people" || route === "privacy" || route === "activity" || route === "connections" || route === "osl-chat" || route === "osl-mail") return homeHeader();
   if (route === "mullvad") {
     return `<div class="trusted-stack"><header class="workspace-header mullvad-host-header"><button class="button compact" id="mullvad-return" type="button">${mullvadReturnRoute === "onboarding" ? "Back to setup" : "Back to Home"}</button><div class="service-context"><span><strong>Mullvad</strong><small>Existing session · capture resistance does not cover Mullvad</small></span></div></header></div>`;
   }
@@ -3403,6 +3430,7 @@ function workspaceContent(): string {
   if (route === "activity") return activityDestinationContent();
   if (route === "connections") return connectionsDestinationContent();
   if (route === "osl-chat") return oslChatContent();
+  if (route === "osl-mail") return oslMailContent();
   if (route === "osl-servers") return oslServersContent();
   if (route === "settings") return settingsContent();
   if (route === "service" && activeService) return serviceContent();
@@ -3418,6 +3446,7 @@ function workspaceContent(): string {
     : launchableHomeApps;
   const modules = [
     { id: "osl-chats", name: "OSL Chat", available: true },
+    { id: "osl-mail", name: "OSL Mail", available: true },
     { id: "osl-notes", name: "OSL Notes", available: false },
     { id: "scrub", name: "Scrub", available: true },
   ] as const;
@@ -3775,8 +3804,9 @@ function oslServersContent(): string {
   return `<main class="content-viewport osl-servers-page"><header class="osl-chat-page-header"><button class="text-button" data-route="home" type="button">Back</button><h1 id="route-heading" tabindex="-1">Servers</h1></header><p>Shared encrypted spaces will appear here when their sender, membership, delivery, and history security are complete.</p><section class="settings-list" aria-label="Planned server capabilities">${capabilities.map(([name, state]) => `<div class="setting-line"><span><strong>${name}</strong><small>${state}</small></span><span class="status-tag">Coming later</span></div>`).join("")}</section><p class="scope-approval-note">OSL does not claim provider-server access or read provider pages. Direct OSL Chats are available now.</p></main>`;
 }
 
-function homeModuleIcon(id: "osl-chats" | "osl-servers" | "scrub" | "activity" | "osl-notes"): string {
+function homeModuleIcon(id: "osl-chats" | "osl-mail" | "osl-servers" | "scrub" | "activity" | "osl-notes"): string {
   if (id === "osl-chats") return `<svg viewBox="0 0 24 24"><path d="M4 5.5h16v10H9l-5 4v-14Z"/><path d="M8 9h8M8 12h5"/></svg>`;
+  if (id === "osl-mail") return `<svg viewBox="0 0 24 24"><path d="M4 6h16v12H4V6Z"/><path d="m5 7 7 6 7-6"/></svg>`;
   if (id === "osl-servers") return `<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="6"/><rect x="4" y="14" width="16" height="6"/><path d="M7 7h.01M7 17h.01M11 7h6M11 17h6"/></svg>`;
   if (id === "scrub") return `<svg viewBox="0 0 24 24"><path d="m5 18 9-9 5 5-6 6H7l-2-2Z"/><path d="m12 11 3-3 5 5-3 3M4 20h16"/></svg>`;
   if (id === "activity") return `<svg viewBox="0 0 24 24"><path d="M4 12h4l2-5 4 10 2-5h4"/></svg>`;
@@ -3790,6 +3820,59 @@ function activeHomeApp(): HomeAppCatalogEntry | null {
 function mailComposerEncryptionScope(app: HomeAppCatalogEntry | null): string {
   if (app?.serviceId !== "email" || app.provider === null) return "";
   return `<aside class="mail-composer-encryption-scope" data-mail-composer-encryption-scope="${app.id}" role="note" aria-label="Email protection scope"><strong>Before you send</strong><small>${escapeHtml(app.displayName)} protects this app account. Ordinary external email uses the mail provider's delivery path. Use OSL Chat for verified friends.</small></aside>`;
+}
+
+function oslMailContent(): string {
+  return oslMailViewMarkup({
+    loading: oslMailLoading,
+    available: Boolean(oslMailStatus?.available),
+    signedUsername: claimedOslUsername,
+    status: oslMailStatus,
+    threads: oslMailThreads,
+    activeThread: oslMailActiveThread,
+    pane: oslMailPane,
+    notifications: oslMailNotifications,
+    deleteReceipt: oslMailDeleteReceipt,
+    sendReceipt: oslMailSendReceipt,
+    burnReceipt: oslMailBurnReceipt,
+    error: oslMailError,
+  });
+}
+
+async function refreshOslMail(): Promise<void> {
+  oslMailLoading = true;
+  oslMailError = null;
+  renderWhenIdle();
+  const status = await loadOslMailStatus();
+  oslMailStatus = status;
+  if (status?.provisioned) oslMailThreads = await listOslMailThreads() ?? [];
+  oslMailLoading = false;
+  if (route === "osl-mail") render();
+}
+
+async function provisionOslMailFromProfile(): Promise<void> {
+  if (!claimedOslUsername) {
+    oslMailError = "Choose your signed OSL username first";
+    render();
+    return;
+  }
+  oslMailStatus = await provisionOslMail(claimedOslUsername);
+  if (!oslMailStatus) oslMailError = "Mailbox setup was refused";
+  if (route === "osl-mail") render();
+}
+
+async function sendOslMailForm(form: HTMLFormElement): Promise<void> {
+  const recipient = form.querySelector<HTMLInputElement>("#osl-mail-to")?.value ?? "";
+  const subject = form.querySelector<HTMLInputElement>("#osl-mail-subject")?.value ?? "";
+  const body = form.querySelector<HTMLTextAreaElement>("#osl-mail-body")?.value ?? "";
+  if (!recipient.endsWith("@oslprivacy.com")) {
+    oslMailError = "External outbound mail is unavailable in v1";
+    render();
+    return;
+  }
+  oslMailSendReceipt = await sendOslMail(recipient, subject, body);
+  oslMailError = oslMailSendReceipt ? null : "Send was refused";
+  if (route === "osl-mail") render();
 }
 
 function activeHomeAppName(): string {
@@ -5780,6 +5863,37 @@ function bindWorkspace(): void {
     void changeSendingMode(button.dataset.settingsSendMode as SendMode);
   }));
   document.querySelector<HTMLButtonElement>("[data-inbox-start-private]")?.addEventListener("click", () => inboxPrimaryAction());
+  document.querySelector<HTMLButtonElement>("#osl-mail-retry")?.addEventListener("click", () => void refreshOslMail());
+  document.querySelector<HTMLButtonElement>("#osl-mail-provision")?.addEventListener("click", () => void provisionOslMailFromProfile());
+  document.querySelectorAll<HTMLButtonElement>("[data-mail-pane]").forEach((button) => button.addEventListener("click", () => {
+    oslMailPane = button.dataset.mailPane as OslMailPane;
+    render();
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-mail-thread]").forEach((button) => button.addEventListener("click", async () => {
+    const threadId = button.dataset.mailThread ?? "";
+    oslMailActiveThread = await retrieveOslMailThread(threadId);
+    oslMailError = oslMailActiveThread ? null : "Message retrieval was refused";
+    render();
+  }));
+  document.querySelector<HTMLButtonElement>("#osl-mail-ack")?.addEventListener("click", async () => {
+    if (!oslMailActiveThread) return;
+    oslMailDeleteReceipt = await acknowledgeOslMailRetrieval(oslMailActiveThread.retrievalId, oslMailActiveThread.messages.map((message) => message.messageId));
+    oslMailError = oslMailDeleteReceipt ? null : "Server deletion was not confirmed";
+    render();
+  });
+  document.querySelector<HTMLFormElement>("#osl-mail-compose-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void sendOslMailForm(event.currentTarget as HTMLFormElement);
+  });
+  document.querySelector<HTMLFormElement>("#osl-mail-burn-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget as HTMLFormElement;
+    const address = oslMailStatus?.address ?? "";
+    const confirmation = String(new FormData(form).get("confirmation") ?? form.querySelector<HTMLInputElement>("#osl-mail-burn-confirmation")?.value ?? "");
+    oslMailBurnReceipt = await burnOslMailbox(address, confirmation);
+    oslMailError = oslMailBurnReceipt ? null : "Mailbox burn was refused";
+    render();
+  });
   document.querySelector<HTMLButtonElement>("[data-connections-primary-action]")?.addEventListener("click", () => connectionsPrimaryAction());
   document.querySelector<HTMLButtonElement>("[data-activity-primary-action]")?.addEventListener("click", () => {
     route = "activity";
@@ -6417,7 +6531,7 @@ async function continueOnboardingFromService(): Promise<void> {
 function currentHomeTileIds(): string[] {
   return [
     ...homeAppsFromServices(services).filter((app) => app.visibility === "launch").map((app) => app.id),
-    "osl-chats", "osl-notes", "scrub",
+    "osl-chats", "osl-mail", "osl-notes", "scrub",
   ];
 }
 
@@ -6473,6 +6587,10 @@ export function inboxPrimaryAction(): void {
 function openHomeModule(id: string): void {
   if (id === "osl-chats") {
     inboxPrimaryAction();
+  } else if (id === "osl-mail") {
+    route = "osl-mail";
+    void refreshOslMail();
+    render();
   } else if (id === "osl-servers") {
     route = "osl-servers";
     render();

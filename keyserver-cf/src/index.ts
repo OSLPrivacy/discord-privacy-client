@@ -58,6 +58,7 @@ import { handleStripeWebhook } from "./endpoints/stripe-webhook.js";
 import { handleTelegramWebhook } from "./endpoints/telegram.js";
 import { handleUnregister } from "./endpoints/unregister.js";
 import { handleUsernameCoverage } from "./endpoints/username-coverage.js";
+import { handleUsernameClaim, handleUsernameLookup } from "./endpoints/usernames.js";
 import {
   handleControlInboxDelete,
   handleControlInboxGet,
@@ -312,6 +313,10 @@ async function dispatch(
     if (bundleUserId !== null) {
       return await handlePrekeyBundleGet(request, env, bundleUserId);
     }
+    const username = matchParam(path, /^\/v1\/usernames\/([^/]+)$/);
+    if (username !== null) {
+      return await handleUsernameLookup(request, env, decodeURIComponent(username));
+    }
     const inboxUserId = matchParam(path, /^\/v1\/control-inbox\/([^/]+)$/);
     if (inboxUserId !== null) return await handleControlInboxGet(request, env, inboxUserId);
     const floorUserId = matchParam(
@@ -354,6 +359,7 @@ async function dispatch(
       return await handleSenderFilterRolloutRootAdvance(request, env);
     }
     if (path === "/v1/control-inbox") return await handleControlInboxPost(request, env);
+    if (path === "/v1/usernames/claim") return await handleUsernameClaim(request, env);
     if (path === "/v1/wrapped-keys") return await handleWrappedKeysPost(request, env);
     if (path === "/v1/prekey-bundle/replenish") {
       return await handlePrekeyBundleReplenish(request, env);

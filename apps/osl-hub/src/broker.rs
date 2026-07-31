@@ -1497,6 +1497,71 @@ pub fn prepare_peer_prose_text_with_capture(
     .map(|envelope| envelope.prepared)
 }
 
+/// QA-only seam used by the dedicated WhatsApp build after the exact native
+/// window, paired peer, chat headers, composer, and transcript have been
+/// explicitly visually bound. It does not place or send provider input.
+pub fn prepare_whatsapp_qa_peer_prose_text(
+    core: &HubCoreState,
+    security_state: &HubSecurityState,
+    verified: ManualPeerBinding,
+    visual_context_sha256: &str,
+    plaintext: String,
+) -> Result<PreparedPeerProseMessage, String> {
+    if !canonical_hex(visual_context_sha256, 64) {
+        return Err("WhatsApp QA visual context commitment is invalid".to_owned());
+    }
+    let (scope, manual, context) = whatsapp_qa_peer_context(core, &verified)?;
+    let ttl_seconds = security::scope_security(scope.clone())?.ttl_seconds;
+    if ttl_seconds == 0 || i64::from(ttl_seconds) > MAX_PEER_LIFETIME_SECONDS {
+        return Err("OSL could not prepare a single manual peer message".to_owned());
+    }
+    let now = ipc::main_password::now_unix_secs_pub();
+    let expires_at = now
+        .checked_add(i64::from(ttl_seconds))
+        .ok_or_else(|| "OSL could not prepare a single manual peer message".to_owned())?;
+    let encrypted = prepare_direct_manual_v3(
+        core,
+        &verified,
+        &manual,
+        &context,
+        plaintext,
+        PeerProtectionPolicy {
+            view_once: false,
+            require_capture_protection: false,
+            created_at: now,
+            expires_at,
+        },
+        random_peer_message_id(),
+        None,
+    )?;
+    if verify_manual_v3(core, &verified, &encrypted, ManualWireSender::SelfIdentity).is_err() {
+        return Err("OSL could not prepare a single manual peer message".to_owned());
+    }
+
+    let dir = keystore::osl_config_dir()
+        .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
+    let uploaded = ipc::prose_token::prose_token_send(&dir, &scope, &encrypted, ttl_seconds)
+        .map_err(|_| "OSL could not prepare the encrypted copy text".to_owned())?;
+    if security::record_peer_prose_blob(security_state, scope.clone(), uploaded.blob_id.clone())
+        .is_err()
+    {
+        if ipc::prose_token::prose_token_burn_id(&dir, &scope, &uploaded.blob_id).is_err() {
+            let _ = security::record_peer_prose_blob(
+                security_state,
+                scope,
+                uploaded.blob_id.clone(),
+            );
+        }
+        return Err("OSL could not save the encrypted message safely".to_owned());
+    }
+    Ok(PreparedPeerProseMessage {
+        cover_text: uploaded.cover_text,
+        expires_at,
+        person_to_person_e2ee: true,
+        view_once: false,
+    })
+}
+
 fn prepare_peer_prose_text_inner(
     core: &HubCoreState,
     security_state: &HubSecurityState,
@@ -1797,6 +1862,94 @@ pub fn open_peer_prose_text(
         view_once_consumed,
         require_capture_protection: payload.require_capture_protection,
     })
+}
+
+/// QA-only receive seam for an explicitly pasted carrier. The caller must
+/// independently revalidate the exact WhatsApp visual binding before and
+/// after this function. No provider content or clipboard is read here.
+pub fn open_whatsapp_qa_peer_prose_text(
+    core: &HubCoreState,
+    security_state: &HubSecurityState,
+    verified: ManualPeerBinding,
+    visual_context_sha256: &str,
+    cover_text: String,
+) -> Result<OpenedPeerProseMessage, String> {
+    if !canonical_hex(visual_context_sha256, 64) {
+        return Err("This encrypted message could not be opened".to_owned());
+    }
+    if cover_text.is_empty() || cover_text.len() > MAX_PROSE_COVER_BYTES {
+        return Err("This encrypted message could not be opened".to_owned());
+    }
+    let (scope, manual, context) = whatsapp_qa_peer_context(core, &verified)?;
+    let dir = keystore::osl_config_dir()
+        .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
+    let recovered = peer_prose_token_or_generic(ipc::prose_token::prose_token_recv(
+        &dir,
+        &scope,
+        &cover_text,
+    ))?;
+    if verify_manual_v3(core, &verified, &recovered.wire, ManualWireSender::Peer).is_err() {
+        return Err("This encrypted message could not be opened".to_owned());
+    }
+    let payload = decrypt_direct_manual_v3(core, &verified, ManualWireSender::Peer, &recovered.wire)
+        .map_err(|_| "This encrypted message could not be opened".to_owned())?;
+    let now = ipc::main_password::now_unix_secs_pub();
+    validate_peer_protected_payload(&payload, &manual, &context, now)
+        .map_err(|_| "This encrypted message could not be opened".to_owned())?;
+    security::consume_peer_message(
+        security_state,
+        scope,
+        &payload.message_id,
+        payload.expires_at,
+        now,
+    )
+    .map_err(|_| "This encrypted message could not be opened".to_owned())?;
+    Ok(OpenedPeerProseMessage {
+        plaintext: payload.plaintext,
+        context_verified: true,
+        person_to_person_e2ee: true,
+        view_once_consumed: payload.view_once,
+        require_capture_protection: payload.require_capture_protection,
+    })
+}
+
+fn whatsapp_qa_peer_context(
+    core: &HubCoreState,
+    verified: &ManualPeerBinding,
+) -> Result<(ScopeInput, ManualPeerContext, HubConversationContext), String> {
+    let self_osl_user_id = core
+        .osl
+        .identity
+        .lock()
+        .map_err(|_| "OSL identity state is unavailable".to_owned())?
+        .as_ref()
+        .map(|identity| identity.user_id.clone())
+        .ok_or_else(|| "OSL identity is not loaded".to_owned())?;
+    let channel_binding =
+        manual_dm_channel_binding("whatsapp", &self_osl_user_id, &verified.peer_osl_user_id)?;
+    let scope = ScopeInput {
+        kind: ScopeKind::Dm,
+        id: channel_binding.clone(),
+        server_id: None,
+        channel_id: Some(channel_binding.clone()),
+    };
+    let manual = ManualPeerContext {
+        service_id: "whatsapp".to_owned(),
+        account_id: "whatsapp-qa".to_owned(),
+        person_id: verified.person_id.clone(),
+        peer_osl_user_id: verified.peer_osl_user_id.clone(),
+        scope: scope.clone(),
+    };
+    let context = HubConversationContext {
+        service_id: "whatsapp".to_owned(),
+        account_id: "whatsapp-qa".to_owned(),
+        conversation_kind: HubConversationKind::Dm,
+        conversation_id: channel_binding,
+        space_id: None,
+        participant_osl_ids: vec![verified.person_id.clone()],
+        self_osl_id: self_osl_user_id,
+    };
+    Ok((scope, manual, context))
 }
 
 /// The native Discord prepare receipt: the committed-delivery facts plus the one

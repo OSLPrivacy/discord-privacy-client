@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(feature = "whatsapp-qa-shell")]
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use osl_privacy_hub::autoscrub_run::{self, AutoScrubFleetStatus, AutoScrubReviewedRunRequest};
 use osl_privacy_hub::broker::{
     self, DecryptedLocalProtectedMessage, HubBrokerState, OpenedHubAttachment,
@@ -63,8 +65,8 @@ use osl_privacy_hub::preferences::PreviewState;
 use osl_privacy_hub::privacy_scan::{self, LocalMessageCandidate, LocalPrivacyScanResult};
 use osl_privacy_hub::pro_context_cover::LocalCoverState;
 use osl_privacy_hub::scrub_index::{
-    ScrubIndexChunkRequest, ScrubIndexInitializeRequest, ScrubIndexManifest, ScrubIndexScan,
-    ScrubIndexState, ScrubIndexStatus,
+    ScrubIndexChunkRequest, ScrubIndexInitializeRequest, ScrubIndexManifest, ScrubIndexState,
+    ScrubIndexStatus,
 };
 use osl_privacy_hub::security::{
     self, AddFriendResult, FriendCodeExport, HubScopeBurnResult, HubSecurityState, PersonDto,
@@ -76,13 +78,22 @@ use osl_privacy_hub::service_scope_index::{ImmutableServiceBurnManifest, Service
 use osl_privacy_hub::services::ServiceRegistryState;
 use osl_privacy_hub::startup_gate::{self, HubGateUnlockResult, VerifiedGateRole};
 use osl_privacy_hub::updates::{bounded_plain_notes, bounded_version, RELEASES_URL};
+use osl_privacy_hub::whatsapp_accessibility::{
+    WhatsAppAccessibilityState, WhatsAppVerificationReceipt, WhatsAppVerificationStatus,
+    WhatsAppVisualBindingBeginReceipt, WhatsAppVisualBindingConfirmReceipt,
+};
+use osl_privacy_hub::whatsapp_qa_host::{WhatsAppQaHostState, WhatsAppQaResult};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "whatsapp-qa-shell")]
+use std::io::Write as _;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Mutex,
 };
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_updater::UpdaterExt;
+#[cfg(feature = "whatsapp-qa-shell")]
+use zeroize::{Zeroize, Zeroizing};
 
 /// Diagnostics-only startup breadcrumb trace. TEMPORARY: added to bracket the
 /// exact point where a freshly built binary hangs during launch before any
@@ -152,8 +163,40 @@ mod native_attachment_transport;
 mod native_discord_overlay;
 mod native_image_viewer;
 mod native_surface_capture;
+mod native_whatsapp_overlay;
 
 use native_discord_overlay::OverlaySessionState;
+
+#[derive(Default)]
+struct WhatsAppQaProtectionState(Mutex<WhatsAppAccessibilityState>);
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WhatsAppQaPreparedMessage {
+    provider: &'static str,
+    status: &'static str,
+    cover_text: String,
+    expires_at: i64,
+    person_to_person_e2ee: bool,
+    context_binding_sha256: String,
+    automatic_placement: bool,
+    real_message_sent: bool,
+}
+
+/// Plaintext is intentionally not `Debug`; it may only be rendered by the
+/// capture-resistant trusted OSL owner webview.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WhatsAppQaOpenedMessage {
+    provider: &'static str,
+    status: &'static str,
+    plaintext: String,
+    person_to_person_e2ee: bool,
+    context_verified: bool,
+    context_binding_sha256: String,
+    provider_history_changed: bool,
+    provider_storage_read: bool,
+}
 
 #[allow(dead_code)]
 #[path = "../../../src-tauri/src/screenshot.rs"]
@@ -816,11 +859,12 @@ async fn get_scrub_index_scan(
     state: State<'_, ScrubIndexState>,
     core: State<'_, HubCoreState>,
     session: State<'_, HubAccountSessionState>,
-) -> Result<Option<ScrubIndexScan>, String> {
+    import_id: String,
+) -> Result<Option<LocalPrivacyScanResult>, String> {
     let _session = session.transition.lock().await;
     let owner = active_unlocked_osl_user_id(&core)?;
     let state = state.inner().clone();
-    tokio::task::spawn_blocking(move || state.get_scrub_index_scan(&owner))
+    tokio::task::spawn_blocking(move || state.get_scrub_index_scan(&owner, &import_id))
         .await
         .map_err(|_| "Scrub scan check was interrupted".to_owned())?
 }
@@ -1062,6 +1106,20 @@ fn get_autoscrub_run_fl(state: State<'_, HubCoreState>) -> Result<AutoScrubFleet
     autoscrub_run::fleet_status(&state.osl)
 }
 
+fn build_review_ui_identity_binding_verifier(
+    core: &HubCoreState,
+) -> Result<IdentityBindingVerifier, String> {
+    let identity = core
+        .osl
+        .identity
+        .lock()
+        .map_err(|_| "OSL identity state is unavailable".to_owned())?
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "Unlock an OSL identity before starting AutoScrub".to_owned())?;
+    Ok(IdentityBindingVerifier::new(PinnedOwner::from_identity(&identity)))
+}
+
 fn require_review_ui_identity_binding_from_verifier(
     verifier: &IdentityBindingVerifier,
     request: &AutoScrubReviewedRunRequest,
@@ -1099,18 +1157,28 @@ fn start_autoscrub_reviewed_run_inner(
     core: &HubCoreState,
     request: AutoScrubReviewedRunRequest,
 ) -> Result<AutoScrubFleetStatus, String> {
-    let identity = core
-        .osl
-        .identity
-        .lock()
-        .map_err(|_| "OSL identity state is unavailable".to_owned())?
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| "Unlock an OSL identity before starting AutoScrub".to_owned())?;
-    let verifier = IdentityBindingVerifier::new(PinnedOwner::from_identity(&identity));
-    start_autoscrub_reviewed_run_after_review_ui_binding(&verifier, request, |request| {
-        autoscrub_run::start_reviewed_run(&core.osl, request)
-    })
+    start_autoscrub_reviewed_run_checked(
+        core,
+        request,
+        build_review_ui_identity_binding_verifier,
+        |core, request| autoscrub_run::start_reviewed_run(&core.osl, request),
+    )
+}
+
+fn start_autoscrub_reviewed_run_checked<BuildVerifier, Start>(
+    core: &HubCoreState,
+    request: AutoScrubReviewedRunRequest,
+    build_verifier: BuildVerifier,
+    start: Start,
+) -> Result<AutoScrubFleetStatus, String>
+where
+    BuildVerifier: FnOnce(&HubCoreState) -> Result<IdentityBindingVerifier, String>,
+    Start:
+        FnOnce(&HubCoreState, AutoScrubReviewedRunRequest) -> Result<AutoScrubFleetStatus, String>,
+{
+    let verifier = build_verifier(core)?;
+    require_review_ui_identity_binding_from_verifier(&verifier, &request)?;
+    start(core, request)
 }
 
 #[tauri::command]
@@ -1279,6 +1347,149 @@ async fn setup_hub_main_password(
     })
     .await
     .map_err(|_| "OSL password setup worker failed".to_string())?
+}
+
+#[cfg(feature = "whatsapp-qa-shell")]
+fn bootstrap_whatsapp_qa_device_identity(
+    state: &HubCoreState,
+    config_dir: &std::path::Path,
+) -> Result<(), String> {
+    const SECRET_FILE: &str = "whatsapp-qa-device-secret.v1";
+    let secret_path = config_dir.join(SECRET_FILE);
+    let sealer = keystore::select_best_sealer();
+    if !matches!(
+        sealer.method_label(),
+        keystore::METHOD_TPM | keystore::METHOD_KEYRING
+    ) {
+        return Err(
+            "WhatsApp QA requires persistent TPM or operating-system credential storage".to_owned(),
+        );
+    }
+    let password = if secret_path.is_file() {
+        let sealed = std::fs::read(&secret_path)
+            .map_err(|_| "WhatsApp QA device secret is unreadable".to_owned())?;
+        let plaintext = Zeroizing::new(
+            sealer
+                .unseal(&sealed)
+                .map_err(|_| "WhatsApp QA device secret authentication failed".to_owned())?,
+        );
+        let value = std::str::from_utf8(&plaintext)
+            .map_err(|_| "WhatsApp QA device secret is malformed".to_owned())?;
+        Zeroizing::new(value.to_owned())
+    } else {
+        std::fs::create_dir_all(config_dir)
+            .map_err(|_| "WhatsApp QA configuration storage is unavailable".to_owned())?;
+        let random = Zeroizing::new(crypto::random::random_bytes(32));
+        let value = Zeroizing::new(URL_SAFE_NO_PAD.encode(&*random));
+        let sealed = sealer
+            .seal(value.as_bytes())
+            .map_err(|_| "WhatsApp QA device secret could not be sealed".to_owned())?;
+        let temporary_tag = URL_SAFE_NO_PAD.encode(crypto::random::random_bytes(9));
+        let temporary =
+            config_dir.join(format!(".whatsapp-qa-device-secret.v1.{temporary_tag}.tmp"));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|_| "WhatsApp QA device secret staging was rejected".to_owned())?;
+        if file
+            .write_all(&sealed)
+            .and_then(|_| file.sync_all())
+            .is_err()
+        {
+            drop(file);
+            let _ = std::fs::remove_file(&temporary);
+            return Err("WhatsApp QA device secret could not be persisted".to_owned());
+        }
+        drop(file);
+        if std::fs::rename(&temporary, &secret_path).is_err() {
+            let _ = std::fs::remove_file(&temporary);
+            return Err("WhatsApp QA device secret could not be committed".to_owned());
+        }
+        value
+    };
+
+    let before = password_lifecycle::readiness(state);
+    if !before.identity_loaded && !before.main_password_set {
+        let mut identity = password_lifecycle::create_native_identity(state)?;
+        if let Some(phrase) = identity.identity_recovery_phrase.as_mut() {
+            phrase.zeroize();
+        }
+        identity.identity_recovery_phrase = None;
+    } else if !before.identity_loaded {
+        return Err(
+            "WhatsApp QA found an existing password without its disposable identity".to_owned(),
+        );
+    }
+    let current = password_lifecycle::readiness(state);
+    if !current.main_password_set {
+        let mut setup = password_lifecycle::setup_main_password(state, password.to_string())?;
+        setup.password_recovery_phrase.zeroize();
+    } else if !current.unlocked {
+        core_bridge::unlock_main_password(state, password.to_string())?;
+    }
+    let ready = core_bridge::readiness(state);
+    if !ready.identity_loaded || !ready.password_gate_required || !ready.unlocked {
+        return Err("WhatsApp QA device identity did not reach a verified ready state".to_owned());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "whatsapp-qa-shell")]
+struct WhatsAppQaRuntimeReceiptState {
+    path: std::path::PathBuf,
+    write_lock: Mutex<()>,
+}
+
+#[cfg(feature = "whatsapp-qa-shell")]
+impl WhatsAppQaRuntimeReceiptState {
+    fn beside_current_executable() -> Result<Self, String> {
+        let executable = std::env::current_exe()
+            .map_err(|_| "WhatsApp QA executable identity is unavailable".to_owned())?;
+        let directory = executable
+            .parent()
+            .ok_or_else(|| "WhatsApp QA install directory is unavailable".to_owned())?;
+        Ok(Self {
+            path: directory.join("whatsapp-qa-runtime-status.v1.json"),
+            write_lock: Mutex::new(()),
+        })
+    }
+
+    fn write(
+        &self,
+        phase: &'static str,
+        host: Option<&WhatsAppQaResult>,
+        native_window_claimed: bool,
+        protected_controls_enabled: bool,
+        failure_code: Option<&'static str>,
+    ) -> Result<(), String> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|_| "WhatsApp QA audit receipt is unavailable".to_owned())?;
+        let receipt = serde_json::json!({
+            "schema": "whatsapp-qa-runtime-status/v1",
+            "phase": phase,
+            "nativeWindowClaimed": native_window_claimed,
+            "protectedControlsEnabled": protected_controls_enabled,
+            "failureCode": failure_code,
+            "browserFallbackUsed": false,
+            "providerContentRead": false,
+            "providerPrivateStorageRead": false,
+            "hostReceipt": host,
+        });
+        let bytes = serde_json::to_vec(&receipt)
+            .map_err(|_| "WhatsApp QA audit receipt serialization failed".to_owned())?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&self.path)
+            .map_err(|_| "WhatsApp QA audit receipt could not be opened".to_owned())?;
+        file.write_all(&bytes)
+            .and_then(|_| file.sync_all())
+            .map_err(|_| "WhatsApp QA audit receipt could not be persisted".to_owned())
+    }
 }
 
 #[tauri::command]
@@ -2048,6 +2259,407 @@ fn detach_native_app_window(app: tauri::AppHandle) -> NativeWindowHostResult {
     native_discord_overlay::clear_and_hide(&app);
     app.state::<NativeDiscordComposerState>().clear();
     app.state::<NativeWindowHostState>().detach()
+}
+
+#[tauri::command]
+async fn claim_whatsapp_qa_window(
+    app: tauri::AppHandle,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<WhatsAppQaResult, String> {
+    let _session = session.transition.lock().await;
+    let _owner = active_unlocked_osl_user_id(&core)?;
+    let parent = main_window_hwnd(&app)?;
+    let operation_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        operation_app.state::<WhatsAppQaHostState>().claim(parent)
+    })
+    .await
+    .map_err(|_| "The WhatsApp QA claim was interrupted".to_owned())?;
+    #[cfg(feature = "whatsapp-qa-shell")]
+    if app
+        .state::<WhatsAppQaRuntimeReceiptState>()
+        .write(
+            if result.mode == "existingNativeCompanion" {
+                "nativeWindowClaimed"
+            } else {
+                "failedClosed"
+            },
+            Some(&result),
+            result.mode == "existingNativeCompanion",
+            false,
+            None,
+        )
+        .is_err()
+    {
+        let _ = app.state::<WhatsAppQaHostState>().detach();
+        return Err(
+            "The WhatsApp QA audit receipt failed; the native window was detached".to_owned(),
+        );
+    }
+    #[cfg(feature = "whatsapp-qa-shell")]
+    if result.mode == "existingNativeCompanion"
+        && matches!(
+            option_env!("OSL_WHATSAPP_QA_VISUAL_BINDING_APPROVED"),
+            Some("approved")
+        )
+    {
+        if let Ok(binding) = begin_whatsapp_visual_binding(app.clone()) {
+            if let Ok(confirmed) =
+                confirm_whatsapp_visual_binding(app.clone(), binding.capture_id, true)
+            {
+                if matches!(
+                    option_env!("OSL_WHATSAPP_QA_PROBE_DISPATCH_APPROVED"),
+                    Some("approved")
+                ) {
+                    let registration_app = app.clone();
+                    let registration = tauri::async_runtime::spawn_blocking(move || {
+                        osl_privacy_hub::whatsapp_qa_pairing::wait_for_registered_transport(
+                            &registration_app.state::<HubCoreState>(),
+                        )
+                    })
+                    .await
+                    .map_err(|_| "WhatsApp QA registration wait was interrupted".to_owned())?;
+                    if !registration.ready {
+                        app.state::<WhatsAppQaRuntimeReceiptState>().write(
+                            "protectedProbePreparationFailed",
+                            None,
+                            true,
+                            false,
+                            Some(registration.state),
+                        )?;
+                    } else {
+                        match prepare_whatsapp_qa_protected_text_blocking(
+                            &app,
+                            "OSL protected WhatsApp QA probe".to_owned(),
+                        ) {
+                            Ok(prepared) => {
+                                native_whatsapp_overlay::hide(&app);
+                                let dispatch =
+                                    osl_privacy_hub::whatsapp_qa_transport::dispatch_bound_cover_text(
+                                        &app.state::<WhatsAppQaHostState>(),
+                                        confirmed.composer_rect,
+                                        &prepared.cover_text,
+                                    );
+                                app.state::<WhatsAppQaProtectionState>()
+                                    .0
+                                    .lock()
+                                    .map_err(|_| {
+                                        "WhatsApp protection state is unavailable".to_owned()
+                                    })?
+                                    .clear();
+                                let (phase, failure) = if dispatch.is_ok() {
+                                    ("protectedProbeDispatched", None)
+                                } else {
+                                    ("protectedProbeDispatchFailed", Some("transportRejected"))
+                                };
+                                app.state::<WhatsAppQaRuntimeReceiptState>()
+                                    .write(phase, None, true, false, failure)?;
+                            }
+                            Err(error) => {
+                                let failure_code = match error.as_str() {
+                                    "qaStageContextBefore" => "contextBeforeRejected",
+                                    "qaStageContextBeforeUnverified" => "contextBeforeUnverified",
+                                    "qaStageContextCommitment" => "contextCommitmentUnavailable",
+                                    "qaStageStorage" => "storageUnavailable",
+                                    "qaStagePairing" => "pairingUnavailable",
+                                    "qaStagePeerBinding" => "peerBindingUnavailable",
+                                    "qaStageRelayUpload" => "relayUploadRejected",
+                                    "qaStageEncryption" => "encryptionRejected",
+                                    "qaStageLedger" => "ledgerRejected",
+                                    "qaStageScope" => "scopeRejected",
+                                    "qaStageContextAfter" => "contextAfterRejected",
+                                    "qaStageContextAfterUnverified" => "contextAfterUnverified",
+                                    _ => "preparationRejected",
+                                };
+                                app.state::<WhatsAppQaRuntimeReceiptState>().write(
+                                    "protectedProbePreparationFailed",
+                                    None,
+                                    true,
+                                    false,
+                                    Some(failure_code),
+                                )?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        let _ = refresh_whatsapp_qa_protection(&app);
+    }
+    #[cfg(not(feature = "whatsapp-qa-shell"))]
+    let _ = refresh_whatsapp_qa_protection(&app);
+    Ok(result)
+}
+
+fn refresh_whatsapp_qa_protection(
+    app: &tauri::AppHandle,
+) -> Result<WhatsAppVerificationReceipt, String> {
+    let protection = app.state::<WhatsAppQaProtectionState>();
+    let mut state = protection
+        .0
+        .lock()
+        .map_err(|_| "WhatsApp protection state is unavailable".to_owned())?;
+    let mut receipt = state.verify_current(&app.state::<WhatsAppQaHostState>());
+    if receipt.protected_controls_available {
+        let Some(window_rect) = receipt.window_rect else {
+            native_whatsapp_overlay::hide(app);
+            receipt.status = WhatsAppVerificationStatus::GeometryRejected;
+            receipt.protected_controls_available = false;
+            return Ok(receipt);
+        };
+        let Some(composer_rect) = receipt.composer_rect else {
+            native_whatsapp_overlay::hide(app);
+            receipt.status = WhatsAppVerificationStatus::GeometryRejected;
+            receipt.protected_controls_available = false;
+            return Ok(receipt);
+        };
+        if native_whatsapp_overlay::show_verified(app, window_rect, composer_rect).is_err() {
+            native_whatsapp_overlay::hide(app);
+            receipt.status = WhatsAppVerificationStatus::GeometryRejected;
+            receipt.protected_controls_available = false;
+        }
+    } else {
+        native_whatsapp_overlay::hide(app);
+    }
+    Ok(receipt)
+}
+
+#[tauri::command]
+fn get_whatsapp_qa_protection_status(
+    app: tauri::AppHandle,
+) -> Result<WhatsAppVerificationReceipt, String> {
+    refresh_whatsapp_qa_protection(&app)
+}
+
+#[tauri::command]
+fn begin_whatsapp_visual_binding(
+    app: tauri::AppHandle,
+) -> Result<WhatsAppVisualBindingBeginReceipt, String> {
+    native_whatsapp_overlay::hide(&app);
+    let protection = app.state::<WhatsAppQaProtectionState>();
+    let mut state = protection
+        .0
+        .lock()
+        .map_err(|_| "WhatsApp protection state is unavailable".to_owned())?;
+    let result = state.begin_visual_binding(&app.state::<WhatsAppQaHostState>());
+    #[cfg(feature = "whatsapp-qa-shell")]
+    if let Err(error) = &result {
+        let failure_code = if error.contains("obscured") {
+            "regionObscured"
+        } else if error.contains("stable visual evidence") {
+            "visualEvidenceUnavailable"
+        } else if error.contains("complete visual frame") {
+            "captureUnavailable"
+        } else if error.contains("geometry") || error.contains("bounds") {
+            "geometryRejected"
+        } else {
+            "bindingRejected"
+        };
+        let _ = app.state::<WhatsAppQaRuntimeReceiptState>().write(
+            "visualBindingFailed",
+            None,
+            true,
+            false,
+            Some(failure_code),
+        );
+    }
+    result
+}
+
+#[tauri::command]
+fn confirm_whatsapp_visual_binding(
+    app: tauri::AppHandle,
+    capture_id: String,
+    attested: bool,
+) -> Result<WhatsAppVisualBindingConfirmReceipt, String> {
+    let protection = app.state::<WhatsAppQaProtectionState>();
+    let mut state = protection
+        .0
+        .lock()
+        .map_err(|_| "WhatsApp protection state is unavailable".to_owned())?;
+    let receipt = match state.confirm_visual_binding(
+        &app.state::<WhatsAppQaHostState>(),
+        &capture_id,
+        attested,
+    ) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            #[cfg(feature = "whatsapp-qa-shell")]
+            {
+                let _ = app.state::<WhatsAppQaRuntimeReceiptState>().write(
+                    "visualBindingFailed",
+                    None,
+                    true,
+                    false,
+                    Some("confirmationRejected"),
+                );
+            }
+            return Err(error);
+        }
+    };
+    if native_whatsapp_overlay::show_verified(&app, receipt.window_rect, receipt.composer_rect)
+        .is_err()
+    {
+        state.clear();
+        native_whatsapp_overlay::hide(&app);
+        return Err("The protected composer geometry was rejected".to_owned());
+    }
+    #[cfg(feature = "whatsapp-qa-shell")]
+    app.state::<WhatsAppQaRuntimeReceiptState>().write(
+        "protectedControlsReady",
+        None,
+        true,
+        true,
+        None,
+    )?;
+    Ok(receipt)
+}
+
+#[tauri::command]
+async fn prepare_whatsapp_qa_protected_text(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+    plaintext: String,
+) -> Result<WhatsAppQaPreparedMessage, String> {
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        prepare_whatsapp_qa_protected_text_blocking(&app, plaintext)
+    })
+    .await
+    .map_err(|_| "WhatsApp protected-message preparation was interrupted".to_owned())?
+}
+
+fn prepare_whatsapp_qa_protected_text_blocking(
+    app: &tauri::AppHandle,
+    plaintext: String,
+) -> Result<WhatsAppQaPreparedMessage, String> {
+    native_whatsapp_overlay::hide(app);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let before =
+        refresh_whatsapp_qa_protection(app).map_err(|_| "qaStageContextBefore".to_owned())?;
+    if before.status != WhatsAppVerificationStatus::Verified || !before.protected_controls_available
+    {
+        return Err("qaStageContextBeforeUnverified".to_owned());
+    }
+    let context_binding_sha256 = before
+        .context_binding_sha256
+        .clone()
+        .ok_or_else(|| "qaStageContextCommitment".to_owned())?;
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|_| "qaStageStorage".to_owned())?;
+    let peer_person_id = osl_privacy_hub::whatsapp_qa_pairing::verified_peer_person_id(
+        &config_dir.join("osl-core"),
+    )
+    .map_err(|_| "qaStagePairing".to_owned())?;
+    let peer = security::manual_peer_binding(&app.state::<HubCoreState>(), peer_person_id)
+        .map_err(|_| "qaStagePeerBinding".to_owned())?;
+    let prepared = broker::prepare_whatsapp_qa_peer_prose_text(
+        &app.state::<HubCoreState>(),
+        &app.state::<HubSecurityState>(),
+        peer,
+        &context_binding_sha256,
+        plaintext,
+    )
+    .map_err(|error| {
+        if error.contains("encrypted copy text") {
+            "qaStageRelayUpload".to_owned()
+        } else if error.contains("single manual peer message") {
+            "qaStageEncryption".to_owned()
+        } else if error.contains("save the encrypted message") {
+            "qaStageLedger".to_owned()
+        } else if error.contains("scope") {
+            "qaStageScope".to_owned()
+        } else {
+            "qaStageCarrier".to_owned()
+        }
+    })?;
+    native_whatsapp_overlay::hide(app);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let after =
+        refresh_whatsapp_qa_protection(app).map_err(|_| "qaStageContextAfter".to_owned())?;
+    if after.status != WhatsAppVerificationStatus::Verified
+        || !after.protected_controls_available
+        || after.context_binding_sha256.as_deref() != Some(context_binding_sha256.as_str())
+    {
+        return Err("qaStageContextAfterUnverified".to_owned());
+    }
+    Ok(WhatsAppQaPreparedMessage {
+        provider: "whatsapp",
+        status: "readyForExplicitPlacement",
+        cover_text: prepared.cover_text,
+        expires_at: prepared.expires_at,
+        person_to_person_e2ee: prepared.person_to_person_e2ee,
+        context_binding_sha256,
+        automatic_placement: false,
+        real_message_sent: false,
+    })
+}
+
+#[tauri::command]
+async fn open_whatsapp_qa_protected_text(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+    cover_text: String,
+) -> Result<WhatsAppQaOpenedMessage, String> {
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let before = refresh_whatsapp_qa_protection(&app)?;
+        if before.status != WhatsAppVerificationStatus::Verified
+            || !before.protected_controls_available
+        {
+            return Err("The exact WhatsApp visual binding is no longer verified".to_owned());
+        }
+        let context_binding_sha256 = before
+            .context_binding_sha256
+            .clone()
+            .ok_or_else(|| "The WhatsApp context commitment is unavailable".to_owned())?;
+        let config_dir = app
+            .path()
+            .app_config_dir()
+            .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
+        let peer_person_id = osl_privacy_hub::whatsapp_qa_pairing::verified_peer_person_id(
+            &config_dir.join("osl-core"),
+        )?;
+        let peer = security::manual_peer_binding(&app.state::<HubCoreState>(), peer_person_id)?;
+        let opened = broker::open_whatsapp_qa_peer_prose_text(
+            &app.state::<HubCoreState>(),
+            &app.state::<HubSecurityState>(),
+            peer,
+            &context_binding_sha256,
+            cover_text,
+        )?;
+        let after = refresh_whatsapp_qa_protection(&app)?;
+        if after.status != WhatsAppVerificationStatus::Verified
+            || !after.protected_controls_available
+            || after.context_binding_sha256.as_deref() != Some(context_binding_sha256.as_str())
+        {
+            return Err("The WhatsApp visual context changed during decryption".to_owned());
+        }
+        Ok(WhatsAppQaOpenedMessage {
+            provider: "whatsapp",
+            status: "opened",
+            plaintext: opened.plaintext,
+            person_to_person_e2ee: opened.person_to_person_e2ee,
+            context_verified: opened.context_verified,
+            context_binding_sha256,
+            provider_history_changed: false,
+            provider_storage_read: false,
+        })
+    })
+    .await
+    .map_err(|_| "WhatsApp protected-message opening was interrupted".to_owned())?
+}
+
+#[tauri::command]
+fn resize_whatsapp_qa_window(app: tauri::AppHandle) -> Result<WhatsAppQaResult, String> {
+    let parent = main_window_hwnd(&app)?;
+    let result = app.state::<WhatsAppQaHostState>().resize(parent);
+    let _ = refresh_whatsapp_qa_protection(&app);
+    Ok(result)
 }
 
 fn native_discord_scope_binding(app: &tauri::AppHandle) -> Result<String, String> {
@@ -7849,6 +8461,17 @@ mod qa_selftest {
             let addressed_drain = format!(r#"{{"verb":"drain","instance":"{}"}}"#, instance_b);
             let shared_for_a = format!(r#"{{"verb":"send","instance":"{}"}}"#, instance_a);
 
+            assert_ne!(
+                addressed_name(ADDRESSED_TRIGGER_FORMAT, &instance_a),
+                addressed_name(ADDRESSED_TRIGGER_FORMAT, &instance_b),
+                "a restart trigger for A and B must be different files"
+            );
+            assert_ne!(
+                addressed_name(ADDRESSED_VERDICT_FORMAT, &instance_a),
+                addressed_name(ADDRESSED_VERDICT_FORMAT, &instance_b),
+                "a relaunched B must write a verdict file that A cannot satisfy"
+            );
+
             assert_eq!(
                 select_trigger_body(
                     &instance_b,
@@ -7867,6 +8490,90 @@ mod qa_selftest {
                 &instance_b
             ));
 
+            let addressed_for_a = format!(r#"{{"verb":"drain","instance":"{}"}}"#, instance_a);
+            assert_eq!(
+                select_trigger_body(&instance_b, Some(addressed_for_a.as_str()), None),
+                TriggerSelection::Addressed(addressed_for_a.as_str()),
+                "an addressed trigger is this process's responsibility even if its body is contradictory"
+            );
+            let ParsedRequest::Accepted(wrong_instance) = parse_request(&addressed_for_a) else {
+                panic!("contradictory addressed request must still parse");
+            };
+            assert!(
+                !osl_privacy_hub::qa_selftest_request::request_is_for_me(
+                    wrong_instance.instance.as_deref(),
+                    &instance_b
+                ),
+                "B must refuse a relaunched trigger whose body still declares A"
+            );
+            let mut wrong_instance_detail = VerbOutcome::new(
+                wrong_instance.verb.label(),
+                &instance_b,
+                &addressed_name(ADDRESSED_TRIGGER_FORMAT, &instance_b),
+            )
+            .refused("declined-wrong-instance");
+            wrong_instance_detail.request_format = wrong_instance.format.clone();
+            let wrong_instance_verdict = refused_verdict(
+                "refused",
+                "This self-test request was addressed to another instance",
+                wrong_instance_detail,
+            );
+            assert_eq!(wrong_instance_verdict.instance, instance_b);
+            assert_eq!(wrong_instance_verdict.request_format, "json");
+            assert_eq!(
+                wrong_instance_verdict.request_status,
+                "declined-wrong-instance"
+            );
+            assert_eq!(
+                wrong_instance_verdict.refusal,
+                Some("declined-wrong-instance")
+            );
+            assert!(
+                !wrong_instance_verdict.pass,
+                "a wrong-instance restart request must not produce green proof for B"
+            );
+
+            assert_eq!(
+                select_trigger_body(
+                    &instance_b,
+                    Some(addressed_for_a.as_str()),
+                    Some(shared_for_a.as_str()),
+                ),
+                TriggerSelection::Addressed(addressed_for_a.as_str()),
+                "B's private restart trigger must be answered by B, even when its body is wrong"
+            );
+            let ParsedRequest::Accepted(wrong_instance) = parse_request(&addressed_for_a) else {
+                panic!("wrong-instance addressed drain request must parse");
+            };
+            assert!(
+                !osl_privacy_hub::qa_selftest_request::request_is_for_me(
+                    wrong_instance.instance.as_deref(),
+                    &instance_b
+                ),
+                "an addressed trigger whose body names A must refuse before B drains"
+            );
+            let mut wrong_instance_detail = VerbOutcome::new(
+                wrong_instance.verb.label(),
+                &instance_b,
+                "osl-qa-selftest.b.request",
+            )
+            .refused("declined-wrong-instance");
+            wrong_instance_detail.request_format = wrong_instance.format;
+            let wrong_instance_refused = refused_verdict(
+                "refused",
+                "This self-test request was addressed to another instance",
+                wrong_instance_detail,
+            );
+            assert_eq!(wrong_instance_refused.outcome, "refused");
+            assert_eq!(
+                wrong_instance_refused.refusal.as_deref(),
+                Some("declined-wrong-instance")
+            );
+            assert!(
+                !wrong_instance_refused.pass,
+                "a wrong-instance restart trigger must not pass green"
+            );
+
             assert_eq!(
                 select_trigger_body(&instance_b, None, Some(shared_for_a.as_str())),
                 TriggerSelection::DeclineLegacy {
@@ -7875,7 +8582,29 @@ mod qa_selftest {
                 },
                 "B must leave a shared trigger declared for A instead of consuming it"
             );
+            let decline_instance = format!("org.oslprivacy.hub.qa-b-{}", std::process::id());
+            let declared_instance = format!("org.oslprivacy.hub.qa-a-{}", std::process::id());
+            let decline_body = format!(
+                r#"{{"verb":"drain","instance":"{}"}}"#,
+                declared_instance
+            );
+            let decline_path =
+                temp_path(&addressed_name(ADDRESSED_DECLINE_FORMAT, &decline_instance));
+            let _ = std::fs::remove_file(&decline_path);
+            record_decline(&decline_instance, &declared_instance, &decline_body);
+            let decline_record: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&decline_path).expect("read decline record"))
+                    .expect("decline record JSON");
+            assert_eq!(decline_record["instance"].as_str(), Some(decline_instance.as_str()));
+            assert_eq!(
+                decline_record["declaredInstance"].as_str(),
+                Some(declared_instance.as_str())
+            );
+            assert_eq!(decline_record["requestStatus"], "declined-wrong-instance");
+            assert_eq!(decline_record["action"], "left-for-its-owner");
+            let _ = std::fs::remove_file(&decline_path);
 
+            DECLINED_REQUEST_FINGERPRINT.store(0, Ordering::SeqCst);
             let decline_path = temp_path(&addressed_name(ADDRESSED_DECLINE_FORMAT, &instance_b));
             let _ = std::fs::remove_file(&decline_path);
             record_decline(&instance_b, &instance_a, &shared_for_a);
@@ -7887,18 +8616,77 @@ mod qa_selftest {
                 declined["declaredInstance"].as_str(),
                 Some(instance_a.as_str())
             );
+            assert_eq!(declined["trigger"].as_str(), Some(TRIGGER_FILE));
             assert_eq!(
                 declined["requestStatus"].as_str(),
                 Some("declined-wrong-instance")
             );
-            assert_eq!(declined["action"].as_str(), Some("left-for-its-owner"));
+            assert_eq!(
+                declined["action"].as_str(),
+                Some("left-for-its-owner"),
+                "B must durably prove it left A's shared restart trigger for A"
+            );
+            let first_decline = std::fs::read(&decline_path).expect("read first decline record");
+            record_decline(&instance_b, &instance_a, &shared_for_a);
+            assert_eq!(
+                std::fs::read(&decline_path).expect("read repeated decline record"),
+                first_decline,
+                "re-seeing the same wrong-instance trigger must not rewrite B's decline proof"
+            );
+            DECLINED_REQUEST_FINGERPRINT.store(0, Ordering::SeqCst);
             let _ = std::fs::remove_file(&decline_path);
 
-            let legacy_drain = format!(r#"{{"verb":"drain","instance":"{}"}}"#, instance_b);
             assert_eq!(
-                select_trigger_body(&instance_b, None, Some(legacy_drain.as_str())),
-                TriggerSelection::Legacy(legacy_drain.as_str()),
+                select_trigger_body(&instance_b, None, Some(addressed_drain.as_str())),
+                TriggerSelection::Legacy(addressed_drain.as_str()),
                 "B may consume the shared trigger only when it is addressed to B"
+            );
+
+            let fixed_instance_b = "org.oslprivacy.hub.qa-b";
+            let fixed_addressed_for_a =
+                r#"{"verb":"drain","instance":"org.oslprivacy.hub.qa-a"}"#;
+            assert_eq!(
+                select_trigger_body(fixed_instance_b, Some(fixed_addressed_for_a), None),
+                TriggerSelection::Addressed(fixed_addressed_for_a),
+                "an addressed trigger is B's responsibility even when the body contradicts it"
+            );
+            let ParsedRequest::Accepted(wrong_instance_request) =
+                parse_request(fixed_addressed_for_a)
+            else {
+                panic!("wrong-instance addressed drain request must parse");
+            };
+            assert!(
+                !osl_privacy_hub::qa_selftest_request::request_is_for_me(
+                    wrong_instance_request.instance.as_deref(),
+                    fixed_instance_b
+                ),
+                "a trigger body addressed to A must not authorize B's restart proof"
+            );
+            let mut wrong_instance_detail = VerbOutcome::new(
+                wrong_instance_request.verb.label(),
+                fixed_instance_b,
+                "osl-qa-selftest.b.request",
+            )
+            .refused("declined-wrong-instance");
+            wrong_instance_detail.request_format = wrong_instance_request.format;
+            let wrong_instance_refusal = refused_verdict(
+                "refused",
+                "This self-test request was addressed to another instance",
+                wrong_instance_detail,
+            );
+            assert_eq!(wrong_instance_refusal.instance, fixed_instance_b);
+            assert_eq!(wrong_instance_refusal.verb, "drain");
+            assert_eq!(
+                wrong_instance_refusal.request_status,
+                "declined-wrong-instance"
+            );
+            assert_eq!(
+                wrong_instance_refusal.refusal,
+                Some("declined-wrong-instance")
+            );
+            assert!(
+                !wrong_instance_refusal.pass,
+                "a wrong-instance addressed trigger must fail closed"
             );
 
             assert!(!selftest_busy());
@@ -7939,6 +8727,9 @@ mod qa_selftest {
             ));
             std::fs::write(&verdict_path, br#"{"pass":true,"outcome":"completed"}"#)
                 .expect("seed stale verdict");
+            let mut partial_path = verdict_path.as_os_str().to_owned();
+            partial_path.push(VERDICT_PARTIAL_SUFFIX);
+            let partial_path = std::path::PathBuf::from(partial_path);
             write_verdict(&refused, &verdict_path);
             let durable: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(&verdict_path).expect("read verdict"))
@@ -7950,6 +8741,10 @@ mod qa_selftest {
             assert_eq!(
                 durable["criteria"]["send_completed"]["pass"], false,
                 "a restarted B that is still draining must replace stale green evidence"
+            );
+            assert!(
+                !partial_path.exists(),
+                "the restart proof must not leave a partial verdict for the harness to read"
             );
             let _ = std::fs::remove_file(&verdict_path);
         }
@@ -8139,6 +8934,13 @@ macro_rules! hub_tauri_commands {
             resize_native_app_window,
             focus_native_app_window,
             detach_native_app_window,
+            claim_whatsapp_qa_window,
+            resize_whatsapp_qa_window,
+            get_whatsapp_qa_protection_status,
+            begin_whatsapp_visual_binding,
+            confirm_whatsapp_visual_binding,
+            prepare_whatsapp_qa_protected_text,
+            open_whatsapp_qa_protected_text,
             set_native_discord_protected_overlay_open,
             get_native_discord_overlay_state,
             prepare_native_discord_overlay_text,
@@ -8476,6 +9278,8 @@ fn main() {
         osl_privacy_hub::discord_qa_identity::ensure_disposable_identity(&core)?;
         #[cfg(feature = "discord-qa-shell")]
         startup_breadcrumb("setup_step_20_qa_disposable_identity_after"); // STARTUP-TRACE
+        #[cfg(feature = "whatsapp-qa-shell")]
+        bootstrap_whatsapp_qa_device_identity(&core, &config_dir)?;
         let security_state = HubSecurityState::default();
         startup_breadcrumb("setup_step_21_security_state_created"); // STARTUP-TRACE
         #[cfg(feature = "discord-qa-shell")]
@@ -8488,7 +9292,19 @@ fn main() {
         )?;
         #[cfg(feature = "discord-qa-shell")]
         startup_breadcrumb("setup_step_23_qa_pairing_after"); // STARTUP-TRACE
+        #[cfg(feature = "whatsapp-qa-shell")]
+        osl_privacy_hub::whatsapp_qa_pairing::publish_and_consume(
+            &osl_core_dir,
+            &core,
+            &security_state,
+        )?;
         app.manage(core);
+        #[cfg(feature = "whatsapp-qa-shell")]
+        {
+            let runtime_receipt = WhatsAppQaRuntimeReceiptState::beside_current_executable()?;
+            runtime_receipt.write("coreReady", None, false, false, None)?;
+            app.manage(runtime_receipt);
+        }
         startup_breadcrumb("setup_step_24_core_state_managed"); // STARTUP-TRACE
         app.manage(HubBrokerState::default());
         startup_breadcrumb("setup_step_25_broker_state_managed"); // STARTUP-TRACE
@@ -8502,6 +9318,8 @@ fn main() {
         startup_breadcrumb("setup_step_29_native_window_host_state_managed"); // STARTUP-TRACE
         app.manage(NativeDiscordComposerState::default());
         startup_breadcrumb("setup_step_30_native_discord_composer_state_managed"); // STARTUP-TRACE
+        app.manage(WhatsAppQaHostState::default());
+        app.manage(WhatsAppQaProtectionState::default());
         app.manage(LocalCoverState::default());
         startup_breadcrumb("setup_step_31_local_cover_state_managed"); // STARTUP-TRACE
         app.manage(OverlaySessionState::default());
@@ -9272,6 +10090,9 @@ mod tauri_command_acl_tests {
         AccountRef, BindingEvidence, BindingScope, IdentityBindingError, IdentityBindingVerifier,
         PinnedOwner,
     };
+    use osl_privacy_hub::native_discord_adapter::guided_deletion::{
+        DeletionScan, WalkCompleteness,
+    };
     use osl_privacy_hub::scrub_index::ScrubAccountSelection;
     use std::cell::RefCell;
     use std::collections::BTreeSet;
@@ -9361,6 +10182,31 @@ mod tauri_command_acl_tests {
         }
     }
 
+    fn test_checked_host() -> CheckedHost {
+        CheckedHost {
+            context_epoch: 42,
+            active: ActiveServiceHost {
+                service_id: "discord".to_owned(),
+                account_id: "acct-1".to_owned(),
+                generation: 9,
+                owner_namespace: "owner-ns".to_owned(),
+            },
+            owner_osl_user_id: "owner-1".to_owned(),
+            scope_binding: "scope-binding".to_owned(),
+        }
+    }
+
+    fn test_deletion_scan() -> DeletionScan {
+        DeletionScan {
+            scope_binding_hash: "scan-hash".to_owned(),
+            generation: 9,
+            rows_seen: 1,
+            rows_unreadable: 0,
+            walk: WalkCompleteness::Complete,
+            candidates: Vec::new(),
+        }
+    }
+
     #[test]
     fn pw3_browser_session_commands_are_registered_and_acl_granted() {
         assert_registered_and_acl_granted(&[
@@ -9417,7 +10263,7 @@ mod tauri_command_acl_tests {
                 Ok(())
             },
         )
-        .expect("checked hosted scan succeeds only after all gates");
+        .expect("checked scan succeeds only after every gate");
         assert_eq!(scan.generation, 9);
         assert_eq!(
             events.into_inner(),
@@ -9426,25 +10272,26 @@ mod tauri_command_acl_tests {
                 "attended-binding",
                 "native-scan",
                 "context-recheck"
-            ]
+            ],
+            "scan must be checked host -> attended binding -> native scan -> context recheck"
         );
 
-        let refused_events = RefCell::new(Vec::<&'static str>::new());
+        let refusal_events = RefCell::new(Vec::<&'static str>::new());
         let refused = checked_hosted_session_scan_flow(
             || {
-                refused_events.borrow_mut().push("checked-host");
+                refusal_events.borrow_mut().push("checked-host");
                 Ok(test_checked_host())
             },
             |_checked| {
-                refused_events.borrow_mut().push("attended-binding");
+                refusal_events.borrow_mut().push("attended-binding");
                 Err("missing attended binding".to_owned())
             },
             |_checked, _operator_names| {
-                refused_events.borrow_mut().push("native-scan");
+                refusal_events.borrow_mut().push("native-scan");
                 Ok(test_deletion_scan())
             },
             |_checked| {
-                refused_events.borrow_mut().push("context-recheck");
+                refusal_events.borrow_mut().push("context-recheck");
                 Ok(())
             },
         );
@@ -9453,9 +10300,9 @@ mod tauri_command_acl_tests {
             Ok(_) => panic!("missing attended binding must refuse"),
         }
         assert_eq!(
-            refused_events.into_inner(),
+            refusal_events.into_inner(),
             ["checked-host", "attended-binding"],
-            "missing attended binding must refuse before native scan"
+            "absence of attended binding must refuse before native scan or context success"
         );
     }
 
@@ -9754,6 +10601,33 @@ mod native_visible_row_qa_command_tests {
             ]
         );
 
+        let stale_after_events = RefCell::new(Vec::<&'static str>::new());
+        let stale_after = finish_native_visible_row_qa_request(
+            &context,
+            runtime_receipt_fixture(),
+            || {
+                stale_after_events.borrow_mut().push("lock-after");
+                Ok(())
+            },
+            |_epoch, _host| {
+                stale_after_events.borrow_mut().push("context-after");
+                Err("stale native context".to_owned())
+            },
+            |_receipt| {
+                stale_after_events.borrow_mut().push("persist");
+                Ok(())
+            },
+        );
+        match stale_after {
+            Err(error) => assert_eq!(error, "stale native context"),
+            Ok(_) => panic!("stale native context must refuse the QA receipt"),
+        }
+        assert_eq!(
+            stale_after_events.into_inner(),
+            ["context-after"],
+            "a stale post-read context must refuse before the lock-after gate or persistence"
+        );
+
         let refused_events = RefCell::new(Vec::<&'static str>::new());
         let refused = prepare_native_visible_row_qa_request(
             || {
@@ -10003,26 +10877,60 @@ mod tauri_registration_surface_tests {
             .collect()
     }
 
+    fn toml_string_field(line: &str, field: &str) -> Option<String> {
+        let value = line.strip_prefix(field)?.trim_start();
+        let value = value.strip_prefix('=')?.trim_start();
+        let value = value.strip_prefix('"')?.strip_suffix('"')?;
+        Some(value.to_owned())
+    }
+
+    fn toml_string_array_field(line: &str, field: &str) -> Option<Vec<String>> {
+        let value = line.strip_prefix(field)?.trim_start();
+        let value = value.strip_prefix('=')?.trim_start();
+        let value = value.strip_prefix('[')?.strip_suffix(']')?;
+        Some(
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .map(|part| {
+                    part.strip_prefix('"')
+                        .and_then(|part| part.strip_suffix('"'))
+                        .expect("commands.allow entries must be TOML strings")
+                        .to_owned()
+                })
+                .collect(),
+        )
+    }
+
     fn permission_commands(source: &str) -> BTreeMap<String, String> {
-        let mut current_identifier = None::<String>;
         let mut permissions = BTreeMap::new();
-        for line in source.lines().map(str::trim) {
-            if let Some(value) = line
-                .strip_prefix("identifier = \"")
-                .and_then(|tail| tail.strip_suffix('"'))
-            {
-                current_identifier = Some(value.to_owned());
+        for block in source.split("[[permission]]").skip(1) {
+            let mut identifier = None::<String>;
+            let mut allowed_commands = None::<Vec<String>>;
+            for line in block.lines().map(str::trim).filter(|line| !line.is_empty()) {
+                if identifier.is_none() {
+                    identifier = toml_string_field(line, "identifier");
+                }
+                if allowed_commands.is_none() {
+                    allowed_commands = toml_string_array_field(line, "commands.allow");
+                }
+            }
+            let Some(identifier) = identifier else {
                 continue;
-            }
-            if let Some(command) = line
-                .strip_prefix("commands.allow = [\"")
-                .and_then(|tail| tail.strip_suffix("\"]"))
-            {
-                let identifier = current_identifier
-                    .take()
-                    .expect("command permission has an identifier");
-                permissions.insert(identifier, command.to_owned());
-            }
+            };
+            let commands = allowed_commands
+                .unwrap_or_else(|| panic!("permission {identifier} must declare commands.allow"));
+            assert_eq!(
+                commands.len(),
+                1,
+                "permission {identifier} must grant exactly one command"
+            );
+            let previous = permissions.insert(identifier.clone(), commands[0].clone());
+            assert!(
+                previous.is_none(),
+                "permission identifier {identifier} must be unique"
+            );
         }
         permissions
     }
@@ -10094,6 +11002,39 @@ mod tauri_registration_surface_tests {
         );
     }
 
+    fn assert_each_registration_surface_is_required(
+        handlers: &BTreeSet<String>,
+        permissions: &BTreeMap<String, String>,
+        capability: &BTreeSet<String>,
+        commands: &[&str],
+    ) {
+        for command in commands {
+            let command = *command;
+            let permission = command_permission(command);
+
+            let mut missing_handler = handlers.clone();
+            missing_handler.remove(command);
+            assert!(
+                !is_registered_and_granted(&missing_handler, permissions, capability, command),
+                "removing {command} from generate_handler must fail the registration proof"
+            );
+
+            let mut missing_permission = permissions.clone();
+            missing_permission.remove(&permission);
+            assert!(
+                !is_registered_and_granted(handlers, &missing_permission, capability, command),
+                "removing {permission} from hub.toml must fail the registration proof"
+            );
+
+            let mut missing_capability = capability.clone();
+            missing_capability.remove(&permission);
+            assert!(
+                !is_registered_and_granted(handlers, permissions, &missing_capability, command),
+                "removing {permission} from hub.json must fail the registration proof"
+            );
+        }
+    }
+
     fn registration_inputs() -> (BTreeSet<String>, BTreeMap<String, String>, BTreeSet<String>) {
         (
             handler_commands(),
@@ -10108,6 +11049,24 @@ mod tauri_registration_surface_tests {
         "scan_consented_browser_profile",
         "load_detected_browser_footprint",
         "revoke_detected_browser_footprint",
+    ];
+
+    const BROWSER_CONSENT_TAURI_COMMANDS: [&str; 15] = [
+        "list_browser_imports",
+        "open_browser_import",
+        "get_firefox_status",
+        "install_firefox",
+        "begin_browser_account_import",
+        "begin_protected_browser_import",
+        "finish_protected_browser_import",
+        "launch_firefox_service",
+        "get_default_browser_companion_status",
+        "host_default_browser_companion",
+        "resize_default_browser_companion",
+        "focus_default_browser_companion",
+        "detach_default_browser_companion",
+        "native_app_takeover_requires_consent",
+        "host_native_app_window",
     ];
 
     const F1_FOOTPRINT_NATIVE_COMMANDS: [&str; 2] = [
@@ -10202,6 +11161,12 @@ mod tauri_registration_surface_tests {
         for command in BROWSER_CONSENT_COMMANDS {
             assert_registered_and_granted(&handlers, &permissions, &capability, command);
         }
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &BROWSER_CONSENT_COMMANDS,
+        );
 
         let declared_browser_consent_permissions = permissions
             .iter()
@@ -10258,6 +11223,57 @@ mod tauri_registration_surface_tests {
             ),
             "removing a browser-consent capability grant must make the proof fail"
         );
+
+        let request = BrowserFootprintConsentRequest {
+            browser_id: BrowserImportId::Chrome,
+            browser_profile_account: "browser-account".to_owned(),
+            browser_profile_id: "profile-id".to_owned(),
+            import_run_id: "import-run".to_owned(),
+            consent: true,
+        };
+        let observation = FootprintObservation {
+            owner_osl_user_id: "owner-1".to_owned(),
+            browser_id: request.browser_id,
+            browser_profile_account: request.browser_profile_account.clone(),
+            browser_profile_id: request.browser_profile_id.clone(),
+            import_run_id: request.import_run_id.clone(),
+            observed_at_unix_ms: 12,
+        };
+        let mut state = browser_footprint::BrowserFootprintState {
+            observations: vec![observation],
+            bindings: vec![
+                checked_browser_footprint_binding("owner-1", &request, false)
+                    .expect("well-formed browser footprint binding"),
+            ],
+        };
+        assert!(
+            browser_footprint::hydrate_consented_for_owner(
+                &state,
+                "owner-1",
+                request.browser_id,
+                &request.browser_profile_account,
+                &request.browser_profile_id,
+                &request.import_run_id,
+            )
+            .is_none(),
+            "a browser footprint binding without explicit consent must refuse hydration"
+        );
+        state.bindings = vec![checked_browser_footprint_binding("owner-1", &request, true)
+            .expect("explicit browser footprint consent binding")];
+        assert_eq!(
+            browser_footprint::hydrate_consented_for_owner(
+                &state,
+                "owner-1",
+                request.browser_id,
+                &request.browser_profile_account,
+                &request.browser_profile_id,
+                &request.import_run_id,
+            )
+            .expect("explicit consent hydrates the exact footprint")
+            .len(),
+            1,
+            "explicit consent must hydrate only the exact owner/browser/profile/import scope"
+        );
     }
 
     fn test_checked_host() -> CheckedHost {
@@ -10290,26 +11306,29 @@ mod tauri_registration_surface_tests {
     #[test]
     fn browser_consent_tauri_commands_and_acl_are_registered() {
         let (handlers, permissions, capability) = registration_inputs();
-        let expected_permissions = BROWSER_NATIVE_CONSENT_COMMANDS
+        let browser_consent_surface = BROWSER_CONSENT_TAURI_COMMANDS;
+        assert_eq!(
+            BROWSER_NATIVE_CONSENT_COMMANDS, browser_consent_surface,
+            "the legacy browser/native consent alias must match the reconciled Tauri command surface"
+        );
+        let expected_permissions = browser_consent_surface
             .iter()
             .map(|command| command_permission(command))
             .collect::<BTreeSet<_>>();
-
-        for command in BROWSER_NATIVE_CONSENT_COMMANDS {
+        for command in browser_consent_surface {
             assert_registered_and_granted(&handlers, &permissions, &capability, command);
         }
-
         let declared_permissions = permissions
             .iter()
             .filter_map(|(permission, command)| {
-                BROWSER_NATIVE_CONSENT_COMMANDS
+                browser_consent_surface
                     .contains(&command.as_str())
                     .then_some(permission.clone())
             })
             .collect::<BTreeSet<_>>();
         assert_eq!(
             declared_permissions, expected_permissions,
-            "the browser/native consent command group must use exactly its fixed permission identifiers"
+            "the reconciled browser-consent Tauri surface must keep exactly its fixed permission identifiers"
         );
 
         let granted_permissions = capability
@@ -10318,7 +11337,13 @@ mod tauri_registration_surface_tests {
             .collect::<BTreeSet<_>>();
         assert_eq!(
             granted_permissions, expected_permissions,
-            "the main-window capability must grant every browser/native consent permission"
+            "the main-window capability must grant the full reconciled browser-consent Tauri surface"
+        );
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &browser_consent_surface,
         );
 
         let mut missing_consent_probe = handlers.clone();
@@ -10370,19 +11395,51 @@ mod tauri_registration_surface_tests {
     #[test]
     fn hosted_session_scan_commands_are_registered() {
         let (handlers, permissions, capability) = registration_inputs();
-        for command in [
+        const HOSTED_SESSION_SCAN_COMMANDS: [&str; 3] = [
             "open_hosted_session_scan",
             "request_hosted_session_scan",
             "request_hosted_session_scan_command",
-        ] {
+        ];
+        let expected_permissions = HOSTED_SESSION_SCAN_COMMANDS
+            .iter()
+            .map(|command| command_permission(command))
+            .collect::<BTreeSet<_>>();
+        for command in HOSTED_SESSION_SCAN_COMMANDS {
             assert_registered_and_granted(&handlers, &permissions, &capability, command);
         }
+        let declared_permissions = permissions
+            .iter()
+            .filter_map(|(permission, command)| {
+                HOSTED_SESSION_SCAN_COMMANDS
+                    .contains(&command.as_str())
+                    .then_some(permission.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            declared_permissions, expected_permissions,
+            "hosted session scan commands must keep exactly their fixed permission identifiers"
+        );
+        let granted_permissions = capability
+            .intersection(&expected_permissions)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            granted_permissions, expected_permissions,
+            "hosted session scan commands must all be granted by the main-window capability"
+        );
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &HOSTED_SESSION_SCAN_COMMANDS,
+        );
         for forbidden in [
             "preview_discord_guided_deletion",
             "request_hosted_session_scan_comman",
             "execute_discord_guided_deletion",
             "delete_own_item",
         ] {
+            let forbidden_permission = command_permission(forbidden);
             assert!(
                 !handlers.contains(forbidden),
                 "{forbidden} must not be registered"
@@ -10391,45 +11448,71 @@ mod tauri_registration_surface_tests {
                 !permissions.values().any(|command| command == forbidden),
                 "{forbidden} must not be ACL-granted"
             );
+            assert!(
+                !capability.contains(&forbidden_permission),
+                "{forbidden} must not have a capability grant"
+            );
         }
-
-        let mut missing_request = handlers.clone();
-        missing_request.remove("request_hosted_session_scan");
-        assert!(
-            !is_registered_and_granted(
-                &missing_request,
-                &permissions,
-                &capability,
-                "request_hosted_session_scan",
-            ),
-            "removing the scan request command must make the proof fail"
-        );
-        let mut missing_permission = permissions.clone();
-        missing_permission.remove("allow-request-hosted-session-scan-command");
-        assert!(
-            !is_registered_and_granted(
-                &handlers,
-                &missing_permission,
-                &capability,
-                "request_hosted_session_scan_command",
-            ),
-            "removing the scan command permission declaration must make the proof fail"
-        );
-        let mut missing_capability = capability.clone();
-        missing_capability.remove("allow-open-hosted-session-scan");
-        assert!(
-            !is_registered_and_granted(
-                &handlers,
-                &permissions,
-                &missing_capability,
-                "open_hosted_session_scan",
-            ),
-            "removing the scan open ACL grant must make the proof fail"
-        );
+        for forbidden_permission in [
+            "allow-preview-discord-guided-deletion",
+            "allow-request-hosted-session-scan-comman",
+            "allow-execute-discord-guided-deletion",
+            "allow-delete-own-item",
+        ] {
+            assert!(
+                !permissions.contains_key(forbidden_permission),
+                "{forbidden_permission} must not be declared as a Tauri permission"
+            );
+            assert!(
+                !capability.contains(forbidden_permission),
+                "{forbidden_permission} must not be granted by the main-window capability"
+            );
+        }
     }
 
     #[test]
     fn request_hosted_session_scan_command_routes_through_checked_host() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "request_hosted_session_scan_command",
+        );
+
+        let missing_checked_host_events = RefCell::new(Vec::<&'static str>::new());
+        let missing_checked_host = checked_hosted_session_scan_flow(
+            || {
+                missing_checked_host_events.borrow_mut().push("checked-host");
+                Err("missing checked host".to_owned())
+            },
+            |_checked| {
+                missing_checked_host_events
+                    .borrow_mut()
+                    .push("attended-binding");
+                Ok(vec!["operator".to_owned()])
+            },
+            |_checked, _operator_names| {
+                missing_checked_host_events.borrow_mut().push("native-scan");
+                Ok(test_deletion_scan())
+            },
+            |_checked| {
+                missing_checked_host_events
+                    .borrow_mut()
+                    .push("context-recheck");
+                Ok(())
+            },
+        );
+        match missing_checked_host {
+            Err(error) => assert_eq!(error, "missing checked host"),
+            Ok(_) => panic!("missing checked host must refuse the hosted scan"),
+        }
+        assert_eq!(
+            missing_checked_host_events.into_inner(),
+            ["checked-host"],
+            "the hosted scan command must build CheckedHost before binding operators or scanning"
+        );
+
         let events = RefCell::new(Vec::<&'static str>::new());
         let scan = checked_hosted_session_scan_flow(
             || {
@@ -10455,6 +11538,8 @@ mod tauri_registration_surface_tests {
         )
         .expect("checked scan succeeds only after every gate");
         assert_eq!(scan.generation, 9);
+        assert_eq!(scan.scope_binding_hash, "scan-hash");
+        assert_eq!(scan.rows_seen, 1);
         assert_eq!(
             events.into_inner(),
             [
@@ -10511,12 +11596,12 @@ mod tauri_registration_surface_tests {
             },
             |_checked| {
                 stale_context_events.borrow_mut().push("context-recheck");
-                Err("stale native context".to_owned())
+                Err("stale hosted context".to_owned())
             },
         );
         match stale_context {
-            Err(error) => assert_eq!(error, "stale native context"),
-            Ok(_) => panic!("stale native context must refuse the hosted scan result"),
+            Err(error) => assert_eq!(error, "stale hosted context"),
+            Ok(_) => panic!("stale hosted context must refuse after native scan"),
         }
         assert_eq!(
             stale_context_events.into_inner(),
@@ -10526,7 +11611,40 @@ mod tauri_registration_surface_tests {
                 "native-scan",
                 "context-recheck"
             ],
-            "a stale context after native scan must refuse before the result is returned"
+            "a stale hosted context must refuse after native scan and before returning data"
+        );
+
+        let native_scan_refusal_events = RefCell::new(Vec::<&'static str>::new());
+        let native_scan_refused = checked_hosted_session_scan_flow(
+            || {
+                native_scan_refusal_events.borrow_mut().push("checked-host");
+                Ok(test_checked_host())
+            },
+            |_checked| {
+                native_scan_refusal_events
+                    .borrow_mut()
+                    .push("attended-binding");
+                Ok(vec!["operator".to_owned()])
+            },
+            |_checked, _operator_names| {
+                native_scan_refusal_events.borrow_mut().push("native-scan");
+                Err("native scan refused".to_owned())
+            },
+            |_checked| {
+                native_scan_refusal_events
+                    .borrow_mut()
+                    .push("context-recheck");
+                Ok(())
+            },
+        );
+        match native_scan_refused {
+            Err(error) => assert_eq!(error, "native scan refused"),
+            Ok(_) => panic!("native scan refusal must not be converted into success"),
+        }
+        assert_eq!(
+            native_scan_refusal_events.into_inner(),
+            ["checked-host", "attended-binding", "native-scan"],
+            "native scan refusal must stop before context recheck or result return"
         );
 
         let missing_checked_host_events = RefCell::new(Vec::<&'static str>::new());
@@ -10596,8 +11714,29 @@ mod tauri_registration_surface_tests {
             .as_ref()
             .cloned()
             .expect("test identity installed");
-        let mut verifier =
-            IdentityBindingVerifier::new(PinnedOwner::from_identity(&owner_identity));
+        let owner = PinnedOwner::from_identity(&owner_identity);
+        let mut verifier = IdentityBindingVerifier::new(owner);
+        let refused_before_start = Cell::new(false);
+        let refused_checked = start_autoscrub_reviewed_run_checked(
+            &state,
+            request.clone(),
+            |_| Ok(IdentityBindingVerifier::new(owner)),
+            |_, _| {
+                refused_before_start.set(true);
+                Ok(before.clone())
+            },
+        );
+        match refused_checked {
+            Err(error) => assert_eq!(
+                error, "A reviewed identity binding is required before starting AutoScrub",
+                "the production review gate must refuse before the reviewed-run start callback"
+            ),
+            Ok(_) => panic!("missing review binding must refuse before starting AutoScrub"),
+        }
+        assert!(
+            !refused_before_start.get(),
+            "missing review binding must stop before any AutoScrub run can open"
+        );
         assert_eq!(
             require_review_ui_identity_binding_from_verifier(&verifier, &request),
             Err("A reviewed identity binding is required before starting AutoScrub".to_owned()),
@@ -10685,6 +11824,37 @@ mod tauri_registration_surface_tests {
         assert_eq!(started, 1);
         assert_eq!(start_events.into_inner(), ["start"]);
 
+        let mut accepted_verifier = IdentityBindingVerifier::new(owner);
+        accepted_verifier
+            .bind(
+                AccountRef {
+                    service_id: "discord".to_owned(),
+                    account_id: "acct-1".to_owned(),
+                },
+                BindingScope::ScrubDeletion,
+                BindingEvidence::CallerAttested,
+            )
+            .expect("exact deletion binding can be recorded for checked path");
+        let accepted_start = Cell::new(false);
+        let accepted = start_autoscrub_reviewed_run_checked(
+            &state,
+            request.clone(),
+            |_| Ok(accepted_verifier),
+            |_, accepted_request| {
+                accepted_start.set(true);
+                assert!(
+                    accepted_request.account_id == "acct-1",
+                    "accepted request must target the reviewed account"
+                );
+                Ok(before.clone())
+            },
+        )
+        .expect("an exact reviewed binding reaches the reviewed-run start callback");
+        assert_eq!(accepted.open_run_count, before.open_run_count);
+        assert!(
+            accepted_start.get(),
+            "exact ScrubDeletion binding must be enough to reach the reviewed-run start callback"
+        );
         match start_autoscrub_reviewed_run_inner(&state, request) {
             Err(error) => assert_eq!(
                 error, "A reviewed identity binding is required before starting AutoScrub",
@@ -10703,46 +11873,43 @@ mod tauri_registration_surface_tests {
     #[test]
     fn autoscrub_run_lifecycle_commands_are_registered_and_acl_granted() {
         let (handlers, permissions, capability) = registration_inputs();
-        for command in [
+        const AUTOSCRUB_RUN_LIFECYCLE_COMMANDS: [&str; 3] = [
             "get_autoscrub_run_fl",
             "start_autoscrub_reviewed_run",
             "request_autoscrub_global_stop",
-        ] {
+        ];
+        let expected_permissions = AUTOSCRUB_RUN_LIFECYCLE_COMMANDS
+            .iter()
+            .map(|command| command_permission(command))
+            .collect::<BTreeSet<_>>();
+        for command in AUTOSCRUB_RUN_LIFECYCLE_COMMANDS {
             assert_registered_and_granted(&handlers, &permissions, &capability, command);
         }
-
-        let mut missing_start = capability.clone();
-        missing_start.remove("allow-start-autoscrub-reviewed-run");
-        assert!(
-            !is_registered_and_granted(
-                &handlers,
-                &permissions,
-                &missing_start,
-                "start_autoscrub_reviewed_run",
-            ),
-            "removing the start-run ACL grant must make the proof fail"
+        let declared_permissions = permissions
+            .iter()
+            .filter_map(|(permission, command)| {
+                AUTOSCRUB_RUN_LIFECYCLE_COMMANDS
+                    .contains(&command.as_str())
+                    .then_some(permission.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            declared_permissions, expected_permissions,
+            "AutoScrub lifecycle commands must keep exactly their fixed permission identifiers"
         );
-        let mut missing_handler = handlers.clone();
-        missing_handler.remove("request_autoscrub_global_stop");
-        assert!(
-            !is_registered_and_granted(
-                &missing_handler,
-                &permissions,
-                &capability,
-                "request_autoscrub_global_stop",
-            ),
-            "removing the stop command handler must make the proof fail"
+        let granted_permissions = capability
+            .intersection(&expected_permissions)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            granted_permissions, expected_permissions,
+            "AutoScrub lifecycle commands must all be granted by the main-window capability"
         );
-        let mut missing_permission = permissions.clone();
-        missing_permission.remove("allow-get-autoscrub-run-fl");
-        assert!(
-            !is_registered_and_granted(
-                &handlers,
-                &missing_permission,
-                &capability,
-                "get_autoscrub_run_fl",
-            ),
-            "removing the fleet-status permission declaration must make the proof fail"
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &AUTOSCRUB_RUN_LIFECYCLE_COMMANDS,
         );
     }
 }

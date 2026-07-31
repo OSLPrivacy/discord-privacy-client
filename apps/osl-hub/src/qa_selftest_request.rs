@@ -1711,6 +1711,15 @@ mod tests {
         );
         returned_to_a.fetched = 1;
 
+        assert_eq!(
+            acknowledgment_kind_label(NativeOverlayAcknowledgmentStatus::Received),
+            "received"
+        );
+        assert_eq!(
+            acknowledgment_kind_label(NativeOverlayAcknowledgmentStatus::Opened),
+            "opened"
+        );
+
         let report = DrainReport::from_batch(&returned_to_a);
         assert_eq!(report.opened_count, 0);
         assert_eq!(report.pending_view_once_count, 0);
@@ -1950,6 +1959,7 @@ mod tests {
         // P4c: the second reveal of an already-consumed message. Today this
         // exists only as a string returned to the renderer.
         let mut report = RevealReport::not_driven(RevealTarget::Last, 0);
+        let never_driven = serde_json::to_value(&report).expect("encode");
         report.phase_one_driven = true;
         report.selected = true;
         report.record_phase_two(Err(()));
@@ -1964,6 +1974,7 @@ mod tests {
         assert_eq!(encoded["refused"], true);
         assert_eq!(encoded["revealed"], false);
         assert_eq!(encoded["target"], "last");
+        assert_ne!(encoded, never_driven);
 
         let mut successful_first_reveal = RevealReport::not_driven(RevealTarget::Last, 0);
         successful_first_reveal.phase_one_driven = true;
