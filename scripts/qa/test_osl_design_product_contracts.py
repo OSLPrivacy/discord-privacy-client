@@ -404,6 +404,9 @@ def encode_burns_five_guarantees_and_banned_phrases() -> None:
 encode_burns_five_guarantees_and_banned_phrases.__name__ = (
     "Encode Burn's five guarantees and banned phrases."
 )
+globals()["Encode Burn's five guarantees and banned phrases."] = (
+    encode_burns_five_guarantees_and_banned_phrases
+)
 
 
 def simple_spec_burn_contract() -> None:
