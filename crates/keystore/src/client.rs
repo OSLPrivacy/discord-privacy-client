@@ -1553,18 +1553,16 @@ impl KeyServerClient {
                 "control-inbox sender filter is invalid".into(),
             ));
         }
-        let capability = self.probe_control_inbox_sender_filter_capability()?;
-        let measured_floor = self.observe_sender_filter_capability_floor(identity)?;
-        match (capability, measured_floor) {
-            (
-                ControlInboxSenderFilterCapability::Version1,
-                SenderFilterCapabilityFloor::Version1,
-            ) => self.get_control_inbox_from(identity, sender_id),
-            (
-                ControlInboxSenderFilterCapability::Legacy,
-                SenderFilterCapabilityFloor::Version1,
-            ) => Err(Error::Transport(
-                "control-inbox sender-filter capability downgrade refused".into(),
+        match self.probe_control_inbox_sender_filter_capability()? {
+            ControlInboxSenderFilterCapability::Version1 => {
+                match self.observe_sender_filter_capability_floor(identity)? {
+                    SenderFilterCapabilityFloor::Version1 => {
+                        self.get_control_inbox_from(identity, sender_id)
+                    }
+                }
+            }
+            ControlInboxSenderFilterCapability::Legacy => Err(Error::Transport(
+                "control-inbox sender-filter capability unavailable".into(),
             )),
         }
     }
