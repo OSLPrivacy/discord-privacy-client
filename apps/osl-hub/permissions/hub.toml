@@ -354,6 +354,41 @@ description = "Read only whether the current verified native Discord composer ca
 commands.allow = ["discord_marker_available"]
 
 [[permission]]
+identifier = "allow-claim-whatsapp-qa-window"
+description = "Claim exactly one already-running official Store WhatsApp main window after OSL unlock; never launches, installs, relinks, or accepts a path."
+commands.allow = ["claim_whatsapp_qa_window"]
+
+[[permission]]
+identifier = "allow-resize-whatsapp-qa-window"
+description = "Revalidate and align only the exact WhatsApp window already claimed by the QA host."
+commands.allow = ["resize_whatsapp_qa_window"]
+
+[[permission]]
+identifier = "allow-get-whatsapp-qa-protection-status"
+description = "Revalidate the exact WhatsApp accessibility binding and return only redacted semantic commitments and geometry."
+commands.allow = ["get_whatsapp_qa_protection_status"]
+
+[[permission]]
+identifier = "allow-begin-whatsapp-visual-binding"
+description = "Capture four fixed regions of the exact claimed WhatsApp window in volatile memory, reduce them to non-content visual commitments, discard the pixels, and request explicit local confirmation."
+commands.allow = ["begin_whatsapp_visual_binding"]
+
+[[permission]]
+identifier = "allow-confirm-whatsapp-visual-binding"
+description = "Bind the pending fixed-region commitments to the exact claimed WhatsApp generation only after explicit local attestation; reads no provider storage and persists no screenshot."
+commands.allow = ["confirm_whatsapp_visual_binding"]
+
+[[permission]]
+identifier = "allow-prepare-whatsapp-qa-protected-text"
+description = "After exact visual revalidation, encrypt one bounded OSL draft to only the verified dedicated QA peer and return a carrier for explicit placement; never types into or sends through WhatsApp."
+commands.allow = ["prepare_whatsapp_qa_protected_text"]
+
+[[permission]]
+identifier = "allow-open-whatsapp-qa-protected-text"
+description = "Open one explicitly pasted OSL carrier only after exact WhatsApp visual revalidation; never reads provider content, clipboard, history, or private storage."
+commands.allow = ["open_whatsapp_qa_protected_text"]
+
+[[permission]]
 identifier = "allow-get-mullvad-status"
 description = "Report only whether Mullvad exists in one of two fixed standard Windows locations; never reads VPN account, tunnel, traffic, or configuration state."
 commands.allow = ["get_mullvad_status"]
