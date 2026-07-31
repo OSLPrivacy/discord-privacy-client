@@ -55,7 +55,7 @@ function renderNotice(protectionActive: boolean, unreachable: boolean, reason = 
 const CAST = " as { reason?: unknown; unreachable?: unknown }";
 const listenerRegion = region(
   "    // `{ reason, unreachable }`, not the bare boolean this once was.",
-  "\n  },\n);",
+  "\n    },\n  );",
 );
 expect(listenerRegion).toContain(CAST);
 const listenerBody = listenerRegion.split(CAST).join("");
@@ -91,7 +91,7 @@ describe("native Discord composer-unreachable warning", () => {
     // Emitted with `emit_to("main", ...)`, so main.ts is the window that must
     // listen, and the payload contract is `{ reason, unreachable }`.
     expect(source).toContain(
-      "void listen<{ reason?: unknown; unreachable?: unknown }>(\n  NATIVE_DISCORD_COMPOSER_UNREACHABLE_EVENT,",
+      "void listen<{ reason?: unknown; unreachable?: unknown }>(\n    NATIVE_DISCORD_COMPOSER_UNREACHABLE_EVENT,",
     );
     // The bare-boolean listener is what went dark when the shape changed: a
     // `typeof payload !== "boolean"` guard on this event can only refuse every
@@ -130,7 +130,7 @@ describe("native Discord composer-unreachable warning", () => {
     // raised, or stick on.
     const apply = region(
       "function applyNativeDiscordComposerUnreachable(",
-      "\nvoid listen<{ reason?: unknown; unreachable?: unknown }>(",
+      "\n  void listen<{ reason?: unknown; unreachable?: unknown }>(",
     );
     expect(apply).toContain("nativeDiscordComposerUnreachable = unreachable;");
     expect(apply).not.toContain("Math.min");
@@ -164,7 +164,7 @@ describe("native Discord composer-unreachable warning", () => {
   it("commits the raise and the retraction synchronously rather than on the next frame", () => {
     const apply = region(
       "function applyNativeDiscordComposerUnreachable(",
-      "\nvoid listen<{ reason?: unknown; unreachable?: unknown }>(",
+      "\n  void listen<{ reason?: unknown; unreachable?: unknown }>(",
     );
     // Every deferred frame is a frame the operator may spend typing in the clear.
     expect(apply).toContain("renderNow();");

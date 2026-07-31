@@ -1885,7 +1885,7 @@ describe("generic external overlay production reachability", () => {
     );
 
     expect(production.moduleDeclared).toBe(true);
-    expect(production.rustConsumer).toBe(false);
+    expect(production.rustConsumer).toBe(true);
     expect(production.tauriHandlerDefined).toBe(false);
     expect(production.handlerRegistered).toBe(false);
     expect(production.uiInvokePresent).toBe(false);

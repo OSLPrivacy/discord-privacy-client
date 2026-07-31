@@ -53,6 +53,7 @@
     "allow-check-hub-for-updates",
     "allow-install-hub-update",
     "allow-open-hub-releases-page",
+    "allow-open-hub-source-repository",
     "allow-list-native-apps",
     "allow-native-app-takeover-requires-consent",
     "allow-install-native-app",

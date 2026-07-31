@@ -1,10 +1,14 @@
 import { defineConfig } from "vite";
 import { fileURLToPath } from "node:url";
 
+const discordQaRendererDefine = (mode: string) => mode === "discord-qa"
+  ? { "import.meta.env.VITE_OSL_DISCORD_QA_SHELL": JSON.stringify("1") }
+  : { "import.meta.env.VITE_OSL_DISCORD_QA_SHELL": JSON.stringify("0") };
+
 export default defineConfig(({ mode }) => ({
   base: "./",
   define: {
-    "import.meta.env.VITE_OSL_DISCORD_QA_SHELL": JSON.stringify(mode === "discord-qa" ? "1" : "0"),
+    ...discordQaRendererDefine(mode),
     "import.meta.env.VITE_OSL_SIGNAL_QA_SHELL": JSON.stringify(mode === "signal-qa" ? "1" : "0"),
   },
   build: {

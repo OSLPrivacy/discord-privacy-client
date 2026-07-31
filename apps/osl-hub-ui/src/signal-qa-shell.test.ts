@@ -15,6 +15,8 @@ const signalApp = (availability: NativeApp["availability"] = "installed"): Nativ
   id: "signal",
   displayName: "Signal",
   availability,
+  supportStatus: "comingSoon",
+  protectedMode: "unavailable",
   isolatedProfileAvailable: false,
   supportsOverlay: false,
 });

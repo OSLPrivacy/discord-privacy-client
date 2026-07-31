@@ -97,7 +97,7 @@ import {
   type HubLicenseState,
   type HubPasswordRoleStatus,
 } from "./core";
-import { checkHubForUpdates, installHubUpdate, openHubReleasesPage, type UpdateStatus } from "./updates";
+import { checkHubForUpdates, installHubUpdate, openHubReleasesPage, openHubSourceRepository, type UpdateStatus } from "./updates";
 import { createDiscordQaGeometryKeeper } from "./discord-qa-geometry";
 import { browserLogo, serviceLogo, providerLogo } from "./logos";
 import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, burnActiveHubContext, burnHubServiceAccount, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
@@ -3871,6 +3871,10 @@ function mailComposerEncryptionScope(app: HomeAppCatalogEntry | null): string {
   return `<aside class="mail-composer-encryption-scope" data-mail-composer-encryption-scope="${app.id}" role="note" aria-label="Email protection scope"><strong>Before you send</strong><small>${escapeHtml(app.displayName)} protects this app account. Ordinary external email uses the mail provider's delivery path. Use OSL Chat for verified friends.</small></aside>`;
 }
 
+function mailComposerProtectionNote(app: HomeAppCatalogEntry | null): string {
+  return mailComposerEncryptionScope(app);
+}
+
 function oslMailContent(): string {
   return oslMailViewMarkup({
     loading: oslMailLoading,
@@ -4292,8 +4296,8 @@ function serviceGuideContent(service: LinkedService, step: ServiceGuideStep): st
   const nativeFailure = nativeHostFailureNotice
     ? `<p class="form-status" role="status">${escapeHtml(nativeHostFailureNotice)}</p>`
     : "";
-  const mailScope = mailComposerEncryptionScope(selectedApp ?? activeHomeApp());
-  return `<main class="content-viewport service-guide" id="route-heading" tabindex="-1"><section class="guide-card guide-card-simple"><header><button class="text-back" id="service-guide-exit">← Apps</button></header><div class="guide-hero"><span class="guide-logo" data-guide-service="${service.id}">${serviceLogo(service.id)}</span><h1>${directNativeAccountChoice || directBrowserAccountChoice ? "Open" : "Connect"} ${name}</h1></div>${discordQaHostStatusMarkup()}${sessionChoices}${mailScope}${openAction || installedAction ? `<footer class="guide-actions">${openAction}${installedAction}</footer>` : ""}${nativeFailure}</section>${onboardingServiceSetup ? '<button class="onboarding-skip-dock" id="service-guide-skip">Skip · manual setup</button>' : ""}</main>`;
+  const mailNote = mailComposerProtectionNote(selectedApp ?? activeHomeApp());
+  return `<main class="content-viewport service-guide" id="route-heading" tabindex="-1"><section class="guide-card guide-card-simple"><header><button class="text-back" id="service-guide-exit">← Apps</button></header><div class="guide-hero"><span class="guide-logo" data-guide-service="${service.id}">${serviceLogo(service.id)}</span><h1>${directNativeAccountChoice || directBrowserAccountChoice ? "Open" : "Connect"} ${name}</h1></div>${discordQaHostStatusMarkup()}${sessionChoices}${mailNote}${openAction || installedAction ? `<footer class="guide-actions">${openAction}${installedAction}</footer>` : ""}${nativeFailure}</section>${onboardingServiceSetup ? '<button class="onboarding-skip-dock" id="service-guide-skip">Skip · manual setup</button>' : ""}</main>`;
 }
 
 function settingsContent(): string {
@@ -4476,13 +4480,25 @@ async function scanPrivacyExport(input: HTMLInputElement): Promise<void> {
   privacyScanBusy = true;
   render();
   try {
-    const candidates = importLocalMessageExport(await file.text(), {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const candidates = importLocalMessageExport(new TextDecoder("utf-8", { fatal: true }).decode(bytes), {
       serviceId: "local_import",
       accountId: "manual-export",
       conversationId: "privacy-scan",
     });
     if (!candidates?.length) throw new Error("No supported messages were found");
-    const persisted = await persistLocalScrubExport(candidates);
+    const attachmentName = file.name.replace(/[\u0000-\u001f\u007f-\u009f]/gu, " ").slice(0, 96) || "manual-export";
+    const indexedCandidates = candidates.map((candidate, index) => index === 0
+      ? {
+        ...candidate,
+        attachments: [{
+          attachmentId: "manual-export-file",
+          displayName: attachmentName,
+          contentBase64: bytesToBase64(bytes),
+        }],
+      }
+      : candidate);
+    const persisted = await persistLocalScrubExport(indexedCandidates);
     privacyScanResult = persisted.scan;
     selectedScrubFindings.clear();
     scrubResultsPage = 0;
@@ -4497,6 +4513,15 @@ async function scanPrivacyExport(input: HTMLInputElement): Promise<void> {
     privacyScanBusy = false;
     render();
   }
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
 }
 
 function sendingSettingsContent(): string {
@@ -4776,6 +4801,10 @@ function formatUnixDate(seconds: number): string {
 
 function appearanceSettingsContent(): string {
   return `<h2>Appearance</h2><p>Choose a theme. Arrange apps with Edit on Home.</p><div class="theme-grid">${(["system", "dark", "light"] as ThemeChoice[]).map((choice) => `<button class="theme-card ${themeChoice === choice ? "selected" : ""}" data-theme-choice="${choice}"><span class="theme-swatch ${choice}"></span><strong>${choice[0].toUpperCase()}${choice.slice(1)}</strong><small>${choice === "system" ? "Follow this device" : `${choice} interface`}</small></button>`).join("")}</div>`;
+}
+
+function developerSettingsContent(): string {
+  return `<details class="settings-disclosure developer-source"><summary>Developer source</summary><p>Open the fixed OSL repository through the trusted desktop command.</p><button class="button" data-source-repository type="button">Open source repository</button></details>`;
 }
 
 async function prepareServiceBurn(): Promise<void> {
@@ -7442,7 +7471,7 @@ function updateSettingsContent(): string {
     : updateStatus.state === "error" ? "Update check failed"
     : "Updater backend unavailable";
   const actions = updateStatus.state === "available" ? `<button class="button" data-update-read>Read more on GitHub</button><button class="button primary" data-update-modal>Install</button>` : "";
-  return `<h2>About</h2><div class="update-status-card"><span class="dot"></span><div><strong>${status}</strong><small>Signed local updater · no UI telemetry</small></div></div><div class="settings-actions"><button class="button ${updateStatus.state === "available" ? "" : "primary"}" data-update-check ${updateStatus.state === "checking" || updateStatus.state === "installing" ? "disabled" : ""}>Check for updates</button>${actions}</div><details class="settings-disclosure update-details"><summary>Update privacy</summary><p>Checks and installs use the trusted local updater. Release notes are plain text; remote HTML is never rendered.</p></details><details class="device-diagnostics settings-disclosure"><summary><span><strong>Device status</strong><small>${deviceReady ? "Ready" : "Needs attention"}</small></span></summary><p>${escapeHtml(coreReadinessLabel(core.readiness))}</p></details>`;
+  return `<h2>About</h2><div class="update-status-card"><span class="dot"></span><div><strong>${status}</strong><small>Signed local updater · no UI telemetry</small></div></div><div class="settings-actions"><button class="button ${updateStatus.state === "available" ? "" : "primary"}" data-update-check ${updateStatus.state === "checking" || updateStatus.state === "installing" ? "disabled" : ""}>Check for updates</button>${actions}</div><details class="settings-disclosure update-details"><summary>Update privacy</summary><p>Checks and installs use the trusted local updater. Release notes are plain text; remote HTML is never rendered.</p></details>${developerSettingsContent()}<details class="device-diagnostics settings-disclosure"><summary><span><strong>Device status</strong><small>${deviceReady ? "Ready" : "Needs attention"}</small></span></summary><p>${escapeHtml(coreReadinessLabel(core.readiness))}</p></details>`;
 }
 
 function bindUpdateControls(): void {
@@ -7454,6 +7483,7 @@ function bindUpdateControls(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-update-close]").forEach((button) => button.addEventListener("click", () => document.querySelector<HTMLDialogElement>("#update-dialog")?.close()));
   document.querySelectorAll<HTMLButtonElement>("[data-update-read]").forEach((button) => button.addEventListener("click", async () => { if (!(await openHubReleasesPage())) showToast("Could not open the fixed OSL releases page"); }));
   document.querySelectorAll<HTMLButtonElement>("[data-update-install]").forEach((button) => button.addEventListener("click", () => void installUpdateAfterClick()));
+  document.querySelectorAll<HTMLButtonElement>("[data-source-repository]").forEach((button) => button.addEventListener("click", async () => { if (!(await openHubSourceRepository())) showToast("Could not open the fixed OSL source repository"); }));
 }
 
 async function refreshUpdateStatus(background = false): Promise<void> {
@@ -7935,6 +7965,14 @@ async function openDiscordQaComposerAfterHostReady(): Promise<void> {
   }
 }
 
+function runDesktopShortcutAction(): void {
+  if (discordQaShell) {
+    void openDiscordQaComposer();
+    return;
+  }
+  void toggleDesktopFullscreen().catch(() => undefined);
+}
+
 async function requestDiscordQaVisibleRowRuntimeReceipt(): Promise<void> {
   if (!discordQaShell
     || discordQaRowProofState === "busy"
@@ -8150,11 +8188,7 @@ if (!runningUnderVitest) {
   window.addEventListener("keydown", (event) => {
     if (event.key !== "F11" || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
     event.preventDefault();
-    if (discordQaShell) {
-      void openDiscordQaComposer();
-      return;
-    }
-    void toggleDesktopFullscreen().catch(() => undefined);
+    runDesktopShortcutAction();
   });
 }
 let nativeHostResizeFrame = 0;
