@@ -10266,42 +10266,60 @@ mod tauri_registration_surface_tests {
             .collect()
     }
 
+    fn toml_string_field(line: &str, field: &str) -> Option<String> {
+        let value = line.strip_prefix(field)?.trim_start();
+        let value = value.strip_prefix('=')?.trim_start();
+        let value = value.strip_prefix('"')?.strip_suffix('"')?;
+        Some(value.to_owned())
+    }
+
+    fn toml_string_array_field(line: &str, field: &str) -> Option<Vec<String>> {
+        let value = line.strip_prefix(field)?.trim_start();
+        let value = value.strip_prefix('=')?.trim_start();
+        let value = value.strip_prefix('[')?.strip_suffix(']')?;
+        Some(
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .map(|part| {
+                    part.strip_prefix('"')
+                        .and_then(|part| part.strip_suffix('"'))
+                        .expect("commands.allow entries must be TOML strings")
+                        .to_owned()
+                })
+                .collect(),
+        )
+    }
+
     fn permission_commands(source: &str) -> BTreeMap<String, String> {
-        let mut current_identifier = None::<String>;
         let mut permissions = BTreeMap::new();
-        for line in source.lines().map(str::trim) {
-            if line == "[[permission]]" {
-                current_identifier = None;
+        for block in source.split("[[permission]]").skip(1) {
+            let mut identifier = None::<String>;
+            let mut allowed_commands = None::<Vec<String>>;
+            for line in block.lines().map(str::trim).filter(|line| !line.is_empty()) {
+                if identifier.is_none() {
+                    identifier = toml_string_field(line, "identifier");
+                }
+                if allowed_commands.is_none() {
+                    allowed_commands = toml_string_array_field(line, "commands.allow");
+                }
+            }
+            let Some(identifier) = identifier else {
                 continue;
-            }
-            if let Some(value) = line
-                .strip_prefix("identifier = \"")
-                .and_then(|tail| tail.strip_suffix('"'))
-            {
-                current_identifier = Some(value.to_owned());
-                continue;
-            }
-            if let Some(commands) = line
-                .strip_prefix("commands.allow = [")
-                .and_then(|tail| tail.strip_suffix(']'))
-            {
-                let identifier = current_identifier
-                    .take()
-                    .expect("command permission has an identifier");
-                let commands = commands
-                    .split(',')
-                    .map(str::trim)
-                    .map(|command| command.trim_matches('"'))
-                    .filter(|command| !command.is_empty())
-                    .map(ToOwned::to_owned)
-                    .collect::<Vec<_>>();
-                assert_eq!(
-                    commands.len(),
-                    1,
-                    "{identifier} must grant exactly one Tauri command"
-                );
-                permissions.insert(identifier, commands[0].clone());
-            }
+            };
+            let commands = allowed_commands
+                .unwrap_or_else(|| panic!("permission {identifier} must declare commands.allow"));
+            assert_eq!(
+                commands.len(),
+                1,
+                "permission {identifier} must grant exactly one command"
+            );
+            let previous = permissions.insert(identifier.clone(), commands[0].clone());
+            assert!(
+                previous.is_none(),
+                "permission identifier {identifier} must be unique"
+            );
         }
         permissions
     }
@@ -10559,6 +10577,91 @@ mod tauri_registration_surface_tests {
         assert_eq!(
             granted_browser_consent_permissions, expected_permissions,
             "the main-window capability must grant every fixed browser-consent permission"
+        );
+
+        let mut missing_handler = handlers.clone();
+        missing_handler.remove("scan_consented_browser_profile");
+        assert!(
+            !is_registered_and_granted(
+                &missing_handler,
+                &permissions,
+                &capability,
+                "scan_consented_browser_profile",
+            ),
+            "removing a browser-consent handler entry must make the proof fail"
+        );
+        let mut missing_permission = permissions.clone();
+        missing_permission.remove("allow-load-detected-browser-footprint");
+        assert!(
+            !is_registered_and_granted(
+                &handlers,
+                &missing_permission,
+                &capability,
+                "load_detected_browser_footprint",
+            ),
+            "removing a browser-consent permission declaration must make the proof fail"
+        );
+        let mut missing_capability = capability.clone();
+        missing_capability.remove("allow-revoke-detected-browser-footprint");
+        assert!(
+            !is_registered_and_granted(
+                &handlers,
+                &permissions,
+                &missing_capability,
+                "revoke_detected_browser_footprint",
+            ),
+            "removing a browser-consent capability grant must make the proof fail"
+        );
+
+        let request = BrowserFootprintConsentRequest {
+            browser_id: BrowserImportId::Chrome,
+            browser_profile_account: "browser-account".to_owned(),
+            browser_profile_id: "profile-id".to_owned(),
+            import_run_id: "import-run".to_owned(),
+            consent: true,
+        };
+        let observation = FootprintObservation {
+            owner_osl_user_id: "owner-1".to_owned(),
+            browser_id: request.browser_id,
+            browser_profile_account: request.browser_profile_account.clone(),
+            browser_profile_id: request.browser_profile_id.clone(),
+            import_run_id: request.import_run_id.clone(),
+            observed_at_unix_ms: 12,
+        };
+        let mut state = browser_footprint::BrowserFootprintState {
+            observations: vec![observation],
+            bindings: vec![
+                checked_browser_footprint_binding("owner-1", &request, false)
+                    .expect("well-formed browser footprint binding"),
+            ],
+        };
+        assert!(
+            browser_footprint::hydrate_consented_for_owner(
+                &state,
+                "owner-1",
+                request.browser_id,
+                &request.browser_profile_account,
+                &request.browser_profile_id,
+                &request.import_run_id,
+            )
+            .is_none(),
+            "a browser footprint binding without explicit consent must refuse hydration"
+        );
+        state.bindings = vec![checked_browser_footprint_binding("owner-1", &request, true)
+            .expect("explicit browser footprint consent binding")];
+        assert_eq!(
+            browser_footprint::hydrate_consented_for_owner(
+                &state,
+                "owner-1",
+                request.browser_id,
+                &request.browser_profile_account,
+                &request.browser_profile_id,
+                &request.import_run_id,
+            )
+            .expect("explicit consent hydrates the exact footprint")
+            .len(),
+            1,
+            "explicit consent must hydrate only the exact owner/browser/profile/import scope"
         );
     }
 
