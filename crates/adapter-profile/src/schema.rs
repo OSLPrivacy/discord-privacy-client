@@ -881,6 +881,60 @@ mod tests {
     }
 
     #[test]
+    fn schema_signed_adapter_profile_document_and_fail_closed_validation_contract() {
+        let payload = sample_payload();
+        let (secret, public, trusted) = signer();
+        let doc = sign_profile_doc(&secret, &public, &payload).unwrap();
+
+        let verified = verify_profile_doc(&doc, &trusted, NOW)
+            .expect("trusted signed adapter profile verifies");
+        assert_eq!(verified, payload);
+        verified.validate_for_use(NOW).unwrap();
+
+        let mut tampered = doc.clone();
+        let mut bytes = STANDARD.decode(&tampered.payload_b64).unwrap();
+        bytes[0] ^= 1;
+        tampered.payload_b64 = STANDARD.encode(bytes);
+        assert_eq!(
+            verify_profile_doc(&tampered, &trusted, NOW),
+            Err(ProfileError::BadSignature),
+            "signed adapter profiles must fail closed when payload bytes change"
+        );
+
+        let mut missing_consent = payload.clone();
+        missing_consent.authority.user_consent_required = false;
+        assert_eq!(
+            missing_consent.validate_for_use(NOW),
+            Err(ProfileError::MissingAuthority {
+                field: "user_consent_required"
+            }),
+            "absence of consent authority must refuse use"
+        );
+
+        let mut missing_binding = profile();
+        missing_binding.capabilities[0].binding_required.account = false;
+        assert_eq!(
+            missing_binding.validate_structure(),
+            Err(ProfileValidationError::AccountBindingMissing(
+                Capability::InspectVisibleComposer
+            )),
+            "absence of account binding must refuse structure validation"
+        );
+
+        let mut missing_release_authority = payload;
+        missing_release_authority
+            .authority
+            .release_authority_required = false;
+        assert_eq!(
+            missing_release_authority.validate_for_use(NOW),
+            Err(ProfileError::MissingAuthority {
+                field: "release_authority_required"
+            }),
+            "absence of release authority must refuse use"
+        );
+    }
+
+    #[test]
     fn validate_structure() {
         let validated = profile().validate_structure().unwrap();
         assert!(validated.permits(Capability::PlaceProtectedPayload, full_evidence()));
@@ -891,10 +945,7 @@ mod tests {
 
         let mut no_recipient_binding = full_evidence();
         no_recipient_binding.recipient_bound = false;
-        assert!(!validated.permits(
-            Capability::PlaceProtectedPayload,
-            no_recipient_binding
-        ));
+        assert!(!validated.permits(Capability::PlaceProtectedPayload, no_recipient_binding));
 
         let mut wrong_authority = full_evidence();
         wrong_authority.authority = Some(AdapterAuthority::DocumentedPlatformApi);

@@ -8339,6 +8339,11 @@ export const __oslHubUiTest = {
     if (destination) route = destination;
     return workspaceContent();
   },
+  renderSettingsSection(section: SettingsSection): string {
+    route = "settings";
+    settingsSection = section;
+    return workspaceContent();
+  },
   renderRouteShell(destination: Route): string {
     route = destination;
     return destination === "onboarding" ? onboardingShellMarkup() : workspaceShellMarkup();

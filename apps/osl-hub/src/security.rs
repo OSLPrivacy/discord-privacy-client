@@ -4187,7 +4187,10 @@ mod tests {
             kind: ScopeKind::Dm,
             id: scope_id.clone(),
             server_id: None,
-            channel_id: Some(format!("manual-dm-{}", "a".repeat(MANUAL_DM_BINDING_HEX_LEN))),
+            channel_id: Some(format!(
+                "manual-dm-{}",
+                "a".repeat(MANUAL_DM_BINDING_HEX_LEN)
+            )),
         };
 
         ScopedTrustGrant::for_manual_peer(
@@ -5217,10 +5220,8 @@ mod tests {
             },
         )
         .unwrap();
-        let peers = ipc::peer_map::PeerMap::from([
-            (person_a.clone(), peer_a),
-            (person_b.clone(), peer_b),
-        ]);
+        let peers =
+            ipc::peer_map::PeerMap::from([(person_a.clone(), peer_a), (person_b.clone(), peer_b)]);
         write_encrypted_json(&harness.path().join("peer_map.json"), &peers).unwrap();
         *core.osl.peer_map.lock().unwrap() = peers;
         write_encrypted_json(
@@ -5277,12 +5278,18 @@ mod tests {
 
         let stored: SecurityPreferences =
             load_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE)).unwrap();
-        assert!(!stored.manual_approved_scopes.contains(grant_a.storage_key()));
+        assert!(!stored
+            .manual_approved_scopes
+            .contains(grant_a.storage_key()));
         assert!(!stored
             .manual_approved_scope_people
             .contains_key(grant_a.storage_key()));
-        assert!(!stored.decrypt_display_by_scope.contains_key(grant_a.storage_key()));
-        assert!(stored.manual_approved_scopes.contains(grant_b.storage_key()));
+        assert!(!stored
+            .decrypt_display_by_scope
+            .contains_key(grant_a.storage_key()));
+        assert!(stored
+            .manual_approved_scopes
+            .contains(grant_b.storage_key()));
         assert_eq!(
             stored
                 .manual_approved_scope_people
