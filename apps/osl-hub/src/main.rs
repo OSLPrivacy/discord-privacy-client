@@ -7913,6 +7913,27 @@ mod qa_selftest {
                 },
                 "B must leave a shared trigger declared for A instead of consuming it"
             );
+            let decline_instance = format!("org.oslprivacy.hub.qa-b-{}", std::process::id());
+            let declared_instance = format!("org.oslprivacy.hub.qa-a-{}", std::process::id());
+            let decline_body = format!(
+                r#"{{"verb":"drain","instance":"{}"}}"#,
+                declared_instance
+            );
+            let decline_path =
+                temp_path(&addressed_name(ADDRESSED_DECLINE_FORMAT, &decline_instance));
+            let _ = std::fs::remove_file(&decline_path);
+            record_decline(&decline_instance, &declared_instance, &decline_body);
+            let decline_record: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&decline_path).expect("read decline record"))
+                    .expect("decline record JSON");
+            assert_eq!(decline_record["instance"].as_str(), Some(decline_instance.as_str()));
+            assert_eq!(
+                decline_record["declaredInstance"].as_str(),
+                Some(declared_instance.as_str())
+            );
+            assert_eq!(decline_record["requestStatus"], "declined-wrong-instance");
+            assert_eq!(decline_record["action"], "left-for-its-owner");
+            let _ = std::fs::remove_file(&decline_path);
 
             let decline_path = temp_path(&addressed_name(ADDRESSED_DECLINE_FORMAT, &instance_b));
             let _ = std::fs::remove_file(&decline_path);
@@ -10492,6 +10513,21 @@ mod tauri_registration_surface_tests {
             assert!(
                 !capability.contains(&command_permission(forbidden)),
                 "{forbidden} must not be granted by the main-window capability"
+            );
+        }
+        for forbidden_permission in [
+            "allow-preview-discord-guided-deletion",
+            "allow-request-hosted-session-scan-comman",
+            "allow-execute-discord-guided-deletion",
+            "allow-delete-own-item",
+        ] {
+            assert!(
+                !permissions.contains_key(forbidden_permission),
+                "{forbidden_permission} must not be declared as a Tauri permission"
+            );
+            assert!(
+                !capability.contains(forbidden_permission),
+                "{forbidden_permission} must not be granted by the main-window capability"
             );
         }
 
