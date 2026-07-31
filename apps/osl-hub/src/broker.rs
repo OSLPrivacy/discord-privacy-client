@@ -1546,11 +1546,8 @@ pub fn prepare_whatsapp_qa_peer_prose_text(
         .is_err()
     {
         if ipc::prose_token::prose_token_burn_id(&dir, &scope, &uploaded.blob_id).is_err() {
-            let _ = security::record_peer_prose_blob(
-                security_state,
-                scope,
-                uploaded.blob_id.clone(),
-            );
+            let _ =
+                security::record_peer_prose_blob(security_state, scope, uploaded.blob_id.clone());
         }
         return Err("OSL could not save the encrypted message safely".to_owned());
     }
@@ -1900,8 +1897,9 @@ pub fn open_whatsapp_qa_peer_prose_text(
     if verify_manual_v3(core, &verified, &recovered.wire, ManualWireSender::Peer).is_err() {
         return Err("This encrypted message could not be opened".to_owned());
     }
-    let payload = decrypt_direct_manual_v3(core, &verified, ManualWireSender::Peer, &recovered.wire)
-        .map_err(|_| "This encrypted message could not be opened".to_owned())?;
+    let payload =
+        decrypt_direct_manual_v3(core, &verified, ManualWireSender::Peer, &recovered.wire)
+            .map_err(|_| "This encrypted message could not be opened".to_owned())?;
     let now = ipc::main_password::now_unix_secs_pub();
     validate_peer_protected_payload(&payload, &manual, &context, now)
         .map_err(|_| "This encrypted message could not be opened".to_owned())?;
@@ -2534,9 +2532,7 @@ pub fn rehydrate_native_discord_overlay_history(
                         PeerProsePointerError::Pointer(
                             PeerProsePointerFailure::PointerBlobGone,
                         ) => counts.pointer_blob_gone += 1,
-                        PeerProsePointerError::Pointer(
-                            PeerProsePointerFailure::Transport,
-                        ) => {
+                        PeerProsePointerError::Pointer(PeerProsePointerFailure::Transport) => {
                             counts.store_unreachable += 1
                         }
                         PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected)
@@ -3007,6 +3003,116 @@ fn authenticate_peer_prose_pointer(
         cover_text,
     )
     .map_err(PeerProsePointerError::into_user_message)
+}
+
+fn wrapped_key_fetch_failure(error: keystore::Error) -> PeerProsePointerFailure {
+    match error {
+        keystore::Error::Transport(_) => PeerProsePointerFailure::Transport,
+        keystore::Error::HttpStatus { status, .. } if status == 429 || status >= 500 => {
+            PeerProsePointerFailure::Transport
+        }
+        _ => PeerProsePointerFailure::Rejected,
+    }
+}
+
+fn native_overlay_wrapped_key_matches_payload(
+    wrapped: &keystore::WrappedKeyResponse,
+    identity: &keystore::Identity,
+    notice: &NativeOverlayRelayNotice,
+    manual: &ManualPeerContext,
+    context: &HubConversationContext,
+    payload: &PeerProtectedPayload,
+) -> bool {
+    let expires_at = u64::try_from(payload.expires_at)
+        .ok()
+        .map(keystore::iso_8601_from_unix_seconds);
+    wrapped.content_id == notice.message_id
+        && wrapped.content_id == payload.message_id
+        && wrapped.content_type == "text"
+        && wrapped.system_message_kind.is_none()
+        && wrapped.sender_id == manual.peer_osl_user_id
+        && wrapped.recipient_id == context.self_osl_id
+        && wrapped.recipient_id == identity.user_id
+        && wrapped.session_version == PEER_PROTECTED_CHUNK_VERSION
+        && wrapped.share_index == u32::from(payload.chunk_index.unwrap_or(0))
+        && wrapped.blob_version == 1
+        && wrapped.single_use == payload.view_once
+        && (wrapped.display_duration_seconds.is_some() == payload.view_once)
+        && expires_at.as_deref() == Some(wrapped.expires_at.as_str())
+        && payload.expires_at == notice.expires_at
+}
+
+fn same_peer_protected_payload(left: &PeerProtectedPayload, right: &PeerProtectedPayload) -> bool {
+    left.version == right.version
+        && left.message_id == right.message_id
+        && left.created_at == right.created_at
+        && left.expires_at == right.expires_at
+        && left.service_id == right.service_id
+        && left.conversation_binding == right.conversation_binding
+        && left.sender_osl_user_id == right.sender_osl_user_id
+        && left.recipient_osl_user_id == right.recipient_osl_user_id
+        && left.plaintext == right.plaintext
+        && left.view_once == right.view_once
+        && left.require_capture_protection == right.require_capture_protection
+        && left.logical_message_id == right.logical_message_id
+        && left.chunk_index == right.chunk_index
+        && left.chunk_count == right.chunk_count
+        && left.whole_sha256 == right.whole_sha256
+}
+
+fn authenticate_native_overlay_wrapped_payload(
+    core: &HubCoreState,
+    client: &keystore::KeyServerClient,
+    identity: &keystore::Identity,
+    verified: &ManualPeerBinding,
+    manual: &ManualPeerContext,
+    context: &HubConversationContext,
+    notice: &NativeOverlayRelayNotice,
+) -> Result<PeerProtectedPayload, PeerProsePointerFailure> {
+    let wrapped = client
+        .fetch_wrapped_key(identity, &notice.message_id)
+        .map_err(wrapped_key_fetch_failure)?;
+    let encrypted_wire = STANDARD
+        .decode(&wrapped.wrapped_share_blob)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .filter(|wire| {
+            wire.starts_with("DPC0::")
+                && !wire.is_empty()
+                && wire.as_bytes().len() <= MAX_NATIVE_OVERLAY_WRAPPED_SHARE_BYTES
+        })
+        .ok_or(PeerProsePointerFailure::Rejected)?;
+    if verify_manual_v3(
+        core,
+        verified,
+        &encrypted_wire,
+        PeerWireOrientation::PeerToSelf.wire_sender(),
+    )
+    .is_err()
+    {
+        return Err(PeerProsePointerFailure::Rejected);
+    }
+    let payload = decrypt_direct_manual_v3(
+        core,
+        verified,
+        PeerWireOrientation::PeerToSelf.wire_sender(),
+        &encrypted_wire,
+    )
+    .map_err(|_| PeerProsePointerFailure::Rejected)?;
+    validate_peer_protected_payload(
+        &payload,
+        manual,
+        context,
+        ipc::main_password::now_unix_secs_pub(),
+    )
+    .map_err(|_| PeerProsePointerFailure::Rejected)?;
+    if native_overlay_wrapped_key_matches_payload(
+        &wrapped, identity, notice, manual, context, &payload,
+    ) {
+        Ok(payload)
+    } else {
+        Err(PeerProsePointerFailure::Rejected)
+    }
 }
 
 /// Resolve one public cover to the protected payload it points at, accepting
@@ -3967,7 +4073,7 @@ fn drain_peer_inbox_text(
         // both ended here as one silent `continue`, so an outage was reported to
         // the caller as an empty inbox. The row is left alone either way -- the
         // difference is that a retryable failure is now counted and surfaced.
-        let payload = match authenticate_peer_prose_pointer_classified(
+        let inspected_payload = match authenticate_peer_prose_pointer_classified(
             core,
             broker,
             &context_token,
@@ -3981,6 +4087,30 @@ fn drain_peer_inbox_text(
                 }
                 continue;
             }
+        };
+        let listing_view_once =
+            inspected_payload.view_once && two_phase_view_once && reveal_view_once.is_none();
+        if !capture_policy_allows_plaintext(&inspected_payload, capture_protection_ready) {
+            continue;
+        }
+        let payload = if listing_view_once {
+            inspected_payload
+        } else {
+            let wrapped_payload = match authenticate_native_overlay_wrapped_payload(
+                core, &client, &identity, &verified, &manual, &context, &notice,
+            ) {
+                Ok(payload) => payload,
+                Err(failure) => {
+                    if failure.retryable() {
+                        deferred_rows = deferred_rows.saturating_add(1);
+                    }
+                    continue;
+                }
+            };
+            if !same_peer_protected_payload(&inspected_payload, &wrapped_payload) {
+                continue;
+            }
+            wrapped_payload
         };
         if !capture_policy_allows_plaintext(&payload, capture_protection_ready) {
             continue;
@@ -4141,8 +4271,7 @@ fn drain_peer_inbox_text(
             )
             .is_ok();
         if sent_received_ack && two_phase_view_once {
-            let _ =
-                broker.record_view_once_received(&payload.message_id, payload.expires_at, now);
+            let _ = broker.record_view_once_received(&payload.message_id, payload.expires_at, now);
         }
         // First-party chat history is the durable copy the operator owns. It
         // must commit before either the replay slot is burned or the remote
@@ -8322,10 +8451,7 @@ mod tests {
                 b6_preflight_for(untrusted_keyserver),
                 "keyserver_origin_untrusted",
             ),
-            (
-                b6_preflight_for(no_source_commit),
-                "source_commit_unbound",
-            ),
+            (b6_preflight_for(no_source_commit), "source_commit_unbound"),
             (b6_preflight_for(no_binary_hash), "binary_sha256_unbound"),
             (
                 b6_preflight_for(no_deployment_identity),
@@ -14829,6 +14955,80 @@ ok i will weekend again with you",
             self_osl_id: "osl-self-inbound".to_owned(),
         };
         (manual, context)
+    }
+
+    #[test]
+    fn native_overlay_wrapped_key_metadata_binds_exact_sender_recipient_and_payload() {
+        let (manual, context) = inbound_fixture();
+        let identity = keystore::generate_identity(context.self_osl_id.clone());
+        let notice = inbound_relay_notice(&manual, &context, 1_700_000_000, 1_700_003_600);
+        let plaintext = "wrapped key metadata fixture".to_owned();
+        let payload = PeerProtectedPayload {
+            version: PEER_PROTECTED_CHUNK_VERSION,
+            message_id: notice.message_id.clone(),
+            created_at: notice.created_at,
+            expires_at: notice.expires_at,
+            service_id: manual.service_id.clone(),
+            conversation_binding: context.conversation_id.clone(),
+            sender_osl_user_id: manual.peer_osl_user_id.clone(),
+            recipient_osl_user_id: context.self_osl_id.clone(),
+            plaintext: plaintext.clone(),
+            view_once: false,
+            require_capture_protection: true,
+            logical_message_id: Some("peer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned()),
+            chunk_index: Some(0),
+            chunk_count: Some(1),
+            whole_sha256: Some(sha256_hex(plaintext.as_bytes())),
+        };
+        let wrapped_response = || keystore::WrappedKeyResponse {
+            content_id: notice.message_id.clone(),
+            content_type: "text".to_owned(),
+            system_message_kind: None,
+            sender_id: manual.peer_osl_user_id.clone(),
+            recipient_id: context.self_osl_id.clone(),
+            session_version: PEER_PROTECTED_CHUNK_VERSION,
+            share_index: 0,
+            wrapped_share_blob: STANDARD.encode("DPC0::ciphertext fixture"),
+            blob_version: 1,
+            single_use: false,
+            display_duration_seconds: None,
+            expires_at: keystore::iso_8601_from_unix_seconds(notice.expires_at as u64),
+            created_at: keystore::iso_8601_from_unix_seconds(notice.created_at as u64),
+        };
+        let wrapped = wrapped_response();
+        assert!(native_overlay_wrapped_key_matches_payload(
+            &wrapped, &identity, &notice, &manual, &context, &payload
+        ));
+
+        let mut wrong_sender = wrapped_response();
+        wrong_sender.sender_id = "osl-other-sender".to_owned();
+        let mut wrong_recipient = wrapped_response();
+        wrong_recipient.recipient_id = "osl-other-recipient".to_owned();
+        let mut wrong_content = wrapped_response();
+        wrong_content.content_id = "peer-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned();
+        let mut wrong_share = wrapped_response();
+        wrong_share.share_index = 1;
+        let mut wrong_expiry = wrapped_response();
+        wrong_expiry.expires_at = keystore::iso_8601_from_unix_seconds(1_700_003_601);
+        let mut wrong_single_use = wrapped_response();
+        wrong_single_use.single_use = true;
+        wrong_single_use.display_duration_seconds = Some(3_600);
+
+        for candidate in [
+            wrong_sender,
+            wrong_recipient,
+            wrong_content,
+            wrong_share,
+            wrong_expiry,
+            wrong_single_use,
+        ] {
+            assert!(
+                !native_overlay_wrapped_key_matches_payload(
+                    &candidate, &identity, &notice, &manual, &context, &payload
+                ),
+                "any wrapped-key binding mismatch refuses the open"
+            );
+        }
     }
 
     /// The routing key the drain filters every inbox row on. Two different
