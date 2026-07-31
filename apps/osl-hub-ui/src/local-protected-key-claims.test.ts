@@ -32,7 +32,7 @@ describe("reachable local-protected key claims", () => {
     );
     const workspaceRenderer = sourceBetween(
       mainSource,
-      "function renderWorkspace",
+      "function workspaceProtectedSheetMarkup",
       "function appLauncherStrip",
     );
     const recordDefinition = sourceBetween(

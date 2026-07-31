@@ -334,6 +334,11 @@ description = "Open the single compiled-in OSL GitHub releases page in the syste
 commands.allow = ["open_hub_releases_page"]
 
 [[permission]]
+identifier = "allow-open-hub-source-repository"
+description = "Open the single compiled-in OSL source repository page in the system browser."
+commands.allow = ["open_hub_source_repository"]
+
+[[permission]]
 identifier = "allow-list-native-apps"
 description = "Report installed status for the four fixed Windows-native messaging applications without exposing executable paths."
 commands.allow = ["list_native_apps"]

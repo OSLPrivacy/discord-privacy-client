@@ -17,6 +17,7 @@ function signalOnlyCatalog(raw: unknown): NativeApp[] {
   if (typeof signal.isolatedProfileAvailable !== "boolean" || typeof signal.supportsOverlay !== "boolean") throw new Error("invalid Signal catalog entry");
   return [{
     id: "signal", displayName: "Signal", availability: signal.availability as NativeApp["availability"],
+    supportStatus: "comingSoon", protectedMode: "unavailable",
     isolatedProfileAvailable: signal.isolatedProfileAvailable, supportsOverlay: signal.supportsOverlay,
   }];
 }

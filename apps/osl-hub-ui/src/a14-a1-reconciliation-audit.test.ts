@@ -84,6 +84,7 @@ describe("A1 reconciliation independent audit (unit a14)", () => {
       "if (identity) identityStorageMethod = identity.storageMethod;",
       "identityStorageMethod = null;",
       "identityStorageMethod = null;",
+      "identityStorageMethod = null;",
       "identityStorageMethod = identity.storageMethod;",
       "identityStorageMethod = knownIdentityStorageMethods.get(slotId) ?? null;",
       "identityStorageMethod = null;",

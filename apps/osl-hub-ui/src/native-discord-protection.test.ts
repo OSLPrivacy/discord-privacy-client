@@ -159,7 +159,7 @@ describe("native Discord protected overlay routing", () => {
   it("arms close containment before native cleanup and keeps host locks off the window thread", () => {
     const closePath = nativeMain.slice(
       nativeMain.indexOf("if let tauri::WindowEvent::CloseRequested"),
-      nativeMain.indexOf(".setup(|app|"),
+      nativeMain.indexOf('startup_breadcrumb("setup_before")'),
     );
     const watchdog = closePath.indexOf("std::thread::spawn(move ||");
     const blockingCleanup = closePath.indexOf("tauri::async_runtime::spawn_blocking(move ||");
