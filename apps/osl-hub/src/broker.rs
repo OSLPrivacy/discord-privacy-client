@@ -11273,6 +11273,7 @@ mod tests {
 
     #[test]
     fn d7_received_ack_is_correlated_and_replay_idempotent_while_opened_is_refused() {
+        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
         let context = context("discord-personal", "dm-receipt");
         let manual = ManualPeerContext {
             service_id: "discord".to_owned(),
@@ -11313,6 +11314,88 @@ mod tests {
             sender_osl_user_id: manual.peer_osl_user_id.clone(),
             recipient_osl_user_id: context.self_osl_id.clone(),
         };
+        let mut absent_sent_record = NativeOverlayReceiptLedger::default();
+        assert!(
+            apply_native_overlay_acknowledgment_record(
+                &mut absent_sent_record,
+                &context,
+                &manual,
+                &acknowledgment,
+                false,
+            )
+            .is_err(),
+            "a Received proof must not create receipt state unless the send path already recorded a sent row"
+        );
+
+        let private_text = "private text must never enter the receipt ledger";
+        let carrier_text = "carrier text must never enter the receipt ledger";
+        let receipt_dir = std::env::temp_dir().join(format!(
+            "osl-hub-native-receipt-d7-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&receipt_dir).unwrap();
+        keystore::set_base_dir_override(Some(receipt_dir.clone()));
+        keystore::set_active_account_dir(Some(receipt_dir.clone()));
+        ipc::main_password::set_main_password(&receipt_dir, "aB3!z9").unwrap();
+        let file_key =
+            ipc::main_password::get_file_storage_key().expect("main password unlock installs key");
+        let core = HubCoreState::default();
+        *core.osl.identity.lock().unwrap() =
+            Some(keystore::generate_identity(context.self_osl_id.clone()));
+        let broker = HubBrokerState::default();
+        record_native_overlay_sent(
+            &core,
+            &broker,
+            &context,
+            &manual,
+            &acknowledgment.message_id,
+            acknowledgment.expires_at,
+            false,
+        )
+        .expect("the verified production send path records a durable sent receipt");
+        let receipt_path = receipt_dir.join(NATIVE_OVERLAY_RECEIPTS_FILE);
+        let sealed = std::fs::read(&receipt_path).expect("sent receipt is durable on disk");
+        let sealed_text = String::from_utf8_lossy(&sealed);
+        assert!(ipc::main_password::has_enc_magic(&sealed));
+        assert!(!sealed_text.contains(private_text));
+        assert!(!sealed_text.contains(carrier_text));
+        let persisted = load_native_overlay_receipts(&receipt_path, &file_key).unwrap();
+        let persisted_record = persisted
+            .records
+            .get(&acknowledgment.message_id)
+            .expect("sent receipt is correlated by message id");
+        assert!(persisted_record.status == NativeOverlayReceiptStatus::Sent);
+        assert_eq!(persisted_record.service_id, manual.service_id);
+        assert_eq!(persisted_record.conversation_binding, context.conversation_id);
+        assert_eq!(persisted_record.peer_osl_user_id, manual.peer_osl_user_id);
+        let persisted_json = serde_json::to_string(&persisted).unwrap();
+        assert!(!persisted_json.contains(private_text));
+        assert!(!persisted_json.contains(carrier_text));
+        assert!(!persisted_json.contains("plaintext"));
+        assert!(!persisted_json.contains("cover_pointer"));
+        assert!(!persisted_json.contains("carrier"));
+        assert!(
+            record_native_overlay_sent(
+                &core,
+                &broker,
+                &context,
+                &manual,
+                &acknowledgment.message_id,
+                acknowledgment.expires_at,
+                false,
+            )
+            .is_err(),
+            "the durable sent proof is one row per verified send and cannot be overwritten"
+        );
+        ipc::main_password::set_file_storage_key(None);
+        keystore::set_active_account_dir(None);
+        keystore::set_base_dir_override(None);
+        let _ = std::fs::remove_dir_all(&receipt_dir);
+
         let opened = NativeOverlayAcknowledgmentPayload {
             version: acknowledgment.version,
             domain: acknowledgment.domain.clone(),
