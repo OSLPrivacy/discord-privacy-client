@@ -213,10 +213,81 @@ def _audit_success_step(workflow: dict[str, Any]) -> list[str]:
     return errors
 
 
+UNRELEASED_PROOF_STEP = "Prove no released installer exists to reproduce"
+RELEASE_GATED_STEPS = (
+    "Download released installer",
+    "Extract released executable bytes",
+    "Build frontend from exact source",
+    "Rebuild Hub executable from exact source",
+    "Compare released and rebuilt bytes",
+    "success'",
+    "Upload reproducibility proof",
+)
+
+
+def _audit_unreleased_proof(workflow: dict[str, Any]) -> list[str]:
+    """The job may only skip the byte comparison while nothing has shipped.
+
+    A skipped comparison is a claim that no published installer exists, so that
+    claim has to be re-proved independently and has to fail closed the moment a
+    release, a hub-v* tag push or an explicit candidate tag is in play.
+    """
+
+    errors: list[str] = []
+    job = _job(workflow, "reproduce-hub-release")
+    matches = [
+        step
+        for step in job.get("steps", [])
+        if isinstance(step, dict) and step.get("name") == UNRELEASED_PROOF_STEP
+    ]
+    if len(matches) != 1:
+        return ["workflow must prove that a skipped byte comparison means nothing has shipped"]
+    proof = matches[0]
+    if proof.get("shell") != "pwsh":
+        errors.append("unreleased proof step must run under PowerShell")
+    if proof.get("if") != "steps.source.outputs.has_release != 'true'":
+        errors.append("unreleased proof step must run exactly when no release was resolved")
+    run = proof.get("run")
+    if not isinstance(run, str):
+        return errors + ["unreleased proof step must execute release-absence commands"]
+    for needle, message in (
+        (
+            "gh release list --limit 200 --json tagName,isDraft",
+            "unreleased proof step must enumerate releases itself",
+        ),
+        (
+            "published hub-v* releases exist and must be reproduced",
+            "unreleased proof step must fail when any published hub-v* release exists",
+        ),
+        (
+            "a hub-v* tag was pushed, so its released installer must be reproduced",
+            "a hub-v* tag push must never skip the byte comparison",
+        ),
+        (
+            "an explicit candidate tag was requested, so its released installer must be reproduced",
+            "an explicit candidate tag must never skip the byte comparison",
+        ),
+    ):
+        if needle not in run:
+            errors.append(message)
+
+    for name in RELEASE_GATED_STEPS:
+        try:
+            step = _step(job, name)
+        except AssertionError as exc:
+            errors.append(str(exc))
+            continue
+        if step.get("if") != "steps.source.outputs.has_release == 'true'":
+            errors.append(f"step {name!r} must run whenever a release was resolved")
+    return errors
+
+
 def audit_text(text: str) -> list[str]:
     errors: list[str] = []
     try:
-        errors.extend(_audit_success_step(_workflow_model(text)))
+        model = _workflow_model(text)
+        errors.extend(_audit_success_step(model))
+        errors.extend(_audit_unreleased_proof(model))
     except AssertionError as exc:
         errors.append(str(exc))
     require(
@@ -349,6 +420,38 @@ jobs:
         self.assertIn(
             "workflow must compare released and rebuilt bytes by digest and report both digests",
             errors,
+        )
+
+    def test_refuses_silent_skip_when_a_release_exists(self) -> None:
+        mutant = self.workflow().replace(
+            "published hub-v* releases exist and must be reproduced",
+            "nothing published, continuing",
+        )
+        self.assertIn(
+            "unreleased proof step must fail when any published hub-v* release exists",
+            audit_text(mutant),
+        )
+
+    def test_refuses_ungated_byte_comparison(self) -> None:
+        mutant = self.workflow().replace(
+            "      - name: Compare released and rebuilt bytes\n"
+            "        if: steps.source.outputs.has_release == 'true'\n",
+            "      - name: Compare released and rebuilt bytes\n"
+            "        if: false\n",
+        )
+        self.assertIn(
+            "step 'Compare released and rebuilt bytes' must run whenever a release was resolved",
+            audit_text(mutant),
+        )
+
+    def test_refuses_skipping_a_requested_candidate_tag(self) -> None:
+        mutant = self.workflow().replace(
+            "an explicit candidate tag was requested, so its released installer must be reproduced",
+            "no candidate tag check",
+        )
+        self.assertIn(
+            "an explicit candidate tag must never skip the byte comparison",
+            audit_text(mutant),
         )
 
     def test_refuses_missing_release_download(self) -> None:
