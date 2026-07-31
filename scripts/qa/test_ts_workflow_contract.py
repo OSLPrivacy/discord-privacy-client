@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import importlib.util
 import os
 import re
 import subprocess
@@ -12,7 +13,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "ts-test.yml"
 REQUIRED_SUCCESS_LANES = {
-    "test": ("TEST_RESULT", "TypeScript workflow"),
+    "ts-test": ("TEST_RESULT", "TypeScript workflow"),
     "selector-check": ("SELECTOR_CHECK_RESULT", "Selector check"),
     "telegram-reporting-bot": (
         "TELEGRAM_REPORTING_BOT_RESULT",
@@ -27,6 +28,18 @@ def _yaml_scalar(value: str) -> str:
     if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {"'", '"'}:
         return raw[1:-1]
     return raw
+
+
+def _audit_public_release_module() -> Any:
+    spec = importlib.util.spec_from_file_location(
+        "audit_public_release_contract",
+        ROOT / "scripts" / "audit_public_release.py",
+    )
+    if spec is None or spec.loader is None:
+        raise AssertionError("could not load scripts/audit_public_release.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _workflow() -> dict[str, Any]:
@@ -195,7 +208,7 @@ def _audit_success_step_behavior(workflow: dict[str, Any]) -> list[str]:
         )
 
     failing_cases = {
-        "test": "failure",
+        "ts-test": "failure",
         "selector-check": "cancelled",
         "telegram-reporting-bot": "skipped",
         "public-audit": "failure",
@@ -252,7 +265,7 @@ def _audit_success_gate(workflow: dict[str, Any]) -> list[str]:
 
 def _audit_claim_gate(workflow: dict[str, Any]) -> list[str]:
     errors: list[str] = []
-    test_job = _job(workflow, "test")
+    test_job = _job(workflow, "ts-test")
     steps = test_job.get("steps", [])
     if not isinstance(steps, list):
         return ["test job must have steps"]
@@ -289,7 +302,7 @@ def _audit_claim_gate(workflow: dict[str, Any]) -> list[str]:
 
 
 def _claim_gate_step_index(workflow: dict[str, Any]) -> int:
-    steps = _job(workflow, "test")["steps"]
+    steps = _job(workflow, "ts-test")["steps"]
     return next(
         index
         for index, step in enumerate(steps)
@@ -339,7 +352,7 @@ def app_claim_gate_workflow_contract() -> None:
     testcase.assertEqual(_audit_claim_gate(workflow), [])
 
     no_self_test = copy.deepcopy(workflow)
-    step = no_self_test["jobs"]["test"]["steps"][_claim_gate_step_index(no_self_test)]
+    step = no_self_test["jobs"]["ts-test"]["steps"][_claim_gate_step_index(no_self_test)]
     step["run"] = "\n".join(
         command
         for command in _step_commands(step)
@@ -351,12 +364,53 @@ def app_claim_gate_workflow_contract() -> None:
     )
 
     delayed_gate = copy.deepcopy(workflow)
-    steps = delayed_gate["jobs"]["test"]["steps"]
+    steps = delayed_gate["jobs"]["ts-test"]["steps"]
     gate_step = steps.pop(_claim_gate_step_index(delayed_gate))
     steps.insert(4, gate_step)
     testcase.assertIn(
         "app-claim gate must run before dependency installation",
         _audit_claim_gate(delayed_gate),
+    )
+
+    audit = _audit_public_release_module()
+    release_identity = {
+        "schemaVersion": 1,
+        "releaseTag": "v1.2.3",
+        "sourceCommit": "c" * 40,
+        "sourceTree": "d" * 40,
+        "binarySha256": "a" * 64,
+        "binarySizeBytes": 123,
+        "claimProfile": "release-proven",
+    }
+    testcase.assertEqual(
+        audit.release_claim_violations(
+            (
+                f"Release v1.2.3 binary SHA-256 {'a' * 64} is release-proven. "
+                f"The source commit {'c' * 40} and source tree {'d' * 40} match the app."
+            ),
+            release_identity,
+        ),
+        [],
+    )
+    testcase.assertEqual(
+        audit.release_identity_mismatch_violations(
+            f"Release v9.9.9 binary SHA-256 {'a' * 64} is release-proven.",
+            release_identity,
+        ),
+        [(1, "release claim references a different released binary identity")],
+    )
+    testcase.assertEqual(
+        audit.release_identity_mismatch_violations(
+            f"Release v1.2.3 binary SHA-256 {'b' * 64} is release-proven.",
+            release_identity,
+        ),
+        [(1, "release claim references a different released binary identity")],
+    )
+    testcase.assertTrue(
+        audit.release_claim_violations(
+            "This release build proves encrypted messages send through Discord.",
+            None,
+        )
     )
 
 
