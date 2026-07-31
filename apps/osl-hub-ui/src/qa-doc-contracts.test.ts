@@ -336,6 +336,48 @@ describe("QA documentation contracts", () => {
     }).decision).toBe("standby");
   });
 
+  it("docs/plans/osl-parallel-build-plan-2026-07-29.md", () => {
+    const plan = readDoc("docs/plans/osl-parallel-build-plan-2026-07-29.md");
+    const exercise = fencedJsonBlocks(plan).find(isCodexCapacityExercise);
+    expect(exercise).toBeDefined();
+
+    const dispatchCase = exercise!.cases.find((entry) => entry.expectedDecision === "dispatch");
+    expect(dispatchCase).toBeDefined();
+    expect(routeCodexCapacity(dispatchCase!)).toEqual({
+      decision: "dispatch",
+      reason: "fresh-capacity-and-owned-files",
+    });
+
+    expect(routeCodexCapacity({
+      ...dispatchCase!,
+      historicalPoolLabel: "available",
+      currentCapacity: {
+        ...dispatchCase!.currentCapacity,
+        fresh: false,
+      },
+    })).toEqual({
+      decision: "standby",
+      reason: "missing-current-capacity",
+    });
+    expect(routeCodexCapacity({
+      ...dispatchCase!,
+      forbiddenSubstitute: "borrowed-account",
+    })).toEqual({
+      decision: "refuse",
+      reason: "forbidden-substitute",
+    });
+    expect(routeCodexCapacity({
+      ...dispatchCase!,
+      currentCapacity: {
+        ...dispatchCase!.currentCapacity,
+        ownedFileBound: false,
+      },
+    })).toEqual({
+      decision: "standby",
+      reason: "missing-current-capacity",
+    });
+  });
+
   it("frontend_dist_is_embedded_after_frontend_build", () => {
     const output = execFileSync("bash", [
       "scripts/qa/osl-instance-b-build-wsl.sh",
