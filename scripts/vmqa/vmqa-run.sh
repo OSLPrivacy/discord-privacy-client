@@ -29,6 +29,7 @@ vmqa-run.sh - host-side VM QA driver
   agent-alive [--vm <vm>]
   selftest [--vm <vm>] [--identifier <id>] [--timeout <sec>]
       --bundle-dir <producer-bundle>
+  test [all|f1|f2]
 USAGE
 }
 
@@ -1031,6 +1032,19 @@ f2_real_vm_five_frame_walkthrough() {
   return 0
 }
 
+cmd_named_tests() {
+  local target="${1:-all}"
+  case "$target" in
+    all)
+      f1_live_windows_walkthrough_imports_nonempty_receipt
+      f2_real_vm_five_frame_walkthrough
+      ;;
+    f1) f1_live_windows_walkthrough_imports_nonempty_receipt ;;
+    f2) f2_real_vm_five_frame_walkthrough ;;
+    *) die_usage "unknown test target: $target" ;;
+  esac
+}
+
 cmd_selftest() {
   local vm="$DEFAULT_VM" identifier="$DEFAULT_IDENTIFIER" timeout="$DEFAULT_TIMEOUT"
   local pos_id neg_id pos_file neg_file pos_rc neg_rc pos neg markers neg_markers colors launch_neg shot_neg result
@@ -1113,6 +1127,7 @@ main() {
     run) cmd_run "$@" ;;
     agent-alive) cmd_agent_alive "$@" ;;
     selftest) cmd_selftest "$@" ;;
+    test) cmd_named_tests "$@" ;;
     f1_live_windows_walkthrough_imports_nonempty_receipt)
       f1_live_windows_walkthrough_imports_nonempty_receipt "$@" ;;
     f2_real_vm_five_frame_walkthrough)
