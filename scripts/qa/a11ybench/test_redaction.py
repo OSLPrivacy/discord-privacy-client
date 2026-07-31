@@ -273,6 +273,26 @@ def _reject_content_bearing_accessibility_bench_artifacts(
     self.assertIn("content-bearing artifact", reason)
     self.assertNotIn(message_json_path, reason)
 
+    accessibility_tree_path = "a11ybench/accessibility-tree.json"
+    reason = self.reject(
+        lambda evidence: evidence["artifacts"][0].update(
+            kind="accessibility-tree",
+            relativePath=accessibility_tree_path,
+            containsUserContent=False,
+        )
+    )
+    self.assertIn("content-bearing artifact", reason)
+    self.assertNotIn(accessibility_tree_path, reason)
+
+    accessible_name = "Visible sender and message preview"
+    reason = self.reject(
+        lambda evidence: evidence["measurements"][0]["facts"].update(
+            accessibleName=accessible_name,
+        )
+    )
+    self.assertIn("content-bearing evidence field", reason)
+    self.assertNotIn(accessible_name, reason)
+
     reason = self.reject(
         lambda evidence: evidence["artifacts"][0].update(
             messageContentSha256="e" * 64
