@@ -59,6 +59,10 @@ import { handleTelegramWebhook } from "./endpoints/telegram.js";
 import { handleUnregister } from "./endpoints/unregister.js";
 import { handleUsernameCoverage } from "./endpoints/username-coverage.js";
 import {
+  handleUsernameClaim,
+  handleUsernameLookup,
+} from "./endpoints/usernames.js";
+import {
   handleControlInboxDelete,
   handleControlInboxGet,
   handleControlInboxPost,
@@ -314,6 +318,10 @@ async function dispatch(
     }
     const inboxUserId = matchParam(path, /^\/v1\/control-inbox\/([^/]+)$/);
     if (inboxUserId !== null) return await handleControlInboxGet(request, env, inboxUserId);
+    const username = matchParam(path, /^\/v1\/usernames\/([^/]+)$/);
+    if (username !== null) {
+      return await handleUsernameLookup(request, env, username);
+    }
     const floorUserId = matchParam(
       path,
       /^\/v1\/sender-filter-capability-floor\/([^/]+)$/,
@@ -387,6 +395,9 @@ async function dispatch(
     }
     if (path === "/v1/checkout/claim") {
       return withCors(await handleCheckoutClaim(request, env), request);
+    }
+    if (path === "/v1/usernames/claim") {
+      return await handleUsernameClaim(request, env);
     }
     if (path === "/v1/stripe/webhook") {
       return await handleStripeWebhook(request, env, fetch, ctx);

@@ -40,6 +40,7 @@ const ACCOUNT_ARTIFACTS: &[&str] = &[
     "pending_invitations.json",
     "hub_local_protected.json",
     "hub_people.json",
+    "hub_profile.json",
     "hub_security_preferences.json",
     "store",
 ];
@@ -49,7 +50,7 @@ pub struct HubIdentityRegistryState {
     transition: Mutex<()>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HubIdentitySlotDto {
     pub slot_id: String,
@@ -69,7 +70,7 @@ pub struct HubIdentitySlotCreation {
     pub storage_method: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HubIdentitySwitchResult {
     pub previous_slot_id: String,
@@ -85,7 +86,7 @@ pub enum RemoteUnregisterState {
     Unavailable,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HubIdentityBurnResult {
     pub burned_slot_id: String,
