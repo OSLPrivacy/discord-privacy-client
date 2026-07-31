@@ -1062,6 +1062,20 @@ fn get_autoscrub_run_fl(state: State<'_, HubCoreState>) -> Result<AutoScrubFleet
     autoscrub_run::fleet_status(&state.osl)
 }
 
+fn build_review_ui_identity_binding_verifier(
+    core: &HubCoreState,
+) -> Result<IdentityBindingVerifier, String> {
+    let identity = core
+        .osl
+        .identity
+        .lock()
+        .map_err(|_| "OSL identity state is unavailable".to_owned())?
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "Unlock an OSL identity before starting AutoScrub".to_owned())?;
+    Ok(IdentityBindingVerifier::new(PinnedOwner::from_identity(&identity)))
+}
+
 fn require_review_ui_identity_binding_from_verifier(
     verifier: &IdentityBindingVerifier,
     request: &AutoScrubReviewedRunRequest,
@@ -1099,18 +1113,28 @@ fn start_autoscrub_reviewed_run_inner(
     core: &HubCoreState,
     request: AutoScrubReviewedRunRequest,
 ) -> Result<AutoScrubFleetStatus, String> {
-    let identity = core
-        .osl
-        .identity
-        .lock()
-        .map_err(|_| "OSL identity state is unavailable".to_owned())?
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| "Unlock an OSL identity before starting AutoScrub".to_owned())?;
-    let verifier = IdentityBindingVerifier::new(PinnedOwner::from_identity(&identity));
-    start_autoscrub_reviewed_run_after_review_ui_binding(&verifier, request, |request| {
-        autoscrub_run::start_reviewed_run(&core.osl, request)
-    })
+    start_autoscrub_reviewed_run_checked(
+        core,
+        request,
+        build_review_ui_identity_binding_verifier,
+        |core, request| autoscrub_run::start_reviewed_run(&core.osl, request),
+    )
+}
+
+fn start_autoscrub_reviewed_run_checked<BuildVerifier, Start>(
+    core: &HubCoreState,
+    request: AutoScrubReviewedRunRequest,
+    build_verifier: BuildVerifier,
+    start: Start,
+) -> Result<AutoScrubFleetStatus, String>
+where
+    BuildVerifier: FnOnce(&HubCoreState) -> Result<IdentityBindingVerifier, String>,
+    Start:
+        FnOnce(&HubCoreState, AutoScrubReviewedRunRequest) -> Result<AutoScrubFleetStatus, String>,
+{
+    let verifier = build_verifier(core)?;
+    require_review_ui_identity_binding_from_verifier(&verifier, &request)?;
+    start(core, request)
 }
 
 #[tauri::command]
@@ -7849,6 +7873,17 @@ mod qa_selftest {
             let addressed_drain = format!(r#"{{"verb":"drain","instance":"{}"}}"#, instance_b);
             let shared_for_a = format!(r#"{{"verb":"send","instance":"{}"}}"#, instance_a);
 
+            assert_ne!(
+                addressed_name(ADDRESSED_TRIGGER_FORMAT, &instance_a),
+                addressed_name(ADDRESSED_TRIGGER_FORMAT, &instance_b),
+                "a restart trigger for A and B must be different files"
+            );
+            assert_ne!(
+                addressed_name(ADDRESSED_VERDICT_FORMAT, &instance_a),
+                addressed_name(ADDRESSED_VERDICT_FORMAT, &instance_b),
+                "a relaunched B must write a verdict file that A cannot satisfy"
+            );
+
             assert_eq!(
                 select_trigger_body(
                     &instance_b,
@@ -7867,25 +7902,45 @@ mod qa_selftest {
                 &instance_b
             ));
 
-            let addressed_for_a = r#"{"verb":"drain","instance":"org.oslprivacy.hub.qa-a"}"#;
+            let addressed_for_a = format!(r#"{{"verb":"drain","instance":"{}"}}"#, instance_a);
             assert_eq!(
-                select_trigger_body(instance_b, Some(addressed_for_a), Some(shared_for_a)),
-                TriggerSelection::Addressed(addressed_for_a),
+                select_trigger_body(&instance_b, Some(addressed_for_a.as_str()), None),
+                TriggerSelection::Addressed(addressed_for_a.as_str()),
+                "an addressed trigger is this process's responsibility even if its body is contradictory"
+            );
+            let ParsedRequest::Accepted(wrong_instance) = parse_request(&addressed_for_a) else {
+                panic!("contradictory addressed request must still parse");
+            };
+            assert!(
+                !osl_privacy_hub::qa_selftest_request::request_is_for_me(
+                    wrong_instance.instance.as_deref(),
+                    &instance_b
+                ),
+                "B must refuse a relaunched trigger whose body still declares A"
+            );
+
+            assert_eq!(
+                select_trigger_body(
+                    &instance_b,
+                    Some(addressed_for_a.as_str()),
+                    Some(shared_for_a.as_str()),
+                ),
+                TriggerSelection::Addressed(addressed_for_a.as_str()),
                 "B's private restart trigger must be answered by B, even when its body is wrong"
             );
-            let ParsedRequest::Accepted(wrong_instance) = parse_request(addressed_for_a) else {
+            let ParsedRequest::Accepted(wrong_instance) = parse_request(&addressed_for_a) else {
                 panic!("wrong-instance addressed drain request must parse");
             };
             assert!(
                 !osl_privacy_hub::qa_selftest_request::request_is_for_me(
                     wrong_instance.instance.as_deref(),
-                    instance_b
+                    &instance_b
                 ),
                 "an addressed trigger whose body names A must refuse before B drains"
             );
             let mut wrong_instance_detail = VerbOutcome::new(
                 wrong_instance.verb.label(),
-                instance_b,
+                &instance_b,
                 "osl-qa-selftest.b.request",
             )
             .refused("declined-wrong-instance");
@@ -7960,26 +8015,29 @@ mod qa_selftest {
                 "B may consume the shared trigger only when it is addressed to B"
             );
 
-            let addressed_for_a = r#"{"verb":"drain","instance":"org.oslprivacy.hub.qa-a"}"#;
+            let fixed_instance_b = "org.oslprivacy.hub.qa-b";
+            let fixed_addressed_for_a =
+                r#"{"verb":"drain","instance":"org.oslprivacy.hub.qa-a"}"#;
             assert_eq!(
-                select_trigger_body(instance_b, Some(addressed_for_a), None),
-                TriggerSelection::Addressed(addressed_for_a),
+                select_trigger_body(fixed_instance_b, Some(fixed_addressed_for_a), None),
+                TriggerSelection::Addressed(fixed_addressed_for_a),
                 "an addressed trigger is B's responsibility even when the body contradicts it"
             );
-            let ParsedRequest::Accepted(wrong_instance_request) = parse_request(addressed_for_a)
+            let ParsedRequest::Accepted(wrong_instance_request) =
+                parse_request(fixed_addressed_for_a)
             else {
                 panic!("wrong-instance addressed drain request must parse");
             };
             assert!(
                 !osl_privacy_hub::qa_selftest_request::request_is_for_me(
                     wrong_instance_request.instance.as_deref(),
-                    instance_b
+                    fixed_instance_b
                 ),
                 "a trigger body addressed to A must not authorize B's restart proof"
             );
             let mut wrong_instance_detail = VerbOutcome::new(
                 wrong_instance_request.verb.label(),
-                instance_b,
+                fixed_instance_b,
                 "osl-qa-selftest.b.request",
             )
             .refused("declined-wrong-instance");
@@ -7989,7 +8047,7 @@ mod qa_selftest {
                 "This self-test request was addressed to another instance",
                 wrong_instance_detail,
             );
-            assert_eq!(wrong_instance_refusal.instance, instance_b);
+            assert_eq!(wrong_instance_refusal.instance, fixed_instance_b);
             assert_eq!(wrong_instance_refusal.verb, "drain");
             assert_eq!(
                 wrong_instance_refusal.request_status,
@@ -10742,8 +10800,29 @@ mod tauri_registration_surface_tests {
             .as_ref()
             .cloned()
             .expect("test identity installed");
-        let mut verifier =
-            IdentityBindingVerifier::new(PinnedOwner::from_identity(&owner_identity));
+        let owner = PinnedOwner::from_identity(&owner_identity);
+        let mut verifier = IdentityBindingVerifier::new(owner);
+        let refused_before_start = Cell::new(false);
+        let refused_checked = start_autoscrub_reviewed_run_checked(
+            &state,
+            request.clone(),
+            |_| Ok(IdentityBindingVerifier::new(owner)),
+            |_, _| {
+                refused_before_start.set(true);
+                Ok(before.clone())
+            },
+        );
+        match refused_checked {
+            Err(error) => assert_eq!(
+                error, "A reviewed identity binding is required before starting AutoScrub",
+                "the production review gate must refuse before the reviewed-run start callback"
+            ),
+            Ok(_) => panic!("missing review binding must refuse before starting AutoScrub"),
+        }
+        assert!(
+            !refused_before_start.get(),
+            "missing review binding must stop before any AutoScrub run can open"
+        );
         assert_eq!(
             require_review_ui_identity_binding_from_verifier(&verifier, &request),
             Err("A reviewed identity binding is required before starting AutoScrub".to_owned()),
@@ -10831,6 +10910,37 @@ mod tauri_registration_surface_tests {
         assert_eq!(started, 1);
         assert_eq!(start_events.into_inner(), ["start"]);
 
+        let mut accepted_verifier = IdentityBindingVerifier::new(owner);
+        accepted_verifier
+            .bind(
+                AccountRef {
+                    service_id: "discord".to_owned(),
+                    account_id: "acct-1".to_owned(),
+                },
+                BindingScope::ScrubDeletion,
+                BindingEvidence::CallerAttested,
+            )
+            .expect("exact deletion binding can be recorded for checked path");
+        let accepted_start = Cell::new(false);
+        let accepted = start_autoscrub_reviewed_run_checked(
+            &state,
+            request.clone(),
+            |_| Ok(accepted_verifier),
+            |_, accepted_request| {
+                accepted_start.set(true);
+                assert!(
+                    accepted_request.account_id == "acct-1",
+                    "accepted request must target the reviewed account"
+                );
+                Ok(before.clone())
+            },
+        )
+        .expect("an exact reviewed binding reaches the reviewed-run start callback");
+        assert_eq!(accepted.open_run_count, before.open_run_count);
+        assert!(
+            accepted_start.get(),
+            "exact ScrubDeletion binding must be enough to reach the reviewed-run start callback"
+        );
         match start_autoscrub_reviewed_run_inner(&state, request) {
             Err(error) => assert_eq!(
                 error, "A reviewed identity binding is required before starting AutoScrub",
