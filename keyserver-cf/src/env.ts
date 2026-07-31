@@ -6,6 +6,8 @@
 
 export interface Env {
   DB: D1Database;
+  /** Strongly consistent, ciphertext-only per-identity OSL mailbox. */
+  MAILBOX: DurableObjectNamespace<import("./mail/mailbox.js").Mailbox>;
   RATE_LIMIT_5: RateLimit;
   RATE_LIMIT_10: RateLimit;
   RATE_LIMIT_120: RateLimit;
