@@ -673,6 +673,9 @@ where
     let checked = build_checked()?;
     let operator_names = bind_operators(&checked)?;
     let scan = scan(&checked, &operator_names)?;
+    if scan.generation != checked.active.generation {
+        return Err("Hosted session scan context changed during native scan".to_owned());
+    }
     recheck(&checked)?;
     Ok(scan)
 }
@@ -11611,6 +11614,43 @@ mod tauri_registration_surface_tests {
             refusal_events.into_inner(),
             ["checked-host", "attended-binding"],
             "absence of attended binding must refuse before scan or post-scan success"
+        );
+
+        let generation_drift_events = RefCell::new(Vec::<&'static str>::new());
+        let generation_drift = checked_hosted_session_scan_flow(
+            || {
+                generation_drift_events.borrow_mut().push("checked-host");
+                Ok(pw3_test_checked_host())
+            },
+            |_checked| {
+                generation_drift_events
+                    .borrow_mut()
+                    .push("attended-binding");
+                Ok(vec!["operator".to_owned()])
+            },
+            |_checked, _operator_names| {
+                generation_drift_events.borrow_mut().push("native-scan");
+                let mut scan = pw3_test_deletion_scan();
+                scan.generation += 1;
+                Ok(scan)
+            },
+            |_checked| {
+                generation_drift_events
+                    .borrow_mut()
+                    .push("context-recheck");
+                Ok(())
+            },
+        );
+        match generation_drift {
+            Err(error) => assert_eq!(
+                error, "Hosted session scan context changed during native scan"
+            ),
+            Ok(_) => panic!("a scan from a different native generation must refuse"),
+        }
+        assert_eq!(
+            generation_drift_events.into_inner(),
+            ["checked-host", "attended-binding", "native-scan"],
+            "a generation-mismatched scan must refuse before context recheck or result return"
         );
 
         let stale_context_events = RefCell::new(Vec::<&'static str>::new());
