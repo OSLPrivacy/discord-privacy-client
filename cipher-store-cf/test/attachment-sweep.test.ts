@@ -125,6 +125,12 @@ describe("attachment quota and expiry sweep", () => {
     // seeding loop stays sequential.
   }, 180_000);
 
+  // Drives multiple isolated claim batches through workerd, which is roughly
+  // 15x slower on the windows-latest runner: measured 5799ms there against
+  // vitest's 5s default, while the whole file is 8/8 in ~18s locally. Slow,
+  // not hung -- the body completed and the harness cut it off. Budget raised
+  // for this spec only; the rest of the file keeps the default so a genuine
+  // hang elsewhere still fails fast.
   it("reclaims more than one legacy selection batch through isolated claims", async () => {
     const real = workerEnv();
     const rows = ATTACHMENT_SWEEP_BATCH_SIZE + 1;
@@ -151,7 +157,7 @@ describe("attachment quota and expiry sweep", () => {
     expect(await d1Count("SELECT COUNT(*) AS c FROM attachment_objects")).toBe(0);
     expect(await real.ATTACHMENTS.head("attachments/d1-boundary/0")).toBeNull();
     expect(await real.ATTACHMENTS.head(`attachments/d1-boundary/${rows - 1}`)).toBeNull();
-  });
+  }, 60_000);
 
   it("keeps retryable metadata if an R2 deletion fails", async () => {
     const real = workerEnv();
