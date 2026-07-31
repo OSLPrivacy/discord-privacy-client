@@ -2518,7 +2518,7 @@ mod tests {
             let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
 
             let merged = client
-                .fetch_own_identity_bundle_since(&identity, None)
+                .fetch_identity_bundle(&identity, "self-bundle")
                 .unwrap();
 
             assert_eq!(merged.identity.revision, 3);
@@ -2551,7 +2551,7 @@ mod tests {
             // endpoint key-binding mismatch, rather than reaching the proof check
             // and surfacing as PeerBundleProofInvalid. Assert the refusal and the
             // reason, so this still fails if the mismatch is ever accepted.
-            let outcome = client.fetch_own_identity_bundle_since(&identity, None);
+            let outcome = client.fetch_identity_bundle(&identity, "self-bundle");
             match outcome {
                 Err(Error::PeerBundleProofInvalid) => {}
                 Err(Error::Transport(ref reason)) if reason.contains("key binding mismatch") => {}
