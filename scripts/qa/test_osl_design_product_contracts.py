@@ -379,11 +379,26 @@ gui_final_plan_document_contract.__name__ = "docs/design/osl-gui-final-plan.md'"
 
 def encode_burns_five_guarantees_and_banned_phrases() -> None:
     markdown = SIMPLE_SPEC.read_text(encoding="utf-8")
-    broken = markdown.replace(
+    optimistic_result = markdown.replace(
         '5. **Honest result:** OSL reports what it actually verified.',
         '5. **Optimistic result:** OSL reports cleanup requests as success.',
     ).replace('"gone for good"', '"secure cleanup"')
-    _assert_contract(_errors_for_burn_contract, markdown, broken_documents=(broken,))
+    missing_local_cleanup = markdown.replace(
+        "1. **Local cleanup:** OSL shreds its local stored ciphertext and nonce for the\n"
+        "   selected scope, marks the rows burned so sync cannot resurrect them, and drops\n"
+        "   cached attachments for those rows.",
+        "1. **Local cleanup:** OSL updates the conversation state for the selected scope.",
+    )
+    testcase = unittest.TestCase()
+    testcase.assertEqual(_errors_for_burn_contract(markdown), [])
+    testcase.assertIn(
+        "Burn guarantee is incomplete: Honest result",
+        _errors_for_burn_contract(optimistic_result),
+    )
+    testcase.assertIn(
+        "Burn guarantee is incomplete: Local cleanup",
+        _errors_for_burn_contract(missing_local_cleanup),
+    )
 
 
 encode_burns_five_guarantees_and_banned_phrases.__name__ = (

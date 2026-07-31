@@ -80,7 +80,11 @@ def _fixture(tmp: Path) -> dict[str, object]:
 def _step(payload: dict[str, object], name: str) -> dict[str, object]:
     steps = payload["steps"]
     assert isinstance(steps, list)
-    matches = [step for step in steps if isinstance(step, dict) and step.get("step") == name]
+    matches = [
+        step
+        for step in steps
+        if isinstance(step, dict) and step.get("step") == name
+    ]
     assert matches, f"missing step {name}"
     return matches[-1]
 
@@ -101,30 +105,22 @@ def instance_b_launcher_uses_private_temp_root_and_preserves_instance_a() -> Non
         assert (Path(str(fixture["tempRootB"])) / "osl-startup-trace.txt").is_file()
         assert not (Path(str(fixture["tempRootA"])) / "osl-startup-trace.txt").exists()
 
-    with tempfile.TemporaryDirectory() as raw_tmp:
-        tmp = Path(raw_tmp)
-        fixture = _fixture(tmp)
-        fixture["tempRootB"] = fixture["tempRootA"]
+        shared_temp = _fixture(tmp / "shared-temp")
+        shared_temp["tempRootB"] = shared_temp["tempRootA"]
+        blocked, blocked_payload = _run_fixture(tmp, shared_temp, confirm=True)
+        assert blocked.returncode == 2, blocked.stderr
+        assert blocked_payload["overall"]["verdict"] == "blocked"
+        assert _step(blocked_payload, "temp-isolation")["result"] == "failed"
+        assert blocked_payload["steps"][-1]["step"] == "temp-isolation"
+        assert not (Path(str(shared_temp["tempRootA"])) / "osl-startup-trace.txt").exists()
 
-        completed, payload = _run_fixture(tmp, fixture, confirm=True)
-
-        assert completed.returncode == 2, completed.stderr
-        assert payload["overall"]["verdict"] == "blocked"
-        assert _step(payload, "temp-isolation")["result"] == "failed"
-        assert payload["steps"][-1]["step"] == "temp-isolation"
-        assert not (Path(str(fixture["tempRootA"])) / "osl-startup-trace.txt").exists()
-
-    with tempfile.TemporaryDirectory() as raw_tmp:
-        tmp = Path(raw_tmp)
-        fixture = _fixture(tmp)
-        fixture["instanceAIdentityShaAfter"] = "c" * 64
-
-        completed, payload = _run_fixture(tmp, fixture, confirm=True)
-
-        assert completed.returncode == 1, completed.stderr
-        assert payload["overall"]["verdict"] == "failed"
-        assert _step(payload, "assert/instance-a-untouched")["result"] == "failed"
-        assert payload["steps"][-1]["step"] == "assert/instance-a-untouched"
+        touched_a = _fixture(tmp / "touched-a")
+        touched_a["instanceAIdentityShaAfter"] = "b" * 64
+        failed, failed_payload = _run_fixture(tmp, touched_a, confirm=True)
+        assert failed.returncode == 1, failed.stderr
+        assert failed_payload["overall"]["verdict"] == "failed"
+        assert _step(failed_payload, "assert/instance-a-untouched")["result"] == "failed"
+        assert failed_payload["steps"][-1]["step"] == "assert/instance-a-untouched"
 
 
 def instance_b_confirm_creates_identity_registers_second_identity() -> None:
@@ -151,21 +147,17 @@ def instance_b_confirm_creates_identity_registers_second_identity() -> None:
         assert identity_step["identitiesAfter"] == 2
         assert allowed_payload["instanceB"]["registeredSecondIdentity"] is True
 
-    with tempfile.TemporaryDirectory() as raw_tmp:
-        tmp = Path(raw_tmp)
-        fixture = _fixture(tmp)
-        fixture["keyserverIdentitiesAfter"] = ["identity-a"]
-
-        completed, payload = _run_fixture(tmp, fixture, confirm=True)
-
-        assert completed.returncode == 1, completed.stderr
-        assert payload["overall"]["verdict"] == "failed"
-        identity_step = _step(payload, "identity/keyserver-registration")
+        not_registered = _fixture(tmp / "not-registered")
+        not_registered["keyserverIdentitiesAfter"] = ["identity-a"]
+        failed, failed_payload = _run_fixture(tmp, not_registered, confirm=True)
+        assert failed.returncode == 1, failed.stderr
+        assert failed_payload["overall"]["verdict"] == "failed"
+        identity_step = _step(failed_payload, "identity/keyserver-registration")
         assert identity_step["result"] == "failed"
-        assert payload["overall"]["diagnosis"] == (
+        assert failed_payload["overall"]["diagnosis"] == (
             "consented instance B launch did not register exactly one additional identity"
         )
-        assert payload["steps"][-1]["step"] == "identity/keyserver-registration"
+        assert failed_payload["steps"][-1]["step"] == "identity/keyserver-registration"
 
 
 def load_tests(
