@@ -13,7 +13,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "ts-test.yml"
 REQUIRED_SUCCESS_LANES = {
-    "test": ("TEST_RESULT", "TypeScript workflow"),
+    "ts-test": ("TEST_RESULT", "TypeScript workflow"),
     "selector-check": ("SELECTOR_CHECK_RESULT", "Selector check"),
     "telegram-reporting-bot": (
         "TELEGRAM_REPORTING_BOT_RESULT",
@@ -208,7 +208,7 @@ def _audit_success_step_behavior(workflow: dict[str, Any]) -> list[str]:
         )
 
     failing_cases = {
-        "test": "failure",
+        "ts-test": "failure",
         "selector-check": "cancelled",
         "telegram-reporting-bot": "skipped",
         "public-audit": "failure",
@@ -265,7 +265,7 @@ def _audit_success_gate(workflow: dict[str, Any]) -> list[str]:
 
 def _audit_claim_gate(workflow: dict[str, Any]) -> list[str]:
     errors: list[str] = []
-    test_job = _job(workflow, "test")
+    test_job = _job(workflow, "ts-test")
     steps = test_job.get("steps", [])
     if not isinstance(steps, list):
         return ["test job must have steps"]
@@ -302,7 +302,7 @@ def _audit_claim_gate(workflow: dict[str, Any]) -> list[str]:
 
 
 def _claim_gate_step_index(workflow: dict[str, Any]) -> int:
-    steps = _job(workflow, "test")["steps"]
+    steps = _job(workflow, "ts-test")["steps"]
     return next(
         index
         for index, step in enumerate(steps)
@@ -352,7 +352,7 @@ def app_claim_gate_workflow_contract() -> None:
     testcase.assertEqual(_audit_claim_gate(workflow), [])
 
     no_self_test = copy.deepcopy(workflow)
-    step = no_self_test["jobs"]["test"]["steps"][_claim_gate_step_index(no_self_test)]
+    step = no_self_test["jobs"]["ts-test"]["steps"][_claim_gate_step_index(no_self_test)]
     step["run"] = "\n".join(
         command
         for command in _step_commands(step)
@@ -364,7 +364,7 @@ def app_claim_gate_workflow_contract() -> None:
     )
 
     delayed_gate = copy.deepcopy(workflow)
-    steps = delayed_gate["jobs"]["test"]["steps"]
+    steps = delayed_gate["jobs"]["ts-test"]["steps"]
     gate_step = steps.pop(_claim_gate_step_index(delayed_gate))
     steps.insert(4, gate_step)
     testcase.assertIn(
