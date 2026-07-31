@@ -446,6 +446,23 @@ def simple_spec_burn_contract() -> None:
         _errors_for_send_contract(synthetic_second_enter, gui),
     )
 
+    permissive_second_enter = re.sub(
+        r"Key repeat, a\s+held key, a synthetic event or OSL's own placement action cannot satisfy the\s+second Enter\.",
+        "Key repeat and a held key may satisfy the second Enter.",
+        markdown,
+        count=1,
+    )
+    permissive_second_enter = re.sub(
+        r"key repeat, a\s+held\s+key, a synthetic event, OSL's own placement action,\s+",
+        "key repeat and a held key ",
+        permissive_second_enter,
+        count=1,
+    )
+    testcase.assertIn(
+        "missing simple Double Enter rule: synthetic event",
+        _errors_for_send_contract(permissive_second_enter, gui),
+    )
+
     missing_peer_refusal = markdown.replace(
         "absence of consent, binding, authority, transport delivery or\n   verification means the peer cleanup is refused or reported as unavailable.",
         "peer cleanup is attempted whenever transport delivery is available.",
