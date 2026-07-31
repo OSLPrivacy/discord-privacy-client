@@ -2481,23 +2481,23 @@ mod tests {
                     }
                     match (pin.is_pinned_to_rn(), caps.supports_rn(), policy) {
                         (true, true, _) => assert!(
-                            matches!(got, Ok(SelectedVersion::Rn)),
+                            matches!(&got, Ok(SelectedVersion::Rn)),
                             "expected Rn for pin={pin_name} caps={caps_name} policy={policy:?}, got {got:?}"
                         ),
                         (true, false, _) => assert!(
-                            matches!(got, Err(RnError::PinnedToRn)),
+                            matches!(&got, Err(RnError::PinnedToRn)),
                             "expected PinnedToRn for pin={pin_name} caps={caps_name} policy={policy:?}, got {got:?}"
                         ),
                         (false, true, _) => assert!(
-                            matches!(got, Ok(SelectedVersion::Rn)),
+                            matches!(&got, Ok(SelectedVersion::Rn)),
                             "expected Rn for pin={pin_name} caps={caps_name} policy={policy:?}, got {got:?}"
                         ),
                         (false, false, RnPolicy::Required) => assert!(
-                            matches!(got, Err(RnError::RnRequiredButUnsupported)),
+                            matches!(&got, Err(RnError::RnRequiredButUnsupported)),
                             "expected RnRequiredButUnsupported for pin={pin_name} caps={caps_name} policy={policy:?}, got {got:?}"
                         ),
                         (false, false, RnPolicy::Opportunistic) => assert!(
-                            matches!(got, Ok(SelectedVersion::LegacyV3)),
+                            matches!(&got, Ok(SelectedVersion::LegacyV3)),
                             "expected LegacyV3 for pin={pin_name} caps={caps_name} policy={policy:?}, got {got:?}"
                         ),
                     }

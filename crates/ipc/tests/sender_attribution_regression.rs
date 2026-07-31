@@ -61,7 +61,7 @@ fn assert_v3_pinned_sender_rejects_forgery() {
     )
     .expect_err("v3 wire sender must match the pinned sender key");
     assert!(
-        matches!(err, V2Error::SenderIdentityMismatch),
+        matches!(&err, V2Error::SenderIdentityMismatch),
         "expected v3 sender identity mismatch, got {err:?}"
     );
 
@@ -191,7 +191,7 @@ fn assert_v4_sender_context_rejects_forgery() {
         .decrypt(&recovered)
         .expect_err("v4 sender identity AD must reject a forged sender");
     assert!(
-        matches!(err, crypto::Error::AeadFailure),
+        matches!(&err, crypto::Error::AeadFailure),
         "expected v4 AEAD failure from forged sender AD, got {err:?}"
     );
     assert_eq!(
@@ -275,7 +275,7 @@ fn assert_v5_sender_context_rejects_forgery() {
         )
         .expect_err("v5 sender-key AD must reject a forged sender");
     assert!(
-        matches!(err, crypto::Error::AeadFailure),
+        matches!(&err, crypto::Error::AeadFailure),
         "expected v5 AEAD failure from forged sender AD, got {err:?}"
     );
     assert_eq!(
