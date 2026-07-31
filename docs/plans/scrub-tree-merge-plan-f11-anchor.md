@@ -16,6 +16,70 @@ as the plan's integration anchor without mutating the source checkouts. It fails
 the integration source is absent, if a newer integration HEAD is silently substituted
 for the pinned SHA, or if the branch/worktree cannot be identified.
 
+## Machine-readable anchor record
+
+```json
+{
+  "schema": "osl-scrub-tree-merge-anchor-v1",
+  "unit": "f11",
+  "purpose": "plan-integration-anchor",
+  "branch": "unit-f11",
+  "worktree_path_template": "/home/<user>/osl-unit-f11",
+  "created_from": {
+    "line": "main",
+    "sha": "16778b297d3ec8d0358b7d3812a95f4f8443e462",
+    "tree": "e85e4bd48bfaab810845e307614ab8af238a33d3"
+  },
+  "integration_source": {
+    "line": "osl-newest-integration",
+    "pinned_input_sha": "403cfa2e090bf76ae4cb2950f3febcc72204fc59",
+    "observed_head_sha": "c08941e998bf9906e6629b39584c2630b48b542f"
+  },
+  "planned_merge_order": [
+    {
+      "line": "main",
+      "sha": "16778b297d3ec8d0358b7d3812a95f4f8443e462",
+      "action": "branch-base"
+    },
+    {
+      "line": "f1-footprint",
+      "sha": "61933d3a4b50e410e3be1d5e05560d955ee72b4c",
+      "action": "merge-second"
+    },
+    {
+      "line": "osl-newest-integration",
+      "sha": "403cfa2e090bf76ae4cb2950f3febcc72204fc59",
+      "action": "merge-last"
+    }
+  ],
+  "branch_creation": {
+    "created_new_branch": true,
+    "worktree_added": true,
+    "source_checkouts_mutated": false
+  },
+  "source_checkout_head_verification": [
+    {
+      "line": "main",
+      "path_template": "/home/<user>/discord-privacy-client",
+      "before": "73dccd588a8e07c48d5165bb05b77150539ce0e9",
+      "after": "73dccd588a8e07c48d5165bb05b77150539ce0e9"
+    },
+    {
+      "line": "f1-footprint",
+      "path_template": "/home/<user>/discord-privacy-client-f1-footprint",
+      "before": "61933d3a4b50e410e3be1d5e05560d955ee72b4c",
+      "after": "61933d3a4b50e410e3be1d5e05560d955ee72b4c"
+    },
+    {
+      "line": "osl-newest-integration",
+      "path_template": "/home/<user>/osl-newest-integration",
+      "before": "c08941e998bf9906e6629b39584c2630b48b542f",
+      "after": "c08941e998bf9906e6629b39584c2630b48b542f"
+    }
+  ]
+}
+```
+
 ## What was created
 
 | Field | Value |

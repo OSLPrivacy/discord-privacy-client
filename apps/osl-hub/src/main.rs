@@ -3731,6 +3731,64 @@ struct DiscordHeadlessQaPoll {
     fetched: u32,
 }
 
+#[cfg(feature = "discord-qa-shell")]
+#[allow(clippy::too_many_arguments)]
+fn poll_native_discord_headless_qa_restart_proof_flow<
+    Opened,
+    LoadOwner,
+    LoadContextToken,
+    LoadHost,
+    ValidateHostBefore,
+    Drain,
+    RecordPoll,
+    ReloadHost,
+    ValidateHostAfter,
+    RecordOpened,
+    Summarize,
+>(
+    caller_label: &str,
+    load_owner: LoadOwner,
+    load_context_token: LoadContextToken,
+    load_host: LoadHost,
+    validate_host_before: ValidateHostBefore,
+    drain: Drain,
+    record_poll: RecordPoll,
+    reload_host: ReloadHost,
+    validate_host_after: ValidateHostAfter,
+    record_opened: RecordOpened,
+    summarize: Summarize,
+) -> Result<DiscordHeadlessQaPoll, String>
+where
+    LoadOwner: FnOnce() -> Result<String, String>,
+    LoadContextToken: FnOnce() -> Result<String, String>,
+    LoadHost: FnOnce(&str) -> Result<ActiveServiceHost, String>,
+    ValidateHostBefore: FnOnce(&str, &ActiveServiceHost) -> Result<(), String>,
+    Drain: FnOnce() -> Result<Opened, String>,
+    RecordPoll: FnOnce(Result<&Opened, &str>) -> Result<(), String>,
+    ReloadHost: FnOnce(&str) -> Result<ActiveServiceHost, String>,
+    ValidateHostAfter: FnOnce(&str, &ActiveServiceHost) -> Result<(), String>,
+    RecordOpened: FnOnce(&Opened) -> Result<(), String>,
+    Summarize: FnOnce(&Opened) -> DiscordHeadlessQaPoll,
+{
+    if caller_label != "main" {
+        return Err("Only the trusted Discord QA shell may poll headless QA".to_owned());
+    }
+    let owner = load_owner()?;
+    let context_token = load_context_token()?;
+    let host = load_host(&owner)?;
+    validate_host_before(&context_token, &host)?;
+    let opened = drain();
+    record_poll(opened.as_ref().map_err(String::as_str))?;
+    let opened = opened?;
+    let current = reload_host(&owner)?;
+    if current != host {
+        return Err("The native Discord QA host changed during receive".to_owned());
+    }
+    validate_host_after(&context_token, &current)?;
+    record_opened(&opened)?;
+    Ok(summarize(&opened))
+}
+
 /// Drain the exact active native Discord friend context through the real
 /// authenticated inbox without creating or showing a WebView.
 #[cfg(feature = "discord-qa-shell")]
@@ -3740,42 +3798,41 @@ async fn poll_native_discord_headless_qa(
     caller: tauri::WebviewWindow,
     session: State<'_, HubAccountSessionState>,
 ) -> Result<DiscordHeadlessQaPoll, String> {
-    if caller.label() != "main" {
-        return Err("Only the trusted Discord QA shell may poll headless QA".to_owned());
-    }
+    let caller_label = caller.label().to_owned();
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         let core = app.state::<HubCoreState>();
         let broker_state = app.state::<HubBrokerState>();
-        let owner = active_unlocked_osl_user_id(&core)?;
-        let context_token = broker_state.active_native_manual_context_token()?;
-        let host = app
-            .state::<NativeWindowHostState>()
-            .current_discord_service_host(&owner)?;
-        broker_state.validate_active_host(&context_token, &host)?;
-        let opened = broker::drain_native_discord_overlay_text(
-            &core,
-            &app.state::<HubSecurityState>(),
-            &broker_state,
-        );
-        osl_privacy_hub::discord_qa_inbound_receipt::record_poll(
-            opened.as_ref().map_err(String::as_str),
-        )?;
-        let opened = opened?;
-        let current = app
-            .state::<NativeWindowHostState>()
-            .current_discord_service_host(&owner)?;
-        if current != host {
-            return Err("The native Discord QA host changed during receive".to_owned());
-        }
-        broker_state.validate_active_host(&context_token, &current)?;
-        osl_privacy_hub::discord_qa_inbound_receipt::record(&opened)?;
-        Ok(DiscordHeadlessQaPoll {
-            opened_count: opened.messages.len(),
-            pending_view_once_count: opened.pending_view_once.len(),
-            acknowledgment_count: opened.acknowledgments.len(),
-            fetched: opened.fetched,
-        })
+        poll_native_discord_headless_qa_restart_proof_flow(
+            &caller_label,
+            || active_unlocked_osl_user_id(&core),
+            || broker_state.active_native_manual_context_token(),
+            |owner| {
+                app.state::<NativeWindowHostState>()
+                    .current_discord_service_host(owner)
+            },
+            |context_token, host| broker_state.validate_active_host(context_token, host),
+            || {
+                broker::drain_native_discord_overlay_text(
+                    &core,
+                    &app.state::<HubSecurityState>(),
+                    &broker_state,
+                )
+            },
+            |opened| osl_privacy_hub::discord_qa_inbound_receipt::record_poll(opened),
+            |owner| {
+                app.state::<NativeWindowHostState>()
+                    .current_discord_service_host(owner)
+            },
+            |context_token, host| broker_state.validate_active_host(context_token, host),
+            |opened| osl_privacy_hub::discord_qa_inbound_receipt::record(opened),
+            |opened| DiscordHeadlessQaPoll {
+                opened_count: opened.messages.len(),
+                pending_view_once_count: opened.pending_view_once.len(),
+                acknowledgment_count: opened.acknowledgments.len(),
+                fetched: opened.fetched,
+            },
+        )
     })
     .await
     .map_err(|_| "OSL headless Discord QA poll worker was interrupted".to_owned())?
@@ -7786,7 +7843,7 @@ mod qa_selftest {
         use super::*;
 
         #[test]
-        fn p5_offline_queue_restart_proof() {
+        fn p5_offline_queue_restart_trigger_selection_is_addressed_and_busy_fail_closed() {
             let instance_b = format!("org.oslprivacy.hub.qa-b-{}", std::process::id());
             let instance_a = format!("org.oslprivacy.hub.qa-a-{}", std::process::id());
             let addressed_drain = format!(r#"{{"verb":"drain","instance":"{}"}}"#, instance_b);
@@ -7826,8 +7883,14 @@ mod qa_selftest {
                 serde_json::from_slice(&std::fs::read(&decline_path).expect("read decline"))
                     .expect("decline JSON");
             assert_eq!(declined["instance"].as_str(), Some(instance_b.as_str()));
-            assert_eq!(declined["declaredInstance"].as_str(), Some(instance_a.as_str()));
-            assert_eq!(declined["requestStatus"].as_str(), Some("declined-wrong-instance"));
+            assert_eq!(
+                declined["declaredInstance"].as_str(),
+                Some(instance_a.as_str())
+            );
+            assert_eq!(
+                declined["requestStatus"].as_str(),
+                Some("declined-wrong-instance")
+            );
             assert_eq!(declined["action"].as_str(), Some("left-for-its-owner"));
             let _ = std::fs::remove_file(&decline_path);
 
@@ -7861,7 +7924,11 @@ mod qa_selftest {
             let refused = refused_verdict(
                 "busy",
                 "A previous self-test invocation has not finished",
-                VerbOutcome::new(Verb::Drain.label(), &instance_b, "osl-qa-selftest.b.request"),
+                VerbOutcome::new(
+                    Verb::Drain.label(),
+                    &instance_b,
+                    "osl-qa-selftest.b.request",
+                ),
             );
             assert_eq!(refused.outcome, "busy");
             assert!(!refused.pass, "a busy restart proof must not pass green");
@@ -8526,6 +8593,12 @@ fn main() {
 
 #[cfg(all(test, feature = "discord-qa-shell"))]
 mod b6_startup_gate_tests {
+    use super::{
+        poll_native_discord_headless_qa_restart_proof_flow, ActiveServiceHost,
+        DiscordHeadlessQaPoll,
+    };
+    use std::cell::RefCell;
+
     fn between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
         let start = source.find(start).expect("start marker must exist");
         let end = source[start..]
@@ -8583,6 +8656,332 @@ mod b6_startup_gate_tests {
         assert!(
             controller.contains("'negativeCrossPeerIsolation'"),
             "the retained receipt gate must bind the eighth starvation fact"
+        );
+    }
+
+    #[test]
+    fn p5_offline_queue_restart_proof() {
+        struct FakeOpened {
+            opened_count: usize,
+            pending_view_once_count: usize,
+            acknowledgment_count: usize,
+            fetched: u32,
+        }
+
+        fn relaunched_host() -> ActiveServiceHost {
+            ActiveServiceHost {
+                service_id: "discord".to_owned(),
+                account_id: "native-discord-b".to_owned(),
+                generation: 2,
+                owner_namespace: "owner-b".to_owned(),
+            }
+        }
+
+        fn summarize(opened: &FakeOpened) -> DiscordHeadlessQaPoll {
+            DiscordHeadlessQaPoll {
+                opened_count: opened.opened_count,
+                pending_view_once_count: opened.pending_view_once_count,
+                acknowledgment_count: opened.acknowledgment_count,
+                fetched: opened.fetched,
+            }
+        }
+
+        let stale_pre_kill_context_token = "stale-token-before-b-restart";
+        let events = RefCell::new(Vec::<&'static str>::new());
+        let poll = poll_native_discord_headless_qa_restart_proof_flow(
+            "main",
+            || {
+                events.borrow_mut().push("owner");
+                Ok("osl-b".to_owned())
+            },
+            || {
+                events.borrow_mut().push("reload-context-token");
+                Ok("token-after-b-relaunch".to_owned())
+            },
+            |owner| {
+                events.borrow_mut().push("host-before");
+                assert_eq!(owner, "osl-b");
+                Ok(relaunched_host())
+            },
+            |context_token, host| {
+                events.borrow_mut().push("validate-before");
+                assert_eq!(context_token, "token-after-b-relaunch");
+                assert_ne!(context_token, stale_pre_kill_context_token);
+                assert_eq!(host.generation, 2);
+                Ok(())
+            },
+            || {
+                events.borrow_mut().push("drain-production-inbox");
+                Ok(FakeOpened {
+                    opened_count: 1,
+                    pending_view_once_count: 2,
+                    acknowledgment_count: 3,
+                    fetched: 4,
+                })
+            },
+            |opened| {
+                events.borrow_mut().push("poll-receipt");
+                assert_eq!(
+                    opened.expect("poll records successful drain").opened_count,
+                    1
+                );
+                Ok(())
+            },
+            |owner| {
+                events.borrow_mut().push("host-after");
+                assert_eq!(owner, "osl-b");
+                Ok(relaunched_host())
+            },
+            |context_token, host| {
+                events.borrow_mut().push("validate-after");
+                assert_eq!(context_token, "token-after-b-relaunch");
+                assert_eq!(host.generation, 2);
+                Ok(())
+            },
+            |opened| {
+                events.borrow_mut().push("opened-receipt");
+                assert_eq!(opened.fetched, 4);
+                Ok(())
+            },
+            summarize,
+        )
+        .expect("B can relaunch and verify the queued drain through reloaded state");
+        assert_eq!(poll.opened_count, 1);
+        assert_eq!(poll.pending_view_once_count, 2);
+        assert_eq!(poll.acknowledgment_count, 3);
+        assert_eq!(poll.fetched, 4);
+        assert_eq!(
+            events.into_inner(),
+            [
+                "owner",
+                "reload-context-token",
+                "host-before",
+                "validate-before",
+                "drain-production-inbox",
+                "poll-receipt",
+                "host-after",
+                "validate-after",
+                "opened-receipt",
+            ],
+            "restart proof must reload and validate B's current host before and after draining"
+        );
+
+        let untrusted_events = RefCell::new(Vec::<&'static str>::new());
+        let untrusted = poll_native_discord_headless_qa_restart_proof_flow(
+            "native-discord-overlay",
+            || {
+                untrusted_events.borrow_mut().push("owner");
+                Ok("osl-b".to_owned())
+            },
+            || Ok("token-after-b-relaunch".to_owned()),
+            |_| Ok(relaunched_host()),
+            |_, _| Ok(()),
+            || {
+                untrusted_events.borrow_mut().push("drain-production-inbox");
+                Ok(FakeOpened {
+                    opened_count: 1,
+                    pending_view_once_count: 0,
+                    acknowledgment_count: 0,
+                    fetched: 1,
+                })
+            },
+            |_| Ok(()),
+            |_| Ok(relaunched_host()),
+            |_, _| Ok(()),
+            |_| Ok(()),
+            summarize,
+        );
+        match untrusted {
+            Err(error) => assert_eq!(
+                error,
+                "Only the trusted Discord QA shell may poll headless QA"
+            ),
+            Ok(_) => panic!("an untrusted caller must not drive B's restart drain"),
+        }
+        assert!(
+            untrusted_events.into_inner().is_empty(),
+            "untrusted callers must refuse before owner, context, host, or drain state is read"
+        );
+
+        let stale_validation_events = RefCell::new(Vec::<&'static str>::new());
+        let stale_validation = poll_native_discord_headless_qa_restart_proof_flow(
+            "main",
+            || {
+                stale_validation_events.borrow_mut().push("owner");
+                Ok("osl-b".to_owned())
+            },
+            || {
+                stale_validation_events
+                    .borrow_mut()
+                    .push("reload-context-token");
+                Ok(stale_pre_kill_context_token.to_owned())
+            },
+            |_| {
+                stale_validation_events.borrow_mut().push("host-before");
+                Ok(relaunched_host())
+            },
+            |context_token, _host| {
+                stale_validation_events.borrow_mut().push("validate-before");
+                assert_eq!(context_token, stale_pre_kill_context_token);
+                Err("stale native context".to_owned())
+            },
+            || {
+                stale_validation_events
+                    .borrow_mut()
+                    .push("drain-production-inbox");
+                Ok(FakeOpened {
+                    opened_count: 1,
+                    pending_view_once_count: 0,
+                    acknowledgment_count: 0,
+                    fetched: 1,
+                })
+            },
+            |_| Ok(()),
+            |_| Ok(relaunched_host()),
+            |_, _| Ok(()),
+            |_| Ok(()),
+            summarize,
+        );
+        match stale_validation {
+            Err(error) => assert_eq!(error, "stale native context"),
+            Ok(_) => panic!("a stale pre-restart context token must refuse before drain"),
+        }
+        assert_eq!(
+            stale_validation_events.into_inner(),
+            [
+                "owner",
+                "reload-context-token",
+                "host-before",
+                "validate-before",
+            ],
+            "stale context validation must stop before the inbox drain"
+        );
+
+        let failed_drain_events = RefCell::new(Vec::<&'static str>::new());
+        let failed_drain = poll_native_discord_headless_qa_restart_proof_flow(
+            "main",
+            || {
+                failed_drain_events.borrow_mut().push("owner");
+                Ok("osl-b".to_owned())
+            },
+            || {
+                failed_drain_events
+                    .borrow_mut()
+                    .push("reload-context-token");
+                Ok("token-after-b-relaunch".to_owned())
+            },
+            |_| {
+                failed_drain_events.borrow_mut().push("host-before");
+                Ok(relaunched_host())
+            },
+            |_, _| {
+                failed_drain_events.borrow_mut().push("validate-before");
+                Ok(())
+            },
+            || {
+                failed_drain_events
+                    .borrow_mut()
+                    .push("drain-production-inbox");
+                Err("offline queue unavailable".to_owned())
+            },
+            |opened| {
+                failed_drain_events.borrow_mut().push("poll-receipt");
+                match opened {
+                    Err(error) => assert_eq!(error, "offline queue unavailable"),
+                    Ok(_) => panic!("poll receipt must receive the drain refusal"),
+                }
+                Ok(())
+            },
+            |_| {
+                failed_drain_events.borrow_mut().push("host-after");
+                Ok(relaunched_host())
+            },
+            |_, _| Ok(()),
+            |_| Ok(()),
+            summarize,
+        );
+        match failed_drain {
+            Err(error) => assert_eq!(error, "offline queue unavailable"),
+            Ok(_) => panic!("a failed drain must not return a green restart proof"),
+        }
+        assert_eq!(
+            failed_drain_events.into_inner(),
+            [
+                "owner",
+                "reload-context-token",
+                "host-before",
+                "validate-before",
+                "drain-production-inbox",
+                "poll-receipt",
+            ],
+            "a failed drain is recorded but cannot advance to host recheck or opened receipt"
+        );
+
+        let drift_events = RefCell::new(Vec::<&'static str>::new());
+        let drift = poll_native_discord_headless_qa_restart_proof_flow(
+            "main",
+            || {
+                drift_events.borrow_mut().push("owner");
+                Ok("osl-b".to_owned())
+            },
+            || {
+                drift_events.borrow_mut().push("reload-context-token");
+                Ok("token-after-b-relaunch".to_owned())
+            },
+            |_| {
+                drift_events.borrow_mut().push("host-before");
+                Ok(relaunched_host())
+            },
+            |_, _| {
+                drift_events.borrow_mut().push("validate-before");
+                Ok(())
+            },
+            || {
+                drift_events.borrow_mut().push("drain-production-inbox");
+                Ok(FakeOpened {
+                    opened_count: 1,
+                    pending_view_once_count: 0,
+                    acknowledgment_count: 0,
+                    fetched: 1,
+                })
+            },
+            |opened| {
+                drift_events.borrow_mut().push("poll-receipt");
+                assert!(opened.is_ok());
+                Ok(())
+            },
+            |_| {
+                drift_events.borrow_mut().push("host-after");
+                let mut host = relaunched_host();
+                host.generation += 1;
+                Ok(host)
+            },
+            |_, _| {
+                drift_events.borrow_mut().push("validate-after");
+                Ok(())
+            },
+            |_| {
+                drift_events.borrow_mut().push("opened-receipt");
+                Ok(())
+            },
+            summarize,
+        );
+        match drift {
+            Err(error) => assert_eq!(error, "The native Discord QA host changed during receive"),
+            Ok(_) => panic!("host drift after drain must refuse the restart proof"),
+        }
+        assert_eq!(
+            drift_events.into_inner(),
+            [
+                "owner",
+                "reload-context-token",
+                "host-before",
+                "validate-before",
+                "drain-production-inbox",
+                "poll-receipt",
+                "host-after",
+            ],
+            "host drift must refuse before the opened receipt is recorded"
         );
     }
 
