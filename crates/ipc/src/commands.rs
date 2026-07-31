@@ -11100,8 +11100,6 @@ mod friend_request_acceptance_tests {
         load_pending_friend_requests, pending_friend_requests_path,
         persist_typed_friend_request_with_dir,
     };
-    use base64::engine::general_purpose::STANDARD;
-    use base64::Engine;
     use crate::friend_request::{
         FriendPeer, FriendRequest, FriendScopeGrant, VerifiedFriendAuthority,
     };
@@ -11109,6 +11107,8 @@ mod friend_request_acceptance_tests {
     use crate::scope::Scope;
     use crate::tofu::KeyBundle;
     use crate::AppState;
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
 
     const REQUESTER_DID: &str = "900000000000000001";
     static ACTIVE_ACCOUNT_DIR_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -11224,12 +11224,8 @@ mod friend_request_acceptance_tests {
             },
         );
 
-        let sent = cmd_osl_send_friend_request(
-            &state,
-            REQUESTER_DID.to_string(),
-            (&scope).into(),
-        )
-        .expect("public friend request command should persist a pending row");
+        let sent = cmd_osl_send_friend_request(&state, REQUESTER_DID.to_string(), (&scope).into())
+            .expect("public friend request command should persist a pending row");
 
         assert!(sent.request.grants_scope(&scope));
         assert_eq!(sent.pending.peer_discord_id, REQUESTER_DID);
@@ -11257,14 +11253,11 @@ mod friend_request_acceptance_tests {
             "pending file must contain exactly the created request"
         );
 
-        let duplicate = match cmd_osl_send_friend_request(
-            &state,
-            REQUESTER_DID.to_string(),
-            (&scope).into(),
-        ) {
-            Ok(_) => panic!("same pending friend request must not be duplicated"),
-            Err(err) => err,
-        };
+        let duplicate =
+            match cmd_osl_send_friend_request(&state, REQUESTER_DID.to_string(), (&scope).into()) {
+                Ok(_) => panic!("same pending friend request must not be duplicated"),
+                Err(err) => err,
+            };
         assert_eq!(duplicate, "OSL: friend request already exists");
     }
 
@@ -14922,8 +14915,8 @@ mod account_transfer_tests {
         let store = MessageStore::open(&dir.path().join("store"), &secret).unwrap();
         *state.message_store.lock().unwrap() = Some(store);
 
-        let observed_anchor_debug = Arc::new(std::sync::Mutex::new(None::<String>));
-        let observed_anchor_debug_for_hook = Arc::clone(&observed_anchor_debug);
+        let observed_anchored_reopen = Arc::new(std::sync::Mutex::new(false));
+        let observed_anchored_reopen_for_hook = Arc::clone(&observed_anchored_reopen);
         let expected_store_dir = dir.path().join("store");
         *production_message_store_open_hook()
             .lock()
@@ -14931,7 +14924,8 @@ mod account_transfer_tests {
             Some(Box::new(move |app_data_dir, identity_secret, anchor| {
                 assert_eq!(app_data_dir, expected_store_dir.as_path());
                 assert_eq!(identity_secret, &secret);
-                *observed_anchor_debug_for_hook.lock().unwrap() = Some(format!("{anchor:?}"));
+                let _: &keystore::KeystoreBackedAnchor = anchor.as_ref();
+                *observed_anchored_reopen_for_hook.lock().unwrap() = true;
                 Err(StoreError::Anchor(
                     "test hook refused anchored reopen".to_string(),
                 ))
@@ -14943,14 +14937,9 @@ mod account_transfer_tests {
             drop(pause);
         }
 
-        let debug = observed_anchor_debug
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("production reopen hook must observe an anchor provider");
         assert!(
-            debug.contains("KeystoreBackedAnchor"),
-            "production reopen must use the keystore-backed anchor, got {debug}"
+            *observed_anchored_reopen.lock().unwrap(),
+            "production reopen must invoke the keystore-backed anchored-open path"
         );
         assert!(
             state.message_store.lock().unwrap().is_none(),
