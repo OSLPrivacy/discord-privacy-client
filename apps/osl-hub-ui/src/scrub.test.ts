@@ -45,9 +45,7 @@ describe("local Scrub category preferences", () => {
 
   it("exports a fail-closed contract for future paced deletion adapters", () => {
     expect(scrubDeletionContract).toEqual({
-      browserUiAutomationAllowed: false,
       privateApiAllowed: false,
-      documentedProviderDeleteApiRequired: true,
       unattendedDeletionAllowed: false,
       completeEditableReviewRequiredEveryBatch: true,
       finalConfirmationRequiredEveryBatch: true,

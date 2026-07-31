@@ -31,7 +31,7 @@ describe("radical simplicity on deep screens", () => {
     const scrub = functionSource("privacySettingsContent", "clearPrivacyScanState");
     expect(scrub.indexOf('for="privacy-export-input"')).toBeLessThan(scrub.indexOf("autoscrub-disclosure"));
     expect(scrub).toContain("Before deleting anything");
-    expect(scrub).toContain("Only a provider readback can verify removal");
+    expect(scrub).toContain("Only a service recheck can verify removal");
   });
 
   it("keeps Burn limits visible and secondary options collapsed", () => {

@@ -56,9 +56,7 @@ const scrubReceiptCopy: Record<ScrubReceiptStatus, { label: string; detail: stri
 
 /** Permanent fail-closed contract for any future service-specific delete adapter. */
 export const scrubDeletionContract = Object.freeze({
-  browserUiAutomationAllowed: false,
   privateApiAllowed: false,
-  documentedProviderDeleteApiRequired: true,
   unattendedDeletionAllowed: false,
   completeEditableReviewRequiredEveryBatch: true,
   finalConfirmationRequiredEveryBatch: true,

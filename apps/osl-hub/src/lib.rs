@@ -40,6 +40,8 @@ pub mod hosted_session_port;
 pub mod hosted_provider_recipe;
 pub mod owner_presence;
 #[cfg(feature = "core")]
+pub mod osl_profile;
+#[cfg(feature = "core")]
 pub mod peer_attachment_io;
 pub mod preferences;
 pub mod privacy_scan;

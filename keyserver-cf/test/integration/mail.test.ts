@@ -57,8 +57,16 @@ describe("OSL Mail Worker", () => {
       ciphertext_b64: ciphertext,
       envelope_json: JSON.stringify({ version: 1, nonce_b64: "bm9uY2U=" }),
     });
-    await runInDurableObject(box, async (instance: Mailbox) => {
-      expect(() => instance.list("intruder-m1", 10)).toThrow("mailbox owner mismatch");
+    await runInDurableObject(box, async (instance) => {
+      const mailbox = instance as unknown as Mailbox;
+      let refused = false;
+      try {
+        await mailbox.list("intruder-m1", 10);
+      } catch (error) {
+        refused = true;
+        expect(String(error)).toContain("mailbox owner mismatch");
+      }
+      expect(refused).toBe(true);
     });
 
     expect(await box.ack("owner-m1", "request-m1-ack", "mail_m1_backend", now)).toEqual({ deleted: true, replay: false });
@@ -518,7 +526,15 @@ async function mailEpochCount(): Promise<number> {
   return row?.count ?? 0;
 }
 
-function oslPayload(recipientAddress: string, plaintextMarker: string): Record<string, unknown> {
+interface OslPayload extends Record<string, unknown> {
+  recipient_address: string;
+  opaque_thread_token: string;
+  ciphertext_b64: string;
+  envelope: { version: number; nonce_b64: string };
+  recipient_key_fingerprint: string;
+}
+
+function oslPayload(recipientAddress: string, plaintextMarker: string): OslPayload {
   return {
     recipient_address: recipientAddress,
     opaque_thread_token: `thread${base64Encode(new TextEncoder().encode(plaintextMarker)).replaceAll(/[^A-Za-z0-9]/g, "").slice(0, 24)}`,

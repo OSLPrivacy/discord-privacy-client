@@ -44,7 +44,7 @@ pub enum ProfileEffect {
     Shimmer,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HubProfileInput {
     pub display_name: String,
@@ -57,7 +57,7 @@ pub struct HubProfileInput {
     pub status: String,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[derive(Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HubProfileDto {
     pub display_name: String,
@@ -401,10 +401,7 @@ mod tests {
         assert!(!disk.contains("Liam Example"));
         assert!(!disk.contains("liam_example"));
         assert!(!disk.contains("Available"));
-        assert_eq!(
-            load_profile_with_key(&path, "osl-user-a", &TEST_KEY).unwrap(),
-            Some(profile)
-        );
+        assert!(load_profile_with_key(&path, "osl-user-a", &TEST_KEY).unwrap() == Some(profile));
         assert!(load_profile_with_key(&path, "osl-user-b", &TEST_KEY).is_err());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }

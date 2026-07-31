@@ -48,19 +48,6 @@ function fencedTextBlocks(source: string): string[] {
   return [...source.matchAll(/```text\n([\s\S]*?)\n```/gu)].map((match) => match[1]!);
 }
 
-function listItems(source: string): string[] {
-  const items: string[] = [];
-  for (const line of source.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("- ")) {
-      items.push(trimmed.slice(2).trim());
-    } else if (/^\s+\S/u.test(line) && trimmed.length > 0 && items.length > 0) {
-      items[items.length - 1] = `${items[items.length - 1]} ${trimmed}`;
-    }
-  }
-  return items;
-}
-
 type UserFacingSurfaceReview =
   | {
     kind: "surface";

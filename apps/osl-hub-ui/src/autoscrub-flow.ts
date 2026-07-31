@@ -111,12 +111,12 @@ export function summarizeAutoScrubReceipt(receipt: ProviderDeletionReceipt): Aut
   const heading = receipt.dryRun ? "Dry-run preview" : verifiedDeleted > 0 ? "Verified within stated coverage" : "No deletion was verified";
   const detail = receipt.dryRun
     ? `${receipt.items.length} selected; no deletion was called.`
-    : `${verifiedDeleted} verified absent by provider readback · ${confirmedPresent} verified still present · ${unknown} unknown`;
+    : `${verifiedDeleted} verified absent by service recheck · ${confirmedPresent} verified still present · ${unknown} unknown`;
   return { heading, detail, verifiedDeleted, confirmedPresent, unknown };
 }
 
 export const unavailableAutoScrubCapabilities: readonly AutoScrubCapability[] = [
-  { providerId: "imap", label: "Email (IMAP)", liveConfirmed: false, coverage: "No live transport confirmed", unavailableReason: "Connect and verify an IMAP account in the desktop app." },
+  { providerId: "imap", label: "Email", liveConfirmed: false, coverage: "Not connected", unavailableReason: "Connect and verify an email account in the desktop app." },
   { providerId: "telegram", label: "Telegram", liveConfirmed: false, coverage: "Manual only", unavailableReason: "TDLib session and readback are not available in this build." },
   { providerId: "discord", label: "Discord", liveConfirmed: false, coverage: "Manual only", unavailableReason: "Hosted deletion is not enabled or live-verified." },
 ] as const;

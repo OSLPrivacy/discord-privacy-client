@@ -530,11 +530,7 @@ export async function handleTelegramCommand(
   return "accepted";
 }
 
-type TelegramSourceVitest = {
-  describe: (name: string, fn: () => void) => void;
-  it: (name: string, fn: () => Promise<void>) => void;
-  expect: typeof import("vitest")["expect"];
-};
+type TelegramSourceVitest = Pick<typeof import("vitest"), "describe" | "expect" | "it" | "vi">;
 
 declare global {
   interface ImportMeta {
@@ -546,10 +542,11 @@ function registerTelegramSourceTests(vitest: TelegramSourceVitest): void {
   const { describe, expect, it } = vitest;
   const botToken = "1234567890:abcdefghijklmnopqrstuvwxyzABCDE";
 
-  function testEnv(overrides: Partial<Env> = {}): Env {
-    return {
-      DB: {} as D1Database,
-      RATE_LIMIT_5: {} as RateLimit,
+	  function testEnv(overrides: Partial<Env> = {}): Env {
+	    return {
+	      DB: {} as D1Database,
+	      MAILBOX: {} as DurableObjectNamespace<import("../mail/mailbox.js").Mailbox>,
+	      RATE_LIMIT_5: {} as RateLimit,
       RATE_LIMIT_10: {} as RateLimit,
       RATE_LIMIT_120: {} as RateLimit,
       RATE_LIMIT_1200: {} as RateLimit,
