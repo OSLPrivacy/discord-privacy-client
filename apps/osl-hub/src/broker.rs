@@ -1546,11 +1546,8 @@ pub fn prepare_whatsapp_qa_peer_prose_text(
         .is_err()
     {
         if ipc::prose_token::prose_token_burn_id(&dir, &scope, &uploaded.blob_id).is_err() {
-            let _ = security::record_peer_prose_blob(
-                security_state,
-                scope,
-                uploaded.blob_id.clone(),
-            );
+            let _ =
+                security::record_peer_prose_blob(security_state, scope, uploaded.blob_id.clone());
         }
         return Err("OSL could not save the encrypted message safely".to_owned());
     }
@@ -1900,8 +1897,9 @@ pub fn open_whatsapp_qa_peer_prose_text(
     if verify_manual_v3(core, &verified, &recovered.wire, ManualWireSender::Peer).is_err() {
         return Err("This encrypted message could not be opened".to_owned());
     }
-    let payload = decrypt_direct_manual_v3(core, &verified, ManualWireSender::Peer, &recovered.wire)
-        .map_err(|_| "This encrypted message could not be opened".to_owned())?;
+    let payload =
+        decrypt_direct_manual_v3(core, &verified, ManualWireSender::Peer, &recovered.wire)
+            .map_err(|_| "This encrypted message could not be opened".to_owned())?;
     let now = ipc::main_password::now_unix_secs_pub();
     validate_peer_protected_payload(&payload, &manual, &context, now)
         .map_err(|_| "This encrypted message could not be opened".to_owned())?;
@@ -2534,9 +2532,7 @@ pub fn rehydrate_native_discord_overlay_history(
                         PeerProsePointerError::Pointer(
                             PeerProsePointerFailure::PointerBlobGone,
                         ) => counts.pointer_blob_gone += 1,
-                        PeerProsePointerError::Pointer(
-                            PeerProsePointerFailure::Transport,
-                        ) => {
+                        PeerProsePointerError::Pointer(PeerProsePointerFailure::Transport) => {
                             counts.store_unreachable += 1
                         }
                         PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected)
@@ -4141,8 +4137,7 @@ fn drain_peer_inbox_text(
             )
             .is_ok();
         if sent_received_ack && two_phase_view_once {
-            let _ =
-                broker.record_view_once_received(&payload.message_id, payload.expires_at, now);
+            let _ = broker.record_view_once_received(&payload.message_id, payload.expires_at, now);
         }
         // First-party chat history is the durable copy the operator owns. It
         // must commit before either the replay slot is burned or the remote
@@ -8322,10 +8317,7 @@ mod tests {
                 b6_preflight_for(untrusted_keyserver),
                 "keyserver_origin_untrusted",
             ),
-            (
-                b6_preflight_for(no_source_commit),
-                "source_commit_unbound",
-            ),
+            (b6_preflight_for(no_source_commit), "source_commit_unbound"),
             (b6_preflight_for(no_binary_hash), "binary_sha256_unbound"),
             (
                 b6_preflight_for(no_deployment_identity),
@@ -10006,6 +9998,120 @@ mod tests {
             sender_b,
         );
         server.join().expect("control-inbox test server exits");
+
+        let sender_identity = keystore::generate_identity("sender-a-b49".to_owned());
+        let protected_wire = "DPC0::sealed-b49-private-wire";
+        let wrapped_message_id = "peer-b4900000000000000000000000000000";
+        let wrapped_upload = build_native_overlay_wrapped_key_upload(
+            wrapped_message_id,
+            "recipient-b49",
+            protected_wire,
+            true,
+            3_600,
+            1_700_003_600,
+            0,
+        )
+        .expect("B5 builds a bounded wrapped-key upload before advertising the row");
+        let control_bundle = [0x03, ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY];
+        let control_scope = native_overlay_relay_scope_id("manual-dm-b49-contract").unwrap();
+        let (post_url, post_requests, post_server) = spawn_control_inbox_test_server(vec![
+            serde_json::json!({
+                "content_id": wrapped_message_id,
+            }),
+            serde_json::json!({
+                "id": "b49-control-row",
+                "expires_at": 1_700_003_600,
+            }),
+        ]);
+        let post_client = keystore::KeyServerClient::new(&post_url).expect("build post client");
+        let wrapped_response = post_client
+            .post_wrapped_key(&sender_identity, &wrapped_upload)
+            .expect("wrapped key is posted before the control-inbox notice");
+        assert_eq!(wrapped_response.content_id, wrapped_message_id);
+        post_client
+            .post_control_inbox(
+                &sender_identity,
+                "recipient-b49",
+                &control_scope,
+                &control_bundle,
+            )
+            .expect("control-inbox notice posts only after wrapped-key acceptance");
+
+        let wrapped_request = post_requests.recv().expect("capture wrapped-key post");
+        let control_request = post_requests.recv().expect("capture control-inbox post");
+        assert_eq!(
+            wrapped_request.lines().next(),
+            Some("POST /v1/wrapped-keys HTTP/1.1"),
+            "the server-held wrapped key must be written before the row is discoverable"
+        );
+        assert_eq!(
+            control_request.lines().next(),
+            Some("POST /v1/control-inbox HTTP/1.1"),
+            "the control-inbox relay follows the wrapped-key post"
+        );
+        let wrapped_body = request_body_json(&wrapped_request);
+        assert_eq!(
+            wrapped_body["sender_id"].as_str(),
+            Some(sender_identity.user_id.as_str())
+        );
+        assert_eq!(
+            wrapped_body["content_id"].as_str(),
+            Some(wrapped_message_id)
+        );
+        assert_eq!(wrapped_body["recipient_id"].as_str(), Some("recipient-b49"));
+        assert_eq!(
+            wrapped_body["session_version"].as_u64(),
+            Some(u64::from(PEER_PROTECTED_CHUNK_VERSION))
+        );
+        assert_eq!(wrapped_body["share_index"].as_u64(), Some(0));
+        assert_eq!(wrapped_body["single_use"].as_bool(), Some(true));
+        assert_eq!(
+            wrapped_body["display_duration_seconds"].as_u64(),
+            Some(3_600)
+        );
+        assert!(
+            wrapped_body["sender_signature_b64"]
+                .as_str()
+                .is_some_and(|signature| !signature.is_empty()),
+            "the wrapped-key upload is authorized by a sender signature"
+        );
+        assert_eq!(
+            STANDARD
+                .decode(
+                    wrapped_body["wrapped_share_blob"]
+                        .as_str()
+                        .expect("wrapped share is base64"),
+                )
+                .expect("wrapped share decodes")
+                .as_slice(),
+            protected_wire.as_bytes()
+        );
+        let control_body = request_body_json(&control_request);
+        assert_eq!(
+            control_body["sender_id"].as_str(),
+            Some(sender_identity.user_id.as_str())
+        );
+        assert_eq!(control_body["recipient_id"].as_str(), Some("recipient-b49"));
+        assert_eq!(
+            control_body["scope_id"].as_str(),
+            Some(control_scope.as_str())
+        );
+        assert_eq!(
+            STANDARD
+                .decode(
+                    control_body["bundle_b64"]
+                        .as_str()
+                        .expect("bundle is base64")
+                )
+                .expect("control bundle decodes")
+                .as_slice(),
+            control_bundle.as_slice()
+        );
+        assert!(
+            !control_body.to_string().contains(protected_wire),
+            "the control-inbox notice must not carry the protected wire"
+        );
+        post_server.join().expect("post contract server exits");
         remove_sender_filter_test_account(&account_dir);
     }
 
