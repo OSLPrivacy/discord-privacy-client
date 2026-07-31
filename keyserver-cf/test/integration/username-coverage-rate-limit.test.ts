@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { handleRegister } from "../../src/endpoints/register.js";
 import type { Env } from "../../src/env.js";
+import worker from "../../src/index.js";
 
 function envWith(limit: ReturnType<typeof vi.fn>): Env {
   return {
@@ -32,6 +33,32 @@ function minimallyShapedRegisterBody(userId: string): Record<string, unknown> {
 
 describe("public registration abuse prevention", () => {
   it("Rate-limit and abuse-prevention on the public Worker endpoint", async () => {
+    const workerIngressDenied = vi.fn(async () => ({ success: false }));
+    const workerResponse = await worker.fetch(
+      new Request("http://test/v1/username-coverage", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "cf-connecting-ip": "198.51.100.42",
+          "x-forwarded-for": "203.0.113.99",
+        },
+        body: "not even json",
+      }),
+      {
+        RATE_LIMIT_3600: { limit: workerIngressDenied } as unknown as RateLimit,
+      } as Env,
+      {} as ExecutionContext,
+    );
+    expect(workerResponse.status).toBe(429);
+    expect(workerResponse.headers.get("retry-after")).toBe("60");
+    await expect(workerResponse.json()).resolves.toEqual({ error: "rate_limited" });
+    expect(workerIngressDenied).toHaveBeenCalledWith({
+      key: "mutation-ingress:198.51.100.42",
+    });
+    expect(workerIngressDenied).not.toHaveBeenCalledWith({
+      key: "mutation-ingress:203.0.113.99",
+    });
+
     const ipDenied = vi.fn(async () => ({ success: false }));
     const deniedByIp = await handleRegister(
       registerRequest("not even json object"),
