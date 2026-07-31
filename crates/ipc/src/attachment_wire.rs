@@ -89,12 +89,58 @@ pub fn is_blocked_automatic_open_filename(name: &str) -> bool {
     };
     matches!(
         ext.as_str(),
-        "ade" | "adp" | "app" | "bat" | "cmd" | "com" | "cpl" | "dll" | "docm" | "exe"
-            | "gadget" | "hta" | "inf" | "ins" | "isp" | "jar" | "js" | "jse"
-            | "htm" | "html" | "lnk" | "msc" | "msi" | "msp" | "mst" | "pif" | "pl" | "pptm" | "ps1"
-            | "ps1xml" | "ps2" | "ps2xml" | "psc1" | "psc2" | "reg" | "scf"
-            | "scr" | "sct" | "sh" | "shb" | "shs" | "svg" | "sys" | "url" | "vb"
-            | "vbe" | "vbs" | "ws" | "wsc" | "wsf" | "wsh" | "xlsm"
+        "ade"
+            | "adp"
+            | "app"
+            | "bat"
+            | "cmd"
+            | "com"
+            | "cpl"
+            | "dll"
+            | "docm"
+            | "exe"
+            | "gadget"
+            | "hta"
+            | "inf"
+            | "ins"
+            | "isp"
+            | "jar"
+            | "js"
+            | "jse"
+            | "htm"
+            | "html"
+            | "lnk"
+            | "msc"
+            | "msi"
+            | "msp"
+            | "mst"
+            | "pif"
+            | "pl"
+            | "pptm"
+            | "ps1"
+            | "ps1xml"
+            | "ps2"
+            | "ps2xml"
+            | "psc1"
+            | "psc2"
+            | "reg"
+            | "scf"
+            | "scr"
+            | "sct"
+            | "sh"
+            | "shb"
+            | "shs"
+            | "svg"
+            | "sys"
+            | "url"
+            | "vb"
+            | "vbe"
+            | "vbs"
+            | "ws"
+            | "wsc"
+            | "wsf"
+            | "wsh"
+            | "xlsm"
     )
 }
 
@@ -902,7 +948,7 @@ mod tests {
         let key = fresh_key();
         let plain = vec![0u8; MAX_ATTACHMENT_BYTES + 1];
         let err = seal_attachment(key, &plain, "huge.png").unwrap_err();
-        matches!(err, AttachmentWireError::TooLarge(_, _));
+        assert!(matches!(&err, AttachmentWireError::TooLarge(_, _)));
     }
 
     #[test]
@@ -1044,7 +1090,7 @@ mod tests {
         let plain = vec![0u8; MAX_ATTACHMENT_BYTES + 1];
         let cover = vec![0u8; 16];
         let err = seal_attachment_v3(key, &plain, "x.png", &cover).unwrap_err();
-        matches!(err, AttachmentWireError::TooLarge(_, _));
+        assert!(matches!(&err, AttachmentWireError::TooLarge(_, _)));
     }
 
     #[test]

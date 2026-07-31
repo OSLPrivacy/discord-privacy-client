@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  test:
+  ts-test:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -75,7 +75,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
-      - name: Install selector deps
+      - name: Install selector check deps
         working-directory: selector-ci
         run: npm ci
       - name: Run selector check
@@ -116,14 +116,14 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ always() }}
     needs:
-      - test
+      - ts-test
       - selector-check
       - telegram-reporting-bot
       - public-audit
     steps:
       - name: "success'"
         env:
-          TEST_RESULT: ${{ needs.test.result }}
+          TEST_RESULT: ${{ needs.ts-test.result }}
           SELECTOR_CHECK_RESULT: ${{ needs.selector-check.result }}
           TELEGRAM_REPORTING_BOT_RESULT: ${{ needs.telegram-reporting-bot.result }}
           PUBLIC_AUDIT_RESULT: ${{ needs.public-audit.result }}
