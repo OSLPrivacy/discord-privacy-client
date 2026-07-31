@@ -69,6 +69,24 @@ tracing = { workspace = true }
 # appear to succeed while a fresh Entry immediately returns `NoEntry`.
 keyring = { workspace = true, features = ["windows-native"] }
 
+# Linux-only, and only so the desktop binary can be BUILT, RUN and screenshotted
+# on this machine. Capture protection (`WDA_EXCLUDEFROMCAPTURE`) is compile-time
+# and Windows-only, so a production Windows window cannot be screenshotted at
+# all; the Linux build renders the identical web UI and is the only way to see
+# real pixels. Without a native backend `keyring` 3.x resolves to its in-memory
+# mock on Linux, `KeyringSealer::new`'s persistence probe correctly fails, and
+# `select_best_sealer` correctly falls through to the ephemeral sealer -- so
+# account creation refuses with "Persistent TPM or operating-system credential
+# storage is unavailable". That refusal is CORRECT and is deliberately left
+# untouched; what was wrong is that the Linux build had no real store to offer
+# it. `linux-native` is the kernel keyutils backend (linux-keyutils crate):
+# syscall-only, no Secret Service, no D-Bus, no daemon to start, which is what
+# makes it usable under WSL/Xvfb. Windows is completely unaffected: this block
+# is inert off-target and the Windows build still resolves `windows-native`
+# only.
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { workspace = true, features = ["linux-native"] }
+
 [target.'cfg(windows)'.dependencies]
 # B1 Windows path: NCryptOpenStorageProvider("Microsoft Platform
 # Crypto Provider") → TPM-bound RSA key → wrap an XChaCha20-Poly1305
