@@ -430,9 +430,6 @@ async function dispatch(
     if (path === "/v1/checkout/claim") {
       return withCors(await handleCheckoutClaim(request, env), request);
     }
-    if (path === "/v1/usernames/claim") {
-      return await handleUsernameClaim(request, env);
-    }
     if (path === "/v1/stripe/webhook") {
       return await handleStripeWebhook(request, env, fetch, ctx);
     }
