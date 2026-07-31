@@ -2537,13 +2537,13 @@ mod password_policy_tests {
 
         #[test]
         fn tenth_wrong_password_attempt_triggers_duress() {
-        // Serialize: this test mutates the PROCESS-GLOBAL file storage key.
-        // CI runs `cargo test --workspace` (N threads, ONE process) while the
-        // local gate runs nextest --test-threads=1 (a process per test), so an
-        // unguarded writer here is invisible locally and intermittently clobbers
-        // properly-guarded siblings on CI -- it took down
-        // membership::tests::writes_are_encrypted_when_key_present.
-        let _serial = crate::test_process_globals::serialize();
+            // Serialize: this test mutates the PROCESS-GLOBAL file storage key.
+            // CI runs `cargo test --workspace` (N threads, ONE process) while the
+            // local gate runs nextest --test-threads=1 (a process per test), so an
+            // unguarded writer here is invisible locally and intermittently clobbers
+            // properly-guarded siblings on CI -- it took down
+            // membership::tests::writes_are_encrypted_when_key_present.
+            let _serial = crate::test_process_globals::serialize();
             set_file_storage_key(None);
             let dir = tempfile::tempdir().unwrap();
             let _guard = use_temp_config_dir(dir.path());
