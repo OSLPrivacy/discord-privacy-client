@@ -185,59 +185,134 @@ fn second_session_rebuild_reproduces_recorded_executable_hash() {
 
 #[test]
 fn final_owner_gated_signoff_reproduces_package_from_second_session() {
-    let guide = include_str!("../../../docs/testing/hub-release-candidate-vm-gate.md");
-    let verifier = include_str!("../../../scripts/verify_hub_vm_qa_attestation.py");
+    use sha2::{Digest, Sha256};
 
-    let section = section(
-        guide,
-        "## final_owner_gated_signoff_reproduces_package_from_second_session",
-        "Validate locally before upload:",
+    fn sha256_hex(bytes: &[u8]) -> String {
+        let mut digest = Sha256::new();
+        digest.update(bytes);
+        format!("{:x}", digest.finalize())
+    }
+
+    fn write_candidate(
+        root: &std::path::Path,
+        operator: &str,
+        final_approver: &str,
+        reproduced: bool,
+    ) {
+        let installer_name = "osl-hub-0.1.0-x64-nsis.exe";
+        let installer_bytes = b"signed candidate fixture";
+        std::fs::write(root.join(installer_name), installer_bytes).unwrap();
+        std::fs::write(
+            root.join("latest.json"),
+            serde_json::json!({
+                "version": "0.1.0",
+                "platforms": {
+                    "windows-x86_64": {
+                        "signature": "signed-update-fixture",
+                        "url": format!(
+                            "https://github.com/OSLPrivacy/discord-privacy-client/releases/download/hub-v0.1.0/{installer_name}"
+                        )
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("hub-vm-qa-attestation.json"),
+            serde_json::json!({
+                "schemaVersion": 1,
+                "candidateTag": "hub-v0.1.0",
+                "candidateSha256": sha256_hex(installer_bytes),
+                "completedAtUtc": "2026-07-17T23:00:00Z",
+                "operator": operator,
+                "finalApprover": final_approver,
+                "packageReproducedBySecondSession": reproduced,
+                "captchaHandling": "paused_for_manual_completion",
+                "vms": [
+                    {"name": "A", "goldenSnapshotId": "signed-a", "cleanRestore": true},
+                    {"name": "B", "goldenSnapshotId": "signed-b", "cleanRestore": true}
+                ],
+                "cases": {
+                    "onboarding": true,
+                    "identityCreate": true,
+                    "identityRecover": true,
+                    "twoAccountLogin": true,
+                    "persistenceRestart": true,
+                    "signedUpdate": true,
+                    "oneSidedEncryption": true,
+                    "twoSidedEncryption": true,
+                    "fullCleanup": true
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    fn verify_candidate(root: &std::path::Path) -> std::process::Output {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        std::process::Command::new(std::env::var("PYTHON").unwrap_or_else(|_| "python3".to_owned()))
+            .arg(repo_root.join("scripts/verify_hub_vm_qa_attestation.py"))
+            .arg("--tag")
+            .arg("hub-v0.1.0")
+            .arg("--candidate-dir")
+            .arg(root)
+            .arg("--attestation")
+            .arg(root.join("hub-vm-qa-attestation.json"))
+            .current_dir(repo_root)
+            .output()
+            .expect("run VM QA attestation verifier")
+    }
+
+    let root = std::env::temp_dir().join(format!(
+        "osl-hub-final-signoff-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+
+    write_candidate(
+        &root,
+        "qa-reviewer",
+        "qa-final-approver-second-session",
+        true,
     );
-    for required in [
-        "Final promotion is a two-person/session gate.",
-        "final approver must use a second\nlogin/session to download the draft release assets",
-        "second session computes the installer SHA-256 and it exactly matches\n  `candidateSha256`",
-        "runs `scripts/verify_hub_vm_qa_attestation.py` against the\n  downloaded candidate directory, not a local build tree",
-        "`packageReproducedBySecondSession: true`",
-        "release owner and final approver are not the same session",
-    ] {
-        assert!(
-            section.contains(required),
-            "release gate guide must require second-session package reproduction: {required}"
-        );
-    }
-
-    for required in [
-        "operator = document.get(\"operator\")",
-        "final_approver = document.get(\"finalApprover\")",
-        "QA attestation needs a second-session final approver",
-        "require(final_approver.strip() != operator.strip(),",
-        "QA attestation final approver must be a different session",
-        "require(document.get(\"packageReproducedBySecondSession\") is True,",
-        "QA attestation must reproduce the package from a second session",
-    ] {
-        assert!(
-            verifier.contains(required),
-            "verifier must refuse final sign-off without independent package reproduction: {required}"
-        );
-    }
-
-    let hash_check = verifier
-        .find("require(file_sha256(installers[0]) == expected_hash,")
-        .expect("verifier must hash the downloaded installer");
-    let manifest_check = verifier
-        .find("verify_updater_manifest(tag, candidate_dir / \"latest.json\", installers[0])")
-        .expect("verifier must bind latest.json to the same downloaded installer");
-    let approver_check = verifier
-        .find("final_approver = document.get(\"finalApprover\")")
-        .expect("verifier must read the final approver");
-    let reproduction_check = verifier
-        .find("require(document.get(\"packageReproducedBySecondSession\") is True,")
-        .expect("verifier must require second-session reproduction");
+    let accepted = verify_candidate(&root);
     assert!(
-        hash_check < manifest_check
-            && manifest_check < approver_check
-            && approver_check < reproduction_check,
-        "final sign-off must happen only after the downloaded package hash and manifest match"
+        accepted.status.success(),
+        "valid second-session signoff must pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&accepted.stdout),
+        String::from_utf8_lossy(&accepted.stderr)
     );
+
+    write_candidate(&root, "qa-reviewer", "qa-reviewer", true);
+    let same_session = verify_candidate(&root);
+    assert!(
+        !same_session.status.success()
+            && String::from_utf8_lossy(&same_session.stderr).contains("different session"),
+        "same-session final approval must be refused\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&same_session.stdout),
+        String::from_utf8_lossy(&same_session.stderr)
+    );
+
+    write_candidate(
+        &root,
+        "qa-reviewer",
+        "qa-final-approver-second-session",
+        false,
+    );
+    let unreproduced = verify_candidate(&root);
+    assert!(
+        !unreproduced.status.success()
+            && String::from_utf8_lossy(&unreproduced.stderr).contains("second session"),
+        "missing second-session package reproduction must be refused\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&unreproduced.stdout),
+        String::from_utf8_lossy(&unreproduced.stderr)
+    );
+
+    let _ = std::fs::remove_dir_all(root);
 }
