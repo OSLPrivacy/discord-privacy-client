@@ -1,6 +1,7 @@
 use serde_json::Value;
 
 const J14_PLAN: &str = include_str!("../../../docs/plans/osl-parallel-build-plan-2026-07-29.md");
+const FRESHNESS_WINDOW_SECONDS: i64 = 5 * 60;
 
 #[derive(Debug, Eq, PartialEq)]
 struct RoutingDecision {
@@ -102,7 +103,7 @@ fn observed_seconds(record: &Value, name: &str) -> i64 {
 fn capacity_record_is_fresh(record: &Value) -> bool {
     let observed_at = observed_seconds(record, "observedAt");
     let decision_at = observed_seconds(record, "freshForDecisionAt");
-    decision_at >= observed_at && decision_at - observed_at <= 60
+    decision_at >= observed_at && decision_at - observed_at <= FRESHNESS_WINDOW_SECONDS
 }
 
 fn route_case(case: &Value) -> RoutingDecision {
@@ -178,8 +179,8 @@ fn update_routing_decisions_from_real_codex_capacity_instead_of_stale_pools() {
     let cases = array_field(&fixture, "cases");
     assert_eq!(
         cases.len(),
-        5,
-        "j14 must cover absent, allowed, and failed live checks"
+        6,
+        "j14 must cover absent, allowed, freshness-boundary, and failed live checks"
     );
     for case in cases {
         assert_eq!(
