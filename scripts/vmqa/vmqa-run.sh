@@ -806,18 +806,20 @@ grade_f1_live_windows_walkthrough_import() {
 }
 
 grade_f2_real_vm_five_frame_walkthrough() {
-  local file="$1" overall frames shape unique_sha request_bindings exe_bindings
+  local file="$1" overall frames step_total shape unique_sha request_bindings exe_bindings
   [ -f "$file" ] || { echo "F2 INVALID: verdict file is missing" >&2; return 9; }
   overall="$(jq -r '.overall // empty' "$file" 2>/dev/null || true)"
   frames="$(jq -r '[.steps[]? | select(.verb == "frame" and .status == "pass")] | length' "$file" 2>/dev/null || printf '0\n')"
+  step_total="$(jq -r '[.steps[]?] | length' "$file" 2>/dev/null || printf '0\n')"
   shape="$(jq -r '[.steps[]? | select(.verb == "frame") | (.id + ":" + ((.facts.frameOrdinal // 0) | tostring))] | join(",")' "$file" 2>/dev/null || true)"
   unique_sha="$(jq -r '[.steps[]? | select(.verb == "frame") | .facts.pngSha256] | unique | length' "$file" 2>/dev/null || printf '0\n')"
   if [ "$overall" != "pass" ]; then
     echo "F2 FAIL: overall=$overall" >&2
     return 1
   fi
-  if [ "$frames" -ne 5 ] || [ "$shape" != "F1:1,F2:2,F3:3,F4:4,F5:5" ]; then
-    echo "F2 FAIL: expected exact five-frame walkthrough, got '$shape'" >&2
+  if [ "$step_total" -ne 5 ] || [ "$frames" -ne 5 ] \
+     || [ "$shape" != "F1:1,F2:2,F3:3,F4:4,F5:5" ]; then
+    echo "F2 FAIL: expected exact five-frame walkthrough, got '$shape' across $step_total steps" >&2
     return 1
   fi
   if [ "$unique_sha" -ne 5 ]; then
@@ -855,7 +857,7 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
   local tmp good bad_empty bad_zero_bytes bad_grant bad_unattended bad_receipt bad_receipt_rows
   local bad_receipt_request bad_receipt_exe bad_source bad_secret bad_revoke bad_revoke_bound
   local bad_revoked_source bad_restart bad_reread bad_reread_mismatch bad_persist
-  local bad_live_binding bad_nonnumeric bad_shape bad_status bad_overall
+  local bad_live_binding bad_nonnumeric bad_shape bad_status bad_overall bad_extra bad_reordered
   local request_sha exe_sha agent_sha win32_sha receipt_sha
   tmp="$(vmqa_named_test_tmpdir)"
   good="$tmp/f1-good.json"
@@ -881,6 +883,8 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
   bad_shape="$tmp/f1-bad-shape.json"
   bad_status="$tmp/f1-bad-status.json"
   bad_overall="$tmp/f1-bad-overall.json"
+  bad_extra="$tmp/f1-extra.json"
+  bad_reordered="$tmp/f1-reordered.json"
   request_sha="$(printf f1-request | sha256sum | awk '{print $1}')"
   exe_sha="$(printf f1-exe | sha256sum | awk '{print $1}')"
   agent_sha="$(printf f1-agent | sha256sum | awk '{print $1}')"
@@ -929,6 +933,9 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
   jq '.steps[2].id="X"' "$good" >"$bad_shape"
   jq '.steps[2].status="blocked"' "$good" >"$bad_status"
   jq '.overall="fail"' "$good" >"$bad_overall"
+  jq '.steps += [{id:"X",verb:"receipt",status:"pass",facts:{importedRows:2,receiptSha256:("e" * 64),containsNoSecrets:true,requestSha256:.requestSha256,exeSha256:.requestExeSha256}}]' \
+    "$good" >"$bad_extra"
+  jq '.steps = [.steps[1], .steps[0], .steps[2], .steps[3], .steps[4], .steps[5], .steps[6]]' "$good" >"$bad_reordered"
   grade_f1_live_windows_walkthrough_import "$good" >/dev/null \
     || { rm -rf -- "$tmp"; return 1; }
   grade_f1_live_windows_walkthrough_import "$bad_empty" >/dev/null 2>&1 \
@@ -975,12 +982,16 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
     && { rm -rf -- "$tmp"; return 1; }
   grade_f1_live_windows_walkthrough_import "$bad_overall" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_extra" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_reordered" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
   rm -rf -- "$tmp"
   return 0
 }
 
 f2_real_vm_five_frame_walkthrough() {
-  local tmp good bad_four bad_reused bad_unbound bad_weak_surface bad_mixed_request bad_mixed_exe
+  local tmp good bad_four bad_reused bad_unbound bad_weak_surface bad_mixed_request bad_mixed_exe bad_extra
   tmp="$(vmqa_named_test_tmpdir)"
   good="$tmp/f2-good.json"
   bad_four="$tmp/f2-four.json"
@@ -989,6 +1000,7 @@ f2_real_vm_five_frame_walkthrough() {
   bad_weak_surface="$tmp/f2-weak-surface.json"
   bad_mixed_request="$tmp/f2-mixed-request.json"
   bad_mixed_exe="$tmp/f2-mixed-exe.json"
+  bad_extra="$tmp/f2-extra.json"
   jq -n '{
       overall:"pass",
       steps:[range(1;6) as $i | {
@@ -1014,6 +1026,7 @@ f2_real_vm_five_frame_walkthrough() {
     "$good" >"$bad_weak_surface"
   jq '.steps[1].facts.requestSha256=("e" * 64)' "$good" >"$bad_mixed_request"
   jq '.steps[3].facts.exeSha256=("f" * 64)' "$good" >"$bad_mixed_exe"
+  jq '.steps += [{id:"F6",verb:"wait",status:"pass",facts:{}}]' "$good" >"$bad_extra"
   grade_f2_real_vm_five_frame_walkthrough "$good" >/dev/null \
     || { rm -rf -- "$tmp"; return 1; }
   grade_f2_real_vm_five_frame_walkthrough "$bad_four" >/dev/null 2>&1 \
@@ -1027,6 +1040,8 @@ f2_real_vm_five_frame_walkthrough() {
   grade_f2_real_vm_five_frame_walkthrough "$bad_mixed_request" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
   grade_f2_real_vm_five_frame_walkthrough "$bad_mixed_exe" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
+  grade_f2_real_vm_five_frame_walkthrough "$bad_extra" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
   rm -rf -- "$tmp"
   return 0
