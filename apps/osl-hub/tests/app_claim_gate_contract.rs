@@ -14,6 +14,7 @@ fn app_claim_gate_self_test_proves_release_workflow_and_parser_bindings() {
     for required in [
         "PASS Gate public claims through the allowlist self-test before release.",
         "PASS Bind banned public phrases into the app-claim parser.",
+        "PASS Scan repository copy without exposing implementation concepts to users.",
         "PASS Gate public claims against exact support evidence",
     ] {
         assert!(
