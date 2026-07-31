@@ -481,6 +481,46 @@ def freeze_the_exact_signed_candidate_vm_attestation_regex_contract() -> None:
             verify("hub-v0.1.0", root, attestation)
 
 
+def freeze_the_exact_signed_candidate_vm_attestation_direct_write_contract() -> None:
+    test_case = HubVmQaAttestationTests()
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        installer, attestation = test_case.candidate(root)
+
+        verify("hub-v0.1.0", root, attestation)
+
+        document = json.loads(attestation.read_text(encoding="utf-8"))
+        manifest_path = root / "latest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        document["candidateSha256"] = hashlib.sha256(b"untested package").hexdigest()
+        attestation.write_text(json.dumps(document), encoding="utf-8")
+        with test_case.assertRaises(SystemExit):
+            verify("hub-v0.1.0", root, attestation)
+        document["candidateSha256"] = hashlib.sha256(installer.read_bytes()).hexdigest()
+
+        document["packageReproducedBySecondSession"] = False
+        attestation.write_text(json.dumps(document), encoding="utf-8")
+        with test_case.assertRaises(SystemExit):
+            verify("hub-v0.1.0", root, attestation)
+        document["packageReproducedBySecondSession"] = True
+
+        document["finalApprover"] = document["operator"]
+        attestation.write_text(json.dumps(document), encoding="utf-8")
+        with test_case.assertRaises(SystemExit):
+            verify("hub-v0.1.0", root, attestation)
+        document["finalApprover"] = "qa-final-approver-second-session"
+        attestation.write_text(json.dumps(document), encoding="utf-8")
+
+        manifest["platforms"]["windows-x86_64"]["url"] = (
+            "https://github.com/OSLPrivacy/discord-privacy-client/"
+            "releases/download/hub-latest/osl-hub-0.1.0-x64-nsis.exe"
+        )
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        with test_case.assertRaises(SystemExit):
+            verify("hub-v0.1.0", root, attestation)
+
+
 freeze_the_exact_signed_candidate_vm_attestation_contract.__name__ = (
     "Freeze the exact signed-candidate VM attestation contract."
 )
@@ -493,6 +533,11 @@ freeze_the_exact_signed_candidate_vm_attestation_matrix_contract.__name__ = (
 
 freeze_the_exact_signed_candidate_vm_attestation_regex_contract.__name__ = (
     "Freeze the exact signed-candidate VM attestation regex contract."
+)
+
+
+freeze_the_exact_signed_candidate_vm_attestation_direct_write_contract.__name__ = (
+    "Freeze the exact signed-candidate VM attestation direct-write contract."
 )
 
 
@@ -521,6 +566,9 @@ def load_tests(
     ))
     suite.addTest(unittest.FunctionTestCase(
         freeze_the_exact_signed_candidate_vm_attestation_regex_contract,
+    ))
+    suite.addTest(unittest.FunctionTestCase(
+        freeze_the_exact_signed_candidate_vm_attestation_direct_write_contract,
     ))
     suite.addTest(unittest.FunctionTestCase(
         verify_hub_vm_qa_attestation_py_contract,
