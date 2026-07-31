@@ -52,7 +52,13 @@ describe("mutation rate limiting is atomic (HIGH-2)", () => {
 
     // Before the fix every one of these is admitted: they all read `used = 0`.
     expect(admitted).toBe(DELETE_BUDGET);
-  }, 20_000);
+    // DELETE_BUDGET + 100 limiter round trips fired at once is inherently one
+    // of the heaviest specs here, and on CI it lands at 15722ms / 18319ms /
+    // 20825ms across runs against a 20s budget -- it has been failing on
+    // variance alone, not on a hang, and the admitted-count assertion above is
+    // untouched. 60s is ~3x the worst observed time and still fails a genuine
+    // hang promptly.
+  }, 60_000);
 
   it("keeps a separate, much smaller budget for multipart session creation", async () => {
     const { env } = harness();
@@ -67,7 +73,11 @@ describe("mutation rate limiting is atomic (HIGH-2)", () => {
     // caller needs to finish an upload it already started.
     const part = await rateLimit(env, "203.0.113.10", "attachment-upload");
     expect(part.allowed).toBe(true);
-  });
+    // Same shape, 200 concurrent round trips, and it was inheriting vitest's
+    // 5s default: it measured 4730ms on the run that passed and timed out at
+    // exactly 5000ms on the run that did not. Give it a budget of its own
+    // rather than leave it one bad scheduling slice from red.
+  }, 30_000);
 
   it("still fails closed for anonymous writes and open for reads when the limiter is down", async () => {
     const broken = {
