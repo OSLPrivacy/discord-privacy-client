@@ -262,6 +262,13 @@ describe("trusted composer overlay", () => {
       webviews: string[];
       permissions: unknown[];
     };
+    const whatsapp = JSON.parse(readRelative("../../osl-hub/capabilities/whatsapp-composer-overlay.json")) as {
+      local: boolean;
+      webviews: string[];
+      permissions: unknown[];
+      remote?: unknown;
+      windows?: unknown;
+    };
     const overlay = JSON.parse(readRelative("../../osl-hub/capabilities/native-discord-overlay.json")) as {
       local: boolean;
       webviews: string[];
@@ -278,6 +285,11 @@ describe("trusted composer overlay", () => {
     expect(composer.local).toBe(true);
     expect(composer.webviews).toEqual(["composer-overlay"]);
     expect(composer.permissions).toEqual([]);
+    expect(whatsapp.local).toBe(true);
+    expect(whatsapp.webviews).toEqual(["whatsapp-composer-overlay"]);
+    expect(whatsapp.permissions).toEqual(["allow-prepare-whatsapp-qa-protected-text"]);
+    expect(whatsapp).not.toHaveProperty("remote");
+    expect(whatsapp).not.toHaveProperty("windows");
     expect(overlay.local).toBe(true);
     expect(overlay.webviews).toEqual(["native-discord-overlay"]);
     expect(overlay.permissions).toEqual([

@@ -131,6 +131,11 @@ overlay = json.load(open(sys.argv[1], "r", encoding="utf-8"))
 assert overlay == {"identifier": "org.oslprivacy.hubqab"}, overlay
 assert overlay["identifier"] != "org.oslprivacy.hub"
 PY
+    python3 - "$stage/osl-privacy-hub.exe" <<'PY' || return 1
+import json, sys
+overlay = json.load(open(sys.argv[1], "r", encoding="utf-8"))
+assert overlay == {"identifier": "org.oslprivacy.hubqab"}, overlay
+PY
     python3 - "$json" <<'PY' || return 1
 import json, sys
 receipt = json.load(open(sys.argv[1], "r", encoding="utf-8"))
@@ -299,7 +304,10 @@ say "log        : $LOG"
 
 export CARGO_BUILD_JOBS=4
 build_start=$(date +%s)
-flock /tmp/osl-cargo.lock -c "cd '$REPO/apps/osl-hub' && \
+# Lock path is overridable so a test can run this script with an isolated lock.
+# The build lock is global: a test executing this script runs UNDER osl-cargo,
+# which already holds /tmp/osl-cargo.lock, so a hardcoded path deadlocks forever.
+flock "${OSL_CARGO_LOCK:-/tmp/osl-cargo.lock}" -c "cd '$REPO/apps/osl-hub' && \
   TAURI_CONFIG='{\"identifier\":\"$IDENTIFIER\"}' \
   cargo build --features desktop,discord-qa-shell --bin osl-privacy-hub --target $TARGET" \
   >"$LOG" 2>&1

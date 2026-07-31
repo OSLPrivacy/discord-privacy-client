@@ -109,6 +109,7 @@ pub enum Predicate {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct SelfTestProbe {
     pub subsystem: Subsystem,
     pub predicate: Predicate,
@@ -187,6 +188,7 @@ impl UnverifiedCause {
 /// One measured self-test check, in report order.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct CheckOutcome {
     pub subsystem: Subsystem,
     pub predicate: Predicate,
@@ -287,6 +289,7 @@ impl<'de> Deserialize<'de> for SelfTestReport {
     {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
+        #[serde(deny_unknown_fields)]
         struct RawSelfTestReport {
             version: u16,
             verdict: ContractVerdict,
@@ -587,6 +590,40 @@ mod tests {
         required_contract_check_outcomes()
     }
 
+    fn collect_json_keys<'a>(value: &'a Value, keys: &mut Vec<&'a str>) {
+        match value {
+            Value::Object(object) => {
+                for (key, child) in object {
+                    keys.push(key.as_str());
+                    collect_json_keys(child, keys);
+                }
+            }
+            Value::Array(values) => {
+                for child in values {
+                    collect_json_keys(child, keys);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn collect_json_strings<'a>(value: &'a Value, strings: &mut Vec<&'a str>) {
+        match value {
+            Value::String(string) => strings.push(string.as_str()),
+            Value::Object(object) => {
+                for child in object.values() {
+                    collect_json_strings(child, strings);
+                }
+            }
+            Value::Array(values) => {
+                for child in values {
+                    collect_json_strings(child, strings);
+                }
+            }
+            _ => {}
+        }
+    }
+
     #[test]
     fn contract() {
         assert_eq!(
@@ -809,6 +846,21 @@ mod tests {
             ]
         );
 
+        let missing_binding_checks = required_checks()
+            .into_iter()
+            .filter(|check| check.predicate != Predicate::ScopeBinding)
+            .collect();
+        let missing_binding = SelfTestReport::from_checks(missing_binding_checks).unwrap();
+        assert_eq!(
+            missing_binding.verdict(),
+            ContractVerdict::Refused {
+                failed_subsystem: Subsystem::Binding,
+                failed_predicate: Predicate::ScopeBinding,
+                cause: UnverifiedCause::MissingBinding,
+            }
+        );
+        assert!(!missing_binding.verdict().permits_protected_path());
+
         assert!(!UnverifiedCause::NotObserved.requires_refusal());
         assert!(!UnverifiedCause::Ambiguous.requires_refusal());
         assert!(!UnverifiedCause::Unsupported.requires_refusal());
@@ -943,6 +995,19 @@ mod tests {
                 object.get("verdict"),
                 Some(&Value::String("verified".to_owned()))
             );
+            let mut telemetry_report = json.clone();
+            telemetry_report["providerTelemetry"] = Value::String("host-text".to_owned());
+            assert!(
+                serde_json::from_value::<SelfTestReport>(telemetry_report).is_err(),
+                "profile self-test reports must refuse adapter telemetry fields"
+            );
+            let mut nested_telemetry_report = json.clone();
+            nested_telemetry_report["checks"][0]["hostText"] =
+                Value::String("private account text".to_owned());
+            assert!(
+                serde_json::from_value::<SelfTestReport>(nested_telemetry_report).is_err(),
+                "profile self-test checks must refuse adapter telemetry fields"
+            );
 
             let checks = object
                 .get("checks")
@@ -1019,6 +1084,49 @@ mod tests {
             let round_tripped: SelfTestReport = serde_json::from_value(json).unwrap();
             assert_eq!(round_tripped, report);
             round_tripped.validate().unwrap();
+
+            let mut keys = Vec::new();
+            collect_json_keys(&json, &mut keys);
+            for forbidden in [
+                "hostText",
+                "accountIdentifier",
+                "accountHandle",
+                "credential",
+                "localPath",
+                "profileName",
+                "telemetry",
+            ] {
+                assert!(
+                    !keys.contains(&forbidden),
+                    "self-test report carried telemetry-like key {forbidden}"
+                );
+            }
+
+            let mut strings = Vec::new();
+            collect_json_strings(&json, &mut strings);
+            let allowed_strings = [
+                "verified",
+                "composer",
+                "transcript",
+                "rowText",
+                "writeProof",
+                "consent",
+                "binding",
+                "authority",
+                "composerDiscovery",
+                "transcriptDiscovery",
+                "rowTextExtraction",
+                "writePrefixProof",
+                "operatorConsent",
+                "scopeBinding",
+                "hostAuthority",
+            ];
+            assert!(
+                strings
+                    .iter()
+                    .all(|string| allowed_strings.contains(string)),
+                "self-test report carried a non-contract string: {strings:?}"
+            );
         }
     }
 

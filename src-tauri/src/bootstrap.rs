@@ -162,9 +162,6 @@ fn run_autostart_mode(state: &AppState, register_online: bool) {
     let keyserver_cfg = read_keyserver_config(&base);
     let (identity_loaded, identity_regenerated) =
         load_or_generate_identity(state, &dir, keyserver_cfg.as_ref());
-    if identity_loaded && identity_regenerated {
-        load_persisted_prekey_state_for_bootstrap(state, &dir);
-    }
     // G3-FIX: keyserver.json is an OVERRIDE only. The base URL always
     // resolves (keyserver.json `base_url` if present+valid → else the
     // built-in production default, via the single shared resolver),
@@ -1219,7 +1216,7 @@ fn load_or_generate_identity(
                     path = %path.display(),
                     "OSL bootstrap: identity loaded"
                 );
-                install_loaded_identity(state, id, dir);
+                install_loaded_identity(state, dir, id, sealer.as_ref());
                 return (true, false);
             }
             Err(e) => {
@@ -1278,17 +1275,18 @@ fn load_or_generate_identity(
              but won't survive a restart"
         ),
     }
-    state.install_identity(id);
+    install_loaded_identity(state, dir, id, sealer.as_ref());
     (true, true)
 }
 
-fn install_loaded_identity(state: &AppState, identity: keystore::Identity, dir: &Path) {
+fn install_loaded_identity(
+    state: &AppState,
+    dir: &std::path::Path,
+    identity: keystore::Identity,
+    sealer: &dyn keystore::Sealer,
+) {
     state.install_identity(identity);
-    load_persisted_prekey_state_for_bootstrap(state, dir);
-}
-
-fn load_persisted_prekey_state_for_bootstrap(state: &AppState, dir: &Path) {
-    match ipc::state_reload::load_persisted_prekey_state(state, dir) {
+    match ipc::state_reload::load_persisted_prekey_state_with_sealer(state, dir, sealer) {
         Ok(true) => tracing::info!("OSL bootstrap: prekey state loaded"),
         Ok(false) => {
             tracing::info!("OSL bootstrap: no prekeys.json; first replenish tick will publish")

@@ -48,6 +48,36 @@ function fencedTextBlocks(source: string): string[] {
   return [...source.matchAll(/```text\n([\s\S]*?)\n```/gu)].map((match) => match[1]!);
 }
 
+function expectSharedMemoryCardsAcrossActiveAccounts(prompts: string): void {
+  const rows = parseTable<{
+    "Active account/window": string;
+    "Prompt source": string;
+    "Memory-card route": string;
+    "Volatile-status rule": string;
+  }>(section(prompts, "## Shared memory-card adoption contract"), [
+    "Active account/window",
+    "Prompt source",
+    "Memory-card route",
+    "Volatile-status rule",
+  ]);
+
+  expect(rows.map((row) => row["Active account/window"]).sort()).toEqual([
+    "Coordinating Telegram `/osl` lane",
+    "Existing Discord testing window",
+    "Existing OSL Hub/UI window",
+    "Existing Scrub window",
+    "Existing two-way Opus test window",
+    "New website/head-developer lane",
+  ]);
+
+  for (const row of rows) {
+    expect(row["Memory-card route"].toLowerCase()).toMatch(/\b(?:memory-card|memory card)\b/u);
+    expect(row["Memory-card route"].toLowerCase()).toMatch(/\b(?:common update|bootstrap|prompt [a-d]|handoff)\b/u);
+    expect(row["Volatile-status rule"].toLowerCase()).toMatch(/\bnever copy\b/u);
+    expect(row["Volatile-status rule"].toLowerCase()).toMatch(/\b(?:full master spec|full spec|volatile status)\b/u);
+  }
+}
+
 function listItems(source: string): string[] {
   const items: string[] = [];
   for (const line of source.split("\n")) {
@@ -272,33 +302,7 @@ describe("QA documentation contracts", () => {
 
   it("Adopt shared memory cards across every active account.", () => {
     const prompts = readDoc("docs/design/osl-current-window-prompts-2026-07-26.md");
-    const rows = parseTable<{
-      "Active account/window": string;
-      "Prompt source": string;
-      "Memory-card route": string;
-      "Volatile-status rule": string;
-    }>(section(prompts, "## Shared memory-card adoption contract"), [
-      "Active account/window",
-      "Prompt source",
-      "Memory-card route",
-      "Volatile-status rule",
-    ]);
-
-    expect(rows.map((row) => row["Active account/window"]).sort()).toEqual([
-      "Coordinating Telegram `/osl` lane",
-      "Existing Discord testing window",
-      "Existing OSL Hub/UI window",
-      "Existing Scrub window",
-      "Existing two-way Opus test window",
-      "New website/head-developer lane",
-    ]);
-
-    for (const row of rows) {
-      expect(row["Memory-card route"].toLowerCase()).toMatch(/\b(?:memory-card|memory card)\b/u);
-      expect(row["Memory-card route"].toLowerCase()).toMatch(/\b(?:common update|bootstrap|prompt [a-d]|handoff)\b/u);
-      expect(row["Volatile-status rule"].toLowerCase()).toMatch(/\bnever copy\b/u);
-      expect(row["Volatile-status rule"].toLowerCase()).toMatch(/\b(?:full master spec|full spec|volatile status)\b/u);
-    }
+    expectSharedMemoryCardsAcrossActiveAccounts(prompts);
 
     const commonUpdate = fencedTextBlocks(section(prompts, "## One update prompt for every active OSL tab"));
     expect(commonUpdate).toHaveLength(1);
@@ -310,5 +314,10 @@ describe("QA documentation contracts", () => {
     expect(bootstrap).toHaveLength(1);
     expect(bootstrap[0]!.toLowerCase()).toMatch(/load the compact\s+memory card/u);
     expect(bootstrap[0]!.toLowerCase()).toMatch(/before editing/u);
+  });
+
+  it("docs/design/osl-current-window-prompts-2026-07-26.md", () => {
+    const prompts = readDoc("docs/design/osl-current-window-prompts-2026-07-26.md");
+    expectSharedMemoryCardsAcrossActiveAccounts(prompts);
   });
 });

@@ -174,6 +174,43 @@ class HubVmQaAttestationTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "case set"):
                 verify("hub-v0.1.0", root, attestation)
 
+    def test_rejects_manifest_for_a_different_release_tag(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, attestation = self.candidate(root)
+            manifest_path = root / "latest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["platforms"]["windows-x86_64"]["url"] = (
+                "https://github.com/OSLPrivacy/discord-privacy-client/"
+                "releases/download/hub-v0.1.1/osl-hub-0.1.0-x64-nsis.exe"
+            )
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                verify("hub-v0.1.0", root, attestation)
+
+    def test_freeze_the_exact_signed_candidate_vm_attestation_contract(self) -> None:
+        freeze_the_exact_signed_candidate_vm_attestation_contract()
+
+    def test_rejects_missing_second_session_reproduction_plain_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, attestation = self.candidate(root)
+            document = json.loads(attestation.read_text(encoding="utf-8"))
+            document["packageReproducedBySecondSession"] = False
+            attestation.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                verify("hub-v0.1.0", root, attestation)
+
+    def test_rejects_same_session_final_approver_plain_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, attestation = self.candidate(root)
+            document = json.loads(attestation.read_text(encoding="utf-8"))
+            document["finalApprover"] = document["operator"]
+            attestation.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                verify("hub-v0.1.0", root, attestation)
+
 
 def freeze_the_exact_signed_candidate_vm_attestation_contract() -> None:
     test_case = HubVmQaAttestationTests()

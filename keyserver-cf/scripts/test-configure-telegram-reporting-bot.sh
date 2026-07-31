@@ -194,4 +194,4 @@ set -e
 [[ "${XTRACE_STATUS}" -eq 64 ]] || fail 'xtrace invocation was not refused before prompting'
 grep -Fq 'Refusing to handle secrets while shell tracing' "${XTRACE_OUTPUT}" || fail 'xtrace refusal is not explicit'
 
-printf '%s\n' 'Telegram reporting-bot rotation tests passed.'
+printf 'PASS %s\n' "${TEST_NAME}"

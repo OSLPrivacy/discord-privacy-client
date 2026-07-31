@@ -4249,6 +4249,35 @@ async function runSelfTest() {
   const supportMatrixWithForgedPublicClaim = JSON.parse(JSON.stringify(productionSupportMatrix));
   supportMatrixWithForgedPublicClaim.versioned_public_support_matrix.rows
     .find((row) => row.id === "signal_desktop_public").claim_allowed = true;
+  const supportMatrixWithForgedSignalPublicAvailability = JSON.parse(JSON.stringify(productionSupportMatrix));
+  supportMatrixWithForgedSignalPublicAvailability.versioned_public_support_matrix.rows
+    .find((row) => row.id === "signal_desktop_public").public_claim_allowed = true;
+  const supportMatrixWithExactSignalSupportEvidence = JSON.parse(JSON.stringify(productionSupportMatrix));
+  Object.assign(
+    supportMatrixWithExactSignalSupportEvidence.versioned_public_support_matrix.rows
+      .find((row) => row.id === "signal_desktop_public"),
+    {
+      status: "supported",
+      public_label: "Available",
+      public_status: "supported",
+      public_claim_allowed: true,
+      claim_allowed: true,
+      evidence_status: "supported",
+    },
+  );
+  Object.assign(
+    supportMatrixWithExactSignalSupportEvidence.chat_app_evidence
+      .find((row) => row.id === "signal_desktop_native"),
+    {
+      status: "supported",
+      public_status: "supported",
+      public_claim_allowed: true,
+    },
+  );
+  const productionPublicClaimServices = supportMatrixPublicClaimServices(productionSupportMatrix);
+  const exactSignalPublicClaimServices = supportMatrixPublicClaimServices(
+    supportMatrixWithExactSignalSupportEvidence,
+  );
   const telegramMailPublicProof = await validateSupportMatrixPublicFragments([
     {
       file: "self-test/telegram-mail-verdicts",
@@ -4316,6 +4345,11 @@ async function runSelfTest() {
         ).some((violation) => violation.phrase === "Cryptographic burn")
         && analyseFragments(
           "self-test/minimal-forbidden-phrases",
+          [{ text: "This build produces permanent ciphertext.", line: 1 }],
+          minimalForbiddenPhrases,
+        ).some((violation) => violation.phrase === "permanent ciphertext")
+        && analyseFragments(
+          "self-test/minimal-forbidden-phrases",
           [{ text: "This build offers local deletion.", line: 1 }],
           minimalForbiddenPhrases,
         ).length === 0,
@@ -4330,6 +4364,16 @@ async function runSelfTest() {
         ).some((violation) => violation.phrase === "implementation concept in public copy")
         && analyseFragments(
           "self-test/public-copy",
+          [{ text: '<div data-public-claim="Provider adapter status">Open setup</div>', line: 1 }],
+          bannedPhrases,
+        ).some((violation) => violation.phrase === "implementation concept in public copy")
+        && analyseFragments(
+          "self-test/public-copy",
+          [{ text: "keyserver retry diagnostic", line: 1 }],
+          bannedPhrases,
+        ).length === 0
+        && analyseFragments(
+          "self-test/public-copy",
           [{ text: "<button>Open protected messages</button>", line: 1 }],
           bannedPhrases,
         ).length === 0
@@ -4340,15 +4384,20 @@ async function runSelfTest() {
       name: SUPPORT_MATRIX_PUBLIC_PROOF_NAME,
       passed:
         supportMatrixPublicClaimProofFailures(productionConditionalRows).length === 0
+        && !productionPublicClaimServices.has("Signal")
         && validateSupportMatrixClaims(
           "self-test/exact-support-evidence",
           [{ text: "Signal is supported for protected messaging.", line: 1 }],
-          new Set(),
+          productionPublicClaimServices,
         ).some((violation) => violation.phrase.includes("Signal support claim"))
+        && (await validateVersionedPublicSupportMatrix(supportMatrixWithForgedSignalPublicAvailability)).some(
+          (failure) => failure.expected.includes("Signal.public_claim_allowed=false"),
+        )
+        && exactSignalPublicClaimServices.has("Signal")
         && validateSupportMatrixClaims(
           "self-test/exact-support-evidence",
           [{ text: "Signal is supported for protected messaging.", line: 1 }],
-          new Set(["Signal"]),
+          exactSignalPublicClaimServices,
         ).length === 0,
     },
     {
@@ -4424,6 +4473,16 @@ async function runSelfTest() {
       name: "Block banned Burn and support phrasings",
       passed:
         bannedPhraseInputFailures(bannedPhrases).length === 0
+        && REQUIRED_BURN_BANS.every((phrase) => analyseFragments(
+          "self-test/burn-support-phrasing",
+          [{ text: phrase, line: 1 }],
+          bannedPhrases,
+        ).length > 0)
+        && REQUIRED_SUPPORT_BANS.every((phrase) => analyseFragments(
+          "self-test/burn-support-phrasing",
+          [{ text: phrase, line: 1 }],
+          bannedPhrases,
+        ).length > 0)
         && analyseFragments(
           "self-test/burn-support-phrasing",
           [{ text: "Burn deletes Discord messages.", line: 1 }],

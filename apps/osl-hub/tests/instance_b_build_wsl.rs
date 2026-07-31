@@ -45,6 +45,16 @@ fn repo_root() -> PathBuf {
 fn run_script(script: &Path, arg: &str, envs: &[(&str, &Path)]) -> Output {
     let mut command = Command::new("bash");
     command.arg(script).arg(arg);
+    // The script serialises its build behind the GLOBAL osl-cargo lock. This test
+    // runs under osl-cargo, which already holds that lock, so letting the script
+    // take it deadlocks the whole proof pass. Point it at a per-test lock; the
+    // script's behaviour is unchanged, it just no longer contends with its runner.
+    let isolated_lock = std::env::temp_dir().join(format!(
+        "osl-cargo-test-{}-{}.lock",
+        std::process::id(),
+        arg.replace(['/', ' '], "_")
+    ));
+    command.env("OSL_CARGO_LOCK", &isolated_lock);
     for (key, value) in envs {
         command.env(key, value);
     }
@@ -190,6 +200,17 @@ printf '%s\n' "${TAURI_CONFIG:-}" > target/x86_64-pc-windows-gnu/debug/osl-priva
         .env("FAKE_CARGO_ARGS", &cargo_args)
         .env("FAKE_CARGO_CWD", &cargo_cwd)
         .env("FAKE_TAURI_CONFIG", &tauri_config)
+        // This case builds its own Command instead of going through run_script, so it
+        // needs the isolated lock too. Without it the script takes the GLOBAL
+        // osl-cargo lock that this very test already holds via osl-cargo, and hangs
+        // forever -- even though the build itself is a fake cargo.
+        .env(
+            "OSL_CARGO_LOCK",
+            std::env::temp_dir().join(format!(
+                "osl-cargo-test-{}-distinct.lock",
+                std::process::id()
+            )),
+        )
         .env("PATH", path_value)
         .output()
         .expect("distinct identifier build can be launched");
@@ -250,5 +271,25 @@ printf '%s\n' "${TAURI_CONFIG:-}" > target/x86_64-pc-windows-gnu/debug/osl-priva
             .expect("diffKey is a string")
             .starts_with("OK:org.oslprivacy.hubqab:"),
         "success receipt must be keyed by the B identifier: {distinct_receipt:?}"
+    );
+}
+
+#[test]
+fn frontend_dist_is_embedded_after_frontend_build() {
+    let root = repo_root();
+    let script = root.join("scripts/qa/osl-instance-b-build-wsl.sh");
+    let output = Command::new("bash")
+        .arg(&script)
+        .arg("--self-test")
+        .current_dir(&root)
+        .output()
+        .expect("run instance-B build-order behavior self-test");
+
+    assert!(
+        output.status.success(),
+        "frontend dist build-order self-test failed with status {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
 }

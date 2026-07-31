@@ -275,6 +275,68 @@ describe("Telegram operator webhook route", () => {
     expect(ignoredFetcher).not.toHaveBeenCalled();
   });
 
+  it("Freeze Telegram chat authorization and role separation.", async () => {
+    const viewerChatId = "8876204092";
+
+    const unauthorizedFetcher = outboundFetcher();
+    const unauthorizedResponse = await handleTelegramWebhook(
+      commandRequest("/osl payments", "99112233"),
+      configuredEnv({ TELEGRAM_VIEWER_CHAT_IDS: viewerChatId }),
+      unauthorizedFetcher,
+    );
+    await expectNeutralTelegramAck(unauthorizedResponse);
+    expect(unauthorizedFetcher).not.toHaveBeenCalled();
+
+    const viewerFetcher = outboundFetcher();
+    const viewerResponse = await handleTelegramWebhook(
+      commandRequest("/osl payments", viewerChatId),
+      configuredEnv({ TELEGRAM_VIEWER_CHAT_IDS: viewerChatId }),
+      viewerFetcher,
+    );
+    await expectNeutralTelegramAck(viewerResponse);
+    const viewerCalls = vi.mocked(viewerFetcher).mock.calls;
+    expect(viewerCalls).toHaveLength(1);
+    expect(String(viewerCalls[0]?.[0])).toContain("api.telegram.org");
+    const viewerBody = JSON.parse(String(viewerCalls[0]?.[1]?.body)) as {
+      chat_id: string;
+      text: string;
+    };
+    expect(viewerBody.chat_id).toBe(viewerChatId);
+    expect(viewerBody.text).toContain("OSL live commerce");
+    expect(viewerBody.text).not.toContain("Stripe available");
+    expect(viewerBody.text).not.toContain("Stripe pending");
+
+    const operatorFetcher = outboundFetcher();
+    const operatorResponse = await handleTelegramWebhook(
+      commandRequest("/osl payments", PRIVATE_CHAT_ONE),
+      configuredEnv({ TELEGRAM_VIEWER_CHAT_IDS: viewerChatId }),
+      operatorFetcher,
+    );
+    await expectNeutralTelegramAck(operatorResponse);
+    const operatorCalls = vi.mocked(operatorFetcher).mock.calls;
+    expect(operatorCalls).toHaveLength(2);
+    expect(String(operatorCalls[0]?.[0])).toBe("https://api.stripe.com/v1/balance");
+    const operatorBody = JSON.parse(String(operatorCalls[1]?.[1]?.body)) as {
+      chat_id: string;
+      text: string;
+    };
+    expect(operatorBody.chat_id).toBe(PRIVATE_CHAT_ONE);
+    expect(operatorBody.text).toContain("Stripe available: $12.50");
+
+    const malformedFetcher = outboundFetcher();
+    const malformedResponse = await handleTelegramWebhook(
+      commandRequest("/osl payments", PRIVATE_CHAT_ONE),
+      configuredEnv({
+        TELEGRAM_OPERATOR_CHAT_IDS: "",
+        TELEGRAM_ADMIN_CHAT_ID: ADMIN_CHAT_ID,
+        TELEGRAM_VIEWER_CHAT_IDS: viewerChatId,
+      }),
+      malformedFetcher,
+    );
+    expect(malformedResponse.status).toBe(503);
+    expect(malformedFetcher).not.toHaveBeenCalled();
+  });
+
   it("keeps an operator role when the same chat is also listed as a viewer", async () => {
     const fetcher = outboundFetcher();
     const response = await handleTelegramWebhook(
@@ -502,6 +564,61 @@ describe("Telegram operator webhook route", () => {
     expect(telegramBody.text).toContain("Updated:");
   });
 
+  it("Implement the Telegram /osl command hierarchy with progress and suggestions.", async () => {
+    const helpFetcher = outboundFetcher();
+    const helpResponse = await handleTelegramWebhook(
+      commandRequest("/osl"),
+      configuredEnv(),
+      helpFetcher,
+    );
+    await expectNeutralTelegramAck(helpResponse);
+    const helpBody = JSON.parse(
+      String(vi.mocked(helpFetcher).mock.calls[0]?.[1]?.body),
+    ) as { text: string };
+    expect(helpBody.text).toContain("OSL operator commands");
+    expect(helpBody.text).toContain("/osl status: current coordination state");
+    expect(helpBody.text).toContain("/osl progress: project progress block");
+    expect(helpBody.text).toContain("/osl stats: live commerce summary");
+    expect(helpBody.text).toContain("/osl payments: Stripe and Pro license summary");
+    expect(helpBody.text).toContain("/osl downloads: download requests");
+    expect(helpBody.text).toContain("OSL progress  unavailable");
+    expect(helpBody.text).toContain("ETA: unknown");
+
+    const paymentsFetcher = outboundFetcher();
+    const paymentsResponse = await handleTelegramWebhook(
+      commandRequest("/osl payments"),
+      configuredEnv(),
+      paymentsFetcher,
+    );
+    await expectNeutralTelegramAck(paymentsResponse);
+    expect(paymentsFetcher).toHaveBeenCalledTimes(2);
+    expect(String(vi.mocked(paymentsFetcher).mock.calls[0]?.[0])).toBe(
+      "https://api.stripe.com/v1/balance",
+    );
+    const paymentsBody = JSON.parse(
+      String(vi.mocked(paymentsFetcher).mock.calls[1]?.[1]?.body),
+    ) as { text: string };
+    expect(paymentsBody.text).toContain("Payments:");
+    expect(paymentsBody.text).toContain("Stripe available: $12.50");
+    expect(paymentsBody.text).toContain("OSL progress  unavailable");
+
+    const typoFetcher = outboundFetcher();
+    const typoResponse = await handleTelegramWebhook(
+      commandRequest("/osl paymnts secret-extra"),
+      configuredEnv(),
+      typoFetcher,
+    );
+    await expectNeutralTelegramAck(typoResponse);
+    const typoBody = JSON.parse(
+      String(vi.mocked(typoFetcher).mock.calls[0]?.[1]?.body),
+    ) as { text: string };
+    expect(typoBody.text).toContain("Unknown /osl command.");
+    expect(typoBody.text).toContain("Suggestion: /osl payments");
+    expect(typoBody.text).toContain("OSL progress  unavailable");
+    expect(typoBody.text).not.toContain("paymnts");
+    expect(typoBody.text).not.toContain("secret-extra");
+  });
+
   it("maps /osl report subcommands to existing reports and appends progress", async () => {
     const fetcher = outboundFetcher();
     const response = await handleTelegramWebhook(
@@ -560,10 +677,50 @@ describe("Telegram operator webhook route", () => {
   });
 
   it("telegram'", async () => {
+    const hierarchyFetcher = outboundFetcher();
+    const hierarchyResponse = await handleTelegramWebhook(
+      commandRequest("/osl"),
+      configuredEnv(),
+      hierarchyFetcher,
+    );
+
+    await expectNeutralTelegramAck(hierarchyResponse);
+    expect(hierarchyFetcher).toHaveBeenCalledTimes(1);
+    const hierarchyBody = JSON.parse(
+      String(vi.mocked(hierarchyFetcher).mock.calls[0]?.[1]?.body),
+    ) as { chat_id: string; text: string };
+    expect(hierarchyBody.chat_id).toBe(ADMIN_CHAT_ID);
+    expect(hierarchyBody.text).toContain("OSL operator commands");
+    expect(hierarchyBody.text).toContain("/osl status: current coordination state");
+    expect(hierarchyBody.text).toContain("/osl progress: project progress block");
+    expect(hierarchyBody.text).toContain("/osl stats: live commerce summary");
+    expect(hierarchyBody.text).toContain("/osl payments: Stripe and Pro license summary");
+    expect(hierarchyBody.text).toContain("/osl downloads: download requests");
+    expect(hierarchyBody.text).toContain("OSL progress  unavailable");
+
+    const progressFetcher = outboundFetcher();
+    const progressResponse = await handleTelegramWebhook(
+      commandRequest("/osl progress"),
+      configuredEnv(),
+      progressFetcher,
+    );
+
+    await expectNeutralTelegramAck(progressResponse);
+    expect(progressFetcher).toHaveBeenCalledTimes(1);
+    const progressBody = JSON.parse(
+      String(vi.mocked(progressFetcher).mock.calls[0]?.[1]?.body),
+    ) as { chat_id: string; text: string };
+    expect(progressBody.chat_id).toBe(ADMIN_CHAT_ID);
+    expect(progressBody.text).toContain("OSL progress  unavailable");
+    expect(progressBody.text).toContain("ETA: unknown");
+    expect(progressBody.text).toContain("Updated:");
+    expect(progressBody.text).not.toContain("OSL operator commands");
+
     const acceptedFetcher = outboundFetcher();
     const badSecretFetcher = outboundFetcher();
     const wrongChatFetcher = outboundFetcher();
     const malformedFetcher = outboundFetcher();
+    const invalidJsonFetcher = outboundFetcher();
     const acceptedResponse = await handleTelegramWebhook(
       commandRequest("/downloads", ADMIN_CHAT_ID),
       configuredEnv(),
@@ -584,18 +741,32 @@ describe("Telegram operator webhook route", () => {
       configuredEnv(),
       malformedFetcher,
     );
+    const invalidJsonResponse = await handleTelegramWebhook(
+      new Request("https://keyserver.test/v1/telegram/webhook", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-telegram-bot-api-secret-token": WEBHOOK_SECRET,
+        },
+        body: "{\"message\":",
+      }),
+      configuredEnv(),
+      invalidJsonFetcher,
+    );
 
     expect([
       acceptedResponse.status,
       badSecretResponse.status,
       wrongChatResponse.status,
       malformedResponse.status,
-    ]).toEqual([200, 200, 200, 200]);
+      invalidJsonResponse.status,
+    ]).toEqual([200, 200, 200, 200, 200]);
     const ackBodies = await Promise.all([
       acceptedResponse.text(),
       badSecretResponse.text(),
       wrongChatResponse.text(),
       malformedResponse.text(),
+      invalidJsonResponse.text(),
     ]);
     expect(new Set(ackBodies).size).toBe(1);
     expect(JSON.parse(ackBodies[0] ?? "")).toEqual({ ok: true });
@@ -603,6 +774,7 @@ describe("Telegram operator webhook route", () => {
     expect(badSecretFetcher).not.toHaveBeenCalled();
     expect(wrongChatFetcher).not.toHaveBeenCalled();
     expect(malformedFetcher).not.toHaveBeenCalled();
+    expect(invalidJsonFetcher).not.toHaveBeenCalled();
 
     const typoFetcher = outboundFetcher();
     const typoResponse = await handleTelegramWebhook(
@@ -641,5 +813,123 @@ describe("Telegram operator webhook route", () => {
     expect(controlBody.text).toContain("Try /osl status");
     expect(controlBody.text).toContain("OSL progress  unavailable");
     expect(controlBody.text).not.toContain("owner-secret");
+  });
+
+  it("keeps /osl payments viewer reports aggregate-only while operators retain balance authority", async () => {
+    const viewerChatId = "8876204092";
+    const viewerFetcher = outboundFetcher();
+    const viewerResponse = await handleTelegramWebhook(
+      commandRequest("/osl payments", viewerChatId),
+      configuredEnv({ TELEGRAM_VIEWER_CHAT_IDS: viewerChatId }),
+      viewerFetcher,
+    );
+
+    await expectNeutralTelegramAck(viewerResponse);
+    expect(viewerFetcher).toHaveBeenCalledTimes(1);
+    expect(String(vi.mocked(viewerFetcher).mock.calls[0]?.[0])).toContain(
+      "api.telegram.org/bot",
+    );
+    const viewerBody = JSON.parse(
+      String(vi.mocked(viewerFetcher).mock.calls[0]?.[1]?.body),
+    ) as { chat_id: string; text: string };
+    expect(viewerBody.chat_id).toBe(viewerChatId);
+    expect(viewerBody.text).toContain("OSL live commerce");
+    expect(viewerBody.text).not.toContain("Stripe available");
+    expect(viewerBody.text).not.toContain("Stripe pending");
+
+    const statusFetcher = outboundFetcher();
+    const statusResponse = await handleTelegramWebhook(
+      commandRequest("/osl status", viewerChatId),
+      configuredEnv({ TELEGRAM_VIEWER_CHAT_IDS: viewerChatId }),
+      statusFetcher,
+    );
+
+    await expectNeutralTelegramAck(statusResponse);
+    const statusBody = JSON.parse(
+      String(vi.mocked(statusFetcher).mock.calls[0]?.[1]?.body),
+    ) as { chat_id: string; text: string };
+    expect(statusBody.chat_id).toBe(viewerChatId);
+    expect(statusBody.text).toContain("Authorized chat role: viewer");
+    expect(statusBody.text).toContain("Coordination controls: unavailable");
+
+    const operatorFetcher = outboundFetcher();
+    const operatorResponse = await handleTelegramWebhook(
+      commandRequest("/osl payments", PRIVATE_CHAT_ONE),
+      configuredEnv({ TELEGRAM_VIEWER_CHAT_IDS: viewerChatId }),
+      operatorFetcher,
+    );
+
+    await expectNeutralTelegramAck(operatorResponse);
+    expect(operatorFetcher).toHaveBeenCalledTimes(2);
+    expect(String(vi.mocked(operatorFetcher).mock.calls[0]?.[0])).toBe(
+      "https://api.stripe.com/v1/balance",
+    );
+    const operatorBody = JSON.parse(
+      String(vi.mocked(operatorFetcher).mock.calls[1]?.[1]?.body),
+    ) as { chat_id: string; text: string };
+    expect(operatorBody.chat_id).toBe(PRIVATE_CHAT_ONE);
+    expect(operatorBody.text).toContain("Stripe available: $12.50");
+
+    const ignoredFetcher = outboundFetcher();
+    const ignoredResponse = await handleTelegramWebhook(
+      commandRequest("/osl payments", "99112233"),
+      configuredEnv({ TELEGRAM_VIEWER_CHAT_IDS: viewerChatId }),
+      ignoredFetcher,
+    );
+
+    await expectNeutralTelegramAck(ignoredResponse);
+    expect(ignoredFetcher).not.toHaveBeenCalled();
+  });
+
+  it("keeps /osl help and owner-binding refusals free of user-supplied text", async () => {
+    const helpFetcher = outboundFetcher();
+    const helpResponse = await handleTelegramWebhook(
+      commandRequest("/osl"),
+      configuredEnv(),
+      helpFetcher,
+    );
+
+    await expectNeutralTelegramAck(helpResponse);
+    const helpBody = JSON.parse(
+      String(vi.mocked(helpFetcher).mock.calls[0]?.[1]?.body),
+    ) as { text: string };
+    expect(helpBody.text).toContain("OSL operator commands");
+    expect(helpBody.text).toContain("/osl status: current coordination state");
+    expect(helpBody.text).toContain("/osl progress: project progress block");
+    expect(helpBody.text).toContain("/osl on|off|quiet|bind|unbind");
+    expect(helpBody.text).toContain("OSL progress  unavailable");
+    expect(helpBody.text).toContain("ETA: unknown");
+
+    const typoFetcher = outboundFetcher();
+    const typoResponse = await handleTelegramWebhook(
+      commandRequest("/osl paymnts secret-extra"),
+      configuredEnv(),
+      typoFetcher,
+    );
+
+    await expectNeutralTelegramAck(typoResponse);
+    const typoBody = JSON.parse(
+      String(vi.mocked(typoFetcher).mock.calls[0]?.[1]?.body),
+    ) as { text: string };
+    expect(typoBody.text).toContain("Unknown /osl command.");
+    expect(typoBody.text).toContain("Suggestion: /osl payments");
+    expect(typoBody.text).not.toContain("paymnts");
+    expect(typoBody.text).not.toContain("secret-extra");
+
+    const controlFetcher = outboundFetcher();
+    const controlResponse = await handleTelegramWebhook(
+      commandRequest("/osl quiet target-chat"),
+      configuredEnv(),
+      controlFetcher,
+    );
+
+    await expectNeutralTelegramAck(controlResponse);
+    const controlBody = JSON.parse(
+      String(vi.mocked(controlFetcher).mock.calls[0]?.[1]?.body),
+    ) as { text: string };
+    expect(controlBody.text).toContain("Cannot change /osl coordination state here.");
+    expect(controlBody.text).toContain("Owner binding is required");
+    expect(controlBody.text).not.toContain("target-chat");
+    expect(controlBody.text).toContain("Try /osl status");
   });
 });

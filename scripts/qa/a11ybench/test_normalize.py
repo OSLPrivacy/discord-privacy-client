@@ -62,7 +62,15 @@ class ProviderFingerprintNormalizationTests(unittest.TestCase):
 
 def normalize_provider_fingerprints_for_signed_profiles() -> None:
     fingerprint = bytes.fromhex(FINGERPRINT_HEX)
+    urlsafe_fingerprint = bytes.fromhex(
+        "fbff00112233445566778899aabbccdd"
+        "eeff102132435465768798a9babbdcdd"
+    )
+    urlsafe_hex = urlsafe_fingerprint.hex()
     signed_profile_urlsafe = base64.urlsafe_b64encode(fingerprint).decode("ascii").rstrip("=")
+    signed_profile_urlsafe_with_alt_alphabet = (
+        base64.urlsafe_b64encode(urlsafe_fingerprint).decode("ascii").rstrip("=")
+    )
     signed_profile_wrapped = "\n  ".join(
         base64.b64encode(fingerprint).decode("ascii")[index : index + 16]
         for index in range(0, 44, 16)
@@ -76,6 +84,14 @@ def normalize_provider_fingerprints_for_signed_profiles() -> None:
     testcase.assertEqual(
         NORMALIZE.normalize_provider_fingerprint(f"SHA256={signed_profile_urlsafe}"),
         FINGERPRINT_HEX,
+    )
+    testcase.assertIn("-", signed_profile_urlsafe_with_alt_alphabet)
+    testcase.assertIn("_", signed_profile_urlsafe_with_alt_alphabet)
+    testcase.assertEqual(
+        NORMALIZE.normalize_provider_fingerprint(
+            f"SHA256:{signed_profile_urlsafe_with_alt_alphabet}"
+        ),
+        urlsafe_hex,
     )
     testcase.assertEqual(
         NORMALIZE.normalize_provider_fingerprint(f"sha256:{signed_profile_wrapped}"),
@@ -93,6 +109,9 @@ def normalize_provider_fingerprints_for_signed_profiles() -> None:
     testcase.assertIn("provider fingerprint", reason)
     testcase.assertNotIn("alice@example.test", reason)
     testcase.assertNotIn("bad", reason)
+
+    with testcase.assertRaises(NORMALIZE.NormalizationError):
+        NORMALIZE.normalize_provider_fingerprint(f"sha256:{signed_profile_urlsafe}!")
 
 
 normalize_provider_fingerprints_for_signed_profiles.__name__ = (

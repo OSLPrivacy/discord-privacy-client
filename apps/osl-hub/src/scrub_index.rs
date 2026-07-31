@@ -25,6 +25,7 @@ const JOURNAL_RESERVE_BYTES: u64 = 512 * 1024;
 const MAX_SELECTIONS: usize = 32;
 const MAX_MESSAGES_PER_CHUNK: usize = 256;
 const MAX_PLAINTEXT_CHUNK_BYTES: usize = 2 * 1024 * 1024;
+const MAX_SEALED_CHUNK_BYTES: u64 = (MAX_PLAINTEXT_CHUNK_BYTES + 4 * 1024) as u64;
 const MAX_CHUNKS: usize = 4_096;
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -95,20 +96,6 @@ pub struct ScrubIndexManifest {
     pub next_sequence: u32,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ScrubIndexScan {
-    pub import_id: String,
-    pub phase: ScrubIndexPhase,
-    pub messages_indexed: u64,
-    pub findings_indexed: u64,
-    pub rejected_messages: u64,
-    pub completed_chunks: u32,
-    pub analysis_location: &'static str,
-    pub persisted_encrypted: bool,
-    pub deletion_enabled: bool,
-}
-
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct JournalDocument {
@@ -133,6 +120,15 @@ struct StoredChunk<'a> {
     import_id: &'a str,
     sequence: u32,
     messages: &'a [LocalMessageCandidate],
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredChunkDocument {
+    version: u8,
+    import_id: String,
+    sequence: u32,
+    messages: Vec<LocalMessageCandidate>,
 }
 
 #[derive(Clone, Default)]
@@ -225,17 +221,24 @@ impl ScrubIndexState {
         Ok(Some(document.manifest()))
     }
 
-    pub fn get_scrub_index_scan(&self, owner: &str) -> Result<Option<ScrubIndexScan>, String> {
+    pub fn get_scrub_index_scan(
+        &self,
+        owner: &str,
+        import_id: &str,
+    ) -> Result<Option<LocalPrivacyScanResult>, String> {
         let _guard = self.lock()?;
         validate_owner(owner)?;
+        validate_import_id(import_id)?;
         let root = self.root()?;
         ensure_safe_root(&root, false)?;
-        let Some(document) = load_journal(&root, &self.key()?)? else {
+        let key = self.key()?;
+        let Some(document) = load_journal(&root, &key)? else {
             return Ok(None);
         };
         require_owner(&document, owner)?;
+        require_import(&document, import_id)?;
         recover_orphans(&root, document.next_sequence)?;
-        Ok(Some(document.scan()))
+        Ok(Some(load_persisted_scan(&root, &document, &key)?))
     }
 
     pub fn append_chunk(
@@ -487,20 +490,6 @@ impl JournalDocument {
         }
     }
 
-    fn scan(&self) -> ScrubIndexScan {
-        ScrubIndexScan {
-            import_id: self.import_id.clone(),
-            phase: self.phase,
-            messages_indexed: self.messages_indexed,
-            findings_indexed: self.findings_indexed,
-            rejected_messages: self.rejected_messages,
-            completed_chunks: self.next_sequence,
-            analysis_location: "this_device_only",
-            persisted_encrypted: true,
-            deletion_enabled: false,
-        }
-    }
-
     fn status(&self) -> ScrubIndexStatus {
         ScrubIndexStatus {
             import_id: self.import_id.clone(),
@@ -665,6 +654,60 @@ fn require_import(document: &JournalDocument, import_id: &str) -> Result<(), Str
     } else {
         Err("Scrub import identifier does not match".into())
     }
+}
+
+fn load_persisted_scan(
+    root: &Path,
+    document: &JournalDocument,
+    key: &[u8; 32],
+) -> Result<LocalPrivacyScanResult, String> {
+    let mut output = LocalPrivacyScanResult {
+        findings: Vec::new(),
+        messages_scanned: 0,
+        messages_rejected: 0,
+        truncated: false,
+        analysis_location: "this_device_only",
+        persisted: true,
+    };
+    for sequence in 0..document.next_sequence {
+        let sealed = crate::atomic_file::read_recoverable_bounded(
+            &chunk_path(root, sequence),
+            MAX_SEALED_CHUNK_BYTES,
+            "encrypted Scrub chunk",
+        )?
+        .ok_or_else(|| "Scrub chunk is missing".to_owned())?;
+        if !ipc::main_password::has_enc_magic(&sealed) {
+            return Err("Scrub chunk is not encrypted".into());
+        }
+        let mut plain = ipc::main_password::decrypt_at_rest(&sealed, key)
+            .map_err(|_| "Scrub chunk authentication failed".to_owned())?;
+        if plain.len() > MAX_PLAINTEXT_CHUNK_BYTES {
+            plain.zeroize();
+            return Err("Scrub chunk exceeds its local limit".into());
+        }
+        let parsed = serde_json::from_slice::<StoredChunkDocument>(&plain)
+            .map_err(|_| "Scrub chunk is malformed".to_owned());
+        plain.zeroize();
+        let chunk = parsed?;
+        if chunk.version != VERSION
+            || chunk.import_id != document.import_id
+            || chunk.sequence != sequence
+        {
+            return Err("Scrub chunk does not match the active import".into());
+        }
+        let scan = scan_local_messages(chunk.messages);
+        output.messages_scanned = output.messages_scanned.saturating_add(scan.messages_scanned);
+        output.messages_rejected = output.messages_rejected.saturating_add(scan.messages_rejected);
+        output.truncated |= scan.truncated;
+        for finding in scan.findings {
+            if output.findings.len() >= MAX_FINDINGS {
+                output.truncated = true;
+                break;
+            }
+            output.findings.push(finding);
+        }
+    }
+    Ok(output)
 }
 
 fn digest_request(request: &ScrubIndexChunkRequest) -> Result<String, String> {
@@ -1041,16 +1084,18 @@ mod tests {
                 version: manifest.version,
             }
         );
-        let scan = reopened.get_scrub_index_scan(OWNER).unwrap().unwrap();
-        assert_eq!(scan.import_id, manifest.import_id);
-        assert_eq!(scan.messages_indexed, 1);
-        assert!(scan.findings_indexed >= 1);
-        assert_eq!(scan.rejected_messages, 0);
-        assert_eq!(scan.completed_chunks, 1);
+        let scan = reopened
+            .get_scrub_index_scan(OWNER, &manifest.import_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(scan.messages_scanned, 1);
+        assert!(!scan.findings.is_empty());
+        assert_eq!(scan.messages_rejected, 0);
         assert_eq!(scan.analysis_location, "this_device_only");
-        assert!(scan.persisted_encrypted);
-        assert!(!scan.deletion_enabled);
-        assert!(reopened.get_scrub_index_scan(&"f".repeat(64)).is_err());
+        assert!(scan.persisted);
+        assert!(reopened
+            .get_scrub_index_scan(&"f".repeat(64), &manifest.import_id)
+            .is_err());
     }
 
     #[test]

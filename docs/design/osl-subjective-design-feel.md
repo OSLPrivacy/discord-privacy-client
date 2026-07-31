@@ -42,7 +42,7 @@ This contract is user-facing behavior, not copy decoration. A design that teache
 the user protocol, storage, automation, transport or service-plumbing concepts in
 order to operate OSL violates the design feel even if the underlying feature works.
 
-## Freeze the user-facing complexity-hiding product contract.
+## Freeze the user-facing complexity-hiding product contract
 
 This acceptance test passes only when a proposed user-facing surface preserves the
 contract above:
@@ -66,3 +66,123 @@ contract above:
 Mentally invert the behavior before accepting a design: if replacing the product
 nouns with implementation machinery would still pass review, the test is
 vacuous and the design does not satisfy this contract.
+
+The same document-level test keeps implementation machinery behind the product
+model in concrete candidate surfaces:
+
+| Candidate surface | Expected verdict | Product behavior under test |
+|---|---|---|
+| Main navigation item named `Private conversations` | Pass | The user chooses a product destination, not a protocol or connector layer. |
+| Send warning saying `This conversation is not ready for protected send. Verify the person before sending protected content.` | Pass | The UI gives a plain consequence and a next safe action. |
+| Status label saying `Result unknown` after an unverified cleanup attempt | Pass | Uncertainty remains explicit instead of being promoted to success. |
+| Onboarding choice named `Select a provider adapter` | Fail | The user must understand implementation machinery before acting. |
+| Warning label saying `Ratchet receipt missing; inspect browser profile` | Fail | The UI exposes transport, receipt and profile machinery instead of a product consequence. |
+
+The negative fixtures must be refused even if the underlying implementation is
+complete. The positive fixtures must remain acceptable even if the connector,
+storage or protocol implementation changes.
+
+## Machine-readable product-contract acceptance fixtures
+
+```json
+{
+  "schema": "osl-subjective-design-feel-contract-v1",
+  "unit": "j1",
+  "contract": "complexity-hiding-product-model",
+  "allowed_product_nouns": [
+    "protection state",
+    "trusted people",
+    "connected accounts",
+    "private conversations",
+    "cleanup actions",
+    "activity history"
+  ],
+  "banned_user_facing_concepts": [
+    "keyservers",
+    "ratchets",
+    "receipts",
+    "browser profiles",
+    "provider adapters",
+    "protocol state",
+    "storage layout",
+    "automation internals",
+    "transport plumbing",
+    "service-adapter mechanics"
+  ],
+  "cases": [
+    {
+      "name": "product navigation choices",
+      "surface": "navigation",
+      "visible_choices": [
+        "protection state",
+        "trusted people",
+        "connected accounts",
+        "private conversations",
+        "cleanup actions",
+        "activity history"
+      ],
+      "main_screen_answer": "Protection is ready for this private conversation.",
+      "expected": "pass"
+    },
+    {
+      "name": "implementation navigation choices",
+      "surface": "navigation",
+      "visible_choices": [
+        "keyservers",
+        "ratchets",
+        "browser profiles",
+        "provider adapters"
+      ],
+      "main_screen_answer": "Select the ratchet state before sending.",
+      "expected": "fail"
+    },
+    {
+      "name": "plain refusal with safe action",
+      "surface": "warning",
+      "main_screen_answer": "Protected send is not ready for this conversation.",
+      "refusal": {
+        "consequence": "Protected send is not ready for this conversation.",
+        "safe_action": "Verify the person or send normally."
+      },
+      "expected": "pass"
+    },
+    {
+      "name": "mechanism refusal",
+      "surface": "warning",
+      "main_screen_answer": "Ratchet receipt is missing for this provider adapter.",
+      "refusal": {
+        "consequence": "Ratchet receipt is missing for this provider adapter.",
+        "safe_action": "Open protocol diagnostics."
+      },
+      "expected": "fail"
+    },
+    {
+      "name": "secondary support export",
+      "surface": "advanced-support-export",
+      "main_screen_answer": "The result is unknown. Review the latest activity or try again.",
+      "support_export": {
+        "machine_fields_secondary": true,
+        "fields": [
+          "protocol state",
+          "storage layout",
+          "transport plumbing"
+        ]
+      },
+      "expected": "pass"
+    },
+    {
+      "name": "support fields replace main answer",
+      "surface": "main-screen-status",
+      "main_screen_answer": "Protocol state blocked by storage layout.",
+      "support_export": {
+        "machine_fields_secondary": false,
+        "fields": [
+          "protocol state",
+          "storage layout"
+        ]
+      },
+      "expected": "fail"
+    }
+  ]
+}
+```

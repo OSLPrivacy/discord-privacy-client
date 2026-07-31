@@ -323,6 +323,12 @@ describe("bundled preview security boundary", () => {
       "allow-native-app-takeover-requires-consent",
       "allow-discord-marker-available",
       "allow-install-native-app",
+      "allow-claim-whatsapp-qa-window",
+      "allow-resize-whatsapp-qa-window",
+      "allow-get-whatsapp-qa-protection-status",
+      "allow-begin-whatsapp-visual-binding",
+      "allow-confirm-whatsapp-visual-binding",
+      "allow-open-whatsapp-qa-protected-text",
       "allow-get-mullvad-status",
       "allow-install-mullvad",
       "allow-open-mullvad",
@@ -442,6 +448,12 @@ describe("bundled preview security boundary", () => {
       ["allow-copy-hub-friend-invite", "copy_hub_friend_invite"],
       ["allow-native-app-takeover-requires-consent", "native_app_takeover_requires_consent"],
       ["allow-discord-marker-available", "discord_marker_available"],
+      ["allow-claim-whatsapp-qa-window", "claim_whatsapp_qa_window"],
+      ["allow-resize-whatsapp-qa-window", "resize_whatsapp_qa_window"],
+      ["allow-get-whatsapp-qa-protection-status", "get_whatsapp_qa_protection_status"],
+      ["allow-begin-whatsapp-visual-binding", "begin_whatsapp_visual_binding"],
+      ["allow-confirm-whatsapp-visual-binding", "confirm_whatsapp_visual_binding"],
+      ["allow-open-whatsapp-qa-protected-text", "open_whatsapp_qa_protected_text"],
       ["allow-remove-hub-friend", "remove_hub_friend"],
     ] as const) {
       expect(handler).toContain(`${command},`);
@@ -1051,6 +1063,7 @@ describe("bundled preview security boundary", () => {
     expect(productionUsesRemoteWrappedKeyUpload(productionRust)).toBe(true);
     expect(productionUsesRemoteWrappedKeyUpload(security)).toBe(false);
     expect(productionUsesRemoteWrappedKeyUpload(commands)).toBe(true);
+    expect(commandsProduction).toContain("post_wrapped_key_before_producing_link");
     expect(productionUsesRemoteWrappedKeyUpload(applyBurnBody)).toBe(false);
     expect(rustProductionPrefix(productionRust)).toMatch(/\.fetch_wrapped_key\s*\(/u);
 
@@ -1212,6 +1225,12 @@ describe("bundled preview security boundary", () => {
     );
 
     expect(productionUsesKeyserverBurn(productionRust)).toBe(true);
+    expect(rustProductionPrefix(commands)).toContain(
+      "fn burn_wrapped_keys_for_peer(",
+    );
+    expect(rustProductionPrefix(commands)).toContain(
+      "post_burn_control_and_delete_wrapped_keys",
+    );
 
     const commandProduction = rustProductionPrefix(commands);
     const keyserverBurnBody =
@@ -1276,6 +1295,7 @@ describe("bundled preview security boundary", () => {
     const commands = readRelative("../../../crates/ipc/src/commands.rs");
     const state = readRelative("../../../crates/ipc/src/state.rs");
     const wire = readRelative("../../../crates/ipc/src/wire_v2.rs");
+    const wireRn = readRelative("../../../crates/ipc/src/wire_rn.rs");
     const productionRust = [
       readProductionRustTree("../../osl-hub/src/"),
       readProductionRustTree("../../../crates/ipc/src/"),
@@ -1346,9 +1366,8 @@ describe("bundled preview security boundary", () => {
     expect(commands).toContain("pub fn run_prekey_replenishment_tick(");
     expect(commands).toContain("client\n                .replenish_using_state(");
     expect(commands).toContain("crate::wire_rn::RN_WIRE_IN_ENABLED");
-    const wireRnProduction = rustProductionPrefix(
-      readRelative("../../../crates/ipc/src/wire_rn.rs"),
-    );
+    const wireRnProduction = rustProductionPrefix(wireRn);
+    expect(wireRnProduction).toMatch(/\bconsume_opk\s*\(/u);
     expect(wireRnProduction).toContain("prekeys.consume_opk(opk_id)");
     expect(wireRnProduction).toContain(
       "accept_b5_prekey_state_and_persist_with_sealer",
@@ -1776,6 +1795,12 @@ describe("bundled preview security boundary", () => {
     );
 
     expect(productionReferencesLegacyDuress(productionRust)).toBe(true);
+    expect(rustProductionPrefix(productionRust)).toContain(
+      "production_duress_engine",
+    );
+    expect(rustProductionPrefix(productionRust)).toContain(
+      "execute_production_duress",
+    );
 
     // Positive controls for the separate, reachable Hub password gate and the
     // now-live production duress engine.

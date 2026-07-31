@@ -10,7 +10,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 from audit_reproducible_build import audit_workflow as audit_reproducible_build_workflow
 
 
@@ -48,6 +50,13 @@ def require_before(text: str, earlier: str, later: str, message: str) -> None:
     require(earlier_index >= 0 and later_index >= 0 and earlier_index < later_index, message)
 
 
+def require_not_before(text: str, needle: str, boundary: str, message: str) -> None:
+    needle_index = text.find(needle)
+    boundary_index = text.find(boundary)
+    require(boundary_index >= 0, message)
+    require(needle_index < 0 or boundary_index < needle_index, message)
+
+
 def audit_release_policy(
     workflow: str,
     promotion: str,
@@ -82,6 +91,14 @@ def audit_release_policy(
                    "Audit OSL Privacy updater supply-chain policy",
                    "Build signed draft installer and updater manifest",
                    "OSL Privacy supply-chain audit must run before candidate signing")
+    require_before(workflow,
+                   "Audit OSL Privacy updater supply-chain policy",
+                   "tauri-apps/tauri-action@",
+                   "OSL Privacy supply-chain audit must run before the signing action")
+    require_not_before(workflow,
+                       "HUB_TAURI_SIGNING_PRIVATE_KEY",
+                       "Audit OSL Privacy updater supply-chain policy",
+                       "OSL Privacy signing secret must not be reachable before the supply-chain audit")
 
     require("on:\n  workflow_dispatch:" in promotion,
             "OSL Privacy promotion must be a separate manual workflow")
@@ -147,6 +164,7 @@ jobs:
           python scripts/audit_hub_release.py
           python -m unittest scripts/audit_hub_release.py
       - name: Build signed draft installer and updater manifest
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.HUB_TAURI_SIGNING_PRIVATE_KEY }}
         with:
@@ -200,6 +218,16 @@ jobs:
         workflow, promotion, hub, original, root = self.fixture()
         workflow = workflow + "\n      - run: gh release upload hub-latest latest.json"
         with self.assertRaises(SystemExit):
+            audit_release_policy(workflow, promotion, hub, original, root)
+
+    def test_refuses_release_supply_chain_drift_before_any_candidate_is_signed(self) -> None:
+        workflow, promotion, hub, original, root = self.fixture()
+        workflow = workflow.replace(
+            "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5",
+            "actions/checkout@v4",
+        )
+
+        with self.assertRaisesRegex(SystemExit, "full commit SHAs"):
             audit_release_policy(workflow, promotion, hub, original, root)
 
 
@@ -269,6 +297,22 @@ def _scripts_audit_hub_release_py(self: HubReleaseAuditTests) -> None:
             original,
             root,
             "must not share an updater signing key",
+        ),
+        (
+            workflow.replace(
+                "      - name: Resolve and verify the app release version\n",
+                """      - name: Preload hub signing secret too early
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.HUB_TAURI_SIGNING_PRIVATE_KEY }}
+        run: echo preflight
+      - name: Resolve and verify the app release version
+""",
+            ),
+            promotion,
+            hub,
+            original,
+            root,
+            "signing secret must not be reachable before the supply-chain audit",
         ),
     ]
     for *mutant, expected in mutants:

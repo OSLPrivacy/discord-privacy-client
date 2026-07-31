@@ -105,6 +105,27 @@ export interface HubIdentityCreation { identity: HubIdentitySlot; identityRecove
 export interface ScopeSecurity { storageKey: string; ttlSeconds: number; decryptDisplayEnabled: boolean; }
 export interface HubPersonWhitelistScope { kind: "dm" | "group" | "channel" | "space"; contextId: string | null; storageKey: string; userSpecific: boolean; }
 export interface HubPerson { personId: string; oslUserId: string; alias: string | null; safetyNumber: string; safetyNumberVerified: boolean; whitelistCount: number; whitelistedScopes: HubPersonWhitelistScope[]; whitelistedScopesTruncated: boolean; pendingKeyChange: boolean; reachBroadened: boolean; reachBroadenedAt: string | null; reachNarrowedScopes: string[]; }
+export interface HubUsernameClaim { username: string; oslUserId: string; }
+export interface HubAddFriendResult {
+  disposition: "added" | "already_added" | "updated";
+  personId: string;
+  oslUserId: string;
+  safetyNumber: string;
+  codeSignatureValid: true;
+  safetyNumberVerified: false;
+}
+export type OslProfileFrame = "none" | "thin" | "double" | "glow";
+export type OslProfileEffect = "none" | "gradient" | "pulse" | "shimmer";
+export interface OslProfile {
+  displayName: string;
+  usernameCandidate: string;
+  avatar: string | null;
+  accentColor: string;
+  bannerColor: string;
+  frame: OslProfileFrame;
+  effect: OslProfileEffect;
+  status: string;
+}
 export interface HubFullCleanupResult {
   localCleanupComplete: boolean;
   removedTargets: string[];
@@ -157,6 +178,9 @@ export interface LocalPrivacyScanResult {
   truncated: boolean;
   analysisLocation: "this_device_only";
   persisted: false;
+}
+export interface PersistedLocalPrivacyScanResult extends Omit<LocalPrivacyScanResult, "persisted"> {
+  persisted: true;
 }
 export interface ReviewedItemIdentity {
   reviewId: string;
@@ -788,6 +812,59 @@ export function parseHubPerson(raw: unknown): HubPerson | null {
   return { ...raw, whitelistedScopes } as unknown as HubPerson;
 }
 
+export function isNormalizedOslUsername(value: unknown): value is string {
+  return typeof value === "string" && /^[a-z0-9](?:[a-z0-9_]{1,28}[a-z0-9])$/u.test(value);
+}
+
+export function parseHubUsernameClaim(raw: unknown): HubUsernameClaim | null {
+  if (!isRecord(raw) || !exact(raw, ["username", "oslUserId"])) return null;
+  if (!isNormalizedOslUsername(raw.username) || !safePlaintext(raw.oslUserId, 180)) return null;
+  return raw as unknown as HubUsernameClaim;
+}
+
+export function parseHubAddFriendResult(raw: unknown): HubAddFriendResult | null {
+  if (!isRecord(raw) || !exact(raw, ["disposition", "personId", "oslUserId", "safetyNumber", "codeSignatureValid", "safetyNumberVerified"])) return null;
+  if (!["added", "already_added", "updated"].includes(String(raw.disposition))
+    || !safePlaintext(raw.personId, 180)
+    || !safePlaintext(raw.oslUserId, 180)
+    || !safePlaintext(raw.safetyNumber, 180)
+    || raw.codeSignatureValid !== true
+    || raw.safetyNumberVerified !== false) return null;
+  return raw as unknown as HubAddFriendResult;
+}
+
+export async function claimOslUsername(username: string): Promise<HubUsernameClaim | null> {
+  if (!isTauriRuntime() || !isNormalizedOslUsername(username)) return null;
+  try {
+    const parsed = parseHubUsernameClaim(await invoke<unknown>("claim_hub_username", { username }));
+    return checkedBackendResponse("claim_hub_username",
+      parsed?.username === username ? parsed : null,
+      "the username claim did not match the expected shape");
+  } catch (error) { recordBackendFailure("claim_hub_username", error); return null; }
+}
+
+export async function addOslFriendByUsername(username: string, alias: string): Promise<HubAddFriendResult | null> {
+  if (!isTauriRuntime() || !isNormalizedOslUsername(username) || !validFriendNickname(alias)) return null;
+  try {
+    return checkedBackendResponse("add_hub_friend_by_username",
+      parseHubAddFriendResult(await invoke<unknown>("add_hub_friend_by_username", { username, alias })),
+      "the username friend result did not match the expected shape");
+  } catch (error) { recordBackendFailure("add_hub_friend_by_username", error, [alias]); return null; }
+}
+
+export function parseOslProfile(raw: unknown): OslProfile | null {
+  if (!isRecord(raw) || !exact(raw, ["displayName", "usernameCandidate", "avatar", "accentColor", "bannerColor", "frame", "effect", "status"])) return null;
+  if (!boundedProfileText(raw.displayName, 64, 192, false)
+    || !isNormalizedOslUsername(raw.usernameCandidate)
+    || !(raw.avatar === null || validProfileAvatar(raw.avatar))
+    || !validHexColor(raw.accentColor)
+    || !validHexColor(raw.bannerColor)
+    || !["none", "thin", "double", "glow"].includes(String(raw.frame))
+    || !["none", "gradient", "pulse", "shimmer"].includes(String(raw.effect))
+    || !boundedProfileText(raw.status, 160, 512, true)) return null;
+  return raw as unknown as OslProfile;
+}
+
 function parseHubPersonWhitelistScope(raw: unknown): HubPersonWhitelistScope | null {
   if (!isRecord(raw) || !exact(raw, ["kind", "contextId", "storageKey", "userSpecific"])) return null;
   if (!["dm", "group", "channel", "space"].includes(String(raw.kind))) return null;
@@ -801,6 +878,38 @@ function validFriendNickname(value: string): boolean {
   return new TextEncoder().encode(value).length <= 80
     && Array.from(value).length <= 48
     && !/[<>\u0000-\u001f\u007f\u200b-\u200d\u202a-\u202e\u2060\u2066-\u2069]/u.test(value);
+}
+
+function boundedProfileText(value: unknown, maxChars: number, maxBytes: number, allowEmpty: boolean): value is string {
+  return typeof value === "string"
+    && (allowEmpty || value.trim().length > 0)
+    && Array.from(value).length <= maxChars
+    && new TextEncoder().encode(value).length <= maxBytes
+    && !/[\u0000-\u001f\u007f]/u.test(value);
+}
+
+function validHexColor(value: unknown): value is string {
+  return typeof value === "string" && /^#[0-9a-f]{6}$/u.test(value);
+}
+
+function validProfileAvatar(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 2_800_000 || /\s/u.test(value)) return false;
+  if (value.startsWith("data:")) {
+    const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/=]+)$/u.exec(value);
+    if (!match) return false;
+    return match[2].length > 0 && match[2].length <= 2_800_000;
+  }
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:"
+      && url.hostname.length > 0
+      && url.username === ""
+      && url.password === ""
+      && url.hash === ""
+      && value.length <= 2_048;
+  } catch {
+    return false;
+  }
 }
 
 export async function loadAppNotifications(): Promise<AppNotification[] | null> {
@@ -1302,6 +1411,14 @@ export function parseLocalPrivacyScan(raw: unknown): LocalPrivacyScanResult | nu
   const findings = raw.findings.map(parsePrivacyFinding);
   if (!findings.every((finding): finding is LocalPrivacyFinding => finding !== null)) return null;
   return { ...raw, findings } as LocalPrivacyScanResult;
+}
+
+export function parsePersistedLocalPrivacyScan(raw: unknown): PersistedLocalPrivacyScanResult | null {
+  if (!isRecord(raw) || !exact(raw, ["findings", "messagesScanned", "messagesRejected", "truncated", "analysisLocation", "persisted"])) return null;
+  if (!Array.isArray(raw.findings) || raw.findings.length > 1_000 || !Number.isSafeInteger(raw.messagesScanned) || Number(raw.messagesScanned) < 0 || Number(raw.messagesScanned) > 10_000_000 || !Number.isSafeInteger(raw.messagesRejected) || Number(raw.messagesRejected) < 0 || typeof raw.truncated !== "boolean" || raw.analysisLocation !== "this_device_only" || raw.persisted !== true) return null;
+  const findings = raw.findings.map(parsePrivacyFinding);
+  if (!findings.every((finding): finding is LocalPrivacyFinding => finding !== null)) return null;
+  return { ...raw, findings } as PersistedLocalPrivacyScanResult;
 }
 
 function parsePrivacyFinding(raw: unknown): LocalPrivacyFinding | null {

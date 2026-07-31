@@ -57,7 +57,6 @@ import { handleSelectorManifest } from "./endpoints/selector-manifest.js";
 import { handleStripeWebhook } from "./endpoints/stripe-webhook.js";
 import { handleTelegramWebhook } from "./endpoints/telegram.js";
 import { handleUnregister } from "./endpoints/unregister.js";
-import { handleUsernameClaim, handleUsernameLookup } from "./endpoints/usernames.js";
 import {
   handleMailCapabilities,
   handleMailConsent,
@@ -69,6 +68,7 @@ import {
 import { handleInboundEmail } from "./mail/inbound.js";
 export { Mailbox } from "./mail/mailbox.js";
 import { handleUsernameCoverage } from "./endpoints/username-coverage.js";
+import { handleUsernameClaim, handleUsernameLookup } from "./endpoints/usernames.js";
 import {
   handleControlInboxDelete,
   handleControlInboxGet,
@@ -340,10 +340,12 @@ async function dispatch(
     if (bundleUserId !== null) {
       return await handlePrekeyBundleGet(request, env, bundleUserId);
     }
+    const username = matchParam(path, /^\/v1\/usernames\/([^/]+)$/);
+    if (username !== null) {
+      return await handleUsernameLookup(request, env, decodeURIComponent(username));
+    }
     const inboxUserId = matchParam(path, /^\/v1\/control-inbox\/([^/]+)$/);
     if (inboxUserId !== null) return await handleControlInboxGet(request, env, inboxUserId);
-    const username = matchParam(path, /^\/v1\/usernames\/([^/]+)$/);
-    if (username !== null) return await handleUsernameLookup(request, env, username);
     const floorUserId = matchParam(
       path,
       /^\/v1\/sender-filter-capability-floor\/([^/]+)$/,
@@ -394,6 +396,7 @@ async function dispatch(
       return await handleSenderFilterRolloutRootAdvance(request, env);
     }
     if (path === "/v1/control-inbox") return await handleControlInboxPost(request, env);
+    if (path === "/v1/usernames/claim") return await handleUsernameClaim(request, env);
     if (path === "/v1/wrapped-keys") return await handleWrappedKeysPost(request, env);
     if (path === "/v1/prekey-bundle/replenish") {
       return await handlePrekeyBundleReplenish(request, env);
@@ -427,6 +430,9 @@ async function dispatch(
     }
     if (path === "/v1/checkout/claim") {
       return withCors(await handleCheckoutClaim(request, env), request);
+    }
+    if (path === "/v1/usernames/claim") {
+      return await handleUsernameClaim(request, env);
     }
     if (path === "/v1/stripe/webhook") {
       return await handleStripeWebhook(request, env, fetch, ctx);
