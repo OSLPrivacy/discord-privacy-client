@@ -2554,8 +2554,7 @@ mod tests {
             let outcome = client.fetch_own_identity_bundle_since(&identity, None);
             match outcome {
                 Err(Error::PeerBundleProofInvalid) => {}
-                Err(Error::Transport(ref reason))
-                    if reason.contains("key binding mismatch") => {}
+                Err(Error::Transport(ref reason)) if reason.contains("key binding mismatch") => {}
                 other => panic!(
                     "a bundle signed by another identity must be refused, got {:?}",
                     other.err()
@@ -2643,12 +2642,35 @@ mod tests {
 
     #[test]
     fn identity_bundle_error_text_does_not_echo_sensitive_values() {
-        let text = IdentityBundleError::SignatureMismatch.to_string();
+        let errors = [
+            IdentityBundleError::MissingRegistrationSignature,
+            IdentityBundleError::MalformedEd25519PublicKey,
+            IdentityBundleError::MalformedRegistrationSignature,
+            IdentityBundleError::UnsupportedCapabilityBitmap,
+            IdentityBundleError::CanonicalIdentityProofInvalid,
+            IdentityBundleError::SignatureMismatch,
+        ];
+        let sensitive_values = [
+            "alice",
+            "peer@example.test",
+            "osl1_owner_sensitive",
+            "QUJDREVGR0g=",
+            "@",
+        ];
 
-        assert!(text.contains("signature"));
-        assert!(!text.contains("peer"));
-        assert!(!text.contains("alice"));
-        assert!(!text.contains('@'));
+        for error in errors {
+            let text = error.to_string();
+            assert!(
+                text.contains("identity bundle"),
+                "identity bundle errors should stay categorical: {text}"
+            );
+            for sensitive in sensitive_values {
+                assert!(
+                    !text.contains(sensitive),
+                    "identity bundle error text echoed sensitive value {sensitive:?}: {text}"
+                );
+            }
+        }
     }
 
     #[test]
