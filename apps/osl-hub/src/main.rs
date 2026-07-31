@@ -672,6 +672,11 @@ where
 {
     let checked = build_checked()?;
     let operator_names = bind_operators(&checked)?;
+    if operator_names.is_empty() {
+        return Err(
+            "Hosted session scan requires a reviewed attended operator-name binding".to_owned(),
+        );
+    }
     let scan = scan(&checked, &operator_names)?;
     if scan.generation != checked.active.generation {
         return Err("Hosted session scan context changed during native scan".to_owned());
@@ -11735,6 +11740,38 @@ mod tauri_registration_surface_tests {
             refusal_events.into_inner(),
             ["checked-host", "attended-binding"],
             "absence of attended binding must refuse before scan or post-scan success"
+        );
+
+        let empty_binding_events = RefCell::new(Vec::<&'static str>::new());
+        let empty_binding = checked_hosted_session_scan_flow(
+            || {
+                empty_binding_events.borrow_mut().push("checked-host");
+                Ok(pw3_test_checked_host())
+            },
+            |_checked| {
+                empty_binding_events.borrow_mut().push("attended-binding");
+                Ok(Vec::new())
+            },
+            |_checked, _operator_names| {
+                empty_binding_events.borrow_mut().push("native-scan");
+                Ok(pw3_test_deletion_scan())
+            },
+            |_checked| {
+                empty_binding_events.borrow_mut().push("context-recheck");
+                Ok(())
+            },
+        );
+        match empty_binding {
+            Err(error) => assert_eq!(
+                error,
+                "Hosted session scan requires a reviewed attended operator-name binding"
+            ),
+            Ok(_) => panic!("an empty attended binding must refuse before native scan"),
+        }
+        assert_eq!(
+            empty_binding_events.into_inner(),
+            ["checked-host", "attended-binding"],
+            "an empty attended binding must not be interpreted as permission to scan"
         );
 
         let generation_drift_events = RefCell::new(Vec::<&'static str>::new());
