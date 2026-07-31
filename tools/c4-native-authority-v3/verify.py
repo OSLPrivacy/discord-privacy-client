@@ -961,6 +961,7 @@ class _VerifySelfTests(unittest.TestCase):
         good_context = _selftest_context(receipt)
         verdict = verify_receipt(encoded, good_context)
         self.assertTrue(verdict.parser_crypto_valid)
+        self.assertFalse(verdict.runtime_receipt_accepted)
 
         cases: dict[str, dict[str, Any]] = {
             "missing expected emitter": {
@@ -975,6 +976,24 @@ class _VerifySelfTests(unittest.TestCase):
                 **good_context.__dict__,
                 "expected_target": None,
             },
+        }
+        missing_expected_emitter_key = copy.deepcopy(good_context.expected_emitter)
+        del missing_expected_emitter_key["fileIdentity"]
+        cases["expected emitter missing process identity"] = {
+            **good_context.__dict__,
+            "expected_emitter": missing_expected_emitter_key,
+        }
+        missing_pipe_client_key = copy.deepcopy(good_context.pipe_client)
+        del missing_pipe_client_key["executableSha256"]
+        cases["pipe client missing executable digest"] = {
+            **good_context.__dict__,
+            "pipe_client": missing_pipe_client_key,
+        }
+        missing_target_key = copy.deepcopy(good_context.expected_target)
+        del missing_target_key["bindingSha256"]
+        cases["Discord target missing binding digest"] = {
+            **good_context.__dict__,
+            "expected_target": missing_target_key,
         }
         mismatched_emitter = copy.deepcopy(good_context.expected_emitter)
         mismatched_emitter["pid"] += 1
@@ -1012,6 +1031,7 @@ class _VerifySelfTests(unittest.TestCase):
         self.assertFalse(verdict.runtime_receipt_accepted)
         self.assertFalse(verdict.full_c4_success)
         self.assertEqual(verdict.point_delta, 0)
+        self.assertEqual(verdict.receipt_frame_sha256, sha256_hex(encoded))
 
         with self.assertRaises(VerificationError):
             verify_receipt(encoded, synthetic_context, ledger=object())  # type: ignore[arg-type]
@@ -1020,6 +1040,16 @@ class _VerifySelfTests(unittest.TestCase):
                 encoded,
                 synthetic_context,
                 filesystem_authority_verifier=object(),  # type: ignore[arg-type]
+            )
+        with self.assertRaises(VerificationError):
+            verify_receipt(
+                encoded,
+                VerificationContext(
+                    **{
+                        **synthetic_context.__dict__,
+                        "source": "runtime_named_pipe",
+                    }
+                ),
             )
 
 
