@@ -2083,12 +2083,31 @@ mod tests {
         ledger
             .step(OWNER, NativeEntitlement::Confirmed, &step_for(&opened_a))
             .unwrap();
+        {
+            let store = ledger.ledger.lock().unwrap();
+            let pending = store
+                .runs
+                .values()
+                .find(|run| run.run_id == opened_a.run_id)
+                .and_then(|run| run.pending.as_ref());
+            assert!(
+                pending.is_some(),
+                "step must mint pending authority before global stop can prove revocation"
+            );
+        }
 
         let fleet = ledger.global_stop(OWNER).unwrap();
         assert_eq!(fleet.working, 0);
         assert!(fleet.runs.iter().all(
             |run| run.phase == RunPhaseDto::Halted && run.halted_reason == Some("global_stop")
         ));
+        {
+            let store = ledger.ledger.lock().unwrap();
+            assert!(
+                store.runs.values().all(|run| run.pending.is_none()),
+                "global stop must erase every pending delete authority, not only mark runs halted"
+            );
+        }
         assert!(matches!(
             ledger.authorize_imap_prepare(
                 OWNER,
