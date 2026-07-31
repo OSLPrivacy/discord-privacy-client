@@ -56,6 +56,9 @@ const scrubReceiptCopy: Record<ScrubReceiptStatus, { label: string; detail: stri
 
 /** Permanent fail-closed contract for any future service-specific delete adapter. */
 export const scrubDeletionContract = Object.freeze({
+  browserUiAutomationAllowed: false,
+  privateApiAllowed: false,
+  documentedProviderDeleteApiRequired: true,
   unattendedDeletionAllowed: false,
   completeEditableReviewRequiredEveryBatch: true,
   finalConfirmationRequiredEveryBatch: true,
@@ -67,6 +70,26 @@ export const scrubDeletionContract = Object.freeze({
   documentedProviderDeleteApiRequired: true,
   stopOn: ["rate_limit", "challenge", "content_mismatch", "verification_failure"] as const,
 });
+
+export interface ScrubDeletionCapability {
+  deletionEnabled: boolean;
+  mechanism: "none" | "documented_provider_delete_api" | "browser_ui_automation" | "private_api";
+  stopOn: readonly string[];
+  requestedDeletionCountsAsVerified: boolean;
+}
+
+export function scrubDeletionAllowed(capability: ScrubDeletionCapability): boolean {
+  return capability.deletionEnabled
+    && capability.mechanism === "documented_provider_delete_api"
+    && scrubDeletionContract.browserUiAutomationAllowed === false
+    && scrubDeletionContract.privateApiAllowed === false
+    && scrubDeletionContract.documentedProviderDeleteApiRequired
+    && scrubDeletionContract.unattendedDeletionAllowed === false
+    && scrubDeletionContract.completeEditableReviewRequiredEveryBatch
+    && scrubDeletionContract.finalConfirmationRequiredEveryBatch
+    && scrubDeletionContract.stopOn.every((condition) => capability.stopOn.includes(condition))
+    && capability.requestedDeletionCountsAsVerified === false;
+}
 
 const categoryGroups: Record<PrivacyRiskCategory, ScrubSignalGroup> = {
   credential: "personal",
