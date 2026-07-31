@@ -541,7 +541,7 @@ fn resolve_active_account_on_launch() {
 /// app prefs, password gate) is intentionally left alone.
 fn reset_account_scoped_state(state: &AppState) {
     use std::sync::atomic::Ordering;
-    *state.identity.lock().expect("identity poisoned") = None;
+    state.clear_identity();
     *state.keyserver.lock().expect("keyserver poisoned") = None;
     *state
         .registration_alert
@@ -1216,7 +1216,7 @@ fn load_or_generate_identity(
                     path = %path.display(),
                     "OSL bootstrap: identity loaded"
                 );
-                *state.identity.lock().expect("identity mutex poisoned") = Some(id);
+                install_loaded_identity(state, dir, id, sealer.as_ref());
                 return (true, false);
             }
             Err(e) => {
@@ -1275,8 +1275,27 @@ fn load_or_generate_identity(
              but won't survive a restart"
         ),
     }
-    *state.identity.lock().expect("identity mutex poisoned") = Some(id);
+    install_loaded_identity(state, dir, id, sealer.as_ref());
     (true, true)
+}
+
+fn install_loaded_identity(
+    state: &AppState,
+    dir: &std::path::Path,
+    identity: keystore::Identity,
+    sealer: &dyn keystore::Sealer,
+) {
+    state.install_identity(identity);
+    match ipc::state_reload::load_persisted_prekey_state_with_sealer(state, dir, sealer) {
+        Ok(true) => tracing::info!("OSL bootstrap: prekey state loaded"),
+        Ok(false) => {
+            tracing::info!("OSL bootstrap: no prekeys.json; first replenish tick will publish")
+        }
+        Err(e) => tracing::warn!(
+            error = %e,
+            "OSL bootstrap: prekey state refused; prekey-dependent work stays unavailable"
+        ),
+    }
 }
 
 /// Init the keyserver client and call `register`.
@@ -1363,6 +1382,82 @@ mod multi_account_marker_tests {
         let path = dir.join("active");
         std::fs::write(&path, "not-a-snowflake").expect("write malformed");
         assert_eq!(read_active_marker_at(&path), None);
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn load_or_generate_identity_installs_identity_without_prekey_authority() {
+        let dir = temp_dir("identity-load");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let sealer = select_best_sealer();
+        let identity = generate_identity("prekey-owner".to_owned());
+        let identity_path = dir.join("identity.json");
+        save_identity(&identity_path, &identity, sealer.as_ref()).expect("save identity");
+
+        let state = AppState::new();
+        assert_eq!(load_or_generate_identity(&state, &dir, None), (true, false));
+        let loaded_identity = state
+            .identity
+            .lock()
+            .expect("identity mutex poisoned")
+            .clone()
+            .expect("identity installed");
+        assert_eq!(loaded_identity.user_id, identity.user_id);
+
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn load_or_generate_identity_loads_persisted_prekey_state_and_primes_replenishment() {
+        let dir = temp_dir("identity-prekeys-load");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let sealer = select_best_sealer();
+        let identity = generate_identity("persisted-prekey-owner".to_owned());
+        let identity_path = dir.join("identity.json");
+        save_identity(&identity_path, &identity, sealer.as_ref()).expect("save identity");
+
+        let mut persisted = keystore::PrekeyState::new(
+            &identity,
+            keystore::PrekeyConfig {
+                opk_pool_target: 7,
+                opk_replenish_threshold: 3,
+                spk_rotation_seconds: 86_400,
+            },
+            1234,
+        );
+        persisted.opk_pool.truncate(2);
+        let expected_next_opk_id = persisted.next_opk_id;
+        let expected_opk_ids = persisted
+            .opk_pool
+            .iter()
+            .map(|opk| opk.id)
+            .collect::<Vec<_>>();
+        let prekey_path = dir.join("prekeys.json");
+        keystore::save_prekey_state(&prekey_path, &persisted, sealer.as_ref())
+            .expect("save persisted prekeys");
+
+        let state = AppState::new();
+        assert_eq!(load_or_generate_identity(&state, &dir, None), (true, false));
+
+        let loaded = state
+            .prekey_state
+            .lock()
+            .expect("prekey_state mutex poisoned")
+            .clone()
+            .expect("persisted prekey state installed");
+        assert_eq!(loaded.current_spk.rotated_at_unix_seconds, 1234);
+        assert_eq!(loaded.config.opk_pool_target, 7);
+        assert_eq!(loaded.config.opk_replenish_threshold, 3);
+        assert_eq!(loaded.next_opk_id, expected_next_opk_id);
+        assert_eq!(
+            loaded.opk_pool.iter().map(|opk| opk.id).collect::<Vec<_>>(),
+            expected_opk_ids
+        );
+        assert!(
+            loaded.should_replenish(loaded.opk_pool.len() as u32),
+            "loaded low-water persisted pool must be ready for the replenish driver"
+        );
+
         std::fs::remove_dir_all(dir).expect("cleanup");
     }
 }

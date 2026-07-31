@@ -10,6 +10,8 @@
 ///   GET    /v1/prekey-bundle/:user_id
 ///   POST   /v1/prekey-bundle/replenish
 ///   GET    /v1/selector-manifest
+///   POST   /v1/link-grant           (anonymous view-once link grant)
+///   POST   /v1/account-ownership/challenge
 ///
 /// F1.2 (Stripe + licenses):
 ///   POST   /v1/checkout-session
@@ -29,6 +31,7 @@
 /// sweeps, and a daily Telegram report. Triggered by `[triggers] crons`.
 
 import type { Env } from "./env.js";
+import { handleAccountOwnershipChallenge } from "./endpoints/account-ownership-challenge.js";
 import { handleCheckout } from "./endpoints/checkout.js";
 import { handleStripeDonationSession } from "./endpoints/donation-stripe.js";
 import { handleCheckoutClaim } from "./endpoints/checkout-claim.js";
@@ -41,23 +44,43 @@ import { handleCryptoStatus } from "./endpoints/crypto-status.js";
 import { handleHealthz } from "./endpoints/healthz.js";
 import { handleWindowsDownload } from "./endpoints/download.js";
 import { handleLicenseValidate } from "./endpoints/license.js";
+import { handleLinkGrant } from "./endpoints/link-grant.js";
 import { handleBillingPortal } from "./endpoints/portal.js";
 import {
   handlePrekeyBundleGet,
   handlePrekeyBundleReplenish,
 } from "./endpoints/prekey-bundle.js";
+import { handleProofChallenge } from "./endpoints/proof-challenge.js";
 import { handlePubkeys } from "./endpoints/pubkeys.js";
 import { handleRegister } from "./endpoints/register.js";
 import { handleSelectorManifest } from "./endpoints/selector-manifest.js";
 import { handleStripeWebhook } from "./endpoints/stripe-webhook.js";
 import { handleTelegramWebhook } from "./endpoints/telegram.js";
 import { handleUnregister } from "./endpoints/unregister.js";
+import {
+  handleMailCapabilities,
+  handleMailConsent,
+  handleMailExternalOutbound,
+  handleMailProvision,
+  handleMailRead,
+  handleMailSendOsl,
+} from "./endpoints/mail.js";
+import { handleInboundEmail } from "./mail/inbound.js";
+export { Mailbox } from "./mail/mailbox.js";
+import { handleUsernameCoverage } from "./endpoints/username-coverage.js";
 import { handleUsernameClaim, handleUsernameLookup } from "./endpoints/usernames.js";
 import {
   handleControlInboxDelete,
   handleControlInboxGet,
   handleControlInboxPost,
 } from "./endpoints/control-inbox.js";
+import {
+  handleSenderFilterCapabilityFloorGet,
+} from "./endpoints/sender-filter-capability-floor.js";
+import {
+  handleSenderFilterRolloutRootAdvance,
+  handleSenderFilterRolloutRootProvision,
+} from "./endpoints/sender-filter-rollout-root.js";
 import { handleUpdateManifest } from "./endpoints/update-manifest.js";
 import {
   handleWrappedKeysDelete,
@@ -75,8 +98,12 @@ import {
   drainPaymentAlertOutbox,
   sweepDeliveredPaymentAlerts,
 } from "./lib/payment-alert-outbox.js";
+import { sweepExpiredControlInboxRows } from "./lib/control-inbox-sweep.js";
 
 const MAX_MUTATION_BODY_BYTES = 1024 * 1024;
+const PUBLIC_GET_INGRESS_MAX_PER_MINUTE = 1200;
+const PUBLIC_GET_INGRESS_BUCKET = "public-get-ingress";
+const PUBLIC_GET_INGRESS_EXEMPT_PATHS = new Set(["/v1/healthz"]);
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -86,6 +113,22 @@ export default {
     } catch {
       console.error("[fetch] unhandled failure");
       return serverError("internal error");
+    }
+  },
+
+  async email(
+    message: ForwardableEmailMessage,
+    env: Env,
+    ctx: ExecutionContext,
+  ): Promise<void> {
+    void ctx;
+    try {
+      await handleInboundEmail(message, env);
+    } catch {
+      // Throwing asks the upstream SMTP sender to retry. Never log envelope,
+      // header, address, or content data from this privacy-sensitive path.
+      console.error("[mail] inbound processing failed");
+      throw new Error("inbound processing failed");
     }
   },
 
@@ -187,24 +230,40 @@ export default {
     // tolerance, and clients drain their inbox far more frequently
     // than that anyway.
     try {
-      const now = Math.floor(Date.now() / 1000);
-      const r = await env.DB.prepare(
-        "DELETE FROM control_inbox WHERE expires_at < ?",
-      )
-        .bind(now)
-        .run();
-      const meta = r as unknown as { meta?: { changes?: number } };
-      const changes = meta.meta?.changes ?? 0;
-      if (changes > 0) {
-        console.log(`[cron] control_inbox sweep deleted ${changes} expired row(s)`);
+      const deleted = await sweepExpiredControlInboxRows(env.DB);
+      const total = deleted.inboxRows + deleted.requestReceipts;
+      const classified =
+        deleted.senderStates.reenabled +
+        deleted.senderStates.retryable +
+        deleted.senderStates.quarantined +
+        deleted.senderStates.retired;
+      if (total > 0 || classified > 0) {
+        console.log(
+          `[cron] control_inbox sweep deleted ${deleted.inboxRows} row(s) and ` +
+          `${deleted.requestReceipts} request receipt(s); sender state ` +
+          `reenabled=${deleted.senderStates.reenabled} ` +
+          `retryable=${deleted.senderStates.retryable} ` +
+          `quarantined=${deleted.senderStates.quarantined} ` +
+          `retired=${deleted.senderStates.retired}`,
+        );
       }
-      await env.DB.prepare(
-        "DELETE FROM control_inbox_requests WHERE expires_at < ?",
-      )
-        .bind(now)
-        .run();
     } catch {
       console.error("[cron] control_inbox sweep failed");
+    }
+    // View-once link-grant bookkeeping. Spent request receipts expire on
+    // their own clock; quota rows are dropped once their UTC day is over,
+    // so the table holds at most today's active identities and never
+    // accumulates a history of who created links when.
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      await env.DB.batch([
+        env.DB.prepare("DELETE FROM link_grant_receipts WHERE expires_at <= ?").bind(now),
+        env.DB.prepare("DELETE FROM link_grant_quota WHERE day < ?").bind(
+          Math.floor(now / (24 * 60 * 60)),
+        ),
+      ]);
+    } catch {
+      console.error("[cron] link grant sweep failed");
     }
   },
 };
@@ -214,6 +273,22 @@ async function dispatch(
   env: Env,
   ctx: ExecutionContext,
 ): Promise<Response> {
+  const url = new URL(request.url);
+  const path = url.pathname;
+  const method = request.method;
+
+  if (method === "GET" && !PUBLIC_GET_INGRESS_EXEMPT_PATHS.has(path)) {
+    // Public read routes still rely on signatures, opaque IDs, D1 transactions
+    // or client verification for trust. This is an abuse-cost guard only.
+    const ingress = await checkRateLimit(
+      env,
+      callerIp(request),
+      PUBLIC_GET_INGRESS_MAX_PER_MINUTE,
+      PUBLIC_GET_INGRESS_BUCKET,
+    );
+    if (!ingress.ok) return tooMany(ingress.retryAfter);
+  }
+
   if (["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) {
     // Reject abusive mutation floods before reading their bodies. Endpoint
     // limits below remain stricter; this is the coarse memory/CPU guard.
@@ -228,9 +303,6 @@ async function dispatch(
     if (bounded instanceof Response) return bounded;
     request = bounded;
   }
-  const url = new URL(request.url);
-  const path = url.pathname;
-  const method = request.method;
 
   // CORS preflight — only explicitly browser-callable commerce endpoints.
   if (method === "OPTIONS") {
@@ -242,7 +314,8 @@ async function dispatch(
       path === "/v1/crypto/quote" ||
       path === "/v1/crypto/status" ||
       path === "/v1/donations/crypto/quote" ||
-      path === "/v1/donations/crypto/status"
+      path === "/v1/donations/crypto/status" ||
+      path === "/v1/username-coverage"
     ) {
       return corsPreflight("POST, OPTIONS", request);
     }
@@ -253,7 +326,8 @@ async function dispatch(
   }
 
   if (method === "GET") {
-    if (path === "/v1/healthz") return handleHealthz();
+    if (path === "/v1/healthz") return await handleHealthz(env);
+    if (path === "/v1/mail/capabilities") return handleMailCapabilities();
     if (path === "/v1/download/windows") return await handleWindowsDownload(request, env);
     if (path === "/v1/selector-manifest") return handleSelectorManifest(env);
     const pubkeysUserId = matchParam(path, /^\/v1\/pubkeys\/([^/]+)$/);
@@ -266,10 +340,23 @@ async function dispatch(
     if (bundleUserId !== null) {
       return await handlePrekeyBundleGet(request, env, bundleUserId);
     }
+    const username = matchParam(path, /^\/v1\/usernames\/([^/]+)$/);
+    if (username !== null) {
+      return await handleUsernameLookup(request, env, decodeURIComponent(username));
+    }
     const inboxUserId = matchParam(path, /^\/v1\/control-inbox\/([^/]+)$/);
     if (inboxUserId !== null) return await handleControlInboxGet(request, env, inboxUserId);
-    const username = matchParam(path, /^\/v1\/usernames\/([^/]+)$/);
-    if (username !== null) return await handleUsernameLookup(request, env, username);
+    const floorUserId = matchParam(
+      path,
+      /^\/v1\/sender-filter-capability-floor\/([^/]+)$/,
+    );
+    if (floorUserId !== null) {
+      return await handleSenderFilterCapabilityFloorGet(
+        request,
+        env,
+        floorUserId,
+      );
+    }
     const um = path.match(
       /^\/v1\/update-manifest\/([^/]+)\/([^/]+)\/([^/]+)$/,
     );
@@ -288,12 +375,51 @@ async function dispatch(
   }
 
   if (method === "POST") {
+    if (path === "/v1/account-ownership/challenge") {
+      return await handleAccountOwnershipChallenge(request, env);
+    }
     if (path === "/v1/register") return await handleRegister(request, env);
-    if (path === "/v1/usernames/claim") return await handleUsernameClaim(request, env);
+    if (path === "/v1/mail/address") return await handleMailProvision(request, env);
+    if (path === "/v1/mail/consent") return await handleMailConsent(request, env);
+    if (path === "/v1/mail/send/osl") return await handleMailSendOsl(request, env);
+    if (path === "/v1/mail/send/external") return handleMailExternalOutbound();
+    if (path === "/v1/mail/list") return await handleMailRead(request, env, "LIST");
+    if (path === "/v1/mail/fetch") return await handleMailRead(request, env, "FETCH");
+    if (path === "/v1/mail/ack") return await handleMailRead(request, env, "ACK");
+    if (path === "/v1/mail/delete") return await handleMailRead(request, env, "DELETE");
+    if (path === "/v1/mail/burn") return await handleMailRead(request, env, "BURN");
+    if (path === "/v1/internal/sender-filter-rollout-root/provision") {
+      return await handleSenderFilterRolloutRootProvision(request, env);
+    }
+    if (path === "/v1/internal/sender-filter-rollout-root/advance") {
+      return await handleSenderFilterRolloutRootAdvance(request, env);
+    }
     if (path === "/v1/control-inbox") return await handleControlInboxPost(request, env);
+    if (path === "/v1/usernames/claim") return await handleUsernameClaim(request, env);
     if (path === "/v1/wrapped-keys") return await handleWrappedKeysPost(request, env);
     if (path === "/v1/prekey-bundle/replenish") {
       return await handlePrekeyBundleReplenish(request, env);
+    }
+    if (path === "/v1/proof-challenge") {
+      return await handleProofChallenge(request);
+    }
+    if (path === "/v1/link-grant") {
+      // Deliberately dark. `DEPLOY.md` section 12 records that 0028's link-grant
+      // lane is committed-but-undeployed pending a fresh owner decision, and the
+      // 2026-07-26 audit declined to promote its single-use KV race *because* the
+      // route was unreachable. Migration 0029 had to ship with 0028 (wrangler
+      // applies pending migrations together), so the table now exists; this gate
+      // keeps the documented behaviour -- no grant can be issued, and
+      // cipher-store-cf's POST /v1/link keeps answering 503 -- instead of
+      // activating the lane as a side effect of a security deploy.
+      // Flip by setting LINK_GRANT_ENABLED = "true" in wrangler.toml [vars].
+      if (env.LINK_GRANT_ENABLED !== "true") {
+        return new Response(JSON.stringify({ error: "link_grant_not_enabled" }), {
+          status: 503,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return await handleLinkGrant(request, env);
     }
     if (path === "/v1/checkout-session") {
       return withCors(await handleCheckout(request, env), request);
@@ -317,6 +443,9 @@ async function dispatch(
     }
     if (path === "/v1/crypto/status") {
       return withCors(await handleCryptoStatus(request, env), request);
+    }
+    if (path === "/v1/username-coverage") {
+      return withCors(await handleUsernameCoverage(request), request);
     }
     if (path === "/v1/donations/crypto/quote") {
       return withCors(await handleCryptoDonationQuote(request, env), request);

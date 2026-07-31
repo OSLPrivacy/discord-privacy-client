@@ -113,14 +113,14 @@ export function summarizeAutoScrubReceipt(receipt: ProviderDeletionReceipt): Aut
   const heading = receipt.dryRun ? "Dry-run preview" : verifiedDeleted > 0 ? "Verified within stated coverage" : "No deletion was verified";
   const detail = receipt.dryRun
     ? `${receipt.items.length} selected; no deletion was called.`
-    : `${verifiedDeleted} verified absent by provider readback · ${confirmedPresent} verified still present · ${unknown} unknown`;
+    : `${verifiedDeleted} verified absent by service recheck · ${confirmedPresent} verified still present · ${unknown} unknown`;
   return { heading, detail, verifiedDeleted, confirmedPresent, unknown };
 }
 
 export const unavailableAutoScrubCapabilities: readonly AutoScrubCapability[] = [
-  { providerId: "gmail-web", label: "Gmail (signed-in session)", liveConfirmed: false, coverage: "Hosted own-item UI readback", unavailableReason: "Open the signed-in Gmail service window. The host command port must then live-confirm this account.", pathKind: "hosted-session", primary: true },
-  { providerId: "discord", label: "Discord (signed-in session)", liveConfirmed: false, coverage: "Hosted own-message UI readback", unavailableReason: "Open the signed-in Discord service window. Live verification is still required.", pathKind: "hosted-session", primary: true },
-  { providerId: "telegram-web", label: "Telegram Web (signed-in session)", liveConfirmed: false, coverage: "Hosted own-message UI readback", unavailableReason: "Open the signed-in Telegram service window. Live verification is still required.", pathKind: "hosted-session", primary: true },
-  { providerId: "imap", label: "Email (IMAP, optional)", liveConfirmed: false, coverage: "No live transport confirmed", unavailableReason: "Optional secondary path: connect and verify IMAP only if you choose it.", pathKind: "secondary-api", primary: false },
-  { providerId: "telegram", label: "Telegram (TDLib, optional)", liveConfirmed: false, coverage: "No packaged live session", unavailableReason: "Optional secondary path; TDLib is not packaged or live-confirmed in this build.", pathKind: "secondary-api", primary: false },
+  { providerId: "gmail-web", label: "Gmail", liveConfirmed: false, coverage: "Service recheck unavailable", unavailableReason: "Open Gmail from Connections and confirm the account before cleanup.", pathKind: "hosted-session", primary: true },
+  { providerId: "discord", label: "Discord", liveConfirmed: false, coverage: "Manual only", unavailableReason: "Service cleanup is not live-verified in this build.", pathKind: "hosted-session", primary: true },
+  { providerId: "telegram-web", label: "Telegram", liveConfirmed: false, coverage: "Manual only", unavailableReason: "Service cleanup is not live-verified in this build.", pathKind: "hosted-session", primary: true },
+  { providerId: "imap", label: "Email", liveConfirmed: false, coverage: "Not connected", unavailableReason: "Connect and verify an email account in the desktop app.", pathKind: "secondary-api", primary: false },
+  { providerId: "telegram", label: "Telegram", liveConfirmed: false, coverage: "Manual only", unavailableReason: "A verified Telegram cleanup session is not available in this build.", pathKind: "secondary-api", primary: false },
 ] as const;

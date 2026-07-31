@@ -18,8 +18,12 @@ fn ctx(seed: u8, group_id: &[u8]) -> SenderContext {
 #[test]
 fn v5_roundtrip_single_sender_single_receiver() {
     let mut sender = SenderChain::new().unwrap();
-    let mut receiver =
-        ReceiverChain::install(sender.current_chain_id(), &sender.rotation_root_bytes()).unwrap();
+    let mut receiver = ReceiverChain::install(
+        sender.current_chain_id(),
+        &sender.rotation_root_bytes(),
+        sender.physical_device_id(),
+    )
+    .unwrap();
     let c = ctx(0xab, b"gc:test");
     let em = sender.encrypt(b"hello v=5", &c).unwrap();
     let sender_ik_pub = c.sender_ik_x25519_pub;
@@ -64,8 +68,12 @@ fn v5_rejects_nonzero_flags_bits() {
 #[test]
 fn v5_header_tamper_rejected_via_aad() {
     let mut sender = SenderChain::new().unwrap();
-    let mut receiver =
-        ReceiverChain::install(sender.current_chain_id(), &sender.rotation_root_bytes()).unwrap();
+    let mut receiver = ReceiverChain::install(
+        sender.current_chain_id(),
+        &sender.rotation_root_bytes(),
+        sender.physical_device_id(),
+    )
+    .unwrap();
     let c = ctx(0x11, b"gc:tamper");
     let em = sender.encrypt(b"tamper me", &c).unwrap();
     let sender_ik_pub = c.sender_ik_x25519_pub;
@@ -151,8 +159,12 @@ fn peek_wire_version_returns_5_for_v5_bytes() {
 #[test]
 fn v5_replay_within_chain_rejected() {
     let mut sender = SenderChain::new().unwrap();
-    let mut receiver =
-        ReceiverChain::install(sender.current_chain_id(), &sender.rotation_root_bytes()).unwrap();
+    let mut receiver = ReceiverChain::install(
+        sender.current_chain_id(),
+        &sender.rotation_root_bytes(),
+        sender.physical_device_id(),
+    )
+    .unwrap();
     let c = ctx(0x44, b"gc:replay");
     let em = sender.encrypt(b"once", &c).unwrap();
     let sender_ik_pub = c.sender_ik_x25519_pub;
@@ -180,8 +192,12 @@ fn v5_replay_within_chain_rejected() {
 #[test]
 fn v5_out_of_order_within_window_succeeds() {
     let mut sender = SenderChain::new().unwrap();
-    let mut receiver =
-        ReceiverChain::install(sender.current_chain_id(), &sender.rotation_root_bytes()).unwrap();
+    let mut receiver = ReceiverChain::install(
+        sender.current_chain_id(),
+        &sender.rotation_root_bytes(),
+        sender.physical_device_id(),
+    )
+    .unwrap();
     let c = ctx(0x55, b"gc:ooo");
     let em0 = sender.encrypt(b"m0", &c).unwrap();
     let em1 = sender.encrypt(b"m1", &c).unwrap();

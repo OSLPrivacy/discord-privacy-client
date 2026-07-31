@@ -29,6 +29,56 @@ export const REG_DOMAIN = "OSL-REGISTER-v1";
 /** Domain-separation + version tag for an authenticated key rotation. */
 export const ROT_DOMAIN = "OSL-ROTATE-v1";
 
+// ---------------------------------------------------------------
+// Signed protocol-capability advertisement
+// ---------------------------------------------------------------
+
+/**
+ * Bit 0 — this identity can send and receive OSL-RN, wire `0x10`
+ * (`osl_ratchet_next::WIRE_VERSION_RN`, `ipc::wire_rn`).
+ *
+ * The bitmap is deliberately NOT indexed by wire-version byte. `0x10`
+ * would need a 17-bit map with 16 dead bits, and the two byte
+ * namespaces (`wire version` vs `message type`) are already a
+ * documented foot-gun in this product — see `WIRE_VERSION_RN`'s doc
+ * comment. Named bits, allocated densely from 0, keep the two apart.
+ */
+export const RN_CAP_WIRE_RN = 1;
+
+/**
+ * Upper bound on the bitmap.
+ *
+ * Unknown bits are stored **verbatim** rather than rejected: a client
+ * newer than the worker must be able to advertise a capability this
+ * build has no name for, and a reader ignores bits it does not know.
+ * The bound exists only so the column stays a small integer and the
+ * signed message stays a bounded string.
+ */
+export const RN_CAP_MAX = 0xffff;
+
+/**
+ * Parse and validate a submitted `rn_capabilities` field.
+ *
+ * Returns:
+ * - `{ present: false, value: 0 }` when the field is absent or `null`.
+ *   This is the legacy shape every currently-deployed client sends, and
+ *   it means **no capability**, never "assume capable".
+ * - `{ present: true, value }` for a valid bounded non-negative integer.
+ * - `null` when the field is present but malformed. The caller must
+ *   refuse the request; coercing a malformed bitmap to `0` would let an
+ *   attacker who can corrupt one byte of the field silently strip a
+ *   capability instead of breaking the signature.
+ */
+export function parseRnCapabilities(
+  value: unknown,
+): { present: boolean; value: number } | null {
+  if (value === undefined || value === null) return { present: false, value: 0 };
+  if (typeof value !== "number") return null;
+  if (!Number.isSafeInteger(value)) return null;
+  if (value < 0 || value > RN_CAP_MAX) return null;
+  return { present: true, value };
+}
+
 /**
  * REG_MSG — bound by the registrant's identity key.
  *
@@ -43,6 +93,34 @@ export const ROT_DOMAIN = "OSL-ROTATE-v1";
  * (the same strings the client base64-encoded and signed) — never
  * re-encoded. A null / absent ratchet pub contributes the empty
  * string (no trailing newline after the last component).
+ *
+ * ## The optional capability component
+ *
+ * When `rn_capabilities` is supplied, one more newline-delimited
+ * component is appended: the bitmap as a decimal string. When it is
+ * absent the message is byte-identical to the pre-capability form.
+ *
+ * This two-form encoding is what makes the advertisement **unstrippable
+ * on the write path**, and it is why the bitmap lives inside this
+ * signature rather than in a separate signed record:
+ *
+ * - A client that advertises a bitmap signs the extended form. An
+ *   attacker who removes `rn_capabilities` from the request body makes
+ *   the server reconstruct the *legacy* form, which the submitted
+ *   signature does not cover → the registration is refused. The strip
+ *   is detected, not silently applied.
+ * - An attacker who alters the bitmap changes the reconstruction the
+ *   same way → refused.
+ * - A legacy client that never sends the field produces exactly the
+ *   bytes it produces today, so nothing already deployed breaks. This
+ *   is the only reason the component is optional rather than always
+ *   present with a `0` default: making it mandatory would invalidate
+ *   every signature every currently-shipped client produces.
+ *
+ * Unambiguity: the legacy form ends at `ratchet` with no trailing
+ * newline, and the extended form appends `"\n" + <decimal>` where the
+ * decimal is always at least one digit. No legacy message can be read
+ * as an extended one or vice versa.
  */
 export function buildRegMsg(fields: {
   user_id: string;
@@ -50,9 +128,10 @@ export function buildRegMsg(fields: {
   ik_ed25519_pub: string;
   ik_mlkem768_pub: string;
   ik_ratchet_initial_pub?: string | null;
+  rn_capabilities?: number | null;
 }): Uint8Array {
   const ratchet = fields.ik_ratchet_initial_pub ?? "";
-  const msg =
+  let msg =
     REG_DOMAIN +
     "\n" +
     fields.user_id +
@@ -64,6 +143,9 @@ export function buildRegMsg(fields: {
     fields.ik_mlkem768_pub +
     "\n" +
     ratchet;
+  if (fields.rn_capabilities !== undefined && fields.rn_capabilities !== null) {
+    msg += "\n" + String(fields.rn_capabilities);
+  }
   return new TextEncoder().encode(msg);
 }
 
@@ -90,9 +172,10 @@ export function buildRotMsg(fields: {
   new_ik_ed25519_pub: string;
   new_ik_mlkem768_pub: string;
   new_ik_ratchet_initial_pub?: string | null;
+  rn_capabilities?: number | null;
 }): Uint8Array {
   const ratchet = fields.new_ik_ratchet_initial_pub ?? "";
-  const msg =
+  let msg =
     ROT_DOMAIN +
     "\n" +
     fields.user_id +
@@ -106,6 +189,14 @@ export function buildRotMsg(fields: {
     fields.new_ik_mlkem768_pub +
     "\n" +
     ratchet;
+  // Same optional-component rule as `buildRegMsg`. A rotation
+  // re-states the whole record, so the bitmap it carries must be
+  // covered by the rotation authorisation too — otherwise a rotation
+  // would be a signature-free way to change a peer's advertised
+  // capability.
+  if (fields.rn_capabilities !== undefined && fields.rn_capabilities !== null) {
+    msg += "\n" + String(fields.rn_capabilities);
+  }
   return new TextEncoder().encode(msg);
 }
 

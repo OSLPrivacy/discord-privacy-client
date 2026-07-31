@@ -45,28 +45,34 @@ use base64::Engine;
 use bip39::{Language, Mnemonic};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use zeroize::{Zeroize, Zeroizing};
 
 const MARKER_FILENAME: &str = "password_marker.json";
 const LOCKOUT_FILENAME: &str = "lockout_state.json";
+const DEVICE_BOUND_FALLBACK_KEY_FILENAME: &str = "file_storage_key_fallback.json";
 const MARKER_VERSION: u32 = 2;
 const LOCKOUT_VERSION: u32 = 1;
+const DEVICE_BOUND_FALLBACK_KEY_VERSION: u32 = 1;
 const ENC_MAGIC: &[u8; 8] = b"OSL-ENC1";
 
 pub const PASSWORD_MIN_LEN: usize = 6;
 pub const RECOMMENDED_PASSWORD_LEN: usize = 12;
 pub const PASSWORD_MAX_LEN: usize = 128;
+pub const DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT: u32 = 10;
+pub const DURESS_FAILED_ATTEMPT_THRESHOLD: u32 = DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT;
 const SALT_LEN: usize = 16;
 const ARGON_OUTPUT_LEN: usize = 64; // 32 hash + 32 AES key
 const HASH_LEN: usize = 32;
 const KEY_LEN: usize = 32;
 const NONCE_LEN: usize = 12;
+const DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD: u32 = keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD;
+pub const INACTIVITY_AUTO_LOCK_SECONDS: u64 = keystore::DEFAULT_INACTIVITY_SECONDS;
 
 const ARGON_MEMORY_KB: u32 = 65_536; // 64 MiB
 const ARGON_ITERATIONS: u32 = 3;
 const ARGON_PARALLELISM: u32 = 1;
-
 // =====================================================================
 // On-disk schemas.
 // =====================================================================
@@ -122,6 +128,10 @@ pub struct PasswordMarker {
     /// Same salt + params as main. Absent on v=1 markers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub burn_password_hash_b64: Option<String>,
+    /// Distinct duress credential. Matching this at the unlock gate runs the
+    /// journaled DuressEngine path, separate from the full-account burn role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duress_password_hash_b64: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -138,6 +148,13 @@ pub struct LockoutState {
     pub phrase_locked_until: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceBoundFallbackStorageKey {
+    pub version: u32,
+    pub sealer_method: String,
+    pub sealed_key_b64: String,
+}
+
 // =====================================================================
 // DTOs the Tauri layer surfaces.
 // =====================================================================
@@ -147,11 +164,12 @@ pub struct PasswordStatusDto {
     pub is_set: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifyFailureDto {
     pub ok: bool, // always false on this path
     pub attempts_used: u32,
     pub lockout_seconds_remaining: i64,
+    pub duress_triggered: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -161,6 +179,24 @@ pub struct LockoutStatusDto {
     pub phrase_locked_until: Option<i64>,
     pub phrase_attempts_used: u32,
     pub now: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InactivityAutoLockOutcome {
+    StillUnlocked,
+    Locked,
+    AlreadyLocked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WrongPasswordAttemptAction {
+    Wrong {
+        attempts_used: u32,
+        lockout_seconds_remaining: i64,
+    },
+    DuressTriggered {
+        attempts_used: u32,
+    },
 }
 
 // =====================================================================
@@ -235,6 +271,10 @@ fn lockout_path(dir: &Path) -> PathBuf {
     dir.join(LOCKOUT_FILENAME)
 }
 
+fn device_bound_fallback_key_path(dir: &Path) -> PathBuf {
+    dir.join(DEVICE_BOUND_FALLBACK_KEY_FILENAME)
+}
+
 /// Reports whether a main password is configured (the marker file
 /// exists). Does not validate the file's contents.
 pub fn marker_exists(dir: &Path) -> bool {
@@ -297,6 +337,10 @@ pub fn password_lockout_secs_pub(attempts: u32) -> i64 {
     password_lockout_secs(attempts)
 }
 
+pub fn wrong_password_attempt_triggers_duress(attempts: u32) -> bool {
+    attempts >= DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT
+}
+
 fn read_lockout(dir: &Path) -> LockoutState {
     let path = lockout_path(dir);
     let Ok(bytes) = std::fs::read(&path) else {
@@ -318,6 +362,33 @@ fn write_lockout(dir: &Path, state: &LockoutState) -> Result<(), String> {
     let path = lockout_path(dir);
     let bytes =
         serde_json::to_vec_pretty(state).map_err(|e| format!("OSL: serialize lockout: {e}"))?;
+    std::fs::write(&path, &bytes).map_err(|e| format!("OSL: write {}: {e}", path.display()))
+}
+
+fn read_device_bound_fallback_key(dir: &Path) -> Result<DeviceBoundFallbackStorageKey, String> {
+    let path = device_bound_fallback_key_path(dir);
+    let bytes = std::fs::read(&path).map_err(|e| format!("OSL: read {}: {e}", path.display()))?;
+    let dto: DeviceBoundFallbackStorageKey = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("OSL: parse file_storage_key_fallback.json: {e}"))?;
+    if dto.version != DEVICE_BOUND_FALLBACK_KEY_VERSION {
+        return Err(format!(
+            "OSL: file_storage_key_fallback.json version mismatch (got {}, want {DEVICE_BOUND_FALLBACK_KEY_VERSION})",
+            dto.version
+        ));
+    }
+    Ok(dto)
+}
+
+fn write_device_bound_fallback_key(
+    dir: &Path,
+    dto: &DeviceBoundFallbackStorageKey,
+) -> Result<(), String> {
+    if !dir.exists() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("OSL: mkdir {}: {e}", dir.display()))?;
+    }
+    let path = device_bound_fallback_key_path(dir);
+    let bytes = serde_json::to_vec_pretty(dto)
+        .map_err(|e| format!("OSL: serialize file_storage_key_fallback: {e}"))?;
     std::fs::write(&path, &bytes).map_err(|e| format!("OSL: write {}: {e}", path.display()))
 }
 
@@ -367,6 +438,10 @@ fn phrase_lockout_secs(attempts: u32) -> i64 {
         5 => 3600,
         _ => 86400,
     }
+}
+
+fn password_duress_triggered(attempts: u32) -> bool {
+    attempts >= keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD
 }
 
 // =====================================================================
@@ -445,6 +520,7 @@ fn build_marker(password: &str, phrase: &str) -> Result<PasswordMarker, String> 
         phrase_hash_b64: Some(phrase_hash_b64),
         stealth_password_hash_b64: None,
         burn_password_hash_b64: None,
+        duress_password_hash_b64: None,
     })
 }
 
@@ -509,7 +585,7 @@ pub fn set_main_password(dir: &Path, password: &str) -> Result<String, String> {
     let derived = derive(password, &salt, &marker.params)?;
     let file_key = Zeroizing::new(derive_file_storage_key(&derived[HASH_LEN..]));
     encrypt_existing_state_files(dir, &file_key)?;
-    set_file_storage_key(Some(*file_key));
+    set_file_storage_key_after_main_password_unlock(*file_key);
     Ok(phrase)
 }
 
@@ -537,7 +613,7 @@ pub fn change_main_password(dir: &Path, current: &str, new: &str) -> Result<Stri
     // in a consistent (old-marker, old-key-encrypted) state.
     rotate_state_files(dir, &old_file_key, &new_file_key)?;
     write_marker(dir, &new_marker)?;
-    set_file_storage_key(Some(*new_file_key));
+    set_file_storage_key_after_main_password_unlock(*new_file_key);
     let _ = reset_password_lockout(dir);
     let _ = reset_phrase_lockout(dir);
     Ok(new_phrase)
@@ -599,6 +675,7 @@ pub fn verify_main_password(dir: &Path, password: &str) -> Result<(), String> {
                 ok: false,
                 attempts_used: state.password_failed_attempts,
                 lockout_seconds_remaining: until - now,
+                duress_triggered: password_duress_triggered(state.password_failed_attempts),
             })
             .unwrap_or_else(|_| "OSL: lockout active".to_string()));
         }
@@ -620,7 +697,7 @@ pub fn verify_main_password(dir: &Path, password: &str) -> Result<(), String> {
                 .map_err(|e| format!("OSL: salt b64: {e}"))?;
             let derived = derive(password, &salt, &marker.params)?;
             let file_key = Zeroizing::new(derive_file_storage_key(&derived[HASH_LEN..]));
-            set_file_storage_key(Some(*file_key));
+            set_file_storage_key_after_main_password_unlock(*file_key);
             state.password_failed_attempts = 0;
             state.password_locked_until = None;
             let _ = write_lockout(dir, &state);
@@ -635,6 +712,7 @@ pub fn verify_main_password(dir: &Path, password: &str) -> Result<(), String> {
                 ok: false,
                 attempts_used: state.password_failed_attempts,
                 lockout_seconds_remaining: secs,
+                duress_triggered: password_duress_triggered(state.password_failed_attempts),
             })
             .unwrap_or_else(|_| "OSL: bad password".to_string()))
         }
@@ -659,6 +737,7 @@ pub fn verify_recovery_phrase(
                 ok: false,
                 attempts_used: lock.phrase_failed_attempts,
                 lockout_seconds_remaining: until - now,
+                duress_triggered: false,
             })
             .unwrap_or_else(|_| "OSL: phrase lockout active".to_string()));
         }
@@ -734,6 +813,7 @@ pub fn verify_recovery_phrase(
             ok: false,
             attempts_used: lock.phrase_failed_attempts,
             lockout_seconds_remaining: secs,
+            duress_triggered: false,
         })
         .unwrap_or_else(|_| "OSL: bad recovery phrase".to_string()));
     }
@@ -797,6 +877,62 @@ pub fn lockout_status(dir: &Path) -> LockoutStatusDto {
     }
 }
 
+pub fn record_wrong_password_attempt_or_duress(
+    state: &AppState,
+    lockout: &mut LockoutState,
+    now: i64,
+) -> Result<WrongPasswordAttemptAction, String> {
+    lockout.version = LOCKOUT_VERSION;
+    lockout.password_failed_attempts = lockout.password_failed_attempts.saturating_add(1);
+    if wrong_password_attempt_triggers_duress(lockout.password_failed_attempts) {
+        lockout.password_locked_until = None;
+        execute_gate_duress(state)?;
+        return Ok(WrongPasswordAttemptAction::DuressTriggered {
+            attempts_used: lockout.password_failed_attempts,
+        });
+    }
+
+    let secs = password_lockout_secs(lockout.password_failed_attempts);
+    lockout.password_locked_until = if secs > 0 { Some(now + secs) } else { None };
+    Ok(WrongPasswordAttemptAction::Wrong {
+        attempts_used: lockout.password_failed_attempts,
+        lockout_seconds_remaining: secs,
+    })
+}
+
+pub fn lock_main_password_session(state: &AppState) {
+    set_file_storage_key(None);
+    state.clear_identity();
+    state.clear_prekey_state();
+    state.sender_pubkey_cache.clear();
+    *state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned") = None;
+    *state
+        .recovery_token
+        .lock()
+        .expect("recovery_token mutex poisoned") = None;
+}
+
+pub fn run_inactivity_auto_lock_timer_for_state(
+    state: &AppState,
+    last_activity: Instant,
+    now: Instant,
+) -> InactivityAutoLockOutcome {
+    if get_file_storage_key().is_none() {
+        return InactivityAutoLockOutcome::AlreadyLocked;
+    }
+    let timer =
+        keystore::InactivityTimer::with_last_activity(INACTIVITY_AUTO_LOCK_SECONDS, last_activity);
+    if timer.should_reprompt_at(now) {
+        lock_main_password_session(state);
+        InactivityAutoLockOutcome::Locked
+    } else {
+        InactivityAutoLockOutcome::StillUnlocked
+    }
+}
+
 fn marker_phrase_hash(marker: &PasswordMarker) -> Option<String> {
     marker.phrase_hash_b64.clone()
 }
@@ -821,24 +957,106 @@ fn marker_phrase_hash(marker: &PasswordMarker) -> Option<String> {
 // changes to existing readers.
 //
 // Plain JSON (no OSL-ENC1 prefix) is still accepted by loaders so
-// users without a password keep working, and so the migration to
-// encryption-at-rest on first `set_main_password` is a one-shot
-// re-write. `clear_file_storage_key()` is called from
-// `remove_main_password` to revert future writes to plain JSON.
+// old files can be migrated. Writes always encrypt: either with the
+// main-password-derived key already in the slot, or with a device-bound
+// fallback key opened from the active config dir when no main password is
+// configured.
 // =====================================================================
 
-use std::sync::{Mutex, OnceLock};
-
 static FILE_STORAGE_KEY: OnceLock<Mutex<Option<[u8; 32]>>> = OnceLock::new();
+static INACTIVITY_AUTO_LOCK_TIMER: OnceLock<Mutex<Option<keystore::InactivityTimer>>> =
+    OnceLock::new();
 
 fn file_storage_slot() -> &'static Mutex<Option<[u8; 32]>> {
     FILE_STORAGE_KEY.get_or_init(|| Mutex::new(None))
+}
+
+fn inactivity_auto_lock_slot() -> &'static Mutex<Option<keystore::InactivityTimer>> {
+    INACTIVITY_AUTO_LOCK_TIMER.get_or_init(|| Mutex::new(None))
+}
+
+fn arm_inactivity_auto_lock_timer_at(now: Instant) {
+    let mut slot = inactivity_auto_lock_slot()
+        .lock()
+        .expect("inactivity auto-lock timer mutex poisoned");
+    *slot = Some(keystore::InactivityTimer::with_last_activity(
+        keystore::DEFAULT_INACTIVITY_SECONDS,
+        now,
+    ));
+}
+
+fn disarm_inactivity_auto_lock_timer() {
+    let mut slot = inactivity_auto_lock_slot()
+        .lock()
+        .expect("inactivity auto-lock timer mutex poisoned");
+    *slot = None;
+}
+
+fn set_file_storage_key_after_main_password_unlock_at(key: [u8; 32], now: Instant) {
+    set_file_storage_key(Some(key));
+    arm_inactivity_auto_lock_timer_at(now);
+}
+
+/// Install a password-derived file storage key and arm the 15-minute
+/// inactivity auto-lock timer for this unlocked session.
+pub fn set_file_storage_key_after_main_password_unlock(key: [u8; 32]) {
+    set_file_storage_key_after_main_password_unlock_at(key, Instant::now());
+}
+
+/// Clear the unlocked file key after 15 idle minutes. Returns true when this
+/// invocation transitioned the password gate from unlocked to locked.
+pub fn run_file_key_inactivity_auto_lock_timer() -> bool {
+    run_file_key_inactivity_auto_lock_timer_at(Instant::now())
+}
+
+pub(crate) fn run_file_key_inactivity_auto_lock_timer_at(now: Instant) -> bool {
+    let should_lock = {
+        let mut timer = inactivity_auto_lock_slot()
+            .lock()
+            .expect("inactivity auto-lock timer mutex poisoned");
+        // `Some(timer)` shadowed the outer guard, so `*timer = None` assigned to the
+        // borrowed &InactivityTimer instead of the slot -- and as_ref() held an
+        // immutable borrow across the write. Decide first, then clear the slot.
+        let expired = timer.as_ref().is_some_and(|t| t.should_reprompt_at(now));
+        if expired {
+            *timer = None;
+            true
+        } else {
+            false
+        }
+    };
+    if should_lock {
+        set_file_storage_key(None);
+    }
+    should_lock
+}
+
+/// Record user activity for the current unlocked session. If the timer has
+/// already fired, the file key is cleared and this activity does not re-open it.
+pub fn mark_activity_for_inactivity_auto_lock() -> bool {
+    mark_activity_for_inactivity_auto_lock_at(Instant::now())
+}
+
+pub(crate) fn mark_activity_for_inactivity_auto_lock_at(now: Instant) -> bool {
+    if run_file_key_inactivity_auto_lock_timer_at(now) {
+        return false;
+    }
+    let mut timer = inactivity_auto_lock_slot()
+        .lock()
+        .expect("inactivity auto-lock timer mutex poisoned");
+    if let Some(timer) = timer.as_mut() {
+        timer.mark_activity_at(now);
+        true
+    } else {
+        false
+    }
 }
 
 /// Public accessor used by peer_map / whitelist_state /
 /// pending_invitations loaders + writers to decide whether to
 /// encrypt-on-write or accept an encrypted-on-disk file.
 pub fn get_file_storage_key() -> Option<[u8; 32]> {
+    run_file_key_inactivity_auto_lock_timer();
     *file_storage_slot()
         .lock()
         .expect("file_storage_key mutex poisoned")
@@ -855,11 +1073,87 @@ pub fn set_file_storage_key(key: Option<[u8; 32]>) {
     }
     *slot = key;
     drop(slot);
+    if !is_some {
+        disarm_inactivity_auto_lock_timer();
+    }
     if is_some && !was_some {
         eprintln!("[OSL][crypto] file_storage_key populated");
     } else if !is_some && was_some {
         eprintln!("[OSL][crypto] file_storage_key cleared");
     }
+}
+
+pub fn mark_inactivity_timer_activity() {
+    let _ = mark_activity_for_inactivity_auto_lock();
+}
+
+pub fn run_inactivity_auto_lock_timer() -> bool {
+    run_file_key_inactivity_auto_lock_timer()
+}
+
+/// Ensure this no-main-password install still has an encrypted
+/// `file_storage_key` rather than falling back to protected plaintext.
+///
+/// The fallback key is generated once, sealed with the existing device sealer
+/// stack, written under the OSL config dir, and installed in the process slot.
+/// It is available only when no main password marker exists; if the user has a
+/// main password, that password-derived key remains the only authority.
+pub fn ensure_device_bound_fallback_file_storage_key(dir: &Path) -> Result<[u8; 32], String> {
+    let sealer = keystore::select_best_sealer();
+    ensure_device_bound_fallback_file_storage_key_with_sealer(dir, sealer.as_ref())
+}
+
+pub fn ensure_device_bound_fallback_file_storage_key_with_sealer(
+    dir: &Path,
+    sealer: &dyn keystore::Sealer,
+) -> Result<[u8; 32], String> {
+    if marker_exists(dir) {
+        return Err(
+            "OSL: main password marker exists; refusing device-bound fallback storage key"
+                .to_owned(),
+        );
+    }
+
+    let key = if device_bound_fallback_key_path(dir).exists() {
+        let dto = read_device_bound_fallback_key(dir)?;
+        if dto.sealer_method != sealer.method_label() {
+            return Err(
+                "OSL: file_storage_key_fallback.json was sealed by a different device backend"
+                    .to_owned(),
+            );
+        }
+        let sealed = STANDARD
+            .decode(&dto.sealed_key_b64)
+            .map_err(|e| format!("OSL: fallback storage key b64: {e}"))?;
+        let opened = sealer
+            .unseal(&sealed)
+            .map_err(|e| format!("OSL: unseal fallback storage key: {e}"))?;
+        if opened.len() != KEY_LEN {
+            return Err("OSL: fallback storage key wrong length".to_owned());
+        }
+        let mut out = [0u8; KEY_LEN];
+        out.copy_from_slice(&opened[..KEY_LEN]);
+        out
+    } else {
+        let random = random_bytes(KEY_LEN);
+        let mut out = [0u8; KEY_LEN];
+        out.copy_from_slice(&random);
+        let sealed = sealer
+            .seal(&out)
+            .map_err(|e| format!("OSL: seal fallback storage key: {e}"))?;
+        write_device_bound_fallback_key(
+            dir,
+            &DeviceBoundFallbackStorageKey {
+                version: DEVICE_BOUND_FALLBACK_KEY_VERSION,
+                sealer_method: sealer.method_label().to_owned(),
+                sealed_key_b64: STANDARD.encode(sealed),
+            },
+        )?;
+        out
+    };
+
+    set_file_storage_key(Some(key));
+    Ok(key)
 }
 
 /// HKDF-Expand-SHA256 single-block expansion. Input `prk` is the
@@ -938,13 +1232,23 @@ pub fn maybe_decrypt(blob: &[u8]) -> Result<Vec<u8>, String> {
     decrypt_at_rest(blob, &key)
 }
 
-/// Convenience: write-side mirror of `maybe_decrypt`. If a key is
-/// in the slot, encrypt; otherwise return plaintext verbatim.
+/// Convenience: write-side mirror of `maybe_decrypt`.
+///
+/// Writes never fall back to plaintext. If no main-password-derived key is
+/// present in the process slot, open or create the device-bound fallback key
+/// for the active OSL config directory and use that. When a main-password
+/// marker exists but the user has not unlocked it, the fallback key is refused
+/// and the write fails closed.
 pub fn maybe_encrypt(plaintext: &[u8]) -> Result<Vec<u8>, String> {
-    match get_file_storage_key().map(Zeroizing::new) {
-        Some(key) => encrypt_at_rest(plaintext, &key),
-        None => Ok(plaintext.to_vec()),
-    }
+    let key = match get_file_storage_key() {
+        Some(key) => Zeroizing::new(key),
+        None => {
+            let dir = keystore::osl_config_dir()
+                .map_err(|e| format!("OSL: resolve config dir for at-rest encrypt: {e}"))?;
+            Zeroizing::new(ensure_device_bound_fallback_file_storage_key(&dir)?)
+        }
+    };
+    encrypt_at_rest(plaintext, &key)
 }
 
 pub fn has_enc_magic(blob: &[u8]) -> bool {
@@ -1047,19 +1351,34 @@ pub fn rotate_state_files(
 // 7d-B2 / B3: stealth + burn password operations + 3-way gate verify.
 // =====================================================================
 
-/// Verify a password against the marker's three stored hashes
-/// (main, stealth, burn). Constant-time across all three regardless
+/// Verify a password against the marker's stored gate hashes
+/// (main, stealth, burn, duress). Constant-time across all roles regardless
 /// of early match. Returns which role matched. The boot gate's
 /// dispatcher uses this; the settings UI continues using
-/// `verify_main_password` (which intentionally rejects stealth/burn
+/// `verify_main_password` (which intentionally rejects stealth/burn/duress
 /// matches — a password manager that only knows the main password
 /// should fail "current password incorrect" if the user types
 /// stealth/burn into a "current password" field).
 pub enum GateMatch {
     Main([u8; 32]), // also returns derived file_storage_key
     Stealth,
+    Duress,
     Burn,
     Wrong,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum GatePasswordAttemptResult {
+    Main([u8; 32]), // also returns derived file_storage_key
+    Stealth,
+    Burn,
+    Wrong {
+        attempts_used: u32,
+        lockout_seconds_remaining: i64,
+    },
+    Duress {
+        attempts_used: u32,
+    },
 }
 
 pub fn verify_gate_password_with_marker(
@@ -1092,8 +1411,16 @@ pub fn verify_gate_password_with_marker(
         ),
         None => None,
     };
+    let duress_hash = match marker.duress_password_hash_b64.as_ref() {
+        Some(s) => Some(
+            STANDARD
+                .decode(s)
+                .map_err(|e| format!("OSL: duress hash b64: {e}"))?,
+        ),
+        None => None,
+    };
     let candidate = &derived[..HASH_LEN];
-    // Constant-time: run all three comparisons regardless of
+    // Constant-time: run all role comparisons regardless of
     // early match. The bool ORs at the end pick the first match.
     let m_main = ct_eq(candidate, &main_hash);
     let m_stealth = stealth_hash
@@ -1104,6 +1431,10 @@ pub fn verify_gate_password_with_marker(
         .as_deref()
         .map(|h| ct_eq(candidate, h))
         .unwrap_or(false);
+    let m_duress = duress_hash
+        .as_deref()
+        .map(|h| ct_eq(candidate, h))
+        .unwrap_or(false);
     if m_main {
         let file_key = derive_file_storage_key(&derived[HASH_LEN..]);
         return Ok(GateMatch::Main(file_key));
@@ -1111,10 +1442,88 @@ pub fn verify_gate_password_with_marker(
     if m_stealth {
         return Ok(GateMatch::Stealth);
     }
+    if m_duress {
+        return Ok(GateMatch::Duress);
+    }
     if m_burn {
         return Ok(GateMatch::Burn);
     }
     Ok(GateMatch::Wrong)
+}
+
+/// Gate-side password verification with the shared persisted failure
+/// counter. The tenth consecutive wrong entry triggers duress immediately.
+pub fn verify_gate_password_attempt(
+    dir: &Path,
+    password: &str,
+) -> Result<GatePasswordAttemptResult, String> {
+    let mut lock = read_lockout(dir);
+    lock.version = LOCKOUT_VERSION;
+    let now = now_unix_secs();
+    if let Some(until) = lock.password_locked_until {
+        if now < until {
+            return Ok(GatePasswordAttemptResult::Wrong {
+                attempts_used: lock.password_failed_attempts,
+                lockout_seconds_remaining: until - now,
+            });
+        }
+    }
+
+    let marker = read_marker(dir)?;
+    match verify_gate_password_with_marker(&marker, password)? {
+        GateMatch::Main(file_key) => {
+            set_file_storage_key_after_main_password_unlock(file_key);
+            lock.password_failed_attempts = 0;
+            lock.password_locked_until = None;
+            let _ = write_lockout(dir, &lock);
+            Ok(GatePasswordAttemptResult::Main(file_key))
+        }
+        GateMatch::Stealth => {
+            lock.password_failed_attempts = 0;
+            lock.password_locked_until = None;
+            let _ = write_lockout(dir, &lock);
+            Ok(GatePasswordAttemptResult::Stealth)
+        }
+        GateMatch::Burn => {
+            lock.password_failed_attempts = 0;
+            lock.password_locked_until = None;
+            let _ = write_lockout(dir, &lock);
+            Ok(GatePasswordAttemptResult::Burn)
+        }
+        GateMatch::Duress => {
+            lock.password_failed_attempts = 0;
+            lock.password_locked_until = None;
+            let _ = write_lockout(dir, &lock);
+            set_file_storage_key(None);
+            burn_wipe_all(dir)?;
+            Ok(GatePasswordAttemptResult::Duress { attempts_used: 0 })
+        }
+        GateMatch::Wrong => record_wrong_gate_password_attempt(dir, &mut lock, now),
+    }
+}
+
+fn record_wrong_gate_password_attempt(
+    dir: &Path,
+    lock: &mut LockoutState,
+    now: i64,
+) -> Result<GatePasswordAttemptResult, String> {
+    lock.password_failed_attempts = lock.password_failed_attempts.saturating_add(1);
+    let attempts_used = lock.password_failed_attempts;
+    if attempts_used >= DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD {
+        lock.password_locked_until = None;
+        let _ = write_lockout(dir, lock);
+        set_file_storage_key(None);
+        burn_wipe_all(dir)?;
+        return Ok(GatePasswordAttemptResult::Duress { attempts_used });
+    }
+
+    let secs = password_lockout_secs(attempts_used);
+    lock.password_locked_until = if secs > 0 { Some(now + secs) } else { None };
+    let _ = write_lockout(dir, lock);
+    Ok(GatePasswordAttemptResult::Wrong {
+        attempts_used,
+        lockout_seconds_remaining: secs,
+    })
 }
 
 /// Set or rotate the stealth password. Verifies `current_main`
@@ -1144,6 +1553,18 @@ pub fn set_stealth_password(
             .map_err(|e| format!("OSL: burn b64: {e}"))?;
         if ct_eq(&derived[..HASH_LEN], &burn) {
             return Err("OSL: stealth and burn passwords must be different".to_string());
+        }
+    }
+    if let Some(duress_b64) = marker.duress_password_hash_b64.as_ref() {
+        let salt = STANDARD
+            .decode(&marker.salt_b64)
+            .map_err(|e| format!("OSL: salt b64: {e}"))?;
+        let derived = derive(new_stealth, &salt, &marker.params)?;
+        let duress = STANDARD
+            .decode(duress_b64)
+            .map_err(|e| format!("OSL: duress b64: {e}"))?;
+        if ct_eq(&derived[..HASH_LEN], &duress) {
+            return Err("OSL: stealth and duress passwords must be different".to_string());
         }
     }
     let salt = STANDARD
@@ -1184,6 +1605,18 @@ pub fn set_burn_password(dir: &Path, current_main: &str, new_burn: &str) -> Resu
             return Err("OSL: stealth and burn passwords must be different".to_string());
         }
     }
+    if let Some(duress_b64) = marker.duress_password_hash_b64.as_ref() {
+        let salt = STANDARD
+            .decode(&marker.salt_b64)
+            .map_err(|e| format!("OSL: salt b64: {e}"))?;
+        let derived = derive(new_burn, &salt, &marker.params)?;
+        let duress = STANDARD
+            .decode(duress_b64)
+            .map_err(|e| format!("OSL: duress b64: {e}"))?;
+        if ct_eq(&derived[..HASH_LEN], &duress) {
+            return Err("OSL: burn and duress passwords must be different".to_string());
+        }
+    }
     let salt = STANDARD
         .decode(&marker.salt_b64)
         .map_err(|e| format!("OSL: salt b64: {e}"))?;
@@ -1212,6 +1645,74 @@ pub fn burn_password_status(dir: &Path) -> bool {
     read_marker(dir)
         .map(|m| m.burn_password_hash_b64.is_some())
         .unwrap_or(false)
+}
+
+pub fn set_duress_password(dir: &Path, current_main: &str, new_duress: &str) -> Result<(), String> {
+    validate_password(new_duress)?;
+    let mut marker = read_marker(dir)?;
+    let _ = verify_with_marker(&marker, current_main)
+        .map_err(|_| "OSL: current main password incorrect".to_string())?;
+    if current_main == new_duress {
+        return Err("OSL: duress password must be different from your main password".to_string());
+    }
+    let salt = STANDARD
+        .decode(&marker.salt_b64)
+        .map_err(|e| format!("OSL: salt b64: {e}"))?;
+    let derived = derive(new_duress, &salt, &marker.params)?;
+    if let Some(stealth_b64) = marker.stealth_password_hash_b64.as_ref() {
+        let stealth = STANDARD
+            .decode(stealth_b64)
+            .map_err(|e| format!("OSL: stealth b64: {e}"))?;
+        if ct_eq(&derived[..HASH_LEN], &stealth) {
+            return Err("OSL: stealth and duress passwords must be different".to_string());
+        }
+    }
+    if let Some(burn_b64) = marker.burn_password_hash_b64.as_ref() {
+        let burn = STANDARD
+            .decode(burn_b64)
+            .map_err(|e| format!("OSL: burn b64: {e}"))?;
+        if ct_eq(&derived[..HASH_LEN], &burn) {
+            return Err("OSL: burn and duress passwords must be different".to_string());
+        }
+    }
+    marker.duress_password_hash_b64 = Some(STANDARD.encode(&derived[..HASH_LEN]));
+    marker.version = MARKER_VERSION;
+    write_marker(dir, &marker)
+}
+
+pub fn remove_duress_password(dir: &Path, current_main: &str) -> Result<(), String> {
+    let mut marker = read_marker(dir)?;
+    let _ = verify_with_marker(&marker, current_main)
+        .map_err(|_| "OSL: current main password incorrect".to_string())?;
+    marker.duress_password_hash_b64 = None;
+    marker.version = MARKER_VERSION;
+    write_marker(dir, &marker)
+}
+
+pub fn duress_password_status(dir: &Path) -> bool {
+    read_marker(dir)
+        .map(|m| m.duress_password_hash_b64.is_some())
+        .unwrap_or(false)
+}
+
+pub fn execute_gate_duress(state: &AppState) -> Result<(), String> {
+    let report = match state.execute_production_duress() {
+        Ok(report) => report,
+        Err(_) => state
+            .duress_engine
+            .lock()
+            .expect("duress_engine mutex poisoned")
+            .execute()
+            .map_err(|e| format!("OSL: duress wipe failed before it could be journaled: {e}"))?,
+    };
+    if !report.failed_steps().is_empty() {
+        tracing::warn!(
+            failed_steps = ?report.failed_steps(),
+            "OSL: duress wipe completed with failed steps; journal retained for resume"
+        );
+    }
+    set_file_storage_key(None);
+    Ok(())
 }
 
 // =====================================================================
@@ -1318,10 +1819,186 @@ pub fn burn_wipe_all(dir: &Path) -> Result<(), String> {
 mod password_policy_tests {
     use super::*;
 
+    /// Holds the process-global serialization lock for as long as the
+    /// overrides it installed are live, so a parallel `cargo test` cannot
+    /// reset another test's config dir mid-assertion.
+    struct ConfigDirOverrideGuard(#[allow(dead_code)] crate::test_process_globals::SerialGuard);
+
+    impl Drop for ConfigDirOverrideGuard {
+        fn drop(&mut self) {
+            keystore::set_active_account_dir(None);
+            keystore::set_base_dir_override(None);
+            set_file_storage_key(None);
+        }
+    }
+
+    fn use_temp_config_dir(dir: &Path) -> ConfigDirOverrideGuard {
+        let serial = crate::test_process_globals::serialize();
+        keystore::set_active_account_dir(None);
+        keystore::set_base_dir_override(Some(dir.to_path_buf()));
+        ConfigDirOverrideGuard(serial)
+    }
+
+    const TEST_MAIN_PASSWORD: &str = "main-secret";
+    const TEST_PHRASE: &str =
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+    fn build_fast_test_marker(password: &str) -> PasswordMarker {
+        let salt = [7u8; SALT_LEN];
+        let params = Argon2ParamsDto {
+            memory_kb: 32,
+            iterations: 1,
+            parallelism: 1,
+        };
+        let derived = derive(password, &salt, &params).unwrap();
+        let (hash, key_slice) = derived.split_at(HASH_LEN);
+        let mut key = Zeroizing::new([0u8; KEY_LEN]);
+        key.copy_from_slice(key_slice);
+        let (ct, nonce) = encrypt_phrase(TEST_PHRASE, &key).unwrap();
+        let phrase_derived = derive(TEST_PHRASE, &salt, &params).unwrap();
+        PasswordMarker {
+            version: MARKER_VERSION,
+            salt_b64: STANDARD.encode(salt),
+            params,
+            password_hash_b64: STANDARD.encode(hash),
+            phrase_encrypted_b64: STANDARD.encode(&ct),
+            phrase_nonce_b64: STANDARD.encode(nonce),
+            phrase_hash_b64: Some(STANDARD.encode(&phrase_derived[..HASH_LEN])),
+            stealth_password_hash_b64: None,
+            burn_password_hash_b64: None,
+            duress_password_hash_b64: None,
+        }
+    }
+
+    fn clear_password_lockout_window(dir: &Path) {
+        let mut lock = read_lockout(dir);
+        lock.password_locked_until = None;
+        write_lockout(dir, &lock).unwrap();
+    }
+
     #[test]
     fn six_character_passwords_can_be_created_and_unlocked() {
         assert!(validate_password("aB3!z9").is_ok());
         assert!(validate_new_password("aB3!z9").is_ok());
+    }
+
+    #[test]
+    fn stateful_inactivity_auto_lock_timer_clears_session() {
+        let _serial = crate::test_process_globals::serialize();
+        set_file_storage_key(None);
+        let state = AppState::new();
+        state.install_identity(keystore::generate_identity("idle-lock-owner".to_owned()));
+        set_file_storage_key(Some([0x7a; 32]));
+        // `Instant` is monotonic-since-boot, so `Instant::now() - 30min` panics
+        // ("overflow when subtracting duration from instant") on a machine that
+        // has been up for less than 30 minutes. A freshly-booted `windows-latest`
+        // runner is exactly that machine, which is why this only ever failed in
+        // CI. Anchor `now` far enough forward instead and derive the
+        // last-activity instants by subtraction from it, which cannot underflow.
+        let idle_window = std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS);
+        let now = std::time::Instant::now() + idle_window * 2;
+
+        assert_eq!(
+            super::run_inactivity_auto_lock_timer_for_state(
+                &state,
+                now - std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS - 1),
+                now,
+            ),
+            InactivityAutoLockOutcome::StillUnlocked
+        );
+        assert_eq!(get_file_storage_key(), Some([0x7a; 32]));
+        assert!(state.has_identity());
+        assert!(state.has_prekey_state());
+
+        assert_eq!(
+            super::run_inactivity_auto_lock_timer_for_state(
+                &state,
+                now - std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS),
+                now,
+            ),
+            InactivityAutoLockOutcome::Locked
+        );
+        assert_eq!(get_file_storage_key(), None);
+        assert!(
+            !state.has_identity(),
+            "auto-lock must clear the live decrypted identity, not only a UI flag"
+        );
+        assert!(!state.has_prekey_state());
+
+        assert_eq!(
+            super::run_inactivity_auto_lock_timer_for_state(
+                &state,
+                now - std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS * 2),
+                now,
+            ),
+            InactivityAutoLockOutcome::AlreadyLocked
+        );
+        set_file_storage_key(None);
+    }
+
+    #[test]
+    fn record_wrong_password_attempt_triggers_duress_at_threshold() {
+        set_file_storage_key(None);
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = use_temp_config_dir(dir.path());
+        let state = AppState::new_with_production_duress_engine(dir.path().to_path_buf());
+        state.install_identity(keystore::generate_identity(
+            "wrong-threshold-owner".to_owned(),
+        ));
+        set_file_storage_key(Some([0x55; 32]));
+        let identity_file = dir.path().join("identity.json");
+        let password_file = dir.path().join("password_marker.json");
+        let prekey_file = dir.path().join("prekeys.json");
+        std::fs::write(&identity_file, b"identity").unwrap();
+        std::fs::write(&password_file, b"password").unwrap();
+        std::fs::write(&prekey_file, b"prekeys").unwrap();
+        let now = now_unix_secs();
+        let mut lock = LockoutState {
+            version: LOCKOUT_VERSION,
+            password_failed_attempts: DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 2,
+            password_locked_until: None,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            record_wrong_password_attempt_or_duress(&state, &mut lock, now).unwrap(),
+            WrongPasswordAttemptAction::Wrong {
+                attempts_used: DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 1,
+                lockout_seconds_remaining: password_lockout_secs(
+                    DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 1
+                ),
+            },
+            "the ninth wrong password must not trigger duress early"
+        );
+        assert!(identity_file.exists());
+        assert!(password_file.exists());
+        assert!(prekey_file.exists());
+        assert_eq!(get_file_storage_key(), Some([0x55; 32]));
+
+        lock.password_locked_until = Some(now - 1);
+        assert_eq!(
+            record_wrong_password_attempt_or_duress(&state, &mut lock, now).unwrap(),
+            WrongPasswordAttemptAction::DuressTriggered {
+                attempts_used: DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT,
+            },
+            "the tenth wrong password must trigger the production duress engine"
+        );
+
+        assert_eq!(
+            lock.password_failed_attempts,
+            DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT
+        );
+        assert_eq!(lock.password_locked_until, None);
+        assert!(!identity_file.exists());
+        assert!(!password_file.exists());
+        assert!(!prekey_file.exists());
+        assert_eq!(
+            get_file_storage_key(),
+            None,
+            "duress must clear the live storage key"
+        );
+        assert!(!state.has_identity());
+        assert!(!state.has_prekey_state());
     }
 
     #[test]
@@ -1330,5 +2007,578 @@ mod password_policy_tests {
         assert!(validate_new_password("short").is_err());
         assert!(validate_new_password(&"x".repeat(PASSWORD_MAX_LEN + 1)).is_err());
         assert!(validate_new_password("twelve\nchars").is_err());
+    }
+
+    #[test]
+    fn command_activity_extends_file_key_inactivity_timer_window() {
+        let _guard = crate::test_process_globals::serialize();
+        set_file_storage_key(None);
+        let t0 = Instant::now();
+        let key = [0x42; 32];
+        set_file_storage_key_after_main_password_unlock_at(key, t0);
+
+        assert!(!run_file_key_inactivity_auto_lock_timer_at(
+            t0 + std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS - 1)
+        ));
+        assert_eq!(get_file_storage_key(), Some(key));
+
+        let t1 = t0 + std::time::Duration::from_secs(500);
+        assert!(mark_activity_for_inactivity_auto_lock_at(t1));
+        assert!(!run_file_key_inactivity_auto_lock_timer_at(
+            t1 + std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS - 1)
+        ));
+        assert_eq!(get_file_storage_key(), Some(key));
+
+        assert!(run_file_key_inactivity_auto_lock_timer_at(
+            t1 + std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS)
+        ));
+        assert_eq!(get_file_storage_key(), None);
+
+        set_file_storage_key(None);
+    }
+
+    #[test]
+    fn gate_wrong_password_threshold_reports_duress_and_runs_cleanup() {
+        struct OverrideReset;
+        impl Drop for OverrideReset {
+            fn drop(&mut self) {
+                set_file_storage_key(None);
+                keystore::set_active_account_dir(None);
+                keystore::set_base_dir_override(None);
+            }
+        }
+
+        // Taken before the overrides are installed and released after
+        // `OverrideReset` has torn them down, so no parallel test can point
+        // `password_dir()` back at the real per-user config dir while this one
+        // is driving the duress gate.
+        let _serial = crate::test_process_globals::serialize();
+        set_file_storage_key(None);
+        let dir = tempfile::tempdir().unwrap();
+        let base_dir = dir.path().join("base");
+        let account_dir = dir.path().join("accounts").join("active");
+        std::fs::create_dir_all(&account_dir).unwrap();
+        std::fs::create_dir_all(&base_dir).unwrap();
+        keystore::set_base_dir_override(Some(base_dir.clone()));
+        keystore::set_active_account_dir(Some(account_dir.clone()));
+        let _reset = OverrideReset;
+
+        let state = AppState::new();
+        let marker = build_marker(
+            "correct-password",
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        )
+        .unwrap();
+        write_marker(&base_dir, &marker).unwrap();
+        std::fs::write(account_dir.join("identity.json"), b"identity").unwrap();
+        std::fs::write(account_dir.join("prekeys.json"), b"prekeys").unwrap();
+        write_lockout(
+            &base_dir,
+            &LockoutState {
+                version: LOCKOUT_VERSION,
+                password_failed_attempts: DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 1,
+                password_locked_until: Some(now_unix_secs() - 1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let result =
+            crate::commands::cmd_osl_verify_gate_password(&state, "wrong-password".to_owned())
+                .unwrap();
+
+        assert_eq!(result.result, "duress");
+        assert_eq!(result.attempts_used, DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT);
+        assert!(!account_dir.join("identity.json").exists());
+        assert!(!account_dir.join("prekeys.json").exists());
+        assert!(!base_dir.join("password_marker.json").exists());
+    }
+
+    #[test]
+    fn device_bound_fallback_file_storage_key_round_trips_without_main_password() {
+        let _serial = crate::test_process_globals::serialize();
+        set_file_storage_key(None);
+        let dir = tempfile::tempdir().unwrap();
+        let sealer = keystore::MemorySealer::new();
+
+        let first = ensure_device_bound_fallback_file_storage_key_with_sealer(dir.path(), &sealer)
+            .expect("no marker: fallback key can be created");
+        assert_eq!(get_file_storage_key(), Some(first));
+
+        let fallback_path = device_bound_fallback_key_path(dir.path());
+        let raw = std::fs::read(&fallback_path).unwrap();
+        assert!(
+            !raw.windows(first.len())
+                .any(|window| window == first.as_slice()),
+            "sealed fallback artifact must not contain the raw storage key"
+        );
+
+        let sealed = maybe_encrypt(br#"{"protected":true}"#).unwrap();
+        assert!(has_enc_magic(&sealed));
+
+        set_file_storage_key(None);
+        assert!(maybe_decrypt(&sealed).is_err());
+
+        let reopened =
+            ensure_device_bound_fallback_file_storage_key_with_sealer(dir.path(), &sealer)
+                .expect("same device sealer can reopen fallback key");
+        assert_eq!(reopened, first);
+        assert_eq!(maybe_decrypt(&sealed).unwrap(), br#"{"protected":true}"#);
+
+        let marker = build_marker(
+            "main-secret",
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        )
+        .unwrap();
+        write_marker(dir.path(), &marker).unwrap();
+        assert!(
+            ensure_device_bound_fallback_file_storage_key_with_sealer(dir.path(), &sealer).is_err(),
+            "main-password installs must not also mint fallback authority"
+        );
+        set_file_storage_key(None);
+    }
+
+    #[test]
+    fn maybe_encrypt_always_encrypts() {
+        set_file_storage_key(None);
+        let dir = tempfile::tempdir().unwrap();
+        let _override = use_temp_config_dir(dir.path());
+
+        let plaintext = br#"{"protected":"without-main-password"}"#;
+        let sealed = maybe_encrypt(plaintext).unwrap();
+
+        assert!(
+            has_enc_magic(&sealed),
+            "maybe_encrypt with no main-password key must create an encrypted envelope"
+        );
+        assert_ne!(
+            sealed.as_slice(),
+            plaintext,
+            "maybe_encrypt must not return plaintext when the key slot starts empty"
+        );
+        assert!(
+            device_bound_fallback_key_path(dir.path()).exists(),
+            "no-main-password encryption must persist a sealed device-bound fallback key"
+        );
+        assert!(
+            get_file_storage_key().is_some(),
+            "device-bound fallback key should be installed for decrypting subsequent reads"
+        );
+        assert_eq!(maybe_decrypt(&sealed).unwrap(), plaintext);
+
+        set_file_storage_key(Some([0xA9; KEY_LEN]));
+        let sealed_with_main_key = maybe_encrypt(plaintext).unwrap();
+        assert!(
+            has_enc_magic(&sealed_with_main_key),
+            "maybe_encrypt with a main-password key must also encrypt"
+        );
+        assert_eq!(maybe_decrypt(&sealed_with_main_key).unwrap(), plaintext);
+    }
+
+    #[test]
+    fn maybe_decrypt_transparently_supports_both_device_bound_and_main_password() {
+        let _serial = crate::test_process_globals::serialize();
+        set_file_storage_key(None);
+
+        let main_dir = tempfile::tempdir().unwrap();
+        set_main_password(main_dir.path(), "main-secret").unwrap();
+        let main_password_blob = maybe_encrypt(br#"{"mode":"main-password"}"#).unwrap();
+        assert!(has_enc_magic(&main_password_blob));
+
+        set_file_storage_key(Some([0xA5; 32]));
+        assert!(maybe_decrypt(&main_password_blob).is_err());
+        set_file_storage_key(None);
+        assert!(maybe_decrypt(&main_password_blob).is_err());
+
+        verify_main_password(main_dir.path(), "main-secret").unwrap();
+        assert_eq!(
+            maybe_decrypt(&main_password_blob).unwrap(),
+            br#"{"mode":"main-password"}"#
+        );
+
+        set_file_storage_key(None);
+
+        let device_dir = tempfile::tempdir().unwrap();
+        let sealer = keystore::MemorySealer::new();
+        ensure_device_bound_fallback_file_storage_key_with_sealer(device_dir.path(), &sealer)
+            .unwrap();
+        let device_bound_blob = maybe_encrypt(br#"{"mode":"device-bound"}"#).unwrap();
+        assert!(has_enc_magic(&device_bound_blob));
+
+        set_file_storage_key(Some([0x5A; 32]));
+        assert!(maybe_decrypt(&device_bound_blob).is_err());
+        set_file_storage_key(None);
+        assert!(maybe_decrypt(&device_bound_blob).is_err());
+
+        ensure_device_bound_fallback_file_storage_key_with_sealer(device_dir.path(), &sealer)
+            .unwrap();
+        assert_eq!(
+            maybe_decrypt(&device_bound_blob).unwrap(),
+            br#"{"mode":"device-bound"}"#
+        );
+        set_file_storage_key(None);
+    }
+
+    #[test]
+    fn gate_attempt_tenth_wrong_password_triggers_marker_duress_wipe() {
+        let _serial = crate::test_process_globals::serialize();
+        set_file_storage_key(None);
+        let dir = tempfile::tempdir().unwrap();
+        write_marker(dir.path(), &build_fast_test_marker(TEST_MAIN_PASSWORD)).unwrap();
+
+        for expected_attempt in 1..DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD {
+            match verify_gate_password_attempt(dir.path(), "wrong-password").unwrap() {
+                GatePasswordAttemptResult::Wrong { attempts_used, .. } => {
+                    assert_eq!(attempts_used, expected_attempt);
+                }
+                _ => panic!("wrong password must not trigger duress before attempt 10"),
+            }
+            assert!(
+                marker_path(dir.path()).exists(),
+                "marker must survive attempts before the threshold"
+            );
+            clear_password_lockout_window(dir.path());
+        }
+
+        match verify_gate_password_attempt(dir.path(), "wrong-password").unwrap() {
+            GatePasswordAttemptResult::Duress { attempts_used } => {
+                assert_eq!(attempts_used, DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD);
+            }
+            _ => panic!("the tenth wrong password attempt must trigger duress"),
+        }
+        assert!(
+            !marker_path(dir.path()).exists(),
+            "duress threshold must wipe the password marker"
+        );
+        assert!(
+            !lockout_path(dir.path()).exists(),
+            "duress threshold must wipe the persisted lockout state"
+        );
+        set_file_storage_key(None);
+    }
+
+    #[test]
+    fn tenth_consecutive_wrong_password_attempt_triggers_duress() {
+        let _serial = crate::test_process_globals::serialize();
+        set_file_storage_key(None);
+        let dir = tempfile::tempdir().unwrap();
+        write_marker(dir.path(), &build_fast_test_marker(TEST_MAIN_PASSWORD)).unwrap();
+
+        for expected_attempt in 1..DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD {
+            match verify_gate_password_attempt(dir.path(), "still-wrong").unwrap() {
+                GatePasswordAttemptResult::Wrong { attempts_used, .. } => {
+                    assert_eq!(attempts_used, expected_attempt);
+                }
+                _ => panic!("consecutive wrong attempts must stay non-duress before attempt 10"),
+            }
+            let lock = read_lockout(dir.path());
+            assert_eq!(
+                lock.password_failed_attempts, expected_attempt,
+                "wrong attempts must persist as a consecutive counter"
+            );
+            clear_password_lockout_window(dir.path());
+        }
+
+        match verify_gate_password_attempt(dir.path(), "still-wrong").unwrap() {
+            GatePasswordAttemptResult::Duress { attempts_used } => {
+                assert_eq!(attempts_used, DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD);
+            }
+            _ => panic!("the tenth consecutive wrong password must trigger duress"),
+        }
+        assert!(
+            !marker_path(dir.path()).exists(),
+            "duress must destroy the marker on the threshold attempt"
+        );
+        set_file_storage_key(None);
+    }
+
+    #[test]
+    fn correct_password_before_tenth_attempt_resets_counter() {
+        let _serial = crate::test_process_globals::serialize();
+        set_file_storage_key(None);
+        let dir = tempfile::tempdir().unwrap();
+        let password = "correct-password";
+        set_main_password(dir.path(), password).expect("password marker can be created");
+
+        let now = now_unix_secs();
+        write_lockout(
+            dir.path(),
+            &LockoutState {
+                version: LOCKOUT_VERSION,
+                password_failed_attempts: 9,
+                password_locked_until: Some(now - 1),
+                phrase_failed_attempts: 0,
+                phrase_locked_until: None,
+            },
+        )
+        .expect("pre-tenth lockout state can be seeded");
+
+        verify_main_password(dir.path(), password).expect("correct password must unlock");
+        let after_success = lockout_status(dir.path());
+        assert_eq!(after_success.password_attempts_used, 0);
+        assert_eq!(after_success.password_locked_until, None);
+
+        verify_main_password(dir.path(), "wrong-password").expect_err(
+            "a wrong password after successful unlock must fail as the first fresh attempt",
+        );
+        let after_next_failure = lockout_status(dir.path());
+        assert_eq!(after_next_failure.password_attempts_used, 1);
+        assert_eq!(after_next_failure.password_locked_until, None);
+
+        set_file_storage_key(None);
+    }
+
+    #[test]
+    fn file_key_inactivity_auto_lock_timer_clears_key_at_threshold() {
+        let _guard = crate::test_process_globals::serialize();
+        set_file_storage_key(None);
+        let t0 = Instant::now();
+        let key = [0xA5; 32];
+        set_file_storage_key_after_main_password_unlock_at(key, t0);
+
+        assert_eq!(get_file_storage_key(), Some(key));
+        assert!(
+            !run_file_key_inactivity_auto_lock_timer_at(
+                t0 + std::time::Duration::from_secs(keystore::DEFAULT_INACTIVITY_SECONDS - 1)
+            ),
+            "timer must not lock before the full inactivity window"
+        );
+        assert_eq!(get_file_storage_key(), Some(key));
+
+        assert!(
+            run_file_key_inactivity_auto_lock_timer_at(
+                t0 + std::time::Duration::from_secs(keystore::DEFAULT_INACTIVITY_SECONDS)
+            ),
+            "timer must lock exactly at the configured inactivity threshold"
+        );
+        assert_eq!(
+            get_file_storage_key(),
+            None,
+            "auto-lock must clear the unlocked file storage key"
+        );
+        assert!(
+            !run_file_key_inactivity_auto_lock_timer_at(
+                t0 + std::time::Duration::from_secs(keystore::DEFAULT_INACTIVITY_SECONDS * 2)
+            ),
+            "a disarmed timer must not repeatedly report fresh lock transitions"
+        );
+        set_file_storage_key(None);
+    }
+
+    #[test]
+    fn gate_attempt_correct_password_before_tenth_attempt_resets_counter() {
+        let _serial = crate::test_process_globals::serialize();
+        set_file_storage_key(None);
+        let dir = tempfile::tempdir().unwrap();
+        write_marker(dir.path(), &build_fast_test_marker(TEST_MAIN_PASSWORD)).unwrap();
+
+        for expected_attempt in 1..DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD {
+            match verify_gate_password_attempt(dir.path(), "wrong-before-reset").unwrap() {
+                GatePasswordAttemptResult::Wrong { attempts_used, .. } => {
+                    assert_eq!(attempts_used, expected_attempt);
+                }
+                _ => panic!("wrong attempts before reset must not trigger duress"),
+            }
+            clear_password_lockout_window(dir.path());
+        }
+        assert_eq!(
+            read_lockout(dir.path()).password_failed_attempts,
+            DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD - 1
+        );
+
+        match verify_gate_password_attempt(dir.path(), TEST_MAIN_PASSWORD).unwrap() {
+            GatePasswordAttemptResult::Main(_) => {}
+            _ => panic!("correct main password must unlock before the threshold"),
+        }
+        let after_success = read_lockout(dir.path());
+        assert_eq!(
+            after_success.password_failed_attempts, 0,
+            "correct password must reset the consecutive wrong-attempt counter"
+        );
+        assert!(
+            after_success.password_locked_until.is_none(),
+            "correct password must clear any stale lockout window"
+        );
+        assert!(
+            marker_path(dir.path()).exists(),
+            "correct password before the tenth wrong attempt must not trigger duress"
+        );
+
+        match verify_gate_password_attempt(dir.path(), "wrong-after-reset").unwrap() {
+            GatePasswordAttemptResult::Wrong { attempts_used, .. } => {
+                assert_eq!(
+                    attempts_used, 1,
+                    "first wrong password after a correct unlock must start a fresh counter"
+                );
+            }
+            _ => panic!("one wrong password after reset must not trigger duress"),
+        }
+        assert!(
+            marker_path(dir.path()).exists(),
+            "the reset counter must keep the marker intact after one new wrong attempt"
+        );
+        set_file_storage_key(None);
+    }
+
+    #[test]
+    fn verify_main_password_tenth_consecutive_wrong_attempt_sets_duress_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let salt = [0xA7; SALT_LEN];
+        let params = Argon2ParamsDto {
+            memory_kb: 8,
+            iterations: 1,
+            parallelism: 1,
+        };
+        let derived = derive("correct-password", &salt, &params).unwrap();
+        let marker = PasswordMarker {
+            version: MARKER_VERSION,
+            salt_b64: STANDARD.encode(salt),
+            params,
+            password_hash_b64: STANDARD.encode(&derived[..HASH_LEN]),
+            phrase_encrypted_b64: STANDARD.encode([0u8; 16]),
+            phrase_nonce_b64: STANDARD.encode([0u8; NONCE_LEN]),
+            phrase_hash_b64: None,
+            stealth_password_hash_b64: None,
+            burn_password_hash_b64: None,
+            duress_password_hash_b64: None,
+        };
+        write_marker(dir.path(), &marker).unwrap();
+
+        for attempt in 1..keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD {
+            let err = verify_main_password(dir.path(), "wrong-password").unwrap_err();
+            let failure: VerifyFailureDto = serde_json::from_str(&err).unwrap();
+            assert_eq!(failure.attempts_used, attempt);
+            assert!(
+                !failure.duress_triggered,
+                "attempt {attempt} must not trigger threshold duress"
+            );
+
+            let mut lock = read_lockout(dir.path());
+            lock.password_locked_until = Some(0);
+            write_lockout(dir.path(), &lock).unwrap();
+        }
+
+        let err = verify_main_password(dir.path(), "wrong-password").unwrap_err();
+        let failure: VerifyFailureDto = serde_json::from_str(&err).unwrap();
+        assert_eq!(
+            failure.attempts_used,
+            keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD
+        );
+        assert!(
+            failure.duress_triggered,
+            "the 10th consecutive wrong password attempt must trigger threshold duress"
+        );
+
+        let lock = read_lockout(dir.path());
+        assert_eq!(
+            lock.password_failed_attempts,
+            keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD
+        );
+    }
+
+    mod exact_unit_tests {
+        use super::*;
+
+        #[test]
+        fn run_inactivity_auto_lock_timer() {
+            let _guard = crate::test_process_globals::serialize();
+            set_file_storage_key(None);
+            let unlocked_at = Instant::now();
+            let key = [0x31; 32];
+            set_file_storage_key_after_main_password_unlock_at(key, unlocked_at);
+
+            assert_eq!(
+                INACTIVITY_AUTO_LOCK_SECONDS,
+                15 * 60,
+                "main password unlocks must arm a 15-minute idle window"
+            );
+            assert!(
+                !run_file_key_inactivity_auto_lock_timer_at(
+                    unlocked_at + std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS - 1)
+                ),
+                "the idle timer must not lock before 15 full idle minutes"
+            );
+            assert_eq!(
+                get_file_storage_key(),
+                Some(key),
+                "the unlocked session key must remain installed before the idle threshold"
+            );
+
+            assert!(
+                run_file_key_inactivity_auto_lock_timer_at(
+                    unlocked_at + std::time::Duration::from_secs(INACTIVITY_AUTO_LOCK_SECONDS)
+                ),
+                "the idle timer must lock at the 15-minute threshold"
+            );
+            assert_eq!(
+                get_file_storage_key(),
+                None,
+                "auto-lock must clear the unlocked file storage key"
+            );
+            assert!(
+                !super::super::run_inactivity_auto_lock_timer(),
+                "a disarmed timer must not report another fresh lock transition"
+            );
+        }
+
+        #[test]
+        fn tenth_wrong_password_attempt_triggers_duress() {
+            set_file_storage_key(None);
+            let dir = tempfile::tempdir().unwrap();
+            let _guard = use_temp_config_dir(dir.path());
+            let state = AppState::new_with_production_duress_engine(dir.path().to_path_buf());
+            state.install_identity(keystore::generate_identity(
+                "tenth-wrong-duress-owner".to_owned(),
+            ));
+            set_file_storage_key(Some([0x62; 32]));
+
+            let identity_file = dir.path().join("identity.json");
+            let password_file = dir.path().join("password_marker.json");
+            let prekey_file = dir.path().join("prekeys.json");
+            std::fs::write(&identity_file, b"identity").unwrap();
+            std::fs::write(&password_file, b"password").unwrap();
+            std::fs::write(&prekey_file, b"prekeys").unwrap();
+
+            let now = now_unix_secs();
+            let mut lock = LockoutState {
+                version: LOCKOUT_VERSION,
+                password_failed_attempts: DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 2,
+                password_locked_until: None,
+                ..Default::default()
+            };
+
+            assert_eq!(
+                record_wrong_password_attempt_or_duress(&state, &mut lock, now).unwrap(),
+                WrongPasswordAttemptAction::Wrong {
+                    attempts_used: DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 1,
+                    lockout_seconds_remaining: password_lockout_secs(
+                        DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 1
+                    ),
+                },
+                "the ninth wrong password attempt must not trigger duress"
+            );
+            assert!(identity_file.exists());
+            assert!(password_file.exists());
+            assert!(prekey_file.exists());
+            assert_eq!(get_file_storage_key(), Some([0x62; 32]));
+
+            assert_eq!(
+                record_wrong_password_attempt_or_duress(&state, &mut lock, now).unwrap(),
+                WrongPasswordAttemptAction::DuressTriggered {
+                    attempts_used: DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT,
+                },
+                "the tenth wrong password attempt must trigger duress"
+            );
+            assert_eq!(
+                lock.password_failed_attempts, DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT,
+                "duress must be driven by the real accumulated attempt counter"
+            );
+            assert!(!identity_file.exists());
+            assert!(!password_file.exists());
+            assert!(!prekey_file.exists());
+            assert_eq!(get_file_storage_key(), None);
+            assert!(!state.has_identity());
+            assert!(!state.has_prekey_state());
+        }
     }
 }

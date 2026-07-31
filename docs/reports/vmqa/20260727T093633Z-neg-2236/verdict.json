@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "runId": "20260727T093633Z-neg-2236",
+  "requestSha256": "6e276e6915efed6c5cef0bed7df634f0646c8d7c06539ce3c27d446cbe7f0023",
+  "requestExeSha256": "d2f6db781a4b5149520d315a1f3378df2cd256292f1e07d04f13e24846a62950",
+  "vmName": "OSL-Azure-Client-1",
+  "agentSha": "8d72920b33601ccda96b2d14be8c84ab3e992482a4ed0c635f0a88e2462adbba",
+  "win32Sha": "c33b25900636a9ef1ad2d54c6ffb33eb6fba5333a2118ee81568f2e48d7d5d48",
+  "runStartUtc": "2026-07-27T09:38:38.0000000Z",
+  "agentStartedUtc": "2026-07-27T09:35:17.7211416Z",
+  "finishedUtc": "2026-07-27T09:40:29.5579517Z",
+  "overall": "blocked",
+  "steps": [
+    {
+      "id": "S0",
+      "verb": "stage",
+      "status": "pass",
+      "detail": "staged=C:\\OSL-VMQA\\d2f6db781a4b5149520d315a1f3378df2cd256292f1e07d04f13e24846a62950 exeSha=d2f6db781a4b5149520d315a1f3378df2cd256292f1e07d04f13e24846a62950 webview2Sha=8427b1fc58ec707813e5c0a51eb5d69397bb333250a7b891be4d3b123f1e0f1c stoppedPriorPids=none",
+      "artifacts": [],
+      "facts": {}
+    },
+    {
+      "id": "S1",
+      "verb": "launch",
+      "status": "blocked",
+      "detail": "VMQA_NO_SUBJECT; markerWindowsTotal=1",
+      "artifacts": [],
+      "facts": {
+        "launchedPid": 9348,
+        "exeSha256": "d2f6db781a4b5149520d315a1f3378df2cd256292f1e07d04f13e24846a62950",
+        "launchProcessStarted": true
+      }
+    },
+    {
+      "id": "S2",
+      "verb": "ping",
+      "status": "pass",
+      "detail": "vmName=OSL-Azure-Client-1; sessionId=1; isInteractiveSession=True; markerWindowsTotal=1",
+      "artifacts": [],
+      "facts": {
+        "markerWindowsTotal": 1
+      }
+    },
+    {
+      "id": "S3",
+      "verb": "shot",
+      "status": "blocked",
+      "detail": "VMQA_NO_LAUNCH_PROVENANCE: shot requires a successful exact-path launch in this run",
+      "artifacts": [],
+      "facts": {}
+    },
+    {
+      "id": "S4",
+      "verb": "kill",
+      "status": "pass",
+      "detail": "cleanup proven pid=9348 outcome=stopped exactExecutableAbsent=true",
+      "artifacts": [],
+      "facts": {
+        "cleanupPid": 9348,
+        "cleanupOutcome": "stopped",
+        "cleanupExeSha256": "d2f6db781a4b5149520d315a1f3378df2cd256292f1e07d04f13e24846a62950",
+        "cleanupPidAbsent": true,
+        "cleanupExecutableAbsent": true,
+        "cleanupMatchingExeCount": 0
+      }
+    }
+  ],
+  "diffKey": "S0=pass;S1=blocked;S2=pass;S3=blocked;S4=pass",
+  "diagnosis": "VMQA_NO_SUBJECT; markerWindowsTotal=1"
+}

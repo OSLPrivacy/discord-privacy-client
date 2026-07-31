@@ -250,6 +250,14 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    struct FileKeyReset;
+
+    impl Drop for FileKeyReset {
+        fn drop(&mut self) {
+            crate::main_password::set_file_storage_key(None);
+        }
+    }
+
     #[test]
     fn empty_file_parses_as_empty_map() {
         let dir = tempdir().unwrap();
@@ -261,6 +269,9 @@ mod tests {
 
     #[test]
     fn legacy_v1_parses_with_extra_fields_dropped() {
+        let _serial = crate::test_process_globals::serialize();
+        let _reset = FileKeyReset;
+        crate::main_password::set_file_storage_key(Some([0x71; 32]));
         // 9-C1: legacy v1 files carry the now-removed
         // `full_whitelist` / `members` / `whitelisted_users` fields.
         // Serde silently ignores unknown fields; the bootstrap

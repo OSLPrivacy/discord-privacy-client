@@ -87,9 +87,13 @@ surface emits `[OSL]` log lines for diagnosis.
    - [ ] Cancel dismisses the modal with no side effects.
    - [ ] Confirm fires a burn marker (control message). Console:
          `[OSL] oslSendControlMessage OK` then a local burn log.
-   - [ ] In the channel, all your prior messages now render as
-         permanent ciphertext to both you and the peer (post-Phase 7
-         burn semantics).
+   - [ ] In the channel, your prior messages no longer render decrypted
+         for you: OSL's local copies are shredded, so you see the
+         original cover text. The peer sees the same ONLY if their client
+         honoured the burn request, and OSL cannot prove that it did.
+         The ciphertext Discord holds is unchanged and stays readable to
+         anyone holding the recipient's keys — do not record this step as
+         "permanent ciphertext", which is a banned claim (allowlist D).
 
 ## D. v=2 send-path gate (Coexist mode)
 

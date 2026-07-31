@@ -1,0 +1,942 @@
+import { execFileSync } from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
+import { mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
+import {
+  deploymentEvidenceSenderFilterCanonicalBytes,
+  TRUSTED_DEPLOYMENT_EVIDENCE_PRODUCERS,
+  verifyDeploymentEvidenceReceipt,
+} from "./deployment-evidence-receipt-contract.mjs";
+import {
+  consumeDeploymentEvidenceOnce,
+  issueDeploymentEvidenceChallenge,
+  loadCommittedMigrationClosure,
+  loadDeploymentEvidenceVerifierChallenge,
+  readDeploymentEvidenceReceipt,
+} from "./deployment-evidence-receipt-io.mjs";
+import {
+  createD1DeploymentEvidenceVerifierStore,
+} from "./deployment-evidence-verifier-store.mjs";
+import { canonicalControlInboxGetBytes } from "../src/lib/canonical.js";
+import {
+  canonicalJson,
+  sha256,
+} from "./readiness-artifact-contract.mjs";
+import {
+  DEPLOYMENT_FIXTURE_ACTIVE_VERSION,
+  DEPLOYMENT_FIXTURE_ARCHIVE,
+  DEPLOYMENT_FIXTURE_COMMIT,
+  DEPLOYMENT_FIXTURE_ID,
+  DEPLOYMENT_FIXTURE_MIGRATIONS,
+  DEPLOYMENT_FIXTURE_NOW,
+  TEST_PRODUCER_IDENTITY,
+  TEST_PRODUCER_KEY_ID,
+  TEST_TRUSTED_DEPLOYMENT_PRODUCERS,
+  createDeploymentEvidenceVerifierStoreFixture,
+  deploymentEvidenceChallenge,
+  deploymentEvidenceEnvelope,
+  deploymentEvidenceExpectation,
+  deploymentEvidencePayload,
+  deploymentEvidenceVerifierState,
+  signDeploymentEvidencePayload,
+} from "./deployment-evidence-test-fixture.js";
+
+const REPO_ROOT = path.resolve(
+  fileURLToPath(new URL("../..", import.meta.url)),
+);
+
+function resign(payload: Record<string, any>) {
+  return signDeploymentEvidencePayload(payload);
+}
+
+function verify(payload: Record<string, any>, artifact: "A" | "B" = "B") {
+  return verifyDeploymentEvidenceReceipt(
+    resign(payload),
+    deploymentEvidenceExpectation(artifact),
+    {
+      trustedProducers: TEST_TRUSTED_DEPLOYMENT_PRODUCERS,
+      nowMs: DEPLOYMENT_FIXTURE_NOW,
+    },
+  );
+}
+
+function challengeRequest(artifact: "A" | "B" = "B") {
+  return {
+    archiveId: DEPLOYMENT_FIXTURE_ARCHIVE,
+    artifact,
+    artifactBundleSha256:
+      deploymentEvidenceExpectation(artifact).artifactBundles[artifact],
+    expectedCommit: DEPLOYMENT_FIXTURE_COMMIT,
+    producerIdentity: TEST_PRODUCER_IDENTITY,
+    producerKeyId: TEST_PRODUCER_KEY_ID,
+  };
+}
+
+describe("producer-owned deployment evidence receipt v3", () => {
+  it("admits nonempty exact Artifact B and Artifact A observation fixtures", () => {
+    const finalReceipt = verify(
+      deploymentEvidencePayload("B"),
+      "B",
+    );
+    expect(finalReceipt).toMatchObject({
+      producer_identity: TEST_PRODUCER_IDENTITY,
+      payload: {
+        artifact: "B",
+        producer_sequence: 8,
+        database: {
+          migration_row_count: 4,
+          schema_object_count: 14,
+        },
+        transition: {
+          previous_artifact: "A",
+          current_artifact: "B",
+          permitted_transition: "artifact-a-to-artifact-b",
+        },
+        worker: {
+          deployment_observation_field_count: 4,
+          sender_filter_route: {
+            item_count: 1,
+            request_signature_byte_count: 64,
+            registered_signer: {
+              observation_field_count: 3,
+            },
+            response_field_count: 3,
+          },
+        },
+        sender_filter: { advertised: true, version: 1 },
+      },
+    });
+    expect(finalReceipt.receipt_sha256).toMatch(/^[1-9a-f][0-9a-f]{63}$/);
+
+    const bridgeReceipt = verify(
+      deploymentEvidencePayload("A"),
+      "A",
+    );
+    expect(bridgeReceipt.payload).toMatchObject({
+      artifact: "A",
+      migrations: [{ applied_order: 1 }],
+      transition: {
+        previous_artifact: "legacy",
+        permitted_transition: "legacy-to-artifact-a",
+      },
+      worker: {
+        sender_filter_route: {
+          status: 503,
+          item_count: 0,
+          response_field_count: 1,
+        },
+      },
+      sender_filter: { advertised: false, version: null },
+    });
+  });
+
+  it("keeps the production trust registry empty and refuses caller keys", () => {
+    expect(Object.keys(TRUSTED_DEPLOYMENT_EVIDENCE_PRODUCERS)).toHaveLength(0);
+    expect(() =>
+      verifyDeploymentEvidenceReceipt(
+        deploymentEvidenceEnvelope(),
+        deploymentEvidenceExpectation(),
+        { nowMs: DEPLOYMENT_FIXTURE_NOW },
+      ),
+    ).toThrow(/producer is not independently trusted/);
+
+    const attacker = generateKeyPairSync("ed25519");
+    const forged = signDeploymentEvidencePayload(
+      deploymentEvidencePayload(),
+      {
+        keyId: TEST_PRODUCER_KEY_ID,
+        privateKey: attacker.privateKey,
+      },
+    );
+    expect(() =>
+      verifyDeploymentEvidenceReceipt(
+        forged,
+        deploymentEvidenceExpectation(),
+        {
+          trustedProducers: TEST_TRUSTED_DEPLOYMENT_PRODUCERS,
+          nowMs: DEPLOYMENT_FIXTURE_NOW,
+        },
+      ),
+    ).toThrow(/producer signature is invalid/);
+  });
+
+  it("keeps the production verifier binding unprovisioned and fail closed", async () => {
+    await expect(
+      loadDeploymentEvidenceVerifierChallenge(TEST_PRODUCER_KEY_ID, {
+        nowMs: DEPLOYMENT_FIXTURE_NOW,
+      }),
+    ).rejects.toThrow(/verifier store is unprovisioned/);
+    await expect(
+      consumeDeploymentEvidenceOnce(verify(deploymentEvidencePayload())),
+    ).rejects.toThrow(/verifier store is unprovisioned/);
+  });
+
+  it("refuses every zeroed raw-observation or lineage digest", () => {
+    const zeroCases: Array<
+      [string, (payload: Record<string, any>) => void]
+    > = [
+      ["previous receipt", (p) => { p.previous_receipt_sha256 = "0".repeat(64); }],
+      ["challenge receipt", (p) => { p.challenge.previous_receipt_sha256 = "0".repeat(64); }],
+      ["archive", (p) => { p.archive_id = "0".repeat(64); }],
+      ["artifact bundle", (p) => { p.artifact_bundle_sha256 = "0".repeat(64); }],
+      ["challenge archive", (p) => { p.challenge.archive_id = "0".repeat(64); }],
+      ["challenge bundle", (p) => { p.challenge.artifact_bundle_sha256 = "0".repeat(64); }],
+      ["migration source", (p) => { p.migrations[0].sha256 = "0".repeat(64); }],
+      ["migration query", (p) => { p.database.migration_list_query_sha256 = "0".repeat(64); }],
+      ["migration output", (p) => { p.database.migration_list_output_sha256 = "0".repeat(64); }],
+      ["schema query", (p) => { p.database.schema_query_sha256 = "0".repeat(64); }],
+      ["schema output", (p) => { p.database.schema_output_sha256 = "0".repeat(64); }],
+      ["schema fingerprint", (p) => { p.database.schema_fingerprint_sha256 = "0".repeat(64); }],
+      ["Worker bundle", (p) => { p.worker.bundle_sha256 = "0".repeat(64); }],
+      ["deployment observation", (p) => { p.worker.deployment_observation_sha256 = "0".repeat(64); }],
+      ["health response", (p) => { p.worker.health_route.response_sha256 = "0".repeat(64); }],
+      ["registered signer query", (p) => { p.worker.sender_filter_route.registered_signer.lookup_query_sha256 = "0".repeat(64); }],
+      ["registered signer observation", (p) => { p.worker.sender_filter_route.registered_signer.observation_sha256 = "0".repeat(64); }],
+      ["canonical request", (p) => { p.worker.sender_filter_route.request_canonical_sha256 = "0".repeat(64); }],
+      ["request signature", (p) => { p.worker.sender_filter_route.request_signature_sha256 = "0".repeat(64); }],
+      ["sender response", (p) => { p.worker.sender_filter_route.response_sha256 = "0".repeat(64); }],
+      ["capability response", (p) => { p.sender_filter.health_response_sha256 = "0".repeat(64); }],
+      ["probe nonce", (p) => { p.artifact_isolation.probe_nonce_sha256 = "0".repeat(64); }],
+      ["Artifact A bundle", (p) => { p.artifact_isolation.artifact_a.bundle_sha256 = "0".repeat(64); }],
+      ["Artifact A probe", (p) => { p.artifact_isolation.artifact_a.probe_sha256 = "0".repeat(64); }],
+      ["Artifact B bundle", (p) => { p.artifact_isolation.artifact_b.bundle_sha256 = "0".repeat(64); }],
+      ["Artifact B probe", (p) => { p.artifact_isolation.artifact_b.probe_sha256 = "0".repeat(64); }],
+    ];
+    for (const [_name, mutate] of zeroCases) {
+      const payload = deploymentEvidencePayload();
+      mutate(payload);
+      expect(() => verify(payload)).toThrow();
+    }
+    const zeroPayloadDigest = deploymentEvidenceEnvelope();
+    zeroPayloadDigest.payload_sha256 = "0".repeat(64);
+    expect(() =>
+      verifyDeploymentEvidenceReceipt(
+        zeroPayloadDigest,
+        deploymentEvidenceExpectation(),
+        {
+          trustedProducers: TEST_TRUSTED_DEPLOYMENT_PRODUCERS,
+          nowMs: DEPLOYMENT_FIXTURE_NOW,
+        },
+      ),
+    ).toThrow(/nonzero lowercase SHA-256/);
+  });
+
+  it("recomputes all raw observation hashes and cardinalities", () => {
+    const cases: Array<
+      [string, (payload: Record<string, any>) => void, RegExp]
+    > = [
+      [
+        "migration cardinality",
+        (p) => { p.database.migration_row_count = 0; },
+        /migration row cardinality/,
+      ],
+      [
+        "migration raw bytes",
+        (p) => { p.database.migration_rows[0].applied_at += " "; },
+        /migration output digest mismatch/,
+      ],
+      [
+        "schema bytes",
+        (p) => { p.database.schema_rows[0].sql += " "; },
+        /schema observation digest mismatch/,
+      ],
+      [
+        "schema cardinality",
+        (p) => { p.database.schema_object_count += 1; },
+        /schema object cardinality mismatch/,
+      ],
+      [
+        "deployment raw fields",
+        (p) => { p.worker.deployment_observation.service = "other"; },
+        /deployment observation digest mismatch/,
+      ],
+      [
+        "health bytes",
+        (p) => { p.worker.health_route.response.ok = false; },
+        /health response observation digest mismatch/,
+      ],
+      [
+        "health cardinality",
+        (p) => { p.worker.health_route.response_field_count = 0; },
+        /raw cardinality/,
+      ],
+      [
+        "deployment cardinality",
+        (p) => { p.worker.deployment_observation_field_count = 0; },
+        /raw cardinality/,
+      ],
+      [
+        "signature cardinality",
+        (p) => { p.worker.sender_filter_route.request_signature_byte_count = 0; },
+        /signature cardinality/,
+      ],
+      [
+        "sender response cardinality",
+        (p) => { p.worker.sender_filter_route.response_field_count = 0; },
+        /raw cardinality/,
+      ],
+      [
+        "signature bytes",
+        (p) => { p.worker.sender_filter_route.request_signature_b64 = "AQ=="; },
+        /canonical nonempty base64|exactly 64 bytes/,
+      ],
+      [
+        "registered signer bytes",
+        (p) => { p.worker.sender_filter_route.registered_signer.observation.user_id = "other"; },
+        /registered signer observation digest mismatch/,
+      ],
+      [
+        "registered signer cardinality",
+        (p) => { p.worker.sender_filter_route.registered_signer.observation_field_count = 0; },
+        /raw cardinality/,
+      ],
+      [
+        "sender bytes",
+        (p) => { p.worker.sender_filter_route.response.items[0].sender_id = "other"; },
+        /response observation digest mismatch/,
+      ],
+      [
+        "probe bytes",
+        (p) => { p.artifact_isolation.artifact_a.observation.active = true; },
+        /probe observation digest mismatch/,
+      ],
+      [
+        "nonce bytes",
+        (p) => { p.artifact_isolation.probe_nonce_b64 = "AQ=="; },
+        /nonce observation mismatch/,
+      ],
+      [
+        "nonce cardinality",
+        (p) => { p.artifact_isolation.probe_nonce_byte_count = 0; },
+        /nonce cardinality/,
+      ],
+      [
+        "Artifact A probe cardinality",
+        (p) => { p.artifact_isolation.artifact_a.observation_field_count = 0; },
+        /raw cardinality/,
+      ],
+      [
+        "Artifact B probe cardinality",
+        (p) => { p.artifact_isolation.artifact_b.observation_field_count = 0; },
+        /raw cardinality/,
+      ],
+    ];
+    for (const [_name, mutate, error] of cases) {
+      const payload = deploymentEvidencePayload();
+      mutate(payload);
+      expect(() => verify(payload)).toThrow(error);
+    }
+  });
+
+  it("verifies exactly 64 Ed25519 signature bytes over production canonical request bytes", () => {
+    const payload = deploymentEvidencePayload();
+    const route = payload.worker.sender_filter_route;
+    expect(
+      Buffer.from(
+        deploymentEvidenceSenderFilterCanonicalBytes({
+          requestUserId: route.request_user_id,
+          requestTimestampMs: route.request_timestamp_ms,
+          requestSenderId: route.request_sender_id,
+        }),
+      ),
+    ).toEqual(
+      Buffer.from(
+        canonicalControlInboxGetBytes({
+          user_id: route.request_user_id,
+          timestamp_ms: route.request_timestamp_ms,
+          sender_id: route.request_sender_id,
+        }),
+      ),
+    );
+    expect(() => verify(payload)).not.toThrow();
+
+    const shortSignature = deploymentEvidencePayload();
+    const shortBytes = Buffer.alloc(63, 0x41);
+    shortSignature.worker.sender_filter_route.request_signature_b64 =
+      shortBytes.toString("base64");
+    shortSignature.worker.sender_filter_route.request_signature_byte_count =
+      shortBytes.byteLength;
+    shortSignature.worker.sender_filter_route.request_signature_sha256 =
+      sha256(shortBytes);
+    expect(() => verify(shortSignature)).toThrow(
+      /exactly 64 bytes/,
+    );
+
+    const arbitrarySignature = deploymentEvidencePayload();
+    const arbitraryBytes = Buffer.alloc(64, 0x41);
+    arbitrarySignature.worker.sender_filter_route.request_signature_b64 =
+      arbitraryBytes.toString("base64");
+    arbitrarySignature.worker.sender_filter_route.request_signature_sha256 =
+      sha256(arbitraryBytes);
+    expect(() => verify(arbitrarySignature)).toThrow(
+      /does not verify against the registered key/,
+    );
+
+    const wrongRegisteredKey = deploymentEvidencePayload();
+    const otherKey = generateKeyPairSync("ed25519").publicKey.export({
+      format: "der",
+      type: "spki",
+    });
+    const signer =
+      wrongRegisteredKey.worker.sender_filter_route.registered_signer;
+    signer.observation.ik_ed25519_pub_b64 =
+      Buffer.from(otherKey).subarray(-32).toString("base64");
+    signer.observation_sha256 = sha256(
+      Buffer.from(canonicalJson(signer.observation)),
+    );
+    expect(() => verify(wrongRegisteredKey)).toThrow(
+      /does not verify against the registered key/,
+    );
+
+    const changedRequest = deploymentEvidencePayload();
+    changedRequest.worker.sender_filter_route.request_sender_id =
+      "sender-tampered";
+    changedRequest.worker.sender_filter_route.request_canonical_sha256 =
+      sha256(
+        deploymentEvidenceSenderFilterCanonicalBytes({
+          requestUserId:
+            changedRequest.worker.sender_filter_route.request_user_id,
+          requestTimestampMs:
+            changedRequest.worker.sender_filter_route.request_timestamp_ms,
+          requestSenderId: "sender-tampered",
+        }),
+      );
+    expect(() => verify(changedRequest)).toThrow(
+      /does not verify against the registered key/,
+    );
+  });
+
+  it("refuses a producer-chosen or forged challenge even when re-signed", () => {
+    const forgedNonce = deploymentEvidencePayload();
+    forgedNonce.challenge.nonce_b64 = Buffer.alloc(32, 0x41).toString("base64");
+    expect(() => verify(forgedNonce)).toThrow(
+      /does not carry the verifier-issued challenge/,
+    );
+
+    const forgedId = deploymentEvidencePayload();
+    forgedId.challenge.challenge_id =
+      "cccccccc-dddd-4eee-8fff-000000000000";
+    expect(() => verify(forgedId)).toThrow(
+      /does not carry the verifier-issued challenge/,
+    );
+  });
+
+  it("refuses a caller-forged challenge even if pure inputs agree", async () => {
+    const verifier = createDeploymentEvidenceVerifierStoreFixture();
+    const payload = deploymentEvidencePayload();
+    payload.challenge.nonce_b64 =
+      Buffer.alloc(32, 0x41).toString("base64");
+    const expectation = deploymentEvidenceExpectation();
+    expectation.verifierChallenge = structuredClone(payload.challenge);
+    const purelyVerified = verifyDeploymentEvidenceReceipt(
+      resign(payload),
+      expectation,
+      {
+        trustedProducers: TEST_TRUSTED_DEPLOYMENT_PRODUCERS,
+        nowMs: DEPLOYMENT_FIXTURE_NOW,
+      },
+    );
+    await expect(
+      consumeDeploymentEvidenceOnce(purelyVerified, {
+        verifierStore: verifier.store,
+      }),
+    ).rejects.toThrow(/challenge is absent, forged, stale, or replayed/);
+  });
+
+  it("binds exact predecessor Worker, deployment, and permitted transition", () => {
+    const wrongPreviousWorker = deploymentEvidencePayload();
+    wrongPreviousWorker.transition.previous_worker_version =
+      "99999999-8888-4777-8666-555555555555";
+    expect(() => verify(wrongPreviousWorker)).toThrow(
+      /transition does not match verifier state/,
+    );
+
+    const wrongPreviousDeployment = deploymentEvidencePayload();
+    wrongPreviousDeployment.transition.previous_deployment_id =
+      "99999999-8888-4777-8666-555555555555";
+    expect(() => verify(wrongPreviousDeployment)).toThrow(
+      /transition does not match verifier state/,
+    );
+
+    const wrongTransition = deploymentEvidencePayload();
+    wrongTransition.challenge.permitted_transition = "artifact-b-forward";
+    wrongTransition.transition.permitted_transition = "artifact-b-forward";
+    const expectation = deploymentEvidenceExpectation();
+    expectation.verifierChallenge = structuredClone(wrongTransition.challenge);
+    expect(() =>
+      verifyDeploymentEvidenceReceipt(resign(wrongTransition), expectation, {
+        trustedProducers: TEST_TRUSTED_DEPLOYMENT_PRODUCERS,
+        nowMs: DEPLOYMENT_FIXTURE_NOW,
+      }),
+    ).toThrow(/transition is not permitted/);
+  });
+
+  it("retains exact commit, archive, D1, migration, Worker, route, and A/B bindings", () => {
+    const cases: Array<
+      [string, (payload: Record<string, any>) => void, RegExp]
+    > = [
+      [
+        "commit",
+        (p) => { p.expected_commit = "f".repeat(40); },
+        /commit, archive, artifact, or bundle mismatch/,
+      ],
+      [
+        "archive",
+        (p) => { p.archive_id = "e".repeat(64); },
+        /commit, archive, artifact, or bundle mismatch/,
+      ],
+      [
+        "database",
+        (p) => { p.database.id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"; },
+        /database identity mismatch/,
+      ],
+      [
+        "migration order",
+        (p) => { p.migrations.reverse(); },
+        /migration order or digest mismatch/,
+      ],
+      [
+        "Worker version",
+        (p) => {
+          p.worker.version_id =
+            "99999999-8888-4777-8666-555555555555";
+        },
+        /Worker identity or bundle mismatch/,
+      ],
+      [
+        "route",
+        (p) => { p.worker.sender_filter_route.path = "/v1/control-inbox"; },
+        /sender-filter route contract mismatch/,
+      ],
+      [
+        "capability",
+        (p) => { p.sender_filter.version = 2; },
+        /capability advertisement mismatch/,
+      ],
+      [
+        "Artifact isolation",
+        (p) => {
+          p.artifact_isolation.artifact_a.active = true;
+          p.artifact_isolation.artifact_a.observed_version_id =
+            DEPLOYMENT_FIXTURE_ACTIVE_VERSION;
+        },
+        /probe observation mismatch|Artifact A\/B isolation mismatch/,
+      ],
+    ];
+    for (const [_name, mutate, error] of cases) {
+      const payload = deploymentEvidencePayload();
+      mutate(payload);
+      expect(() => verify(payload)).toThrow(error);
+    }
+  });
+
+  it("requires deployed migration 0031 retention schema and hidden-row behavior", () => {
+    const missingTrigger = deploymentEvidencePayload();
+    missingTrigger.database.schema_rows =
+      missingTrigger.database.schema_rows.filter(
+        (row: Record<string, unknown>) =>
+          row.name !== "control_inbox_retention_delete_guard",
+      );
+    missingTrigger.database.schema_object_count =
+      missingTrigger.database.schema_rows.length;
+    missingTrigger.database.schema_output_sha256 = sha256(
+      Buffer.from(canonicalJson(missingTrigger.database.schema_rows)),
+    );
+    missingTrigger.database.schema_fingerprint_sha256 =
+      missingTrigger.database.schema_output_sha256;
+    expect(() => verify(missingTrigger)).toThrow(
+      /retention_delete_guard is absent|migration 0031 retention behavior/,
+    );
+
+    const missingColumn = deploymentEvidencePayload();
+    const table = missingColumn.database.schema_rows.find(
+      (row: Record<string, unknown>) => row.name === "control_inbox",
+    );
+    table.sql = "CREATE TABLE control_inbox (id TEXT, sender_id TEXT)";
+    missingColumn.database.schema_output_sha256 = sha256(
+      Buffer.from(canonicalJson(missingColumn.database.schema_rows)),
+    );
+    missingColumn.database.schema_fingerprint_sha256 =
+      missingColumn.database.schema_output_sha256;
+    expect(() => verify(missingColumn)).toThrow(
+      /sender-retention table does not prove migration 0031 retention behavior/,
+    );
+
+    const liveOnlyRoute = deploymentEvidencePayload();
+    liveOnlyRoute.worker.sender_filter_route.response.filtered_sender_delivery = {
+      live: 1,
+      quarantined: 0,
+      retired: 0,
+      retryable: 0,
+    };
+    liveOnlyRoute.worker.sender_filter_route.response_sha256 = sha256(
+      Buffer.from(canonicalJson(liveOnlyRoute.worker.sender_filter_route.response)),
+    );
+    expect(() => verify(liveOnlyRoute)).toThrow(
+      /lacks retained rows/,
+    );
+  });
+
+  it("issues a nonce only from initialized durable verifier state", async () => {
+    const verifier = createDeploymentEvidenceVerifierStoreFixture(
+      "B",
+      { pending_challenge: null },
+    );
+    const challenge = await issueDeploymentEvidenceChallenge(
+      challengeRequest(),
+      {
+        verifierStore: verifier.store,
+        nowMs: Date.parse("2026-07-27T11:59:45.000Z"),
+        randomBytesFn: () => Buffer.alloc(32, 0x7a),
+        randomUuidFn: () =>
+          "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+      },
+    );
+    expect(challenge).toEqual(deploymentEvidenceChallenge());
+    await expect(
+      loadDeploymentEvidenceVerifierChallenge(TEST_PRODUCER_KEY_ID, {
+        verifierStore: verifier.store,
+        nowMs: DEPLOYMENT_FIXTURE_NOW,
+      }),
+    ).resolves.toEqual(challenge);
+    await expect(
+      issueDeploymentEvidenceChallenge(challengeRequest(), {
+        verifierStore: verifier.store,
+        nowMs: DEPLOYMENT_FIXTURE_NOW,
+      }),
+    ).rejects.toThrow(/already has a pending challenge/);
+
+    const missing = createDeploymentEvidenceVerifierStoreFixture(
+      "B",
+      {},
+      { missing: true },
+    );
+    await expect(
+      issueDeploymentEvidenceChallenge(challengeRequest(), {
+        verifierStore: missing.store,
+        nowMs: DEPLOYMENT_FIXTURE_NOW,
+      }),
+    ).rejects.toThrow(/state is missing; genesis is forbidden/);
+  });
+
+  it("refuses forged live producer identities in transactional verifier state", async () => {
+    const forgedIdentity = "test://forged-live-producer";
+    const verifier = createDeploymentEvidenceVerifierStoreFixture(
+      "B",
+      {
+        pending_challenge: null,
+        producer_identity: forgedIdentity,
+      },
+    );
+    await expect(
+      issueDeploymentEvidenceChallenge(challengeRequest(), {
+        verifierStore: verifier.store,
+        nowMs: DEPLOYMENT_FIXTURE_NOW,
+      }),
+    ).rejects.toThrow(/producer does not match transactional state/);
+
+    const forgedLiveState = createDeploymentEvidenceVerifierStoreFixture(
+      "B",
+      { producer_identity: forgedIdentity },
+    );
+    await expect(
+      consumeDeploymentEvidenceOnce(verify(deploymentEvidencePayload()), {
+        verifierStore: forgedLiveState.store,
+      }),
+    ).rejects.toThrow(/producer does not match transactional state/);
+    expect(forgedLiveState.casCalls()).toBe(0);
+  });
+
+  it("consumes once and refuses replay or caller-file genesis reset", async () => {
+    const verifier = createDeploymentEvidenceVerifierStoreFixture();
+    const verified = verify(deploymentEvidencePayload());
+    await expect(
+      consumeDeploymentEvidenceOnce(verified, {
+        verifierStore: verifier.store,
+      }),
+    ).resolves.toMatchObject({
+      sequence: 8,
+      current_worker_version: DEPLOYMENT_FIXTURE_ACTIVE_VERSION,
+      current_deployment_id: DEPLOYMENT_FIXTURE_ID,
+      pending_challenge: null,
+    });
+    await expect(
+      consumeDeploymentEvidenceOnce(verified, {
+        verifierStore: verifier.store,
+      }),
+    ).rejects.toThrow(/challenge is absent, forged, stale, or replayed/);
+
+    const callerDirectory = await mkdtemp(
+      path.join(tmpdir(), "deployment-verifier-caller-restore-"),
+    );
+    await writeFile(
+      path.join(callerDirectory, `${TEST_PRODUCER_KEY_ID}.json`),
+      JSON.stringify(deploymentEvidenceVerifierState()),
+    );
+    await expect(
+      consumeDeploymentEvidenceOnce(verified, {
+        verifierStore: verifier.store,
+        testStateDirectory: callerDirectory,
+      } as any),
+    ).rejects.toThrow(/options fields are not exact/);
+    expect(verifier.current()?.state.pending_challenge).toBeNull();
+
+    const missing = createDeploymentEvidenceVerifierStoreFixture(
+      "B",
+      {},
+      { missing: true },
+    );
+    await expect(
+      consumeDeploymentEvidenceOnce(verified, {
+        verifierStore: missing.store,
+      }),
+    ).rejects.toThrow(/state is missing; genesis is forbidden/);
+  });
+
+  it("refuses a Worker rollback recorded anywhere in durable history", async () => {
+    const base = deploymentEvidenceVerifierState();
+    const rollback = createDeploymentEvidenceVerifierStoreFixture(
+      "B",
+      {
+        seen_worker_versions: [
+          ...(base.seen_worker_versions as string[]),
+          DEPLOYMENT_FIXTURE_ACTIVE_VERSION,
+        ],
+        seen_deployment_ids: [
+          ...(base.seen_deployment_ids as string[]),
+          DEPLOYMENT_FIXTURE_ID,
+        ],
+      },
+    );
+    const verified = verify(deploymentEvidencePayload());
+    await expect(
+      consumeDeploymentEvidenceOnce(verified, {
+        verifierStore: rollback.store,
+      }),
+    ).rejects.toThrow(/Worker rollback or replay refused/);
+
+    const downgrade = createDeploymentEvidenceVerifierStoreFixture(
+      "B",
+      {
+        current_artifact: "B",
+        pending_challenge: null,
+      },
+    );
+    await expect(
+      issueDeploymentEvidenceChallenge(challengeRequest("A"), {
+        verifierStore: downgrade.store,
+        nowMs: DEPLOYMENT_FIXTURE_NOW,
+      }),
+    ).rejects.toThrow(/transition is not permitted/);
+  });
+
+  it("refuses a compare-and-swap conflict once without retry or mutation", async () => {
+    const verifier = createDeploymentEvidenceVerifierStoreFixture(
+      "B",
+      {},
+      { conflict: true },
+    );
+    const before = verifier.current();
+    await expect(
+      consumeDeploymentEvidenceOnce(verify(deploymentEvidencePayload()), {
+        verifierStore: verifier.store,
+      }),
+    ).rejects.toThrow(/compare-and-swap refused/);
+    expect(verifier.casCalls()).toBe(1);
+    expect(verifier.current()).toEqual(before);
+  });
+
+  it("adapts a single conditional D1 update and never creates genesis", async () => {
+    let row: { state_version: number; state_json: string } | null = {
+      state_version: 3,
+      state_json: canonicalJson(deploymentEvidenceVerifierState()),
+    };
+    let updateCalls = 0;
+    const database = {
+      prepare(sql: string) {
+        return {
+          bind(...values: any[]) {
+            return {
+              async first() {
+                expect(sql).toContain("SELECT");
+                return row === null ? null : { ...row };
+              },
+              async run() {
+                expect(sql).toContain(
+                  "WHERE producer_key_id = ?\n  AND state_version = ?",
+                );
+                updateCalls += 1;
+                const [
+                  nextVersion,
+                  nextStateJson,
+                  _updatedAt,
+                  producerKeyId,
+                  expectedVersion,
+                ] = values;
+                if (
+                  row === null ||
+                  producerKeyId !== TEST_PRODUCER_KEY_ID ||
+                  row.state_version !== expectedVersion
+                ) {
+                  return { meta: { changes: 0 } };
+                }
+                row = {
+                  state_version: nextVersion,
+                  state_json: nextStateJson,
+                };
+                return { meta: { changes: 1 } };
+              },
+            };
+          },
+        };
+      },
+    };
+    const store = createD1DeploymentEvidenceVerifierStore(database, {
+      administratorIdentity: "test://independent-verifier-administrator",
+      databaseId: "12345678-1234-4abc-8def-123456789abc",
+      environment: "production",
+    });
+    await expect(
+      consumeDeploymentEvidenceOnce(verify(deploymentEvidencePayload()), {
+        verifierStore: store,
+      }),
+    ).resolves.toMatchObject({ state_epoch: 4, sequence: 8 });
+    expect(updateCalls).toBe(1);
+    expect(row?.state_version).toBe(4);
+
+    row = null;
+    await expect(
+      consumeDeploymentEvidenceOnce(verify(deploymentEvidencePayload()), {
+        verifierStore: store,
+      }),
+    ).rejects.toThrow(/state is missing; genesis is forbidden/);
+    expect(updateCalls).toBe(1);
+  });
+
+  it("refuses stale, reversed, and overlong receipt or challenge times", () => {
+    const cases: Array<
+      [(payload: Record<string, any>) => void, RegExp]
+    > = [
+      [
+        (p) => {
+          p.timestamps = {
+            action_started_at: "2026-07-27T11:54:50.000Z",
+            migrations_captured_at: "2026-07-27T11:54:52.000Z",
+            worker_deployed_at: "2026-07-27T11:54:54.000Z",
+            probes_finished_at: "2026-07-27T11:54:57.000Z",
+            issued_at: "2026-07-27T11:54:58.000Z",
+          };
+          p.challenge.issued_at = "2026-07-27T11:54:45.000Z";
+          p.challenge.expires_at = "2026-07-27T12:04:45.000Z";
+          const expectation = deploymentEvidenceExpectation();
+          expectation.verifierChallenge = structuredClone(p.challenge);
+          p.__expectation = expectation;
+        },
+        /stale or future-dated/,
+      ],
+      [
+        (p) => { p.timestamps.worker_deployed_at = "2026-07-27T11:59:49.000Z"; },
+        /timestamps are out of order/,
+      ],
+      [
+        (p) => { p.timestamps.action_started_at = "2026-07-27T11:40:00.000Z"; },
+        /action interval is too long|challenge does not cover/,
+      ],
+      [
+        (p) => {
+          p.challenge.expires_at = "2026-07-27T11:59:56.000Z";
+          const expectation = deploymentEvidenceExpectation();
+          expectation.verifierChallenge = structuredClone(p.challenge);
+          p.__expectation = expectation;
+        },
+        /challenge does not cover/,
+      ],
+    ];
+    for (const [mutate, error] of cases) {
+      const payload = deploymentEvidencePayload();
+      mutate(payload);
+      const expectation =
+        payload.__expectation ?? deploymentEvidenceExpectation();
+      delete payload.__expectation;
+      expect(() =>
+        verifyDeploymentEvidenceReceipt(resign(payload), expectation, {
+          trustedProducers: TEST_TRUSTED_DEPLOYMENT_PRODUCERS,
+          nowMs: DEPLOYMENT_FIXTURE_NOW,
+        }),
+      ).toThrow(error);
+    }
+  });
+
+  it("reads only a nonempty absolute regular receipt file", async () => {
+    const directory = await mkdtemp(
+      path.join(tmpdir(), "deployment-evidence-file-"),
+    );
+    const receiptPath = path.join(directory, "receipt.json");
+    await writeFile(receiptPath, JSON.stringify(deploymentEvidenceEnvelope()));
+    await expect(readDeploymentEvidenceReceipt(receiptPath)).resolves.toMatchObject({
+      payload: { expected_commit: DEPLOYMENT_FIXTURE_COMMIT },
+    });
+    await expect(
+      readDeploymentEvidenceReceipt("relative-receipt.json"),
+    ).rejects.toThrow(/must be absolute/);
+    const emptyPath = path.join(directory, "empty.json");
+    await writeFile(emptyPath, "");
+    await expect(readDeploymentEvidenceReceipt(emptyPath)).rejects.toThrow(
+      /empty or oversized/,
+    );
+    const linkPath = path.join(directory, "receipt-link.json");
+    await symlink(receiptPath, linkPath);
+    await expect(readDeploymentEvidenceReceipt(linkPath)).rejects.toThrow(
+      /not a regular file/,
+    );
+  });
+
+  it("loads the complete nonempty ordered migration closure from the exact commit", () => {
+    const head = execFileSync(
+      "git",
+      ["-C", REPO_ROOT, "rev-parse", "HEAD"],
+      { encoding: "utf8" },
+    ).trim();
+    const committedMigrationNames = execFileSync(
+      "git",
+      [
+        "-C",
+        REPO_ROOT,
+        "ls-tree",
+        "-r",
+        "--name-only",
+        head,
+        "--",
+        "keyserver-cf/migrations",
+      ],
+      { encoding: "utf8" },
+    )
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .sort()
+      .map((entry) => entry.slice("keyserver-cf/migrations/".length));
+    const migrations = loadCommittedMigrationClosure(REPO_ROOT, head);
+    expect(migrations.map((entry) => entry.name)).toEqual(
+      committedMigrationNames,
+    );
+    expect(migrations.length).toBeGreaterThan(0);
+    expect(migrations[0].name).toMatch(/^0001_/);
+    expect(
+      migrations.every(
+        (entry) =>
+          /^[0-9a-f]{64}$/.test(entry.sha256) &&
+          entry.sha256 !== "0".repeat(64),
+      ),
+    ).toBe(true);
+    expect(new Set(migrations.map((entry) => entry.sha256)).size).toBe(
+      migrations.length,
+    );
+    expect(new Set(migrations.map((entry) => entry.name)).size).toBe(
+      migrations.length,
+    );
+  });
+});

@@ -74,5 +74,18 @@ export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
     setupFiles: ["./test/apply-migrations.ts"],
+    // vitest's 5s default is calibrated for a developer machine; this suite
+    // runs on `windows-latest`, where workerd/miniflare is uniformly ~15x
+    // slower. Measured: `mail.test.ts` takes 1.63s of test time locally and
+    // 26386ms on CI, and its "m3 sends OSL-to-OSL Mail with recipient consent"
+    // spec takes 381ms locally and 5289ms on CI -- 289ms past the default,
+    // with the assertions themselves passing on every other run.
+    //
+    // The whole file scales by the same factor, so this is the platform, not
+    // a hang, and raising the default is the honest knob: bumping individual
+    // specs would mean chasing every spec across 61 files that happens to
+    // cost more than ~350ms locally. 30s still leaves a genuine hang failing
+    // promptly rather than sitting until the job-level timeout.
+    testTimeout: 30_000,
   },
 });

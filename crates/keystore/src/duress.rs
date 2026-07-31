@@ -1,43 +1,44 @@
-//! Duress flow execution.
+//! Duress-engine primitives.
 //!
 //! Spec: `docs/design/unlock-and-duress.md` "Duress flow — full
 //! specification" + `docs/design/build-order.md` Layer B3.
 //!
-//! Four phases:
+//! IPC constructs a production [`DuressEngine`] in application state and the
+//! Hub password gate invokes it for duress outcomes. The separate burn-password
+//! path still uses `startup_gate` and `cleanup`, not this engine.
 //!
-//! 1. **Apparent unlock** — UI concern, not driven from this engine.
-//!    The caller (Tauri shell) plays the normal unlock animation
-//!    while the engine runs phases 2 + 3 concurrently in the
-//!    background.
-//! 2. **Local burn** — synchronous wipe of every key-bearing piece
-//!    of state. Each step is idempotent so a crash mid-burn resumes
-//!    cleanly on relaunch.
-//! 3. **Strip OPSEC features** — delete injection scripts +
-//!    encryption-module config so future launches fall through to a
-//!    "stub" mode (plain Discord webview shell, no privacy
-//!    features).
-//! 4. **Stripped state** — runtime concern, not driven from this
-//!    engine. The next process launch sees the absence of the
-//!    OPSEC files and operates as a stub.
+//! The engine contract, when explicitly driven, has four phases:
+//!
+//! 1. **Apparent unlock** — an intended UI integration concern, not driven
+//!    from this engine.
+//! 2. **Local burn** — the engine attempts its configured synchronous wipe
+//!    steps. Each step is idempotent within this engine.
+//! 3. **Strip OPSEC features** — a caller-supplied callback can delete
+//!    injection/config files. With no callback, this step is reported as
+//!    `Skipped`.
+//! 4. **Stripped state** — an intended runtime integration concern, not
+//!    driven from this engine.
 //!
 //! ## Idempotency + journal
 //!
-//! Each wipe step writes its completion into the on-disk journal
-//! AFTER it succeeds. On relaunch, [`DuressEngine::resume_if_pending`]
-//! reads the journal and re-runs any steps not yet completed — every
-//! step is idempotent so re-running a completed step is a no-op.
-//! Once all steps complete the journal is removed and the engine
-//! reports [`DuressOutcome::Completed`].
+//! After each step attempt, the engine records its `Wiped`, `AlreadyClean`,
+//! `Skipped`, or `Failed` outcome in the on-disk journal. When an integration
+//! explicitly calls
+//! [`DuressEngine::resume_if_pending`], the engine reads the journal and
+//! re-runs steps not yet completed. Startup resume remains a caller
+//! responsibility.
 //!
 //! ## Wipe set status (v1 alpha)
 //!
-//! Implemented today:
+//! Implemented inside this engine when it is explicitly invoked:
 //! - TPM key eviction (B1's `evict_tpm_key`).
 //! - Keyring purge (B1's `KeyringSealer::purge_keyring_entry`).
 //! - Identity-blob file deletion.
 //! - Password-record file deletion.
 //! - **Prekey-bundle file deletion** (B4: `prekeys.json` holds the
 //!   sealed `PrekeyState`).
+//! - Account unregister callback (caller-supplied; normally signs and sends
+//!   the keyserver unregister request before local identity material is gone).
 //! - In-memory zeroize (caller responsibility — the design's
 //!   "Phase 2 step 9" is a process-exit / drop concern, not
 //!   on-disk).
@@ -55,7 +56,7 @@
 //! pointing at the integration layer responsible. **No
 //! `unimplemented!()` / `todo!()` is used.**
 
-use crate::sealer::{evict_tpm_key, KeyringSealer};
+use crate::sealer::{evict_tpm_key, KeyringSealer, SealerError, TpmEvictOutcome};
 use crate::{Error as KeystoreError, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -97,6 +98,9 @@ pub enum WipeStep {
     InMemoryZeroize,
     /// Step 10 — wipe stored unlock/duress password hashes.
     PasswordHashes,
+    /// Account-burn unregister. The engine cannot infer keyserver authority;
+    /// production must supply an explicit signed unregister callback.
+    UnregisterAccount,
     /// Identity blob file deletion (the on-disk identity.json that
     /// holds sealed keys). Listed under TPM eviction in the design
     /// but the file itself is separate from the TPM blob.
@@ -115,6 +119,7 @@ impl WipeStep {
             WipeStep::KeyringPurge,
             WipeStep::IdentityFile,
             WipeStep::PasswordHashes,
+            WipeStep::UnregisterAccount,
             WipeStep::PrekeyFile,
             WipeStep::LocalCacheDir,
             WipeStep::AnonymousCredentials,
@@ -146,12 +151,14 @@ pub enum StepOutcome {
 /// thread.
 pub type WipeFn = Box<dyn Fn() -> std::result::Result<(), DuressError> + Send + Sync + 'static>;
 
-/// Optional handlers for wipe steps that aren't yet self-contained
-/// in the keystore crate. Each `None` becomes a `Skipped` step at
-/// run time with a reason string in the report — never an
-/// `unimplemented!()`.
+/// Optional handlers and overrides for wipe steps. Deferred steps
+/// become `Skipped` when their handler is unset; the keyring purge
+/// override falls back to the production [`KeyringSealer`] purge.
 #[derive(Default)]
 pub struct DuressHandlers {
+    /// Override for Step 2. When unset, the engine purges the
+    /// production OS keyring entry through [`KeyringSealer`].
+    pub purge_keyring: Option<WipeFn>,
     pub wipe_local_cache_dir: Option<WipeFn>,
     pub wipe_anonymous_credentials: Option<WipeFn>,
     pub wipe_prekeys: Option<WipeFn>,
@@ -160,6 +167,207 @@ pub struct DuressHandlers {
     pub wipe_peer_ratchets: Option<WipeFn>,
     pub zeroize_in_memory: Option<WipeFn>,
     pub strip_opsec_files: Option<WipeFn>,
+    pub unregister_account: Option<WipeFn>,
+}
+
+/// Production-owned adapter for wiring the duress engine's callback slots.
+///
+/// This type is intentionally additive over [`DuressHandlers`]: the engine's
+/// low-level tests can continue constructing `DuressHandlers` directly, while
+/// production callers get one named boundary for explicit wipe wiring. A missing
+/// callback remains `None`, which the engine reports as `Skipped`; absence of a
+/// production binding never grants permission to run a wipe by inference.
+#[derive(Default)]
+pub struct ProductionDuressHandlers {
+    handlers: DuressHandlers,
+    unregister_remote_identity: Option<WipeFn>,
+}
+
+impl ProductionDuressHandlers {
+    /// Start with no production callbacks wired. Each missing handler is a
+    /// refusal-by-omission and becomes a skipped step at execution time.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Wrap an already-assembled handler set. Intended for integration layers
+    /// that own concrete wipe resources and can prove those resources are
+    /// explicitly bound before invoking the duress engine.
+    pub fn from_handlers(handlers: DuressHandlers) -> Self {
+        Self {
+            handlers,
+            unregister_remote_identity: None,
+        }
+    }
+
+    pub fn with_purge_keyring(mut self, handler: WipeFn) -> Self {
+        self.handlers.purge_keyring = Some(handler);
+        self
+    }
+
+    pub fn with_wipe_local_cache_dir(mut self, handler: WipeFn) -> Self {
+        self.handlers.wipe_local_cache_dir = Some(handler);
+        self
+    }
+
+    pub fn with_wipe_local_cache_dir_path<P>(mut self, path: P) -> Self
+    where
+        P: Into<PathBuf>,
+    {
+        self.handlers.wipe_local_cache_dir = Some(remove_bound_paths_handler(
+            [path.into()],
+            "local cache wipe requires an explicitly bound directory path",
+        ));
+        self
+    }
+
+    pub fn with_wipe_anonymous_credentials(mut self, handler: WipeFn) -> Self {
+        self.handlers.wipe_anonymous_credentials = Some(handler);
+        self
+    }
+
+    pub fn with_wipe_anonymous_credentials_paths<I, P>(mut self, paths: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<PathBuf>,
+    {
+        self.handlers.wipe_anonymous_credentials = Some(remove_bound_paths_handler(
+            paths,
+            "anonymous credentials wipe requires at least one explicitly bound path",
+        ));
+        self
+    }
+
+    pub fn with_wipe_prekeys(mut self, handler: WipeFn) -> Self {
+        self.handlers.wipe_prekeys = Some(handler);
+        self
+    }
+
+    pub fn with_wipe_double_ratchet(mut self, handler: WipeFn) -> Self {
+        self.handlers.wipe_double_ratchet = Some(handler);
+        self
+    }
+
+    pub fn with_wipe_sender_keys(mut self, handler: WipeFn) -> Self {
+        self.handlers.wipe_sender_keys = Some(handler);
+        self
+    }
+
+    pub fn with_wipe_peer_ratchets(mut self, handler: WipeFn) -> Self {
+        self.handlers.wipe_peer_ratchets = Some(handler);
+        self
+    }
+
+    pub fn with_zeroize_in_memory(mut self, handler: WipeFn) -> Self {
+        self.handlers.zeroize_in_memory = Some(handler);
+        self
+    }
+
+    pub fn with_strip_opsec_files(mut self, handler: WipeFn) -> Self {
+        self.handlers.strip_opsec_files = Some(handler);
+        self
+    }
+
+    pub fn with_strip_opsec_file_paths<I, P>(mut self, paths: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<PathBuf>,
+    {
+        self.handlers.strip_opsec_files = Some(remove_bound_paths_handler(
+            paths,
+            "OPSEC strip requires at least one explicitly bound path",
+        ));
+        self
+    }
+
+    /// Wire the production caller's keyserver unregister operation.
+    ///
+    /// This deliberately lives beside, not inside, [`DuressHandlers`]: the
+    /// remote unregister must run while the old identity key still exists, so a
+    /// caller performs it before handing the local wipe handlers to
+    /// [`DuressEngine`]. If no callback is bound, production gets an explicit
+    /// skipped outcome rather than permission inferred from absence.
+    pub fn with_unregister_remote_identity(mut self, handler: WipeFn) -> Self {
+        self.unregister_remote_identity = Some(handler);
+        self
+    }
+
+    pub fn unregister_remote_identity(&self) -> StepOutcome {
+        match self.unregister_remote_identity.as_ref() {
+            Some(handler) => match handler() {
+                Ok(()) => StepOutcome::Wiped,
+                Err(error) => StepOutcome::Failed {
+                    error: error.to_string(),
+                },
+            },
+            None => StepOutcome::Skipped {
+                reason: "remote identity unregister handler not wired — caller must unregister before local identity files are wiped".to_string(),
+            },
+        }
+    }
+
+    pub fn with_unregister_account(mut self, handler: WipeFn) -> Self {
+        self.handlers.unregister_account = Some(handler);
+        self
+    }
+
+    pub fn into_handlers(self) -> DuressHandlers {
+        self.handlers
+    }
+}
+
+impl From<ProductionDuressHandlers> for DuressHandlers {
+    fn from(production: ProductionDuressHandlers) -> Self {
+        production.into_handlers()
+    }
+}
+
+/// Convert explicitly-bound production wipe callbacks into the engine's
+/// complete handler table.
+///
+/// This function is the production assembly boundary: callers must supply each
+/// callback they have authority to run through [`ProductionDuressHandlers`].
+/// Any missing callback remains absent and is reported by [`DuressEngine`] as a
+/// skipped step; absence is never treated as permission.
+pub fn build_production_duress_handlers(production: ProductionDuressHandlers) -> DuressHandlers {
+    production.into_handlers()
+}
+
+fn remove_bound_paths_handler<I, P>(paths: I, empty_binding_error: &'static str) -> WipeFn
+where
+    I: IntoIterator<Item = P>,
+    P: Into<PathBuf>,
+{
+    let paths: Vec<PathBuf> = paths.into_iter().map(Into::into).collect();
+    Box::new(move || remove_bound_paths(&paths, empty_binding_error))
+}
+
+fn remove_bound_paths(
+    paths: &[PathBuf],
+    empty_binding_error: &'static str,
+) -> std::result::Result<(), DuressError> {
+    if paths.is_empty() {
+        return Err(DuressError::Handler(empty_binding_error.to_string()));
+    }
+
+    for (idx, path) in paths.iter().enumerate() {
+        match std::fs::symlink_metadata(path) {
+            Ok(meta) if meta.file_type().is_dir() && !meta.file_type().is_symlink() => {
+                std::fs::remove_dir_all(path)
+                    .map_err(|e| DuressError::Io(format!("remove bound directory #{idx}: {e}")))?;
+            }
+            Ok(_) => {
+                std::fs::remove_file(path)
+                    .map_err(|e| DuressError::Io(format!("remove bound file #{idx}: {e}")))?;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(DuressError::Io(format!("inspect bound path #{idx}: {e}")));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// On-disk paths the engine deletes directly.
@@ -170,6 +378,27 @@ pub struct DuressPaths {
     /// engine reports the [`WipeStep::PrekeyFile`] step as
     /// `Skipped`; when `Some` it deletes the file idempotently.
     pub prekey_file: Option<PathBuf>,
+}
+
+/// Filesystem roots used to assemble production duress behavior.
+///
+/// `config_dir` is the active account directory. `password_dir` is the
+/// device-level directory that holds the main-password marker.
+pub struct ProductionDuressConfig {
+    pub config_dir: PathBuf,
+    pub password_dir: PathBuf,
+    pub strip_opsec_files: Vec<PathBuf>,
+}
+
+impl ProductionDuressConfig {
+    pub fn new(config_dir: PathBuf, password_dir: PathBuf) -> Self {
+        let strip_opsec_files = default_strip_opsec_files(&config_dir);
+        Self {
+            config_dir,
+            password_dir,
+            strip_opsec_files,
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -199,8 +428,48 @@ impl From<DuressError> for KeystoreError {
     }
 }
 
-/// On-disk journal: lists which steps have been completed so far.
-/// Read on relaunch by [`DuressEngine::resume_if_pending`].
+pub fn build_partial_duress_handlers(
+    local_cache_dir: Option<PathBuf>,
+    strip_opsec_files: Vec<PathBuf>,
+) -> DuressHandlers {
+    let wipe_local_cache_dir =
+        local_cache_dir.map(|path| Box::new(move || remove_dir_idempotent(&path)) as WipeFn);
+    let strip_opsec_files = (!strip_opsec_files.is_empty()).then(|| {
+        Box::new(move || {
+            for path in &strip_opsec_files {
+                remove_path_idempotent(path)?;
+            }
+            Ok(())
+        }) as WipeFn
+    });
+
+    DuressHandlers {
+        wipe_local_cache_dir,
+        strip_opsec_files,
+        ..Default::default()
+    }
+}
+
+pub fn build_production_duress_paths(config: &ProductionDuressConfig) -> (DuressPaths, PathBuf) {
+    (
+        DuressPaths {
+            identity_file: config.config_dir.join("identity.json"),
+            password_file: config.password_dir.join("password_marker.json"),
+            prekey_file: Some(config.config_dir.join("prekeys.json")),
+        },
+        config.config_dir.join("duress.journal"),
+    )
+}
+
+pub fn build_production_duress_config_handlers(config: &ProductionDuressConfig) -> DuressHandlers {
+    build_partial_duress_handlers(
+        Some(config.config_dir.join("store")),
+        config.strip_opsec_files.clone(),
+    )
+}
+
+/// On-disk journal of attempted step outcomes. Read when an integration calls
+/// [`DuressEngine::resume_if_pending`].
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct DuressJournal {
     pub completed: Vec<(WipeStep, StepOutcome)>,
@@ -259,6 +528,13 @@ impl DuressEngine {
     /// (every step finished) or every remaining step has logged a
     /// failure outcome.
     pub fn execute(&self) -> Result<DuressReport> {
+        self.execute_with_tpm_evict(evict_tpm_key)
+    }
+
+    fn execute_with_tpm_evict<F>(&self, tpm_evict: F) -> Result<DuressReport>
+    where
+        F: Fn() -> std::result::Result<TpmEvictOutcome, SealerError>,
+    {
         let mut journal = self.read_or_init_journal()?;
         let already_done: std::collections::HashSet<WipeStep> =
             journal.completed.iter().map(|(s, _)| *s).collect();
@@ -268,7 +544,7 @@ impl DuressEngine {
             if already_done.contains(&step) {
                 continue;
             }
-            let outcome = self.run_step(step);
+            let outcome = self.run_step(step, &tpm_evict);
             report_steps.push((step, outcome.clone()));
             journal.completed.push((step, outcome));
             self.write_journal(&journal)?;
@@ -308,20 +584,48 @@ impl DuressEngine {
         Ok(Some(self.execute()?))
     }
 
-    fn run_step(&self, step: WipeStep) -> StepOutcome {
+    pub fn journal_path(&self) -> &Path {
+        &self.journal_path
+    }
+
+    pub fn paths(&self) -> &DuressPaths {
+        &self.paths
+    }
+
+    pub fn handler_wired(&self, step: WipeStep) -> bool {
         match step {
-            WipeStep::TpmEvict => evict_tpm_key()
-                .map(|_| StepOutcome::Wiped)
-                .unwrap_or_else(|e| StepOutcome::Failed {
-                    error: e.to_string(),
-                }),
-            WipeStep::KeyringPurge => KeyringSealer::purge_keyring_entry()
-                .map(|_| StepOutcome::Wiped)
-                .unwrap_or_else(|e| StepOutcome::Failed {
-                    error: e.to_string(),
-                }),
+            WipeStep::LocalCacheDir => self.handlers.wipe_local_cache_dir.is_some(),
+            WipeStep::AnonymousCredentials => self.handlers.wipe_anonymous_credentials.is_some(),
+            WipeStep::Prekeys => self.handlers.wipe_prekeys.is_some(),
+            WipeStep::DoubleRatchet => self.handlers.wipe_double_ratchet.is_some(),
+            WipeStep::SenderKeys => self.handlers.wipe_sender_keys.is_some(),
+            WipeStep::PeerRatchets => self.handlers.wipe_peer_ratchets.is_some(),
+            WipeStep::InMemoryZeroize => self.handlers.zeroize_in_memory.is_some(),
+            WipeStep::StripOpsecFiles => self.handlers.strip_opsec_files.is_some(),
+            WipeStep::UnregisterAccount => self.handlers.unregister_account.is_some(),
+            WipeStep::TpmEvict
+            | WipeStep::KeyringPurge
+            | WipeStep::IdentityFile
+            | WipeStep::PasswordHashes
+            | WipeStep::PrekeyFile => true,
+        }
+    }
+
+    fn run_step<F>(&self, step: WipeStep, tpm_evict: &F) -> StepOutcome
+    where
+        F: Fn() -> std::result::Result<TpmEvictOutcome, SealerError>,
+    {
+        match step {
+            WipeStep::TpmEvict => map_tpm_evict_result(tpm_evict()),
+            WipeStep::KeyringPurge => self.run_keyring_purge(),
             WipeStep::IdentityFile => self.delete_file_idempotent(&self.paths.identity_file),
             WipeStep::PasswordHashes => self.delete_file_idempotent(&self.paths.password_file),
+            WipeStep::UnregisterAccount => self.run_handler(
+                self.handlers.unregister_account.as_ref(),
+                "account unregister not wired — caller must bind a signed \
+                 keyserver unregister callback before local identity material \
+                 is burned",
+            ),
             WipeStep::PrekeyFile => match self.paths.prekey_file.as_deref() {
                 Some(path) => self.delete_file_idempotent(path),
                 None => StepOutcome::Skipped {
@@ -378,6 +682,22 @@ impl DuressEngine {
         }
     }
 
+    fn run_keyring_purge(&self) -> StepOutcome {
+        match self.handlers.purge_keyring.as_ref() {
+            Some(handler) => match handler() {
+                Ok(_) => StepOutcome::Wiped,
+                Err(e) => StepOutcome::Failed {
+                    error: e.to_string(),
+                },
+            },
+            None => KeyringSealer::purge_keyring_entry()
+                .map(|_| StepOutcome::Wiped)
+                .unwrap_or_else(|e| StepOutcome::Failed {
+                    error: e.to_string(),
+                }),
+        }
+    }
+
     fn run_handler(&self, handler: Option<&WipeFn>, skip_reason: &'static str) -> StepOutcome {
         match handler {
             Some(f) => match f() {
@@ -397,7 +717,7 @@ impl DuressEngine {
             Ok(_) => StepOutcome::Wiped,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => StepOutcome::AlreadyClean,
             Err(e) => StepOutcome::Failed {
-                error: format!("remove_file {}: {e}", path.display()),
+                error: format!("remove_file failed: {e}"),
             },
         }
     }
@@ -438,5 +758,671 @@ impl DuressEngine {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(DuressError::Io(e.to_string())),
         }
+    }
+}
+
+pub fn build_production_duress_engine(config: ProductionDuressConfig) -> DuressEngine {
+    let (paths, journal_path) = build_production_duress_paths(&config);
+    let handlers = build_production_duress_config_handlers(&config);
+    DuressEngine::new(journal_path, paths, handlers)
+}
+
+fn map_tpm_evict_result(result: std::result::Result<TpmEvictOutcome, SealerError>) -> StepOutcome {
+    match result {
+        Ok(TpmEvictOutcome::Evicted) => StepOutcome::Wiped,
+        Ok(TpmEvictOutcome::NoTpmNothingToEvict) => StepOutcome::AlreadyClean,
+        Err(e) => StepOutcome::Failed {
+            error: e.to_string(),
+        },
+    }
+}
+
+fn default_strip_opsec_files(config_dir: &Path) -> Vec<PathBuf> {
+    [
+        "injection.js",
+        "boot.js",
+        "opsec_config.json",
+        "keyserver.json",
+        "channels.json",
+    ]
+    .into_iter()
+    .map(|name| config_dir.join(name))
+    .collect()
+}
+
+fn remove_dir_idempotent(path: &Path) -> std::result::Result<(), DuressError> {
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(DuressError::Io(format!("remove_dir_all failed: {e}"))),
+    }
+}
+
+fn remove_path_idempotent(path: &Path) -> std::result::Result<(), DuressError> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(DuressError::Io(format!("metadata failed: {e}"))),
+    };
+
+    if metadata.file_type().is_dir() {
+        remove_dir_idempotent(path)
+    } else {
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(DuressError::Io(format!("remove_file failed: {e}"))),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use tempfile::TempDir;
+
+    fn test_paths(dir: &TempDir) -> (DuressPaths, PathBuf) {
+        (
+            DuressPaths {
+                identity_file: dir.path().join("identity.json"),
+                password_file: dir.path().join("password.json"),
+                prekey_file: Some(dir.path().join("prekeys.json")),
+            },
+            dir.path().join("duress.journal"),
+        )
+    }
+
+    fn write_journal_with_all_steps_except(journal_path: &Path, except: WipeStep) {
+        let completed = WipeStep::ordered()
+            .iter()
+            .copied()
+            .filter(|step| *step != except)
+            .map(|step| {
+                (
+                    step,
+                    StepOutcome::Skipped {
+                        reason: "prefilled test step".to_string(),
+                    },
+                )
+            })
+            .collect();
+        let journal = DuressJournal {
+            completed,
+            started_at_unix_seconds: 0,
+        };
+        std::fs::write(journal_path, serde_json::to_vec_pretty(&journal).unwrap()).unwrap();
+    }
+
+    fn outcome_for(steps: &[(WipeStep, StepOutcome)], target: WipeStep) -> &StepOutcome {
+        &steps
+            .iter()
+            .find(|(step, _)| *step == target)
+            .unwrap_or_else(|| panic!("step {target:?} missing from report"))
+            .1
+    }
+
+    fn counted_handler(counter: Arc<AtomicUsize>) -> WipeFn {
+        Box::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+    }
+
+    fn record_handler(calls: Arc<Mutex<Vec<&'static str>>>, label: &'static str) -> WipeFn {
+        Box::new(move || {
+            calls.lock().unwrap().push(label);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn production_duress_handlers_compose_concrete_handlers() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        std::fs::write(&paths.identity_file, b"identity").unwrap();
+        std::fs::write(&paths.password_file, b"password").unwrap();
+        if let Some(prekey_file) = paths.prekey_file.as_ref() {
+            std::fs::write(prekey_file, b"prekeys").unwrap();
+        }
+        let anonymous_store = dir.path().join("anonymous_credentials.json");
+        let strip_file = dir.path().join("opsec.js");
+        std::fs::write(&anonymous_store, b"anonymous").unwrap();
+        std::fs::write(&strip_file, b"opsec").unwrap();
+        let remote_unregister = Arc::new(AtomicUsize::new(0));
+
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let production = ProductionDuressHandlers::new()
+            .with_unregister_remote_identity(counted_handler(remote_unregister.clone()))
+            .with_purge_keyring(record_handler(Arc::clone(&calls), "purge_keyring"))
+            .with_wipe_local_cache_dir(record_handler(Arc::clone(&calls), "local_cache"))
+            .with_wipe_anonymous_credentials_paths([anonymous_store.clone()])
+            .with_wipe_prekeys(record_handler(Arc::clone(&calls), "prekeys"))
+            .with_wipe_double_ratchet(record_handler(Arc::clone(&calls), "double_ratchet"))
+            .with_wipe_sender_keys(record_handler(Arc::clone(&calls), "sender_keys"))
+            .with_wipe_peer_ratchets(record_handler(Arc::clone(&calls), "peer_ratchets"))
+            .with_zeroize_in_memory(record_handler(Arc::clone(&calls), "zeroize"))
+            .with_strip_opsec_file_paths([strip_file.clone()])
+            .with_unregister_account(record_handler(Arc::clone(&calls), "unregister"));
+
+        assert_eq!(
+            production.unregister_remote_identity(),
+            StepOutcome::Wiped,
+            "production remote unregister must be an explicit concrete callback"
+        );
+        assert_eq!(remote_unregister.load(Ordering::SeqCst), 1);
+
+        let handlers = production.into_handlers();
+        let engine = DuressEngine::new(journal_path, paths, handlers);
+
+        let report = engine
+            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
+            .unwrap();
+
+        for step in [
+            WipeStep::KeyringPurge,
+            WipeStep::IdentityFile,
+            WipeStep::PasswordHashes,
+            WipeStep::UnregisterAccount,
+            WipeStep::PrekeyFile,
+            WipeStep::LocalCacheDir,
+            WipeStep::AnonymousCredentials,
+            WipeStep::Prekeys,
+            WipeStep::DoubleRatchet,
+            WipeStep::SenderKeys,
+            WipeStep::PeerRatchets,
+            WipeStep::InMemoryZeroize,
+            WipeStep::StripOpsecFiles,
+        ] {
+            assert_eq!(outcome_for(&report.steps, step), &StepOutcome::Wiped);
+        }
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            &[
+                "purge_keyring",
+                "unregister",
+                "local_cache",
+                "prekeys",
+                "double_ratchet",
+                "sender_keys",
+                "peer_ratchets",
+                "zeroize",
+            ]
+        );
+        assert!(!anonymous_store.exists());
+        assert!(!strip_file.exists());
+    }
+
+    #[test]
+    fn build_production_duress_config_handlers_wipes_bound_paths() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        std::fs::write(&paths.identity_file, b"identity").unwrap();
+        std::fs::write(&paths.password_file, b"password").unwrap();
+        if let Some(prekey_file) = paths.prekey_file.as_ref() {
+            std::fs::write(prekey_file, b"prekeys").unwrap();
+        }
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let handlers = super::build_production_duress_handlers(
+            ProductionDuressHandlers::new()
+                .with_purge_keyring(record_handler(Arc::clone(&calls), "purge_keyring"))
+                .with_unregister_account(record_handler(Arc::clone(&calls), "unregister"))
+                .with_wipe_local_cache_dir(record_handler(Arc::clone(&calls), "local_cache"))
+                .with_wipe_anonymous_credentials(record_handler(
+                    Arc::clone(&calls),
+                    "anonymous_credentials",
+                ))
+                .with_wipe_prekeys(record_handler(Arc::clone(&calls), "prekeys"))
+                .with_wipe_double_ratchet(record_handler(Arc::clone(&calls), "double_ratchet"))
+                .with_wipe_sender_keys(record_handler(Arc::clone(&calls), "sender_keys"))
+                .with_wipe_peer_ratchets(record_handler(Arc::clone(&calls), "peer_ratchets"))
+                .with_zeroize_in_memory(record_handler(Arc::clone(&calls), "zeroize"))
+                .with_strip_opsec_files(record_handler(Arc::clone(&calls), "strip_opsec")),
+        );
+        let engine = DuressEngine::new(journal_path, paths, handlers);
+
+        let report = engine
+            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
+            .unwrap();
+
+        assert!(report.completed);
+        assert!(report.failed_steps().is_empty());
+        assert!(report.skipped_steps().is_empty());
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::TpmEvict),
+            &StepOutcome::AlreadyClean
+        );
+        for step in [
+            WipeStep::KeyringPurge,
+            WipeStep::IdentityFile,
+            WipeStep::PasswordHashes,
+            WipeStep::UnregisterAccount,
+            WipeStep::PrekeyFile,
+            WipeStep::LocalCacheDir,
+            WipeStep::AnonymousCredentials,
+            WipeStep::Prekeys,
+            WipeStep::DoubleRatchet,
+            WipeStep::SenderKeys,
+            WipeStep::PeerRatchets,
+            WipeStep::InMemoryZeroize,
+            WipeStep::StripOpsecFiles,
+        ] {
+            assert_eq!(outcome_for(&report.steps, step), &StepOutcome::Wiped);
+        }
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            &[
+                "purge_keyring",
+                "unregister",
+                "local_cache",
+                "anonymous_credentials",
+                "prekeys",
+                "double_ratchet",
+                "sender_keys",
+                "peer_ratchets",
+                "zeroize",
+                "strip_opsec",
+            ],
+            "production handler assembly must preserve every concrete callback"
+        );
+    }
+
+    #[test]
+    fn production_duress_wipes_password_hashes_strips_opsec_and_unregisters() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        let password_file = paths.password_file.clone();
+        let strip_file = dir.path().join("injection.js");
+        let strip_dir = dir.path().join("opsec");
+        let anonymous_file = dir.path().join("anonymous-credentials.json");
+        std::fs::write(&password_file, b"password hash record").unwrap();
+        std::fs::write(&strip_file, b"boot script").unwrap();
+        std::fs::create_dir(&strip_dir).unwrap();
+        std::fs::write(strip_dir.join("config.json"), b"{}").unwrap();
+        std::fs::write(&anonymous_file, b"anonymous credential").unwrap();
+        let unregister_calls = Arc::new(Mutex::new(0usize));
+        let unregister_calls_for_handler = Arc::clone(&unregister_calls);
+
+        let handlers = ProductionDuressHandlers::new()
+            .with_purge_keyring(Box::new(|| Ok(())))
+            .with_wipe_anonymous_credentials_paths([anonymous_file.clone()])
+            .with_strip_opsec_file_paths([strip_file.clone(), strip_dir.clone()])
+            .with_unregister_account(Box::new(move || {
+                *unregister_calls_for_handler.lock().unwrap() += 1;
+                Ok(())
+            }))
+            .into_handlers();
+        let engine = DuressEngine::new(journal_path, paths, handlers);
+
+        let report = engine
+            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
+            .unwrap();
+
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::PasswordHashes),
+            &StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::AnonymousCredentials),
+            &StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::StripOpsecFiles),
+            &StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::UnregisterAccount),
+            &StepOutcome::Wiped
+        );
+        assert!(!password_file.exists());
+        assert!(!anonymous_file.exists());
+        assert!(!strip_file.exists());
+        assert!(!strip_dir.exists());
+        assert_eq!(*unregister_calls.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn production_duress_wipes_cache_prekeys_and_identity_files() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        std::fs::write(&paths.identity_file, b"sealed identity").unwrap();
+        let prekey_file = paths.prekey_file.clone().unwrap();
+        std::fs::write(&prekey_file, b"sealed prekeys").unwrap();
+        let cache_dir = dir.path().join("store");
+        std::fs::create_dir(&cache_dir).unwrap();
+        std::fs::write(cache_dir.join("cache.sqlite"), b"cached ciphertext").unwrap();
+
+        let identity_file = paths.identity_file.clone();
+        let handlers = ProductionDuressHandlers::new()
+            .with_purge_keyring(Box::new(|| Ok(())))
+            .with_wipe_local_cache_dir_path(cache_dir.clone())
+            .into_handlers();
+        let engine = DuressEngine::new(journal_path, paths, handlers);
+
+        let report = engine
+            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
+            .unwrap();
+
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::IdentityFile),
+            &StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::PrekeyFile),
+            &StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::LocalCacheDir),
+            &StepOutcome::Wiped
+        );
+        assert!(!identity_file.exists());
+        assert!(!prekey_file.exists());
+        assert!(!cache_dir.exists());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn production_handlers_absence_keeps_remaining_callbacks_skipped() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        let handlers = ProductionDuressHandlers::new().into_handlers();
+        let engine = DuressEngine::new(journal_path, paths, handlers);
+
+        let report = engine
+            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
+            .unwrap();
+
+        for step in [
+            WipeStep::UnregisterAccount,
+            WipeStep::AnonymousCredentials,
+            WipeStep::InMemoryZeroize,
+            WipeStep::StripOpsecFiles,
+        ] {
+            assert!(
+                matches!(
+                    outcome_for(&report.steps, step),
+                    StepOutcome::Skipped { .. }
+                ),
+                "unbound production callback {step:?} must fail closed as Skipped"
+            );
+        }
+    }
+
+    #[test]
+    fn production_path_handlers_wipe_anonymous_credentials_and_strip_files() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        let anonymous_store = dir.path().join("anonymous_credentials.json");
+        let strip_file = dir.path().join("boot.js");
+        let strip_dir = dir.path().join("opsec_config");
+        std::fs::write(&anonymous_store, b"credential-token").unwrap();
+        std::fs::write(&strip_file, b"injection").unwrap();
+        std::fs::create_dir(&strip_dir).unwrap();
+        std::fs::write(strip_dir.join("config.json"), b"{}").unwrap();
+
+        let handlers = ProductionDuressHandlers::new()
+            .with_wipe_anonymous_credentials_paths([anonymous_store.clone()])
+            .with_strip_opsec_file_paths([strip_file.clone(), strip_dir.clone()])
+            .into_handlers();
+        let engine = DuressEngine::new(journal_path, paths, handlers);
+        let report = engine
+            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
+            .unwrap();
+
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::AnonymousCredentials),
+            &StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::StripOpsecFiles),
+            &StepOutcome::Wiped
+        );
+        assert!(!anonymous_store.exists());
+        assert!(!strip_file.exists());
+        assert!(!strip_dir.exists());
+    }
+
+    #[test]
+    fn production_path_handlers_with_empty_bindings_fail_closed() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        let handlers = ProductionDuressHandlers::new()
+            .with_wipe_anonymous_credentials_paths(Vec::<PathBuf>::new())
+            .with_strip_opsec_file_paths(Vec::<PathBuf>::new())
+            .into_handlers();
+        let engine = DuressEngine::new(journal_path, paths, handlers);
+
+        let report = engine
+            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
+            .unwrap();
+
+        assert!(matches!(
+            outcome_for(&report.steps, WipeStep::AnonymousCredentials),
+            StepOutcome::Failed { error } if error.contains("explicitly bound path")
+        ));
+        assert!(matches!(
+            outcome_for(&report.steps, WipeStep::StripOpsecFiles),
+            StepOutcome::Failed { error } if error.contains("explicitly bound path")
+        ));
+    }
+
+    #[test]
+    fn production_password_hashes_wipe_is_bound_by_duress_paths() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        std::fs::write(&paths.password_file, b"password-record").unwrap();
+        let password_file = paths.password_file.clone();
+        let handlers = ProductionDuressHandlers::new().into_handlers();
+        let engine = DuressEngine::new(journal_path, paths, handlers);
+
+        let report = engine
+            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
+            .unwrap();
+
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::PasswordHashes),
+            &StepOutcome::Wiped
+        );
+        assert!(!password_file.exists());
+    }
+
+    #[test]
+    fn duress_tpm_no_tpm_nothing_to_evict_completes_and_removes_journal() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        write_journal_with_all_steps_except(&journal_path, WipeStep::TpmEvict);
+
+        let engine = DuressEngine::new(journal_path.clone(), paths, DuressHandlers::default());
+        let report = engine.execute().unwrap();
+
+        assert!(report.completed);
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::TpmEvict),
+            &StepOutcome::AlreadyClean
+        );
+        assert!(
+            !journal_path.exists(),
+            "NoTpmNothingToEvict is terminal and must remove the journal"
+        );
+    }
+
+    #[test]
+    fn duress_tpm_evict_error_retains_journal_and_reports_failed() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        write_journal_with_all_steps_except(&journal_path, WipeStep::TpmEvict);
+
+        let engine = DuressEngine::new(journal_path.clone(), paths, DuressHandlers::default());
+        let report = engine
+            .execute_with_tpm_evict(|| Err(SealerError::Tpm("DeleteKey: access denied".into())))
+            .unwrap();
+
+        assert!(report.completed);
+        assert!(matches!(
+            outcome_for(&report.steps, WipeStep::TpmEvict),
+            StepOutcome::Failed { error } if error.contains("DeleteKey")
+        ));
+        assert!(
+            journal_path.exists(),
+            "failed TPM deletion must retain the journal for resume"
+        );
+    }
+
+    #[test]
+    fn already_clean_is_not_conflated_with_wiped_in_report() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        write_journal_with_all_steps_except(&journal_path, WipeStep::TpmEvict);
+
+        let engine = DuressEngine::new(journal_path, paths, DuressHandlers::default());
+        let report = engine
+            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
+            .unwrap();
+        let tpm_outcome = outcome_for(&report.steps, WipeStep::TpmEvict);
+
+        assert_eq!(tpm_outcome, &StepOutcome::AlreadyClean);
+        assert_ne!(tpm_outcome, &StepOutcome::Wiped);
+    }
+
+    #[test]
+    fn keyring_purge_handler() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        write_journal_with_all_steps_except(&journal_path, WipeStep::KeyringPurge);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_handler = Arc::clone(&calls);
+        let handlers = DuressHandlers {
+            purge_keyring: Some(Box::new(move || {
+                calls_for_handler.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })),
+            ..Default::default()
+        };
+        let engine = DuressEngine::new(journal_path.clone(), paths, handlers);
+
+        let report = engine
+            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
+            .unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::KeyringPurge),
+            &StepOutcome::Wiped
+        );
+        assert!(!journal_path.exists());
+    }
+
+    #[test]
+    fn handlers_run_in_canonical_order() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        std::fs::write(&paths.identity_file, b"identity").unwrap();
+        std::fs::write(&paths.password_file, b"password").unwrap();
+        let prekey_file = paths.prekey_file.clone().unwrap();
+        std::fs::write(&prekey_file, b"prekeys").unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+
+        let handlers = ProductionDuressHandlers::new()
+            .with_purge_keyring(record_handler(Arc::clone(&calls), "keyring"))
+            .with_unregister_account(record_handler(Arc::clone(&calls), "unregister"))
+            .with_wipe_local_cache_dir(record_handler(Arc::clone(&calls), "local_cache"))
+            .with_wipe_anonymous_credentials(record_handler(Arc::clone(&calls), "anonymous"))
+            .with_wipe_prekeys(record_handler(Arc::clone(&calls), "prekeys"))
+            .with_wipe_double_ratchet(record_handler(Arc::clone(&calls), "double_ratchet"))
+            .with_wipe_sender_keys(record_handler(Arc::clone(&calls), "sender_keys"))
+            .with_wipe_peer_ratchets(record_handler(Arc::clone(&calls), "peer_ratchets"))
+            .with_zeroize_in_memory(record_handler(Arc::clone(&calls), "zeroize"))
+            .with_strip_opsec_files(record_handler(Arc::clone(&calls), "strip_opsec"))
+            .into_handlers();
+        let engine = DuressEngine::new(journal_path, paths, handlers);
+
+        let report = engine
+            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
+            .unwrap();
+
+        assert!(report.completed);
+        assert!(report.failed_steps().is_empty());
+        assert!(report.skipped_steps().is_empty());
+        assert_eq!(
+            report
+                .steps
+                .iter()
+                .map(|(step, _)| *step)
+                .collect::<Vec<_>>(),
+            WipeStep::ordered().to_vec()
+        );
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            &[
+                "keyring",
+                "unregister",
+                "local_cache",
+                "anonymous",
+                "prekeys",
+                "double_ratchet",
+                "sender_keys",
+                "peer_ratchets",
+                "zeroize",
+                "strip_opsec",
+            ]
+        );
+    }
+
+    #[test]
+    fn build_production_duress_handlers() {
+        let dir = TempDir::new().unwrap();
+        let account_dir = dir.path().join("account");
+        let password_dir = dir.path().join("base");
+        std::fs::create_dir_all(account_dir.join("store")).unwrap();
+        std::fs::write(account_dir.join("identity.json"), b"identity").unwrap();
+        std::fs::write(account_dir.join("prekeys.json"), b"prekeys").unwrap();
+        std::fs::write(account_dir.join("store").join("messages.sqlite"), b"cache").unwrap();
+        std::fs::create_dir_all(&password_dir).unwrap();
+        std::fs::write(password_dir.join("password_marker.json"), b"marker").unwrap();
+        let opsec_script = account_dir.join("boot.js");
+        let opsec_config = account_dir.join("opsec.json");
+        std::fs::write(&opsec_script, b"script").unwrap();
+        std::fs::write(&opsec_config, b"config").unwrap();
+
+        let mut config = ProductionDuressConfig::new(account_dir.clone(), password_dir.clone());
+        config.strip_opsec_files = vec![opsec_script.clone(), opsec_config.clone()];
+
+        let (paths, journal_path) = super::build_production_duress_paths(&config);
+        assert_eq!(journal_path, account_dir.join("duress.journal"));
+        assert_eq!(paths.identity_file, account_dir.join("identity.json"));
+        assert_eq!(
+            paths.password_file,
+            password_dir.join("password_marker.json")
+        );
+        let expected_prekey_file = account_dir.join("prekeys.json");
+        assert_eq!(
+            paths.prekey_file.as_deref(),
+            Some(expected_prekey_file.as_path())
+        );
+
+        let handlers = super::build_production_duress_config_handlers(&config);
+        let engine = DuressEngine::new(journal_path.clone(), paths, handlers);
+        let report = engine
+            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
+            .unwrap();
+
+        assert!(report.completed);
+        assert!(report.failed_steps().is_empty());
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::LocalCacheDir),
+            &StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::StripOpsecFiles),
+            &StepOutcome::Wiped
+        );
+        assert!(!account_dir.join("identity.json").exists());
+        assert!(!account_dir.join("prekeys.json").exists());
+        assert!(!account_dir.join("store").exists());
+        assert!(!opsec_script.exists());
+        assert!(!opsec_config.exists());
+        assert!(!password_dir.join("password_marker.json").exists());
+        assert!(!journal_path.exists());
     }
 }

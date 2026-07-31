@@ -14,10 +14,25 @@ describe("native IMAP identity and deletion authority", () => {
   });
 
   it("revokes live IMAP authority across identity and burn transitions", () => {
+    // Whitespace-normalized on purpose. The property under test is that each of
+    // these transitions revokes ALL live IMAP authority before it returns, which
+    // is a security property. A literal substring match also pinned the source
+    // FORMATTING: rustfmt line-wrapped
+    //   app.state::<...ScrubImapState>().revoke_all()?;
+    // into two lines and this test went red while the revoke was still there.
+    // Collapsing runs of whitespace keeps the gate exact about the call and
+    // indifferent to how rustfmt happens to break the line.
+    const collapse = (value: string): string => value.replace(/\s+/gu, "");
+    const flat = collapse(commands);
     for (const name of ["switch_hub_identity", "burn_active_hub_identity", "execute_hub_full_cleanup", "burn_hub_service_account", "burn_active_hub_context"]) {
       const start = commands.indexOf(`async fn ${name}`);
       expect(start, name).toBeGreaterThanOrEqual(0);
-      expect(commands.slice(start, start + 900), name).toContain("ScrubImapState>().revoke_all()");
+      // Slice on the collapsed text so the 900-char budget measures code, not indentation.
+      const flatStart = flat.indexOf(collapse(`async fn ${name}`));
+      expect(flatStart, name).toBeGreaterThanOrEqual(0);
+      expect(flat.slice(flatStart, flatStart + 900), name).toContain(
+        collapse("ScrubImapState>().revoke_all()"),
+      );
     }
   });
 

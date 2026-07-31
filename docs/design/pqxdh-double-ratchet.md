@@ -237,12 +237,29 @@ flagged in `sender-keys.md` for the audit engagement.
 
 ## Defense if this layer is compromised
 
-- Wrapped per-message keys live on key server(s). Burn deletes them.
-  Even if the in-flight ratchet construction has a flaw, server-side
-  burn renders content permanently undecryptable. After burn, content
-  on Discord's CDN renders as the original stego'd cover text — see
-  `key-server-api.md` and `group-messaging.md` for burn-rendering
-  semantics.
+- **`Planned` — this defence does not exist as described.** The design was:
+  wrapped per-message keys live on the key server(s), burn deletes them, and
+  the content becomes undecryptable even if the ratchet construction has a
+  flaw. The send path never creates those server-held per-message keys.
+  `MessageStore::put` (`crates/store/src/lib.rs:194-206`) omits `wrapped_key`
+  from its INSERT entirely, so every burn path that sets `wrapped_key = NULL`
+  (`:298`, `:342`, `:350`, `:560`) nulls a column that was already null.
+
+  What burn does today: it deletes OSL's local state — zeroblobbing the cached
+  ciphertext and nonce — deletes OSL's server-side state, and sends a
+  cooperative removal request to the peer's client. It does **not** destroy the
+  only decryption capability. Because the live `v=3` scheme wraps to the
+  recipient's *long-term* keys, any holder of that key material can still read
+  the carrier ciphertext on Discord's CDN after a burn.
+
+  Do not write "permanently undecryptable" or "cryptographic burn" — both are
+  banned in `osl-public-claim-allowlist.md` §D. Making this defence real
+  requires the send path to wrap to a per-message key held only by the key
+  server, plus a proven delete.
+
+  The cover-text rendering property is unaffected: after burn, content renders
+  as the original stego'd cover text — see `key-server-api.md` and
+  `group-messaging.md` for burn-rendering semantics.
 - Padding limits length-leak even if the AEAD itself were broken.
 
 ## Duress wipe

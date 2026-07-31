@@ -43,8 +43,8 @@ fn install_self_entry(state: &AppState, self_did: &str) {
 ///     bootstrap pubs published by the other side
 ///   - mutual scope acceptance rows (so the recv gate passes)
 fn setup_alice_bob_dm_dr_ready() -> (AppState, AppState) {
-    let alice_state = fresh_state_for("alice");
-    let bob_state = fresh_state_for("bob");
+    let alice_state = fresh_state_for(ALICE_DID);
+    let bob_state = fresh_state_for(BOB_DID);
 
     // Snapshot pubkeys.
     let alice_id = alice_state
@@ -117,21 +117,19 @@ fn setup_alice_bob_dm_dr_ready() -> (AppState, AppState) {
 fn pubkeys_json_for(state: &AppState, user_id: &str) -> String {
     let g = state.identity.lock().unwrap();
     let id = g.as_ref().expect("identity loaded");
-    let x = STANDARD.encode(id.x25519_public.as_bytes());
-    let ed = STANDARD.encode(id.ed25519_public.as_bytes());
-    let mlkem = STANDARD.encode(id.mlkem_public_bytes);
-    let ratchet = STANDARD.encode(
-        id.ratchet_initial_pub
-            .expect("fresh identity has ratchet pub")
-            .as_bytes(),
-    );
-    format!(
-        "{{\"user_id\":\"{user_id}\",\"ik_x25519_pub\":\"{x}\",\
-         \"ik_ed25519_pub\":\"{ed}\",\"ik_mlkem768_pub\":\"{mlkem}\",\
-         \"registered_at\":\"2026-01-01T00:00:00Z\",\
-         \"last_rotated_at\":null,\
-         \"ik_ratchet_initial_pub\":\"{ratchet}\"}}"
-    )
+    assert!(id.user_id == user_id, "fixture route must match identity");
+    let req = keystore::client::KeyServerClient::build_register_request(id);
+    serde_json::to_string(&serde_json::json!({
+        "user_id": req.user_id,
+        "ik_x25519_pub": req.ik_x25519_pub,
+        "ik_ed25519_pub": req.ik_ed25519_pub,
+        "ik_mlkem768_pub": req.ik_mlkem768_pub,
+        "registered_at": "2026-01-01T00:00:00Z",
+        "last_rotated_at": null,
+        "ik_ratchet_initial_pub": req.ik_ratchet_initial_pub,
+        "registration_sig": req.registration_sig,
+    }))
+    .expect("pubkeys response json")
 }
 
 /// Hand-rolled loopback HTTP server (no dependency). Serves

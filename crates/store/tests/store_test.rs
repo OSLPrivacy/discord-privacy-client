@@ -7,12 +7,24 @@
 //! input gives a stable derived AEAD key across runs.
 
 use rusqlite::params;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use store::{MessageStore, StoreError, StoredMessage};
 use tempfile::TempDir;
 
 const SECRET_A: &[u8; 32] = &[1u8; 32];
 const SECRET_B: &[u8; 32] = &[2u8; 32];
+
+type StoredMessageRow = (
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    i64,
+    i64,
+);
 
 fn open_a(dir: &Path) -> MessageStore {
     MessageStore::open(dir, SECRET_A).expect("open with SECRET_A should succeed")
@@ -37,6 +49,157 @@ fn sample(
     }
 }
 
+fn raw_store_artifacts(db_path: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let parent = db_path.parent().expect("database has a parent");
+    let prefix = db_path
+        .file_name()
+        .expect("database has a filename")
+        .to_string_lossy();
+    let mut artifacts = std::fs::read_dir(parent)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().starts_with(prefix.as_ref()))
+                .unwrap_or(false)
+        })
+        .filter(|path| path.is_file())
+        .map(|path| {
+            let bytes = std::fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect::<Vec<_>>();
+    artifacts.sort_by(|left, right| left.0.cmp(&right.0));
+    artifacts
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+fn v3_key() -> crypto::aead::Key {
+    let bytes = crypto::hkdf::derive_32(&[], SECRET_A, b"osl-message-store-v1").unwrap();
+    crypto::aead::Key::from_bytes(bytes)
+}
+
+fn v3_seal(aad: &[u8], plaintext: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let key = v3_key();
+    let nonce = crypto::random::random_nonce();
+    let ct = crypto::aead::seal(&key, &nonce, aad, plaintext).unwrap();
+    (nonce.as_bytes().to_vec(), ct)
+}
+
+fn build_v3_fixture(dir: &Path, rows: &[StoredMessage]) {
+    let sealed: Vec<(String, Vec<u8>, Vec<u8>)> = rows
+        .iter()
+        .map(|row| {
+            let (nonce, ct) = v3_seal(row.discord_message_id.as_bytes(), row.plaintext.as_bytes());
+            (row.discord_message_id.clone(), ct, nonce)
+        })
+        .collect();
+
+    let (canary_nonce, canary_ct) =
+        v3_seal(b"osl-message-store/canary", b"osl-message-store-canary-v1");
+    let canary: Vec<(String, Vec<u8>)> = vec![
+        ("canary_nonce".to_string(), canary_nonce),
+        ("canary_ct".to_string(), canary_ct),
+    ];
+
+    let db_path = dir.join("messages.sqlite");
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch(
+        r#"
+CREATE TABLE _meta (key TEXT PRIMARY KEY, value BLOB);
+CREATE TABLE messages (
+    discord_message_id TEXT PRIMARY KEY,
+    channel_id TEXT NOT NULL,
+    sender_discord_id TEXT NOT NULL,
+    sender_osl_user_id TEXT NOT NULL,
+    ciphertext BLOB NOT NULL,
+    nonce BLOB NOT NULL,
+    decrypted_at INTEGER NOT NULL,
+    burned INTEGER NOT NULL DEFAULT 0,
+    burned_at INTEGER,
+    wrapped_key BLOB,
+    scope_type TEXT,
+    scope_id TEXT
+);
+CREATE INDEX idx_messages_channel ON messages(channel_id, decrypted_at DESC);
+CREATE TABLE attachments (
+    cache_key TEXT PRIMARY KEY,
+    discord_message_id TEXT NOT NULL,
+    random_filename TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    ciphertext BLOB NOT NULL,
+    nonce BLOB NOT NULL,
+    byte_len INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    scope_type TEXT,
+    scope_id TEXT,
+    sender_discord_id TEXT
+);
+"#,
+    )
+    .unwrap();
+    for (key, value) in canary {
+        conn.execute(
+            "INSERT INTO _meta(key, value) VALUES(?1, ?2)",
+            params![key, value],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "INSERT INTO _meta(key, value) VALUES('schema_version', ?1)",
+        params![3u32.to_le_bytes().to_vec()],
+    )
+    .unwrap();
+    for (row, (_, ct, nonce)) in rows.iter().zip(sealed.iter()) {
+        conn.execute(
+            "INSERT INTO messages (discord_message_id, channel_id, sender_discord_id, \
+                sender_osl_user_id, ciphertext, nonce, decrypted_at, burned) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
+            params![
+                row.discord_message_id,
+                row.channel_id,
+                row.sender_discord_id,
+                row.sender_osl_user_id,
+                ct,
+                nonce,
+                row.decrypted_at,
+            ],
+        )
+        .unwrap();
+    }
+}
+
+fn schema_version(dir: &Path) -> u32 {
+    let conn = rusqlite::Connection::open(dir.join("messages.sqlite")).unwrap();
+    let version: Vec<u8> = conn
+        .query_row(
+            "SELECT value FROM _meta WHERE key = 'schema_version'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    u32::from_le_bytes(version.try_into().unwrap())
+}
+
+fn assert_migrated_rows(store: &MessageStore, rows: &[StoredMessage]) {
+    for row in rows {
+        let out = store
+            .get(&row.discord_message_id)
+            .unwrap()
+            .expect("migrated row should be present");
+        assert_eq!(&out, row);
+    }
+    let listed = store.list_by_channel("v3-chan-a", 10).unwrap();
+    let ids: Vec<&str> = listed
+        .iter()
+        .map(|m| m.discord_message_id.as_str())
+        .collect();
+    assert_eq!(ids, vec!["v3-newer", "v3-older"]);
+}
+
 // ---- roundtrip ----
 
 #[test]
@@ -51,12 +214,33 @@ fn roundtrip_put_get_returns_same_plaintext() {
         "hello phase 5b",
         1_700_000_000,
     );
+    let other = sample(
+        "1502771310428819579",
+        "1502771310428820000",
+        "900000000000000004",
+        "mira",
+        "not the first body",
+        1_700_000_005,
+    );
+    // A single-row fixture cannot detect a lookup that ignores its key.
     store.put(&msg).unwrap();
+    store.put(&other).unwrap();
     let out = store
         .get("1502771310428819569")
         .unwrap()
         .expect("row should be present");
     assert_eq!(out, msg);
+    assert_eq!(out.discord_message_id, "1502771310428819569");
+    assert_eq!(out.sender_discord_id, "900000000000000003");
+    assert_eq!(out.plaintext, "hello phase 5b");
+    let other_out = store
+        .get("1502771310428819579")
+        .unwrap()
+        .expect("second row should be present");
+    assert_eq!(other_out, other);
+    assert_eq!(other_out.discord_message_id, "1502771310428819579");
+    assert_eq!(other_out.sender_discord_id, "900000000000000004");
+    assert_eq!(other_out.plaintext, "not the first body");
 }
 
 #[test]
@@ -75,9 +259,22 @@ fn roundtrip_unicode_and_long_plaintext() {
         &plaintext,
         1_700_000_001,
     );
+    let ascii = sample(
+        "1502771310428819571",
+        "1502771310428819561",
+        "900000000000000004",
+        "mira",
+        "ordinary ascii body",
+        1_700_000_002,
+    );
+    // A single-row fixture cannot detect a lookup that ignores its key.
     store.put(&msg).unwrap();
+    store.put(&ascii).unwrap();
     let out = store.get("1502771310428819570").unwrap().unwrap();
     assert_eq!(out.plaintext, plaintext);
+    assert_eq!(out.plaintext.as_bytes(), plaintext.as_bytes());
+    let ascii_out = store.get("1502771310428819571").unwrap().unwrap();
+    assert_eq!(ascii_out.plaintext, "ordinary ascii body");
 }
 
 // ---- list_by_channel ----
@@ -114,6 +311,13 @@ fn list_by_channel_returns_desc_by_decrypted_at_respects_limit() {
     assert_eq!(listed[0].discord_message_id, "a-5");
     assert_eq!(listed[1].discord_message_id, "a-4");
     assert_eq!(listed[2].discord_message_id, "a-3");
+    // This catches an implementation that ignores the channel predicate.
+    let listed_ids: Vec<&str> = listed
+        .iter()
+        .map(|m| m.discord_message_id.as_str())
+        .collect();
+    assert_eq!(listed_ids, vec!["a-5", "a-4", "a-3"]);
+    assert!(!listed_ids.contains(&"b-1"));
     // Sanity: timestamps strictly descending.
     assert!(listed[0].decrypted_at > listed[1].decrypted_at);
     assert!(listed[1].decrypted_at > listed[2].decrypted_at);
@@ -122,6 +326,8 @@ fn list_by_channel_returns_desc_by_decrypted_at_respects_limit() {
     let all = store.list_by_channel("ch-a", 100).unwrap();
     assert_eq!(all.len(), 5);
     assert!(all.iter().all(|m| m.channel_id == "ch-a"));
+    let all_ids: Vec<&str> = all.iter().map(|m| m.discord_message_id.as_str()).collect();
+    assert_eq!(all_ids, vec!["a-5", "a-4", "a-3", "a-2", "a-1"]);
 }
 
 // ---- mark_burned ----
@@ -130,28 +336,47 @@ fn list_by_channel_returns_desc_by_decrypted_at_respects_limit() {
 fn mark_burned_makes_get_return_none() {
     let tmp = TempDir::new().unwrap();
     let store = open_a(tmp.path());
-    store
-        .put(&sample("vanish", "ch", "s", "alice", "to be burned", 1))
-        .unwrap();
+    let msg = sample("vanish", "ch", "s", "alice", "to be burned", 1);
+    let survivor = sample(
+        "survives",
+        "other-ch",
+        "other-s",
+        "bob",
+        "still readable",
+        2,
+    );
+    // A single-row fixture cannot detect a lookup that ignores its key.
+    store.put(&msg).unwrap();
     assert!(store.get("vanish").unwrap().is_some());
     let db_path = tmp.path().join("messages.sqlite");
+    // Schema v4 stores no plaintext identifier, so capture this blob before
+    // adding the second row that proves key discrimination.
     let before: (Vec<u8>, Vec<u8>) = {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.query_row(
-            "SELECT ciphertext, nonce FROM messages WHERE discord_message_id = 'vanish'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
+        conn.query_row("SELECT ciphertext, nonce FROM messages", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
         .unwrap()
     };
+    store.put(&survivor).unwrap();
+    let live_before = store
+        .get("survives")
+        .unwrap()
+        .expect("second row should be readable before burn");
+    assert_eq!(live_before, survivor);
     store.mark_burned("vanish").unwrap();
     assert!(store.get("vanish").unwrap().is_none());
-    let after: (Vec<u8>, Vec<u8>, Option<Vec<u8>>, i64) = {
+    let live_after = store
+        .get("survives")
+        .unwrap()
+        .expect("burn must not touch unrelated row");
+    assert_eq!(live_after, survivor);
+    let after: (Vec<u8>, Vec<u8>, i64) = {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         conn.query_row(
-            "SELECT ciphertext, nonce, wrapped_key, burned FROM messages WHERE discord_message_id = 'vanish'",
+            "SELECT ciphertext, nonce, burned FROM messages WHERE burned = 1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap()
     };
@@ -159,8 +384,25 @@ fn mark_burned_makes_get_return_none() {
     assert_ne!(after.1, before.1, "burn must overwrite the AEAD nonce");
     assert!(after.0.iter().all(|byte| *byte == 0));
     assert!(after.1.iter().all(|byte| *byte == 0));
-    assert!(after.2.is_none());
-    assert_eq!(after.3, 1);
+    assert_eq!(after.2, 1);
+    let (live_bodies, zeroed_bodies): (usize, usize) = {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let mut stmt = conn.prepare("SELECT ciphertext FROM messages").unwrap();
+        let rows = stmt.query_map([], |row| row.get::<_, Vec<u8>>(0)).unwrap();
+        let mut live = 0;
+        let mut zeroed = 0;
+        for row in rows {
+            let ct = row.unwrap();
+            if ct.iter().all(|byte| *byte == 0) {
+                zeroed += 1;
+            } else {
+                live += 1;
+            }
+        }
+        (live, zeroed)
+    };
+    assert_eq!(live_bodies, 1);
+    assert_eq!(zeroed_bodies, 1);
     let wal = db_path.with_extension("sqlite-wal");
     assert!(
         !wal.exists() || std::fs::metadata(wal).unwrap().len() == 0,
@@ -172,22 +414,90 @@ fn mark_burned_makes_get_return_none() {
 fn mark_burned_unknown_id_returns_not_found() {
     let tmp = TempDir::new().unwrap();
     let store = open_a(tmp.path());
+    let msg = sample("known", "ch", "s", "alice", "stays live", 1);
+    let survivor = sample(
+        "known-survivor",
+        "other-ch",
+        "other-s",
+        "bob",
+        "also stays live",
+        2,
+    );
+    store.put(&msg).unwrap();
+    store.put(&survivor).unwrap();
+    // A one-row fixture lets a faulty `UPDATE messages SET burned = 1` pass:
+    // there is no independent live row for an unknown-id burn to preserve.
+    let before = store
+        .get("known")
+        .unwrap()
+        .expect("positive control row should be present");
+    assert_eq!(before, msg);
+    assert_eq!(store.get("known-survivor").unwrap(), Some(survivor.clone()));
+
     let err = store.mark_burned("never-existed").unwrap_err();
-    assert!(matches!(err, StoreError::NotFound(_)), "got {err:?}");
+    assert!(matches!(&err, StoreError::NotFound(_)), "got {err:?}");
+    let after = store
+        .get("known")
+        .unwrap()
+        .expect("unknown-id burn must not touch a real row");
+    assert_eq!(after, msg);
+    assert!(!after.burned);
+    assert_eq!(
+        store.get("known-survivor").unwrap(),
+        Some(survivor),
+        "unknown-id burn must not become an unscoped destructive update"
+    );
 }
 
 #[test]
 fn mark_burned_is_idempotent() {
     let tmp = TempDir::new().unwrap();
     let store = open_a(tmp.path());
-    store
-        .put(&sample("twice", "ch", "s", "alice", "double burn", 1))
-        .unwrap();
+    let msg = sample("twice", "ch", "s", "alice", "double burn", 1);
+    let other = sample("untouched", "ch", "s", "bob", "must remain", 2);
+    store.put(&msg).unwrap();
+    store.put(&other).unwrap();
+    // Without it, 'nothing came back' is indistinguishable from 'nothing was ever stored'.
+    let before = store
+        .get("twice")
+        .unwrap()
+        .expect("row should be present before burn");
+    assert_eq!(before, msg);
     store.mark_burned("twice").unwrap();
+    let db_path = tmp.path().join("messages.sqlite");
+    let first_destruction: (Vec<u8>, Vec<u8>, i64) = rusqlite::Connection::open(&db_path)
+        .unwrap()
+        .query_row(
+            "SELECT ciphertext, nonce, burned FROM messages WHERE burned = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    // This rejects an idempotent flag-only implementation: it can make get()
+    // return None on the first call while leaving the sealed body recoverable.
+    assert!(first_destruction.0.iter().all(|byte| *byte == 0));
+    assert!(first_destruction.1.iter().all(|byte| *byte == 0));
+    assert_eq!(first_destruction.2, 1);
     // Second mark is a no-op (already burned). Exercises the
     // idempotency branch.
     store.mark_burned("twice").unwrap();
     assert!(store.get("twice").unwrap().is_none());
+    let wrong_id = store.mark_burned("not-the-burned-row").unwrap_err();
+    // This rejects an idempotency shortcut that reports success for every
+    // later call once *any* row is burned, instead of still selecting the
+    // requested blind index and reporting an unknown id.
+    assert!(
+        matches!(&wrong_id, StoreError::NotFound(_)),
+        "got {wrong_id:?}"
+    );
+    let still_live = store
+        .get("untouched")
+        .unwrap()
+        .expect("burn must not wipe unrelated rows");
+    assert_eq!(still_live, other);
+    // This rejects an idempotent implementation whose retry destructively
+    // reuses a broad predicate instead of the burned message's blind index.
+    assert_eq!(store.get("untouched").unwrap(), Some(other));
 }
 
 // ---- corruption ----
@@ -196,11 +506,12 @@ fn mark_burned_is_idempotent() {
 fn corrupted_ciphertext_returns_corrupted_not_panic() {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().to_path_buf();
+    let first = sample("corrupt-a", "ch", "s", "alice", "tampered", 1);
+    let second = sample("corrupt-b", "ch", "s", "bob", "still intact", 2);
     {
         let store = open_a(&path);
-        store
-            .put(&sample("corrupt-me", "ch", "s", "alice", "tampered", 1))
-            .unwrap();
+        store.put(&first).unwrap();
+        store.put(&second).unwrap();
     }
     // Reach into the SQLite file directly and flip a byte in
     // the ciphertext. Use a fresh rusqlite handle (not the
@@ -208,26 +519,46 @@ fn corrupted_ciphertext_returns_corrupted_not_panic() {
     // raw bad blob. Tag will fail on next read.
     {
         let conn = rusqlite::Connection::open(path.join("messages.sqlite")).unwrap();
-        let mut ct: Vec<u8> = conn
+        // Schema v4 stores no plaintext identifier, so corrupt exactly one row
+        // by rowid and let public lookups prove which message it was.
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))
+            .unwrap();
+        // This positive control rejects a no-op/empty-store corruption probe.
+        assert_eq!(count, 2);
+        let (rowid, mut ct): (i64, Vec<u8>) = conn
             .query_row(
-                "SELECT ciphertext FROM messages WHERE discord_message_id = ?1",
-                params!["corrupt-me"],
-                |r| r.get(0),
+                "SELECT rowid, ciphertext FROM messages ORDER BY rowid LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
+        // This fixture inserts `corrupt-a` first. If SQLite no longer gives
+        // that row the selected identity, fail instead of attributing a
+        // Corrupted result to the wrong row.
+        assert_eq!(rowid, 1, "the raw tamper target must be corrupt-a");
         // Flip the last byte (Poly1305 tag tail). Any single-bit
         // flip in either ciphertext or tag invalidates AEAD.
         let last = ct.len() - 1;
         ct[last] ^= 0x01;
         conn.execute(
-            "UPDATE messages SET ciphertext = ?1 WHERE discord_message_id = ?2",
-            params![ct, "corrupt-me"],
+            "UPDATE messages SET ciphertext = ?1 WHERE rowid = ?2",
+            params![ct, rowid],
         )
         .unwrap();
     }
     let store = open_a(&path);
-    let err = store.get("corrupt-me").unwrap_err();
-    assert!(matches!(err, StoreError::Corrupted(_)), "got {err:?}");
+    // The selected row is the first inserted row. Counting one error and one
+    // success would falsely accept a lookup that ignores its requested key.
+    assert!(
+        matches!(store.get("corrupt-a"), Err(StoreError::Corrupted(_))),
+        "the specifically tampered row must surface Corrupted"
+    );
+    assert_eq!(
+        store.get("corrupt-b").unwrap(),
+        Some(second),
+        "a selected-row decryptor must leave the untampered row readable"
+    );
 }
 
 // ---- wrong-secret rejection ----
@@ -251,7 +582,7 @@ fn open_with_wrong_secret_returns_sealer_error() {
     }
     match MessageStore::open(&path, SECRET_B) {
         Ok(_) => panic!("wrong secret must not unlock"),
-        Err(e) => assert!(matches!(e, StoreError::Sealer(_)), "got {e:?}"),
+        Err(e) => assert!(matches!(&e, StoreError::Sealer(_)), "got {e:?}"),
     }
 }
 
@@ -260,25 +591,89 @@ fn open_with_wrong_secret_returns_sealer_error() {
 #[test]
 fn reopen_with_correct_secret_migration_idempotent() {
     let tmp = TempDir::new().unwrap();
-    let path = tmp.path().to_path_buf();
-    {
-        let store = MessageStore::open(&path, SECRET_A).unwrap();
-        store
-            .put(&sample(
-                "across-runs",
-                "ch",
-                "s",
-                "alice",
-                "see you next session",
-                1,
-            ))
-            .unwrap();
+    let rows = vec![
+        sample(
+            "v3-older",
+            "v3-chan-a",
+            "sender-1",
+            "alice",
+            "old v3 body",
+            100,
+        ),
+        sample(
+            "v3-newer",
+            "v3-chan-a",
+            "sender-2",
+            "bob",
+            "newer v3 body",
+            200,
+        ),
+        sample(
+            "v3-other",
+            "v3-chan-b",
+            "sender-3",
+            "carol",
+            "other channel body",
+            300,
+        ),
+    ];
+    build_v3_fixture(tmp.path(), &rows);
+    assert_eq!(schema_version(tmp.path()), 3);
+
+    // This catches a reopen path that only handles current-schema databases.
+    let store = MessageStore::open(tmp.path(), SECRET_A).unwrap();
+    assert_migrated_rows(&store, &rows);
+    // These three distinct ids reject a migration/reopen lookup that returns
+    // an arbitrary first row instead of deriving and using the requested key.
+    assert_eq!(store.get("v3-older").unwrap(), Some(rows[0].clone()));
+    assert_eq!(store.get("v3-newer").unwrap(), Some(rows[1].clone()));
+    assert_eq!(store.get("v3-other").unwrap(), Some(rows[2].clone()));
+    let first_open_version = schema_version(tmp.path());
+    drop(store);
+
+    // A migration that merely stamps v4 but leaves v3 plaintext fields (or a
+    // reopen writer that persists bodies unchanged) must fail this raw-byte
+    // check. The distinctive fixture values rule out an accidental match.
+    let db_bytes = std::fs::read(tmp.path().join("messages.sqlite")).unwrap();
+    for secret in [
+        "v3-older",
+        "v3-chan-a",
+        "sender-1",
+        "old v3 body",
+        "v3-newer",
+        "newer v3 body",
+        "v3-other",
+        "other channel body",
+    ] {
+        assert!(
+            !db_bytes
+                .windows(secret.len())
+                .any(|window| window == secret.as_bytes()),
+            "migration/reopen must not leave the v3 value {secret:?} as a no-op encoding"
+        );
     }
-    // Drop the first store, re-open. Migration runs again
-    // (it's idempotent); canary verifies. Data survives.
-    let store2 = MessageStore::open(&path, SECRET_A).unwrap();
-    let m = store2.get("across-runs").unwrap().unwrap();
+
+    let store2 = MessageStore::open(tmp.path(), SECRET_A).unwrap();
+    assert_migrated_rows(&store2, &rows);
+    let second_open_version = schema_version(tmp.path());
+    assert_eq!(first_open_version, 8);
+    assert_eq!(second_open_version, first_open_version);
+    store2
+        .put(&sample(
+            "across-runs",
+            "ch",
+            "s",
+            "alice",
+            "see you next session",
+            1,
+        ))
+        .unwrap();
+    drop(store2);
+    let store3 = MessageStore::open(tmp.path(), SECRET_A).unwrap();
+    let m = store3.get("across-runs").unwrap().unwrap();
     assert_eq!(m.plaintext, "see you next session");
+    assert_migrated_rows(&store3, &rows);
+    assert_eq!(schema_version(tmp.path()), first_open_version);
 }
 
 #[test]
@@ -287,8 +682,25 @@ fn reopen_with_future_schema_version_refuses() {
     let path = tmp.path().to_path_buf();
     {
         // Initialise normally so _meta and the canary are set up.
-        let _ = MessageStore::open(&path, SECRET_A).unwrap();
+        let store = MessageStore::open(&path, SECRET_A).unwrap();
+        let current = sample(
+            "current-schema-positive",
+            "current-channel",
+            "current-sender",
+            "alice",
+            "must survive refusal",
+            9,
+        );
+        store.put(&current).unwrap();
+        assert_eq!(store.get("current-schema-positive").unwrap(), Some(current));
     }
+    // A normal reopen before the future stamp is the nonempty valid-schema
+    // positive control. It rejects a test that only observes a refusal from a
+    // database that was never valid under this binary.
+    assert_eq!(schema_version(&path), 8);
+    let baseline = MessageStore::open(&path, SECRET_A).unwrap();
+    assert!(baseline.get("current-schema-positive").unwrap().is_some());
+    drop(baseline);
     // Manually stamp a future schema_version to simulate a DB
     // written by a later binary. The migration framework
     // should refuse to open rather than proceed under
@@ -303,10 +715,36 @@ fn reopen_with_future_schema_version_refuses() {
         )
         .unwrap();
     }
+    let before_version = schema_version(&path);
+    let before_row: StoredMessageRow = {
+        let conn = rusqlite::Connection::open(path.join("messages.sqlite")).unwrap();
+        conn.query_row(
+            "SELECT mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct, ciphertext, nonce, seq, burned FROM messages",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?)),
+        )
+        .unwrap()
+    };
     match MessageStore::open(&path, SECRET_A) {
         Ok(_) => panic!("future schema must refuse"),
-        Err(e) => assert!(matches!(e, StoreError::Schema(_)), "got {e:?}"),
+        Err(e) => assert!(matches!(&e, StoreError::Schema(_)), "got {e:?}"),
     }
+    // This rejects a future-version handler that performs a partial migration
+    // (or quietly downgrades the stamp) before returning its refusal.
+    assert_eq!(schema_version(&path), before_version);
+    let after_row: StoredMessageRow = {
+        let conn = rusqlite::Connection::open(path.join("messages.sqlite")).unwrap();
+        conn.query_row(
+            "SELECT mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct, ciphertext, nonce, seq, burned FROM messages",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?)),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        after_row, before_row,
+        "future-schema refusal must not mutate the current row"
+    );
 }
 
 // ---- Beta 1.0: attachment cache ----
@@ -316,6 +754,8 @@ fn attachment_put_get_roundtrip() {
     let tmp = TempDir::new().unwrap();
     let store = open_a(tmp.path());
     let bytes: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect();
+    let other_bytes = b"plain text attachment bytes".to_vec();
+    // A single-row fixture cannot detect a lookup that ignores its key.
     store
         .put_attachment(
             "1502771310428819569",
@@ -327,60 +767,198 @@ fn attachment_put_get_roundtrip() {
             None,
         )
         .unwrap();
+    store
+        .put_attachment(
+            "1502771310428819570",
+            "a1b2c3d4.bin",
+            "text/plain",
+            &other_bytes,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
     let out = store
         .get_attachment("1502771310428819569", "a1b2c3d4.bin")
         .unwrap()
         .expect("attachment should be present");
     assert_eq!(out.0, "image/png");
     assert_eq!(out.1, bytes);
+    let other_out = store
+        .get_attachment("1502771310428819570", "a1b2c3d4.bin")
+        .unwrap()
+        .expect("second attachment should be present");
+    assert_eq!(other_out.0, "text/plain");
+    assert_eq!(other_out.1, other_bytes);
+    assert!(store
+        .get_attachment("1502771310428819571", "a1b2c3d4.bin")
+        .unwrap()
+        .is_none());
 }
 
 #[test]
 fn attachment_get_miss_is_none() {
     let tmp = TempDir::new().unwrap();
     let store = open_a(tmp.path());
-    assert!(store.get_attachment("nope", "nope.bin").unwrap().is_none());
+    let bytes = b"cached attachment bytes".to_vec();
+    store
+        .put_attachment(
+            "msg1",
+            "present.bin",
+            "text/plain",
+            &bytes,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    // Without it, 'nothing came back' is indistinguishable from 'nothing was ever stored'.
+    let out = store
+        .get_attachment("msg1", "present.bin")
+        .unwrap()
+        .expect("positive control attachment should be present");
+    assert_eq!(out.0, "text/plain");
+    assert_eq!(out.1, bytes);
+    assert!(store
+        .get_attachment("msg1", "missing.bin")
+        .unwrap()
+        .is_none());
+    assert!(store
+        .get_attachment("other-msg", "present.bin")
+        .unwrap()
+        .is_none());
 }
 
 #[test]
 fn attachment_survives_reopen() {
     let tmp = TempDir::new().unwrap();
     let bytes = b"decrypted image bytes".to_vec();
+    let other_bytes = b"reopened text bytes".to_vec();
     {
         let store = open_a(tmp.path());
+        // A single-row fixture cannot detect a lookup that ignores its key.
         store
             .put_attachment("msg1", "f.bin", "image/jpeg", &bytes, None, None, None)
             .unwrap();
-    }
-    // Reopen with the same secret: the row + its seal must survive.
-    let store = open_a(tmp.path());
-    let out = store.get_attachment("msg1", "f.bin").unwrap().unwrap();
-    assert_eq!(out.1, bytes);
-}
-
-#[test]
-fn attachment_wrong_secret_cannot_unseal() {
-    let tmp = TempDir::new().unwrap();
-    {
-        let store = open_a(tmp.path());
         store
             .put_attachment(
-                "msg1",
+                "msg2",
                 "f.bin",
-                "image/jpeg",
-                b"secret bytes",
+                "text/plain",
+                &other_bytes,
                 None,
                 None,
                 None,
             )
             .unwrap();
     }
+    // Reopen with the same secret: the row + its seal must survive.
+    let store = open_a(tmp.path());
+    let out = store.get_attachment("msg1", "f.bin").unwrap().unwrap();
+    assert_eq!(out.0, "image/jpeg");
+    assert_eq!(out.1, bytes);
+    let other_out = store.get_attachment("msg2", "f.bin").unwrap().unwrap();
+    assert_eq!(other_out.0, "text/plain");
+    assert_eq!(other_out.1, other_bytes);
+    assert!(store.get_attachment("msg3", "f.bin").unwrap().is_none());
+}
+
+#[test]
+fn attachment_wrong_secret_cannot_unseal() {
+    let tmp = TempDir::new().unwrap();
+    let original = b"secret bytes".to_vec();
+    {
+        let store = open_a(tmp.path());
+        store
+            .put_attachment("msg1", "f.bin", "image/jpeg", &original, None, None, None)
+            .unwrap();
+        let out = store
+            .get_attachment("msg1", "f.bin")
+            .unwrap()
+            .expect("attachment should read with the correct secret");
+        assert_eq!(out.0, "image/jpeg");
+        assert_eq!(out.1, original);
+    }
     // A different secret fails the canary at open(), so we never
     // even reach get_attachment — assert the open itself refuses.
     match MessageStore::open(tmp.path(), SECRET_B) {
         Ok(_) => panic!("wrong secret must refuse to open"),
-        Err(e) => assert!(matches!(e, StoreError::Sealer(_)), "got {e:?}"),
+        Err(e) => assert!(matches!(&e, StoreError::Sealer(_)), "got {e:?}"),
     }
+
+    let (source_ct, source_nonce): (Vec<u8>, Vec<u8>) = {
+        let conn = rusqlite::Connection::open(tmp.path().join("messages.sqlite")).unwrap();
+        conn.query_row(
+            "SELECT ciphertext, nonce FROM attachments ORDER BY rowid LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+    };
+    let second = TempDir::new().unwrap();
+    let store_b = MessageStore::open(second.path(), SECRET_B).unwrap();
+    store_b
+        .put_attachment(
+            "msg1",
+            "f.bin",
+            "text/plain",
+            b"other store bytes",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    store_b
+        .put_attachment(
+            "msg2",
+            "f.bin",
+            "text/plain",
+            b"unaffected sibling bytes",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let own = store_b
+        .get_attachment("msg1", "f.bin")
+        .unwrap()
+        .expect("second store attachment should be present before transplant");
+    assert_eq!(own.1, b"other store bytes");
+    assert_eq!(
+        store_b.get_attachment("msg2", "f.bin").unwrap(),
+        Some((
+            "text/plain".to_string(),
+            b"unaffected sibling bytes".to_vec()
+        )),
+        "the non-tampered sibling is a nonempty selected-row control"
+    );
+    {
+        let conn = rusqlite::Connection::open(second.path().join("messages.sqlite")).unwrap();
+        // Schema v4 has no plaintext cache key, so transplant by rowid. The
+        // fixture's first row is msg1; assert that below by requiring only
+        // msg1 to return Corrupted and its sibling to remain readable.
+        let changed = conn
+            .execute(
+                "UPDATE attachments SET ciphertext = ?1, nonce = ?2 \
+                 WHERE rowid = (SELECT rowid FROM attachments ORDER BY rowid LIMIT 1)",
+                params![source_ct, source_nonce],
+            )
+            .unwrap();
+        assert_eq!(changed, 1);
+    }
+    let err = store_b.get_attachment("msg1", "f.bin").unwrap_err();
+    // This rejects a key-ignoring/missing-row implementation that hid an AEAD
+    // failure as None. The selected, existing attachment must authenticate as
+    // Corrupted, while the unaffected sibling proves failure is not broad.
+    assert!(matches!(&err, StoreError::Corrupted(_)), "got {err:?}");
+    assert_eq!(
+        store_b.get_attachment("msg2", "f.bin").unwrap(),
+        Some((
+            "text/plain".to_string(),
+            b"unaffected sibling bytes".to_vec()
+        )),
+        "tampering msg1 must not corrupt a valid sibling"
+    );
 }
 
 #[test]
@@ -407,4 +985,278 @@ fn attachment_trim_keeps_newest() {
     // Newest (msg9) should remain; oldest (msg0) should be gone.
     assert!(store.get_attachment("msg9", "f.bin").unwrap().is_some());
     assert!(store.get_attachment("msg0", "f.bin").unwrap().is_none());
+    // This catches trim keeping any three rows instead of the newest three.
+    for i in 7..10 {
+        let out = store
+            .get_attachment(&format!("msg{i}"), "f.bin")
+            .unwrap()
+            .expect("newest attachment should survive trim");
+        assert_eq!(out.0, "image/png");
+        assert_eq!(out.1, vec![i as u8; 8]);
+    }
+    assert!(store.get_attachment("msg6", "f.bin").unwrap().is_none());
+}
+
+#[test]
+fn a70_trimmed_attachment_rows_leave_no_recoverable_plaintext_residue_after_trim() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("messages.sqlite");
+    let store = open_a(tmp.path());
+    for (msg_id, body) in [
+        ("a70-msg-oldest", b"a70 oldest attachment body".as_slice()),
+        ("a70-msg-middle", b"a70 middle attachment body".as_slice()),
+        ("a70-msg-newest", b"a70 newest attachment body".as_slice()),
+    ] {
+        store
+            .put_attachment(
+                msg_id,
+                "f.bin",
+                "application/octet-stream",
+                body,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+    }
+
+    let residue = "a70-trim-recoverable-plaintext-residue-582533417";
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let changed = conn
+            .execute(
+                "UPDATE attachments
+                    SET cache_key = ?1,
+                        discord_message_id = ?1,
+                        random_filename = ?1,
+                        mime = ?1,
+                        scope_type = ?1,
+                        scope_id = ?1,
+                        sender_discord_id = ?1
+                  WHERE ck_bi = (
+                    SELECT ck_bi FROM attachments ORDER BY seq ASC, ck_bi ASC LIMIT 1
+                  )",
+                params![residue],
+            )
+            .unwrap();
+        assert_eq!(changed, 1, "fixture must seed one trim victim");
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .unwrap();
+    }
+    assert_eq!(
+        store
+            .get_attachment("a70-msg-oldest", "f.bin")
+            .unwrap()
+            .unwrap()
+            .1,
+        b"a70 oldest attachment body",
+        "the seeded legacy columns must not make the live row unreadable"
+    );
+    assert!(
+        raw_store_artifacts(&db_path)
+            .iter()
+            .any(|(_, bytes)| contains(bytes, residue.as_bytes())),
+        "fixture must leave recoverable plaintext residue before trim"
+    );
+
+    assert_eq!(store.trim_attachments(1).unwrap(), 2);
+    assert!(store
+        .get_attachment("a70-msg-oldest", "f.bin")
+        .unwrap()
+        .is_none());
+    assert!(store
+        .get_attachment("a70-msg-middle", "f.bin")
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        store
+            .get_attachment("a70-msg-newest", "f.bin")
+            .unwrap()
+            .unwrap()
+            .1,
+        b"a70 newest attachment body"
+    );
+
+    let findings = raw_store_artifacts(&db_path)
+        .into_iter()
+        .filter_map(|(path, bytes)| {
+            contains(&bytes, residue.as_bytes()).then(|| path.display().to_string())
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        findings.is_empty(),
+        "trim left recoverable plaintext residue in raw store artifacts: {findings:?}"
+    );
+    let wal_path = db_path.with_extension("sqlite-wal");
+    assert!(
+        !wal_path.exists() || std::fs::metadata(wal_path).unwrap().len() == 0,
+        "trim must truncate WAL page images after shredding rows"
+    );
+}
+
+// ---- timed deletion: sweeper-named batch shred ----
+
+#[test]
+fn shred_expired_messages_destroys_named_rows_and_their_attachments() {
+    let tmp = TempDir::new().unwrap();
+    let store = open_a(tmp.path());
+    store
+        .put(&sample("expired-1", "ch", "s", "alice", "gone", 1))
+        .unwrap();
+    store
+        .put(&sample("expired-2", "ch", "s", "alice", "also gone", 2))
+        .unwrap();
+    store
+        .put(&sample("still-live", "ch", "s", "alice", "kept", 3))
+        .unwrap();
+    let still_live_2 = sample("still-live-2", "other-ch", "s2", "bob", "also kept", 4);
+    // A single surviving row cannot detect a lookup that ignores its key.
+    store.put(&still_live_2).unwrap();
+    store
+        .put_attachment(
+            "expired-1",
+            "pic.png",
+            "image/png",
+            &[7u8; 64],
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+    let shredded = store
+        .shred_expired_messages(&["expired-1".to_string(), "expired-2".to_string()])
+        .unwrap();
+    assert_eq!(shredded, 2);
+    assert!(store.get("expired-1").unwrap().is_none());
+    assert!(store.get("expired-2").unwrap().is_none());
+    assert!(
+        store
+            .get_attachment("expired-1", "pic.png")
+            .unwrap()
+            .is_none(),
+        "expiry must destroy the decrypted attachment cache too"
+    );
+    assert!(
+        store.get("still-live").unwrap().is_some(),
+        "a sweep must never touch a row it did not name"
+    );
+    let live_two = store
+        .get("still-live-2")
+        .unwrap()
+        .expect("a sweep must not touch a second unnamed row");
+    assert_eq!(live_two, still_live_2);
+
+    let db_path = tmp.path().join("messages.sqlite");
+    // Schema v4 stores no plaintext identifier, so the shredded rows cannot be
+    // named in SQL. Assert over the whole table instead, which is a stronger
+    // claim than naming one row: of the four messages, exactly the two expired
+    // ones must be burned with a zeroed body, and exactly two must still hold
+    // live body.
+    let (burned_zeroed, live_bodies, burned_with_wrapper, live_without_wrapper) = {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT ciphertext, nonce, wrapped_key, burned FROM messages")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Option<Vec<u8>>>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .unwrap();
+        let mut burned_zeroed = 0;
+        let mut live = 0;
+        let mut burned_with_wrapper = 0;
+        let mut live_without_wrapper = 0;
+        for row in rows {
+            let (ct, nonce, wk, burned) = row.unwrap();
+            if burned == 1 && wk.is_some() {
+                burned_with_wrapper += 1;
+            }
+            if burned == 0 && wk.is_none() {
+                live_without_wrapper += 1;
+            }
+            if burned == 1 && ct.iter().all(|b| *b == 0) && nonce.iter().all(|b| *b == 0) {
+                burned_zeroed += 1;
+            }
+            if ct.iter().any(|b| *b != 0) {
+                live += 1;
+            }
+        }
+        (
+            burned_zeroed,
+            live,
+            burned_with_wrapper,
+            live_without_wrapper,
+        )
+    };
+    assert_eq!(
+        burned_zeroed, 2,
+        "both expired rows must be burned and zeroed"
+    );
+    assert_eq!(
+        live_bodies, 2,
+        "the unexpired rows must keep their live bodies"
+    );
+    assert_eq!(
+        burned_with_wrapper, 0,
+        "a shred must null each selected wrapped key"
+    );
+    assert_eq!(
+        live_without_wrapper, 0,
+        "untouched live survivors must retain their wrapped keys"
+    );
+    let wal = db_path.with_extension("sqlite-wal");
+    assert!(
+        !wal.exists() || std::fs::metadata(wal).unwrap().len() == 0,
+        "a shred must truncate WAL page images"
+    );
+}
+
+#[test]
+fn shred_expired_messages_tolerates_unknown_ids_and_is_idempotent() {
+    let tmp = TempDir::new().unwrap();
+    let store = open_a(tmp.path());
+    let known = sample("known", "ch", "s", "alice", "once", 1);
+    let untouched = sample("untouched", "ch", "s", "bob", "still here", 2);
+    store.put(&known).unwrap();
+    store.put(&untouched).unwrap();
+    // Without it, 'nothing came back' is indistinguishable from 'nothing was ever stored'.
+    let before = store
+        .get("known")
+        .unwrap()
+        .expect("row should be present before shred");
+    assert_eq!(before, known);
+
+    // A sweeper legitimately names rows this device never cached. That is not
+    // an error, unlike `mark_burned`.
+    assert_eq!(
+        store
+            .shred_expired_messages(&["known".to_string(), "never-cached".to_string()])
+            .unwrap(),
+        1
+    );
+    assert!(store.get("known").unwrap().is_none());
+    let still_live = store
+        .get("untouched")
+        .unwrap()
+        .expect("sweep must not touch unnamed rows");
+    assert_eq!(still_live, untouched);
+    // A second sweep reports zero and leaves the terminal row alone.
+    assert_eq!(
+        store
+            .shred_expired_messages(&["known".to_string()])
+            .unwrap(),
+        0
+    );
+    let still_live_after_second = store
+        .get("untouched")
+        .unwrap()
+        .expect("idempotent sweep must not remove unnamed rows");
+    assert_eq!(still_live_after_second, untouched);
+    assert_eq!(store.shred_expired_messages(&[]).unwrap(), 0);
 }

@@ -123,6 +123,23 @@ function checkoutEnv(overrides: Partial<Env> = {}): Env {
   return result;
 }
 
+const redemptionReady = () => true;
+
+async function settleReady(
+  evidence: WatcherSettlementEvidence,
+  environment: Env = checkoutEnv(),
+  headers?: Record<string, string>,
+): Promise<Response> {
+  return await handleCryptoSettlement(new Request(
+    "http://test/v1/internal/crypto/settle",
+    {
+      method: "POST",
+      headers: headers ?? await settlementHeaders(evidence),
+      body: JSON.stringify(evidence),
+    },
+  ), environment, undefined, redemptionReady);
+}
+
 async function quote(
   asset: "btc" | "xmr",
   publicKey: string,
@@ -143,7 +160,7 @@ async function quote(
         ? `bc1q${"q".repeat(38)}`
         : `8${"1".repeat(94)}`,
     });
-  });
+  }, redemptionReady);
   expect(response.status).toBe(200);
   return await response.json() as {
     invoice_id: string; claim_token: string; amount_atomic: string; expires_at: number;
@@ -186,7 +203,7 @@ describe("anonymous node-verified lifetime Pro flow", () => {
         body: JSON.stringify(body),
       }), checkoutEnv(), async () => {
         throw new Error("watcher must not be called");
-      });
+      }, redemptionReady);
       expect(response.status).toBe(400);
     }
 
@@ -202,7 +219,7 @@ describe("anonymous node-verified lifetime Pro flow", () => {
         invoice_id: watcherInvoice.invoice_id,
         address: `bc1q${"q".repeat(38)}`,
       });
-    });
+    }, redemptionReady);
     expect(response.status).toBe(200);
     const invoice = await response.json() as { invoice_id: string; amount_usd_cents: number };
     expect(invoice.amount_usd_cents).toBe(500);
@@ -221,7 +238,7 @@ describe("anonymous node-verified lifetime Pro flow", () => {
         body,
       }), checkoutEnv(), async () => {
         throw new Error("watcher must not be called");
-      });
+      }, redemptionReady);
       expect(response.status).toBe(400);
     }
   });
@@ -269,10 +286,89 @@ describe("anonymous node-verified lifetime Pro flow", () => {
       }), disabledEnv, async () => {
         watcherCalls += 1;
         throw new Error("disabled asset must not reach watcher");
-      });
+      }, redemptionReady);
       expect(response.status).toBe(503);
       expect(watcherCalls).toBe(0);
     }
+  });
+
+  it("refuses quote creation before the watcher or invoice write", async () => {
+    const keys = await deliveryKeys();
+    const before = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM crypto_invoices_v2",
+    ).first<{ count: number }>();
+    let watcherCalls = 0;
+    const response = await handleCryptoQuote(new Request(
+      "http://test/v1/crypto/quote",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-forwarded-for": "192.0.2.97" },
+        body: JSON.stringify({
+          plan: "pro",
+          payment_method: "btc",
+          delivery_public_key_spki: keys.publicKey,
+        }),
+      },
+    ), checkoutEnv(), async () => {
+      watcherCalls += 1;
+      throw new Error("readiness refusal must precede watcher invoice creation");
+    });
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "paid checkout is unavailable until prepaid-code redemption is ready",
+    });
+    expect(watcherCalls).toBe(0);
+    const after = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM crypto_invoices_v2",
+    ).first<{ count: number }>();
+    expect(after).toEqual(before);
+  });
+
+  it("keeps a signed paid invoice pending and writes no entitlement while gated", async () => {
+    const keys = await deliveryKeys();
+    const invoice = await quote("btc", keys.publicKey);
+    const evidence = await settlementEvidence(invoice, "btc", 2);
+    const response = await handleCryptoSettlement(new Request(
+      "http://test/v1/internal/crypto/settle",
+      {
+        method: "POST",
+        headers: await settlementHeaders(evidence),
+        body: JSON.stringify(evidence),
+      },
+    ), checkoutEnv());
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "paid checkout is unavailable until prepaid-code redemption is ready",
+    });
+    const state = await env.DB.prepare(
+      `SELECT
+        (SELECT status FROM crypto_invoices_v2 WHERE invoice_id = ?) AS invoice_status,
+        (SELECT COUNT(*) FROM crypto_settlement_events_v2 WHERE invoice_id = ?) AS events,
+        (SELECT COUNT(*) FROM crypto_payment_references_v2 WHERE invoice_id = ?) AS references_count,
+        (SELECT COUNT(*) FROM subscriptions WHERE subscription_id = ?) AS subscriptions,
+        (SELECT COUNT(*) FROM licenses WHERE subscription_id = ?) AS licenses`,
+    ).bind(
+      invoice.invoice_id,
+      invoice.invoice_id,
+      invoice.invoice_id,
+      `crypto_${invoice.invoice_id}`,
+      `crypto_${invoice.invoice_id}`,
+    ).first<{
+      invoice_status: string;
+      events: number;
+      references_count: number;
+      subscriptions: number;
+      licenses: number;
+    }>();
+    expect(state).toEqual({
+      invoice_status: "pending",
+      events: 0,
+      references_count: 0,
+      subscriptions: 0,
+      licenses: 0,
+    });
   });
 
   it("rejects wrong amount, asset, confirmations, and signature before issuing", async () => {
@@ -288,11 +384,7 @@ describe("anonymous node-verified lifetime Pro flow", () => {
     for (const testCase of cases) {
       const headers = await settlementHeaders(testCase.evidence);
       if (testCase.badSignature) headers["x-osl-settlement-signature"] = base64(new Uint8Array(64));
-      const response = await SELF.fetch("http://test/v1/internal/crypto/settle", {
-        method: "POST",
-        headers,
-        body: JSON.stringify(testCase.evidence),
-      });
+      const response = await settleReady(testCase.evidence, checkoutEnv(), headers);
       expect(response.status).toBe(testCase.status);
     }
     const row = await env.DB.prepare(
@@ -306,11 +398,7 @@ describe("anonymous node-verified lifetime Pro flow", () => {
     const invoice = await quote("btc", keys.publicKey);
     const evidence = await settlementEvidence(invoice, "btc", 2);
     const headers = await settlementHeaders(evidence);
-    const send = () => SELF.fetch("http://test/v1/internal/crypto/settle", {
-      method: "POST",
-      headers,
-      body: JSON.stringify(evidence),
-    });
+    const send = () => settleReady(evidence, checkoutEnv(), headers);
     const concurrent = await Promise.all([send(), send()]);
     expect(concurrent.map((response) => response.status)).toEqual([200, 200]);
     const retry = await send();
@@ -350,11 +438,7 @@ describe("anonymous node-verified lifetime Pro flow", () => {
     const keys = await deliveryKeys();
     const invoice = await quote("btc", keys.publicKey);
     const evidence = await settlementEvidence(invoice, "btc", 2);
-    const settled = await SELF.fetch("http://test/v1/internal/crypto/settle", {
-      method: "POST",
-      headers: await settlementHeaders(evidence),
-      body: JSON.stringify(evidence),
-    });
+    const settled = await settleReady(evidence);
     expect(settled.status).toBe(200);
     const commerceAfter = await getCommerceSummary(env.DB);
     expect(commerceAfter.successful_payments).toBe(commerceBefore.successful_payments + 1);
@@ -432,11 +516,7 @@ describe("anonymous node-verified lifetime Pro flow", () => {
     const paidInvoice = await quote("btc", keys.publicKey);
     const otherInvoice = await quote("btc", keys.publicKey);
     const evidence = await settlementEvidence(paidInvoice, "btc", 2);
-    const settled = await SELF.fetch("http://test/v1/internal/crypto/settle", {
-      method: "POST",
-      headers: await settlementHeaders(evidence),
-      body: JSON.stringify(evidence),
-    });
+    const settled = await settleReady(evidence);
     expect(settled.status).toBe(200);
 
     const ready = await SELF.fetch("http://test/v1/crypto/status", {
@@ -473,11 +553,7 @@ describe("anonymous node-verified lifetime Pro flow", () => {
     const keys = await deliveryKeys();
     const invoice = await quote("xmr", keys.publicKey);
     const evidence = await settlementEvidence(invoice, "xmr", 10);
-    const settled = await SELF.fetch("http://test/v1/internal/crypto/settle", {
-      method: "POST",
-      headers: await settlementHeaders(evidence),
-      body: JSON.stringify(evidence),
-    });
+    const settled = await settleReady(evidence);
     expect(settled.status, await settled.clone().text()).toBe(200);
 
     const commerceAfterSettlement = await getCommerceSummary(env.DB);
@@ -539,11 +615,13 @@ describe("anonymous node-verified lifetime Pro flow", () => {
         headers: await settlementHeaders(beforeCreation),
         body: JSON.stringify(beforeCreation),
       },
-    ), checkoutEnv({ CRYPTO_BTC_CONFIRMATIONS: "999" }));
+    ), checkoutEnv({ CRYPTO_BTC_CONFIRMATIONS: "999" }), undefined, redemptionReady);
     expect(early.status).toBe(409);
 
     const future = await settlementEvidence(invoice, "btc", 2);
-    future.observed_at = Math.floor(Date.now() / 1000) + 301;
+    // Stay decisively outside the accepted +300-second skew even if the
+    // asynchronous Ed25519 signing below crosses a wall-clock second.
+    future.observed_at = Math.floor(Date.now() / 1000) + 600;
     const futureResponse = await handleCryptoSettlement(new Request(
       "http://test/v1/internal/crypto/settle",
       {
@@ -551,7 +629,7 @@ describe("anonymous node-verified lifetime Pro flow", () => {
         headers: await settlementHeaders(future),
         body: JSON.stringify(future),
       },
-    ), checkoutEnv({ CRYPTO_BTC_CONFIRMATIONS: "999" }));
+    ), checkoutEnv({ CRYPTO_BTC_CONFIRMATIONS: "999" }), undefined, redemptionReady);
     expect(futureResponse.status).toBe(409);
 
     const valid = await settlementEvidence(invoice, "btc", 2);
@@ -562,7 +640,7 @@ describe("anonymous node-verified lifetime Pro flow", () => {
         headers: await settlementHeaders(valid),
         body: JSON.stringify(valid),
       },
-    ), checkoutEnv({ CRYPTO_BTC_CONFIRMATIONS: "999" }));
+    ), checkoutEnv({ CRYPTO_BTC_CONFIRMATIONS: "999" }), undefined, redemptionReady);
     expect(accepted.status).toBe(200);
   });
 
@@ -572,19 +650,11 @@ describe("anonymous node-verified lifetime Pro flow", () => {
     const secondInvoice = await quote("btc", keys.publicKey);
     const sharedReference = await sha256Hex("btc:single-on-chain-payment-reference");
     const firstEvidence = await settlementEvidence(firstInvoice, "btc", 2, sharedReference);
-    const first = await SELF.fetch("http://test/v1/internal/crypto/settle", {
-      method: "POST",
-      headers: await settlementHeaders(firstEvidence),
-      body: JSON.stringify(firstEvidence),
-    });
+    const first = await settleReady(firstEvidence);
     expect(first.status, await first.clone().text()).toBe(200);
 
     const secondEvidence = await settlementEvidence(secondInvoice, "btc", 2, sharedReference);
-    const second = await SELF.fetch("http://test/v1/internal/crypto/settle", {
-      method: "POST",
-      headers: await settlementHeaders(secondEvidence),
-      body: JSON.stringify(secondEvidence),
-    });
+    const second = await settleReady(secondEvidence);
     expect(second.status).toBe(409);
     await expect(second.json()).resolves.toMatchObject({
       error: "payment reference is already assigned to another invoice",
@@ -604,11 +674,7 @@ describe("anonymous node-verified lifetime Pro flow", () => {
       const keys = await deliveryKeys();
       const invoice = await quote(asset, keys.publicKey);
       const evidence = await settlementEvidence(invoice, asset, asset === "btc" ? 2 : 10);
-      const response = await SELF.fetch("http://test/v1/internal/crypto/settle", {
-        method: "POST",
-        headers: await settlementHeaders(evidence),
-        body: JSON.stringify(evidence),
-      });
+      const response = await settleReady(evidence);
       expect(response.status, await response.clone().text()).toBe(200);
       const entitlement = await env.DB.prepare(
         `SELECT status, current_period_end, cancel_at_period_end

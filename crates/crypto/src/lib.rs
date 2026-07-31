@@ -71,6 +71,9 @@ pub mod pqxdh;
 pub mod random;
 pub mod ratchet;
 pub mod sender_keys;
+/// View-once link lane for recipients who do not run OSL. Structurally
+/// weaker than OSL-to-OSL and always will be — see the module docs.
+pub mod view_once_link;
 pub mod wire;
 pub mod x25519;
 

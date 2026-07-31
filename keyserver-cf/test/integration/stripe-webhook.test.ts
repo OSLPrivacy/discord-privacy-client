@@ -186,6 +186,83 @@ describe("POST /v1/stripe/webhook idempotency", () => {
 });
 
 describe("POST /v1/stripe/webhook state machine", () => {
+  it("503s paid fulfillment without consuming the retry or writing entitlement state", async () => {
+    const eventId = uniqueEventId();
+    const sessionId = `cs_live_gated_${crypto.randomUUID().replace(/-/g, "")}`;
+    const paymentIntentId = `pi_gated_${crypto.randomUUID().replace(/-/g, "")}`;
+    const licenseHash = `license-${sessionId}`;
+    const now = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(
+      `INSERT INTO stripe_checkout_claims (
+         session_id, claim_hash, delivery_public_key_spki,
+         encrypted_license, license_hash, subscription_id, status,
+         created_at, expires_at, delivered_at
+       ) VALUES (?, ?, 'public-key', 'ciphertext', ?, NULL, 'pending', ?, ?, NULL)`,
+    ).bind(sessionId, `claim-${sessionId}`, licenseHash, now, now + 3600).run();
+
+    const body = JSON.stringify({
+      id: eventId,
+      type: "checkout.session.completed",
+      livemode: true,
+      created: now,
+      data: {
+        object: {
+          id: sessionId,
+          mode: "payment",
+          metadata: {
+            osl_plan: "pro",
+            osl_purchase: "one-time",
+            osl_fulfillment: "instant-v1",
+          },
+          payment_status: "paid",
+          payment_intent: paymentIntentId,
+          amount_total: 500,
+          currency: "usd",
+        },
+      },
+    });
+    const response = await SELF.fetch("http://test/v1/stripe/webhook", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": await signStripeWebhook(body),
+      },
+      body,
+    });
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "paid checkout is unavailable until prepaid-code redemption is ready",
+    });
+    const state = await env.DB.prepare(
+      `SELECT
+        (SELECT status FROM stripe_checkout_claims WHERE session_id = ?) AS claim_status,
+        (SELECT COUNT(*) FROM stripe_event_claims WHERE event_id = ?) AS event_claims,
+        (SELECT COUNT(*) FROM stripe_events WHERE event_id = ?) AS completed_events,
+        (SELECT COUNT(*) FROM subscriptions WHERE subscription_id = ?) AS subscriptions,
+        (SELECT COUNT(*) FROM licenses WHERE license_hash = ?) AS licenses`,
+    ).bind(
+      sessionId,
+      eventId,
+      eventId,
+      paymentIntentId,
+      licenseHash,
+    ).first<{
+      claim_status: string;
+      event_claims: number;
+      completed_events: number;
+      subscriptions: number;
+      licenses: number;
+    }>();
+    expect(state).toEqual({
+      claim_status: "pending",
+      event_claims: 0,
+      completed_events: 0,
+      subscriptions: 0,
+      licenses: 0,
+    });
+  });
+
   it("activates lifetime Pro from a paid one-time checkout without customer data", async () => {
     const sessionId = `cs_live_one_time_${crypto.randomUUID().replace(/-/g, "")}`;
     const paymentIntentId = `pi_${crypto.randomUUID().replace(/-/g, "")}`;

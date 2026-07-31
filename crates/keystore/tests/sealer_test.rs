@@ -1,7 +1,17 @@
 use keystore::{
     select_best_sealer, verify_sealer_round_trip, MemorySealer, NoOpSealer, Sealer, SealerError,
-    METHOD_EPHEMERAL, METHOD_MEMORY, METHOD_NOOP,
+    Zeroizing, METHOD_EPHEMERAL, METHOD_MEMORY, METHOD_NOOP,
 };
+
+// `KeyringSealer::new()` writes a key to one machine-global Windows
+// Credential Manager entry and then re-reads it through a fresh `Entry` to
+// prove the backend actually persists. Two tests doing that at the same
+// time overwrite each other's key, so the probe reads the other test's
+// bytes and reports "keyring backend not persistent" -- which is how CI
+// failed. It never reproduced on the Linux dev host because there the
+// keyring resolves to a backend this probe rejects anyway, so nothing
+// contends. Serialize every test that reaches the real credential store.
+static CREDENTIAL_STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 struct SealFailure;
 
@@ -18,7 +28,7 @@ impl Sealer for SealFailure {
     fn seal(&self, _plaintext: &[u8]) -> keystore::sealer::Result<Vec<u8>> {
         Err(SealerError::Tpm("fixed test failure".into()))
     }
-    fn unseal(&self, _ciphertext: &[u8]) -> keystore::sealer::Result<Vec<u8>> {
+    fn unseal(&self, _ciphertext: &[u8]) -> keystore::sealer::Result<Zeroizing<Vec<u8>>> {
         unreachable!("unseal must not run after seal fails")
     }
 }
@@ -38,8 +48,8 @@ impl Sealer for WrongRoundTrip {
     fn seal(&self, plaintext: &[u8]) -> keystore::sealer::Result<Vec<u8>> {
         Ok(plaintext.to_vec())
     }
-    fn unseal(&self, _ciphertext: &[u8]) -> keystore::sealer::Result<Vec<u8>> {
-        Ok(b"different public test bytes".to_vec())
+    fn unseal(&self, _ciphertext: &[u8]) -> keystore::sealer::Result<Zeroizing<Vec<u8>>> {
+        Ok(Zeroizing::new(b"different public test bytes".to_vec()))
     }
 }
 
@@ -50,7 +60,7 @@ fn noop_round_trip() {
     let ct = s.seal(pt).unwrap();
     assert_eq!(ct, pt, "NoOp must be a passthrough");
     let recovered = s.unseal(&ct).unwrap();
-    assert_eq!(recovered, pt);
+    assert_eq!(&recovered[..], pt);
 }
 
 #[test]
@@ -68,7 +78,7 @@ fn memory_round_trip() {
     let ct = s.seal(pt).unwrap();
     assert_ne!(ct, pt, "memory sealer must not store plaintext");
     let recovered = s.unseal(&ct).unwrap();
-    assert_eq!(recovered, pt);
+    assert_eq!(&recovered[..], pt);
 }
 
 #[test]
@@ -81,8 +91,8 @@ fn memory_seal_is_unique_per_call_via_random_nonce() {
         ct_a, ct_b,
         "fresh nonce per seal — same plaintext must yield distinct ciphertexts"
     );
-    assert_eq!(s.unseal(&ct_a).unwrap(), pt);
-    assert_eq!(s.unseal(&ct_b).unwrap(), pt);
+    assert_eq!(&s.unseal(&ct_a).unwrap()[..], pt);
+    assert_eq!(&s.unseal(&ct_b).unwrap()[..], pt);
 }
 
 #[test]
@@ -124,7 +134,7 @@ fn empty_plaintext_round_trips() {
     let s = MemorySealer::new();
     let ct = s.seal(b"").unwrap();
     let pt = s.unseal(&ct).unwrap();
-    assert_eq!(pt, b"");
+    assert_eq!(&pt[..], b"");
 }
 
 #[test]
@@ -136,6 +146,9 @@ fn readiness_probe_accepts_complete_round_trip_only() {
 
 #[test]
 fn select_best_sealer_returns_some_implementation() {
+    let _credential_store = CREDENTIAL_STORE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     // On WSL: TPM unavailable, keyring may or may not work depending
     // on DBus. The fallback must remain encrypted in process memory;
     // it must never silently downgrade to NoOp/plaintext.
@@ -149,17 +162,22 @@ fn select_best_sealer_returns_some_implementation() {
     // Round-trip must work whichever sealer was picked.
     let ct = s.seal(b"factory-test").unwrap();
     let pt = s.unseal(&ct).unwrap();
-    assert_eq!(pt, b"factory-test");
+    assert_eq!(&pt[..], b"factory-test");
 }
 
 #[cfg(windows)]
 #[test]
 fn windows_credential_manager_survives_fresh_entry() {
+    let _credential_store = CREDENTIAL_STORE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let writer = keystore::KeyringSealer::new().expect("Windows Credential Manager available");
     let ciphertext = writer.seal(b"fixed public persistence probe").unwrap();
     let reader = keystore::KeyringSealer::new().expect("fresh credential entry can read key");
-    assert_eq!(
-        reader.unseal(&ciphertext).unwrap(),
-        b"fixed public persistence probe"
-    );
+    // `unseal` returns Zeroizing<Vec<u8>>, so slice it before comparing to a byte
+    // literal -- the same shape the non-Windows test above uses. This is
+    // #[cfg(windows)] and never compiled on the Linux dev host, so the mismatch
+    // sat here uncaught: the test has never actually run.
+    let plaintext = reader.unseal(&ciphertext).unwrap();
+    assert_eq!(&plaintext[..], b"fixed public persistence probe");
 }

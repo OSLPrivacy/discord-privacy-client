@@ -1,51 +1,148 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import {
+  scrubImapDelete,
+  scrubImapPrepareDelete,
+  type NativeConfigureImapRequest,
+  type NativeImapDeleteReceipt,
+  type NativeImapMessageSnapshot,
+  type NativePreparedImapDelete,
+  type ScrubImapDeletePort,
+  type ScrubImapIpcPort,
+  type ScrubImapPrepareDeleteRequest,
+  type ScrubImapPreparedDelete,
+} from "./scrub-imap-ipc";
 
-const invoke = vi.hoisted(() => vi.fn());
-vi.mock("@tauri-apps/api/core", () => ({ invoke }));
-vi.mock("./preferences", () => ({ isTauriRuntime: () => true }));
+const request: ScrubImapPrepareDeleteRequest = {
+  ownerOslUserId: "owner-local-1",
+  accountId: "acct-local-1",
+  mailbox: "INBOX",
+  messageId: "<msg-1@local.test>",
+};
 
-import { configureScrubImapAccount, createDesktopAutoScrubBridge, prepareScrubImapFindings } from "./scrub-imap-ipc";
-import type { DeleteFinding } from "./scrub-delete-engine";
+const fingerprint = Array.from({ length: 32 }, (_, index) => index);
+const batchDigest = Array.from({ length: 32 }, (_, index) => 255 - index);
 
-const proof = { providerId: "imap", accountId: "mail", authEpoch: "epoch-2", authenticatedAt: 10, expiresAt: 1000 } as const;
-const finding: DeleteFinding = { providerId: "imap", accountId: "mail", channelId: "Sent", correspondentId: "Sent", itemId: "m@example.test", authoredBySelf: true, createdAtUnixMs: 12, contentFingerprint: "sha256:abc" };
+const prepared: NativePreparedImapDelete = {
+  ...request,
+  preparedUid: 10,
+  fingerprint,
+  batchDigest,
+};
 
-describe("IMAP AutoScrub IPC contract", () => {
-  beforeEach(() => invoke.mockReset());
+const receipt: NativeImapDeleteReceipt = {
+  accountId: "acct-local-1",
+  mailbox: "INBOX",
+  messageId: "<msg-1@local.test>",
+  deletedUid: 10,
+};
 
-  it("nests configuration and never persists or logs the credential in the UI bridge", async () => {
-    invoke.mockResolvedValue({ configured: true, liveConfirmed: true, authEpoch: "epoch-1", detail: "ok" });
-    await configureScrubImapAccount({ accountId: "mail", host: "imap.example.test", username: "me", auth: { kind: "appPassword", secret: "secret" }, defaultMailbox: "Sent" });
-    expect(invoke).toHaveBeenCalledWith("configure_scrub_imap_account", { request: { accountId: "mail", host: "imap.example.test", username: "me", auth: { kind: "appPassword", secret: "secret" }, defaultMailbox: "Sent" } });
-  });
+function methodPort(overrides: Partial<ScrubImapDeletePort> = {}): ScrubImapDeletePort {
+  return {
+    prepareDelete: vi.fn().mockResolvedValue(prepared),
+    delete: vi.fn().mockResolvedValue(receipt),
+    ...overrides,
+  };
+}
 
-  it("binds enumerate and every operation to the same fresh epoch", async () => {
-    invoke.mockImplementation(async (command: string) => {
-      if (command === "scrub_imap_enumerate") return { findings: [{ uid: 7, mailbox: "Sent", messageId: "m@example.test", authoredBySelf: true, contentFingerprint: "sha256:abc" }], authEpoch: "epoch-2" };
-      if (command === "scrub_imap_inspect") return { state: "present", authoredBySelf: true, contentFingerprint: "sha256:abc", authEpoch: "epoch-2", schemaVersion: "imap-v1", retractable: true, detail: "present" };
-      return { outcome: "confirmed-deleted", authEpoch: "epoch-2", detail: "absent" };
+function invokePort(result: unknown): ScrubImapIpcPort {
+  return { invoke: vi.fn().mockResolvedValue(result) };
+}
+
+describe("scrub IMAP IPC", () => {
+  it("defines native scrub IMAP structures and configure auth variants", async () => {
+    const nativeMessage: NativeImapMessageSnapshot = {
+      ...request,
+      uid: 10,
+      fingerprint,
+      authoredBySelf: true,
+    };
+    expect(nativeMessage).toEqual({
+      ownerOslUserId: "owner-local-1",
+      accountId: "acct-local-1",
+      mailbox: "INBOX",
+      messageId: "<msg-1@local.test>",
+      uid: 10,
+      fingerprint,
+      authoredBySelf: true,
     });
-    const prepared = await prepareScrubImapFindings([{ accountId: "mail", mailbox: "Sent", messageId: "m@example.test", sinceDate: 12 }], proof);
-    const adapter = await createDesktopAutoScrubBridge(["mail"]).adapter("imap", "mail", prepared, proof);
-    await adapter.inspect(prepared[0]);
-    await expect(adapter.delete(prepared[0])).rejects.toThrow("one-shot reviewed consent");
-    await adapter.verify(prepared[0]);
-    expect(prepared).toEqual([finding]);
-    for (const call of invoke.mock.calls) {
-      expect(call[1].request.expectedAuthEpoch).toBe("epoch-2");
-    }
-    expect(invoke.mock.calls.some(([command]) => command === "scrub_imap_delete")).toBe(false);
-    expect(invoke.mock.calls[0][1]).toEqual({ request: { accountId: "mail", expectedAuthEpoch: "epoch-2", mailbox: "Sent", messageId: "m@example.test", sinceDateUnixMs: 12, expectedContentFingerprint: null } });
+
+    const passwordConfig = {
+      ownerOslUserId: "owner-local-1",
+      accountId: "acct-local-1",
+      host: "imap.local.test",
+      port: 993,
+      tlsRequired: true,
+      auth: { password: { username: "user@local.test", password: "local-test-password" } },
+    } satisfies NativeConfigureImapRequest;
+    const oauthConfig = {
+      ownerOslUserId: "owner-local-1",
+      accountId: "acct-local-1",
+      host: "imap.local.test",
+      port: 993,
+      tlsRequired: true,
+      auth: { oAuthBearer: { username: "user@local.test", bearerToken: "local-test-token" } },
+    } satisfies NativeConfigureImapRequest;
+    expect(passwordConfig).toMatchObject({
+      ownerOslUserId: "owner-local-1",
+      tlsRequired: true,
+      auth: { password: { username: "user@local.test" } },
+    });
+    expect(oauthConfig.auth).toHaveProperty("oAuthBearer");
+
+    await expect(scrubImapPrepareDelete(request, methodPort())).resolves.toEqual(prepared);
+    await expect(scrubImapPrepareDelete(request, methodPort({
+      prepareDelete: vi.fn().mockResolvedValue({ ...prepared, fingerprint: fingerprint.slice(1) }),
+    }))).rejects.toThrow("invalid scrub IMAP prepared delete response");
   });
 
-  it("never activates one selected account from another account's capability", async () => {
-    invoke.mockResolvedValue({ configured: true, liveConfirmed: true, authEpoch: null, detail: "ok" });
-    const single = await createDesktopAutoScrubBridge(["mail-a"]).capabilities();
-    const ambiguous = await createDesktopAutoScrubBridge(["mail-a", "mail-b"]).capabilities();
-    expect(single.find((capability) => capability.providerId === "imap")?.liveConfirmed).toBe(false);
-    expect(single.find((capability) => capability.providerId === "imap")?.coverage).toContain("Read-only");
-    expect(ambiguous.find((capability) => capability.providerId === "imap")?.liveConfirmed).toBe(false);
-    expect(single[0]).toMatchObject({ providerId: "gmail-web", primary: true, liveConfirmed: false });
-    expect(invoke).toHaveBeenCalledWith("get_scrub_imap_capability", { request: { accountId: "mail-a" } });
+  it("calls Tauri-style invoke ports for prepare and delete", async () => {
+    const preparePort = invokePort(prepared);
+    await expect(scrubImapPrepareDelete(request, preparePort)).resolves.toEqual(prepared);
+    expect(preparePort.invoke).toHaveBeenCalledWith("scrub_imap_prepare_delete", { request });
+
+    const deletePort = invokePort(receipt);
+    await expect(scrubImapDelete(prepared, deletePort)).resolves.toEqual(receipt);
+    expect(deletePort.invoke).toHaveBeenCalledWith("scrub_imap_delete", { prepared });
+  });
+
+  it("validates request, prepared delete and receipt bindings", async () => {
+    const adapter = methodPort();
+
+    await expect(scrubImapPrepareDelete({ ...request, ownerOslUserId: "" }, adapter))
+      .rejects.toThrow("invalid scrub IMAP prepare delete request");
+    expect(adapter.prepareDelete).not.toHaveBeenCalled();
+
+    await expect(scrubImapPrepareDelete(request, invokePort({
+      ...prepared,
+      fingerprint: Array(31).fill(7),
+    }))).rejects.toThrow("invalid scrub IMAP prepared delete response");
+
+    await expect(scrubImapDelete({
+      ...prepared,
+      batchDigest: Array(31).fill(9),
+    } satisfies ScrubImapPreparedDelete, adapter)).rejects.toThrow("invalid scrub IMAP prepared delete");
+    expect(adapter.delete).not.toHaveBeenCalled();
+
+    await expect(scrubImapDelete(prepared, methodPort({
+      delete: vi.fn().mockResolvedValue({ ...receipt, deletedUid: 11 }),
+    }))).rejects.toThrow("invalid scrub IMAP delete receipt");
+  });
+
+  it("rejects malformed native delete receipts before trusting IPC data", async () => {
+    const malformedReceipts: unknown[] = [
+      { mailbox: "INBOX", messageId: "message-0001", deletedUid: 42 },
+      { accountId: "account-a", messageId: "message-0001", deletedUid: 42 },
+      { accountId: "account-a", mailbox: "INBOX", deletedUid: 42 },
+      { accountId: "account-a", mailbox: "INBOX", messageId: "message-0001" },
+      { accountId: "", mailbox: "INBOX", messageId: "message-0001", deletedUid: 42 },
+      { accountId: "account-a", mailbox: "INBOX", messageId: "message-0001", deletedUid: "42" },
+      { accountId: "account-a", mailbox: "INBOX", messageId: "message-0001", deletedUid: 42, extra: true },
+    ];
+
+    for (const malformed of malformedReceipts) {
+      await expect(scrubImapDelete(prepared, methodPort({
+        delete: vi.fn().mockResolvedValue(malformed),
+      }))).rejects.toThrow("invalid scrub IMAP delete receipt");
+    }
   });
 });

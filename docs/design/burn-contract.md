@@ -1,12 +1,24 @@
 # Burn contract
 
-Burn is local cryptographic erasure with three explicit scopes: the current
+> **Status correction, 2026-07-26.** Burn is **not** cryptographic erasure today, and this
+> document previously said it was. `MessageStore::put` never populates `wrapped_key`
+> (`crates/store/src/lib.rs:194-206`), so the burn paths that set `wrapped_key = NULL` null a
+> column that was already null. What burn does is **state deletion**: local shredding plus
+> server-side deletion plus a cooperative request to the peer. The per-message wrapped-key model
+> that *would* earn the word "cryptographic" is designed and **deliberately not built** (owner
+> decision 2026-07-26: not now). The phrases "cryptographic burn", "destroys keys, not messages"
+> and "permanent ciphertext" are banned — see `osl-public-claim-allowlist.md` §D.
+
+Burn is local **state deletion** with three explicit scopes: the current
 chat, one linked service account, or the entire active OSL identity. Every burn
 requires review and confirmation of the exact scope and options. Changing an
 option invalidates that confirmation.
 
-A completed local burn destroys local decryption capability, key mappings, and
-caches for the selected scope. The user may also choose to forget locally cached
+A completed local burn shreds the stored ciphertext and nonce for the selected scope, marks those
+rows burned so a later re-sync cannot resurrect them, and drops their cached attachments. That
+local destruction is real and was hardened on 2026-07-26. What it does **not** do is destroy the
+only decryption capability: because messages are sealed to the recipient's long-term keys, the
+carrier still held by the connected service stays readable to any holder of that key material. The user may also choose to forget locally cached
 incoming/member messages. Existing executors in `security.rs`, `broker.rs`, and
 `identity_registry.rs` perform the destructive work; `burn_contract.rs`
 normalizes authorization and honest result semantics around them.

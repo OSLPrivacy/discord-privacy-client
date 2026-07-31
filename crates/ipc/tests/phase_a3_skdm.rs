@@ -10,6 +10,7 @@ fn skdm_payload_serde_roundtrip() {
         scope_storage_key: "gc:1234".to_string(),
         chain_id: 7,
         rotation_root: [0x42; 32],
+        physical_device_id: [0x24; 32],
         sent_at: 1_700_000_000,
     };
     let bytes = serialize_sender_key_distribution(&m).unwrap();
@@ -30,6 +31,7 @@ fn skdm_roundtrip_preserves_long_scope_keys() {
         scope_storage_key: "server_channel:1111111111111111111:2222222222222222222".to_string(),
         chain_id: 0xABCDEF,
         rotation_root: [0x99; 32],
+        physical_device_id: [0x55; 32],
         sent_at: 1_800_000_000,
     };
     let bytes = serialize_sender_key_distribution(&m).unwrap();
@@ -43,6 +45,7 @@ fn skdm_roundtrip_with_zero_chain_id_and_root() {
         scope_storage_key: "gc:0".to_string(),
         chain_id: 0,
         rotation_root: [0u8; 32],
+        physical_device_id: [1u8; 32],
         sent_at: 0,
     };
     let bytes = serialize_sender_key_distribution(&m).unwrap();
@@ -56,6 +59,7 @@ fn skdm_truncated_bytes_rejected() {
         scope_storage_key: "gc:trunc".to_string(),
         chain_id: 1,
         rotation_root: [1u8; 32],
+        physical_device_id: [2u8; 32],
         sent_at: 1,
     };
     let bytes = serialize_sender_key_distribution(&m).unwrap();

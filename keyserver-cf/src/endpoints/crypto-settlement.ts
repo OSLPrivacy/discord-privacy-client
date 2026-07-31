@@ -21,6 +21,11 @@ import {
   ensurePaymentAlert,
   paymentAlertInsertStatement,
 } from "../lib/payment-alert-outbox.js";
+import {
+  prepaidRedemptionReady,
+  PREPAID_REDEMPTION_UNAVAILABLE,
+  type PrepaidRedemptionReadiness,
+} from "../lib/prepaid-redemption-readiness.js";
 
 const DELIVERY_RETENTION = 7 * 24 * 60 * 60;
 const CONFIRMATION_GRACE = 24 * 60 * 60;
@@ -30,6 +35,7 @@ export async function handleCryptoSettlement(
   request: Request,
   env: Env,
   ctx?: Pick<ExecutionContext, "waitUntil">,
+  readiness: PrepaidRedemptionReadiness = prepaidRedemptionReady,
 ): Promise<Response> {
   if (!env.CRYPTO_WATCHER_SETTLEMENT_PUBLIC_KEY) {
     return serviceUnavailable("crypto settlement is not configured");
@@ -84,6 +90,10 @@ export async function handleCryptoSettlement(
 
   if (body.invoice_id.startsWith("cdon_")) {
     return await settleCryptoDonation(body as WatcherSettlementEvidence, env, ctx);
+  }
+
+  if (!readiness()) {
+    return serviceUnavailable(PREPAID_REDEMPTION_UNAVAILABLE);
   }
 
   if (!env.LICENSE_HMAC_SECRET) {

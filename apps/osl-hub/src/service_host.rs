@@ -8,14 +8,27 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use url::Url;
 
+#[cfg(any(feature = "desktop", test))]
+use crate::hosted_port::{
+    open_hosted_port, DeleteAuthorityGrant, HostedPort, HostedPortMode, HostedPortOpenError,
+};
 use crate::models::EmailProvider;
 
 const MAX_OPAQUE_ID_LEN: usize = 64;
 static TOMBSTONE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 #[cfg(feature = "desktop")]
 const PROFILE_NAMESPACE: &str = "service-profiles-v2";
+// The desktop shell no longer reserves a separate titlebar row above the
+// trusted chrome: the drag region and window controls (minimize/maximize/
+// close) are docked directly into the existing TRUSTED_BAR_HEIGHT row
+// (osl-hub-ui/src/main.ts's ".desktop-top-row", inside the 54px workspace
+// header) instead of a standalone 44px strip that read as an empty pale bar.
+// The constant stays (rather than being threaded out of host_rect()) so the
+// geometry contract documents that zero pixels are reserved for it, and so a
+// future reintroduction of a real titlebar row only has to change this one
+// value.
 #[cfg(any(feature = "desktop", test))]
-const DESKTOP_TITLE_HEIGHT: u32 = 44;
+const DESKTOP_TITLE_HEIGHT: u32 = 0;
 #[cfg(any(feature = "desktop", test))]
 const TRUSTED_BAR_HEIGHT: u32 = 54;
 #[cfg(any(feature = "desktop", test))]
@@ -132,21 +145,21 @@ const SERVICES: &[ServiceManifest] = &[
         display_name: "Discord",
         initial_url: "https://discord.com/app",
         allowed_hosts: &["discord.com"],
-        launch_active: true,
+        launch_active: false,
     },
     ServiceManifest {
         id: "telegram",
         display_name: "Telegram",
         initial_url: "https://web.telegram.org/a/",
         allowed_hosts: &["web.telegram.org"],
-        launch_active: true,
+        launch_active: false,
     },
     ServiceManifest {
         id: "whatsapp",
         display_name: "WhatsApp",
         initial_url: "https://web.whatsapp.com/",
         allowed_hosts: &["web.whatsapp.com"],
-        launch_active: true,
+        launch_active: false,
     },
     ServiceManifest {
         id: "instagram",
@@ -220,18 +233,6 @@ const EMAIL_GMAIL: ServiceManifest = ServiceManifest {
     allowed_hosts: &["mail.google.com", "accounts.google.com"],
     launch_active: true,
 };
-const EMAIL_OUTLOOK: ServiceManifest = ServiceManifest {
-    id: "email",
-    display_name: "Outlook",
-    initial_url: "https://outlook.live.com/mail/0/",
-    allowed_hosts: &[
-        "outlook.live.com",
-        "login.live.com",
-        "account.live.com",
-        "login.microsoftonline.com",
-    ],
-    launch_active: true,
-};
 const EMAIL_PROTON: ServiceManifest = ServiceManifest {
     id: "email",
     display_name: "Proton Mail",
@@ -288,6 +289,13 @@ const EMAIL_MAIL_COM: ServiceManifest = ServiceManifest {
     allowed_hosts: &["www.mail.com", "login.mail.com", "navigator-lxa.mail.com"],
     launch_active: true,
 };
+const EMAIL_ICLOUD: ServiceManifest = ServiceManifest {
+    id: "email",
+    display_name: "iCloud Mail",
+    initial_url: "https://www.icloud.com/mail/",
+    allowed_hosts: &["www.icloud.com", "idmsa.apple.com"],
+    launch_active: true,
+};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ServiceHostError {
@@ -337,7 +345,9 @@ pub fn service_manifest_for_provider(
     }
     Ok(match provider.unwrap_or_default() {
         EmailProvider::Gmail => &EMAIL_GMAIL,
-        EmailProvider::Outlook => &EMAIL_OUTLOOK,
+        // Outlook is native-only. Keep its reviewed web manifest as inert
+        // navigation-policy metadata, but never create an embedded profile.
+        EmailProvider::Outlook => return Err(ServiceHostError::ServiceUnavailable),
         EmailProvider::Proton => &EMAIL_PROTON,
         EmailProvider::Tuta => &EMAIL_TUTA,
         EmailProvider::Fastmail => &EMAIL_FASTMAIL,
@@ -346,6 +356,7 @@ pub fn service_manifest_for_provider(
         EmailProvider::Aol => &EMAIL_AOL,
         EmailProvider::Gmx => &EMAIL_GMX,
         EmailProvider::Maildotcom => &EMAIL_MAIL_COM,
+        EmailProvider::Icloud => &EMAIL_ICLOUD,
     })
 }
 
@@ -667,6 +678,110 @@ fn active_profile_matches(
             && active.service_id == service_id
             && active.account_id == account_id
     })
+}
+
+#[cfg(any(feature = "desktop", test))]
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct HostedOpenAuthority<'a> {
+    run_id: Option<&'a str>,
+    attended_operator_authority: bool,
+}
+
+#[cfg(any(feature = "desktop", test))]
+impl fmt::Debug for HostedOpenAuthority<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HostedOpenAuthority")
+            .field("run_id", &self.run_id.map(|_| "[redacted]"))
+            .field(
+                "attended_operator_authority",
+                &self.attended_operator_authority,
+            )
+            .finish()
+    }
+}
+
+#[cfg(any(feature = "desktop", test))]
+fn hosted_delete_capable_authority_bound(
+    authority: HostedOpenAuthority<'_>,
+) -> Result<DeleteAuthorityGrant, ServiceHostError> {
+    if authority.attended_operator_authority {
+        return Ok(DeleteAuthorityGrant::ExplicitUserAuthority);
+    }
+    let Some(run_id) = authority.run_id else {
+        return Err(ServiceHostError::Runtime(
+            "delete-capable hosted port requires run or attended authority".to_owned(),
+        ));
+    };
+    if run_id.is_empty()
+        || run_id.len() > 128
+        || run_id
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte == b'/' || byte == b'\\')
+    {
+        return Err(ServiceHostError::Runtime(
+            "delete-capable hosted port requires a bounded run authority".to_owned(),
+        ));
+    }
+    Ok(DeleteAuthorityGrant::ExplicitUserAuthority)
+}
+
+#[cfg(any(feature = "desktop", test))]
+fn service_hosted_port_open_error(error: HostedPortOpenError) -> ServiceHostError {
+    match error {
+        HostedPortOpenError::DeleteAuthorityRequired => ServiceHostError::Runtime(
+            "delete-capable hosted port requires run or attended authority".to_owned(),
+        ),
+    }
+}
+
+#[cfg(any(feature = "desktop", test))]
+fn open_with_mode<R>(
+    mode: HostedPortMode,
+    authority: HostedOpenAuthority<'_>,
+    delete_capable: impl FnOnce(HostedPort) -> Result<R, ServiceHostError>,
+    scan_only: impl FnOnce(HostedPort) -> Result<R, ServiceHostError>,
+) -> Result<R, ServiceHostError> {
+    let port = match mode {
+        HostedPortMode::DeleteCapable => {
+            let delete_authority = hosted_delete_capable_authority_bound(authority)?;
+            open_hosted_port(mode, Some(delete_authority))
+                .map_err(service_hosted_port_open_error)?
+        }
+        HostedPortMode::ScanOnly => {
+            open_hosted_port(mode, None).map_err(service_hosted_port_open_error)?
+        }
+    };
+    match port {
+        HostedPort::DeleteCapable { .. } => delete_capable(port),
+        HostedPort::ScanOnly => scan_only(port),
+    }
+}
+
+#[cfg(any(feature = "desktop", test))]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum SessionKind {
+    Dedicated,
+    SessionReuse,
+}
+
+#[cfg(any(feature = "desktop", test))]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+struct PresenceIdleGate {
+    session_kind: SessionKind,
+    session_reuse_surface: bool,
+    native_attached: bool,
+    native_visible: bool,
+    idle_ms: u64,
+    max_idle_ms: u64,
+}
+
+#[cfg(any(feature = "desktop", test))]
+fn presence_idle_gate_allows(gate: PresenceIdleGate) -> bool {
+    if gate.session_kind == SessionKind::SessionReuse && !gate.session_reuse_surface {
+        return false;
+    }
+    gate.native_attached && gate.native_visible && gate.idle_ms <= gate.max_idle_ms
 }
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize)]
@@ -1643,13 +1758,25 @@ mod tests {
 
     #[test]
     fn native_layout_uses_the_area_below_and_right_of_trusted_chrome() {
+        // The hub route's .app-frame is a single-row grid now (no more
+        // separate 44px titlebar strip above the trusted chrome): the window
+        // controls dock into the existing 54px row instead. DESKTOP_TITLE_HEIGHT
+        // is 0 to match, so this reserves exactly TRUSTED_BAR_HEIGHT pixels,
+        // not their sum. (Bare-shell screens with no other header to dock
+        // into — onboarding, boot recovery, initial loading — still opt back
+        // into a real 44px row via the ".with-titlebar" modifier, but they
+        // never host a borrowed native window, so that row is irrelevant to
+        // this geometry contract.)
         let bundled_styles = include_str!("../../osl-hub-ui/src/styles.css");
-        assert!(bundled_styles.contains("grid-template-rows: 44px minmax(0, 1fr);"));
+        assert!(bundled_styles.contains("grid-template-rows: minmax(0, 1fr);"));
+        assert!(bundled_styles.contains(".app-frame.with-titlebar"));
+        assert!(bundled_styles.contains(".desktop-top-row"));
         assert!(bundled_styles.contains("height: 54px;"));
-        assert_eq!(DESKTOP_TITLE_HEIGHT, 44);
+        assert_eq!(DESKTOP_TITLE_HEIGHT, 0);
         assert_eq!(TRUSTED_BAR_HEIGHT, 54);
         let rect = host_rect(1180, 780);
         let top_reserved = DESKTOP_TITLE_HEIGHT + TRUSTED_BAR_HEIGHT;
+        assert_eq!(top_reserved, TRUSTED_BAR_HEIGHT);
         assert_eq!(rect.x, 0);
         assert_eq!(rect.y, top_reserved);
         assert_eq!(rect.width, 1180);
@@ -1766,10 +1893,22 @@ mod tests {
     }
 
     #[test]
+    fn native_messengers_never_launch_through_the_embedded_browser_host() {
+        for service_id in ["discord", "telegram", "signal", "whatsapp"] {
+            let manifest = service_manifest(service_id).unwrap();
+            assert!(!manifest.launch_active, "{service_id}");
+            assert_eq!(
+                validated_initial_url(manifest),
+                Err(ServiceHostError::ServiceUnavailable),
+                "{service_id}"
+            );
+        }
+    }
+
+    #[test]
     fn email_providers_use_only_fixed_exact_https_origins() {
         let cases = [
             (EmailProvider::Gmail, "mail.google.com"),
-            (EmailProvider::Outlook, "outlook.live.com"),
             (EmailProvider::Proton, "mail.proton.me"),
             (EmailProvider::Tuta, "app.tuta.com"),
             (EmailProvider::Fastmail, "app.fastmail.com"),
@@ -1778,6 +1917,7 @@ mod tests {
             (EmailProvider::Aol, "mail.aol.com"),
             (EmailProvider::Gmx, "www.gmx.com"),
             (EmailProvider::Maildotcom, "www.mail.com"),
+            (EmailProvider::Icloud, "www.icloud.com"),
         ];
         for (provider, expected_host) in cases {
             let manifest = service_manifest_for_provider("email", Some(provider)).unwrap();
@@ -1790,6 +1930,14 @@ mod tests {
                 &Url::parse(&format!("https://{expected_host}.evil.example/")).unwrap()
             ));
         }
+    }
+
+    #[test]
+    fn outlook_is_native_only_and_has_no_embedded_profile() {
+        assert_eq!(
+            service_manifest_for_provider("email", Some(EmailProvider::Outlook)),
+            Err(ServiceHostError::ServiceUnavailable)
+        );
     }
 
     #[test]
@@ -1963,11 +2111,13 @@ mod tests {
             }
         );
         assert!(!profile.exists());
-        assert!(fs::read_dir(&root).unwrap().all(|entry| !entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .starts_with(".deleted-")));
+        assert!(fs::read_dir(&root).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".deleted-")
+        }));
 
         let second = tombstone_profile_directory(&root, "discord", "acct-rose").unwrap();
         assert_eq!(second, ProfileResetOutcome::default());
@@ -2053,6 +2203,139 @@ mod tests {
             "discord",
             "acct-rose"
         ));
+    }
+
+    #[test]
+    fn delete_capable_hosted_port_requires_run_or_attended_authority() {
+        let absent = HostedOpenAuthority {
+            run_id: None,
+            attended_operator_authority: false,
+        };
+        assert!(hosted_delete_capable_authority_bound(absent).is_err());
+
+        let malformed_run = HostedOpenAuthority {
+            run_id: Some("../run"),
+            attended_operator_authority: false,
+        };
+        assert!(hosted_delete_capable_authority_bound(malformed_run).is_err());
+
+        let run_bound = HostedOpenAuthority {
+            run_id: Some("run-20260730-001"),
+            attended_operator_authority: false,
+        };
+        assert!(hosted_delete_capable_authority_bound(run_bound).is_ok());
+
+        let attended = HostedOpenAuthority {
+            run_id: None,
+            attended_operator_authority: true,
+        };
+        assert!(hosted_delete_capable_authority_bound(attended).is_ok());
+
+        let mut delete_invoked = false;
+        let refused = open_with_mode(
+            HostedPortMode::DeleteCapable,
+            absent,
+            |_| {
+                delete_invoked = true;
+                Ok("delete")
+            },
+            |_| Ok("scan"),
+        );
+        assert!(refused.is_err());
+        assert!(
+            !delete_invoked,
+            "refusal must happen before delete authority runs"
+        );
+    }
+
+    #[test]
+    fn open_with_mode_dispatches_delete_capable_and_scan_only_paths() {
+        let mut delete_calls = 0;
+        let mut scan_calls = 0;
+        let authority = HostedOpenAuthority {
+            run_id: Some("delete-run-001"),
+            attended_operator_authority: false,
+        };
+
+        let delete = open_with_mode(
+            HostedPortMode::DeleteCapable,
+            authority,
+            |port| {
+                assert!(matches!(port, HostedPort::DeleteCapable { .. }));
+                delete_calls += 1;
+                Ok("delete-capable")
+            },
+            |port| {
+                assert_eq!(port, HostedPort::ScanOnly);
+                scan_calls += 1;
+                Ok("scan-only")
+            },
+        )
+        .unwrap();
+        assert_eq!(delete, "delete-capable");
+        assert_eq!(delete_calls, 1);
+        assert_eq!(scan_calls, 0);
+
+        let scan = open_with_mode(
+            HostedPortMode::ScanOnly,
+            HostedOpenAuthority {
+                run_id: None,
+                attended_operator_authority: false,
+            },
+            |port| {
+                assert!(matches!(port, HostedPort::DeleteCapable { .. }));
+                delete_calls += 1;
+                Ok("delete-capable")
+            },
+            |port| {
+                assert_eq!(port, HostedPort::ScanOnly);
+                scan_calls += 1;
+                Ok("scan-only")
+            },
+        )
+        .unwrap();
+        assert_eq!(scan, "scan-only");
+        assert_eq!(delete_calls, 1);
+        assert_eq!(scan_calls, 1);
+    }
+
+    #[test]
+    fn presence_idle_gate_checks_session_reuse_surface_and_native_state() {
+        let reuse_ready = PresenceIdleGate {
+            session_kind: SessionKind::SessionReuse,
+            session_reuse_surface: true,
+            native_attached: true,
+            native_visible: true,
+            idle_ms: 4_000,
+            max_idle_ms: 5_000,
+        };
+        assert!(presence_idle_gate_allows(reuse_ready));
+
+        assert!(!presence_idle_gate_allows(PresenceIdleGate {
+            session_reuse_surface: false,
+            ..reuse_ready
+        }));
+        assert!(!presence_idle_gate_allows(PresenceIdleGate {
+            native_attached: false,
+            ..reuse_ready
+        }));
+        assert!(!presence_idle_gate_allows(PresenceIdleGate {
+            native_visible: false,
+            ..reuse_ready
+        }));
+        assert!(!presence_idle_gate_allows(PresenceIdleGate {
+            idle_ms: 5_001,
+            ..reuse_ready
+        }));
+
+        assert!(presence_idle_gate_allows(PresenceIdleGate {
+            session_kind: SessionKind::Dedicated,
+            session_reuse_surface: false,
+            native_attached: true,
+            native_visible: true,
+            idle_ms: 0,
+            max_idle_ms: 0,
+        }));
     }
 
     #[cfg(unix)]

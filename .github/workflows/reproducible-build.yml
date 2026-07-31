@@ -2,39 +2,205 @@ name: Reproducible Build
 
 on:
   push:
-    tags: ['v*']
+    branches:
+      - main
+    tags:
+      - "hub-v*"
   workflow_dispatch:
+    inputs:
+      candidate_tag:
+        description: "hub-v* release tag to reproduce; defaults to apps/osl-hub version"
+        required: false
+        type: string
+
+permissions:
+  contents: read
 
 jobs:
-  build:
+  reproduce-hub-release:
     runs-on: windows-latest
-    strategy:
-      matrix:
-        run: [1, 2]   # build twice; compare hashes
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 0
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          toolchain: '1.88.0'
-      - name: Build deterministic
-        run: cargo build --profile release-deterministic
-      - name: Hash artifact
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/osl-hub-ui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.88.0
+
+      - name: Resolve exact release source
+        id: source
+        shell: pwsh
+        env:
+          INPUT_CANDIDATE_TAG: ${{ inputs.candidate_tag || '' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $candidateTag = ([string]$env:INPUT_CANDIDATE_TAG).Trim()
+          if ([string]::IsNullOrWhiteSpace($candidateTag) -and "${{ github.ref }}" -like "refs/tags/hub-v*") {
+            $candidateTag = "${{ github.ref_name }}"
+          }
+          if ([string]::IsNullOrWhiteSpace($candidateTag)) {
+            $config = Get-Content apps/osl-hub/tauri.conf.json | ConvertFrom-Json
+            $candidateTag = "hub-v$($config.version)"
+          }
+          if ($candidateTag -notmatch "^hub-v[0-9A-Za-z.+-]{1,64}$") {
+            throw "candidate_tag must be a bounded hub-v* tag"
+          }
+
+          git fetch --force --tags origin "refs/tags/${candidateTag}:refs/tags/${candidateTag}"
+          $tagCommit = (git rev-list -n 1 "$candidateTag^{commit}").Trim()
+          if ($tagCommit -notmatch "^[0-9a-f]{40}$") {
+            throw "candidate tag does not resolve to an exact commit"
+          }
+          git checkout --detach $tagCommit
+
+          $config = Get-Content apps/osl-hub/tauri.conf.json | ConvertFrom-Json
+          $expectedTag = "hub-v$($config.version)"
+          if ($candidateTag -cne $expectedTag) {
+            throw "candidate tag $candidateTag does not match source version $expectedTag"
+          }
+          $tree = (git rev-parse "$tagCommit^{tree}").Trim()
+          if ($tree -notmatch "^[0-9a-f]{40}$") {
+            throw "candidate source tree did not resolve"
+          }
+          $release = gh release view $candidateTag --json tagName --jq .tagName
+          if ($release.Trim() -cne $candidateTag) {
+            throw "GitHub release is not bound to the requested tag"
+          }
+
+          "candidate_tag=$candidateTag" >> $env:GITHUB_OUTPUT
+          "source_commit=$tagCommit" >> $env:GITHUB_OUTPUT
+          "source_tree=$tree" >> $env:GITHUB_OUTPUT
+
+      - name: Download released installer
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_TAG: ${{ steps.source.outputs.candidate_tag }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Path candidate | Out-Null
+          gh release download $env:CANDIDATE_TAG --pattern "*.exe" --dir candidate
+          $installers = @(Get-ChildItem candidate -File -Filter "*.exe")
+          if ($installers.Count -ne 1) {
+            throw "release must contain exactly one Windows installer, got $($installers.Count)"
+          }
+          "RELEASE_INSTALLER=$($installers[0].FullName)" >> $env:GITHUB_ENV
+          "RELEASE_INSTALLER_NAME=$($installers[0].Name)" >> $env:GITHUB_ENV
+
+      - name: Extract released executable bytes
         shell: pwsh
         run: |
-          Get-FileHash target\release-deterministic\discord-privacy-client.exe -Algorithm SHA256 | Out-File hash-${{ matrix.run }}.txt
-      - name: Upload hash
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Path candidate-extracted | Out-Null
+          7z x "$env:RELEASE_INSTALLER" -ocandidate-extracted -y | Out-Null
+          $executables = @(Get-ChildItem candidate-extracted -Recurse -File -Filter "osl-privacy-hub.exe")
+          if ($executables.Count -ne 1) {
+            throw "released installer must contain exactly one OSL Privacy Hub executable, got $($executables.Count)"
+          }
+          $hash = (Get-FileHash $executables[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "RELEASED_EXE=$($executables[0].FullName)" >> $env:GITHUB_ENV
+          "RELEASED_EXE_SHA256=$hash" >> $env:GITHUB_ENV
+
+      - name: Build frontend from exact source
+        working-directory: apps/osl-hub-ui
+        run: |
+          npm ci
+          npm run build
+
+      - name: Rebuild Hub executable from exact source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $target = Join-Path $env:RUNNER_TEMP "osl-repro-target"
+          if (Test-Path $target) {
+            throw "reproducible build target directory already exists"
+          }
+          New-Item -ItemType Directory -Path $target | Out-Null
+          $env:CARGO_TARGET_DIR = $target
+          cargo build --manifest-path apps/osl-hub/Cargo.toml --release --features desktop --bin osl-privacy-hub
+          $rebuilt = Join-Path $target "release/osl-privacy-hub.exe"
+          if (!(Test-Path $rebuilt -PathType Leaf)) {
+            throw "rebuilt OSL Privacy Hub executable is missing"
+          }
+          $hash = (Get-FileHash $rebuilt -Algorithm SHA256).Hash.ToLowerInvariant()
+          "REBUILT_EXE=$rebuilt" >> $env:GITHUB_ENV
+          "REBUILT_EXE_SHA256=$hash" >> $env:GITHUB_ENV
+
+      - name: Compare released and rebuilt bytes
+        shell: pwsh
+        env:
+          CANDIDATE_TAG: ${{ steps.source.outputs.candidate_tag }}
+          SOURCE_COMMIT: ${{ steps.source.outputs.source_commit }}
+          SOURCE_TREE: ${{ steps.source.outputs.source_tree }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:RELEASED_EXE_SHA256 -cne $env:REBUILT_EXE_SHA256) {
+            throw "released executable bytes do not reproduce from exact source: released sha256=$env:RELEASED_EXE_SHA256 rebuilt sha256=$env:REBUILT_EXE_SHA256"
+          }
+          $installerHash = (Get-FileHash $env:RELEASE_INSTALLER -Algorithm SHA256).Hash.ToLowerInvariant()
+          $proof = [ordered]@{
+            schemaVersion = 1
+            candidateTag = $env:CANDIDATE_TAG
+            sourceCommit = $env:SOURCE_COMMIT
+            sourceTree = $env:SOURCE_TREE
+            installer = [ordered]@{
+              name = $env:RELEASE_INSTALLER_NAME
+              sha256 = $installerHash
+            }
+            releasedExecutable = [ordered]@{
+              sha256 = $env:RELEASED_EXE_SHA256
+            }
+            rebuiltExecutable = [ordered]@{
+              sha256 = $env:REBUILT_EXE_SHA256
+            }
+          }
+          $proof | ConvertTo-Json -Depth 5 | Set-Content reproducible-build-proof.json -Encoding UTF8
+
+      - name: "success'"
+        shell: pwsh
+        env:
+          CANDIDATE_TAG: ${{ steps.source.outputs.candidate_tag }}
+          SOURCE_COMMIT: ${{ steps.source.outputs.source_commit }}
+          SOURCE_TREE: ${{ steps.source.outputs.source_tree }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $proof = Get-Content reproducible-build-proof.json -Raw | ConvertFrom-Json
+          if ($proof.schemaVersion -ne 1) {
+            throw "reproducibility proof has unsupported schema"
+          }
+          $releasedHash = (Get-FileHash $env:RELEASED_EXE -Algorithm SHA256).Hash.ToLowerInvariant()
+          $rebuiltHash = (Get-FileHash $env:REBUILT_EXE -Algorithm SHA256).Hash.ToLowerInvariant()
+          $installerHash = (Get-FileHash $env:RELEASE_INSTALLER -Algorithm SHA256).Hash.ToLowerInvariant()
+          $actualCommit = (git rev-parse HEAD).Trim()
+          $actualTree = (git rev-parse HEAD^{tree}).Trim()
+          if ($actualCommit -cne $env:SOURCE_COMMIT -or $actualTree -cne $env:SOURCE_TREE) {
+            throw "reproducibility proof was not produced from the resolved exact source"
+          }
+          if ($proof.candidateTag -cne $env:CANDIDATE_TAG -or
+              $proof.sourceCommit -cne $env:SOURCE_COMMIT -or
+              $proof.sourceTree -cne $env:SOURCE_TREE) {
+            throw "reproducibility proof is not bound to the resolved exact source"
+          }
+          if ($proof.installer.name -cne $env:RELEASE_INSTALLER_NAME -or
+              $proof.installer.sha256 -cne $installerHash) {
+            throw "reproducibility proof is not bound to the released installer bytes"
+          }
+          if ($proof.releasedExecutable.sha256 -cne $releasedHash -or
+              $proof.rebuiltExecutable.sha256 -cne $rebuiltHash -or
+              $releasedHash -cne $rebuiltHash) {
+            throw "released executable bytes do not reproduce from exact source"
+          }
+
+      - name: Upload reproducibility proof
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: hash-${{ matrix.run }}
-          path: hash-${{ matrix.run }}.txt
-
-  compare:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-      - name: Compare hashes
-        run: diff hash-1/hash-1.txt hash-2/hash-2.txt
+          name: reproducible-build-proof
+          path: reproducible-build-proof.json

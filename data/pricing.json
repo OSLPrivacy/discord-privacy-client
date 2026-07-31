@@ -1,0 +1,1603 @@
+{
+  "$comment": "SINGLE SOURCE OF TRUTH for every price, billing term and capability label on oslprivacy.com. Edit this file, then run `node scripts/pricing-sync.mjs` and `node scripts/check-claims.mjs`. Never hand-edit a price literal or a capability status in an HTML file.",
+  "claim_gate_source_sha256": "39f451f259737f1ec2614432e4043c22072bb3ec7916902f550ec3a11e002ed1",
+  "manifest_version": 7,
+  "decided_by": "Zhao",
+  "decided_on": "2026-07-26",
+  "currency": "USD",
+  "authority": "docs/design/osl-master-decision-2026-07-26.md sections 7.1, 7.6, 7.10, 7.14 and 8 (revision OSL-MASTER-2026-07-26-r12), plus docs/decisions/pro-prepaid-monthly-codes-2026-07-26.md, both in the discord-privacy-client repository.",
+  "model": {
+    "name": "Prepaid activation codes",
+    "summary": "$5 is the intended price for one month of Pro. Checkout is paused until one-month redemption and expiry are implemented. It is not a subscription: nothing auto-renews, no payment details are stored, and no account is required.",
+    "no_stored_payment_data": true,
+    "no_auto_renewal": true,
+    "no_account_required": true,
+    "period_starts_on_redemption": false,
+    "intended_period_starts_on_redemption": true,
+    "truth_contract": {
+      "accept_requires_top_level": [
+        "model",
+        "capability_registry",
+        "connector_matrix"
+      ],
+      "pricing_source": "/model",
+      "capability_source": "/capability_registry",
+      "connector_source": "/connector_matrix",
+      "central_accept_command": "node -e \"const p=JSON.parse(require('fs').readFileSync('data/pricing.json','utf8')); if(!p.model || !p.capability_registry || !p.connector_matrix) process.exit(1)\"",
+      "local_contract_test": "node scripts/test-pricing-manifest.mjs",
+      "checkout_state": "paused_until_redemption_records_and_automatic_one_month_expiry_exist",
+      "absence_rule": "Absence of implementation evidence, consent, binding, or authority means refusal or a Planned label; it never means permission.",
+      "publication_rule": "Public copy may use the intended $5 one-month price and the no-renewal, no-stored-payment, no-account-required claims, but must not promise redemption-start timing or sell any capability whose registry entry is not sellable.",
+      "must_not_publish_until_implemented": [
+        "Your month starts when you enter the code.",
+        "Automatic Pro expiry is implemented.",
+        "Processing credits are on sale.",
+        "A Planned capability is included in a purchase today."
+      ]
+    },
+    "$redemption_note": "Owner decision 2026-07-26: the month does NOT start at purchase. It starts when the code is entered into the OSL client, so a code bought and left unused for months still delivers a full 30 days. Two separate clocks: shelf life (how long an unredeemed code may still be entered) and entitlement period (the 30 days of Pro). This is product truth, but see publication.not_publishable below -- the client does not implement it yet, so the WEBSITE must not claim it.",
+    "$why_this_matters": "Owner decision 2026-07-26: payment information is NEVER saved, including for repeat purchases. The website may state the $5-per-month rate, but must never imply a stored card, a recurring mandate, or a cancellation obligation."
+  },
+  "publication": {
+    "$note": "Master 7.14 draws the line explicitly: the website may publish the price and the nothing-renews / nothing-stored claims, but not the redemption-start claim, because the deployed client does not implement it. Publishing a shorter entitlement than the code currently grants understates what a buyer gets, which is the safe direction (master 0.2 rule 5); publishing a redemption-start promise the client cannot keep would be a false claim.",
+    "publishable": [
+      "$5 is the price of one month of Pro.",
+      "Nothing renews automatically and there is nothing to cancel.",
+      "OSL never stores payment details, including for repeat purchases.",
+      "No OSL account is required; the intended flow unlocks Pro by pasting an activation code.",
+      "Card, Bitcoin and Monero all work the same way: one payment, one month.",
+      "Checkout is paused until redemption records and automatic one-month expiry are implemented."
+    ],
+    "not_publishable": [
+      {
+        "claim": "Your month starts when you enter the code.",
+        "reason": "Master 7.14: no redemption timestamp exists anywhere in the client or keyserver. A paid code currently grants lifetime access (subscription-state.ts: checkout.session.completed -> lifetime ACTIVE) and comp codes have their period fixed at mint.",
+        "unblocks_when": [
+          "the keyserver records a redemption timestamp on an explicit redeem call, not as a side effect of validation",
+          "the entitlement period is computed from that timestamp",
+          "/v1/license/validate returns EXPIRED after the period ends",
+          "the app degrades Pro features to Free at expiry without breaking the encryption path"
+        ],
+        "owner": "keyserver/app lane -- NOT the website lane"
+      },
+      {
+        "claim": "Processing credits are on sale.",
+        "reason": "Master 7.14 and 7.1: no credit purchase or balance endpoint exists on the deployed keyserver (verified 2026-07-26: nothing matching credits/compute in keyserver-cf/src/endpoints/). Credits may be EXPLAINED as Planned; they must not be offered for sale.",
+        "unblocks_when": [
+          "a credits purchase + balance endpoint is deployed",
+          "the ledger provably contains no message text, conversation names, carrier text or recipient identity"
+        ],
+        "owner": "keyserver lane"
+      }
+    ],
+    "$one_time_charge_is_correct": "The deployed checkout is already a single one-off charge, which is what a prepaid code needs: Stripe `mode: \"payment\"`, metadata `osl_purchase: \"one-time\"`, a single STRIPE_PRICE_ID_PRO. No Stripe subscription, webhook lifecycle, customer portal or stored payment method is required. The outstanding work is licence validity, not a billing-mode migration."
+  },
+  "tiers": {
+    "free": {
+      "name": "Free",
+      "display": "$0",
+      "period_display": "forever",
+      "amount_cents": 0,
+      "billing": "none",
+      "status": "Available",
+      "includes": [
+        "Protected text on supported connectors",
+        "No ads and no message limit",
+        "Free Scrub, arriving at v1"
+      ]
+    },
+    "pro": {
+      "name": "Pro",
+      "display": "$5",
+      "period_display": "/ month",
+      "rate_sentence": "$5 for one month",
+      "amount_cents": 500,
+      "billing": "prepaid_one_month_code",
+      "renews": false,
+      "stores_payment_method": false,
+      "requires_account": false,
+      "intended_grant_days": 30,
+      "$intended_grant_days_note": "This is the approved future entitlement length, not current implementation state. Paid codes currently grant lifetime access; checkout remains paused until explicit redemption and automatic expiry exist.",
+      "status": "Beta",
+      "no_renewal_note": "$5 is the intended price for one month of Pro. Nothing renews, and OSL never stores your payment details.",
+      "$no_renewal_note_why": "Allowlist A6 rule 3: the limitation must ship with the price on the same page, in the same section, at comparable prominence -- a limitation in a linked FAQ does not count. index.html showed '$5 / month' on two checkout buttons with no renewal disclosure anywhere on the page, which reads as a subscription and contradicts master 7.14. Pinned in required_phrases for index.html and download.html so it cannot regress.",
+      "includes": [
+        "Early access to new privacy tools as they reach the beta channel"
+      ],
+      "planned_extras": [
+        "AutoScrub: an approved plan repeated with strict limits",
+        "Non-image file sending",
+        "AI-generated carrier text, local or cloud"
+      ],
+      "purchase_type": "early_access",
+      "early_access_line": "Pro is an early-access purchase. Today it unlocks early access to new privacy tools as they reach the beta channel — not the v1 feature set, which is still being finished.",
+      "works_today": [
+        "Send protected text on Discord, with no message limit",
+        "New privacy tools first, as they reach the public beta channel"
+      ],
+      "arrives_at_v1": [
+        "Sending encrypted images",
+        "Sending other kinds of file",
+        "AutoScrub",
+        "View once, expiry and burn",
+        "AI-written cover text"
+      ],
+      "$includes_note": "Owner decision 2026-07-26: keep selling, but as a STATED early-access purchase. The purchase summary may only list capabilities with sellable:true in capability_registry, so encrypted image sending is never sold present-tense. works_today and arrives_at_v1 drive the checkout copy and are enforced by check-claims on checkout surfaces."
+    }
+  },
+  "compute_credits": {
+    "name": "Processing credits",
+    "billing": "separate_purchase",
+    "recurring": false,
+    "stores_payment_method": false,
+    "status": "Planned",
+    "purpose": "Pay-as-you-go cloud processing for the optional AI features (context-aware carrier text, optional AI sensitivity classifier). Pro includes a small allowance; credits top it up.",
+    "honest_copy_rules": [
+      "Credits are bought separately and never renew.",
+      "Local processing is the privacy-preferred option and consumes no credits.",
+      "Cloud processing requires separate informed consent and a persistent visible indicator.",
+      "Never call cloud processing end-to-end encrypted: the service can see the context it processes.",
+      "Encryption must never stop working because credits ran out or a payment failed."
+    ],
+    "packs": []
+  },
+  "payment_methods": {
+    "card": {
+      "provider": "Stripe",
+      "status": "Paused",
+      "stores_payment_method": false,
+      "note": "Stripe sees the card; OSL does not receive card numbers and keeps no customer profile, because every purchase is a separate one-off charge."
+    },
+    "crypto": {
+      "provider": "self-hosted invoice (Bitcoin, Monero)",
+      "status": "Paused",
+      "stores_payment_method": false,
+      "note": "Invoice creation works, but purchase checkout is paused with card checkout until one-month redemption and expiry are implemented."
+    }
+  },
+  "ledger_privacy": {
+    "$authority": "Master 7.1.",
+    "excluded_from_payment_and_credit_ledgers": [
+      "message text",
+      "conversation names",
+      "carrier text",
+      "recipient identity"
+    ],
+    "redemption_record": "No redemption record exists yet. Issued licence rows contain a licence hash and status, with no account, email, device fingerprint, install ID or joined payment identifier.",
+    "plain_sentence": "The payment and credit records contain no message text, no conversation names, no carrier text and no recipient identity."
+  },
+  "open_source": {
+    "$authority": "Master 7.6 and 7.10.",
+    "position": "OSL is fully open source except for one narrow, optional module.",
+    "exception_name": "AutoScrub",
+    "exception_sentence": "The only exception is a future optional AutoScrub module, which would stay closed source purely to make trivial cloning harder. It does not exist yet; if introduced, it would be separately downloaded only after your explicit consent, and a reproducible fully open-source build would stay usable without it.",
+    "exception_does_not_cover": [
+      "cryptography",
+      "trust and identity",
+      "deletion receipts",
+      "data formats",
+      "policy contracts",
+      "free Scrub",
+      "the default client"
+    ]
+  },
+  "liability_cap_usd": 50,
+  "$liability_note": "The $50 in docs/terms.html is a LIABILITY CAP, not a price. The claim crawler must never treat it as a pricing contradiction.",
+  "capability_labels": [
+    "Available",
+    "Beta",
+    "Experimental",
+    "Planned",
+    "Illustration"
+  ],
+  "$capability_label_meanings": {
+    "Available": "Proved on the shipping build and safe to market plainly.",
+    "Beta": "The runtime boundary works but the whole user promise is not yet proved on the release build.",
+    "Experimental": "Reaches real surfaces, is off by default or unproven, and may fail.",
+    "Planned": "Specified, and possibly built in source, but no proven production call path reaches it. Never marketed as working.",
+    "Illustration": "A drawing or animation of an idea, not a screenshot of a working build."
+  },
+  "capability_registry": [
+    {
+      "id": "per-message-sealing",
+      "name": "Per-message hybrid sealing",
+      "status": "Beta",
+      "evidence": "Restored to Beta 2026-07-26 after owner correction. The code does this: crates/ipc/src/wire_v2.rs:685-760 (encrypt_v3) seals every direct message to the recipient published X25519 and ML-KEM-768 keys with a fresh per-message ephemeral, and live encrypted sends have landed real cover text in a real Discord conversation. The earlier Planned label came from reading implemented-unwired as if it described the cryptography; it describes a call path. Beta, not Available, because it is proven on QA builds rather than a named release build, and because sender attribution remains an open finding (master 10 finding 2).",
+      "surfaces": [
+        "docs/how-it-works.html",
+        "docs/faq.html",
+        "audit.html"
+      ],
+      "verified_on": "2026-07-26",
+      "sellable": true,
+      "public_note": "Working. Every direct message is sealed to the recipient keys with a fresh key of its own, combining X25519 with post-quantum ML-KEM-768. Proven on test builds against a real conversation, not yet on a numbered release build."
+    },
+    {
+      "id": "cover-carrier-text",
+      "name": "Cover text carrier",
+      "status": "Planned",
+      "evidence": "Downgraded Beta -> Planned 2026-07-27 after an adversarial audit finding, verified in source. crates/ipc/src/commands.rs:2640-2660 (9-MODE1-RETIRE) DISABLES Mode 1 template stego in V2 as unviable under the PQ-hybrid wire ~1190-byte wrap leg, and silently coerces legacy stego_mode=mode1 to Mode 0. Mode 0 emits a visible DPC0::base64 capsule (crates/stego/src/mode0.rs MODE0_PREFIX), so the connected service receives an obvious encrypted blob, NOT a harmless cover message. Confidentiality is unaffected; the stealth claim is not. Allowlist A2 and C1 wording is unsupported on this build.",
+      "surfaces": [
+        "index.html",
+        "features.html"
+      ],
+      "verified_on": "2026-07-26",
+      "sellable": false,
+      "public_note": "Not yet. The readable text never reaches the connected service, but what the service currently receives is an obvious encrypted block rather than an innocuous-looking message. The natural-language cover mode is switched off in the current build because the post-quantum wire is too large for it."
+    },
+    {
+      "id": "protected-text",
+      "name": "Protected text send and read",
+      "status": "Beta",
+      "evidence": "Master 9: Discord protected send is verified-live on dated QA builds with a current-tree recheck still required; the decrypted overlay is runtime-proven only. Discord is the reference connector; no other connector has a two-peer proof.",
+      "surfaces": [
+        "index.html",
+        "download.html",
+        "docs/faq.html"
+      ],
+      "verified_on": "2026-07-26",
+      "sellable": true,
+      "public_note": "Working on Discord. Sending and reading protected text is proven on test builds. Discord is the only connector qualified so far."
+    },
+    {
+      "id": "image-send",
+      "name": "Encrypted image sending",
+      "status": "Planned",
+      "evidence": "Downgraded from Beta 2026-07-26; evidence corrected against product truth commit 6d8400d on 2026-07-27. The picker offers PNG and JPEG only (apps/osl-hub/src/attachment_formats.rs:154), but scope is not proof. Historical source-unbound Worker 0a17547d proves only that one known-length part upload returned 201. Exact recovery source 3938a73 is runtime-proven locally. Exact release contract 1e9e635 is test-proven-only, not a deployment receipt. Migration 0010 is unapplied and its matching Worker is inactive. No named release build proves ciphertext/decoy delivery to Discord, so image transport remains Planned and unsellable.",
+      "surfaces": [
+        "download.html",
+        "docs/faq.html",
+        "docs/terms.html"
+      ],
+      "verified_on": "2026-07-26",
+      "sellable": false,
+      "public_note": "Not in the shipping app yet. The encryption for images is written and the picker accepts PNG and JPEG, but nothing in the released app drives it end to end. This is not part of what a Pro purchase gives you today."
+    },
+    {
+      "id": "file-send",
+      "name": "Non-image file sending",
+      "status": "Planned",
+      "evidence": "Unavailable. The picker offers PNG and JPEG only (apps/osl-hub/src/attachment_formats.rs), and master P0-4 records that protected non-image attachments are still staged as durable plaintext.",
+      "surfaces": [
+        "download.html",
+        "docs/faq.html"
+      ],
+      "verified_on": "2026-07-26",
+      "sellable": false,
+      "public_note": "Not yet. Only PNG and JPEG are offered; other file types are not supported."
+    },
+    {
+      "id": "group-protection",
+      "name": "Group chat and server channel protection",
+      "status": "Planned",
+      "evidence": "False as previously written. The feature defaults off at crates/ipc/src/state.rs:280 and the construction carries no sender signature. The independent crypto review also found the live native path does not use the claimed sender keys.",
+      "surfaces": [
+        "docs/faq.html",
+        "docs/how-it-works.html",
+        "audit.html"
+      ],
+      "verified_on": "2026-07-26",
+      "sellable": false,
+      "public_note": "Not yet. Group and channel protection is switched off in the shipping app, and the messages it would build carry no signature identifying the sender. Treat anything you write in a group or channel as unprotected."
+    },
+    {
+      "id": "ratchet",
+      "name": "Old-message protection",
+      "status": "Planned",
+      "evidence": "The live path is stateless per-message sealing. crates/ipc/src/commands.rs:2842 hard-disables the ratchet, and crates/osl-ratchet-next is built but deliberately unwired. Master 7.11 forbids any forward-secrecy claim that outruns the audited live path.",
+      "surfaces": [
+        "docs/how-it-works.html",
+        "docs/index.html"
+      ],
+      "verified_on": "2026-07-26",
+      "sellable": false,
+      "public_note": "Not yet. The mechanism that would keep old messages safe if a key is later stolen is written and tested but deliberately switched off pending independent review.",
+      "$name_note": "Must not be called \"forward secrecy\" anywhere public, even on the matrix where it is marked Not yet. The phrase is on the NOT-ELIGIBLE list and the ban is absolute rather than surface-dependent, so the capability is renamed instead of exempted."
+    },
+    {
+      "id": "attachment-privacy-guard",
+      "name": "Attachment Privacy Guard",
+      "status": "Planned",
+      "evidence": "The metadata-stripping shipping seam is uncalled -- no production path invokes it.",
+      "surfaces": [
+        "features.html"
+      ],
+      "verified_on": "2026-07-26",
+      "sellable": false,
+      "public_note": "Not yet. Stripping hidden details out of a file before encrypting it is written but nothing in the shipping app calls it. Assume a file you send still carries its original details."
+    },
+    {
+      "id": "exposure-warning",
+      "name": "Before-send warning",
+      "status": "Planned",
+      "evidence": "crates/exposure-warning has no dependent at all. The root Cargo.toml:12-16 comment states plainly: 'UNWIRED -- no app depends on it yet'.",
+      "surfaces": [
+        "features.html"
+      ],
+      "verified_on": "2026-07-26",
+      "sellable": false,
+      "public_note": "Not yet. The detection code exists and is tested, but nothing in the shipping app calls it, so OSL does not warn you today."
+    },
+    {
+      "id": "expiry",
+      "name": "Timed expiry",
+      "status": "Planned",
+      "evidence": "Not wired, and there is no crypto-shred: the writer at crates/store/src/lib.rs:194 never populates wrapped_key, so no key can be destroyed at zero. All key-destruction wording was removed.",
+      "surfaces": [
+        "features.html"
+      ],
+      "verified_on": "2026-07-26",
+      "sellable": false,
+      "public_note": "Not yet. Timed deletion is not wired into the shipping app."
+    },
+    {
+      "id": "view-once",
+      "name": "View once",
+      "status": "Planned",
+      "evidence": "Master 9: components built, production wiring incomplete. Two-party consent and proven capture protection before the first pixel are still required (master 3a).",
+      "surfaces": [
+        "download.html",
+        "features.html",
+        "docs/faq.html"
+      ],
+      "verified_on": "2026-07-26",
+      "sellable": false,
+      "public_note": "Not yet. Components are built; the production wiring and the two-party consent it requires are incomplete."
+    },
+    {
+      "id": "burn",
+      "name": "Burn",
+      "status": "Planned",
+      "evidence": "Master 9: components built, production wiring incomplete. Existing copy already refuses to promise that a platform, screenshot or backup forgot anything; that framing is kept.",
+      "surfaces": [
+        "features.html",
+        "docs/faq.html"
+      ],
+      "verified_on": "2026-07-26",
+      "sellable": false,
+      "public_note": "Not yet as a peer action. When it lands, burn deletes OSL local and server-side state and asks the other side to delete too. It does not destroy anyone ability to decrypt what the service already holds, and it cannot recall a screenshot."
+    },
+    {
+      "id": "link-protection",
+      "name": "Link protection",
+      "status": "Planned",
+      "evidence": "No implementation found. There is no link/tracker crate, and no match for tracking-parameter handling anywhere in crates/ or apps/ (searched 2026-07-26). This item was NOT in the original strike list; it was found while labelling.",
+      "surfaces": [
+        "features.html"
+      ],
+      "verified_on": "2026-07-26",
+      "sellable": false,
+      "public_note": "Not yet. This is a design intention with no code behind it."
+    },
+    {
+      "id": "scrub-discovery",
+      "name": "Scrub discovery",
+      "status": "Planned",
+      "evidence": "Truth correction 2026-07-27. Exact immutable Scrub object 1766aaa154c77a179a02227fced2ce5634728890, tree face6d5d7e49ac155851cb1ad2cb78f68d3082b4, is independently REJECT +0 at source/test tier. Its raw-file handler reaches production, but provider-parser failure can fall through to generic JSON, allowing self-declared account, manifest, inventory and completeness fields and inline media that is not bound to archive members. Google, Discord, Meta, X and WhatsApp exports are not qualified end to end. Later mutable or unaudited successor bytes are excluded. Planned remains the strongest honest badge; no runtime, release or provider coverage is inferred.",
+      "surfaces": [
+        "index.html",
+        "features.html",
+        "download.html"
+      ],
+      "verified_on": "2026-07-27",
+      "sellable": false,
+      "public_note": "Not yet. Current source can fall back to generic JSON when a provider parser refuses an export, so provider identity, archive inventory, media bytes and completeness are not reliably bound. Google, Discord, Meta, X and WhatsApp exports are not qualified end to end."
+    },
+    {
+      "id": "scrub-guided-deletion",
+      "name": "Guided deletion handoff",
+      "status": "Planned",
+      "evidence": "Downgraded from Experimental 2026-07-26 (truth lane): it depends on scrub-discovery, which does not yet produce accounts on any named build, so the handoff cannot be exercised end to end. Master 9: Free Scrub deletion is active implementation. Scrub does not erase: it discovers, then hands the owner off to the page where they delete. Every destructive flow stays Scan, Preview, Confirm, Execute, Verify, Receipt (master 7.5), and requested deletion is never shown as verified deletion.",
+      "surfaces": [
+        "index.html",
+        "features.html"
+      ],
+      "verified_on": "2026-07-26",
+      "sellable": false,
+      "public_note": "Not yet, and further off than a dependency on discovery would suggest. The part of the app that would actually carry out a guided deletion is not connected: it holds every candidate and does not open the page, choose the delete action, confirm it, or check that it worked. When it does land, OSL will take you to the page and you confirm each removal yourself — OSL will not delete on your behalf."
+    },
+    {
+      "id": "autoscrub",
+      "name": "AutoScrub",
+      "status": "Planned",
+      "evidence": "Master 9: active implementation, optional-module packaging unresolved. It is the one closed-source exception (master 7.6) and is not installed by default.",
+      "surfaces": [
+        "download.html",
+        "docs/faq.html"
+      ],
+      "verified_on": "2026-07-26",
+      "sellable": false,
+      "public_note": "Not yet. What exists is switched-off interface scaffolding, not a working engine — the app itself says it is unavailable in this build. AutoScrub is also the one optional closed-source module, it is not installed by default, and it would need your explicit consent to download."
+    },
+    {
+      "id": "ai-carrier-text",
+      "name": "AI-generated carrier text",
+      "status": "Planned",
+      "evidence": "Master 7.1 opt-in feature, gated behind processing credits that cannot yet be bought.",
+      "surfaces": [
+        "docs/faq.html"
+      ],
+      "verified_on": "2026-07-26",
+      "sellable": false,
+      "public_note": "Not yet. Opt-in AI-written cover text. Cloud generation is never end-to-end private, because the service has to see the text it is working on."
+    },
+    {
+      "id": "processing-credits",
+      "name": "Processing credits",
+      "status": "Planned",
+      "evidence": "No purchase or balance endpoint exists on the deployed keyserver. Explained only, never sold.",
+      "surfaces": [
+        "docs/faq.html",
+        "docs/terms.html"
+      ],
+      "verified_on": "2026-07-26",
+      "sellable": false,
+      "public_note": "Not yet, and not on sale. Credits would be bought separately and never renew."
+    },
+    {
+      "id": "pro-expiry-enforcement",
+      "name": "Automatic Pro expiry",
+      "status": "Planned",
+      "evidence": "A paid code currently grants lifetime access; no redemption timestamp exists. The website therefore sells one month and does not promise when the month begins.",
+      "surfaces": [
+        "docs/terms.html"
+      ],
+      "verified_on": "2026-07-26",
+      "sellable": false,
+      "public_note": "Not yet. A purchased code currently unlocks Pro without a redemption clock, so the month does not yet start when you enter the code."
+    },
+    {
+      "id": "exposure-comparison",
+      "name": "Country exposure comparison",
+      "status": "Illustration",
+      "evidence": "The homepage dialog is a static, country-keyed comparison of published agency and company practice with links to official sources. It is not a live device or account scan (master 8.4).",
+      "surfaces": [
+        "index.html"
+      ],
+      "verified_on": "2026-07-26",
+      "sellable": false,
+      "public_note": "A drawing, not a measurement. The homepage comparison summarises published agency and company practice. It is not a scan of your device, and this site never shows a live protection score."
+    },
+    {
+      "id": "product-animations",
+      "name": "Product animations",
+      "status": "Illustration",
+      "evidence": "Every animated scene on the homepage, features page and download page is a drawing of the intended behaviour, not a recording of a build.",
+      "surfaces": [
+        "index.html",
+        "features.html",
+        "download.html"
+      ],
+      "verified_on": "2026-07-26",
+      "sellable": false,
+      "public_note": "Drawings, not recordings. Every animated scene on this site illustrates intended behaviour rather than showing the app running."
+    }
+  ],
+  "forbidden_phrases": [
+    {
+      "phrase": "use Sender Keys",
+      "reason": "Group/channel sender keys default off at crates/ipc/src/state.rs:280 and carry no sender signature.",
+      "replaced_by": "group-protection labelled Planned"
+    },
+    {
+      "phrase": "sender key chains with local mutable state",
+      "reason": "Same defect, stated as shipping behaviour on the audit page.",
+      "replaced_by": "group-protection labelled Planned"
+    },
+    {
+      "phrase": "forward secrecy",
+      "reason": "The live path is stateless per-message sealing; crates/ipc/src/commands.rs:2842 hard-disables the ratchet. Master 7.11 forbids the claim.",
+      "replaced_by": "per-message sealing wording"
+    },
+    {
+      "phrase": "Private text + files",
+      "reason": "Non-image sending is unavailable; the picker offers PNG/JPEG only.",
+      "replaced_by": "Private text + images"
+    },
+    {
+      "phrase": "Erase 3",
+      "reason": "Scrub discovers and hands off; it does not erase.",
+      "replaced_by": "Review 3"
+    },
+    {
+      "phrase": "the key and readable message disappear",
+      "reason": "No crypto-shred exists: crates/store/src/lib.rs:194 never populates wrapped_key.",
+      "replaced_by": "expiry labelled Planned, with no key-destruction wording"
+    },
+    {
+      "phrase": "Unlimited messages",
+      "reason": "Master 8.5 replaced this positioning with Scrub.",
+      "replaced_by": "Free Scrub"
+    },
+    {
+      "phrase": "Unlimited private messages",
+      "reason": "Same positioning, worded so it slipped past the two-word rule.",
+      "replaced_by": "Free Scrub"
+    },
+    {
+      "phrase": "images and files",
+      "reason": "Bundles the unavailable file lane with the working image lane.",
+      "replaced_by": "images, with files labelled Planned"
+    },
+    {
+      "phrase": "unlocks encrypted image sending",
+      "reason": "Encrypted image sending is Planned and unsellable. Pro currently buys early access to tools only after they enter the beta channel.",
+      "replaced_by": "the manifest-driven Pro early-access line"
+    },
+    {
+      "phrase": "customer portal",
+      "reason": "Implies a stored payment method and a cancellation duty. Master 7.14 forbids both.",
+      "replaced_by": "nothing, the prepaid model needs no portal"
+    },
+    {
+      "phrase": "Crypto checkout is coming soon",
+      "reason": "Bitcoin and Monero checkout already ships.",
+      "replaced_by": "the live crypto description"
+    },
+    {
+      "phrase": "coming soon and will not go through Stripe",
+      "reason": "Same stale claim in the third-parties list.",
+      "replaced_by": "the live crypto description"
+    },
+    {
+      "phrase": "checkout launches",
+      "reason": "Same stale future tense in the payment-information bullet.",
+      "replaced_by": "present tense"
+    },
+    {
+      "phrase": "destroys keys, not messages",
+      "reason": "Exactly inverted: wrapped_key is never populated, so there is no key to destroy. Burn destroys OSL local copies of messages and destroys no keys. Was on README.md:78 until 2026-07-26."
+    },
+    {
+      "phrase": "permanent ciphertext",
+      "reason": "Asserts the carrier becomes undecryptable after a burn. v3 seals to the recipient long-term keys, so any holder of that key material still reads it."
+    },
+    {
+      "phrase": "permanent gibberish",
+      "reason": "Same overstatement as permanent ciphertext."
+    },
+    {
+      "phrase": "cryptographic erasure",
+      "reason": "Burn is state deletion, not cryptographic erasure. The per-message wrapped-key model that would earn the word is deliberately not built."
+    },
+    {
+      "phrase": "Discord attachment scanning defeated",
+      "reason": "No named release build proves ciphertext/decoy delivery to Discord. Historical source-unbound Worker 0a17547d proves only one known-length part upload returned 201.",
+      "replaced_by": "image transport labelled Planned with the release-build evidence limitation"
+    },
+    {
+      "phrase": "defeats Discord attachment scanning",
+      "reason": "Same unproved release-build transport property, stated as an affirmative product capability.",
+      "replaced_by": "image transport labelled Planned with the release-build evidence limitation"
+    },
+    {
+      "phrase": "Discord cannot scan attachments",
+      "reason": "No release evidence establishes what Discord receives or can inspect.",
+      "replaced_by": "no named release build proves ciphertext/decoy delivery to Discord"
+    },
+    {
+      "phrase": "Discord sees only decoys",
+      "reason": "The intended ciphertext/decoy property is not proved on a named release build.",
+      "replaced_by": "ciphertext/decoy delivery remains unproved"
+    },
+    {
+      "phrase": "Bitcoin and Monero checkout is live",
+      "reason": "Invoice plumbing exists, but purchase checkout must remain paused until one-month redemption and automatic expiry are implemented."
+    },
+    {
+      "phrase": "A redemption record is a licence hash and a timestamp",
+      "reason": "No redemption endpoint or timestamp exists in the committed keyserver."
+    },
+    {
+      "phrase": "Your month starts when you enter the code",
+      "reason": "The approved redemption-start policy is not implemented. No explicit redemption record or timestamp exists, and current paid codes grant lifetime access."
+    },
+    {
+      "phrase": "When Pro ends, OSL returns to Free",
+      "reason": "Automatic paid-code expiry is Planned and not implemented."
+    }
+  ],
+  "$forbidden_phrases_note": "Exact case-insensitive substrings that must not appear in any crawled HTML. Unlike forbidden_claims these are not billing words but capability claims that source evidence proved false on 2026-07-26. Each records the defect it guards so a future editor cannot reintroduce it by accident. The crawler additionally derives a semantic 30-day/one-month activation-code grant prohibition from tiers.pro.intended_grant_days, so equivalent duration promises cannot bypass this exact-phrase list.",
+  "required_phrases": [
+    {
+      "file": "index.html",
+      "phrase": "Nothing renews, and OSL never stores your payment details",
+      "reason": "Allowlist A6 rule 3 and master 7.14. index.html shows the intended monthly rate beside paused checkout controls; the no-renewal, no-stored-card limitation must remain equally prominent."
+    },
+    {
+      "file": "index.html",
+      "phrase": "Checkout stays paused until one-month redemption and expiry work as described.",
+      "reason": "The homepage must not expose an enabled purchase while the committed keyserver still issues non-expiring paid licences."
+    },
+    {
+      "file": "docs/how-it-works.html",
+      "phrase": "fresh ephemeral key for every message, so each message stands on its own",
+      "reason": "KEEP EXACTLY. This is the one crypto sentence that is accurate for the live path. The crawler pins it so a later cleanup cannot delete the only true statement while removing the false ones around it."
+    },
+    {
+      "file": "docs/how-it-works.html",
+      "phrase": "The only exception is the optional AutoScrub module",
+      "reason": "Master 7.6 and 7.10 require the open-source exception to be stated wherever the site claims OSL is open source."
+    },
+    {
+      "file": "audit.html",
+      "phrase": "The only exception is the optional AutoScrub module",
+      "reason": "Same, on the licences section of the audit page."
+    },
+    {
+      "file": "audit.html",
+      "phrase": "No redemption record exists yet",
+      "reason": "The audit page must not describe the approved future redemption record as current keyserver behavior."
+    },
+    {
+      "file": "docs/privacy.html",
+      "phrase": "no message text, no conversation names, no carrier text and no recipient identity",
+      "reason": "Master 7.1 requires the payment and credit ledger boundary to be stated plainly."
+    },
+    {
+      "file": "docs/privacy.html",
+      "phrase": "No redemption record exists yet",
+      "reason": "The privacy page must describe the actual licence schema, which has no redemption timestamp."
+    },
+    {
+      "file": "docs/terms.html",
+      "phrase": "nothing renews automatically",
+      "reason": "Master 7.14 requires the no-renewal fact wherever Pro is described."
+    },
+    {
+      "file": "docs/terms.html",
+      "phrase": "Pro is an early-access purchase. Today it unlocks early access to new privacy tools as they reach the beta channel — not the v1 feature set, which is still being finished.",
+      "reason": "The terms must describe what a Pro purchase actually gives today and must not sell Planned encrypted image sending present-tense."
+    },
+    {
+      "file": "docs/terms.html",
+      "phrase": "Automatic one-month expiry and return to Free are not implemented yet.",
+      "reason": "The terms must not promise an expiry transition that the client and keyserver do not implement."
+    },
+    {
+      "file": "download.html",
+      "phrase": "Nothing renews, and OSL never stores your payment details",
+      "reason": "Master 7.14, at the point of sale."
+    },
+    {
+      "file": "download.html",
+      "phrase": "Pro is an early-access purchase",
+      "reason": "Owner decision 2026-07-26. The point of sale must be unambiguous that this is early access, naming what works today versus what arrives at v1. This is a consumer-protection line and is the one place where softening is not allowed."
+    },
+    {
+      "file": "download.html",
+      "phrase": "Checkout is paused until one-month redemption and expiry are implemented.",
+      "reason": "The purchase surface must fail closed until the intended entitlement boundary exists."
+    },
+    {
+      "file": "download.html",
+      "phrase": "Automatic Pro expiry is not implemented, so checkout remains paused.",
+      "reason": "The purchase surface must state the exact missing entitlement behavior rather than imply that a paid code expires today."
+    },
+    {
+      "file": "success.html",
+      "phrase": "Automatic one-month expiry is not implemented",
+      "reason": "The legacy success surface must not promise a duration or return-to-Free transition for issued lifetime licences."
+    },
+    {
+      "file": "docs/status.html",
+      "phrase": "What works today",
+      "reason": "The support matrix is one of the two concentrated honesty surfaces; it must lead with what is proven now."
+    }
+  ],
+  "crawler_policy": {
+    "status_badge_attribute": "data-osl-status",
+    "feature_id_attribute": "data-osl-feature",
+    "$status_badge_note": "A capability badge is validated ONLY when it carries this explicit attribute, e.g. <span data-osl-feature=\"expiry\" data-osl-status=\"Planned\">Planned</span>. Do not infer status badges from CSS class names: 'Pro' is a tier name and 'Record opened' is a feature name, and guessing from classes flagged both. An opt-in marker cannot false-positive, and it makes the labelling pass deliberate.",
+    "donation_amount_files": [
+      "donate.html"
+    ],
+    "$donation_note": "Donation amounts are freely chosen sums, not product prices, so the bare-price rule does not apply to them. They must still carry data-donation-amount, which assets/js/main.js already relies on.",
+    "donation_amount_attribute": "data-donation-amount",
+    "negation_aware": [
+      "subscription",
+      "renews",
+      "renew",
+      "auto-renew",
+      "recurring",
+      "cryptographic erasure",
+      "Discord attachment scanning defeated",
+      "defeats Discord attachment scanning",
+      "Discord cannot scan attachments",
+      "Discord sees only decoys"
+    ],
+    "$negation_note": "Denying or limiting a property is honest copy only when the denial or Planned/unproved/unknown/not-yet-implemented/not-established limitation governs that exact claim in the same sentence. An unrelated negator in an adjacent sentence or clause never suppresses a violation."
+  },
+  "forbidden_claims": [
+    "one-time $5 purchase",
+    "$5 once",
+    "Pay once",
+    "lifetime",
+    "forever unlocked",
+    "one time",
+    "No renewal",
+    "Renews monthly",
+    "renews until you cancel",
+    "cancel any time",
+    "subscription",
+    "unlimited messages",
+    "better than Signal",
+    "Signal protocol",
+    "post-quantum authentication",
+    "military-grade",
+    "anti-spyware",
+    "unhackable",
+    "100% private",
+    "cannot be traced"
+  ],
+  "$forbidden_note": "Two families. (1) Billing wording that is now wrong in BOTH directions: the old permanent one-time framing ('$5 once', 'No renewal', 'one-time $5 purchase') AND any subscription framing ('Renews monthly', 'subscription', 'cancel any time') -- because a prepaid code neither renews nor is cancellable. Plus the 'unlimited messages' positioning Zhao replaced with Scrub. (2) Security/marketing claims master 7.11, 8.2 and 8.4 forbid until the audited live path earns them. The crawler fails on any hit outside data/ and scripts/.",
+  "required_disclosures": {
+    "pro_billing": "$5 is the intended price for one month of Pro. Checkout is paused until one-month redemption and expiry are implemented. It is not a subscription — nothing renews automatically, and OSL never stores your payment details.",
+    "no_account": "No OSL account is intended to be needed. The activation-code flow is not ready for purchase.",
+    "credits": "Processing credits are bought separately for optional cloud AI features. They never renew, and encryption keeps working without them.",
+    "crypto": "Bitcoin and Monero checkout is paused with card checkout until one-month redemption and expiry are implemented.",
+    "free_forever": "Free stays free. Paying is never required for the basic encryption path to keep working.",
+    "expiry_behaviour": "Automatic Pro expiry is not implemented. Checkout remains paused.",
+    "ledger_privacy": "The payment and credit records contain no message text, no conversation names, no carrier text and no recipient identity.",
+    "open_source": "OSL is fully open source. The only exception is the optional AutoScrub module, which is not installed by default."
+  },
+  "research_comparisons": {
+    "schema_version": 1,
+    "h7_deleteme": {
+      "comparison_version": 1,
+      "id": "h7-deleteme-us-consumer",
+      "reviewed_on": "2026-07-31",
+      "market_scope": {
+        "country": "US",
+        "audience": "consumer",
+        "plans": [
+          "Standard",
+          "Premium"
+        ],
+        "excluded": [
+          "business",
+          "international"
+        ]
+      },
+      "sources": [
+        {
+          "id": "pricing-standard",
+          "publisher": "DeleteMe / Abine",
+          "source_type": "pricing",
+          "url": "https://joindeleteme.com/pricing/",
+          "title": "Pricing – DeleteMe",
+          "section": "Standard Protection; All DeleteMe Plans Include",
+          "published_or_effective_on": "2026-04-10",
+          "accessed_on": "2026-07-31",
+          "refresh_evidence": {
+            "checked_on": "2026-07-31",
+            "method": "manual_official_source_review",
+            "result": "The official DeleteMe/Abine source was refreshed for the H7 comparison on 2026-07-31, with live URL/title or indexed-content checks retained as refresh evidence."
+          }
+        },
+        {
+          "id": "pricing-premium",
+          "publisher": "DeleteMe / Abine",
+          "source_type": "pricing",
+          "url": "https://joindeleteme.com/pricing/?premium=true",
+          "title": "Pricing – DeleteMe, premium view",
+          "section": "Premium Protection; Compare all plans",
+          "published_or_effective_on": "2026-04-10",
+          "accessed_on": "2026-07-31",
+          "refresh_evidence": {
+            "checked_on": "2026-07-31",
+            "method": "manual_official_source_review",
+            "result": "The official DeleteMe/Abine source was refreshed for the H7 comparison on 2026-07-31, with live URL/title or indexed-content checks retained as refresh evidence."
+          }
+        },
+        {
+          "id": "standard-us-sites",
+          "publisher": "DeleteMe / Abine",
+          "source_type": "plan_coverage",
+          "url": "https://help.joindeleteme.com/hc/en-us/articles/38908862627091-Sites-we-remove-from-on-the-Standard-US-plan",
+          "title": "Sites we remove from on the Standard US plan",
+          "section": "Main named-site list",
+          "published_or_effective_on": "2025-07-03",
+          "accessed_on": "2026-07-31",
+          "refresh_evidence": {
+            "checked_on": "2026-07-31",
+            "method": "manual_official_source_review",
+            "result": "The official DeleteMe/Abine source was refreshed for the H7 comparison on 2026-07-31, with live URL/title or indexed-content checks retained as refresh evidence."
+          }
+        },
+        {
+          "id": "broader-broker-catalog",
+          "publisher": "DeleteMe / Abine",
+          "source_type": "plan_coverage",
+          "url": "https://joindeleteme.com/sites-we-remove-from/",
+          "title": "Sites We Remove From",
+          "section": "List of Data Brokers We Have Found and Removed Data From",
+          "published_or_effective_on": "2026-07-30",
+          "accessed_on": "2026-07-31",
+          "refresh_evidence": {
+            "checked_on": "2026-07-31",
+            "method": "manual_official_source_review",
+            "result": "The official DeleteMe/Abine source was refreshed for the H7 comparison on 2026-07-31, with live URL/title or indexed-content checks retained as refresh evidence."
+          }
+        },
+        {
+          "id": "monitoring-cadence",
+          "publisher": "DeleteMe / Abine",
+          "source_type": "monitoring_reporting",
+          "url": "https://help.joindeleteme.com/hc/en-us/articles/8171611866899-Do-you-constantly-monitor-my-info-around-the-clock",
+          "title": "Do you constantly monitor my info around the clock?",
+          "section": "Main answer",
+          "published_or_effective_on": "2025-08-13",
+          "accessed_on": "2026-07-31",
+          "refresh_evidence": {
+            "checked_on": "2026-07-31",
+            "method": "manual_official_source_review",
+            "result": "The official DeleteMe/Abine source was refreshed for the H7 comparison on 2026-07-31, with live URL/title or indexed-content checks retained as refresh evidence."
+          }
+        },
+        {
+          "id": "removal-timing",
+          "publisher": "DeleteMe / Abine",
+          "source_type": "removal_process",
+          "url": "https://help.joindeleteme.com/hc/en-us/articles/8171803033491-How-long-before-my-information-is-removed",
+          "title": "How long before my information is removed?",
+          "section": "What affects timing; What you'll see; Why things can reappear",
+          "published_or_effective_on": "2025-09-30",
+          "accessed_on": "2026-07-31",
+          "refresh_evidence": {
+            "checked_on": "2026-07-31",
+            "method": "manual_official_source_review",
+            "result": "The official DeleteMe/Abine source was refreshed for the H7 comparison on 2026-07-31, with live URL/title or indexed-content checks retained as refresh evidence."
+          }
+        },
+        {
+          "id": "member-opt-outs",
+          "publisher": "DeleteMe / Abine",
+          "source_type": "removal_process",
+          "url": "https://help.joindeleteme.com/hc/en-us/articles/13663869546643-Member-Opt-Outs",
+          "title": "Member Opt-Outs",
+          "section": "Overview; Data Broker Secondary Opt-Out",
+          "published_or_effective_on": "2026-02-25",
+          "accessed_on": "2026-07-31",
+          "refresh_evidence": {
+            "checked_on": "2026-07-31",
+            "method": "manual_official_source_review",
+            "result": "The official DeleteMe/Abine source was refreshed for the H7 comparison on 2026-07-31, with live URL/title or indexed-content checks retained as refresh evidence."
+          }
+        },
+        {
+          "id": "privacy-report",
+          "publisher": "DeleteMe / Abine",
+          "source_type": "monitoring_reporting",
+          "url": "https://help.joindeleteme.com/hc/en-us/articles/8585306360083-Your-DeleteMe-Privacy-Report",
+          "title": "Your DeleteMe Privacy Report",
+          "section": "Overview; Definitions; Site Specific; Removing Personal Information",
+          "published_or_effective_on": "2026-07-28",
+          "accessed_on": "2026-07-31",
+          "refresh_evidence": {
+            "checked_on": "2026-07-31",
+            "method": "manual_official_source_review",
+            "result": "The official DeleteMe/Abine source was refreshed for the H7 comparison on 2026-07-31, with live URL/title or indexed-content checks retained as refresh evidence."
+          }
+        },
+        {
+          "id": "privacy-collect-use",
+          "publisher": "DeleteMe / Abine",
+          "source_type": "privacy_policy",
+          "url": "https://privacy.joindeleteme.com/policies?name=privacy-policy#personal-information-we-collect",
+          "title": "DeleteMe Privacy Center – Privacy Policy",
+          "section": "Personal Information We Collect; How We Use Your Personal Information",
+          "published_or_effective_on": "2025-05-21",
+          "accessed_on": "2026-07-31",
+          "refresh_evidence": {
+            "checked_on": "2026-07-31",
+            "method": "manual_official_source_review",
+            "result": "The official DeleteMe/Abine source was refreshed for the H7 comparison on 2026-07-31, with live URL/title or indexed-content checks retained as refresh evidence."
+          }
+        },
+        {
+          "id": "privacy-sharing",
+          "publisher": "DeleteMe / Abine",
+          "source_type": "privacy_policy",
+          "url": "https://privacy.joindeleteme.com/policies?name=privacy-policy#how-we-share-your-personal-information",
+          "title": "DeleteMe Privacy Center – Privacy Policy",
+          "section": "Datasheet Data Disclosures; General Data Disclosures",
+          "published_or_effective_on": "2025-05-21",
+          "accessed_on": "2026-07-31",
+          "refresh_evidence": {
+            "checked_on": "2026-07-31",
+            "method": "manual_official_source_review",
+            "result": "The official DeleteMe/Abine source was refreshed for the H7 comparison on 2026-07-31, with live URL/title or indexed-content checks retained as refresh evidence."
+          }
+        },
+        {
+          "id": "privacy-retention-security",
+          "publisher": "DeleteMe / Abine",
+          "source_type": "privacy_policy",
+          "url": "https://privacy.joindeleteme.com/policies?name=privacy-policy#notice-to-european-uk-users-visitors",
+          "title": "DeleteMe Privacy Center – Privacy Policy",
+          "section": "Retention; Security Practices; International Data Transfers",
+          "published_or_effective_on": "2025-05-21",
+          "accessed_on": "2026-07-31",
+          "refresh_evidence": {
+            "checked_on": "2026-07-31",
+            "method": "manual_official_source_review",
+            "result": "The official DeleteMe/Abine source was refreshed for the H7 comparison on 2026-07-31, with live URL/title or indexed-content checks retained as refresh evidence."
+          }
+        },
+        {
+          "id": "terms-service",
+          "publisher": "DeleteMe / Abine",
+          "source_type": "terms",
+          "url": "https://privacy.joindeleteme.com/policies?name=terms-of-service#using-delete-me-all-delete-me-users",
+          "title": "DeleteMe Privacy Center – Terms of Service",
+          "section": "Using DeleteMe – All DeleteMe Users",
+          "published_or_effective_on": "2023-10-26",
+          "accessed_on": "2026-07-31",
+          "refresh_evidence": {
+            "checked_on": "2026-07-31",
+            "method": "manual_official_source_review",
+            "result": "The official DeleteMe/Abine source was refreshed for the H7 comparison on 2026-07-31, with live URL/title or indexed-content checks retained as refresh evidence."
+          }
+        },
+        {
+          "id": "unsupported-sites",
+          "publisher": "DeleteMe / Abine",
+          "source_type": "limitations",
+          "url": "https://help.joindeleteme.com/hc/en-us/articles/8170825111699-What-sites-can-t-DeleteMe-remove-me-from",
+          "title": "What sites can't DeleteMe remove me from?",
+          "section": "Main answer",
+          "published_or_effective_on": "2025-10-01",
+          "accessed_on": "2026-07-31",
+          "refresh_evidence": {
+            "checked_on": "2026-07-31",
+            "method": "manual_official_source_review",
+            "result": "The official DeleteMe/Abine source was refreshed for the H7 comparison on 2026-07-31, with live URL/title or indexed-content checks retained as refresh evidence."
+          }
+        },
+        {
+          "id": "google-results",
+          "publisher": "DeleteMe / Abine",
+          "source_type": "limitations",
+          "url": "https://help.joindeleteme.com/hc/en-us/articles/8171487675027-Can-you-delete-Google-search-results-for-me",
+          "title": "Can you delete Google search results for me?",
+          "section": "Main answer",
+          "published_or_effective_on": "2025-08-13",
+          "accessed_on": "2026-07-31",
+          "refresh_evidence": {
+            "checked_on": "2026-07-31",
+            "method": "manual_official_source_review",
+            "result": "The official DeleteMe/Abine source was refreshed for the H7 comparison on 2026-07-31, with live URL/title or indexed-content checks retained as refresh evidence."
+          }
+        },
+        {
+          "id": "social-media",
+          "publisher": "DeleteMe / Abine",
+          "source_type": "limitations",
+          "url": "https://help.joindeleteme.com/hc/en-us/articles/28524503617171-How-do-I-get-my-information-removed-from-Social-Media",
+          "title": "How do I get my information removed from Social Media?",
+          "section": "Main answer",
+          "published_or_effective_on": "2025-07-08",
+          "accessed_on": "2026-07-31",
+          "refresh_evidence": {
+            "checked_on": "2026-07-31",
+            "method": "manual_official_source_review",
+            "result": "The official DeleteMe/Abine source was refreshed for the H7 comparison on 2026-07-31, with live URL/title or indexed-content checks retained as refresh evidence."
+          }
+        }
+      ],
+      "dimensions": [
+        {
+          "id": "scope",
+          "status": "conflicted",
+          "conflict_explanation": "The official Standard-US article enumerates 87 included domain entries, while the 986 figure is a broader historical catalog of brokers DeleteMe says it has found and removed data from. These scopes are not interchangeable, and the official pages do not establish one current global coverage count.",
+          "deleteme_facts": [
+            {
+              "id": "standard-us-87",
+              "paraphrase": "The Standard US help article enumerated 87 domain entries when accessed; that named plan list is the bounded source for Standard-US included scope.",
+              "source_ids": [
+                "standard-us-sites"
+              ],
+              "confidence": "high",
+              "qualifiers": "The list can change, and an invitation to report an unlisted broker is not a promise that the broker will be accepted or removable."
+            },
+            {
+              "id": "broader-catalog-986",
+              "paraphrase": "DeleteMe's separate catalog says it has found and removed data from 986 brokers; this broader historical figure is not the Standard-US included-site count.",
+              "source_ids": [
+                "broader-broker-catalog"
+              ],
+              "confidence": "high",
+              "qualifiers": "The page describes a broader found-and-removed-from catalog, not a current plan entitlement."
+            },
+            {
+              "id": "premium-additional-sites",
+              "paraphrase": "Premium advertises 15 additional broker sites beyond Standard.",
+              "source_ids": [
+                "pricing-premium"
+              ],
+              "confidence": "high",
+              "qualifiers": "US consumer Premium only."
+            }
+          ],
+          "unknowns": [
+            {
+              "field": "single_current_global_coverage_count",
+              "reason": "Official pages publish differently scoped and dated figures, so one global included-site count cannot be inferred.",
+              "attempted_source_ids": [
+                "standard-us-sites",
+                "broader-broker-catalog",
+                "pricing-premium"
+              ]
+            },
+            {
+              "field": "future_broker_set",
+              "reason": "The broker set is contractually subject to change.",
+              "attempted_source_ids": [
+                "terms-service",
+                "standard-us-sites"
+              ]
+            }
+          ],
+          "osl_manifest_refs": [
+            {
+              "json_pointer": "/capability_registry/scrub-discovery",
+              "expected_status": "Planned"
+            }
+          ],
+          "osl_limitation": "OSL Scrub discovery is Planned: no named build qualifies Scrub end to end, provider exports are not qualified end to end, and exact 1766aaa independently failed because generic JSON fallback does not reliably bind provider identity, archive inventory, media bytes or completeness.",
+          "comparability": "narrowly_comparable",
+          "bounded_conclusion": "DeleteMe publishes a maintained Standard-US plan list. OSL has only a Planned discovery design, so no broker-count or live-coverage equivalence is supported."
+        },
+        {
+          "id": "price",
+          "status": "established",
+          "deleteme_facts": [
+            {
+              "id": "standard-one-person-year",
+              "paraphrase": "Standard costs $129 per year for one US resident and renews automatically unless canceled.",
+              "source_ids": [
+                "pricing-standard"
+              ],
+              "confidence": "high",
+              "qualifiers": "US consumer one-person annual plan."
+            },
+            {
+              "id": "premium-one-person-year",
+              "paraphrase": "Premium costs $180 per year for one US resident and renews automatically unless canceled.",
+              "source_ids": [
+                "pricing-premium"
+              ],
+              "confidence": "high",
+              "qualifiers": "US consumer one-person annual plan."
+            }
+          ],
+          "unknowns": [],
+          "osl_manifest_refs": [
+            {
+              "json_pointer": "/capability_registry/autoscrub",
+              "expected_status": "Planned"
+            }
+          ],
+          "osl_limitation": "OSL's $5 is only the intended price for one month of Pro; checkout is paused because redemption and automatic expiry are unimplemented, and Planned AutoScrub is unavailable and not sellable.",
+          "comparability": "not_equivalent",
+          "bounded_conclusion": "DeleteMe's live annual auto-renewing removal service and OSL's paused prepaid early-access offer are not equivalent price units or service commitments."
+        },
+        {
+          "id": "ongoing_monitoring",
+          "status": "established",
+          "deleteme_facts": [
+            {
+              "id": "standard-four-reports",
+              "paraphrase": "Standard provides four scans and privacy reports per year.",
+              "source_ids": [
+                "pricing-standard",
+                "monitoring-cadence"
+              ],
+              "confidence": "high",
+              "qualifiers": "Plan-level cadence; not a per-broker interval."
+            },
+            {
+              "id": "premium-six-reports",
+              "paraphrase": "Premium provides six scans and privacy reports per year.",
+              "source_ids": [
+                "pricing-premium"
+              ],
+              "confidence": "high",
+              "qualifiers": "US Premium plan."
+            },
+            {
+              "id": "reappearance-checks",
+              "paraphrase": "DeleteMe says it checks brokers on a reliable cadence and resubmits when information reappears.",
+              "source_ids": [
+                "monitoring-cadence",
+                "removal-timing"
+              ],
+              "confidence": "high",
+              "qualifiers": "No literal continuous scan or exact per-broker interval is stated."
+            }
+          ],
+          "unknowns": [
+            {
+              "field": "per_broker_scan_interval",
+              "reason": "The official sources state plan report cadence but not an exact interval for each broker.",
+              "attempted_source_ids": [
+                "monitoring-cadence",
+                "pricing-standard",
+                "pricing-premium"
+              ]
+            },
+            {
+              "field": "continuous_monitoring",
+              "reason": "The official answer does not establish literal around-the-clock scanning.",
+              "attempted_source_ids": [
+                "monitoring-cadence"
+              ]
+            }
+          ],
+          "osl_manifest_refs": [
+            {
+              "json_pointer": "/capability_registry/autoscrub",
+              "expected_status": "Planned"
+            }
+          ],
+          "osl_limitation": "OSL AutoScrub is Planned, switched-off interface scaffolding; it is not installed by default and has no proved recurring scan or report cadence.",
+          "comparability": "not_equivalent",
+          "bounded_conclusion": "DeleteMe states plan-level recurring scan/report cadences. OSL has no operational recurring-monitoring service to compare."
+        },
+        {
+          "id": "removals",
+          "status": "established",
+          "deleteme_facts": [
+            {
+              "id": "submits-and-checks-opt-outs",
+              "paraphrase": "DeleteMe submits opt-out requests, checks outcomes and reappearances, and says broker action may be immediate or take weeks.",
+              "source_ids": [
+                "removal-timing"
+              ],
+              "confidence": "high",
+              "qualifiers": "Timing depends on verification, manual review, broker policy, and workload."
+            },
+            {
+              "id": "member-confirmation-required",
+              "paraphrase": "Some removals require the member to complete a confirmation email, authentication, or other secondary action before the broker will finalize the opt-out.",
+              "source_ids": [
+                "member-opt-outs"
+              ],
+              "confidence": "high",
+              "qualifiers": "DeleteMe can submit the initial request but cannot perform the member-only confirmation."
+            },
+            {
+              "id": "no-guaranteed-completion",
+              "paraphrase": "DeleteMe promises reasonable efforts, not that every third party will honor an opt-out or remove the data.",
+              "source_ids": [
+                "terms-service"
+              ],
+              "confidence": "high",
+              "qualifiers": "Successful-removal count, completion date, and permanence are not guaranteed."
+            }
+          ],
+          "unknowns": [
+            {
+              "field": "guaranteed_successful_removals",
+              "reason": "The terms expressly decline a guarantee that third parties will honor requests.",
+              "attempted_source_ids": [
+                "terms-service",
+                "removal-timing"
+              ]
+            }
+          ],
+          "osl_manifest_refs": [
+            {
+              "json_pointer": "/capability_registry/scrub-guided-deletion",
+              "expected_status": "Planned"
+            }
+          ],
+          "osl_limitation": "OSL guided deletion is Planned and currently holds every candidate: it does not open the broker page, choose deletion, confirm it, verify it, or produce a receipt; the owner must confirm each future removal.",
+          "comparability": "not_equivalent",
+          "bounded_conclusion": "DeleteMe operates an opt-out submission and follow-up process with member-action and third-party limits. OSL has no end-to-end removal flow."
+        },
+        {
+          "id": "data_handling",
+          "status": "established",
+          "deleteme_facts": [
+            {
+              "id": "datasheet-data-purpose",
+              "paraphrase": "DeleteMe may collect detailed identity and contact Datasheet Data to search broker sites and request removals.",
+              "source_ids": [
+                "privacy-collect-use"
+              ],
+              "confidence": "high",
+              "qualifiers": "The policy also describes account, device, usage, IP, approximate-location, marketing, and interaction data."
+            },
+            {
+              "id": "broker-and-provider-disclosures",
+              "paraphrase": "Datasheet Data may be sent to broker sites for searches and removals; other personal information may be shared with listed service-provider, affiliate, legal, integration, and transaction categories. DeleteMe says it does not sell personal information.",
+              "source_ids": [
+                "privacy-sharing"
+              ],
+              "confidence": "high",
+              "qualifiers": "The policy distinguishes Datasheet Data from general personal information."
+            },
+            {
+              "id": "retention-windows",
+              "paraphrase": "Identifying member data is retained for the membership plus six months, while payment data is retained for at least seven years.",
+              "source_ids": [
+                "privacy-retention-security"
+              ],
+              "confidence": "high",
+              "qualifiers": "Datasheet Data is stored in the US; other personal information may be processed elsewhere."
+            }
+          ],
+          "unknowns": [],
+          "osl_manifest_refs": [
+            {
+              "json_pointer": "/capability_registry/scrub-discovery",
+              "expected_status": "Planned"
+            },
+            {
+              "json_pointer": "/capability_registry/autoscrub",
+              "expected_status": "Planned"
+            }
+          ],
+          "osl_limitation": "OSL's local discovery is a design intention, not a proved named-build behavior; optional AutoScrub is Planned, closed source, unavailable, and not installed by default, so OSL has no comparable operational handling record.",
+          "comparability": "not_equivalent",
+          "bounded_conclusion": "DeleteMe's policy documents service-side collection, disclosures, and retention. OSL's present manifest supports only Planned local tooling, not a runtime-equivalent service."
+        },
+        {
+          "id": "completion_reporting",
+          "status": "established",
+          "deleteme_facts": [
+            {
+              "id": "first-report-status-only",
+              "paraphrase": "The first privacy report arrives within seven days and is a status update, not proof that everything has been removed.",
+              "source_ids": [
+                "privacy-report"
+              ],
+              "confidence": "high",
+              "qualifiers": "The first report can contain in-progress and completed site-level statuses."
+            },
+            {
+              "id": "site-level-statuses",
+              "paraphrase": "Reports describe exposed data and distinguish removals in progress from successfully completed removals.",
+              "source_ids": [
+                "privacy-report"
+              ],
+              "confidence": "high",
+              "qualifiers": "The official source does not establish an independently audited artifact for every displayed status."
+            }
+          ],
+          "unknowns": [
+            {
+              "field": "independent_audit_artifact",
+              "reason": "The public report documentation does not establish that every displayed removal status is independently auditable proof.",
+              "attempted_source_ids": [
+                "privacy-report",
+                "terms-service"
+              ]
+            }
+          ],
+          "osl_manifest_refs": [
+            {
+              "json_pointer": "/capability_registry/scrub-guided-deletion",
+              "expected_status": "Planned"
+            }
+          ],
+          "osl_limitation": "OSL guided deletion is Planned and produces no completed-removal status or deletion receipt because no end-to-end deletion is wired.",
+          "comparability": "not_equivalent",
+          "bounded_conclusion": "DeleteMe documents status reporting, but its first report is not completion proof. OSL has no removal-report artifact to compare."
+        },
+        {
+          "id": "limitations",
+          "status": "established",
+          "deleteme_facts": [
+            {
+              "id": "third-party-no-guarantee",
+              "paraphrase": "DeleteMe does not guarantee that a third party will honor an opt-out or remove data, and it does not claim to remove all information from the internet.",
+              "source_ids": [
+                "terms-service"
+              ],
+              "confidence": "high",
+              "qualifiers": "The broker list depends on third-party practices and can change."
+            },
+            {
+              "id": "no-opt-out-public-records",
+              "paraphrase": "Sites without a legitimate opt-out path and public records such as property, marriage or business licenses, voter records, and some court records can remain outside complete removal.",
+              "source_ids": [
+                "unsupported-sites"
+              ],
+              "confidence": "high",
+              "qualifiers": "Source-specific and legal-process limits apply."
+            },
+            {
+              "id": "google-source-first",
+              "paraphrase": "DeleteMe cannot directly delete Google results; the source content must first be removed or changed before indexing may update.",
+              "source_ids": [
+                "google-results"
+              ],
+              "confidence": "high",
+              "qualifiers": "Search indexing is controlled by a third party."
+            },
+            {
+              "id": "social-user-action",
+              "paraphrase": "DeleteMe cannot directly scrub social-platform content where the platform requires the user to act.",
+              "source_ids": [
+                "social-media"
+              ],
+              "confidence": "high",
+              "qualifiers": "Platform-specific user action is required."
+            }
+          ],
+          "unknowns": [],
+          "osl_manifest_refs": [
+            {
+              "json_pointer": "/capability_registry/scrub-discovery",
+              "expected_status": "Planned"
+            },
+            {
+              "json_pointer": "/capability_registry/scrub-guided-deletion",
+              "expected_status": "Planned"
+            },
+            {
+              "json_pointer": "/capability_registry/autoscrub",
+              "expected_status": "Planned"
+            }
+          ],
+          "osl_limitation": "OSL discovery, guided deletion, and AutoScrub are all Planned; the last measured run found zero accounts, no removal is wired, and no efficacy claim is supported.",
+          "comparability": "not_equivalent",
+          "bounded_conclusion": "DeleteMe documents material third-party and source limits despite operating a live service. OSL cannot be presented as a replacement because its comparable capabilities remain Planned."
+        }
+      ]
+    }
+  },
+  "launch_frame": {
+    "stage": "pre-launch",
+    "banner": "OSL is in early access before its v1 launch. Some of what you see below is still being finished — the status page says exactly what works today.",
+    "matrix_url": "/docs/status",
+    "matrix_link_text": "See what works today",
+    "public_ia_accept_command": "node -e \"const fs=require('fs'); const text=['index.html','features.html','download.html'].map(f=>fs.readFileSync(f,'utf8')).join('\\n'); if(/keyservers?|ratchets?|provider adapters?|ban risk [0-9]+%/i.test(text)) process.exit(1); if(!text.includes('/docs/status')) process.exit(1)\"",
+    "public_ia_files": [
+      "index.html",
+      "features.html",
+      "download.html"
+    ],
+    "public_ia_allowed_concepts": [
+      "protection state",
+      "trusted people",
+      "connected accounts",
+      "private conversations",
+      "cleanup actions",
+      "activity history"
+    ],
+    "public_ia_forbidden_terms": [
+      "keyserver",
+      "keyservers",
+      "ratchet",
+      "ratchets",
+      "provider adapter",
+      "provider adapters"
+    ],
+    "public_ia_forbidden_patterns": [
+      "ban risk [0-9]+%"
+    ],
+    "$why": "Owner decision 2026-07-26. The site is pre-launch marketing for v1, not a live health screen. Putting a status label on every feature card made the product harder to understand without making it more honest. Honesty is concentrated in two unmissable places instead: the dated status page and the point of sale."
+  },
+  "surface_policy": {
+    "matrix_files": [
+      "docs/status.html"
+    ],
+    "checkout_files": [
+      "success.html",
+      "cancel.html"
+    ],
+    "checkout_region_start": "osl:checkout-summary",
+    "checkout_region_end": "/osl:checkout-summary",
+    "marketing_capability_files": [
+      "index.html",
+      "features.html",
+      "download.html",
+      "docs/faq.html",
+      "docs/how-it-works.html"
+    ],
+    "forward_looking_markers": [
+      "at v1",
+      "when v1",
+      "before v1",
+      "v1 launch",
+      "is designed to",
+      "are designed to",
+      "will ",
+      "not yet",
+      "still being finished",
+      "still being built",
+      "arrives",
+      "coming",
+      "in progress",
+      "early access"
+    ],
+    "$rule": "A marketing page may describe a v1 capability in forward-looking language. The support matrix and the checkout purchase summary may only state what current evidence supports. A present-tense capability claim outside those two surfaces still fails the gate: any marketing section naming a capability that is not Available or Beta must carry at least one forward-looking marker, and every marketing capability page must link to the matrix."
+  },
+  "connector_matrix": {
+    "version": "2026-07-31",
+    "$note": "Master 8.4. A logo never implies support; only this table does (master 7.8). Source-backed rows fail closed: no current source, OSL proof, and provider-risk note means no public support claim.",
+    "sources": [
+      {
+        "id": "discord-self-bots",
+        "publisher": "Discord",
+        "source_type": "provider_policy",
+        "url": "https://support.discord.com/hc/en-us/articles/115002192352-Automated-User-Accounts-Self-Bots",
+        "title": "Automated User Accounts (Self-Bots)",
+        "section": "Automating normal user accounts",
+        "published_or_effective_on": "not stated",
+        "accessed_on": "2026-07-31"
+      },
+      {
+        "id": "discord-terms",
+        "publisher": "Discord",
+        "source_type": "terms",
+        "url": "https://discord.com/terms",
+        "title": "Terms of Service",
+        "section": "Your Discord account; Content in Discord's services",
+        "published_or_effective_on": "2025-09-29",
+        "accessed_on": "2026-07-31"
+      },
+      {
+        "id": "signal-permissions",
+        "publisher": "Signal",
+        "source_type": "support",
+        "url": "https://support.signal.org/hc/en-us/articles/360007062172-Signal-Permissions-OS-Notification-Settings",
+        "title": "Signal Permissions & OS Notification Settings",
+        "section": "Permissions and Desktop",
+        "published_or_effective_on": "not stated",
+        "accessed_on": "2026-07-31"
+      },
+      {
+        "id": "signal-screen-security",
+        "publisher": "Signal",
+        "source_type": "desktop_behavior",
+        "url": "https://signal.org/blog/signal-doesnt-recall/",
+        "title": "By Default, Signal Doesn't Recall",
+        "section": "Signal Desktop screen security on Windows",
+        "published_or_effective_on": "2025-05-21",
+        "accessed_on": "2026-07-31"
+      },
+      {
+        "id": "whatsapp-terms",
+        "publisher": "WhatsApp",
+        "source_type": "terms",
+        "url": "https://www.whatsapp.com/legal/terms-of-service",
+        "title": "WhatsApp Terms of Service",
+        "section": "Our Terms And Policies; Legal And Acceptable Use; Termination",
+        "published_or_effective_on": "2021-01-04",
+        "accessed_on": "2026-07-31"
+      },
+      {
+        "id": "whatsapp-temporary-bans",
+        "publisher": "WhatsApp",
+        "source_type": "provider_policy",
+        "url": "https://faq.whatsapp.com/1848531392146538",
+        "title": "About temporarily banned accounts",
+        "section": "Unofficial apps and scraping",
+        "published_or_effective_on": "not stated",
+        "accessed_on": "2026-07-31"
+      },
+      {
+        "id": "telegram-accessibility",
+        "publisher": "Telegram",
+        "source_type": "provider_issue_tracker",
+        "url": "https://bugs.telegram.org/?tag_ids=29",
+        "title": "Accessibility - Bugs and Suggestions",
+        "section": "Telegram Desktop and mobile accessibility issues",
+        "published_or_effective_on": "2026-07-30",
+        "accessed_on": "2026-07-31"
+      },
+      {
+        "id": "microsoft-services-agreement",
+        "publisher": "Microsoft",
+        "source_type": "terms",
+        "url": "https://www.microsoft.com/en-us/servicesagreement",
+        "title": "Microsoft Services Agreement",
+        "section": "Agreement for Microsoft consumer online products and services",
+        "published_or_effective_on": "2025-09-30",
+        "accessed_on": "2026-07-31"
+      },
+      {
+        "id": "microsoft-new-outlook",
+        "publisher": "Microsoft",
+        "source_type": "support",
+        "url": "https://support.microsoft.com/en-us/outlook/getstarted/getting-started-with-the-new-outlook-for-windows",
+        "title": "Getting started with the new Outlook for Windows",
+        "section": "Supported accounts",
+        "published_or_effective_on": "not stated",
+        "accessed_on": "2026-07-31"
+      },
+      {
+        "id": "google-gmail-third-party-access",
+        "publisher": "Google",
+        "source_type": "support",
+        "url": "https://support.google.com/mail/answer/17101213",
+        "title": "Learn about changes to third-party email account support in Gmail",
+        "section": "Access Gmail from third-party clients using IMAP, POP, & API",
+        "published_or_effective_on": "not stated",
+        "accessed_on": "2026-07-31"
+      }
+    ],
+    "connectors": [
+      {
+        "name": "Discord",
+        "role": "Reference adapter",
+        "protected_send": "Beta",
+        "protected_receive": "Beta",
+        "attachments": "Planned",
+        "scrub": "Planned",
+        "verified_on": "2026-07-31",
+        "status": "Beta",
+        "provider_policy_risk": "Discord forbids automating normal user accounts outside its OAuth2/bot API. OSL has no Discord approval; use may put the account at risk.",
+        "source_ids": [
+          "discord-self-bots",
+          "discord-terms"
+        ]
+      },
+      {
+        "name": "Signal",
+        "role": "Planned connector",
+        "protected_send": "Planned",
+        "protected_receive": "Planned",
+        "attachments": "Planned",
+        "scrub": "Not applicable",
+        "verified_on": "2026-07-31",
+        "status": "Coming soon",
+        "provider_policy_risk": "Not qualified by OSL: no two-peer proof on any build. Signal Desktop's own screen-security behavior can make companion viewing unavailable.",
+        "source_ids": [
+          "signal-permissions",
+          "signal-screen-security"
+        ]
+      },
+      {
+        "name": "WhatsApp",
+        "role": "Planned connector",
+        "protected_send": "Planned",
+        "protected_receive": "Planned",
+        "attachments": "Planned",
+        "scrub": "Not applicable",
+        "verified_on": "2026-07-31",
+        "status": "Coming soon",
+        "provider_policy_risk": "Not qualified by OSL: no two-peer proof on any build. WhatsApp restricts auto-messaging, non-personal use, unofficial apps, and scraping.",
+        "source_ids": [
+          "whatsapp-terms",
+          "whatsapp-temporary-bans"
+        ]
+      },
+      {
+        "name": "Telegram",
+        "role": "Blocked connector",
+        "protected_send": "Externally blocked",
+        "protected_receive": "Externally blocked",
+        "attachments": "Externally blocked",
+        "scrub": "Not applicable",
+        "verified_on": "2026-07-31",
+        "status": "Externally blocked",
+        "provider_policy_risk": "Telegram remains externally blocked for OSL: current provider issue records still show unreliable message and control accessibility. OSL will not fake support.",
+        "source_ids": [
+          "telegram-accessibility"
+        ]
+      },
+      {
+        "name": "Outlook / OSL Mail",
+        "role": "Separate staged program",
+        "protected_send": "Planned",
+        "protected_receive": "Planned",
+        "attachments": "Planned",
+        "scrub": "Planned",
+        "verified_on": "2026-07-31",
+        "status": "Coming soon",
+        "provider_policy_risk": "Scoped as OSL Mail, not ordinary chat support. Microsoft and Google mail terms/support are live inputs, but OSL has no mail-specific proof.",
+        "source_ids": [
+          "microsoft-services-agreement",
+          "microsoft-new-outlook",
+          "google-gmail-third-party-access"
+        ]
+      }
+    ]
+  }
+}

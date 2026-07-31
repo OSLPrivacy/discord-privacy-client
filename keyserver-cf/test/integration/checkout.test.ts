@@ -79,7 +79,7 @@ describe("POST /v1/checkout-session", () => {
         claim_token: claimToken(),
         delivery_public_key_spki: await deliveryPublicKey(),
       }),
-    }), configuredEnv(), fetcher);
+    }), configuredEnv(), fetcher, () => true);
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ session_id: sessionId });
     expect(fetcher).toHaveBeenCalledOnce();
@@ -99,7 +99,7 @@ describe("POST /v1/checkout-session", () => {
         claim_token: claimToken(),
         delivery_public_key_spki: await deliveryPublicKey(),
       }),
-    }), configuredEnv("rk_live_restricted_test"), fetcher);
+    }), configuredEnv("rk_live_restricted_test"), fetcher, () => true);
     expect(response.status).toBe(200);
     expect(fetcher).toHaveBeenCalledOnce();
   });
@@ -116,7 +116,7 @@ describe("POST /v1/checkout-session", () => {
           claim_token: claimToken(),
           delivery_public_key_spki: await deliveryPublicKey(),
         }),
-      }), configuredEnv(stripeKey), fetcher);
+      }), configuredEnv(stripeKey), fetcher, () => true);
       expect(response.status).toBe(503);
       expect(fetcher).not.toHaveBeenCalled();
     },
@@ -128,10 +128,39 @@ describe("POST /v1/checkout-session", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ plan: "monthly" }),
-    }), configuredEnv(), fetcher);
+    }), configuredEnv(), fetcher, () => true);
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toMatchObject({ error: 'plan must be "pro"' });
     expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("refuses configured Stripe before claim preparation or any Stripe call", async () => {
+    const before = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM stripe_checkout_claims",
+    ).first<{ count: number }>();
+    const fetcher = vi.fn<typeof fetch>();
+    const response = await handleCheckout(new Request(
+      "https://test/v1/checkout-session",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          plan: "pro",
+          claim_token: claimToken(),
+          delivery_public_key_spki: await deliveryPublicKey(),
+        }),
+      },
+    ), configuredEnv(), fetcher);
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "paid checkout is unavailable until prepaid-code redemption is ready",
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+    const after = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM stripe_checkout_claims",
+    ).first<{ count: number }>();
+    expect(after).toEqual(before);
   });
 });
 

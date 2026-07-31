@@ -89,7 +89,7 @@ describe("local message export import", () => {
     expect(scanFlow).toContain('new TextDecoder("utf-8", { fatal: true }).decode(bytes)');
     expect(scanFlow).toContain("attachments: [{");
     expect(scanFlow).toContain("contentBase64: bytesToBase64(bytes)");
-    expect(scanFlow).toContain("await persistLocalScrubExport(candidates)");
+    expect(scanFlow).toContain("await persistLocalScrubExport(indexedCandidates)");
     expect(scanFlow).toContain("privacyScanResult = persisted.scan");
     expect(scanFlow).not.toMatch(/localStorage|saveOnboardingPreferences|createServiceAccount|\binvoke\s*\(/);
 

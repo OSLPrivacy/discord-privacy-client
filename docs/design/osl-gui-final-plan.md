@@ -38,6 +38,22 @@ Every connected service also has an approved dual-mode contract:
 
 Users do not give up calls, communities, rich media, bots, search, administration or any other native feature in order to use OSL. Full service functionality is preserved by companioning the native UI, not by reimplementing every platform inside the app. Each service offers a clear Native versus OSL Protected choice wherever a protected capability exists. If a recipient, endpoint or feature cannot use OSL protection, the UI explains why and offers Native or an explicit user-assisted fallback. It never silently changes mode and never describes an ordinary external platform message or email as OSL E2EE.
 
+### Staged product boundary resolution
+
+<!-- StagedProductBoundaryResolution -->
+
+Mail and Android are approved product directions, but they are not one launch promise. The app must present only the stage that has passed implementation, verification and operational review. Future stages remain visibly `Coming later`; they must not be implied by navigation labels, marketing copy, pricing cards or setup prompts.
+
+OSL Mail starts at **Stage A** as client-side protection for mailboxes the user already controls. It may connect an existing mailbox only after explicit account authorization and may warn, sanitize, organize retention and label protection scope honestly. It does not include an OSL-operated mailbox, custom domain hosting, universal encrypted delivery, silent mailbox import, account takeover recovery or server-side mail operations. External email remains ordinary interoperable email unless a separately supported encrypted path is explicitly selected before send.
+
+Stage B adds aliases and relay behavior only after abuse handling, deliverability, reply routing, account recovery and support operations have a separate release gate. Stage C adds an OSL mailbox only after a new mail-operations review. Until Stage C is accepted, every mailbox UI and pricing reference must say that a full OSL mailbox is `Coming later`, not available, bundled or in beta by default.
+
+**Android Companion** is a small phone app tied to the user's OSL identity and device approval flow. It may show OSL-native conversations, local warnings, approvals and supported share-sheet cleanup. It is not a remote-control surface for desktop accounts, does not receive master credentials, does not inherit unrestricted destructive authority and does not make a connected Android app protected merely because the companion is installed.
+
+**Android Mobile Workspace** is a separate Pro desktop feature and remains `Coming later` until the local runtime, isolation, input, rendering, recovery and wipe paths have passed independent verification. It may run official Android apps inside an isolated local workspace after the user signs in normally inside those apps. It must not copy sessions or credentials, bypass challenges, spoof device identity, automate account behavior or claim protection for an Android-only app before the exact app, account, window and user action are bound. A hosted workspace is a different product boundary and needs its own threat model, consent and audit.
+
+Across all staged surfaces, absence of user consent, account binding, recipient support, verified capability or send/delete authority means refusal or `Unavailable`, never permission. Monetization labels may indicate what will require Pro later, but they must never interrupt a safety warning, destructive confirmation or honest capability refusal.
+
 ## Platform compatibility boundary
 
 `Available at launch` means OSL can recognize the service, show an OSL-owned companion surface and provide the locally safe features the platform permits. It does not mean silent automation or identical capabilities everywhere.
@@ -162,6 +178,12 @@ The user can enter `Edit Home` to reorder, pin or hide tiles. This is an explici
 
 Optional OSL modules include Chats, Circles/groups, Notifications, Notes, Files, Network privacy and, later, Protected Passwords and Android Workspace. Notifications are off the Home screen by default and may be enabled per connected app. No third-party message content is copied into the notification hub unless the user explicitly enables a locally stored preview.
 
+The Friends rail is also the direct-message launcher. Each approved friend occupies one compact row. Selecting the row opens that person's first-party OSL Chat; a separate settings control opens nickname, safety-number verification, per-service/per-chat whitelist, expiry and preview policy without navigating away. The row may show the most recent locally authorized OSL message preview. It must never scrape or infer a preview from an ordinary platform history. If no authorized preview exists, the row shows a neutral delivery or verification state.
+
+Message previews are on by default. **Hide friend message previews** is a Pro appearance/privacy preference that replaces preview text with a neutral state on Home, notifications and task switching while leaving the encrypted local history unchanged. Lock-screen and OS notification previews remain independently controlled and default off.
+
+Servers are never nested under an individual friend. **Servers** is a separate Home icon and destination for Discord servers/channels and supported Telegram, Signal or Snapchat groups. It owns membership proof, group-key state, channel whitelist, expiry and burn controls independently from one-to-one OSL Chats.
+
 Connection state still uses four honest labels when details are opened: **Protected**, **Needs attention**, **Degraded** and **Offline**. Home itself communicates these states with a small icon-plus-text badge on the affected tile, never a giant banner or vague score.
 
 ## Onboarding
@@ -236,6 +258,17 @@ OSL Chat is a first-party service, not an overlay. Its first release includes:
 
 Calls, large public communities, bots and third-party mini-apps come later. They expand the attack surface and are not required to prove the product.
 
+The first friend-centric desktop surface includes:
+
+- a compact conversation list with local previews and honest sent, delivered, received, opened, expired and failed states;
+- one-to-one text and multiline formatting with exact UTF-8 and line-break preservation;
+- files, images, voice notes, replies and reactions only after their authenticated envelopes and local rendering pass the same fail-closed checks as text;
+- per-friend settings for verification, nickname, expiry, view once, burn and connector whitelists;
+- offline receive after reconnect, replay rejection and malformed-message failure that never substitutes guessed plaintext;
+- a separate Servers destination for group and channel conversations.
+
+Connected-platform capability is proved per surface, not inherited from the OSL Chat feature name. Discord DMs, group DMs, channels and servers; Telegram DMs, groups and channels; Signal DMs and groups; and Snapchat DMs and groups each remain unavailable until OSL can revalidate the exact signed client, OSL-owned profile, account, conversation, participants, author and composer. A connector that can only prove a subset exposes only that subset. No connector reads credentials, cookies, hidden history or private APIs, injects code, bypasses challenges or claims that its foreign window inherits OSL capture resistance.
+
 ### OSL Circles
 
 OSL Circles is the private social layer:
@@ -261,7 +294,7 @@ The preview must state:
 
 ### OSL Mail
 
-OSL Mail should be a staged product, not part of the first OSL Privacy release.
+OSL Mail should be a staged product, not part of the first OSL Privacy release. Its stage labels are product boundaries, not marketing milestones; the UI must not display a later stage as available until its release gate has passed.
 
 **Stage A - private email client:** connect existing Gmail, Outlook, Proton, Tuta or standard mailboxes; block trackers, sanitize links and attachments, support retention rules and label encryption honestly.
 
@@ -271,7 +304,7 @@ OSL Mail should be a staged product, not part of the first OSL Privacy release.
 
 Messages between OSL Mail users can be automatically E2EE. Mail to an external address remains ordinary interoperable email unless the recipient opens an OSL encrypted message portal or uses a compatible encryption method. The composer must show this distinction before send.
 
-This sequencing lets OSL deliver email privacy value early without risking the brand on unreliable delivery or a rushed mail server.
+Stage A may inspect and clean only mail the user explicitly authorizes. If authorization, mailbox binding or provider support is missing, OSL refuses the protected action and preserves any local draft or warning state. This sequencing lets OSL deliver email privacy value early without risking the brand on unreliable delivery or a rushed mail server.
 
 ## People, identity and the universal whitelist
 
@@ -410,7 +443,7 @@ Inbound protected capsules render through an OSL-owned decrypted-message layer a
 Protected transport offers two honest options:
 
 - **Inline capsule:** the full ciphertext travels in the platform message and OSL stores no message payload for delivery.
-- **Sealed relay token:** an optional padded, short-TTL encrypted object is fetched through an opaque token and deleted on successful fetch or expiry. OSL cannot read it, but the relay necessarily observes limited transient metadata such as access time, network address and object size; setup and the payload preview disclose this.
+- **Sealed relay token:** an optional padded, short-TTL encrypted object is fetched through an opaque token and deleted on successful fetch or expiry (designed, not implemented). OSL cannot read it, but the relay necessarily observes limited transient metadata such as access time, network address and object size; setup and the payload preview disclose this.
 
 Carrier text may contain only a note written by the user, explicitly selected by the user or individually approved through the future Pro Cover Draft Relay described below. OSL never sends generated text autonomously, manufactures engagement, or runs unattended decoy activity.
 
@@ -429,14 +462,14 @@ The complete flow is:
 7. OSL immediately aligns an OSL-owned overlay containing the canonical plaintext with the native message. The overlay keeps the OSL lock, verified sender and real platform context visible; revealing the platform carrier remains one action away.
 8. With the recipient's permission, the local model may use that user-authorized decrypted message to prepare the next cover draft and protected reply. The recipient must still review or edit and deliberately send every outward message. There is no automatic response loop.
 
-Each relay token is an unguessable, high-entropy, single-use capability. It is authenticated, expires after a short TTL, is bound to sender identity, recipient device set, connector, account epoch and conversation context, and carries replay protection. A token copied to another conversation, sender, account or service fails authentication. Fetch is idempotent only for the authorized recipient transaction; successful delivery consumes the capability, and expiry or revocation makes it permanently unusable.
+Each relay token is an unguessable, high-entropy, single-use capability (designed, not implemented). It is authenticated, expires after a short TTL, is bound to sender identity, recipient device set, connector, account epoch and conversation context, and carries replay protection. A token copied to another conversation, sender, account or service fails authentication. Fetch is idempotent only for the authorized recipient transaction; successful delivery consumes the capability, and expiry or revocation makes it permanently unusable.
 
 The UI discloses that the platform sees the user-approved cover text, explicit OSL token, sender, recipient, timing and ordinary platform metadata. A blind relay can additionally observe transient network address, access time, padded size class and delivery result. OSL publishes the exact retention interval for those fields, minimizes or aggregates them where possible and never calls the cover text anonymous or metadata-free.
 
 Offline and failure behavior is fail-closed:
 
 - If the relay is unavailable, the recipient sees the native carrier plus `Protected message unavailable - try again`; no guessed or partial plaintext is rendered.
-- If the token expired or was already consumed, OSL shows `Protected message expired` and never reuses it.
+- If the token expired or was already consumed, OSL shows `Protected message expired` and never reuses it (designed, not implemented).
 - If authentication, sender/context binding, decryption or overlay placement fails, OSL leaves the native message visible, shows the specific safe error locally and does not generate a response draft.
 - A sender who is offline may keep the encrypted local draft, but OSL cannot claim the message is deliverable until relay upload or inline placement is verified.
 - Draft generation defaults to an on-device model. A user-selected external model is a separate explicit setting with a precise data-disclosure screen; OSL's own servers do not receive plaintext for generation.
@@ -470,6 +503,16 @@ The companion inherits the app policy. It is not a second settings app. A small 
 
 ## Deletion, retention and view-once
 
+> **Status: designed, NOT implemented (2026-07-26).** The per-message wrapped-key model described
+> below is not what the shipping code does. `MessageStore::put` never populates `wrapped_key`
+> (`crates/store/src/lib.rs:194-206`), so there is no per-message key to destroy and no key to
+> withhold. Burn today is **state deletion**: local shredding, server-side deletion, and a
+> cooperative request to the peer. Because messages are sealed to the recipient's long-term keys,
+> the carrier retained by the connected service stays readable to any holder of that key material.
+> Building this model is deliberately deferred. Read everything below as intended design, not as
+> current behaviour, and never quote it as a capability. See
+> `docs/design/osl-public-claim-allowlist.md` §D.
+
 Every destructive workflow uses the same sequence:
 
 `Scan → Preview → Confirm → Execute → Verify → Receipt`
@@ -479,7 +522,7 @@ Activity states are **Scheduled**, **Running**, **Verified**, **Failed**, **Unsu
 OSL exposes three distinct guarantees:
 
 1. **Platform removal:** OSL asked the platform to remove the account's copy and verified the platform no longer returns it where possible.
-2. **OSL content expiry:** encrypted OSL content becomes undecryptable after key expiry, subject to recipient capture and already-open copies.
+2. **OSL content expiry:** encrypted OSL content becomes undecryptable after key expiry (designed, not implemented), subject to recipient capture and already-open copies.
 3. **Local removal:** OSL deleted the local cached copy from this device.
 
 View-once protects ordinary reuse and local persistence. It cannot prevent a screenshot, camera, rooted device or compromised recipient. That limitation appears once during setup and remains available in details, without nagging on every send.
@@ -564,12 +607,12 @@ The initial native-client companion matrix is:
 | Telegram | Installed Telegram Desktop | Local protection and user-assisted handoff |
 | Signal | Installed Signal Desktop | Local protection and user-assisted handoff |
 | WhatsApp | Installed WhatsApp for Windows | Local protection and user-assisted handoff |
-| Outlook | Fixed official Outlook web origin in a dedicated local Firefox profile; reviewed desktop connector later | Native use now; protected overlay later |
+| Outlook | Installed signed Outlook for Windows | Current native account; separate native profile only when independently verified |
 | Slack / Teams | Installed desktop clients, later launch | Coming soon; no hidden browser fallback |
-| Instagram / Snapchat / X / Messenger | Fixed official origin in a dedicated local Firefox profile | Native site use now; protected overlay later |
-| Gmail / Yahoo / AOL / GMX / Mail.com / Proton | Fixed official webmail origin in a dedicated local Firefox profile | Native webmail use now; protected overlay later |
+| Instagram / Snapchat / X / Messenger | Fixed official origin in the user's selected trusted browser | Browser account or new OSL-owned browser profile |
+| Gmail / Yahoo / AOL / GMX / Mail.com / Proton | Fixed official webmail origin in the user's selected trusted browser | Browser account or new OSL-owned browser profile |
 
-The launch does not depend on official APIs. OSL companion capabilities are not promised to match every native feature. Full platform functionality remains in the official Windows client or the service's real site in Firefox while each OSL tile exposes only capabilities OSL can actually enforce. Browser-backed services are explicit Firefox routes, never a silent WebView fallback. OSL uses only fixed reviewed HTTPS origins, keeps the Firefox profile local, and does not embed, inject into, inspect, or intercept the remote page. A permitted official integration can be added later without changing the user's privacy policy or interface.
+The launch does not depend on official APIs. OSL companion capabilities are not promised to match every native feature. Native Discord, Telegram, Signal, WhatsApp and installed Outlook remain native-only and never fall back to a browser. Settings selects one installed, signed, allowlisted major browser for all genuinely web-backed apps. If that browser has a completed import-source receipt, a web app shows only `Browser account` and `New account`; without one, the tile opens the fixed official sign-in origin directly. `New account` uses a fixed owner-scoped OSL browser profile. OSL never accepts a renderer-provided executable, URL, profile path or browser argument, and does not inject into, inspect or intercept the remote page.
 
 ### Self-healing companion system
 
@@ -599,6 +642,8 @@ States are Protected, Connecting, Not protected and Unavailable. Depending on us
 
 OSL never stores Mullvad account credentials or claims that VPN use makes message content private from the recipient or platform.
 
+On Windows, explicit consent may let OSL visually borrow the user's existing Mullvad app window. This reuses Mullvad's existing device-wide sign-in without importing it: OSL does not read or copy the account number, settings, tunnel state, traffic, credentials or configuration. The borrowed foreign window is restored rather than closed, and OSL does not claim its screenshot resistance covers Mullvad pixels.
+
 ## Privacy.com integration (optional Pro)
 
 Privacy.com is an off-by-default Pro connector. Enabling it opens Privacy.com in a dedicated local service profile and can surface quick access from payment warnings; disabling it removes the OSL shortcut without touching the user's Privacy.com account.
@@ -609,11 +654,11 @@ OSL does not proxy or retain card numbers, bank credentials, merchant transactio
 
 ### Android Companion
 
-The companion app provides OSL Chat, Circles, Mail, approvals, warnings, key management and supported share-sheet sanitization on a real phone.
+The companion app is a phone companion for OSL-owned experiences and local user approvals. It provides OSL Chat, Circles, Mail when that stage is available, warnings and supported share-sheet sanitization on a real phone. It never turns an unrelated Android app into an OSL Protected surface by presence alone and never receives master credentials or unrestricted destructive authority.
 
 ### Android Mobile Workspace
 
-The paid desktop feature runs selected Android-only apps inside a clearly isolated workspace. Its card exposes:
+The paid desktop feature runs selected Android-only apps inside a clearly isolated local workspace. Until the workspace is independently verified, its card is visible only as `Coming later`. When available, the card exposes:
 
 - Start or stop workspace.
 - Installed apps and storage use.
@@ -624,6 +669,8 @@ The paid desktop feature runs selected Android-only apps inside a clearly isolat
 It is marketed as a privacy workspace, not a cloud phone and not a stealth automation environment. The default is local execution. A future hosted workspace would require a separate threat model and explicit customer consent.
 
 This is a future Pro feature, not a dependency of the Windows launch. The virtual device gets its own encrypted disk, Android identity, app permissions, clipboard boundary, network policy and wipe key per OSL identity. Snapshots are encrypted locally before any optional backup; OSL infrastructure cannot mount the workspace. Host-to-Android clipboard, files, notifications, camera, microphone and location are denied until individually enabled. A hosted version is a different product boundary and cannot inherit the local product's privacy claims without a new audit.
+
+The planned local workspace may run official Android apps that have no equivalent supported Windows surface, including Snapchat and Telegram secret chats, while OSL presents consistent Windows-style chrome around the dedicated Android runtime. The user signs in normally inside each official app. Windows-style presentation does not change the app's Android identity, platform rules or security boundary. Until the runtime, isolation, input, rendering and recovery paths are implemented and independently verified, the feature remains visibly `Coming later` and OSL makes no compatibility or protection claim. It never bypasses CAPTCHA or approval prompts, spoofs device fingerprints, copies sessions, cookies or tokens, or extracts credentials.
 
 ## Windows installation and updates
 
@@ -714,7 +761,7 @@ The enforceable server promise is:
 
 > OSL servers never retain plaintext messages, media, social-account credentials, encryption keys, warning contents or scanned-history findings. Current relays do retain bounded ciphertext-routing metadata and replay receipts for published TTLs; that metadata is not described as anonymous, unlinkable or risk-free.
 
-- OSL-native relays carry end-to-end encrypted envelopes and delete queued ciphertext after delivery or a short published expiry.
+- OSL-native relays carry end-to-end encrypted envelopes and delete queued ciphertext after delivery or a short published expiry (designed, not implemented).
 - Compatibility recipes, app updates and health rules are generic and contain no customer content.
 - Cleanup findings and detailed receipts remain on the user's device or customer-controlled agent.
 - Until opaque rotating inbox capabilities replace stable sender/recipient routing, the public data inventory must disclose the linkable identifiers, timestamps, access logs and deletion schedule used by each relay.
@@ -758,6 +805,28 @@ Before production implementation:
 ## Acceptance criteria
 
 The GUI plan is ready to implement when these statements are all accepted:
+
+Behavioral acceptance test:
+`docs/design/osl-gui-final-plan.md'`.
+
+Exercise the product shell from a fresh profile and assert behavior, not prose:
+the primary sidebar exposes exactly Home, Inbox, People, Privacy, Activity and
+Connections as top-level destinations, with Settings fixed separately at the
+bottom. Attempting to add Settings, Advanced, Servers, Mail, Android Workspace or
+any connector internals as a seventh primary destination must fail the test.
+
+Using a genuinely web-backed service tile, the same acceptance test must assert
+that the launch choice is limited to the existing browser account when an
+import-source receipt exists, or a new owner-scoped OSL browser profile. Without a
+completed import-source receipt, opening the tile must go directly to the fixed
+official sign-in origin. No renderer-supplied executable, URL, profile path or
+browser argument can become an accepted launch choice.
+
+Run the same flow through a safety warning, a destructive confirmation and an
+unsupported protected-action refusal while the account is Free. The warning,
+confirmation or refusal must remain the foreground decision and must not be
+replaced, blocked or delayed by an upgrade prompt. Inverting any of these
+behaviors must fail the test.
 
 - One OSL Privacy plus thin overlays is the core form.
 - The Windows-first companion list includes Discord, Telegram, WhatsApp, Instagram, Snapchat, Signal, selected email providers, X and Facebook Messenger. Slack and LinkedIn Messaging are later integrations.

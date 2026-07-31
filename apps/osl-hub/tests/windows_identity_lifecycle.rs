@@ -78,8 +78,11 @@ fn create_and_lock(root: &Path) {
     )
     .expect("write loopback-only keyserver override");
 
-    let created = password_lifecycle::create_native_identity(&state)
-        .expect("create isolated native identity");
+    let created = password_lifecycle::create_native_identity(
+        &state,
+        Some(password_lifecycle::IdentityCreationOwnerAuthorization::ExplicitOwnerSignoff),
+    )
+    .expect("create isolated native identity");
     assert_eq!(
         state.osl.cloud_registration_state(),
         ipc::state::CloudRegistrationState::NotAttempted,

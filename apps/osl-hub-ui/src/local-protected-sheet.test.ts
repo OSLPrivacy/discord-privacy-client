@@ -31,6 +31,9 @@ describe("local protected side sheet", () => {
     });
     expect(markup.match(/<option /gu)).toHaveLength(4);
     expect(markup).toContain('<option value="3600" selected>1 hour</option>');
+    expect(markup).toContain("Opening authorization expires after");
+    expect(markup).toContain("After expiry, OSL refuses to open this text on this device.");
+    expect(markup).not.toContain("Delete key after");
     expect(markup).not.toContain('value="0"');
     expect(markup).not.toContain("No timer");
   });
@@ -89,10 +92,35 @@ describe("local protected side sheet", () => {
     expect(openMarkup).toContain('id="local-decrypt-display"');
     expect(openMarkup).toContain("Only for this local chat.");
     expect(localProtectedSheetMarkup(ready, "clipboard")).toContain("Encrypt & copy");
-    expect(localProtectedSheetMarkup(ready, "double")).toContain("Prepare · Double Enter");
-    expect(localProtectedSheetMarkup(ready, "single")).toContain("Prepare · Single Enter");
+    expect(localProtectedSheetMarkup(ready, "double")).toContain("Encrypt & copy");
+    expect(localProtectedSheetMarkup(ready, "single")).toContain("Encrypt & copy");
+    expect(localProtectedSheetMarkup(ready, "double")).not.toContain("Double Enter");
+    expect(localProtectedSheetMarkup(ready, "single")).not.toContain("Single Enter");
+    expect(readyMarkup).toContain("OSL copies encrypted text only.");
+    expect(readyMarkup).toContain("press Send yourself");
     expect(readyMarkup).toContain('<option value="259200"');
     expect(readyMarkup).toContain("3 days");
+  });
+
+  it("bounds the rendered Clipboard payload to the local plaintext byte limit", () => {
+    const oversizedDraft = "🔐".repeat(251);
+    const boundedDraft = "🔐".repeat(250);
+    const markup = localProtectedSheetMarkup({
+      ...blankLocalProtectedModel(true),
+      context: {
+        contextToken: "ctx-1-abc",
+        serviceId: "discord",
+        accountId: "account-1",
+        conversationId: "local-abababababababababababababababab",
+      },
+      draft: oversizedDraft,
+    });
+
+    expect(markup).toContain('data-max-bytes="1000"');
+    expect(markup).toContain('aria-describedby="local-protected-draft-bytes"');
+    expect(markup).toContain(`>${boundedDraft}</textarea>`);
+    expect(markup).not.toContain(`>${oversizedDraft}</textarea>`);
+    expect(markup).toContain("Draft shortened to 1,000 bytes for copy.");
   });
 
   it("keeps the sheet absent until an embedded profile explicitly opens it", () => {

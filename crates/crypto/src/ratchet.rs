@@ -116,8 +116,9 @@ use crate::x25519;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use zeroize::ZeroizeOnDrop;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// HKDF info labels — domain-separated for v1.
 const SHARED_HKA_INFO: &[u8] = b"discord-privacy-client/ratchet/init-hka/v1";
@@ -894,7 +895,12 @@ pub enum RatchetPersistError {
 /// Conversion is lossless and idempotent: `RatchetStateOnDisk::from(&dr)
 /// .try_into::<DoubleRatchet>()` reproduces a ratchet that emits and
 /// accepts the same wire bytes as the original.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// A8: every persisted ratchet field except the public session context is
+/// zeroized by the derive.  Keeping this derive field-complete is deliberate:
+/// adding a future `String`, `Option<String>`, or zeroizable nested field
+/// makes it part of the wipe automatically.  `ctx` is the only opt-out: it is
+/// public identity metadata and has its own persistence lifetime.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub struct RatchetStateOnDisk {
     pub version: u8,
     pub root_key_b64: String,
@@ -917,16 +923,58 @@ pub struct RatchetStateOnDisk {
     pub nhkr_b64: String,
     #[serde(default)]
     pub skipped: Vec<SkippedKeyOnDisk>,
+    #[zeroize(skip)]
     pub ctx: SessionContextOnDisk,
 }
 
 /// One persisted entry of the skipped-message-key cache.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub struct SkippedKeyOnDisk {
     pub hk_b64: String,
     pub counter: u32,
     pub mk_b64: String,
     pub inserted_at_unix_secs: u64,
+}
+
+/// Persistence records must never disclose ratchet material through logs.
+/// Keep this formatter intentionally structural: no base64 field is rendered,
+/// including public/metadata fields, so later format changes cannot turn a
+/// diagnostics path into a secret-bearing one.
+impl fmt::Debug for RatchetStateOnDisk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RatchetStateOnDisk")
+            .field("version", &self.version)
+            .field("root_key_b64", &"[REDACTED]")
+            .field("dhs_secret_b64", &"[REDACTED]")
+            .field("dhs_pub_b64", &"[REDACTED]")
+            .field("dhr_b64", &"[REDACTED]")
+            .field("sending_chain_b64", &"[REDACTED]")
+            .field("sending_counter", &self.sending_counter)
+            .field("receiving_chain_b64", &"[REDACTED]")
+            .field("receiving_counter", &self.receiving_counter)
+            .field("prev_sending_count", &self.prev_sending_count)
+            .field("hks_b64", &"[REDACTED]")
+            .field("hkr_b64", &"[REDACTED]")
+            .field("nhks_b64", &"[REDACTED]")
+            .field("nhkr_b64", &"[REDACTED]")
+            .field(
+                "skipped",
+                &format_args!("[REDACTED; {} entries]", self.skipped.len()),
+            )
+            .field("ctx", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl fmt::Debug for SkippedKeyOnDisk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SkippedKeyOnDisk")
+            .field("hk_b64", &"[REDACTED]")
+            .field("counter", &self.counter)
+            .field("mk_b64", &"[REDACTED]")
+            .field("inserted_at_unix_secs", &self.inserted_at_unix_secs)
+            .finish()
+    }
 }
 
 /// Persistable mirror of [`SessionContext`]. Variable-length ML-KEM
@@ -1004,31 +1052,31 @@ impl TryFrom<RatchetStateOnDisk> for DoubleRatchet {
         let root_key = RootKey::from_bytes(decode_32(&s.root_key_b64, "root_key")?);
         let dhs_secret = x25519::SecretKey::from_bytes(decode_32(&s.dhs_secret_b64, "dhs_secret")?);
         let dhs_pub = x25519::PublicKey::from_bytes(decode_32(&s.dhs_pub_b64, "dhs_pub")?);
-        let dhr = match s.dhr_b64 {
-            Some(b) => Some(x25519::PublicKey::from_bytes(decode_32(&b, "dhr")?)),
+        let dhr = match &s.dhr_b64 {
+            Some(b) => Some(x25519::PublicKey::from_bytes(decode_32(b, "dhr")?)),
             None => None,
         };
-        let sending_chain = match s.sending_chain_b64 {
-            Some(b) => Some(ChainKey::from_bytes(decode_32(&b, "sending_chain")?)),
+        let sending_chain = match &s.sending_chain_b64 {
+            Some(b) => Some(ChainKey::from_bytes(decode_32(b, "sending_chain")?)),
             None => None,
         };
-        let receiving_chain = match s.receiving_chain_b64 {
-            Some(b) => Some(ChainKey::from_bytes(decode_32(&b, "receiving_chain")?)),
+        let receiving_chain = match &s.receiving_chain_b64 {
+            Some(b) => Some(ChainKey::from_bytes(decode_32(b, "receiving_chain")?)),
             None => None,
         };
-        let hks = match s.hks_b64 {
-            Some(b) => Some(aead::Key::from_bytes(decode_32(&b, "hks")?)),
+        let hks = match &s.hks_b64 {
+            Some(b) => Some(aead::Key::from_bytes(decode_32(b, "hks")?)),
             None => None,
         };
-        let hkr = match s.hkr_b64 {
-            Some(b) => Some(aead::Key::from_bytes(decode_32(&b, "hkr")?)),
+        let hkr = match &s.hkr_b64 {
+            Some(b) => Some(aead::Key::from_bytes(decode_32(b, "hkr")?)),
             None => None,
         };
         let nhks = aead::Key::from_bytes(decode_32(&s.nhks_b64, "nhks")?);
         let nhkr = aead::Key::from_bytes(decode_32(&s.nhkr_b64, "nhkr")?);
 
         let mut skipped_keys: Vec<SkippedKey> = Vec::with_capacity(s.skipped.len());
-        for entry in s.skipped {
+        for entry in &s.skipped {
             skipped_keys.push(SkippedKey {
                 hk: aead::Key::from_bytes(decode_32(&entry.hk_b64, "skipped.hk")?),
                 counter: entry.counter,
@@ -1096,4 +1144,125 @@ fn decode_var(s: &str, field: &'static str) -> std::result::Result<Vec<u8>, Ratc
     STANDARD
         .decode(s)
         .map_err(|source| RatchetPersistError::Base64 { field, source })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state_with_canaries() -> RatchetStateOnDisk {
+        RatchetStateOnDisk {
+            version: 77,
+            root_key_b64: "root-key-canary".into(),
+            dhs_secret_b64: "dhs-secret-canary".into(),
+            dhs_pub_b64: "dhs-public-canary".into(),
+            dhr_b64: Some("dhr-canary".into()),
+            sending_chain_b64: Some("sending-chain-canary".into()),
+            sending_counter: 12,
+            receiving_chain_b64: Some("receiving-chain-canary".into()),
+            receiving_counter: 13,
+            prev_sending_count: 14,
+            hks_b64: Some("hks-canary".into()),
+            hkr_b64: Some("hkr-canary".into()),
+            nhks_b64: "nhks-canary".into(),
+            nhkr_b64: "nhkr-canary".into(),
+            skipped: vec![SkippedKeyOnDisk {
+                hk_b64: "skipped-header-key-canary".into(),
+                counter: 15,
+                mk_b64: "skipped-message-key-canary".into(),
+                inserted_at_unix_secs: 16,
+            }],
+            ctx: SessionContextOnDisk {
+                local_ik_x25519_pub_b64: "local-identity-canary".into(),
+                local_ik_mlkem_pub_b64: "local-mlkem-canary".into(),
+                peer_ik_x25519_pub_b64: "peer-identity-canary".into(),
+                peer_ik_mlkem_pub_b64: "peer-mlkem-canary".into(),
+                conversation_id_b64: "conversation-canary".into(),
+                session_version: 17,
+            },
+        }
+    }
+
+    fn absent_or_empty(value: &Option<String>) -> bool {
+        value.as_deref().is_none_or(str::is_empty)
+    }
+
+    #[test]
+    fn zeroizing_persisted_ratchet_state_clears_every_secret_field_and_skipped_entry() {
+        let mut state = state_with_canaries();
+        state.zeroize();
+
+        assert_eq!(state.version, 0);
+        assert!(state.root_key_b64.is_empty());
+        assert!(state.dhs_secret_b64.is_empty());
+        assert!(state.dhs_pub_b64.is_empty());
+        assert!(absent_or_empty(&state.dhr_b64));
+        assert!(absent_or_empty(&state.sending_chain_b64));
+        assert_eq!(state.sending_counter, 0);
+        assert!(absent_or_empty(&state.receiving_chain_b64));
+        assert_eq!(state.receiving_counter, 0);
+        assert_eq!(state.prev_sending_count, 0);
+        assert!(absent_or_empty(&state.hks_b64));
+        assert!(absent_or_empty(&state.hkr_b64));
+        assert!(state.nhks_b64.is_empty());
+        assert!(state.nhkr_b64.is_empty());
+        assert!(state.skipped.is_empty());
+
+        // `ctx` is deliberately the one zeroize-skip field: it holds
+        // public session metadata and remains available to the persistence
+        // caller while the enclosing DTO is still alive.
+        assert_eq!(state.ctx.conversation_id_b64, "conversation-canary");
+    }
+
+    #[test]
+    fn persistence_debug_is_redacted_and_existing_session_key_wipe_control_remains() {
+        let state = state_with_canaries();
+        let state_debug = format!("{state:?}");
+        let skipped_debug = format!("{:?}", &state.skipped[0]);
+        for canary in [
+            "root-key-canary",
+            "dhs-secret-canary",
+            "dhs-public-canary",
+            "dhr-canary",
+            "sending-chain-canary",
+            "receiving-chain-canary",
+            "hks-canary",
+            "hkr-canary",
+            "nhks-canary",
+            "nhkr-canary",
+            "skipped-header-key-canary",
+            "skipped-message-key-canary",
+            "local-identity-canary",
+            "conversation-canary",
+        ] {
+            assert!(!state_debug.contains(canary), "state debug leaked {canary}");
+            assert!(
+                !skipped_debug.contains(canary),
+                "skipped debug leaked {canary}"
+            );
+        }
+
+        // This remains reachable from this crate; InnerIdentity is private to
+        // keystore, so its established control is intentionally not widened.
+        fn assert_zeroize_on_drop<T: ZeroizeOnDrop>() {}
+        assert_zeroize_on_drop::<RatchetStateOnDisk>();
+        assert_zeroize_on_drop::<SkippedKeyOnDisk>();
+        assert_zeroize_on_drop::<SessionKey>();
+    }
+
+    #[test]
+    fn zeroization_census_is_derive_driven_with_one_reviewed_opt_out() {
+        // The derives make a newly added zeroizable field part of the wipe at
+        // compile time. This guard prevents a future secret field from being
+        // silently exempted with another zeroize-skip attribute.
+        let source = include_str!("ratchet.rs");
+        assert!(source.contains(
+            "#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]\n"
+        ));
+        assert_eq!(source.matches(concat!("#", "[zeroize(skip)]")).count(), 1);
+        assert!(source.contains(concat!(
+            "#",
+            "[zeroize(skip)]\n    pub ctx: SessionContextOnDisk"
+        )));
+    }
 }

@@ -1,17 +1,19 @@
 # Design: Sender keys for group messaging (v1)
 
-Status: **Draft.** Construction decisions captured below.
-**v1 alpha ships without paid cryptographer audit** (budget
-constraint; loud disclosure to users in onboarding and
+Status: **Draft / planned, not wired.** Construction decisions captured below.
+The shipping client does not enable sender keys. The former “v1 alpha ships”
+wording is retained only as historical design context; this construction is
+not an available runtime feature. The design also assumes no paid cryptographer
+audit yet (budget constraint; loud disclosure to users in onboarding and
 [`../THREAT_MODEL.md`](../THREAT_MODEL.md) audit-status section).
 **v1 stable requires audit** — this doc is a hard prerequisite
 input to that engagement.
 
 This doc replaces the pairwise fan-out approach previously in
-`group-messaging.md`. Per user direction, v1 ships sender keys for
-group encryption. Sender keys carry higher cryptographic complexity
-than pairwise but ship with bounded blast radius via mandatory
-rotation.
+`group-messaging.md`. Per user direction, the v1 design targets sender keys
+for group encryption. Sender keys carry higher cryptographic complexity than
+pairwise but are designed for a bounded blast radius via mandatory rotation;
+the construction is not enabled in the shipping client.
 
 ## Purpose
 
@@ -387,9 +389,10 @@ distribution is the only O(N) cost.
    > based on intuitive reasoning. Professional cryptographic
    > verification of this composition is gated behind audit
    > funding."*
-9. **System messages for burn alerts**: confirmed — same construction,
-   same signing path (`IK_X25519`), same audit scope as user
-   messages. See `group-messaging.md` burn-and-alert section.
+9. **System messages for burn alerts**: specified as using the same
+   construction and signing path (`IK_X25519`) as user messages, but not
+   confirmed or wired in the shipping client. See `group-messaging.md`
+   burn-and-alert section.
 
 ## Remaining open items
 
@@ -423,8 +426,8 @@ Bounded by the resolved cache caps:
 
 ## Review gate
 
-**v1 alpha** — ships without these gates being met (loud disclosure
-required):
+**v1 alpha design gate** — must not be treated as shipping until these gates
+are met (loud disclosure required):
 
 - [x] Construction decisions captured (this document).
 - [ ] Memory monitoring scaffold in place before alpha ship.

@@ -69,6 +69,10 @@ export function providerLogo(id: string): string {
   return icon ? iconSvg(icon) : envelopeSvg(fallbackLabels[id] ?? "Mail");
 }
 
+function iCloudMailSvg(): string {
+  return `<svg class="company-logo provider-logo provider-logo-icloud" viewBox="0 0 24 24" role="img" aria-label="iCloud Mail"><defs><linearGradient id="icloud-mail-gradient" x1="4" y1="3" x2="20" y2="21" gradientUnits="userSpaceOnUse"><stop stop-color="#62c8ff"/><stop offset="1" stop-color="#1688f8"/></linearGradient></defs><path fill="url(#icloud-mail-gradient)" d="M7.2 19.4h10.2a4.6 4.6 0 0 0 .8-9.1A6.5 6.5 0 0 0 5.9 8.7a5.4 5.4 0 0 0 1.3 10.7Z"/><path fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.45" d="M8.1 12.2h7.8v4.6H8.1zM8.4 12.6l3.6 2.5 3.6-2.5"/></svg>`;
+}
+
 export function browserLogo(id: BrowserImportId): string {
   if (id === "edge") return edgeSvg();
   const icon = browserIcons[id];
@@ -77,10 +81,6 @@ export function browserLogo(id: BrowserImportId): string {
 
 function edgeSvg(): string {
   return `<svg class="company-logo" viewBox="0 0 24 24" role="img" aria-label="Microsoft Edge"><path fill="currentColor" d="M21.7 14.2H8.1c.3 2.8 2.4 4.4 5.4 4.4 2.1 0 3.8-.5 5.4-1.5v4.1A13 13 0 0 1 13 22C6.6 22 2 18 2 12.1 2 6.4 6.4 2 12.2 2 18 2 22 6.1 22 12c0 .8-.1 1.5-.3 2.2ZM8.2 10.7h8.3c-.2-2.7-1.8-4.4-4.1-4.4-2.2 0-3.8 1.7-4.2 4.4Z"/></svg>`;
-}
-
-function iCloudMailSvg(): string {
-  return `<svg class="company-logo provider-logo provider-logo-icloud" viewBox="0 0 24 24" role="img" aria-label="iCloud Mail"><defs><linearGradient id="icloud-mail-gradient" x1="4" y1="3" x2="20" y2="21" gradientUnits="userSpaceOnUse"><stop stop-color="#62c8ff"/><stop offset="1" stop-color="#1688f8"/></linearGradient></defs><path fill="url(#icloud-mail-gradient)" d="M7.2 19.4h10.2a4.6 4.6 0 0 0 .8-9.1A6.5 6.5 0 0 0 5.9 8.7a5.4 5.4 0 0 0 1.3 10.7Z"/><path fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.45" d="M8.1 12.2h7.8v4.6H8.1zM8.4 12.6l3.6 2.5 3.6-2.5"/></svg>`;
 }
 
 function aolSvg(): string {

@@ -22,6 +22,9 @@ struct Setup {
     alice_ik_sk: x25519::SecretKey,
     alice_ik_pub: x25519::PublicKey,
     bob_ik_sk: x25519::SecretKey,
+    bob_ik_pub: x25519::PublicKey,
+    bob_sk: SessionKey,
+    bob_spk_sk: x25519::SecretKey,
     bob_recipient: RecipientV3,
     bob_mlkem_dk: ml_kem_768::DecapsulationKey,
 }
@@ -70,6 +73,9 @@ fn setup() -> Setup {
         alice_ik_sk,
         alice_ik_pub,
         bob_ik_sk,
+        bob_ik_pub,
+        bob_sk,
+        bob_spk_sk,
         bob_recipient,
         bob_mlkem_dk,
     }
@@ -133,6 +139,47 @@ fn v4_roundtrip_single_recipient() {
         ciphertext: parsed.body_ct,
     };
     assert_eq!(s.bob.decrypt(&em_recovered).unwrap(), b"hello v=4");
+}
+
+#[test]
+fn v4_rejects_forged_sender_ik_pub() {
+    let mut s = setup();
+    let (_, forged_sender_ik_pub) = x25519::generate_keypair();
+    assert_ne!(forged_sender_ik_pub, s.alice_ik_pub);
+    let plaintext = b"sender identity must bind the ratchet body";
+    let em = s.alice.encrypt(plaintext).unwrap();
+    let wire = seal_v4(&s, true, &em);
+    let parsed = decrypt_v4(&wire, &s.bob_ik_sk, &s.bob_mlkem_dk).expect("decode");
+    assert_eq!(
+        parsed.sender_ik_pub, s.alice_ik_pub,
+        "fixture must parse Alice as the honest v4 sender"
+    );
+
+    let forged_ctx = SessionContext {
+        local_ik_x25519_pub: s.bob_ik_pub,
+        local_ik_mlkem_pub: vec![0xbb; 1184],
+        peer_ik_x25519_pub: forged_sender_ik_pub,
+        peer_ik_mlkem_pub: vec![0xaa; 1184],
+        conversation_id: b"wire-v4-test".to_vec(),
+        session_version: SESSION_VERSION_V1,
+    };
+    let mut bob_keyed_to_forged_sender =
+        DoubleRatchet::new_responder(&s.bob_sk, &s.bob_spk_sk, forged_ctx).unwrap();
+    let em_recovered = crypto::ratchet::EncryptedMessage {
+        header_nonce: parsed.enc_header_nonce,
+        enc_header: parsed.enc_header,
+        message_nonce: parsed.body_nonce,
+        ciphertext: parsed.body_ct,
+    };
+
+    let err = bob_keyed_to_forged_sender
+        .decrypt(&em_recovered)
+        .expect_err("SessionContext keyed to a forged sender_ik_pub must reject");
+    assert!(
+        matches!(&err, crypto::Error::AeadFailure),
+        "expected body AEAD failure from sender identity AD mismatch, got: {err:?}"
+    );
+    assert_eq!(s.bob.decrypt(&em_recovered).unwrap(), plaintext);
 }
 
 #[test]
@@ -243,8 +290,90 @@ fn v4_header_tamper_rejected_via_aad() {
     );
     let err = decrypt_v4(&tampered, &s.bob_ik_sk, &s.bob_mlkem_dk).unwrap_err();
     assert!(
-        matches!(err, V2Error::WrapAeadFailed),
+        matches!(&err, V2Error::WrapAeadFailed),
         "expected WrapAeadFailed (AAD includes global header), got: {err:?}"
+    );
+}
+
+#[test]
+fn v4_rejects_forged_sender_ik_pub_through_attribution_helper() {
+    let (alice_ik_sk, alice_ik_pub) = x25519::generate_keypair();
+    let (_mallory_ik_sk, mallory_ik_pub) = x25519::generate_keypair();
+    let (bob_ik_sk, bob_ik_pub) = x25519::generate_keypair();
+    let (bob_ratchet_sk, bob_ratchet_pub) = x25519::generate_keypair();
+    let (bob_mlkem_dk, bob_mlkem_ek) = ml_kem_768::generate_keypair();
+
+    let (session_key, handshake) =
+        pqxdh::initiate(&alice_ik_sk, &bob_ik_pub, &bob_ik_pub, None, &bob_mlkem_ek).unwrap();
+    assert!(
+        ipc::sender_attribution_proof::prove_resolved_sender_key(&alice_ik_pub, &mallory_ik_pub,)
+            .is_err(),
+        "fixture must model distinct honest and forged sender identity keys"
+    );
+
+    let conversation_id = b"wire-v4-sender-attribution".to_vec();
+    let alice_ctx = SessionContext {
+        local_ik_x25519_pub: alice_ik_pub,
+        local_ik_mlkem_pub: vec![0xaa; 1184],
+        peer_ik_x25519_pub: bob_ik_pub,
+        peer_ik_mlkem_pub: vec![0xbb; 1184],
+        conversation_id: conversation_id.clone(),
+        session_version: SESSION_VERSION_V1,
+    };
+    let mut alice =
+        DoubleRatchet::new_initiator(&session_key, &bob_ratchet_pub, alice_ctx).unwrap();
+    let em = alice.encrypt(b"v4 sender attribution").unwrap();
+    let bob_recipient = RecipientV3 {
+        x25519_pub: bob_ik_pub,
+        mlkem_pub: ml_kem_768::EncapsulationKey::from_bytes(&bob_mlkem_ek.to_bytes()),
+    };
+    let wire = encrypt_v4_from_ratchet(
+        &alice_ik_pub,
+        &bob_recipient,
+        &session_key,
+        &handshake,
+        ipc::wire_v2::MSG_TYPE_CONTENT,
+        true,
+        &em,
+    )
+    .unwrap();
+    let parsed = decrypt_v4(&wire, &bob_ik_sk, &bob_mlkem_dk).unwrap();
+    assert_eq!(parsed.sender_ik_pub.as_bytes(), alice_ik_pub.as_bytes());
+
+    let em_recovered = crypto::ratchet::EncryptedMessage {
+        header_nonce: parsed.enc_header_nonce,
+        enc_header: parsed.enc_header,
+        message_nonce: parsed.body_nonce,
+        ciphertext: parsed.body_ct,
+    };
+    let honest_bob_ctx = SessionContext {
+        local_ik_x25519_pub: bob_ik_pub,
+        local_ik_mlkem_pub: vec![0xbb; 1184],
+        peer_ik_x25519_pub: alice_ik_pub,
+        peer_ik_mlkem_pub: vec![0xaa; 1184],
+        conversation_id: conversation_id.clone(),
+        session_version: SESSION_VERSION_V1,
+    };
+    let mut honest_bob =
+        DoubleRatchet::new_responder(&parsed.session_key, &bob_ratchet_sk, honest_bob_ctx).unwrap();
+    assert_eq!(
+        honest_bob.decrypt(&em_recovered).unwrap(),
+        b"v4 sender attribution"
+    );
+
+    let forged_bob_ctx = SessionContext {
+        local_ik_x25519_pub: bob_ik_pub,
+        local_ik_mlkem_pub: vec![0xbb; 1184],
+        peer_ik_x25519_pub: mallory_ik_pub,
+        peer_ik_mlkem_pub: vec![0xcc; 1184],
+        conversation_id,
+        session_version: SESSION_VERSION_V1,
+    };
+    let mut forged_bob =
+        DoubleRatchet::new_responder(&parsed.session_key, &bob_ratchet_sk, forged_bob_ctx).unwrap();
+    assert!(
+        forged_bob.decrypt(&em_recovered).is_err(),
+        "v4 SessionContext must bind sender_ik_pub; a relabelled sender key must not decrypt"
     );
 }
 

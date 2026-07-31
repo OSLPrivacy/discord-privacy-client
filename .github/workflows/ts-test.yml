@@ -6,13 +6,21 @@ on:
   pull_request:
 
 jobs:
-  test:
+  ts-test:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
+      # Claim gate for in-app copy and README. Zero-dependency, so it runs before
+      # any npm ci: nothing to install and nothing that can fail for unrelated
+      # reasons. Ban list is parsed out of docs/design/osl-public-claim-allowlist.md
+      # section D, so adding a banned phrase there automatically tightens this.
+      - name: Claim-gate-in-app-copy-and-README
+        run: |
+          node scripts/check-app-claims.mjs --self-test
+          node scripts/check-app-claims.mjs
       - name: Install webview deps
         working-directory: webview
         run: npm ci
@@ -60,3 +68,109 @@ jobs:
       - name: Test legacy keyserver
         working-directory: keyserver
         run: npm test
+  selector-check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Install selector check deps
+        working-directory: selector-ci
+        run: npm ci
+      - name: Run selector check
+        working-directory: selector-ci
+        run: npm run check
+  telegram-reporting-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Install keyserver worker deps
+        working-directory: keyserver-cf
+        run: npm ci
+      - name: keyserver-cf/scripts/test-configure-telegram-reporting-bot.sh
+        run: bash keyserver-cf/scripts/test-configure-telegram-reporting-bot.sh
+  public-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - name: Run public audit
+        run: |
+          python3 scripts/audit_reproducible_build.py --self-test
+          python3 - <<'PY'
+          from scripts.audit_public_release import audit_public_release_claims_self_test
+
+          errors = []
+          audit_public_release_claims_self_test(errors)
+          if errors:
+              raise SystemExit("\n".join(errors))
+          PY
+  success:
+    name: "success'"
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    needs:
+      - ts-test
+      - selector-check
+      - telegram-reporting-bot
+      - public-audit
+    steps:
+      - name: "success'"
+        env:
+          TEST_RESULT: ${{ needs.ts-test.result }}
+          SELECTOR_CHECK_RESULT: ${{ needs.selector-check.result }}
+          TELEGRAM_REPORTING_BOT_RESULT: ${{ needs.telegram-reporting-bot.result }}
+          PUBLIC_AUDIT_RESULT: ${{ needs.public-audit.result }}
+        run: |
+          require_required_checks_green() {
+            failed=0
+            for check in "$@"; do
+              label="${check%%=*}"
+              result="${check#*=}"
+              if [ "$result" != 'success' ]; then
+                echo "$label failed with result: $result"
+                failed=1
+              fi
+            done
+            return "$failed"
+          }
+
+          require_required_checks_green \
+            'TypeScript workflow=success' \
+            'Selector check=success' \
+            'Telegram reporting bot script check=success' \
+            'Public audit=success'
+
+          for failed_check in \
+            'TypeScript workflow=failure' \
+            'Selector check=cancelled' \
+            'Telegram reporting bot script check=skipped' \
+            'Public audit=failure'
+          do
+            if self_test_output=$(require_required_checks_green \
+              "$failed_check" \
+              'other required check=success')
+            then
+              echo "success' self-test accepted a non-green required check: $failed_check"
+              exit 1
+            fi
+            expected_message="${failed_check%%=*} failed with result: ${failed_check#*=}"
+            if [ "$self_test_output" != "$expected_message" ]; then
+              echo "success' self-test produced the wrong refusal for: $failed_check"
+              echo "expected: $expected_message"
+              echo "actual: $self_test_output"
+              exit 1
+            fi
+          done
+
+          require_required_checks_green \
+            "TypeScript workflow=$TEST_RESULT" \
+            "Selector check=$SELECTOR_CHECK_RESULT" \
+            "Telegram reporting bot script check=$TELEGRAM_REPORTING_BOT_RESULT" \
+            "Public audit=$PUBLIC_AUDIT_RESULT"

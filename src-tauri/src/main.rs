@@ -30,9 +30,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod bootstrap;
+mod information_architecture;
 mod injection;
 mod screenshot;
 
+use information_architecture::get_information_architecture_destinations;
 use ipc::commands::{
     cmd_aead_open, cmd_aead_seal, cmd_fetch_pubkeys, cmd_generate_identity, cmd_init_keyserver,
     cmd_load_identity, cmd_osl_apply_burn, cmd_osl_bulk_set_whitelist,
@@ -62,6 +64,8 @@ use ipc::commands::{
 use ipc::scope::ScopeInput;
 use ipc::{AppState, IpcError, IpcResult};
 use runtime::ScreenshotProtection;
+use std::future::Future;
+use std::time::Duration;
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 // Phase F0: deep-link plugin extension trait. Brings the
 // `.deep_link()` method into scope on `&AppHandle`, returning the
@@ -161,6 +165,82 @@ async fn set_screenshot_protection(app: tauri::AppHandle, enabled: bool) -> IpcR
         ScreenshotProtection::Off
     };
     screenshot::apply_to_window(&window, protection)
+}
+
+async fn drive_prekey_replenishment_timer<F, Fut>(
+    interval: Duration,
+    max_ticks: Option<usize>,
+    mut tick: F,
+) where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let mut fired = 0usize;
+    tick().await;
+    fired += 1;
+    if max_ticks == Some(fired) {
+        return;
+    }
+
+    let mut iv = tokio::time::interval(interval);
+    // Consume tokio interval's immediate first tick. The explicit tick above is
+    // the launch-time run; periodic runs should start after one full interval.
+    iv.tick().await;
+    loop {
+        iv.tick().await;
+        tick().await;
+        fired += 1;
+        if max_ticks == Some(fired) {
+            return;
+        }
+    }
+}
+
+fn prekey_replenishment_outcome_label(
+    outcome: ipc::commands::PrekeyReplenishmentOutcome,
+) -> &'static str {
+    match outcome {
+        ipc::commands::PrekeyReplenishmentOutcome::InitialPublished { .. } => "initial-published",
+        ipc::commands::PrekeyReplenishmentOutcome::Replenished { .. } => "replenished",
+        ipc::commands::PrekeyReplenishmentOutcome::Skipped => "skipped",
+    }
+}
+
+fn spawn_prekey_replenishment_timer(app_handle: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        drive_prekey_replenishment_timer(
+            Duration::from_secs(ipc::commands::PREKEY_REPLENISH_INTERVAL_SECONDS),
+            None,
+            move || {
+                let app_handle = app_handle.clone();
+                async move {
+                    let result = tauri::async_runtime::spawn_blocking(move || {
+                        let state = app_handle.state::<AppState>();
+                        let dir = keystore::osl_config_dir().map_err(|_| {
+                            "OSL: prekey replenish refused: config dir is unavailable".to_string()
+                        })?;
+                        ipc::commands::run_prekey_replenishment_tick(state.inner(), &dir, None)
+                    })
+                    .await;
+                    match result {
+                        Ok(Ok(outcome)) => tracing::debug!(
+                            outcome = %prekey_replenishment_outcome_label(outcome),
+                            "OSL: prekey replenish timer tick completed"
+                        ),
+                        Ok(Err(error)) => tracing::debug!(
+                            error = %error,
+                            "OSL: prekey replenish timer tick refused"
+                        ),
+                        Err(error) => tracing::warn!(
+                            error = %error,
+                            "OSL: prekey replenish timer task join failed"
+                        ),
+                    }
+                }
+            },
+        )
+        .await;
+    });
 }
 
 /// Layer 10 / Phase 4 entry point. The injected boot script (see
@@ -970,11 +1050,12 @@ async fn osl_get_self_user_id(app: tauri::AppHandle) -> Result<String, String> {
 async fn osl_register_self_snowflake(
     app: tauri::AppHandle,
     snowflake: String,
+    ownership_proof: Option<keystore::AccountOwnershipProof>,
 ) -> Result<(), String> {
     let app_handle = app.clone();
     let result: Result<(), String> = tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
-        cmd_osl_register_self_snowflake(state.inner(), snowflake)
+        cmd_osl_register_self_snowflake(state.inner(), snowflake, ownership_proof)
     })
     .await
     .map_err(|e| format!("OSL: join error: {e}"))?;
@@ -1854,11 +1935,16 @@ async fn osl_list_key_change_alerts(
 
 /// User accepted a peer's new identity key → adopt as new baseline.
 #[tauri::command]
-async fn osl_accept_key_change(app: tauri::AppHandle, discord_id: String) -> Result<(), String> {
+async fn osl_accept_key_change(
+    app: tauri::AppHandle,
+    discord_id: String,
+    safety_number: String,
+) -> Result<(), String> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
-        ipc::commands::cmd_osl_accept_key_change(state.inner(), discord_id)
+        let proof = ipc::trust_ceremony_proof::TrustCeremonyProof::new(safety_number);
+        ipc::commands::cmd_osl_accept_key_change(state.inner(), discord_id, proof)
     })
     .await
     .map_err(|e| format!("OSL: join error: {e}"))?
@@ -2954,6 +3040,7 @@ fn main() {
             // `bootstrap::run_autostart` docs.
             let app_state = app.state::<AppState>();
             bootstrap::run_autostart(app_state.inner());
+            spawn_prekey_replenishment_timer(app.handle().clone());
 
             // F2.4: license-refresh task. `run_autostart` did the
             // synchronous cache-only classify (so the first webview
@@ -3107,6 +3194,7 @@ fn main() {
             stego_encode,
             stego_decode,
             status,
+            get_information_architecture_destinations,
             x25519_diffie_hellman,
             set_screenshot_protection,
             osl_encrypt_message,
@@ -3230,4 +3318,242 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running discord-privacy-client tauri app");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::Instant;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static CONFIG_DIR_LOCK: Mutex<()> = Mutex::new(());
+    static NEXT_CONFIG_DIR_ID: AtomicUsize = AtomicUsize::new(0);
+
+    struct IsolatedConfigDir {
+        path: PathBuf,
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl IsolatedConfigDir {
+        fn new() -> Self {
+            let guard = CONFIG_DIR_LOCK.lock().expect("config dir lock");
+            let path = std::env::temp_dir().join(format!(
+                "osl-prekey-timer-{}-{}",
+                std::process::id(),
+                NEXT_CONFIG_DIR_ID.fetch_add(1, Ordering::SeqCst)
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).expect("create isolated config dir");
+            keystore::set_active_account_dir(None);
+            keystore::set_base_dir_override(Some(path.clone()));
+            Self {
+                path,
+                _guard: guard,
+            }
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
+
+    impl Drop for IsolatedConfigDir {
+        fn drop(&mut self) {
+            keystore::set_active_account_dir(None);
+            keystore::set_base_dir_override(None);
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn read_http_request(stream: &mut std::net::TcpStream) -> Vec<u8> {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("set request read timeout");
+        let mut request = Vec::new();
+        let mut chunk = [0_u8; 4096];
+        let header_end = loop {
+            let read = stream.read(&mut chunk).expect("read request");
+            if read == 0 {
+                break request.len();
+            }
+            request.extend_from_slice(&chunk[..read]);
+            if let Some(position) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                break position;
+            }
+        };
+        let header_text = std::str::from_utf8(&request[..header_end]).expect("headers are utf8");
+        let content_length = header_text
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then_some(value.trim())
+            })
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0);
+        let mut body_read = request[header_end + 4..].len();
+        while body_read < content_length {
+            let read = stream.read(&mut chunk).expect("read request body");
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&chunk[..read]);
+            body_read += read;
+        }
+        request
+    }
+
+    fn successful_replenish_server() -> (String, mpsc::Receiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let address = listener.local_addr().expect("local address");
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept replenish request");
+            drop(listener);
+            let request = String::from_utf8(read_http_request(&mut stream)).expect("request utf8");
+            tx.send(request).expect("send replenish request");
+            let body = br#"{"user_id":"timer-user","opks_added":81}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .expect("write response headers");
+            stream.write_all(body).expect("write response body");
+        });
+        (format!("http://{address}"), rx)
+    }
+
+    #[tokio::test]
+    async fn prekey_replenishment_real_timer_driver() {
+        let isolated = IsolatedConfigDir::new();
+        let (server_url, replenish_rx) = successful_replenish_server();
+        let state = Arc::new(AppState::new());
+        let identity = keystore::generate_identity("timer-user".to_string());
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after Unix epoch")
+            .as_secs();
+        let prekeys = keystore::PrekeyState::new(&identity, keystore::PrekeyConfig::default(), now);
+        let sealer = keystore::select_best_sealer();
+        keystore::save_prekey_state(
+            &isolated.path().join("prekeys.json"),
+            &prekeys,
+            sealer.as_ref(),
+        )
+        .expect("seed persisted prekey state");
+        state.install_identity_with_prekey_state(identity, prekeys);
+        *state.keyserver.lock().expect("keyserver mutex poisoned") =
+            Some(keystore::KeyServerClient::new(server_url).expect("keyserver client"));
+
+        let invocations = Arc::new(AtomicUsize::new(0));
+        let fired_at = Arc::new(Mutex::new(Vec::new()));
+        let outcomes = Arc::new(Mutex::new(Vec::new()));
+        let started = Instant::now();
+        let state_for_driver = state.clone();
+        let dir_for_driver = isolated.path().to_path_buf();
+        let invocations_for_driver = invocations.clone();
+        let fired_at_for_driver = fired_at.clone();
+        let outcomes_for_driver = outcomes.clone();
+
+        let interval = Duration::from_millis(40);
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            drive_prekey_replenishment_timer(interval, Some(2), move || {
+                let state_for_tick = state_for_driver.clone();
+                let dir_for_tick = dir_for_driver.clone();
+                let invocation = invocations_for_driver.fetch_add(1, Ordering::SeqCst);
+                let fired_at_for_tick = fired_at_for_driver.clone();
+                let outcomes_for_tick = outcomes_for_driver.clone();
+                async move {
+                    fired_at_for_tick.lock().unwrap().push(Instant::now());
+                    let observed_remaining = if invocation == 0 { Some(100) } else { Some(19) };
+                    let outcome = tokio::task::spawn_blocking(move || {
+                        ipc::commands::run_prekey_replenishment_tick(
+                            &state_for_tick,
+                            &dir_for_tick,
+                            observed_remaining,
+                        )
+                    })
+                    .await
+                    .map_err(|e| format!("join error: {e}"))
+                    .and_then(|result| result);
+                    outcomes_for_tick.lock().unwrap().push(outcome);
+                }
+            }),
+        )
+        .await
+        .expect("driver should complete launch plus one periodic tick on a real timer");
+
+        assert_eq!(invocations.load(Ordering::SeqCst), 2);
+        let outcomes = outcomes.lock().unwrap();
+        assert_eq!(outcomes.len(), 2);
+        assert!(
+            matches!(
+                outcomes[0].as_ref(),
+                Ok(&ipc::commands::PrekeyReplenishmentOutcome::Skipped)
+            ),
+            "the launch tick must not publish when the server reports a full OPK pool"
+        );
+        assert!(
+            matches!(
+                outcomes[1].as_ref(),
+                Ok(&ipc::commands::PrekeyReplenishmentOutcome::Replenished { opks_added: 81 })
+            ),
+            "the first real periodic tick must top up depleted server OPKs through the replenish path"
+        );
+        let fired_at = fired_at.lock().unwrap();
+        assert_eq!(fired_at.len(), 2);
+        assert!(
+            fired_at[0].duration_since(started) < interval / 2,
+            "the launch replenish tick must run immediately instead of waiting for the periodic interval"
+        );
+        assert!(
+            fired_at[1].duration_since(fired_at[0]) >= interval - (interval / 5),
+            "the first periodic replenish tick must wait for the real interval"
+        );
+        assert!(
+            started.elapsed() >= interval - (interval / 5),
+            "after the launch tick, the first periodic tick must wait for the real interval"
+        );
+
+        let request = replenish_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("periodic replenish request captured");
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .starts_with("post /v1/prekey-bundle/replenish http/1.1")
+        );
+        let body = request
+            .split("\r\n\r\n")
+            .nth(1)
+            .expect("replenish request body present");
+        let json: serde_json::Value = serde_json::from_str(body).expect("replenish body json");
+        assert_eq!(json["user_id"].as_str(), Some("timer-user"));
+        assert!(json["batch_signature_b64"].as_str().is_some());
+        assert!(json["spk"].is_null());
+        let opks = json["opks"].as_array().expect("opks array");
+        assert_eq!(opks.len(), 81);
+        assert_eq!(opks.first().and_then(|opk| opk["id"].as_u64()), Some(100));
+        assert_eq!(opks.last().and_then(|opk| opk["id"].as_u64()), Some(180));
+
+        let loaded = keystore::load_prekey_state(
+            &isolated.path().join("prekeys.json"),
+            keystore::select_best_sealer().as_ref(),
+        )
+        .expect("replenished prekey state reloads");
+        assert_eq!(
+            loaded.next_opk_id, 181,
+            "periodic replenish_using_state must persist the newly allocated OPK ids"
+        );
+    }
 }

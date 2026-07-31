@@ -1,4 +1,21 @@
-//! Phase 8e: minimal decoy MP4 container.
+//! Decoy containers.
+//!
+//! Two unrelated decoys live here, and conflating them is the mistake this
+//! header exists to prevent:
+//!
+//! 1. **The legacy wire decoy** ([`decoy_mp4`]) — a 16x16 MP4 that
+//!    `seal_attachment_v3` prepends to OSL ciphertext so the *sealed object*
+//!    is a structurally-valid MP4. Ciphertext lives in the cipher store, not
+//!    on any platform CDN, so this decoy's only remaining job is keeping the
+//!    V3 wire format stable for objects already sealed. It is **not** what
+//!    OSL places on Discord and its bytes never traverse Discord.
+//! 2. **The layout decoy** ([`layout_decoy_png`]) — a payload-free image
+//!    whose only purpose is to make Discord allocate and lay out a media row.
+//!    It carries no ciphertext, no key material, and nothing derived from the
+//!    plaintext beyond a 4-way aspect bucket. See the section at the bottom of
+//!    this file.
+//!
+//! ## Phase 8e: minimal decoy MP4 container
 //!
 //! Built dynamically per the spec's Option B (ffmpeg-free fallback)
 //! and cached via [`OnceLock`]. Produces a structurally-valid ISO/IEC
@@ -27,8 +44,20 @@
 //! `seal_attachment_v3` (in [`crate::attachment_wire`]) appends a
 //! `free` box carrying the OSL payload AFTER the decoy bytes. Free
 //! boxes are ignorable per the ISO spec, so MP4 parsers walk past
-//! them without complaining and Discord's CDN preserves the trailing
-//! bytes verbatim (octet-stream-style; no transcoding).
+//! them without complaining.
+//!
+//! ## Correction: the "Discord preserves trailing bytes" claim is retired
+//!
+//! An earlier revision of this comment asserted that Discord's CDN
+//! "preserves the trailing bytes verbatim (octet-stream-style; no
+//! transcoding)". That claim was never verified against Discord and it is
+//! **no longer relied upon anywhere**. The sealed object is uploaded to
+//! OSL's own cipher store, so this `free` box only ever round-trips through
+//! storage OSL controls. Nothing in OSL requires Discord to preserve any
+//! byte of any file. If a future change wants to put ciphertext on a
+//! platform CDN, that claim must be re-established first — it is not
+//! established here, and the deletion-control argument (a platform CDN blob
+//! is outside the cipher store's TTL and outside burn) rules it out anyway.
 
 use std::sync::OnceLock;
 
@@ -313,6 +342,233 @@ pub fn iter_top_level_boxes(file: &[u8]) -> Vec<([u8; 4], std::ops::Range<usize>
     out
 }
 
+// ---------------------------------------------------------------------------
+// Layout decoy
+// ---------------------------------------------------------------------------
+//
+// The problem this solves: Discord renders a cover message as a text row of a
+// height Discord alone decides. A decrypted image is far taller than that row,
+// so painting it over the row occludes the row's neighbours and is wrong at
+// every scroll offset. Something has to *allocate* the vertical space, and the
+// only thing that can allocate space inside Discord is Discord.
+//
+// So OSL gives Discord a file to lay out. That file is payload-free: the
+// ciphertext stays in the cipher store, where OSL keeps deletion control and
+// burn still means something. The decoy exists only so Discord computes a
+// media rect, which OSL then *measures* and paints over.
+//
+// Three properties make the decoy safe to hand to a platform:
+//
+// * **It cannot leak the image.** [`layout_decoy_png`] takes a
+//   [`LayoutDecoyBucket`] and nothing else. There is no parameter through
+//   which plaintext, dimensions, filename or key material could reach it.
+//   That is a type-level guarantee, not a review convention.
+// * **It leaks ~2 bits.** The bucket is one of four, chosen from the image's
+//   aspect ratio alone by [`LayoutDecoyBucket::for_dimensions`], which clamps
+//   rather than extends: a 20:1 panorama and a 3:1 banner both land in `Wide`.
+// * **Its bytes differ every send.** The pixel field is random, so the decoy
+//   has no fixed hash or fixed length-for-bucket to fingerprint on.
+//
+// The decoy's own dimensions are deliberately *not* treated as the geometry
+// OSL paints into. If Discord clamps, scales, re-encodes or re-boxes it, that
+// changes nothing: the paint rect is measured live from Discord's own
+// accessibility tree every time it is used.
+
+/// Aspect bucket for the layout decoy. Four values, so a Discord row discloses
+/// about two bits of the protected image's shape and nothing else — not its
+/// dimensions, not its size, not its content.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LayoutDecoyBucket {
+    /// Wider than about 16:9.
+    Wide,
+    /// Between about 16:9 and about 6:5.
+    Landscape,
+    /// Between about 6:5 and about 5:6.
+    Square,
+    /// Taller than about 5:6, including everything more extreme.
+    Portrait,
+}
+
+/// Decoy pixel dimensions per bucket.
+///
+/// Chosen at or below the largest media box Discord has historically laid out
+/// so the common case needs no downscale. Nothing depends on that being right:
+/// a clamp on Discord's side changes the rect OSL measures, and the measured
+/// rect is the only geometry that is ever painted into.
+const WIDE_SIZE: (u32, u32) = (550, 232);
+const LANDSCAPE_SIZE: (u32, u32) = (466, 350);
+const SQUARE_SIZE: (u32, u32) = (350, 350);
+const PORTRAIT_SIZE: (u32, u32) = (262, 350);
+
+/// Largest image edge the bucket chooser will accept. Beyond this the caller is
+/// not describing a real picture and gets no bucket at all.
+const MAX_SOURCE_EDGE: u32 = 1 << 16;
+
+impl LayoutDecoyBucket {
+    /// Bucket for a decoded image's pixel dimensions.
+    ///
+    /// Returns `None` for degenerate input so a caller can fail closed rather
+    /// than place a row for an image it could not measure. Every non-degenerate
+    /// ratio maps into one of the four buckets by clamping, so no extra bit ever
+    /// escapes through an "unbucketable" case.
+    pub fn for_dimensions(width: u32, height: u32) -> Option<Self> {
+        if width == 0 || height == 0 || width > MAX_SOURCE_EDGE || height > MAX_SOURCE_EDGE {
+            return None;
+        }
+        // Integer comparison of width/height against the boundary ratios, so
+        // there is no float rounding at a bucket edge.
+        let (w, h) = (u64::from(width), u64::from(height));
+        Some(if w * 9 > h * 16 {
+            Self::Wide
+        } else if w * 5 > h * 6 {
+            Self::Landscape
+        } else if w * 6 >= h * 5 {
+            Self::Square
+        } else {
+            Self::Portrait
+        })
+    }
+
+    /// Pixel dimensions of the decoy this bucket produces.
+    pub const fn dimensions(self) -> (u32, u32) {
+        match self {
+            Self::Wide => WIDE_SIZE,
+            Self::Landscape => LANDSCAPE_SIZE,
+            Self::Square => SQUARE_SIZE,
+            Self::Portrait => PORTRAIT_SIZE,
+        }
+    }
+
+    /// Stable, non-secret label for the operator-facing payload preview.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Wide => "wide",
+            Self::Landscape => "landscape",
+            Self::Square => "square",
+            Self::Portrait => "portrait",
+        }
+    }
+}
+
+/// Palette entries for the decoy: two greys one step apart.
+///
+/// One step is below any practical perceptual threshold, so a reader who
+/// reveals the spoiler sees flat grey rather than static, while the pixel
+/// field underneath is still one random bit per pixel and therefore
+/// incompressible and different on every send.
+const DECOY_PALETTE: [[u8; 3]; 2] = [[0x8A, 0x8A, 0x8A], [0x8B, 0x8B, 0x8B]];
+
+/// Build the payload-free layout decoy for one bucket.
+///
+/// The signature is the security argument: there is no parameter through which
+/// the protected image, its filename, its size or any key material could reach
+/// this function, so the returned bytes cannot encode them. The only input is
+/// the bucket, and the only variable content is CSPRNG output.
+pub fn layout_decoy_png(bucket: LayoutDecoyBucket) -> Vec<u8> {
+    let (width, height) = bucket.dimensions();
+    // 1 bit per pixel, so one row is ceil(width / 8) bytes behind a PNG filter
+    // byte. `width` is a compile-time constant per bucket and far below any
+    // overflow boundary.
+    let row_bytes = width.div_ceil(8) as usize;
+    let stride = row_bytes + 1;
+    let raw_len = stride * height as usize;
+
+    let mut raw = Vec::with_capacity(raw_len);
+    let noise = crypto::random::random_bytes(row_bytes * height as usize);
+    for row in 0..height as usize {
+        raw.push(0u8); // filter type 0 (None) — nothing to predict, nothing to gain
+        raw.extend_from_slice(&noise[row * row_bytes..(row + 1) * row_bytes]);
+    }
+    debug_assert_eq!(raw.len(), raw_len);
+
+    let mut png = Vec::with_capacity(raw_len + 128);
+    png.extend_from_slice(&PNG_SIGNATURE);
+    write_png_chunk(&mut png, b"IHDR", |o| {
+        o.extend_from_slice(&width.to_be_bytes());
+        o.extend_from_slice(&height.to_be_bytes());
+        o.push(1); // bit depth
+        o.push(3); // colour type 3 = palette
+        o.push(0); // compression method (deflate)
+        o.push(0); // filter method
+        o.push(0); // interlace method (none)
+    });
+    write_png_chunk(&mut png, b"PLTE", |o| {
+        for entry in DECOY_PALETTE {
+            o.extend_from_slice(&entry);
+        }
+    });
+    write_png_chunk(&mut png, b"IDAT", |o| write_stored_zlib(o, &raw));
+    write_png_chunk(&mut png, b"IEND", |_| {});
+    png
+}
+
+const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+
+fn write_png_chunk(out: &mut Vec<u8>, chunk_type: &[u8; 4], body: impl FnOnce(&mut Vec<u8>)) {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(chunk_type);
+    body(&mut payload);
+    // Length counts the data only, never the type or the CRC.
+    let data_len = (payload.len() - 4) as u32;
+    out.extend_from_slice(&data_len.to_be_bytes());
+    let crc = crc32(&payload);
+    out.extend_from_slice(&payload);
+    out.extend_from_slice(&crc.to_be_bytes());
+}
+
+/// A zlib stream of deflate *stored* blocks.
+///
+/// Deliberately uncompressed. The pixel field is one random bit per pixel, so
+/// it is incompressible by construction and a real deflate would spend CPU to
+/// grow it. Stored blocks also keep this file free of a compression dependency
+/// and keep the decoy's length an exact function of its bucket plus framing.
+fn write_stored_zlib(out: &mut Vec<u8>, raw: &[u8]) {
+    // CMF=0x78 (deflate, 32 KiB window), FLG=0x01: no preset dictionary and
+    // (0x78 << 8 | 0x01) % 31 == 0, which is the header check zlib requires.
+    out.push(0x78);
+    out.push(0x01);
+    let mut offset = 0usize;
+    // An empty input still needs one final (empty) stored block, or the stream
+    // has no end and no decoder will accept it.
+    loop {
+        let remaining = raw.len() - offset;
+        let take = remaining.min(u16::MAX as usize);
+        let final_block = offset + take == raw.len();
+        out.push(u8::from(final_block)); // BFINAL, BTYPE=00 (stored)
+        out.extend_from_slice(&(take as u16).to_le_bytes());
+        out.extend_from_slice(&(!(take as u16)).to_le_bytes());
+        out.extend_from_slice(&raw[offset..offset + take]);
+        offset += take;
+        if final_block {
+            break;
+        }
+    }
+    out.extend_from_slice(&adler32(raw).to_be_bytes());
+}
+
+fn adler32(data: &[u8]) -> u32 {
+    const MOD: u32 = 65_521;
+    let mut a: u32 = 1;
+    let mut b: u32 = 0;
+    for byte in data {
+        a = (a + u32::from(*byte)) % MOD;
+        b = (b + a) % MOD;
+    }
+    (b << 16) | a
+}
+
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for byte in data {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+        }
+    }
+    !crc
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,5 +633,216 @@ mod tests {
         let a = decoy_mp4().as_ptr();
         let b = decoy_mp4().as_ptr();
         assert_eq!(a, b, "OnceLock should return the same slice on every call");
+    }
+
+    // ---------------- layout decoy ----------------
+
+    const ALL_BUCKETS: [LayoutDecoyBucket; 4] = [
+        LayoutDecoyBucket::Wide,
+        LayoutDecoyBucket::Landscape,
+        LayoutDecoyBucket::Square,
+        LayoutDecoyBucket::Portrait,
+    ];
+
+    #[test]
+    fn every_real_aspect_lands_in_exactly_one_of_four_buckets() {
+        // Ordinary shapes.
+        assert_eq!(
+            LayoutDecoyBucket::for_dimensions(4000, 1000),
+            Some(LayoutDecoyBucket::Wide)
+        );
+        assert_eq!(
+            LayoutDecoyBucket::for_dimensions(4032, 3024),
+            Some(LayoutDecoyBucket::Landscape)
+        );
+        assert_eq!(
+            LayoutDecoyBucket::for_dimensions(1000, 1000),
+            Some(LayoutDecoyBucket::Square)
+        );
+        assert_eq!(
+            LayoutDecoyBucket::for_dimensions(1080, 1920),
+            Some(LayoutDecoyBucket::Portrait)
+        );
+        // Extremes clamp into the same four, so an unusual picture never
+        // discloses more than an ordinary one.
+        assert_eq!(
+            LayoutDecoyBucket::for_dimensions(60_000, 3),
+            Some(LayoutDecoyBucket::Wide)
+        );
+        assert_eq!(
+            LayoutDecoyBucket::for_dimensions(3, 60_000),
+            Some(LayoutDecoyBucket::Portrait)
+        );
+        // Degenerate input gets no bucket, so the caller must fail closed
+        // rather than place a row it could not size.
+        assert_eq!(LayoutDecoyBucket::for_dimensions(0, 10), None);
+        assert_eq!(LayoutDecoyBucket::for_dimensions(10, 0), None);
+        assert_eq!(
+            LayoutDecoyBucket::for_dimensions(MAX_SOURCE_EDGE + 1, 10),
+            None
+        );
+    }
+
+    #[test]
+    fn bucket_boundaries_are_exact_and_monotonic() {
+        // Walking one aspect step across each boundary changes the bucket once
+        // and never skips one. 16:9 and 6:5 are the two boundary ratios.
+        assert_eq!(
+            LayoutDecoyBucket::for_dimensions(1600, 900),
+            Some(LayoutDecoyBucket::Landscape),
+            "exactly 16:9 is the top of Landscape, not the bottom of Wide"
+        );
+        assert_eq!(
+            LayoutDecoyBucket::for_dimensions(1601, 900),
+            Some(LayoutDecoyBucket::Wide)
+        );
+        assert_eq!(
+            LayoutDecoyBucket::for_dimensions(1200, 1000),
+            Some(LayoutDecoyBucket::Square)
+        );
+        assert_eq!(
+            LayoutDecoyBucket::for_dimensions(1201, 1000),
+            Some(LayoutDecoyBucket::Landscape)
+        );
+        assert_eq!(
+            LayoutDecoyBucket::for_dimensions(1000, 1200),
+            Some(LayoutDecoyBucket::Square),
+            "the reciprocal boundary is inclusive on the Square side"
+        );
+        assert_eq!(
+            LayoutDecoyBucket::for_dimensions(1000, 1201),
+            Some(LayoutDecoyBucket::Portrait)
+        );
+    }
+
+    /// The anti-leak property, stated as a test even though the real guarantee
+    /// is the signature: `layout_decoy_png` has no parameter that could carry
+    /// the protected image, so two completely different images of the same
+    /// bucket produce decoys that are indistinguishable in every way except
+    /// their random pixels.
+    #[test]
+    fn the_decoy_is_payload_free_and_never_repeats_its_bytes() {
+        for bucket in ALL_BUCKETS {
+            let first = layout_decoy_png(bucket);
+            let second = layout_decoy_png(bucket);
+            assert_eq!(
+                first.len(),
+                second.len(),
+                "decoy length must depend on the bucket alone"
+            );
+            assert_ne!(
+                first, second,
+                "a fixed-byte decoy would give every send the same CDN hash"
+            );
+        }
+    }
+
+    #[test]
+    fn decoy_declares_its_bucket_dimensions_and_stays_small() {
+        for bucket in ALL_BUCKETS {
+            let png = layout_decoy_png(bucket);
+            let (width, height) = bucket.dimensions();
+            assert_eq!(&png[..8], &PNG_SIGNATURE);
+            // IHDR body starts at 8 (signature) + 4 (length) + 4 (type).
+            assert_eq!(&png[12..16], b"IHDR");
+            assert_eq!(
+                u32::from_be_bytes([png[16], png[17], png[18], png[19]]),
+                width
+            );
+            assert_eq!(
+                u32::from_be_bytes([png[20], png[21], png[22], png[23]]),
+                height
+            );
+            assert_eq!(png[24], 1, "bit depth");
+            assert_eq!(png[25], 3, "colour type: palette");
+            assert!(
+                png.len() < 64 * 1024,
+                "{} decoy is {} bytes; a layout decoy must stay a plausible small upload",
+                bucket.label(),
+                png.len()
+            );
+        }
+    }
+
+    /// Walk the file the way a decoder does: every chunk length and CRC, the
+    /// chunk order, and the zlib stream inside IDAT. A decoy Discord refuses is
+    /// worse than no decoy at all, because the operator would be left with a
+    /// message whose row never gets its media rect.
+    #[test]
+    fn decoy_is_a_structurally_valid_png_a_decoder_would_accept() {
+        for bucket in ALL_BUCKETS {
+            let png = layout_decoy_png(bucket);
+            let (width, height) = bucket.dimensions();
+            let mut p = 8usize;
+            let mut order = Vec::new();
+            let mut idat = Vec::new();
+            while p + 8 <= png.len() {
+                let len = u32::from_be_bytes([png[p], png[p + 1], png[p + 2], png[p + 3]]) as usize;
+                let chunk_type = &png[p + 4..p + 8];
+                let body = &png[p + 8..p + 8 + len];
+                let stored = u32::from_be_bytes([
+                    png[p + 8 + len],
+                    png[p + 9 + len],
+                    png[p + 10 + len],
+                    png[p + 11 + len],
+                ]);
+                assert_eq!(
+                    stored,
+                    crc32(&png[p + 4..p + 8 + len]),
+                    "chunk CRC must verify"
+                );
+                order.push(std::str::from_utf8(chunk_type).unwrap().to_owned());
+                if chunk_type == b"IDAT" {
+                    idat.extend_from_slice(body);
+                }
+                p += 12 + len;
+            }
+            assert_eq!(p, png.len(), "no trailing bytes after IEND");
+            assert_eq!(order, vec!["IHDR", "PLTE", "IDAT", "IEND"]);
+
+            // zlib header, then stored deflate blocks, then adler32.
+            assert_eq!(idat[0], 0x78);
+            assert_eq!(idat[1], 0x01);
+            assert_eq!(
+                (u16::from(idat[0]) << 8 | u16::from(idat[1])) % 31,
+                0,
+                "zlib header check value"
+            );
+            let mut q = 2usize;
+            let mut raw = Vec::new();
+            loop {
+                let header = idat[q];
+                assert_eq!(header & 0b110, 0, "BTYPE must be 00 (stored)");
+                let len = u16::from_le_bytes([idat[q + 1], idat[q + 2]]);
+                let nlen = u16::from_le_bytes([idat[q + 3], idat[q + 4]]);
+                assert_eq!(len, !nlen, "stored block LEN/NLEN must be complements");
+                raw.extend_from_slice(&idat[q + 5..q + 5 + len as usize]);
+                q += 5 + len as usize;
+                if header & 1 == 1 {
+                    break;
+                }
+            }
+            assert_eq!(
+                u32::from_be_bytes([idat[q], idat[q + 1], idat[q + 2], idat[q + 3]]),
+                adler32(&raw),
+                "adler32 trailer must match the inflated data"
+            );
+            assert_eq!(q + 4, idat.len());
+
+            let row_bytes = width.div_ceil(8) as usize;
+            assert_eq!(raw.len(), (row_bytes + 1) * height as usize);
+            for row in 0..height as usize {
+                assert_eq!(raw[row * (row_bytes + 1)], 0, "filter byte must be None");
+            }
+        }
+    }
+
+    #[test]
+    fn crc32_and_adler32_match_their_published_vectors() {
+        // Guards the hand-rolled checksums against a silent transcription slip,
+        // which would produce a PNG every decoder rejects.
+        assert_eq!(crc32(b"IEND"), 0xAE42_6082);
+        assert_eq!(adler32(b"abc"), 0x024D_0127);
+        assert_eq!(adler32(b""), 1);
     }
 }

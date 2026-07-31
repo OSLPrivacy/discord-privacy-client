@@ -1,17 +1,15 @@
-//! Signed burn-alert system messages.
+//! Signed burn-alert payload prototype.
 //!
-//! When a sender opts into an alerted burn (per
-//! `docs/design/key-server-api.md` § "Alert messages"), the client
-//! uploads a regular wrapped-keys row with `content_type = "system"`
-//! and `system_message_kind = "burn-alert"`. The wrapped blob carries
-//! a signed payload so the recipient knows the alert wasn't forged
-//! by the server.
+//! This module implements only the canonical payload bytes and Ed25519
+//! sign/verify helpers. Current production code does not construct this
+//! payload, upload it through the wrapped-key client, fetch/decrypt it on a
+//! recipient, or render a verified alert. The separate bilateral `0x0A`
+//! revocation path does not call these helpers either. Signed burn alerts are
+//! therefore implemented-unwired and are not a working peer action.
 //!
-//! Note this module owns *only the signature layer* — the payload
-//! envelope (encryption to recipient, ratchet wrapping) is built at
-//! the higher integration layer that already handles regular text
-//! messages. Here we just produce / verify the bytes the sender's
-//! `IK_Ed25519` signs.
+//! The intended design would place this payload in a wrapped-keys row with
+//! `content_type = "system"` and `system_message_kind = "burn-alert"`.
+//! That sender/recipient integration does not currently exist.
 //!
 //! ## Wire format
 //!
@@ -28,8 +26,7 @@ use crypto::ed25519;
 
 pub const BURN_ALERT_DOMAIN: &[u8] = b"discord-privacy-client/burn-alert/v1";
 
-/// Signed burn-alert payload that goes inside the wrapped blob the
-/// recipient retrieves from `/v1/wrapped-keys/:content_id`.
+/// Prototype signed burn-alert payload intended for a future wrapped blob.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BurnAlertPayload {
     pub sender_id: String,
@@ -77,9 +74,10 @@ pub fn sign_burn_alert(sender: &Identity, payload: &BurnAlertPayload) -> ed25519
     ed25519::sign(&sender.ed25519_secret, &bytes)
 }
 
-/// Verify a burn-alert signature against the sender's Ed25519 public
-/// key. Recipients call this after decrypting the wrapped blob to
-/// confirm the alert came from the named sender.
+/// Verify a burn-alert signature against the sender's Ed25519 public key.
+///
+/// This primitive alone does not establish a production fetch, decrypt, sender
+/// binding, replay policy, or renderer path.
 pub fn verify_burn_alert(
     sender_public: &ed25519::PublicKey,
     payload: &BurnAlertPayload,

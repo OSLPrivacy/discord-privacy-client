@@ -1,0 +1,22 @@
+# Normalize line endings on checkout.
+#
+# WHY THIS EXISTS: scripts/check-app-claims.mjs pins a SHA-256 of its own source
+# in docs/design/osl-public-claim-allowlist.md as tamper evidence. GitHub's
+# windows-latest runners check out with core.autocrlf=true, so every LF became
+# CRLF, the bytes changed, and the digest could NEVER match on CI:
+#   "Claim-gate source contract mismatch: expected 251c1268..., actual 45e266b3..."
+# It reproduced on any PR, not just one. Without a committed eol policy a
+# content-addressed gate is unpinnable across platforms.
+* text=auto eol=lf
+
+# Genuinely require CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Never touch binaries.
+*.png binary
+*.ico binary
+*.woff2 binary
+*.exe binary
+*.dll binary
+*.msi binary

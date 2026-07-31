@@ -28,6 +28,10 @@ license.workspace = true
 # sites are synchronous (invoked from
 # `tauri::async_runtime::spawn_blocking`).
 crypto = { path = "../crypto" }
+# A48: `KeystoreBackedAnchor` implements `store::MonotonicAnchor` against the
+# OS credential store. `store` has no dependency back on this crate (see
+# crates/store/Cargo.toml), so this is a one-directional edge, not a cycle.
+store = { path = "../store" }
 base64 = "0.22"
 sha2 = { workspace = true }
 # Device-transfer recovery: deterministically derive the identity
@@ -49,6 +53,12 @@ serde_json = { workspace = true }
 subtle = { workspace = true }
 zeroize = { workspace = true }
 thiserror = { workspace = true }
+# Used by the Windows TPM eviction path to record WHY nothing was evicted
+# without ever claiming a key was destroyed. Those call sites live inside
+# `#[cfg(windows)] mod tpm`, so a Linux `cargo test -p keystore` compiles them
+# out and stays green while every Windows hub build breaks -- which is exactly
+# how this dependency went missing.
+tracing = { workspace = true }
 
 # OS credential-store fallback when TPM is unavailable. Native keyring
 # backends are opt-in features; this Windows build uses Credential Manager.

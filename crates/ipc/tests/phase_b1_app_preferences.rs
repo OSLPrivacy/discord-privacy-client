@@ -9,6 +9,8 @@ use ipc::app_preferences::{
 };
 use ipc::commands::{cmd_osl_get_app_preferences, cmd_osl_set_app_preferences, AppPreferencesDto};
 use ipc::AppState;
+use keystore::{set_active_account_dir, set_base_dir_override};
+use std::path::Path;
 use std::sync::Mutex;
 use tempfile::tempdir;
 
@@ -18,14 +20,33 @@ use tempfile::tempdir;
 // the password-touching tests against this mutex.
 static KEY_LOCK: Mutex<()> = Mutex::new(());
 
+struct ConfigDirGuard;
+
+impl Drop for ConfigDirGuard {
+    fn drop(&mut self) {
+        set_active_account_dir(None);
+        set_base_dir_override(None);
+        ipc::main_password::set_file_storage_key(None);
+    }
+}
+
+fn use_temp_config_dir(dir: &Path) -> ConfigDirGuard {
+    set_active_account_dir(None);
+    set_base_dir_override(Some(dir.to_path_buf()));
+    ipc::main_password::set_file_storage_key(None);
+    ConfigDirGuard
+}
+
 #[test]
 fn app_preferences_default_is_mode0() {
+    let _osl_serial = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let p = AppPreferences::default();
     assert_eq!(p.stego_mode, StegoMode::Mode0);
 }
 
 #[test]
 fn app_preferences_load_missing_file_returns_default() {
+    let _osl_serial = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempdir().unwrap();
     let path = dir.path().join("does-not-exist.json");
     let p = load_app_preferences(&path);
@@ -39,6 +60,7 @@ fn app_preferences_load_missing_file_returns_default() {
 /// new shape.
 #[test]
 fn app_preferences_legacy_fields_are_ignored() {
+    let _osl_serial = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempdir().unwrap();
     let path = dir.path().join("app_preferences_legacy.json");
     let legacy = r#"{
@@ -63,21 +85,22 @@ fn app_preferences_roundtrip_plain_then_encrypted() {
     let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     set_file_storage_key(None);
 
-    // ---- Plain ----
+    // ---- No main password: encrypted with an isolated device-bound fallback ----
     let dir = tempdir().unwrap();
-    let plain_path = dir.path().join("app_preferences_plain.json");
+    let _config_dir = use_temp_config_dir(dir.path());
+    let fallback_path = dir.path().join("app_preferences_fallback.json");
     let prefs = AppPreferences {
         version: APP_PREFERENCES_VERSION,
         stego_mode: StegoMode::Mode1,
         ..Default::default()
     };
-    write_app_preferences(&plain_path, &prefs).unwrap();
-    let plain_raw = std::fs::read(&plain_path).unwrap();
+    write_app_preferences(&fallback_path, &prefs).unwrap();
+    let fallback_raw = std::fs::read(&fallback_path).unwrap();
     assert!(
-        !plain_raw.starts_with(b"OSL-ENC1"),
-        "no-password write must be plain JSON"
+        fallback_raw.starts_with(b"OSL-ENC1"),
+        "no-password write must use the device-bound encrypted fallback"
     );
-    assert_eq!(load_app_preferences(&plain_path), prefs);
+    assert_eq!(load_app_preferences(&fallback_path), prefs);
 
     // ---- Encrypted ----
     let key = [0x33u8; 32];
@@ -107,6 +130,7 @@ fn tauri_get_then_set_writes_through_to_disk() {
 
     let state = AppState::new();
     let dir = tempdir().unwrap();
+    let _config_dir = use_temp_config_dir(dir.path());
     let path = dir.path().join("app_preferences.json");
 
     // Default state → Mode 0.

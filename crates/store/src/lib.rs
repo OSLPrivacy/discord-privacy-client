@@ -12,9 +12,14 @@
 //! ## Wire layout
 //!
 //! - SQLite file at `<app_data_dir>/messages.sqlite`.
-//! - `messages` rows store opaque XChaCha20-Poly1305 ciphertext +
-//!   per-row nonce. AAD = `discord_message_id` UTF-8 bytes (binds
-//!   row identity).
+//! - Each live `messages` row has a unique random content key. The body is
+//!   XChaCha20-Poly1305 ciphertext under that key; the store master key wraps
+//!   the content key. Both AEAD layers bind the record type, blind-index
+//!   selector, and content version.
+//! - Identifiers are **not** stored. Each row carries keyed blind indexes
+//!   (`mid_bi`, `chan_bi`, `sender_bi`) for equality lookup, and a sealed
+//!   `meta_ct` holding the real ids and timestamp. Ordering uses an opaque
+//!   `seq` rather than a plaintext timestamp.
 //! - `_meta` holds `schema_version` and a sealed canary for
 //!   wrong-`identity_secret` detection at `open()`.
 //!
@@ -24,10 +29,11 @@
 //!
 //! ## Crypto
 //!
-//! No new crypto in this crate. The data key is HKDF-SHA256
+//! No new crypto in this crate. The store master key is HKDF-SHA256
 //! derived from the caller-supplied 32-byte `identity_secret`
-//! (info = `"osl-message-store-v1"`, salt empty). Per-row AEAD
-//! is `crypto::aead::seal` with a fresh random 24-byte nonce.
+//! (info = `"osl-message-store-v1"`, salt empty); the blind-index key is a
+//! second, domain-separated derivation from the same secret. Message content
+//! keys and AEAD nonces come from the audited crypto crate's RNG.
 //!
 //! ## Threading
 //!
@@ -36,26 +42,23 @@
 //! callers serialize at the lock. SQLite WAL mode is enabled to
 //! reduce write-lock contention with future readers.
 //!
-//! ## What this crate does **not** do (yet)
-//!
-//! - It does not wire into the IPC `cmd_osl_decrypt_message` —
-//!   Phase 5b1 is the crate by itself, fully tested. Phase 5b2
-//!   wires the store into the decrypt path.
-//! - It does not provide search. v1 ships with `get` +
-//!   `list_by_channel` only. v1.5 adds a decrypt-and-scan path.
-//!   v2 may add blind-indexed encrypted search if the
-//!   decrypt-and-scan latency proves unworkable.
+//! Burn is terminal: a `put` cannot restore a row that
+//! [`MessageStore::mark_burned`] has destroyed.
 
+mod anchor;
 mod cipher;
 mod error;
 mod schema;
 
+pub use anchor::{AnchorKeystore, AnchorRecord, KeystoreBackedAnchor, MonotonicAnchor};
 pub use error::StoreError;
 
+use cipher::{AttachmentMeta, MessageMeta};
 use crypto::aead;
 use rusqlite::{params, Connection, OptionalExtension};
-use std::path::Path;
-use std::sync::Mutex;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 /// A single decrypted Discord message persisted in the local
 /// store.
@@ -100,18 +103,296 @@ pub struct StoredMessage {
 
 /// At-rest-encrypted message store backed by SQLite.
 ///
-/// Each row's plaintext is sealed with XChaCha20-Poly1305 keyed
-/// off an HKDF-SHA256 derivation of the caller-supplied
-/// `identity_secret`. The same secret on every open is required;
-/// a canary row in `_meta` detects mismatches at `open()` time
-/// (returns [`StoreError::Sealer`] without unlocking).
+/// Each message body is sealed under a unique random content key. An
+/// HKDF-SHA256 derivation of the caller-supplied `identity_secret` wraps those
+/// keys and seals metadata. The same secret on every open is required; a
+/// canary row in `_meta` detects mismatches at `open()` time (returns
+/// [`StoreError::Sealer`] without unlocking).
 ///
 /// Plaintext never lands on disk in any form, including
 /// tokenized. v1 deliberately ships without search — see
 /// `SECURITY.md` § "Search".
 pub struct MessageStore {
     conn: Mutex<Connection>,
+    /// Canonical path bound to the live `main` SQLite connection at open.
+    ///
+    /// This is retained so evidence callers can enumerate the Store-owned
+    /// database/WAL/SHM trio without substituting a second connection or a
+    /// filename-prefix scan.
+    storage_path: PathBuf,
     key: aead::Key,
+
+    /// Separate HKDF derivation used only for blind indexes, never for
+    /// encryption.
+    index_key: [u8; 32],
+    anchor: Option<anchor::AnchorBinding>,
+}
+
+/// Complete cryptographic and selector state needed to authenticate a live
+/// message row.
+struct MessageRow {
+    meta_nonce: Vec<u8>,
+    meta_ct: Vec<u8>,
+    ciphertext: Vec<u8>,
+    nonce: Vec<u8>,
+    burned: i64,
+    chan_bi: Vec<u8>,
+    sender_bi: Vec<u8>,
+    content_version: i64,
+    wrapped_key_nonce: Option<Vec<u8>>,
+    wrapped_key: Option<Vec<u8>>,
+}
+
+/// Complete cryptographic and selector state needed to authenticate a live
+/// attachment row.
+struct AttachmentRow {
+    meta_nonce: Vec<u8>,
+    meta_ct: Vec<u8>,
+    ciphertext: Vec<u8>,
+    nonce: Vec<u8>,
+    mid_bi: Vec<u8>,
+    sender_bi: Option<Vec<u8>>,
+    seq: i64,
+    content_version: i64,
+    wrapped_key_nonce: Option<Vec<u8>>,
+    wrapped_key: Option<Vec<u8>>,
+}
+
+fn read_attachment_manifest(
+    conn: &Connection,
+    key: &aead::Key,
+    mid_bi: &[u8],
+) -> Result<Option<cipher::AttachmentManifest>, StoreError> {
+    let row: Option<(i64, i64, Vec<u8>, Vec<u8>)> = conn
+        .query_row(
+            "SELECT complete, generation, nonce, ciphertext \
+               FROM attachment_manifests WHERE mid_bi = ?1",
+            params![mid_bi],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    row.map(|(complete, generation, nonce, ciphertext)| {
+        let complete = match complete {
+            0 => false,
+            1 => true,
+            _ => {
+                return Err(StoreError::Corrupted(
+                    "attachment manifest has invalid coverage column".to_string(),
+                ))
+            }
+        };
+        cipher::unseal_attachment_manifest(key, mid_bi, complete, generation, &nonce, &ciphertext)
+    })
+    .transpose()
+}
+
+fn write_attachment_manifest(
+    conn: &Connection,
+    key: &aead::Key,
+    mid_bi: &[u8],
+    manifest: &cipher::AttachmentManifest,
+) -> Result<(), StoreError> {
+    let (nonce, ciphertext) = cipher::seal_attachment_manifest(key, mid_bi, manifest)?;
+    conn.execute(
+        "INSERT INTO attachment_manifests \
+            (mid_bi, complete, generation, nonce, ciphertext) \
+         VALUES (?1, ?2, ?3, ?4, ?5) \
+         ON CONFLICT(mid_bi) DO UPDATE SET \
+            complete = excluded.complete, generation = excluded.generation, \
+            nonce = excluded.nonce, ciphertext = excluded.ciphertext",
+        params![
+            mid_bi,
+            if manifest.complete { 1i64 } else { 0i64 },
+            manifest.generation,
+            nonce,
+            ciphertext
+        ],
+    )?;
+    Ok(())
+}
+
+fn validate_attachment_manifest(
+    conn: &Connection,
+    key: &aead::Key,
+    index_key: &[u8; 32],
+    mid_bi: &[u8],
+) -> Result<cipher::AttachmentManifest, StoreError> {
+    let manifest = read_attachment_manifest(conn, key, mid_bi)?.ok_or_else(|| {
+        StoreError::Corrupted("live message or attachment set has no manifest".to_string())
+    })?;
+    let rows: Vec<(Vec<u8>, AttachmentRow)> = {
+        let mut stmt = conn.prepare(
+            "SELECT ck_bi, meta_nonce, meta_ct, ciphertext, nonce, mid_bi, sender_bi, \
+                    seq, content_version, wrapped_key_nonce, wrapped_key \
+               FROM attachments WHERE mid_bi = ?1 AND burned = 0 \
+              ORDER BY seq ASC, ck_bi ASC",
+        )?;
+        let mapped = stmt.query_map(params![mid_bi], |row| {
+            Ok((
+                row.get(0)?,
+                AttachmentRow {
+                    meta_nonce: row.get(1)?,
+                    meta_ct: row.get(2)?,
+                    ciphertext: row.get(3)?,
+                    nonce: row.get(4)?,
+                    mid_bi: row.get(5)?,
+                    sender_bi: row.get(6)?,
+                    seq: row.get(7)?,
+                    content_version: row.get(8)?,
+                    wrapped_key_nonce: row.get(9)?,
+                    wrapped_key: row.get(10)?,
+                },
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in mapped {
+            out.push(row?);
+        }
+        out
+    };
+    if rows.len() != manifest.entries.len() {
+        return Err(StoreError::Corrupted(
+            "attachment rows do not match authenticated manifest count".to_string(),
+        ));
+    }
+    let mut previous: Option<(&[u8], i64)> = None;
+    for ((ck_bi, row), expected) in rows.iter().zip(&manifest.entries) {
+        if let Some((previous_ck, previous_seq)) = previous {
+            if row.seq < previous_seq
+                || (row.seq == previous_seq && ck_bi.as_slice() <= previous_ck)
+            {
+                return Err(StoreError::Corrupted(
+                    "attachment manifest order is not canonical".to_string(),
+                ));
+            }
+        }
+        previous = Some((ck_bi, row.seq));
+        if row.content_version < 1 {
+            return Err(StoreError::Corrupted(
+                "attachment content version must be positive".to_string(),
+            ));
+        }
+        let metadata = cipher::unseal(
+            key,
+            &cipher::attachment_meta_aad(ck_bi, &row.mid_bi, row.seq, row.content_version),
+            &row.meta_nonce,
+            &row.meta_ct,
+        )?;
+        let meta = cipher::decode_attachment_meta(&metadata)?;
+        let expected_ck = cipher::blind_index(index_key, cipher::BI_CACHE_KEY, &meta.cache_key)?;
+        let expected_mid =
+            cipher::blind_index(index_key, cipher::BI_MESSAGE_ID, &meta.discord_message_id)?;
+        let expected_sender = match meta.sender_discord_id.as_deref() {
+            Some(sender) => Some(cipher::blind_index(
+                index_key,
+                cipher::BI_SENDER_ID,
+                sender,
+            )?),
+            None => None,
+        };
+        if expected_ck != *ck_bi || expected_mid != row.mid_bi || expected_sender != row.sender_bi {
+            return Err(StoreError::Corrupted(
+                "attachment selectors do not match authenticated metadata".to_string(),
+            ));
+        }
+        let wrapper_nonce = row.wrapped_key_nonce.as_deref().ok_or_else(|| {
+            StoreError::Corrupted("live attachment row has no wrapped-key nonce".to_string())
+        })?;
+        let wrapper = row.wrapped_key.as_deref().ok_or_else(|| {
+            StoreError::Corrupted("live attachment row has no wrapped content key".to_string())
+        })?;
+        cipher::unseal_attachment_body(
+            key,
+            ck_bi,
+            &row.mid_bi,
+            row.seq,
+            row.content_version,
+            &metadata,
+            wrapper_nonce,
+            wrapper,
+            &row.nonce,
+            &row.ciphertext,
+        )?;
+        let actual = cipher::attachment_manifest_entry(
+            ck_bi.clone(),
+            row.seq,
+            row.content_version,
+            &metadata,
+            &row.nonce,
+            &row.ciphertext,
+            wrapper_nonce,
+            wrapper,
+        );
+        if &actual != expected {
+            return Err(StoreError::Corrupted(
+                "attachment row does not match authenticated manifest".to_string(),
+            ));
+        }
+    }
+    Ok(manifest)
+}
+
+fn validate_all_attachment_manifests(
+    conn: &Connection,
+    key: &aead::Key,
+    index_key: &[u8; 32],
+) -> Result<(), StoreError> {
+    let mids: Vec<Vec<u8>> = {
+        let mut stmt = conn.prepare(
+            "SELECT mid_bi FROM messages WHERE burned = 0 \
+             UNION SELECT mid_bi FROM attachments WHERE burned = 0 \
+             UNION SELECT mid_bi FROM attachment_manifests \
+             ORDER BY mid_bi",
+        )?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        out
+    };
+    for mid_bi in mids {
+        let owner_count: i64 = conn.query_row(
+            "SELECT \
+                (SELECT COUNT(*) FROM messages WHERE mid_bi = ?1 AND burned = 0) + \
+                (SELECT COUNT(*) FROM attachments WHERE mid_bi = ?1 AND burned = 0)",
+            params![&mid_bi],
+            |row| row.get(0),
+        )?;
+        if owner_count == 0 {
+            let burned_owner: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM messages WHERE mid_bi = ?1 AND burned != 0",
+                params![&mid_bi],
+                |row| row.get(0),
+            )?;
+            if burned_owner != 0 {
+                // Older builds could set only the flag and leave the live
+                // envelope behind. Opening must preserve the repair path:
+                // `mark_burned` unconditionally shreds it and removes this
+                // stale manifest. No read API exposes a burned message.
+                continue;
+            }
+            return Err(StoreError::Corrupted(
+                "attachment manifest has no live owner or attachment rows".to_string(),
+            ));
+        }
+        validate_attachment_manifest(conn, key, index_key, &mid_bi)?;
+    }
+    Ok(())
+}
+
+fn transition_manifest_to_empty(
+    conn: &Connection,
+    key: &aead::Key,
+    index_key: &[u8; 32],
+    mid_bi: &[u8],
+) -> Result<(), StoreError> {
+    let mut manifest = validate_attachment_manifest(conn, key, index_key, mid_bi)?;
+    manifest.entries.clear();
+    manifest.generation = manifest.generation.checked_add(1).ok_or_else(|| {
+        StoreError::Corrupted("attachment manifest generation overflow".to_string())
+    })?;
+    write_attachment_manifest(conn, key, mid_bi, &manifest)
 }
 
 /// Flush destructive updates out of WAL and truncate the WAL file so
@@ -119,14 +400,129 @@ pub struct MessageStore {
 /// A non-zero busy result means another reader prevented the security
 /// checkpoint; surface that instead of claiming a completed shred.
 fn checkpoint_after_shred(conn: &Connection) -> Result<(), StoreError> {
-    let (busy, _, _): (i64, i64, i64) =
-        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })?;
+    let checkpoint = |conn: &Connection| -> Result<i64, StoreError> {
+        let (busy, _, _): (i64, i64, i64) =
+            conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?;
+        Ok(busy)
+    };
+    let busy = checkpoint(conn)?;
     if busy != 0 {
         return Err(StoreError::Sealer(
             "burn shred could not truncate SQLite WAL because a reader is active".to_string(),
         ));
+    }
+    // Do not clear the marker here.  With an external anchor, clearing it
+    // first creates an unanchored crash window.  The caller clears it in the
+    // same SQLite transaction that advances the cleared-state anchor.
+    Ok(())
+}
+
+/// Destroy one row's secret material in place, unconditionally.
+///
+/// Deliberately **not** predicated on `burned = 0`. A row can carry
+/// `burned = 1` and still hold an intact sealed body — every store written by
+/// a build before this fix can contain one — and skipping the shred because a
+/// flag was already set is how a destructive call came to report success over
+/// a secret it never touched.
+///
+/// The caller is responsible for the WAL checkpoint; batching one checkpoint
+/// after several shreds is why it is not done here.
+fn shred_row(conn: &Connection, mid_bi: &[u8]) -> Result<usize, StoreError> {
+    let rows = conn.execute(
+        "UPDATE messages
+            SET ciphertext = zeroblob(length(ciphertext)),
+                nonce = zeroblob(length(nonce)),
+                wrapped_key_nonce = NULL,
+                wrapped_key = NULL,
+                burned = 1
+          WHERE mid_bi = ?1",
+        params![mid_bi],
+    )?;
+    Ok(rows)
+}
+
+/// Destroy every attachment envelope belonging to a message while retaining a
+/// terminal selector-only stub. Keeping the stub makes burn terminal:
+/// `put_attachment` can identify and refuse a later history replay instead of
+/// silently recreating the deleted cache row.
+fn shred_attachment_rows(conn: &Connection, mid_bi: &[u8]) -> Result<usize, StoreError> {
+    let rows = conn.execute(
+        "UPDATE attachments
+            SET meta_nonce = zeroblob(length(meta_nonce)),
+                meta_ct = zeroblob(length(meta_ct)),
+                ciphertext = zeroblob(length(ciphertext)),
+                nonce = zeroblob(length(nonce)),
+                wrapped_key_nonce = NULL,
+                wrapped_key = NULL,
+                burned = 1
+          WHERE mid_bi = ?1",
+        params![mid_bi],
+    )?;
+    Ok(rows)
+}
+
+/// Refuse an identifier that would make a cache key or an AEAD associated-data
+/// value ambiguous.
+///
+/// Validation rather than a wider separator is deliberate: the attachment
+/// selector is derived from the canonical `message_id/filename` cache key, and
+/// legacy attachment bodies used that same string as AAD. Accepting a slash in
+/// either component would let two different pairs collapse to one selector.
+fn check_id(field: &str, value: &str) -> Result<(), StoreError> {
+    if value.contains('/') || value.contains('\0') {
+        return Err(StoreError::InvalidId(format!(
+            "{field} may not contain '/' or NUL"
+        )));
+    }
+    Ok(())
+}
+
+/// Next ordering counter. `seq` replaces the plaintext `decrypted_at` index:
+/// relative order is inherent to storing rows at all, whereas wall-clock
+/// timing was a leak, so the leak goes and the ordering stays.
+fn next_seq(conn: &Connection, table: &str) -> Result<i64, StoreError> {
+    let sql = format!("SELECT COALESCE(MAX(seq), 0) + 1 FROM {table}");
+    let seq: i64 = conn.query_row(&sql, [], |r| r.get(0))?;
+    Ok(seq)
+}
+
+/// Bind a SQLite connection to the exact file selected by `open`.
+///
+/// This check runs before any schema or pragma write. It prevents a harness,
+/// refactor, or future connection factory from validating one path while
+/// persisting protected rows in another, and refuses attached databases rather
+/// than silently widening the storage root.
+fn verify_connection_binding(conn: &Connection, expected_path: &Path) -> Result<(), StoreError> {
+    let expected = expected_path.canonicalize()?;
+    let databases: Vec<(String, PathBuf)> = {
+        let mut stmt = conn.prepare("PRAGMA database_list")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                PathBuf::from(row.get::<_, String>(2)?),
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        out
+    };
+    if databases.len() != 1 || databases[0].0 != "main" {
+        return Err(StoreError::StorageBinding(format!(
+            "expected one main database, found {} database bindings",
+            databases.len()
+        )));
+    }
+    let actual = databases[0].1.canonicalize()?;
+    if actual != expected {
+        return Err(StoreError::StorageBinding(format!(
+            "connection resolved to {}, expected {}",
+            actual.display(),
+            expected.display()
+        )));
     }
     Ok(())
 }
@@ -135,31 +531,94 @@ impl MessageStore {
     /// Open or create the message store at
     /// `<app_data_dir>/messages.sqlite`.
     ///
-    /// Creates `app_data_dir` if it does not exist. Runs schema
-    /// migrations (idempotent for the current version). On a
-    /// fresh DB, seeds a sealed canary under the derived data
-    /// key. On reopen, verifies the canary unseals correctly —
-    /// failure returns [`StoreError::Sealer`] (the
-    /// wrong-`identity_secret` signal) without exposing any
-    /// plaintext.
+    /// Creates `app_data_dir` if it does not exist. Verifies the canary
+    /// **before** running migrations — the v3→v4 step rewrites every row, and
+    /// doing that under an unproven key would destroy the database of anyone
+    /// who mistyped a password. Failure returns [`StoreError::Sealer`] (the
+    /// wrong-`identity_secret` signal) without exposing any plaintext.
     pub fn open(app_data_dir: &Path, identity_secret: &[u8; 32]) -> Result<Self, StoreError> {
+        Self::open_with_connection_factory(app_data_dir, identity_secret, None, |path| {
+            Ok(Connection::open(path)?)
+        })
+    }
+
+    /// Open with an external, durable monotonic anchor.  Only this mode
+    /// detects coherent SQLite rollback/replay; [`Self::open`] intentionally
+    /// retains compatibility but makes no such claim.
+    pub fn open_anchored(
+        app_data_dir: &Path,
+        identity_secret: &[u8; 32],
+        provider: Arc<dyn MonotonicAnchor>,
+    ) -> Result<Self, StoreError> {
+        // A provider record with no local database is a rollback/replacement
+        // signal, not permission to create a fresh SQLite file and discover
+        // the disagreement afterwards.  This is deliberately separate from
+        // unanchored first enrollment: only a provider-absent store may be
+        // created here.
+        let prospective_path = app_data_dir.join("messages.sqlite");
+        if !prospective_path.exists() {
+            let (store_id, _) = cipher::derive_anchor_material(identity_secret)?;
+            if provider.load(store_id)?.is_some() {
+                return Err(StoreError::Anchor(
+                    "provider has anchor state but local database is absent; refusing creation"
+                        .to_string(),
+                ));
+            }
+        }
+        Self::open_with_connection_factory(app_data_dir, identity_secret, Some(provider), |path| {
+            Ok(Connection::open(path)?)
+        })
+    }
+
+    /// Shared production initializer with an injectable connection factory.
+    ///
+    /// The trusted app-data root and the connection returned by the factory are
+    /// independent inputs. Production supplies the default SQLite opener;
+    /// tests can return a wrong-root connection and thereby exercise the exact
+    /// binding gate in the real initialization path. Keeping this seam private
+    /// prevents callers from widening the set of accepted roots.
+    fn open_with_connection_factory<F>(
+        app_data_dir: &Path,
+        identity_secret: &[u8; 32],
+        provider: Option<Arc<dyn MonotonicAnchor>>,
+        factory: F,
+    ) -> Result<Self, StoreError>
+    where
+        F: FnOnce(&Path) -> Result<Connection, StoreError>,
+    {
         std::fs::create_dir_all(app_data_dir)?;
         let path = app_data_dir.join("messages.sqlite");
-        let conn = Connection::open(&path)?;
-        // WAL mode reduces write-lock contention vs the default
-        // rollback journal; foreign_keys is on for completeness
-        // (we don't use FK constraints today, but enabling early
-        // means a future migration that introduces them works).
-        // pragma_update returns the row count; we don't care
-        // about the value, just that it doesn't fail.
+        let conn = factory(&path)?;
+        verify_connection_binding(&conn, &path)?;
+        let storage_path = path.canonicalize()?;
+        // This format refusal is key-independent and must run before even the
+        // persistent journal-mode pragma. A refused legacy profile is left
+        // byte-for-byte unchanged, not merely logically un-migrated.
+        schema::refuse_ambiguous_legacy_wrappers(&conn)?;
+
+        // This probe and anchor reconciliation are read-only.  In particular,
+        // do not create `_meta`, switch journal mode, or set a persistent
+        // pragma before an existing anchored v7/v8 generation has proved it
+        // is still the provider's current state.
+        let inspected_version = schema::inspect_schema_version(&conn)?;
+        let existing_anchor = match provider.as_ref() {
+            Some(provider) => {
+                anchor::AnchorBinding::reconcile_existing(&conn, identity_secret, provider.clone())?
+            }
+            None => None,
+        };
+        if existing_anchor.is_some() && !matches!(inspected_version, Some(7) | Some(8)) {
+            return Err(StoreError::Anchor(
+                "anchored migration before v7 is not journal-supported; refusing mutation"
+                    .to_string(),
+            ));
+        }
+
         conn.pragma_update(None, "journal_mode", "WAL")?;
         // Probe-4 fix: WAL's default synchronous=NORMAL is fast but
         // loses uncheckpointed writes on a hard kill (force-close,
-        // OS crash, power loss). User reports "saves some, reverts
-        // others" -- the reverted rows are the most recent before
-        // close. synchronous=FULL forces an fsync per WAL frame so
-        // every persisted message survives a hard kill. Cost is ~1
-        // extra fsync per put, which is cheap at chat-rate writes.
+        // OS crash, power loss). synchronous=FULL forces an fsync per
+        // WAL frame so every persisted message survives a hard kill.
         conn.pragma_update(None, "synchronous", "FULL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         // Burn operations overwrite or delete secret-bearing rows.
@@ -167,53 +626,324 @@ impl MessageStore {
         // leaving recoverable copies in free database pages.
         conn.pragma_update(None, "secure_delete", "ON")?;
 
-        schema::migrate(&conn)?;
+        schema::ensure_meta_table(&conn)?;
 
         let key = cipher::derive_key(identity_secret)?;
+        let index_key = cipher::derive_index_key(identity_secret)?;
         schema::check_canary(&conn, &key)?;
-
+        let anchor = match provider {
+            None => {
+                schema::migrate(&conn, &key, &index_key)?;
+                None
+            }
+            Some(provider) => match (inspected_version, existing_anchor) {
+                // An enrolled v7 profile must be reconciled before the
+                // migration removes any anchored metadata. An absent local and
+                // provider record is deliberately the distinct unanchored
+                // compatibility path: it migrates first, then enrolls v8.
+                (Some(7), Some(binding)) => {
+                    binding.migrate_v7_to_v8(&conn)?;
+                    Some(binding)
+                }
+                (Some(7), None) => {
+                    schema::migrate(&conn, &key, &index_key)?;
+                    Some(anchor::AnchorBinding::enroll_or_reconcile(
+                        &conn,
+                        identity_secret,
+                        provider,
+                    )?)
+                }
+                // A current enrolled profile was reconciled before ordinary
+                // open did any idempotent schema maintenance. Its digest has
+                // already bound the exact existing state.
+                (Some(8), Some(binding)) => {
+                    if anchor::AnchorBinding::migration_pending(&conn)? {
+                        binding.migrate_v7_to_v8(&conn)?;
+                    }
+                    Some(binding)
+                }
+                (Some(8), None) => {
+                    schema::migrate(&conn, &key, &index_key)?;
+                    Some(anchor::AnchorBinding::enroll_or_reconcile(
+                        &conn,
+                        identity_secret,
+                        provider,
+                    )?)
+                }
+                // The pre-mutation guard above returns for an existing
+                // pre-v7 anchor.  An absent local/provider record remains the
+                // explicitly distinct unanchored compatibility path.
+                (_, None) => {
+                    schema::migrate(&conn, &key, &index_key)?;
+                    Some(anchor::AnchorBinding::enroll_or_reconcile(
+                        &conn,
+                        identity_secret,
+                        provider,
+                    )?)
+                }
+                (_, Some(_)) => unreachable!("pre-mutation anchor guard returned"),
+            },
+        };
+        validate_all_attachment_manifests(&conn, &key, &index_key)?;
+        if schema::shred_checkpoint_pending(&conn)? {
+            checkpoint_after_shred(&conn)?;
+            if let Some(anchor) = &anchor {
+                let tx = conn.unchecked_transaction()?;
+                schema::clear_shred_checkpoint_pending(&tx)?;
+                anchor.commit(tx)?;
+            } else {
+                schema::clear_shred_checkpoint_pending(&conn)?;
+            }
+            // The marker clear is a WAL frame.  It is safe to truncate only
+            // after its anchored commit has succeeded.
+            checkpoint_after_shred(&conn)?;
+        }
         Ok(MessageStore {
             conn: Mutex::new(conn),
+            storage_path,
             key,
+            index_key,
+            anchor,
         })
+    }
+
+    /// Return the exact files attributable to this Store's live SQLite
+    /// connection: the main database and its WAL/SHM sidecars.
+    ///
+    /// The method rechecks the connection binding before deriving sidecar
+    /// names. It intentionally does not scan a directory, and it does not
+    /// claim anything about backups, staging files, or data outside this
+    /// Store-owned root.
+    pub fn live_storage_artifacts(&self) -> Result<[PathBuf; 3], StoreError> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        verify_connection_binding(&conn, &self.storage_path)?;
+        let root = self.storage_path.parent().ok_or_else(|| {
+            StoreError::StorageBinding("bound store path has no parent directory".to_string())
+        })?;
+        let artifacts = [
+            self.storage_path.clone(),
+            root.join("messages.sqlite-wal"),
+            root.join("messages.sqlite-shm"),
+        ];
+        for artifact in &artifacts {
+            if !artifact.is_file() {
+                return Err(StoreError::StorageBinding(format!(
+                    "live Store artifact is absent: {}",
+                    artifact.display()
+                )));
+            }
+        }
+        Ok(artifacts)
+    }
+
+    fn commit(&self, tx: rusqlite::Transaction<'_>) -> Result<(), StoreError> {
+        match &self.anchor {
+            Some(anchor) => anchor.commit(tx),
+            None => {
+                tx.commit()?;
+                Ok(())
+            }
+        }
+    }
+
+    /// `checkpoint_after_shred` clears a durable recovery marker in a second
+    /// SQLite transaction. Bind that post-checkpoint state too: otherwise an
+    /// anchored digest would describe the pre-checkpoint marker rather than
+    /// the database later reopened by the caller.
+    fn sync_anchor_after_checkpoint(&self, conn: &mut Connection) -> Result<(), StoreError> {
+        if let Some(anchor) = &self.anchor {
+            let tx = conn.transaction()?;
+            schema::clear_shred_checkpoint_pending(&tx)?;
+            anchor.commit(tx)?;
+        } else {
+            schema::clear_shred_checkpoint_pending(conn)?;
+        }
+        checkpoint_after_shred(conn)?;
+        Ok(())
+    }
+
+    fn bi(&self, domain: &[u8], value: &str) -> Result<Vec<u8>, StoreError> {
+        cipher::blind_index(&self.index_key, domain, value)
     }
 
     /// Insert or replace a message in the store.
     ///
-    /// Sealing happens inside this call: `msg.plaintext` is
-    /// AEAD-encrypted under the derived key, AAD =
-    /// `msg.discord_message_id` bytes, with a fresh random
-    /// nonce per call. The nonce + ciphertext go into the
-    /// `messages` row.
+    /// Sealing happens inside this call: `msg.plaintext` is encrypted under a
+    /// fresh per-write content key. That key is wrapped under the store master
+    /// key, and both layers authenticate the message selector, record type,
+    /// and monotonically increasing row version.
+    ///
+    /// ## Burn is terminal
+    ///
+    /// A `put` targeting a row that is already burned does **not** restore it.
+    /// The upsert carries `WHERE messages.burned = 0`, so a burned row keeps
+    /// its zeroed body and its burn flag, and the call is a silent no-op.
+    ///
+    /// This matters because it is ordinary behaviour, not an attack: the
+    /// receive observer re-decrypts a channel's history on every re-entry and
+    /// re-`put`s the same snowflakes. Before this predicate existed, one
+    /// re-entry after a burn wrote the sealed body straight back onto disk and
+    /// cleared `burned`, which made `THREAT_MODEL.md`'s "the local cached
+    /// plaintext of those messages is gone" false in normal use.
+    ///
+    /// A caller that hands in `burned: true` gets a **shredded** row: the
+    /// body is never written. Writing a live body under a burned flag was the
+    /// precondition that let `mark_burned` report success over an intact
+    /// secret.
+    ///
+    /// ## Ordering on re-put
+    ///
+    /// An existing row keeps its original `seq`. Re-decrypting history on
+    /// channel re-entry therefore no longer shuffles that history to the top
+    /// of the channel view.
     pub fn put(&self, msg: &StoredMessage) -> Result<(), StoreError> {
-        let aad = msg.discord_message_id.as_bytes();
-        let (nonce, ct) = cipher::seal(&self.key, aad, msg.plaintext.as_bytes())?;
+        check_id("discord_message_id", &msg.discord_message_id)?;
+        let mid_bi = self.bi(cipher::BI_MESSAGE_ID, &msg.discord_message_id)?;
+        let chan_bi = self.bi(cipher::BI_CHANNEL_ID, &msg.channel_id)?;
+        let sender_bi = self.bi(cipher::BI_SENDER_ID, &msg.sender_discord_id)?;
+        let meta = MessageMeta {
+            discord_message_id: msg.discord_message_id.clone(),
+            channel_id: msg.channel_id.clone(),
+            sender_discord_id: msg.sender_discord_id.clone(),
+            sender_osl_user_id: msg.sender_osl_user_id.clone(),
+            decrypted_at: msg.decrypted_at,
+        };
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let seq = next_seq(&tx, "messages")?;
+        let existing: Option<(Vec<u8>, Vec<u8>, i64, i64)> = tx
+            .query_row(
+                "SELECT meta_nonce, meta_ct, burned, content_version \
+                   FROM messages WHERE mid_bi = ?1",
+                params![mid_bi],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
 
-        let conn = self.conn.lock().expect("store mutex poisoned");
-        conn.execute(
+        if matches!(&existing, Some((_, _, burned, _)) if *burned != 0) {
+            return Ok(());
+        }
+        if existing.is_some() {
+            validate_attachment_manifest(&tx, &self.key, &self.index_key, &mid_bi)?;
+        }
+
+        let content_version = match existing {
+            Some((old_meta_nonce, old_meta_ct, _, old_version)) => {
+                if old_version < 1 {
+                    return Err(StoreError::Corrupted(
+                        "message content version must be positive".to_string(),
+                    ));
+                }
+                let old_meta_bytes = cipher::unseal(
+                    &self.key,
+                    &cipher::message_meta_aad(&mid_bi, old_version),
+                    &old_meta_nonce,
+                    &old_meta_ct,
+                )?;
+                let old_meta = cipher::decode_message_meta(&old_meta_bytes)?;
+                if old_meta.discord_message_id != msg.discord_message_id {
+                    return Err(StoreError::Corrupted(
+                        "message blind-index selector collision".to_string(),
+                    ));
+                }
+                old_version.checked_add(1).ok_or_else(|| {
+                    StoreError::Corrupted("message content version overflow".to_string())
+                })?
+            }
+            None => 1,
+        };
+
+        if msg.burned {
+            let (meta_nonce, meta_ct) = cipher::seal(
+                &self.key,
+                &cipher::message_meta_aad(&mid_bi, content_version),
+                &cipher::encode_message_meta(&meta),
+            )?;
+            tx.execute(
+                "INSERT INTO messages \
+                    (mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct, \
+                     ciphertext, nonce, seq, burned, content_version, \
+                     wrapped_key_nonce, wrapped_key) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, x'', x'', ?6, 1, \
+                         ?7, NULL, NULL) \
+                 ON CONFLICT(mid_bi) DO NOTHING",
+                params![
+                    mid_bi,
+                    chan_bi,
+                    sender_bi,
+                    meta_nonce,
+                    meta_ct,
+                    seq,
+                    content_version
+                ],
+            )?;
+            shred_row(&tx, &mid_bi)?;
+            tx.execute(
+                "DELETE FROM attachment_manifests WHERE mid_bi = ?1",
+                params![&mid_bi],
+            )?;
+            schema::mark_shred_checkpoint_pending(&tx)?;
+            self.commit(tx)?;
+            checkpoint_after_shred(&conn)?;
+            self.sync_anchor_after_checkpoint(&mut conn)?;
+            return Ok(());
+        }
+
+        let (meta_nonce, meta_ct) = cipher::seal(
+            &self.key,
+            &cipher::message_meta_aad(&mid_bi, content_version),
+            &cipher::encode_message_meta(&meta),
+        )?;
+        let sealed = cipher::seal_message_body(
+            &self.key,
+            &mid_bi,
+            content_version,
+            msg.plaintext.as_bytes(),
+        )?;
+        tx.execute(
             "INSERT INTO messages \
-                (discord_message_id, channel_id, sender_discord_id, \
-                 sender_osl_user_id, ciphertext, nonce, decrypted_at, burned) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
-             ON CONFLICT(discord_message_id) DO UPDATE SET \
-                channel_id = excluded.channel_id, \
-                sender_discord_id = excluded.sender_discord_id, \
-                sender_osl_user_id = excluded.sender_osl_user_id, \
+                (mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct, \
+                 ciphertext, nonce, seq, burned, content_version, \
+                 wrapped_key_nonce, wrapped_key) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10, ?11) \
+             ON CONFLICT(mid_bi) DO UPDATE SET \
+                chan_bi = excluded.chan_bi, \
+                sender_bi = excluded.sender_bi, \
+                meta_nonce = excluded.meta_nonce, \
+                meta_ct = excluded.meta_ct, \
                 ciphertext = excluded.ciphertext, \
                 nonce = excluded.nonce, \
-                decrypted_at = excluded.decrypted_at, \
-                burned = excluded.burned",
+                content_version = excluded.content_version, \
+                wrapped_key_nonce = excluded.wrapped_key_nonce, \
+                wrapped_key = excluded.wrapped_key \
+             WHERE messages.burned = 0",
             params![
-                msg.discord_message_id,
-                msg.channel_id,
-                msg.sender_discord_id,
-                msg.sender_osl_user_id,
-                ct,
-                nonce,
-                msg.decrypted_at,
-                if msg.burned { 1_i64 } else { 0_i64 },
+                mid_bi,
+                chan_bi,
+                sender_bi,
+                meta_nonce,
+                meta_ct,
+                sealed.ciphertext,
+                sealed.nonce,
+                seq,
+                content_version,
+                sealed.wrapped_key_nonce,
+                sealed.wrapped_key
             ],
         )?;
+        if read_attachment_manifest(&tx, &self.key, &mid_bi)?.is_none() {
+            write_attachment_manifest(
+                &tx,
+                &self.key,
+                &mid_bi,
+                &cipher::AttachmentManifest {
+                    complete: true,
+                    generation: 1,
+                    entries: Vec::new(),
+                },
+            )?;
+        }
+        self.commit(tx)?;
         Ok(())
     }
 
@@ -223,18 +953,34 @@ impl MessageStore {
     /// burned. Burned rows are filtered at the SQL level so
     /// callers can't accidentally surface them.
     pub fn get(&self, discord_message_id: &str) -> Result<Option<StoredMessage>, StoreError> {
+        check_id("discord_message_id", discord_message_id)?;
+        let mid_bi = self.bi(cipher::BI_MESSAGE_ID, discord_message_id)?;
         let conn = self.conn.lock().expect("store mutex poisoned");
-        let row_opt = conn
+        let row_opt: Option<MessageRow> = conn
             .query_row(
-                "SELECT channel_id, sender_discord_id, sender_osl_user_id, \
-                        ciphertext, nonce, decrypted_at, burned \
-                 FROM messages WHERE discord_message_id = ?1 AND burned = 0",
-                params![discord_message_id],
-                row_to_tuple,
+                "SELECT meta_nonce, meta_ct, ciphertext, nonce, burned, chan_bi, sender_bi, \
+                        content_version, wrapped_key_nonce, wrapped_key \
+                 FROM messages WHERE mid_bi = ?1 AND burned = 0",
+                params![mid_bi],
+                |r| {
+                    Ok(MessageRow {
+                        meta_nonce: r.get(0)?,
+                        meta_ct: r.get(1)?,
+                        ciphertext: r.get(2)?,
+                        nonce: r.get(3)?,
+                        burned: r.get(4)?,
+                        chan_bi: r.get(5)?,
+                        sender_bi: r.get(6)?,
+                        content_version: r.get(7)?,
+                        wrapped_key_nonce: r.get(8)?,
+                        wrapped_key: r.get(9)?,
+                    })
+                },
             )
             .optional()?;
-        let Some(t) = row_opt else { return Ok(None) };
-        Ok(Some(self.materialize(discord_message_id, t)?))
+        let Some(row) = row_opt else { return Ok(None) };
+        validate_attachment_manifest(&conn, &self.key, &self.index_key, &mid_bi)?;
+        Ok(Some(self.materialize(&mid_bi, row)?))
     }
 
     /// List the most-recently-decrypted messages for a channel,
@@ -250,21 +996,38 @@ impl MessageStore {
         channel_id: &str,
         limit: u32,
     ) -> Result<Vec<StoredMessage>, StoreError> {
+        let chan_bi = self.bi(cipher::BI_CHANNEL_ID, channel_id)?;
         let conn = self.conn.lock().expect("store mutex poisoned");
         let mut stmt = conn.prepare(
-            "SELECT discord_message_id, channel_id, sender_discord_id, \
-                    sender_osl_user_id, ciphertext, nonce, decrypted_at, burned \
+            "SELECT mid_bi, meta_nonce, meta_ct, ciphertext, nonce, burned, chan_bi, sender_bi, \
+                    content_version, wrapped_key_nonce, wrapped_key \
              FROM messages \
-             WHERE channel_id = ?1 AND burned = 0 \
-             ORDER BY decrypted_at DESC \
+             WHERE chan_bi = ?1 AND burned = 0 \
+             ORDER BY seq DESC, mid_bi DESC \
              LIMIT ?2",
         )?;
-        let rows = stmt.query_map(params![channel_id, i64::from(limit)], full_row_to_tuple)?;
+        let rows = stmt.query_map(params![chan_bi, i64::from(limit)], |r| {
+            Ok((
+                r.get::<_, Vec<u8>>(0)?,
+                MessageRow {
+                    meta_nonce: r.get(1)?,
+                    meta_ct: r.get(2)?,
+                    ciphertext: r.get(3)?,
+                    nonce: r.get(4)?,
+                    burned: r.get(5)?,
+                    chan_bi: r.get(6)?,
+                    sender_bi: r.get(7)?,
+                    content_version: r.get(8)?,
+                    wrapped_key_nonce: r.get(9)?,
+                    wrapped_key: r.get(10)?,
+                },
+            ))
+        })?;
         let mut out = Vec::new();
         for row in rows {
-            let t = row?;
-            let mid = t.0.clone();
-            out.push(materialize_full(&self.key, t, &mid)?);
+            let (mid_bi, row) = row?;
+            validate_attachment_manifest(&conn, &self.key, &self.index_key, &mid_bi)?;
+            out.push(self.materialize(&mid_bi, row)?);
         }
         Ok(out)
     }
@@ -274,119 +1037,249 @@ impl MessageStore {
     /// `list_by_channel` filters the audit-stub row out.
     ///
     /// Returns [`StoreError::NotFound`] if no row exists for
-    /// `discord_message_id`. Callers can distinguish "I burned
-    /// it" from "there was nothing to burn."
+    /// `discord_message_id`.
+    ///
+    /// ## Why this does not short-circuit on `burned = 1`
+    ///
+    /// It used to return `Ok(())` as soon as the flag was set, on the
+    /// assumption that a burned row had already been shredded. That assumption
+    /// does not hold: a row can carry `burned = 1` over an intact sealed body,
+    /// and every database written by a build before this fix may contain one.
+    /// The call then reported a completed destruction while the secret sat on
+    /// disk. Shredding unconditionally is cheap and removes the assumption
+    /// rather than documenting it.
     pub fn mark_burned(&self, discord_message_id: &str) -> Result<(), StoreError> {
-        let conn = self.conn.lock().expect("store mutex poisoned");
-        let burned_flag: Option<i64> = conn
+        let mid_bi = self.bi(cipher::BI_MESSAGE_ID, discord_message_id)?;
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let burned: Option<i64> = tx
             .query_row(
-                "SELECT burned FROM messages WHERE discord_message_id = ?1",
-                params![discord_message_id],
+                "SELECT burned FROM messages WHERE mid_bi = ?1",
+                params![&mid_bi],
                 |r| r.get(0),
             )
             .optional()?;
-        let Some(_) = burned_flag else {
+        if burned.is_none() {
             return Err(StoreError::NotFound(discord_message_id.to_string()));
-        };
-        if burned_flag == Some(1) {
-            return Ok(());
         }
-        conn.execute(
-            "UPDATE messages
-                SET ciphertext = zeroblob(length(ciphertext)),
-                    nonce = zeroblob(length(nonce)),
-                    wrapped_key = NULL,
-                    burned = 1,
-                    burned_at = strftime('%s','now')
-              WHERE discord_message_id = ?1",
-            params![discord_message_id],
+        if burned == Some(0) {
+            validate_attachment_manifest(&tx, &self.key, &self.index_key, &mid_bi)?;
+        }
+        shred_row(&tx, &mid_bi)?;
+        shred_attachment_rows(&tx, &mid_bi)?;
+        tx.execute(
+            "DELETE FROM attachment_manifests WHERE mid_bi = ?1",
+            params![&mid_bi],
         )?;
+        schema::mark_shred_checkpoint_pending(&tx)?;
+        self.commit(tx)?;
         checkpoint_after_shred(&conn)?;
+        self.sync_anchor_after_checkpoint(&mut conn)?;
         Ok(())
     }
 
-    /// Phase 7b: wipe the `wrapped_key` column on every row that
-    /// matches `(scope_type, scope_id)`, marking them burned at
-    /// the same time.
+    /// Shred every message in a scope, marking the rows burned.
     ///
-    /// `wrapped_key` is the per-recipient wrapped AES-GCM K from
-    /// the v=2 wire format ([`crate::wire_v2`]). Nulling it
-    /// removes the ability to re-derive K and thus to re-decrypt
-    /// the row's `ciphertext` after the fact — which is what
-    /// gives scope burns "real teeth" per
-    /// `docs/phase-7-design.md` §3.2.
+    /// `only_sender_discord_id`: when `Some(id)`, ONLY rows from that sender
+    /// are wiped — so a burn destroys the burner's OWN messages without nuking
+    /// everyone else's in the channel. When `None`, every row in the scope is
+    /// wiped (full-scope destruction, e.g. account burn).
     ///
-    /// Returns the number of rows touched (useful for the caller
-    /// to log "burned N messages" without a separate count
-    /// query).
-    /// Wipe the per-message keys for a scope so the rows can no longer
-    /// be decrypted (they revert to the cover wire).
+    /// Returns the number of rows touched.
     ///
-    /// `only_sender_discord_id`: when `Some(id)`, ONLY rows whose
-    /// `sender_discord_id == id` are wiped — used so a burn destroys
-    /// the burner's OWN messages without nuking everyone else's in the
-    /// channel (a server burn used to blank the whole channel). When
-    /// `None`, every row in the scope is wiped (full-scope destruction,
-    /// e.g. account burn).
+    /// ## What `scope_id` matches
+    ///
+    /// Nothing in this repository has ever written the old `scope_type` /
+    /// `scope_id` columns, so a predicate over them matched **zero**
+    /// normally-written rows: this call destroyed nothing and returned 0 while
+    /// its caller reported a successful burn. Those columns are gone in v4 —
+    /// a column that is never written is a lie about capability — and matching
+    /// runs against the channel blind index, whose value `scope_id` is for the
+    /// channel-shaped scopes (`dm`, `gc`, `server_channel`).
+    ///
+    /// A server-wide `scope_id` matches no channel, so this cannot
+    /// over-delete: snowflakes are unique. `scope_type` is retained in the
+    /// signature for caller compatibility.
+    ///
+    /// For v5 message and v6 attachment bodies this destroys the selected
+    /// local content-key wrappers plus physically zeroing their ciphertext
+    /// fields. It says nothing about Discord's copy, peer devices, or backups.
     pub fn wipe_wrapped_keys_in_scope(
         &self,
-        scope_type: &str,
+        _scope_type: &str,
         scope_id: &str,
         only_sender_discord_id: Option<&str>,
     ) -> Result<usize, StoreError> {
-        let conn = self.conn.lock().expect("store mutex poisoned");
+        let chan_bi = self.bi(cipher::BI_CHANNEL_ID, scope_id)?;
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let sender_bi = only_sender_discord_id
+            .map(|sender| self.bi(cipher::BI_SENDER_ID, sender))
+            .transpose()?;
+        let target_mids: Vec<Vec<u8>> = {
+            let sql = if sender_bi.is_some() {
+                "SELECT mid_bi FROM messages \
+                  WHERE chan_bi = ?1 AND sender_bi = ?2 AND burned = 0"
+            } else {
+                "SELECT mid_bi FROM messages WHERE chan_bi = ?1 AND burned = 0"
+            };
+            let mut out = Vec::new();
+            let mut stmt = tx.prepare(sql)?;
+            if let Some(sender_bi) = sender_bi.as_deref() {
+                let mapped = stmt.query_map(params![&chan_bi, sender_bi], |row| row.get(0))?;
+                for row in mapped {
+                    out.push(row?);
+                }
+            } else {
+                let mapped = stmt.query_map(params![&chan_bi], |row| row.get(0))?;
+                for row in mapped {
+                    out.push(row?);
+                }
+            }
+            out
+        };
+        for mid_bi in &target_mids {
+            validate_attachment_manifest(&tx, &self.key, &self.index_key, mid_bi)?;
+        }
+        match sender_bi.as_deref() {
+            Some(sender_bi) => {
+                tx.execute(
+                    "DELETE FROM attachment_manifests WHERE mid_bi IN ( \
+                        SELECT mid_bi FROM messages WHERE chan_bi = ?1 AND sender_bi = ?2)",
+                    params![&chan_bi, sender_bi],
+                )?;
+            }
+            None => {
+                tx.execute(
+                    "DELETE FROM attachment_manifests WHERE mid_bi IN ( \
+                        SELECT mid_bi FROM messages WHERE chan_bi = ?1)",
+                    params![&chan_bi],
+                )?;
+            }
+        }
+        match sender_bi.as_deref() {
+            Some(sender_bi) => {
+                tx.execute(
+                    "UPDATE attachments
+                        SET meta_nonce = zeroblob(length(meta_nonce)),
+                            meta_ct = zeroblob(length(meta_ct)),
+                            ciphertext = zeroblob(length(ciphertext)),
+                            nonce = zeroblob(length(nonce)),
+                            wrapped_key_nonce = NULL,
+                            wrapped_key = NULL,
+                            burned = 1
+                      WHERE mid_bi IN (
+                        SELECT mid_bi FROM messages
+                         WHERE chan_bi = ?1 AND sender_bi = ?2
+                      )",
+                    params![&chan_bi, sender_bi],
+                )?;
+            }
+            None => {
+                tx.execute(
+                    "UPDATE attachments
+                        SET meta_nonce = zeroblob(length(meta_nonce)),
+                            meta_ct = zeroblob(length(meta_ct)),
+                            ciphertext = zeroblob(length(ciphertext)),
+                            nonce = zeroblob(length(nonce)),
+                            wrapped_key_nonce = NULL,
+                            wrapped_key = NULL,
+                            burned = 1
+                      WHERE mid_bi IN (
+                        SELECT mid_bi FROM messages WHERE chan_bi = ?1
+                      )",
+                    params![&chan_bi],
+                )?;
+            }
+        }
         let rows = match only_sender_discord_id {
-            Some(sender) => conn.execute(
+            Some(sender) => {
+                let sender_bi = self.bi(cipher::BI_SENDER_ID, sender)?;
+                tx.execute(
+                    "UPDATE messages \
+                        SET ciphertext = zeroblob(length(ciphertext)), \
+                            nonce = zeroblob(length(nonce)), \
+                            wrapped_key_nonce = NULL, wrapped_key = NULL, \
+                            burned = 1 \
+                      WHERE chan_bi = ?1 AND sender_bi = ?2",
+                    params![chan_bi, sender_bi],
+                )?
+            }
+            None => tx.execute(
                 "UPDATE messages \
                     SET ciphertext = zeroblob(length(ciphertext)), \
-                        nonce = zeroblob(length(nonce)), wrapped_key = NULL, \
-                        burned = 1, burned_at = strftime('%s','now') \
-                  WHERE scope_type = ?1 AND scope_id = ?2 AND sender_discord_id = ?3",
-                params![scope_type, scope_id, sender],
-            )?,
-            None => conn.execute(
-                "UPDATE messages \
-                    SET ciphertext = zeroblob(length(ciphertext)), \
-                        nonce = zeroblob(length(nonce)), wrapped_key = NULL, \
-                        burned = 1, burned_at = strftime('%s','now') \
-                  WHERE scope_type = ?1 AND scope_id = ?2",
-                params![scope_type, scope_id],
+                        nonce = zeroblob(length(nonce)), \
+                        wrapped_key_nonce = NULL, wrapped_key = NULL, \
+                        burned = 1 \
+                  WHERE chan_bi = ?1",
+                params![chan_bi],
             )?,
         };
+        schema::mark_shred_checkpoint_pending(&tx)?;
+        self.commit(tx)?;
         checkpoint_after_shred(&conn)?;
+        self.sync_anchor_after_checkpoint(&mut conn)?;
         Ok(rows)
     }
 
-    /// 7d-FIX1: full data destruction for a channel. Unlike
-    /// `wipe_wrapped_keys_in_scope` which leaves the encrypted
-    /// `ct` column intact and merely marks rows burned, this
-    /// DELETE removes every row for `channel_id` entirely. The
-    /// receive observer's re-decrypt pass then has no history
-    /// row to materialize — combined with the JS-side
-    /// `__oslBurnedScopes` cache that skips dispatch, the user's
-    /// view of the channel becomes pure ciphertext.
+    /// Full data destruction for a channel: remove every row for `channel_id`
+    /// entirely, along with the cached attachments those rows own.
     ///
     /// `secure_delete=ON` scrubs freed database cells and an immediate
     /// truncating checkpoint removes pre-delete page images from WAL.
     ///
-    /// Returns the row count for diagnostic logging.
+    /// Returns the message row count for diagnostic logging.
     pub fn delete_messages_in_channel(&self, channel_id: &str) -> Result<usize, StoreError> {
-        let conn = self.conn.lock().expect("store mutex poisoned");
-        let rows = conn.execute(
-            "DELETE FROM messages WHERE channel_id = ?1",
-            params![channel_id],
+        let chan_bi = self.bi(cipher::BI_CHANNEL_ID, channel_id)?;
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let target_mids: Vec<Vec<u8>> = {
+            let mut stmt =
+                tx.prepare("SELECT mid_bi FROM messages WHERE chan_bi = ?1 AND burned = 0")?;
+            let mapped = stmt.query_map(params![&chan_bi], |row| row.get(0))?;
+            let mut out = Vec::new();
+            for row in mapped {
+                out.push(row?);
+            }
+            out
+        };
+        for mid_bi in &target_mids {
+            validate_attachment_manifest(&tx, &self.key, &self.index_key, mid_bi)?;
+        }
+        // Drop the cached attachment plaintext FIRST, while the message rows
+        // that identify it still exist. Deleting the messages first orphans
+        // those attachment rows: nothing then links them to a channel, so no
+        // later burn predicate can find them and `get_attachment` keeps
+        // serving the decrypted bytes of a message that no longer exists.
+        tx.execute(
+            "DELETE FROM attachments WHERE mid_bi IN \
+                (SELECT mid_bi FROM messages WHERE chan_bi = ?1)",
+            params![&chan_bi],
         )?;
+        tx.execute(
+            "DELETE FROM attachment_manifests WHERE mid_bi IN \
+                (SELECT mid_bi FROM messages WHERE chan_bi = ?1)",
+            params![&chan_bi],
+        )?;
+        let rows = tx.execute("DELETE FROM messages WHERE chan_bi = ?1", params![chan_bi])?;
+        schema::mark_shred_checkpoint_pending(&tx)?;
+        self.commit(tx)?;
         checkpoint_after_shred(&conn)?;
+        self.sync_anchor_after_checkpoint(&mut conn)?;
         Ok(rows)
     }
 
-    /// Beta 1.0: persist a decrypted attachment's bytes, sealed at
-    /// rest (AAD = cache_key), so a channel re-entry or app restart
-    /// can rehydrate the image/file without re-fetching from the CDN
-    /// and re-decrypting. `cache_key` is
-    /// `"<discord_message_id>/<random_filename>"`. Insert-or-replace
-    /// keyed on cache_key. The caller is expected to cap the size it
-    /// hands in (large videos aren't worth persisting).
+    /// Persist a decrypted attachment under a fresh per-write content key.
+    ///
+    /// The master key wraps that content key; it never encrypts attachment
+    /// bytes directly. Metadata, body, and wrapper all authenticate the
+    /// attachment selector, owning message selector, stable ordering counter,
+    /// and monotonically increasing content version. Body and wrapper also
+    /// commit to the canonical metadata, while the wrapper commits to the
+    /// exact body nonce and ciphertext.
+    ///
+    /// A burned attachment stub is terminal. Re-observing history cannot
+    /// recreate the bytes destroyed by a prior message burn.
     #[allow(clippy::too_many_arguments)]
     pub fn put_attachment(
         &self,
@@ -396,232 +1289,837 @@ impl MessageStore {
         plaintext: &[u8],
         // Scope + sender so a burn can wipe the burner's cached
         // attachments precisely. `None` is tolerated (legacy callers /
-        // unknown context) — such rows just won't match a scope wipe.
+        // unknown context); such rows are still reached through their
+        // parent message.
         scope_type: Option<&str>,
         scope_id: Option<&str>,
         sender_discord_id: Option<&str>,
     ) -> Result<(), StoreError> {
+        check_id("discord_message_id", discord_message_id)?;
+        check_id("random_filename", random_filename)?;
         let cache_key = format!("{discord_message_id}/{random_filename}");
-        let (nonce, ct) = cipher::seal(&self.key, cache_key.as_bytes(), plaintext)?;
+        let ck_bi = self.bi(cipher::BI_CACHE_KEY, &cache_key)?;
+        let mid_bi = self.bi(cipher::BI_MESSAGE_ID, discord_message_id)?;
+        let sender_bi = match sender_discord_id {
+            Some(s) => Some(self.bi(cipher::BI_SENDER_ID, s)?),
+            None => None,
+        };
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let parent_burned: Option<i64> = tx
+            .query_row(
+                "SELECT burned FROM messages WHERE mid_bi = ?1",
+                params![&mid_bi],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if matches!(parent_burned, Some(burned) if burned != 0) {
+            return Ok(());
+        }
+        let existing_manifest = read_attachment_manifest(&tx, &self.key, &mid_bi)?;
+        let mut manifest = match existing_manifest {
+            Some(_) => validate_attachment_manifest(&tx, &self.key, &self.index_key, &mid_bi)?,
+            None => cipher::AttachmentManifest {
+                complete: true,
+                generation: 0,
+                entries: Vec::new(),
+            },
+        };
+        let existing: Option<(AttachmentRow, i64)> = tx
+            .query_row(
+                "SELECT meta_nonce, meta_ct, ciphertext, nonce, mid_bi, sender_bi, \
+                        seq, content_version, wrapped_key_nonce, wrapped_key, burned \
+                   FROM attachments WHERE ck_bi = ?1",
+                params![&ck_bi],
+                |row| {
+                    Ok((
+                        AttachmentRow {
+                            meta_nonce: row.get(0)?,
+                            meta_ct: row.get(1)?,
+                            ciphertext: row.get(2)?,
+                            nonce: row.get(3)?,
+                            mid_bi: row.get(4)?,
+                            sender_bi: row.get(5)?,
+                            seq: row.get(6)?,
+                            content_version: row.get(7)?,
+                            wrapped_key_nonce: row.get(8)?,
+                            wrapped_key: row.get(9)?,
+                        },
+                        row.get(10)?,
+                    ))
+                },
+            )
+            .optional()?;
+        if matches!(&existing, Some((_, burned)) if *burned != 0) {
+            return Ok(());
+        }
+        if existing.is_some() && manifest.generation == 0 {
+            return Err(StoreError::Corrupted(
+                "live attachment row has no authenticated manifest".to_string(),
+            ));
+        }
+
+        let (seq, content_version) = match existing {
+            Some((old, _)) => {
+                if old.content_version < 1 {
+                    return Err(StoreError::Corrupted(
+                        "attachment content version must be positive".to_string(),
+                    ));
+                }
+                let old_metadata = cipher::unseal(
+                    &self.key,
+                    &cipher::attachment_meta_aad(&ck_bi, &old.mid_bi, old.seq, old.content_version),
+                    &old.meta_nonce,
+                    &old.meta_ct,
+                )?;
+                let old_meta = cipher::decode_attachment_meta(&old_metadata)?;
+                if old_meta.cache_key != cache_key {
+                    return Err(StoreError::Corrupted(
+                        "attachment blind-index selector collision".to_string(),
+                    ));
+                }
+                let expected_mid = self.bi(cipher::BI_MESSAGE_ID, &old_meta.discord_message_id)?;
+                let expected_sender = match old_meta.sender_discord_id.as_deref() {
+                    Some(sender) => Some(self.bi(cipher::BI_SENDER_ID, sender)?),
+                    None => None,
+                };
+                if old.mid_bi != expected_mid || old.sender_bi != expected_sender {
+                    return Err(StoreError::Corrupted(
+                        "existing attachment selectors do not match sealed metadata".to_string(),
+                    ));
+                }
+                let wrapper_nonce = old.wrapped_key_nonce.as_deref().ok_or_else(|| {
+                    StoreError::Corrupted(
+                        "live attachment row has no wrapped-key nonce".to_string(),
+                    )
+                })?;
+                let wrapper = old.wrapped_key.as_deref().ok_or_else(|| {
+                    StoreError::Corrupted(
+                        "live attachment row has no wrapped content key".to_string(),
+                    )
+                })?;
+                // Validate the complete previous envelope before replacing it.
+                // Otherwise a re-put could erase evidence of a partial row or
+                // stale replay and turn corruption into a successful update.
+                cipher::unseal_attachment_body(
+                    &self.key,
+                    &ck_bi,
+                    &old.mid_bi,
+                    old.seq,
+                    old.content_version,
+                    &old_metadata,
+                    wrapper_nonce,
+                    wrapper,
+                    &old.nonce,
+                    &old.ciphertext,
+                )?;
+                (
+                    old.seq,
+                    old.content_version.checked_add(1).ok_or_else(|| {
+                        StoreError::Corrupted("attachment content version overflow".to_string())
+                    })?,
+                )
+            }
+            None => (next_seq(&tx, "attachments")?, 1),
+        };
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
-        let conn = self.conn.lock().expect("store mutex poisoned");
-        conn.execute(
+        let meta = AttachmentMeta {
+            cache_key: cache_key.clone(),
+            discord_message_id: discord_message_id.to_string(),
+            random_filename: random_filename.to_string(),
+            mime: mime.to_string(),
+            byte_len: plaintext.len() as i64,
+            created_at: now,
+            scope_type: scope_type.map(str::to_string),
+            scope_id: scope_id.map(str::to_string),
+            sender_discord_id: sender_discord_id.map(str::to_string),
+        };
+        let metadata = cipher::encode_attachment_meta(&meta);
+        let sealed = cipher::seal_attachment_body(
+            &self.key,
+            &ck_bi,
+            &mid_bi,
+            seq,
+            content_version,
+            &metadata,
+            plaintext,
+        )?;
+        tx.execute(
             "INSERT INTO attachments \
-                (cache_key, discord_message_id, random_filename, mime, \
-                 ciphertext, nonce, byte_len, created_at, \
-                 scope_type, scope_id, sender_discord_id) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
-             ON CONFLICT(cache_key) DO UPDATE SET \
-                mime = excluded.mime, \
+                (ck_bi, mid_bi, sender_bi, meta_nonce, meta_ct, ciphertext, nonce, seq, \
+                 burned, content_version, wrapped_key_nonce, wrapped_key) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10, ?11) \
+             ON CONFLICT(ck_bi) DO UPDATE SET \
+                mid_bi = excluded.mid_bi, \
+                sender_bi = excluded.sender_bi, \
+                meta_nonce = excluded.meta_nonce, \
+                meta_ct = excluded.meta_ct, \
                 ciphertext = excluded.ciphertext, \
                 nonce = excluded.nonce, \
-                byte_len = excluded.byte_len, \
-                created_at = excluded.created_at, \
-                scope_type = excluded.scope_type, \
-                scope_id = excluded.scope_id, \
-                sender_discord_id = excluded.sender_discord_id",
+                content_version = excluded.content_version, \
+                wrapped_key_nonce = excluded.wrapped_key_nonce, \
+                wrapped_key = excluded.wrapped_key \
+             WHERE attachments.burned = 0",
             params![
-                cache_key,
-                discord_message_id,
-                random_filename,
-                mime,
-                ct,
-                nonce,
-                plaintext.len() as i64,
-                now,
-                scope_type,
-                scope_id,
-                sender_discord_id,
+                ck_bi,
+                mid_bi,
+                sender_bi,
+                sealed.meta_nonce,
+                sealed.meta_ct,
+                sealed.ciphertext,
+                sealed.nonce,
+                seq,
+                content_version,
+                sealed.wrapped_key_nonce,
+                sealed.wrapped_key,
             ],
         )?;
+        let entry = cipher::attachment_manifest_entry(
+            ck_bi.clone(),
+            seq,
+            content_version,
+            &metadata,
+            &sealed.nonce,
+            &sealed.ciphertext,
+            &sealed.wrapped_key_nonce,
+            &sealed.wrapped_key,
+        );
+        if let Some(position) = manifest
+            .entries
+            .iter()
+            .position(|existing| existing.ck_bi == ck_bi)
+        {
+            manifest.entries[position] = entry;
+        } else {
+            manifest.entries.push(entry);
+        }
+        manifest
+            .entries
+            .sort_by(|a, b| a.seq.cmp(&b.seq).then_with(|| a.ck_bi.cmp(&b.ck_bi)));
+        manifest.generation = manifest.generation.checked_add(1).ok_or_else(|| {
+            StoreError::Corrupted("attachment manifest generation overflow".to_string())
+        })?;
+        write_attachment_manifest(&tx, &self.key, &mid_bi, &manifest)?;
+        self.commit(tx)?;
         Ok(())
     }
 
-    /// Burn: delete cached attachments for a scope, optionally limited
-    /// to one sender (the burner). Mirrors `wipe_wrapped_keys_in_scope`
-    /// — `Some(sender)` wipes only that sender's cached attachments so a
-    /// burn doesn't evict everyone's images in the channel; `None`
-    /// wipes the whole scope. Returns the row count.
+    /// Burn: cryptographically shred cached attachments for a scope,
+    /// optionally limited to one sender (the burner).
+    ///
+    /// ## Why it resolves through the message rows
+    ///
+    /// `put_attachment` accepts `None` for scope and sender, and the shipping
+    /// caller passes `None` whenever it cannot resolve the scope. Those rows
+    /// match no scope predicate of their own, so a scope burn used to leave the
+    /// decrypted picture in the cache where `get_attachment` still served it —
+    /// the text was destroyed and the image was not.
+    ///
+    /// An attachment therefore belongs to a scope if its parent message does.
+    /// That covers every legacy row whose message is still present, and keeps
+    /// the sender restriction honest because the sender is read off the
+    /// message rather than the attachment's own (possibly absent) column.
+    ///
+    /// Residue this does not reach: an attachment whose message row was
+    /// already deleted has no remaining link to any scope. Nothing can
+    /// attribute it. [`Self::delete_messages_in_channel`] deletes attachments
+    /// before their messages so that orphan is no longer created.
     pub fn wipe_attachments_in_scope(
         &self,
-        scope_type: &str,
+        _scope_type: &str,
         scope_id: &str,
         only_sender_discord_id: Option<&str>,
     ) -> Result<usize, StoreError> {
-        let conn = self.conn.lock().expect("store mutex poisoned");
+        let chan_bi = self.bi(cipher::BI_CHANNEL_ID, scope_id)?;
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let target_mids: Vec<Vec<u8>> = {
+            let sql = if only_sender_discord_id.is_some() {
+                "SELECT mid_bi FROM messages \
+                  WHERE chan_bi = ?1 AND sender_bi = ?2 AND burned = 0"
+            } else {
+                "SELECT mid_bi FROM messages WHERE chan_bi = ?1 AND burned = 0"
+            };
+            let sender_bi = only_sender_discord_id
+                .map(|sender| self.bi(cipher::BI_SENDER_ID, sender))
+                .transpose()?;
+            let mut out = Vec::new();
+            let mut stmt = tx.prepare(sql)?;
+            if let Some(sender_bi) = sender_bi.as_deref() {
+                let mapped = stmt.query_map(params![&chan_bi, sender_bi], |row| row.get(0))?;
+                for row in mapped {
+                    out.push(row?);
+                }
+            } else {
+                let mapped = stmt.query_map(params![&chan_bi], |row| row.get(0))?;
+                for row in mapped {
+                    out.push(row?);
+                }
+            }
+            out
+        };
+        for mid_bi in &target_mids {
+            transition_manifest_to_empty(&tx, &self.key, &self.index_key, mid_bi)?;
+        }
         let rows = match only_sender_discord_id {
-            Some(sender) => conn.execute(
-                "DELETE FROM attachments \
-                  WHERE scope_type = ?1 AND scope_id = ?2 AND sender_discord_id = ?3",
-                params![scope_type, scope_id, sender],
-            )?,
-            None => conn.execute(
-                "DELETE FROM attachments WHERE scope_type = ?1 AND scope_id = ?2",
-                params![scope_type, scope_id],
+            Some(sender) => {
+                let sender_bi = self.bi(cipher::BI_SENDER_ID, sender)?;
+                tx.execute(
+                    "UPDATE attachments
+                        SET meta_nonce = zeroblob(length(meta_nonce)),
+                            meta_ct = zeroblob(length(meta_ct)),
+                            ciphertext = zeroblob(length(ciphertext)),
+                            nonce = zeroblob(length(nonce)),
+                            wrapped_key_nonce = NULL,
+                            wrapped_key = NULL,
+                            burned = 1
+                      WHERE burned = 0 AND mid_bi IN ( \
+                        SELECT mid_bi FROM messages \
+                         WHERE chan_bi = ?1 AND sender_bi = ?2)",
+                    params![chan_bi, sender_bi],
+                )?
+            }
+            None => tx.execute(
+                "UPDATE attachments
+                    SET meta_nonce = zeroblob(length(meta_nonce)),
+                        meta_ct = zeroblob(length(meta_ct)),
+                        ciphertext = zeroblob(length(ciphertext)),
+                        nonce = zeroblob(length(nonce)),
+                        wrapped_key_nonce = NULL,
+                        wrapped_key = NULL,
+                        burned = 1
+                  WHERE burned = 0 AND mid_bi IN ( \
+                    SELECT mid_bi FROM messages WHERE chan_bi = ?1)",
+                params![chan_bi],
             )?,
         };
+        if rows != 0 {
+            schema::mark_shred_checkpoint_pending(&tx)?;
+        }
+        self.commit(tx)?;
         checkpoint_after_shred(&conn)?;
+        self.sync_anchor_after_checkpoint(&mut conn)?;
         Ok(rows)
     }
 
-    /// Beta 1.0: fetch a previously-persisted decrypted attachment.
+    /// Fetch a previously-persisted decrypted attachment.
     /// Returns `(mime, plaintext_bytes)` or `None` if not cached.
     pub fn get_attachment(
         &self,
         discord_message_id: &str,
         random_filename: &str,
     ) -> Result<Option<(String, Vec<u8>)>, StoreError> {
+        check_id("discord_message_id", discord_message_id)?;
+        check_id("random_filename", random_filename)?;
         let cache_key = format!("{discord_message_id}/{random_filename}");
+        let ck_bi = self.bi(cipher::BI_CACHE_KEY, &cache_key)?;
+        let mid_bi = self.bi(cipher::BI_MESSAGE_ID, discord_message_id)?;
         let conn = self.conn.lock().expect("store mutex poisoned");
-        let row_opt: Option<(String, Vec<u8>, Vec<u8>)> = conn
+        let has_manifest = read_attachment_manifest(&conn, &self.key, &mid_bi)?.is_some();
+        if has_manifest {
+            validate_attachment_manifest(&conn, &self.key, &self.index_key, &mid_bi)?;
+        } else {
+            let owner_count: i64 = conn.query_row(
+                "SELECT \
+                    (SELECT COUNT(*) FROM messages WHERE mid_bi=?1 AND burned=0) + \
+                    (SELECT COUNT(*) FROM attachments WHERE mid_bi=?1 AND burned=0)",
+                params![&mid_bi],
+                |row| row.get(0),
+            )?;
+            if owner_count != 0 {
+                return Err(StoreError::Corrupted(
+                    "live message or attachment set has no manifest".to_string(),
+                ));
+            }
+        }
+        let row_opt: Option<AttachmentRow> = conn
             .query_row(
-                "SELECT mime, ciphertext, nonce FROM attachments WHERE cache_key = ?1",
-                params![cache_key],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                "SELECT meta_nonce, meta_ct, ciphertext, nonce, mid_bi, sender_bi, \
+                        seq, content_version, wrapped_key_nonce, wrapped_key \
+                   FROM attachments \
+                 WHERE ck_bi = ?1 AND burned = 0",
+                params![ck_bi],
+                |r| {
+                    Ok(AttachmentRow {
+                        meta_nonce: r.get(0)?,
+                        meta_ct: r.get(1)?,
+                        ciphertext: r.get(2)?,
+                        nonce: r.get(3)?,
+                        mid_bi: r.get(4)?,
+                        sender_bi: r.get(5)?,
+                        seq: r.get(6)?,
+                        content_version: r.get(7)?,
+                        wrapped_key_nonce: r.get(8)?,
+                        wrapped_key: r.get(9)?,
+                    })
+                },
             )
             .optional()?;
-        let Some((mime, ct, nonce)) = row_opt else {
+        let Some(row) = row_opt else {
             return Ok(None);
         };
-        let pt = cipher::unseal(&self.key, cache_key.as_bytes(), &nonce, &ct)?;
-        Ok(Some((mime, pt)))
+        if !has_manifest {
+            return Err(StoreError::Corrupted(
+                "live attachment row has no authenticated manifest".to_string(),
+            ));
+        }
+        if row.content_version < 1 {
+            return Err(StoreError::Corrupted(
+                "attachment content version must be positive".to_string(),
+            ));
+        }
+        let meta_bytes = cipher::unseal(
+            &self.key,
+            &cipher::attachment_meta_aad(&ck_bi, &row.mid_bi, row.seq, row.content_version),
+            &row.meta_nonce,
+            &row.meta_ct,
+        )?;
+        let meta = cipher::decode_attachment_meta(&meta_bytes)?;
+
+        let expect_ck = self.bi(cipher::BI_CACHE_KEY, &meta.cache_key)?;
+        if expect_ck != ck_bi || meta.cache_key != cache_key {
+            return Err(StoreError::Corrupted(
+                "attachment cache selector does not match its sealed metadata".to_string(),
+            ));
+        }
+        let expect_mid = self.bi(cipher::BI_MESSAGE_ID, &meta.discord_message_id)?;
+        if expect_mid != row.mid_bi {
+            return Err(StoreError::Corrupted(
+                "attachment message selector does not match its sealed metadata".to_string(),
+            ));
+        }
+        let expect_sender = match meta.sender_discord_id.as_deref() {
+            Some(sender) => Some(self.bi(cipher::BI_SENDER_ID, sender)?),
+            None => None,
+        };
+        if expect_sender != row.sender_bi {
+            return Err(StoreError::Corrupted(
+                "attachment sender selector does not match its sealed metadata".to_string(),
+            ));
+        }
+        if meta.byte_len < 0 {
+            return Err(StoreError::Corrupted(
+                "attachment byte length must not be negative".to_string(),
+            ));
+        }
+        let wrapper_nonce = row.wrapped_key_nonce.as_deref().ok_or_else(|| {
+            StoreError::Corrupted("live attachment row has no wrapped-key nonce".to_string())
+        })?;
+        let wrapper = row.wrapped_key.as_deref().ok_or_else(|| {
+            StoreError::Corrupted("live attachment row has no wrapped content key".to_string())
+        })?;
+        let pt = cipher::unseal_attachment_body(
+            &self.key,
+            &ck_bi,
+            &row.mid_bi,
+            row.seq,
+            row.content_version,
+            &meta_bytes,
+            wrapper_nonce,
+            wrapper,
+            &row.nonce,
+            &row.ciphertext,
+        )?;
+        if pt.len() != meta.byte_len as usize {
+            return Err(StoreError::Corrupted(
+                "attachment body length does not match sealed metadata".to_string(),
+            ));
+        }
+        Ok(Some((meta.mime, pt)))
     }
 
-    /// Beta 1.0: bound the attachments table's disk footprint by
-    /// trimming oldest rows beyond `keep`. Best-effort; called
-    /// occasionally by the caller. Returns rows deleted.
+    /// Bound the attachments table's disk footprint by trimming oldest rows
+    /// beyond `keep`. Best-effort; called occasionally by the caller. Returns
+    /// rows deleted.
     pub fn trim_attachments(&self, keep: u32) -> Result<usize, StoreError> {
-        let conn = self.conn.lock().expect("store mutex poisoned");
-        let rows = conn.execute(
-            "DELETE FROM attachments WHERE cache_key NOT IN \
-                (SELECT cache_key FROM attachments ORDER BY created_at DESC LIMIT ?1)",
-            params![keep],
-        )?;
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let victims: Vec<(Vec<u8>, Vec<u8>, i64)> = {
+            let mut stmt = tx.prepare(
+                "SELECT ck_bi, mid_bi, burned FROM attachments \
+                  WHERE burned = 0 AND ck_bi NOT IN \
+                    (SELECT ck_bi FROM attachments WHERE burned = 0 \
+                      ORDER BY seq DESC, ck_bi DESC LIMIT ?1)",
+            )?;
+            let mapped = stmt.query_map(params![keep], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?;
+            let mut out = Vec::new();
+            for row in mapped {
+                out.push(row?);
+            }
+            out
+        };
+        let mut by_mid: BTreeMap<Vec<u8>, Vec<Vec<u8>>> = BTreeMap::new();
+        for (ck_bi, mid_bi, burned) in &victims {
+            if *burned == 0 {
+                by_mid
+                    .entry(mid_bi.clone())
+                    .or_default()
+                    .push(ck_bi.clone());
+            }
+        }
+        for (mid_bi, selectors) in &by_mid {
+            let mut manifest =
+                validate_attachment_manifest(&tx, &self.key, &self.index_key, mid_bi)?;
+            manifest
+                .entries
+                .retain(|entry| !selectors.iter().any(|selector| selector == &entry.ck_bi));
+            manifest.generation = manifest.generation.checked_add(1).ok_or_else(|| {
+                StoreError::Corrupted("attachment manifest generation overflow".to_string())
+            })?;
+            write_attachment_manifest(&tx, &self.key, mid_bi, &manifest)?;
+        }
+        let mut rows = 0usize;
+        for (ck_bi, _, _) in &victims {
+            tx.execute(
+                "UPDATE attachments
+                    SET meta_nonce = zeroblob(length(meta_nonce)),
+                        meta_ct = zeroblob(length(meta_ct)),
+                        ciphertext = zeroblob(length(ciphertext)),
+                        nonce = zeroblob(length(nonce)),
+                        wrapped_key_nonce = NULL,
+                        wrapped_key = NULL,
+                        burned = 1
+                  WHERE ck_bi = ?1 AND burned = 0",
+                params![ck_bi],
+            )?;
+            rows += tx.execute("DELETE FROM attachments WHERE ck_bi = ?1", params![ck_bi])?;
+        }
+        if rows != 0 {
+            schema::mark_shred_checkpoint_pending(&tx)?;
+        }
+        self.commit(tx)?;
+        if rows != 0 {
+            checkpoint_after_shred(&conn)?;
+            self.sync_anchor_after_checkpoint(&mut conn)?;
+        }
         Ok(rows)
     }
 
-    /// Delete cached attachments for a channel's messages (used by
-    /// scope burn so burned images don't linger in the cache).
+    /// Delete cached attachments for one message (used by scope burn so
+    /// burned images don't linger in the cache).
     pub fn delete_attachments_for_message(
         &self,
         discord_message_id: &str,
     ) -> Result<usize, StoreError> {
-        let conn = self.conn.lock().expect("store mutex poisoned");
-        let rows = conn.execute(
-            "DELETE FROM attachments WHERE discord_message_id = ?1",
-            params![discord_message_id],
-        )?;
+        let mid_bi = self.bi(cipher::BI_MESSAGE_ID, discord_message_id)?;
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        if read_attachment_manifest(&tx, &self.key, &mid_bi)?.is_some() {
+            transition_manifest_to_empty(&tx, &self.key, &self.index_key, &mid_bi)?;
+        } else {
+            let owner_count: i64 = tx.query_row(
+                "SELECT \
+                    (SELECT COUNT(*) FROM messages WHERE mid_bi=?1 AND burned=0) + \
+                    (SELECT COUNT(*) FROM attachments WHERE mid_bi=?1 AND burned=0)",
+                params![&mid_bi],
+                |row| row.get(0),
+            )?;
+            if owner_count != 0 {
+                return Err(StoreError::Corrupted(
+                    "live message or attachment set has no manifest".to_string(),
+                ));
+            }
+            self.commit(tx)?;
+            return Ok(0);
+        }
+        let rows = shred_attachment_rows(&tx, &mid_bi)?;
+        if rows != 0 {
+            schema::mark_shred_checkpoint_pending(&tx)?;
+        }
+        self.commit(tx)?;
         checkpoint_after_shred(&conn)?;
+        self.sync_anchor_after_checkpoint(&mut conn)?;
         Ok(rows)
     }
 
-    /// Materialize a (channel_id, sender_discord_id,
-    /// sender_osl_user_id, ct, nonce, decrypted_at, burned)
-    /// row tuple into a [`StoredMessage`] using the supplied
-    /// `discord_message_id`. The id is the AAD for unsealing.
-    fn materialize(
-        &self,
-        discord_message_id: &str,
-        t: GetRowTuple,
-    ) -> Result<StoredMessage, StoreError> {
-        let (
-            channel_id,
-            sender_discord_id,
-            sender_osl_user_id,
-            ct,
-            nonce,
-            decrypted_at,
-            burned_flag,
-        ) = t;
-        let aad = discord_message_id.as_bytes();
-        let pt = cipher::unseal(&self.key, aad, &nonce, &ct)?;
+    /// Shred the cached plaintext of every named row whose timed-deletion
+    /// deadline has elapsed, and drop its cached attachments.
+    ///
+    /// ## Why the caller names the rows
+    ///
+    /// Expiry lives in the receiver's sealed open-clock ledger, which is the
+    /// only place that knows both clocks and the first-open timestamp. So the
+    /// sweeper decides *which* rows died and this method destroys them.
+    ///
+    /// ## Semantics
+    ///
+    /// Same destruction as [`Self::mark_burned`] — zero the ciphertext and
+    /// nonce in place, null the wrapped key, and stamp `burned` — followed by
+    /// a single WAL truncation for the whole batch.
+    ///
+    /// Unlike `mark_burned`, an id that is absent or already burned is *not* an
+    /// error: a sweeper legitimately names rows this device never cached. It
+    /// returns the number of rows it actually shredded, so a caller can report
+    /// real work rather than an intention.
+    ///
+    /// `ids` is bounded by the caller. Passing an empty slice touches nothing
+    /// and does not checkpoint.
+    pub fn shred_expired_messages(&self, ids: &[String]) -> Result<usize, StoreError> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let blinded: Vec<Vec<u8>> = ids
+            .iter()
+            .map(|id| self.bi(cipher::BI_MESSAGE_ID, id))
+            .collect::<Result<_, _>>()?;
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let mut shredded = 0usize;
+        for mid_bi in &blinded {
+            let burned: Option<i64> = tx
+                .query_row(
+                    "SELECT burned FROM messages WHERE mid_bi = ?1",
+                    params![mid_bi],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if burned == Some(0) {
+                validate_attachment_manifest(&tx, &self.key, &self.index_key, mid_bi)?;
+            }
+            // `burned = 0` in the predicate keeps this idempotent: a second
+            // sweep over the same id reports zero.
+            shredded += tx.execute(
+                "UPDATE messages
+                    SET ciphertext = zeroblob(length(ciphertext)),
+                        nonce = zeroblob(length(nonce)),
+                        wrapped_key_nonce = NULL,
+                        wrapped_key = NULL,
+                        burned = 1
+                  WHERE mid_bi = ?1 AND burned = 0",
+                params![mid_bi],
+            )?;
+            // Expiry destroys local plaintext caches, and a decrypted
+            // attachment is one.
+            shred_attachment_rows(&tx, mid_bi)?;
+            tx.execute(
+                "DELETE FROM attachment_manifests WHERE mid_bi = ?1",
+                params![mid_bi],
+            )?;
+        }
+        schema::mark_shred_checkpoint_pending(&tx)?;
+        self.commit(tx)?;
+        checkpoint_after_shred(&conn)?;
+        self.sync_anchor_after_checkpoint(&mut conn)?;
+        Ok(shredded)
+    }
+
+    /// Turn a stored row back into a [`StoredMessage`], recovering the
+    /// identifiers from the sealed metadata blob.
+    ///
+    /// The metadata is sealed with the row's own `mid_bi` as AAD, so it is
+    /// authenticated as well as hidden: an offline editor who moves a blob
+    /// between rows, or edits one, produces a tag failure rather than a
+    /// forged attribution.
+    fn materialize(&self, mid_bi: &[u8], row: MessageRow) -> Result<StoredMessage, StoreError> {
+        if row.content_version < 1 {
+            return Err(StoreError::Corrupted(
+                "message content version must be positive".to_string(),
+            ));
+        }
+        let meta_bytes = cipher::unseal(
+            &self.key,
+            &cipher::message_meta_aad(mid_bi, row.content_version),
+            &row.meta_nonce,
+            &row.meta_ct,
+        )?;
+        let meta = cipher::decode_message_meta(&meta_bytes)?;
+
+        // Re-derive the selector columns and check them against what is on
+        // disk.
+        //
+        // Sealing the metadata with `mid_bi` as AAD authenticates the blob and
+        // the message id, but it authenticates NOTHING ELSE: `chan_bi` and
+        // `sender_bi` are separate columns that no AEAD covers. Without this
+        // check, someone who can write the file can retarget a row — move a
+        // message into another conversation's view by rewriting `chan_bi`, or
+        // make a sender-scoped burn silently skip a row by rewriting
+        // `sender_bi`. They cannot read it, but they can misfile it and they
+        // can defeat a burn.
+        //
+        // No format change is needed to close this: after unsealing we hold
+        // both the plaintext identifiers and the index key, so the honest
+        // values are recomputable and a mismatch is proof of tampering.
+        let expect_mid = self.bi(cipher::BI_MESSAGE_ID, &meta.discord_message_id)?;
+        if expect_mid != mid_bi {
+            return Err(StoreError::Corrupted(
+                "row message selector does not match its sealed metadata — \
+                 the row was retargeted on disk"
+                    .to_string(),
+            ));
+        }
+        let expect_chan = self.bi(cipher::BI_CHANNEL_ID, &meta.channel_id)?;
+        if expect_chan != row.chan_bi {
+            return Err(StoreError::Corrupted(
+                "row channel selector does not match its sealed metadata — \
+                 the row was retargeted on disk"
+                    .to_string(),
+            ));
+        }
+        let expect_sender = self.bi(cipher::BI_SENDER_ID, &meta.sender_discord_id)?;
+        if expect_sender != row.sender_bi {
+            return Err(StoreError::Corrupted(
+                "row sender selector does not match its sealed metadata — \
+                 the row was retargeted on disk"
+                    .to_string(),
+            ));
+        }
+        let wrapped_key_nonce = row.wrapped_key_nonce.as_deref().ok_or_else(|| {
+            StoreError::Corrupted("live message row has no wrapped-key nonce".to_string())
+        })?;
+        let wrapped_key = row.wrapped_key.as_deref().ok_or_else(|| {
+            StoreError::Corrupted("live message row has no wrapped content key".to_string())
+        })?;
+        let pt = cipher::unseal_message_body(
+            &self.key,
+            mid_bi,
+            row.content_version,
+            wrapped_key_nonce,
+            wrapped_key,
+            &row.nonce,
+            &row.ciphertext,
+        )?;
         let plaintext = String::from_utf8(pt).map_err(|_| {
             StoreError::Corrupted("decoded plaintext is not valid UTF-8".to_string())
         })?;
         Ok(StoredMessage {
-            discord_message_id: discord_message_id.to_string(),
-            channel_id,
-            sender_discord_id,
-            sender_osl_user_id,
+            discord_message_id: meta.discord_message_id,
+            channel_id: meta.channel_id,
+            sender_discord_id: meta.sender_discord_id,
+            sender_osl_user_id: meta.sender_osl_user_id,
             plaintext,
-            decrypted_at,
-            burned: burned_flag != 0,
+            decrypted_at: meta.decrypted_at,
+            burned: row.burned != 0,
         })
     }
 }
 
-/// Row tuple shape for the seven-column `messages`-only fetch
-/// (used by [`MessageStore::get`]). Columns:
-/// `(channel_id, sender_discord_id, sender_osl_user_id,
-///   ciphertext, nonce, decrypted_at, burned)`.
-type GetRowTuple = (String, String, String, Vec<u8>, Vec<u8>, i64, i64);
+#[cfg(test)]
+mod storage_binding_tests {
+    use super::*;
 
-/// Row tuple shape for the eight-column fetch (used by
-/// [`MessageStore::list_by_channel`], which carries the
-/// `discord_message_id` as column 0). Columns:
-/// `(discord_message_id, channel_id, sender_discord_id,
-///   sender_osl_user_id, ciphertext, nonce, decrypted_at, burned)`.
-type FullRowTuple = (String, String, String, String, Vec<u8>, Vec<u8>, i64, i64);
+    #[test]
+    fn wrong_root_connection_is_refused_without_touching_either_decoy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let expected = tmp.path().join("messages.sqlite");
+        let wrong = tmp.path().join("payload.sqlite");
+        Connection::open(&expected)
+            .unwrap()
+            .execute_batch("CREATE TABLE expected_sentinel (value TEXT);")
+            .unwrap();
+        let wrong_conn = Connection::open(&wrong).unwrap();
+        wrong_conn
+            .execute_batch(
+                "CREATE TABLE wrong_sentinel (value TEXT);
+                 INSERT INTO wrong_sentinel VALUES ('untouched');",
+            )
+            .unwrap();
 
-/// Row mapper for the seven-column `messages`-only fetch (used
-/// by `get`).
-fn row_to_tuple(r: &rusqlite::Row<'_>) -> rusqlite::Result<GetRowTuple> {
-    Ok((
-        r.get::<_, String>(0)?,
-        r.get::<_, String>(1)?,
-        r.get::<_, String>(2)?,
-        r.get::<_, Vec<u8>>(3)?,
-        r.get::<_, Vec<u8>>(4)?,
-        r.get::<_, i64>(5)?,
-        r.get::<_, i64>(6)?,
-    ))
-}
+        assert!(matches!(
+            verify_connection_binding(&wrong_conn, &expected),
+            Err(StoreError::StorageBinding(_))
+        ));
+        assert_eq!(
+            wrong_conn
+                .query_row("SELECT value FROM wrong_sentinel", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap(),
+            "untouched"
+        );
+        assert_eq!(
+            Connection::open(&expected)
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM expected_sentinel", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
 
-/// Row mapper for the eight-column fetch (used by
-/// `list_by_channel`, which carries the `discord_message_id`
-/// as column 0).
-fn full_row_to_tuple(r: &rusqlite::Row<'_>) -> rusqlite::Result<FullRowTuple> {
-    Ok((
-        r.get::<_, String>(0)?,
-        r.get::<_, String>(1)?,
-        r.get::<_, String>(2)?,
-        r.get::<_, String>(3)?,
-        r.get::<_, Vec<u8>>(4)?,
-        r.get::<_, Vec<u8>>(5)?,
-        r.get::<_, i64>(6)?,
-        r.get::<_, i64>(7)?,
-    ))
-}
+    #[test]
+    fn exact_selected_root_is_accepted_and_attached_database_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let expected = tmp.path().join("messages.sqlite");
+        let attached = tmp.path().join("decoy.sqlite");
+        let conn = Connection::open(&expected).unwrap();
+        verify_connection_binding(&conn, &expected)
+            .expect("the exact production-selected root must be accepted");
 
-/// Materialize the eight-column tuple into a [`StoredMessage`].
-fn materialize_full(
-    key: &aead::Key,
-    t: FullRowTuple,
-    aad_id: &str,
-) -> Result<StoredMessage, StoreError> {
-    let (
-        discord_message_id,
-        channel_id,
-        sender_discord_id,
-        sender_osl_user_id,
-        ct,
-        nonce,
-        decrypted_at,
-        burned_flag,
-    ) = t;
-    let pt = cipher::unseal(key, aad_id.as_bytes(), &nonce, &ct)?;
-    let plaintext = String::from_utf8(pt)
-        .map_err(|_| StoreError::Corrupted("decoded plaintext is not valid UTF-8".to_string()))?;
-    Ok(StoredMessage {
-        discord_message_id,
-        channel_id,
-        sender_discord_id,
-        sender_osl_user_id,
-        plaintext,
-        decrypted_at,
-        burned: burned_flag != 0,
-    })
+        let attach_sql = ["ATTACH", "DATABASE ?1 AS decoy"].join(" ");
+        conn.execute(
+            &attach_sql,
+            params![attached.to_string_lossy().into_owned()],
+        )
+        .unwrap();
+        assert!(matches!(
+            verify_connection_binding(&conn, &expected),
+            Err(StoreError::StorageBinding(_))
+        ));
+        conn.execute_batch("DETACH DATABASE decoy;").unwrap();
+        verify_connection_binding(&conn, &expected)
+            .expect("detaching the alternate root restores the exact binding");
+    }
+
+    #[test]
+    fn production_open_factory_rejects_a_decoy_connection_before_initializing_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let trusted_root = tempfile::tempdir_in(tmp.path()).unwrap();
+        let decoy_root = tempfile::tempdir_in(tmp.path()).unwrap();
+        let trusted_root = trusted_root.path();
+        let decoy_root = decoy_root.path();
+        let trusted_db = trusted_root.join("messages.sqlite");
+        let decoy_db = decoy_root.join("payload.sqlite");
+        Connection::open(&trusted_db)
+            .unwrap()
+            .execute_batch("CREATE TABLE trusted_sentinel(value TEXT);")
+            .unwrap();
+        Connection::open(&decoy_db)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE decoy_sentinel(value TEXT);
+                 INSERT INTO decoy_sentinel VALUES ('unchanged');",
+            )
+            .unwrap();
+
+        let error = match MessageStore::open_with_connection_factory(
+            trusted_root,
+            &[7u8; 32],
+            None,
+            |_trusted_path| Ok(Connection::open(&decoy_db)?),
+        ) {
+            Ok(_) => panic!("the production initializer accepted a wrong-root connection"),
+            Err(error) => error,
+        };
+        assert!(matches!(&error, StoreError::StorageBinding(_)));
+        assert_eq!(
+            Connection::open(&decoy_db)
+                .unwrap()
+                .query_row("SELECT value FROM decoy_sentinel", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap(),
+            "unchanged"
+        );
+        assert_eq!(
+            Connection::open(&trusted_db)
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM trusted_sentinel", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+
+        let positive_root = tempfile::tempdir_in(tmp.path()).unwrap();
+        let store = MessageStore::open(positive_root.path(), &[7u8; 32])
+            .expect("the public production factory must accept its exact selected root");
+        drop(store);
+        assert!(positive_root.path().join("messages.sqlite").is_file());
+        assert!(!positive_root.path().join("payload.sqlite").exists());
+    }
 }

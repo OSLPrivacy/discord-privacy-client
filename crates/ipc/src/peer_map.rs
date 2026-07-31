@@ -9,6 +9,12 @@
 //!   — per `docs/phase-7-design.md` §5.1. Each value is an
 //!   object carrying the legacy `osl_user_id` plus the new
 //!   whitelist / burn fields the Phase 7 trust model needs.
+//! - **legacy v4 ratchet state / Phase 9-A2**: modern entries may
+//!   carry `ratchet_state`. That per-peer Double Ratchet state is
+//!   retired at load time rather than reused. The peer's bootstrap
+//!   public key is left intact so any surviving legacy v4 caller must
+//!   re-handshake instead of silently continuing from an at-rest
+//!   session snapshot.
 //!
 //! ## Backward compatibility
 //!
@@ -53,6 +59,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use zeroize::Zeroizing;
 
 /// One peer's full v=2 record per `docs/phase-7-design.md` §5.1.
 ///
@@ -125,36 +132,36 @@ pub struct PeerEntry {
     pub is_self: Option<bool>,
 
     /// Phase 9-A2: base64-encoded X25519 public key that the peer
-    /// published as their initial Double Ratchet bootstrap. Used by
-    /// v=4 senders on the *first* outbound message to a peer — once
-    /// `ratchet_state` is populated this field is no longer read
-    /// (the live DR's `dhr` carries the peer's current ratchet pub).
+    /// published as their initial Double Ratchet bootstrap. Retained
+    /// after legacy v4 state retirement so any remaining v4 caller has
+    /// to re-handshake instead of continuing from an at-rest session.
     /// `None` for peers whose keyserver record predates the A2
-    /// fourth-column rollout; senders fall through to v=3 in that case.
+    /// fourth-column rollout; those peers are not v4 bootstrap-ready.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ik_ratchet_initial_pub: Option<String>,
 
-    /// Phase 9-A2: persisted Double Ratchet state. `Some` once a v=4
-    /// session has been initialized (either by a successful bootstrap
-    /// send or a successful bootstrap receive). DM-scope only — GC
-    /// and server channels stay on v=3 in this phase. Serialized
-    /// inline so the existing `peer_map.json` encryption-at-rest
-    /// envelope covers the ratchet too.
+    /// Legacy Phase 9-A2 persisted Double Ratchet state.
+    ///
+    /// Retired by `load_peer_map_from_path`: a value present on disk is
+    /// accepted only long enough to strip it and write the file back.
+    /// Keeping the field in the struct lets old files deserialize
+    /// cleanly; no current load path may silently reuse it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ratchet_state: Option<crypto::ratchet::RatchetStateOnDisk>,
 
-    /// REGISTER-FIX (TOFU): the peer's trusted Ed25519 identity pub
-    /// (base64), recorded the FIRST time we ever saw this peer's keys
-    /// via `fetch_pubkeys`. Trust-on-first-use baseline: every later
-    /// fetch compares the keyserver's `ik_ed25519_pub` against this.
-    /// A mismatch raises a `KeyChangeAlert` (Signal-style "safety
-    /// number changed") and does NOT silently update this value —
-    /// only an explicit user-accept does. `None` for peers seen
-    /// before this field existed (back-compatible: serde default;
-    /// the next fetch sets the baseline). Decrypt is NEVER blocked
-    /// on this — warn, don't break.
+    /// Legacy Ed25519-only TOFU baseline. Retained for migration only:
+    /// current trust decisions use `tofu_key_bundle`, reconstructed
+    /// from this field plus the already-pinned transport keys when an
+    /// older entry is first loaded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tofu_ed25519_pub: Option<String>,
+
+    /// Complete trust object used by the safety-number ceremony.
+    /// Legacy entries retain `tofu_ed25519_pub`; the first verified
+    /// full-bundle fetch reconstructs or seeds this field without
+    /// silently replacing any already-pinned transport key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tofu_key_bundle: Option<crate::tofu::KeyBundle>,
 }
 
 /// One outgoing whitelist entry for a peer. Variants correspond to
@@ -357,14 +364,18 @@ pub fn load_peer_map_from_path(path: &Path) -> Result<PeerMap, PeerMapError> {
     // whether to write back).
     let any_legacy = raw_map
         .values()
-        .any(|v| matches!(v, PeerEntryRepr::Legacy(_)));
+        .any(|v| matches!(&v, PeerEntryRepr::Legacy(_)));
 
-    let map: PeerMap = raw_map
+    let mut map: PeerMap = raw_map
         .into_iter()
         .map(|(k, v)| (k, PeerEntry::from(v)))
         .collect();
+    let retired_v4_sessions = retire_legacy_v4_sessions(&mut map);
 
-    if any_legacy {
+    let plaintext_with_key_now_present = !crate::main_password::has_enc_magic(&blob)
+        && crate::main_password::get_file_storage_key().is_some();
+
+    if any_legacy || retired_v4_sessions > 0 || plaintext_with_key_now_present {
         write_peer_map(path, &map).map_err(|source| PeerMapError::WriteBackFailed {
             path: path.to_path_buf(),
             source,
@@ -374,43 +385,78 @@ pub fn load_peer_map_from_path(path: &Path) -> Result<PeerMap, PeerMapError> {
     Ok(map)
 }
 
+fn retire_legacy_v4_sessions(map: &mut PeerMap) -> usize {
+    let mut retired = 0usize;
+    for entry in map.values_mut() {
+        if entry.ratchet_state.take().is_some() {
+            retired += 1;
+        }
+    }
+    retired
+}
+
 /// Serialise + write `map` to `path` atomically (via a tempfile +
 /// rename, so a crash mid-write doesn't truncate the existing
 /// file).
 ///
-/// 9-PEER-MAP-ENC defense-in-depth: refuse to overwrite an existing
-/// encrypted file with plaintext when `file_storage_key` is absent.
-/// Pre-fix, bootstrap's `verify_and_persist_peer_map_self_entry`
-/// fired BEFORE the password gate (key=None), failed to decrypt the
-/// existing file (so state defaulted to empty), then "repaired" the
-/// missing self-entry and persisted — overwriting the encrypted
-/// peer_map with a 1-entry plaintext stub on every launch. This
-/// guard makes the destructive path Err out rather than clobber:
-/// callers see the failure and can defer the persist to after the
-/// gate has installed the key.
+/// 9-PEER-MAP-ENC defense-in-depth: writes always encrypt. Existing
+/// plaintext files are upgraded in place; existing encrypted files require
+/// either the in-memory main-password key or a device-bound fallback key that
+/// can open the old envelope before replacement.
 pub fn write_peer_map(path: &Path, map: &PeerMap) -> Result<(), std::io::Error> {
-    if crate::main_password::get_file_storage_key().is_none() && path.exists() {
-        if let Ok(existing) = std::fs::read(path) {
-            if crate::main_password::has_enc_magic(&existing) {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "OSL: refusing to write plaintext peer_map over encrypted file \
-                     — file_storage_key not in slot (password not yet entered)",
-                ));
-            }
-        }
-    }
+    let existing = std::fs::read(path).ok();
+    let key = peer_map_write_key(path, existing.as_deref())?;
 
     let body = serde_json::to_string_pretty(map)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    // 7d-B4 (scoped): if a file_storage_key is installed (main
-    // password active), encrypt before write. Plain JSON otherwise.
-    let out_bytes = crate::main_password::maybe_encrypt(body.as_bytes())
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let out_bytes = crate::main_password::encrypt_at_rest(body.as_bytes(), &key)
+        .map_err(std::io::Error::other)?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, &out_bytes)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
+}
+
+fn peer_map_write_key(
+    path: &Path,
+    existing: Option<&[u8]>,
+) -> Result<Zeroizing<[u8; 32]>, std::io::Error> {
+    if let Some(key) = crate::main_password::get_file_storage_key() {
+        return Ok(Zeroizing::new(key));
+    }
+
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let existing_is_encrypted = existing
+        .map(crate::main_password::has_enc_magic)
+        .unwrap_or(false);
+    let fallback_path = dir.join("file_storage_key_fallback.json");
+    if existing_is_encrypted && !fallback_path.exists() {
+        return Err(peer_map_key_refusal(
+            "OSL: refusing to replace encrypted peer_map.json without a storage key",
+        ));
+    }
+
+    let key =
+        crate::main_password::ensure_device_bound_fallback_file_storage_key(dir).map_err(|e| {
+            peer_map_key_refusal(format!(
+                "OSL: refusing to write peer_map.json without storage-key authority: {e}"
+            ))
+        })?;
+    let key = Zeroizing::new(key);
+
+    if let Some(existing) = existing.filter(|blob| crate::main_password::has_enc_magic(blob)) {
+        crate::main_password::decrypt_at_rest(existing, &key).map_err(|_| {
+            peer_map_key_refusal(
+                "OSL: refusing to replace encrypted peer_map.json; storage key cannot open it",
+            )
+        })?;
+    }
+
+    Ok(key)
+}
+
+fn peer_map_key_refusal(message: impl Into<String>) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::PermissionDenied, message.into())
 }
 
 /// Resolve the OS-default `peer_map.json` path
@@ -440,19 +486,57 @@ pub fn load_peer_map() -> (PathBuf, Result<PeerMap, PeerMapError>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crypto::pqxdh::SessionKey;
+    use crypto::ratchet::{DoubleRatchet, RatchetStateOnDisk, SessionContext, SESSION_VERSION_V1};
+    use crypto::{ml_kem_768, pqxdh, x25519};
     use std::fs;
     use tempfile::tempdir;
+
+    use crate::main_password::{has_enc_magic, maybe_decrypt, set_file_storage_key};
+
+    fn build_test_ratchet_state() -> RatchetStateOnDisk {
+        let (alice_ik_sk, alice_ik_pub) = x25519::generate_keypair();
+        let (bob_ik_sk, bob_ik_pub) = x25519::generate_keypair();
+        let (bob_spk_sk, bob_spk_pub) = x25519::generate_keypair();
+        let (bob_mlkem_dk, bob_mlkem_ek) = ml_kem_768::generate_keypair();
+        let (alice_sk, hs) =
+            pqxdh::initiate(&alice_ik_sk, &bob_ik_pub, &bob_spk_pub, None, &bob_mlkem_ek)
+                .expect("initiate");
+        let _bob_sk: SessionKey = pqxdh::respond(
+            &bob_ik_sk,
+            &bob_spk_sk,
+            None,
+            &bob_mlkem_dk,
+            &alice_ik_pub,
+            &hs,
+        )
+        .expect("respond");
+        let ctx = SessionContext {
+            local_ik_x25519_pub: alice_ik_pub,
+            local_ik_mlkem_pub: vec![0xaa; 1184],
+            peer_ik_x25519_pub: bob_ik_pub,
+            peer_ik_mlkem_pub: vec![0xbb; 1184],
+            conversation_id: b"peer-map-b80-test".to_vec(),
+            session_version: SESSION_VERSION_V1,
+        };
+        let alice =
+            DoubleRatchet::new_initiator(&alice_sk, &bob_spk_pub, ctx).expect("new initiator");
+        RatchetStateOnDisk::from(&alice)
+    }
 
     #[test]
     fn missing_file_is_not_found_error() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("peer_map.json");
         let err = load_peer_map_from_path(&path).expect_err("missing file should error");
-        assert!(matches!(err, PeerMapError::NotFound { .. }), "got {err:?}");
+        assert!(matches!(&err, PeerMapError::NotFound { .. }), "got {err:?}");
     }
 
     #[test]
     fn legacy_string_values_upgrade_in_place() {
+        let _g = crate::test_process_globals::serialize();
+        set_file_storage_key(Some([0x21; 32]));
+
         let dir = tempdir().unwrap();
         let path = dir.path().join("peer_map.json");
         fs::write(
@@ -465,7 +549,9 @@ mod tests {
         assert_eq!(osl_user_id_for(&map, "900000000000000003"), Some("liam"));
         assert_eq!(osl_user_id_for(&map, "900000000000000001"), Some("henry"));
         // File should now be in v=2 format with object values.
-        let after = fs::read_to_string(&path).unwrap();
+        let after_raw = fs::read(&path).unwrap();
+        assert!(has_enc_magic(&after_raw));
+        let after = String::from_utf8(maybe_decrypt(&after_raw).unwrap()).unwrap();
         assert!(
             after.contains("\"osl_user_id\""),
             "expected upgrade write-back to add osl_user_id field, got: {after}"
@@ -473,6 +559,8 @@ mod tests {
         // Second load on the upgraded file: no rewrite, modern parse.
         let map2 = load_peer_map_from_path(&path).expect("second load");
         assert_eq!(map2, map);
+
+        set_file_storage_key(None);
     }
 
     #[test]
@@ -510,13 +598,110 @@ mod tests {
     }
 
     #[test]
+    fn reload_reencrypts_plaintext_peer_map_when_key_now_present() {
+        let _g = crate::test_process_globals::serialize();
+        set_file_storage_key(Some([0x71; 32]));
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("peer_map.json");
+        let mut expected = PeerMap::new();
+        expected.insert(
+            "900000000000000003".to_string(),
+            PeerEntry {
+                osl_user_id: Some("liam".to_string()),
+                discord_id: Some("900000000000000003".to_string()),
+                outgoing_whitelists: vec![WhitelistEntry::Dm {
+                    broadened: true,
+                    enabled_at: Some("2026-05-09T12:00:00Z".to_string()),
+                }],
+                ..PeerEntry::default()
+            },
+        );
+        fs::write(&path, serde_json::to_vec_pretty(&expected).unwrap()).unwrap();
+        assert!(
+            !has_enc_magic(&fs::read(&path).unwrap()),
+            "fixture must start as plaintext JSON"
+        );
+
+        let loaded = load_peer_map_from_path(&path).expect("plaintext modern peer map should load");
+
+        assert_eq!(loaded, expected);
+        let raw_after = fs::read(&path).expect("read migrated peer map");
+        assert!(
+            has_enc_magic(&raw_after),
+            "load must rewrite plaintext peer_map.json under the active storage key"
+        );
+        let decrypted: PeerMap =
+            serde_json::from_slice(&maybe_decrypt(&raw_after).expect("decrypt migrated map"))
+                .expect("migrated map remains valid JSON");
+        assert_eq!(decrypted, expected);
+
+        set_file_storage_key(None);
+    }
+
+    #[test]
+    fn b80_legacy_v4_ratchet_state_is_retired_on_load_and_written_back() {
+        let _g = crate::test_process_globals::serialize();
+        set_file_storage_key(Some([0x80; 32]));
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("peer_map.json");
+        let mut map = PeerMap::new();
+        map.insert(
+            "DM_PEER".to_string(),
+            PeerEntry {
+                discord_id: Some("DM_PEER".to_string()),
+                ratchet_state: Some(build_test_ratchet_state()),
+                ik_ratchet_initial_pub: Some(
+                    "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=".to_string(),
+                ),
+                ..Default::default()
+            },
+        );
+        write_peer_map(&path, &map).expect("seed legacy v4 state");
+        let raw = fs::read(&path).expect("read seeded peer map");
+        assert!(has_enc_magic(&raw));
+        let raw = String::from_utf8(maybe_decrypt(&raw).unwrap()).unwrap();
+        assert!(
+            raw.contains("ratchet_state"),
+            "test fixture must contain legacy at-rest v4 state"
+        );
+
+        let loaded = load_peer_map_from_path(&path).expect("load retires v4 state");
+        let entry = loaded.get("DM_PEER").expect("peer retained");
+        assert!(
+            entry.ratchet_state.is_none(),
+            "legacy v4 state must not be available for silent reuse after load"
+        );
+        assert_eq!(
+            entry.ik_ratchet_initial_pub.as_deref(),
+            Some("ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8="),
+            "bootstrap material stays so any remaining v4 path must re-handshake"
+        );
+
+        let rewritten_raw = fs::read(&path).expect("read retired peer map");
+        assert!(has_enc_magic(&rewritten_raw));
+        let rewritten = String::from_utf8(maybe_decrypt(&rewritten_raw).unwrap()).unwrap();
+        assert!(
+            !rewritten.contains("ratchet_state"),
+            "retirement must be durable on disk"
+        );
+        assert!(
+            rewritten.contains("ik_ratchet_initial_pub"),
+            "retirement must not erase bootstrap material"
+        );
+
+        set_file_storage_key(None);
+    }
+
+    #[test]
     fn malformed_json_is_parse_failed() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("peer_map.json");
         fs::write(&path, r#"{"900000000000000003":"liam",}"#).unwrap();
         let err = load_peer_map_from_path(&path).expect_err("trailing comma should fail");
         assert!(
-            matches!(err, PeerMapError::ParseFailed { .. }),
+            matches!(&err, PeerMapError::ParseFailed { .. }),
             "got {err:?}"
         );
     }
@@ -538,7 +723,7 @@ mod tests {
         let err =
             load_peer_map_from_path(&path).expect_err("array root should fail (expected object)");
         assert!(
-            matches!(err, PeerMapError::ParseFailed { .. }),
+            matches!(&err, PeerMapError::ParseFailed { .. }),
             "got {err:?}"
         );
     }

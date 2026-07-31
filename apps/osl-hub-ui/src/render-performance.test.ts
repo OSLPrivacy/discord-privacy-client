@@ -57,15 +57,15 @@ describe("truthful bounded startup", () => {
     expect(bootstrap).toContain('withNativeDeadline(loadLinkedServices(), "Load apps", bootSupportDeadlineMs)');
     expect(bootstrap).toContain('savedAccountMode === "use"');
     expect(bootstrap).toContain('withNativeDeadline(loadNativeApps(), "Load selected Windows apps", bootSupportDeadlineMs)');
-    expect(bootstrap).toContain('savedAccountsReady');
-    expect(bootstrap).toContain('withNativeDeadline(loadFirefoxStatus(), "Check selected Firefox profile", bootSupportDeadlineMs)');
+    expect(bootstrap).toContain("listBrowserProfilesForConsent()");
+    expect(bootstrap).toContain('"Load saved browser areas"');
     expect(bootstrap).not.toContain("const mullvadRequest =");
     expect(bootstrap).not.toContain("const browserImportsRequest =");
     expect(bootstrap).toContain('withNativeDeadline(loadHubLicenseState(), "Load plan", bootSupportDeadlineMs)');
     expect(bootstrap).toContain("renderNow();");
     expect(bootstrap).toContain('onboardingRoute === "browser") void refreshBrowserImportReadiness()');
     expect(bootstrap).toContain('onboardingRoute === "mullvad") void refreshMullvadSetup()');
-    expect(bootstrap).toContain("Promise.all([servicesRequest, nativeAppsRequest, firefoxRequest, licenseRequest])");
+    expect(bootstrap).toContain("Promise.all([servicesRequest, nativeAppsRequest, licenseRequest, browserCompanionRequest, browserProfilesRequest])");
     expect(bootstrap).toContain("if (nativeCatalog && isCompleteNativeCatalog(nativeCatalog))");
     expect(bootstrap).not.toContain("nativeAppsReady");
     expect(bootstrap).not.toContain("currentMullvadStatus");

@@ -737,8 +737,28 @@ mod tests {
         value
     }
 
+    fn registration_for(account: &str, scope: ScopeInput) -> ServiceScopeRegistration {
+        ServiceScopeRegistration {
+            owner_osl_user_id: "identity-test-1".to_owned(),
+            service_id: "discord".to_owned(),
+            account_id: account.to_owned(),
+            canonical_channel_ids: vec![scope
+                .channel_id
+                .clone()
+                .unwrap_or_else(|| scope.id.clone())],
+            scope,
+            local_context_binding_sha256: "b".repeat(64),
+            manual_peer_person_id: None,
+        }
+    }
+
     #[test]
     fn clean_account_registration_is_write_ahead_and_encrypted() {
+        // state() flips the process-wide main-password test key
+        // (crates/ipc/src/main_password.rs), which other modules' tests also
+        // mutate; hold the crate-wide lock so a sibling test can't swap the
+        // key out from under this one mid-test.
+        let _serial = crate::global_keystore_test_lock();
         let (index_state, path) = state();
         index_state
             .initialize_clean_account("identity-test-1", "discord", "account-test-1")
@@ -766,6 +786,9 @@ mod tests {
 
     #[test]
     fn uninitialized_legacy_account_indexes_write_but_cannot_claim_complete_burn() {
+        // See clean_account_registration_is_write_ahead_and_encrypted for why
+        // this lock is needed.
+        let _serial = crate::global_keystore_test_lock();
         let (state, path) = state();
         state
             .with_registered_write(registration(), || Ok(()))
@@ -785,6 +808,9 @@ mod tests {
 
     #[test]
     fn immutable_manifest_freezes_writes_and_journal_makes_retry_idempotent() {
+        // See clean_account_registration_is_write_ahead_and_encrypted for why
+        // this lock is needed.
+        let _serial = crate::global_keystore_test_lock();
         let (state, path) = state();
         state
             .initialize_clean_account("identity-test-1", "discord", "account-test-1")
@@ -817,6 +843,10 @@ mod tests {
 
     #[test]
     fn manual_discriminator_is_authenticated_and_mismatch_fails_closed() {
+        // See clean_account_registration_is_write_ahead_and_encrypted for why
+        // this lock is needed (this test also calls state() a second time
+        // further down, for the rejected-registration case).
+        let _serial = crate::global_keystore_test_lock();
         let (index_state, path) = state();
         index_state
             .initialize_clean_account("identity-test-1", "discord", "account-test-1")
@@ -861,6 +891,95 @@ mod tests {
         let _ = std::fs::remove_file(path.with_extension("bak"));
         let _ = std::fs::remove_file(&rejected_path);
         let _ = std::fs::remove_file(rejected_path.with_extension("bak"));
+    }
+
+    #[test]
+    fn enumerate_scopes_to_exact_reviewed_mailbox_under_one_auth_epoch() {
+        let _serial = crate::global_keystore_test_lock();
+        let (state, path) = state();
+        state
+            .initialize_clean_account("identity-test-1", "discord", "account-test-1")
+            .unwrap();
+        state
+            .initialize_clean_account("identity-test-1", "discord", "account-test-2")
+            .unwrap();
+
+        let reviewed_dm = ScopeInput {
+            kind: ScopeKind::Dm,
+            id: "reviewed-peer".to_owned(),
+            server_id: None,
+            channel_id: Some("reviewed-mailbox".to_owned()),
+        };
+        let reviewed_gc = ScopeInput {
+            kind: ScopeKind::Gc,
+            id: "reviewed-group".to_owned(),
+            server_id: None,
+            channel_id: Some("reviewed-group-mailbox".to_owned()),
+        };
+        let other_account_dm = ScopeInput {
+            kind: ScopeKind::Dm,
+            id: "other-peer".to_owned(),
+            server_id: None,
+            channel_id: Some("other-mailbox".to_owned()),
+        };
+
+        state
+            .with_registered_write(registration_for("account-test-1", reviewed_dm), || Ok(()))
+            .unwrap();
+        state
+            .with_registered_write(registration_for("account-test-1", reviewed_gc), || Ok(()))
+            .unwrap();
+        state
+            .with_registered_write(registration_for("account-test-2", other_account_dm), || {
+                Ok(())
+            })
+            .unwrap();
+
+        let manifest = state
+            .freeze_complete_manifest("identity-test-1", "discord", "account-test-1")
+            .unwrap();
+
+        assert_eq!(manifest.owner_osl_user_id, "identity-test-1");
+        assert_eq!(manifest.service_id, "discord");
+        assert_eq!(manifest.account_id, "account-test-1");
+        assert_eq!(manifest.generation, 4);
+        assert_eq!(manifest.scopes.len(), 2);
+        let channels: BTreeSet<_> = manifest
+            .scopes
+            .iter()
+            .flat_map(|scope| scope.canonical_channel_ids.iter().cloned())
+            .collect();
+        assert_eq!(
+            channels,
+            BTreeSet::from([
+                "reviewed-group-mailbox".to_owned(),
+                "reviewed-mailbox".to_owned()
+            ])
+        );
+        assert!(manifest
+            .scopes
+            .iter()
+            .all(|scope| scope.scope.id.starts_with("reviewed-")));
+
+        let retry = state
+            .freeze_complete_manifest("identity-test-1", "discord", "account-test-1")
+            .unwrap();
+        assert_eq!(retry.generation, manifest.generation);
+        assert_eq!(retry.burn_id, manifest.burn_id);
+        assert_eq!(retry.scopes, manifest.scopes);
+
+        let other = state
+            .freeze_complete_manifest("identity-test-1", "discord", "account-test-2")
+            .unwrap();
+        assert_eq!(other.account_id, "account-test-2");
+        assert_eq!(other.scopes.len(), 1);
+        assert_eq!(
+            other.scopes[0].canonical_channel_ids,
+            vec!["other-mailbox".to_owned()]
+        );
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("bak"));
     }
 
     #[test]

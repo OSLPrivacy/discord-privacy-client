@@ -577,6 +577,9 @@ mod tests {
 
     #[test]
     fn gate_burn_recovery_is_fixed_root_idempotent_and_fail_closed() {
+        // Overrides the process-wide keystore base dir below, so it must serialise
+        // against every other test that touches those statics.
+        let _serial = crate::global_keystore_test_lock();
         let config = temp_root("gate-config");
         let local = temp_root("gate-local");
         std::fs::create_dir_all(config.join(HUB_CORE_DIR)).unwrap();
@@ -591,16 +594,41 @@ mod tests {
         assert!(config.join(HUB_CORE_DIR).join("identity.json").exists());
         assert!(local.join(PROFILE_DIR).join("cache").exists());
 
+        let foreign_config = temp_root("gate-foreign-config");
+        let foreign_local = temp_root("gate-foreign-local");
+        std::fs::create_dir_all(foreign_config.join(HUB_CORE_DIR)).unwrap();
+        std::fs::create_dir_all(foreign_local.join(PROFILE_DIR)).unwrap();
+        std::fs::write(
+            foreign_config.join(HUB_CORE_DIR).join("identity.json"),
+            b"foreign sealed",
+        )
+        .unwrap();
+        std::fs::write(foreign_local.join(PROFILE_DIR).join("cache"), b"foreign").unwrap();
+        write_gate_burn_journal(&foreign_config).unwrap();
+        assert!(resume_interrupted_gate_burn(&foreign_config, &foreign_local).is_err());
+        assert!(foreign_config
+            .join(HUB_CORE_DIR)
+            .join("identity.json")
+            .exists());
+        assert!(foreign_local.join(PROFILE_DIR).join("cache").exists());
+
+        keystore::set_active_account_dir(Some(config.join("accounts").join("stale")));
+        ipc::main_password::set_file_storage_key(Some([0x44; 32]));
         write_gate_burn_journal(&config).unwrap();
         assert!(resume_interrupted_gate_burn(&config, &local).unwrap());
         assert!(!config.join(HUB_CORE_DIR).exists());
         assert!(!local.join(PROFILE_DIR).exists());
         assert!(!config.join(GATE_BURN_JOURNAL).exists());
+        assert!(ipc::main_password::get_file_storage_key().is_none());
+        assert!(keystore::active_account_dir().is_none());
         // A completed recovery is a harmless no-op on the next launch.
         assert!(!resume_interrupted_gate_burn(&config, &local).unwrap());
 
+        keystore::set_active_account_dir(None);
         keystore::set_base_dir_override(None);
         let _ = std::fs::remove_dir_all(config);
         let _ = std::fs::remove_dir_all(local);
+        let _ = std::fs::remove_dir_all(foreign_config);
+        let _ = std::fs::remove_dir_all(foreign_local);
     }
 }

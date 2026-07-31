@@ -12,14 +12,15 @@ function functionSource(name: string, nextName: string): string {
 }
 
 describe("radically simple onboarding", () => {
-  it("shows all three sending choices with clear risk hierarchy", () => {
-    const sending = functionSource("sendingSetupContent", "onboardingPasswordRoleContent");
+  it("keeps one recommended sending path and makes all three modes visible", () => {
+    const sending = functionSource("sendingSetupContent", "coverDraftSetupContent");
     expect(sending).toContain("Choose how to send");
-    expect(sending.match(/manualSendingAnimationMarkup\(mode\)/g)).toHaveLength(1);
-    expect(sending).toContain('option("clipboard", "Copy", "safe", "Safest")');
-    expect(sending).toContain('option("double", "Double Enter", "caution"');
-    expect(sending).toContain('option("single", "Single Enter", "danger"');
-    expect(sending).not.toContain("send-mode-advanced");
+    expect(sending).toContain("manualSendingAnimationMarkup(selectedMode)");
+    expect(sending).toContain('"Manual", "OSL prepares the protected message; you place it and send it.", "Recommended"');
+    expect(sending).toContain('"Clipboard", "OSL encrypts and copies; you paste it and send it."');
+    expect(sending).toContain('"Double Enter", "First Enter prepares and places. A second distinct Enter sends after another exact check."');
+    expect(sending).not.toContain('<details class="send-mode-advanced"');
+    expect(sending).not.toContain('option("single", "Single Enter"');
   });
 });
 
@@ -40,14 +41,13 @@ describe("plain-language friends", () => {
 });
 
 describe("one-step app guide", () => {
-  it("opens the real service with minimal copy and a short privacy disclosure", () => {
+  it("opens the real service with two minimal account choices and no extra disclosure", () => {
     const guide = functionSource("serviceGuideContent", "settingsContent");
     expect(guide).not.toContain("Step ${step + 1} of 3");
-    expect(guide).toContain("Connect ${name}");
-    expect(guide).toContain('nativeInstalled ? "Open app in OSL" : "Open in OSL"');
-    expect(guide).toContain("separate local app profile");
-    expect(guide).toContain("normal app and account stay untouched");
-    expect(guide).toContain('<details class="guide-details"><summary>Sign-in privacy</summary>');
+    expect(guide).toContain('directNativeAccountChoice');
+    expect(guide).toContain('directNativeAccountChoice || directBrowserAccountChoice ? "Open" : "Connect"');
+    expect(guide).not.toContain('<details class="guide-details"><summary>Sign-in privacy</summary>');
+    expect(guide).toContain('directNativeAccountChoice || directBrowserAccountChoice');
     expect(guide).not.toContain("Choose which account to use.");
     expect(guide).not.toMatch(/adapter|scope|auto-whitelist/i);
   });
