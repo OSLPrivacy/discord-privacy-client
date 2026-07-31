@@ -442,6 +442,19 @@ test('wrapped-key roundtrip e2e test: post then fetch across two sessions', asyn
   }));
 });
 
+test('key"', async () => {
+  await assertWrappedKeyRoundtripAcrossSessions(validWrappedKey({
+    content_id: 'persisted-msg-exact-attributor',
+    sender_id: 'alice',
+    recipient_id: 'bob',
+    session_version: 7,
+    share_index: 2,
+    wrapped_share_blob: b64('wrapped-share-exact-attributor'),
+    blob_version: 3,
+    expires_at: '2035-01-02T03:04:05.000Z',
+  }));
+});
+
 test('wrapped-key roundtrip e2e test: exact attributor key name survives persistence', async () => {
   await assertWrappedKeyRoundtripAcrossSessions(validWrappedKey({
     content_id: 'exact-attributor-key-name',
