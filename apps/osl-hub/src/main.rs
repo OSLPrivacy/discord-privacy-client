@@ -7867,6 +7867,44 @@ mod qa_selftest {
                 &instance_b
             ));
 
+            let addressed_for_a = r#"{"verb":"drain","instance":"org.oslprivacy.hub.qa-a"}"#;
+            assert_eq!(
+                select_trigger_body(instance_b, Some(addressed_for_a), Some(shared_for_a)),
+                TriggerSelection::Addressed(addressed_for_a),
+                "B's private restart trigger must be answered by B, even when its body is wrong"
+            );
+            let ParsedRequest::Accepted(wrong_instance) = parse_request(addressed_for_a) else {
+                panic!("wrong-instance addressed drain request must parse");
+            };
+            assert!(
+                !osl_privacy_hub::qa_selftest_request::request_is_for_me(
+                    wrong_instance.instance.as_deref(),
+                    instance_b
+                ),
+                "an addressed trigger whose body names A must refuse before B drains"
+            );
+            let mut wrong_instance_detail = VerbOutcome::new(
+                wrong_instance.verb.label(),
+                instance_b,
+                "osl-qa-selftest.b.request",
+            )
+            .refused("declined-wrong-instance");
+            wrong_instance_detail.request_format = wrong_instance.format;
+            let wrong_instance_refused = refused_verdict(
+                "refused",
+                "This self-test request was addressed to another instance",
+                wrong_instance_detail,
+            );
+            assert_eq!(wrong_instance_refused.outcome, "refused");
+            assert_eq!(
+                wrong_instance_refused.refusal.as_deref(),
+                Some("declined-wrong-instance")
+            );
+            assert!(
+                !wrong_instance_refused.pass,
+                "a wrong-instance restart trigger must not pass green"
+            );
+
             assert_eq!(
                 select_trigger_body(&instance_b, None, Some(shared_for_a.as_str())),
                 TriggerSelection::DeclineLegacy {
