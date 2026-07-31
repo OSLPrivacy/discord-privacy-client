@@ -608,6 +608,12 @@ describe("link rate-limit buckets", () => {
     return workerEnv({ RATE_LIMIT_HASH_KEY: "k".repeat(48) });
   }
 
+  // 120 sequential rateLimit() round trips through workerd. Locally the whole
+  // file is 21/21 in under 8s, but workerd is roughly 15x slower on the
+  // windows-latest runner and these two took 9.6s and 15.3s against vitest's
+  // 5s default. They are SLOW, not hung -- the bodies completed, the harness
+  // cut them off. Budget raised only for these two; the rest of the file keeps
+  // the default so a genuine hang elsewhere still fails fast.
   it("caps link retrieval at 120/hr, far below the 3600/hr blob fetch budget", async () => {
     const env = limiterEnv();
     for (let i = 0; i < 120; i++) {
@@ -620,8 +626,14 @@ describe("link rate-limit buckets", () => {
     });
     // The generic blob bucket is untouched and still generous.
     expect((await rateLimit(env, "203.0.113.9", "fetch")).allowed).toBe(true);
-  });
+  }, 60_000);
 
+  // 120 sequential rateLimit() round trips through workerd. Locally the whole
+  // file is 21/21 in under 8s, but workerd is roughly 15x slower on the
+  // windows-latest runner and these two took 9.6s and 15.3s against vitest's
+  // 5s default. They are SLOW, not hung -- the bodies completed, the harness
+  // cut them off. Budget raised only for these two; the rest of the file keeps
+  // the default so a genuine hang elsewhere still fails fast.
   it("caps link creation at 120/hr on its own bucket", async () => {
     const env = limiterEnv();
     for (let i = 0; i < 120; i++) {
@@ -630,7 +642,7 @@ describe("link rate-limit buckets", () => {
     expect((await rateLimit(env, "203.0.113.10", "link-create")).allowed).toBe(false);
     // Buckets are independent.
     expect((await rateLimit(env, "203.0.113.10", "link-fetch")).allowed).toBe(true);
-  });
+  }, 60_000);
 
   it("denies creation but keeps retrieval available when the limiter is down", async () => {
     const env = {
