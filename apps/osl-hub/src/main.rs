@@ -8100,6 +8100,9 @@ mod qa_selftest {
             ));
             std::fs::write(&verdict_path, br#"{"pass":true,"outcome":"completed"}"#)
                 .expect("seed stale verdict");
+            let mut partial_path = verdict_path.as_os_str().to_owned();
+            partial_path.push(VERDICT_PARTIAL_SUFFIX);
+            let partial_path = std::path::PathBuf::from(partial_path);
             write_verdict(&refused, &verdict_path);
             let durable: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(&verdict_path).expect("read verdict"))
@@ -8111,6 +8114,10 @@ mod qa_selftest {
             assert_eq!(
                 durable["criteria"]["send_completed"]["pass"], false,
                 "a restarted B that is still draining must replace stale green evidence"
+            );
+            assert!(
+                !partial_path.exists(),
+                "the restart proof must not leave a partial verdict for the harness to read"
             );
             let _ = std::fs::remove_file(&verdict_path);
         }
@@ -10496,35 +10503,33 @@ mod tauri_registration_surface_tests {
     #[test]
     fn browser_consent_tauri_commands_and_acl_are_registered() {
         let (handlers, permissions, capability) = registration_inputs();
-        let expected_permissions = BROWSER_NATIVE_CONSENT_COMMANDS
+        let final_browser_consent_surface = BROWSER_NATIVE_CONSENT_COMMANDS;
+        let expected_permissions = final_browser_consent_surface
             .iter()
             .map(|command| command_permission(command))
             .collect::<BTreeSet<_>>();
-
-        for command in BROWSER_NATIVE_CONSENT_COMMANDS {
+        for command in final_browser_consent_surface {
             assert_registered_and_granted(&handlers, &permissions, &capability, command);
         }
-
         let declared_permissions = permissions
             .iter()
             .filter_map(|(permission, command)| {
-                BROWSER_NATIVE_CONSENT_COMMANDS
+                final_browser_consent_surface
                     .contains(&command.as_str())
                     .then_some(permission.clone())
             })
             .collect::<BTreeSet<_>>();
         assert_eq!(
             declared_permissions, expected_permissions,
-            "the browser/native consent command group must use exactly its fixed permission identifiers"
+            "the reconciled browser-consent surface must use exactly its fixed permission identifiers"
         );
-
         let granted_permissions = capability
             .intersection(&expected_permissions)
             .cloned()
             .collect::<BTreeSet<_>>();
         assert_eq!(
             granted_permissions, expected_permissions,
-            "the main-window capability must grant every browser/native consent permission"
+            "the reconciled browser-consent surface must be fully granted by the main-window capability"
         );
 
         let mut missing_consent_probe = handlers.clone();
@@ -10576,13 +10581,38 @@ mod tauri_registration_surface_tests {
     #[test]
     fn hosted_session_scan_commands_are_registered() {
         let (handlers, permissions, capability) = registration_inputs();
-        for command in [
+        let hosted_scan_commands = [
             "open_hosted_session_scan",
             "request_hosted_session_scan",
             "request_hosted_session_scan_command",
-        ] {
+        ];
+        let expected_permissions = hosted_scan_commands
+            .iter()
+            .map(|command| command_permission(command))
+            .collect::<BTreeSet<_>>();
+        for command in hosted_scan_commands {
             assert_registered_and_granted(&handlers, &permissions, &capability, command);
         }
+        let declared_permissions = permissions
+            .iter()
+            .filter_map(|(permission, command)| {
+                hosted_scan_commands
+                    .contains(&command.as_str())
+                    .then_some(permission.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            declared_permissions, expected_permissions,
+            "hosted session scan commands must keep exactly their fixed permission identifiers"
+        );
+        let granted_permissions = capability
+            .intersection(&expected_permissions)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            granted_permissions, expected_permissions,
+            "hosted session scan commands must all be granted by the main-window capability"
+        );
         for forbidden in [
             "preview_discord_guided_deletion",
             "request_hosted_session_scan_comman",
@@ -11023,13 +11053,38 @@ mod tauri_registration_surface_tests {
     #[test]
     fn autoscrub_run_lifecycle_commands_are_registered_and_acl_granted() {
         let (handlers, permissions, capability) = registration_inputs();
-        for command in [
+        let autoscrub_lifecycle_commands = [
             "get_autoscrub_run_fl",
             "start_autoscrub_reviewed_run",
             "request_autoscrub_global_stop",
-        ] {
+        ];
+        let expected_permissions = autoscrub_lifecycle_commands
+            .iter()
+            .map(|command| command_permission(command))
+            .collect::<BTreeSet<_>>();
+        for command in autoscrub_lifecycle_commands {
             assert_registered_and_granted(&handlers, &permissions, &capability, command);
         }
+        let declared_permissions = permissions
+            .iter()
+            .filter_map(|(permission, command)| {
+                autoscrub_lifecycle_commands
+                    .contains(&command.as_str())
+                    .then_some(permission.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            declared_permissions, expected_permissions,
+            "AutoScrub lifecycle commands must keep exactly their fixed permission identifiers"
+        );
+        let granted_permissions = capability
+            .intersection(&expected_permissions)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            granted_permissions, expected_permissions,
+            "AutoScrub lifecycle commands must all be granted by the main-window capability"
+        );
 
         let mut missing_start = capability.clone();
         missing_start.remove("allow-start-autoscrub-reviewed-run");
