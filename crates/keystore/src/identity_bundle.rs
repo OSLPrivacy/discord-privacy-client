@@ -1478,6 +1478,7 @@ mod tests {
             BundleVerifyPolicy::new().verify(&bundle, &identity.ed25519_public, None),
             Ok(17)
         );
+        assert_eq!(bundle.revision, 17);
 
         let attacker = generate_identity("attacker".to_owned());
         let mut mismatched = pubkeys_response_from_identity(&identity, Some(3));
@@ -1491,6 +1492,19 @@ mod tests {
             Err(BundleConstructionError::IdentityKeyMismatch {
                 field: BundleField::X25519IdentityKey
             })
+        );
+
+        let unsupported = pubkeys_response_from_identity(
+            &identity,
+            Some(crate::client::RN_CAP_MAX.saturating_add(1)),
+        );
+        assert_eq!(
+            IdentityBundle::from_local_identity_and_fetched_pubkeys_response(
+                &identity,
+                &unsupported,
+                19,
+            ),
+            Err(BundleConstructionError::UnsupportedCapabilityBitmap)
         );
     }
 
@@ -1799,6 +1813,25 @@ mod tests {
             result,
             Err(BundleMergeError::IdentityKeyMismatch {
                 field: BundleField::Ed25519IdentityKey
+            })
+        );
+
+        let mut response = matching_prekey_response(&bundle, &owner_secret, spk_pub, None, 10);
+        response.ik_x25519_pub = STANDARD.encode([0x55u8; 32]);
+        assert_eq!(
+            bundle.merge_prekey_bundle_response(&response, None),
+            Err(BundleMergeError::IdentityKeyMismatch {
+                field: BundleField::X25519IdentityKey
+            })
+        );
+
+        let mut response = matching_prekey_response(&bundle, &owner_secret, spk_pub, None, 10);
+        response.ik_mlkem768_pub =
+            STANDARD.encode([0x66u8; crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE]);
+        assert_eq!(
+            bundle.merge_prekey_bundle_response(&response, None),
+            Err(BundleMergeError::IdentityKeyMismatch {
+                field: BundleField::MlKem768IdentityKey
             })
         );
     }
