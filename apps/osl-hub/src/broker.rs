@@ -11244,6 +11244,32 @@ mod tests {
                 .unwrap(),
             None
         );
+
+        let bounded = HubBrokerState::default();
+        for index in 0..MAX_LOCAL_LEDGER_ENTRIES {
+            bounded
+                .record_view_once_second_reveal_refusal(&format!("peer-bounded-{index:04}"), 100)
+                .unwrap();
+        }
+        assert!(
+            bounded
+                .record_view_once_second_reveal_refusal("peer-bounded-over-cap", 101)
+                .is_err(),
+            "a new second-reveal trace must be refused once the local ledger bound is reached"
+        );
+        let updated_existing = bounded
+            .record_view_once_second_reveal_refusal("peer-bounded-0000", 102)
+            .unwrap();
+        assert_eq!(
+            updated_existing.refusal_count, 2,
+            "bounded state may count an already-tracked refusal without allocating a new handle"
+        );
+        bounded
+            .record_view_once_second_reveal_refusal(
+                "peer-bounded-after-expiry",
+                102 + MAX_PEER_LIFETIME_SECONDS + 1,
+            )
+            .expect("expired refusal traces are pruned before enforcing the bound");
     }
 
     #[test]
