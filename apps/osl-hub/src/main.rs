@@ -10657,12 +10657,12 @@ mod tauri_registration_surface_tests {
             },
             |_checked| {
                 stale_context_events.borrow_mut().push("context-recheck");
-                Err("stale native context".to_owned())
+                Err("stale hosted context".to_owned())
             },
         );
         match stale_context {
-            Err(error) => assert_eq!(error, "stale native context"),
-            Ok(_) => panic!("stale native context must refuse the hosted scan result"),
+            Err(error) => assert_eq!(error, "stale hosted context"),
+            Ok(_) => panic!("stale hosted context must refuse after native scan"),
         }
         assert_eq!(
             stale_context_events.into_inner(),
@@ -10672,7 +10672,7 @@ mod tauri_registration_surface_tests {
                 "native-scan",
                 "context-recheck"
             ],
-            "a stale context after native scan must refuse before the result is returned"
+            "a stale hosted context must refuse after native scan and before returning data"
         );
 
         let missing_checked_host_events = RefCell::new(Vec::<&'static str>::new());
