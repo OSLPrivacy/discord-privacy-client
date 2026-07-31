@@ -863,6 +863,7 @@ def simple_spec_sending_contract() -> None:
     gui = GUI_PLAN.read_text(encoding="utf-8")
     testcase = unittest.TestCase()
     testcase.assertEqual(_errors_for_send_contract(simple, gui), [])
+    testcase.assertEqual(_errors_for_burn_contract(simple), [])
 
     optimistic_outcome = simple.replace(
         "sent, not sent, or delivery uncertain",
@@ -893,6 +894,25 @@ def simple_spec_sending_contract() -> None:
     testcase.assertIn(
         "missing GUI Double Enter refusal: second enter must be a separate, trusted user key press after key-up",
         _errors_for_send_contract(simple, synthetic_second_enter),
+    )
+
+    missing_peer_refusal = simple.replace(
+        "but absence of consent, binding, authority, transport delivery or\n"
+        "   verification means the peer cleanup is refused or reported as unavailable.",
+        "and peer cleanup requests are posted when a transport is available.",
+    )
+    testcase.assertIn(
+        "Burn guarantee is incomplete: Cooperative peer request",
+        _errors_for_burn_contract(missing_peer_refusal),
+    )
+
+    softened_banned_phrases = simple.replace(
+        '"permanently undecryptable" or "gone for good"',
+        '"permanently undecryptable" or "secure cleanup"',
+    )
+    testcase.assertIn(
+        "Burn banned phrases changed",
+        _errors_for_burn_contract(softened_banned_phrases),
     )
 
 
