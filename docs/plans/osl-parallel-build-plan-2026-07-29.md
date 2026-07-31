@@ -82,6 +82,23 @@ Freshness is deliberately narrow for dispatch: `observedAt` must be no more than
       "lane": "j14",
       "historicalPoolLabel": "available",
       "currentCapacityRecord": {
+        "observedAt": "2026-07-30T09:07:20Z",
+        "freshForDecisionAt": "2026-07-30T09:12:20Z",
+        "activeSessionCount": 2,
+        "blockedOrSleepingSessions": [],
+        "accountQuotaStatus": "verified_enough_for_expected_turn",
+        "machineHeadroom": "verified_enough_for_focused_verification",
+        "ownedFileBound": true,
+        "contradictions": []
+      },
+      "forbiddenSubstitute": null,
+      "expectedDecision": "dispatch",
+      "expectedReason": "fresh verified capacity and owned-file bound"
+    },
+    {
+      "lane": "j14",
+      "historicalPoolLabel": "available",
+      "currentCapacityRecord": {
         "observedAt": "2026-07-30T07:00:00Z",
         "freshForDecisionAt": "2026-07-30T09:12:20Z",
         "activeSessionCount": 1,
@@ -235,6 +252,23 @@ const cases = [
       freshForDecisionAt: "2026-07-30T09:12:20Z",
       activeSessionCount: 3,
       blockedOrSleepingSessions: ["j6"],
+      accountQuotaStatus: "verified_enough_for_expected_turn",
+      machineHeadroom: "verified_enough_for_focused_verification",
+      ownedFileBound: true,
+      contradictions: [],
+    },
+    forbiddenSubstitute: null,
+    expectedDecision: "dispatch",
+    expectedReason: "fresh verified capacity and owned-file bound",
+  },
+  {
+    lane: "j14",
+    historicalPoolLabel: "available",
+    currentCapacityRecord: {
+      observedAt: "2026-07-30T09:07:20Z",
+      freshForDecisionAt: "2026-07-30T09:12:20Z",
+      activeSessionCount: 2,
+      blockedOrSleepingSessions: [],
       accountQuotaStatus: "verified_enough_for_expected_turn",
       machineHeadroom: "verified_enough_for_focused_verification",
       ownedFileBound: true,
