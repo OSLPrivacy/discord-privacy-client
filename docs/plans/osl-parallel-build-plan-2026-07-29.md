@@ -416,3 +416,14 @@ The coordinator records the following cases as the local contract for this plan:
 Inverting any expected decision above must fail the exercise. In particular, a stale `available`
 label cannot dispatch, a fresh capacity record cannot be ignored when it is sufficient and file-bound,
 and a borrowed account or changed `CODEX_HOME` cannot turn failed capacity into permission.
+
+Concrete fixture for that exercise:
+
+| Case | Historical pool label | Current capacity signal | Substitute attempted | Expected routing decision |
+| --- | --- | --- | --- | --- |
+| stale-pool | `available` | no fresh active-session count, quota/account state not verified | none | `standby`, reason `missing-current-capacity` |
+| live-capacity | `available` | active sessions below cap, blocked/sleeping list checked, quota/account verified, machine headroom sufficient, unit still owned-file bound | none | `dispatch` |
+| failed-capacity | `available` | quota or headroom check failed | borrow account, change `CODEX_HOME`, or start speculative child | `refuse`, reason `capacity-check-failed` |
+
+The `live-capacity` case is the only fixture row that may dispatch. Inverting either refusal row to
+`dispatch`, or accepting any substitute in `failed-capacity`, fails the exercise.
