@@ -139,7 +139,7 @@ export {
   type AutoscrubUnattendedRunResult,
 } from "./autoscrub-unattended-run";
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
-import { oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
+import { OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
 import { parseCircleAudience, type CircleAudience } from "./osl-collab";
 import { bindFriendRemovalControls, bindMainWindowFocusChanges, friendRemovalButtonMarkup, friendTrustAction, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat } from "./ui-behavior";
 import { BurnGuaranteeCopy, type BurnGuaranteeState } from "./two-step-burn";
@@ -5820,6 +5820,24 @@ function bindLocalProtectedSheet(): void {
   }));
 }
 
+function syncOslChatComposer(): void {
+  const draft = document.querySelector<HTMLTextAreaElement>("#osl-chat-draft");
+  if (!draft) return;
+  const bytes = oslChatDraftBytes(draft.value);
+  const withinLimit = bytes <= OSL_CHAT_MAX_DRAFT_BYTES;
+  const hasDraft = draft.value.trim().length > 0;
+  const send = document.querySelector<HTMLButtonElement>("button.osl-chat-send");
+  if (send) {
+    const contextReady = send.dataset.oslChatSendContext === "1";
+    send.disabled = !(contextReady && hasDraft && withinLimit);
+  }
+  const count = document.querySelector<HTMLOutputElement>("#osl-chat-draft-count");
+  if (count) {
+    count.textContent = `${bytes.toLocaleString("en-US")} / ${OSL_CHAT_MAX_DRAFT_BYTES.toLocaleString("en-US")}`;
+    count.classList.toggle("is-over", !withinLimit);
+  }
+}
+
 function bindWorkspace(): void {
   bindPasswordVisibility();
   bindLocalProtectedSheet();
@@ -5859,7 +5877,22 @@ function bindWorkspace(): void {
   document.querySelector<HTMLButtonElement>("#osl-chat-refresh")?.addEventListener("click", () => void refreshOslChat());
   document.querySelector<HTMLButtonElement>("#osl-chat-approve")?.addEventListener("click", () => void approveOslChat());
   const oslChatDraftInput = document.querySelector<HTMLTextAreaElement>("#osl-chat-draft");
-  oslChatDraftInput?.addEventListener("input", () => { oslChatDraft = oslChatDraftInput.value; });
+  oslChatDraftInput?.addEventListener("input", () => {
+    oslChatDraft = oslChatDraftInput.value;
+    // The Send button's disabled state and the byte counter are computed in
+    // activeThread() at RENDER time. This listener only assigned the draft, so
+    // after typing a message Send kept the stale `disabled` from the previous
+    // render and stayed dead until some unrelated event repainted -- measured on
+    // a real VM: byteCounter=0 sendEnabled=False after typing, then 50/True
+    // after clicking Refresh. The counter proving 0 -> 50 shows the input DID
+    // fire; only the repaint was missing.
+    //
+    // Updated in place rather than calling render(): a full re-render would
+    // rebuild the textarea under the caret and lose focus and cursor position
+    // mid-word. The preconditions that cannot change while typing (verified,
+    // ready, not busy) are carried on the button by the view.
+    syncOslChatComposer();
+  });
   document.querySelector<HTMLInputElement>("#osl-chat-view-once")?.addEventListener("change", (event) => { oslChatViewOnce = (event.currentTarget as HTMLInputElement).checked; });
   document.querySelector<HTMLFormElement>("[data-osl-chat-compose]")?.addEventListener("submit", (event) => void sendOslChat(event));
   document.querySelector<HTMLButtonElement>("#osl-chat-attach")?.addEventListener("click", () => void sendOslChatAttachment());

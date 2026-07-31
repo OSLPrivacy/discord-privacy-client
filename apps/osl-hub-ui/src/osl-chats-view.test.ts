@@ -118,3 +118,36 @@ describe("OSL chats view", () => {
     expect(markup).not.toMatch(/Discord|Signal|Telegram|Snapchat|encrypted|end-to-end|server|group|keyserver|ratchet|receipt|browser profile|provider adapter|relay/iu);
   });
 });
+
+describe("send button re-enablement while typing", () => {
+  it("marks the send context ready when only the empty draft blocks sending", () => {
+    // The Send button's disabled state is computed at RENDER time, but typing
+    // does not re-render (a re-render would rebuild the textarea under the
+    // caret). So the button carries the preconditions that CANNOT change while
+    // typing, and the input handler re-evaluates only draft-dependent ones.
+    // Without this, a user typed a message and Send stayed dead until some
+    // unrelated event repainted -- measured on a real VM.
+    const markup = oslChatsViewMarkup(model({ draft: "" }));
+    expect(markup).toContain('data-osl-chat-send-context="1"');
+    // ...and it is genuinely disabled right now, because the draft is empty.
+    expect(markup).toMatch(/data-osl-chat-send-context="1"[^>]*disabled/u);
+  });
+
+  it("marks the send context NOT ready when a precondition typing cannot fix is unmet", () => {
+    // These three cannot be cleared by typing, so the input handler must never
+    // enable Send on their account.
+    for (const [label, m] of [
+      ["unverified", model({ friends: [friend({ verified: false })], draft: "hello" })],
+      ["not ready", model({ friends: [friend({ ready: false })], draft: "hello" })],
+      ["busy", model({ draft: "hello", busy: true })],
+    ] as const) {
+      expect(oslChatsViewMarkup(m), label).toContain('data-osl-chat-send-context="0"');
+    }
+  });
+
+  it("enables send once a draft exists and every other precondition holds", () => {
+    const markup = oslChatsViewMarkup(model({ draft: "hello" }));
+    expect(markup).toContain('data-osl-chat-send-context="1"');
+    expect(markup).not.toMatch(/class="osl-chat-send"[^>]*disabled/u);
+  });
+});
