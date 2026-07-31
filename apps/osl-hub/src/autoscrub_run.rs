@@ -1649,6 +1649,13 @@ mod tests {
         ))
     }
 
+    fn force_deadline_elapsed(ledger: &AutoScrubRunState, owner: &str, run_id: &str) {
+        let scope = owner_scope(owner).unwrap();
+        let mut store = ledger.ledger.lock().unwrap();
+        let run = find_owned_run_mut(&mut store.runs, &scope, run_id).unwrap();
+        run.deadline = Instant::now() - Duration::from_millis(1);
+    }
+
     #[test]
     fn cloud_autoscrub_run_inputs_and_manifest_validate_strictly() {
         let now = now_ms();
@@ -2224,20 +2231,8 @@ mod tests {
         );
 
         let expired = AutoScrubRunState::default();
-        let mut m = manifest("run-c", ACCOUNT);
-        m.expires_at = now_ms() + 250;
-        let opened = expired
-            .open(
-                OWNER,
-                NativeEntitlement::Confirmed,
-                &m,
-                &session(ACCOUNT),
-                &consent("run-c", ACCOUNT),
-                &capability(),
-                &registry(),
-            )
-            .unwrap();
-        std::thread::sleep(Duration::from_millis(300));
+        let opened = open_run(&expired, "run-c", ACCOUNT);
+        force_deadline_elapsed(&expired, OWNER, &opened.run_id);
         assert!(matches!(
             expired.step(OWNER, NativeEntitlement::Confirmed, &step_for(&opened)),
             Err(AutoScrubRunError::RunHalted)
