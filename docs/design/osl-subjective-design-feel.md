@@ -42,7 +42,7 @@ This contract is user-facing behavior, not copy decoration. A design that teache
 the user protocol, storage, automation, transport or service-plumbing concepts in
 order to operate OSL violates the design feel even if the underlying feature works.
 
-## Freeze the user-facing complexity-hiding product contract.
+## Freeze the user-facing complexity-hiding product contract
 
 This acceptance test passes only when a proposed user-facing surface preserves the
 contract above:
@@ -66,6 +66,21 @@ contract above:
 Mentally invert the behavior before accepting a design: if replacing the product
 nouns with implementation machinery would still pass review, the test is
 vacuous and the design does not satisfy this contract.
+
+The same document-level test keeps implementation machinery behind the product
+model in concrete candidate surfaces:
+
+| Candidate surface | Expected verdict | Product behavior under test |
+|---|---|---|
+| Main navigation item named `Private conversations` | Pass | The user chooses a product destination, not a protocol or connector layer. |
+| Send warning saying `This conversation is not ready for protected send. Verify the person before sending protected content.` | Pass | The UI gives a plain consequence and a next safe action. |
+| Status label saying `Result unknown` after an unverified cleanup attempt | Pass | Uncertainty remains explicit instead of being promoted to success. |
+| Onboarding choice named `Select a provider adapter` | Fail | The user must understand implementation machinery before acting. |
+| Warning label saying `Ratchet receipt missing; inspect browser profile` | Fail | The UI exposes transport, receipt and profile machinery instead of a product consequence. |
+
+The negative fixtures must be refused even if the underlying implementation is
+complete. The positive fixtures must remain acceptable even if the connector,
+storage or protocol implementation changes.
 
 ## Machine-readable product-contract acceptance fixtures
 
