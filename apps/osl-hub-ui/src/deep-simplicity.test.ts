@@ -80,7 +80,7 @@ describe("radical simplicity on deep screens", () => {
 
     expect(scrub.indexOf('for="privacy-export-input"')).toBeLessThan(scrub.indexOf("autoscrub-disclosure"));
     expect(scrub).toContain("Before deleting anything");
-    expect(scrub).toContain("Only a provider readback can verify removal within its stated coverage");
+    expect(scrub).toContain("Only a service recheck can verify removal within its stated coverage");
     expect(scrub).toContain("Automatic deletion is unavailable in this build");
     expect(scrub).toContain("native one-shot reviewed-consent capability");
     expect(scrub).toContain("Connect IMAP for read-only verification");

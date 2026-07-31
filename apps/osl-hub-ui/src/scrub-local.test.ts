@@ -83,8 +83,9 @@ describe("local Scrub persisted pipeline", () => {
 
   it("emits a validated incomplete receipt for manual exports and records timestamp gaps", () => {
     const receipt = localImportCoverageReceipt([message(0), message(2)], scan(2));
-    expect(receipt.oldestReachableAtUnixMs).toBe(1_700_000_000_002);
-    expect(receipt.newestReachableAtUnixMs).toBe(1_700_000_000_002);
+    expect(receipt.oldestReachableUnixMs).toBe(1_700_000_000_002);
+    expect(receipt.newestReachableUnixMs).toBe(1_700_000_000_002);
+    expect(receipt.targetId).toBe("local_import:manual-export");
     expect(receipt.providerReportedComplete).toBe(false);
     expect(receipt.gaps).toHaveLength(2);
   });

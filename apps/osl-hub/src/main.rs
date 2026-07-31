@@ -57,6 +57,7 @@ use osl_privacy_hub::native_window_host::{
     DiscordSessionMode, DiscordTakeover, NativeWindowHostReason, NativeWindowHostResult,
     NativeWindowHostState,
 };
+use osl_privacy_hub::osl_profile::{self, HubProfileDto, HubProfileInput};
 use osl_privacy_hub::password_lifecycle::{
     self, HubIdentityCreationOwnerSignoff, HubIdentitySetupResult, HubMainPasswordSetupResult,
 };
@@ -5863,6 +5864,79 @@ async fn add_hub_friend(
     security::add_friend_code(&core, &security_state, friend_code, alias)
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HubUsernameClaim {
+    username: String,
+    osl_user_id: String,
+}
+
+fn valid_osl_username(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    (3..=30).contains(&bytes.len())
+        && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'_')
+}
+
+#[tauri::command]
+async fn claim_hub_username(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    username: String,
+) -> Result<HubUsernameClaim, String> {
+    let _session = session.transition.lock().await;
+    let _owner = active_unlocked_osl_user_id(&core)?;
+    if !valid_osl_username(&username) {
+        return Err("OSL username is invalid".to_owned());
+    }
+    Err("OSL username directory authority is unavailable in this build".to_owned())
+}
+
+#[tauri::command]
+async fn add_hub_friend_by_username(
+    core: State<'_, HubCoreState>,
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    username: String,
+    alias: Option<String>,
+) -> Result<AddFriendResult, String> {
+    let _session = session.transition.lock().await;
+    let _ = (&core, &security_state);
+    if !valid_osl_username(&username) {
+        return Err("OSL username is invalid".to_owned());
+    }
+    if alias.as_deref().is_some_and(|value| {
+        value.len() > 80 || value.chars().any(|character| character.is_control())
+    }) {
+        return Err("OSL friend alias is invalid".to_owned());
+    }
+    Err("OSL username friend lookup is unavailable in this build".to_owned())
+}
+
+#[tauri::command]
+async fn get_osl_profile(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<Option<HubProfileDto>, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    osl_profile::get_active_profile(&owner)
+}
+
+#[tauri::command]
+async fn save_osl_profile(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    input: HubProfileInput,
+) -> Result<HubProfileDto, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    osl_profile::save_active_profile(&owner, input)
+}
+
 #[tauri::command]
 async fn verify_hub_friend_safety_number(
     core: State<'_, HubCoreState>,
@@ -9029,6 +9103,10 @@ macro_rules! hub_tauri_commands {
             export_hub_friend_code,
             copy_hub_friend_invite,
             add_hub_friend,
+            claim_hub_username,
+            add_hub_friend_by_username,
+            get_osl_profile,
+            save_osl_profile,
             verify_hub_friend_safety_number,
             remove_hub_friend,
             list_hub_people,

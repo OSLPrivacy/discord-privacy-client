@@ -892,7 +892,6 @@ describe("trusted composer overlay", () => {
 
   it("keys the eye to every decodable Discord row, not to the messages this client sent", () => {
     const source = readRelative("./overlay.ts");
-    const rowProjection = readRelative("./discord-row-attribution.ts");
     const paint = source.slice(source.indexOf("function paintBoundRows"), source.indexOf("function decodedRowPresentation"));
     const apply = source.slice(source.indexOf("function applyDecodedTranscript"), source.indexOf("function clearDecodedTranscript"));
 

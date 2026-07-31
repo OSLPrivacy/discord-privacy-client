@@ -58,6 +58,7 @@ describe("Android workspace rendering", () => {
     expect(html).toContain('data-consent="required"');
     expect(html).toContain("separate mobile workspace threat model review and explicit consent");
     expect(html).toContain("No hosted Android workspace runs from this card");
+    expect(copy).toContain("Future Pro isolation");
   });
 });
 

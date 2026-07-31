@@ -1,4 +1,5 @@
 import type { ScrubSignalGroup } from "./scrub";
+import type { UninspectedAttachment } from "./adapters";
 
 export type ScrubMode = "skip" | "scrub" | "autoscrub";
 
@@ -25,6 +26,10 @@ export interface ScrubCoverageReceipt {
   gaps: string[];
   textChecked: boolean;
   imagesChecked: boolean;
+  videosChecked?: boolean;
+  attachmentsScanned?: number;
+  attachmentTypesScanned?: string[];
+  uninspectedAttachments?: UninspectedAttachment[];
 }
 
 export const SCRUB_TARGET_LIMIT = 32;
@@ -69,10 +74,16 @@ export function parseScrubSetupPlan(
 }
 
 export function validateCoverageReceipt(raw: unknown, selectedTargetIds: ReadonlySet<string>): ScrubCoverageReceipt | null {
-  if (!exactRecord(raw, [
+  const baseKeys = [
     "targetId", "messagesScanned", "oldestReachableUnixMs", "newestReachableUnixMs",
     "providerReportedComplete", "gaps", "textChecked", "imagesChecked",
-  ])
+  ] as const;
+  const extendedKeys = [
+    ...baseKeys,
+    "videosChecked", "attachmentsScanned", "attachmentTypesScanned", "uninspectedAttachments",
+  ] as const;
+  const hasAttachmentCoverage = exactRecord(raw, extendedKeys);
+  if ((!hasAttachmentCoverage && !exactRecord(raw, baseKeys))
     || typeof raw.targetId !== "string"
     || !selectedTargetIds.has(raw.targetId)
     || !boundedInteger(raw.messagesScanned)
@@ -84,8 +95,37 @@ export function validateCoverageReceipt(raw: unknown, selectedTargetIds: Readonl
     || !raw.gaps.every((gap): gap is string => typeof gap === "string" && gap.length > 0 && gap.length <= 256)
     || typeof raw.textChecked !== "boolean"
     || typeof raw.imagesChecked !== "boolean") return null;
+  if (hasAttachmentCoverage
+    && (typeof raw.videosChecked !== "boolean"
+      || !boundedInteger(raw.attachmentsScanned)
+      || !Array.isArray(raw.attachmentTypesScanned)
+      || raw.attachmentTypesScanned.length > 64
+      || !raw.attachmentTypesScanned.every((item): item is string => typeof item === "string" && item.length > 0 && item.length <= 80)
+      || new Set(raw.attachmentTypesScanned).size !== raw.attachmentTypesScanned.length
+      || !Array.isArray(raw.uninspectedAttachments)
+      || raw.uninspectedAttachments.length > 1_000
+      || !raw.uninspectedAttachments.every(validReceiptUninspectedAttachment))) return null;
   if (raw.providerReportedComplete && raw.gaps.length > 0) return null;
   return raw as unknown as ScrubCoverageReceipt;
+}
+
+function validReceiptUninspectedAttachment(value: unknown): value is UninspectedAttachment {
+  if (!exactRecord(value, ["attachmentId", "path", "detectedType", "reason", "detail"])) return false;
+  return typeof value.attachmentId === "string"
+    && value.attachmentId.length > 0
+    && value.attachmentId.length <= 256
+    && typeof value.path === "string"
+    && value.path.length > 0
+    && value.path.length <= 4_096
+    && typeof value.detectedType === "string"
+    && value.detectedType.length > 0
+    && value.detectedType.length <= 80
+    && typeof value.reason === "string"
+    && value.reason.length > 0
+    && value.reason.length <= 80
+    && typeof value.detail === "string"
+    && value.detail.length > 0
+    && value.detail.length <= 512;
 }
 
 function exactRecord(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
