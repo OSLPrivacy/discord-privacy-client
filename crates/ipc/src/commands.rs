@@ -993,6 +993,11 @@ mod register_self_snowflake_ownership_tests {
 
     #[test]
     fn register_self_snowflake_requires_account_ownership_proof() {
+        // Writes at-rest files with no key in the slot, so `maybe_encrypt`
+        // lazily creates the device-bound fallback key -- which installs it
+        // into the process-global slot and silently re-keys any test that is
+        // mid-write elsewhere. Take the same lock those tests hold.
+        let _serial = crate::test_process_globals::serialize();
         let dir = tempfile::TempDir::new().expect("tempdir");
         let state = AppState::new();
         let identity = generate_identity("native-register-owner".to_string());
@@ -16311,6 +16316,11 @@ mod friend_request_decline_revoke_command_tests {
 
     #[test]
     fn decline_or_revoke_friend_request_declines_pending_or_revokes_grant() {
+        // Writes at-rest files with no key in the slot, so `maybe_encrypt`
+        // lazily creates the device-bound fallback key -- which installs it
+        // into the process-global slot and silently re-keys any test that is
+        // mid-write elsewhere. Take the same lock those tests hold.
+        let _serial = crate::test_process_globals::serialize();
         let pending_state = AppState::new();
         let dm_scope = Scope::dm(PEER);
 
