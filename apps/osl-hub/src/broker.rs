@@ -1546,11 +1546,8 @@ pub fn prepare_whatsapp_qa_peer_prose_text(
         .is_err()
     {
         if ipc::prose_token::prose_token_burn_id(&dir, &scope, &uploaded.blob_id).is_err() {
-            let _ = security::record_peer_prose_blob(
-                security_state,
-                scope,
-                uploaded.blob_id.clone(),
-            );
+            let _ =
+                security::record_peer_prose_blob(security_state, scope, uploaded.blob_id.clone());
         }
         return Err("OSL could not save the encrypted message safely".to_owned());
     }
@@ -1900,8 +1897,9 @@ pub fn open_whatsapp_qa_peer_prose_text(
     if verify_manual_v3(core, &verified, &recovered.wire, ManualWireSender::Peer).is_err() {
         return Err("This encrypted message could not be opened".to_owned());
     }
-    let payload = decrypt_direct_manual_v3(core, &verified, ManualWireSender::Peer, &recovered.wire)
-        .map_err(|_| "This encrypted message could not be opened".to_owned())?;
+    let payload =
+        decrypt_direct_manual_v3(core, &verified, ManualWireSender::Peer, &recovered.wire)
+            .map_err(|_| "This encrypted message could not be opened".to_owned())?;
     let now = ipc::main_password::now_unix_secs_pub();
     validate_peer_protected_payload(&payload, &manual, &context, now)
         .map_err(|_| "This encrypted message could not be opened".to_owned())?;
@@ -2534,9 +2532,7 @@ pub fn rehydrate_native_discord_overlay_history(
                         PeerProsePointerError::Pointer(
                             PeerProsePointerFailure::PointerBlobGone,
                         ) => counts.pointer_blob_gone += 1,
-                        PeerProsePointerError::Pointer(
-                            PeerProsePointerFailure::Transport,
-                        ) => {
+                        PeerProsePointerError::Pointer(PeerProsePointerFailure::Transport) => {
                             counts.store_unreachable += 1
                         }
                         PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected)
@@ -4141,8 +4137,7 @@ fn drain_peer_inbox_text(
             )
             .is_ok();
         if sent_received_ack && two_phase_view_once {
-            let _ =
-                broker.record_view_once_received(&payload.message_id, payload.expires_at, now);
+            let _ = broker.record_view_once_received(&payload.message_id, payload.expires_at, now);
         }
         // First-party chat history is the durable copy the operator owns. It
         // must commit before either the replay slot is burned or the remote
@@ -8322,10 +8317,7 @@ mod tests {
                 b6_preflight_for(untrusted_keyserver),
                 "keyserver_origin_untrusted",
             ),
-            (
-                b6_preflight_for(no_source_commit),
-                "source_commit_unbound",
-            ),
+            (b6_preflight_for(no_source_commit), "source_commit_unbound"),
             (b6_preflight_for(no_binary_hash), "binary_sha256_unbound"),
             (
                 b6_preflight_for(no_deployment_identity),
@@ -9077,66 +9069,15 @@ mod tests {
 
     #[test]
     fn audit_control_inbox_consumers_have_no_active_peer_unfiltered_drain() {
-        audit_control_inbox_consumers_have_no_active_peer_unfiltered_drain_sw18590();
-    }
-
-    #[test]
-    fn audit_control_inbox_consumers_have_no_active_peer_unfiltered_drain_sw18590() {
         let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
         let account_dir = install_sender_filter_test_account("audit-no-unfiltered");
         let identity = keystore::generate_identity("recipient".to_owned());
         let sender_a = "peer-a";
         let sender_b = "peer-b";
 
-        let (base_url, requests, server) = spawn_control_inbox_test_server(vec![
-            serde_json::json!({
-                "ok": true,
-                "capabilities": {
-                    "control_inbox_sender_disposition": 1,
-                },
-            }),
-            serde_json::json!({
-                "items": [
-                    control_inbox_test_row(
-                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                        sender_a,
-                        ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
-                    ),
-                    control_inbox_test_row(
-                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab",
-                        sender_a,
-                        ipc::wire_v2::MSG_TYPE_ATTACHMENT,
-                    ),
-                ],
-                "filtered_sender_id": sender_a,
-                "filtered_sender_delivery": {
-                    "live": 2,
-                    "retryable": 0,
-                    "quarantined": 0,
-                    "retired": 0,
-                },
-            }),
-        ]);
-        let client = keystore::KeyServerClient::new(&base_url).expect("build audit client");
-        let page = fetch_peer_control_inbox(&identity, &client, sender_a)
-            .expect("active-peer receive uses the sender-scoped boundary");
-        assert_eq!(page.items.len(), 2);
-        assert!(
-            page.items.iter().all(|row| row.sender_id == sender_a),
-            "active-peer receive must not admit another sender's row"
-        );
-        let health = requests.recv().expect("capture capability probe");
-        let filtered = requests.recv().expect("capture active-peer GET");
-        assert_health_request(&health);
-        assert_filtered_request(&filtered, sender_a);
-        assert!(
-            requests.try_recv().is_err(),
-            "active-peer receive must not issue an extra unfiltered inbox request"
-        );
-        server.join().expect("filtered audit server exits");
-
-        let (widened_url, widened_requests, widened_server) =
-            spawn_control_inbox_test_server(vec![
+        let (base_url, requests, server) = spawn_control_inbox_test_server_with_floor(
+            &identity,
+            vec![
                 serde_json::json!({
                     "ok": true,
                     "capabilities": {
@@ -9146,20 +9087,74 @@ mod tests {
                 serde_json::json!({
                     "items": [
                         control_inbox_test_row(
-                            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                            sender_b,
+                            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                            sender_a,
                             ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
+                        ),
+                        control_inbox_test_row(
+                            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab",
+                            sender_a,
+                            ipc::wire_v2::MSG_TYPE_ATTACHMENT,
                         ),
                     ],
                     "filtered_sender_id": sender_a,
                     "filtered_sender_delivery": {
-                        "live": 1,
+                        "live": 2,
                         "retryable": 0,
                         "quarantined": 0,
                         "retired": 0,
                     },
                 }),
-            ]);
+            ],
+        );
+        let client = keystore::KeyServerClient::new(&base_url).expect("build audit client");
+        let page = fetch_peer_control_inbox(&identity, &client, sender_a)
+            .expect("active-peer receive uses the sender-scoped boundary");
+        assert_eq!(page.items.len(), 2);
+        assert!(
+            page.items.iter().all(|row| row.sender_id == sender_a),
+            "active-peer receive must not admit another sender's row"
+        );
+        let health = requests.recv().expect("capture capability probe");
+        let floor = requests.recv().expect("capture sender-filter floor probe");
+        let filtered = requests.recv().expect("capture active-peer GET");
+        assert_health_request(&health);
+        assert_sender_filter_floor_request(&floor, &identity);
+        assert_filtered_request(&filtered, sender_a);
+        assert!(
+            requests.try_recv().is_err(),
+            "active-peer receive must not issue an extra unfiltered inbox request"
+        );
+        server.join().expect("filtered audit server exits");
+
+        let (widened_url, widened_requests, widened_server) =
+            spawn_control_inbox_test_server_with_floor(
+                &identity,
+                vec![
+                    serde_json::json!({
+                        "ok": true,
+                        "capabilities": {
+                            "control_inbox_sender_disposition": 1,
+                        },
+                    }),
+                    serde_json::json!({
+                        "items": [
+                            control_inbox_test_row(
+                                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                                sender_b,
+                                ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
+                            ),
+                        ],
+                        "filtered_sender_id": sender_a,
+                        "filtered_sender_delivery": {
+                            "live": 1,
+                            "retryable": 0,
+                            "quarantined": 0,
+                            "retired": 0,
+                        },
+                    }),
+                ],
+            );
         let widened_client =
             keystore::KeyServerClient::new(&widened_url).expect("build widened audit client");
         let error = fetch_peer_control_inbox(&identity, &widened_client, sender_a)
@@ -9169,6 +9164,12 @@ mod tests {
             "widened rows must fail closed instead of being locally filtered"
         );
         assert_health_request(&widened_requests.recv().expect("capture widened health"));
+        assert_sender_filter_floor_request(
+            &widened_requests
+                .recv()
+                .expect("capture widened sender-filter floor"),
+            &identity,
+        );
         assert_filtered_request(
             &widened_requests
                 .recv()
@@ -9221,24 +9222,27 @@ mod tests {
             ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
         );
 
-        let (base_url, requests, server) = spawn_control_inbox_test_server(vec![
-            serde_json::json!({
-                "ok": true,
-                "capabilities": {
-                    "control_inbox_sender_disposition": 1,
-                },
-            }),
-            serde_json::json!({
-                "items": [a_text, a_attachment],
-                "filtered_sender_id": sender_a,
-                "filtered_sender_delivery": {
-                    "live": 2,
-                    "retryable": 0,
-                    "quarantined": 0,
-                    "retired": 0,
-                },
-            }),
-        ]);
+        let (base_url, requests, server) = spawn_control_inbox_test_server_with_floor(
+            &identity,
+            vec![
+                serde_json::json!({
+                    "ok": true,
+                    "capabilities": {
+                        "control_inbox_sender_disposition": 1,
+                    },
+                }),
+                serde_json::json!({
+                    "items": [a_text, a_attachment],
+                    "filtered_sender_id": sender_a,
+                    "filtered_sender_delivery": {
+                        "live": 2,
+                        "retryable": 0,
+                        "quarantined": 0,
+                        "retired": 0,
+                    },
+                }),
+            ],
+        );
         let client = keystore::KeyServerClient::new(&base_url).expect("build audit client");
         let page = fetch_peer_control_inbox(&identity, &client, sender_a)
             .expect("active-peer consumer uses the sender-scoped boundary");
@@ -9265,6 +9269,10 @@ mod tests {
             "the same sender-scoped boundary carries attachment rows"
         );
         assert_health_request(&requests.recv().expect("capture capability probe"));
+        assert_sender_filter_floor_request(
+            &requests.recv().expect("capture sender-filter floor probe"),
+            &identity,
+        );
         assert_filtered_request(
             &requests.recv().expect("capture filtered active-peer GET"),
             sender_a,
@@ -9272,24 +9280,27 @@ mod tests {
         server.join().expect("filtered audit server exits");
 
         let (widened_url, widened_requests, widened_server) =
-            spawn_control_inbox_test_server(vec![
-                serde_json::json!({
-                    "ok": true,
-                    "capabilities": {
-                        "control_inbox_sender_disposition": 1,
-                    },
-                }),
-                serde_json::json!({
-                    "items": [b_text],
-                    "filtered_sender_id": sender_a,
-                    "filtered_sender_delivery": {
-                        "live": 1,
-                        "retryable": 0,
-                        "quarantined": 0,
-                        "retired": 0,
-                    },
-                }),
-            ]);
+            spawn_control_inbox_test_server_with_floor(
+                &identity,
+                vec![
+                    serde_json::json!({
+                        "ok": true,
+                        "capabilities": {
+                            "control_inbox_sender_disposition": 1,
+                        },
+                    }),
+                    serde_json::json!({
+                        "items": [b_text],
+                        "filtered_sender_id": sender_a,
+                        "filtered_sender_delivery": {
+                            "live": 1,
+                            "retryable": 0,
+                            "quarantined": 0,
+                            "retired": 0,
+                        },
+                    }),
+                ],
+            );
         let widened_client =
             keystore::KeyServerClient::new(&widened_url).expect("build widened audit client");
         let widened = fetch_peer_control_inbox(&identity, &widened_client, sender_a)
@@ -9299,6 +9310,12 @@ mod tests {
             "the refusal must come from the widened-page path"
         );
         assert_health_request(&widened_requests.recv().expect("capture widened health"));
+        assert_sender_filter_floor_request(
+            &widened_requests
+                .recv()
+                .expect("capture widened sender-filter floor"),
+            &identity,
+        );
         assert_filtered_request(
             &widened_requests
                 .recv()
@@ -9345,6 +9362,35 @@ mod tests {
         std::sync::mpsc::Receiver<String>,
         std::thread::JoinHandle<()>,
     ) {
+        spawn_control_inbox_test_server_inner(None, responses)
+    }
+
+    fn spawn_control_inbox_test_server_with_floor(
+        identity: &keystore::Identity,
+        responses: Vec<serde_json::Value>,
+    ) -> (
+        String,
+        std::sync::mpsc::Receiver<String>,
+        std::thread::JoinHandle<()>,
+    ) {
+        spawn_control_inbox_test_server_inner(
+            Some((
+                identity.user_id.clone(),
+                identity.ed25519_public.as_bytes().to_vec(),
+            )),
+            responses,
+        )
+    }
+
+    fn spawn_control_inbox_test_server_inner(
+        floor_identity: Option<(String, Vec<u8>)>,
+        responses: Vec<serde_json::Value>,
+    ) -> (
+        String,
+        std::sync::mpsc::Receiver<String>,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::collections::VecDeque;
         use std::io::{Read, Write};
 
         let listener =
@@ -9352,7 +9398,8 @@ mod tests {
         let address = listener.local_addr().expect("read test server address");
         let (request_tx, request_rx) = std::sync::mpsc::channel();
         let server = std::thread::spawn(move || {
-            for body in responses {
+            let mut responses = VecDeque::from(responses);
+            while !responses.is_empty() {
                 let (mut stream, _) = listener.accept().expect("accept control-inbox request");
                 stream
                     .set_read_timeout(Some(Duration::from_secs(5)))
@@ -9391,10 +9438,22 @@ mod tests {
                     assert!(read > 0, "request ended before its body");
                     request.extend_from_slice(&chunk[..read]);
                 }
+                let request_text = String::from_utf8(request).expect("request headers are UTF-8");
+                let target = request_target(&request_text).to_owned();
                 request_tx
-                    .send(String::from_utf8(request).expect("request headers are UTF-8"))
+                    .send(request_text)
                     .expect("record control-inbox request");
 
+                let body = if target.starts_with("/v1/sender-filter-capability-floor/") {
+                    let (user_id, ed25519_public) = floor_identity
+                        .as_ref()
+                        .expect("test floor response has a bound identity");
+                    sender_filter_floor_response(user_id, ed25519_public, &target)
+                } else {
+                    responses
+                        .pop_front()
+                        .expect("scripted control-inbox response is available")
+                };
                 let body = serde_json::to_vec(&body).expect("serialize control-inbox response");
                 let headers = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -9407,6 +9466,92 @@ mod tests {
             }
         });
         (format!("http://{address}"), request_rx, server)
+    }
+
+    fn request_target(request: &str) -> &str {
+        request
+            .lines()
+            .next()
+            .expect("request line")
+            .split_whitespace()
+            .nth(1)
+            .expect("request target")
+    }
+
+    fn query_value<'a>(target: &'a str, name: &str) -> &'a str {
+        target
+            .split_once('?')
+            .map(|(_, query)| query)
+            .unwrap_or("")
+            .split('&')
+            .find_map(|pair| {
+                let (key, value) = pair.split_once('=')?;
+                (key == name).then_some(value)
+            })
+            .unwrap_or("")
+    }
+
+    fn write_sender_filter_floor_lp(output: &mut Vec<u8>, value: &[u8]) {
+        output.extend_from_slice(&(value.len() as u32).to_be_bytes());
+        output.extend_from_slice(value);
+    }
+
+    fn sender_filter_floor_identity_anchor_sha256(user_id: &str, ed25519_public: &[u8]) -> String {
+        let mut canonical = Vec::new();
+        write_sender_filter_floor_lp(&mut canonical, b"OSL-SENDER-FILTER-FLOOR-IDENTITY-v1\0");
+        write_sender_filter_floor_lp(&mut canonical, user_id.as_bytes());
+        write_sender_filter_floor_lp(&mut canonical, ed25519_public);
+        let digest = Sha256::digest(canonical);
+        digest.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    fn sender_filter_floor_response(
+        user_id: &str,
+        ed25519_public: &[u8],
+        target: &str,
+    ) -> serde_json::Value {
+        assert!(
+            target.starts_with("/v1/sender-filter-capability-floor/"),
+            "sender-filter floor uses the exact authority route"
+        );
+        let timestamp_ms = query_value(target, "ts")
+            .parse::<i64>()
+            .expect("floor request carries numeric timestamp");
+        let request_id = query_value(target, "request_id");
+        assert_eq!(request_id.len(), 43);
+        assert!(
+            !query_value(target, "sig").is_empty(),
+            "floor request is signed"
+        );
+        serde_json::json!({
+            "format": "osl.keyserver.sender-filter-capability-floor.v3",
+            "recipient_user_id": user_id,
+            "identity_anchor_sha256": sender_filter_floor_identity_anchor_sha256(
+                user_id,
+                ed25519_public,
+            ),
+            "capability_version": 1,
+            "monotonic_version": 1,
+            "first_observed_at_ms": timestamp_ms,
+            "request_timestamp_ms": timestamp_ms,
+            "request_id": request_id,
+        })
+    }
+
+    fn assert_sender_filter_floor_request(request: &str, identity: &keystore::Identity) {
+        let target = request_target(request);
+        assert!(
+            target.starts_with(&format!(
+                "/v1/sender-filter-capability-floor/{}?",
+                identity.user_id
+            )),
+            "the shipping receive boundary observes the signed sender-filter floor"
+        );
+        assert_eq!(query_value(target, "request_id").len(), 43);
+        assert!(
+            !query_value(target, "sig").is_empty(),
+            "sender-filter floor observation is signed"
+        );
     }
 
     fn assert_filtered_request(request: &str, sender_id: &str) {
@@ -9920,40 +10065,43 @@ mod tests {
             sender_b,
             ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
         );
-        let (base_url, requests, server) = spawn_control_inbox_test_server(vec![
-            serde_json::json!({
-                "ok": true,
-                "capabilities": {
-                    "control_inbox_sender_disposition": 1,
-                },
-            }),
-            serde_json::json!({
-                "items": [a_text, a_attachment],
-                "filtered_sender_id": sender_a,
-                "filtered_sender_delivery": {
-                    "live": 2,
-                    "retryable": 0,
-                    "quarantined": 0,
-                    "retired": 0,
-                },
-            }),
-            serde_json::json!({
-                "ok": true,
-                "capabilities": {
-                    "control_inbox_sender_disposition": 1,
-                },
-            }),
-            serde_json::json!({
-                "items": [b_text],
-                "filtered_sender_id": sender_b,
-                "filtered_sender_delivery": {
-                    "live": 1,
-                    "retryable": 0,
-                    "quarantined": 0,
-                    "retired": 0,
-                },
-            }),
-        ]);
+        let (base_url, requests, server) = spawn_control_inbox_test_server_with_floor(
+            &identity,
+            vec![
+                serde_json::json!({
+                    "ok": true,
+                    "capabilities": {
+                        "control_inbox_sender_disposition": 1,
+                    },
+                }),
+                serde_json::json!({
+                    "items": [a_text, a_attachment],
+                    "filtered_sender_id": sender_a,
+                    "filtered_sender_delivery": {
+                        "live": 2,
+                        "retryable": 0,
+                        "quarantined": 0,
+                        "retired": 0,
+                    },
+                }),
+                serde_json::json!({
+                    "ok": true,
+                    "capabilities": {
+                        "control_inbox_sender_disposition": 1,
+                    },
+                }),
+                serde_json::json!({
+                    "items": [b_text],
+                    "filtered_sender_id": sender_b,
+                    "filtered_sender_delivery": {
+                        "live": 1,
+                        "retryable": 0,
+                        "quarantined": 0,
+                        "retired": 0,
+                    },
+                }),
+            ],
+        );
         let client = keystore::KeyServerClient::new(&base_url).expect("build test client");
 
         let a_page = fetch_peer_control_inbox(&identity, &client, sender_a)
@@ -9996,11 +10144,23 @@ mod tests {
         assert_eq!(b_rows[0].sender_id, sender_b);
 
         assert_health_request(&requests.recv().expect("capture A capability request"));
+        assert_sender_filter_floor_request(
+            &requests
+                .recv()
+                .expect("capture A sender-filter floor request"),
+            &identity,
+        );
         assert_filtered_request(
             &requests.recv().expect("capture A's production request"),
             sender_a,
         );
         assert_health_request(&requests.recv().expect("capture B capability request"));
+        assert_sender_filter_floor_request(
+            &requests
+                .recv()
+                .expect("capture B sender-filter floor request"),
+            &identity,
+        );
         assert_filtered_request(
             &requests.recv().expect("capture B's production request"),
             sender_b,
@@ -10080,15 +10240,18 @@ mod tests {
         ];
 
         for (label, response, expected_error) in cases {
-            let (base_url, requests, server) = spawn_control_inbox_test_server(vec![
-                serde_json::json!({
-                    "ok": true,
-                    "capabilities": {
-                        "control_inbox_sender_disposition": 1,
-                    },
-                }),
-                response,
-            ]);
+            let (base_url, requests, server) = spawn_control_inbox_test_server_with_floor(
+                &identity,
+                vec![
+                    serde_json::json!({
+                        "ok": true,
+                        "capabilities": {
+                            "control_inbox_sender_disposition": 1,
+                        },
+                    }),
+                    response,
+                ],
+            );
             let client = keystore::KeyServerClient::new(&base_url).expect("build test client");
             let error = fetch_peer_control_inbox(&identity, &client, sender_a)
                 .expect_err("an unconfirmed or widened page must be refused");
@@ -10097,6 +10260,12 @@ mod tests {
                 "{label} must fail through its specific closed-path verdict"
             );
             assert_health_request(&requests.recv().expect("capture capability request"));
+            assert_sender_filter_floor_request(
+                &requests
+                    .recv()
+                    .expect("capture sender-filter floor request"),
+                &identity,
+            );
             assert_filtered_request(
                 &requests.recv().expect("capture refused production request"),
                 sender_a,
@@ -10125,30 +10294,43 @@ mod tests {
             "legacy capability absence is an explicit refusal"
         );
         assert_health_request(&legacy_requests.recv().expect("capture legacy health"));
+        assert!(
+            legacy_requests.try_recv().is_err(),
+            "legacy refusal must stop before any floor or inbox GET"
+        );
         legacy_server.join().expect("legacy server exits");
 
-        let (final_url, final_requests, final_server) = spawn_control_inbox_test_server(vec![
-            serde_json::json!({
-                "ok": true,
-                "capabilities": {
-                    "control_inbox_sender_disposition": 1,
-                },
-            }),
-            serde_json::json!({
-                "items": [],
-                "filtered_sender_id": sender_a,
-                "filtered_sender_delivery": {
-                    "live": 0,
-                    "retryable": 0,
-                    "quarantined": 0,
-                    "retired": 0,
-                },
-            }),
-        ]);
+        let (final_url, final_requests, final_server) = spawn_control_inbox_test_server_with_floor(
+            &identity,
+            vec![
+                serde_json::json!({
+                    "ok": true,
+                    "capabilities": {
+                        "control_inbox_sender_disposition": 1,
+                    },
+                }),
+                serde_json::json!({
+                    "items": [],
+                    "filtered_sender_id": sender_a,
+                    "filtered_sender_delivery": {
+                        "live": 0,
+                        "retryable": 0,
+                        "quarantined": 0,
+                        "retired": 0,
+                    },
+                }),
+            ],
+        );
         let final_client = keystore::KeyServerClient::new(&final_url).expect("final client");
         fetch_peer_control_inbox(&identity, &final_client, sender_a)
             .expect("final Worker raises the durable capability floor");
         assert_health_request(&final_requests.recv().expect("capture final health"));
+        assert_sender_filter_floor_request(
+            &final_requests
+                .recv()
+                .expect("capture final sender-filter floor"),
+            &identity,
+        );
         assert_filtered_request(
             &final_requests.recv().expect("capture final filtered GET"),
             sender_a,
@@ -10168,6 +10350,10 @@ mod tests {
             "rollback is refused before any unfiltered fallback GET"
         );
         assert_health_request(&rollback_requests.recv().expect("capture rollback health"));
+        assert!(
+            rollback_requests.try_recv().is_err(),
+            "rollback refusal must stop before any floor or inbox GET"
+        );
         rollback_server.join().expect("rollback server exits");
         remove_sender_filter_test_account(&account_dir);
     }
@@ -10180,28 +10366,32 @@ mod tests {
         let sender_a = "peer-a";
         let sender_b = "peer-b";
 
-        let (legacy_url, legacy_requests, legacy_server) = spawn_control_inbox_test_server(vec![
-            serde_json::json!({
-                "ok": true,
-                "capabilities": {
-                    "control_inbox_sender_disposition": 1,
-                },
-            }),
-            serde_json::json!({
-                "items": [
-                    control_inbox_test_row(
-                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                        sender_a,
-                        ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
-                    ),
-                    control_inbox_test_row(
-                        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                        sender_b,
-                        ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
-                    ),
+        let (legacy_url, legacy_requests, legacy_server) =
+            spawn_control_inbox_test_server_with_floor(
+                &identity,
+                vec![
+                    serde_json::json!({
+                        "ok": true,
+                        "capabilities": {
+                            "control_inbox_sender_disposition": 1,
+                        },
+                    }),
+                    serde_json::json!({
+                        "items": [
+                            control_inbox_test_row(
+                                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                                sender_a,
+                                ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
+                            ),
+                            control_inbox_test_row(
+                                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                                sender_b,
+                                ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
+                            ),
+                        ],
+                    }),
                 ],
-            }),
-        ]);
+            );
         let legacy_client = keystore::KeyServerClient::new(&legacy_url).expect("legacy client");
         let error = fetch_peer_control_inbox(&identity, &legacy_client, sender_a)
             .expect_err("legacy shape without sender echo must be refused");
@@ -10212,6 +10402,12 @@ mod tests {
             "legacy shape is refused by the exact echo requirement"
         );
         assert_health_request(&legacy_requests.recv().expect("capture legacy health"));
+        assert_sender_filter_floor_request(
+            &legacy_requests
+                .recv()
+                .expect("capture legacy-shape sender-filter floor"),
+            &identity,
+        );
         assert_filtered_request(
             &legacy_requests.recv().expect("capture legacy filtered GET"),
             sender_a,

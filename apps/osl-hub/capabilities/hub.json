@@ -129,6 +129,7 @@
     "allow-open-hub-attachment",
     "allow-export-hub-friend-code",
     "allow-add-hub-friend",
+    "allow-get-hub-username-status",
     "allow-verify-hub-friend-safety-number",
     "allow-remove-hub-friend",
     "allow-list-hub-people",

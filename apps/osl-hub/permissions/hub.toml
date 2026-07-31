@@ -654,6 +654,11 @@ description = "Validate and add one signed OSL friend code to encrypted local Pe
 commands.allow = ["add_hub_friend"]
 
 [[permission]]
+identifier = "allow-get-hub-username-status"
+description = "Check bounded public username availability metadata without granting any claim or account mutation authority."
+commands.allow = ["get_hub_username_status"]
+
+[[permission]]
 identifier = "allow-verify-hub-friend-safety-number"
 description = "Record explicit out-of-band verification of one friend's safety number."
 commands.allow = ["verify_hub_friend_safety_number"]
