@@ -51,6 +51,7 @@ custom-protocol = ["tauri/custom-protocol"]
 # feature rather than a renderer/runtime switch, so production binaries cannot
 # enter the passwordless path from JavaScript or an environment variable.
 discord-qa-shell = []
+signal-qa-shell = []
 whatsapp-qa-shell = []
 
 [[bin]]

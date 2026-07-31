@@ -133,6 +133,31 @@ pub fn save_active_profile(owner: &str, input: HubProfileInput) -> Result<HubPro
     write_profile_with_key(&active_profile_path()?, owner, profile, &key)
 }
 
+/// Restores the exact logical profile state after a later username-directory
+/// step fails. This remains identity-scoped and encrypted through the same
+/// storage boundary as an ordinary save.
+pub fn restore_active_profile(owner: &str, profile: Option<HubProfileDto>) -> Result<(), String> {
+    let key = active_file_key()?;
+    let path = active_profile_path()?;
+    restore_profile_with_key(&path, owner, profile, &key)
+}
+
+fn restore_profile_with_key(
+    path: &Path,
+    owner: &str,
+    profile: Option<HubProfileDto>,
+    key: &[u8; 32],
+) -> Result<(), String> {
+    match profile {
+        Some(profile) => write_profile_with_key(path, owner, profile, key).map(|_| ()),
+        None => match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err("OSL profile rollback could not remove the new profile".to_owned()),
+        },
+    }
+}
+
 fn active_file_key() -> Result<[u8; 32], String> {
     ipc::main_password::get_file_storage_key()
         .ok_or_else(|| "OSL main password must be unlocked".to_owned())
@@ -455,6 +480,28 @@ mod tests {
             "A".repeat(MAX_AVATAR_DATA_URL_BYTES)
         ));
         assert!(validate_profile(input).is_err());
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn transaction_rollback_restores_previous_or_absent_profile() {
+        let path = temporary_file("rollback");
+        let previous = validate_profile(valid_input()).unwrap();
+        write_profile_with_key(&path, "osl-user-a", previous.clone(), &TEST_KEY).unwrap();
+        let mut changed_input = valid_input();
+        changed_input.username_candidate = "next_name".to_owned();
+        let changed = validate_profile(changed_input).unwrap();
+        write_profile_with_key(&path, "osl-user-a", changed, &TEST_KEY).unwrap();
+        restore_profile_with_key(&path, "osl-user-a", Some(previous.clone()), &TEST_KEY).unwrap();
+        assert_eq!(
+            load_profile_with_key(&path, "osl-user-a", &TEST_KEY).unwrap(),
+            Some(previous)
+        );
+        restore_profile_with_key(&path, "osl-user-a", None, &TEST_KEY).unwrap();
+        assert_eq!(
+            load_profile_with_key(&path, "osl-user-a", &TEST_KEY).unwrap(),
+            None
+        );
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }
