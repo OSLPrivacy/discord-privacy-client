@@ -681,6 +681,7 @@ describe("Telegram operator webhook route", () => {
     const badSecretFetcher = outboundFetcher();
     const wrongChatFetcher = outboundFetcher();
     const malformedFetcher = outboundFetcher();
+    const invalidJsonFetcher = outboundFetcher();
     const acceptedResponse = await handleTelegramWebhook(
       commandRequest("/downloads", ADMIN_CHAT_ID),
       configuredEnv(),
@@ -701,18 +702,32 @@ describe("Telegram operator webhook route", () => {
       configuredEnv(),
       malformedFetcher,
     );
+    const invalidJsonResponse = await handleTelegramWebhook(
+      new Request("https://keyserver.test/v1/telegram/webhook", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-telegram-bot-api-secret-token": WEBHOOK_SECRET,
+        },
+        body: "{\"message\":",
+      }),
+      configuredEnv(),
+      invalidJsonFetcher,
+    );
 
     expect([
       acceptedResponse.status,
       badSecretResponse.status,
       wrongChatResponse.status,
       malformedResponse.status,
-    ]).toEqual([200, 200, 200, 200]);
+      invalidJsonResponse.status,
+    ]).toEqual([200, 200, 200, 200, 200]);
     const ackBodies = await Promise.all([
       acceptedResponse.text(),
       badSecretResponse.text(),
       wrongChatResponse.text(),
       malformedResponse.text(),
+      invalidJsonResponse.text(),
     ]);
     expect(new Set(ackBodies).size).toBe(1);
     expect(JSON.parse(ackBodies[0] ?? "")).toEqual({ ok: true });
@@ -720,6 +735,7 @@ describe("Telegram operator webhook route", () => {
     expect(badSecretFetcher).not.toHaveBeenCalled();
     expect(wrongChatFetcher).not.toHaveBeenCalled();
     expect(malformedFetcher).not.toHaveBeenCalled();
+    expect(invalidJsonFetcher).not.toHaveBeenCalled();
 
     const typoFetcher = outboundFetcher();
     const typoResponse = await handleTelegramWebhook(

@@ -15,7 +15,11 @@ export async function handleTelegramWebhook(
   if (!telegramReportingIsConfigured(env)) {
     return serviceUnavailable("Telegram reporting is not configured");
   }
-  await handleTelegramCommand(request, env, fetcher);
+  try {
+    await handleTelegramCommand(request, env, fetcher);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+  }
   // Always acknowledge handled updates without revealing whether any command
   // was authorized. Telegram will not retry an acknowledged update.
   return json(TELEGRAM_NEUTRAL_ACK);
