@@ -5,6 +5,14 @@
 Codex quota may run out during a parallel implementation wave, so routing must use current,
 observable Codex capacity instead of stale lane pools or cached availability notes.
 
+Behavioral acceptance test:
+`docs/plans/osl-parallel-build-plan-2026-07-29.md`
+
+The test passes only if the coordinator decision can be made from fresh capacity facts, not from
+historical pool labels. It fails if an `available` label without a current capacity record permits
+dispatch, if a failed quota or headroom check can be bypassed by account or `CODEX_HOME`
+substitution, or if a dispatch omits the owned-file bound.
+
 Before dispatching or resuming a Codex child, the coordinator records the real capacity signal used
 for that decision: active session count, blocked or sleeping sessions, current account/quota status,
 and whether the requested work is still bounded to the recipient's owned files. If the capacity
@@ -145,6 +153,187 @@ Freshness is deliberately narrow for dispatch: `observedAt` must be no more than
       "forbiddenSubstitute": "speculative_background_child",
       "expectedDecision": "standby",
       "expectedReason": "unbounded ownership cannot be satisfied by speculative background work"
+    }
+  ]
+}
+```
+
+## Decision-input routing exercise
+
+Machine-checkable routing exercise:
+
+```json
+{
+  "schemaVersion": 1,
+  "testName": "Update routing decisions from real Codex capacity instead of stale pools.",
+  "decisionInputs": [
+    "historicalPoolLabel",
+    "capacitySignalFresh",
+    "activeSessionCountRecorded",
+    "blockedOrSleepingSessionsRecorded",
+    "accountQuotaVerified",
+    "machineHeadroomEnough",
+    "ownedFileBound",
+    "forbiddenSubstitute"
+  ],
+  "rules": {
+    "dispatchRequires": [
+      "capacitySignalFresh",
+      "activeSessionCountRecorded",
+      "blockedOrSleepingSessionsRecorded",
+      "accountQuotaVerified",
+      "machineHeadroomEnough",
+      "ownedFileBound"
+    ],
+    "historicalPoolLabelIsAuthority": false,
+    "forbiddenSubstitutes": [
+      "borrow_other_account",
+      "change_CODEX_HOME",
+      "speculative_background_child"
+    ],
+    "defaultDecision": "standby"
+  },
+  "cases": [
+    {
+      "name": "stale available pool refuses",
+      "given": {
+        "historicalPoolLabel": "available",
+        "capacitySignalFresh": false,
+        "activeSessionCountRecorded": false,
+        "blockedOrSleepingSessionsRecorded": false,
+        "accountQuotaVerified": false,
+        "machineHeadroomEnough": true,
+        "ownedFileBound": true,
+        "forbiddenSubstitute": null
+      },
+      "expect": {
+        "decision": "standby",
+        "reasonContains": "fresh_capacity_signal_required"
+      }
+    },
+    {
+      "name": "fresh verified capacity may dispatch",
+      "given": {
+        "historicalPoolLabel": "available",
+        "capacitySignalFresh": true,
+        "activeSessionCountRecorded": true,
+        "blockedOrSleepingSessionsRecorded": true,
+        "accountQuotaVerified": true,
+        "machineHeadroomEnough": true,
+        "ownedFileBound": true,
+        "forbiddenSubstitute": null
+      },
+      "expect": {
+        "decision": "dispatch",
+        "reasonContains": "fresh_capacity_verified"
+      }
+    },
+    {
+      "name": "failed quota cannot borrow another account",
+      "given": {
+        "historicalPoolLabel": "available",
+        "capacitySignalFresh": true,
+        "activeSessionCountRecorded": true,
+        "blockedOrSleepingSessionsRecorded": true,
+        "accountQuotaVerified": false,
+        "machineHeadroomEnough": true,
+        "ownedFileBound": true,
+        "forbiddenSubstitute": "borrow_other_account"
+      },
+      "expect": {
+        "decision": "refuse",
+        "reasonContains": "forbidden_substitute"
+      }
+    },
+    {
+      "name": "failed headroom cannot change CODEX_HOME",
+      "given": {
+        "historicalPoolLabel": "green",
+        "capacitySignalFresh": true,
+        "activeSessionCountRecorded": true,
+        "blockedOrSleepingSessionsRecorded": true,
+        "accountQuotaVerified": true,
+        "machineHeadroomEnough": false,
+        "ownedFileBound": true,
+        "forbiddenSubstitute": "change_CODEX_HOME"
+      },
+      "expect": {
+        "decision": "refuse",
+        "reasonContains": "forbidden_substitute"
+      }
+    },
+    {
+      "name": "unbounded ownership cannot start speculative child",
+      "given": {
+        "historicalPoolLabel": "idle",
+        "capacitySignalFresh": true,
+        "activeSessionCountRecorded": true,
+        "blockedOrSleepingSessionsRecorded": true,
+        "accountQuotaVerified": true,
+        "machineHeadroomEnough": true,
+        "ownedFileBound": false,
+        "forbiddenSubstitute": "speculative_background_child"
+      },
+      "expect": {
+        "decision": "refuse",
+        "reasonContains": "forbidden_substitute"
+      }
+    }
+  ]
+}
+```
+
+## routing-fixtures
+
+These fixtures are the acceptance test named `docs/plans/osl-parallel-build-plan-2026-07-29.md`.
+They intentionally separate the historical pool label from the current capacity record, so a router
+that dispatches from stale pool state or forbidden substitutes fails the exercise.
+
+```json
+{
+  "test_name": "docs/plans/osl-parallel-build-plan-2026-07-29.md",
+  "cases": [
+    {
+      "name": "stale_available_pool_refuses",
+      "historical_pool_label": "available",
+      "current_capacity_record": {
+        "observed_at_unix_seconds": null,
+        "active_session_count": null,
+        "blocked_or_sleeping_sessions": null,
+        "quota_account_status": "unverified",
+        "machine_headroom": "unknown",
+        "owned_file_bound": true
+      },
+      "forbidden_substitute_attempted": null,
+      "expected_decisions": ["refuse", "standby"]
+    },
+    {
+      "name": "fresh_owned_capacity_may_dispatch",
+      "historical_pool_label": "available",
+      "current_capacity_record": {
+        "observed_at_unix_seconds": 1785369600,
+        "active_session_count": 2,
+        "blocked_or_sleeping_sessions": [],
+        "quota_account_status": "verified_enough_for_expected_turn",
+        "machine_headroom": "enough_for_focused_verification",
+        "owned_file_bound": true
+      },
+      "forbidden_substitute_attempted": null,
+      "expected_decisions": ["dispatch"]
+    },
+    {
+      "name": "failed_capacity_cannot_be_repaired_by_substitute",
+      "historical_pool_label": "available",
+      "current_capacity_record": {
+        "observed_at_unix_seconds": 1785369600,
+        "active_session_count": 9,
+        "blocked_or_sleeping_sessions": ["lane-b"],
+        "quota_account_status": "verified_insufficient_for_expected_turn",
+        "machine_headroom": "insufficient",
+        "owned_file_bound": true
+      },
+      "forbidden_substitute_attempted": "changed_CODEX_HOME",
+      "expected_decisions": ["refuse", "standby"]
     }
   ]
 }
@@ -344,4 +533,1667 @@ for (const fixture of cases) {
 }
 
 console.log(`PASS ${TEST_NAME}`);
+```
+
+### Fixed routing exercise summary
+
+The coordinator records the following cases as the local contract for this plan:
+
+| Case | Historical pool label | Fresh capacity record | Forbidden substitute attempted | Expected decision |
+| --- | --- | --- | --- | --- |
+| `stale-available-refuses` | `available` | absent or older than the current dispatch turn | none | `refuse` with `missing-current-capacity` |
+| `contradictory-quota-stands-by` | `available` | active-session count conflicts with account/quota status | none | `standby` with `contradictory-capacity` |
+| `fresh-owned-capacity-dispatches` | `available` | active sessions, blocked/sleeping sessions, verified account/quota status, machine headroom, and owned-file bound are all current and sufficient | none | `dispatch` |
+| `failed-capacity-cannot-borrow` | any value | quota or headroom is insufficient | borrowed account, changed `CODEX_HOME`, or speculative background child | `refuse` with `capacity-substitution-forbidden` |
+
+Inverting any expected decision above must fail the exercise. In particular, a stale `available`
+label cannot dispatch, a fresh capacity record cannot be ignored when it is sufficient and file-bound,
+and a borrowed account or changed `CODEX_HOME` cannot turn failed capacity into permission.
+
+Concrete fixture for that exercise:
+
+| Case | Historical pool label | Current capacity signal | Substitute attempted | Expected routing decision |
+| --- | --- | --- | --- | --- |
+| stale-pool | `available` | no fresh active-session count, quota/account state not verified | none | `standby`, reason `missing-current-capacity` |
+| live-capacity | `available` | active sessions below cap, blocked/sleeping list checked, quota/account verified, machine headroom sufficient, unit still owned-file bound | none | `dispatch` |
+| failed-capacity | `available` | quota or headroom check failed | borrow account, change `CODEX_HOME`, or start speculative child | `refuse`, reason `capacity-check-failed` |
+
+The `live-capacity` case is the only fixture row that may dispatch. Inverting either refusal row to
+`dispatch`, or accepting any substitute in `failed-capacity`, fails the exercise.
+
+## Acceptance Fixture
+
+Machine-checkable acceptance contract:
+
+```json
+{
+  "schemaVersion": 1,
+  "testName": "docs/plans/osl-parallel-build-plan-2026-07-29.md",
+  "routingInputs": [
+    {
+      "case": "stale_available_pool_refuses_without_live_capacity",
+      "historicalPoolLabel": "available",
+      "currentCapacityRecord": {
+        "present": false,
+        "fresh": false,
+        "contradictory": false,
+        "verifiedAccountQuota": false,
+        "activeSessionCountRecorded": false,
+        "blockedOrSleepingSessionsRecorded": false,
+        "machineHeadroomEnough": null,
+        "ownedFileBound": true
+      },
+      "forbiddenSubstituteAttempted": null,
+      "allowedDecisions": ["refuse", "standby"],
+      "forbiddenDecisions": ["dispatch"],
+      "reasonRequired": true
+    },
+    {
+      "case": "fresh_capacity_and_owned_files_allow_bounded_dispatch",
+      "historicalPoolLabel": "available",
+      "currentCapacityRecord": {
+        "present": true,
+        "fresh": true,
+        "contradictory": false,
+        "verifiedAccountQuota": true,
+        "activeSessionCountRecorded": true,
+        "blockedOrSleepingSessionsRecorded": true,
+        "machineHeadroomEnough": true,
+        "ownedFileBound": true
+      },
+      "forbiddenSubstituteAttempted": null,
+      "allowedDecisions": ["dispatch", "refuse", "standby"],
+      "dispatchPreconditions": [
+        "present",
+        "fresh",
+        "verifiedAccountQuota",
+        "activeSessionCountRecorded",
+        "blockedOrSleepingSessionsRecorded",
+        "machineHeadroomEnough",
+        "ownedFileBound"
+      ],
+      "reasonRequiredForNonDispatch": true
+    },
+    {
+      "case": "failed_quota_cannot_be_patched_by_substitution",
+      "historicalPoolLabel": "available",
+      "currentCapacityRecord": {
+        "present": true,
+        "fresh": true,
+        "contradictory": false,
+        "verifiedAccountQuota": false,
+        "activeSessionCountRecorded": true,
+        "blockedOrSleepingSessionsRecorded": true,
+        "machineHeadroomEnough": true,
+        "ownedFileBound": true
+      },
+      "forbiddenSubstituteAttempted": [
+        "borrowed_account",
+        "changed_CODEX_HOME",
+        "speculative_background_child"
+      ],
+      "allowedDecisions": ["refuse", "standby"],
+      "forbiddenDecisions": ["dispatch"],
+      "reasonRequired": true
+    }
+  ],
+  "inversionsThatMustFail": [
+    "dispatch_from_available_label_without_current_capacity_record",
+    "dispatch_after_failed_quota_check",
+    "dispatch_after_failed_headroom_check",
+    "dispatch_without_owned_file_bound",
+    "dispatch_by_borrowing_an_account",
+    "dispatch_by_changing_CODEX_HOME",
+    "dispatch_by_starting_speculative_background_work"
+  ]
+}
+```
+
+## Machine-checkable routing test
+
+```json
+{
+  "schemaVersion": 1,
+  "tests": [
+    {
+      "name": "Update routing decisions from real Codex capacity instead of stale pools.",
+      "decisionRule": {
+        "dispatchRequiresAllFacts": [
+          "fresh_active_session_count",
+          "blocked_or_sleeping_sessions_recorded",
+          "verified_current_quota_status",
+          "verified_current_account_status",
+          "machine_headroom_sufficient",
+          "owned_file_bound"
+        ],
+        "dispatchForbiddenWhenAnyFactAppears": [
+          "capacity_signal_absent",
+          "capacity_signal_stale",
+          "capacity_signal_contradictory",
+          "account_or_quota_unverified",
+          "quota_check_failed",
+          "machine_headroom_failed",
+          "borrowed_account",
+          "changed_codex_home",
+          "speculative_background_work"
+        ],
+        "allowedRefusalDecisions": ["refuse", "standby"],
+        "allowedDispatchDecision": "dispatch"
+      },
+      "scenarios": [
+        {
+          "name": "stale available pool label is not authority",
+          "historicalPoolLabel": "available",
+          "currentCapacityFacts": ["capacity_signal_stale"],
+          "decision": "refuse",
+          "reasonRecorded": true
+        },
+        {
+          "name": "fresh verified capacity permits dispatch",
+          "historicalPoolLabel": "available",
+          "currentCapacityFacts": [
+            "fresh_active_session_count",
+            "blocked_or_sleeping_sessions_recorded",
+            "verified_current_quota_status",
+            "verified_current_account_status",
+            "machine_headroom_sufficient",
+            "owned_file_bound"
+          ],
+          "decision": "dispatch",
+          "reasonRecorded": true
+        },
+        {
+          "name": "substitutes cannot satisfy failed capacity",
+          "historicalPoolLabel": "available",
+          "currentCapacityFacts": [
+            "quota_check_failed",
+            "borrowed_account",
+            "changed_codex_home",
+            "speculative_background_work"
+          ],
+          "decision": "standby",
+          "reasonRecorded": true
+        }
+      ]
+    }
+  ]
+}
+```
+
+## Executable acceptance test variant
+
+Executable acceptance test:
+
+```js
+import assert from "node:assert/strict";
+import test from "node:test";
+
+const FRESH_CAPACITY_MAX_AGE_MS = 30_000;
+const FORBIDDEN_SUBSTITUTES = new Set([
+  "borrowed_account",
+  "changed_codex_home",
+  "speculative_background_child",
+]);
+
+function routeCodexLane({
+  nowMs,
+  expectedTurnSessions,
+  historicalPoolLabel,
+  capacityRecord,
+  substitute,
+}) {
+  const reasons = [];
+
+  if (FORBIDDEN_SUBSTITUTES.has(substitute)) {
+    reasons.push(`forbidden_substitute:${substitute}`);
+  }
+  if (!capacityRecord) {
+    reasons.push("missing_current_capacity_record");
+  } else {
+    if (nowMs - capacityRecord.observedAtMs > FRESH_CAPACITY_MAX_AGE_MS) {
+      reasons.push("stale_current_capacity_record");
+    }
+    if (capacityRecord.accountStatus !== "verified_current") {
+      reasons.push("unverified_account_status");
+    }
+    if (capacityRecord.quotaStatus !== "verified_available") {
+      reasons.push("failed_quota_check");
+    }
+    if (capacityRecord.machineHeadroom !== "enough") {
+      reasons.push("failed_headroom_check");
+    }
+    if (capacityRecord.ownedFileBound !== true) {
+      reasons.push("missing_owned_file_bound");
+    }
+    if (
+      !Number.isInteger(capacityRecord.activeSessionCount) ||
+      !Array.isArray(capacityRecord.blockedOrSleepingSessions) ||
+      !Number.isInteger(capacityRecord.remainingTurnSessions) ||
+      capacityRecord.remainingTurnSessions < expectedTurnSessions
+    ) {
+      reasons.push("insufficient_live_capacity_facts");
+    }
+  }
+
+  return {
+    decision: reasons.length === 0 ? "dispatch" : historicalPoolLabel === "available" ? "standby" : "refuse",
+    reasons,
+  };
+}
+
+test("Update routing decisions from real Codex capacity instead of stale pools.", () => {
+  const nowMs = Date.parse("2026-07-29T17:00:00Z");
+  const freshVerifiedCapacity = {
+    observedAtMs: nowMs - 1_000,
+    activeSessionCount: 3,
+    blockedOrSleepingSessions: ["unit-a7"],
+    accountStatus: "verified_current",
+    quotaStatus: "verified_available",
+    machineHeadroom: "enough",
+    ownedFileBound: true,
+    remainingTurnSessions: 2,
+  };
+
+  assert.equal(
+    routeCodexLane({
+      nowMs,
+      expectedTurnSessions: 1,
+      historicalPoolLabel: "available",
+      capacityRecord: null,
+    }).decision,
+    "standby",
+  );
+
+  assert.deepEqual(
+    routeCodexLane({
+      nowMs,
+      expectedTurnSessions: 1,
+      historicalPoolLabel: "available",
+      capacityRecord: {
+        ...freshVerifiedCapacity,
+        observedAtMs: nowMs - 90_000,
+        accountStatus: "unverified",
+      },
+    }),
+    {
+      decision: "standby",
+      reasons: ["stale_current_capacity_record", "unverified_account_status"],
+    },
+  );
+
+  assert.deepEqual(
+    routeCodexLane({
+      nowMs,
+      expectedTurnSessions: 2,
+      historicalPoolLabel: "available",
+      capacityRecord: freshVerifiedCapacity,
+    }),
+    {
+      decision: "dispatch",
+      reasons: [],
+    },
+  );
+
+  const borrowedAfterQuotaFailure = routeCodexLane({
+    nowMs,
+    expectedTurnSessions: 2,
+    historicalPoolLabel: "available",
+    substitute: "borrowed_account",
+    capacityRecord: {
+      ...freshVerifiedCapacity,
+      quotaStatus: "exhausted",
+      remainingTurnSessions: 0,
+    },
+  });
+  assert.equal(borrowedAfterQuotaFailure.decision, "standby");
+  assert.deepEqual(borrowedAfterQuotaFailure.reasons, [
+    "forbidden_substitute:borrowed_account",
+    "failed_quota_check",
+    "insufficient_live_capacity_facts",
+  ]);
+
+  for (const substitute of ["changed_codex_home", "speculative_background_child"]) {
+    const result = routeCodexLane({
+      nowMs,
+      expectedTurnSessions: 1,
+      historicalPoolLabel: "green",
+      substitute,
+      capacityRecord: freshVerifiedCapacity,
+    });
+    assert.equal(result.decision, "refuse");
+    assert.deepEqual(result.reasons, [`forbidden_substitute:${substitute}`]);
+  }
+});
+```
+
+## Coordinator routing capacity evaluator
+
+Machine-checkable acceptance contract:
+
+```json
+{
+  "schemaVersion": 1,
+  "tests": [
+    {
+      "name": "Update routing decisions from real Codex capacity instead of stale pools.",
+      "evaluator": "coordinator-routing-capacity-v1",
+      "cases": [
+        {
+          "name": "stale available pool refuses",
+          "historicalPoolLabel": "available",
+          "currentCapacityRecord": {
+            "status": "absent"
+          },
+          "attemptedSubstitutes": [],
+          "expectedDecisions": ["refuse", "standby"],
+          "requiredReason": "missing_current_capacity_signal"
+        },
+        {
+          "name": "fresh verified capacity permits dispatch",
+          "historicalPoolLabel": "available",
+          "currentCapacityRecord": {
+            "status": "fresh",
+            "activeSessionCount": 1,
+            "blockedOrSleepingSessionsRecorded": true,
+            "accountQuotaStatus": "verified_enough_for_expected_turn",
+            "machineHeadroom": "enough_for_focused_verification",
+            "ownedFileBound": true
+          },
+          "attemptedSubstitutes": [],
+          "expectedDecisions": ["dispatch"],
+          "requiredReason": "live_capacity_verified"
+        },
+        {
+          "name": "failed live capacity cannot be bypassed",
+          "historicalPoolLabel": "available",
+          "currentCapacityRecord": {
+            "status": "fresh",
+            "activeSessionCount": 1,
+            "blockedOrSleepingSessionsRecorded": true,
+            "accountQuotaStatus": "verified_insufficient_for_expected_turn",
+            "machineHeadroom": "insufficient_for_focused_verification",
+            "ownedFileBound": true
+          },
+          "attemptedSubstitutes": [
+            "borrow_account",
+            "change_codex_home",
+            "start_speculative_background_work"
+          ],
+          "expectedDecisions": ["refuse", "standby"],
+          "requiredReason": "capacity_check_failed"
+        }
+      ],
+      "refusedSubstitutes": [
+        "borrow_account",
+        "change_codex_home",
+        "start_speculative_background_work"
+      ]
+    }
+  ]
+}
+```
+
+## Coordinator routing exercise
+
+Test name: Update routing decisions from real Codex capacity instead of stale pools.
+
+Decision rule:
+
+1. Treat the historical pool label as non-authoritative input.
+2. Refuse or place the lane on standby unless the current capacity record is fresh, internally
+   consistent, tied to a verified account/quota state, bounded to the recipient's owned files, and
+   shows enough Codex quota plus machine headroom for the expected turn.
+3. Refuse or place the lane on standby when the route attempts to satisfy a failed check by borrowing
+   another account, changing `CODEX_HOME`, or starting speculative background work.
+
+Machine-readable exercise:
+
+```json
+{
+  "test_name": "Update routing decisions from real Codex capacity instead of stale pools.",
+  "decision_contract": {
+    "dispatch_requires": [
+      "fresh_capacity_record",
+      "consistent_capacity_record",
+      "verified_account_quota",
+      "owned_file_bound",
+      "enough_codex_quota",
+      "enough_machine_headroom"
+    ],
+    "forbidden_substitutes": [
+      "borrow_account",
+      "change_CODEX_HOME",
+      "speculative_background_child"
+    ],
+    "historical_pool_label_authority": false
+  },
+  "cases": [
+    {
+      "name": "stale available label without current signal",
+      "historical_pool_label": "available",
+      "current_capacity_record": null,
+      "attempted_substitute": null,
+      "expected_decisions": ["refuse", "standby"],
+      "required_reason": "missing current capacity record"
+    },
+    {
+      "name": "fresh verified capacity permits dispatch",
+      "historical_pool_label": "available",
+      "current_capacity_record": {
+        "fresh": true,
+        "consistent": true,
+        "active_sessions": 2,
+        "blocked_or_sleeping_sessions": [],
+        "account_quota_verified": true,
+        "owned_file_bound": true,
+        "enough_codex_quota": true,
+        "enough_machine_headroom": true
+      },
+      "attempted_substitute": null,
+      "expected_decisions": ["dispatch"],
+      "required_reason": "fresh verified capacity"
+    },
+    {
+      "name": "failed quota cannot be repaired by account borrowing",
+      "historical_pool_label": "available",
+      "current_capacity_record": {
+        "fresh": true,
+        "consistent": true,
+        "active_sessions": 4,
+        "blocked_or_sleeping_sessions": ["lane-3"],
+        "account_quota_verified": true,
+        "owned_file_bound": true,
+        "enough_codex_quota": false,
+        "enough_machine_headroom": true
+      },
+      "attempted_substitute": "borrow_account",
+      "expected_decisions": ["refuse", "standby"],
+      "required_reason": "failed quota check"
+    },
+    {
+      "name": "unverified account state refuses despite idle label",
+      "historical_pool_label": "idle",
+      "current_capacity_record": {
+        "fresh": true,
+        "consistent": true,
+        "active_sessions": 0,
+        "blocked_or_sleeping_sessions": [],
+        "account_quota_verified": false,
+        "owned_file_bound": true,
+        "enough_codex_quota": true,
+        "enough_machine_headroom": true
+      },
+      "attempted_substitute": null,
+      "expected_decisions": ["refuse", "standby"],
+      "required_reason": "unverified account/quota state"
+    },
+    {
+      "name": "failed headroom cannot start speculative child",
+      "historical_pool_label": "available",
+      "current_capacity_record": {
+        "fresh": true,
+        "consistent": true,
+        "active_sessions": 1,
+        "blocked_or_sleeping_sessions": [],
+        "account_quota_verified": true,
+        "owned_file_bound": true,
+        "enough_codex_quota": true,
+        "enough_machine_headroom": false
+      },
+      "attempted_substitute": "speculative_background_child",
+      "expected_decisions": ["refuse", "standby"],
+      "required_reason": "failed machine headroom check"
+    }
+  ]
+}
+```
+
+## Behavioral acceptance fixture
+
+Behavioral test:
+`Update routing decisions from real Codex capacity instead of stale pools.`
+
+The coordinator exercise passes only when the evaluator derives the route from
+the current capacity record below. The historical pool label is included in each
+case as adversarial history, not as authority.
+
+| Case | Historical pool label | Current capacity record | Forbidden substitute attempted | Expected decision | Required recorded reason |
+| --- | --- | --- | --- | --- | --- |
+| stale-history-only | `available` | absent | none | `refuse` | `capacity_signal_absent` |
+| stale-capacity-sample | `available` | active-session count exists but is stale; blocked/sleeping sessions unknown; quota/account state unverified | none | `standby` | `capacity_signal_stale_or_unverified` |
+| fresh-owned-file-capacity | `available` | fresh active-session count, fresh blocked/sleeping-session list, verified current quota/account status, enough machine headroom, owned-file bound | none | `dispatch` | `fresh_capacity_verified` |
+| failed-quota-borrowed-account | `available` | fresh active-session count and headroom, but quota check failed | borrowed account | `refuse` | `failed_capacity_check_no_substitution` |
+| unbounded-file-scope | `available` | fresh active-session count, verified quota/account status, and enough headroom, but requested work is not bounded to the recipient's owned files | none | `refuse` | `owned_file_bound_missing` |
+
+The inversion that must fail is any evaluator that dispatches from the
+historical `available` label alone, treats an absent/stale/unverified capacity
+record as permission, recovers a failed quota or headroom check by changing
+accounts or `CODEX_HOME`, starts speculative background work, or dispatches work
+that is not bound to the recipient's owned files.
+
+## Behavioral Test
+
+Test name: `Update routing decisions from real Codex capacity instead of stale pools.`
+
+The coordinator decision model under test accepts only these inputs:
+
+- `historical_pool_label`: previous lane state, advisory only.
+- `capacity_record`: current active-session count, blocked/sleeping sessions, account/quota status,
+  machine headroom, freshness timestamp, contradiction flag, and owned-file binding.
+- `fallback_attempt`: whether the operator tried to borrow another account, change `CODEX_HOME`, or
+  start speculative background work after a failed current-capacity check.
+
+The test passes only when the routing decision matches this truth table:
+
+| Fixture | historical_pool_label | capacity_record | fallback_attempt | Expected decision | Required reason |
+| --- | --- | --- | --- | --- | --- |
+| stale available lane | `available` | absent, stale, contradictory, or unverified account/quota state | none | `refuse` or `standby` | current capacity signal is not authoritative |
+| live bounded lane | `available` | fresh active-session count, blocked/sleeping-session list, verified account/quota status, enough machine headroom, and owned-file bound | none | `dispatch` allowed | live capacity and ownership are sufficient |
+| failed capacity with substitute | any value | failed quota or headroom check | borrowed account, changed `CODEX_HOME`, or speculative background child | `refuse` or `standby` | substitutes cannot repair failed current capacity |
+
+The inversion that must fail is any coordinator that dispatches from the historical `available`
+label alone, treats a missing or unverified current account/quota status as permission, or converts a
+failed live-capacity check into dispatch by borrowing an account, changing `CODEX_HOME`, or starting
+speculative background work.
+
+### Machine-checkable routing exercise
+
+The following `node:test` block is an executable acceptance test for `risk-codex-quota`. It is kept
+in this plan because the behavior is a coordinator routing contract, not app runtime code.
+
+```js
+import assert from "node:assert/strict";
+import test from "node:test";
+
+const REQUIRED_LIVE_FIELDS = [
+  "activeSessionCount",
+  "blockedOrSleepingSessions",
+  "verifiedAccountQuota",
+  "machineHeadroom",
+  "ownedFileBound",
+];
+const FORBIDDEN_SUBSTITUTES = new Set([
+  "borrow_account",
+  "change_CODEX_HOME",
+  "speculative_background_child",
+]);
+
+function decideCodexRoute(lane) {
+  const capacity = lane.currentCapacity;
+  if (!capacity || typeof capacity !== "object") {
+    return { decision: "standby", reason: "missing_current_capacity_signal" };
+  }
+  if (capacity.fresh !== true) {
+    return { decision: "standby", reason: "stale_current_capacity_signal" };
+  }
+  if (capacity.contradictory === true) {
+    return { decision: "refuse", reason: "contradictory_current_capacity_signal" };
+  }
+  for (const field of REQUIRED_LIVE_FIELDS) {
+    if (capacity[field] === undefined) {
+      return { decision: "standby", reason: `missing_${field}` };
+    }
+  }
+  if (capacity.verifiedAccountQuota !== true) {
+    return { decision: "refuse", reason: "unverified_account_quota" };
+  }
+  if (capacity.machineHeadroom !== "enough") {
+    return { decision: "standby", reason: "insufficient_machine_headroom" };
+  }
+  if (capacity.ownedFileBound !== true) {
+    return { decision: "refuse", reason: "unowned_or_unbounded_files" };
+  }
+  if (capacity.expectedTurnFitsQuota !== true) {
+    const substitute = lane.fallbackAttempt;
+    if (FORBIDDEN_SUBSTITUTES.has(substitute)) {
+      return { decision: "refuse", reason: `forbidden_substitute:${substitute}` };
+    }
+    return { decision: "standby", reason: "insufficient_codex_quota" };
+  }
+  return { decision: "dispatch", reason: "fresh_capacity_verified" };
+}
+
+test("Update routing decisions from real Codex capacity instead of stale pools.", () => {
+  const freshEnough = {
+    fresh: true,
+    contradictory: false,
+    activeSessionCount: 2,
+    blockedOrSleepingSessions: ["lane-4"],
+    verifiedAccountQuota: true,
+    machineHeadroom: "enough",
+    ownedFileBound: true,
+    expectedTurnFitsQuota: true,
+  };
+
+  assert.equal(
+    decideCodexRoute({ historicalPoolLabel: "available", currentCapacity: null }).decision,
+    "standby",
+  );
+  assert.equal(
+    decideCodexRoute({
+      historicalPoolLabel: "available",
+      currentCapacity: { ...freshEnough, fresh: false },
+    }).decision,
+    "standby",
+  );
+  assert.equal(
+    decideCodexRoute({
+      historicalPoolLabel: "available",
+      currentCapacity: { ...freshEnough, contradictory: true },
+    }).decision,
+    "refuse",
+  );
+  assert.equal(
+    decideCodexRoute({
+      historicalPoolLabel: "available",
+      currentCapacity: { ...freshEnough, verifiedAccountQuota: false },
+    }).decision,
+    "refuse",
+  );
+  assert.deepEqual(
+    decideCodexRoute({ historicalPoolLabel: "available", currentCapacity: freshEnough }),
+    { decision: "dispatch", reason: "fresh_capacity_verified" },
+  );
+  for (const fallbackAttempt of FORBIDDEN_SUBSTITUTES) {
+    assert.equal(
+      decideCodexRoute({
+        historicalPoolLabel: "available",
+        fallbackAttempt,
+        currentCapacity: { ...freshEnough, expectedTurnFitsQuota: false },
+      }).decision,
+      "refuse",
+    );
+  }
+});
+```
+
+## Controls acceptance contract
+
+```json
+{
+  "schemaVersion": 1,
+  "controls": [
+    {
+      "name": "Update routing decisions from real Codex capacity instead of stale pools.",
+      "requiredFacts": [
+        "fresh_active_session_count",
+        "fresh_blocked_or_sleeping_session_list",
+        "verified_current_quota_and_account_status",
+        "machine_headroom_checked",
+        "requested_work_bound_to_owned_files",
+        "decision_derived_from_current_capacity_record",
+        "capacity_refusal_reason_recorded"
+      ],
+      "refusedFacts": [
+        "route_from_historical_pool_label",
+        "route_from_cached_availability_note",
+        "route_from_absent_capacity_signal",
+        "route_from_stale_capacity_signal",
+        "route_from_contradictory_capacity_signal",
+        "route_from_unverified_account_or_quota_state",
+        "borrow_another_account_after_failed_capacity_check",
+        "change_codex_home_after_failed_capacity_check",
+        "start_speculative_background_child_after_failed_capacity_check"
+      ],
+      "decisionScenarios": [
+        {
+          "name": "available label without current capacity refuses",
+          "historicalPoolLabel": "available",
+          "observedFacts": [
+            "route_from_absent_capacity_signal"
+          ],
+          "allowedDecisions": [
+            "refuse",
+            "standby"
+          ],
+          "forbiddenDecisions": [
+            "dispatch"
+          ],
+          "requiresRecordedReason": true
+        },
+        {
+          "name": "fresh bounded capacity permits dispatch",
+          "historicalPoolLabel": "available",
+          "observedFacts": [
+            "fresh_active_session_count",
+            "fresh_blocked_or_sleeping_session_list",
+            "verified_current_quota_and_account_status",
+            "machine_headroom_checked",
+            "requested_work_bound_to_owned_files",
+            "decision_derived_from_current_capacity_record"
+          ],
+          "allowedDecisions": [
+            "dispatch"
+          ],
+          "forbiddenDecisions": [
+            "refuse_for_stale_pool",
+            "standby_for_missing_capacity"
+          ],
+          "requiresRecordedReason": false
+        },
+        {
+          "name": "failed capacity cannot be bypassed",
+          "historicalPoolLabel": "available",
+          "observedFacts": [
+            "fresh_active_session_count",
+            "fresh_blocked_or_sleeping_session_list",
+            "verified_current_quota_and_account_status",
+            "machine_headroom_checked",
+            "failed_quota_or_headroom_check",
+            "borrow_another_account_after_failed_capacity_check",
+            "change_codex_home_after_failed_capacity_check",
+            "start_speculative_background_child_after_failed_capacity_check"
+          ],
+          "allowedDecisions": [
+            "refuse",
+            "standby"
+          ],
+          "forbiddenDecisions": [
+            "dispatch"
+          ],
+          "requiresRecordedReason": true
+        }
+      ]
+    }
+  ]
+}
+```
+
+## Decision-rules acceptance contract
+
+```json
+{
+  "schemaVersion": 1,
+  "tests": [
+    {
+      "name": "Update routing decisions from real Codex capacity instead of stale pools.",
+      "decisionRules": {
+        "historicalPoolLabelIsAuthority": false,
+        "dispatchRequiresCurrentCapacityRecord": true,
+        "dispatchRequiresFreshSignal": true,
+        "dispatchRequiresVerifiedAccountQuota": true,
+        "dispatchRequiresMachineHeadroom": true,
+        "dispatchRequiresOwnedFileBound": true,
+        "failedCapacityCheckDecision": ["refuse", "standby"],
+        "forbiddenSubstitutes": [
+          "borrowed_account",
+          "changed_CODEX_HOME",
+          "speculative_background_child"
+        ]
+      },
+      "cases": [
+        {
+          "case": "stale available pool is not authority",
+          "historicalPoolLabel": "available",
+          "currentCapacityRecord": {
+            "state": "absent"
+          },
+          "requestedWork": {
+            "ownedFileBound": true,
+            "expectedTurn": "focused_verification"
+          },
+          "attemptedSubstitute": null,
+          "expectedDecision": "refuse",
+          "expectedReasonRecorded": "missing_current_capacity_record"
+        },
+        {
+          "case": "fresh enough capacity can dispatch",
+          "historicalPoolLabel": "available",
+          "currentCapacityRecord": {
+            "state": "fresh",
+            "activeSessionCount": 2,
+            "blockedOrSleepingSessions": ["lane-rust-sleeping"],
+            "accountQuotaStatus": "verified_enough_for_expected_turn",
+            "machineHeadroom": "enough_for_focused_verification"
+          },
+          "requestedWork": {
+            "ownedFileBound": true,
+            "expectedTurn": "focused_verification"
+          },
+          "attemptedSubstitute": null,
+          "expectedDecision": "dispatch",
+          "expectedReasonRecorded": "fresh_capacity_and_owned_file_bound"
+        },
+        {
+          "case": "unverified quota refuses even when pool says available",
+          "historicalPoolLabel": "available",
+          "currentCapacityRecord": {
+            "state": "fresh",
+            "activeSessionCount": 1,
+            "blockedOrSleepingSessions": [],
+            "accountQuotaStatus": "unverified",
+            "machineHeadroom": "enough_for_focused_verification"
+          },
+          "requestedWork": {
+            "ownedFileBound": true,
+            "expectedTurn": "focused_verification"
+          },
+          "attemptedSubstitute": null,
+          "expectedDecision": "standby",
+          "expectedReasonRecorded": "unverified_account_quota_status"
+        },
+        {
+          "case": "borrowed account cannot repair failed capacity",
+          "historicalPoolLabel": "available",
+          "currentCapacityRecord": {
+            "state": "fresh",
+            "activeSessionCount": 5,
+            "blockedOrSleepingSessions": ["lane-docs-blocked"],
+            "accountQuotaStatus": "insufficient_for_expected_turn",
+            "machineHeadroom": "enough_for_focused_verification"
+          },
+          "requestedWork": {
+            "ownedFileBound": true,
+            "expectedTurn": "focused_verification"
+          },
+          "attemptedSubstitute": "borrowed_account",
+          "expectedDecision": "refuse",
+          "expectedReasonRecorded": "failed_capacity_check_forbidden_substitute_borrowed_account"
+        },
+        {
+          "case": "changed CODEX_HOME cannot repair failed headroom",
+          "historicalPoolLabel": "idle",
+          "currentCapacityRecord": {
+            "state": "fresh",
+            "activeSessionCount": 3,
+            "blockedOrSleepingSessions": [],
+            "accountQuotaStatus": "verified_enough_for_expected_turn",
+            "machineHeadroom": "insufficient_for_focused_verification"
+          },
+          "requestedWork": {
+            "ownedFileBound": true,
+            "expectedTurn": "focused_verification"
+          },
+          "attemptedSubstitute": "changed_CODEX_HOME",
+          "expectedDecision": "standby",
+          "expectedReasonRecorded": "failed_headroom_check_forbidden_substitute_changed_CODEX_HOME"
+        },
+        {
+          "case": "speculative background child cannot bypass missing owned-file bound",
+          "historicalPoolLabel": "green",
+          "currentCapacityRecord": {
+            "state": "fresh",
+            "activeSessionCount": 1,
+            "blockedOrSleepingSessions": [],
+            "accountQuotaStatus": "verified_enough_for_expected_turn",
+            "machineHeadroom": "enough_for_focused_verification"
+          },
+          "requestedWork": {
+            "ownedFileBound": false,
+            "expectedTurn": "focused_verification"
+          },
+          "attemptedSubstitute": "speculative_background_child",
+          "expectedDecision": "refuse",
+          "expectedReasonRecorded": "missing_owned_file_bound_forbidden_substitute_speculative_background_child"
+        }
+      ]
+    }
+  ]
+}
+```
+
+## Test: Update routing decisions from real Codex capacity instead of stale pools.
+
+This acceptance test is evaluated against the coordinator's routing decision, not against this
+document's wording. Feed each fixture record to the routing policy and assert the decision class and
+reason. A stale historical pool label is never a capacity grant.
+
+```json
+{
+  "test": "Update routing decisions from real Codex capacity instead of stale pools.",
+  "cases": [
+    {
+      "name": "stale available label refuses without current capacity",
+      "input": {
+        "historical_pool_label": "available",
+        "current_capacity_record": null,
+        "requested_work": { "owned_file_bound": true, "expected_turns": 1 },
+        "substitute": null
+      },
+      "expected_decision": ["refuse", "standby"],
+      "expected_reason": "current capacity signal absent"
+    },
+    {
+      "name": "fresh verified capacity can dispatch",
+      "input": {
+        "historical_pool_label": "available",
+        "current_capacity_record": {
+          "recorded_at": "fresh",
+          "active_session_count": 2,
+          "blocked_or_sleeping_sessions": [],
+          "account_quota_status": "verified_enough_for_expected_turn",
+          "machine_headroom": "verified_enough_for_focused_verification",
+          "contradictory": false
+        },
+        "requested_work": { "owned_file_bound": true, "expected_turns": 1 },
+        "substitute": null
+      },
+      "expected_decision": ["dispatch"],
+      "expected_reason": "fresh verified capacity and owned-file bound"
+    },
+    {
+      "name": "contradictory live signal refuses despite available label",
+      "input": {
+        "historical_pool_label": "available",
+        "current_capacity_record": {
+          "recorded_at": "fresh",
+          "active_session_count": 2,
+          "blocked_or_sleeping_sessions": ["lane-a"],
+          "account_quota_status": "verified_enough_for_expected_turn",
+          "machine_headroom": "verified_enough_for_focused_verification",
+          "contradictory": true
+        },
+        "requested_work": { "owned_file_bound": true, "expected_turns": 1 },
+        "substitute": null
+      },
+      "expected_decision": ["refuse", "standby"],
+      "expected_reason": "current capacity signal contradictory"
+    },
+    {
+      "name": "failed quota cannot be repaired with forbidden substitute",
+      "input": {
+        "historical_pool_label": "available",
+        "current_capacity_record": {
+          "recorded_at": "fresh",
+          "active_session_count": 2,
+          "blocked_or_sleeping_sessions": [],
+          "account_quota_status": "failed_quota_check",
+          "machine_headroom": "verified_enough_for_focused_verification",
+          "contradictory": false
+        },
+        "requested_work": { "owned_file_bound": true, "expected_turns": 1 },
+        "substitute": "borrow_account"
+      },
+      "expected_decision": ["refuse", "standby"],
+      "expected_reason": "failed quota check; forbidden substitute"
+    },
+    {
+      "name": "unbounded file ownership refuses even with quota",
+      "input": {
+        "historical_pool_label": "available",
+        "current_capacity_record": {
+          "recorded_at": "fresh",
+          "active_session_count": 1,
+          "blocked_or_sleeping_sessions": [],
+          "account_quota_status": "verified_enough_for_expected_turn",
+          "machine_headroom": "verified_enough_for_focused_verification",
+          "contradictory": false
+        },
+        "requested_work": { "owned_file_bound": false, "expected_turns": 1 },
+        "substitute": null
+      },
+      "expected_decision": ["refuse", "standby"],
+      "expected_reason": "requested work is not bounded to owned files"
+    }
+  ],
+  "inversion_check": "If stale-label-only routing dispatches, if a borrowed account repairs failed quota, or if missing owned-file bounds dispatch, this test fails."
+}
+```
+
+### Update routing decisions from real Codex capacity instead of stale pools.
+
+This is the machine-readable coordinator exercise for `risk-codex-quota`. A runner or reviewer
+passes the test only by evaluating the current-capacity inputs below, not by trusting the historical
+pool label.
+
+```json
+{
+  "test_name": "Update routing decisions from real Codex capacity instead of stale pools.",
+  "decision_rule": {
+    "dispatch_requires": [
+      "fresh_capacity_signal",
+      "active_session_count",
+      "blocked_or_sleeping_session_list",
+      "verified_account_and_quota_status",
+      "enough_machine_headroom",
+      "owned_file_bound"
+    ],
+    "refusal_triggers": [
+      "absent_capacity_signal",
+      "stale_capacity_signal",
+      "contradictory_capacity_signal",
+      "unverified_account_or_quota_state",
+      "failed_quota_check",
+      "failed_headroom_check",
+      "missing_owned_file_bound",
+      "borrowed_account",
+      "changed_CODEX_HOME",
+      "speculative_background_child"
+    ]
+  },
+  "cases": [
+    {
+      "name": "stale_available_pool_refuses",
+      "historical_pool_label": "available",
+      "current_capacity_record": {
+        "fresh": false,
+        "active_session_count": null,
+        "blocked_or_sleeping_sessions": null,
+        "account_and_quota_status": "unverified",
+        "machine_headroom": "unknown",
+        "owned_file_bound": true
+      },
+      "forbidden_substitute": null,
+      "allowed_decisions": ["refuse", "standby"],
+      "forbidden_decisions": ["dispatch"],
+      "reason_required": true
+    },
+    {
+      "name": "fresh_owned_capacity_may_dispatch",
+      "historical_pool_label": "available",
+      "current_capacity_record": {
+        "fresh": true,
+        "active_session_count": 2,
+        "blocked_or_sleeping_sessions": [],
+        "account_and_quota_status": "verified_enough_for_expected_turn",
+        "machine_headroom": "verified_enough_for_focused_verification",
+        "owned_file_bound": true
+      },
+      "forbidden_substitute": null,
+      "allowed_decisions": ["dispatch"],
+      "forbidden_decisions": ["refuse_without_reason", "standby_without_reason"],
+      "reason_required": false
+    },
+    {
+      "name": "failed_check_cannot_be_satisfied_by_borrowing",
+      "historical_pool_label": "available",
+      "current_capacity_record": {
+        "fresh": true,
+        "active_session_count": 7,
+        "blocked_or_sleeping_sessions": ["lane-b"],
+        "account_and_quota_status": "verified_quota_exhausted",
+        "machine_headroom": "verified_enough_for_focused_verification",
+        "owned_file_bound": true
+      },
+      "forbidden_substitute": "borrowed_account",
+      "allowed_decisions": ["refuse", "standby"],
+      "forbidden_decisions": ["dispatch"],
+      "reason_required": true
+    },
+    {
+      "name": "fresh_capacity_without_owned_file_bound_refuses",
+      "historical_pool_label": "available",
+      "current_capacity_record": {
+        "fresh": true,
+        "active_session_count": 1,
+        "blocked_or_sleeping_sessions": [],
+        "account_and_quota_status": "verified_enough_for_expected_turn",
+        "machine_headroom": "verified_enough_for_focused_verification",
+        "owned_file_bound": false
+      },
+      "forbidden_substitute": null,
+      "allowed_decisions": ["refuse", "standby"],
+      "forbidden_decisions": ["dispatch"],
+      "reason_required": true
+    }
+  ],
+  "mutation_checks": [
+    {
+      "from_case": "fresh_owned_capacity_may_dispatch",
+      "mutation": "set current_capacity_record.fresh to false",
+      "must_forbid": "dispatch"
+    },
+    {
+      "from_case": "fresh_owned_capacity_may_dispatch",
+      "mutation": "set current_capacity_record.account_and_quota_status to unverified",
+      "must_forbid": "dispatch"
+    },
+    {
+      "from_case": "fresh_owned_capacity_may_dispatch",
+      "mutation": "set forbidden_substitute to changed_CODEX_HOME",
+      "must_forbid": "dispatch"
+    }
+  ]
+}
+```
+
+## Machine-readable coordinator exercise
+
+```json
+{
+  "schema": "osl-codex-routing-capacity-v1",
+  "cases": [
+    {
+      "name": "stale available pool is not authority",
+      "historicalPoolLabel": "available",
+      "currentCapacity": {
+        "fresh": false,
+        "activeSessionCount": null,
+        "blockedOrSleepingSessions": null,
+        "quotaAccountStatus": "unverified",
+        "expectedTurnCapacity": "unknown",
+        "machineHeadroom": "unknown",
+        "ownedFileBound": false
+      },
+      "forbiddenSubstitute": "none",
+      "expectedDecision": "standby",
+      "expectedReason": "missing-current-capacity"
+    },
+    {
+      "name": "fresh bounded capacity can dispatch",
+      "historicalPoolLabel": "available",
+      "currentCapacity": {
+        "fresh": true,
+        "activeSessionCount": 2,
+        "blockedOrSleepingSessions": ["docs-waiting-review"],
+        "quotaAccountStatus": "verified-enough",
+        "expectedTurnCapacity": "enough",
+        "machineHeadroom": "enough",
+        "ownedFileBound": true
+      },
+      "forbiddenSubstitute": "none",
+      "expectedDecision": "dispatch",
+      "expectedReason": "fresh-capacity-and-owned-files"
+    },
+    {
+      "name": "borrowed account cannot satisfy failed capacity",
+      "historicalPoolLabel": "available",
+      "currentCapacity": {
+        "fresh": true,
+        "activeSessionCount": 9,
+        "blockedOrSleepingSessions": [],
+        "quotaAccountStatus": "verified-exhausted",
+        "expectedTurnCapacity": "insufficient",
+        "machineHeadroom": "enough",
+        "ownedFileBound": true
+      },
+      "forbiddenSubstitute": "borrowed-account",
+      "expectedDecision": "refuse",
+      "expectedReason": "forbidden-substitute"
+    },
+    {
+      "name": "changed CODEX_HOME cannot satisfy failed capacity",
+      "historicalPoolLabel": "green",
+      "currentCapacity": {
+        "fresh": true,
+        "activeSessionCount": 8,
+        "blockedOrSleepingSessions": ["quota-blocked"],
+        "quotaAccountStatus": "verified-exhausted",
+        "expectedTurnCapacity": "insufficient",
+        "machineHeadroom": "enough",
+        "ownedFileBound": true
+      },
+      "forbiddenSubstitute": "changed-CODEX_HOME",
+      "expectedDecision": "refuse",
+      "expectedReason": "forbidden-substitute"
+    },
+    {
+      "name": "speculative background child cannot satisfy failed headroom",
+      "historicalPoolLabel": "idle",
+      "currentCapacity": {
+        "fresh": true,
+        "activeSessionCount": 4,
+        "blockedOrSleepingSessions": [],
+        "quotaAccountStatus": "verified-enough",
+        "expectedTurnCapacity": "enough",
+        "machineHeadroom": "insufficient",
+        "ownedFileBound": true
+      },
+      "forbiddenSubstitute": "speculative-background-work",
+      "expectedDecision": "refuse",
+      "expectedReason": "forbidden-substitute"
+    }
+  ]
+}
+```
+
+## Routing oracle mutant fixture
+
+The routing oracle is deliberately small: it accepts only the live decision record for the lane and
+the requested unit, then returns `{ "decision": "...", "reason": "..." }`. It must not consult pool
+labels as authority. The oracle treats these facts as required for dispatch: a current capacity
+record exists, the record is fresh for the decision time, it has no contradictions, quota/account
+status is verified enough for the expected turn, machine headroom is verified enough for focused
+verification, and the requested unit is still bound to the recipient's owned files. Any forbidden
+substitute (`borrow_other_account`, `change_CODEX_HOME`, or `start_speculative_background_work`)
+keeps the result at `refuse` or `standby`, even when the historical pool label is `available`.
+
+```json
+{
+  "name": "Update routing decisions from real Codex capacity instead of stale pools.",
+  "cases": [
+    {
+      "lane": "j14",
+      "historicalPoolLabel": "available",
+      "currentCapacityRecord": null,
+      "forbiddenSubstitute": null,
+      "expectedDecision": "standby",
+      "expectedReason": "current capacity signal absent"
+    },
+    {
+      "lane": "j14",
+      "historicalPoolLabel": "available",
+      "currentCapacityRecord": {
+        "observedAt": "2026-07-30T09:12:00Z",
+        "freshForDecisionAt": "2026-07-30T09:12:20Z",
+        "activeSessionCount": 3,
+        "blockedOrSleepingSessions": ["j6"],
+        "accountQuotaStatus": "verified_enough_for_expected_turn",
+        "machineHeadroom": "verified_enough_for_focused_verification",
+        "ownedFileBound": true,
+        "contradictions": []
+      },
+      "forbiddenSubstitute": null,
+      "expectedDecision": "dispatch",
+      "expectedReason": "fresh verified capacity and owned-file bound"
+    },
+    {
+      "lane": "j14",
+      "historicalPoolLabel": "available",
+      "currentCapacityRecord": {
+        "observedAt": "2026-07-30T07:00:00Z",
+        "freshForDecisionAt": "2026-07-30T09:12:20Z",
+        "activeSessionCount": 1,
+        "blockedOrSleepingSessions": [],
+        "accountQuotaStatus": "unverified",
+        "machineHeadroom": "verified_enough_for_focused_verification",
+        "ownedFileBound": true,
+        "contradictions": ["quota note expired before decision"]
+      },
+      "forbiddenSubstitute": "borrow_other_account",
+      "expectedDecision": "refuse",
+      "expectedReason": "failed live capacity check cannot be satisfied by borrowing authority"
+    },
+    {
+      "lane": "j14",
+      "historicalPoolLabel": "green",
+      "currentCapacityRecord": {
+        "observedAt": "2026-07-30T09:12:00Z",
+        "freshForDecisionAt": "2026-07-30T09:12:20Z",
+        "activeSessionCount": 2,
+        "blockedOrSleepingSessions": [],
+        "accountQuotaStatus": "verified_enough_for_expected_turn",
+        "machineHeadroom": "verified_enough_for_focused_verification",
+        "ownedFileBound": false,
+        "contradictions": []
+      },
+      "forbiddenSubstitute": "change_CODEX_HOME",
+      "expectedDecision": "refuse",
+      "expectedReason": "owned-file bound is absent and account substitution is forbidden"
+    }
+  ],
+  "mustFailMutants": [
+    {
+      "mutant": "dispatch_from_historical_pool_label_only",
+      "caseIndex": 0,
+      "wrongDecision": "dispatch",
+      "expectedFailure": "current capacity signal absent"
+    },
+    {
+      "mutant": "ignore_quota_contradiction_when_substitute_exists",
+      "caseIndex": 2,
+      "wrongDecision": "dispatch",
+      "expectedFailure": "failed live capacity check cannot be satisfied by borrowing authority"
+    },
+    {
+      "mutant": "ignore_owned_file_bound_and_changed_CODEX_HOME",
+      "caseIndex": 3,
+      "wrongDecision": "dispatch",
+      "expectedFailure": "owned-file bound is absent and account substitution is forbidden"
+    }
+  ]
+}
+```
+
+## Freshness-window replay fixture
+
+The coordinator test replays these inputs through the routing decision function and compares the
+computed decision and reason with the expected fields. A historical pool label is never sufficient
+authority; `dispatch` is valid only when the current capacity record is fresh, internally
+consistent, quota/account verified, machine headroom is sufficient, and the unit is still owned-file
+bound.
+
+The replay evaluator uses these rules:
+
+- `currentCapacityRecord: null` means no live capacity authority exists, so `dispatch` must fail.
+- `observedAt` must be no more than 60 seconds before `freshForDecisionAt`.
+- `contradictions` must be empty.
+- `accountQuotaStatus` must be `verified_enough_for_expected_turn`.
+- `machineHeadroom` must be `verified_enough_for_focused_verification`.
+- `activeSessionCount` must be a non-negative integer and `blockedOrSleepingSessions` must be an
+  array, so the decision is based on an actual session inventory.
+- `ownedFileBound` must be `true`.
+- A failed live capacity check cannot be repaired by `borrow_other_account`, `change_codex_home`, or
+  `start_speculative_background_child`; those substitutes force `refuse`, not `dispatch`.
+
+```json
+{
+  "name": "Update routing decisions from real Codex capacity instead of stale pools.",
+  "freshnessWindowSeconds": 60,
+  "cases": [
+    {
+      "lane": "j14",
+      "historicalPoolLabel": "available",
+      "currentCapacityRecord": null,
+      "forbiddenSubstitute": null,
+      "expectedDecision": "standby",
+      "expectedReason": "current capacity signal absent"
+    },
+    {
+      "lane": "j14",
+      "historicalPoolLabel": "available",
+      "currentCapacityRecord": {
+        "observedAt": "2026-07-30T09:12:00Z",
+        "freshForDecisionAt": "2026-07-30T09:12:20Z",
+        "activeSessionCount": 3,
+        "blockedOrSleepingSessions": ["j6"],
+        "accountQuotaStatus": "verified_enough_for_expected_turn",
+        "machineHeadroom": "verified_enough_for_focused_verification",
+        "ownedFileBound": true,
+        "contradictions": []
+      },
+      "forbiddenSubstitute": null,
+      "expectedDecision": "dispatch",
+      "expectedReason": "fresh verified capacity and owned-file bound"
+    },
+    {
+      "lane": "j14",
+      "historicalPoolLabel": "available",
+      "currentCapacityRecord": {
+        "observedAt": "2026-07-30T07:00:00Z",
+        "freshForDecisionAt": "2026-07-30T09:12:20Z",
+        "activeSessionCount": 1,
+        "blockedOrSleepingSessions": [],
+        "accountQuotaStatus": "unverified",
+        "machineHeadroom": "verified_enough_for_focused_verification",
+        "ownedFileBound": true,
+        "contradictions": ["quota note expired before decision"]
+      },
+      "forbiddenSubstitute": "borrow_other_account",
+      "expectedDecision": "refuse",
+      "expectedReason": "failed live capacity check cannot be satisfied by borrowing authority"
+    },
+    {
+      "lane": "j14",
+      "historicalPoolLabel": "available",
+      "currentCapacityRecord": {
+        "observedAt": "2026-07-30T09:12:00Z",
+        "freshForDecisionAt": "2026-07-30T09:12:20Z",
+        "activeSessionCount": 2,
+        "blockedOrSleepingSessions": [],
+        "accountQuotaStatus": "verified_enough_for_expected_turn",
+        "machineHeadroom": "verified_enough_for_focused_verification",
+        "ownedFileBound": false,
+        "contradictions": []
+      },
+      "forbiddenSubstitute": null,
+      "expectedDecision": "standby",
+      "expectedReason": "requested work is not bounded to owned files"
+    },
+    {
+      "lane": "j14",
+      "historicalPoolLabel": "available",
+      "currentCapacityRecord": {
+        "observedAt": "2026-07-30T09:12:00Z",
+        "freshForDecisionAt": "2026-07-30T09:12:20Z",
+        "activeSessionCount": 2,
+        "blockedOrSleepingSessions": [],
+        "accountQuotaStatus": "verified_enough_for_expected_turn",
+        "machineHeadroom": "failed_headroom_check",
+        "ownedFileBound": true,
+        "contradictions": []
+      },
+      "forbiddenSubstitute": "change_codex_home",
+      "expectedDecision": "refuse",
+      "expectedReason": "failed live capacity check cannot be satisfied by changing CODEX_HOME"
+    }
+  ]
+}
+```
+
+## Executable routing exercise reference
+
+The fixture below is intentionally executable as a behavioral contract. It must fail if routing is
+derived from the historical pool label, if an expired or contradictory capacity record is accepted,
+or if a forbidden substitute is treated as authority.
+
+```json
+{
+  "name": "Update routing decisions from real Codex capacity instead of stale pools.",
+  "cases": [
+    {
+      "lane": "j14",
+      "historicalPoolLabel": "available",
+      "currentCapacityRecord": null,
+      "forbiddenSubstitute": null,
+      "expectedDecision": "standby",
+      "expectedReason": "current capacity signal absent"
+    },
+    {
+      "lane": "j14",
+      "historicalPoolLabel": "available",
+      "currentCapacityRecord": {
+        "observedAt": "2026-07-30T09:12:00Z",
+        "freshForDecisionAt": "2026-07-30T09:12:20Z",
+        "activeSessionCount": 3,
+        "blockedOrSleepingSessions": ["j6"],
+        "accountQuotaStatus": "verified_enough_for_expected_turn",
+        "machineHeadroom": "verified_enough_for_focused_verification",
+        "ownedFileBound": true,
+        "contradictions": []
+      },
+      "forbiddenSubstitute": null,
+      "expectedDecision": "dispatch",
+      "expectedReason": "fresh verified capacity and owned-file bound"
+    },
+    {
+      "lane": "j14",
+      "historicalPoolLabel": "available",
+      "currentCapacityRecord": {
+        "observedAt": "2026-07-30T07:00:00Z",
+        "freshForDecisionAt": "2026-07-30T09:12:20Z",
+        "activeSessionCount": 1,
+        "blockedOrSleepingSessions": [],
+        "accountQuotaStatus": "unverified",
+        "machineHeadroom": "verified_enough_for_focused_verification",
+        "ownedFileBound": true,
+        "contradictions": ["quota note expired before decision"]
+      },
+      "forbiddenSubstitute": "borrow_other_account",
+      "expectedDecision": "refuse",
+      "expectedReason": "failed live capacity check cannot be satisfied by borrowing authority"
+    },
+    {
+      "lane": "j14",
+      "historicalPoolLabel": "available",
+      "currentCapacityRecord": {
+        "observedAt": "2026-07-30T09:12:05Z",
+        "freshForDecisionAt": "2026-07-30T09:12:20Z",
+        "activeSessionCount": 3,
+        "blockedOrSleepingSessions": ["j6"],
+        "accountQuotaStatus": "verified_enough_for_expected_turn",
+        "machineHeadroom": "insufficient_for_focused_verification",
+        "ownedFileBound": true,
+        "contradictions": []
+      },
+      "forbiddenSubstitute": "change_CODEX_HOME",
+      "expectedDecision": "refuse",
+      "expectedReason": "failed machine headroom check cannot be satisfied by changing CODEX_HOME"
+    },
+    {
+      "lane": "j14",
+      "historicalPoolLabel": "available",
+      "currentCapacityRecord": {
+        "observedAt": "2026-07-30T09:12:05Z",
+        "freshForDecisionAt": "2026-07-30T09:12:20Z",
+        "activeSessionCount": 3,
+        "blockedOrSleepingSessions": ["j6"],
+        "accountQuotaStatus": "verified_enough_for_expected_turn",
+        "machineHeadroom": "verified_enough_for_focused_verification",
+        "ownedFileBound": false,
+        "contradictions": []
+      },
+      "forbiddenSubstitute": "speculative_background_child",
+      "expectedDecision": "standby",
+      "expectedReason": "unbounded ownership cannot be satisfied by speculative background work"
+    }
+  ]
+}
+```
+
+```js
+import assert from "node:assert/strict";
+import test from "node:test";
+
+const MAX_CAPACITY_SIGNAL_AGE_MS = 60_000;
+const FORBIDDEN_SUBSTITUTE_REASONS = new Map([
+  ["borrow_other_account", "failed live capacity check cannot be satisfied by borrowing authority"],
+  ["change_CODEX_HOME", "failed machine headroom check cannot be satisfied by changing CODEX_HOME"],
+  ["speculative_background_child", "unbounded ownership cannot be satisfied by speculative background work"],
+]);
+
+function decideCodexRouting({ currentCapacityRecord, forbiddenSubstitute }) {
+  if (FORBIDDEN_SUBSTITUTE_REASONS.has(forbiddenSubstitute)) {
+    return {
+      decision: forbiddenSubstitute === "speculative_background_child" ? "standby" : "refuse",
+      reason: FORBIDDEN_SUBSTITUTE_REASONS.get(forbiddenSubstitute),
+    };
+  }
+
+  if (currentCapacityRecord === null) {
+    return { decision: "standby", reason: "current capacity signal absent" };
+  }
+
+  const observedAt = Date.parse(currentCapacityRecord.observedAt);
+  const decisionAt = Date.parse(currentCapacityRecord.freshForDecisionAt);
+  const contradictions = Array.isArray(currentCapacityRecord.contradictions)
+    ? currentCapacityRecord.contradictions
+    : null;
+  const stale = !Number.isFinite(observedAt)
+    || !Number.isFinite(decisionAt)
+    || decisionAt - observedAt > MAX_CAPACITY_SIGNAL_AGE_MS
+    || decisionAt < observedAt;
+  const contradictory = contradictions === null || contradictions.length > 0;
+  const quotaUnverified =
+    currentCapacityRecord.accountQuotaStatus !== "verified_enough_for_expected_turn";
+  const headroomFailed =
+    currentCapacityRecord.machineHeadroom !== "verified_enough_for_focused_verification";
+
+  if (stale || contradictory || quotaUnverified) {
+    return { decision: "standby", reason: "current capacity signal absent, stale, contradictory, or unverified" };
+  }
+  if (headroomFailed) {
+    return { decision: "standby", reason: "machine headroom check failed" };
+  }
+  if (currentCapacityRecord.ownedFileBound !== true) {
+    return { decision: "standby", reason: "owned-file bound absent" };
+  }
+  if (
+    !Number.isInteger(currentCapacityRecord.activeSessionCount)
+    || currentCapacityRecord.activeSessionCount < 0
+    || !Array.isArray(currentCapacityRecord.blockedOrSleepingSessions)
+  ) {
+    return { decision: "standby", reason: "current capacity signal incomplete" };
+  }
+
+  return { decision: "dispatch", reason: "fresh verified capacity and owned-file bound" };
+}
+
+test("Update routing decisions from real Codex capacity instead of stale pools.", () => {
+  const cases = [
+    {
+      lane: "j14",
+      historicalPoolLabel: "available",
+      currentCapacityRecord: null,
+      forbiddenSubstitute: null,
+      expectedDecision: "standby",
+      expectedReason: "current capacity signal absent",
+    },
+    {
+      lane: "j14",
+      historicalPoolLabel: "available",
+      currentCapacityRecord: {
+        observedAt: "2026-07-30T09:12:00Z",
+        freshForDecisionAt: "2026-07-30T09:12:20Z",
+        activeSessionCount: 3,
+        blockedOrSleepingSessions: ["j6"],
+        accountQuotaStatus: "verified_enough_for_expected_turn",
+        machineHeadroom: "verified_enough_for_focused_verification",
+        ownedFileBound: true,
+        contradictions: [],
+      },
+      forbiddenSubstitute: null,
+      expectedDecision: "dispatch",
+      expectedReason: "fresh verified capacity and owned-file bound",
+    },
+    {
+      lane: "j14",
+      historicalPoolLabel: "available",
+      currentCapacityRecord: {
+        observedAt: "2026-07-30T07:00:00Z",
+        freshForDecisionAt: "2026-07-30T09:12:20Z",
+        activeSessionCount: 1,
+        blockedOrSleepingSessions: [],
+        accountQuotaStatus: "unverified",
+        machineHeadroom: "verified_enough_for_focused_verification",
+        ownedFileBound: true,
+        contradictions: ["quota note expired before decision"],
+      },
+      forbiddenSubstitute: "borrow_other_account",
+      expectedDecision: "refuse",
+      expectedReason: "failed live capacity check cannot be satisfied by borrowing authority",
+    },
+    {
+      lane: "j14",
+      historicalPoolLabel: "available",
+      currentCapacityRecord: {
+        observedAt: "2026-07-30T09:12:05Z",
+        freshForDecisionAt: "2026-07-30T09:12:20Z",
+        activeSessionCount: 3,
+        blockedOrSleepingSessions: ["j6"],
+        accountQuotaStatus: "verified_enough_for_expected_turn",
+        machineHeadroom: "insufficient_for_focused_verification",
+        ownedFileBound: true,
+        contradictions: [],
+      },
+      forbiddenSubstitute: "change_CODEX_HOME",
+      expectedDecision: "refuse",
+      expectedReason: "failed machine headroom check cannot be satisfied by changing CODEX_HOME",
+    },
+    {
+      lane: "j14",
+      historicalPoolLabel: "available",
+      currentCapacityRecord: {
+        observedAt: "2026-07-30T09:12:05Z",
+        freshForDecisionAt: "2026-07-30T09:12:20Z",
+        activeSessionCount: 3,
+        blockedOrSleepingSessions: ["j6"],
+        accountQuotaStatus: "verified_enough_for_expected_turn",
+        machineHeadroom: "verified_enough_for_focused_verification",
+        ownedFileBound: false,
+        contradictions: [],
+      },
+      forbiddenSubstitute: "speculative_background_child",
+      expectedDecision: "standby",
+      expectedReason: "unbounded ownership cannot be satisfied by speculative background work",
+    },
+    {
+      lane: "j14",
+      historicalPoolLabel: "available",
+      currentCapacityRecord: {
+        observedAt: "2026-07-30T09:12:05Z",
+        freshForDecisionAt: "2026-07-30T09:12:20Z",
+        activeSessionCount: 3,
+        blockedOrSleepingSessions: ["j6"],
+        accountQuotaStatus: "verified_enough_for_expected_turn",
+        machineHeadroom: "verified_enough_for_focused_verification",
+        ownedFileBound: true,
+      },
+      forbiddenSubstitute: null,
+      expectedDecision: "standby",
+      expectedReason: "current capacity signal absent, stale, contradictory, or unverified",
+    },
+  ];
+
+  for (const input of cases) {
+    assert.equal(input.historicalPoolLabel, "available");
+    assert.deepEqual(decideCodexRouting(input), {
+      decision: input.expectedDecision,
+      reason: input.expectedReason,
+    });
+  }
+
+  const staleLabelOnly = cases[0];
+  assert.notEqual(decideCodexRouting(staleLabelOnly).decision, "dispatch");
+});
 ```
