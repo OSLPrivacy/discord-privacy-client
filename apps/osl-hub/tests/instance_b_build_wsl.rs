@@ -206,7 +206,10 @@ printf '%s\n' "${TAURI_CONFIG:-}" > target/x86_64-pc-windows-gnu/debug/osl-priva
         // forever -- even though the build itself is a fake cargo.
         .env(
             "OSL_CARGO_LOCK",
-            std::env::temp_dir().join(format!("osl-cargo-test-{}-distinct.lock", std::process::id())),
+            std::env::temp_dir().join(format!(
+                "osl-cargo-test-{}-distinct.lock",
+                std::process::id()
+            )),
         )
         .env("PATH", path_value)
         .output()
@@ -268,5 +271,25 @@ printf '%s\n' "${TAURI_CONFIG:-}" > target/x86_64-pc-windows-gnu/debug/osl-priva
             .expect("diffKey is a string")
             .starts_with("OK:org.oslprivacy.hubqab:"),
         "success receipt must be keyed by the B identifier: {distinct_receipt:?}"
+    );
+}
+
+#[test]
+fn frontend_dist_is_embedded_after_frontend_build() {
+    let root = repo_root();
+    let script = root.join("scripts/qa/osl-instance-b-build-wsl.sh");
+    let output = Command::new("bash")
+        .arg(&script)
+        .arg("--self-test")
+        .current_dir(&root)
+        .output()
+        .expect("run instance-B build-order behavior self-test");
+
+    assert!(
+        output.status.success(),
+        "frontend dist build-order self-test failed with status {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
 }

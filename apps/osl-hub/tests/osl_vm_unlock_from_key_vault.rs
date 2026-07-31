@@ -1,5 +1,3 @@
-#![cfg(windows)]
-
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -57,7 +55,9 @@ fn repo_root() -> PathBuf {
 }
 
 fn run_powershell(script: &Path, args: &[&str]) -> Output {
-    let mut command = Command::new("powershell.exe");
+    let shell = powershell();
+    let script = powershell_script_path(script, shell);
+    let mut command = Command::new(shell);
     command.args([
         "-NoLogo",
         "-NoProfile",
@@ -69,6 +69,39 @@ fn run_powershell(script: &Path, args: &[&str]) -> Output {
     command.arg(script);
     command.args(args);
     command.output().expect("launch Windows PowerShell")
+}
+
+fn powershell() -> &'static str {
+    for candidate in ["pwsh", "powershell.exe", "powershell"] {
+        if Command::new(candidate)
+            .args(["-NoProfile", "-Command", "$PSVersionTable.PSVersion.Major"])
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+        {
+            return candidate;
+        }
+    }
+    panic!("PowerShell is required for Key Vault disposable Discord account behavior test");
+}
+
+fn powershell_script_path(script: &Path, shell: &str) -> PathBuf {
+    if shell != "powershell.exe" || cfg!(windows) {
+        return script.to_path_buf();
+    }
+
+    let output = Command::new("wslpath")
+        .arg("-w")
+        .arg(script)
+        .output()
+        .expect("convert WSL path for Windows PowerShell");
+    assert!(
+        output.status.success(),
+        "wslpath failed while converting {}: {}",
+        script.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    PathBuf::from(as_text(&output.stdout).trim())
 }
 
 fn assert_no_secret_bearing_material(output: &Output) {
