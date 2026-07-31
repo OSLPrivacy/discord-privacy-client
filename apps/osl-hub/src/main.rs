@@ -9433,6 +9433,9 @@ mod tauri_command_acl_tests {
         AccountRef, BindingEvidence, BindingScope, IdentityBindingError, IdentityBindingVerifier,
         PinnedOwner,
     };
+    use osl_privacy_hub::native_discord_adapter::guided_deletion::{
+        DeletionScan, WalkCompleteness,
+    };
     use osl_privacy_hub::scrub_index::ScrubAccountSelection;
     use std::cell::RefCell;
     use std::collections::BTreeSet;
@@ -9522,6 +9525,31 @@ mod tauri_command_acl_tests {
         }
     }
 
+    fn test_checked_host() -> CheckedHost {
+        CheckedHost {
+            context_epoch: 42,
+            active: ActiveServiceHost {
+                service_id: "discord".to_owned(),
+                account_id: "acct-1".to_owned(),
+                generation: 9,
+                owner_namespace: "owner-ns".to_owned(),
+            },
+            owner_osl_user_id: "owner-1".to_owned(),
+            scope_binding: "scope-binding".to_owned(),
+        }
+    }
+
+    fn test_deletion_scan() -> DeletionScan {
+        DeletionScan {
+            scope_binding_hash: "scan-hash".to_owned(),
+            generation: 9,
+            rows_seen: 1,
+            rows_unreadable: 0,
+            walk: WalkCompleteness::Complete,
+            candidates: Vec::new(),
+        }
+    }
+
     #[test]
     fn pw3_browser_session_commands_are_registered_and_acl_granted() {
         assert_registered_and_acl_granted(&[
@@ -9578,7 +9606,7 @@ mod tauri_command_acl_tests {
                 Ok(())
             },
         )
-        .expect("checked hosted scan succeeds only after all gates");
+        .expect("checked scan succeeds only after every gate");
         assert_eq!(scan.generation, 9);
         assert_eq!(
             events.into_inner(),
@@ -9587,25 +9615,26 @@ mod tauri_command_acl_tests {
                 "attended-binding",
                 "native-scan",
                 "context-recheck"
-            ]
+            ],
+            "scan must be checked host -> attended binding -> native scan -> context recheck"
         );
 
-        let refused_events = RefCell::new(Vec::<&'static str>::new());
+        let refusal_events = RefCell::new(Vec::<&'static str>::new());
         let refused = checked_hosted_session_scan_flow(
             || {
-                refused_events.borrow_mut().push("checked-host");
+                refusal_events.borrow_mut().push("checked-host");
                 Ok(test_checked_host())
             },
             |_checked| {
-                refused_events.borrow_mut().push("attended-binding");
+                refusal_events.borrow_mut().push("attended-binding");
                 Err("missing attended binding".to_owned())
             },
             |_checked, _operator_names| {
-                refused_events.borrow_mut().push("native-scan");
+                refusal_events.borrow_mut().push("native-scan");
                 Ok(test_deletion_scan())
             },
             |_checked| {
-                refused_events.borrow_mut().push("context-recheck");
+                refusal_events.borrow_mut().push("context-recheck");
                 Ok(())
             },
         );
@@ -9614,9 +9643,9 @@ mod tauri_command_acl_tests {
             Ok(_) => panic!("missing attended binding must refuse"),
         }
         assert_eq!(
-            refused_events.into_inner(),
+            refusal_events.into_inner(),
             ["checked-host", "attended-binding"],
-            "missing attended binding must refuse before native scan"
+            "absence of attended binding must refuse before native scan or context success"
         );
     }
 
