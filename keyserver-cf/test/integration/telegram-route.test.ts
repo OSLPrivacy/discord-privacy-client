@@ -560,6 +560,45 @@ describe("Telegram operator webhook route", () => {
   });
 
   it("telegram'", async () => {
+    const hierarchyFetcher = outboundFetcher();
+    const hierarchyResponse = await handleTelegramWebhook(
+      commandRequest("/osl"),
+      configuredEnv(),
+      hierarchyFetcher,
+    );
+
+    await expectNeutralTelegramAck(hierarchyResponse);
+    expect(hierarchyFetcher).toHaveBeenCalledTimes(1);
+    const hierarchyBody = JSON.parse(
+      String(vi.mocked(hierarchyFetcher).mock.calls[0]?.[1]?.body),
+    ) as { chat_id: string; text: string };
+    expect(hierarchyBody.chat_id).toBe(ADMIN_CHAT_ID);
+    expect(hierarchyBody.text).toContain("OSL operator commands");
+    expect(hierarchyBody.text).toContain("/osl status: current coordination state");
+    expect(hierarchyBody.text).toContain("/osl progress: project progress block");
+    expect(hierarchyBody.text).toContain("/osl stats: live commerce summary");
+    expect(hierarchyBody.text).toContain("/osl payments: Stripe and Pro license summary");
+    expect(hierarchyBody.text).toContain("/osl downloads: download requests");
+    expect(hierarchyBody.text).toContain("OSL progress  unavailable");
+
+    const progressFetcher = outboundFetcher();
+    const progressResponse = await handleTelegramWebhook(
+      commandRequest("/osl progress"),
+      configuredEnv(),
+      progressFetcher,
+    );
+
+    await expectNeutralTelegramAck(progressResponse);
+    expect(progressFetcher).toHaveBeenCalledTimes(1);
+    const progressBody = JSON.parse(
+      String(vi.mocked(progressFetcher).mock.calls[0]?.[1]?.body),
+    ) as { chat_id: string; text: string };
+    expect(progressBody.chat_id).toBe(ADMIN_CHAT_ID);
+    expect(progressBody.text).toContain("OSL progress  unavailable");
+    expect(progressBody.text).toContain("ETA: unknown");
+    expect(progressBody.text).toContain("Updated:");
+    expect(progressBody.text).not.toContain("OSL operator commands");
+
     const acceptedFetcher = outboundFetcher();
     const badSecretFetcher = outboundFetcher();
     const wrongChatFetcher = outboundFetcher();
