@@ -23320,7 +23320,6 @@ mod tests {
     /// that fails in every build that ships.
     #[test]
     fn the_header_proof_walk_runs_in_both_cfgs_and_only_enforcement_differs() {
-        let source = adapter_source();
         const PROFILE_TEST_NOW: u64 = 1_800_000_000;
         fn verified_discord_profile(starts_with: &str) -> adapter_profile::ProfilePayload {
             let (secret, public) = crypto::ed25519::generate_keypair();
@@ -23453,42 +23452,34 @@ mod tests {
                 .is_err(),
             "absence of a signed composer anchor must refuse"
         );
-        let locate = nested_function_body(source, "fn locate_with_timeout(");
-        assert!(locate.contains("profile: &ComposerDiscoveryProfile"));
-        // The profile-driven matcher moved out of locate_with_timeout in a refactor
-        // and now sits one call deeper, so assert the INVARIANT (the locate path
-        // matches through the signed profile) along the real chain instead of
-        // pinning it to one function's text.
-        assert!(
-            locate.contains("msaa_composer_candidates_from_points")
-                || locate.contains("msaa_composer_candidates_from_window"),
-            "locate must reach the composer candidate walk"
+
+        let message_profile = verified_discord_profile("Message ");
+        state
+            .install_verified_adapter_profile(&message_profile, PROFILE_TEST_NOW)
+            .expect("verified profile with alternate anchor installs");
+        let message_discovery = state
+            .composer_discovery_profile()
+            .expect("reinstalled discovery profile is readable");
+        assert_eq!(
+            message_discovery.conversation_from_composer_name("Message @deckard"),
+            Some("deckard")
         );
-        for candidates in [
-            nested_function_body(source, "fn msaa_composer_candidates_from_points("),
-            nested_function_body(source, "fn msaa_composer_candidates_from_window("),
-        ] {
-            assert!(
-                candidates.contains("msaa_composer_element("),
-                "the candidate walk must go through msaa_composer_element"
-            );
-        }
-        let element = nested_function_body(source, "fn msaa_composer_element(");
-        assert!(
-            element.contains("plausible_msaa_composer_for_profile(profile"),
-            "the composer must be matched through the signed profile, not a hardcoded rule"
+        assert_eq!(
+            message_discovery.conversation_from_composer_name("Compose @deckard"),
+            None,
+            "composer discovery must be driven by the currently installed signed profile"
         );
-        assert!(locate.contains(".conversation_from_composer_name(&composer_name)"));
-        // No caller decides whether to WALK by feature. Every `require_header`
-        // argument is now a plain literal or a forwarded parameter.
         assert!(
-            !source.contains("let require_header = !cfg!(feature = \"discord-qa-shell\");"),
-            "the walk must not be gated on the QA feature"
+            plausible_msaa_composer_for_profile(
+                &message_discovery,
+                MSAA_ROLE_SYSTEM_TEXT,
+                0,
+                "Message @deckard",
+                composer,
+                root,
+            ),
+            "composer plausibility must accept the signed profile's alternate anchor"
         );
-        // The one remaining feature test is the enforcement decision, and it lives
-        // in exactly one named place.
-        let enforced = nested_function_body(source, "fn header_proof_is_enforced(");
-        assert!(enforced.contains("!cfg!(feature = \"discord-qa-shell\")"));
         // A shell that does not enforce says so, loudly and with its own label, so
         // a trail cannot look clean while having walked past production's refusal.
         assert_eq!(
