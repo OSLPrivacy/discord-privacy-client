@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       candidate_tag:
-        description: "hub-v* release tag to reproduce; defaults to apps/osl-hub version"
+        description: "hub-v* release tag to reproduce; defaults to the newest published hub-v* release"
         required: false
         type: string
 
@@ -47,8 +47,34 @@ jobs:
             $candidateTag = "${{ github.ref_name }}"
           }
           if ([string]::IsNullOrWhiteSpace($candidateTag)) {
-            $config = Get-Content apps/osl-hub/tauri.conf.json | ConvertFrom-Json
-            $candidateTag = "hub-v$($config.version)"
+            # Nothing named a tag, so reproduce the newest installer users can
+            # actually download. The version in apps/osl-hub/tauri.conf.json runs
+            # ahead of the newest release while main is developed, so it is not by
+            # itself evidence that anything was ever shipped under that tag.
+            $listedLines = gh release list --limit 200 --json tagName,isDraft,publishedAt
+            if ($LASTEXITCODE -ne 0) {
+              throw "could not enumerate published releases"
+            }
+            $listed = ($listedLines | Out-String).Trim()
+            if ([string]::IsNullOrWhiteSpace($listed)) {
+              $listed = "[]"
+            }
+            $published = @(
+              $listed | ConvertFrom-Json |
+                Where-Object { -not $_.isDraft -and $_.tagName -cmatch "^hub-v[0-9A-Za-z.+-]{1,64}$" } |
+                Sort-Object { [datetime]$_.publishedAt } -Descending
+            )
+            if ($published.Count -gt 0) {
+              $candidateTag = $published[0].tagName
+            }
+          }
+          if ([string]::IsNullOrWhiteSpace($candidateTag)) {
+            # No published installer exists, so there are no released bytes to
+            # compare against. The next step must prove that independently; every
+            # byte comparison below stays mandatory the moment a release exists.
+            "has_release=false" >> $env:GITHUB_OUTPUT
+            Write-Host "no published hub-v* release resolved"
+            exit 0
           }
           if ($candidateTag -notmatch "^hub-v[0-9A-Za-z.+-]{1,64}$") {
             throw "candidate_tag must be a bounded hub-v* tag"
@@ -75,11 +101,46 @@ jobs:
             throw "GitHub release is not bound to the requested tag"
           }
 
+          "has_release=true" >> $env:GITHUB_OUTPUT
           "candidate_tag=$candidateTag" >> $env:GITHUB_OUTPUT
           "source_commit=$tagCommit" >> $env:GITHUB_OUTPUT
           "source_tree=$tree" >> $env:GITHUB_OUTPUT
 
+      - name: Prove no released installer exists to reproduce
+        if: steps.source.outputs.has_release != 'true'
+        shell: pwsh
+        env:
+          INPUT_CANDIDATE_TAG: ${{ inputs.candidate_tag || '' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $listedLines = gh release list --limit 200 --json tagName,isDraft
+          if ($LASTEXITCODE -ne 0) {
+            throw "could not enumerate releases while proving nothing has shipped"
+          }
+          $listed = ($listedLines | Out-String).Trim()
+          if ([string]::IsNullOrWhiteSpace($listed)) {
+            $listed = "[]"
+          }
+          $published = @(
+            $listed | ConvertFrom-Json |
+              Where-Object { -not $_.isDraft -and $_.tagName -cmatch "^hub-v[0-9A-Za-z.+-]{1,64}$" }
+          )
+          if ($published.Count -ne 0) {
+            throw "published hub-v* releases exist and must be reproduced: $(($published | ForEach-Object { $_.tagName }) -join ', ')"
+          }
+          if ("${{ github.ref }}" -like "refs/tags/hub-v*") {
+            throw "a hub-v* tag was pushed, so its released installer must be reproduced"
+          }
+          if (-not [string]::IsNullOrWhiteSpace(([string]$env:INPUT_CANDIDATE_TAG).Trim())) {
+            throw "an explicit candidate tag was requested, so its released installer must be reproduced"
+          }
+          $note = "No published hub-v* release exists, so no shipped OSL Privacy installer can be reproduced yet. Reproducibility of the Hub build is therefore still unproven, and stays unproven until the first release is published."
+          Write-Host $note
+          $note >> $env:GITHUB_STEP_SUMMARY
+
       - name: Download released installer
+        if: steps.source.outputs.has_release == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -96,6 +157,7 @@ jobs:
           "RELEASE_INSTALLER_NAME=$($installers[0].Name)" >> $env:GITHUB_ENV
 
       - name: Extract released executable bytes
+        if: steps.source.outputs.has_release == 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -110,12 +172,14 @@ jobs:
           "RELEASED_EXE_SHA256=$hash" >> $env:GITHUB_ENV
 
       - name: Build frontend from exact source
+        if: steps.source.outputs.has_release == 'true'
         working-directory: apps/osl-hub-ui
         run: |
           npm ci
           npm run build
 
       - name: Rebuild Hub executable from exact source
+        if: steps.source.outputs.has_release == 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -135,6 +199,7 @@ jobs:
           "REBUILT_EXE_SHA256=$hash" >> $env:GITHUB_ENV
 
       - name: Compare released and rebuilt bytes
+        if: steps.source.outputs.has_release == 'true'
         shell: pwsh
         env:
           CANDIDATE_TAG: ${{ steps.source.outputs.candidate_tag }}
@@ -165,6 +230,7 @@ jobs:
           $proof | ConvertTo-Json -Depth 5 | Set-Content reproducible-build-proof.json -Encoding UTF8
 
       - name: "success'"
+        if: steps.source.outputs.has_release == 'true'
         shell: pwsh
         env:
           CANDIDATE_TAG: ${{ steps.source.outputs.candidate_tag }}
@@ -200,6 +266,7 @@ jobs:
           }
 
       - name: Upload reproducibility proof
+        if: steps.source.outputs.has_release == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: reproducible-build-proof
