@@ -92,7 +92,7 @@ fn test_v2_wrong_recipient_cannot_decrypt() {
 
     let err = decrypt_v2(&wire, &b_sk, &sender_pk).unwrap_err();
     assert!(
-        matches!(err, V2Error::NoMatchingSlot),
+        matches!(&err, V2Error::NoMatchingSlot),
         "expected NoMatchingSlot, got {err:?}"
     );
 }
@@ -151,7 +151,7 @@ fn test_v2_tampered_ciphertext_fails() {
 
     let err = decrypt_v2(&tampered, &recipient_sk, &sender_pk).unwrap_err();
     assert!(
-        matches!(err, V2Error::BodyAeadFailed),
+        matches!(&err, V2Error::BodyAeadFailed),
         "expected BodyAeadFailed, got {err:?}"
     );
 }
