@@ -10,18 +10,8 @@ use ipc::commands::{cmd_osl_get_update_channel, cmd_osl_set_update_channel, Upda
 use ipc::AppState;
 use tempfile::TempDir;
 
-// `ipc`'s file-storage key and config-dir overrides are process globals, and
-// the tests in one integration binary share a process. `cargo test` runs them
-// on several threads, so without this every test here can have its key swapped
-// out from under it mid-write -- which is exactly how Windows CI produced
-// `at-rest decrypt: aead::Error`.
-static OSL_PROCESS_GLOBALS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 #[test]
 fn default_channel_is_stable() {
-    let _osl_serial = OSL_PROCESS_GLOBALS_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
     let state = AppState::new();
     assert_eq!(
         cmd_osl_get_update_channel(&state).unwrap(),
@@ -31,9 +21,6 @@ fn default_channel_is_stable() {
 
 #[test]
 fn set_channel_updates_in_memory_state() {
-    let _osl_serial = OSL_PROCESS_GLOBALS_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
     let state = AppState::new();
     cmd_osl_set_update_channel(&state, UpdateChannel::Beta, None).unwrap();
     assert_eq!(
@@ -50,9 +37,6 @@ fn set_channel_updates_in_memory_state() {
 
 #[test]
 fn set_channel_persists_to_app_preferences_file() {
-    let _osl_serial = OSL_PROCESS_GLOBALS_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
     let _base = tempfile::TempDir::new().unwrap();
     keystore::set_base_dir_override(Some(_base.path().to_path_buf()));
     ipc::main_password::set_file_storage_key(None);
@@ -70,9 +54,6 @@ fn set_channel_persists_to_app_preferences_file() {
 
 #[test]
 fn channel_serde_matches_keyserver_query_values() {
-    let _osl_serial = OSL_PROCESS_GLOBALS_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
     assert_eq!(
         serde_json::to_value(UpdateChannel::Stable).unwrap(),
         serde_json::json!("stable")
@@ -87,9 +68,6 @@ fn channel_serde_matches_keyserver_query_values() {
 
 #[test]
 fn install_result_serializes_with_status_tag() {
-    let _osl_serial = OSL_PROCESS_GLOBALS_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
     let no = serde_json::to_value(UpdateInstallResult::NoUpdate).unwrap();
     assert_eq!(no["status"], "no_update");
 

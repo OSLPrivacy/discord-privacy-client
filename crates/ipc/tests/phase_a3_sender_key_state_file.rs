@@ -107,7 +107,6 @@ fn sender_key_state_file_roundtrip_plain_then_encrypted() {
 
 #[test]
 fn sender_key_state_file_loads_legacy_empty_file() {
-    let _osl_serial = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempdir().unwrap();
     let path = dir.path().join("sender_key_state.json");
     // Pre-A3 deployments have no file at all. Loader returns empty
@@ -119,7 +118,6 @@ fn sender_key_state_file_loads_legacy_empty_file() {
 
 #[test]
 fn sender_key_state_file_load_returns_empty_when_missing() {
-    let _osl_serial = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Same case, distinct test name per spec.
     let dir = tempdir().unwrap();
     let path = dir.path().join("does-not-exist.json");

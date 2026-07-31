@@ -36,13 +36,6 @@ use ipc::state::AppState;
 use ipc::whitelist_state::ScopeState;
 use keystore::generate_identity;
 
-// `ipc`'s file-storage key and config-dir overrides are process globals, and
-// the tests in one integration binary share a process. `cargo test` runs them
-// on several threads, so without this every test here can have its key swapped
-// out from under it mid-write -- which is exactly how Windows CI produced
-// `at-rest decrypt: aead::Error`.
-static OSL_PROCESS_GLOBALS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 const LIAM_DID: &str = "900000000000000003";
 const HENRY_DID: &str = "900000000000000001";
 
@@ -97,9 +90,6 @@ fn si(s: &Scope) -> ScopeInput {
 
 #[test]
 fn seal_open_round_trip_preserves_bytes_and_filename() {
-    let _osl_serial = OSL_PROCESS_GLOBALS_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
     let state = fresh_state_for_liam();
     let plaintext = vec![0xABu8; 4096];
     let sealed = cmd_osl_seal_attachment(&state, plaintext.clone(), "vacation.jpg".to_string())
@@ -141,9 +131,6 @@ fn seal_open_round_trip_preserves_bytes_and_filename() {
 
 #[test]
 fn open_with_wrong_key_fails_auth() {
-    let _osl_serial = OSL_PROCESS_GLOBALS_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
     let state = fresh_state_for_liam();
     let plaintext = vec![1u8; 1024];
     let sealed = cmd_osl_seal_attachment(&state, plaintext, "img.png".to_string()).expect("seal");
@@ -159,9 +146,6 @@ fn open_with_wrong_key_fails_auth() {
 
 #[test]
 fn open_without_magic_fails_with_magic_not_found() {
-    let _osl_serial = OSL_PROCESS_GLOBALS_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
     let state = fresh_state_for_liam();
     // A blob with no OSL framing at all.
     let bytes = vec![0u8; 10_000];
@@ -175,9 +159,6 @@ fn open_without_magic_fails_with_magic_not_found() {
 
 #[test]
 fn open_with_short_key_rejected() {
-    let _osl_serial = OSL_PROCESS_GLOBALS_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
     let state = fresh_state_for_liam();
     let bogus_key = STANDARD.encode([0u8; 16]); // wrong length
     let err = cmd_osl_open_attachment(&state, bogus_key, vec![0u8; 100]).unwrap_err();
@@ -189,9 +170,6 @@ fn open_with_short_key_rejected() {
 
 #[test]
 fn envelope_round_trip_yields_sentinel_for_boot_js() {
-    let _osl_serial = OSL_PROCESS_GLOBALS_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
     // Liam encrypts an envelope for Henry. Henry's recv side
     // decodes the v=2 wire and surfaces the OSL_CONTROL_ATTACHMENT
     // sentinel with the JSON payload.
@@ -274,9 +252,6 @@ fn envelope_round_trip_yields_sentinel_for_boot_js() {
 
 #[test]
 fn envelope_round_trip_multi_attachment() {
-    let _osl_serial = OSL_PROCESS_GLOBALS_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
     // Phase 8b: 3-attachment cover. Verifies the list ordering is
     // preserved and each entry's attKey survives the CBOR round trip.
     let liam_state = fresh_state_for_liam();
@@ -360,9 +335,6 @@ fn envelope_round_trip_multi_attachment() {
 
 #[test]
 fn empty_envelope_input_rejected() {
-    let _osl_serial = OSL_PROCESS_GLOBALS_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
     let state = fresh_state_for_liam();
     let scope = Scope::dm(HENRY_DID);
     install_peer_pubkey(&state, HENRY_DID, x25519::generate_keypair().1);
@@ -383,9 +355,6 @@ fn empty_envelope_input_rejected() {
 
 #[test]
 fn unsupported_extension_rejected_at_seal_time() {
-    let _osl_serial = OSL_PROCESS_GLOBALS_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
     let state = fresh_state_for_liam();
     let err =
         cmd_osl_seal_attachment(&state, vec![0u8; 100], "payload.exe".to_string()).unwrap_err();
@@ -433,9 +402,6 @@ fn mark_sender_accepted_in_scope(state: &AppState, sender_did: &str, scope: &Sco
 
 #[test]
 fn v2_seal_carries_v2_magic_and_round_trips() {
-    let _osl_serial = OSL_PROCESS_GLOBALS_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
     let liam_state = fresh_state_for_liam();
     let (henry_sk, henry_pk) = x25519::generate_keypair();
     install_peer_pubkey(&liam_state, HENRY_DID, henry_pk);
@@ -494,9 +460,6 @@ fn v2_seal_carries_v2_magic_and_round_trips() {
 
 #[test]
 fn v3_seal_carries_v3_magic_in_mp4_free_box_and_round_trips() {
-    let _osl_serial = OSL_PROCESS_GLOBALS_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
     // Phase 8e: V3 seal wraps the V2 cover+filename+payload triple
     // in an MP4 `free` box appended to a decoy MP4. Open chain
     // detects V3 first, then V2/V1. Whitelisted recipient unwraps
@@ -570,9 +533,6 @@ fn v3_seal_carries_v3_magic_in_mp4_free_box_and_round_trips() {
 
 #[test]
 fn v3_open_chain_still_decodes_v2_and_v1() {
-    let _osl_serial = OSL_PROCESS_GLOBALS_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
     // Decode chain must remain backward-compatible: V2 wires
     // (8d-FIX2) and V1 wires (8/8c) need to keep decrypting after
     // the V3 chain is added to cmd_osl_open_attachment_v2.
@@ -627,9 +587,6 @@ fn v3_open_chain_still_decodes_v2_and_v1() {
 
 #[test]
 fn v2_open_without_legacy_key_fails_on_v1_bundle() {
-    let _osl_serial = OSL_PROCESS_GLOBALS_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
     let _base = tempfile::TempDir::new().unwrap();
     keystore::set_base_dir_override(Some(_base.path().to_path_buf()));
     ipc::main_password::set_file_storage_key(None);
@@ -677,9 +634,6 @@ fn v2_open_without_legacy_key_fails_on_v1_bundle() {
 
 #[test]
 fn v2_open_with_wrong_recipient_fails() {
-    let _osl_serial = OSL_PROCESS_GLOBALS_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
     let liam_state = fresh_state_for_liam();
     let (_henry_sk, henry_pk) = x25519::generate_keypair();
     install_peer_pubkey(&liam_state, HENRY_DID, henry_pk);

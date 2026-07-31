@@ -45,7 +45,6 @@ fn build_ratchet_state() -> RatchetStateOnDisk {
 
 #[test]
 fn peer_entry_with_ratchet_state_serde_roundtrip() {
-    let _osl_serial = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let e = PeerEntry {
         pubkey: Some(
             "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gIQ==".to_string(), // dummy 32B b64
@@ -68,7 +67,6 @@ fn peer_entry_with_ratchet_state_serde_roundtrip() {
 
 #[test]
 fn peer_entry_without_ratchet_state_loads_as_legacy() {
-    let _osl_serial = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Pre-9-A2 record on disk: no `ratchet_state`, no
     // `ik_ratchet_initial_pub`. Must still load cleanly and produce
     // None for both new fields.
