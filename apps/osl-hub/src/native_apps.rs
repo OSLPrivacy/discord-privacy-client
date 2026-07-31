@@ -353,8 +353,7 @@ const WHATSAPP_PACKAGE_NAME: &str = "5319275A.WhatsAppDesktop";
 #[cfg(any(target_os = "windows", test))]
 const WHATSAPP_PACKAGE_PUBLISHER_ID: &str = "cv1g1gvanyjgm";
 
-pub(crate) const WHATSAPP_PACKAGE_FAMILY_NAME: &str =
-    "5319275A.WhatsAppDesktop_cv1g1gvanyjgm";
+pub(crate) const WHATSAPP_PACKAGE_FAMILY_NAME: &str = "5319275A.WhatsAppDesktop_cv1g1gvanyjgm";
 
 #[cfg(target_os = "windows")]
 const MAX_WHATSAPP_PACKAGE_COUNT: u32 = 32;
@@ -1232,17 +1231,7 @@ pub fn install_mullvad() -> Result<MullvadActionResult, String> {
     {
         let winget = installer_executable()
             .ok_or_else(|| "Windows App Installer (winget) is unavailable".to_owned())?;
-        let arguments = [
-            "install",
-            "--id",
-            MULLVAD_PACKAGE_ID,
-            "--exact",
-            "--source",
-            "winget",
-            "--accept-source-agreements",
-            "--accept-package-agreements",
-            "--silent",
-        ];
+        let arguments = mullvad_install_arguments();
         spawn_detached(&winget, &arguments)
             .map_err(|_| "The Mullvad installer could not be started".to_owned())?;
         Ok(MullvadActionResult { started: true })
@@ -1251,6 +1240,26 @@ pub fn install_mullvad() -> Result<MullvadActionResult, String> {
     {
         Err("Mullvad installation is available only on Windows".to_owned())
     }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn mullvad_install_arguments() -> [&'static str; 9] {
+    [
+        "install",
+        "--id",
+        MULLVAD_PACKAGE_ID,
+        "--exact",
+        "--source",
+        "winget",
+        "--accept-source-agreements",
+        "--accept-package-agreements",
+        "--silent",
+    ]
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn mullvad_open_candidates() -> &'static [ExecutableCandidate] {
+    MULLVAD_CANDIDATES
 }
 
 /// Opens only Mullvad's reviewed desktop executable with no arguments. OSL
@@ -1271,7 +1280,7 @@ pub fn open_mullvad() -> Result<MullvadActionResult, String> {
 
 #[cfg(target_os = "windows")]
 fn mullvad_executable() -> Option<PathBuf> {
-    MULLVAD_CANDIDATES.iter().find_map(|candidate| {
+    mullvad_open_candidates().iter().find_map(|candidate| {
         let executable = known_folder(candidate.folder)?.join(candidate.relative_path);
         executable.is_file().then_some(executable)
     })
@@ -2611,7 +2620,21 @@ mod tests {
     fn mullvad_actions_use_fixed_package_and_path() {
         assert_eq!(MULLVAD_PACKAGE_ID, "MullvadVPN.MullvadVPN");
         assert_eq!(
-            MULLVAD_CANDIDATES,
+            mullvad_install_arguments(),
+            [
+                "install",
+                "--id",
+                "MullvadVPN.MullvadVPN",
+                "--exact",
+                "--source",
+                "winget",
+                "--accept-source-agreements",
+                "--accept-package-agreements",
+                "--silent",
+            ]
+        );
+        assert_eq!(
+            mullvad_open_candidates(),
             &[
                 ExecutableCandidate {
                     folder: KnownFolder::ProgramFiles,
@@ -2623,7 +2646,7 @@ mod tests {
                 },
             ]
         );
-        for candidate in MULLVAD_CANDIDATES {
+        for candidate in mullvad_open_candidates() {
             assert!(!candidate.relative_path.starts_with(['/', '\\']));
             assert!(!candidate.relative_path.contains(".."));
             assert!(!candidate.relative_path.contains(':'));
