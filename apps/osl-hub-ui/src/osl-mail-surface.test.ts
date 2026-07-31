@@ -28,7 +28,7 @@ function functionSource(name: string, nextName: string): string {
 }
 
 describe("OSL Mail surface", () => {
-  const scope = functionSource("mailComposerEncryptionScope", "activeHomeAppName");
+  const scope = functionSource("mailComposerEncryptionScope", "oslMailContent");
 
   beforeEach(() => {
     vi.unstubAllGlobals();
@@ -59,7 +59,7 @@ describe("OSL Mail surface", () => {
     expect(styles).toContain(".mail-composer-encryption-scope");
   });
 
-  it("renders OSL Mail Stage A as private client protection", async () => {
+  it("Render OSL Mail Stage A as private client protection", async () => {
     const { __oslHubUiTest, oslMailStageAContent } = await loadUi();
     __oslHubUiTest.reset({ route: "inbox" });
 
