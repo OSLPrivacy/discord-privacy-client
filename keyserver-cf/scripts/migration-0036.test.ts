@@ -127,6 +127,18 @@ describe("migration 0036 account ownership proof required", () => {
     await expect(
       insertProofBinding(db, { nonce, binding }),
     ).rejects.toThrow(/proof challenge is required/);
+    await expect(
+      insertProofBinding(db, {
+        nonce,
+        binding,
+        verifiedAt: 1_900_000_020,
+      }),
+    ).rejects.toThrow(/proof challenge is required/);
+
+    const mismatchedBinding = "a".repeat(64);
+    await expect(
+      insertProofBinding(db, { nonce, binding: mismatchedBinding }),
+    ).rejects.toThrow(/proof challenge is required/);
 
     await spendChallenge(db, nonce, 1_900_000_030);
     await expect(

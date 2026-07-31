@@ -1608,6 +1608,18 @@ def define_the_c4_v3_native_authority_receipt_schema_for_exact_shipping_builds()
     with testcase.assertRaisesRegex(SchemaError, "targetOs"):
         validate_receipt(wrong_os)
 
+    wrong_arch = copy.deepcopy(receipt)
+    wrong_arch["build"]["targetArch"] = "aarch64"
+    wrong_arch = reseal(wrong_arch)
+    with testcase.assertRaisesRegex(SchemaError, "targetArch"):
+        validate_receipt(wrong_arch)
+
+    non_release = copy.deepcopy(receipt)
+    non_release["build"]["profile"] = "debug"
+    non_release = reseal(non_release)
+    with testcase.assertRaisesRegex(SchemaError, "profile"):
+        validate_receipt(non_release)
+
 
 define_the_c4_v3_native_authority_receipt_schema_for_exact_shipping_builds.__name__ = (
     "Define the C4 v3 native authority receipt schema for exact shipping builds"
@@ -1665,11 +1677,31 @@ def validate_carrier_and_pre_post_readbacks_against_one_discord_target_binding()
     with testcase.assertRaisesRegex(SchemaError, "preSend.readback digest"):
         validate_receipt(wrong_pre_readback)
 
+    changed_carrier = copy.deepcopy(receipt)
+    changed_carrier_bytes = b"same target, different carrier"
+    changed_carrier["carrier"]["utf8B64"] = base64.b64encode(
+        changed_carrier_bytes,
+    ).decode("ascii")
+    changed_carrier["carrier"]["sha256"] = sha256_hex(changed_carrier_bytes)
+    changed_carrier["carrier"]["byteLength"] = len(changed_carrier_bytes)
+    changed_carrier["carrier"]["utf16Length"] = len(
+        changed_carrier_bytes.decode("utf-8").encode("utf-16-le"),
+    ) // 2
+    changed_carrier = reseal(changed_carrier)
+    with testcase.assertRaisesRegex(SchemaError, "preSend.readback digest"):
+        validate_receipt(changed_carrier)
+
     wrong_post_readback = copy.deepcopy(receipt)
     wrong_post_readback["postSend"]["readback"]["byteLength"] = 1
     wrong_post_readback = reseal(wrong_post_readback)
     with testcase.assertRaisesRegex(SchemaError, "postSend.readback byte length"):
         validate_receipt(wrong_post_readback)
+
+    wrong_post_classification = copy.deepcopy(receipt)
+    wrong_post_classification["postSend"]["readback"]["classification"] = "exact"
+    wrong_post_classification = reseal(wrong_post_classification)
+    with testcase.assertRaisesRegex(SchemaError, "postSend.readback.classification"):
+        validate_receipt(wrong_post_classification)
 
 
 validate_carrier_and_pre_post_readbacks_against_one_discord_target_binding.__name__ = (

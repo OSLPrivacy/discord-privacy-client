@@ -438,7 +438,7 @@ test('wrapped-key roundtrip e2e test: post then fetch across two sessions', asyn
   }));
 });
 
-test('key"', async () => {
+test('wrapped-key roundtrip e2e test: exact attributor key name survives persistence', async () => {
   await assertWrappedKeyRoundtripAcrossSessions(validWrappedKey({
     content_id: 'exact-attributor-key-name',
     sender_id: 'sender-exact-name',
@@ -448,6 +448,65 @@ test('key"', async () => {
     wrapped_share_blob: b64('exact-name-wrapped-share'),
     blob_version: 5,
   }));
+});
+
+test('wrapped-key roundtrip e2e test: duplicate content id is rejected across sessions', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'osl-keyserver-roundtrip-'));
+  const dbFile = path.join(tempDir, 'keyserver.sqlite');
+  const payload = validWrappedKey({
+    content_id: 'persisted-msg-duplicate',
+    sender_id: 'alice',
+    recipient_id: 'bob',
+    session_version: 7,
+    share_index: 2,
+    wrapped_share_blob: b64('wrapped-share-across-sessions'),
+    blob_version: 3,
+    expires_at: '2035-01-02T03:04:05.000Z',
+  });
+
+  let firstSession;
+  let secondSession;
+  try {
+    firstSession = await buildServer({ logger: false, dbFile });
+    const upload = await inject(firstSession, {
+      method: 'POST',
+      url: '/v1/wrapped-keys',
+      payload,
+    });
+    assert.equal(upload.statusCode, 201);
+    assert.equal(upload.body.content_id, payload.content_id);
+    await firstSession.close();
+    firstSession = null;
+
+    secondSession = await buildServer({ logger: false, dbFile });
+    const duplicate = await inject(secondSession, {
+      method: 'POST',
+      url: '/v1/wrapped-keys',
+      payload,
+    });
+    assert.equal(duplicate.statusCode, 409);
+    assert.equal(duplicate.body.error, 'content_id already exists');
+
+    const fetched = await inject(secondSession, {
+      method: 'GET',
+      url: `/v1/wrapped-keys/${payload.content_id}`,
+    });
+    assert.equal(fetched.statusCode, 200);
+    assert.equal(fetched.body.content_id, payload.content_id);
+    assert.equal(fetched.body.sender_id, payload.sender_id);
+    assert.equal(fetched.body.recipient_id, payload.recipient_id);
+    assert.equal(fetched.body.session_version, payload.session_version);
+    assert.equal(fetched.body.share_index, payload.share_index);
+    assert.equal(fetched.body.wrapped_share_blob, payload.wrapped_share_blob);
+    assert.equal(fetched.body.blob_version, payload.blob_version);
+    assert.equal(fetched.body.single_use, false);
+    await secondSession.close();
+    secondSession = null;
+  } finally {
+    if (firstSession) await firstSession.close();
+    if (secondSession) await secondSession.close();
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 // ============================================================
