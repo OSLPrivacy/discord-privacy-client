@@ -41,9 +41,10 @@ export function localImportCoverageReceipt(
   const gaps = ["The provider did not attest that this manual export is complete."];
   if (timestamps.length !== messages.length) gaps.push("Some exported messages did not include a reachable timestamp.");
   const receipt: ScrubCoverageReceipt = {
+    targetId: "local_import:manual-export",
     messagesScanned: scan.messagesScanned,
-    oldestReachableAtUnixMs: timestamps.length ? Math.min(...timestamps) : null,
-    newestReachableAtUnixMs: timestamps.length ? Math.max(...timestamps) : null,
+    oldestReachableUnixMs: timestamps.length ? Math.min(...timestamps) : null,
+    newestReachableUnixMs: timestamps.length ? Math.max(...timestamps) : null,
     providerReportedComplete: false,
     gaps,
     textChecked: true,
@@ -53,7 +54,7 @@ export function localImportCoverageReceipt(
     attachmentTypesScanned: [...scan.attachmentTypesScanned],
     uninspectedAttachments: [...scan.uninspectedAttachments],
   };
-  if (!validateCoverageReceipt(receipt)) throw new Error("invalid Scrub coverage receipt");
+  if (!validateCoverageReceipt(receipt, new Set([receipt.targetId]))) throw new Error("invalid Scrub coverage receipt");
   return receipt;
 }
 

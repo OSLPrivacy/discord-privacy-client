@@ -64,7 +64,7 @@ export async function executeDeletion(r: ExecutionRequest): Promise<ProviderDele
     if (wasUnknown) { items.push(receipt(f, "UNKNOWN", false, false, "prior UNKNOWN requires manual resolution; not retried")); stoppedFailClosed = true; break; }
     let inspected: DeleteInspection;
     try { inspected = await r.adapter.inspect(f); } catch { items.push(receipt(f, "UNKNOWN", false, false, "inspection failed ambiguously")); stoppedFailClosed = true; break; }
-    if (inspected.authEpoch !== r.stepUp.authEpoch || inspected.schemaVersion.length === 0) { items.push(receipt(f, "UNKNOWN", false, false, "authentication or provider schema changed")); stoppedFailClosed = true; break; }
+    if (inspected.authEpoch !== r.stepUp.authEpoch || inspected.schemaVersion.length === 0) { items.push(receipt(f, "UNKNOWN", false, false, "authentication or service state changed")); stoppedFailClosed = true; break; }
     if (inspected.state === "absent") { items.push(receipt(f, "confirmed-deleted", false, true, "readback confirmed already absent")); continue; }
     if (inspected.state !== "present" || !inspected.authoredBySelf || inspected.contentFingerprint !== f.contentFingerprint) { items.push(receipt(f, inspected.state === "present" ? "confirmed-not-deleted" : "UNKNOWN", false, inspected.state === "present", "ownership, content, or presence check failed")); stoppedFailClosed = true; break; }
     if (!inspected.retractable) { items.push(receipt(f, "confirmed-not-deleted", false, true, inspected.detail ?? "cannot be recalled; item remains located at its source")); continue; }
@@ -74,7 +74,7 @@ export async function executeDeletion(r: ExecutionRequest): Promise<ProviderDele
     try {
       const verified = await r.adapter.verify(f);
       const outcome = verified.authEpoch === r.stepUp.authEpoch ? verified.outcome : "UNKNOWN";
-      const detail = deleted.accepted ? verified.detail ?? "provider readback completed" : `${deleted.detail ?? "provider rejected deletion"}; ${verified.detail ?? "provider readback completed"}`;
+      const detail = deleted.accepted ? verified.detail ?? "service recheck completed" : `${deleted.detail ?? "service rejected deletion"}; ${verified.detail ?? "service recheck completed"}`;
       items.push(receipt(f, outcome, true, outcome !== "UNKNOWN", detail));
       if (outcome === "UNKNOWN") { stoppedFailClosed = true; break; }
     } catch { items.push(receipt(f, "UNKNOWN", true, false, "verification failed ambiguously; not safe to retry")); stoppedFailClosed = true; break; }

@@ -9,7 +9,7 @@ type TelegramVitest = typeof import("vitest");
 
 declare global {
   interface ImportMeta {
-    readonly vitest?: Pick<TelegramVitest, "expect" | "it" | "vi">;
+    vitest?: Pick<TelegramVitest, "describe" | "expect" | "it" | "vi">;
   }
 }
 
@@ -40,10 +40,17 @@ if (import.meta.vitest) {
   const OPERATOR_CHAT_ID = "-1001234567890";
 
   const configuredEnv = (): Env => ({
+    DB: {} as D1Database,
+    MAILBOX: {} as DurableObjectNamespace<import("../mail/mailbox.js").Mailbox>,
+    RATE_LIMIT_5: {} as RateLimit,
+    RATE_LIMIT_10: {} as RateLimit,
+    RATE_LIMIT_120: {} as RateLimit,
+    RATE_LIMIT_1200: {} as RateLimit,
+    RATE_LIMIT_3600: {} as RateLimit,
     TELEGRAM_WEBHOOK_SECRET: WEBHOOK_SECRET,
     TELEGRAM_BOT_TOKEN: BOT_TOKEN,
     TELEGRAM_OPERATOR_CHAT_IDS: OPERATOR_CHAT_ID,
-  }) as Env;
+  });
 
   const updateRequest = (
     chatId: string,

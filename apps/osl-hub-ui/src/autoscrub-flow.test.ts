@@ -10,7 +10,7 @@ import type { DeleteFinding, ScopePolicy, ScrubDeleteAdapter } from "./scrub-del
 const now = 1_800_000_000_000;
 const finding = (itemId = "message-1"): DeleteFinding => ({ providerId: "imap", accountId: "mail", channelId: "Sent", correspondentId: "person", itemId, authoredBySelf: true, createdAtUnixMs: now - 100_000, contentFingerprint: `hash-${itemId}` });
 const policy = (overrides: Partial<ScopePolicy> = {}): ScopePolicy => ({ providerId: "imap", accountId: "mail", itemIds: ["message-1", "message-2"], channelIds: ["Sent"], protectedChannelIds: [], protectedCorrespondentIds: [], maxCount: 2, minAgeMs: 0, ...overrides });
-const capability: AutoScrubCapability = { providerId: "imap", label: "Email (IMAP)", liveConfirmed: true, coverage: "Message-ID readback" };
+const capability: AutoScrubCapability = { providerId: "imap", label: "Email", liveConfirmed: true, coverage: "Service recheck" };
 
 function harness() {
   const order: string[] = [];

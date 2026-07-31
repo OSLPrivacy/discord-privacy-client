@@ -52,7 +52,7 @@ export class ImapDeleteAdapter implements ScrubDeleteAdapter {
 
 export function classifyImapFailure(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
-  if (/rate|limit|too many|try again/i.test(message)) return "provider rate limit; stop and resume only after server recovery";
+  if (/rate|limit|too many|try again/i.test(message)) return "service rate limit; stop and resume only after server recovery";
   if (/auth|login|credential/i.test(message)) return "authentication changed or expired";
   return "ambiguous IMAP failure";
 }
