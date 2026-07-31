@@ -622,9 +622,7 @@ fn canonical_lower_hex(value: &str, expected_len: usize) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn decode_fetch_token(
-    value: &str,
-) -> Option<[u8; ipc::cipher_store_client::FETCH_TOKEN_BYTES]> {
+fn decode_fetch_token(value: &str) -> Option<[u8; ipc::cipher_store_client::FETCH_TOKEN_BYTES]> {
     if !canonical_lower_hex(value, FETCH_TOKEN_HEX_LEN) {
         return None;
     }
@@ -785,10 +783,7 @@ where
     Ok(report)
 }
 
-pub fn pending_attachment_deletions_at_path(
-    path: &Path,
-    key: &[u8; 32],
-) -> Result<usize, String> {
+pub fn pending_attachment_deletions_at_path(path: &Path, key: &[u8; 32]) -> Result<usize, String> {
     Ok(load_deletion_outbox(path, key)?.entries.len())
 }
 
@@ -1495,10 +1490,7 @@ mod tests {
             ),
             (Raw::BadTtl(7), TransportOutcome::UnsupportedLifetime),
             (
-                Raw::BlobTooLarge {
-                    got: 2,
-                    max: 1,
-                },
+                Raw::BlobTooLarge { got: 2, max: 1 },
                 TransportOutcome::TooLarge,
             ),
             (
@@ -1644,7 +1636,10 @@ mod tests {
             false,
         )
         .unwrap();
-        assert_eq!(pending_attachment_deletions_at_path(&path, &key).unwrap(), 2);
+        assert_eq!(
+            pending_attachment_deletions_at_path(&path, &key).unwrap(),
+            2
+        );
 
         let mut seen_attempts = Vec::new();
         let report = drain_attachment_deletions_at_path(&path, &key, now, |pending| {
@@ -1656,7 +1651,10 @@ mod tests {
         assert_eq!(report.deleted, 0);
         assert_eq!(report.expired, 0);
         assert!(seen_attempts.iter().all(|(_, attempts)| *attempts == 0));
-        assert_eq!(pending_attachment_deletions_at_path(&path, &key).unwrap(), 2);
+        assert_eq!(
+            pending_attachment_deletions_at_path(&path, &key).unwrap(),
+            2
+        );
 
         // A repeated failure increments the attempt count and still keeps the
         // record: the promise is never abandoned after N tries.
@@ -1667,7 +1665,10 @@ mod tests {
         })
         .unwrap();
         assert_eq!(attempts_second_round, vec![1, 1]);
-        assert_eq!(pending_attachment_deletions_at_path(&path, &key).unwrap(), 2);
+        assert_eq!(
+            pending_attachment_deletions_at_path(&path, &key).unwrap(),
+            2
+        );
 
         // The view-once flag survives a merge and reaches the retry closure.
         let mut view_once_flags = Vec::new();
@@ -1680,7 +1681,10 @@ mod tests {
         assert_eq!(report.expired, 1);
         assert_eq!(report.deleted, 1);
         assert_eq!(view_once_flags, vec![true]);
-        assert_eq!(pending_attachment_deletions_at_path(&path, &key).unwrap(), 0);
+        assert_eq!(
+            pending_attachment_deletions_at_path(&path, &key).unwrap(),
+            0
+        );
 
         // AlreadyGone clears the record too.
         enqueue_attachment_deletion_at_path(
@@ -1697,7 +1701,10 @@ mod tests {
             drain_attachment_deletions_at_path(&path, &key, now, |_| DeletionAttempt::AlreadyGone)
                 .unwrap();
         assert_eq!(report.already_gone, 1);
-        assert_eq!(pending_attachment_deletions_at_path(&path, &key).unwrap(), 0);
+        assert_eq!(
+            pending_attachment_deletions_at_path(&path, &key).unwrap(),
+            0
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1711,7 +1718,13 @@ mod tests {
         // Short object id, non-hex token, already expired, and beyond the
         // longest lifetime the store honours.
         assert!(enqueue_attachment_deletion_at_path(
-            &path, &key, "abcd", &fetch_token_hex(1), now + 60, now, false
+            &path,
+            &key,
+            "abcd",
+            &fetch_token_hex(1),
+            now + 60,
+            now,
+            false
         )
         .is_err());
         assert!(enqueue_attachment_deletion_at_path(
@@ -1744,7 +1757,10 @@ mod tests {
             false
         )
         .is_err());
-        assert_eq!(pending_attachment_deletions_at_path(&path, &key).unwrap(), 0);
+        assert_eq!(
+            pending_attachment_deletions_at_path(&path, &key).unwrap(),
+            0
+        );
 
         // A plaintext or corrupted outbox fails closed instead of being read.
         std::fs::write(&path, b"{\"version\":1,\"entries\":[]}").unwrap();
