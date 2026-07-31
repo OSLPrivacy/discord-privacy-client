@@ -238,6 +238,9 @@ fn reload_handles_missing_files_gracefully() {
 #[test]
 fn reload_handles_decrypt_failure_gracefully() {
     let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _base = tempfile::TempDir::new().unwrap();
+    keystore::set_base_dir_override(Some(_base.path().to_path_buf()));
+    set_file_storage_key(None);
 
     // Write a peer_map encrypted with key A.
     let key_a = [0xAAu8; 32];
