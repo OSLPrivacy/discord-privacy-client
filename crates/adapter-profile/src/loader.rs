@@ -527,9 +527,24 @@ mod tests {
     #[test]
     fn loader() {
         let (compiled, trusted_compiled) = signed_doc(9, "signal.desktop.native");
+        let (fresh_cached, trusted_fresh_cached) = signed_doc(10, "signal.desktop.native");
         let (old_cached, trusted_cached) = signed_doc(8, "signal.desktop.native");
 
-        let loaded = load_signed_adapter_profile_or_compiled_in(
+        let loaded_cached = load_signed_adapter_profile_or_compiled_in(
+            Some(&fresh_cached),
+            &trusted_fresh_cached,
+            &compiled,
+            &trusted_compiled,
+            NOW,
+        )
+        .unwrap();
+
+        assert_eq!(loaded_cached.source(), AdapterProfileSource::Cached);
+        assert_eq!(loaded_cached.signed(), &fresh_cached);
+        assert_eq!(loaded_cached.payload().revision.number, 10);
+        assert_ne!(loaded_cached.signed(), &compiled);
+
+        let loaded_without_rollback = load_signed_adapter_profile_or_compiled_in(
             Some(&old_cached),
             &trusted_cached,
             &compiled,
@@ -538,9 +553,12 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(loaded.source(), AdapterProfileSource::CompiledIn);
-        assert_eq!(loaded.signed(), &compiled);
-        assert_eq!(loaded.payload().revision.number, 9);
-        assert_ne!(loaded.signed(), &old_cached);
+        assert_eq!(
+            loaded_without_rollback.source(),
+            AdapterProfileSource::CompiledIn
+        );
+        assert_eq!(loaded_without_rollback.signed(), &compiled);
+        assert_eq!(loaded_without_rollback.payload().revision.number, 9);
+        assert_ne!(loaded_without_rollback.signed(), &old_cached);
     }
 }
