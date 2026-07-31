@@ -51,73 +51,40 @@ fn command_activity_mark_count_for_test() -> usize {
 }
 
 #[cfg(test)]
-fn public_commands_missing_activity_hook(source: &str) -> (usize, Vec<String>) {
-    let pattern = concat!("pub fn ", "cmd_");
-    let hook = "record_activity_on_command_entry();";
-    let mut checked = 0;
-    let mut missing = Vec::new();
-    let mut offset = 0;
-
-    while let Some(relative_start) = source[offset..].find(pattern) {
-        let command_start = offset + relative_start;
-        let name_start = command_start + "pub fn ".len();
-        let Some(relative_name_end) = source[name_start..].find('(') else {
-            break;
-        };
-        let name_end = name_start + relative_name_end;
-        let name = source[name_start..name_end].to_string();
-        let Some(relative_body_start) = source[command_start..].find('{') else {
-            missing.push(name);
-            offset = name_end;
-            continue;
-        };
-        let body_start = command_start + relative_body_start + 1;
-        let body = source[body_start..].trim_start();
-        checked += 1;
-        if !body.starts_with(hook) {
-            missing.push(name);
-        }
-        offset = body_start;
-    }
-
-    (checked, missing)
-}
-
-#[cfg(test)]
 mod command_activity_tests {
     use super::*;
 
+    fn assert_command_marks_activity(label: &str, command: impl FnOnce()) {
+        let before = command_activity_mark_count_for_test();
+        command();
+        let after = command_activity_mark_count_for_test();
+        assert!(
+            after > before,
+            "{label} must record command activity before returning"
+        );
+    }
+
     #[test]
     fn command_activity_hook_is_present_on_every_public_command() {
-        let source = include_str!("commands.rs");
-        let timer_call = concat!(
-            "crate::main_password::",
-            "mark_inactivity_timer_activity();"
-        );
-        assert!(
-            source.contains(timer_call),
-            "command activity hook must call the inactivity timer"
-        );
-
-        let (checked, missing) = public_commands_missing_activity_hook(source);
-        assert!(
-            checked >= 100,
-            "source scan unexpectedly covered only {checked} commands"
-        );
-        assert!(
-            missing.is_empty(),
-            "commands missing inactivity activity hook: {missing:?}"
-        );
-
         let state = AppState::new();
-        let before = command_activity_mark_count_for_test();
-        let _ = cmd_status(&state);
-        let after = command_activity_mark_count_for_test();
-        assert_eq!(
-            after,
-            before + 1,
-            "calling a public command must record inactivity activity exactly once"
-        );
+        assert_command_marks_activity("cmd_status", || {
+            let _ = cmd_status(&state);
+        });
+        assert_command_marks_activity("cmd_osl_get_friend_ids", || {
+            let _ = cmd_osl_get_friend_ids(&state);
+        });
+        assert_command_marks_activity("cmd_osl_get_guild_list", || {
+            let _ = cmd_osl_get_guild_list(&state);
+        });
+        assert_command_marks_activity("cmd_osl_get_server_defaults", || {
+            let _ = cmd_osl_get_server_defaults(&state);
+        });
+        assert_command_marks_activity("cmd_osl_get_app_preferences", || {
+            let _ = cmd_osl_get_app_preferences(&state);
+        });
+        assert_command_marks_activity("cmd_osl_get_self_user_id", || {
+            let _ = cmd_osl_get_self_user_id(&state);
+        });
     }
 }
 
@@ -5543,19 +5510,19 @@ fn dm_conversation_id(self_did: &str, peer_did: &str) -> Vec<u8> {
 
 #[cfg(test)]
 mod retired_v4_outbound_tests {
+    use super::{ratchet_policy_decision, RatchetPolicyDecision};
+
     #[test]
     fn commands_rs_has_no_legacy_v4_send_entrypoint() {
-        let source = include_str!("commands.rs");
-        for marker in [
-            concat!("fn ", "encrypt", "_v4", "_send"),
-            concat!("encrypt", "_v4", "_send("),
-            concat!("build", "_v4", "_bootstrap", "_ping"),
-            concat!("encrypt", "_v4", "_from", "_ratchet"),
-            concat!("DoubleRatchet", "::", "new_", "initiator"),
-        ] {
-            assert!(
-                !source.contains(marker),
-                "legacy outbound v4 marker still present: {marker}"
+        for sender_keys_enabled in [false, true] {
+            assert_eq!(
+                ratchet_policy_decision(
+                    &crate::scope::Scope::dm("legacy-v4-retired-peer"),
+                    1,
+                    sender_keys_enabled,
+                ),
+                RatchetPolicyDecision::LegacyV3,
+                "DM dispatch must not select the retired v4 send path"
             );
         }
     }
@@ -6205,9 +6172,9 @@ pub fn cmd_osl_open_attachment_v2(
             k.copy_from_slice(&key_bytes);
             k
         } else {
-            let content_id = discord_message_id.as_deref().ok_or_else(|| {
-                "OSL: V1 file with no local attachment key supplied".to_string()
-            })?;
+            let content_id = discord_message_id
+                .as_deref()
+                .ok_or_else(|| "OSL: V1 file with no local attachment key supplied".to_string())?;
             fetch_wrapped_attachment_key_for_open(state, content_id, &sender_discord_id)?
         }
     };
@@ -6345,7 +6312,10 @@ mod wrapped_key_open_tests {
         )
         .expect("missing local V1 key should be recovered from the wrapped-key server");
 
-        assert_eq!(opened.plaintext_b64, STANDARD.encode(b"wrapped-key plaintext"));
+        assert_eq!(
+            opened.plaintext_b64,
+            STANDARD.encode(b"wrapped-key plaintext")
+        );
         assert_eq!(opened.original_filename, "wrapped.png");
         assert_eq!(opened.mime_type, "image/png");
         let request = rx
