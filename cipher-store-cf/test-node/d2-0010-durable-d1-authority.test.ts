@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   D2_CONSUME_CHALLENGE_SQL,
@@ -82,7 +83,11 @@ function runCrossProcessContender(
     ...input,
   })).toString("base64url");
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [contender.pathname, encoded], {
+    // `URL.pathname` of a file: URL is "/D:/a/..." on Windows, and spawn
+    // resolves that against the drive root as "D:\\D:\\a\\...". Only
+    // `fileURLToPath` produces a path Node can actually open on both
+    // platforms.
+    const child = spawn(process.execPath, [fileURLToPath(contender), encoded], {
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";

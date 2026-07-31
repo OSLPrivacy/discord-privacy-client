@@ -1,5 +1,6 @@
 import { createHash, webcrypto } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { basename, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
@@ -497,6 +498,10 @@ describe("D2 migration-0010 authoritative release contract", () => {
     expect(createHash("sha256").update(migration).digest("hex")).toBe(
       D2_MIGRATION_0010_SHA256,
     );
-    expect(PROJECT_ROOT.endsWith("cipher-store-cf/")).toBe(true);
+    // Separator-agnostic: `fileURLToPath` yields a trailing "\\" on Windows,
+    // so a literal "cipher-store-cf/" suffix check is false there even
+    // though the root is correct. The property under test is that the
+    // digests above were taken from the cipher-store-cf tree.
+    expect(basename(resolvePath(PROJECT_ROOT))).toBe("cipher-store-cf");
   });
 });
