@@ -320,6 +320,177 @@ fn final_owner_gated_signoff_reproduces_package_from_second_session() {
 }
 
 #[test]
+fn freeze_the_exact_signed_candidate_vm_attestation_contract() {
+    use sha2::{Digest, Sha256};
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        let mut digest = Sha256::new();
+        digest.update(bytes);
+        format!("{:x}", digest.finalize())
+    }
+
+    fn write_candidate(root: &std::path::Path) {
+        let installer_name = "osl-hub-0.1.0-x64-nsis.exe";
+        let installer_bytes = b"signed candidate fixture";
+        std::fs::write(root.join(installer_name), installer_bytes).unwrap();
+        std::fs::write(
+            root.join("latest.json"),
+            serde_json::json!({
+                "version": "0.1.0",
+                "platforms": {
+                    "windows-x86_64": {
+                        "signature": "signed-update-fixture",
+                        "url": format!(
+                            "https://github.com/OSLPrivacy/discord-privacy-client/releases/download/hub-v0.1.0/{installer_name}"
+                        )
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("hub-vm-qa-attestation.json"),
+            serde_json::json!({
+                "schemaVersion": 1,
+                "candidateTag": "hub-v0.1.0",
+                "candidateSha256": sha256_hex(installer_bytes),
+                "completedAtUtc": "2026-07-17T23:00:00Z",
+                "operator": "qa-reviewer",
+                "finalApprover": "qa-final-approver-second-session",
+                "packageReproducedBySecondSession": true,
+                "captchaHandling": "paused_for_manual_completion",
+                "vms": [
+                    {"name": "A", "goldenSnapshotId": "signed-a", "cleanRestore": true},
+                    {"name": "B", "goldenSnapshotId": "signed-b", "cleanRestore": true}
+                ],
+                "cases": {
+                    "onboarding": true,
+                    "identityCreate": true,
+                    "identityRecover": true,
+                    "twoAccountLogin": true,
+                    "persistenceRestart": true,
+                    "signedUpdate": true,
+                    "oneSidedEncryption": true,
+                    "twoSidedEncryption": true,
+                    "fullCleanup": true
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    fn verify_candidate(root: &std::path::Path) -> std::process::Output {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        std::process::Command::new(std::env::var("PYTHON").unwrap_or_else(|_| "python3".to_owned()))
+            .arg(repo_root.join("scripts/verify_hub_vm_qa_attestation.py"))
+            .arg("--tag")
+            .arg("hub-v0.1.0")
+            .arg("--candidate-dir")
+            .arg(root)
+            .arg("--attestation")
+            .arg(root.join("hub-vm-qa-attestation.json"))
+            .current_dir(repo_root)
+            .output()
+            .expect("run VM QA attestation verifier")
+    }
+
+    fn read_json(path: &std::path::Path) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    let root = std::env::temp_dir().join(format!(
+        "osl-hub-vm-attestation-contract-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    write_candidate(&root);
+
+    let accepted = verify_candidate(&root);
+    assert!(
+        accepted.status.success(),
+        "valid signed candidate must pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&accepted.stdout),
+        String::from_utf8_lossy(&accepted.stderr)
+    );
+
+    std::fs::write(
+        root.join("osl-hub-0.1.0-x64-nsis.exe"),
+        b"modified after QA",
+    )
+    .unwrap();
+    let changed_installer = verify_candidate(&root);
+    assert!(
+        !changed_installer.status.success(),
+        "changed installer bytes must be refused\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&changed_installer.stdout),
+        String::from_utf8_lossy(&changed_installer.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&changed_installer.stderr).contains("exact candidate installer")
+    );
+
+    write_candidate(&root);
+    let mut manifest = read_json(&root.join("latest.json"));
+    manifest["platforms"]["windows-x86_64"]["url"] = serde_json::Value::String(
+        "https://github.com/OSLPrivacy/discord-privacy-client/releases/download/hub-latest/osl-hub-0.1.0-x64-nsis.exe".to_owned(),
+    );
+    std::fs::write(root.join("latest.json"), manifest.to_string()).unwrap();
+    let stable_feed = verify_candidate(&root);
+    assert!(
+        !stable_feed.status.success(),
+        "stable feed manifest URL must be refused\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&stable_feed.stdout),
+        String::from_utf8_lossy(&stable_feed.stderr)
+    );
+    assert!(String::from_utf8_lossy(&stable_feed.stderr).contains("stable feed"));
+
+    write_candidate(&root);
+    let mut attestation = read_json(&root.join("hub-vm-qa-attestation.json"));
+    attestation["packageReproducedBySecondSession"] = serde_json::Value::Bool(false);
+    std::fs::write(
+        root.join("hub-vm-qa-attestation.json"),
+        attestation.to_string(),
+    )
+    .unwrap();
+    let unreproduced = verify_candidate(&root);
+    assert!(
+        !unreproduced.status.success(),
+        "missing second-session reproduction must be refused\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&unreproduced.stdout),
+        String::from_utf8_lossy(&unreproduced.stderr)
+    );
+    assert!(String::from_utf8_lossy(&unreproduced.stderr).contains("second session"));
+
+    write_candidate(&root);
+    let mut attestation = read_json(&root.join("hub-vm-qa-attestation.json"));
+    attestation["cases"]
+        .as_object_mut()
+        .unwrap()
+        .remove("fullCleanup");
+    std::fs::write(
+        root.join("hub-vm-qa-attestation.json"),
+        attestation.to_string(),
+    )
+    .unwrap();
+    let incomplete_matrix = verify_candidate(&root);
+    assert!(
+        !incomplete_matrix.status.success(),
+        "incomplete required QA matrix must be refused\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&incomplete_matrix.stdout),
+        String::from_utf8_lossy(&incomplete_matrix.stderr)
+    );
+    assert!(String::from_utf8_lossy(&incomplete_matrix.stderr).contains("case set"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn final_owner_gated_signoff_documents_second_session_requirements() {
     let guide = include_str!("../../../docs/testing/hub-release-candidate-vm-gate.md");
     let verifier = include_str!("../../../scripts/verify_hub_vm_qa_attestation.py");
