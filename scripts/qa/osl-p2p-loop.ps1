@@ -136,14 +136,23 @@ param(
 
     # Repository self-test entry point. It runs only synthetic precondition
     # cases and never writes a self-test trigger or touches a live conversation.
-    [switch]$RunScriptSelfTests
+    [switch]$RunScriptSelfTests,
+
+    # Internal child mode used only by -RunScriptSelfTests. It exercises the
+    # retained-preflight and consent gates without loading Win32 APIs; every
+    # child case must block before instance discovery.
+    [switch]$SelfTestPreconditionChild
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Off
 
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-. (Join-Path $here 'osl-p2p-win32.ps1')
+if ($RunScriptSelfTests -or $SelfTestPreconditionChild) {
+    function Get-P2PDiscordPids { @() }
+} else {
+    . (Join-Path $here 'osl-p2p-win32.ps1')
+}
 
 # H1. Run start, captured once. LastWriteTime and Get-Date are both local time,
 # so they compare directly. No slack is allowed: slack is what hides staleness.
@@ -639,6 +648,7 @@ function Invoke-P2PLoopSelfTestChild {
         -TempRootA $TempRootAForChild `
         -TempRootB $TempRootBForChild `
         -JsonOut $JsonOutForChild `
+        -SelfTestPreconditionChild `
         -Quiet
     $code = $LASTEXITCODE
     if ($code -ne 2) {
