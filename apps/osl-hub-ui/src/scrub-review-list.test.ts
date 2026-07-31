@@ -16,6 +16,7 @@ function finding(overrides: Partial<LocalPrivacyFinding> = {}): LocalPrivacyFind
     reason: "Review in context.",
     localPreview: "shared password",
     canRequestDelete: true,
+    attachmentPath: null,
     ...overrides,
   };
 }

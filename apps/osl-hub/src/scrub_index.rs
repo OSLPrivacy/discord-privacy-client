@@ -13,9 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
-use crate::privacy_scan::{
-    scan_local_messages, LocalMessageCandidate, LocalPrivacyScanResult, MAX_FINDINGS,
-};
+use crate::privacy_scan::{scan_local_messages, LocalMessageCandidate};
 
 const VERSION: u8 = 1;
 const INDEX_DIR: &str = "scrub-index-v1";
@@ -670,6 +668,11 @@ fn load_persisted_scan(
         truncated: false,
         analysis_location: "this_device_only",
         persisted: true,
+        attachments_scanned: 0,
+        images_checked: false,
+        videos_checked: false,
+        attachment_types_scanned: Vec::new(),
+        uninspected_attachments: Vec::new(),
     };
     for sequence in 0..document.next_sequence {
         let sealed = crate::atomic_file::read_recoverable_bounded(
@@ -698,8 +701,12 @@ fn load_persisted_scan(
             return Err("Scrub chunk does not match the active import".into());
         }
         let scan = scan_local_messages(chunk.messages);
-        output.messages_scanned = output.messages_scanned.saturating_add(scan.messages_scanned);
-        output.messages_rejected = output.messages_rejected.saturating_add(scan.messages_rejected);
+        output.messages_scanned = output
+            .messages_scanned
+            .saturating_add(scan.messages_scanned);
+        output.messages_rejected = output
+            .messages_rejected
+            .saturating_add(scan.messages_rejected);
         output.truncated |= scan.truncated;
         for finding in scan.findings {
             if output.findings.len() >= MAX_FINDINGS {
@@ -866,6 +873,7 @@ mod tests {
             authored_by_self: true,
             created_at_unix_ms: Some(1_700_000_000_000),
             text: text.into(),
+            attachments: Vec::new(),
         }
     }
 
