@@ -307,10 +307,21 @@ build_start=$(date +%s)
 # Lock path is overridable so a test can run this script with an isolated lock.
 # The build lock is global: a test executing this script runs UNDER osl-cargo,
 # which already holds /tmp/osl-cargo.lock, so a hardcoded path deadlocks forever.
-flock "${OSL_CARGO_LOCK:-/tmp/osl-cargo.lock}" -c "cd '$REPO/apps/osl-hub' && \
+# `flock` is util-linux and is ABSENT on the GitHub windows-latest runner, where
+# this script's --self-test runs under Git Bash. It exited 127 ("flock: command
+# not found") before cargo was ever invoked, and the self-test reported that as a
+# build failure. Serialization only matters where builds actually contend, so
+# degrade to running unlocked when flock is unavailable, and say so out loud
+# rather than pretending a lock was taken.
+BUILD_CMD="cd '$REPO/apps/osl-hub' && \
   TAURI_CONFIG='{\"identifier\":\"$IDENTIFIER\"}' \
-  cargo build --features desktop,discord-qa-shell --bin osl-privacy-hub --target $TARGET" \
-  >"$LOG" 2>&1
+  cargo build --features desktop,discord-qa-shell --bin osl-privacy-hub --target $TARGET"
+if command -v flock >/dev/null 2>&1; then
+  flock "${OSL_CARGO_LOCK:-/tmp/osl-cargo.lock}" -c "$BUILD_CMD" >"$LOG" 2>&1
+else
+  say "note: flock unavailable on this host - building WITHOUT the global cargo lock"
+  sh -c "$BUILD_CMD" >"$LOG" 2>&1
+fi
 rc=$?
 build_secs=$(( $(date +%s) - build_start ))
 [ $rc -eq 0 ] || fail "cargo build exited $rc after ${build_secs}s. Tail: $(tail -3 "$LOG" | tr '\n' ' ')" \

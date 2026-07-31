@@ -158,8 +158,10 @@ fn windows_credential_manager_survives_fresh_entry() {
     let writer = keystore::KeyringSealer::new().expect("Windows Credential Manager available");
     let ciphertext = writer.seal(b"fixed public persistence probe").unwrap();
     let reader = keystore::KeyringSealer::new().expect("fresh credential entry can read key");
-    assert_eq!(
-        reader.unseal(&ciphertext).unwrap(),
-        b"fixed public persistence probe"
-    );
+    // `unseal` returns Zeroizing<Vec<u8>>, so slice it before comparing to a byte
+    // literal -- the same shape the non-Windows test above uses. This is
+    // #[cfg(windows)] and never compiled on the Linux dev host, so the mismatch
+    // sat here uncaught: the test has never actually run.
+    let plaintext = reader.unseal(&ciphertext).unwrap();
+    assert_eq!(&plaintext[..], b"fixed public persistence probe");
 }
