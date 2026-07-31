@@ -3979,6 +3979,49 @@ mod rn_send_selection_tests {
     }
 }
 
+#[cfg(test)]
+mod rn_legacy_fallback_send_path_tests {
+    use super::*;
+
+    #[test]
+    fn gate_off_unpinned_peer_dispatches_legacy_v3_unchanged() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let store = crate::wire_rn::RnSessionStore::new(dir.path().join("rn"));
+        let peer = [0x79u8; 32];
+
+        let raw_selected = crate::wire_rn::select_wire_version(
+            &crate::wire_rn::RnPeerPin::UNKNOWN,
+            keystore::client::PeerCapabilities::Absent,
+            crate::wire_rn::RnPolicy::Opportunistic,
+        )
+        .expect("unpinned peer without verified RN capability must stay on legacy v3");
+        assert_eq!(raw_selected, crate::wire_rn::SelectedVersion::LegacyV3);
+
+        let send_path = select_rn_wire_path_for_send(
+            &store,
+            "900000000000000079",
+            &peer,
+            keystore::client::PeerCapabilities::Absent,
+        )
+        .expect("production send selector must preserve the legacy v3 fallback");
+        assert_eq!(send_path, RnWirePath::LegacyV3);
+
+        store
+            .raise_pin_to_rn(&peer)
+            .expect("test should be able to model an existing RN pin");
+        let pinned = select_rn_wire_path_for_send(
+            &store,
+            "900000000000000079",
+            &peer,
+            keystore::client::PeerCapabilities::Absent,
+        );
+        assert!(
+            pinned.is_err(),
+            "a stored RN pin must refuse rather than taking the legacy fallback: {pinned:?}"
+        );
+    }
+}
+
 /// Send-path transport policy after recipient resolution.
 ///
 /// Keep this as the single typed answer for the v=3/v=4/v=5 routing
