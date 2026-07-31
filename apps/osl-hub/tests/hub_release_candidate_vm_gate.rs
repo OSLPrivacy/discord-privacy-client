@@ -185,32 +185,74 @@ fn second_session_rebuild_reproduces_recorded_executable_hash() {
 
 #[test]
 fn final_owner_gated_signoff_reproduces_package_from_second_session() {
-    fn write_candidate(root: &std::path::Path) {
-        std::fs::write(
-            root.join("osl-hub-0.1.0-x64-nsis.exe"),
-            b"signed candidate fixture",
-        )
-        .expect("write candidate installer");
+    use sha2::{Digest, Sha256};
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        let mut digest = Sha256::new();
+        digest.update(bytes);
+        format!("{:x}", digest.finalize())
+    }
+
+    fn write_candidate(
+        root: &std::path::Path,
+        operator: &str,
+        final_approver: &str,
+        reproduced: bool,
+    ) {
+        let installer_name = "osl-hub-0.1.0-x64-nsis.exe";
+        let installer_bytes = b"signed candidate fixture";
+        std::fs::write(root.join(installer_name), installer_bytes).unwrap();
         std::fs::write(
             root.join("latest.json"),
-            r#"{"version":"0.1.0","platforms":{"windows-x86_64":{"signature":"signed-update-fixture","url":"https://github.com/OSLPrivacy/discord-privacy-client/releases/download/hub-v0.1.0/osl-hub-0.1.0-x64-nsis.exe"}}}"#,
+            serde_json::json!({
+                "version": "0.1.0",
+                "platforms": {
+                    "windows-x86_64": {
+                        "signature": "signed-update-fixture",
+                        "url": format!(
+                            "https://github.com/OSLPrivacy/discord-privacy-client/releases/download/hub-v0.1.0/{installer_name}"
+                        )
+                    }
+                }
+            })
+            .to_string(),
         )
-        .expect("write updater manifest");
-    }
-
-    fn write_attestation(root: &std::path::Path, final_approver: &str, reproduced: bool) {
+        .unwrap();
         std::fs::write(
             root.join("hub-vm-qa-attestation.json"),
-            format!(
-                r#"{{"schemaVersion":1,"candidateTag":"hub-v0.1.0","candidateSha256":"6f44e5bf164984cb7daf83fdcac411e4da8104af8ee7c8128d542def97507e47","completedAtUtc":"2026-07-17T23:00:00Z","operator":"qa-reviewer","finalApprover":"{final_approver}","packageReproducedBySecondSession":{reproduced},"captchaHandling":"paused_for_manual_completion","vms":[{{"name":"A","goldenSnapshotId":"signed-a","cleanRestore":true}},{{"name":"B","goldenSnapshotId":"signed-b","cleanRestore":true}}],"cases":{{"onboarding":true,"identityCreate":true,"identityRecover":true,"twoAccountLogin":true,"persistenceRestart":true,"signedUpdate":true,"oneSidedEncryption":true,"twoSidedEncryption":true,"fullCleanup":true}}}}"#,
-            ),
+            serde_json::json!({
+                "schemaVersion": 1,
+                "candidateTag": "hub-v0.1.0",
+                "candidateSha256": sha256_hex(installer_bytes),
+                "completedAtUtc": "2026-07-17T23:00:00Z",
+                "operator": operator,
+                "finalApprover": final_approver,
+                "packageReproducedBySecondSession": reproduced,
+                "captchaHandling": "paused_for_manual_completion",
+                "vms": [
+                    {"name": "A", "goldenSnapshotId": "signed-a", "cleanRestore": true},
+                    {"name": "B", "goldenSnapshotId": "signed-b", "cleanRestore": true}
+                ],
+                "cases": {
+                    "onboarding": true,
+                    "identityCreate": true,
+                    "identityRecover": true,
+                    "twoAccountLogin": true,
+                    "persistenceRestart": true,
+                    "signedUpdate": true,
+                    "oneSidedEncryption": true,
+                    "twoSidedEncryption": true,
+                    "fullCleanup": true
+                }
+            })
+            .to_string(),
         )
-        .expect("write QA attestation");
+        .unwrap();
     }
 
-    fn run_verifier(root: &std::path::Path) -> std::process::Output {
+    fn verify_candidate(root: &std::path::Path) -> std::process::Output {
         let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        std::process::Command::new("python3")
+        std::process::Command::new(std::env::var("PYTHON").unwrap_or_else(|_| "python3".to_owned()))
             .arg(repo_root.join("scripts/verify_hub_vm_qa_attestation.py"))
             .arg("--tag")
             .arg("hub-v0.1.0")
@@ -224,36 +266,114 @@ fn final_owner_gated_signoff_reproduces_package_from_second_session() {
     }
 
     let root = std::env::temp_dir().join(format!(
-        "osl-hub-final-owner-gate-{}-{}",
+        "osl-hub-final-signoff-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
     ));
-    std::fs::create_dir_all(&root).expect("create isolated candidate dir");
-    write_candidate(&root);
+    std::fs::create_dir_all(&root).unwrap();
 
-    write_attestation(&root, "qa-final-approver-second-session", true);
-    let accepted = run_verifier(&root);
+    write_candidate(
+        &root,
+        "qa-reviewer",
+        "qa-final-approver-second-session",
+        true,
+    );
+    let accepted = verify_candidate(&root);
     assert!(
         accepted.status.success(),
-        "second-session package reproduction should pass\nstdout:\n{}\nstderr:\n{}",
+        "valid second-session signoff must pass\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&accepted.stdout),
         String::from_utf8_lossy(&accepted.stderr)
     );
 
-    write_attestation(&root, "qa-final-approver-second-session", false);
-    let missing_reproduction = run_verifier(&root);
-    assert!(!missing_reproduction.status.success());
-    assert!(String::from_utf8_lossy(&missing_reproduction.stderr)
-        .contains("QA attestation must reproduce the package from a second session"));
-
-    write_attestation(&root, "qa-reviewer", true);
-    let same_session = run_verifier(&root);
-    assert!(!same_session.status.success());
+    write_candidate(&root, "qa-reviewer", "qa-reviewer", true);
+    let same_session = verify_candidate(&root);
+    assert!(
+        !same_session.status.success(),
+        "same-session final approval must be refused\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&same_session.stdout),
+        String::from_utf8_lossy(&same_session.stderr)
+    );
     assert!(String::from_utf8_lossy(&same_session.stderr)
         .contains("QA attestation final approver must be a different session"));
 
-    std::fs::remove_dir_all(root).expect("remove isolated candidate dir");
+    write_candidate(
+        &root,
+        "qa-reviewer",
+        "qa-final-approver-second-session",
+        false,
+    );
+    let unreproduced = verify_candidate(&root);
+    assert!(
+        !unreproduced.status.success(),
+        "missing second-session package reproduction must be refused\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&unreproduced.stdout),
+        String::from_utf8_lossy(&unreproduced.stderr)
+    );
+    assert!(String::from_utf8_lossy(&unreproduced.stderr)
+        .contains("QA attestation must reproduce the package from a second session"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn final_owner_gated_signoff_documents_second_session_requirements() {
+    let guide = include_str!("../../../docs/testing/hub-release-candidate-vm-gate.md");
+    let verifier = include_str!("../../../scripts/verify_hub_vm_qa_attestation.py");
+
+    let section = section(
+        guide,
+        "## final_owner_gated_signoff_reproduces_package_from_second_session",
+        "Validate locally before upload:",
+    );
+    for required in [
+        "Final promotion is a two-person/session gate.",
+        "final approver must use a second\nlogin/session to download the draft release assets",
+        "second session computes the installer SHA-256 and it exactly matches\n  `candidateSha256`",
+        "runs `scripts/verify_hub_vm_qa_attestation.py` against the\n  downloaded candidate directory, not a local build tree",
+        "`packageReproducedBySecondSession: true`",
+        "release owner and final approver are not the same session",
+    ] {
+        assert!(
+            section.contains(required),
+            "release gate guide must require second-session package reproduction: {required}"
+        );
+    }
+
+    for required in [
+        "operator = document.get(\"operator\")",
+        "final_approver = document.get(\"finalApprover\")",
+        "QA attestation needs a second-session final approver",
+        "require(final_approver.strip() != operator.strip(),",
+        "QA attestation final approver must be a different session",
+        "require(document.get(\"packageReproducedBySecondSession\") is True,",
+        "QA attestation must reproduce the package from a second session",
+    ] {
+        assert!(
+            verifier.contains(required),
+            "verifier must refuse final sign-off without independent package reproduction: {required}"
+        );
+    }
+
+    let hash_check = verifier
+        .find("require(file_sha256(installers[0]) == expected_hash,")
+        .expect("verifier must hash the downloaded installer");
+    let manifest_check = verifier
+        .find("verify_updater_manifest(tag, candidate_dir / \"latest.json\", installers[0])")
+        .expect("verifier must bind latest.json to the same downloaded installer");
+    let approver_check = verifier
+        .find("final_approver = document.get(\"finalApprover\")")
+        .expect("verifier must read the final approver");
+    let reproduction_check = verifier
+        .find("require(document.get(\"packageReproducedBySecondSession\") is True,")
+        .expect("verifier must require second-session reproduction");
+    assert!(
+        hash_check < manifest_check
+            && manifest_check < approver_check
+            && approver_check < reproduction_check,
+        "final sign-off must happen only after the downloaded package hash and manifest match"
+    );
 }
