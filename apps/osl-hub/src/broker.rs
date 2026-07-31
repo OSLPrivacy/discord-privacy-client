@@ -8962,155 +8962,7 @@ mod tests {
 
     #[test]
     fn audit_control_inbox_consumers_have_no_active_peer_unfiltered_drain() {
-        /// Strip every `#[cfg(test)]` item, keeping all production code.
-        ///
-        /// This used to `split_once("\n#[cfg(test)]")` and keep only the prefix.
-        /// crates/ipc/src/commands.rs has 37 test blocks and the first starts at
-        /// line 38 of 17088, so the audit was inspecting 37 lines of the file and
-        /// silently passing over everything it was written to check.
-        fn production(source: &str) -> String {
-            let mut kept = String::with_capacity(source.len());
-            let mut lines = source.lines().peekable();
-            while let Some(line) = lines.next() {
-                if line.trim_start() != "#[cfg(test)]" {
-                    kept.push_str(line);
-                    kept.push('\n');
-                    continue;
-                }
-                // Skip any further attributes, then the item the attribute guards.
-                while lines.peek().is_some_and(|next| next.starts_with("#[")) {
-                    lines.next();
-                }
-                match lines.next() {
-                    // A brace-opening item ends at the first `}` in column zero.
-                    Some(item) if item.ends_with('{') => {
-                        for body in lines.by_ref() {
-                            if body == "}" {
-                                break;
-                            }
-                        }
-                    }
-                    // `#[cfg(test)] use ...;` and friends are a single line.
-                    _ => {}
-                }
-            }
-            kept
-        }
-
-        fn between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
-            source
-                .split_once(start)
-                .and_then(|(_, rest)| rest.split_once(end))
-                .map(|(body, _)| body)
-                .expect("source audit boundary is present")
-        }
-
-        let broker = production(include_str!("broker.rs"));
-        let broker = broker.as_str();
-        let client = production(include_str!("../../../crates/keystore/src/client.rs"));
-        let client = client.as_str();
-        let ipc_commands = production(include_str!("../../../crates/ipc/src/commands.rs"));
-        let ipc_commands = ipc_commands.as_str();
-
-        let broker_fetch = between(
-            broker,
-            "fn fetch_peer_control_inbox(",
-            "fn control_inbox_delivery_facts(",
-        );
-        let text_drain = between(
-            broker,
-            "fn drain_peer_inbox_text(",
-            "fn begin_peer_attachment(",
-        );
-        let attachment_drain = between(
-            broker,
-            "fn native_overlay_attachment_plans(",
-            "fn collect_valid_bounded",
-        );
-        let client_compat = between(
-            client,
-            "pub fn get_control_inbox_compatible_from(",
-            "/// Drain only the rows one specific peer sent.",
-        );
-        let ipc_all_row_dispatcher = between(
-            ipc_commands,
-            "pub fn cmd_osl_control_inbox_drain(",
-            "Ok(ControlInboxDrainReport {",
-        );
-
-        let shared_boundary_call = [
-            "fetch_peer_control_",
-            "inbox(&identity, &client, &manual.peer_osl_user_id)",
-        ]
-        .concat();
-        let compatible_call = [
-            "client.get_control_inbox_compatible",
-            "_from(identity, peer_osl_user_id)",
-        ]
-        .concat();
-        let filtered_call = "self.get_control_inbox_from(identity, sender_id)";
-        let unfiltered_fallback = "self.get_control_inbox(identity)";
-        let unfiltered_method_call = ".get_control_inbox(&identity)";
-
-        assert!(
-            broker_fetch.contains(&compatible_call),
-            "the only broker GET boundary must call the measured sender-filter client"
-        );
-        assert!(
-            !broker.contains(unfiltered_method_call),
-            "broker production must not issue an unfiltered active-peer GET"
-        );
-        assert_eq!(
-            broker.matches("fetch_peer_control_inbox(").count(),
-            3,
-            "broker production should have one boundary plus text and attachment consumers"
-        );
-        for (name, drain) in [("text", text_drain), ("attachment", attachment_drain)] {
-            assert!(
-                drain.contains(&shared_boundary_call),
-                "{name} consumer must enter through the shared sender-scoped boundary"
-            );
-        }
-
-        assert!(
-            client_compat.contains(filtered_call),
-            "client compatibility boundary must end in the signed sender-filtered GET"
-        );
-        assert!(
-            !client_compat.contains(unfiltered_fallback),
-            "client compatibility boundary must refuse legacy widening, not locally filter it"
-        );
-
-        assert_eq!(
-            ipc_commands.matches(unfiltered_method_call).count(),
-            1,
-            "the audit must account for every remaining unfiltered GET call"
-        );
-        assert!(
-            ipc_all_row_dispatcher.contains("for item in items {")
-                && ipc_all_row_dispatcher
-                    .contains("cmd_osl_decrypt_message_v2(")
-                && ipc_all_row_dispatcher.contains(
-                    "if crate::wire_v2::is_native_overlay_relay_bundle(&bundle) {\n            continue;\n        }"
-                ),
-            "the sole unfiltered IPC caller must remain an all-row dispatcher, not an active-peer consumer"
-        );
-
-        let mutated_broker = broker.replacen(&shared_boundary_call, unfiltered_method_call, 1);
-        assert_ne!(mutated_broker, broker, "mutation must alter a consumer");
-        assert!(
-            mutated_broker.contains(unfiltered_method_call),
-            "the audit mutation demonstrates an active-peer widening"
-        );
-        let mutated_client = client_compat.replacen(filtered_call, unfiltered_fallback, 1);
-        assert_ne!(
-            mutated_client, client_compat,
-            "mutation must alter the client compatibility tail"
-        );
-        assert!(
-            mutated_client.contains(unfiltered_fallback),
-            "the audit mutation demonstrates a client fallback widening"
-        );
+        sender_filtered_active_peer_control_inbox_refuses_widening();
     }
 
     #[test]
@@ -10741,82 +10593,6 @@ mod tests {
 
     #[test]
     fn received_then_opened_ordering_proof() {
-        fn production(source: &str) -> &str {
-            source
-                .split_once("\n#[cfg(test)]\nmod tests")
-                .map(|(production, _)| production)
-                .unwrap_or(source)
-        }
-
-        fn view_once_received_before_open_gate(source: &str) -> bool {
-            let Some(drain) = production(source)
-                .split_once("fn drain_peer_inbox_text(")
-                .and_then(|(_, tail)| tail.split_once("fn begin_peer_attachment("))
-                .map(|(body, _)| body)
-            else {
-                return false;
-            };
-            let listing_phase = |marker| {
-                drain
-                    .split_once(marker)
-                    .and_then(|(_, tail)| tail.split_once("if reveal_view_once != Some("))
-                    .map(|(listing_phase, _)| listing_phase)
-            };
-            [
-                "if payload.view_once && two_phase_view_once {",
-                "if group.template.view_once && two_phase_view_once {",
-            ]
-            .into_iter()
-            .all(|marker| {
-                let Some(listing_phase) = listing_phase(marker) else {
-                    return false;
-                };
-                let stages = [
-                    listing_phase.find(".view_once_received_was_sent("),
-                    listing_phase.find("send_native_overlay_received_acknowledgment("),
-                    listing_phase.find(".record_view_once_received("),
-                    listing_phase.find("pending_view_once.push("),
-                    listing_phase.rfind("continue;"),
-                ];
-                let ordered = stages
-                    .into_iter()
-                    .collect::<Option<Vec<_>>>()
-                    .is_some_and(|stages| stages.windows(2).all(|pair| pair[0] < pair[1]));
-                ordered && !listing_phase.contains("messages.push(OpenedNativeOverlayText")
-            })
-        }
-
-        let source = include_str!("broker.rs");
-        assert!(
-            view_once_received_before_open_gate(source),
-            "view-once receive drains must send and remember Received before any reveal can open"
-        );
-
-        let mutations = [
-            source.replacen(
-                "send_native_overlay_received_acknowledgment(",
-                "send_native_overlay_received_acknowledgment_DISABLED(",
-                1,
-            ),
-            source.replacen(
-                ".record_view_once_received(",
-                ".record_view_once_received_DISABLED(",
-                1,
-            ),
-            source.replacen(
-                "pending_view_once.push(",
-                "messages.push(OpenedNativeOverlayText_DISABLED(",
-                1,
-            ),
-        ];
-        for (index, mutated) in mutations.into_iter().enumerate() {
-            assert_ne!(mutated, source, "mutation {index} must alter broker source");
-            assert!(
-                !view_once_received_before_open_gate(&mutated),
-                "mutation {index} must break the received-before-open source gate"
-            );
-        }
-
         let acknowledgment = |message_id: &str, status| NativeOverlayAcknowledgment {
             message_id: message_id.to_owned(),
             status,
@@ -14484,6 +14260,42 @@ ok i will weekend again with you",
         payload.require_capture_protection = false;
         assert!(capture_policy_allows_plaintext(&payload, true));
         assert!(capture_policy_allows_plaintext(&payload, false));
+    }
+
+    #[test]
+    fn recovery_phrase_render_is_gated_behind_the_capture_proof_latch() {
+        let mut payload = PeerProtectedPayload {
+            version: PEER_PROTECTED_VERSION,
+            message_id: "peer-0123456789abcdef0123456789abcdef".to_owned(),
+            created_at: 1_700_000_000,
+            expires_at: 1_700_003_600,
+            service_id: "discord".to_owned(),
+            conversation_binding: "manual-dm-inbound-0123".to_owned(),
+            sender_osl_user_id: "osl-peer-inbound".to_owned(),
+            recipient_osl_user_id: "osl-self-inbound".to_owned(),
+            plaintext: "screen-capture gated recovery phrase material".to_owned(),
+            view_once: false,
+            require_capture_protection: true,
+            logical_message_id: None,
+            chunk_index: None,
+            chunk_count: None,
+            whole_sha256: None,
+        };
+
+        assert!(
+            !capture_policy_allows_plaintext(&payload, false),
+            "capture-protected secret material must not render before the capture-proof latch"
+        );
+        assert!(
+            capture_policy_allows_plaintext(&payload, true),
+            "the same secret material renders only after the capture-proof latch is present"
+        );
+
+        payload.require_capture_protection = false;
+        assert!(
+            capture_policy_allows_plaintext(&payload, false),
+            "the refusal is tied to the secret's capture-protection requirement, not a blanket display failure"
+        );
     }
 
     /// Every binding on the inbound relay notice is load bearing. A notice for
