@@ -842,16 +842,8 @@ mod tests {
     #[test]
     fn list_profiles_enumerates_candidates_without_reading_history_or_logins() {
         let (root, roots) = roots_with_chrome_profile("list-no-content", "Profile 1");
-        std::fs::write(
-            root.join("Profile 1").join("History"),
-            b"not a sqlite database",
-        )
-        .unwrap();
-        std::fs::write(
-            root.join("Profile 1").join("Login Data"),
-            b"credential-shaped bytes that listing must ignore",
-        )
-        .unwrap();
+        std::fs::create_dir(root.join("Profile 1").join("History")).unwrap();
+        std::fs::create_dir(root.join("Profile 1").join("Login Data")).unwrap();
         std::fs::create_dir_all(root.join("bad:name")).unwrap();
         let mut state = state("list-no-content");
         let profiles = state.list_profiles(&roots).unwrap();
