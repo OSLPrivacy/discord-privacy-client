@@ -427,10 +427,13 @@ mod production_duress_session_wipe_tests {
             .expect("peer_map persists after duress session wipe");
         let plain_peer_map =
             crate::main_password::maybe_decrypt(&raw_peer_map).expect("peer_map decrypts");
-        let plain_peer_map = String::from_utf8(plain_peer_map).expect("peer_map remains utf8 JSON");
+        let persisted_peer_map: crate::peer_map::PeerMap =
+            serde_json::from_slice(&plain_peer_map).expect("peer_map remains valid JSON");
         assert!(
-            !plain_peer_map.contains("ratchet_state"),
-            "persisted peer_map must not retain ratchet_state"
+            persisted_peer_map
+                .values()
+                .all(|entry| entry.ratchet_state.is_none()),
+            "persisted peer_map must not retain per-peer ratchet state"
         );
         let reloaded_sender_keys = crate::sender_key_state::load_sender_key_state(
             &dir.path().join("sender_key_state.json"),

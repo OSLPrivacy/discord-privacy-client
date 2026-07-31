@@ -177,7 +177,7 @@ export interface LocalPrivacyFinding extends Omit<LocalMessageCandidate, "text">
   reason: string;
   localPreview: string;
   canRequestDelete: boolean;
-  attachmentPath: string | null;
+  attachmentPath?: string | null;
 }
 export type UninspectedAttachmentReason = "unsupported" | "encrypted" | "malformed" | "limit_exceeded" | "unsafe_archive_entry" | "model_not_installed" | "dependency_not_installed" | "image_only_pdf_needs_ocr";
 export interface UninspectedAttachment {
@@ -1457,29 +1457,41 @@ export function parsePersistedLocalPrivacyScan(raw: unknown): PersistedLocalPriv
 function parsePrivacyScan(raw: unknown, persisted: false): LocalPrivacyScanResult | null;
 function parsePrivacyScan(raw: unknown, persisted: true): PersistedLocalPrivacyScanResult | null;
 function parsePrivacyScan(raw: unknown, persisted: boolean): LocalPrivacyScanResult | PersistedLocalPrivacyScanResult | null {
-  if (!isRecord(raw) || !exact(raw, ["findings", "messagesScanned", "messagesRejected", "truncated", "analysisLocation", "persisted", "attachmentsScanned", "imagesChecked", "videosChecked", "attachmentTypesScanned", "uninspectedAttachments"])) return null;
+  if (!isRecord(raw)) return null;
+  const baseKeys = ["findings", "messagesScanned", "messagesRejected", "truncated", "analysisLocation", "persisted"];
+  const attachmentKeys = ["attachmentsScanned", "imagesChecked", "videosChecked", "attachmentTypesScanned", "uninspectedAttachments"];
+  const hasAttachmentKeys = attachmentKeys.some((key) => Object.prototype.hasOwnProperty.call(raw, key));
+  if (!exact(raw, hasAttachmentKeys ? [...baseKeys, ...attachmentKeys] : baseKeys)) return null;
   const maxMessages = persisted ? 10_000_000 : 2_000;
   if (!Array.isArray(raw.findings) || raw.findings.length > 1_000 || !Number.isSafeInteger(raw.messagesScanned) || Number(raw.messagesScanned) < 0 || Number(raw.messagesScanned) > maxMessages || !Number.isSafeInteger(raw.messagesRejected) || Number(raw.messagesRejected) < 0 || typeof raw.truncated !== "boolean" || raw.analysisLocation !== "this_device_only" || raw.persisted !== persisted) return null;
-  if (!boundedCount(raw.attachmentsScanned)
-    || typeof raw.imagesChecked !== "boolean"
-    || typeof raw.videosChecked !== "boolean"
-    || !Array.isArray(raw.attachmentTypesScanned)
-    || raw.attachmentTypesScanned.length > 64
-    || !raw.attachmentTypesScanned.every((value) => safePlaintext(value, 80))
-    || new Set(raw.attachmentTypesScanned).size !== raw.attachmentTypesScanned.length
-    || !Array.isArray(raw.uninspectedAttachments)
-    || raw.uninspectedAttachments.length > 1_000
-    || !raw.uninspectedAttachments.every(validUninspectedAttachment)) return null;
+  const attachmentsScanned = hasAttachmentKeys ? raw.attachmentsScanned : 0;
+  const imagesChecked = hasAttachmentKeys ? raw.imagesChecked : false;
+  const videosChecked = hasAttachmentKeys ? raw.videosChecked : false;
+  const attachmentTypesScanned = hasAttachmentKeys ? raw.attachmentTypesScanned : [];
+  const uninspectedAttachments = hasAttachmentKeys ? raw.uninspectedAttachments : [];
+  if (!boundedCount(attachmentsScanned)
+    || typeof imagesChecked !== "boolean"
+    || typeof videosChecked !== "boolean"
+    || !Array.isArray(attachmentTypesScanned)
+    || attachmentTypesScanned.length > 64
+    || !attachmentTypesScanned.every((value) => safePlaintext(value, 80))
+    || new Set(attachmentTypesScanned).size !== attachmentTypesScanned.length
+    || !Array.isArray(uninspectedAttachments)
+    || uninspectedAttachments.length > 1_000
+    || !uninspectedAttachments.every(validUninspectedAttachment)) return null;
   const findings = raw.findings.map(parsePrivacyFinding);
   if (!findings.every((finding): finding is LocalPrivacyFinding => finding !== null)) return null;
-  return { ...raw, findings } as LocalPrivacyScanResult | PersistedLocalPrivacyScanResult;
+  return { ...raw, findings, attachmentsScanned, imagesChecked, videosChecked, attachmentTypesScanned, uninspectedAttachments } as LocalPrivacyScanResult | PersistedLocalPrivacyScanResult;
 }
 
 function parsePrivacyFinding(raw: unknown): LocalPrivacyFinding | null {
-  if (!isRecord(raw) || !exact(raw, ["serviceId", "accountId", "conversationId", "messageLocator", "authoredBySelf", "createdAtUnixMs", "category", "confidence", "reason", "localPreview", "canRequestDelete", "attachmentPath"])) return null;
-  if (!safeId(raw.serviceId, 32) || !safePlaintext(raw.accountId, 128) || !safePlaintext(raw.conversationId, 256) || !safePlaintext(raw.messageLocator, 256) || typeof raw.authoredBySelf !== "boolean" || !(raw.createdAtUnixMs === null || Number.isSafeInteger(raw.createdAtUnixMs)) || !["credential", "recovery_material", "payment_card", "government_identity", "precise_location", "profanity", "sexual_content", "sensitive_health", "controlled_substances", "potentially_unlawful_conduct", "work_sensitive_information"].includes(String(raw.category)) || !Number.isSafeInteger(raw.confidence) || Number(raw.confidence) < 0 || Number(raw.confidence) > 100 || !safePlaintext(raw.reason, 240) || !safePlaintext(raw.localPreview, 256) || typeof raw.canRequestDelete !== "boolean" || !(raw.attachmentPath === null || safePlaintext(raw.attachmentPath, 1_024))) return null;
+  if (!isRecord(raw)) return null;
+  const hasAttachmentPath = Object.prototype.hasOwnProperty.call(raw, "attachmentPath");
+  if (!exact(raw, hasAttachmentPath ? ["serviceId", "accountId", "conversationId", "messageLocator", "authoredBySelf", "createdAtUnixMs", "category", "confidence", "reason", "localPreview", "canRequestDelete", "attachmentPath"] : ["serviceId", "accountId", "conversationId", "messageLocator", "authoredBySelf", "createdAtUnixMs", "category", "confidence", "reason", "localPreview", "canRequestDelete"])) return null;
+  const attachmentPath = hasAttachmentPath ? raw.attachmentPath : null;
+  if (!safeId(raw.serviceId, 32) || !safePlaintext(raw.accountId, 128) || !safePlaintext(raw.conversationId, 256) || !safePlaintext(raw.messageLocator, 256) || typeof raw.authoredBySelf !== "boolean" || !(raw.createdAtUnixMs === null || Number.isSafeInteger(raw.createdAtUnixMs)) || !["credential", "recovery_material", "payment_card", "government_identity", "precise_location", "profanity", "sexual_content", "sensitive_health", "controlled_substances", "potentially_unlawful_conduct", "work_sensitive_information"].includes(String(raw.category)) || !Number.isSafeInteger(raw.confidence) || Number(raw.confidence) < 0 || Number(raw.confidence) > 100 || !safePlaintext(raw.reason, 240) || !safePlaintext(raw.localPreview, 256) || typeof raw.canRequestDelete !== "boolean" || !(attachmentPath === null || safePlaintext(attachmentPath, 1_024))) return null;
   if (raw.canRequestDelete && !raw.authoredBySelf) return null;
-  return raw as unknown as LocalPrivacyFinding;
+  return { ...raw, attachmentPath } as unknown as LocalPrivacyFinding;
 }
 
 function validLocalCandidate(candidate: LocalMessageCandidate): boolean {

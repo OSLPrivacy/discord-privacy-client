@@ -100,7 +100,7 @@ import {
 import { checkHubForUpdates, installHubUpdate, openHubReleasesPage, type UpdateStatus } from "./updates";
 import { createDiscordQaGeometryKeeper } from "./discord-qa-geometry";
 import { browserLogo, serviceLogo, providerLogo } from "./logos";
-import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, burnActiveHubContext, burnHubServiceAccount, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, scanLocalPrivacy, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
+import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, burnActiveHubContext, burnHubServiceAccount, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import { blankPeerProtectedModel, boundedPeerProtectedDraft, peerProtectedDraftByteFeedback, peerProtectedSheetMarkup, type PeerProtectedPane, type PeerProtectedSheetModel } from "./peer-protected-sheet";
 import oslLogoUrl from "../../osl-hub/icons/icon-cyan.png";
@@ -273,6 +273,7 @@ let browserFootprintImports: NativeBrowserImportReceipt[] = [];
 let browserFootprintOwner: string | null = null;
 let savedAccountMode: SavedAccountMode = "ask";
 let savedNativeApps = new Set<NativeAppId>();
+let detectedAccountChoices = new Map<string, "native" | "osl">();
 let discordSessionMode: DiscordSessionMode = "existingSession";
 let telegramSessionMode: NativeSessionMode = "existingSession";
 let signalSessionMode: NativeSessionMode = "existingSession";
@@ -461,6 +462,7 @@ const homeTileOrderStorageKey = "osl-home-tile-order-v1";
 const hiddenHomeTilesStorageKey = "osl-home-tile-hidden-v1";
 const savedAccountModeStorageKey = "osl-saved-account-mode-v1";
 const savedNativeAppsStorageKey = "osl-saved-native-apps-v1";
+const detectedAccountChoicesStorageKey = "osl-detected-account-choices-v1";
 const discordSessionModeStorageKey = "osl-discord-session-mode-v1";
 const telegramSessionModeStorageKey = "osl-telegram-session-mode-v1";
 const signalSessionModeStorageKey = "osl-signal-session-mode-v1";
@@ -1021,6 +1023,14 @@ export async function loadUiPreferences(): Promise<void> {
     }
     const savedApps = JSON.parse(localStorage.getItem(savedNativeAppsStorageKey) ?? "[]") as unknown;
     if (Array.isArray(savedApps)) savedNativeApps = new Set(savedApps.filter((id): id is NativeAppId => typeof id === "string" && supportedNativeAppIds.has(id as NativeAppId)));
+    const accountChoices = JSON.parse(localStorage.getItem(detectedAccountChoicesStorageKey) ?? "[]") as unknown;
+    if (Array.isArray(accountChoices)) {
+      detectedAccountChoices = new Map(accountChoices.filter((entry): entry is [string, "native" | "osl"] =>
+        Array.isArray(entry)
+        && entry.length === 2
+        && typeof entry[0] === "string"
+        && (entry[1] === "native" || entry[1] === "osl")));
+    }
     const selectedAppsRaw = localStorage.getItem(selectedOnboardingAppsStorageKey);
     hasExplicitOnboardingAppSelection = selectedAppsRaw !== null;
     const selectedApps = JSON.parse(selectedAppsRaw ?? "[]") as unknown;
@@ -1032,6 +1042,7 @@ export async function loadUiPreferences(): Promise<void> {
     hiddenHomeTiles.clear();
     notificationAppPreferences = {};
     savedNativeApps.clear();
+    detectedAccountChoices.clear();
     selectedOnboardingApps.clear();
     hasExplicitOnboardingAppSelection = localStorage.getItem(selectedOnboardingAppsStorageKey) !== null;
   }
@@ -1658,19 +1669,7 @@ async function ensureNativeCatalogForAppChoice(): Promise<boolean> {
 }
 
 function selectedNativeAppIntent(appId: HomeAppId): NativeAppId | undefined {
-  const nativeId = appId as NativeAppId;
-  if (!supportedNativeAppIds.has(nativeId)) return undefined;
-  if (!nativeSessionModeConfirmed(nativeId)) return undefined;
-  const catalogApp = nativeApps.find((app) => app.id === nativeId);
-  if (existingNativeSessionRequested(appId)) return nativeId;
-  if (savedAccountMode === "use" && savedNativeApps.has(nativeId) && catalogApp?.availability === "installed" && catalogApp.isolatedProfileAvailable) return nativeId;
-  const onboardingDedicatedIntent = onboardingServiceSetup
-    && selectedOnboardingApps.has(appId)
-    && savedAccountMode !== "clean"
-    && nativeSessionModeForApp(nativeId) === "dedicated"
-    && catalogApp?.availability === "installed"
-    && catalogApp.isolatedProfileAvailable;
-  return onboardingDedicatedIntent ? nativeId : undefined;
+  return selectedInstalledNativeApp(appId);
 }
 
 function nativeSessionModeForApp(appId: NativeAppId): NativeSessionMode {
@@ -1774,8 +1773,54 @@ function selectedBrowserHasImportReceipt(): boolean {
   return browserId !== null && completedBrowserImportIds.has(browserId);
 }
 
+function detectedAccountChoiceKey(serviceId: string, accountId: string): string {
+  return `${serviceId}:${accountId}`;
+}
+
+function providerWideInstalledNativeApp(appId: HomeAppId): NativeAppId | undefined {
+  const nativeId = appId as NativeAppId;
+  if (!supportedNativeAppIds.has(nativeId)) return undefined;
+  if (!nativeSessionModeConfirmed(nativeId)) return undefined;
+  const catalogApp = nativeApps.find((app) => app.id === nativeId);
+  if (existingNativeSessionRequested(appId)) return nativeId;
+  if (savedAccountMode === "use" && savedNativeApps.has(nativeId) && catalogApp?.availability === "installed" && catalogApp.isolatedProfileAvailable) return nativeId;
+  const onboardingDedicatedIntent = onboardingServiceSetup
+    && selectedOnboardingApps.has(appId)
+    && savedAccountMode !== "clean"
+    && nativeSessionModeForApp(nativeId) === "dedicated"
+    && catalogApp?.availability === "installed"
+    && catalogApp.isolatedProfileAvailable;
+  return onboardingDedicatedIntent ? nativeId : undefined;
+}
+
+function persistDetectedAccountChoices(): void {
+  const validKeys = new Set(services.flatMap((service) =>
+    service.accounts.map((account) => detectedAccountChoiceKey(service.id, account.id))));
+  for (const key of detectedAccountChoices.keys()) {
+    if (!validKeys.has(key)) detectedAccountChoices.delete(key);
+  }
+  localStorage.setItem(detectedAccountChoicesStorageKey, JSON.stringify([...detectedAccountChoices]));
+}
+
+function selectedInstalledNativeApp(appId: HomeAppId): NativeAppId | undefined {
+  const app = { id: appId };
+  const service = services.find((candidate) => homeAppsFromServices([candidate]).some((app) => app.id === appId));
+  if (service) {
+    for (const account of service.accounts) {
+      const key = detectedAccountChoiceKey(service.id, account.id);
+      if (detectedAccountChoices.get(key) === "osl") return undefined;
+    }
+  }
+  return providerWideInstalledNativeApp(app.id);
+}
+
 function detectedAppsContent(): string {
   const installed = selectedNativeApps().filter((app) => app.availability === "installed");
+  const accountChoices = services.flatMap((service) => service.accounts.map((account) => {
+    const key = detectedAccountChoiceKey(service.id, account.id);
+    const mode = detectedAccountChoices.get(key) ?? "native";
+    return `<div class="native-mode-setting account-opening-choice" role="radiogroup" aria-label="${escapeHtml(service.displayName)} ${escapeHtml(account.label)} opening"><strong>${escapeHtml(service.displayName)} · ${escapeHtml(account.label)}</strong><div><button type="button" role="radio" aria-checked="${mode === "native"}" class="native-mode-option ${mode === "native" ? "selected" : ""}" data-service-current-session="${escapeHtml(key)}" data-detected-account-choice="native">Current desktop session · provider-wide</button><button type="button" role="radio" aria-checked="${mode === "osl"}" class="native-mode-option ${mode === "osl" ? "selected" : ""}" data-service-current-session="${escapeHtml(key)}" data-detected-account-choice="osl">Use isolated OSL profile · this account</button></div></div>`;
+  })).join("");
   const rows = installed.length
     ? installed.map((app) => `<label class="saved-account-app"><span>${nativeAppLogo(app)}<span><strong>${escapeHtml(app.displayName)}</strong><small>Installed on this PC</small></span></span><input type="checkbox" data-saved-native="${app.id}" ${app.id === "discord" || savedNativeApps.has(app.id) ? "checked" : ""} ${app.id === "discord" ? "disabled" : ""}/></label>`).join("")
     : `<div class="empty-state"><strong>No selected desktop apps were detected</strong><p>OSL can still use isolated web profiles.</p></div>`;
@@ -1788,7 +1833,7 @@ function detectedAppsContent(): string {
   const signalChoices = installed.some((app) => app.id === "signal") ? nativeSessionModeSettingChoices("signal", "Signal") : "";
   const whatsappChoices = installed.some((app) => app.id === "whatsapp") ? nativeSessionModeSettingChoices("whatsapp", "WhatsApp") : "";
   const outlookChoices = installed.some((app) => app.id === "outlook") ? nativeSessionModeSettingChoices("outlook", "Outlook") : "";
-  return `<h1 id="route-heading" tabindex="-1">Use installed apps</h1><p class="compact-lead onboarding-centered-copy">Choose detected desktop apps.</p>${discordChoices}${telegramChoices}${signalChoices}${whatsappChoices}${outlookChoices}<div class="setup-list">${rows}</div><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-detected-apps" type="button">Continue</button></div>`;
+  return `<h1 id="route-heading" tabindex="-1">Use installed apps</h1><p class="compact-lead onboarding-centered-copy">Choose detected desktop apps.</p>${discordChoices}${telegramChoices}${signalChoices}${whatsappChoices}${outlookChoices}${accountChoices}<div class="setup-list">${rows}</div><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-detected-apps" type="button">Continue</button></div>`;
 }
 
 function installMissingAppsContent(): string {
@@ -1844,6 +1889,7 @@ function browserImportContent(): string {
 }
 
 function persistSavedAccountPreferences(): void {
+  persistDetectedAccountChoices();
   localStorage.setItem(savedAccountModeStorageKey, savedAccountMode);
   localStorage.setItem(savedNativeAppsStorageKey, JSON.stringify([...savedNativeApps]));
   localStorage.setItem(confirmedNativeSessionModesStorageKey, JSON.stringify([...confirmedNativeSessionModes]));
@@ -1913,6 +1959,13 @@ function bindSavedAccountControls(): void {
     savedAccountMode = "use";
     savedNativeApps.add(appId);
     persistSavedAccountPreferences();
+    render();
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-service-current-session]").forEach((button) => button.addEventListener("click", () => {
+    const key = button.dataset.serviceCurrentSession ?? "";
+    const choice = button.dataset.detectedAccountChoice === "osl" ? "osl" : "native";
+    detectedAccountChoices.set(key, choice);
+    persistDetectedAccountChoices();
     render();
   }));
   document.querySelectorAll<HTMLButtonElement>("[data-saved-account-mode]").forEach((button) => button.addEventListener("click", () => {
@@ -4203,8 +4256,11 @@ function serviceAccountPickerContent(): string {
   const app = homeAppsFromServices(services).find((candidate) => candidate.id === activeHomeAppId);
   const accounts = app ? embeddedAccountsForHomeApp(app, services) : [];
   const name = escapeHtml(activeHomeAppName());
-  const choices = accounts.map((account) => `<button class="service-account-choice" data-service-account="${escapeHtml(account.id)}"><span>${serviceLogo(activeService?.id ?? "discord")}</span><strong>${escapeHtml(account.label)}</strong><small>OSL profile</small></button>`).join("");
-  return `<main class="content-viewport native-app-page" id="route-heading" tabindex="-1"><section class="native-app-card service-account-picker"><button class="text-back" id="native-app-back">← Apps</button><h1>Choose ${name} profile</h1><div class="service-account-choices">${choices}</div><button class="button" id="add-service-profile">Add another profile</button></section></main>`;
+  const currentSession = activeHomeAppId && selectedInstalledNativeApp(activeHomeAppId)
+    ? `<button class="service-account-choice" data-service-account=""><span>${serviceLogo(activeService?.id ?? "discord")}</span><strong>Current desktop session</strong><small>whichever account the desktop app currently shows</small></button>`
+    : "";
+  const choices = accounts.map((account) => `<button class="service-account-choice" data-service-account="${escapeHtml(account.id)}"><span>${serviceLogo(activeService?.id ?? "discord")}</span><strong>${escapeHtml(account.label)}</strong><small>Isolated OSL profile · exact account</small></button>`).join("");
+  return `<main class="content-viewport native-app-page" id="route-heading" tabindex="-1"><section class="native-app-card service-account-picker"><button class="text-back" id="native-app-back">← Apps</button><h1>Choose ${name} profile</h1><div class="service-account-choices">${currentSession}${choices}</div><button class="button" id="add-service-profile">Add another profile</button></section></main>`;
 }
 
 function serviceGuideContent(service: LinkedService, step: ServiceGuideStep): string {
@@ -6437,7 +6493,8 @@ async function setupEmbeddedApp(forceNewProfile = false): Promise<void> {
   try {
     const service = services.find((candidate) => candidate.id === app.serviceId);
     if (!service) throw new Error("This app is unavailable right now");
-    const nativeIntent = selectedNativeAppIntent(app.id);
+    const native = forceNewProfile ? undefined : selectedInstalledNativeApp(app.id);
+    const nativeIntent = native;
     if (nativeIntent) {
       nativeActionBusy = false;
       await openNativeHostedApp(app, service, nativeIntent);
@@ -6490,7 +6547,8 @@ async function openEmbeddedApp(app: HomeAppCatalogEntry, service: LinkedService,
   serviceAccountPickerOpen = false;
   render();
   try {
-    const nativeIntent = selectedNativeAppIntent(app.id);
+    const native = accountId ? undefined : selectedInstalledNativeApp(app.id);
+    const nativeIntent = native;
     if (nativeIntent) {
       nativeActionBusy = false;
       await openNativeHostedApp(app, service, nativeIntent);
@@ -7014,7 +7072,10 @@ async function refreshIdentityScopedState(): Promise<void> {
   const [nextCore, nextIdentities, profile, people, linkedServices, notifications] = await Promise.all([
     loadCoreIntegration().catch(() => structuredClone(unavailableCoreIntegration)),
     listHubIdentities().then((value) => value ?? []),
-    loadFriendProfile(),
+    loadFriendProfile().then(async (value) => {
+      await getOslUsernameStatus("osl").catch(() => null);
+      return value;
+    }),
     listHubPeople().then((value) => value ?? []),
     loadLinkedServices().catch(() => []),
     notificationsEnabled ? loadAppNotifications() : Promise.resolve([]),
@@ -7495,6 +7556,7 @@ function startReadyWorkspaceLoads(): void {
   void loadHubPasswordRoleStatus().then((status) => { passwordRoleStatus = status; if (route === "settings" && settingsSection === "account") renderWhenIdle(); }).catch(() => undefined);
   void refreshUpdateStatus(true);
   void refreshAutoScrubFleetStatus();
+  void getOslUsernameStatus("osl").catch(() => null);
   void loadFriendProfile().then((profile) => { friendCode = profile?.friendCode ?? null; friendDisplayId = profile?.oslUserId ?? null; if (route === "home") renderWhenIdle(); });
   void listHubPeople().then((people) => { hubPeople = people ?? []; if (route === "home") renderWhenIdle(); });
   if (notificationsEnabled) void setNotificationsEnabled(true).then(async (enabled) => {
