@@ -66,3 +66,108 @@ contract above:
 Mentally invert the behavior before accepting a design: if replacing the product
 nouns with implementation machinery would still pass review, the test is
 vacuous and the design does not satisfy this contract.
+
+## Machine-readable product-contract acceptance fixtures
+
+```json
+{
+  "schema": "osl-subjective-design-feel-contract-v1",
+  "unit": "j1",
+  "contract": "complexity-hiding-product-model",
+  "allowed_product_nouns": [
+    "protection state",
+    "trusted people",
+    "connected accounts",
+    "private conversations",
+    "cleanup actions",
+    "activity history"
+  ],
+  "banned_user_facing_concepts": [
+    "keyservers",
+    "ratchets",
+    "receipts",
+    "browser profiles",
+    "provider adapters",
+    "protocol state",
+    "storage layout",
+    "automation internals",
+    "transport plumbing",
+    "service-adapter mechanics"
+  ],
+  "cases": [
+    {
+      "name": "product navigation choices",
+      "surface": "navigation",
+      "visible_choices": [
+        "protection state",
+        "trusted people",
+        "connected accounts",
+        "private conversations",
+        "cleanup actions",
+        "activity history"
+      ],
+      "main_screen_answer": "Protection is ready for this private conversation.",
+      "expected": "pass"
+    },
+    {
+      "name": "implementation navigation choices",
+      "surface": "navigation",
+      "visible_choices": [
+        "keyservers",
+        "ratchets",
+        "browser profiles",
+        "provider adapters"
+      ],
+      "main_screen_answer": "Select the ratchet state before sending.",
+      "expected": "fail"
+    },
+    {
+      "name": "plain refusal with safe action",
+      "surface": "warning",
+      "main_screen_answer": "Protected send is not ready for this conversation.",
+      "refusal": {
+        "consequence": "Protected send is not ready for this conversation.",
+        "safe_action": "Verify the person or send normally."
+      },
+      "expected": "pass"
+    },
+    {
+      "name": "mechanism refusal",
+      "surface": "warning",
+      "main_screen_answer": "Ratchet receipt is missing for this provider adapter.",
+      "refusal": {
+        "consequence": "Ratchet receipt is missing for this provider adapter.",
+        "safe_action": "Open protocol diagnostics."
+      },
+      "expected": "fail"
+    },
+    {
+      "name": "secondary support export",
+      "surface": "advanced-support-export",
+      "main_screen_answer": "The result is unknown. Review the latest activity or try again.",
+      "support_export": {
+        "machine_fields_secondary": true,
+        "fields": [
+          "protocol state",
+          "storage layout",
+          "transport plumbing"
+        ]
+      },
+      "expected": "pass"
+    },
+    {
+      "name": "support fields replace main answer",
+      "surface": "main-screen-status",
+      "main_screen_answer": "Protocol state blocked by storage layout.",
+      "support_export": {
+        "machine_fields_secondary": false,
+        "fields": [
+          "protocol state",
+          "storage layout"
+        ]
+      },
+      "expected": "fail"
+    }
+  ]
+}
+```
