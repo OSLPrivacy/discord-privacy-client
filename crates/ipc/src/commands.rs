@@ -11150,13 +11150,44 @@ fn pending_friend_requests_path(dir: &Path) -> PathBuf {
     dir.join(PENDING_FRIEND_REQUESTS_FILE)
 }
 
+/// A6-F2: the pending social graph — who is trying to reach the user and who
+/// the user is trying to reach — is at-rest state exactly like `peer_map.json`,
+/// `whitelist_state.json` and `burned_scopes.json`, and goes through the same
+/// `main_password` envelope.
+///
+/// Reads accept a plaintext file exactly once, to carry an installation written
+/// by an older build across the upgrade. That acceptance is not a standing
+/// allowance: a plaintext file read while a storage key is installed is
+/// immediately re-written encrypted, and a failure to complete that upgrade
+/// fails the read rather than leaving cleartext on disk.
 fn load_pending_friend_requests(path: &Path) -> Result<Vec<PendingFriendRequestRecord>, String> {
-    match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map_err(|_| "OSL: pending friend request storage is unreadable".to_string()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(_) => Err("OSL: pending friend request storage is unavailable".to_string()),
+    let blob = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err("OSL: pending friend request storage is unavailable".to_string()),
+    };
+
+    // The envelope decides whether magic-less bytes are acceptable, not this
+    // function. `maybe_decrypt` is the single place that knows whether a
+    // header-less blob is a genuine pre-encryption legacy file or a
+    // substitution into an install that has already enrolled at-rest
+    // encryption. Re-deciding that here is exactly how a loader drifts out of
+    // step with the envelope it is supposed to be sealed by.
+    let plain = crate::main_password::maybe_decrypt(&blob)
+        .map_err(|_| "OSL: pending friend request storage is unreadable".to_string())?;
+    let records: Vec<PendingFriendRequestRecord> = serde_json::from_slice(&plain)
+        .map_err(|_| "OSL: pending friend request storage is unreadable".to_string())?;
+
+    // One-time upgrade, and only for bytes the envelope above just certified as
+    // a genuine legacy plaintext file. This is deliberately not a standing
+    // "accept plaintext" path: when the envelope refuses header-less bytes the
+    // read has already failed, so there is never anything here to re-seal --
+    // and in particular a substituted plaintext file can never be laundered
+    // into an authentic-looking sealed one by this write.
+    if !crate::main_password::has_enc_magic(&blob) {
+        save_pending_friend_requests(path, &records)?;
     }
+    Ok(records)
 }
 
 fn save_pending_friend_requests(
@@ -11169,7 +11200,12 @@ fn save_pending_friend_requests(
     }
     let bytes = serde_json::to_vec_pretty(records)
         .map_err(|_| "OSL: pending friend request storage is unavailable".to_string())?;
-    std::fs::write(path, bytes)
+    let sealed = crate::main_password::maybe_encrypt(&bytes)
+        .map_err(|_| "OSL: pending friend request storage is unavailable".to_string())?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, &sealed)
+        .map_err(|_| "OSL: pending friend request storage is unavailable".to_string())?;
+    std::fs::rename(&tmp, path)
         .map_err(|_| "OSL: pending friend request storage is unavailable".to_string())
 }
 
@@ -11463,6 +11499,139 @@ mod friend_request_acceptance_tests {
         }
     }
 
+    /// Installs a file storage key for the duration of one test and always
+    /// clears the process-global slot again, even on panic.
+    struct FileStorageKeyForTest;
+
+    impl FileStorageKeyForTest {
+        fn install(key: [u8; 32]) -> Self {
+            crate::main_password::set_file_storage_key(Some(key));
+            Self
+        }
+
+        /// Installs nothing, but still clears the slot on drop -- for tests
+        /// that start unenrolled and let the product code establish its own
+        /// device-bound key.
+        fn clear_on_drop() -> Self {
+            crate::main_password::set_file_storage_key(None);
+            Self
+        }
+    }
+
+    impl Drop for FileStorageKeyForTest {
+        fn drop(&mut self) {
+            crate::main_password::set_file_storage_key(None);
+        }
+    }
+
+    fn peer_state_for_pending_request() -> AppState {
+        let state = AppState::new();
+        let mut identity = keystore::generate_identity("requester-osl-a6f2".to_string());
+        identity.discord_snowflake = Some("900000000000000098".to_string());
+        state.install_identity(identity);
+        state.peer_map.lock().unwrap().insert(
+            REQUESTER_DID.to_string(),
+            crate::peer_map::PeerEntry {
+                discord_id: Some(REQUESTER_DID.to_string()),
+                tofu_key_bundle: Some(bundle("trusted-peer")),
+                ..Default::default()
+            },
+        );
+        state
+    }
+
+    /// A6-F2. The pending social graph is who is trying to reach this user and
+    /// who this user is trying to reach. Asserted on the bytes that are really
+    /// on disk, not on what a loader hands back.
+    #[test]
+    fn pending_friend_requests_are_never_written_in_cleartext() {
+        let _guard = crate::test_process_globals::serialize();
+        let _reset = ActiveAccountDirReset;
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        keystore::set_active_account_dir(Some(dir.path().to_path_buf()));
+        let _key = FileStorageKeyForTest::install([0x5c; 32]);
+
+        let state = peer_state_for_pending_request();
+        let scope = Scope::dm(REQUESTER_DID);
+        let result = cmd_osl_send_friend_request_with_dir(
+            &state,
+            REQUESTER_DID.to_string(),
+            (&scope).into(),
+            dir.path(),
+        )
+        .expect("trusted peer should get a persisted pending friend request");
+
+        let path = pending_friend_requests_path(dir.path());
+        let raw = std::fs::read(&path).expect("pending friend request file exists");
+        assert!(
+            crate::main_password::has_enc_magic(&raw),
+            "pending_friend_requests.json must carry the at-rest envelope its siblings use"
+        );
+        let needle = REQUESTER_DID.as_bytes();
+        assert!(
+            !raw.windows(needle.len()).any(|window| window == needle),
+            "the peer identifier is readable in the bytes on disk"
+        );
+        let scope_needle = scope.storage_key();
+        assert!(
+            !raw.windows(scope_needle.len())
+                .any(|window| window == scope_needle.as_bytes()),
+            "the requested scope is readable in the bytes on disk"
+        );
+
+        // The record itself must still survive the round trip.
+        let pending = load_pending_friend_requests(&path).expect("pending file loads");
+        assert!(pending == vec![result.pending]);
+    }
+
+    /// The migration is a one-time upgrade, not a standing acceptance of
+    /// plaintext: the legacy file is read once and immediately re-sealed.
+    ///
+    /// Modelled on the only installation that can legitimately hold a
+    /// header-less file -- one that has never enrolled at-rest encryption. No
+    /// storage key is installed here on purpose. `maybe_decrypt` is what
+    /// decides whether header-less bytes are a legacy file or a substitution,
+    /// and it refuses them once an install is enrolled; this loader must ride
+    /// on that judgement rather than carry a second copy of it, so the case
+    /// exercised here is exactly the case the envelope permits.
+    #[test]
+    fn legacy_plaintext_pending_friend_requests_are_upgraded_on_first_read() {
+        let _guard = crate::test_process_globals::serialize();
+        let _reset = ActiveAccountDirReset;
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        keystore::set_active_account_dir(Some(dir.path().to_path_buf()));
+        // The upgrade write establishes a device-bound key and installs it in
+        // the process slot; make sure the slot is cleared again either way.
+        let _key = FileStorageKeyForTest::clear_on_drop();
+
+        let path = pending_friend_requests_path(dir.path());
+        let legacy = serde_json::json!([{
+            "peerDiscordId": REQUESTER_DID,
+            "scopeStorageKey": Scope::dm(REQUESTER_DID).storage_key(),
+            "createdAtUnixSeconds": 1_700_000_000u64,
+        }]);
+        std::fs::write(&path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
+
+        let loaded = load_pending_friend_requests(&path).expect("legacy plaintext still loads");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].peer_discord_id, REQUESTER_DID);
+
+        let raw = std::fs::read(&path).expect("upgraded file exists");
+        assert!(
+            crate::main_password::has_enc_magic(&raw),
+            "the legacy plaintext file must be re-written encrypted, not left as it was"
+        );
+        let needle = REQUESTER_DID.as_bytes();
+        assert!(
+            !raw.windows(needle.len()).any(|window| window == needle),
+            "the peer identifier is still readable after the upgrade"
+        );
+
+        // And the upgraded file is what later reads see.
+        let reloaded = load_pending_friend_requests(&path).expect("upgraded file loads");
+        assert!(reloaded == loaded);
+    }
+
     #[test]
     fn cmd_osl_send_friend_request_creates_and_persists_pending_friend_request() {
         let _guard = crate::test_process_globals::serialize();
@@ -11568,7 +11737,15 @@ mod friend_request_acceptance_tests {
 
     #[test]
     fn cmd_osl_send_typed_friend_request_creates_and_persists_pending_friend_request() {
+        // A6-F2: persisting a pending request is an at-rest write now, so this
+        // test needs the same storage-key authority the product has. Without
+        // it the test only passed when some earlier test happened to leave a
+        // key in the process-global slot -- it failed run in isolation.
+        let _guard = crate::test_process_globals::serialize();
+        let _reset = ActiveAccountDirReset;
         let dir = tempfile::TempDir::new().expect("tempdir");
+        keystore::set_active_account_dir(Some(dir.path().to_path_buf()));
+        let _key = FileStorageKeyForTest::install([0x7e; 32]);
         let state = AppState::new();
         let scope = Scope::gc("friend-pending-gc");
         let request = request_for(scope.clone());
@@ -11609,7 +11786,10 @@ mod friend_request_acceptance_tests {
         );
 
         let persisted: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(pending_friend_requests_path(dir.path())).unwrap(),
+            &crate::main_password::maybe_decrypt(
+                &std::fs::read(pending_friend_requests_path(dir.path())).unwrap(),
+            )
+            .unwrap(),
         )
         .unwrap();
         let rows = persisted.as_array().expect("pending rows");
@@ -11631,7 +11811,13 @@ mod friend_request_acceptance_tests {
 
     #[test]
     fn persist_typed_friend_request_records_authority_bound_pending_without_adopting_scope() {
+        // A6-F2: persisting a pending request is an at-rest write now, so this
+        // test needs the same storage-key authority the product has.
+        let _guard = crate::test_process_globals::serialize();
+        let _reset = ActiveAccountDirReset;
         let dir = tempfile::TempDir::new().expect("tempdir");
+        keystore::set_active_account_dir(Some(dir.path().to_path_buf()));
+        let _key = FileStorageKeyForTest::install([0x6b; 32]);
         let state = AppState::new();
         let scope = Scope::gc("friend-persist-gc");
         state.peer_map.lock().unwrap().insert(
@@ -11699,7 +11885,14 @@ mod friend_request_acceptance_tests {
 
     #[test]
     fn cmd_osl_send_friend_request_refuses_untrusted_then_persists_authority_bound_pending() {
+        // A6-F2: see the sibling test above -- the pending write is sealed now,
+        // so the test has to supply a storage key instead of relying on one
+        // leaking in from whatever ran before it.
+        let _guard = crate::test_process_globals::serialize();
+        let _reset = ActiveAccountDirReset;
         let dir = tempfile::tempdir().unwrap();
+        keystore::set_active_account_dir(Some(dir.path().to_path_buf()));
+        let _key = FileStorageKeyForTest::install([0x3a; 32]);
         let state = AppState::new();
         state.install_identity(keystore::generate_identity("requester-osl".to_string()));
         let scope = Scope::dm(REQUESTER_DID);

@@ -231,7 +231,9 @@ impl ScopedTrustGrant {
             service_id: service_id.to_owned(),
             account_id: account_id.to_owned(),
             binding_commitment: manual_peer_binding_commitment(binding),
-            storage_key: scope.storage_key(),
+            // Derived, not copied from the caller's scope: the revoke side
+            // computes the same key from the same three inputs (A5-F4).
+            storage_key: manual_peer_scope_storage_key(service_id, account_id, &binding.person_id)?,
             scope,
         })
     }
@@ -1276,6 +1278,8 @@ pub fn set_friend_scope_reach(
 pub fn revoke_friend_scope_entry(
     core: &HubCoreState,
     security: &HubSecurityState,
+    service_id: &str,
+    account_id: &str,
     person_id: String,
     storage_key: String,
 ) -> Result<PersonDto, String> {
@@ -1296,6 +1300,28 @@ pub fn revoke_friend_scope_entry(
     let prefs_path = dir.join(SECURITY_PREFS_FILE);
     let mut prefs = load_encrypted_json::<SecurityPreferences>(&prefs_path)?;
     prefs.version = 2;
+
+    // A5-F4. Every scope row the roster renders comes from the manual approval
+    // ledger (`manual_approved_scopes_for_person`), whose keys are built by
+    // `manual_peer_scope_storage_key`. The peer-map search below can only ever
+    // see a person-level DM entry keyed `dm`, so without this branch the
+    // roster's own "revoke" button matched nothing and the grant survived.
+    if storage_key == manual_peer_scope_storage_key(service_id, account_id, &person_id)? {
+        if prefs
+            .manual_approved_scope_people
+            .get(&storage_key)
+            .map(String::as_str)
+            != Some(person_id.as_str())
+            && !prefs.manual_approved_scopes.contains(&storage_key)
+        {
+            return Err("OSL friend approval is unknown".to_owned());
+        }
+        withdraw_manual_scope_grant(&mut prefs, &storage_key);
+        write_encrypted_json(&prefs_path, &prefs)
+            .map_err(|_| "OSL whitelist could not be persisted".to_owned())?;
+        return person_dto(core, &person_id, &metadata, &prefs);
+    }
+
     let previous_peers = core
         .osl
         .peer_map
@@ -1565,8 +1591,7 @@ fn withdraw_person_grants(prefs: &mut SecurityPreferences, person_id: &str) -> u
         .map(|(storage_key, _)| storage_key.clone())
         .collect();
     for storage_key in &storage_keys {
-        prefs.manual_approved_scopes.remove(storage_key);
-        prefs.manual_approved_scope_people.remove(storage_key);
+        withdraw_manual_scope_grant(prefs, storage_key);
         prefs.decrypt_display_by_scope.remove(storage_key);
     }
     prefs.reach_narrowed_scopes.remove(person_id);
@@ -1608,6 +1633,35 @@ pub fn manual_peer_scope_id(
         "manual-scope-{}",
         URL_SAFE_NO_PAD.encode(&hash.finalize()[..18])
     ))
+}
+
+/// The single place a manual per-person scope's on-disk namespace is built.
+///
+/// A5-F4: a grant was recorded under `dm:manual-scope-<b64>` while the roster's
+/// revoke path searched the peer map, whose person-level DM entry is keyed by
+/// the bare reach key `dm`. The two strings could never meet, so pressing
+/// "revoke" on a roster scope row left the grant fully in force while telling
+/// the user it was gone. Granting ([`ScopedTrustGrant::for_manual_peer`]) and
+/// revoking ([`revoke_friend_scope_entry`]) now both derive the key here, so
+/// the namespaces cannot drift apart again.
+pub fn manual_peer_scope_storage_key(
+    service_id: &str,
+    account_id: &str,
+    person_id: &str,
+) -> Result<String, String> {
+    Ok(Scope::dm(manual_peer_scope_id(service_id, account_id, person_id)?).storage_key())
+}
+
+/// The single place a manual grant is withdrawn from the approval ledger the
+/// roster projects. Returns whether anything was actually recorded there.
+fn withdraw_manual_scope_grant(prefs: &mut SecurityPreferences, storage_key: &str) -> bool {
+    prefs.version = 2;
+    let approved = prefs.manual_approved_scopes.remove(storage_key);
+    let attributed = prefs
+        .manual_approved_scope_people
+        .remove(storage_key)
+        .is_some();
+    approved || attributed
 }
 
 fn validate_manual_peer_service_account(service_id: &str, account_id: &str) -> Result<(), String> {
@@ -1745,10 +1799,8 @@ pub fn set_manual_peer_scope_permission(
     let dir = config_dir()?;
     let path = dir.join(SECURITY_PREFS_FILE);
     let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
-    let storage_key = scope.storage_key();
-    prefs.version = 2;
-    prefs.manual_approved_scopes.remove(&storage_key);
-    prefs.manual_approved_scope_people.remove(&storage_key);
+    let storage_key = manual_peer_scope_storage_key(service_id, account_id, &binding.person_id)?;
+    withdraw_manual_scope_grant(&mut prefs, &storage_key);
     write_encrypted_json(&path, &prefs)
 }
 
@@ -5181,6 +5233,88 @@ mod tests {
             revocation_peers_from_map(&ipc::peer_map::PeerMap::new(), &scope, None);
         assert!(nobody_approved.fully_addressed());
         assert_eq!(queue(&nobody_approved), (0, true));
+    }
+
+    /// A5-F4. Grant a per-scope permission, take the storage key from the exact
+    /// roster projection the "−" button renders, hand it to the exact function
+    /// `revoke_active_hub_friend_scope` calls, and require the permission to
+    /// actually be gone afterwards. Before the namespace was shared, the grant
+    /// lived under `dm:manual-scope-<b64>` while this path only ever compared
+    /// against the peer map's bare `dm` reach key, so the revoke matched
+    /// nothing and the approval survived.
+    #[test]
+    fn roster_scope_revoke_actually_withdraws_the_grant_it_displays() {
+        let harness = FileBackedSecurityHarness::new("roster-scope-revoke");
+        let core = HubCoreState::default();
+        install_self_identity(&core);
+        let security = HubSecurityState::default();
+        let (person_id, metadata, peer) = test_friend(57);
+        write_people(harness.path(), &person_id, metadata);
+        install_peer_map(&core, harness.path(), &person_id, peer);
+        write_encrypted_json(
+            &harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences::default(),
+        )
+        .unwrap();
+
+        let scope_id = manual_peer_scope_id("osl-chat", "osl-main", &person_id).unwrap();
+        set_manual_peer_scope_permission(
+            &core,
+            &security,
+            "osl-chat",
+            "osl-main",
+            person_id.clone(),
+            dm_scope_input(scope_id.clone()),
+            true,
+        )
+        .unwrap();
+        assert!(manual_peer_scope_approved(
+            &core,
+            "osl-chat",
+            "osl-main",
+            person_id.clone(),
+            dm_scope_input(scope_id.clone())
+        )
+        .unwrap());
+
+        // Exactly the row the roster renders the revoke button from.
+        let granted: SecurityPreferences =
+            load_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE)).unwrap();
+        let rows = manual_approved_scopes_for_person(&granted, &person_id);
+        assert_eq!(rows.len(), 1, "the roster must show the grant it just made");
+        let storage_key = rows[0].storage_key.clone();
+
+        let dto = revoke_friend_scope_entry(
+            &core,
+            &security,
+            "osl-chat",
+            "osl-main",
+            person_id.clone(),
+            storage_key.clone(),
+        )
+        .expect("the roster's own scope key must be revocable");
+        assert!(
+            dto.whitelisted_scopes.is_empty(),
+            "the revoked scope is still projected to the roster"
+        );
+        assert_eq!(dto.whitelist_count, 0);
+
+        let stored: SecurityPreferences =
+            load_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE)).unwrap();
+        assert!(!stored.manual_approved_scopes.contains(&storage_key));
+        assert!(!stored
+            .manual_approved_scope_people
+            .contains_key(&storage_key));
+
+        // The enforcement predicate, not just the display, must now refuse.
+        assert!(!manual_peer_scope_approved(
+            &core,
+            "osl-chat",
+            "osl-main",
+            person_id,
+            dm_scope_input(scope_id)
+        )
+        .unwrap());
     }
 
     #[test]
