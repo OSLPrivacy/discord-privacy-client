@@ -1627,6 +1627,121 @@ mod prekey_replenishment_scheduler_tests {
     }
 }
 
+#[cfg(all(test))]
+mod prekey_replenishment_production_caller_tests {
+    use super::{run_prekey_replenishment_tick_at, PrekeyReplenishmentOutcome};
+    use crate::state::AppState;
+    use keystore::{KeyServerClient, PrekeyConfig, PrekeyState};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    fn read_request(stream: &mut std::net::TcpStream) -> Vec<u8> {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut buf = [0u8; 8192];
+        let mut acc = Vec::new();
+        let header_end = loop {
+            let n = stream.read(&mut buf).unwrap();
+            assert!(n > 0, "request ended before headers");
+            acc.extend_from_slice(&buf[..n]);
+            if let Some(pos) = acc.windows(4).position(|window| window == b"\r\n\r\n") {
+                break pos;
+            }
+        };
+        let headers = std::str::from_utf8(&acc[..header_end]).unwrap();
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim())
+            })
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0);
+        while acc[header_end + 4..].len() < content_length {
+            let n = stream.read(&mut buf).unwrap();
+            assert!(n > 0, "request body ended early");
+            acc.extend_from_slice(&buf[..n]);
+        }
+        acc
+    }
+
+    #[test]
+    fn observed_remaining_at_threshold_triggers_replenish_using_state_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let identity = keystore::generate_identity("prekey-prod-caller".to_string());
+        let prekeys = PrekeyState::new(&identity, PrekeyConfig::default(), 1_700_000_000);
+        let sealer = keystore::select_best_sealer();
+        keystore::save_prekey_state(&dir.path().join("prekeys.json"), &prekeys, sealer.as_ref())
+            .expect("persist initial prekey state");
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = mpsc::channel();
+        let response_body =
+            serde_json::json!({ "user_id": identity.user_id.clone(), "opks_added": 75 })
+                .to_string();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_request(&mut stream);
+            tx.send(String::from_utf8_lossy(&request).to_string())
+                .unwrap();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+
+        let state = AppState::new();
+        state.install_identity(identity.clone());
+        *state.keyserver.lock().unwrap() =
+            Some(KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap());
+
+        let outcome =
+            run_prekey_replenishment_tick_at(&state, dir.path(), Some(25), 1_700_000_001)
+                .expect("threshold observation should trigger production replenish caller");
+        assert!(
+            matches!(
+                outcome,
+                PrekeyReplenishmentOutcome::Replenished { opks_added: 75 }
+            ),
+            "unexpected replenish outcome"
+        );
+
+        let request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("scheduler tick must call the keyserver replenish endpoint");
+        assert!(request.starts_with("POST /v1/prekey-bundle/replenish "));
+        let body = request
+            .split_once("\r\n\r\n")
+            .expect("request has body")
+            .1;
+        let body: serde_json::Value = serde_json::from_str(body).expect("JSON body");
+        assert_eq!(body["user_id"], "prekey-prod-caller");
+        assert!(body["spk"].is_null(), "fresh SPK must not rotate before due");
+        assert_eq!(
+            body["opks"].as_array().expect("OPK batch").len(),
+            75,
+            "observed server count at the threshold must top up to the configured target"
+        );
+        assert!(body["batch_signature_b64"].as_str().is_some());
+
+        let reloaded =
+            keystore::load_prekey_state(&dir.path().join("prekeys.json"), sealer.as_ref())
+                .expect("reloaded replenished state");
+        assert_eq!(reloaded.opk_pool.len(), prekeys.opk_pool.len() + 75);
+        assert_eq!(
+            state.prekey_state.lock().unwrap().as_ref().unwrap().opk_pool.len(),
+            reloaded.opk_pool.len()
+        );
+    }
+}
+
 // ---- AEAD primitive ----
 
 pub fn cmd_aead_seal(req: AeadSealRequest) -> IpcResult<AeadSealResponse> {
