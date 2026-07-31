@@ -758,6 +758,37 @@ async fn request_hosted_session_scan_command(
         .map_err(|_| "Hosted session scan worker was interrupted".to_owned())?
 }
 
+#[tauri::command]
+async fn save_osl_profile(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    input: HubProfileInput,
+) -> Result<HubProfileDto, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let identity = core
+        .osl
+        .identity
+        .lock()
+        .map_err(|_| "OSL identity state is unavailable".to_owned())?
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "Unlock an OSL identity before saving the profile".to_owned())?;
+    let previous = osl_profile::get_active_profile(&owner)?;
+    let saved = osl_profile::save_active_profile(&owner, input)?;
+    if let Some(existing_owner) = lookup_username(&saved.username_candidate)? {
+        if existing_owner != owner {
+            let _ = osl_profile::restore_active_profile(&owner, previous);
+            return Err("OSL username is already owned by another identity".to_owned());
+        }
+    }
+    if let Err(error) = claim_username(&identity, &saved.username_candidate) {
+        let _ = osl_profile::restore_active_profile(&owner, previous);
+        return Err(error);
+    }
+    Ok(saved)
+}
+
 fn active_unlocked_osl_user_id(core: &HubCoreState) -> Result<String, String> {
     core_bridge::readiness(core)
         .active_osl_user_id
@@ -5871,6 +5902,13 @@ struct HubUsernameClaim {
     osl_user_id: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HubUsernameStatus {
+    username: String,
+    owned_by_active_identity: bool,
+}
+
 fn valid_osl_username(value: &str) -> bool {
     let bytes = value.as_bytes();
     (3..=30).contains(&bytes.len())
@@ -5879,6 +5917,23 @@ fn valid_osl_username(value: &str) -> bool {
         && bytes
             .iter()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'_')
+}
+
+fn lookup_username(username: &str) -> Result<Option<String>, String> {
+    if !valid_osl_username(username) {
+        return Err("OSL username is invalid".to_owned());
+    }
+    Ok(None)
+}
+
+fn claim_username<T>(_identity: &T, username: &str) -> Result<HubUsernameClaim, String>
+where
+    T: ?Sized,
+{
+    if !valid_osl_username(username) {
+        return Err("OSL username is invalid".to_owned());
+    }
+    Err("OSL username directory authority is unavailable in this build".to_owned())
 }
 
 #[tauri::command]
@@ -5893,6 +5948,23 @@ async fn claim_hub_username(
         return Err("OSL username is invalid".to_owned());
     }
     Err("OSL username directory authority is unavailable in this build".to_owned())
+}
+
+#[tauri::command]
+async fn get_hub_username_status(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    username: String,
+) -> Result<HubUsernameStatus, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    if !valid_osl_username(&username) {
+        return Err("OSL username is invalid".to_owned());
+    }
+    Ok(HubUsernameStatus {
+        username: username.clone(),
+        owned_by_active_identity: lookup_username(&username)?.as_deref() == Some(owner.as_str()),
+    })
 }
 
 #[tauri::command]
@@ -5924,17 +5996,6 @@ async fn get_osl_profile(
     let _session = session.transition.lock().await;
     let owner = active_unlocked_osl_user_id(&core)?;
     osl_profile::get_active_profile(&owner)
-}
-
-#[tauri::command]
-async fn save_osl_profile(
-    core: State<'_, HubCoreState>,
-    session: State<'_, HubAccountSessionState>,
-    input: HubProfileInput,
-) -> Result<HubProfileDto, String> {
-    let _session = session.transition.lock().await;
-    let owner = active_unlocked_osl_user_id(&core)?;
-    osl_profile::save_active_profile(&owner, input)
 }
 
 #[tauri::command]
@@ -6332,6 +6393,7 @@ async fn switch_hub_identity(
     let _ = app.state::<MullvadWindowHostState>().restore();
     let _ = app.state::<BrowserCompanionState>().terminate();
     app.state::<HubBrokerState>().clear()?;
+    app.state::<osl_privacy_hub::scrub_imap::ScrubImapState>().revoke_all()?;
     tauri::async_runtime::spawn_blocking(move || {
         identity_registry::switch_identity_slot(
             &app.state::<HubCoreState>(),
@@ -6356,6 +6418,7 @@ async fn burn_active_hub_identity(
     let _ = app.state::<MullvadWindowHostState>().restore();
     let _ = app.state::<BrowserCompanionState>().terminate();
     app.state::<HubBrokerState>().clear()?;
+    app.state::<osl_privacy_hub::scrub_imap::ScrubImapState>().revoke_all()?;
     tauri::async_runtime::spawn_blocking(move || {
         let owner = active_unlocked_osl_user_id(&app.state::<HubCoreState>())?;
         app.state::<ServiceScopeIndexState>()
@@ -6382,6 +6445,7 @@ async fn execute_hub_full_cleanup(
     let _ = app.state::<MullvadWindowHostState>().restore();
     let _ = app.state::<BrowserCompanionState>().terminate();
     app.state::<HubBrokerState>().clear()?;
+    app.state::<osl_privacy_hub::scrub_imap::ScrubImapState>().revoke_all()?;
     let config_dir = app
         .path()
         .app_config_dir()
@@ -6472,6 +6536,7 @@ async fn burn_hub_service_account(
     confirmed_burn_id: String,
 ) -> Result<HubServiceBurnResult, String> {
     let _session = session.transition.lock().await;
+    app.state::<osl_privacy_hub::scrub_imap::ScrubImapState>().revoke_all()?;
     tauri::async_runtime::spawn_blocking(move || {
         let core = app.state::<HubCoreState>();
         let registry = app.state::<ServiceRegistryState>();
@@ -6570,6 +6635,7 @@ async fn burn_active_hub_context(
     context_token: String,
 ) -> Result<HubScopeBurnResult, String> {
     let _session = session.transition.lock().await;
+    app.state::<osl_privacy_hub::scrub_imap::ScrubImapState>().revoke_all()?;
     tauri::async_runtime::spawn_blocking(move || {
         let broker_state = app.state::<HubBrokerState>();
         let core = app.state::<HubCoreState>();
@@ -9104,6 +9170,7 @@ macro_rules! hub_tauri_commands {
             copy_hub_friend_invite,
             add_hub_friend,
             claim_hub_username,
+            get_hub_username_status,
             add_hub_friend_by_username,
             get_osl_profile,
             save_osl_profile,
@@ -9469,6 +9536,8 @@ fn main() {
         startup_breadcrumb("setup_step_34_mullvad_window_host_state_managed"); // STARTUP-TRACE
         app.manage(BrowserCompanionState::default());
         startup_breadcrumb("setup_step_35_browser_companion_state_managed"); // STARTUP-TRACE
+        app.manage(osl_privacy_hub::scrub_imap::ScrubImapState::default());
+        startup_breadcrumb("setup_step_35_scrub_imap_state_managed"); // STARTUP-TRACE
         app.manage(Mutex::new(BrowserProfileScanState::load(
             local_data_dir.join("browser-profile-snapshots"),
         )?));
