@@ -183,17 +183,53 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $target = Join-Path $env:RUNNER_TEMP "osl-repro-target"
+          # The shipped executable is not a bare cargo artifact. osl-hub-release.yml
+          # builds it with the Tauri CLI, which adds its own custom-protocol feature
+          # and then patches the linked executable with bundle-type information
+          # ("Info Patching ... with bundle type information: nsis"). Reproducing the
+          # released bytes therefore means running the release command itself, at the
+          # release project path, into the release target directory - rustc embeds
+          # that absolute path, so relocating the build guarantees a mismatch.
+          $target = "apps/osl-hub/target"
           if (Test-Path $target) {
             throw "reproducible build target directory already exists"
           }
-          New-Item -ItemType Directory -Path $target | Out-Null
-          $env:CARGO_TARGET_DIR = $target
-          cargo build --manifest-path apps/osl-hub/Cargo.toml --release --features desktop --bin osl-privacy-hub
-          $rebuilt = Join-Path $target "release/osl-privacy-hub.exe"
-          if (!(Test-Path $rebuilt -PathType Leaf)) {
-            throw "rebuilt OSL Privacy Hub executable is missing"
+          npm install -g @tauri-apps/cli@2.11.4
+          # bundle.createUpdaterArtifacts is on, so bundling refuses to run without a
+          # signing key. This throwaway key signs only our own updater artifact; it
+          # never touches the executable bytes under comparison, and the released
+          # signature is verified by the updater policy audit, not by this job.
+          $signingKey = Join-Path $env:RUNNER_TEMP "osl-repro-updater.key"
+          tauri signer generate --ci -p "" -w $signingKey
+          if ($LASTEXITCODE -ne 0) {
+            throw "could not generate the throwaway updater signing key"
           }
+          $env:TAURI_SIGNING_PRIVATE_KEY = $signingKey
+          $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
+          Push-Location apps/osl-hub
+          try {
+            tauri build --features desktop
+            if ($LASTEXITCODE -ne 0) {
+              throw "the release build command failed on exact source"
+            }
+          } finally {
+            Pop-Location
+          }
+          # Compare what the installer actually carries. The bundler patches the
+          # copy it stages, so the pre-bundle link output at target/release still
+          # reads __TAURI_BUNDLE_TYPE_VAR_UNK where the shipped copy reads NSS -
+          # measured, three bytes, the only difference between the two.
+          $bundles = @(Get-ChildItem apps/osl-hub/target/release/bundle/nsis -File -Filter "*.exe")
+          if ($bundles.Count -ne 1) {
+            throw "rebuild must produce exactly one Windows installer, got $($bundles.Count)"
+          }
+          New-Item -ItemType Directory -Path rebuilt-extracted | Out-Null
+          7z x "$($bundles[0].FullName)" -orebuilt-extracted -y | Out-Null
+          $executables = @(Get-ChildItem rebuilt-extracted -Recurse -File -Filter "osl-privacy-hub.exe")
+          if ($executables.Count -ne 1) {
+            throw "rebuilt installer must contain exactly one OSL Privacy Hub executable, got $($executables.Count)"
+          }
+          $rebuilt = $executables[0].FullName
           $hash = (Get-FileHash $rebuilt -Algorithm SHA256).Hash.ToLowerInvariant()
           "REBUILT_EXE=$rebuilt" >> $env:GITHUB_ENV
           "REBUILT_EXE_SHA256=$hash" >> $env:GITHUB_ENV

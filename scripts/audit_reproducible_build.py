@@ -14,6 +14,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "reproducible-build.yml"
+RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "osl-hub-release.yml"
 
 
 def require(condition: bool, message: str, errors: list[str]) -> None:
@@ -282,7 +283,33 @@ def _audit_unreleased_proof(workflow: dict[str, Any]) -> list[str]:
     return errors
 
 
-def audit_text(text: str) -> list[str]:
+def _audit_release_parity(text: str, release_text: str | None) -> list[str]:
+    """The rebuild must run the command that actually produced the release.
+
+    The shipped executable is a Tauri CLI artifact: the CLI adds its own
+    custom-protocol feature and patches the linked binary with bundle-type
+    information, and rustc embeds the absolute target path. Rebuilding with a
+    different command, from a different directory, cannot reproduce those bytes
+    no matter how deterministic the compiler is, so this pins the reproduce job
+    to whatever osl-hub-release.yml is currently shipping.
+    """
+
+    if release_text is None:
+        release_text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    project = re.search(r"^\s+projectPath: (\S+)\s*$", release_text, re.MULTILINE)
+    args = re.search(r"^\s+args: (.+?)\s*$", release_text, re.MULTILINE)
+    if project is None or args is None:
+        return ["release workflow no longer declares the Tauri build project path and args"]
+
+    errors: list[str] = []
+    if f"Push-Location {project.group(1)}" not in text:
+        errors.append("rebuild must run in the same project path the release build used")
+    if f"tauri build {args.group(1)}" not in text:
+        errors.append("rebuild must run the same Tauri build arguments the release used")
+    return errors
+
+
+def audit_text(text: str, release_text: str | None = None) -> list[str]:
     errors: list[str] = []
     try:
         model = _workflow_model(text)
@@ -342,18 +369,23 @@ def audit_text(text: str) -> list[str]:
         errors,
     )
     require(
-        "--manifest-path apps/osl-hub/Cargo.toml" in text
-        and "--release --features desktop --bin osl-privacy-hub" in text,
-        "workflow must rebuild the Hub executable with the release feature set",
+        re.search(r"npm install -g @tauri-apps/cli@\d+\.\d+\.\d+\b", text) is not None,
+        "workflow must rebuild with a pinned Tauri CLI, not a floating tag",
         errors,
     )
     require(
-        "RUNNER_TEMP" in text
-        and "reproducible build target directory already exists" in text
-        and "CARGO_TARGET_DIR" in text,
-        "workflow must use a born-empty runner-owned target directory",
+        "7z x \"$($bundles[0].FullName)\" -orebuilt-extracted" in text
+        and "rebuilt installer must contain exactly one OSL Privacy Hub executable" in text,
+        "workflow must compare the installer-staged executable, not the pre-bundle link output",
         errors,
     )
+    require(
+        "reproducible build target directory already exists" in text
+        and "CARGO_TARGET_DIR" not in text,
+        "workflow must rebuild into a born-empty target directory at the release path",
+        errors,
+    )
+    errors.extend(_audit_release_parity(text, release_text))
     require(
         "$env:RELEASED_EXE_SHA256 -cne $env:REBUILT_EXE_SHA256" in text
         and "released executable bytes do not reproduce from exact source" in text
@@ -451,6 +483,58 @@ jobs:
         )
         self.assertIn(
             "an explicit candidate tag must never skip the byte comparison",
+            audit_text(mutant),
+        )
+
+    def test_refuses_bare_cargo_rebuild(self) -> None:
+        mutant = self.workflow().replace(
+            "tauri build --features desktop",
+            "cargo build --release --features desktop --bin osl-privacy-hub",
+        )
+        self.assertIn(
+            "rebuild must run the same Tauri build arguments the release used",
+            audit_text(mutant),
+        )
+
+    def test_refuses_relocating_the_release_target_directory(self) -> None:
+        mutant = self.workflow().replace(
+            "          npm install -g @tauri-apps/cli@",
+            "          $env:CARGO_TARGET_DIR = $env:RUNNER_TEMP\n"
+            "          npm install -g @tauri-apps/cli@",
+        )
+        self.assertIn(
+            "workflow must rebuild into a born-empty target directory at the release path",
+            audit_text(mutant),
+        )
+
+    def test_refuses_floating_tauri_cli(self) -> None:
+        mutant = re.sub(
+            r"npm install -g @tauri-apps/cli@\d+\.\d+\.\d+",
+            "npm install -g @tauri-apps/cli@v2",
+            self.workflow(),
+        )
+        self.assertIn(
+            "workflow must rebuild with a pinned Tauri CLI, not a floating tag",
+            audit_text(mutant),
+        )
+
+    def test_refuses_drifting_from_the_release_build_arguments(self) -> None:
+        release = RELEASE_WORKFLOW.read_text(encoding="utf-8").replace(
+            "args: --features desktop",
+            "args: --features desktop,discord-qa-shell",
+        )
+        self.assertIn(
+            "rebuild must run the same Tauri build arguments the release used",
+            audit_text(self.workflow(), release),
+        )
+
+    def test_refuses_comparing_the_pre_bundle_link_output(self) -> None:
+        mutant = self.workflow().replace(
+            "7z x \"$($bundles[0].FullName)\" -orebuilt-extracted -y | Out-Null",
+            "# staged extraction omitted",
+        )
+        self.assertIn(
+            "workflow must compare the installer-staged executable, not the pre-bundle link output",
             audit_text(mutant),
         )
 
