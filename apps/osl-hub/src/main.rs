@@ -802,6 +802,20 @@ fn require_current_context_host(
             return Ok(native);
         }
     }
+    // OSL Chat has NO ServiceHostState entry: it is not a connected third-party
+    // service. `broker::activate_owned_osl_chat_context` mints a synthetic host
+    // and stores it only in the broker lease, so without this branch every OSL
+    // Chat authority check fell through to the error below and the product could
+    // not enable encrypted chat between two verified, paired identities at all.
+    //
+    // This is NOT a relaxation of authority. `validate_active_host` remains the
+    // gate: the lease must already bind this exact service/account/generation/
+    // owner to this context_token, which only `activate_owned_osl_chat_context`
+    // can have created. A caller cannot mint authority it was not granted.
+    let osl_chat = broker::owned_osl_chat_host(&owner);
+    if broker.validate_active_host(context_token, &osl_chat).is_ok() {
+        return Ok(osl_chat);
+    }
     let active = app
         .state::<ServiceHostState>()
         .current()
