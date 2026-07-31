@@ -5580,3 +5580,20 @@ code {
 }
 .whitelist-roster-truncated,
 .whitelist-roster-note { color: var(--muted); }
+
+/* Burn result: the peer-acknowledgement line.
+   `queue_scope_revocations_locked` (apps/osl-hub/src/security.rs) says a burn
+   whose notices are only queued must read `Not acknowledged` and never a
+   success, so the outstanding case borrows the same left rule and colour the
+   refusal states already use (--danger), and only the acknowledged case is
+   allowed the brand rule that `.burn-result-message.success` uses. */
+.burn-revocation-line {
+  margin: 8px 0 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--danger);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.burn-revocation-line.acknowledged { border-left-color: var(--brand); color: var(--muted); }

@@ -398,6 +398,9 @@ describe("bundled preview security boundary", () => {
       "allow-get-hub-service-burn-readiness",
       "allow-burn-hub-service-account",
       "allow-burn-active-hub-context",
+      // Read-only: whether the burn notices already queued for one scope have
+      // been acknowledged. Without it a queued revocation renders as a success.
+      "allow-get-hub-revocation-status",
     ];
     expect(new Set(capability.permissions)).toEqual(new Set(expectedPermissions));
     expect(capability.permissions).toHaveLength(expectedPermissions.length);

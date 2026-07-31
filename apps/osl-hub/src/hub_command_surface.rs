@@ -529,7 +529,8 @@ macro_rules! hub_tauri_commands {
             execute_hub_full_cleanup,
             get_hub_service_burn_readiness,
             burn_hub_service_account,
-            burn_active_hub_context
+            burn_active_hub_context,
+            get_hub_revocation_status
         }
     };
 }
@@ -1400,6 +1401,22 @@ mod tauri_registration_surface_tests {
         assert_eq!(
             granted_footprint_permissions, expected_permissions,
             "the main-window capability must keep granting both F1 footprint commands"
+        );
+    }
+
+    /// The burn-acknowledgement read-back has to be reachable from a shipping
+    /// build, which is exactly what it was not: `security::revocation_status`
+    /// had no `#[tauri::command]`, no permission, and no capability grant, so
+    /// the "must be shown `Not acknowledged` — never a success" contract on
+    /// `queue_scope_revocations_locked` had no live surface at all.
+    #[test]
+    fn get_hub_revocation_status_is_registered_and_acl_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "get_hub_revocation_status",
         );
     }
 
