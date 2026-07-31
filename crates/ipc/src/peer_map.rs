@@ -532,7 +532,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("peer_map.json");
         let err = load_peer_map_from_path(&path).expect_err("missing file should error");
-        assert!(matches!(err, PeerMapError::NotFound { .. }), "got {err:?}");
+        assert!(matches!(&err, PeerMapError::NotFound { .. }), "got {err:?}");
     }
 
     #[test]
@@ -704,7 +704,7 @@ mod tests {
         fs::write(&path, r#"{"900000000000000003":"liam",}"#).unwrap();
         let err = load_peer_map_from_path(&path).expect_err("trailing comma should fail");
         assert!(
-            matches!(err, PeerMapError::ParseFailed { .. }),
+            matches!(&err, PeerMapError::ParseFailed { .. }),
             "got {err:?}"
         );
     }
@@ -726,7 +726,7 @@ mod tests {
         let err =
             load_peer_map_from_path(&path).expect_err("array root should fail (expected object)");
         assert!(
-            matches!(err, PeerMapError::ParseFailed { .. }),
+            matches!(&err, PeerMapError::ParseFailed { .. }),
             "got {err:?}"
         );
     }

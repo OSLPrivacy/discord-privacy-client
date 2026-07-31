@@ -176,7 +176,7 @@ fn v4_rejects_forged_sender_ik_pub() {
         .decrypt(&em_recovered)
         .expect_err("SessionContext keyed to a forged sender_ik_pub must reject");
     assert!(
-        matches!(err, crypto::Error::AeadFailure),
+        matches!(&err, crypto::Error::AeadFailure),
         "expected body AEAD failure from sender identity AD mismatch, got: {err:?}"
     );
     assert_eq!(s.bob.decrypt(&em_recovered).unwrap(), plaintext);
@@ -290,7 +290,7 @@ fn v4_header_tamper_rejected_via_aad() {
     );
     let err = decrypt_v4(&tampered, &s.bob_ik_sk, &s.bob_mlkem_dk).unwrap_err();
     assert!(
-        matches!(err, V2Error::WrapAeadFailed),
+        matches!(&err, V2Error::WrapAeadFailed),
         "expected WrapAeadFailed (AAD includes global header), got: {err:?}"
     );
 }

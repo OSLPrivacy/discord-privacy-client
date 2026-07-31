@@ -39,7 +39,7 @@ fn a_single_absurd_gap_is_refused_without_deriving_anything() {
     let before_keys = bob.skipped_key_count();
     let err = bob.decrypt(&last, &mut rng).expect_err("must refuse");
     assert!(
-        matches!(err, Error::SkipLimitExceeded { limit: 64, .. }),
+        matches!(&err, Error::SkipLimitExceeded { limit: 64, .. }),
         "expected a skip-limit refusal, got {err:?}"
     );
 

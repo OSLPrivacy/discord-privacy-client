@@ -1815,7 +1815,7 @@ mod tests {
 
         let err = peer_bundle_from_b5(&response).expect_err("invalid signature must refuse");
         assert!(matches!(
-            err,
+            &err,
             RnError::PrekeyAdapter("peer signed prekey signature is invalid")
         ));
         let display = err.to_string();
@@ -2102,7 +2102,7 @@ mod tests {
         };
 
         assert!(matches!(
-            err,
+            &err,
             RnError::PrekeyAdapter("fetched prekey bundle does not match authenticated identity")
         ));
         let display = err.to_string();
@@ -2481,23 +2481,23 @@ mod tests {
                     }
                     match (pin.is_pinned_to_rn(), caps.supports_rn(), policy) {
                         (true, true, _) => assert!(
-                            matches!(got, Ok(SelectedVersion::Rn)),
+                            matches!(&got, Ok(SelectedVersion::Rn)),
                             "expected Rn for pin={pin_name} caps={caps_name} policy={policy:?}, got {got:?}"
                         ),
                         (true, false, _) => assert!(
-                            matches!(got, Err(RnError::PinnedToRn)),
+                            matches!(&got, Err(RnError::PinnedToRn)),
                             "expected PinnedToRn for pin={pin_name} caps={caps_name} policy={policy:?}, got {got:?}"
                         ),
                         (false, true, _) => assert!(
-                            matches!(got, Ok(SelectedVersion::Rn)),
+                            matches!(&got, Ok(SelectedVersion::Rn)),
                             "expected Rn for pin={pin_name} caps={caps_name} policy={policy:?}, got {got:?}"
                         ),
                         (false, false, RnPolicy::Required) => assert!(
-                            matches!(got, Err(RnError::RnRequiredButUnsupported)),
+                            matches!(&got, Err(RnError::RnRequiredButUnsupported)),
                             "expected RnRequiredButUnsupported for pin={pin_name} caps={caps_name} policy={policy:?}, got {got:?}"
                         ),
                         (false, false, RnPolicy::Opportunistic) => assert!(
-                            matches!(got, Ok(SelectedVersion::LegacyV3)),
+                            matches!(&got, Ok(SelectedVersion::LegacyV3)),
                             "expected LegacyV3 for pin={pin_name} caps={caps_name} policy={policy:?}, got {got:?}"
                         ),
                     }
