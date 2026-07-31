@@ -301,5 +301,10 @@ describe("link-creation grants", () => {
     await expect(sweepExpiredLinkGrantConsumptions(workerEnv())).resolves.toBe(101);
     expect(await d1Count("SELECT COUNT(*) AS c FROM link_grant_consumed WHERE expires_at < ?", now())).toBe(0);
     expect(await d1Count("SELECT COUNT(*) AS c FROM link_grant_consumed")).toBe(1);
-  });
+    // 102 awaited D1 round trips to seed, then a bounded sweep over all of
+    // them, on vitest's 5s default. It measured 18470ms on CI while every
+    // assertion above still held -- slow, not stuck. Give it a budget that
+    // matches what it actually does; 60s is over 3x the worst observed and
+    // still fails a genuine hang quickly.
+  }, 60_000);
 });

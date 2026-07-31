@@ -108,13 +108,22 @@ describe("attachment quota and expiry sweep", () => {
     // the body itself finishing at 59439ms, so the work completes; only the
     // budget was wrong.
     //
-    // 90s, not more: the ceiling still has to be low enough that a real hang
-    // fails the run promptly instead of quietly costing minutes, and low
-    // enough that this spec cannot monopolise the worker pool and starve the
-    // specs vitest runs alongside it. Seeding these rows concurrently was
-    // tried and is *worse* -- it took the spec to 115890ms on CI and timed
-    // out three unrelated files -- so the seeding loop stays sequential.
-  }, 90_000);
+    // Measured on CI across runs: 59439ms, 63223ms, 67786ms, 103224ms. The
+    // spread is runner variance plus how much else vitest happens to schedule
+    // alongside it, so 90s was inside the range and this spec failed on load
+    // rather than on behaviour. 180s clears the worst observed with room.
+    //
+    // Raising the ceiling does not make it a worse neighbour: vitest does not
+    // cancel the work when a spec times out, so the ~100s of D1/R2 traffic
+    // happens either way and the only thing the ceiling decides is whether it
+    // is reported as a failure. It is still far below the job timeout, so a
+    // genuine hang here fails the run rather than sitting until the six-hour
+    // limit.
+    //
+    // Seeding these rows concurrently was tried and is *worse* -- it took the
+    // spec to 115890ms on CI and timed out three unrelated files -- so the
+    // seeding loop stays sequential.
+  }, 180_000);
 
   it("reclaims more than one legacy selection batch through isolated claims", async () => {
     const real = workerEnv();
