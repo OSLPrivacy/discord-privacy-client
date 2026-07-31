@@ -8,7 +8,6 @@ import {
 } from "../src/lib/attachment-limits.js";
 import { sweepExpiredAttachments } from "../src/lib/sweep.js";
 import {
-  d1BatchRun,
   d1Count,
   d1Run,
   workerEnv,
@@ -57,41 +56,6 @@ async function insertAttachment(
   );
 }
 
-const INSERT_ATTACHMENT_SQL = `INSERT INTO attachment_objects
-       (id, object_key, size_bytes, expires_at, content_expires_at, created_at,
-        fetch_token_sha256_hex, state, upload_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-
-/// Seed `count` expired, ready, single-part rows plus their R2 objects.
-///
-/// The row-at-a-time version of this cost two awaited round trips per row,
-/// which is what pushed the full-cap (512 row) fixture past its 40s budget on
-/// CI while it stayed at ~12s locally. Batching the D1 inserts and issuing the
-/// R2 puts concurrently seeds exactly the same rows and objects — the sweep
-/// under test still sees a full-cap backlog.
-async function seedExpiredBacklog(
-  bucket: R2Bucket,
-  count: number,
-  objectKeyFor: (index: number) => string,
-  idFor: (index: number) => string,
-): Promise<void> {
-  const now = Math.floor(Date.now() / 1000);
-  const rows: (string | number | null)[][] = [];
-  for (let index = 0; index < count; index++) {
-    rows.push([idFor(index), objectKeyFor(index), 1, now - 1, now - 1, now - 60, DIGEST, "ready", null]);
-  }
-  await d1BatchRun(INSERT_ATTACHMENT_SQL, rows);
-  const CONCURRENCY = 32;
-  for (let start = 0; start < count; start += CONCURRENCY) {
-    await Promise.all(
-      rows.slice(start, start + CONCURRENCY).map((row, offset) => {
-        const index = start + offset;
-        return bucket.put(objectKeyFor(index), new Uint8Array([index % 256]));
-      }),
-    );
-  }
-}
-
 describe("attachment quota and expiry sweep", () => {
   it("uses Wrangler-splittable DDL for digest-only metadata", async () => {
     expect(migration).toContain("fetch_token_sha256_hex");
@@ -107,12 +71,15 @@ describe("attachment quota and expiry sweep", () => {
 
   it("drains a full-cap expired backlog in bounded bulk batches", async () => {
     const real = workerEnv();
-    await seedExpiredBacklog(
-      real.ATTACHMENTS,
-      MAX_LIVE_ATTACHMENT_ROWS,
-      (index) => `attachments/${index}`,
-      (index) => index.toString(16).padStart(32, "0"),
-    );
+    for (let index = 0; index < MAX_LIVE_ATTACHMENT_ROWS; index++) {
+      const objectKey = `attachments/${index}`;
+      await insertAttachment({
+        id: index.toString(16).padStart(32, "0"),
+        object_key: objectKey,
+        upload_id: null,
+      });
+      await real.ATTACHMENTS.put(objectKey, new Uint8Array([index % 256]));
+    }
     const remove = vi.fn((key: string | string[]) => real.ATTACHMENTS.delete(key));
     const env = {
       ...real,
@@ -132,17 +99,22 @@ describe("attachment quota and expiry sweep", () => {
     expect(await real.ATTACHMENTS.head("attachments/0")).toBeNull();
     expect(await real.ATTACHMENTS.head(`attachments/${MAX_LIVE_ATTACHMENT_ROWS - 1}`)).toBeNull();
     expect(remove).toHaveBeenCalledTimes(MAX_LIVE_ATTACHMENT_ROWS);
-    // This is the only spec that fills the entire MAX_LIVE_ATTACHMENT_ROWS
-    // quota cap and then drains it, so it is ~1000 D1 + R2 operations against
-    // miniflare where every other spec is a handful. It is slow, not stuck:
-    // the CI run that reported "timed out in 40000ms" also reported the body
-    // finishing at 59439ms, and the cost is superlinear in row count on a
-    // 2-core runner (the 101-row sibling spec is only 1.2x slower on CI than
-    // locally, this one was 4.9x). Batched seeding above takes the local time
-    // from 12.2s to 9.4s; the ceiling is raised for this spec only, with
-    // enough headroom that a genuine hang still fails the run rather than
-    // silently costing a minute.
-  }, 120_000);
+    // Slow, not stuck. This is the only spec that fills the whole
+    // MAX_LIVE_ATTACHMENT_ROWS quota cap and then drains it -- ~1000 D1 + R2
+    // operations against miniflare where every other spec does a handful --
+    // and its cost is superlinear in row count on a 2-core runner: the
+    // 101-row sibling spec below is 1.2x slower on CI than locally, this one
+    // is 4.9x. The CI run that reported "timed out in 40000ms" also reported
+    // the body itself finishing at 59439ms, so the work completes; only the
+    // budget was wrong.
+    //
+    // 90s, not more: the ceiling still has to be low enough that a real hang
+    // fails the run promptly instead of quietly costing minutes, and low
+    // enough that this spec cannot monopolise the worker pool and starve the
+    // specs vitest runs alongside it. Seeding these rows concurrently was
+    // tried and is *worse* -- it took the spec to 115890ms on CI and timed
+    // out three unrelated files -- so the seeding loop stays sequential.
+  }, 90_000);
 
   it("reclaims more than one legacy selection batch through isolated claims", async () => {
     const real = workerEnv();

@@ -19,6 +19,13 @@ use ipc::peer_map::WhitelistEntry;
 use ipc::state::AppState;
 use tempfile::tempdir;
 
+// `ipc`'s file-storage key and config-dir overrides are process globals, and
+// the tests in one integration binary share a process. `cargo test` runs them
+// on several threads, so without this every test here can have its key swapped
+// out from under it mid-write -- which is exactly how Windows CI produced
+// `at-rest decrypt: aead::Error`.
+static OSL_PROCESS_GLOBALS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 const HENRY_DID: &str = "900000000000000001";
 const ALICE_DID: &str = "1602770642930634812";
 const GC_ID: &str = "1234567890";
@@ -31,6 +38,9 @@ fn write_legacy(dir: &std::path::Path, body: &str) {
 
 #[test]
 fn dm_legacy_migrates_to_peer_outgoing_whitelists() {
+    let _osl_serial = OSL_PROCESS_GLOBALS_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     // whitelist_state writes go through maybe_encrypt, whose device-bound
     // fallback key lives in the process-global base dir; a record sealed by an
     // earlier test makes the write fail and the migration marker never lands.
@@ -79,6 +89,9 @@ fn dm_legacy_migrates_to_peer_outgoing_whitelists() {
 
 #[test]
 fn gc_full_whitelist_migrates_each_member() {
+    let _osl_serial = OSL_PROCESS_GLOBALS_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let dir = tempdir().unwrap();
     write_legacy(
         dir.path(),
@@ -115,6 +128,9 @@ fn gc_full_whitelist_migrates_each_member() {
 
 #[test]
 fn server_channel_per_user_migrates_whitelisted_users() {
+    let _osl_serial = OSL_PROCESS_GLOBALS_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let dir = tempdir().unwrap();
     write_legacy(
         dir.path(),
@@ -145,6 +161,9 @@ fn server_channel_per_user_migrates_whitelisted_users() {
 
 #[test]
 fn idempotent_second_run_does_not_duplicate_peer_links() {
+    let _osl_serial = OSL_PROCESS_GLOBALS_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     // whitelist_state writes go through maybe_encrypt, whose device-bound
     // fallback key lives in the process-global base dir; a record sealed by an
     // earlier test makes the write fail and the migration marker never lands.
@@ -199,6 +218,9 @@ fn idempotent_second_run_does_not_duplicate_peer_links() {
 
 #[test]
 fn missing_whitelist_state_returns_none() {
+    let _osl_serial = OSL_PROCESS_GLOBALS_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let dir = tempdir().unwrap();
     let state = AppState::new();
     let result = migrate_whitelist_state_in_place(&state, dir.path()).unwrap();
@@ -207,6 +229,9 @@ fn missing_whitelist_state_returns_none() {
 
 #[test]
 fn empty_members_yields_no_peer_projections() {
+    let _osl_serial = OSL_PROCESS_GLOBALS_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let dir = tempdir().unwrap();
     write_legacy(
         dir.path(),

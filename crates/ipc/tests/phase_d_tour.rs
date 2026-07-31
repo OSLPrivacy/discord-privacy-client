@@ -15,6 +15,7 @@ static KEY_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn tour_state_default_is_not_completed() {
+    let _osl_serial = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let state = AppState::new();
     let s = cmd_osl_tour_get_state(&state).unwrap();
     assert!(!s.completed);
@@ -146,6 +147,7 @@ fn writes_stamp_version_2() {
 /// serde defaults must apply.
 #[test]
 fn legacy_v1_loads_with_defaults_for_new_fields() {
+    let _osl_serial = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempdir().unwrap();
     let path = dir.path().join("legacy.json");
     let legacy = r#"{ "version": 1, "stego_mode": "mode1" }"#;
