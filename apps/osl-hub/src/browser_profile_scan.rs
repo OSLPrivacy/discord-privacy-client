@@ -1090,6 +1090,10 @@ mod tests {
             },
         )
         .unwrap();
+        assert_eq!(receipt.browser_id, BrowserImportId::Chrome);
+        assert_eq!(receipt.profile, "Default");
+        assert_eq!(receipt.source_account, HISTORY_SOURCE_ACCOUNT);
+        assert_eq!(receipt.scope, HISTORY_SCOPE);
         assert_eq!(receipt.observation_count, MAX_SNAPSHOT_ROWS);
         assert!(receipt.snapshot_deleted);
         assert_eq!(std::fs::read(&history).unwrap(), original.as_bytes());
