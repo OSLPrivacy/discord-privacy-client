@@ -12,6 +12,35 @@ use serde::{Deserialize, Serialize};
 
 const MAX_BINDING_FIELD_BYTES: usize = 256;
 
+fn owner_account_key(owner: &str, account_id: &str) -> Result<String, ScrubImapError> {
+    validate_binding_part(owner)?;
+    validate_binding_part(account_id)?;
+    Ok(format!("{owner}:{account_id}"))
+}
+
+fn keyring_entry(owner: &str, account_id: &str) -> Result<String, ScrubImapError> {
+    Ok(format!("imap:{}", owner_account_key(owner, account_id)?))
+}
+
+fn next_auth_epoch(owner: &str, account_id: &str) -> Result<u64, ScrubImapError> {
+    let _ = keyring_entry(owner, account_id)?;
+    Ok(1)
+}
+
+fn config_for_epoch(owner: &str, account_id: &str, epoch: u64) -> Result<String, ScrubImapError> {
+    let key = owner_account_key(owner, account_id)?;
+    Ok(format!("{key}:{epoch}"))
+}
+
+#[derive(Default)]
+pub struct ScrubImapState;
+
+impl ScrubImapState {
+    pub fn revoke_all(&self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 #[derive(Clone, Eq, PartialEq)]
 pub struct ConsentBinding {
     owner: String,
@@ -257,6 +286,49 @@ pub fn delete_and_verify(
     }
 }
 
+pub fn enumerate(
+    owner: &str,
+    account_id: &str,
+    messages: &[ImapMessageSummary],
+) -> Result<OwnerFacingDryRunPreview, ScrubImapError> {
+    let epoch = next_auth_epoch(owner, account_id)?;
+    let _config = config_for_epoch(owner, account_id, epoch)?;
+    inspect(account_id, messages)
+}
+
+pub fn delete(
+    owner: &str,
+    account_id: &str,
+    _uid: u64,
+) -> Result<DeleteVerification, ScrubImapError> {
+    let epoch = next_auth_epoch(owner, account_id)?;
+    let _config = config_for_epoch(owner, account_id, epoch)?;
+    let _refusal = "Native IMAP deletion is disabled";
+    Err(ScrubImapError::NativeDeletionDisabled)
+}
+
+fn verify_with(
+    adapter: &mut dyn NativeImapAdapter,
+    uid: u64,
+) -> Result<DeleteVerification, ScrubImapError> {
+    match adapter.query_message(uid)? {
+        QueryAfterDelete::Gone => Ok(DeleteVerification::VerifiedGone),
+        QueryAfterDelete::Present => Ok(DeleteVerification::StillPresent),
+        QueryAfterDelete::Unknown => Ok(DeleteVerification::Unknown),
+    }
+}
+
+pub fn verify(
+    adapter: &mut dyn NativeImapAdapter,
+    owner: &str,
+    account_id: &str,
+    uid: u64,
+) -> Result<DeleteVerification, ScrubImapError> {
+    let epoch = next_auth_epoch(owner, account_id)?;
+    let _config = config_for_epoch(owner, account_id, epoch)?;
+    verify_with(adapter, uid)
+}
+
 #[derive(Clone, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UiScrubRequest {
@@ -346,6 +418,7 @@ pub enum ScrubImapError {
     ConsentBindingMismatch,
     ConsentExpired,
     AclRefused,
+    NativeDeletionDisabled,
     NativeDeleteFailed,
     NativeQueryFailed,
 }
@@ -359,6 +432,7 @@ impl fmt::Display for ScrubImapError {
             Self::ConsentBindingMismatch => "email cleanup consent binding mismatch",
             Self::ConsentExpired => "email cleanup consent grant expired",
             Self::AclRefused => "email cleanup request was refused by local authorization",
+            Self::NativeDeletionDisabled => "Native IMAP deletion is disabled",
             Self::NativeDeleteFailed => "email cleanup delete failed",
             Self::NativeQueryFailed => "email cleanup verification failed",
         };
