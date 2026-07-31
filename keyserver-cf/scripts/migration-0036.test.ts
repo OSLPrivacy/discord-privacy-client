@@ -183,6 +183,53 @@ describe("migration 0036 account ownership proof required", () => {
     ).rejects.toThrow(/proof challenge is required/);
   });
 
+  it("preserves spent challenges that predate proof-required migration", async () => {
+    const db = await preProofRequiredDb();
+    await seedUser(db, "owner-osl-id");
+
+    const nonce = "7".repeat(64);
+    const binding = "8".repeat(64);
+    await insertChallenge(db, { nonce, binding });
+    await spendChallenge(db, nonce, 1_900_000_030);
+    await applyMigration(db, "0036_account_ownership_proof_required.sql");
+
+    await expect(
+      insertProofBinding(db, {
+        nonce,
+        binding: "9".repeat(64),
+        verifiedAt: 1_900_000_040,
+      }),
+    ).rejects.toThrow(/proof challenge is required/);
+
+    await expect(
+      insertProofBinding(db, {
+        nonce,
+        binding,
+        verifiedAt: 1_900_000_040,
+      }),
+    ).resolves.toMatchObject({ success: true });
+
+    await expect(
+      insertProofBinding(db, {
+        nonce: "a".repeat(64),
+        binding: "b".repeat(64),
+        verifiedAt: 1_900_000_040,
+      }),
+    ).rejects.toThrow(/proof challenge is required/);
+
+    const rows = await db.prepare(
+      `SELECT nonce_sha256, binding_sha256, verified_at_unix_seconds
+         FROM account_ownership_proof_bindings`,
+    ).all();
+    expect(rows.results).toEqual([
+      {
+        nonce_sha256: nonce,
+        binding_sha256: binding,
+        verified_at_unix_seconds: 1_900_000_040,
+      },
+    ]);
+  });
+
   it("requires a matching spent challenge before durable proof binding", async () => {
     const db = await preProofRequiredDb();
     await seedUser(db, "owner-osl-id");
