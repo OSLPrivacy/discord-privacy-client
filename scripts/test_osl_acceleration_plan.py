@@ -86,6 +86,32 @@ def _keep_codex_account_and_heavy_resource_routing_explicit(
         evaluate_control(control, heavy_bypass),
     )
 
+    for refused_fact in (
+        "delegate_may_clear_codex_home",
+        "delegate_may_synthesize_codex_home",
+        "delegate_may_switch_account",
+        "delegate_may_infer_account",
+    ):
+        with self.subTest(refused_fact=refused_fact):
+            account_bypass = set(permitted)
+            account_bypass.remove("preserves_inherited_codex_home")
+            account_bypass.add(refused_fact)
+            errors = evaluate_control(control, account_bypass)
+            self.assertIn("missing:preserves_inherited_codex_home", errors)
+            self.assertIn(f"refused:{refused_fact}", errors)
+
+    cargo_bypass = set(permitted)
+    cargo_bypass.remove("cargo_uses_osl_cargo")
+    cargo_bypass.add("cargo_bypasses_osl_cargo")
+    self.assertIn(
+        "missing:cargo_uses_osl_cargo",
+        evaluate_control(control, cargo_bypass),
+    )
+    self.assertIn(
+        "refused:cargo_bypasses_osl_cargo",
+        evaluate_control(control, cargo_bypass),
+    )
+
 
 def _pin_mirror_sessions_by_identifier_before_prompting_or_resuming_them(
     self: AccelerationPlanContractTests,
