@@ -103,8 +103,40 @@ setattr(
 )
 setattr(
     PublicReleaseAuditTests,
-    "scripts/check-app-claims.mjs'",
+    "scripts/check-app-claims.mjs release reconciliation",
     _reconcile_public_docs_and_site_claims_against_the_exact_released_binary,
+)
+
+
+def _scripts_check_app_claims_mjs(
+    self: PublicReleaseAuditTests,
+) -> None:
+    identity = self.release_identity()
+    exact_claim = (
+        f"Release v1.2.3 binary SHA-256 {'a' * 64} is release-proven."
+    )
+    stale_claim = (
+        f"Release v1.2.3 binary SHA-256 {'b' * 64} is release-proven."
+    )
+    unbound_claim = (
+        "This released binary proves protected messages send through Discord."
+    )
+
+    self.assertEqual(release_claim_violations(exact_claim, identity), [])
+    self.assertEqual(
+        release_identity_mismatch_violations(stale_claim, identity),
+        [(1, "release claim references a different released binary identity")],
+    )
+    self.assertTrue(release_claim_violations(unbound_claim, None))
+    self.assertTrue(
+        release_claim_violations(unbound_claim, {**identity, "claimProfile": "qa-only"})
+    )
+
+
+setattr(
+    PublicReleaseAuditTests,
+    "scripts/check-app-claims.mjs'",
+    _scripts_check_app_claims_mjs,
 )
 
 
@@ -117,6 +149,9 @@ def load_tests(
         PublicReleaseAuditTests(
             "Reconcile public docs and site claims against the exact released binary."
         )
+    )
+    tests.addTest(
+        PublicReleaseAuditTests("scripts/check-app-claims.mjs release reconciliation")
     )
     tests.addTest(PublicReleaseAuditTests("scripts/check-app-claims.mjs'"))
     return tests

@@ -10989,7 +10989,7 @@ mod tauri_registration_surface_tests {
         );
     }
 
-    fn test_checked_host() -> CheckedHost {
+    fn pw3_test_checked_host() -> CheckedHost {
         CheckedHost {
             context_epoch: 42,
             active: ActiveServiceHost {
@@ -11003,7 +11003,7 @@ mod tauri_registration_surface_tests {
         }
     }
 
-    fn test_deletion_scan() -> osl_privacy_hub::native_discord_adapter::guided_deletion::DeletionScan
+    fn pw3_test_deletion_scan() -> osl_privacy_hub::native_discord_adapter::guided_deletion::DeletionScan
     {
         osl_privacy_hub::native_discord_adapter::guided_deletion::DeletionScan {
             scope_binding_hash: "scan-hash".to_owned(),
@@ -11190,7 +11190,7 @@ mod tauri_registration_surface_tests {
         let scan = checked_hosted_session_scan_flow(
             || {
                 events.borrow_mut().push("checked-host");
-                Ok(test_checked_host())
+                Ok(pw3_test_checked_host())
             },
             |checked| {
                 events.borrow_mut().push("attended-binding");
@@ -11201,7 +11201,7 @@ mod tauri_registration_surface_tests {
                 events.borrow_mut().push("native-scan");
                 assert_eq!(checked.scope_binding, "scope-binding");
                 assert_eq!(operator_names, ["operator".to_owned()]);
-                Ok(test_deletion_scan())
+                Ok(pw3_test_deletion_scan())
             },
             |checked| {
                 events.borrow_mut().push("context-recheck");
@@ -11226,7 +11226,7 @@ mod tauri_registration_surface_tests {
         let refused = checked_hosted_session_scan_flow(
             || {
                 refusal_events.borrow_mut().push("checked-host");
-                Ok(test_checked_host())
+                Ok(pw3_test_checked_host())
             },
             |_checked| {
                 refusal_events.borrow_mut().push("attended-binding");
@@ -11234,7 +11234,7 @@ mod tauri_registration_surface_tests {
             },
             |_checked, _operator_names| {
                 refusal_events.borrow_mut().push("native-scan");
-                Ok(test_deletion_scan())
+                Ok(pw3_test_deletion_scan())
             },
             |_checked| {
                 refusal_events.borrow_mut().push("context-recheck");
@@ -11255,7 +11255,7 @@ mod tauri_registration_surface_tests {
         let stale_context = checked_hosted_session_scan_flow(
             || {
                 stale_context_events.borrow_mut().push("checked-host");
-                Ok(test_checked_host())
+                Ok(pw3_test_checked_host())
             },
             |_checked| {
                 stale_context_events.borrow_mut().push("attended-binding");
@@ -11263,7 +11263,7 @@ mod tauri_registration_surface_tests {
             },
             |_checked, _operator_names| {
                 stale_context_events.borrow_mut().push("native-scan");
-                Ok(test_deletion_scan())
+                Ok(pw3_test_deletion_scan())
             },
             |_checked| {
                 stale_context_events.borrow_mut().push("context-recheck");
@@ -11301,7 +11301,7 @@ mod tauri_registration_surface_tests {
             },
             |_checked, _operator_names| {
                 missing_checked_host_events.borrow_mut().push("native-scan");
-                Ok(test_deletion_scan())
+                Ok(pw3_test_deletion_scan())
             },
             |_checked| {
                 missing_checked_host_events

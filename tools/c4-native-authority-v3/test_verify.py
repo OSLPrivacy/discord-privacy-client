@@ -1690,6 +1690,13 @@ def c4_v3_native_authority_receipt_schema_test_verify_py() -> None:
 c4_v3_native_authority_receipt_schema_test_verify_py.__name__ = "test_verify.py"
 
 
+def test_verify_schema_py() -> None:
+    define_the_c4_v3_native_authority_receipt_schema_for_exact_shipping_builds()
+
+
+test_verify_schema_py.__name__ = "test_verify.py schema-only"
+
+
 def validate_carrier_and_pre_post_readbacks_against_one_discord_target_binding() -> None:
     testcase = unittest.TestCase()
     receipt = make_receipt()
@@ -1807,6 +1814,13 @@ def readback_empty_post_send_contract() -> None:
         validate_receipt(false_empty_readback)
 
 
+def readback_target_binding_contract() -> None:
+    validate_carrier_and_pre_post_readbacks_against_one_discord_target_binding()
+
+
+readback_target_binding_contract.__name__ = "readback target binding"
+
+
 def load_tests(
     loader: unittest.TestLoader,
     tests: unittest.TestSuite,
@@ -1823,6 +1837,7 @@ def load_tests(
     suite.addTest(unittest.FunctionTestCase(
         define_the_c4_v3_native_authority_receipt_schema_for_exact_shipping_builds,
     ))
+    suite.addTest(unittest.FunctionTestCase(test_verify_schema_py))
     suite.addTest(unittest.FunctionTestCase(
         c4_v3_native_authority_receipt_schema_test_verify_py,
     ))
@@ -1831,6 +1846,7 @@ def load_tests(
     ))
     suite.addTest(unittest.FunctionTestCase(readback_contract))
     suite.addTest(unittest.FunctionTestCase(readback_empty_post_send_contract))
+    suite.addTest(unittest.FunctionTestCase(readback_target_binding_contract))
     return suite
 
 
