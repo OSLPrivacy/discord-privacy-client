@@ -716,10 +716,13 @@ grade_f1_live_windows_walkthrough_import() {
   local vm_name request_sha exe_sha agent_sha win32_sha receipt_request_sha receipt_exe_sha
   local receipt_artifact_count receipt_artifact_rel
   local receipt_artifact_file receipt_artifact_sha receipt_artifact_size receipt_artifact_path
+  local evidence_tier platform
   [ -f "$file" ] || { echo "F1 INVALID: verdict file is missing" >&2; return 9; }
   overall="$(jq -r '.overall // empty' "$file" 2>/dev/null || true)"
   shape="$(step_shape "$file")"
   steps="$(step_count "$file")"
+  evidence_tier="$(jq -r '.evidenceTier // empty' "$file" 2>/dev/null || true)"
+  platform="$(jq -r '(.platform.os // .os // "") | ascii_downcase' "$file" 2>/dev/null || true)"
   picker="$(step_status "$file" picker)"
   grant="$(step_status "$file" grant-ipc)"
   import="$(step_status "$file" import)"
@@ -765,6 +768,11 @@ grade_f1_live_windows_walkthrough_import() {
      || ! is_sha256 "$agent_sha" || ! is_sha256 "$win32_sha" ]; then
     echo "F1 INVALID: verdict is not bound to a live Windows VM request, executable and agent pair" >&2
     return 9
+  fi
+  if [ "$evidence_tier" != "live" ] || [ "$platform" != "windows" ] \
+     || [[ ! "$vm_name" =~ ^[A-Za-z0-9._-]{1,96}$ ]]; then
+    echo "F1 FAIL: walkthrough is not bound to a live Windows VM" >&2
+    return 1
   fi
   if [ "$picker" != "pass" ] || [ "$grant" != "pass" ] \
      || [ "$import" != "pass" ] || [ "$revoke" != "pass" ] \
@@ -835,8 +843,12 @@ grade_f2_real_vm_five_frame_walkthrough() {
   local file="$1" overall frames step_total shape unique_sha artifact_shape unique_artifacts
   local request_bindings exe_bindings
   local frame_id artifact_rel claimed_sha artifact_file artifact_actual_sha artifact_size artifact_signature
+  local evidence_tier vm_name authorization_sha
   [ -f "$file" ] || { echo "F2 INVALID: verdict file is missing" >&2; return 9; }
   overall="$(jq -r '.overall // empty' "$file" 2>/dev/null || true)"
+  evidence_tier="$(jq -r '.evidenceTier // empty' "$file" 2>/dev/null || true)"
+  vm_name="$(jq -r '.vmName // empty' "$file" 2>/dev/null || true)"
+  authorization_sha="$(jq -r '.authorizationSha256 // .authorizedGrantSha256 // empty' "$file" 2>/dev/null || true)"
   frames="$(jq -r '[.steps[]? | select(.verb == "frame" and .status == "pass")] | length' "$file" 2>/dev/null || printf '0\n')"
   step_total="$(jq -r '[.steps[]?] | length' "$file" 2>/dev/null || printf '0\n')"
   shape="$(jq -r '[.steps[]? | select(.verb == "frame") | (.id + ":" + ((.facts.frameOrdinal // 0) | tostring))] | join(",")' "$file" 2>/dev/null || true)"
@@ -850,6 +862,11 @@ grade_f2_real_vm_five_frame_walkthrough() {
   if [ "$step_total" -ne 5 ] || [ "$frames" -ne 5 ] \
      || [ "$shape" != "F1:1,F2:2,F3:3,F4:4,F5:5" ]; then
     echo "F2 FAIL: expected exact five-frame walkthrough, got '$shape' across $step_total steps" >&2
+    return 1
+  fi
+  if [ "$evidence_tier" != "live" ] || [[ ! "$vm_name" =~ ^[A-Za-z0-9._-]{1,96}$ ]] \
+     || ! is_sha256 "$authorization_sha"; then
+    echo "F2 FAIL: walkthrough is not bound to an authorized live VM" >&2
     return 1
   fi
   if [ "$unique_sha" -ne 5 ]; then
@@ -916,7 +933,7 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
   local bad_receipt_request bad_receipt_exe bad_source bad_secret bad_revoke bad_revoke_bound
   local bad_revoked_source bad_restart bad_reread bad_reread_mismatch bad_persist
   local bad_live_binding bad_nonnumeric bad_shape bad_status bad_overall bad_extra bad_reordered
-  local bad_missing_artifact request_sha exe_sha agent_sha win32_sha receipt_file receipt_sha
+  local bad_missing_artifact bad_simulated request_sha exe_sha agent_sha win32_sha receipt_file receipt_sha
   tmp="$(vmqa_named_test_tmpdir)"
   good="$tmp/f1-good.json"
   bad_empty="$tmp/f1-empty.json"
@@ -944,6 +961,7 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
   bad_extra="$tmp/f1-extra.json"
   bad_reordered="$tmp/f1-reordered.json"
   bad_missing_artifact="$tmp/f1-missing/f1-missing-receipt-artifact.json"
+  bad_simulated="$tmp/f1-simulated.json"
   mkdir -p -- "$tmp/artifacts"
   receipt_file="$tmp/artifacts/import-receipt.json"
   printf '{"importedRows":2,"importedBytes":256,"source":"edge"}\n' >"$receipt_file"
@@ -961,6 +979,9 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
     requestExeSha256:$exe,
     agentSha:$agent,
     win32Sha:$win32,
+    evidenceTier:"live",
+    vmName:"OSL-Azure-Client-1",
+    platform:{os:"windows"},
     overall:"pass",
     steps:[
       {id:"P",verb:"picker",status:"pass",facts:{selectedSource:"edge"}},
@@ -1000,6 +1021,7 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
   jq '.steps = [.steps[1], .steps[0], .steps[2], .steps[3], .steps[4], .steps[5], .steps[6]]' "$good" >"$bad_reordered"
   mkdir -p -- "$(dirname -- "$bad_missing_artifact")"
   cp -- "$good" "$bad_missing_artifact"
+  jq '.evidenceTier="simulation"' "$good" >"$bad_simulated"
   grade_f1_live_windows_walkthrough_import "$good" >/dev/null \
     || { rm -rf -- "$tmp"; return 1; }
   grade_f1_live_windows_walkthrough_import "$bad_empty" >/dev/null 2>&1 \
@@ -1052,13 +1074,15 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
     && { rm -rf -- "$tmp"; return 1; }
   grade_f1_live_windows_walkthrough_import "$bad_missing_artifact" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
+  grade_f1_live_windows_walkthrough_import "$bad_simulated" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
   rm -rf -- "$tmp"
   return 0
 }
 
 f2_real_vm_five_frame_walkthrough() {
   local tmp good bad_four bad_reused bad_unbound bad_weak_surface bad_mixed_request bad_mixed_exe
-  local bad_extra bad_missing_artifact
+  local bad_extra bad_missing_artifact bad_unauthorized
   local frame_path frame_sha frame_color missing_dir
   tmp="$(vmqa_named_test_tmpdir)"
   good="$tmp/f2-good.json"
@@ -1070,8 +1094,15 @@ f2_real_vm_five_frame_walkthrough() {
   bad_mixed_exe="$tmp/f2-mixed-exe.json"
   bad_extra="$tmp/f2-extra.json"
   bad_missing_artifact="$tmp/f2-missing/verdict.json"
+  bad_unauthorized="$tmp/f2-unauthorized.json"
   mkdir -p -- "$tmp/artifacts"
-  jq -n '{overall:"pass",steps:[]}' >"$good"
+  jq -n '{
+    evidenceTier:"live",
+    vmName:"OSL-Azure-Client-1",
+    authorizationSha256:("a" * 64),
+    overall:"pass",
+    steps:[]
+  }' >"$good"
   for frame in 1 2 3 4 5; do
     frame_path="$tmp/artifacts/frame-$frame.png"
     frame_color=$((30 + frame))
@@ -1127,6 +1158,7 @@ PY
   cp -- "$good" "$bad_missing_artifact"
   cp -R -- "$tmp/artifacts" "$missing_dir/artifacts"
   rm -f -- "$missing_dir/artifacts/frame-3.png"
+  jq '.authorizationSha256=""' "$good" >"$bad_unauthorized"
   grade_f2_real_vm_five_frame_walkthrough "$good" >/dev/null \
     || { rm -rf -- "$tmp"; return 1; }
   grade_f2_real_vm_five_frame_walkthrough "$bad_four" >/dev/null 2>&1 \
@@ -1144,6 +1176,8 @@ PY
   grade_f2_real_vm_five_frame_walkthrough "$bad_extra" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
   grade_f2_real_vm_five_frame_walkthrough "$bad_missing_artifact" >/dev/null 2>&1 \
+    && { rm -rf -- "$tmp"; return 1; }
+  grade_f2_real_vm_five_frame_walkthrough "$bad_unauthorized" >/dev/null 2>&1 \
     && { rm -rf -- "$tmp"; return 1; }
   rm -rf -- "$tmp"
   return 0
