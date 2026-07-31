@@ -10,6 +10,16 @@ publish = false
 tauri-build = "=2.6.1"
 
 [dependencies]
+# Restored: a merge dropped these while keeping the code in attachment_scan.rs
+# that uses them, so the crate failed with 26 "unresolved module or unlinked
+# crate" errors. Versions are the exact pins from 05ed3686.
+calamine = { version = "=0.36.0", default-features = false }
+flate2 = "=1.1.9"
+pdf-extract = "=0.12.0"
+quick-xml = "=0.41.0"
+tar = "=0.4.46"
+zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }
+lopdf = { version = "=0.42.0", default-features = false }
 adapter-profile = { path = "../../crates/adapter-profile" }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.149"
