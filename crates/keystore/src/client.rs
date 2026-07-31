@@ -125,6 +125,48 @@ pub const ROT_DOMAIN: &str = "OSL-ROTATE-v1";
 /// The b64 args are the EXACT strings placed in the JSON body
 /// (never re-encoded). A `None` ratchet contributes the empty
 /// string with no trailing newline.
+/// Mirrors `USERNAME_CLAIM_DOMAIN` in keyserver-cf/src/lib/username.ts.
+pub const USERNAME_CLAIM_DOMAIN: &str = "OSL-USERNAME-CLAIM-v1";
+/// Mirrors `USERNAME_MIN` / `USERNAME_MAX` in the same module.
+pub const USERNAME_MIN: usize = 3;
+pub const USERNAME_MAX: usize = 30;
+
+/// True only for an ALREADY-normalized username.
+///
+/// The server refuses anything else with "username must already be normalized",
+/// so this must never normalize silently: a caller that quietly lowercased or
+/// trimmed would claim a name the user did not type. Mirrors
+/// `USERNAME_RE = /^[a-z0-9](?:[a-z0-9_]{1,28}[a-z0-9])?$/` exactly: lowercase
+/// alphanumeric, underscores only in the interior, 3..=30 characters.
+pub fn is_normalized_username(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() < USERNAME_MIN || bytes.len() > USERNAME_MAX {
+        return false;
+    }
+    let alnum = |b: u8| b.is_ascii_digit() || b.is_ascii_lowercase();
+    let Some((&first, rest)) = bytes.split_first() else {
+        return false;
+    };
+    let Some((&last, middle)) = rest.split_last() else {
+        return false;
+    };
+    alnum(first) && alnum(last) && middle.iter().all(|&b| alnum(b) || b == b'_')
+}
+
+/// Byte-exact claim message, mirroring `usernameClaimMessage` in
+/// keyserver-cf/src/lib/username.ts. One byte of drift and every claim fails, so
+/// both sides pin this vector in their tests.
+pub fn username_claim_msg(
+    username: &str,
+    user_id: &str,
+    friend_code: &str,
+    request_id: &str,
+    timestamp_ms: i64,
+) -> Vec<u8> {
+    format!("{USERNAME_CLAIM_DOMAIN}\n{username}\n{user_id}\n{friend_code}\n{request_id}\n{timestamp_ms}")
+        .into_bytes()
+}
+
 pub fn reg_msg(
     user_id: &str,
     ik_x25519_pub_b64: &str,

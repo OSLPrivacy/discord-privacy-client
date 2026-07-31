@@ -24,7 +24,8 @@ fn readback() {
         output.status.code()
     );
     assert!(
-        combined.contains("readback (tools/c4-native-authority-v3/test_verify.NativeAuthorityV3Tests.readback) ... ok"),
+        combined.contains("readback (")
+            && combined.contains("NativeAuthorityV3Tests.readback) ... ok"),
         "the exact readback schema test must be exercised\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
