@@ -188,7 +188,7 @@ class HubVmQaAttestationTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 verify("hub-v0.1.0", root, attestation)
 
-    def test_rejects_missing_second_session_reproduction(self) -> None:
+    def test_rejects_missing_second_session_reproduction_legacy_json_load(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             _, attestation = self.candidate(root)
@@ -198,7 +198,7 @@ class HubVmQaAttestationTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 verify("hub-v0.1.0", root, attestation)
 
-    def test_rejects_same_session_final_approver(self) -> None:
+    def test_rejects_same_session_final_approver_legacy_json_load(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             _, attestation = self.candidate(root)
