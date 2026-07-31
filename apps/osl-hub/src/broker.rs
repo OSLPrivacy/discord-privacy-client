@@ -8966,6 +8966,124 @@ mod tests {
     }
 
     #[test]
+    fn audit_control_inbox_consumers_have_no_active_peer_unfiltered_drain_sw18590() {
+        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let account_dir = install_sender_filter_test_account("audit-no-unfiltered");
+        let identity = keystore::generate_identity("recipient".to_owned());
+        let sender_a = "peer-a";
+        let sender_b = "peer-b";
+
+        let (base_url, requests, server) = spawn_control_inbox_test_server(vec![
+            serde_json::json!({
+                "ok": true,
+                "capabilities": {
+                    "control_inbox_sender_disposition": 1,
+                },
+            }),
+            serde_json::json!({
+                "items": [
+                    control_inbox_test_row(
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        sender_a,
+                        ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
+                    ),
+                    control_inbox_test_row(
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab",
+                        sender_a,
+                        ipc::wire_v2::MSG_TYPE_ATTACHMENT,
+                    ),
+                ],
+                "filtered_sender_id": sender_a,
+                "filtered_sender_delivery": {
+                    "live": 2,
+                    "retryable": 0,
+                    "quarantined": 0,
+                    "retired": 0,
+                },
+            }),
+        ]);
+        let client = keystore::KeyServerClient::new(&base_url).expect("build audit client");
+        let page = fetch_peer_control_inbox(&identity, &client, sender_a)
+            .expect("active-peer receive uses the sender-scoped boundary");
+        assert_eq!(page.items.len(), 2);
+        assert!(
+            page.items.iter().all(|row| row.sender_id == sender_a),
+            "active-peer receive must not admit another sender's row"
+        );
+        let health = requests.recv().expect("capture capability probe");
+        let filtered = requests.recv().expect("capture active-peer GET");
+        assert_health_request(&health);
+        assert_filtered_request(&filtered, sender_a);
+        assert!(
+            requests.try_recv().is_err(),
+            "active-peer receive must not issue an extra unfiltered inbox request"
+        );
+        server.join().expect("filtered audit server exits");
+
+        let (widened_url, widened_requests, widened_server) =
+            spawn_control_inbox_test_server(vec![
+                serde_json::json!({
+                    "ok": true,
+                    "capabilities": {
+                        "control_inbox_sender_disposition": 1,
+                    },
+                }),
+                serde_json::json!({
+                    "items": [
+                        control_inbox_test_row(
+                            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                            sender_b,
+                            ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_RELAY,
+                        ),
+                    ],
+                    "filtered_sender_id": sender_a,
+                    "filtered_sender_delivery": {
+                        "live": 1,
+                        "retryable": 0,
+                        "quarantined": 0,
+                        "retired": 0,
+                    },
+                }),
+            ]);
+        let widened_client =
+            keystore::KeyServerClient::new(&widened_url).expect("build widened audit client");
+        let error = fetch_peer_control_inbox(&identity, &widened_client, sender_a)
+            .expect_err("a sender-scoped boundary must refuse widened rows");
+        assert!(
+            error.to_string().contains("outside its sender filter"),
+            "widened rows must fail closed instead of being locally filtered"
+        );
+        assert_health_request(&widened_requests.recv().expect("capture widened health"));
+        assert_filtered_request(
+            &widened_requests
+                .recv()
+                .expect("capture widened active-peer GET"),
+            sender_a,
+        );
+        widened_server.join().expect("widened audit server exits");
+
+        let (legacy_url, legacy_requests, legacy_server) =
+            spawn_control_inbox_test_server(vec![serde_json::json!({ "ok": true })]);
+        let legacy_client =
+            keystore::KeyServerClient::new(&legacy_url).expect("build legacy audit client");
+        let legacy_error = fetch_peer_control_inbox(&identity, &legacy_client, sender_a)
+            .expect_err("legacy capability absence must not fall back to an unfiltered page");
+        assert!(
+            legacy_error
+                .to_string()
+                .contains("sender-filter capability unavailable"),
+            "legacy capability absence must be an explicit refusal"
+        );
+        assert_health_request(&legacy_requests.recv().expect("capture legacy health"));
+        assert!(
+            legacy_requests.try_recv().is_err(),
+            "legacy refusal must stop before any unfiltered active-peer GET"
+        );
+        legacy_server.join().expect("legacy audit server exits");
+        remove_sender_filter_test_account(&account_dir);
+    }
+
+    #[test]
     fn sender_filtered_active_peer_control_inbox_refuses_widening() {
         let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
         let account_dir = install_sender_filter_test_account("audit-filtered");
@@ -13218,6 +13336,47 @@ mod tests {
             "Decryption display is off for this conversation"
         );
     }
+
+    #[test]
+    fn recovery_phrase_render_is_gated_behind_the_capture_proof_latch() {
+        let mut payload = PeerProtectedPayload {
+            version: PEER_PROTECTED_VERSION,
+            message_id: "peer-a9000000000000000000000000000000".to_owned(),
+            created_at: 1_700_000_000,
+            expires_at: 1_700_003_600,
+            service_id: "discord".to_owned(),
+            conversation_binding: "manual-dm-a9-capture".to_owned(),
+            sender_osl_user_id: "osl-peer-a9".to_owned(),
+            recipient_osl_user_id: "osl-self-a9".to_owned(),
+            plaintext: [
+                "abandon ability able about above absent absorb abstract",
+                "absurd abuse access accident",
+            ]
+            .join(" "),
+            view_once: false,
+            require_capture_protection: true,
+            logical_message_id: None,
+            chunk_index: None,
+            chunk_count: None,
+            whole_sha256: None,
+        };
+
+        assert!(
+            !capture_policy_allows_plaintext(&payload, false),
+            "a recovery-phrase display path must refuse while screen-capture protection is unproven"
+        );
+        assert!(
+            capture_policy_allows_plaintext(&payload, true),
+            "the same authenticated payload may render only after the capture-proof latch is set"
+        );
+
+        payload.require_capture_protection = false;
+        assert!(
+            capture_policy_allows_plaintext(&payload, false),
+            "the test must distinguish the protected recovery path from payloads that do not demand the latch"
+        );
+    }
+
     #[test]
     fn rehydrated_rows_keep_undecodable_rows_instead_of_dropping_them() {
         let rows = rehydrated_rows(
@@ -14316,7 +14475,7 @@ ok i will weekend again with you",
     }
 
     #[test]
-    fn recovery_phrase_render_is_gated_behind_the_capture_proof_latch() {
+    fn recovery_phrase_secret_material_render_is_gated_behind_the_capture_proof_latch() {
         let mut payload = PeerProtectedPayload {
             version: PEER_PROTECTED_VERSION,
             message_id: "peer-0123456789abcdef0123456789abcdef".to_owned(),
