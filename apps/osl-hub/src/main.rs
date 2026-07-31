@@ -78,7 +78,9 @@ use osl_privacy_hub::service_host::{self, ActiveServiceHost, ServiceHostState};
 use osl_privacy_hub::service_scope_index::{ImmutableServiceBurnManifest, ServiceScopeIndexState};
 use osl_privacy_hub::services::ServiceRegistryState;
 use osl_privacy_hub::startup_gate::{self, HubGateUnlockResult, VerifiedGateRole};
-use osl_privacy_hub::updates::{bounded_plain_notes, bounded_version, RELEASES_URL};
+use osl_privacy_hub::updates::{
+    bounded_plain_notes, bounded_version, RELEASES_URL, SOURCE_REPOSITORY_URL,
+};
 use osl_privacy_hub::whatsapp_accessibility::{
     WhatsAppAccessibilityState, WhatsAppVerificationReceipt, WhatsAppVerificationStatus,
     WhatsAppVisualBindingBeginReceipt, WhatsAppVisualBindingConfirmReceipt,
@@ -1715,6 +1717,32 @@ fn open_hub_releases_page() -> Result<(), String> {
         .spawn()
         .map(|_| ())
         .map_err(|_| "The fixed OSL releases page could not be opened".to_owned())
+}
+
+#[tauri::command]
+fn open_hub_source_repository() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("rundll32.exe");
+        command.args(["url.dll,FileProtocolHandler", SOURCE_REPOSITORY_URL]);
+        command
+    };
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = std::process::Command::new("open");
+        command.arg(SOURCE_REPOSITORY_URL);
+        command
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(SOURCE_REPOSITORY_URL);
+        command
+    };
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|_| "The fixed OSL source repository could not be opened".to_owned())
 }
 
 #[tauri::command]
@@ -4441,6 +4469,9 @@ async fn poll_native_discord_headless_qa(
     caller: tauri::WebviewWindow,
     session: State<'_, HubAccountSessionState>,
 ) -> Result<DiscordHeadlessQaPoll, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted Discord QA shell may poll headless QA".to_owned());
+    }
     let caller_label = caller.label().to_owned();
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
@@ -9009,6 +9040,7 @@ macro_rules! hub_tauri_commands {
             check_hub_for_updates,
             install_hub_update,
             open_hub_releases_page,
+            open_hub_source_repository,
             list_native_apps,
             install_native_app,
             get_mullvad_status,

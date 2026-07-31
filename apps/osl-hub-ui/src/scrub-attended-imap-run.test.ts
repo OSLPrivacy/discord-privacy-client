@@ -15,6 +15,7 @@ const baseFinding: LocalPrivacyFinding = {
   reason: "Review in context.",
   localPreview: "password",
   canRequestDelete: true,
+  attachmentPath: null,
 };
 
 describe("attended IMAP scrub run", () => {

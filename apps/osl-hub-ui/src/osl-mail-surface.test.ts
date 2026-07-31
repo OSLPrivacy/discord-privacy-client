@@ -54,8 +54,8 @@ describe("OSL Mail surface", () => {
     expect(header.indexOf("${mailScope}")).toBeLessThan(header.indexOf("${localProtection}"));
 
     const guide = functionSource("serviceGuideContent", "settingsContent");
-    expect(guide).toContain("mailComposerEncryptionScope(selectedApp ?? activeHomeApp())");
-    expect(guide.indexOf("${mailScope}")).toBeLessThan(guide.indexOf("<footer"));
+    expect(guide).toContain("mailComposerProtectionNote(selectedApp ?? activeHomeApp())");
+    expect(guide.indexOf("${mailNote}")).toBeLessThan(guide.indexOf("<footer"));
     expect(styles).toContain(".mail-composer-encryption-scope");
   });
 

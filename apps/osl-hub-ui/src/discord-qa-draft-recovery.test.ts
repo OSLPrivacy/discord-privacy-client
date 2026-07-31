@@ -296,10 +296,10 @@ describe("Discord QA draft recovery", () => {
     // can still never be claimed until Discord has actually consumed the
     // exact draft.
     expect(place).toContain(
-      "&& confirm_carrier_consumed(target, process_is_trusted, scope_binding, &expected)",
+      "&& confirm_carrier_consumed(\n                target,\n                process_is_trusted,\n                &profile,\n                scope_binding,\n                &expected,\n            )",
     );
     expect(place).toContain(
-      "if !confirm_carrier_consumed(target, process_is_trusted, scope_binding, &expected) {",
+      "if !confirm_carrier_consumed(\n            target,\n            process_is_trusted,\n            &profile,\n            scope_binding,\n            &expected,\n        ) {",
     );
     expect(place).toContain("if !finish_confirmed_carrier_send(");
     expect(adapter).toContain("let delays = [0, 15, 30, 60];");
