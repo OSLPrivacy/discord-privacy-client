@@ -52,7 +52,10 @@ fn bundled_navigation(url: &url::Url) -> bool {
         && url.password().is_none()
         && url.query().is_none()
         && url.fragment().is_none()
-        && matches!(url.path(), "/whatsapp-overlay.html" | "/whatsapp-overlay.html/")
+        && matches!(
+            url.path(),
+            "/whatsapp-overlay.html" | "/whatsapp-overlay.html/"
+        )
 }
 
 pub(crate) fn hide(app: &tauri::AppHandle) {

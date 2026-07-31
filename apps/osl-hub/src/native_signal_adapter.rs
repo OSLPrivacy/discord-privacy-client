@@ -517,9 +517,7 @@ mod tests {
         assert_eq!(candidates[1].node_index, 3);
         assert_eq!(candidates[1].text, "second visible body");
         assert!(
-            candidates
-                .iter()
-                .all(|candidate| candidate.node_index != 2),
+            candidates.iter().all(|candidate| candidate.node_index != 2),
             "text without body evidence must not become a row candidate"
         );
 

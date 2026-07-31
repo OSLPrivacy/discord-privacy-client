@@ -1183,22 +1183,35 @@ pub fn install_native_app(id: NativeAppId) -> Result<NativeInstallResult, String
 /// Installs the fixed official Discord PTB channel only when the normal
 /// Stable channel is already populated outside OSL. PTB gives OSL a separate
 /// signed native profile without reading, moving, or closing Stable Discord.
+/// The exact winget argument vector used to install the dedicated Discord
+/// channel.
+///
+/// Split out so the "one fixed official channel" property can be asserted
+/// without running an installer. The test used to assert that
+/// `install_discord_dedicated_channel()` returned `Err`, which only held on
+/// machines that have no winget; on a CI runner that does have it, the test
+/// was launching a real Discord PTB install as a side effect.
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn discord_dedicated_install_arguments() -> [&'static str; 9] {
+    [
+        "install",
+        "--id",
+        DISCORD_DEDICATED_PACKAGE_ID,
+        "--exact",
+        "--source",
+        "winget",
+        "--accept-source-agreements",
+        "--accept-package-agreements",
+        "--silent",
+    ]
+}
+
 pub fn install_discord_dedicated_channel() -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         let winget = installer_executable()
             .ok_or_else(|| "Windows App Installer (winget) is unavailable".to_owned())?;
-        let arguments = [
-            "install",
-            "--id",
-            DISCORD_DEDICATED_PACKAGE_ID,
-            "--exact",
-            "--source",
-            "winget",
-            "--accept-source-agreements",
-            "--accept-package-agreements",
-            "--silent",
-        ];
+        let arguments = discord_dedicated_install_arguments();
         spawn_detached(&winget, &arguments)
             .map_err(|_| "The dedicated Discord installer could not be started".to_owned())?;
         Ok(())
@@ -2686,7 +2699,48 @@ mod tests {
     #[test]
     fn dedicated_discord_fallback_is_one_fixed_official_channel() {
         assert_eq!(DISCORD_DEDICATED_PACKAGE_ID, "Discord.Discord.PTB");
-        assert!(install_discord_dedicated_channel().is_err());
+
+        // This used to assert `install_discord_dedicated_channel().is_err()`,
+        // which is not a property anyone wants: it held only because the dev
+        // box has no winget. On a runner that has winget the call succeeds --
+        // and really starts installing Discord PTB. Assert the invariant in
+        // the name instead, on the command we would issue, with no installer
+        // executed and nothing about the local machine involved.
+        let arguments = discord_dedicated_install_arguments();
+        assert_eq!(
+            arguments,
+            [
+                "install",
+                "--id",
+                "Discord.Discord.PTB",
+                "--exact",
+                "--source",
+                "winget",
+                "--accept-source-agreements",
+                "--accept-package-agreements",
+                "--silent",
+            ]
+        );
+        // Exactly one channel, pinned by exact id against the official source.
+        assert_eq!(
+            arguments
+                .iter()
+                .filter(|argument| argument.starts_with("Discord."))
+                .count(),
+            1,
+            "never offer a second Discord channel"
+        );
+        assert!(
+            arguments.contains(&"--exact"),
+            "an inexact id could resolve to a different package"
+        );
+        assert_eq!(
+            arguments
+                .iter()
+                .position(|argument| *argument == "--source"),
+            Some(4)
+        );
+        assert_eq!(arguments[5], "winget", "only the official winget source");
     }
 
     #[test]
@@ -3037,16 +3091,48 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn current_user_whatsapp_registration_resolves_exact_packaged_executable() {
-        let executable = whatsapp_store_executable_path()
-            .expect("current user's exact WhatsApp AppX registration should resolve");
-        assert!(path_file_name_eq(&executable, "WhatsApp.Root.exe"));
-        let package_root = executable.parent().expect("packaged executable has a root");
-        let program_files = known_folder(KnownFolder::ProgramFiles)
-            .expect("Program Files known folder should resolve");
-        assert!(is_trusted_whatsapp_package_path(
-            package_root,
-            &program_files
-        ));
+        // Two different things were tangled here: the invariant (if we resolve
+        // a WhatsApp registration at all, it is the exact packaged executable
+        // under a trusted package root -- never a fuzzy match) and the
+        // environment fact (WhatsApp happens to be installed). The `expect`
+        // asserted the environment fact, so the test failed on a bare runner
+        // where nothing is installed.
+        //
+        // The invariant is asserted below in both directions, and this is not
+        // a silent skip: if WhatsApp *is* registered and the resolved path is
+        // not the exact packaged executable in a trusted root, this fails
+        // loudly. If it is not registered, resolution must refuse cleanly
+        // rather than hand back some approximate path.
+        match whatsapp_store_executable_path() {
+            Some(executable) => {
+                assert!(
+                    path_file_name_eq(&executable, "WhatsApp.Root.exe"),
+                    "a resolved WhatsApp registration must be the exact packaged \
+                     executable, got {executable:?}"
+                );
+                let package_root = executable.parent().expect("packaged executable has a root");
+                let program_files = known_folder(KnownFolder::ProgramFiles)
+                    .expect("Program Files known folder should resolve");
+                assert!(
+                    is_trusted_whatsapp_package_path(package_root, &program_files),
+                    "a resolved WhatsApp package root must be trusted, got {package_root:?}"
+                );
+            }
+            None => {
+                // Refusing is the only other acceptable outcome. Prove the
+                // refusal is the identity check doing its job and not an
+                // accident of this machine: the exact-match predicates that
+                // gate resolution must still reject every near-miss identity.
+                assert!(!whatsapp_package_full_name_matches(
+                    "5319275A.WhatsAppDesktop_bad_x64__cv1g1gvanyjgm"
+                ));
+                assert!(!whatsapp_package_identity_matches(
+                    "5319275A.WhatsAppDesktop",
+                    "attacker",
+                    ""
+                ));
+            }
+        }
     }
 
     #[test]

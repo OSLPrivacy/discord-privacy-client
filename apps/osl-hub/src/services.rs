@@ -589,7 +589,7 @@ mod tests {
         // (crates/ipc/src/main_password.rs), which other modules' tests also
         // mutate; hold the crate-wide lock so a sibling test can't swap the
         // key out from under this one mid-test.
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let path = temporary_registry();
         let state = ServiceRegistryState::load(path.clone());
         let services = state.list_for_owner(OWNER_A).unwrap();
@@ -611,7 +611,7 @@ mod tests {
     fn created_profiles_persist_without_credentials_or_claimed_login() {
         // See new_registry_has_twelve_services_and_no_fake_accounts for why
         // this lock is needed.
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let path = temporary_registry();
         let state = ServiceRegistryState::load(path.clone());
         let account = state
@@ -643,7 +643,7 @@ mod tests {
     fn remove_is_scoped_to_service_and_account() {
         // See new_registry_has_twelve_services_and_no_fake_accounts for why
         // this lock is needed.
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let path = temporary_registry();
         let state = ServiceRegistryState::load(path.clone());
         let account = state
@@ -686,22 +686,64 @@ mod tests {
     fn failed_create_never_leaves_a_phantom_in_memory_account() {
         // See new_registry_has_twelve_services_and_no_fake_accounts for why
         // this lock is needed.
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let parent_file = temporary_registry().with_extension("blocked-parent");
         fs::write(&parent_file, b"not a directory").unwrap();
         let state = ServiceRegistryState::load(parent_file.join("registry.json"));
         assert!(state
             .create_for_owner(OWNER_A, ServiceKind::Discord, "Personal".to_string())
             .is_err());
-        assert!(state.list_for_owner(OWNER_A).is_err());
-        let _ = fs::remove_file(parent_file);
+
+        // The invariant is that a create which failed to persist is never
+        // served back, not that the failure surfaces as any particular error.
+        // How "my parent directory is actually a file" surfaces is a platform
+        // fact: Linux reports ENOTDIR, which `read_bounded` treats as an error,
+        // while Windows reports ERROR_PATH_NOT_FOUND, which Rust maps to
+        // `NotFound` and `read_bounded` deliberately reads as "no registry
+        // yet". Asserting `is_err()` was asserting the Linux errno. Assert the
+        // absence of the phantom instead, under either outcome.
+        match state.list_for_owner(OWNER_A) {
+            Err(_) => {}
+            Ok(services) => assert!(
+                services.iter().all(|service| service.accounts.is_empty()),
+                "a create that failed to persist must never be listed afterwards"
+            ),
+        }
+        let _ = fs::remove_file(&parent_file);
+    }
+
+    #[test]
+    fn registry_path_that_is_not_a_regular_file_fails_closed() {
+        // The portable half of the property the test above used to lean on:
+        // when the registry path *does* resolve to something, and that
+        // something is not a bounded regular file, the registry must refuse
+        // rather than quietly present itself as empty -- an empty read is what
+        // a later write would clobber a real registry from. Pointing the
+        // registry straight at a directory reaches `read_bounded`'s
+        // `metadata` -> "not a bounded regular file" arm identically on Linux
+        // and Windows, with no errno spelling involved.
+        let _serial = crate::global_keystore_test_lock();
+        let directory = temporary_registry().with_extension("registry-is-a-directory");
+        fs::create_dir_all(&directory).unwrap();
+        let state = ServiceRegistryState::load(directory.clone());
+        assert!(
+            state.list_for_owner(OWNER_A).is_err(),
+            "a registry path that is not a regular file must fail closed, not read as empty"
+        );
+        assert!(
+            state
+                .create_for_owner(OWNER_A, ServiceKind::Discord, "Personal".to_string())
+                .is_err(),
+            "and it must refuse writes rather than create a fresh registry over it"
+        );
+        let _ = fs::remove_dir_all(&directory);
     }
 
     #[test]
     fn multiple_email_profiles_preserve_fixed_providers_across_restart() {
         // See new_registry_has_twelve_services_and_no_fake_accounts for why
         // this lock is needed.
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let path = temporary_registry();
         let state = ServiceRegistryState::load(path.clone());
         let gmail = state
@@ -744,7 +786,7 @@ mod tests {
     fn arbitrary_provider_binding_and_coming_soon_profiles_fail_closed() {
         // See new_registry_has_twelve_services_and_no_fake_accounts for why
         // this lock is needed.
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let path = temporary_registry();
         let state = ServiceRegistryState::load(path.clone());
         assert!(state
@@ -781,7 +823,7 @@ mod tests {
     fn legacy_unowned_account_is_quarantined_during_version_three_migration() {
         // See new_registry_has_twelve_services_and_no_fake_accounts for why
         // this lock is needed.
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let path = temporary_registry();
         fs::write(
             &path,
@@ -835,7 +877,7 @@ mod tests {
     fn complete_backup_recovers_a_crash_between_registry_replacements() {
         // See new_registry_has_twelve_services_and_no_fake_accounts for why
         // this lock is needed.
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let path = temporary_registry();
         let state = ServiceRegistryState::load(path.clone());
         let account = state
@@ -857,7 +899,7 @@ mod tests {
     fn two_owners_cannot_cross_list_or_authorize_open() {
         // See new_registry_has_twelve_services_and_no_fake_accounts for why
         // this lock is needed.
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let path = temporary_registry();
         let state = ServiceRegistryState::load(path.clone());
         let account_a = state
@@ -909,7 +951,7 @@ mod tests {
     fn reload_preserves_the_per_owner_profile_limit() {
         // See new_registry_has_twelve_services_and_no_fake_accounts for why
         // this lock is needed.
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let path = temporary_registry();
         let state = ServiceRegistryState::load(path.clone());
         for index in 0..MAX_ACCOUNTS_PER_SERVICE {
@@ -939,7 +981,7 @@ mod tests {
     fn tampered_encrypted_registry_fails_closed() {
         // See new_registry_has_twelve_services_and_no_fake_accounts for why
         // this lock is needed.
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let path = temporary_registry();
         ServiceRegistryState::load(path.clone())
             .create_for_owner(OWNER_A, ServiceKind::Discord, "Owner A".to_owned())
@@ -958,7 +1000,7 @@ mod tests {
     fn plaintext_primary_and_backup_get_distinct_encrypted_archive_paths() {
         // See new_registry_has_twelve_services_and_no_fake_accounts for why
         // this lock is needed.
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let path = temporary_registry();
         let backup = path.with_extension("bak");
         fs::write(&path, br#"{"version":2,"accounts":[]}"#).unwrap();

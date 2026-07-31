@@ -344,7 +344,7 @@ mod tests {
 
     #[test]
     fn burn_code_and_wrong_password_threshold_keep_distinct_paths() {
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let _reset = KeystoreGlobalReset;
         let state = HubCoreState::default();
 
@@ -395,7 +395,7 @@ mod tests {
 
     #[test]
     fn duress_pin_and_wrong_password_threshold_share_burn_path() {
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let _reset = KeystoreGlobalReset;
 
         let explicit_duress_dir = temp_dir("explicit-duress");

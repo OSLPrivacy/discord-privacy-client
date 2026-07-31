@@ -758,7 +758,7 @@ mod tests {
         // (crates/ipc/src/main_password.rs), which other modules' tests also
         // mutate; hold the crate-wide lock so a sibling test can't swap the
         // key out from under this one mid-test.
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let (index_state, path) = state();
         index_state
             .initialize_clean_account("identity-test-1", "discord", "account-test-1")
@@ -788,7 +788,7 @@ mod tests {
     fn uninitialized_legacy_account_indexes_write_but_cannot_claim_complete_burn() {
         // See clean_account_registration_is_write_ahead_and_encrypted for why
         // this lock is needed.
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let (state, path) = state();
         state
             .with_registered_write(registration(), || Ok(()))
@@ -810,7 +810,7 @@ mod tests {
     fn immutable_manifest_freezes_writes_and_journal_makes_retry_idempotent() {
         // See clean_account_registration_is_write_ahead_and_encrypted for why
         // this lock is needed.
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let (state, path) = state();
         state
             .initialize_clean_account("identity-test-1", "discord", "account-test-1")
@@ -846,7 +846,7 @@ mod tests {
         // See clean_account_registration_is_write_ahead_and_encrypted for why
         // this lock is needed (this test also calls state() a second time
         // further down, for the rejected-registration case).
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let (index_state, path) = state();
         index_state
             .initialize_clean_account("identity-test-1", "discord", "account-test-1")
@@ -895,7 +895,7 @@ mod tests {
 
     #[test]
     fn enumerate_scopes_to_exact_reviewed_mailbox_under_one_auth_epoch() {
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let (state, path) = state();
         state
             .initialize_clean_account("identity-test-1", "discord", "account-test-1")

@@ -848,13 +848,58 @@ mod tests {
         let (root, roots) = roots_with_chrome_profile("list-no-content", "Profile 1");
         std::fs::create_dir(root.join("Profile 1").join("History")).unwrap();
         std::fs::create_dir(root.join("Profile 1").join("Login Data")).unwrap();
-        std::fs::create_dir_all(root.join("bad:name")).unwrap();
+        // The malformed-directory fixture was named "bad:name", which cannot
+        // exist on Windows at all -- ':' is the alternate-data-stream
+        // separator, so `create_dir_all` failed and took the test with it
+        // before any enumeration happened. "bad!name" is creatable on both
+        // platforms and is still outside the profile-label allow-list, so it
+        // exercises the same "enumerate only well-formed profiles" path. The
+        // characters that cannot be put on disk under Windows are covered
+        // against the validator directly, in the test below.
+        std::fs::create_dir_all(root.join("bad!name")).unwrap();
         let mut state = state("list-no-content");
         let profiles = state.list_profiles(&roots).unwrap();
         assert_eq!(profiles.len(), 1);
         assert_eq!(profiles[0].browser_id, BrowserImportId::Chrome);
         assert_eq!(profiles[0].profile, "Profile 1");
         assert_eq!(profiles[0].display_name, "Profile 1");
+    }
+
+    #[test]
+    fn profile_label_rejects_separators_traversal_and_anything_outside_the_allow_list() {
+        // Filesystem-free, so it holds identically on every platform and can
+        // cover the separators and traversal labels that Windows will not let
+        // a fixture create on disk. These are the labels that reach path
+        // joins, so the rejection is the thing that matters, not whether a
+        // directory of that name happens to be enumerable.
+        for rejected in [
+            "",
+            ".",
+            "..",
+            "bad:name",
+            "bad/name",
+            "bad\\name",
+            "bad!name",
+            "a\0b",
+            "trailing\n",
+            "sneaky/../..",
+            "C:",
+            "nul\u{7f}",
+        ] {
+            assert!(
+                !valid_profile_label(rejected),
+                "profile label must be rejected: {rejected:?}"
+            );
+        }
+        assert!(!valid_profile_label(
+            &"a".repeat(MAX_BROWSER_PROFILE_LABEL_BYTES + 1)
+        ));
+        for accepted in ["Default", "Profile 1", "work_profile", "a.b-c", "A"] {
+            assert!(
+                valid_profile_label(accepted),
+                "ordinary profile label must be accepted: {accepted:?}"
+            );
+        }
     }
 
     #[test]

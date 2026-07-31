@@ -4029,7 +4029,7 @@ mod tests {
 
     impl FileBackedSecurityHarness {
         fn new(label: &str) -> Self {
-            let serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+            let serial = crate::global_keystore_test_lock();
             let dir = fresh_test_dir(label);
             let previous_active_account_dir = keystore::active_account_dir();
             let previous_file_key = ipc::main_password::get_file_storage_key();

@@ -37,8 +37,8 @@ const CANDIDATE_EXTENSIONS: &[&str] = &[
 /// allowlist for anything that would be handed to the in-memory viewer.
 pub fn accepted_attachment_mime(filename: &str) -> Option<&'static str> {
     let mime = ipc::attachment_wire::mime_for_filename(filename)?;
-    let viewer_can_decode =
-        !mime.starts_with("image/") || crate::peer_attachment_io::supported_protected_image_mime(mime);
+    let viewer_can_decode = !mime.starts_with("image/")
+        || crate::peer_attachment_io::supported_protected_image_mime(mime);
     if !viewer_can_decode {
         return None;
     }

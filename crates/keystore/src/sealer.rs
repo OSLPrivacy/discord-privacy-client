@@ -274,6 +274,20 @@ impl KeyringSealer {
         // `select_best_sealer` can fall through to process memory instead of
         // silently returning a sealer whose state vanishes between
         // operations.
+        //
+        // KNOWN RACE (deliberately not fixed here, 2026-07-31): this probe is
+        // not concurrency-safe. `KEYRING_SERVICE`/`KEYRING_USER` name ONE
+        // machine-global entry, so two threads in `KeyringSealer::new` at the
+        // same time each write their own key and then each read back the
+        // other's, and one of them reports the store as non-persistent even
+        // though it is fine. It fails safe -- the caller falls through to the
+        // encrypted in-memory sealer and never to plaintext NoOp -- which is
+        // why it is left alone rather than changed unreviewed. It is real
+        // though: it is exactly what made
+        // `windows_credential_manager_survives_fresh_entry` fail on Windows CI
+        // (see the serialization note in crates/keystore/tests/sealer_test.rs).
+        // Fixing it properly means either per-caller entry names or holding a
+        // lock across the write+probe.
         let probe = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
             .map_err(|e| SealerError::Keyring(format!("probe Entry: {e}")))?;
         let stored = probe

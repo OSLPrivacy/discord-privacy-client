@@ -9236,7 +9236,7 @@ mod tests {
 
     #[test]
     fn audit_control_inbox_consumers_have_no_active_peer_unfiltered_drain() {
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let account_dir = install_sender_filter_test_account("audit-no-unfiltered");
         let identity = keystore::generate_identity("recipient".to_owned());
         let sender_a = "peer-a";
@@ -9368,7 +9368,7 @@ mod tests {
 
     #[test]
     fn sender_filtered_active_peer_control_inbox_refuses_widening() {
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let account_dir = install_sender_filter_test_account("audit-filtered");
         let identity = keystore::generate_identity("recipient".to_owned());
         let sender_a = "peer-a";
@@ -9993,7 +9993,7 @@ mod tests {
 
     #[test]
     fn native_discord_inbound_opens_once_and_refuses_foreign_malformed_and_replayed_rows() {
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let account_dir = install_sender_filter_test_account("b52-replay");
         ipc::main_password::set_file_storage_key(Some([0x52; 32]));
         let pair = native_manual_pair("b52");
@@ -10212,7 +10212,7 @@ mod tests {
     #[test]
     fn production_receive_boundary_drains_exact_sender_text_and_attachment_without_touching_other_sender(
     ) {
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let account_dir = install_sender_filter_test_account("filtered");
         let identity = keystore::generate_identity("recipient".to_owned());
         let sender_a = "peer-a";
@@ -10452,7 +10452,7 @@ mod tests {
 
     #[test]
     fn production_receive_boundary_refuses_every_unconfirmed_or_widened_sender_page() {
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let account_dir = install_sender_filter_test_account("refusals");
         let identity = keystore::generate_identity("recipient".to_owned());
         let sender_a = "peer-a";
@@ -10558,7 +10558,7 @@ mod tests {
 
     #[test]
     fn shipping_receive_boundary_refuses_legacy_worker_without_unfiltered_fallback() {
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let account_dir = install_sender_filter_test_account("legacy-refused");
         let identity = keystore::generate_identity("recipient".to_owned());
         let sender_a = "peer-a";
@@ -10641,7 +10641,7 @@ mod tests {
 
     #[test]
     fn shipping_receive_boundary_refuses_legacy_worker_shape_without_widening() {
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let account_dir = install_sender_filter_test_account("legacy-shape-refused");
         let identity = keystore::generate_identity("recipient".to_owned());
         let sender_a = "peer-a";
@@ -11553,7 +11553,7 @@ mod tests {
 
     #[test]
     fn reveal_once_consumes_on_b() {
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let account_dir = install_sender_filter_test_account("b74-reveal");
         ipc::main_password::set_file_storage_key(Some([0x74; 32]));
         let pair = native_manual_pair("b74");
@@ -12009,7 +12009,7 @@ mod tests {
 
     #[test]
     fn d7_received_ack_is_correlated_and_replay_idempotent_while_opened_is_refused() {
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let _globals = KeystoreGlobalsGuard;
         let context = context("discord-personal", "dm-receipt");
         let manual = ManualPeerContext {
@@ -12299,7 +12299,7 @@ mod tests {
 
     #[test]
     fn c32_send_proof_is_recorded_only_after_control_inbox_post_succeeds() {
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let _globals = KeystoreGlobalsGuard;
         let receipt_dir = std::env::temp_dir().join(format!(
             "osl-hub-native-receipt-post-gate-{}-{}",
@@ -12398,7 +12398,7 @@ mod tests {
         // (crates/ipc/src/main_password.rs), which other modules' tests also
         // mutate; hold the crate-wide lock so a sibling test can't swap the
         // key out from under this one mid-test.
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let owner = "osl_owner_aaaaaaaaaaaaaaaa";
         let registry_path = temporary_registry();
         let registry = ServiceRegistryState::load(registry_path.clone());
@@ -12443,7 +12443,7 @@ mod tests {
     fn loopback_activation_rejects_unowned_mismatched_stale_and_nonopaque_inputs() {
         // See owned_loopback_context_derives_self_only_and_exact_host_generation
         // for why this lock is needed.
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let owner = "osl_owner_aaaaaaaaaaaaaaaa";
         let registry_path = temporary_registry();
         let registry = ServiceRegistryState::load(registry_path.clone());
@@ -12991,7 +12991,7 @@ mod tests {
         // for why this lock is needed (this test also calls
         // temporary_registry() further down, once history persistence kicks
         // in).
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let alice = keystore::generate_identity("osl-alice-chat".to_owned());
         let bob = keystore::generate_identity("osl-bob-chat".to_owned());
         let core = HubCoreState::default();
@@ -15604,7 +15604,7 @@ ok i will weekend again with you",
     #[test]
     #[ignore = "requires a real device-sealed OSL account; set OSL_LIVE_RECEIVE=1"]
     fn live_native_discord_receive_against_the_real_keyserver() {
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         assert_eq!(
             std::env::var("OSL_LIVE_RECEIVE").as_deref(),
             Ok("1"),

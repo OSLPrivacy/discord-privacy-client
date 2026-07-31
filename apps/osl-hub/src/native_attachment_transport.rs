@@ -362,12 +362,8 @@ fn delete_remote_ciphertext(
         return Ok(RollbackOutcome::Deleted);
     }
     let mut token_hex = lower_hex(token);
-    let queued = peer_attachment_io::enqueue_attachment_deletion(
-        object_id,
-        &token_hex,
-        bounded,
-        view_once,
-    );
+    let queued =
+        peer_attachment_io::enqueue_attachment_deletion(object_id, &token_hex, bounded, view_once);
     token_hex.zeroize();
     queued.map(|()| RollbackOutcome::Queued)
 }
@@ -434,8 +430,7 @@ const DELETION_DRAIN_NOTICE_TARGET: &str = "main";
 
 /// Last advisory emitted, so a store that stays down does not emit the same
 /// sentence every tick. Cleared by a clean pass, so a later failure is reported.
-static LAST_DELETION_DRAIN_NOTICE: std::sync::Mutex<Option<String>> =
-    std::sync::Mutex::new(None);
+static LAST_DELETION_DRAIN_NOTICE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 fn deletion_drain_client(
     app: &tauri::AppHandle,

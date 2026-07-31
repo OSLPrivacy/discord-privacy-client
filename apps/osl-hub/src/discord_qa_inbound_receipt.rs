@@ -997,11 +997,10 @@ mod tests {
         let proof_invalid = keyserver_post_error_class(&keystore::Error::PeerBundleProofInvalid);
         let transport =
             keyserver_post_error_class(&keystore::Error::Transport("network down".to_owned()));
-        let local_state =
-            keyserver_post_error_class(&keystore::Error::BlobVersionMismatch {
-                got: 7,
-                expected: 1,
-            });
+        let local_state = keyserver_post_error_class(&keystore::Error::BlobVersionMismatch {
+            got: 7,
+            expected: 1,
+        });
 
         assert_eq!(proof_invalid, "peer_bundle_proof_invalid");
         assert_eq!(transport, "transport");

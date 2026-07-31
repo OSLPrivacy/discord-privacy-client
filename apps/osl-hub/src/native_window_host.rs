@@ -3081,20 +3081,16 @@ mod windows {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         BringWindowToTop, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
         EnumChildWindows, EnumWindows, GetAncestor, GetClassNameW, GetClientRect,
-        GetForegroundWindow, GetParent,
-        GetWindow, GetWindowDisplayAffinity, GetWindowLongPtrW, GetWindowPlacement, GetWindowRect,
-        GetWindowTextW, GetWindowThreadProcessId, IsChild, IsHungAppWindow, IsIconic,
-        IsWindowVisible, PeekMessageW, PostMessageW,
-        SendMessageTimeoutW,
-        SetForegroundWindow, SetParent, SetWindowLongPtrW, SetWindowPlacement, SetWindowPos,
-        ShowWindow, ShowWindowAsync, TranslateMessage, GA_ROOT, GWLP_HWNDPARENT, GWLP_USERDATA,
-        GWLP_WNDPROC, GWL_EXSTYLE, GWL_STYLE, GW_HWNDPREV, HWND_TOP, MSG, OBJID_CLIENT, PM_REMOVE,
-        PW_RENDERFULLCONTENT, SMTO_ABORTIFHUNG, SMTO_BLOCK, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-        SWP_NOMOVE, SWP_NOSIZE,
-        SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_MINIMIZE, SW_RESTORE, SW_SHOW,
-        WDA_EXCLUDEFROMCAPTURE,
-        WINDOWPLACEMENT, WM_CLOSE, WM_ERASEBKGND, WM_NULL, WM_PAINT, WS_CAPTION, WS_CHILD,
-        WS_EX_APPWINDOW,
+        GetForegroundWindow, GetParent, GetWindow, GetWindowDisplayAffinity, GetWindowLongPtrW,
+        GetWindowPlacement, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsChild,
+        IsHungAppWindow, IsIconic, IsWindowVisible, PeekMessageW, PostMessageW,
+        SendMessageTimeoutW, SetForegroundWindow, SetParent, SetWindowLongPtrW, SetWindowPlacement,
+        SetWindowPos, ShowWindow, ShowWindowAsync, TranslateMessage, GA_ROOT, GWLP_HWNDPARENT,
+        GWLP_USERDATA, GWLP_WNDPROC, GWL_EXSTYLE, GWL_STYLE, GW_HWNDPREV, HWND_TOP, MSG,
+        OBJID_CLIENT, PM_REMOVE, PW_RENDERFULLCONTENT, SMTO_ABORTIFHUNG, SMTO_BLOCK,
+        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
+        SW_HIDE, SW_MINIMIZE, SW_RESTORE, SW_SHOW, WDA_EXCLUDEFROMCAPTURE, WINDOWPLACEMENT,
+        WM_CLOSE, WM_ERASEBKGND, WM_NULL, WM_PAINT, WS_CAPTION, WS_CHILD, WS_EX_APPWINDOW,
         WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU,
         WS_THICKFRAME, WS_VISIBLE,
     };
@@ -3629,10 +3625,7 @@ mod windows {
                         self.target as HWND,
                         self.shield as HWND,
                         self.expected_process_id,
-                        self.measurement
-                            .lock()
-                            .ok()
-                            .and_then(|measured| *measured),
+                        self.measurement.lock().ok().and_then(|measured| *measured),
                     )
                 }
         }
@@ -4390,9 +4383,7 @@ mod windows {
             SetLastError(ERROR_SUCCESS);
             let previous_owner = SetWindowLongPtrW(window, GWLP_HWNDPARENT, snapshot.parent);
             if previous_owner == 0 && GetLastError() != ERROR_SUCCESS {
-                return BorrowedTetherOutcome::transient(
-                    BorrowedTetherStall::OwnerRepairRejected,
-                );
+                return BorrowedTetherOutcome::transient(BorrowedTetherStall::OwnerRepairRejected);
             }
             let _ = SetWindowPos(
                 window,
@@ -4755,8 +4746,10 @@ mod windows {
                 let hdc = wparam as HDC;
                 let mut client: RECT = std::mem::zeroed();
                 if !hdc.is_null() && GetClientRect(window, &mut client) != 0 {
-                    let color =
-                        borrowed_control_shield_stored_color(GetWindowLongPtrW(window, GWLP_USERDATA));
+                    let color = borrowed_control_shield_stored_color(GetWindowLongPtrW(
+                        window,
+                        GWLP_USERDATA,
+                    ));
                     let brush = CreateSolidBrush(color);
                     if !brush.is_null() {
                         FillRect(hdc, &client, brush);
@@ -4773,8 +4766,10 @@ mod windows {
                 let mut paint: PAINTSTRUCT = std::mem::zeroed();
                 let hdc = BeginPaint(window, &mut paint);
                 if !hdc.is_null() {
-                    let color =
-                        borrowed_control_shield_stored_color(GetWindowLongPtrW(window, GWLP_USERDATA));
+                    let color = borrowed_control_shield_stored_color(GetWindowLongPtrW(
+                        window,
+                        GWLP_USERDATA,
+                    ));
                     let brush = CreateSolidBrush(color);
                     if !brush.is_null() {
                         // Belt-and-suspenders: fill again even though
@@ -5153,11 +5148,7 @@ mod windows {
                     Some(object) => (object, &self_child),
                     None => (&container, &child),
                 };
-                let bounds = msaa_node_window_bounds(
-                    reader,
-                    child_id,
-                    [window.left, window.top],
-                );
+                let bounds = msaa_node_window_bounds(reader, child_id, [window.left, window.top]);
                 if let Some(bounds) = bounds {
                     let role = reader
                         .get_accRole(child_id)
@@ -8762,22 +8753,18 @@ mod windows {
             .ok_or_else(|| "The trusted native Discord window is unavailable".to_owned())?;
         qa_discord_host_stage("overlay_target_host_validated");
         if matches!(hosted.process, HostedProcess::Borrowed { .. }) {
-            let presentation_ready = hosted
-                .borrowed_tether
+            let presentation_ready = hosted.borrowed_tether.as_ref().is_some_and(|tether| {
+                // The protected-overlay guard thread reaches the tether here,
+                // and a refusal tears the protected session down, so it waits
+                // out the longer budget instead of failing on a slow frame.
+                tether.reconcile(
+                    hosted.generation,
+                    borrowed_tether_reconcile_budget(BorrowedTetherCaller::ProtectionGuard),
+                )
+            }) && hosted
+                .borrowed_control_shield
                 .as_ref()
-                .is_some_and(|tether| {
-                    // The protected-overlay guard thread reaches the tether here,
-                    // and a refusal tears the protected session down, so it waits
-                    // out the longer budget instead of failing on a slow frame.
-                    tether.reconcile(
-                        hosted.generation,
-                        borrowed_tether_reconcile_budget(BorrowedTetherCaller::ProtectionGuard),
-                    )
-                })
-                && hosted
-                    .borrowed_control_shield
-                    .as_ref()
-                    .is_some_and(BorrowedControlShield::is_healthy);
+                .is_some_and(BorrowedControlShield::is_healthy);
             if !presentation_ready {
                 return Err(
                     "The trusted native Discord window presentation is unavailable".to_owned(),
@@ -9015,10 +9002,9 @@ mod tests {
                 HostWindowOwnership::Borrowed
             )
         ));
-        assert!(harnessed_exit_plan_stops_owned_process(harnessed_exit_plan(
-            DiscordSessionMode::Dedicated,
-            HostWindowOwnership::Spawned
-        )));
+        assert!(harnessed_exit_plan_stops_owned_process(
+            harnessed_exit_plan(DiscordSessionMode::Dedicated, HostWindowOwnership::Spawned)
+        ));
         // Whichever mode may stop a process is exactly the mode that owns one.
         for mode in [
             DiscordSessionMode::Dedicated,
@@ -9275,8 +9261,12 @@ mod tests {
         }
         // Stated positively, for the three real exit outcomes.
         assert!(!harnessed_exit_leaves_unreachable_window(true, true, false));
-        assert!(!harnessed_exit_leaves_unreachable_window(true, false, false));
-        assert!(!harnessed_exit_leaves_unreachable_window(false, false, true));
+        assert!(!harnessed_exit_leaves_unreachable_window(
+            true, false, false
+        ));
+        assert!(!harnessed_exit_leaves_unreachable_window(
+            false, false, true
+        ));
     }
 
     #[test]
@@ -10003,16 +9993,11 @@ mod tests {
     fn guardian_restore_ex_style_outcome_uses_the_captured_value_not_a_constant() {
         const CAPTURED_UNUSUAL: isize = 0x0000_0080; // e.g. WS_EX_TOOLWINDOW, legitimately original
         const TASK_STYLE: isize = 0x0004_0000; // e.g. WS_EX_APPWINDOW, applied while borrowed
-        // A window whose true original ex-style already carried the
-        // "unusual" bit must be restored to exactly that bit, not "fixed"
-        // into some assumed-normal constant.
+                                               // A window whose true original ex-style already carried the
+                                               // "unusual" bit must be restored to exactly that bit, not "fixed"
+                                               // into some assumed-normal constant.
         assert_eq!(
-            guardian_restore_ex_style_outcome(
-                true,
-                TASK_STYLE,
-                CAPTURED_UNUSUAL,
-                CAPTURED_UNUSUAL
-            ),
+            guardian_restore_ex_style_outcome(true, TASK_STYLE, CAPTURED_UNUSUAL, CAPTURED_UNUSUAL),
             GUARDIAN_RESTORE_EX_STYLE_APPLIED
         );
         // Idempotent: running the same restore again when the live value
@@ -10290,18 +10275,12 @@ mod tests {
         // An active composite on its own is no longer a reason to write anything:
         // that unconditional branch is exactly what saturated the borrowed UI
         // thread, and a background composite is never raised either.
-        assert!(!borrowed_tether_requires_repair(borrowed_tether_repair_plan(
-            true,
-            true,
-            false,
-            Some(false)
-        )));
-        assert!(!borrowed_tether_requires_repair(borrowed_tether_repair_plan(
-            true,
-            true,
-            false,
-            Some(true)
-        )));
+        assert!(!borrowed_tether_requires_repair(
+            borrowed_tether_repair_plan(true, true, false, Some(false))
+        ));
+        assert!(!borrowed_tether_requires_repair(
+            borrowed_tether_repair_plan(true, true, false, Some(true))
+        ));
         assert_eq!(
             undecided.decision_labels(),
             [Some(TETHER_REPAIR_SKIPPED_LABEL), None, None]
@@ -10450,11 +10429,10 @@ mod tests {
         assert_eq!(abandoned, 1);
 
         // Every decision names itself with a fixed, distinct label.
-        let stages: std::collections::BTreeSet<&str> =
-            [R::Defer, R::Apply, R::Skip, R::Abandon]
-                .into_iter()
-                .map(R::stage)
-                .collect();
+        let stages: std::collections::BTreeSet<&str> = [R::Defer, R::Apply, R::Skip, R::Abandon]
+            .into_iter()
+            .map(R::stage)
+            .collect();
         assert_eq!(stages.len(), 4);
         assert_eq!(R::Apply.stage(), "restore_repaint_applied");
         assert_eq!(R::Skip.stage(), "restore_repaint_skipped_not_iconic");
@@ -10529,7 +10507,10 @@ mod tests {
                 R::Defer => unreachable!("host is not iconic in this replay"),
             }
         }
-        assert_eq!(applied, limit as usize, "must retry up to the bounded limit");
+        assert_eq!(
+            applied, limit as usize,
+            "must retry up to the bounded limit"
+        );
         assert_eq!(disarmed_on_attempt, Some(limit as usize));
     }
 
@@ -10751,8 +10732,14 @@ mod tests {
             BorrowedTetherBatch::ReconcileOnce { coalesced: 4 }
         );
         // A stop seen while draining wins: no further cross-process pass runs.
-        assert_eq!(borrowed_tether_batch(5, true), BorrowedTetherBatch::TearDown);
-        assert_eq!(borrowed_tether_batch(0, false), BorrowedTetherBatch::TearDown);
+        assert_eq!(
+            borrowed_tether_batch(5, true),
+            BorrowedTetherBatch::TearDown
+        );
+        assert_eq!(
+            borrowed_tether_batch(0, false),
+            BorrowedTetherBatch::TearDown
+        );
     }
 
     #[test]
@@ -11205,12 +11192,7 @@ mod tests {
             height: 22,
         };
         assert_eq!(
-            borrowed_control_shield_target(
-                [240, 118],
-                [1440, 852],
-                dwm_zero_width,
-                Some(measured)
-            ),
+            borrowed_control_shield_target([240, 118], [1440, 852], dwm_zero_width, Some(measured)),
             Some(([1596, 119, 1680, 141], [1356, 1, 1440, 23]))
         );
         // A measurement that cannot survive validation must not leave the
@@ -11358,10 +11340,7 @@ mod tests {
             })
         );
         // A single button is never enough to claim a cluster.
-        assert_eq!(
-            caption_button_cluster(WINDOW, &controls[2..], 100),
-            None
-        );
+        assert_eq!(caption_button_cluster(WINDOW, &controls[2..], 100), None);
         // A run that does not reach the right edge is not the window controls.
         let inset = [[1200, 0, 1228, 22], [1228, 0, 1256, 22]];
         assert_eq!(caption_button_cluster(WINDOW, &inset, 100), None);
@@ -11461,7 +11440,10 @@ mod tests {
     fn borrowed_control_shield_stored_color_never_falls_back_to_white() {
         // Valid COLORREF values pass straight through...
         assert_eq!(borrowed_control_shield_stored_color(0x0000_0000), 0);
-        assert_eq!(borrowed_control_shield_stored_color(0x0001_0203), 0x0001_0203);
+        assert_eq!(
+            borrowed_control_shield_stored_color(0x0001_0203),
+            0x0001_0203
+        );
         assert_eq!(
             borrowed_control_shield_stored_color(0x00FF_FFFF),
             0x00FF_FFFF

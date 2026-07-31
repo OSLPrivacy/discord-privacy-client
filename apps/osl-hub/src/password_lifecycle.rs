@@ -582,7 +582,6 @@ mod tests {
     // another module holding `GLOBAL_KEYSTORE_TEST_LOCK` would still run
     // concurrently and read back the wrong key. Two mutexes over one global is
     // the same as none.
-    use crate::GLOBAL_KEYSTORE_TEST_LOCK as FILE_KEY_TEST_LOCK;
 
     fn temp_dir(label: &str) -> std::path::PathBuf {
         let nonce = SystemTime::now()
@@ -748,7 +747,7 @@ mod tests {
 
     #[test]
     fn password_setup_uses_only_temp_paths_and_reloads_state() {
-        let _guard = FILE_KEY_TEST_LOCK.lock().unwrap();
+        let _guard = crate::global_keystore_test_lock();
         let dir = temp_dir("password");
         let state = HubCoreState::default();
         *state.osl.identity.lock().unwrap() = Some(keystore::identity_from_entropy(
@@ -771,7 +770,7 @@ mod tests {
 
     #[test]
     fn entering_duress_pin_triggers_full_wipe_report() {
-        let _guard = FILE_KEY_TEST_LOCK.lock().unwrap();
+        let _guard = crate::global_keystore_test_lock();
         let _reset = KeystoreGlobalReset;
         let config_dir = temp_dir("duress-config");
         let local_data_dir = temp_dir("duress-local");

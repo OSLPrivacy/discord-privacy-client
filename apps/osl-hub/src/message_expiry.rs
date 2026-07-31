@@ -258,10 +258,7 @@ fn is_opaque_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_ID_LEN
         && value.bytes().all(|byte| {
-            byte.is_ascii_digit()
-                || byte == b'-'
-                || byte == b':'
-                || byte.is_ascii_lowercase()
+            byte.is_ascii_digit() || byte == b'-' || byte == b':' || byte.is_ascii_lowercase()
         })
 }
 
@@ -306,8 +303,8 @@ fn load_open_clock(path: &Path, key: &[u8; 32]) -> Result<OpenClockLedger, Strin
         ipc::main_password::decrypt_at_rest(&bytes, key)
             .map_err(|_| format!("{OPEN_CLOCK_LABEL} could not be opened"))?,
     );
-    let ledger: OpenClockLedger = serde_json::from_slice(&plain)
-        .map_err(|_| format!("{OPEN_CLOCK_LABEL} is malformed"))?;
+    let ledger: OpenClockLedger =
+        serde_json::from_slice(&plain).map_err(|_| format!("{OPEN_CLOCK_LABEL} is malformed"))?;
     if !matches!(ledger.version, 0 | 1)
         || ledger.scopes.len() > MAX_OPEN_CLOCK_SCOPES
         || ledger.total_entries() > MAX_OPEN_CLOCK_ENTRIES_TOTAL
@@ -393,7 +390,9 @@ pub fn note_delivered_at_path(
 ) -> Result<(), String> {
     if !is_opaque_id(scope_key)
         || !is_opaque_id(message_id)
-        || cache_id.as_deref().is_some_and(|value| !is_opaque_id(value))
+        || cache_id
+            .as_deref()
+            .is_some_and(|value| !is_opaque_id(value))
         || parts.is_empty()
         || release.absolute_expires_at <= now
         || release.absolute_expires_at > now.saturating_add(i64::from(MAX_ABSOLUTE_TTL_SECONDS))
@@ -404,7 +403,8 @@ pub fn note_delivered_at_path(
         commitment(MESSAGE_ID_DOMAIN, message_id),
         commitment(SCOPE_KEY_DOMAIN, scope_key),
         u64::try_from(now).map_err(|_| "OSL clock is invalid".to_owned())?,
-        u64::try_from(release.absolute_expires_at).map_err(|_| "OSL clock is invalid".to_owned())?,
+        u64::try_from(release.absolute_expires_at)
+            .map_err(|_| "OSL clock is invalid".to_owned())?,
         release.open_ttl_seconds.unwrap_or(0),
         parts,
         TransitionEvidence {
@@ -549,8 +549,7 @@ pub fn verdict_at_path(
     else {
         return ExpiryVerdict::Expired;
     };
-    if now_u64 >= record.lifecycle.effective_expires_at()
-        || record.lifecycle.status().is_terminal()
+    if now_u64 >= record.lifecycle.effective_expires_at() || record.lifecycle.status().is_terminal()
     {
         return ExpiryVerdict::Expired;
     }
@@ -582,9 +581,7 @@ fn prune_in_memory(ledger: &mut OpenClockLedger, now: i64) -> PruneReport {
     };
     ledger.scopes.retain(|_, entries| {
         entries.retain(|_, record| {
-            if record.lifecycle.expire(now_u64).is_ok()
-                || record.lifecycle.status().is_terminal()
-            {
+            if record.lifecycle.expire(now_u64).is_ok() || record.lifecycle.status().is_terminal() {
                 report.expired += 1;
                 if let Some(cache_id) = record.cache_id.take() {
                     report.shred_cache_ids.push(cache_id);
@@ -735,11 +732,7 @@ pub fn record_receipt_sent_at_path(
 }
 
 /// Drop receipt records whose message is already gone. Writes only on a change.
-pub fn prune_receipt_dedup_at_path(
-    path: &Path,
-    key: &[u8; 32],
-    now: i64,
-) -> Result<usize, String> {
+pub fn prune_receipt_dedup_at_path(path: &Path, key: &[u8; 32], now: i64) -> Result<usize, String> {
     let mut ledger = load_receipt_dedup(path, key)?;
     let before = ledger.sent.len();
     if before == 0 {
@@ -956,7 +949,8 @@ pub fn run_pass(
     let mut report = PassReport::default();
     // Abandoned decrypted files are removable without the storage key, and are
     // exactly what is left behind by a crash, so sweep them either way.
-    report.removed_staging_files = sweep_abandoned_staging(local_data_dir, STAGED_PLAINTEXT_MAX_AGE);
+    report.removed_staging_files =
+        sweep_abandoned_staging(local_data_dir, STAGED_PLAINTEXT_MAX_AGE);
 
     let Some(key) = ipc::main_password::get_file_storage_key() else {
         return report;
@@ -1027,7 +1021,12 @@ mod tests {
         }]
     }
 
-    fn note(path: &Path, release: TimedRelease, cache_id: Option<&str>, now: i64) -> Result<(), String> {
+    fn note(
+        path: &Path,
+        release: TimedRelease,
+        cache_id: Option<&str>,
+        now: i64,
+    ) -> Result<(), String> {
         note_delivered_at_path(
             path,
             &KEY,
@@ -1055,7 +1054,9 @@ mod tests {
         );
         assert!(matches!(
             relative.mode(),
-            TimedMessageMode::FirstAuthenticatedOpen { lifetime_ms: 3_600_000 }
+            TimedMessageMode::FirstAuthenticatedOpen {
+                lifetime_ms: 3_600_000
+            }
         ));
 
         let absolute = absolute_release(now, ipc::cipher_store_client::TTL_1H).unwrap();
@@ -1286,8 +1287,14 @@ mod tests {
         let path = ledger_path("ceiling");
         let now = 1_000_000i64;
         for bad in [
-            TimedRelease { absolute_expires_at: now, open_ttl_seconds: Some(3_600) },
-            TimedRelease { absolute_expires_at: now - 1, open_ttl_seconds: None },
+            TimedRelease {
+                absolute_expires_at: now,
+                open_ttl_seconds: Some(3_600),
+            },
+            TimedRelease {
+                absolute_expires_at: now - 1,
+                open_ttl_seconds: None,
+            },
             TimedRelease {
                 absolute_expires_at: now + i64::from(MAX_ABSOLUTE_TTL_SECONDS) + 1,
                 open_ttl_seconds: None,
@@ -1358,16 +1365,22 @@ mod tests {
         )
         .unwrap();
         let opened_at = sent_at + 100;
-        assert!(record_first_open_at_path(&path, &KEY, SCOPE, MESSAGE, [6u8; 32], opened_at)
-            .is_readable());
+        assert!(
+            record_first_open_at_path(&path, &KEY, SCOPE, MESSAGE, [6u8; 32], opened_at)
+                .is_readable()
+        );
         // Long before the seven-day absolute deadline, the open clock is what
         // destroys it.
         assert_eq!(
-            prune_at_path(&path, &KEY, opened_at + 3_599).unwrap().expired,
+            prune_at_path(&path, &KEY, opened_at + 3_599)
+                .unwrap()
+                .expired,
             0
         );
         assert_eq!(
-            prune_at_path(&path, &KEY, opened_at + 3_600).unwrap().expired,
+            prune_at_path(&path, &KEY, opened_at + 3_600)
+                .unwrap()
+                .expired,
             1
         );
     }
@@ -1383,7 +1396,12 @@ mod tests {
         // A fresh read of the sealed file is exactly what a restart does.
         assert!(receipt_already_sent_at_path(&path, &KEY, MESSAGE, now));
         // And it stops mattering once the message itself is gone.
-        assert!(!receipt_already_sent_at_path(&path, &KEY, MESSAGE, now + 3_600));
+        assert!(!receipt_already_sent_at_path(
+            &path,
+            &KEY,
+            MESSAGE,
+            now + 3_600
+        ));
     }
 
     #[test]
@@ -1392,8 +1410,15 @@ mod tests {
         std::fs::write(&path, b"not sealed at all").unwrap();
         // Fail closed towards silence: a duplicate receipt is a false claim
         // about the recipient, and not sending one is the recoverable direction.
-        assert!(receipt_already_sent_at_path(&path, &KEY, MESSAGE, 1_000_000));
-        assert!(receipt_already_sent_at_path(&path, &KEY, "not a valid id!", 1_000_000));
+        assert!(receipt_already_sent_at_path(
+            &path, &KEY, MESSAGE, 1_000_000
+        ));
+        assert!(receipt_already_sent_at_path(
+            &path,
+            &KEY,
+            "not a valid id!",
+            1_000_000
+        ));
     }
 
     #[test]
@@ -1406,7 +1431,12 @@ mod tests {
             prune_receipt_dedup_at_path(&path, &KEY, now + 3_600).unwrap(),
             1
         );
-        assert!(!receipt_already_sent_at_path(&path, &KEY, MESSAGE, now + 3_600));
+        assert!(!receipt_already_sent_at_path(
+            &path,
+            &KEY,
+            MESSAGE,
+            now + 3_600
+        ));
     }
 
     // ---- staging sweep ----
@@ -1421,7 +1451,10 @@ mod tests {
 
         // Zero max-age is the "everything is stale" case, so the sweep removes
         // it; the default window would not.
-        assert_eq!(sweep_abandoned_staging(&local_data, STAGED_PLAINTEXT_MAX_AGE), 0);
+        assert_eq!(
+            sweep_abandoned_staging(&local_data, STAGED_PLAINTEXT_MAX_AGE),
+            0
+        );
         assert!(fresh.exists(), "a live staging file must survive a tick");
         assert_eq!(sweep_abandoned_staging(&local_data, Duration::ZERO), 1);
         assert!(!fresh.exists());

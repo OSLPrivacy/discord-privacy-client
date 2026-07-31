@@ -51,7 +51,9 @@ fn powershell() -> Option<Shell> {
         if !output.status.success() {
             continue;
         }
-        let kind = String::from_utf8_lossy(&output.stdout).trim().to_lowercase();
+        let kind = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .to_lowercase();
         if kind != "windows" && kind != "unix" {
             continue;
         }

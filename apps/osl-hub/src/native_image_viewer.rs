@@ -240,7 +240,10 @@ mod windows_viewer {
         // than leaving a window that cannot be closed, moved, or repainted.
         // Hide immediately and ask for an ordinary teardown, then always chain
         // to the default procedure so the window keeps responding.
-        if lookup.is_err() && message != WM_CLOSE && message != WM_DESTROY && message != WM_NCDESTROY
+        if lookup.is_err()
+            && message != WM_CLOSE
+            && message != WM_DESTROY
+            && message != WM_NCDESTROY
         {
             ShowWindow(hwnd, SW_HIDE);
             PostMessageW(hwnd, WM_CLOSE, 0, 0);

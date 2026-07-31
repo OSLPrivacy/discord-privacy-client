@@ -412,7 +412,10 @@ fn allowed_ttl(raw: Option<&String>) -> Option<u32> {
 
 /// `readCapability`: header must be present and match `^[0-9a-f]{32}$`.
 fn read_capability(headers: &BTreeMap<String, String>) -> Option<String> {
-    let raw = headers.get("x-osl-fetch-token")?.trim().to_ascii_lowercase();
+    let raw = headers
+        .get("x-osl-fetch-token")?
+        .trim()
+        .to_ascii_lowercase();
     is_lower_hex(&raw, 32).then_some(raw)
 }
 
@@ -423,7 +426,9 @@ fn read_capability(headers: &BTreeMap<String, String>) -> Option<String> {
 fn read_request(
     stream: &mut TcpStream,
 ) -> Option<(String, String, BTreeMap<String, String>, Vec<u8>)> {
-    stream.set_read_timeout(Some(Duration::from_secs(30))).ok()?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .ok()?;
     let mut request = Vec::with_capacity(16 * 1024);
     let mut buffer = vec![0u8; 64 * 1024];
     let header_end = loop {
@@ -1153,7 +1158,9 @@ fn serve_legacy_request(
                 Some(blob) if headers.get("x-osl-fetch-token") == Some(&blob.fetch_token) => {
                     bytes_response(200, "application/octet-stream", blob.bytes.clone())
                 }
-                Some(_) => error_response(403, "fetch_token_mismatch", "fetch token does not match"),
+                Some(_) => {
+                    error_response(403, "fetch_token_mismatch", "fetch token does not match")
+                }
                 None => not_found(),
             }
         }
@@ -1361,7 +1368,10 @@ impl Drop for TestStorage {
     }
 }
 
-fn core(identity: keystore::Identity, relay_url: &str) -> osl_privacy_hub::core_bridge::HubCoreState {
+fn core(
+    identity: keystore::Identity,
+    relay_url: &str,
+) -> osl_privacy_hub::core_bridge::HubCoreState {
     let core = osl_privacy_hub::core_bridge::HubCoreState::default();
     *core.osl.identity.lock().unwrap() = Some(identity);
     *core.osl.keyserver.lock().unwrap() = Some(keystore::KeyServerClient::new(relay_url).unwrap());
@@ -1491,8 +1501,7 @@ fn write_plaintext_source(path: &Path, len: usize) -> PathBuf {
         }
         if written == 0 {
             let marker_at = 128;
-            block[marker_at..marker_at + PLAINTEXT_MARKER.len()]
-                .copy_from_slice(PLAINTEXT_MARKER);
+            block[marker_at..marker_at + PLAINTEXT_MARKER.len()].copy_from_slice(PLAINTEXT_MARKER);
         }
         file.write_all(&block[..take])
             .expect("write fixture plaintext");
@@ -1574,7 +1583,9 @@ fn read_full(file: &mut File, buffer: &mut [u8]) -> Result<usize, ()> {
 fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
     !needle.is_empty()
         && haystack.len() >= needle.len()
-        && haystack.windows(needle.len()).any(|window| window == needle)
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
 }
 
 /// Walk every regular file under `root` and return the first whose bytes
@@ -1706,8 +1717,8 @@ fn send_attachment(
     )
     .expect("stream-encrypt the attachment");
 
-    let (digest, sealed_size) =
-        osl_privacy_hub::peer_attachment_io::sha256_file(staged.path()).expect("digest the sealed file");
+    let (digest, sealed_size) = osl_privacy_hub::peer_attachment_io::sha256_file(staged.path())
+        .expect("digest the sealed file");
 
     let token = fresh_fetch_token();
     let sealed_file = File::open(staged.path()).expect("reopen the sealed file");
@@ -1810,7 +1821,9 @@ fn fetch_and_verify(
 ///   finds no surviving plaintext anywhere.
 #[test]
 fn direct_upload_round_trip_recovers_byte_identical_plaintext_and_leaves_no_plaintext_at_rest() {
-    let _serial = fixture_lock().lock().unwrap_or_else(|error| error.into_inner());
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let relay = RelayServer::start();
     let storage = TestStorage::new("direct");
     let relay_url = relay.base_url();
@@ -1853,8 +1866,9 @@ fn direct_upload_round_trip_recovers_byte_identical_plaintext_and_leaves_no_plai
     );
 
     bob.activate();
-    let pending = osl_privacy_hub::broker::list_osl_chat_attachments(&bob.core, &bob.security, &bob.broker)
-        .expect("list pending attachments");
+    let pending =
+        osl_privacy_hub::broker::list_osl_chat_attachments(&bob.core, &bob.security, &bob.broker)
+            .expect("list pending attachments");
     assert_eq!(pending.len(), 1);
     assert!(
         pending[0].original_filename == "fixture-note.txt",
@@ -1884,7 +1898,8 @@ fn direct_upload_round_trip_recovers_byte_identical_plaintext_and_leaves_no_plai
         "the notice must carry the sender's pre-upload ciphertext digest"
     );
 
-    let download_path = fetch_and_verify(&bob, &client, &plan).expect("fetch and verify ciphertext");
+    let download_path =
+        fetch_and_verify(&bob, &client, &plan).expect("fetch and verify ciphertext");
     let mut sealed = File::open(&download_path).expect("open the verified ciphertext");
     let opened = osl_privacy_hub::peer_attachment_io::decrypt_file(
         &bob.local_root,
@@ -2111,7 +2126,9 @@ fn multipart_upload_crosses_the_part_boundary_and_rolls_back_a_rejected_part() {
 /// user-visible step flattening the first two into one "expired" string.
 #[test]
 fn tampered_expired_deleted_and_capability_rejected_fetches_are_each_refused_distinctly() {
-    let _serial = fixture_lock().lock().unwrap_or_else(|error| error.into_inner());
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let relay = RelayServer::start();
     let storage = TestStorage::new("refusals");
     let relay_url = relay.base_url();
@@ -2122,8 +2139,9 @@ fn tampered_expired_deleted_and_capability_rejected_fetches_are_each_refused_dis
     let sent = send_attachment(&alice, &client, &source, "fixture-note.txt", false);
 
     bob.activate();
-    let pending = osl_privacy_hub::broker::list_osl_chat_attachments(&bob.core, &bob.security, &bob.broker)
-        .expect("list pending attachments");
+    let pending =
+        osl_privacy_hub::broker::list_osl_chat_attachments(&bob.core, &bob.security, &bob.broker)
+            .expect("list pending attachments");
     assert_eq!(pending.len(), 1);
     let mut plan = osl_privacy_hub::broker::take_osl_chat_attachment(
         &bob.core,
@@ -2249,8 +2267,8 @@ fn tampered_expired_deleted_and_capability_rejected_fetches_are_each_refused_dis
 
     // --- an expired object is Gone ----------------------------------------
     relay.set_expiry(&sent.object_id, now_secs() - 1);
-    let expired = fetch_and_verify(&bob, &client, &plan)
-        .expect_err("an expired object must not be served");
+    let expired =
+        fetch_and_verify(&bob, &client, &plan).expect_err("an expired object must not be served");
     assert!(expired == "This private attachment is unavailable or expired");
     let mut sink = Vec::new();
     let expired_raw = client
@@ -2267,8 +2285,8 @@ fn tampered_expired_deleted_and_capability_rejected_fetches_are_each_refused_dis
         .delete_attachment(&sent.object_id, &token)
         .expect("burn the object");
     assert!(!relay.object_present(&sent.object_id));
-    let deleted = fetch_and_verify(&bob, &client, &plan)
-        .expect_err("a burned object must not be served");
+    let deleted =
+        fetch_and_verify(&bob, &client, &plan).expect_err("a burned object must not be served");
     assert!(deleted == "This private attachment is unavailable or expired");
     client
         .delete_attachment(&sent.object_id, &token)
@@ -2295,7 +2313,9 @@ fn tampered_expired_deleted_and_capability_rejected_fetches_are_each_refused_dis
 ///   full-TTL orphan into a retry.
 #[test]
 fn view_once_open_is_replay_safe_and_a_failed_burn_is_recovered_by_the_deletion_outbox() {
-    let _serial = fixture_lock().lock().unwrap_or_else(|error| error.into_inner());
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let relay = RelayServer::start();
     let storage = TestStorage::new("viewonce");
     let relay_url = relay.base_url();
@@ -2306,14 +2326,18 @@ fn view_once_open_is_replay_safe_and_a_failed_burn_is_recovered_by_the_deletion_
     let sent = send_attachment(&alice, &client, &source, "fixture-pixels.png", true);
 
     bob.activate();
-    let pending = osl_privacy_hub::broker::list_osl_chat_attachments(&bob.core, &bob.security, &bob.broker)
-        .expect("list pending attachments");
+    let pending =
+        osl_privacy_hub::broker::list_osl_chat_attachments(&bob.core, &bob.security, &bob.broker)
+            .expect("list pending attachments");
     assert_eq!(pending.len(), 1);
-    assert!(pending[0].view_once, "the notice must carry the view-once flag");
+    assert!(
+        pending[0].view_once,
+        "the notice must carry the view-once flag"
+    );
     assert!(pending[0].mime_type == "image/png");
-    assert!(osl_privacy_hub::peer_attachment_io::supported_protected_image_mime(
-        &pending[0].mime_type
-    ));
+    assert!(
+        osl_privacy_hub::peer_attachment_io::supported_protected_image_mime(&pending[0].mime_type)
+    );
     // The open plan keeps its expiry private, so take it from the listing.
     let expires_at = pending[0].expires_at;
 
@@ -2329,7 +2353,8 @@ fn view_once_open_is_replay_safe_and_a_failed_burn_is_recovered_by_the_deletion_
         token == sent.token && plan.object_id == sent.object_id,
         "the notice must carry the exact object id and capability the sender uploaded with"
     );
-    let download_path = fetch_and_verify(&bob, &client, &plan).expect("fetch and verify ciphertext");
+    let download_path =
+        fetch_and_verify(&bob, &client, &plan).expect("fetch and verify ciphertext");
 
     let mut sealed = File::open(&download_path).expect("open the verified ciphertext");
     let opened = osl_privacy_hub::peer_attachment_io::decrypt_file_to_memory(
@@ -2397,7 +2422,10 @@ fn view_once_open_is_replay_safe_and_a_failed_burn_is_recovered_by_the_deletion_
         !relay.delete_attempted_before_replay_commit(),
         "the relay observed a remote delete attempt before the durable replay commit and replay check"
     );
-    assert!(burn.is_err(), "the fixture is refusing deletes for this step");
+    assert!(
+        burn.is_err(),
+        "the fixture is refusing deletes for this step"
+    );
     assert!(
         relay.object_present(&plan.object_id),
         "a failed view-once burn leaves the ciphertext in remote storage"
@@ -2460,7 +2488,10 @@ fn fixture_refuses_the_request_shapes_the_rust_client_cannot_produce() {
 
     // The client's mirrored bounds must equal the worker's, or every assertion
     // in this file is measuring the wrong wall.
-    assert_eq!(MAX_SEALED_ATTACHMENT_BYTES, WORKER_MAX_SEALED_ATTACHMENT_BYTES);
+    assert_eq!(
+        MAX_SEALED_ATTACHMENT_BYTES,
+        WORKER_MAX_SEALED_ATTACHMENT_BYTES
+    );
     assert_eq!(ATTACHMENT_MULTIPART_PART_BYTES, MAX_ATTACHMENT_PART_BYTES);
     assert_eq!(ATTACHMENT_MULTIPART_MAX_PARTS, MAX_ATTACHMENT_PARTS);
 
@@ -2673,7 +2704,8 @@ fn padding_buckets_and_rate_limit_budgets_bound_the_real_multipart_shape() {
         "the 50 MiB bucket must take the multipart route"
     );
     assert_eq!(
-        parts_for(fifty), 7,
+        parts_for(fifty),
+        7,
         "the smallest multipart upload production can produce is seven parts"
     );
 
@@ -2709,7 +2741,9 @@ fn padding_buckets_and_rate_limit_budgets_bound_the_real_multipart_shape() {
 #[test]
 #[ignore = "moves ~50 MiB through the loopback fixture; run deliberately"]
 fn full_crypto_multipart_round_trip_at_the_fifty_mebibyte_bucket() {
-    let _serial = fixture_lock().lock().unwrap_or_else(|error| error.into_inner());
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let relay = RelayServer::start();
     let storage = TestStorage::new("bigmultipart");
     let relay_url = relay.base_url();
@@ -2751,8 +2785,9 @@ fn full_crypto_multipart_round_trip_at_the_fifty_mebibyte_bucket() {
     });
 
     bob.activate();
-    let pending = osl_privacy_hub::broker::list_osl_chat_attachments(&bob.core, &bob.security, &bob.broker)
-        .expect("list pending attachments");
+    let pending =
+        osl_privacy_hub::broker::list_osl_chat_attachments(&bob.core, &bob.security, &bob.broker)
+            .expect("list pending attachments");
     assert_eq!(pending.len(), 1);
     let plan = osl_privacy_hub::broker::take_osl_chat_attachment(
         &bob.core,
@@ -2763,7 +2798,8 @@ fn full_crypto_multipart_round_trip_at_the_fifty_mebibyte_bucket() {
     .expect("take the attachment open plan");
     assert_eq!(plan.sealed_size, sent.sealed_size);
 
-    let download_path = fetch_and_verify(&bob, &client, &plan).expect("fetch and verify ciphertext");
+    let download_path =
+        fetch_and_verify(&bob, &client, &plan).expect("fetch and verify ciphertext");
     let mut sealed = File::open(&download_path).expect("open the verified ciphertext");
     let opened = osl_privacy_hub::peer_attachment_io::decrypt_file(
         &bob.local_root,

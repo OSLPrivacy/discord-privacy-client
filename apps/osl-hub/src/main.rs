@@ -168,7 +168,6 @@ mod native_image_viewer;
 mod native_whatsapp_overlay;
 
 use native_discord_overlay::OverlaySessionState;
-use osl_privacy_hub::native_surface_capture;
 use osl_privacy_hub::hub_command_surface::{
     build_review_ui_identity_binding_verifier, checked_browser_footprint_binding,
     checked_hosted_session_scan_flow, require_native_discord_product_send_authority,
@@ -177,6 +176,7 @@ use osl_privacy_hub::hub_command_surface::{
     start_autoscrub_reviewed_run_inner, with_native_discord_product_send_authority,
     BrowserFootprintConsentRequest, CheckedHost, NativeDiscordProductSendAuthority,
 };
+use osl_privacy_hub::native_surface_capture;
 // The QA-evidence half of the surface is compiled only for the disposable QA
 // shell, exactly as it was when it lived in this file. The library gates it on
 // `any(test, feature = "discord-qa-shell")`, and a library dependency is never
@@ -624,7 +624,6 @@ async fn scan_local_privacy(
         .map_err(|_| "The local privacy scan was interrupted".to_owned())
 }
 
-
 /// Build the checked native authority a hosted-session scan requires.
 ///
 /// `CheckedHost` itself and the flow that consumes it live in
@@ -663,7 +662,6 @@ fn run_checked_hosted_session_scan(
         |checked| require_same_overlay_context(&app, checked.context_epoch, &checked.active),
     )
 }
-
 
 /// Open the hosted-session scan surface only after proving the same native
 /// authority the scan command requires. There is no preview, delete, navigation,
@@ -1125,9 +1123,6 @@ fn get_autoscrub_run_fl(state: State<'_, HubCoreState>) -> Result<AutoScrubFleet
     autoscrub_run::fleet_status(&state.osl)
 }
 
-
-
-
 #[tauri::command]
 fn start_autoscrub_reviewed_run(
     state: State<'_, HubCoreState>,
@@ -1135,8 +1130,6 @@ fn start_autoscrub_reviewed_run(
 ) -> Result<AutoScrubFleetStatus, String> {
     start_autoscrub_reviewed_run_inner(&state, request)
 }
-
-
 
 #[tauri::command]
 fn request_autoscrub_global_stop(
@@ -1175,13 +1168,11 @@ async fn unlock_hub_password_gate(
 ) -> Result<HubGateUnlockResult, String> {
     let _session = session.transition.lock().await;
     let verify_app = app.clone();
-    let verification = tauri::async_runtime::spawn_blocking(move || {
-        match duress_pin {
-            Some(pin) if !pin.is_empty() => {
-                startup_gate::verify_duress_pin(&verify_app.state::<HubCoreState>(), pin)
-            }
-            _ => startup_gate::verify_password_role(&verify_app.state::<HubCoreState>(), password),
+    let verification = tauri::async_runtime::spawn_blocking(move || match duress_pin {
+        Some(pin) if !pin.is_empty() => {
+            startup_gate::verify_duress_pin(&verify_app.state::<HubCoreState>(), pin)
         }
+        _ => startup_gate::verify_password_role(&verify_app.state::<HubCoreState>(), password),
     })
     .await
     .map_err(|_| "OSL password-gate worker failed".to_owned())??;
@@ -2521,10 +2512,9 @@ fn prepare_whatsapp_qa_protected_text_blocking(
         .path()
         .app_config_dir()
         .map_err(|_| "qaStageStorage".to_owned())?;
-    let peer_person_id = osl_privacy_hub::whatsapp_qa_pairing::verified_peer_person_id(
-        &config_dir.join("osl-core"),
-    )
-    .map_err(|_| "qaStagePairing".to_owned())?;
+    let peer_person_id =
+        osl_privacy_hub::whatsapp_qa_pairing::verified_peer_person_id(&config_dir.join("osl-core"))
+            .map_err(|_| "qaStagePairing".to_owned())?;
     let peer = security::manual_peer_binding(&app.state::<HubCoreState>(), peer_person_id)
         .map_err(|_| "qaStagePeerBinding".to_owned())?;
     let prepared = broker::prepare_whatsapp_qa_peer_prose_text(
@@ -2935,11 +2925,6 @@ fn require_engaged_lock(app: &tauri::AppHandle) -> Result<(), String> {
     Err("Protected Discord encryption is switched off".to_owned())
 }
 
-
-
-
-
-
 #[cfg(all(feature = "discord-qa-shell", target_os = "windows"))]
 fn trusted_native_visible_row_qa_caller_identity(
     caller: &tauri::WebviewWindow,
@@ -2961,9 +2946,6 @@ fn trusted_native_visible_row_qa_caller_identity(
 ) -> Result<String, String> {
     Err("Native visible-row runtime evidence requires Windows".to_owned())
 }
-
-
-
 
 /// Take one non-mutating, bounded runtime census from the real Windows native
 /// visible-row producer.
@@ -4175,8 +4157,6 @@ async fn run_native_discord_headless_qa(
     .map_err(|_| "OSL headless Discord QA send worker was interrupted".to_owned())?
 }
 
-
-
 /// Drain the exact active native Discord friend context through the real
 /// authenticated inbox without creating or showing a WebView.
 #[cfg(feature = "discord-qa-shell")]
@@ -5133,7 +5113,6 @@ async fn remove_service_account(
     )
     .await
 }
-
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -6094,7 +6073,8 @@ async fn switch_hub_identity(
     let _ = app.state::<MullvadWindowHostState>().restore();
     let _ = app.state::<BrowserCompanionState>().terminate();
     app.state::<HubBrokerState>().clear()?;
-    app.state::<osl_privacy_hub::scrub_imap::ScrubImapState>().revoke_all()?;
+    app.state::<osl_privacy_hub::scrub_imap::ScrubImapState>()
+        .revoke_all()?;
     tauri::async_runtime::spawn_blocking(move || {
         identity_registry::switch_identity_slot(
             &app.state::<HubCoreState>(),
@@ -6119,7 +6099,8 @@ async fn burn_active_hub_identity(
     let _ = app.state::<MullvadWindowHostState>().restore();
     let _ = app.state::<BrowserCompanionState>().terminate();
     app.state::<HubBrokerState>().clear()?;
-    app.state::<osl_privacy_hub::scrub_imap::ScrubImapState>().revoke_all()?;
+    app.state::<osl_privacy_hub::scrub_imap::ScrubImapState>()
+        .revoke_all()?;
     tauri::async_runtime::spawn_blocking(move || {
         let owner = active_unlocked_osl_user_id(&app.state::<HubCoreState>())?;
         app.state::<ServiceScopeIndexState>()
@@ -6146,7 +6127,8 @@ async fn execute_hub_full_cleanup(
     let _ = app.state::<MullvadWindowHostState>().restore();
     let _ = app.state::<BrowserCompanionState>().terminate();
     app.state::<HubBrokerState>().clear()?;
-    app.state::<osl_privacy_hub::scrub_imap::ScrubImapState>().revoke_all()?;
+    app.state::<osl_privacy_hub::scrub_imap::ScrubImapState>()
+        .revoke_all()?;
     let config_dir = app
         .path()
         .app_config_dir()
@@ -6237,7 +6219,8 @@ async fn burn_hub_service_account(
     confirmed_burn_id: String,
 ) -> Result<HubServiceBurnResult, String> {
     let _session = session.transition.lock().await;
-    app.state::<osl_privacy_hub::scrub_imap::ScrubImapState>().revoke_all()?;
+    app.state::<osl_privacy_hub::scrub_imap::ScrubImapState>()
+        .revoke_all()?;
     tauri::async_runtime::spawn_blocking(move || {
         let core = app.state::<HubCoreState>();
         let registry = app.state::<ServiceRegistryState>();
@@ -6336,7 +6319,8 @@ async fn burn_active_hub_context(
     context_token: String,
 ) -> Result<HubScopeBurnResult, String> {
     let _session = session.transition.lock().await;
-    app.state::<osl_privacy_hub::scrub_imap::ScrubImapState>().revoke_all()?;
+    app.state::<osl_privacy_hub::scrub_imap::ScrubImapState>()
+        .revoke_all()?;
     tauri::async_runtime::spawn_blocking(move || {
         let broker_state = app.state::<HubBrokerState>();
         let core = app.state::<HubCoreState>();
@@ -8455,10 +8439,7 @@ mod qa_selftest {
             );
             let decline_instance = format!("org.oslprivacy.hub.qa-b-{}", std::process::id());
             let declared_instance = format!("org.oslprivacy.hub.qa-a-{}", std::process::id());
-            let decline_body = format!(
-                r#"{{"verb":"drain","instance":"{}"}}"#,
-                declared_instance
-            );
+            let decline_body = format!(r#"{{"verb":"drain","instance":"{}"}}"#, declared_instance);
             let decline_path =
                 temp_path(&addressed_name(ADDRESSED_DECLINE_FORMAT, &decline_instance));
             let _ = std::fs::remove_file(&decline_path);
@@ -8466,7 +8447,10 @@ mod qa_selftest {
             let decline_record: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(&decline_path).expect("read decline record"))
                     .expect("decline record JSON");
-            assert_eq!(decline_record["instance"].as_str(), Some(decline_instance.as_str()));
+            assert_eq!(
+                decline_record["instance"].as_str(),
+                Some(decline_instance.as_str())
+            );
             assert_eq!(
                 decline_record["declaredInstance"].as_str(),
                 Some(declared_instance.as_str())
@@ -8514,8 +8498,7 @@ mod qa_selftest {
             );
 
             let fixed_instance_b = "org.oslprivacy.hub.qa-b";
-            let fixed_addressed_for_a =
-                r#"{"verb":"drain","instance":"org.oslprivacy.hub.qa-a"}"#;
+            let fixed_addressed_for_a = r#"{"verb":"drain","instance":"org.oslprivacy.hub.qa-a"}"#;
             assert_eq!(
                 select_trigger_body(fixed_instance_b, Some(fixed_addressed_for_a), None),
                 TriggerSelection::Addressed(fixed_addressed_for_a),
@@ -9132,7 +9115,9 @@ fn main() {
         startup_breadcrumb("setup_done"); // STARTUP-TRACE
         Ok(())
     });
-    let builder = builder.invoke_handler(osl_privacy_hub::hub_tauri_commands!(hub_tauri_generate_handler));
+    let builder = builder.invoke_handler(osl_privacy_hub::hub_tauri_commands!(
+        hub_tauri_generate_handler
+    ));
     startup_breadcrumb("run_before"); // STARTUP-TRACE
     let app = builder
         .build(tauri::generate_context!())
@@ -9220,7 +9205,6 @@ mod b6_startup_gate_tests {
             "the retained receipt gate must bind the eighth starvation fact"
         );
     }
-
 
     #[test]
     fn p5_offline_queue_restart_source_audit() {
@@ -9556,13 +9540,15 @@ mod tauri_command_acl_tests {
             .flat_map(|line| {
                 let value = line.strip_prefix("commands.allow = [")?;
                 let value = value.strip_suffix(']')?;
-                Some(value
-                    .split(',')
-                    .map(str::trim)
-                    .map(|part| part.trim_matches('"'))
-                    .filter(|part| !part.is_empty())
-                    .map(ToOwned::to_owned)
-                    .collect::<Vec<_>>())
+                Some(
+                    value
+                        .split(',')
+                        .map(str::trim)
+                        .map(|part| part.trim_matches('"'))
+                        .filter(|part| !part.is_empty())
+                        .map(ToOwned::to_owned)
+                        .collect::<Vec<_>>(),
+                )
             })
             .flatten()
             .collect()
@@ -9782,5 +9768,3 @@ mod tauri_command_acl_tests {
         ]);
     }
 }
-
-

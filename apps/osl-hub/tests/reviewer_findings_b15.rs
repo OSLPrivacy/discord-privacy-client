@@ -34,7 +34,10 @@ fn findings_table(report: &str) -> Vec<FindingRow> {
         .take_while(|line| line.trim().starts_with('|'))
         .collect();
 
-    assert!(table_lines.len() >= 5, "expected header, separator and at least three findings");
+    assert!(
+        table_lines.len() >= 5,
+        "expected header, separator and at least three findings"
+    );
     let header: Vec<&str> = table_lines[0]
         .trim()
         .trim_matches('|')

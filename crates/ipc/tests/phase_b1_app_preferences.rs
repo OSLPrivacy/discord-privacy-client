@@ -39,12 +39,14 @@ fn use_temp_config_dir(dir: &Path) -> ConfigDirGuard {
 
 #[test]
 fn app_preferences_default_is_mode0() {
+    let _osl_serial = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let p = AppPreferences::default();
     assert_eq!(p.stego_mode, StegoMode::Mode0);
 }
 
 #[test]
 fn app_preferences_load_missing_file_returns_default() {
+    let _osl_serial = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempdir().unwrap();
     let path = dir.path().join("does-not-exist.json");
     let p = load_app_preferences(&path);
@@ -58,6 +60,7 @@ fn app_preferences_load_missing_file_returns_default() {
 /// new shape.
 #[test]
 fn app_preferences_legacy_fields_are_ignored() {
+    let _osl_serial = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempdir().unwrap();
     let path = dir.path().join("app_preferences_legacy.json");
     let legacy = r#"{

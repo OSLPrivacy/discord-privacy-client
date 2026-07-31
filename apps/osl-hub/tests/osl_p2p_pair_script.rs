@@ -36,7 +36,11 @@ fn windows_powershell() -> Option<WindowsShell> {
         if !output.status.success() {
             continue;
         }
-        if String::from_utf8_lossy(&output.stdout).trim().to_lowercase() != "windows" {
+        if String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .to_lowercase()
+            != "windows"
+        {
             continue;
         }
         return Some(WindowsShell {
@@ -101,7 +105,9 @@ fn osl_p2p_pair_source_refuses_same_osl_user_id_before_any_copy() {
     );
 
     assert!(
-        source.contains("if ($Verdict -eq 'ok') { exit 0 } elseif ($Verdict -eq 'failed') { exit 1 }"),
+        source.contains(
+            "if ($Verdict -eq 'ok') { exit 0 } elseif ($Verdict -eq 'failed') { exit 1 }"
+        ),
         "the failed verdict must exit non-zero"
     );
 }

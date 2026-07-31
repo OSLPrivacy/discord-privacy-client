@@ -35,10 +35,8 @@ fn isolated_dir(tag: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("system clock")
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "osl-unit-a5-{tag}-{}-{nonce}",
-        std::process::id()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("osl-unit-a5-{tag}-{}-{nonce}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create isolated test dir");
     dir
 }

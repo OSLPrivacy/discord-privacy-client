@@ -8066,9 +8066,9 @@ mod windows {
     };
     // Only the MSAA transcript walk needs to enumerate children or to re-prove
     // which window an `IAccessible` belongs to, and that walk is QA-shell only.
+    use ::windows::Win32::UI::Accessibility::{AccessibleChildren, WindowFromAccessibleObject};
     use std::ffi::c_void;
     use std::time::{Duration, Instant};
-    use ::windows::Win32::UI::Accessibility::{AccessibleChildren, WindowFromAccessibleObject};
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
         KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, KEYEVENTF_UNICODE,

@@ -2318,9 +2318,7 @@ mod production_fleet_tests {
 
     #[test]
     fn full_autoscrub_reviewed_fleet_native_authority_acceptance() {
-        let _guard = crate::GLOBAL_KEYSTORE_TEST_LOCK
-            .lock()
-            .expect("global keystore test lock");
+        let _guard = crate::global_keystore_test_lock();
         reset_run_store_for_test();
         let state = state_with_license(LicenseState::Paid, "ACTIVE");
 
@@ -2367,9 +2365,7 @@ mod production_fleet_tests {
 
     #[test]
     fn autoscrub_fleet_debug_excludes_review_request_secrets() {
-        let _guard = crate::GLOBAL_KEYSTORE_TEST_LOCK
-            .lock()
-            .expect("global keystore test lock");
+        let _guard = crate::global_keystore_test_lock();
         reset_run_store_for_test();
         let state = state_with_license(LicenseState::Paid, "ACTIVE");
         let request = AutoScrubReviewedRunRequest {

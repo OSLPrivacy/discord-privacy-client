@@ -37,7 +37,8 @@ fn repo_root() -> PathBuf {
 
 fn read_source(relative: &str) -> String {
     let path = repo_root().join(relative);
-    std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
 }
 
 /// Slices `source` from the first byte of `start_needle` up to (but not
@@ -46,9 +47,9 @@ fn read_source(relative: &str) -> String {
 /// rename or deletion of the guarded function fails loudly instead of the
 /// test vacuously passing on an empty/wrong slice.
 fn slice_between<'a>(source: &'a str, start_needle: &str, end_needle: &str) -> &'a str {
-    let start = source
-        .find(start_needle)
-        .unwrap_or_else(|| panic!("start anchor not found (source moved or renamed): {start_needle:?}"));
+    let start = source.find(start_needle).unwrap_or_else(|| {
+        panic!("start anchor not found (source moved or renamed): {start_needle:?}")
+    });
     let after_start = start + start_needle.len();
     let end_offset = source[after_start..]
         .find(end_needle)
@@ -125,7 +126,9 @@ fn copy_recovery_kit_handler_is_gated_behind_the_capture_proof_latch() {
         "\n  });\n",
     );
     gate_precedes_every_secret_use(block, CAPTURE_GATE, &[IDENTITY_PHRASE, PASSWORD_PHRASE])
-        .expect("copy-recovery-kit handler must gate the recovery phrase behind the capture-proof latch");
+        .expect(
+        "copy-recovery-kit handler must gate the recovery phrase behind the capture-proof latch",
+    );
 }
 
 /// Proves `gate_precedes_every_secret_use` is not vacuous: it must reject a
@@ -138,7 +141,8 @@ fn copy_recovery_kit_handler_is_gated_behind_the_capture_proof_latch() {
 fn the_gate_check_detects_removal_and_reordering() {
     let correctly_ordered = format!("if (!{CAPTURE_GATE}) return;\nconst x = {IDENTITY_PHRASE};");
     assert!(
-        gate_precedes_every_secret_use(&correctly_ordered, CAPTURE_GATE, &[IDENTITY_PHRASE]).is_ok(),
+        gate_precedes_every_secret_use(&correctly_ordered, CAPTURE_GATE, &[IDENTITY_PHRASE])
+            .is_ok(),
         "a correctly ordered block must pass"
     );
 

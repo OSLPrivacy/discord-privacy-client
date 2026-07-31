@@ -209,9 +209,11 @@ fn qa_overlay_window_stage(stage: &'static str) {
         *last = Some(stage);
     }
     use std::io::Write;
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(
-        std::env::temp_dir().join("osl-discord-qa-overlay-window-stage.txt"),
-    ) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(std::env::temp_dir().join("osl-discord-qa-overlay-window-stage.txt"))
+    {
         let _ = writeln!(file, "{stage}");
     }
 }
@@ -223,11 +225,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     BeginDeferWindowPos, CallWindowProcW, DefWindowProcW, DeferWindowPos, EndDeferWindowPos,
     GetAncestor, GetCursorPos, GetForegroundWindow, GetWindow, GetWindowLongPtrW, GetWindowRect,
     GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, SetForegroundWindow,
-    SetWindowLongPtrW, SetWindowPos, GA_ROOT,
-    GWLP_HWNDPARENT, GWLP_WNDPROC, GWL_EXSTYLE, GWL_STYLE, GW_HWNDNEXT, GW_HWNDPREV, HWND_TOPMOST,
-    SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_NOZORDER, SWP_SHOWWINDOW, WM_NCCALCSIZE, WM_NCDESTROY, WM_NCPAINT, WNDPROC,
-    WS_EX_APPWINDOW, WS_VISIBLE,
+    SetWindowLongPtrW, SetWindowPos, GA_ROOT, GWLP_HWNDPARENT, GWLP_WNDPROC, GWL_EXSTYLE,
+    GWL_STYLE, GW_HWNDNEXT, GW_HWNDPREV, HWND_TOPMOST, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
+    SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
+    WM_NCCALCSIZE, WM_NCDESTROY, WM_NCPAINT, WNDPROC, WS_EX_APPWINDOW, WS_VISIBLE,
 };
 // Windows refuses a foreground change from a process that does not own the
 // foreground and did not receive the last input event: `SetForegroundWindow`
@@ -723,7 +724,8 @@ impl OverlaySessionState {
 
     /// Record whether the guard is painting decrypted rows this pass.
     fn set_protected_rows_painted(&self, painted: bool) {
-        self.protected_rows_painted.store(painted, Ordering::Release);
+        self.protected_rows_painted
+            .store(painted, Ordering::Release);
     }
 
     /// Whether the last full pass actually had rows to paint.
@@ -803,8 +805,7 @@ impl OverlaySessionState {
     fn clear_composer_unreachable_latches(&self) {
         self.composer_zorder_surrendered
             .store(false, Ordering::Release);
-        self.protected_focus_refused
-            .store(false, Ordering::Release);
+        self.protected_focus_refused.store(false, Ordering::Release);
     }
 
     /// Record whether the composer currently holds the keyboard, and answer
@@ -1183,10 +1184,7 @@ fn painted_message_row_rects(
     }
     #[cfg(not(feature = "discord-qa-shell"))]
     {
-        union_painted_row_rects(
-            Vec::new(),
-            rehydrated_row_rects(&scope_binding, generation),
-        )
+        union_painted_row_rects(Vec::new(), rehydrated_row_rects(&scope_binding, generation))
     }
 }
 
@@ -1639,10 +1637,7 @@ pub(crate) fn discard_changed_qa_toggle(app: &tauri::AppHandle) {
 /// deferred `DeferWindowPos` batch in `position_window_pair`, issued by the
 /// guard on the guard's own thread immediately before it reveals.
 #[cfg(not(target_os = "windows"))]
-fn position_exact_window(
-    window: &tauri::WebviewWindow,
-    rect: OverlayRect,
-) -> Result<(), String> {
+fn position_exact_window(window: &tauri::WebviewWindow, rect: OverlayRect) -> Result<(), String> {
     window
         .set_size(PhysicalSize::new(rect.width, rect.height))
         .map_err(|_| "The native Discord overlay size could not be verified".to_owned())?;
@@ -2086,8 +2081,7 @@ fn ensure_shield_stack(
 #[cfg(target_os = "windows")]
 fn window_is_topmost(window: isize) -> bool {
     let hwnd = window as windows_sys::Win32::Foundation::HWND;
-    !hwnd.is_null()
-        && unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } as u32 & WS_EX_TOPMOST != 0
+    !hwnd.is_null() && unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } as u32 & WS_EX_TOPMOST != 0
 }
 
 /// Bound on the z-order walk below. A desktop with more windows than this above
@@ -2157,10 +2151,7 @@ fn protected_composer_is_above_discord(
         discord_root,
         PROTECTED_STACK_WALK_LIMIT,
         |cursor| unsafe {
-            GetWindow(
-                cursor as windows_sys::Win32::Foundation::HWND,
-                GW_HWNDPREV,
-            ) as isize
+            GetWindow(cursor as windows_sys::Win32::Foundation::HWND, GW_HWNDPREV) as isize
         },
     )
 }
@@ -2199,12 +2190,10 @@ fn qa_record_composer_zorder(app: &tauri::AppHandle, discord_window: isize, stag
     let order = composer_zorder_label(protected_composer_is_above_discord(app, discord_window));
     let (visible, topmost) = cached_label_hwnd(app, OVERLAY_LABEL)
         .map(|hwnd| {
-            let style =
-                unsafe { GetWindowLongPtrW(hwnd as windows_sys::Win32::Foundation::HWND, GWL_STYLE) };
-            (
-                style as u32 & WS_VISIBLE != 0,
-                window_is_topmost(hwnd),
-            )
+            let style = unsafe {
+                GetWindowLongPtrW(hwnd as windows_sys::Win32::Foundation::HWND, GWL_STYLE)
+            };
+            (style as u32 & WS_VISIBLE != 0, window_is_topmost(hwnd))
         })
         .unwrap_or((false, false));
     // Window state only: no composer text, identity or token can reach here.
@@ -2570,10 +2559,7 @@ fn raise_protected_composer_above_discord(
         discord_root as isize,
         PROTECTED_STACK_WALK_LIMIT,
         |cursor| unsafe {
-            GetWindow(
-                cursor as windows_sys::Win32::Foundation::HWND,
-                GW_HWNDPREV,
-            ) as isize
+            GetWindow(cursor as windows_sys::Win32::Foundation::HWND, GW_HWNDPREV) as isize
         },
     ) == Some(false)
     {
@@ -3153,8 +3139,9 @@ static COMPOSER_COMPOSITION_PATH_CHANGED: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "windows")]
 fn enforce_transparent_protected_composer(window: &tauri::WebviewWindow) -> Result<(), String> {
     use windows_sys::Win32::Graphics::Dwm::{
-        DwmEnableBlurBehindWindow, DwmGetWindowAttribute, DWMNCRP_ENABLED, DWMWA_NCRENDERING_ENABLED,
-        DWMWA_NCRENDERING_POLICY, DWM_BB_BLURREGION, DWM_BB_ENABLE, DWM_BLURBEHIND,
+        DwmEnableBlurBehindWindow, DwmGetWindowAttribute, DWMNCRP_ENABLED,
+        DWMWA_NCRENDERING_ENABLED, DWMWA_NCRENDERING_POLICY, DWM_BB_BLURREGION, DWM_BB_ENABLE,
+        DWM_BLURBEHIND,
     };
     use windows_sys::Win32::Graphics::Gdi::{CreateRectRgn, DeleteObject};
 
@@ -3489,10 +3476,10 @@ fn ensure_retained_protected_window(
     crate::startup_breadcrumb("overlay_build_window_before"); // STARTUP-TRACE
     let window = build()?;
     crate::startup_breadcrumb("overlay_build_window_after"); // STARTUP-TRACE
-    // A pre-warmed window is created long before any session exists, so its
-    // frame is stripped here too: nothing that can ever reach the screen may
-    // wear a Windows caption. The post-reveal enforcement still runs every time
-    // because Tauri re-applies its cached decorations while revealing.
+                                                             // A pre-warmed window is created long before any session exists, so its
+                                                             // frame is stripped here too: nothing that can ever reach the screen may
+                                                             // wear a Windows caption. The post-reveal enforcement still runs every time
+                                                             // because Tauri re-applies its cached decorations while revealing.
     if let Err(error) = apply_protected_frame_contract(&window, surface) {
         // A window that cannot be proven frameless must not stay registered
         // under this label. Retaining it would hand the next caller a captioned
@@ -4339,7 +4326,10 @@ fn place_moved_protected_pair(
 const PROTECTED_FULL_GUARD_BUDGET: Duration = Duration::from_millis(400);
 
 /// Apply a host translation to a cached absolute rectangle.
-fn translated_bounds(bounds: AccessibilityBounds, (dx, dy): (i32, i32)) -> Option<AccessibilityBounds> {
+fn translated_bounds(
+    bounds: AccessibilityBounds,
+    (dx, dy): (i32, i32),
+) -> Option<AccessibilityBounds> {
     Some(AccessibilityBounds {
         left: bounds.left.checked_add(dx)?,
         top: bounds.top.checked_add(dy)?,
@@ -4528,7 +4518,8 @@ fn shield_overlaps_sampled_surface(painted: &[[i32; 4]], sample: AccessibilityBo
     let Some(shield) = painted_rows_bounds(painted) else {
         return false;
     };
-    let (Ok(width), Ok(height)) = (i32::try_from(shield.width), i32::try_from(shield.height)) else {
+    let (Ok(width), Ok(height)) = (i32::try_from(shield.width), i32::try_from(shield.height))
+    else {
         return true;
     };
     let (Some(right), Some(bottom)) = (shield.x.checked_add(width), shield.y.checked_add(height))
@@ -6535,7 +6526,10 @@ mod tests {
         );
         // WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE |
         // WS_EX_STATICEDGE, and nothing else.
-        assert_eq!(NATIVE_OVERLAY_FRAME_EX_STYLE_MASK, 0x1 | 0x100 | 0x200 | 0x2_0000);
+        assert_eq!(
+            NATIVE_OVERLAY_FRAME_EX_STYLE_MASK,
+            0x1 | 0x100 | 0x200 | 0x2_0000
+        );
         assert_eq!(
             NATIVE_OVERLAY_FRAME_EX_STYLE_MASK & contract_bits,
             0,
@@ -6544,8 +6538,7 @@ mod tests {
     }
 
     fn key_rect(discord: [i32; 4], presentation: AccessibilityBounds) -> OverlayRect {
-        protected_overlay_rect(discord, Some(presentation), None)
-            .unwrap_or(PREWARM_OVERLAY_RECT)
+        protected_overlay_rect(discord, Some(presentation), None).unwrap_or(PREWARM_OVERLAY_RECT)
     }
 
     fn composer_bounds(discord: [i32; 4]) -> AccessibilityBounds {
@@ -6577,8 +6570,7 @@ mod tests {
     fn nothing_painted_leaves_discords_whole_message_list_untouched() {
         let target = [0, 0, 1_920, 1_080];
         let composer = composer_bounds(target);
-        let rect =
-            protected_overlay_rect(target, Some(composer), None).expect("verified composer");
+        let rect = protected_overlay_rect(target, Some(composer), None).expect("verified composer");
         // The message list starts above the composer, and OSL owns none of it:
         // no header inset, no sidebar inset, no band. Eye off is raw Discord
         // because there is no OSL window over the conversation at all.
@@ -6672,9 +6664,15 @@ mod tests {
             right: 1_888,
             bottom: 1_052,
         };
-        let baseline =
-            adaptive_geometry_key(discord, surface, input, presentation, key_rect(discord, presentation), 1_000)
-                .expect("baseline");
+        let baseline = adaptive_geometry_key(
+            discord,
+            surface,
+            input,
+            presentation,
+            key_rect(discord, presentation),
+            1_000,
+        )
+        .expect("baseline");
 
         assert_ne!(
             adaptive_geometry_key(
@@ -6702,7 +6700,14 @@ mod tests {
             Some(baseline)
         );
         assert_ne!(
-            adaptive_geometry_key(discord, surface, input, presentation, key_rect(discord, presentation), 1_250),
+            adaptive_geometry_key(
+                discord,
+                surface,
+                input,
+                presentation,
+                key_rect(discord, presentation),
+                1_250
+            ),
             Some(baseline)
         );
     }
@@ -6773,8 +6778,15 @@ mod tests {
             ),
         ] {
             assert!(
-                adaptive_geometry_key(discord, surface, input, surface, key_rect(discord, surface), 1_000)
-                    .is_some(),
+                adaptive_geometry_key(
+                    discord,
+                    surface,
+                    input,
+                    surface,
+                    key_rect(discord, surface),
+                    1_000
+                )
+                .is_some(),
                 "bounded Discord geometry should remain adaptable: {discord:?}"
             );
         }
@@ -6868,7 +6880,8 @@ mod tests {
         assert!(protected_surface_rect(target, Some(composer), &[]).is_some());
         // Rows displayed: the composer, grown only over those rows. The eye is
         // still the only thing that decides how far up the surface reaches.
-        let grown = protected_surface_rect(target, Some(composer), &painted).expect("grown surface");
+        let grown =
+            protected_surface_rect(target, Some(composer), &painted).expect("grown surface");
         assert_eq!(grown.y, 700);
         assert_eq!(grown.y + grown.height as i32, composer.bottom);
         // And the composer's own rows are always part of the answer. A surface
@@ -6911,7 +6924,8 @@ mod tests {
         // And it is total for a measured composer: there is no arm left that a
         // live session can reach which answers "nothing on screen".
         assert!(
-            surface.contains("protected_overlay_rect(discord, composer, painted_rows_top(painted))"),
+            surface
+                .contains("protected_overlay_rect(discord, composer, painted_rows_top(painted))"),
             "the surface is the composer, grown over the painted rows, and nothing else"
         );
         assert!(!surface.contains("painted_rows_bounds(painted)?"));
@@ -7000,13 +7014,19 @@ mod tests {
             protected_presence_surface_rect(ComposerAndRows, target, Some(composer), &[])
                 .expect("an engaged composer is present with the eye off");
         assert_eq!(engaged_eye_off.y, composer.top);
-        assert_eq!(engaged_eye_off.y + engaged_eye_off.height as i32, composer.bottom);
+        assert_eq!(
+            engaged_eye_off.y + engaged_eye_off.height as i32,
+            composer.bottom
+        );
         // Lock on, eye on: the same composer, grown over the rows and nothing more.
         let engaged_eye_on =
             protected_presence_surface_rect(ComposerAndRows, target, Some(composer), &painted)
                 .expect("an engaged composer grows over what the eye paints");
         assert_eq!(engaged_eye_on.y, 700);
-        assert_eq!(engaged_eye_on.y + engaged_eye_on.height as i32, composer.bottom);
+        assert_eq!(
+            engaged_eye_on.y + engaged_eye_on.height as i32,
+            composer.bottom
+        );
         // Lock off, eye on: the rows, and provably not the message box.
         let surrendered =
             protected_presence_surface_rect(RowsOnly, target, Some(composer), &painted)
@@ -7035,28 +7055,31 @@ mod tests {
         // is what a partially scrolled transcript looks like.
         let painted = [
             [composer.left + 8, 700, composer.right - 8, 740],
-            [composer.left + 8, composer.top - 10, composer.right - 8, composer.top + 30],
+            [
+                composer.left + 8,
+                composer.top - 10,
+                composer.right - 8,
+                composer.top + 30,
+            ],
         ];
 
         // Lock on: OSL owns the box, so the surface still reaches its bottom edge.
-        let engaged = protected_presence_surface_rect(
-            ComposerAndRows,
-            target,
-            Some(composer),
-            &painted,
-        )
-        .expect("engaged surface");
+        let engaged =
+            protected_presence_surface_rect(ComposerAndRows, target, Some(composer), &painted)
+                .expect("engaged surface");
         assert_eq!(engaged.y + engaged.height as i32, composer.bottom);
 
         // Lock off: clamp the rows first, exactly as the guard does, then derive.
         let rows = rows_above_the_composer_band(&painted, composer.top);
-        let surrendered =
-            protected_presence_surface_rect(RowsOnly, target, Some(composer), &rows)
-                .expect("rows band");
+        let surrendered = protected_presence_surface_rect(RowsOnly, target, Some(composer), &rows)
+            .expect("rows band");
         // The surface stops exactly at the top of Discord's box. `y + height` is
         // exclusive, so the last row it covers is `composer.top - 1`.
         assert_eq!(surrendered.y + surrendered.height as i32, composer.top);
-        assert!(surrendered.y < composer.top, "the rows band must cover rows");
+        assert!(
+            surrendered.y < composer.top,
+            "the rows band must cover rows"
+        );
         // Zero overlap with the box, stated as the overlap itself rather than as
         // an inequality that could be read the other way round.
         let overlap = (surrendered.y + surrendered.height as i32).min(composer.bottom)
@@ -7078,7 +7101,12 @@ mod tests {
         // A row entirely inside the box is dropped outright, and a band with
         // nothing left above the box is "nothing to be on screen for" rather than
         // a rectangle over the box.
-        let inside = [[composer.left + 8, composer.top + 4, composer.right - 8, composer.bottom]];
+        let inside = [[
+            composer.left + 8,
+            composer.top + 4,
+            composer.right - 8,
+            composer.bottom,
+        ]];
         assert!(rows_above_the_composer_band(&inside, composer.top).is_empty());
         assert_eq!(
             protected_presence_surface_rect(RowsOnly, target, Some(composer), &[]),
@@ -7142,10 +7170,7 @@ mod tests {
         // measures against, and the rectangle it actually writes. Calling
         // `protected_surface_rect` directly here would be a pass that covers
         // Discord's message box with the lock down.
-        assert_eq!(
-            guard.matches("protected_presence_surface_rect(").count(),
-            2
-        );
+        assert_eq!(guard.matches("protected_presence_surface_rect(").count(), 2);
         assert!(
             !guard.contains("protected_surface_rect("),
             "the guard must not reach past the presence mapping to a fixed geometry"
@@ -7166,7 +7191,9 @@ mod tests {
         // the rectangle the pass opened with could leave the shield a few pixels
         // inside the box.
         assert!(guard.contains("rows_above_the_composer_band(&painted_rows, placed_bounds.top)"));
-        assert!(guard.contains("position_window_pair(&window, &shield, placed_rect, &placed_rows)?;"));
+        assert!(
+            guard.contains("position_window_pair(&window, &shield, placed_rect, &placed_rows)?;")
+        );
         // Presence is decided from the operator's three facts and nothing else.
         assert!(guard.contains("overlay_state.lock_engaged(),"));
         assert!(guard.contains("overlay_state.protected_rows_painted(),"));
@@ -7181,8 +7208,9 @@ mod tests {
         assert_eq!(guard.matches("last_band_surrendered = None;").count(), 2);
         // And a surrendered band never takes the keyboard: those keystrokes are
         // Discord's, which is the whole point of handing the box back.
-        assert!(guard
-            .contains("if active_overlay_requires_focus_acquisition() && !band_surrendered {"));
+        assert!(
+            guard.contains("if active_overlay_requires_focus_acquisition() && !band_surrendered {")
+        );
     }
 
     #[test]
@@ -7210,9 +7238,7 @@ mod tests {
         // nothing on every tick: it must resolve the scope and ask the adapter's
         // cache for the rectangles the last rehydration actually read.
         assert!(!production.contains("let _ = (app, generation);"));
-        assert!(production.contains(
-            "rehydrated_row_rects(&scope_binding, generation)"
-        ));
+        assert!(production.contains("rehydrated_row_rects(&scope_binding, generation)"));
     }
 
     #[test]
@@ -7356,8 +7382,7 @@ mod tests {
             .find("impl Drop for ForegroundInputAttachment")
             .expect("the attachment must release itself");
         let dropped = function_body(&source[at..], "fn drop(");
-        assert!(dropped
-            .contains("AttachThreadInput(self.foreground_thread, self.this_thread, 0)"));
+        assert!(dropped.contains("AttachThreadInput(self.foreground_thread, self.this_thread, 0)"));
         // And the attachment is a value with a lifetime, not a pair of calls:
         // it is bound in the retry loop so it is released before the wait.
         let focus = function_body(source, "fn active_focus_overlay(");
@@ -7469,14 +7494,17 @@ mod tests {
                 .unwrap_or_else(|| panic!("{reporter} must write its own latch"));
             assert!(before < write, "{reporter} sampled the aggregate too late");
             assert!(
-                body.contains(&format!("publish_composer_unreachable(app, {reason}, was_unreachable)")),
+                body.contains(&format!(
+                    "publish_composer_unreachable(app, {reason}, was_unreachable)"
+                )),
                 "{reporter} must name its own cause"
             );
         }
 
         // The teardown retraction clears the latches and then announces, so the
         // level it publishes is the cleared one.
-        let retract = strip_line_comments(function_body(source, "fn retract_composer_unreachable("));
+        let retract =
+            strip_line_comments(function_body(source, "fn retract_composer_unreachable("));
         let cleared = retract
             .find("clear_composer_unreachable_latches()")
             .expect("teardown must clear both latches");
@@ -7504,9 +7532,7 @@ mod tests {
             COMPOSER_UNREACHABLE_SESSION_ENDED,
         ] {
             assert!(!reason.is_empty());
-            assert!(reason
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c == '-'));
+            assert!(reason.chars().all(|c| c.is_ascii_lowercase() || c == '-'));
         }
     }
 
@@ -7628,15 +7654,17 @@ mod tests {
     fn the_rows_moved_signal_is_emitted_from_the_guard_with_no_payload() {
         let guard = function_body(overlay_source(), "fn start_guard(");
         assert!(guard.contains("transcript_band.observe("));
-        assert!(guard
-            .contains("app.emit_to(OVERLAY_LABEL, NATIVE_DISCORD_ROWS_MOVED_EVENT, ())"));
+        assert!(guard.contains("app.emit_to(OVERLAY_LABEL, NATIVE_DISCORD_ROWS_MOVED_EVENT, ())"));
         // The emit is reachable only through the edge detector; a second emit
         // site anywhere in this loop is how it becomes the per-tick shape.
         let emits = guard
             .matches("emit_to(OVERLAY_LABEL, NATIVE_DISCORD_ROWS_MOVED_EVENT")
             .count();
         assert_eq!(emits, 1);
-        assert_eq!(NATIVE_DISCORD_ROWS_MOVED_EVENT, "osl://native-discord-rows-moved");
+        assert_eq!(
+            NATIVE_DISCORD_ROWS_MOVED_EVENT,
+            "osl://native-discord-rows-moved"
+        );
     }
 
     #[test]
@@ -7995,9 +8023,7 @@ mod tests {
         );
         for handed_the_shield in ["_composer(shield)", "_composer(&shield)"] {
             assert!(
-                !shipped.contains(&format!(
-                    "enforce_transparent_protected{handed_the_shield}"
-                )),
+                !shipped.contains(&format!("enforce_transparent_protected{handed_the_shield}")),
                 "the opaque capture shield must never be made see-through"
             );
         }
@@ -8121,12 +8147,18 @@ mod tests {
     fn a_host_geometry_transition_forces_a_fresh_composer_measurement() {
         // The maximize regression: the rectangle changed, so the cached absolute
         // composer bounds cannot be reused for the surface geometry.
-        assert!(geometry_transition_forces_refresh(true, false, false, false, true));
+        assert!(geometry_transition_forces_refresh(
+            true, false, false, false, true
+        ));
         // Un-maximize/restore is the same transition in the other direction.
-        assert!(geometry_transition_forces_refresh(true, false, true, false, true));
+        assert!(geometry_transition_forces_refresh(
+            true, false, true, false, true
+        ));
         // Coming back from a hidden protected pair re-measures once too: the
         // composer can have moved inside an unchanged Discord window.
-        assert!(geometry_transition_forces_refresh(true, true, true, false, true));
+        assert!(geometry_transition_forces_refresh(
+            true, true, true, false, true
+        ));
         // Steady state writes nothing and measures nothing.
         assert!(!geometry_transition_forces_refresh(
             true, true, false, false, true
@@ -8156,10 +8188,11 @@ mod tests {
         ));
         // The settled flag, not the raw "rectangle stopped moving" read, is what
         // decides whether the composer is re-measured.
-        assert!(guard.contains("discord_geometry_settled,\n                        composer_temporarily_hidden,"));
+        assert!(guard.contains(
+            "discord_geometry_settled,\n                        composer_temporarily_hidden,"
+        ));
         // Still bounded: a moving rectangle cannot buy one walk per tick.
-        assert!(guard
-            .contains("last_composer_refresh.elapsed() >= GEOMETRY_REFRESH_MIN_INTERVAL"));
+        assert!(guard.contains("last_composer_refresh.elapsed() >= GEOMETRY_REFRESH_MIN_INTERVAL"));
         // And the full pass still has exactly one placement expression, so no new
         // per-tick window write was introduced. The drag path shares the same
         // deferred batch through `place_moved_protected_pair`, and the two are
@@ -8234,10 +8267,18 @@ mod tests {
         // the composer sat correctly on top and nothing ever gave it the caret.
         // It is the same narrow predicate the QA build uses -- all four
         // conditions must hold -- and it now shares that answer.
-        assert!(active_should_reclaim_composer_focus(true, true, false, true));
-        assert!(!active_should_reclaim_composer_focus(true, true, true, true));
-        assert!(!active_should_reclaim_composer_focus(true, true, false, false));
-        assert!(!active_should_reclaim_composer_focus(false, true, false, true));
+        assert!(active_should_reclaim_composer_focus(
+            true, true, false, true
+        ));
+        assert!(!active_should_reclaim_composer_focus(
+            true, true, true, true
+        ));
+        assert!(!active_should_reclaim_composer_focus(
+            true, true, false, false
+        ));
+        assert!(!active_should_reclaim_composer_focus(
+            false, true, false, true
+        ));
         assert!(active_should_refresh_composer_bounds(
             true, true, true, false, false, true, true
         ));
@@ -8655,9 +8696,7 @@ mod tests {
         // measured proof was a reveal-time style trace of 0x84C80000 -- a style
         // with no WS_VISIBLE at all. Both strips must therefore be ordered after
         // a barrier that proves the queued reveal has landed.
-        let composer_show = reveal
-            .find("window.show()")
-            .expect("the single reveal");
+        let composer_show = reveal.find("window.show()").expect("the single reveal");
         let landed = reveal
             .find("wait_for_revealed_protected_window(window, show_error)")
             .expect("a reveal must be proven on screen before its frame is stripped");
@@ -8689,7 +8728,10 @@ mod tests {
         // sizing frame or shadow has zero space to be drawn in no matter what
         // the style words say.
         let source = overlay_source();
-        let hook = function_body(source, "unsafe extern \"system\" fn protected_frameless_window_proc(");
+        let hook = function_body(
+            source,
+            "unsafe extern \"system\" fn protected_frameless_window_proc(",
+        );
         assert!(hook.contains("if message == WM_NCCALCSIZE && wparam != 0 {"));
         assert!(hook.contains("if message == WM_NCPAINT {"));
         // Never call through a null displaced procedure.
@@ -8959,7 +9001,7 @@ mod tests {
         use windows_sys::Win32::System::Threading::GetCurrentThreadId;
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             CreateWindowExW, DestroyWindow, DispatchMessageW, GetMessageW, PostThreadMessageW,
-            RegisterClassW, MSG, WNDCLASSW, WM_QUIT, WS_POPUP,
+            RegisterClassW, MSG, WM_QUIT, WNDCLASSW, WS_POPUP,
         };
 
         if std::env::var_os("OSL_NATIVE_DRAG_COST").is_none() {
@@ -9039,10 +9081,7 @@ mod tests {
                 bottom: 0,
             };
             assert_ne!(GetWindowRgnBox(shield_hwnd, &mut box_rect), RGN_ERROR);
-            let offsets = shield_region_offsets(
-                painted_rows_bounds(&rows).expect("bounds"),
-                &rows,
-            );
+            let offsets = shield_region_offsets(painted_rows_bounds(&rows).expect("bounds"), &rows);
             assert_eq!(offsets.len(), rows.len());
         };
         let batch = |frame: i32| unsafe {
@@ -9172,7 +9211,10 @@ mod tests {
         // is the measured composer's.
         assert_eq!(moved.width, rect.width);
         assert_eq!(moved.height, rect.height);
-        assert_eq!(translated_overlay_rect(rect, (0, 0)).expect("identity"), rect);
+        assert_eq!(
+            translated_overlay_rect(rect, (0, 0)).expect("identity"),
+            rect
+        );
         // Overflow is not silently wrapped into a placement on the other side of
         // the desktop.
         assert_eq!(
@@ -9449,10 +9491,22 @@ mod tests {
         );
         // Undecidable answers must never become a mutation: an exhausted bound,
         // a missing window, or a degenerate comparison are all "no drift".
-        assert_eq!(resolve_window_is_above(10, 30, 1, stub_previous_window), None);
-        assert_eq!(resolve_window_is_above(0, 30, 8, stub_previous_window), None);
-        assert_eq!(resolve_window_is_above(10, 0, 8, stub_previous_window), None);
-        assert_eq!(resolve_window_is_above(10, 10, 8, stub_previous_window), None);
+        assert_eq!(
+            resolve_window_is_above(10, 30, 1, stub_previous_window),
+            None
+        );
+        assert_eq!(
+            resolve_window_is_above(0, 30, 8, stub_previous_window),
+            None
+        );
+        assert_eq!(
+            resolve_window_is_above(10, 0, 8, stub_previous_window),
+            None
+        );
+        assert_eq!(
+            resolve_window_is_above(10, 10, 8, stub_previous_window),
+            None
+        );
     }
 
     #[test]
@@ -9501,9 +9555,9 @@ mod tests {
             3,
             "the tick's own read, the post-reconcile read, and the QA host-error fallback"
         );
-        assert!(
-            guard.contains("let host_rect_is_still = exact_window_rect_matches(discord_window, last_rect);")
-        );
+        assert!(guard.contains(
+            "let host_rect_is_still = exact_window_rect_matches(discord_window, last_rect);"
+        ));
         // A move or a resize is not one of the reasons. `active_ensure_carrier_stack`
         // is a blocking UI-thread round trip plus a SetWindowPos, a style rewrite
         // and two DWM calls; running it per `WM_MOVE` is the reported drag lag,
@@ -9604,7 +9658,10 @@ mod tests {
         let mut order = vec![DISCORD, COMPOSER, SHIELD, OSL_MAIN];
         let insert_after =
             composer_insert_after_above_discord(COMPOSER, DISCORD, 0).expect("a correction");
-        assert_eq!(insert_after, 0, "HWND_TOP is the only handle above the band");
+        assert_eq!(
+            insert_after, 0,
+            "HWND_TOP is the only handle above the band"
+        );
         apply_insert_after(&mut order, COMPOSER, insert_after);
         assert_eq!(order.first(), Some(&COMPOSER));
 
@@ -9616,8 +9673,14 @@ mod tests {
             None
         );
         // Degenerate reads never become a write.
-        assert_eq!(composer_insert_after_above_discord(0, DISCORD, OTHER_APP), None);
-        assert_eq!(composer_insert_after_above_discord(COMPOSER, 0, OTHER_APP), None);
+        assert_eq!(
+            composer_insert_after_above_discord(0, DISCORD, OTHER_APP),
+            None
+        );
+        assert_eq!(
+            composer_insert_after_above_discord(COMPOSER, 0, OTHER_APP),
+            None
+        );
         assert_eq!(
             composer_insert_after_above_discord(COMPOSER, COMPOSER, OTHER_APP),
             None
@@ -9648,13 +9711,23 @@ mod tests {
         // Being above Discord and holding Discord's keyboard focus are two
         // different contracts. Production asserted only the first, so the
         // operator typed into Discord's own message box in the clear.
-        assert!(active_should_reclaim_composer_focus(true, true, false, true));
+        assert!(active_should_reclaim_composer_focus(
+            true, true, false, true
+        ));
         // Narrow on purpose: it can never pull the caret away from an operator
         // who is doing something else.
-        assert!(!active_should_reclaim_composer_focus(true, true, false, false));
-        assert!(!active_should_reclaim_composer_focus(true, false, false, true));
-        assert!(!active_should_reclaim_composer_focus(true, true, true, true));
-        assert!(!active_should_reclaim_composer_focus(false, true, false, true));
+        assert!(!active_should_reclaim_composer_focus(
+            true, true, false, false
+        ));
+        assert!(!active_should_reclaim_composer_focus(
+            true, false, false, true
+        ));
+        assert!(!active_should_reclaim_composer_focus(
+            true, true, true, true
+        ));
+        assert!(!active_should_reclaim_composer_focus(
+            false, true, false, true
+        ));
 
         // And it may never end the session: a refused foreground change is not
         // an identity question, and taking the composer off screen is the one
@@ -9833,7 +9906,9 @@ mod tests {
         );
         assert!(!guard.contains("hide_window(&app);"));
         let leave = strip_line_comments(function_body(overlay_source(), "fn leave_the_screen("));
-        let asked = leave.find("hide_window(app)").expect("the hide must be issued");
+        let asked = leave
+            .find("hide_window(app)")
+            .expect("the hide must be issued");
         let proved = leave
             .find("protected_pair_is_off_screen(app)")
             .expect("and it must be read back");
@@ -9909,7 +9984,10 @@ mod tests {
         let announce = guard[commit..]
             .find("OVERLAY_SESSION_EVENT, true")
             .expect("the transition must announce the readable session");
-        assert!(announce > 0, "readiness is committed before it is announced");
+        assert!(
+            announce > 0,
+            "readiness is committed before it is announced"
+        );
     }
 
     #[test]
@@ -9926,7 +10004,10 @@ mod tests {
             "a discarded session must re-arm the readiness poll"
         );
         assert!(!discard.contains("cancelOverlayInit"));
-        let init = function_body(renderer, "async function initializeOverlay(): Promise<void> {");
+        let init = function_body(
+            renderer,
+            "async function initializeOverlay(): Promise<void> {",
+        );
         let ready = init
             .find("overlayReady = true;")
             .expect("initialization is the only thing that can grant readiness");
@@ -10043,7 +10124,11 @@ mod tests {
         let mut unique = labels.to_vec();
         unique.sort_unstable();
         unique.dedup();
-        assert_eq!(unique.len(), labels.len(), "two legs may never share a label");
+        assert_eq!(
+            unique.len(),
+            labels.len(),
+            "two legs may never share a label"
+        );
         for label in labels {
             assert!(label.starts_with("rehydrate_"));
             assert!(label.is_ascii() && !label.contains(' ') && !label.contains('{'));
@@ -10061,7 +10146,10 @@ mod tests {
         let caller = command
             .find("if caller.label() != native_discord_overlay::OVERLAY_LABEL {")
             .expect("the caller check exists");
-        assert!(entered < caller, "entry is named before anything can refuse");
+        assert!(
+            entered < caller,
+            "entry is named before anything can refuse"
+        );
 
         // Every pre-read precondition carries its own label out. A bare `?` on any
         // of these is exactly the silence this test exists to forbid.
@@ -10078,10 +10166,7 @@ mod tests {
         }
         // And the refusal itself is unchanged: the helper reports and returns the
         // caller's own error value, never a substitute for it.
-        let helper = function_body(
-            include_str!("main.rs"),
-            "fn qa_named_rehydrate_refusal<T>(",
-        );
+        let helper = function_body(include_str!("main.rs"), "fn qa_named_rehydrate_refusal<T>(");
         assert!(helper.contains("qa_discord_rehydrate_stage(stage, None);"));
         assert!(helper.contains("result"));
         // The error VALUE must never reach the trail -- only the fixed label.

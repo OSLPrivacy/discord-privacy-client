@@ -2,8 +2,8 @@
 //! Callers must supply already-verified screen-space outer and input rectangles.
 //! Pixels remain in memory and are never written to disk, logged, or receipted.
 
-use base64::Engine as _;
 use crate::native_discord_adapter::VerifiedComposerTextPresentation;
+use base64::Engine as _;
 use serde::Serialize;
 use std::sync::Mutex;
 

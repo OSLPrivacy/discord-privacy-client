@@ -3,14 +3,14 @@ use sha2::{Digest, Sha256};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use url::Url;
 
 #[cfg(any(feature = "desktop", test))]
 use crate::hosted_port::{
-    DeleteAuthorityGrant, HostedPort, HostedPortMode, HostedPortOpenError, open_hosted_port,
+    open_hosted_port, DeleteAuthorityGrant, HostedPort, HostedPortMode, HostedPortOpenError,
 };
 use crate::models::EmailProvider;
 
@@ -1120,7 +1120,7 @@ impl ServiceHostState {
 #[cfg(feature = "desktop")]
 pub mod desktop {
     use super::*;
-    use crate::services::{ServiceRegistryState, service_kind_from_id};
+    use crate::services::{service_kind_from_id, ServiceRegistryState};
     use tauri::webview::{NewWindowResponse, PageLoadEvent, WebviewBuilder};
     use tauri::{
         AppHandle, LogicalPosition, LogicalSize, Manager, Position, Rect, Size, State, WebviewUrl,
@@ -1652,7 +1652,7 @@ pub mod desktop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, TryLockError, mpsc};
+    use std::sync::{mpsc, Arc, TryLockError};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn discord() -> &'static ServiceManifest {
@@ -1741,27 +1741,19 @@ mod tests {
                 .unwrap(),
             active
         );
-        assert!(
-            state
-                .require_current_owned("osl_owner_bbbbbbbbbbbbbbbb", "instagram", "account-one")
-                .is_err()
-        );
-        assert!(
-            state
-                .require_current_owned(owner, "discord", "account-one")
-                .is_err()
-        );
-        assert!(
-            state
-                .require_current_owned(owner, "instagram", "account-two")
-                .is_err()
-        );
+        assert!(state
+            .require_current_owned("osl_owner_bbbbbbbbbbbbbbbb", "instagram", "account-one")
+            .is_err());
+        assert!(state
+            .require_current_owned(owner, "discord", "account-one")
+            .is_err());
+        assert!(state
+            .require_current_owned(owner, "instagram", "account-two")
+            .is_err());
         state.next_generation().unwrap();
-        assert!(
-            state
-                .require_current_owned(owner, "instagram", "account-one")
-                .is_err()
-        );
+        assert!(state
+            .require_current_owned(owner, "instagram", "account-one")
+            .is_err());
     }
 
     #[test]
@@ -2013,12 +2005,10 @@ mod tests {
             state.status().unwrap().phase,
             ServiceHostPhase::DocumentReady
         );
-        assert!(
-            state
-                .resume("owner-a", "telegram", "another-account")
-                .unwrap()
-                .is_none()
-        );
+        assert!(state
+            .resume("owner-a", "telegram", "another-account")
+            .unwrap()
+            .is_none());
     }
 
     #[test]

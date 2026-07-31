@@ -15,15 +15,15 @@
 
 use crate::autoscrub_run::{self, AutoScrubFleetStatus, AutoScrubReviewedRunRequest};
 use crate::broker;
+use crate::browser_footprint::{self, FootprintObservation, NativeBrowserImportBinding};
 use crate::core_bridge::HubCoreState;
 use crate::discord_carrier_geometry::CarrierDecision;
 use crate::identity_binding_verifier::{
     AccountRef, BindingScope, IdentityBindingVerifier, PinnedOwner,
 };
 use crate::models::ServiceKind;
-use crate::native_discord_adapter::{DiscordCarrierLayout, NativeDiscordComposerState};
-use crate::browser_footprint::{self, FootprintObservation, NativeBrowserImportBinding};
 use crate::native_apps::BrowserImportId;
+use crate::native_discord_adapter::{DiscordCarrierLayout, NativeDiscordComposerState};
 use crate::service_host::ActiveServiceHost;
 use serde::Deserialize;
 #[cfg(feature = "discord-qa-shell")]
@@ -40,7 +40,9 @@ pub fn build_review_ui_identity_binding_verifier(
         .as_ref()
         .cloned()
         .ok_or_else(|| "Unlock an OSL identity before starting AutoScrub".to_owned())?;
-    Ok(IdentityBindingVerifier::new(PinnedOwner::from_identity(&identity)))
+    Ok(IdentityBindingVerifier::new(PinnedOwner::from_identity(
+        &identity,
+    )))
 }
 
 pub fn require_review_ui_identity_binding_from_verifier(
@@ -122,10 +124,8 @@ where
     Scan: FnOnce(
         &CheckedHost,
         &[String],
-    ) -> Result<
-        crate::native_discord_adapter::guided_deletion::DeletionScan,
-        String,
-    >,
+    )
+        -> Result<crate::native_discord_adapter::guided_deletion::DeletionScan, String>,
     Recheck: FnOnce(&CheckedHost) -> Result<(), String>,
 {
     let checked = build_checked()?;
@@ -587,10 +587,10 @@ pub fn checked_browser_footprint_binding(
 #[cfg(test)]
 mod native_visible_row_qa_command_tests {
     use super::{
-        canonical_native_visible_row_qa_build_hash,
-        finish_native_visible_row_qa_request, prepare_native_visible_row_qa_request,
-        recorded_executable_hash_matches_rebuild, require_native_discord_product_send_authority,
-        with_native_discord_product_send_authority, ActiveServiceHost,
+        canonical_native_visible_row_qa_build_hash, finish_native_visible_row_qa_request,
+        prepare_native_visible_row_qa_request, recorded_executable_hash_matches_rebuild,
+        require_native_discord_product_send_authority, with_native_discord_product_send_authority,
+        ActiveServiceHost,
     };
     use crate::native_discord_adapter::{
         deidentify_prepared_visual_structure, DiscordCarrierLayout, DiscordCarrierPadding,
@@ -1543,15 +1543,13 @@ mod tauri_registration_surface_tests {
         }
     }
 
-    fn pw3_test_deletion_scan() -> crate::native_discord_adapter::guided_deletion::DeletionScan
-    {
+    fn pw3_test_deletion_scan() -> crate::native_discord_adapter::guided_deletion::DeletionScan {
         crate::native_discord_adapter::guided_deletion::DeletionScan {
             scope_binding_hash: "scan-hash".to_owned(),
             generation: 9,
             rows_seen: 1,
             rows_unreadable: 0,
-            walk:
-                crate::native_discord_adapter::guided_deletion::WalkCompleteness::Complete,
+            walk: crate::native_discord_adapter::guided_deletion::WalkCompleteness::Complete,
             candidates: Vec::new(),
         }
     }
@@ -1736,7 +1734,9 @@ mod tauri_registration_surface_tests {
         let missing_checked_host_events = RefCell::new(Vec::<&'static str>::new());
         let missing_checked_host = checked_hosted_session_scan_flow(
             || {
-                missing_checked_host_events.borrow_mut().push("checked-host");
+                missing_checked_host_events
+                    .borrow_mut()
+                    .push("checked-host");
                 Err("missing checked host".to_owned())
             },
             |_checked| {
@@ -1884,15 +1884,14 @@ mod tauri_registration_surface_tests {
                 Ok(scan)
             },
             |_checked| {
-                generation_drift_events
-                    .borrow_mut()
-                    .push("context-recheck");
+                generation_drift_events.borrow_mut().push("context-recheck");
                 Ok(())
             },
         );
         match generation_drift {
             Err(error) => assert_eq!(
-                error, "Hosted session scan context changed during native scan"
+                error,
+                "Hosted session scan context changed during native scan"
             ),
             Ok(_) => panic!("a scan from a different native generation must refuse"),
         }
@@ -2111,9 +2110,8 @@ mod tauri_registration_surface_tests {
         );
 
         let started_without_binding = Cell::new(false);
-        let unbound_verifier = IdentityBindingVerifier::new(PinnedOwner::from_identity(
-            &owner_identity,
-        ));
+        let unbound_verifier =
+            IdentityBindingVerifier::new(PinnedOwner::from_identity(&owner_identity));
         match start_autoscrub_reviewed_run_after_review_ui_binding(
             &unbound_verifier,
             request.clone(),
@@ -2123,7 +2121,8 @@ mod tauri_registration_surface_tests {
             },
         ) {
             Err(error) => assert_eq!(
-                error, "A reviewed identity binding is required before starting AutoScrub"
+                error,
+                "A reviewed identity binding is required before starting AutoScrub"
             ),
             Ok(_) => panic!("missing review binding must refuse before start"),
         }
@@ -2609,7 +2608,9 @@ mod b6_startup_gate_tests {
                 Ok(())
             },
             || {
-                stale_after_events.borrow_mut().push("drain-production-inbox");
+                stale_after_events
+                    .borrow_mut()
+                    .push("drain-production-inbox");
                 Ok(FakeOpened {
                     opened_count: 1,
                     pending_view_once_count: 0,

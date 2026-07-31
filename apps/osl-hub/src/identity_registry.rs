@@ -1045,7 +1045,7 @@ mod tests {
         // (crates/ipc/src/main_password.rs), which other modules' tests also
         // mutate; hold the crate-wide lock so a sibling test can't swap the
         // key out from under this one mid-test.
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let base = temp_base("registry");
         ipc::main_password::set_file_storage_key(None);
         assert!(write_registry(&base, &IdentityRegistryFile::default()).is_err());

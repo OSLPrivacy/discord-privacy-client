@@ -4,21 +4,21 @@
 #[cfg(feature = "core")]
 pub mod attachment_formats;
 pub mod attachment_scan;
+pub mod attended_imap;
 #[cfg(feature = "core")]
 pub mod autoscrub_run;
-pub mod attended_imap;
 pub mod background_priority;
 pub mod browser_companion;
+pub mod browser_footprint;
 #[cfg(feature = "core")]
 pub mod browser_profile_scan;
-pub mod browser_footprint;
 pub mod burn_contract;
 pub mod cloud_autoscrub_authority;
 pub mod cloud_autoscrub_consent;
+pub mod cloud_autoscrub_envelope;
+pub mod cloud_autoscrub_execution;
 #[cfg(feature = "core")]
 pub mod cloud_autoscrub_run;
-pub mod cloud_autoscrub_execution;
-pub mod cloud_autoscrub_envelope;
 pub mod consent_ledger;
 pub mod control_contract;
 pub mod discord_carrier_geometry;
@@ -26,6 +26,9 @@ pub mod execution_consent;
 pub mod external_overlay;
 pub(crate) mod firefox_migration_coordinator;
 pub mod hosted_audience;
+pub mod hosted_port;
+pub mod hosted_provider_recipe;
+pub mod hosted_session_port;
 pub mod models;
 pub mod mullvad_window_host;
 pub mod native_apps;
@@ -34,22 +37,19 @@ pub mod native_discord_adapter;
 pub mod native_signal_adapter;
 pub mod native_whatsapp_adapter;
 pub mod native_window_host;
-pub mod proprietary_module_boundary;
-pub mod proprietary_module_lifecycle;
-pub mod hosted_port;
-pub mod hosted_session_port;
-pub mod hosted_provider_recipe;
-pub mod owner_presence;
 #[cfg(feature = "core")]
 pub mod osl_profile;
+pub mod owner_presence;
 #[cfg(feature = "core")]
 pub mod peer_attachment_io;
 pub mod preferences;
 pub mod privacy_scan;
 #[cfg(feature = "core")]
 pub mod pro_context_cover;
-pub mod service_host;
+pub mod proprietary_module_boundary;
+pub mod proprietary_module_lifecycle;
 pub mod scrub_evidence_manifest;
+pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;
 pub mod updates;
@@ -112,9 +112,9 @@ pub mod native_surface_capture;
 // core`, which is the only configuration CI and the accept commands can build.
 #[cfg(feature = "core")]
 pub mod hub_command_surface;
+pub mod scrub_imap;
 #[cfg(feature = "core")]
 pub mod scrub_index;
-pub mod scrub_imap;
 pub mod scrub_receipt;
 #[cfg(feature = "core")]
 pub mod security;
@@ -149,3 +149,19 @@ pub mod original_bootstrap;
 // sibling module's test mutates the same global concurrently.
 #[cfg(test)]
 pub(crate) static GLOBAL_KEYSTORE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Take the crate-wide keystore/globals lock, recovering from poisoning.
+///
+/// Every caller used to `.lock().unwrap()`, which meant one genuinely failing
+/// test poisoned the mutex and every later test that touched these globals
+/// died with `PoisonError` instead of running. On Windows CI that turned a
+/// single real assertion failure in `services` into 11 reported failures and
+/// buried the one that mattered. Poisoning tells us nothing useful here: the
+/// lock guards process globals that each test sets up for itself, not an
+/// invariant that a panic could leave half-applied.
+#[cfg(test)]
+pub(crate) fn global_keystore_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    GLOBAL_KEYSTORE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}

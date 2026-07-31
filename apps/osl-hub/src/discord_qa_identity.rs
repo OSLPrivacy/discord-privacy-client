@@ -495,7 +495,6 @@ mod tests {
     // password_lifecycle.rs mutate these same keystore/main-password globals
     // in their own tests, so a lock scoped to only this module would not
     // stop them racing us.
-    use crate::GLOBAL_KEYSTORE_TEST_LOCK as GLOBAL_STORAGE_TEST;
 
     struct StorageGlobalsGuard;
 
@@ -521,7 +520,7 @@ mod tests {
 
     #[test]
     fn pairing_root_ignores_the_active_identity_slot() {
-        let _serial = GLOBAL_STORAGE_TEST.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let _globals = StorageGlobalsGuard;
         let root = test_dir("pairing-root");
         let active = root.join("identities").join("id-active");
@@ -655,7 +654,7 @@ mod tests {
 
     #[test]
     fn two_qa_profiles_exchange_only_public_offers_and_become_verified() {
-        let _serial = GLOBAL_STORAGE_TEST.lock().unwrap();
+        let _serial = crate::global_keystore_test_lock();
         let _globals = StorageGlobalsGuard;
         let root = test_dir("pairing-roundtrip");
         let alice_dir = root.join("alice");
