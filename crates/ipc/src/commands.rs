@@ -6135,7 +6135,7 @@ where
 /// empty cover from `open_attachment_v2_split`) — falls back to the
 /// caller-supplied legacy `att_key_b64` argument for V1 only. If
 /// that legacy local key is absent, the V1 branch fetches the
-/// sender/recipient/content-bound wrapped key from the keyserver.
+/// sender/recipient/content-bound keyserver wrapped-key row.
 ///
 /// Phase 8e: open path now chains V3 → V2 → V1 magic detection via
 /// `open_attachment_v3_split`. JS callers don't need to know which
@@ -6266,9 +6266,9 @@ pub fn cmd_osl_open_attachment_v2(
             k.copy_from_slice(&key_bytes);
             k
         } else {
-            let content_id = discord_message_id
-                .as_deref()
-                .ok_or_else(|| "OSL: V1 file with no local attachment key supplied".to_string())?;
+            let content_id = discord_message_id.as_deref().ok_or_else(|| {
+                "OSL: V1 file with no local attachment key or content id supplied".to_string()
+            })?;
             fetch_wrapped_attachment_key_for_open(state, content_id, &sender_discord_id)?
         }
     };
@@ -6404,17 +6404,17 @@ mod wrapped_key_open_tests {
             None,
             Some("content-1".to_string()),
         )
-        .expect("V1 attachment should open with the fetched wrapped key");
+        .expect("V1 attachment should open by fetching its wrapped key");
 
         assert_eq!(
-            opened.plaintext_b64,
-            STANDARD.encode(b"wrapped-key plaintext")
+            STANDARD.decode(opened.plaintext_b64).unwrap(),
+            b"wrapped-key plaintext"
         );
         assert_eq!(opened.original_filename, "wrapped.png");
         assert_eq!(opened.mime_type, "image/png");
         let request = rx
             .recv_timeout(Duration::from_millis(100))
-            .expect("missing local V1 key must fetch the wrapped key");
+            .expect("open must fetch the missing wrapped attachment key");
         assert!(request.starts_with("GET /v1/wrapped-keys/content-1?"));
         assert!(request.contains("requester_id=recipient-osl"));
         assert!(request.contains("recipient_id=recipient-osl"));
@@ -11100,6 +11100,8 @@ mod friend_request_acceptance_tests {
         load_pending_friend_requests, pending_friend_requests_path,
         persist_typed_friend_request_with_dir,
     };
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
     use crate::friend_request::{
         FriendPeer, FriendRequest, FriendScopeGrant, VerifiedFriendAuthority,
     };
@@ -11122,6 +11124,18 @@ mod friend_request_acceptance_tests {
 
     fn authority(label: &str) -> VerifiedFriendAuthority {
         VerifiedFriendAuthority::from_tofu_trusted_key_bundle(&bundle(label)).unwrap()
+    }
+
+    fn identity_bundle(identity: &keystore::Identity) -> KeyBundle {
+        KeyBundle {
+            ed25519_pub: STANDARD.encode(identity.ed25519_public.as_bytes()),
+            x25519_pub: STANDARD.encode(identity.x25519_public.as_bytes()),
+            mlkem768_pub: STANDARD.encode(identity.mlkem_public_bytes),
+            ratchet_initial_pub: identity
+                .ratchet_initial_pub
+                .as_ref()
+                .map(|p| STANDARD.encode(p.as_bytes())),
+        }
     }
 
     fn request_for(scope: Scope) -> FriendRequest {
@@ -11189,6 +11203,69 @@ mod friend_request_acceptance_tests {
         let pending = load_pending_friend_requests(&pending_friend_requests_path(dir.path()))
             .expect("pending file loads");
         assert!(pending == vec![result.pending.clone()]);
+    }
+
+    #[test]
+    fn cmd_osl_send_friend_request_persists_pending_and_rejects_duplicate_request() {
+        let _guard = ACTIVE_ACCOUNT_DIR_TEST_LOCK.lock().unwrap();
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        keystore::set_active_account_dir(Some(dir.path().to_path_buf()));
+        let _reset = ActiveAccountDirReset;
+        let state = AppState::new();
+        state.install_identity(keystore::generate_identity("requester-osl-a62".to_string()));
+        let trusted_peer = keystore::generate_identity("trusted-peer-a62".to_string());
+        let scope = Scope::dm(REQUESTER_DID);
+        state.peer_map.lock().unwrap().insert(
+            REQUESTER_DID.to_string(),
+            crate::peer_map::PeerEntry {
+                discord_id: Some(REQUESTER_DID.to_string()),
+                tofu_key_bundle: Some(identity_bundle(&trusted_peer)),
+                ..Default::default()
+            },
+        );
+
+        let sent = cmd_osl_send_friend_request(
+            &state,
+            REQUESTER_DID.to_string(),
+            (&scope).into(),
+        )
+        .expect("public friend request command should persist a pending row");
+
+        assert!(sent.request.grants_scope(&scope));
+        assert_eq!(sent.pending.peer_discord_id, REQUESTER_DID);
+        assert_eq!(sent.pending.scope_storage_key, scope.storage_key());
+        assert!(
+            state
+                .peer_map
+                .lock()
+                .unwrap()
+                .get(REQUESTER_DID)
+                .unwrap()
+                .outgoing_whitelists
+                .is_empty(),
+            "sending a request must not adopt the requested scope"
+        );
+        assert!(
+            state.whitelist_state.lock().unwrap().is_empty(),
+            "sending a request must not turn the requested scope on locally"
+        );
+
+        let pending = load_pending_friend_requests(&pending_friend_requests_path(dir.path()))
+            .expect("pending request file should load");
+        assert!(
+            pending == vec![sent.pending.clone()],
+            "pending file must contain exactly the created request"
+        );
+
+        let duplicate = match cmd_osl_send_friend_request(
+            &state,
+            REQUESTER_DID.to_string(),
+            (&scope).into(),
+        ) {
+            Ok(_) => panic!("same pending friend request must not be duplicated"),
+            Err(err) => err,
+        };
+        assert_eq!(duplicate, "OSL: friend request already exists");
     }
 
     #[test]
@@ -13810,6 +13887,29 @@ mod inactivity_command_activity_tests {
     static INACTIVITY_COMMAND_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
+    fn record_activity_on_every_command_marks_inactivity_timer() {
+        let _guard = INACTIVITY_COMMAND_TEST_LOCK.lock().unwrap();
+        crate::main_password::set_file_storage_key(None);
+        let t0 = Instant::now();
+        let key = [0xA7; 32];
+        crate::main_password::set_file_storage_key_after_main_password_unlock(key);
+
+        let command_at = t0 + Duration::from_secs(keystore::DEFAULT_INACTIVITY_SECONDS - 30);
+        assert!(
+            record_activity_on_every_command_at(command_at),
+            "command activity inside the idle window should be accepted"
+        );
+        assert!(
+            !crate::main_password::run_file_key_inactivity_auto_lock_timer_at(
+                t0 + Duration::from_secs(keystore::DEFAULT_INACTIVITY_SECONDS + 1)
+            ),
+            "the command mark must move the inactivity deadline forward"
+        );
+        assert_eq!(crate::main_password::get_file_storage_key(), Some(key));
+        crate::main_password::set_file_storage_key(None);
+    }
+
+    #[test]
     fn record_activity_on_every_command_extends_file_key_timer_window() {
         let _guard = INACTIVITY_COMMAND_TEST_LOCK.lock().unwrap();
         crate::main_password::set_file_storage_key(None);
@@ -13847,7 +13947,7 @@ mod inactivity_command_activity_tests {
     }
 
     #[test]
-    fn record_activity_on_every_command_marks_inactivity_timer() {
+    fn record_activity_on_every_command_marks_short_inactivity_timer_window() {
         let _guard = INACTIVITY_COMMAND_TEST_LOCK.lock().unwrap();
         crate::main_password::set_file_storage_key(None);
         let t0 = Instant::now();
