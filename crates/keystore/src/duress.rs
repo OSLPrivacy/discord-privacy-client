@@ -1082,6 +1082,45 @@ mod tests {
         assert_eq!(*unregister_calls.lock().unwrap(), 1);
     }
 
+    #[test]
+    fn production_duress_wipes_cache_prekeys_and_identity_files() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        std::fs::write(&paths.identity_file, b"sealed identity").unwrap();
+        let prekey_file = paths.prekey_file.clone().unwrap();
+        std::fs::write(&prekey_file, b"sealed prekeys").unwrap();
+        let cache_dir = dir.path().join("store");
+        std::fs::create_dir(&cache_dir).unwrap();
+        std::fs::write(cache_dir.join("cache.sqlite"), b"cached ciphertext").unwrap();
+
+        let identity_file = paths.identity_file.clone();
+        let handlers = ProductionDuressHandlers::new()
+            .with_purge_keyring(Box::new(|| Ok(())))
+            .with_wipe_local_cache_dir_path(cache_dir.clone())
+            .into_handlers();
+        let engine = DuressEngine::new(journal_path, paths, handlers);
+
+        let report = engine
+            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
+            .unwrap();
+
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::IdentityFile),
+            &StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::PrekeyFile),
+            &StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::LocalCacheDir),
+            &StepOutcome::Wiped
+        );
+        assert!(!identity_file.exists());
+        assert!(!prekey_file.exists());
+        assert!(!cache_dir.exists());
+    }
+
     #[cfg(not(windows))]
     #[test]
     fn production_handlers_absence_keeps_remaining_callbacks_skipped() {
@@ -1244,6 +1283,90 @@ mod tests {
 
         assert_eq!(tpm_outcome, &StepOutcome::AlreadyClean);
         assert_ne!(tpm_outcome, &StepOutcome::Wiped);
+    }
+
+    #[test]
+    fn keyring_purge_handler() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        write_journal_with_all_steps_except(&journal_path, WipeStep::KeyringPurge);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_handler = Arc::clone(&calls);
+        let handlers = DuressHandlers {
+            purge_keyring: Some(Box::new(move || {
+                calls_for_handler.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })),
+            ..Default::default()
+        };
+        let engine = DuressEngine::new(journal_path.clone(), paths, handlers);
+
+        let report = engine
+            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
+            .unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            outcome_for(&report.steps, WipeStep::KeyringPurge),
+            &StepOutcome::Wiped
+        );
+        assert!(!journal_path.exists());
+    }
+
+    #[test]
+    fn handlers_run_in_canonical_order() {
+        let dir = TempDir::new().unwrap();
+        let (paths, journal_path) = test_paths(&dir);
+        std::fs::write(&paths.identity_file, b"identity").unwrap();
+        std::fs::write(&paths.password_file, b"password").unwrap();
+        let prekey_file = paths.prekey_file.clone().unwrap();
+        std::fs::write(&prekey_file, b"prekeys").unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+
+        let handlers = ProductionDuressHandlers::new()
+            .with_purge_keyring(record_handler(Arc::clone(&calls), "keyring"))
+            .with_unregister_account(record_handler(Arc::clone(&calls), "unregister"))
+            .with_wipe_local_cache_dir(record_handler(Arc::clone(&calls), "local_cache"))
+            .with_wipe_anonymous_credentials(record_handler(Arc::clone(&calls), "anonymous"))
+            .with_wipe_prekeys(record_handler(Arc::clone(&calls), "prekeys"))
+            .with_wipe_double_ratchet(record_handler(Arc::clone(&calls), "double_ratchet"))
+            .with_wipe_sender_keys(record_handler(Arc::clone(&calls), "sender_keys"))
+            .with_wipe_peer_ratchets(record_handler(Arc::clone(&calls), "peer_ratchets"))
+            .with_zeroize_in_memory(record_handler(Arc::clone(&calls), "zeroize"))
+            .with_strip_opsec_files(record_handler(Arc::clone(&calls), "strip_opsec"))
+            .into_handlers();
+        let engine = DuressEngine::new(journal_path, paths, handlers);
+
+        let report = engine
+            .execute_with_tpm_evict(|| Ok(TpmEvictOutcome::NoTpmNothingToEvict))
+            .unwrap();
+
+        assert!(report.completed);
+        assert!(report.failed_steps().is_empty());
+        assert!(report.skipped_steps().is_empty());
+        assert_eq!(
+            report
+                .steps
+                .iter()
+                .map(|(step, _)| *step)
+                .collect::<Vec<_>>(),
+            WipeStep::ordered().to_vec()
+        );
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            &[
+                "keyring",
+                "unregister",
+                "local_cache",
+                "anonymous",
+                "prekeys",
+                "double_ratchet",
+                "sender_keys",
+                "peer_ratchets",
+                "zeroize",
+                "strip_opsec",
+            ]
+        );
     }
 
     #[test]
