@@ -18,6 +18,22 @@ second Enter. Timeout, focus loss, destination mismatch or restart cancels the
 armed state and preserves the local draft; it never sends and never retries
 automatically.
 
+Behavioral acceptance test:
+`docs/design/osl-simple-spec.md'`.
+
+Drive the send controller with one verified success, one verified refusal and one
+ambiguous post-handoff outcome. The UI and receipt model must report those as
+sent, not sent and delivery uncertain respectively; the uncertain case must not
+be counted as sent, must not enqueue an automatic retry and must not instruct the
+user to resend as though the first attempt certainly failed.
+
+With Double Enter selected, send authority is earned only by two distinct trusted
+user Enter presses separated by key-up and by fresh destination verification
+before both placement and final Send. The test must fail if key repeat, a held
+key, a synthetic event, OSL's own placement action, timeout, focus loss,
+destination mismatch or restart can complete Send or auto-retry. In every
+cancellation path the local draft must remain available.
+
 ## Burn
 
 Burn cleans up. Burn does not un-send.
