@@ -1386,33 +1386,40 @@ mod tests {
 
         let bundle = IdentityBundle::from_identity_and_pubkeys_response(&identity, &response)
             .expect("canonical scheme-1 response must build a local full identity bundle");
+        let bundle_wire = bundle.to_wire();
+        let decoded = IdentityBundle::from_wire(&bundle_wire)
+            .expect("locally constructed identity bundle must serialize to canonical wire");
         assert_eq!(
-            bundle.ed25519_identity_pub,
+            decoded.ed25519_identity_pub,
             *identity.ed25519_public.as_bytes()
         );
         assert_eq!(
-            bundle.x25519_identity_pub,
+            decoded.x25519_identity_pub,
             *identity.x25519_public.as_bytes()
         );
-        assert_eq!(bundle.mlkem768_identity_pub, identity.mlkem_public_bytes);
-        assert_eq!(bundle.capability_bundle, crate::client::RN_CAP_WIRE_RN);
-        assert_eq!(bundle.revision, revision);
+        assert_eq!(decoded.mlkem768_identity_pub, identity.mlkem_public_bytes);
+        assert_eq!(decoded.capability_bundle, crate::client::RN_CAP_WIRE_RN);
+        assert_eq!(decoded.revision, revision);
+        assert_eq!(decoded, bundle);
         assert_eq!(
-            BundleVerifyPolicy::new()
-                .verify(&bundle, &identity.ed25519_public, Some(revision - 1),),
+            BundleVerifyPolicy::new().verify(
+                &decoded,
+                &identity.ed25519_public,
+                Some(revision - 1),
+            ),
             Ok(revision)
         );
 
         let spk_pub = [0x33; 32];
         let opk_pub = [0x44; 32];
         let prekey_response = matching_prekey_response(
-            &bundle,
+            &decoded,
             &identity.ed25519_secret,
             spk_pub,
             Some((42, opk_pub)),
             9,
         );
-        let merged = bundle
+        let merged = decoded
             .verify_full(
                 &prekey_response,
                 &identity.ed25519_public,
@@ -1429,7 +1436,7 @@ mod tests {
         substituted_prekey_response.ik_mlkem768_pub =
             STANDARD.encode([0x55; crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE]);
         assert_eq!(
-            bundle.verify_full(
+            decoded.verify_full(
                 &substituted_prekey_response,
                 &identity.ed25519_public,
                 Some(revision - 1),
@@ -1496,6 +1503,27 @@ mod tests {
         let result = policy.verify(&bundle, &owner_pub, None);
 
         assert_eq!(result, Ok(1));
+
+        let mut tampered_x25519 = bundle.clone();
+        tampered_x25519.x25519_identity_pub[0] ^= 0x01;
+        assert_eq!(
+            policy.verify(&tampered_x25519, &owner_pub, None),
+            Err(BundleVerifyError::SignatureInvalid)
+        );
+
+        let mut tampered_mlkem = bundle.clone();
+        tampered_mlkem.mlkem768_identity_pub[0] ^= 0x01;
+        assert_eq!(
+            policy.verify(&tampered_mlkem, &owner_pub, None),
+            Err(BundleVerifyError::SignatureInvalid)
+        );
+
+        let mut tampered_capability = bundle.clone();
+        tampered_capability.capability_bundle ^= 0x01;
+        assert_eq!(
+            policy.verify(&tampered_capability, &owner_pub, None),
+            Err(BundleVerifyError::SignatureInvalid)
+        );
     }
 
     #[test]
