@@ -346,4 +346,70 @@ mod tests {
         assert_zeroize_on_drop::<InnerIdentity>();
         assert_zeroize_on_drop::<crate::identity::Identity>();
     }
+
+    #[test]
+    fn memory_sealer_round_trips_through_save_load() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("identity.json");
+        let sealer = crate::sealer::MemorySealer::new();
+
+        let mut original = crate::identity::generate_identity("storage-memory-user".to_owned());
+        original.discord_snowflake = Some("123456789012345678".to_owned());
+        let ratchet_pub = original.ensure_ratchet_bootstrap();
+
+        save_identity(&path, &original, &sealer).expect("save with memory sealer");
+        let raw = std::fs::read_to_string(&path).expect("read saved identity blob");
+        assert!(raw.contains("\"method\": \"memory-test\""));
+        assert!(!raw.contains("storage-memory-user"));
+        assert!(!raw.contains("123456789012345678"));
+        assert!(!raw.contains(&STANDARD.encode(original.x25519_secret.as_bytes())));
+        assert!(!raw.contains(&STANDARD.encode(original.ed25519_secret.as_bytes())));
+        assert!(!raw.contains(&STANDARD.encode(original.mlkem_secret_bytes())));
+
+        let loaded = load_identity(&path, &sealer).expect("same memory sealer loads identity");
+        assert_eq!(loaded.user_id, original.user_id);
+        assert_eq!(
+            loaded.x25519_secret.as_bytes(),
+            original.x25519_secret.as_bytes()
+        );
+        assert_eq!(
+            loaded.x25519_public.as_bytes(),
+            original.x25519_public.as_bytes()
+        );
+        assert_eq!(
+            loaded.ed25519_secret.as_bytes(),
+            original.ed25519_secret.as_bytes()
+        );
+        assert_eq!(
+            loaded.ed25519_public.as_bytes(),
+            original.ed25519_public.as_bytes()
+        );
+        assert_eq!(loaded.mlkem_secret_bytes(), original.mlkem_secret_bytes());
+        assert_eq!(loaded.mlkem_public_bytes, original.mlkem_public_bytes);
+        assert_eq!(loaded.discord_snowflake, original.discord_snowflake);
+        assert_eq!(
+            loaded
+                .ratchet_initial_secret
+                .as_ref()
+                .map(|secret| secret.as_bytes()),
+            original
+                .ratchet_initial_secret
+                .as_ref()
+                .map(|secret| secret.as_bytes())
+        );
+        assert_eq!(
+            loaded
+                .ratchet_initial_pub
+                .as_ref()
+                .map(|public| public.as_bytes()),
+            Some(ratchet_pub.as_bytes())
+        );
+        assert_eq!(loaded.recovery_entropy, original.recovery_entropy);
+
+        let wrong_reader = crate::sealer::MemorySealer::new();
+        assert!(
+            matches!(load_identity(&path, &wrong_reader), Err(Error::Sealer(_))),
+            "an independent memory sealer must not decrypt the saved identity"
+        );
+    }
 }
