@@ -24982,14 +24982,75 @@ mod tests {
 
     #[test]
     fn carrier_receipts_never_claim_delivery_when_enter_was_not_sent() {
-        let receipt = carrier_failure(
-            DiscordCarrierMode::Atomic,
-            compatibility_delay_ms(10),
+        for status in [
+            DiscordCarrierStatus::Sent,
+            DiscordCarrierStatus::CalibrationRequired,
             DiscordCarrierStatus::ContextChanged,
+            DiscordCarrierStatus::ComposerUnavailable,
+            DiscordCarrierStatus::ComposerNotEmpty,
+            DiscordCarrierStatus::PlacementRejected,
+            DiscordCarrierStatus::EnterRejected,
+            DiscordCarrierStatus::CarrierUnconfirmed,
+            DiscordCarrierStatus::PlatformUnsupported,
+        ] {
+            let failed_before_enter = carrier_failure(
+                DiscordCarrierMode::Atomic,
+                compatibility_delay_ms(10),
+                status,
+            );
+            assert!(!failed_before_enter.placed);
+            assert!(!failed_before_enter.enter_sent);
+            assert_eq!(failed_before_enter.status, status);
+            assert_eq!(
+                status.protected_send_outcome(false, false),
+                DiscordProtectedSendOutcome::NotSent,
+                "{status:?} without Enter must never be reported as delivered"
+            );
+            assert_eq!(
+                status.protected_send_outcome(true, false),
+                DiscordProtectedSendOutcome::NotSent,
+                "{status:?} after placement but before Enter must remain unsent"
+            );
+        }
+
+        assert_eq!(
+            DiscordCarrierStatus::Sent.protected_send_outcome(true, true),
+            DiscordProtectedSendOutcome::Sent
         );
-        assert!(!receipt.placed);
-        assert!(!receipt.enter_sent);
-        assert_eq!(receipt.status, DiscordCarrierStatus::ContextChanged);
+        assert_eq!(
+            DiscordCarrierStatus::ContextChanged.protected_send_outcome(true, true),
+            DiscordProtectedSendOutcome::DeliveryUncertain
+        );
+        assert_eq!(
+            DiscordCarrierStatus::Sent.protected_send_outcome(false, true),
+            DiscordProtectedSendOutcome::DeliveryUncertain,
+            "a Sent label without proven placement is still not a proven delivery"
+        );
+
+        let refused_without_product_context = NativeDiscordComposerState::default().place_carrier(
+            &crate::native_window_host::NativeWindowHostState::default(),
+            "owner-osl-user",
+            "service/account/conversation/recipients",
+            None,
+            DiscordCarrierMode::Atomic,
+            10,
+            "DPC0::carrier",
+        );
+        assert_eq!(
+            refused_without_product_context.status,
+            DiscordCarrierStatus::PlacementRejected
+        );
+        assert!(!refused_without_product_context.placed);
+        assert!(!refused_without_product_context.enter_sent);
+        assert_eq!(
+            refused_without_product_context
+                .status
+                .protected_send_outcome(
+                    refused_without_product_context.placed,
+                    refused_without_product_context.enter_sent
+                ),
+            DiscordProtectedSendOutcome::NotSent
+        );
     }
 
     #[test]
