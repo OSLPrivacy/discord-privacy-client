@@ -154,6 +154,18 @@ describe("migration 0036 account ownership proof required", () => {
     ).bind(nonce, binding).first<{ count: number }>();
     expect(admitted?.count).toBe(1);
 
+    const stored = await db.prepare(
+      `SELECT owner_user_id, service, verified_at_unix_seconds
+         FROM account_ownership_proof_bindings
+        WHERE nonce_sha256 = ?
+          AND binding_sha256 = ?`,
+    ).bind(nonce, binding).first<Record<string, unknown>>();
+    expect(stored).toEqual({
+      owner_user_id: "owner-osl-id",
+      service: "discord",
+      verified_at_unix_seconds: 1_900_000_040,
+    });
+
     const expiredNonce = "9".repeat(64);
     const expiredBinding = "0".repeat(64);
     await insertChallenge(db, {
