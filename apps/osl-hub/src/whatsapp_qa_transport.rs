@@ -1,9 +1,9 @@
-//! QA-only, foreground-free dispatch into an already visually bound WhatsApp composer.
+//! QA-only, foreground-free placement into an already visually bound WhatsApp composer.
 //!
 //! This is deliberately not a generic automation surface. It accepts only the
 //! exact claimed WhatsApp host and its verified composer rectangle, never
-//! foregrounds a window, and reports only whether Windows accepted the bounded
-//! background messages—not provider delivery.
+//! foregrounds a window, never synthesizes Send, and reports only whether
+//! Windows accepted the bounded placement messages.
 
 #[cfg(target_os = "windows")]
 pub fn dispatch_bound_cover_text(
@@ -14,7 +14,7 @@ pub fn dispatch_bound_cover_text(
     use std::{thread, time::Duration};
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VK_RETURN};
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_CONTROL;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetAncestor, GetForegroundWindow, PostMessageW, WindowFromPoint, GA_ROOT, WM_KEYDOWN,
         WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
@@ -73,13 +73,6 @@ pub fn dispatch_bound_cover_text(
         if !paste {
             clear_clipboard_best_effort();
             return Err("Windows rejected the protected carrier placement".to_owned());
-        }
-        thread::sleep(Duration::from_millis(180));
-        if unsafe { PostMessageW(hwnd, WM_KEYDOWN, VK_RETURN as usize, 1) } == 0
-            || unsafe { PostMessageW(hwnd, WM_KEYUP, VK_RETURN as usize, key_up) } == 0
-        {
-            clear_clipboard_best_effort();
-            return Err("Windows rejected the bounded send action".to_owned());
         }
         thread::sleep(Duration::from_millis(80));
         clear_clipboard_best_effort();

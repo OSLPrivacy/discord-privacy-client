@@ -11,6 +11,7 @@ POWERSHELL = (ROOT / "deploy-whatsapp-preserve.ps1").read_text(encoding="utf-8")
 DISCOVER = (ROOT / "discover-whatsapp-session.ps1").read_text(encoding="utf-8")
 RUNTIME_AUDIT = (ROOT / "audit-whatsapp-qa-runtime.ps1").read_text(encoding="utf-8")
 MAIN_RS = (ROOT.parents[2] / "apps" / "osl-hub" / "src" / "main.rs").read_text(encoding="utf-8")
+TRANSPORT_RS = (ROOT.parents[2] / "apps" / "osl-hub" / "src" / "whatsapp_qa_transport.rs").read_text(encoding="utf-8")
 PYTHON_PATH = ROOT / "whatsapp-deploy-orchestrator.py"
 PYTHON = PYTHON_PATH.read_text(encoding="utf-8")
 SPEC = importlib.util.spec_from_file_location("whatsapp_deploy", PYTHON_PATH)
@@ -48,6 +49,12 @@ class WhatsAppDeployPowerShellTests(unittest.TestCase):
         self.assertIn("confirm_whatsapp_visual_binding(app.clone(), binding.capture_id, true)", MAIN_RS)
         self.assertIn('option_env!("OSL_WHATSAPP_QA_PROBE_DISPATCH_APPROVED")', MAIN_RS)
         self.assertIn("dispatch_bound_cover_text", MAIN_RS)
+
+    def test_probe_dispatch_places_only_and_never_synthesizes_send(self) -> None:
+        self.assertIn("PostMessageW(hwnd, WM_KEYDOWN, VK_CONTROL", TRANSPORT_RS)
+        self.assertIn("Windows accepted the bounded placement messages", TRANSPORT_RS)
+        self.assertNotIn("VK_RETURN", TRANSPORT_RS)
+        self.assertNotIn("bounded send action", TRANSPORT_RS)
 
     def test_exact_scope_and_managed_identity_only(self) -> None:
         self.assertIn("C:\\Users\\osltest\\Desktop\\OSL Privacy\\OSL Privacy.exe", POWERSHELL)
