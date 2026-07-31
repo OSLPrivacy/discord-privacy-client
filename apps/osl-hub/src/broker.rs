@@ -976,7 +976,7 @@ pub struct NativeOverlayAcknowledgment {
     pub acknowledged_at: i64,
 }
 
-#[derive(Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NativeOverlayAcknowledgmentStatus {
     Received,
@@ -1883,11 +1883,20 @@ pub fn open_whatsapp_qa_peer_prose_text(
     let (scope, manual, context) = whatsapp_qa_peer_context(core, &verified)?;
     let dir = keystore::osl_config_dir()
         .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
-    let recovered = peer_prose_token_or_generic(ipc::prose_token::prose_token_recv(
+    // peer_prose_token_or_generic was deliberately removed: it used
+    // result.ok().flatten(), which discarded transport errors, so a cipher-store
+    // outage, an evicted blob and a nonsense cover were one indistinguishable skip
+    // and a drain during an outage silently reported an empty inbox. A merge
+    // resurrected this call site; use the classified replacement instead.
+    // The classification is preserved for the drain path, which must tell an outage
+    // from ordinary chat. This open path keeps ONE generic user-facing sentence by
+    // design, so map the reason away only here, at the boundary.
+    let recovered = peer_prose_token_outcome(ipc::prose_token::prose_token_recv_classified(
         &dir,
         &scope,
         &cover_text,
-    ))?;
+    ))
+    .map_err(|_| "This encrypted message could not be opened".to_owned())?;
     if verify_manual_v3(core, &verified, &recovered.wire, ManualWireSender::Peer).is_err() {
         return Err("This encrypted message could not be opened".to_owned());
     }
