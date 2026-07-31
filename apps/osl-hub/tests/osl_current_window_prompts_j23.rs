@@ -85,8 +85,7 @@ fn has_any(words: &BTreeSet<String>, options: &[&str]) -> bool {
     options.iter().any(|option| words.contains(*option))
 }
 
-#[test]
-fn adopt_shared_memory_cards_across_every_active_account() {
+fn assert_shared_memory_cards_across_every_active_account() {
     let routes = memory_card_routes(CURRENT_WINDOW_PROMPTS);
     let mut accounts: Vec<&str> = routes
         .iter()
@@ -179,4 +178,14 @@ fn adopt_shared_memory_cards_across_every_active_account() {
             && bootstrap_words.contains("editing"),
         "new-window bootstrap must load the memory card before editing",
     );
+}
+
+#[test]
+fn adopt_shared_memory_cards_across_every_active_account() {
+    assert_shared_memory_cards_across_every_active_account();
+}
+
+#[test]
+fn docs_design_osl_current_window_prompts_2026_07_26_md() {
+    assert_shared_memory_cards_across_every_active_account();
 }

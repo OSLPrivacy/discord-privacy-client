@@ -11,8 +11,22 @@ const SCRIPTS_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.dirname(SCRIPTS_DIR);
 const MANIFEST_PATH = path.join(REPO_ROOT, 'data', 'public-surface-manifest.json');
 const MATRIX_PATH = path.join(REPO_ROOT, 'docs', 'evidence', 'website-matrix', 'matrix.json');
+const PRICING_PATH = path.join(REPO_ROOT, 'data', 'pricing.json');
 const REQUIRED_MODES = ['js-on', 'js-off', 'reduced-motion'];
 const REQUIRED_WIDTHS = [320, 390, 768, 1280];
+const CONNECTOR_SUPPORT_LABELS = new Set(['Available', 'Beta', 'Planned', 'Externally blocked', 'Not applicable']);
+const CONNECTOR_STATUS_LABELS = new Set(['Available', 'Beta', 'Coming soon', 'Experimental', 'Externally blocked']);
+const REQUIRED_CONNECTOR_FIELDS = [
+  'name',
+  'role',
+  'protected_send',
+  'protected_receive',
+  'attachments',
+  'scrub',
+  'verified_on',
+  'status',
+  'provider_policy_risk',
+];
 
 function sha256(buffer) {
   return createHash('sha256').update(buffer).digest('hex');
@@ -46,9 +60,96 @@ function assertScriptContains(file, symbol) {
   if (!readFileSync(fullPath, 'utf8').includes(symbol)) throw new Error(`${file} does not contain ${symbol}`);
 }
 
+function requiredText(row, field, label) {
+  const value = row?.[field];
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new Error(`build-status: ${label}.${field} is required`);
+  }
+  return value.trim();
+}
+
+function validateConnectorMatrix(pricing) {
+  const matrix = pricing.connector_matrix ?? {};
+  const version = typeof matrix.version === 'string' ? matrix.version.trim() : '';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(version)) {
+    throw new Error('build-status: connector_matrix.version must be an exact ISO date');
+  }
+  if (!Array.isArray(matrix.sources) || matrix.sources.length === 0) {
+    throw new Error('build-status: connector_matrix.sources must contain connector source evidence');
+  }
+  if (!Array.isArray(matrix.connectors) || matrix.connectors.length === 0) {
+    throw new Error('build-status: connector_matrix.connectors must contain connector evidence');
+  }
+
+  const sourceIds = new Set();
+  for (const [index, source] of matrix.sources.entries()) {
+    const label = `connector_matrix.sources[${index}]`;
+    if (!source || typeof source !== 'object' || Array.isArray(source)) {
+      throw new Error(`build-status: ${label} must be an object`);
+    }
+    const id = requiredText(source, 'id', label);
+    if (sourceIds.has(id)) throw new Error(`build-status: ${label}.id duplicates another source`);
+    sourceIds.add(id);
+    if (!/^https:\/\//.test(requiredText(source, 'url', label))) {
+      throw new Error(`build-status: ${label}.url must be HTTPS`);
+    }
+    requiredText(source, 'publisher', label);
+    requiredText(source, 'source_type', label);
+    requiredText(source, 'title', label);
+    const accessedOn = requiredText(source, 'accessed_on', label);
+    if (accessedOn !== version) {
+      throw new Error(`build-status: ${label}.accessed_on must match connector_matrix.version`);
+    }
+  }
+
+  const connectorNames = new Set();
+  for (const [index, connector] of matrix.connectors.entries()) {
+    const label = `connector_matrix.connectors[${index}]`;
+    if (!connector || typeof connector !== 'object' || Array.isArray(connector)) {
+      throw new Error(`build-status: ${label} must be an object`);
+    }
+    for (const field of REQUIRED_CONNECTOR_FIELDS) requiredText(connector, field, label);
+    if (connectorNames.has(connector.name)) throw new Error(`build-status: ${label}.name duplicates another connector`);
+    connectorNames.add(connector.name);
+    if (connector.verified_on !== version) {
+      throw new Error(`build-status: ${label}.verified_on must match connector_matrix.version`);
+    }
+    for (const field of ['protected_send', 'protected_receive', 'attachments', 'scrub']) {
+      if (!CONNECTOR_SUPPORT_LABELS.has(connector[field])) {
+        throw new Error(`build-status: ${label}.${field} has an unsupported public label`);
+      }
+    }
+    if (!CONNECTOR_STATUS_LABELS.has(connector.status)) {
+      throw new Error(`build-status: ${label}.status has an unsupported public label`);
+    }
+    if (/\b\d+(\.\d+)?\s*%/.test(connector.provider_policy_risk)) {
+      throw new Error(`build-status: ${label}.provider_policy_risk must not contain a percentage`);
+    }
+    if (!Array.isArray(connector.source_ids) || connector.source_ids.length === 0) {
+      throw new Error(`build-status: ${label}.source_ids must cite source evidence`);
+    }
+    const rowSourceIds = new Set();
+    for (const [sourceIndex, sourceId] of connector.source_ids.entries()) {
+      if (typeof sourceId !== 'string' || sourceId.trim() === '') {
+        throw new Error(`build-status: ${label}.source_ids[${sourceIndex}] must be nonempty`);
+      }
+      if (rowSourceIds.has(sourceId)) {
+        throw new Error(`build-status: ${label}.source_ids[${sourceIndex}] duplicates another source on the connector`);
+      }
+      rowSourceIds.add(sourceId);
+      if (!sourceIds.has(sourceId)) {
+        throw new Error(`build-status: ${label}.source_ids[${sourceIndex}] does not resolve to connector_matrix.sources`);
+      }
+    }
+  }
+
+  return { version, connectors: matrix.connectors.length, sources: matrix.sources.length };
+}
+
 function check() {
   const manifest = loadJson(MANIFEST_PATH, 'public surface manifest');
   const matrix = loadJson(MATRIX_PATH, 'website matrix evidence');
+  const connectorMatrix = validateConnectorMatrix(loadJson(PRICING_PATH, 'pricing manifest'));
   if (!Array.isArray(manifest.claim_channels) || manifest.claim_channels.length < 9) {
     throw new Error('public surface manifest must declare at least 9 claim channels');
   }
@@ -116,6 +217,9 @@ function check() {
   console.log(`  matrix captures   : ${matrix.captures.length}`);
   console.log(`  modes             : ${REQUIRED_MODES.join(', ')}`);
   console.log(`  widths            : ${REQUIRED_WIDTHS.join(', ')}`);
+  console.log(`  connectors        : ${connectorMatrix.connectors}`);
+  console.log(`  connector sources : ${connectorMatrix.sources}`);
+  console.log(`  connector version : ${connectorMatrix.version}`);
   console.log('\nbuild-status: complete.');
 }
 

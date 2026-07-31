@@ -2518,7 +2518,7 @@ mod tests {
             let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
 
             let merged = client
-                .fetch_own_identity_bundle_since(&identity, None)
+                .fetch_identity_bundle(&identity, "self-bundle")
                 .unwrap();
 
             assert_eq!(merged.identity.revision, 3);
@@ -2551,7 +2551,7 @@ mod tests {
             // endpoint key-binding mismatch, rather than reaching the proof check
             // and surfacing as PeerBundleProofInvalid. Assert the refusal and the
             // reason, so this still fails if the mismatch is ever accepted.
-            let outcome = client.fetch_own_identity_bundle_since(&identity, None);
+            let outcome = client.fetch_identity_bundle(&identity, "self-bundle");
             match outcome {
                 Err(Error::PeerBundleProofInvalid) => {}
                 Err(Error::Transport(ref reason)) if reason.contains("key binding mismatch") => {}
@@ -2560,6 +2560,71 @@ mod tests {
                     other.err()
                 ),
             }
+        }
+
+        #[test]
+        fn wrapped_key_post_carries_sender_identity_signature_without_bearer() {
+            let sender = generate_identity("alice".to_owned());
+            let upload = WrappedKeyUpload {
+                content_id: "msg-1".to_owned(),
+                content_type: "text".to_owned(),
+                system_message_kind: None,
+                recipient_id: "bob".to_owned(),
+                session_version: 1,
+                share_index: 0,
+                wrapped_share_blob: "AQIDBA==".to_owned(),
+                blob_version: 1,
+                single_use: false,
+                display_duration_seconds: None,
+                expires_at: "2026-07-18T00:00:00.000Z".to_owned(),
+            };
+            let response =
+                serde_json::to_vec(&serde_json::json!({ "content_id": "msg-1" })).unwrap();
+            let (port, rx) = one_shot_server(http_json_response("201 Created", response));
+            let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+
+            let posted = client.post_wrapped_key(&sender, &upload).unwrap();
+
+            assert_eq!(posted.content_id, "msg-1");
+            let request = rx.recv().unwrap();
+            assert_eq!(request_target(&request), "/v1/wrapped-keys");
+            assert!(!String::from_utf8_lossy(&request)
+                .to_ascii_lowercase()
+                .contains("authorization:"));
+            let body = request_json_body(&request);
+            assert_eq!(body["sender_id"], "alice");
+            assert_eq!(body["content_id"], "msg-1");
+            assert_eq!(body["recipient_id"], "bob");
+
+            let timestamp_ms = body["timestamp_ms"]
+                .as_i64()
+                .expect("wrapped-key post must include a signed timestamp");
+            let signature_bytes = STANDARD
+                .decode(
+                    body["sender_signature_b64"]
+                        .as_str()
+                        .expect("wrapped-key post must include sender signature"),
+                )
+                .unwrap();
+            let signature = crypto::ed25519::Signature::from_bytes(
+                signature_bytes.as_slice().try_into().unwrap(),
+            );
+            let canonical = crate::wrapped_key::canonical_wrapped_key_post_bytes(
+                "alice",
+                &upload,
+                timestamp_ms,
+            );
+            assert!(
+                crypto::ed25519::verify(&sender.ed25519_public, &canonical, &signature).unwrap(),
+                "wrapped-key upload must be authorized by the sender identity signature",
+            );
+
+            let wrong_sender = generate_identity("mallory".to_owned());
+            assert!(
+                !crypto::ed25519::verify(&wrong_sender.ed25519_public, &canonical, &signature)
+                    .unwrap(),
+                "a bearer-free request must not be satisfiable without the sender key",
+            );
         }
     }
 
