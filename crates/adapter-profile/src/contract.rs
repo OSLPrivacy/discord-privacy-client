@@ -1081,7 +1081,9 @@ mod tests {
                 "local contract self-test must expose only fixed labels"
             );
 
-            let round_tripped: SelfTestReport = serde_json::from_value(json).unwrap();
+            // Clone for the round trip: `json` is borrowed again below to collect keys,
+            // and from_value takes ownership.
+            let round_tripped: SelfTestReport = serde_json::from_value(json.clone()).unwrap();
             assert_eq!(round_tripped, report);
             round_tripped.validate().unwrap();
 
