@@ -48,6 +48,7 @@ def has_current_compact_report_rule(steps: list[str]) -> bool:
         }
         if (
             "compact report" in lowered
+            and "every wave" in lowered
             and "trap-ledger disposition" in lowered
             and required_report_fields.issubset(set(re.findall(
                 r"exact changed files|tests/evidence|blockers|trap-ledger disposition",
@@ -70,6 +71,11 @@ def internal_build_checklist_keeps_wave_report_rules_current() -> None:
     testcase.assertTrue(has_current_compact_report_rule(steps))
     testcase.assertFalse(has_current_compact_report_rule([
         "close the wave with a compact report that records exact changed files, tests/evidence, and blockers",
+    ]))
+    testcase.assertFalse(has_current_compact_report_rule([
+        "when status changes, close with a compact report that records exact changed files, "
+        "tests/evidence, blockers, and trap-ledger disposition updated, "
+        "unchanged-no-durable-trap-change, or pruned",
     ]))
     testcase.assertFalse(has_current_compact_report_rule([
         "close the wave with trap-ledger disposition updated, unchanged-no-durable-trap-change, or pruned",

@@ -1051,8 +1051,8 @@ When a task changes intent/status/dependencies:
 3. update the layman spec only if the user-facing explanation changed;
 4. update the Telegram `/osl` projection and recompute progress/ETA;
 5. link the detailed report/evidence;
-6. close each wave only after its compact report is current and records exact changed files,
-   tests/evidence, blockers, and trap-ledger disposition (`updated`,
+6. after every wave, close it only after its compact report is current and records exact changed
+   files, tests/evidence, blockers, and trap-ledger disposition (`updated`,
    `unchanged-no-durable-trap-change`, or `pruned`);
 7. never mark ✅ from agent confidence or unit tests alone.
 

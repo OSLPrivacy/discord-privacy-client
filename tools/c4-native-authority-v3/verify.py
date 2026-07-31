@@ -1001,6 +1001,22 @@ class _VerifySelfTests(unittest.TestCase):
                 with self.assertRaises(VerificationError):
                     verify_receipt(encoded, VerificationContext(**fields))
 
+        caller_authored_receipt = copy.deepcopy(receipt)
+        caller_authored_emitter = copy.deepcopy(good_context.expected_emitter)
+        caller_authored_emitter["pid"] += 17
+        caller_authored_receipt["emitter"] = caller_authored_emitter
+        caller_authored_receipt = seal_receipt(caller_authored_receipt)
+        with self.assertRaises(VerificationError):
+            verify_receipt(
+                canonical_json(caller_authored_receipt),
+                VerificationContext(
+                    **{
+                        **good_context.__dict__,
+                        "expected_emitter": caller_authored_emitter,
+                    }
+                ),
+            )
+
     def synthetic(self) -> None:
         receipt = _selftest_receipt()
         encoded = canonical_json(receipt)
