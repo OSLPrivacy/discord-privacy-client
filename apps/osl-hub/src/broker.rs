@@ -12212,6 +12212,23 @@ mod tests {
 
     #[test]
     fn b53_drain_entrypoints_are_reachable_after_process_reactivation() {
+        fn batch_error(result: Result<OpenedNativeOverlayTextBatch, String>) -> String {
+            match result {
+                Ok(_) => panic!("drain unexpectedly opened a batch"),
+                Err(error) => error,
+            }
+        }
+
+        fn opened_error(result: Result<OpenedNativeOverlayText, String>) -> String {
+            match result {
+                Ok(_) => panic!("reveal unexpectedly opened a message"),
+                Err(error) => error,
+            }
+        }
+
+        let core = HubCoreState::default();
+        let security_state = HubSecurityState::default();
+        const VALID_VIEW_ONCE_ID: &str = "peer-b5300000000000000000000000000000";
         let native_binding = ManualPeerBinding {
             person_id: "hub-person-bob".to_owned(),
             peer_osl_user_id: "osl-bob".to_owned(),
@@ -12245,6 +12262,25 @@ mod tests {
         assert!(relaunched_process
             .manual_peer_for(&first_native.lease.context_token)
             .is_err());
+        assert_eq!(
+            batch_error(drain_native_discord_overlay_text(
+                &core,
+                &security_state,
+                &relaunched_process,
+            )),
+            "OSL native Discord protection is not active",
+            "a relaunched process must not drain through a stale native context"
+        );
+        assert_eq!(
+            opened_error(reveal_native_discord_overlay_view_once(
+                &core,
+                &security_state,
+                &relaunched_process,
+                VALID_VIEW_ONCE_ID,
+            )),
+            "OSL native Discord protection is not active",
+            "a relaunched process must not reveal through a stale native context"
+        );
 
         let second_native_host = ActiveServiceHost {
             service_id: "discord".to_owned(),
@@ -12276,8 +12312,37 @@ mod tests {
                 .peer_osl_user_id,
             "osl-bob"
         );
+        let reactivated_drain_error = batch_error(drain_native_discord_overlay_text(
+            &core,
+            &security_state,
+            &relaunched_process,
+        ));
+        assert_ne!(
+            reactivated_drain_error, "OSL native Discord protection is not active",
+            "after reactivation the public native drain must resolve the current active context and reach the next receive gate"
+        );
+        let reactivated_reveal_error = opened_error(reveal_native_discord_overlay_view_once(
+            &core,
+            &security_state,
+            &relaunched_process,
+            VALID_VIEW_ONCE_ID,
+        ));
+        assert_ne!(
+            reactivated_reveal_error, "OSL native Discord protection is not active",
+            "after reactivation the public reveal path must resolve the current active context and reach the next receive gate"
+        );
 
         let chat_process = HubBrokerState::default();
+        assert_eq!(
+            batch_error(drain_osl_chat_text(
+                &core,
+                &security_state,
+                &chat_process,
+                true,
+            )),
+            "OSL Chat is not active",
+            "an inactive OSL Chat process must refuse before any receive work"
+        );
         let chat = activate_owned_osl_chat_context(
             &chat_process,
             "osl-alice",
@@ -12294,6 +12359,16 @@ mod tests {
             chat.lease.context_token
         );
         assert!(chat_process.active_native_manual_context_token().is_err());
+        let chat_drain_error = batch_error(drain_osl_chat_text(
+            &core,
+            &security_state,
+            &chat_process,
+            true,
+        ));
+        assert_ne!(
+            chat_drain_error, "OSL Chat is not active",
+            "after activation the public OSL Chat drain must resolve the current active context and reach the next receive gate"
+        );
     }
 
     #[test]
