@@ -1070,3 +1070,28 @@ historical `available` label alone, treats an absent/stale/unverified capacity
 record as permission, recovers a failed quota or headroom check by changing
 accounts or `CODEX_HOME`, starts speculative background work, or dispatches work
 that is not bound to the recipient's owned files.
+
+## Behavioral Test
+
+Test name: `Update routing decisions from real Codex capacity instead of stale pools.`
+
+The coordinator decision model under test accepts only these inputs:
+
+- `historical_pool_label`: previous lane state, advisory only.
+- `capacity_record`: current active-session count, blocked/sleeping sessions, account/quota status,
+  machine headroom, freshness timestamp, contradiction flag, and owned-file binding.
+- `fallback_attempt`: whether the operator tried to borrow another account, change `CODEX_HOME`, or
+  start speculative background work after a failed current-capacity check.
+
+The test passes only when the routing decision matches this truth table:
+
+| Fixture | historical_pool_label | capacity_record | fallback_attempt | Expected decision | Required reason |
+| --- | --- | --- | --- | --- | --- |
+| stale available lane | `available` | absent, stale, contradictory, or unverified account/quota state | none | `refuse` or `standby` | current capacity signal is not authoritative |
+| live bounded lane | `available` | fresh active-session count, blocked/sleeping-session list, verified account/quota status, enough machine headroom, and owned-file bound | none | `dispatch` allowed | live capacity and ownership are sufficient |
+| failed capacity with substitute | any value | failed quota or headroom check | borrowed account, changed `CODEX_HOME`, or speculative background child | `refuse` or `standby` | substitutes cannot repair failed current capacity |
+
+The inversion that must fail is any coordinator that dispatches from the historical `available`
+label alone, treats a missing or unverified current account/quota status as permission, or converts a
+failed live-capacity check into dispatch by borrowing an account, changing `CODEX_HOME`, or starting
+speculative background work.
