@@ -1561,9 +1561,14 @@ fn run_prekey_replenishment_tick_at(
 mod prekey_replenishment_scheduler_tests {
     use super::{
         decide_prekey_replenishment, run_prekey_replenishment_tick_at, PrekeyReplenishmentDecision,
+        PrekeyReplenishmentOutcome,
     };
     use crate::state::AppState;
     use keystore::{generate_identity, PrekeyConfig, PrekeyState, SPK_ROTATION_INTERVAL_SECONDS};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     #[test]
     fn missing_local_state_plans_initial_publication() {
@@ -1576,14 +1581,129 @@ mod prekey_replenishment_scheduler_tests {
     #[test]
     fn observed_remaining_at_threshold_triggers_replenish_using_state_path() {
         let identity = generate_identity("scheduler-test".to_string());
-        let state = PrekeyState::new(&identity, PrekeyConfig::default(), 1_700_000_000);
+        let prekeys = PrekeyState::new(&identity, PrekeyConfig::default(), 1_700_000_000);
 
         assert!(matches!(
-            decide_prekey_replenishment(Some(&state), Some(25), 1_700_000_001),
+            decide_prekey_replenishment(Some(&prekeys), Some(25), 1_700_000_001),
             PrekeyReplenishmentDecision::Replenish {
                 server_remaining: 25
             }
         ));
+
+        let dir = tempfile::tempdir().unwrap();
+        let prekey_path = dir.path().join("prekeys.json");
+        let sealer = keystore::select_best_sealer();
+        keystore::save_prekey_state(&prekey_path, &prekeys, sealer.as_ref())
+            .expect("seed existing local prekey state");
+
+        let expected_added = prekeys.config.opk_pool_target - 25;
+        let identity_user_id = identity.user_id.clone();
+        let response_body = serde_json::json!({
+            "user_id": identity_user_id,
+            "opks_added": expected_added,
+        })
+        .to_string();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut acc = Vec::new();
+            let mut buf = [0u8; 8192];
+            let header_end = loop {
+                let n = stream.read(&mut buf).unwrap();
+                assert!(n > 0, "request ended before headers");
+                acc.extend_from_slice(&buf[..n]);
+                if let Some(pos) = acc.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break pos;
+                }
+            };
+            let headers = std::str::from_utf8(&acc[..header_end]).unwrap();
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim())
+                })
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(0);
+            while acc[header_end + 4..].len() < content_length {
+                let n = stream.read(&mut buf).unwrap();
+                assert!(n > 0, "request body ended early");
+                acc.extend_from_slice(&buf[..n]);
+            }
+            tx.send(String::from_utf8_lossy(&acc).to_string()).unwrap();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+
+        let app = AppState::new();
+        app.install_identity(identity.clone());
+        *app.keyserver.lock().unwrap() =
+            Some(keystore::KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap());
+
+        let outcome = run_prekey_replenishment_tick_at(&app, dir.path(), Some(25), 1_700_000_001)
+            .expect("threshold observation must trigger production replenish_using_state");
+        match outcome {
+            PrekeyReplenishmentOutcome::Replenished { opks_added } => {
+                assert_eq!(opks_added, expected_added);
+            }
+            PrekeyReplenishmentOutcome::InitialPublished { .. } => {
+                panic!("expected replenish outcome, got initial publish")
+            }
+            PrekeyReplenishmentOutcome::Skipped => {
+                panic!("expected replenish outcome, got skip")
+            }
+        }
+
+        let request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("scheduler must POST replenishment batch to keyserver");
+        assert!(
+            request.starts_with("POST /v1/prekey-bundle/replenish "),
+            "unexpected request target: {request}"
+        );
+        let body = request.split("\r\n\r\n").nth(1).expect("request body");
+        let body: serde_json::Value = serde_json::from_str(body).expect("replenish JSON body");
+        assert_eq!(body["user_id"].as_str(), Some(identity.user_id.as_str()));
+        assert!(
+            body["spk"].is_null(),
+            "OPK depletion should use the existing SPK when rotation is not due"
+        );
+        assert_eq!(
+            body["opks"].as_array().expect("opk batch").len(),
+            expected_added as usize,
+            "replenish_using_state must top up from the observed server count"
+        );
+        assert!(
+            body["batch_signature_b64"].as_str().unwrap_or("").len() > 40,
+            "production caller must send a signed replenish batch"
+        );
+
+        let persisted = keystore::load_prekey_state(&prekey_path, sealer.as_ref())
+            .expect("replenished state persists");
+        assert_eq!(
+            persisted.opk_pool.len(),
+            prekeys.opk_pool.len() + expected_added as usize
+        );
+        assert_eq!(
+            app.prekey_state
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .opk_pool
+                .len(),
+            persisted.opk_pool.len()
+        );
     }
 
     #[test]
