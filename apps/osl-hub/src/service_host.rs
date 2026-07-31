@@ -3,11 +3,15 @@ use sha2::{Digest, Sha256};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use url::Url;
 
+#[cfg(any(feature = "desktop", test))]
+use crate::hosted_port::{
+    DeleteAuthorityGrant, HostedPort, HostedPortMode, HostedPortOpenError, open_hosted_port,
+};
 use crate::models::EmailProvider;
 
 const MAX_OPAQUE_ID_LEN: usize = 64;
@@ -676,26 +680,33 @@ fn active_profile_matches(
     })
 }
 
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-enum HostedOpenMode {
-    DeleteCapable,
-    ScanOnly,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[cfg(any(feature = "desktop", test))]
+#[derive(Clone, Copy, Eq, PartialEq)]
 struct HostedOpenAuthority<'a> {
     run_id: Option<&'a str>,
     attended_operator_authority: bool,
 }
 
-#[cfg(test)]
+#[cfg(any(feature = "desktop", test))]
+impl fmt::Debug for HostedOpenAuthority<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HostedOpenAuthority")
+            .field("run_id", &self.run_id.map(|_| "[redacted]"))
+            .field(
+                "attended_operator_authority",
+                &self.attended_operator_authority,
+            )
+            .finish()
+    }
+}
+
+#[cfg(any(feature = "desktop", test))]
 fn hosted_delete_capable_authority_bound(
     authority: HostedOpenAuthority<'_>,
-) -> Result<(), ServiceHostError> {
+) -> Result<DeleteAuthorityGrant, ServiceHostError> {
     if authority.attended_operator_authority {
-        return Ok(());
+        return Ok(DeleteAuthorityGrant::ExplicitUserAuthority);
     }
     let Some(run_id) = authority.run_id else {
         return Err(ServiceHostError::Runtime(
@@ -712,33 +723,49 @@ fn hosted_delete_capable_authority_bound(
             "delete-capable hosted port requires a bounded run authority".to_owned(),
         ));
     }
-    Ok(())
+    Ok(DeleteAuthorityGrant::ExplicitUserAuthority)
 }
 
-#[cfg(test)]
-fn open_with_mode<R>(
-    mode: HostedOpenMode,
-    authority: HostedOpenAuthority<'_>,
-    delete_capable: impl FnOnce() -> Result<R, ServiceHostError>,
-    scan_only: impl FnOnce() -> Result<R, ServiceHostError>,
-) -> Result<R, ServiceHostError> {
-    match mode {
-        HostedOpenMode::DeleteCapable => {
-            hosted_delete_capable_authority_bound(authority)?;
-            delete_capable()
-        }
-        HostedOpenMode::ScanOnly => scan_only(),
+#[cfg(any(feature = "desktop", test))]
+fn service_hosted_port_open_error(error: HostedPortOpenError) -> ServiceHostError {
+    match error {
+        HostedPortOpenError::DeleteAuthorityRequired => ServiceHostError::Runtime(
+            "delete-capable hosted port requires run or attended authority".to_owned(),
+        ),
     }
 }
 
-#[cfg(test)]
+#[cfg(any(feature = "desktop", test))]
+fn open_with_mode<R>(
+    mode: HostedPortMode,
+    authority: HostedOpenAuthority<'_>,
+    delete_capable: impl FnOnce(HostedPort) -> Result<R, ServiceHostError>,
+    scan_only: impl FnOnce(HostedPort) -> Result<R, ServiceHostError>,
+) -> Result<R, ServiceHostError> {
+    let port = match mode {
+        HostedPortMode::DeleteCapable => {
+            let delete_authority = hosted_delete_capable_authority_bound(authority)?;
+            open_hosted_port(mode, Some(delete_authority))
+                .map_err(service_hosted_port_open_error)?
+        }
+        HostedPortMode::ScanOnly => {
+            open_hosted_port(mode, None).map_err(service_hosted_port_open_error)?
+        }
+    };
+    match port {
+        HostedPort::DeleteCapable { .. } => delete_capable(port),
+        HostedPort::ScanOnly => scan_only(port),
+    }
+}
+
+#[cfg(any(feature = "desktop", test))]
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum SessionKind {
     Dedicated,
     SessionReuse,
 }
 
-#[cfg(test)]
+#[cfg(any(feature = "desktop", test))]
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 struct PresenceIdleGate {
     session_kind: SessionKind,
@@ -749,7 +776,7 @@ struct PresenceIdleGate {
     max_idle_ms: u64,
 }
 
-#[cfg(test)]
+#[cfg(any(feature = "desktop", test))]
 fn presence_idle_gate_allows(gate: PresenceIdleGate) -> bool {
     if gate.session_kind == SessionKind::SessionReuse && !gate.session_reuse_surface {
         return false;
@@ -1093,7 +1120,7 @@ impl ServiceHostState {
 #[cfg(feature = "desktop")]
 pub mod desktop {
     use super::*;
-    use crate::services::{service_kind_from_id, ServiceRegistryState};
+    use crate::services::{ServiceRegistryState, service_kind_from_id};
     use tauri::webview::{NewWindowResponse, PageLoadEvent, WebviewBuilder};
     use tauri::{
         AppHandle, LogicalPosition, LogicalSize, Manager, Position, Rect, Size, State, WebviewUrl,
@@ -1625,7 +1652,7 @@ pub mod desktop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{mpsc, Arc, TryLockError};
+    use std::sync::{Arc, TryLockError, mpsc};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn discord() -> &'static ServiceManifest {
@@ -1714,19 +1741,27 @@ mod tests {
                 .unwrap(),
             active
         );
-        assert!(state
-            .require_current_owned("osl_owner_bbbbbbbbbbbbbbbb", "instagram", "account-one")
-            .is_err());
-        assert!(state
-            .require_current_owned(owner, "discord", "account-one")
-            .is_err());
-        assert!(state
-            .require_current_owned(owner, "instagram", "account-two")
-            .is_err());
+        assert!(
+            state
+                .require_current_owned("osl_owner_bbbbbbbbbbbbbbbb", "instagram", "account-one")
+                .is_err()
+        );
+        assert!(
+            state
+                .require_current_owned(owner, "discord", "account-one")
+                .is_err()
+        );
+        assert!(
+            state
+                .require_current_owned(owner, "instagram", "account-two")
+                .is_err()
+        );
         state.next_generation().unwrap();
-        assert!(state
-            .require_current_owned(owner, "instagram", "account-one")
-            .is_err());
+        assert!(
+            state
+                .require_current_owned(owner, "instagram", "account-one")
+                .is_err()
+        );
     }
 
     #[test]
@@ -1978,10 +2013,12 @@ mod tests {
             state.status().unwrap().phase,
             ServiceHostPhase::DocumentReady
         );
-        assert!(state
-            .resume("owner-a", "telegram", "another-account")
-            .unwrap()
-            .is_none());
+        assert!(
+            state
+                .resume("owner-a", "telegram", "another-account")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -2084,11 +2121,13 @@ mod tests {
             }
         );
         assert!(!profile.exists());
-        assert!(fs::read_dir(&root).unwrap().all(|entry| !entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .starts_with(".deleted-")));
+        assert!(fs::read_dir(&root).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".deleted-")
+        }));
 
         let second = tombstone_profile_directory(&root, "discord", "acct-rose").unwrap();
         assert_eq!(second, ProfileResetOutcome::default());
@@ -2204,13 +2243,13 @@ mod tests {
 
         let mut delete_invoked = false;
         let refused = open_with_mode(
-            HostedOpenMode::DeleteCapable,
+            HostedPortMode::DeleteCapable,
             absent,
-            || {
+            |_| {
                 delete_invoked = true;
                 Ok("delete")
             },
-            || Ok("scan"),
+            |_| Ok("scan"),
         );
         assert!(refused.is_err());
         assert!(
@@ -2229,13 +2268,15 @@ mod tests {
         };
 
         let delete = open_with_mode(
-            HostedOpenMode::DeleteCapable,
+            HostedPortMode::DeleteCapable,
             authority,
-            || {
+            |port| {
+                assert!(matches!(port, HostedPort::DeleteCapable { .. }));
                 delete_calls += 1;
                 Ok("delete-capable")
             },
-            || {
+            |port| {
+                assert_eq!(port, HostedPort::ScanOnly);
                 scan_calls += 1;
                 Ok("scan-only")
             },
@@ -2246,16 +2287,18 @@ mod tests {
         assert_eq!(scan_calls, 0);
 
         let scan = open_with_mode(
-            HostedOpenMode::ScanOnly,
+            HostedPortMode::ScanOnly,
             HostedOpenAuthority {
                 run_id: None,
                 attended_operator_authority: false,
             },
-            || {
+            |port| {
+                assert!(matches!(port, HostedPort::DeleteCapable { .. }));
                 delete_calls += 1;
                 Ok("delete-capable")
             },
-            || {
+            |port| {
+                assert_eq!(port, HostedPort::ScanOnly);
                 scan_calls += 1;
                 Ok("scan-only")
             },
