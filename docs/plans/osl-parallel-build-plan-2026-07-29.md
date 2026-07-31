@@ -158,6 +158,131 @@ Freshness is deliberately narrow for dispatch: `observedAt` must be no more than
 }
 ```
 
+## Decision-input routing exercise
+
+Machine-checkable routing exercise:
+
+```json
+{
+  "schemaVersion": 1,
+  "testName": "Update routing decisions from real Codex capacity instead of stale pools.",
+  "decisionInputs": [
+    "historicalPoolLabel",
+    "capacitySignalFresh",
+    "activeSessionCountRecorded",
+    "blockedOrSleepingSessionsRecorded",
+    "accountQuotaVerified",
+    "machineHeadroomEnough",
+    "ownedFileBound",
+    "forbiddenSubstitute"
+  ],
+  "rules": {
+    "dispatchRequires": [
+      "capacitySignalFresh",
+      "activeSessionCountRecorded",
+      "blockedOrSleepingSessionsRecorded",
+      "accountQuotaVerified",
+      "machineHeadroomEnough",
+      "ownedFileBound"
+    ],
+    "historicalPoolLabelIsAuthority": false,
+    "forbiddenSubstitutes": [
+      "borrow_other_account",
+      "change_CODEX_HOME",
+      "speculative_background_child"
+    ],
+    "defaultDecision": "standby"
+  },
+  "cases": [
+    {
+      "name": "stale available pool refuses",
+      "given": {
+        "historicalPoolLabel": "available",
+        "capacitySignalFresh": false,
+        "activeSessionCountRecorded": false,
+        "blockedOrSleepingSessionsRecorded": false,
+        "accountQuotaVerified": false,
+        "machineHeadroomEnough": true,
+        "ownedFileBound": true,
+        "forbiddenSubstitute": null
+      },
+      "expect": {
+        "decision": "standby",
+        "reasonContains": "fresh_capacity_signal_required"
+      }
+    },
+    {
+      "name": "fresh verified capacity may dispatch",
+      "given": {
+        "historicalPoolLabel": "available",
+        "capacitySignalFresh": true,
+        "activeSessionCountRecorded": true,
+        "blockedOrSleepingSessionsRecorded": true,
+        "accountQuotaVerified": true,
+        "machineHeadroomEnough": true,
+        "ownedFileBound": true,
+        "forbiddenSubstitute": null
+      },
+      "expect": {
+        "decision": "dispatch",
+        "reasonContains": "fresh_capacity_verified"
+      }
+    },
+    {
+      "name": "failed quota cannot borrow another account",
+      "given": {
+        "historicalPoolLabel": "available",
+        "capacitySignalFresh": true,
+        "activeSessionCountRecorded": true,
+        "blockedOrSleepingSessionsRecorded": true,
+        "accountQuotaVerified": false,
+        "machineHeadroomEnough": true,
+        "ownedFileBound": true,
+        "forbiddenSubstitute": "borrow_other_account"
+      },
+      "expect": {
+        "decision": "refuse",
+        "reasonContains": "forbidden_substitute"
+      }
+    },
+    {
+      "name": "failed headroom cannot change CODEX_HOME",
+      "given": {
+        "historicalPoolLabel": "green",
+        "capacitySignalFresh": true,
+        "activeSessionCountRecorded": true,
+        "blockedOrSleepingSessionsRecorded": true,
+        "accountQuotaVerified": true,
+        "machineHeadroomEnough": false,
+        "ownedFileBound": true,
+        "forbiddenSubstitute": "change_CODEX_HOME"
+      },
+      "expect": {
+        "decision": "refuse",
+        "reasonContains": "forbidden_substitute"
+      }
+    },
+    {
+      "name": "unbounded ownership cannot start speculative child",
+      "given": {
+        "historicalPoolLabel": "idle",
+        "capacitySignalFresh": true,
+        "activeSessionCountRecorded": true,
+        "blockedOrSleepingSessionsRecorded": true,
+        "accountQuotaVerified": true,
+        "machineHeadroomEnough": true,
+        "ownedFileBound": false,
+        "forbiddenSubstitute": "speculative_background_child"
+      },
+      "expect": {
+        "decision": "refuse",
+        "reasonContains": "forbidden_substitute"
+      }
+    }
+  ]
+}
+```
+
 ## routing-fixtures
 
 These fixtures are the acceptance test named `docs/plans/osl-parallel-build-plan-2026-07-29.md`.
