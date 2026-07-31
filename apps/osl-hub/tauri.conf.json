@@ -11,8 +11,8 @@
     "windows": [
       {
         "label": "main",
-        "title": "OSL Privacy",
-        "url": "index.html",
+        "title": "OSL WhatsApp Desktop QA",
+        "url": "whatsapp-qa.html",
         "width": 1440,
         "height": 900,
         "minWidth": 960,
@@ -21,7 +21,8 @@
         "decorations": false,
         "shadow": false,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "focus": false
       }
     ],
     "security": {

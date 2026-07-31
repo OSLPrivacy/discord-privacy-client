@@ -50,6 +50,11 @@ pub mod scrub_evidence_manifest;
 #[cfg(feature = "core")]
 pub mod services;
 pub mod updates;
+pub mod whatsapp_accessibility;
+pub mod whatsapp_qa_host;
+#[cfg(feature = "core")]
+pub mod whatsapp_qa_pairing;
+pub mod whatsapp_qa_transport;
 
 // Native executable verification is exercised only by Windows callers. Keep
 // its fail-closed types available to cross-platform manifests and tests.

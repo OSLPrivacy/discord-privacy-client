@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "whatsapp-composer-overlay-local",
+  "description": "Narrow protected-draft capability for the bundled local WhatsApp QA overlay. It can request peer encryption only after backend visual revalidation; remote service webviews never match this label.",
+  "webviews": ["whatsapp-composer-overlay"],
+  "local": true,
+  "permissions": ["allow-prepare-whatsapp-qa-protected-text"]
+}
