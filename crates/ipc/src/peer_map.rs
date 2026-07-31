@@ -372,7 +372,10 @@ pub fn load_peer_map_from_path(path: &Path) -> Result<PeerMap, PeerMapError> {
         .collect();
     let retired_v4_sessions = retire_legacy_v4_sessions(&mut map);
 
-    if any_legacy || retired_v4_sessions > 0 {
+    let plaintext_with_key_now_present = !crate::main_password::has_enc_magic(&blob)
+        && crate::main_password::get_file_storage_key().is_some();
+
+    if any_legacy || retired_v4_sessions > 0 || plaintext_with_key_now_present {
         write_peer_map(path, &map).map_err(|source| PeerMapError::WriteBackFailed {
             path: path.to_path_buf(),
             source,
@@ -595,6 +598,48 @@ mod tests {
             WhitelistEntry::Dm { broadened, .. } => assert!(*broadened),
             other => panic!("expected DM whitelist, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn reload_reencrypts_plaintext_peer_map_when_key_now_present() {
+        let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_file_storage_key(Some([0x71; 32]));
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("peer_map.json");
+        let mut expected = PeerMap::new();
+        expected.insert(
+            "900000000000000003".to_string(),
+            PeerEntry {
+                osl_user_id: Some("liam".to_string()),
+                discord_id: Some("900000000000000003".to_string()),
+                outgoing_whitelists: vec![WhitelistEntry::Dm {
+                    broadened: true,
+                    enabled_at: Some("2026-05-09T12:00:00Z".to_string()),
+                }],
+                ..PeerEntry::default()
+            },
+        );
+        fs::write(&path, serde_json::to_vec_pretty(&expected).unwrap()).unwrap();
+        assert!(
+            !has_enc_magic(&fs::read(&path).unwrap()),
+            "fixture must start as plaintext JSON"
+        );
+
+        let loaded = load_peer_map_from_path(&path).expect("plaintext modern peer map should load");
+
+        assert_eq!(loaded, expected);
+        let raw_after = fs::read(&path).expect("read migrated peer map");
+        assert!(
+            has_enc_magic(&raw_after),
+            "load must rewrite plaintext peer_map.json under the active storage key"
+        );
+        let decrypted: PeerMap =
+            serde_json::from_slice(&maybe_decrypt(&raw_after).expect("decrypt migrated map"))
+                .expect("migrated map remains valid JSON");
+        assert_eq!(decrypted, expected);
+
+        set_file_storage_key(None);
     }
 
     #[test]
