@@ -708,6 +708,7 @@ grade_selftest() {
 
 is_sha256() { [[ "${1:-}" =~ ^[0-9a-f]{64}$ ]]; }
 is_positive_int() { [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]; }
+is_positive_integer() { is_positive_int "$1"; }
 
 grade_f1_live_windows_walkthrough_import() {
   local file="$1" overall shape steps picker grant import revoke restart reread receipt selected
@@ -939,10 +940,11 @@ vmqa_named_test_tmpdir() {
 
 f1_live_windows_walkthrough_imports_nonempty_receipt() {
   local tmp good bad_empty bad_zero_bytes bad_grant bad_unattended bad_receipt bad_receipt_rows
-  local bad_receipt_request bad_receipt_exe bad_source bad_secret bad_revoke bad_revoke_bound
-  local bad_revoked_source bad_restart bad_reread bad_reread_mismatch bad_persist
-  local bad_live_binding bad_nonnumeric bad_shape bad_status bad_overall bad_extra bad_reordered
-  local bad_missing_artifact bad_simulated request_sha exe_sha agent_sha win32_sha receipt_file receipt_sha
+  local bad_receipt_request bad_receipt_exe bad_source bad_password_manager_source bad_secret
+  local bad_revoke bad_revoke_bound bad_revoked_source bad_restart bad_reread bad_reread_mismatch
+  local bad_persist bad_live_binding bad_nonnumeric bad_shape bad_status bad_picker_status
+  local bad_overall bad_extra bad_reordered bad_missing_artifact bad_simulated
+  local request_sha exe_sha agent_sha win32_sha receipt_file receipt_sha
   tmp="$(vmqa_named_test_tmpdir)"
   good="$tmp/f1-good.json"
   bad_empty="$tmp/f1-empty.json"
@@ -954,6 +956,7 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
   bad_receipt_request="$tmp/f1-bad-receipt-request.json"
   bad_receipt_exe="$tmp/f1-bad-receipt-exe.json"
   bad_source="$tmp/f1-bad-source.json"
+  bad_password_manager_source="$tmp/f1-password-manager-source.json"
   bad_secret="$tmp/f1-secret-receipt.json"
   bad_revoke="$tmp/f1-bad-revoke.json"
   bad_revoke_bound="$tmp/f1-bad-revoke-bound.json"
@@ -966,6 +969,7 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
   bad_nonnumeric="$tmp/f1-bad-nonnumeric.json"
   bad_shape="$tmp/f1-bad-shape.json"
   bad_status="$tmp/f1-bad-status.json"
+  bad_picker_status="$tmp/f1-bad-picker-status.json"
   bad_overall="$tmp/f1-bad-overall.json"
   bad_extra="$tmp/f1-extra.json"
   bad_reordered="$tmp/f1-reordered.json"
@@ -989,7 +993,6 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
     agentSha:$agent,
     win32Sha:$win32,
     evidenceTier:"live",
-    vmName:"OSL-Azure-Client-1",
     platform:{os:"windows"},
     overall:"pass",
     steps:[
@@ -1010,6 +1013,7 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
   jq '.steps[6].facts.requestSha256=("0" * 64)' "$good" >"$bad_receipt_request"
   jq '.steps[6].facts.exeSha256=("0" * 64)' "$good" >"$bad_receipt_exe"
   jq '.steps[0].facts.selectedSource="unbounded-profile-path"' "$good" >"$bad_source"
+  jq '.steps[0].facts.selectedSource="password-manager-export"' "$good" >"$bad_password_manager_source"
   jq '.steps[6].facts.containsNoSecrets=false' "$good" >"$bad_secret"
   jq '.steps[3].facts.grantRevoked=false' "$good" >"$bad_revoke"
   jq '.steps[3].facts.revokeBoundToRun=false' "$good" >"$bad_revoke_bound"
@@ -1024,6 +1028,7 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
     "$good" >"$bad_nonnumeric"
   jq '.steps[2].id="X"' "$good" >"$bad_shape"
   jq '.steps[2].status="blocked"' "$good" >"$bad_status"
+  jq '.steps[0].status="blocked"' "$good" >"$bad_picker_status"
   jq '.overall="fail"' "$good" >"$bad_overall"
   jq '.steps += [{id:"X",verb:"receipt",status:"pass",facts:{importedRows:2,receiptSha256:("e" * 64),containsNoSecrets:true,requestSha256:.requestSha256,exeSha256:.requestExeSha256}}]' \
     "$good" >"$bad_extra"
@@ -1033,58 +1038,15 @@ f1_live_windows_walkthrough_imports_nonempty_receipt() {
   jq '.evidenceTier="simulation"' "$good" >"$bad_simulated"
   grade_f1_live_windows_walkthrough_import "$good" >/dev/null \
     || { rm -rf -- "$tmp"; return 1; }
-  grade_f1_live_windows_walkthrough_import "$bad_empty" >/dev/null 2>&1 \
-    && { rm -rf -- "$tmp"; return 1; }
-  grade_f1_live_windows_walkthrough_import "$bad_zero_bytes" >/dev/null 2>&1 \
-    && { rm -rf -- "$tmp"; return 1; }
-  grade_f1_live_windows_walkthrough_import "$bad_grant" >/dev/null 2>&1 \
-    && { rm -rf -- "$tmp"; return 1; }
-  grade_f1_live_windows_walkthrough_import "$bad_unattended" >/dev/null 2>&1 \
-    && { rm -rf -- "$tmp"; return 1; }
-  grade_f1_live_windows_walkthrough_import "$bad_receipt" >/dev/null 2>&1 \
-    && { rm -rf -- "$tmp"; return 1; }
-  grade_f1_live_windows_walkthrough_import "$bad_receipt_rows" >/dev/null 2>&1 \
-    && { rm -rf -- "$tmp"; return 1; }
-  grade_f1_live_windows_walkthrough_import "$bad_receipt_request" >/dev/null 2>&1 \
-    && { rm -rf -- "$tmp"; return 1; }
-  grade_f1_live_windows_walkthrough_import "$bad_receipt_exe" >/dev/null 2>&1 \
-    && { rm -rf -- "$tmp"; return 1; }
-  grade_f1_live_windows_walkthrough_import "$bad_source" >/dev/null 2>&1 \
-    && { rm -rf -- "$tmp"; return 1; }
-  grade_f1_live_windows_walkthrough_import "$bad_secret" >/dev/null 2>&1 \
-    && { rm -rf -- "$tmp"; return 1; }
-  grade_f1_live_windows_walkthrough_import "$bad_revoke" >/dev/null 2>&1 \
-    && { rm -rf -- "$tmp"; return 1; }
-  grade_f1_live_windows_walkthrough_import "$bad_revoke_bound" >/dev/null 2>&1 \
-    && { rm -rf -- "$tmp"; return 1; }
-  grade_f1_live_windows_walkthrough_import "$bad_revoked_source" >/dev/null 2>&1 \
-    && { rm -rf -- "$tmp"; return 1; }
-  grade_f1_live_windows_walkthrough_import "$bad_restart" >/dev/null 2>&1 \
-    && { rm -rf -- "$tmp"; return 1; }
-  grade_f1_live_windows_walkthrough_import "$bad_reread" >/dev/null 2>&1 \
-    && { rm -rf -- "$tmp"; return 1; }
-  grade_f1_live_windows_walkthrough_import "$bad_reread_mismatch" >/dev/null 2>&1 \
-    && { rm -rf -- "$tmp"; return 1; }
-  grade_f1_live_windows_walkthrough_import "$bad_persist" >/dev/null 2>&1 \
-    && { rm -rf -- "$tmp"; return 1; }
-  grade_f1_live_windows_walkthrough_import "$bad_live_binding" >/dev/null 2>&1 \
-    && { rm -rf -- "$tmp"; return 1; }
-  grade_f1_live_windows_walkthrough_import "$bad_nonnumeric" >/dev/null 2>&1 \
-    && { rm -rf -- "$tmp"; return 1; }
-  grade_f1_live_windows_walkthrough_import "$bad_shape" >/dev/null 2>&1 \
-    && { rm -rf -- "$tmp"; return 1; }
-  grade_f1_live_windows_walkthrough_import "$bad_status" >/dev/null 2>&1 \
-    && { rm -rf -- "$tmp"; return 1; }
-  grade_f1_live_windows_walkthrough_import "$bad_overall" >/dev/null 2>&1 \
-    && { rm -rf -- "$tmp"; return 1; }
-  grade_f1_live_windows_walkthrough_import "$bad_extra" >/dev/null 2>&1 \
-    && { rm -rf -- "$tmp"; return 1; }
-  grade_f1_live_windows_walkthrough_import "$bad_reordered" >/dev/null 2>&1 \
-    && { rm -rf -- "$tmp"; return 1; }
-  grade_f1_live_windows_walkthrough_import "$bad_missing_artifact" >/dev/null 2>&1 \
-    && { rm -rf -- "$tmp"; return 1; }
-  grade_f1_live_windows_walkthrough_import "$bad_simulated" >/dev/null 2>&1 \
-    && { rm -rf -- "$tmp"; return 1; }
+  for bad in "$bad_empty" "$bad_zero_bytes" "$bad_grant" "$bad_unattended" "$bad_receipt" \
+    "$bad_receipt_rows" "$bad_receipt_request" "$bad_receipt_exe" "$bad_source" \
+    "$bad_password_manager_source" "$bad_secret" "$bad_revoke" "$bad_revoke_bound" \
+    "$bad_revoked_source" "$bad_restart" "$bad_reread" "$bad_reread_mismatch" "$bad_persist" \
+    "$bad_live_binding" "$bad_nonnumeric" "$bad_shape" "$bad_status" "$bad_picker_status" \
+    "$bad_overall" "$bad_extra" "$bad_reordered" "$bad_missing_artifact" "$bad_simulated"; do
+    grade_f1_live_windows_walkthrough_import "$bad" >/dev/null 2>&1 \
+      && { rm -rf -- "$tmp"; return 1; }
+  done
   rm -rf -- "$tmp"
   return 0
 }
