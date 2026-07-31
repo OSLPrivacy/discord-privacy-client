@@ -92,9 +92,13 @@ async function assertWrappedKeyRoundtripAcrossSessions(payload) {
     assert.equal(fetched.body.share_index, payload.share_index);
     assert.equal(fetched.body.wrapped_share_blob, payload.wrapped_share_blob);
     assert.equal(fetched.body.blob_version, payload.blob_version);
+    assert.equal(fetched.body.single_use, payload.single_use);
+    assert.equal(
+      fetched.body.display_duration_seconds,
+      payload.display_duration_seconds ?? null,
+    );
     assert.equal(fetched.body.expires_at, payload.expires_at);
     assert.match(fetched.body.created_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
-    assert.equal(fetched.body.single_use, false);
   } finally {
     if (firstSession) await firstSession.close();
     if (secondSession) await secondSession.close();
