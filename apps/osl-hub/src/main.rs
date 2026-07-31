@@ -65,8 +65,8 @@ use osl_privacy_hub::preferences::PreviewState;
 use osl_privacy_hub::privacy_scan::{self, LocalMessageCandidate, LocalPrivacyScanResult};
 use osl_privacy_hub::pro_context_cover::LocalCoverState;
 use osl_privacy_hub::scrub_index::{
-    ScrubIndexChunkRequest, ScrubIndexInitializeRequest, ScrubIndexManifest, ScrubIndexScan,
-    ScrubIndexState, ScrubIndexStatus,
+    ScrubIndexChunkRequest, ScrubIndexInitializeRequest, ScrubIndexManifest, ScrubIndexState,
+    ScrubIndexStatus,
 };
 use osl_privacy_hub::security::{
     self, AddFriendResult, FriendCodeExport, HubScopeBurnResult, HubSecurityState, PersonDto,
@@ -859,11 +859,12 @@ async fn get_scrub_index_scan(
     state: State<'_, ScrubIndexState>,
     core: State<'_, HubCoreState>,
     session: State<'_, HubAccountSessionState>,
-) -> Result<Option<ScrubIndexScan>, String> {
+    import_id: String,
+) -> Result<Option<LocalPrivacyScanResult>, String> {
     let _session = session.transition.lock().await;
     let owner = active_unlocked_osl_user_id(&core)?;
     let state = state.inner().clone();
-    tokio::task::spawn_blocking(move || state.get_scrub_index_scan(&owner))
+    tokio::task::spawn_blocking(move || state.get_scrub_index_scan(&owner, &import_id))
         .await
         .map_err(|_| "Scrub scan check was interrupted".to_owned())?
 }
