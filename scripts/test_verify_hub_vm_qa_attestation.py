@@ -201,6 +201,16 @@ class HubVmQaAttestationTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 verify("hub-v0.1.0", root, attestation)
 
+    def test_rejects_missing_second_session_reproduction_legacy_json_load(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, attestation = self.candidate(root)
+            document = json.loads(attestation.read_text(encoding="utf-8"))
+            document["packageReproducedBySecondSession"] = False
+            attestation.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                verify("hub-v0.1.0", root, attestation)
+
     def test_rejects_missing_second_session_reproduction_in_raw_attestation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -222,6 +232,16 @@ class HubVmQaAttestationTests(unittest.TestCase):
                 verify("hub-v0.1.0", root, attestation)
 
     def test_rejects_same_session_final_approver_in_raw_attestation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, attestation = self.candidate(root)
+            document = json.loads(attestation.read_text(encoding="utf-8"))
+            document["finalApprover"] = document["operator"]
+            attestation.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                verify("hub-v0.1.0", root, attestation)
+
+    def test_rejects_same_session_final_approver_legacy_json_load(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             _, attestation = self.candidate(root)
