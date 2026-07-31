@@ -8293,10 +8293,65 @@ mod tests {
         assert!(ready.blockers.is_empty());
         assert_eq!(ready.broker_relay_transport, "persisted_rn");
 
+        let mut no_rn = complete.clone();
+        no_rn.ratchet_wire_in_enabled = false;
+        let mut direct_relay = complete.clone();
+        direct_relay.broker_relay_uses_persisted_ratchet = false;
+        let mut production_keyserver = complete.clone();
+        production_keyserver.keyserver_origin = "production";
+        let mut untrusted_keyserver = complete.clone();
+        untrusted_keyserver.keyserver_origin = "untrusted";
+        let mut no_source_commit = complete.clone();
+        no_source_commit.source_commit = None;
+        let mut no_binary_hash = complete.clone();
+        no_binary_hash.binary_sha256 = None;
+        let mut no_deployment_identity = complete.clone();
+        no_deployment_identity.server_deployment_identity = None;
+
+        let startup_probes = [
+            (b6_preflight_for(no_rn), "rn_wire_in_disabled"),
+            (
+                b6_preflight_for(direct_relay),
+                "broker_relay_uses_direct_manual_v3",
+            ),
+            (
+                b6_preflight_for(production_keyserver),
+                "dedicated_qa_keyserver_not_configured",
+            ),
+            (
+                b6_preflight_for(untrusted_keyserver),
+                "keyserver_origin_untrusted",
+            ),
+            (
+                b6_preflight_for(no_source_commit),
+                "source_commit_unbound",
+            ),
+            (b6_preflight_for(no_binary_hash), "binary_sha256_unbound"),
+            (
+                b6_preflight_for(no_deployment_identity),
+                "server_deployment_identity_unbound",
+            ),
+        ];
+        for (receipt, expected_blocker) in startup_probes {
+            assert!(!receipt.startup_allowed);
+            assert!(!receipt.ready);
+            assert_eq!(
+                receipt.startup_blockers,
+                [expected_blocker],
+                "each startup prerequisite must independently fail closed"
+            );
+            assert_eq!(
+                receipt.blockers,
+                [expected_blocker],
+                "a missing startup prerequisite must not be hidden behind runtime proof"
+            );
+        }
+
         let mut distinct = complete.clone();
         distinct.runtime.distinct_identity_and_keystore_roots = false;
-        let mut deployment = complete.clone();
-        deployment.server_deployment_identity = None;
+        let mut collapsed_public_identity = complete.clone();
+        collapsed_public_identity.identity_public_fingerprints_sha256 =
+            vec!["22".repeat(32), "22".repeat(32)];
         let mut bidirectional = complete.clone();
         bidirectional.runtime.bidirectional_ciphertext_and_plaintext = false;
         let mut offline = complete.clone();
@@ -8316,8 +8371,8 @@ mod tests {
                 "distinct_identity_and_keystore_roots_unproven",
             ),
             (
-                b6_preflight_for(deployment),
-                "server_deployment_identity_unbound",
+                b6_preflight_for(collapsed_public_identity),
+                "distinct_identity_and_keystore_roots_unproven",
             ),
             (
                 b6_preflight_for(bidirectional),
