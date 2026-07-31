@@ -94,6 +94,9 @@ def normalize_provider_fingerprints_for_signed_profiles() -> None:
     testcase.assertNotIn("alice@example.test", reason)
     testcase.assertNotIn("bad", reason)
 
+    with testcase.assertRaises(NORMALIZE.NormalizationError):
+        NORMALIZE.normalize_provider_fingerprint(f"sha256:{signed_profile_urlsafe}!")
+
 
 normalize_provider_fingerprints_for_signed_profiles.__name__ = (
     "Normalize provider fingerprints for signed profiles"
