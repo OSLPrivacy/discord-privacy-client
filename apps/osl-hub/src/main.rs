@@ -10089,6 +10089,10 @@ mod tauri_registration_surface_tests {
         let mut current_identifier = None::<String>;
         let mut permissions = BTreeMap::new();
         for line in source.lines().map(str::trim) {
+            if line == "[[permission]]" {
+                current_identifier = None;
+                continue;
+            }
             if let Some(value) = line
                 .strip_prefix("identifier = \"")
                 .and_then(|tail| tail.strip_suffix('"'))
@@ -10096,14 +10100,26 @@ mod tauri_registration_surface_tests {
                 current_identifier = Some(value.to_owned());
                 continue;
             }
-            if let Some(command) = line
-                .strip_prefix("commands.allow = [\"")
-                .and_then(|tail| tail.strip_suffix("\"]"))
+            if let Some(commands) = line
+                .strip_prefix("commands.allow = [")
+                .and_then(|tail| tail.strip_suffix(']'))
             {
                 let identifier = current_identifier
                     .take()
                     .expect("command permission has an identifier");
-                permissions.insert(identifier, command.to_owned());
+                let commands = commands
+                    .split(',')
+                    .map(str::trim)
+                    .map(|command| command.trim_matches('"'))
+                    .filter(|command| !command.is_empty())
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    commands.len(),
+                    1,
+                    "{identifier} must grant exactly one Tauri command"
+                );
+                permissions.insert(identifier, commands[0].clone());
             }
         }
         permissions
