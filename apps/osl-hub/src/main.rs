@@ -10369,6 +10369,24 @@ mod tauri_registration_surface_tests {
         "revoke_detected_browser_footprint",
     ];
 
+    const BROWSER_CONSENT_TAURI_COMMANDS: [&str; 15] = [
+        "list_browser_imports",
+        "open_browser_import",
+        "get_firefox_status",
+        "install_firefox",
+        "begin_browser_account_import",
+        "begin_protected_browser_import",
+        "finish_protected_browser_import",
+        "launch_firefox_service",
+        "get_default_browser_companion_status",
+        "host_default_browser_companion",
+        "resize_default_browser_companion",
+        "focus_default_browser_companion",
+        "detach_default_browser_companion",
+        "native_app_takeover_requires_consent",
+        "host_native_app_window",
+    ];
+
     const F1_FOOTPRINT_NATIVE_COMMANDS: [&str; 2] = [
         "load_detected_browser_footprint",
         "revoke_detected_browser_footprint",
@@ -10521,39 +10539,44 @@ mod tauri_registration_surface_tests {
     #[test]
     fn browser_consent_tauri_commands_and_acl_are_registered() {
         let (handlers, permissions, capability) = registration_inputs();
-        let final_browser_consent_surface = BROWSER_NATIVE_CONSENT_COMMANDS;
-        let expected_permissions = final_browser_consent_surface
+        let browser_consent_surface = BROWSER_CONSENT_TAURI_COMMANDS;
+        assert_eq!(
+            BROWSER_NATIVE_CONSENT_COMMANDS, browser_consent_surface,
+            "the legacy browser/native consent alias must match the reconciled Tauri command surface"
+        );
+        let expected_permissions = browser_consent_surface
             .iter()
             .map(|command| command_permission(command))
             .collect::<BTreeSet<_>>();
-        for command in final_browser_consent_surface {
+        for command in browser_consent_surface {
             assert_registered_and_granted(&handlers, &permissions, &capability, command);
         }
         let declared_permissions = permissions
             .iter()
             .filter_map(|(permission, command)| {
-                final_browser_consent_surface
+                browser_consent_surface
                     .contains(&command.as_str())
                     .then_some(permission.clone())
             })
             .collect::<BTreeSet<_>>();
         assert_eq!(
             declared_permissions, expected_permissions,
-            "the reconciled browser-consent surface must use exactly its fixed permission identifiers"
+            "the reconciled browser-consent Tauri surface must keep exactly its fixed permission identifiers"
         );
+
         let granted_permissions = capability
             .intersection(&expected_permissions)
             .cloned()
             .collect::<BTreeSet<_>>();
         assert_eq!(
             granted_permissions, expected_permissions,
-            "the reconciled browser-consent surface must be fully granted by the main-window capability"
+            "the main-window capability must grant the full reconciled browser-consent Tauri surface"
         );
         assert_each_registration_surface_is_required(
             &handlers,
             &permissions,
             &capability,
-            &final_browser_consent_surface,
+            &browser_consent_surface,
         );
 
         let mut missing_consent_probe = handlers.clone();
