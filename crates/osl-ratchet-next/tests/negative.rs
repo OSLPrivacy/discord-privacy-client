@@ -18,7 +18,9 @@ use rand::RngCore;
 #[test]
 fn every_single_bit_flip_is_rejected_and_the_session_survives() {
     let (mut alice, mut bob, mut rng) = established_pair(300);
-    let good = alice.encrypt(0, b"the quick brown fox", &mut rng).expect("encrypt");
+    let good = alice
+        .encrypt(0, b"the quick brown fox", &mut rng)
+        .expect("encrypt");
     let len = osl_ratchet_next::test_support::wire_len(&good);
     assert!(len > 80);
 
@@ -110,15 +112,23 @@ fn a_header_from_one_message_on_the_body_of_another_is_rejected() {
         "a spliced header/body pair was accepted"
     );
     // Both originals still work.
-    assert_eq!(bob.decrypt(&a, &mut rng).expect("a").plaintext, b"message A");
-    assert_eq!(bob.decrypt(&b, &mut rng).expect("b").plaintext, b"message B");
+    assert_eq!(
+        bob.decrypt(&a, &mut rng).expect("a").plaintext,
+        b"message A"
+    );
+    assert_eq!(
+        bob.decrypt(&b, &mut rng).expect("b").plaintext,
+        b"message B"
+    );
 }
 
 #[test]
 fn a_message_from_a_different_session_is_rejected() {
     let (mut alice, _b1, mut rng) = established_pair(303);
     let (_a2, mut bob2, _r2) = established_pair(304);
-    let wire = alice.encrypt(0, b"wrong session", &mut rng).expect("encrypt");
+    let wire = alice
+        .encrypt(0, b"wrong session", &mut rng)
+        .expect("encrypt");
     assert_eq!(bob2.decrypt(&wire, &mut rng), Err(Error::AuthFailed));
 }
 
@@ -127,9 +137,18 @@ fn malformed_framing_is_rejected_by_category() {
     let (mut alice, mut bob, mut rng) = established_pair(305);
     let good = alice.encrypt(0, b"x", &mut rng).expect("encrypt");
 
-    assert_eq!(bob.decrypt("no prefix at all", &mut rng), Err(Error::BadPrefix));
-    assert_eq!(bob.decrypt("DPC0::!!!not base64!!!", &mut rng), Err(Error::Base64));
-    assert_eq!(bob.decrypt("DPC0::", &mut rng).err(), Some(Error::Malformed("empty blob")));
+    assert_eq!(
+        bob.decrypt("no prefix at all", &mut rng),
+        Err(Error::BadPrefix)
+    );
+    assert_eq!(
+        bob.decrypt("DPC0::!!!not base64!!!", &mut rng),
+        Err(Error::Base64)
+    );
+    assert_eq!(
+        bob.decrypt("DPC0::", &mut rng).err(),
+        Some(Error::Malformed("empty blob"))
+    );
 
     // A v=3 blob must report WrongVersion so a router can fall through
     // to the existing decoders rather than treating it as corruption.
@@ -147,7 +166,10 @@ fn malformed_framing_is_rejected_by_category() {
     );
 
     // The real message still works after all of that.
-    assert_eq!(bob.decrypt(&good, &mut rng).expect("decrypt").plaintext, b"x");
+    assert_eq!(
+        bob.decrypt(&good, &mut rng).expect("decrypt").plaintext,
+        b"x"
+    );
 }
 
 #[test]
@@ -173,7 +195,10 @@ fn random_garbage_never_panics_and_never_opens() {
         }
     }
     assert_eq!(bob.export_state().expect("export"), before);
-    assert_eq!(bob.decrypt(&good, &mut rng).expect("decrypt").plaintext, b"real");
+    assert_eq!(
+        bob.decrypt(&good, &mut rng).expect("decrypt").plaintext,
+        b"real"
+    );
 }
 
 #[test]
@@ -252,14 +277,19 @@ fn a_restored_session_cannot_reuse_a_consumed_message_key() {
     // is out of scope — see THREAT-MODEL.md.)
     let (mut alice, mut bob, mut rng) = established_pair(310);
     let w = alice.encrypt(0, b"once", &mut rng).expect("encrypt");
-    assert_eq!(bob.decrypt(&w, &mut rng).expect("decrypt").plaintext, b"once");
+    assert_eq!(
+        bob.decrypt(&w, &mut rng).expect("decrypt").plaintext,
+        b"once"
+    );
     let after = bob.export_state().expect("export");
 
     let mut restored = Session::import_state(&after).expect("import");
     let before_replay = restored.export_state().expect("export restored");
     assert_eq!(restored.decrypt(&w, &mut rng), Err(Error::AuthFailed));
     assert_eq!(
-        restored.export_state().expect("export after rejected replay"),
+        restored
+            .export_state()
+            .expect("export after rejected replay"),
         before_replay,
         "rejected replay mutated the restored in-order session"
     );
@@ -294,10 +324,17 @@ fn a_restored_session_cannot_reuse_a_consumed_message_key() {
     );
 
     let after_skipped_use = bob.export_state().expect("export skipped state");
-    let mut restored =
-        Session::import_state(&after_skipped_use).expect("import skipped state");
+    let mut restored = Session::import_state(&after_skipped_use).expect("import skipped state");
     let before_skipped_replay = restored.export_state().expect("export skipped restored");
+    let restored_before_skipped_replay = before_skipped_replay.clone();
     assert_eq!(restored.decrypt(&first, &mut rng), Err(Error::AuthFailed));
+    assert_eq!(
+        restored
+            .export_state()
+            .expect("export restored skipped after replay"),
+        restored_before_skipped_replay,
+        "rejected skipped-key replay mutated the restored session"
+    );
     assert_eq!(
         restored
             .export_state()
@@ -312,7 +349,9 @@ fn a_restored_session_cannot_reuse_a_consumed_message_key() {
             .plaintext,
         b"second skipped"
     );
-    let fourth = alice.encrypt(0, b"after skipped replay", &mut rng).expect("fourth");
+    let fourth = alice
+        .encrypt(0, b"after skipped replay", &mut rng)
+        .expect("fourth");
     assert_eq!(
         restored
             .decrypt(&fourth, &mut rng)
@@ -341,7 +380,9 @@ fn sender_rollback_replays_send_state_but_receiver_rejects_and_recovers() {
         "current protocol permits exact wire replay when sender state and RNG both roll back"
     );
     assert_eq!(
-        bob.decrypt(&first, &mut rng).expect("first decrypt").plaintext,
+        bob.decrypt(&first, &mut rng)
+            .expect("first decrypt")
+            .plaintext,
         b"rollback send"
     );
     assert_eq!(
@@ -369,11 +410,15 @@ fn skipped_message_replay_stays_rejected_after_restart() {
     let third = alice.encrypt(0, b"skip third", &mut rng).expect("third");
 
     assert_eq!(
-        bob.decrypt(&third, &mut rng).expect("third first").plaintext,
+        bob.decrypt(&third, &mut rng)
+            .expect("third first")
+            .plaintext,
         b"skip third"
     );
     assert_eq!(
-        bob.decrypt(&first, &mut rng).expect("open skipped").plaintext,
+        bob.decrypt(&first, &mut rng)
+            .expect("open skipped")
+            .plaintext,
         b"skip first"
     );
 
