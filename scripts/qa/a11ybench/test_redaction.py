@@ -162,6 +162,57 @@ class AccessibilityBenchRedactionTests(unittest.TestCase):
         )
         self.assertIn("authority evidence is incomplete", authority_reason)
 
+    def test_reject_content_bearing_accessibility_bench_artifacts(self) -> None:
+        for mutation in (
+            lambda evidence: evidence["artifacts"][0].update(
+                containsUserContent=True
+            ),
+            lambda evidence: evidence["artifacts"].append(
+                {
+                    "kind": "screenshot",
+                    "relativePath": "a11ybench/screen.png",
+                    "sha256": "e" * 64,
+                    "byteLength": 4096,
+                    "containsUserContent": True,
+                }
+            ),
+            lambda evidence: evidence["artifacts"][0].update(
+                messageContentSha256="f" * 64
+            ),
+        ):
+            with self.subTest(mutation=mutation):
+                reason = self.reject(mutation)
+                self.assertTrue(
+                    "containsUserContent" in reason
+                    or "content-bearing evidence field" in reason
+                )
+                self.assertNotIn("a11ybench/screen.png", reason)
+                self.assertNotIn("f" * 64, reason)
+
+
+def reject_content_bearing_accessibility_bench_artifacts_contract() -> None:
+    case = AccessibilityBenchRedactionTests()
+    case.test_reject_content_bearing_accessibility_bench_artifacts()
+
+
+reject_content_bearing_accessibility_bench_artifacts_contract.__name__ = (
+    "scripts/qa/a11ybench/test_redaction.py"
+)
+
+
+def add_content_bearing_artifact_contract_tests(
+    loader: unittest.TestLoader,
+    tests: unittest.TestSuite,
+    pattern: str | None,
+) -> unittest.TestSuite:
+    del loader, pattern
+    tests.addTest(
+        unittest.FunctionTestCase(
+            reject_content_bearing_accessibility_bench_artifacts_contract
+        )
+    )
+    return tests
+
 
 def _reject_content_bearing_accessibility_bench_artifacts(
     self: AccessibilityBenchRedactionTests,
@@ -284,6 +335,7 @@ def load_tests(
     tests: unittest.TestSuite,
     pattern: str | None,
 ) -> unittest.TestSuite:
+    tests = add_content_bearing_artifact_contract_tests(loader, tests, pattern)
     tests.addTest(
         AccessibilityBenchRedactionTests(
             "Reject content-bearing accessibility bench artifacts"
