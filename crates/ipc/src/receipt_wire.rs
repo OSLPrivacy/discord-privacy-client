@@ -123,7 +123,7 @@ impl SignedPrivacyReceipt {
         }
 
         let signature = ed25519::Signature::from_bytes(signature);
-        let valid = ed25519::verify(signer, &signing_bytes(&receipt))
+        let valid = ed25519::verify(signer, &signing_bytes(&receipt), &signature)
             .map_err(|_| ReceiptWireError::InvalidSignature)?;
         if !valid {
             return Err(ReceiptWireError::InvalidSignature);

@@ -15,6 +15,17 @@ use thiserror::Error;
 /// neither may sit outside the content-bound manifest. No stored manifest
 /// predates v2: the crate had no callers before the clock split.
 const MANIFEST_DOMAIN: &[u8] = b"osl-logical-message-manifest-v2";
+// t2-02 defined the shared lifecycle types in composition.rs but never declared
+// the module here, so `message_lifecycle::Tombstone` did not resolve and every
+// consumer (t2-03's tombstone store) failed to compile. The types existed the
+// whole time -- they were simply unreachable.
+mod composition;
+
+pub use composition::{
+    AckOutcome, BlobState, DestructReason, LifecycleControl, LocalCopyState,
+    MessageDirection, Tombstone,
+};
+
 pub const HARD_MAX_PARTS: u16 = 4_096;
 pub const HARD_MAX_PART_BYTES: u32 = 64 * 1024;
 pub const HARD_MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024;

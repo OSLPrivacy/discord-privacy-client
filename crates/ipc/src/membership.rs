@@ -277,7 +277,7 @@ pub fn load_scope_membership_from_path(
             reason: e,
         }
     })?;
-    let mut membership =
+    let mut membership: ScopeMembership =
         serde_json::from_slice(&plain).map_err(|e| ScopeMembershipError::ParseFailed {
             path: path.display().to_string(),
             reason: e.to_string(),
