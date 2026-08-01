@@ -22,6 +22,43 @@ export class RecoveryCaptureGate {
   }
 }
 
+/**
+ * What one onboarding paint pass should do.
+ *
+ * `defer-sensitive-edit` exists because a background refresh landing mid-typing
+ * used to wipe a half-entered password out of the DOM. It defers on the mere
+ * *presence* of text in any password field, which is correct for a render the
+ * owner did not ask for and catastrophic for one they did: the recovery-reveal
+ * form is a password field that necessarily still holds the typed password at
+ * the moment its own result arrives, so every outcome of that flow — the busy
+ * state, the error, and the revealed kit itself — was suppressed, and the
+ * screen froze with no way off it.
+ *
+ * `forced` is how a flow says "this paint *is* the answer to the keystroke the
+ * owner just made". It outranks both short-circuits.
+ */
+export type OnboardingPaintDecision = "paint" | "skip-unchanged" | "defer-sensitive-edit";
+
+export interface OnboardingPaintInputs {
+  /** The markup to paint is byte-identical to what is already mounted. */
+  markupUnchanged: boolean;
+  /** The onboarding shell is actually in the document. */
+  shellMounted: boolean;
+  /** The last painted onboarding step is the one being painted now. */
+  sameRouteAsRendered: boolean;
+  /** Some password field is focused or holds text. */
+  passwordEditInProgress: boolean;
+  /** This paint was requested by the flow the owner is interacting with. */
+  forced: boolean;
+}
+
+export function onboardingPaintDecision(inputs: OnboardingPaintInputs): OnboardingPaintDecision {
+  if (inputs.forced) return "paint";
+  if (inputs.markupUnchanged && inputs.shellMounted) return "skip-unchanged";
+  if (inputs.sameRouteAsRendered && inputs.passwordEditInProgress) return "defer-sensitive-edit";
+  return "paint";
+}
+
 export interface RecoveryFocusActions {
   scheduleNativeHostRealignment(): void;
   hasRecoverySecrets(): boolean;
