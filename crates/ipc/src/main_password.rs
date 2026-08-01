@@ -1535,6 +1535,20 @@ pub const AT_REST_STATE_FILES: &[&str] = &[
     // sealed under the OLD key -- the exact defect burned_scopes.json already
     // caused once.
     "pending_friend_requests.json",
+    // --- apps/osl-hub/src/security.rs writers -------------------------------
+    // These are sealed with the SAME file storage key, in the SAME config dir,
+    // but are declared in the hub crate rather than here -- so the rotation
+    // sweep never saw them. A main-password change re-keyed the files above and
+    // orphaned every one of these, including the entire friend roster
+    // (hub_people.json) and the pending burn queue (hub_revocation_outbox.json).
+    // Same defect class as burned_scopes.json, at seven times the scale.
+    "hub_people.json",
+    "hub_security_preferences.json",
+    "hub_peer_replay.json",
+    "scope_attachments.json",
+    "hub_revocation_ledger.json",
+    "hub_revocation_outbox.json",
+    "hub_revocation_counters.json",
 ];
 
 /// Names from `AT_REST_STATE_FILES` that currently exist in `dir`. Used to
