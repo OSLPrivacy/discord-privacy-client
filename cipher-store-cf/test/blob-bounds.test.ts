@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Env } from "../src/env.js";
 import {
+  handleFetch,
   handleUpload,
   MAX_BLOB_BYTES,
   readBoundedBody,
@@ -19,6 +20,32 @@ function blobId(index: number): Uint8Array {
 }
 
 describe("cipher upload body bounds", () => {
+  it("fetches a live blob with its capability alone", async () => {
+    const data = new Uint8Array([1, 2, 3]);
+    const env = {
+      DB: {
+        prepare: () => ({
+          bind: () => ({
+            first: async () => ({
+              data,
+              expires_at: Math.floor(Date.now() / 1000) + 60,
+              fetch_token: "0123456789abcdef0123456789abcdef",
+            }),
+          }),
+        }),
+      },
+    } as unknown as Env;
+
+    const response = await handleFetch(
+      new Request("https://cipher.test/v1/blob/0000000000000001"),
+      env,
+      "0000000000000001",
+    );
+
+    expect(response.status).toBe(200);
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(data);
+  });
+
   it("accepts exactly the maximum streamed byte count", async () => {
     const request = new Request("https://cipher.test/v1/blob", {
       method: "POST",
