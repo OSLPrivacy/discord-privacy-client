@@ -8975,10 +8975,36 @@ export const __oslHubUiTest = {
     return destination === "onboarding" ? onboardingShellMarkup() : workspaceShellMarkup();
   },
   /** Render the real service header without needing a companion window. */
-  renderServiceHeader(service: LinkedService, homeAppId: HomeAppId): string {
+  /**
+   * Render the real service header without a companion window.
+   *
+   * Accepts either a full LinkedService plus its app id, OR just an app id --
+   * L1 "encrypt and copy" must be reachable for EVERY launchable app, so tests
+   * that sweep all shipping app ids should not each have to hand-build a
+   * service. Passing only the id synthesises a minimal one for that app.
+   */
+  renderServiceHeader(
+    serviceOrAppId: LinkedService | HomeAppId,
+    homeAppId?: HomeAppId,
+  ): string {
+    const idOnly = typeof serviceOrAppId === "string";
+    const appId = (idOnly ? serviceOrAppId : homeAppId) as HomeAppId;
+    const service: LinkedService = idOnly
+      ? {
+          id: appId,
+          displayName: appId,
+          sidebarGlyph: appId.slice(0, 2).toUpperCase(),
+          sidebarOrder: 0,
+          category: "consumer",
+          launchState: "available",
+          supportsNativePreview: true,
+          supportsProtectedPreview: true,
+          accounts: [],
+        } as unknown as LinkedService
+      : serviceOrAppId;
     route = "service";
     activeService = service;
-    activeHomeAppId = homeAppId;
+    activeHomeAppId = appId;
     activeEmbeddedHost = null;
     activeNativeHostId = null;
     activeNativeHostMode = null;
