@@ -26,8 +26,9 @@
 //!   `ReceiverChain` isolation; cross-routing rejected.
 
 use crypto::sender_keys::{
-    canonical_ad_sender_keys, ReceiverChain, SenderChain, SenderContext, SenderKeyState,
-    MAX_SKIPPED_PER_CHAIN, SESSION_VERSION_V1, SKIPPED_KEY_TTL,
+    canonical_ad_sender_keys, PhysicalDeviceId, ReceiverChain, SenderChain, SenderContext,
+    SenderKeyState, MAX_RECEIVER_CHAINS_PER_PEER, MAX_SKIPPED_PER_CHAIN, SESSION_VERSION_V1,
+    SKIPPED_KEY_TTL,
 };
 use crypto::x25519;
 use std::time::{Duration, SystemTime};
@@ -452,6 +453,102 @@ fn multiple_peer_senders_to_same_receiver() {
     assert_eq!(
         carol.decrypt_from(b"alice", &m_a3, &alice_ctx).unwrap(),
         b"alice 3"
+    );
+}
+
+#[test]
+fn receiver_chains_per_peer_are_bounded_against_forged_device_ids() {
+    let mut state = SenderKeyState::new();
+    let root = [0xa5; 32];
+
+    for id in 1u8..=200 {
+        let installed = state
+            .install_receiver(
+                b"attacker-controlled-peer".to_vec(),
+                0,
+                &root,
+                PhysicalDeviceId::from_bytes([id; 32]).unwrap(),
+            )
+            .unwrap();
+        let expected_eviction = if usize::from(id) > MAX_RECEIVER_CHAINS_PER_PEER {
+            Some(
+                PhysicalDeviceId::from_bytes(
+                    [(usize::from(id) - MAX_RECEIVER_CHAINS_PER_PEER) as u8; 32],
+                )
+                .unwrap(),
+            )
+        } else {
+            None
+        };
+        assert_eq!(installed.evicted_physical_device_id, expected_eviction);
+    }
+
+    assert!(state
+        .receiver_chain_for_physical_device(
+            b"attacker-controlled-peer",
+            PhysicalDeviceId::from_bytes([1; 32]).unwrap(),
+        )
+        .is_none());
+    assert!(state
+        .receiver_chain_for_physical_device(
+            b"attacker-controlled-peer",
+            PhysicalDeviceId::from_bytes([200; 32]).unwrap(),
+        )
+        .is_some());
+    assert_eq!(
+        (1u8..=200)
+            .filter(|id| {
+                state
+                    .receiver_chain_for_physical_device(
+                        b"attacker-controlled-peer",
+                        PhysicalDeviceId::from_bytes([*id; 32]).unwrap(),
+                    )
+                    .is_some()
+            })
+            .count(),
+        MAX_RECEIVER_CHAINS_PER_PEER,
+    );
+}
+
+#[test]
+fn successful_receiver_decrypt_refreshes_lru_before_eviction() {
+    let peer = b"peer-with-many-devices";
+    let ctx = make_sender_ctx(0x61, b"group-1", SESSION_VERSION_V1);
+    let mut state = SenderKeyState::new();
+    let mut first_sender = None;
+
+    for id in 1..=MAX_RECEIVER_CHAINS_PER_PEER as u8 {
+        let sender =
+            SenderChain::new_for_physical_device(PhysicalDeviceId::from_bytes([id; 32]).unwrap())
+                .unwrap();
+        state
+            .install_receiver(
+                peer.to_vec(),
+                sender.current_chain_id(),
+                &sender.rotation_root_bytes(),
+                sender.physical_device_id(),
+            )
+            .unwrap();
+        if id == 1 {
+            first_sender = Some(sender);
+        }
+    }
+
+    let first_sender = first_sender.as_mut().unwrap();
+    let message = first_sender.encrypt(b"refresh device one", &ctx).unwrap();
+    assert_eq!(
+        state.decrypt_from(peer, &message, &ctx).unwrap(),
+        b"refresh device one"
+    );
+
+    let new_device =
+        PhysicalDeviceId::from_bytes([(MAX_RECEIVER_CHAINS_PER_PEER + 1) as u8; 32]).unwrap();
+    let evicted = state
+        .install_receiver(peer.to_vec(), 0, &[0x3c; 32], new_device)
+        .unwrap();
+    assert_eq!(
+        evicted.evicted_physical_device_id,
+        Some(PhysicalDeviceId::from_bytes([2; 32]).unwrap()),
     );
 }
 
