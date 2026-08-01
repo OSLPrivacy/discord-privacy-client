@@ -4798,6 +4798,8 @@ code {
 .osl-chat-thread-header h2 { margin: 0 0 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; }
 .osl-chat-message-list { min-height: 0; padding: 22px 24px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
 .osl-chat-thread-empty { margin: auto; color: var(--muted); }
+.osl-chat-handshake-warning { margin: 0; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--warn-soft, rgba(255, 176, 32, .12)); color: var(--text); font-size: 12px; line-height: 1.45; }
+.osl-chat-message-unreadable { color: var(--muted); font-size: 11px; }
 .osl-chat-message { width: min(74%, 660px); display: grid; gap: 4px; }
 .osl-chat-message.is-outgoing { align-self: end; }
 .osl-chat-message-meta { display: flex; align-items: baseline; gap: 8px; color: var(--muted); font-size: 11px; }

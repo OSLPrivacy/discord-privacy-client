@@ -78,6 +78,70 @@ export function friendTrustAction(
   return safetyNumberVerified && !pendingKeyChange ? "verified" : "verify";
 }
 
+/**
+ * There is no inbound friend-request mechanism in this build. Adding someone
+ * writes a record on THIS device only; nothing is delivered to them and nothing
+ * ever arrives on its own. Any copy that implies an incoming request strands the
+ * user waiting forever, so these lines name the action the user still owes.
+ * See `plan/ADD-FRIEND-PROCEDURE.md`: the invite exchange is symmetric.
+ */
+export type FriendHandshakeState = "verified" | "key-change" | "invite-not-exchanged";
+
+export function friendHandshakeState(
+  safetyNumberVerified: boolean,
+  pendingKeyChange: boolean,
+): FriendHandshakeState {
+  if (pendingKeyChange) return "key-change";
+  return safetyNumberVerified ? "verified" : "invite-not-exchanged";
+}
+
+/** One short line for a person row. Never implies an inbound request. */
+export function friendHandshakeSummary(
+  safetyNumberVerified: boolean,
+  pendingKeyChange: boolean,
+): string {
+  switch (friendHandshakeState(safetyNumberVerified, pendingKeyChange)) {
+    case "key-change":
+      return "Security change needs review";
+    case "verified":
+      return "Verified";
+    case "invite-not-exchanged":
+      return "Waiting on you — send them your invite, then verify";
+  }
+}
+
+/** The longer explanation used wherever there is room for the next action. */
+export function friendHandshakeDetail(
+  safetyNumberVerified: boolean,
+  pendingKeyChange: boolean,
+): string {
+  switch (friendHandshakeState(safetyNumberVerified, pendingKeyChange)) {
+    case "key-change":
+      return "Verification changed. Protected sends stay off until you review it.";
+    case "verified":
+      return "Verified. Approve each chat you want OSL to protect.";
+    case "invite-not-exchanged":
+      return "OSL sent them no request. Send them your invite so they can add you, then verify each other. Both of you must finish every step before a message can be read.";
+  }
+}
+
+export interface FriendInviteCardOptions {
+  readonly sectionClass: string;
+  readonly labelId: string;
+}
+
+/**
+ * The "Your friend ID" card. The note must state both directions: an invite
+ * that only travels one way leaves the other person unable to add you.
+ */
+export function friendInviteCardMarkup(
+  compactFriendId: string,
+  escapeHtml: (value: string) => string,
+  options: FriendInviteCardOptions,
+): string {
+  return `<section class="${options.sectionClass}" aria-labelledby="${options.labelId}"><div><span id="${options.labelId}">Your friend ID</span><code>${escapeHtml(compactFriendId)}</code></div><button class="button" id="copy-friend-code" type="button">Copy invite</button><p>Send your invite to someone you trust, and add theirs here. Both people must do this — no request ever arrives on its own.</p></section>`;
+}
+
 export function shouldClearRemovedFriendChat(
   activePersonId: string | null,
   removedPersonId: string,

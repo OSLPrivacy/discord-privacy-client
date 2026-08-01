@@ -104,6 +104,15 @@ export interface OslChatFriend {
   preview: string | null;
   previewVisible: boolean;
   unreadCount: number;
+  /**
+   * Local evidence that this person has completed their half of the symmetric
+   * handshake: something of theirs has been decrypted here. The sender cannot
+   * observe the peer's device, so this is the only honest signal available and
+   * its absence is NOT proof of anything — it only means OSL has never seen the
+   * peer answer. Absent (the default), an outgoing message must not be
+   * presented as a finished, readable delivery.
+   */
+  handshakeConfirmed?: boolean;
 }
 
 export interface OslChatMessage {
@@ -188,11 +197,44 @@ function friendRow(friend: OslChatFriend, activePersonId: string | null, busy: b
   </div>`;
 }
 
+/**
+ * An outgoing message really is end-to-end encrypted and really did upload.
+ * What it is not, until the peer has answered at least once, is readable:
+ * a peer who has not added your invite, verified you and turned this chat on
+ * has no binding and cannot decrypt. Saying "Sent" alone tells the user the
+ * message landed. It did not.
+ */
+/**
+ * The only local proof that a peer completed their half of the symmetric
+ * handshake: something of theirs decrypted here. An outgoing message proves
+ * nothing -- encrypting and uploading succeed whether or not the peer ever
+ * bound a context. The timeline is seeded from the durable local history when a
+ * chat opens, so this survives a restart.
+ */
+export function oslChatHandshakeConfirmed(messages: readonly OslChatMessage[]): boolean {
+  return messages.some((message) => message.direction === "incoming");
+}
+
+export function oslChatMessageUnreadableNote(
+  message: OslChatMessage,
+  handshakeConfirmed: boolean,
+): string {
+  if (message.direction !== "outgoing" || handshakeConfirmed) return "";
+  if (message.state !== "sent" && message.state !== "delivered") return "";
+  return "Not readable yet";
+}
+
+export function oslChatHandshakeWarning(friend: OslChatFriend): string {
+  if (!friend.verified || friend.handshakeConfirmed === true) return "";
+  return `Nothing has ever arrived from ${friend.nickname}, so OSL cannot tell whether they finished their half. Until they add your invite, verify you and turn this chat on, what you send here cannot be opened on their device. Both people must complete every step.`;
+}
+
 function messageRow(message: OslChatMessage, friend: OslChatFriend): string {
   const label = deliveryLabel(message.state);
+  const unreadable = oslChatMessageUnreadableNote(message, friend.handshakeConfirmed === true);
   return `<article class="osl-chat-message is-${message.direction}" data-message-id="${escapeHtml(message.messageId)}">
     <div class="osl-chat-message-meta"><strong>${message.direction === "outgoing" ? "You" : escapeHtml(friend.nickname)}</strong><time>${escapeHtml(message.timestampLabel)}</time></div><p class="osl-chat-message-text">${escapeHtml(message.body)}</p>
-    <footer><span class="osl-chat-message-state is-${message.state}">${label}</span></footer>
+    <footer><span class="osl-chat-message-state is-${message.state}">${label}</span>${unreadable ? `<span class="osl-chat-message-unreadable">${escapeHtml(unreadable)}</span>` : ""}</footer>
   </article>`;
 }
 
@@ -215,7 +257,12 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
   const messages = model.messages.length
     ? model.messages.map((message) => messageRow(message, friend)).join("")
     : '<p class="osl-chat-thread-empty">No messages yet.</p>';
+  const handshakeWarning = oslChatHandshakeWarning(friend);
+  const unconfirmed = handshakeWarning
+    ? `<p class="osl-chat-handshake-warning" role="status">${escapeHtml(handshakeWarning)}</p>`
+    : "";
   return `<section class="osl-chat-thread" aria-label="OSL direct chat with ${escapeHtml(friend.nickname)}">
+    ${unconfirmed}
     <header class="osl-chat-thread-header">${avatar(friend.nickname, "is-thread")}<div><h2>${escapeHtml(friend.nickname)}</h2><span>${friend.ready ? "Ready" : "Connecting"} · ${friend.verified ? "Verified" : "Unverified"}</span></div><button class="osl-chat-thread-settings" type="button" data-osl-chat-settings="${escapeHtml(friend.personId)}" aria-label="Chat settings">${settingsIcon}</button></header>
     <div class="osl-chat-message-list" role="log" aria-live="polite" aria-relevant="additions text">${messages}</div>
     <form class="osl-chat-composer" data-osl-chat-compose="${escapeHtml(friend.personId)}">

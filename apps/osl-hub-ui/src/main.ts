@@ -141,10 +141,10 @@ export {
   type AutoscrubUnattendedRunResult,
 } from "./autoscrub-unattended-run";
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
-import { OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
+import { OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
 import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, type OslChatDeliveryHost } from "./osl-chat-runtime";
 import { parseCircleAudience, type CircleAudience } from "./osl-collab";
-import { bindFriendRemovalControls, bindMainWindowFocusChanges, friendRemovalButtonMarkup, friendTrustAction, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat } from "./ui-behavior";
+import { bindFriendRemovalControls, bindMainWindowFocusChanges, friendHandshakeDetail, friendHandshakeSummary, friendInviteCardMarkup, friendRemovalButtonMarkup, friendTrustAction, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat } from "./ui-behavior";
 import { BurnGuaranteeCopy, type BurnGuaranteeState } from "./two-step-burn";
 import { burnRevocationReceipt, type BurnRevocationReceipt } from "./burn-revocation-receipt";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
@@ -3953,6 +3953,7 @@ function oslChatContent(): string {
       preview: last?.body ?? null,
       previewVisible: !pro || oslChatPreviewsVisible,
       unreadCount: oslChatUnread.get(person.personId) ?? 0,
+      handshakeConfirmed: oslChatHandshakeConfirmed(messages),
     };
   });
   const approval = activeOslChatPersonId && activeOslChatContext && !activeOslChatContext.scopeApproved
@@ -4100,10 +4101,12 @@ function peopleListMarkup(mode: PeopleListMode, limit?: number, offset = 0): str
           ? `<button class="button compact" data-allow-person="${escapeHtml(person.personId)}">Approve for this chat</button>`
           : `${statusTag("Open a supported chat first")}`
         : `${statusTag("Verified")}`
-      : `<button class="button compact" data-verify-person="${escapeHtml(person.personId)}">${person.pendingKeyChange ? "Re-verify key" : "Review request"}</button>`;
+      : `<button class="button compact" data-verify-person="${escapeHtml(person.personId)}">${person.pendingKeyChange ? "Re-verify key" : "Verify"}</button>`;
     if (mode === "home") {
       const lastMessage = oslChatMessages.get(person.personId)?.at(-1);
-      const chatState = person.pendingKeyChange ? "Security change needs review" : person.safetyNumberVerified ? (lastMessage?.body ?? "Open encrypted chat") : "Request pending";
+      const chatState = person.safetyNumberVerified && !person.pendingKeyChange
+        ? (lastMessage?.body ?? "Open encrypted chat")
+        : friendHandshakeSummary(person.safetyNumberVerified, person.pendingKeyChange);
       return `<article class="person-row home-friend-row"><button class="home-friend-open" type="button" data-osl-chat-open="${escapeHtml(person.personId)}" ${person.safetyNumberVerified && !person.pendingKeyChange ? "" : "disabled"}><span><strong>${escapeHtml(nickname)}</strong><small>${escapeHtml(chatState)}</small></span></button><button class="home-friend-settings" type="button" data-friend-settings="${escapeHtml(person.personId)}" aria-label="Settings for ${escapeHtml(nickname)}">•••</button></article>`;
     }
     const visibleScopes = person.whitelistedScopes.slice(0, friendScopeRenderLimit);
@@ -4117,7 +4120,7 @@ function peopleListMarkup(mode: PeopleListMode, limit?: number, offset = 0): str
     const nicknameForm = mode === "manage" ? `<form class="friend-nickname-form" data-nickname-person="${escapeHtml(person.personId)}"><label><span>Nickname on this device</span><input name="nickname" maxlength="48" value="${escapeHtml(person.alias ?? "")}" placeholder="Add a nickname" autocomplete="off" spellcheck="false"/></label><button class="button compact" type="submit">Save</button></form>` : "";
     const removeControl = mode === "manage" ? friendRemovalButtonMarkup(person.personId, escapeHtml) : "";
     const management = `<details class="friend-management"><summary>Manage</summary><div>${nicknameForm}<div class="friend-approvals"><span>Approved chats</span><div>${scopes}</div>${truncated}</div><details class="friend-security"><summary>Security details</summary><div><span>OSL ID</span><code>${escapeHtml(identity)}</code><span>Verification code</span><code>${escapeHtml(person.safetyNumber)}</code></div></details>${removeControl}</div></details>`;
-    return `<article class="person-row person-profile"><header><div><strong>${escapeHtml(nickname)}</strong>${person.pendingKeyChange ? `<small>Security change needs review</small>` : `<small>${person.safetyNumberVerified ? "Verified" : "Request pending"}</small>`}</div>${action}</header>${management}</article>`;
+    return `<article class="person-row person-profile"><header><div><strong>${escapeHtml(nickname)}</strong><small>${escapeHtml(friendHandshakeSummary(person.safetyNumberVerified, person.pendingKeyChange))}</small></div>${action}</header>${management}</article>`;
   }).join("");
 }
 
@@ -4131,9 +4134,7 @@ function peopleDestinationContent(): string {
   const reviewRows = needsReview.length
     ? needsReview.slice(0, 4).map((person) => {
       const nickname = person.alias ?? "Unnamed friend";
-      const detail = person.pendingKeyChange
-        ? "Verification changed. Protected sends stay off until you review it."
-        : "Not trusted yet. Protected sends stay off until you verify.";
+      const detail = friendHandshakeDetail(person.safetyNumberVerified, person.pendingKeyChange);
       return `<article class="people-review-row"><div><strong>${escapeHtml(nickname)}</strong><small>${detail}</small></div><button class="button compact" type="button" data-verify-person="${escapeHtml(person.personId)}">${person.pendingKeyChange ? "Review change" : "Verify"}</button></article>`;
     }).join("")
     : `<div class="empty-state compact"><strong>No people need review</strong><p>New people and changed verification appear here before OSL trusts them.</p></div>`;
@@ -4141,9 +4142,9 @@ function peopleDestinationContent(): string {
     ? peopleListMarkup("manage")
     : `<div class="empty-state"><strong>No trusted people yet</strong><p>Add someone, compare verification another way, then approve each chat you want to protect.</p></div>`;
   const invite = friendCode && friendDisplayId
-    ? `<section class="friend-invite people-invite" aria-labelledby="people-friend-id-label"><div><span id="people-friend-id-label">Your friend ID</span><code>${escapeHtml(compactFriendId(friendDisplayId))}</code></div><button class="button" id="copy-friend-code" type="button">Copy invite</button><p>Send the invite to someone you trust so they can add you.</p></section>`
+    ? friendInviteCardMarkup(compactFriendId(friendDisplayId), escapeHtml, { sectionClass: "friend-invite people-invite", labelId: "people-friend-id-label" })
     : `<div class="empty-inline friend-code-unavailable">Your invite appears after OSL is unlocked.</div>`;
-  return `<main class="content-viewport people-destination" aria-labelledby="route-heading"><header class="people-destination-header"><button class="text-button" data-route="home" type="button">Back</button><div><h1 id="route-heading" tabindex="-1">People</h1><p>Trusted people, the places you know them, and which chats OSL may protect.</p></div><button class="button primary" data-people-primary-action type="button">Add or verify a person</button></header><section class="people-summary-grid" aria-label="People trust summary"><article><strong>${verified.length.toLocaleString("en-US")}</strong><span>Trusted people</span></article><article><strong>${needsReview.length.toLocaleString("en-US")}</strong><span>Need review</span></article><article><strong>${approvedChats.toLocaleString("en-US")}</strong><span>Approved chats</span></article><article><strong>${broaderReach.toLocaleString("en-US")}</strong><span>Extended reach</span></article></section><section class="people-rule-panel" aria-label="Trust rules"><h2>How trust works</h2><ul><li>No approval means OSL refuses protected sends for that chat.</li><li>Verifying a person does not approve every chat with them.</li><li>Each approval stays separate.</li><li>Groups and audiences never inherit trust from a similar name.</li><li>A changed verification returns the person to review before OSL protects new messages.</li></ul></section><section class="people-add-section" aria-labelledby="people-add-title"${addPrimaryTarget}><div><h2 id="people-add-title">Add or verify a person</h2><p>Adding someone records the request only on this device. Private chats stay off until you compare the verification code another way and approve a chat.</p></div><form id="add-friend-form" class="friend-add-form people-add-form"><label for="friend-code-input"><span>Paste their invite</span><input id="friend-code-input" placeholder="OSL invite" autocomplete="off" autocapitalize="none" spellcheck="false"/></label><label for="friend-nickname-input"><span>Name them on this device</span><input id="friend-nickname-input" maxlength="48" placeholder="Nickname (optional)" autocomplete="off" spellcheck="false"/></label><button class="button primary">Add person</button></form><p class="form-status" id="friend-form-status" role="status"></p></section><section class="people-review-panel" aria-labelledby="people-review-title"${reviewPrimaryTarget}><header><h2 id="people-review-title">Needs review</h2></header><div class="people-review-list">${reviewRows}</div></section>${invite}<section class="people-list-panel" aria-labelledby="people-list-title"><header><h2 id="people-list-title">People you know</h2><p>Nicknames stay on this device. Open Manage on a person to edit trust for approved chats.</p></header><div class="people-list people-destination-list">${peopleRows}</div></section></main>`;
+  return `<main class="content-viewport people-destination" aria-labelledby="route-heading"><header class="people-destination-header"><button class="text-button" data-route="home" type="button">Back</button><div><h1 id="route-heading" tabindex="-1">People</h1><p>Trusted people, the places you know them, and which chats OSL may protect.</p></div><button class="button primary" data-people-primary-action type="button">Add or verify a person</button></header><section class="people-summary-grid" aria-label="People trust summary"><article><strong>${verified.length.toLocaleString("en-US")}</strong><span>Trusted people</span></article><article><strong>${needsReview.length.toLocaleString("en-US")}</strong><span>Need review</span></article><article><strong>${approvedChats.toLocaleString("en-US")}</strong><span>Approved chats</span></article><article><strong>${broaderReach.toLocaleString("en-US")}</strong><span>Extended reach</span></article></section><section class="people-rule-panel" aria-label="Trust rules"><h2>How trust works</h2><ul><li>No approval means OSL refuses protected sends for that chat.</li><li>Verifying a person does not approve every chat with them.</li><li>Each approval stays separate.</li><li>Groups and audiences never inherit trust from a similar name.</li><li>A changed verification returns the person to review before OSL protects new messages.</li></ul></section><section class="people-add-section" aria-labelledby="people-add-title"${addPrimaryTarget}><div><h2 id="people-add-title">Add or verify a person</h2><p>${friendHandshakeDetail(false, false)} Private chats stay off until you compare the verification code another way and approve a chat.</p></div><form id="add-friend-form" class="friend-add-form people-add-form"><label for="friend-code-input"><span>Paste their invite</span><input id="friend-code-input" placeholder="OSL invite" autocomplete="off" autocapitalize="none" spellcheck="false"/></label><label for="friend-nickname-input"><span>Name them on this device</span><input id="friend-nickname-input" maxlength="48" placeholder="Nickname (optional)" autocomplete="off" spellcheck="false"/></label><button class="button primary">Add person</button></form><p class="form-status" id="friend-form-status" role="status"></p></section><section class="people-review-panel" aria-labelledby="people-review-title"${reviewPrimaryTarget}><header><h2 id="people-review-title">Needs review</h2></header><div class="people-review-list">${reviewRows}</div></section>${invite}<section class="people-list-panel" aria-labelledby="people-list-title"><header><h2 id="people-list-title">People you know</h2><p>Nicknames stay on this device. Open Manage on a person to edit trust for approved chats.</p></header><div class="people-list people-destination-list">${peopleRows}</div></section></main>`;
 }
 
 function focusPeopleInviteInput(): void {
@@ -4191,7 +4192,7 @@ function friendsDialogMarkup(): string {
     ? `<nav class="friends-pagination" aria-label="Friends pages"><button class="button compact" data-friends-page="${friendsDialogPage - 1}" ${friendsDialogPage === 0 ? "disabled" : ""}>Previous</button><span>${friendsDialogPage + 1} / ${pageCount}</span><button class="button compact" data-friends-page="${friendsDialogPage + 1}" ${friendsDialogPage + 1 >= pageCount ? "disabled" : ""}>Next</button></nav>`
     : "";
   const inviteCard = friendCode && friendDisplayId
-    ? `<section class="friend-invite" aria-labelledby="friend-id-label"><div><span id="friend-id-label">Your friend ID</span><code>${escapeHtml(compactFriendId(friendDisplayId))}</code></div><button class="button" id="copy-friend-code" type="button">Copy invite</button><p>Send the invite to someone you trust so they can add you.</p></section>`
+    ? friendInviteCardMarkup(compactFriendId(friendDisplayId), escapeHtml, { sectionClass: "friend-invite", labelId: "friend-id-label" })
     : `<div class="empty-inline friend-code-unavailable">Your invite appears after OSL is unlocked.</div>`;
   return `<dialog class="friends-dialog" id="friends-dialog" aria-labelledby="friends-dialog-title"><div class="friends-dialog-card"><header><h2 id="friends-dialog-title">Friends</h2><button class="icon-button" id="friends-dialog-close" aria-label="Close friends">×</button></header><form id="add-friend-form" class="friend-add-form"><label for="friend-code-input"><span>Paste their invite</span><input id="friend-code-input" placeholder="OSL invite" autocomplete="off" autocapitalize="none" spellcheck="false"/></label><label for="friend-nickname-input"><span>Name them on this device</span><input id="friend-nickname-input" maxlength="48" placeholder="Nickname (optional)" autocomplete="off" spellcheck="false"/></label><button class="button primary">Add friend</button></form><p class="form-status" id="friend-form-status" role="status"></p><p class="scope-approval-note">Encrypted chats stay off after adding someone. Compare the verification code another way, then approve each chat separately.</p><div class="people-list home-people-list">${peopleListMarkup("manage", friendsDialogPageSize, pageStart)}</div>${pagination}${inviteCard}</div></dialog>`;
 }
@@ -5732,7 +5733,9 @@ async function preparePeerProtectedDraft(event: SubmitEvent): Promise<void> {
   }
   peerProtectedSheet.coverText = prepared.coverText;
   peerProtectedSheet.receipt = { direction: "sent", state: "prepared" };
-  peerProtectedSheet.status = "Protected text is ready. Your draft stays here until you send.";
+  peerProtectedSheet.status = peerProtectedSheet.handshakeConfirmed
+    ? "Protected text is ready. Your draft stays here until you send."
+    : "Protected text is ready, but it is not readable for them until they finish their half. Your draft stays here until you send.";
   render();
 }
 
@@ -5778,6 +5781,9 @@ async function openPeerProtectedText(event: SubmitEvent): Promise<void> {
     direction: "received",
     state: opened.viewOnceConsumed ? "opened-once" : "received",
   };
+  // Their message decrypted here, which is the only local proof that they
+  // added this identity, verified it and approved this app + friend.
+  peerProtectedSheet.handshakeConfirmed = true;
   if (opened.viewOnceConsumed) peerProtectedSheet.openDraft = "";
   peerProtectedSheet.status = opened.viewOnceConsumed ? "Opened once. It cannot be opened again." : "Opened here.";
   render();

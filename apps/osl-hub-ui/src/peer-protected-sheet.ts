@@ -28,6 +28,13 @@ export interface PeerProtectedSheetModel {
   coverText: string;
   openedPlaintext: string;
   receipt: PeerMessageReceipt | null;
+  /**
+   * Local evidence that this person completed their half of the symmetric
+   * handshake — something of theirs has been opened here. Encrypting and
+   * uploading always succeeds; it says nothing about whether the recipient
+   * bound a context and can decrypt. Default false: unconfirmed until proven.
+   */
+  handshakeConfirmed: boolean;
   status: string;
 }
 
@@ -47,8 +54,21 @@ export function blankPeerProtectedModel(open = false): PeerProtectedSheetModel {
     coverText: "",
     openedPlaintext: "",
     receipt: null,
+    handshakeConfirmed: false,
     status: "",
   };
+}
+
+/**
+ * The carrier text is a pointer to ciphertext that only a peer who has added
+ * your invite, verified you and approved this app + friend can open. Until one
+ * of their messages has been opened here, OSL has no evidence they did any of
+ * that, so a prepared carrier must not read as a delivered message.
+ */
+export function peerHandshakeWarning(model: PeerProtectedSheetModel): string {
+  if (model.handshakeConfirmed) return "";
+  const name = model.displayName || "This person";
+  return `Nothing has ever been opened from ${name} here, so OSL cannot tell whether they finished their half. If they have not added your invite, verified you and approved this app + friend, this text stays unreadable for them however you send it.`;
 }
 
 export function boundedPeerProtectedDraft(value: string): string {
@@ -139,7 +159,7 @@ function readyMarkup(model: PeerProtectedSheetModel): string {
       <button class="local-primary" type="submit" ${model.busy ? "disabled" : ""}>${model.busy ? "Encrypting…" : "Encrypt & copy"}</button>
       <small class="local-send-truth">OSL copies protected text. It never presses Send.</small>
     </form>
-    ${model.coverText ? `<section class="local-capsule-result"><label for="peer-cover-output">Protected text</label><textarea id="peer-cover-output" rows="4" readonly>${escapeHtml(model.coverText)}</textarea><button class="local-copy" id="peer-cover-copy" type="button">Copy again</button><small>Check where you paste it.</small></section>` : ""}`;
+    ${model.coverText ? `<section class="local-capsule-result"><label for="peer-cover-output">Protected text</label><textarea id="peer-cover-output" rows="4" readonly>${escapeHtml(model.coverText)}</textarea><button class="local-copy" id="peer-cover-copy" type="button">Copy again</button><small>Check where you paste it.</small>${peerHandshakeWarning(model) ? `<p class="peer-handshake-warning" role="status">${escapeHtml(peerHandshakeWarning(model))}</p>` : ""}</section>` : ""}`;
   const open = `<form id="peer-open-form" class="local-protected-form">
       <label for="peer-cover-input">Protected text</label>
       <textarea id="peer-cover-input" maxlength="262144" rows="6" autocomplete="off" spellcheck="false" placeholder="Paste here yourself">${escapeHtml(model.openDraft)}</textarea>

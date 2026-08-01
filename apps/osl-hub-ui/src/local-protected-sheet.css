@@ -90,6 +90,7 @@
 .local-capsule-result { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line-soft); }
 .local-capsule-result small { color: var(--muted); text-align: center; }
 .local-send-truth { color: var(--muted); font-size: 11px; line-height: 1.4; text-align: center; }
+.peer-handshake-warning { margin: 0; padding: 10px 12px; background: var(--warn-soft, rgba(255, 176, 32, .12)); color: var(--text); font-size: 11px; line-height: 1.45; text-align: left; }
 .local-decrypt-display { margin-top: 14px; padding: 11px 0; border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .local-decrypt-display strong,
 .local-decrypt-display small { display: block; }
