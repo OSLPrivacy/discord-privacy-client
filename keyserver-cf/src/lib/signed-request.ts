@@ -46,6 +46,16 @@ export const ROT_DOMAIN = "OSL-ROTATE-v1";
 export const RN_CAP_WIRE_RN = 1;
 
 /**
+ * Bit 1 — the client build has its OSL-RN (`0x10`) production wire fuse open.
+ *
+ * Bit 0 stays the compatibility/pinning capability because it was advertised
+ * by fuse-closed builds. Send selection requires this separate bit before it
+ * may route a message onto the RN wire. Mirrors `RN_CAP_WIRE_RN_LIVE` in
+ * `crates/keystore/src/client.rs`.
+ */
+export const RN_CAP_WIRE_RN_LIVE = 1 << 1;
+
+/**
  * Upper bound on the bitmap.
  *
  * Unknown bits are stored **verbatim** rather than rejected: a client
