@@ -3243,11 +3243,11 @@ function bindImportForm(): void {
 }
 
 function workspaceProtectedSheetMarkup(): string {
-  const protectedSheet = activeEmbeddedHost
-    ? protectedSheetMode === "local"
-      ? localProtectedSheetMarkup(localProtectedSheet, setup.sendMode)
-      : peerProtectedSheetMarkup(peerProtectedSheet, hubPeople)
-    : "";
+  const protectedSheet = protectedSheetMode === "local"
+    ? localProtectedSheetMarkup(localProtectedSheet, setup.sendMode)
+    : activeEmbeddedHost
+      ? peerProtectedSheetMarkup(peerProtectedSheet, hubPeople)
+      : "";
   return `${protectedSheet}${nativeDiscordProtectPickerMarkup()}${whitelistRosterMarkup()}${peopleDialogMarkup()}${friendsDialogMarkup()}${scrubReviewDialogMarkup()}${burnDialogMarkup()}${ownedConfirmationMarkup()}${updateDialogMarkup()}`;
 }
 
@@ -4495,7 +4495,7 @@ function nativeDiscordProtectPickerMarkup(): string {
   return `<dialog class="unlock-dialog" id="native-protect-friend-dialog"><div class="unlock-card"><h2>Protect with</h2><p>OSL will open its own private panel. Discord is not read or controlled.</p><div class="peer-choice-list">${choices}</div><button class="button" id="native-protect-picker-close" type="button">Cancel</button></div></dialog>`;
 }
 
-function activeServiceBurnTarget(): { serviceId: string; accountId: string } | null {
+function activeServiceContextTarget(): { serviceId: string; accountId: string } | null {
   if (!activeService) return null;
   const provider = homeAppsFromServices(services).find((app) => app.id === activeHomeAppId)?.provider ?? null;
   const matching = activeService.accounts.filter((account) => provider === null || account.provider === provider);
@@ -4506,7 +4506,7 @@ function burnScopeReason(scope: BurnScope): string | null {
   if (scope === "chat" && !activeContextToken) return "Open a supported chat first.";
   if (scope === "app") {
     if (!activeService) return "Open an app first.";
-    if (!activeServiceBurnTarget()) return "Choose one connected account first.";
+    if (!activeServiceContextTarget()) return "Choose one connected account first.";
     if (serviceBurnReadinessBusy) return "Checking complete local coverage…";
     if (!serviceBurnReadiness?.coverageComplete) return "OSL cannot prove complete coverage for this account yet.";
   }
@@ -5256,7 +5256,7 @@ function developerSettingsContent(): string {
 }
 
 async function prepareServiceBurn(): Promise<void> {
-  const target = activeServiceBurnTarget();
+  const target = activeServiceContextTarget();
   serviceBurnReadiness = null;
   if (!target || !burnDialogOpen || burnScope !== "app") { render(); return; }
   serviceBurnReadinessBusy = true;
@@ -5392,7 +5392,10 @@ async function toggleLocalProtectedSheet(): Promise<void> {
     render();
     return;
   }
-  if (!activeEmbeddedHost) return;
+  if (!activeServiceContextTarget()) {
+    showToast("Choose one connected account first.");
+    return;
+  }
   if (localProtectedSheet.open || peerProtectedSheet.open) {
     localProtectedSheet = blankLocalProtectedModel();
     peerProtectedSheet = blankPeerProtectedModel();
@@ -5407,9 +5410,9 @@ async function toggleLocalProtectedSheet(): Promise<void> {
     showToast(withBackendReason("Protection could not open safely", "set_local_protected_sheet_open"));
     return;
   }
-  protectedSheetMode = "peer";
-  peerProtectedSheet = blankPeerProtectedModel(true);
-  localProtectedSheet = blankLocalProtectedModel();
+  protectedSheetMode = activeEmbeddedHost ? "peer" : "local";
+  peerProtectedSheet = blankPeerProtectedModel(activeEmbeddedHost !== null);
+  localProtectedSheet = blankLocalProtectedModel(activeEmbeddedHost === null);
   activeContextToken = null;
   activeProtectedContextKind = null;
   render();
@@ -6061,11 +6064,21 @@ async function copyPeerProtectedText(): Promise<void> {
 
 async function startLocalProtectedContext(event: SubmitEvent): Promise<void> {
   event.preventDefault();
-  if (!activeEmbeddedHost || localProtectedSheet.busy) return;
   const input = document.querySelector<HTMLInputElement>("#local-chat-label");
   const label = input?.value.trim() ?? "";
+  await startLocalProtectedContextForLabel(label);
+}
+
+async function startLocalProtectedContextForLabel(label: string): Promise<void> {
+  if (localProtectedSheet.busy) return;
   if (!validLocalChatLabel(label)) {
     localProtectedSheet.status = "Use a short chat name.";
+    render();
+    return;
+  }
+  const contextTarget = activeServiceContextTarget();
+  if (!contextTarget) {
+    localProtectedSheet.status = "Choose one connected account first.";
     render();
     return;
   }
@@ -6076,12 +6089,12 @@ async function startLocalProtectedContext(event: SubmitEvent): Promise<void> {
   try {
     const conversationId = loadOrCreateLocalConversationId(
       localStorage,
-      activeEmbeddedHost.serviceId,
-      activeEmbeddedHost.accountId,
+      contextTarget.serviceId,
+      contextTarget.accountId,
     );
     const context = await activateLocalLoopbackContext(
-      activeEmbeddedHost.serviceId,
-      activeEmbeddedHost.accountId,
+      contextTarget.serviceId,
+      contextTarget.accountId,
       conversationId,
     );
     if (!context) throw new Error("local context unavailable");
@@ -7863,7 +7876,7 @@ async function executeBurn(event: SubmitEvent): Promise<void> {
   }
 
   if (burnScope === "app") {
-    const target = activeServiceBurnTarget();
+    const target = activeServiceContextTarget();
     const readiness = serviceBurnReadiness;
     if (!target || !readiness?.coverageComplete) {
       burnBusy = false;
@@ -9006,6 +9019,15 @@ export const __oslHubUiTest = {
     activeNativeHostMode = null;
     activeDefaultBrowserCompanion = false;
     return trustedHeader();
+  },
+  openLocalProtection(): Promise<void> {
+    return toggleLocalProtectedSheet();
+  },
+  startLocalProtection(label: string): Promise<void> {
+    return startLocalProtectedContextForLabel(label);
+  },
+  renderProtectedSheets(): string {
+    return workspaceProtectedSheetMarkup();
   },
   /** D80: the rendered onboarding screen, markup only, for the unlock-screen
    * advertisement audit in `unlock-screen-single-credential.test.ts`. */
