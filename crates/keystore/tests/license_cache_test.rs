@@ -10,6 +10,8 @@ fn make_inner() -> LicenseCacheInner {
     LicenseCacheInner {
         license_plaintext: "OSL-2222-3333-4444-5555".to_string(),
         last_validated_status: "ACTIVE".to_string(),
+        redeemed_at: Some(1_700_000_000),
+        expires_at: Some(1_800_000_000),
         current_period_end: Some(1_800_000_000),
         last_validated_at: 1_700_000_000,
         checksum_ok: true,
@@ -37,6 +39,8 @@ fn round_trip_preserves_optional_fields_when_null() {
     let inner = LicenseCacheInner {
         license_plaintext: "OSL-AAAA-BBBB-CCCC-DDDD".to_string(),
         last_validated_status: "PENDING".to_string(),
+        redeemed_at: None,
+        expires_at: None,
         current_period_end: None,
         last_validated_at: 0,
         checksum_ok: false,
@@ -114,7 +118,7 @@ fn version_mismatch_returns_blob_version_mismatch_error() {
     match load_license_cache(&path, &sealer) {
         Err(Error::BlobVersionMismatch { got, expected }) => {
             assert_eq!(got, 999);
-            assert_eq!(expected, 1);
+            assert_eq!(expected, 2);
         }
         other => panic!("expected BlobVersionMismatch, got {other:?}"),
     }

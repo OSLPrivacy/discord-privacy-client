@@ -18,7 +18,8 @@ use ipc::commands::{
 };
 use ipc::AppState;
 use keystore::{
-    classify_state, save_license_cache, select_best_sealer, LicenseCacheInner, LicenseState,
+    classify_state, load_license_cache, save_license_cache, select_best_sealer, LicenseCacheInner,
+    LicenseState,
 };
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -77,7 +78,19 @@ fn one_shot_server(response: Vec<u8>) -> (u16, mpsc::Receiver<Vec<u8>>) {
 
 fn ok_response(status: &str, current_period_end: &str, checksum_ok: bool) -> Vec<u8> {
     let body = format!(
-        r#"{{"status":"{status}","current_period_end":{current_period_end},"checksum_ok":{checksum_ok}}}"#
+        r#"{{"status":"{status}","redeemed_at":1700000000,"expires_at":{current_period_end},"checksum_ok":{checksum_ok}}}"#
+    );
+    let mut response = Vec::new();
+    response.extend_from_slice(b"HTTP/1.1 200 OK\r\n");
+    response.extend_from_slice(format!("Content-Length: {}\r\n", body.len()).as_bytes());
+    response.extend_from_slice(b"Content-Type: application/json\r\n\r\n");
+    response.extend_from_slice(body.as_bytes());
+    response
+}
+
+fn redeem_response(status: &str, redeemed_at: i64, expires_at: i64, checksum_ok: bool) -> Vec<u8> {
+    let body = format!(
+        r#"{{"status":"{status}","redeemed_at":{redeemed_at},"expires_at":{expires_at},"checksum_ok":{checksum_ok}}}"#
     );
     let mut response = Vec::new();
     response.extend_from_slice(b"HTTP/1.1 200 OK\r\n");
@@ -100,6 +113,8 @@ fn seed_cache_with_status(dir: &std::path::Path, status: &str) {
     let inner = LicenseCacheInner {
         license_plaintext: "OSL-2222-3333-4444-5555".to_string(),
         last_validated_status: status.to_string(),
+        redeemed_at: None,
+        expires_at: None,
         current_period_end: Some(1_800_000_000),
         last_validated_at: 1_700_000_000,
         checksum_ok: true,
@@ -156,6 +171,22 @@ fn get_license_state_malformed_cache_falls_back_to_unconfigured() {
     assert_eq!(dto.raw_status, "Unconfigured");
 }
 
+#[test]
+fn v1_cache_is_treated_as_unconfigured() {
+    let state = AppState::new();
+    let dir = tempdir().unwrap();
+    seed_cache_with_status(dir.path(), "ACTIVE");
+    let cache_path = dir.path().join("license.json");
+    let mut wrapper: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&cache_path).unwrap()).unwrap();
+    wrapper["version"] = serde_json::json!(1);
+    std::fs::write(&cache_path, serde_json::to_vec(&wrapper).unwrap()).unwrap();
+
+    let dto = cmd_osl_get_license_state_with_dir(&state, dir.path()).unwrap();
+    assert_eq!(dto.state, LicenseState::Free);
+    assert_eq!(dto.raw_status, "Unconfigured");
+}
+
 // ---- cmd_osl_clear_license ----
 
 #[test]
@@ -180,6 +211,48 @@ fn clear_license_idempotent_on_already_absent() {
 }
 
 // ---- cmd_osl_validate_license cache-write policy ----
+
+#[test]
+fn activation_redeems_and_retries_preserve_the_original_period() {
+    const REDEEMED_AT: i64 = 1_735_689_600;
+    const EXPIRES_AT: i64 = 1_738_281_600;
+    let response = redeem_response("ACTIVE", REDEEMED_AT, EXPIRES_AT, true);
+    let (first_port, first_request) = one_shot_server(response.clone());
+    let (retry_port, retry_request) = one_shot_server(response);
+    let state = AppState::new();
+    let dir = tempdir().unwrap();
+    let activation_code = "OSL-2222-3333-4444-5555".to_string();
+
+    cmd_osl_validate_license_with_dir_and_url(
+        &state,
+        activation_code.clone(),
+        dir.path(),
+        &format!("http://127.0.0.1:{first_port}"),
+    )
+    .expect("initial activation should redeem the code");
+    let sealer = select_best_sealer();
+    let first_cache = load_license_cache(&dir.path().join("license.json"), sealer.as_ref())
+        .expect("activation should write a readable cache");
+    assert_eq!(first_cache.redeemed_at, Some(REDEEMED_AT));
+    assert_eq!(first_cache.expires_at, Some(EXPIRES_AT));
+
+    cmd_osl_validate_license_with_dir_and_url(
+        &state,
+        activation_code,
+        dir.path(),
+        &format!("http://127.0.0.1:{retry_port}"),
+    )
+    .expect("retrying an activation should return the original period");
+    let retry_cache = load_license_cache(&dir.path().join("license.json"), sealer.as_ref())
+        .expect("retry activation should leave a readable cache");
+    assert_eq!(retry_cache.redeemed_at, first_cache.redeemed_at);
+    assert_eq!(retry_cache.expires_at, first_cache.expires_at);
+
+    let first_request = String::from_utf8(first_request.recv().unwrap()).unwrap();
+    let retry_request = String::from_utf8(retry_request.recv().unwrap()).unwrap();
+    assert!(first_request.starts_with("POST /v1/license/redeem HTTP/1.1\r\n"));
+    assert!(retry_request.starts_with("POST /v1/license/redeem HTTP/1.1\r\n"));
+}
 
 #[test]
 fn validate_license_writes_cache_on_success() {

@@ -12952,6 +12952,9 @@ fn validate_err(v: ValidateLicenseError) -> String {
 /// point at a `tempdir()` + an in-process mock server instead of
 /// the real `%APPDATA%\osl` / `keyserver.oslprivacy.com`.
 ///
+/// Activation writes the redemption period returned by the keyserver. Later
+/// background refreshes remain validate-only and preserve that period.
+///
 /// Cache-write policy (load-bearing for F2.4):
 ///
 /// - Ok(response) → save cache, bump `last_validated_at` to now()
@@ -12977,7 +12980,7 @@ pub fn cmd_osl_validate_license_with_dir_and_url(
             message: format!("client init: {e}"),
         })
     })?;
-    match client.validate_license(&license_key) {
+    match client.redeem_license(&license_key) {
         Ok(resp) => {
             // F2.4 tidy-up: only persist the cache when the
             // keyserver returned a durable, recognized status. A
@@ -12995,7 +12998,9 @@ pub fn cmd_osl_validate_license_with_dir_and_url(
                 let inner = keystore::LicenseCacheInner {
                     license_plaintext: license_key.clone(),
                     last_validated_status: resp.status.clone(),
-                    current_period_end: resp.current_period_end,
+                    redeemed_at: resp.redeemed_at,
+                    expires_at: resp.expires_at,
+                    current_period_end: resp.expires_at,
                     last_validated_at: now,
                     checksum_ok: resp.checksum_ok,
                 };
@@ -13021,7 +13026,11 @@ pub fn cmd_osl_validate_license_with_dir_and_url(
                         keystore::LicenseStateDto::from_cache(&inner);
                 }
             }
-            Ok(resp)
+            Ok(keystore::LicenseValidateResponse {
+                status: resp.status,
+                current_period_end: resp.expires_at,
+                checksum_ok: resp.checksum_ok,
+            })
         }
         Err(keystore::Error::Transport(msg)) => {
             Err(validate_err(ValidateLicenseError::Unreachable {

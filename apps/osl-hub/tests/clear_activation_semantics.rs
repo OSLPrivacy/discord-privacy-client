@@ -25,8 +25,9 @@ impl Drop for ConfigDirReset {
 }
 
 fn active_response() -> Vec<u8> {
-    let body =
-        format!(r#"{{"status":"ACTIVE","current_period_end":{PERIOD_END},"checksum_ok":true}}"#);
+    let body = format!(
+        r#"{{"status":"ACTIVE","redeemed_at":1700000000,"expires_at":{PERIOD_END},"checksum_ok":true}}"#
+    );
     format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
         body.len()
@@ -119,9 +120,9 @@ fn clearing_activation_only_forgets_local_cache_and_reentering_keeps_the_period(
     assert_eq!(
         requests.len(),
         2,
-        "only the two validations contact the server"
+        "only the two activations contact the server"
     );
     for request in requests {
-        assert!(request.starts_with(b"POST /v1/license/validate HTTP/1.1\r\n"));
+        assert!(request.starts_with(b"POST /v1/license/redeem HTTP/1.1\r\n"));
     }
 }

@@ -118,6 +118,8 @@ fn seed_cache(dir: &std::path::Path, status: &str, last_validated_at: i64) {
     let inner = LicenseCacheInner {
         license_plaintext: "OSL-2222-3333-4444-5555".to_string(),
         last_validated_status: status.to_string(),
+        redeemed_at: None,
+        expires_at: None,
         current_period_end: Some(1_800_000_000),
         last_validated_at,
         checksum_ok: true,
@@ -142,6 +144,8 @@ fn offline_grace_paid_status_within_window_returns_paid_offline_grace() {
     let cache = LicenseCacheInner {
         license_plaintext: "OSL-...".to_string(),
         last_validated_status: "ACTIVE".to_string(),
+        redeemed_at: None,
+        expires_at: None,
         current_period_end: Some(now + 30 * 86_400),
         last_validated_at: now - 3 * 86_400, // 3 days ago, well within grace
         checksum_ok: true,
@@ -158,6 +162,8 @@ fn offline_grace_paid_status_at_window_boundary_still_grace() {
     let cache = LicenseCacheInner {
         license_plaintext: "OSL-...".to_string(),
         last_validated_status: "GRACE".to_string(),
+        redeemed_at: None,
+        expires_at: None,
         current_period_end: None,
         // last_validated_at + 7d - 1s — still inside the window.
         last_validated_at: now - SEVEN_DAYS_SEC + 1,
@@ -173,6 +179,8 @@ fn offline_grace_paid_status_past_window_slides_to_free() {
     let cache = LicenseCacheInner {
         license_plaintext: "OSL-...".to_string(),
         last_validated_status: "ACTIVE".to_string(),
+        redeemed_at: None,
+        expires_at: None,
         current_period_end: Some(now + 30 * 86_400),
         // 8 days ago — outside grace.
         last_validated_at: now - 8 * 86_400,
@@ -193,6 +201,8 @@ fn offline_grace_cancelled_within_window_is_paid_grace() {
     let cache = LicenseCacheInner {
         license_plaintext: "OSL-...".to_string(),
         last_validated_status: "CANCELLED".to_string(),
+        redeemed_at: None,
+        expires_at: None,
         current_period_end: Some(now + 7 * 86_400),
         last_validated_at: now - 2 * 86_400,
         checksum_ok: true,
@@ -210,6 +220,8 @@ fn offline_grace_expired_within_window_is_free_no_grace() {
     let cache = LicenseCacheInner {
         license_plaintext: "OSL-...".to_string(),
         last_validated_status: "EXPIRED".to_string(),
+        redeemed_at: None,
+        expires_at: None,
         current_period_end: Some(now - 86_400),
         last_validated_at: now - 60, // a minute ago, plenty fresh
         checksum_ok: true,
@@ -224,6 +236,8 @@ fn offline_grace_revoked_within_window_is_free() {
     let cache = LicenseCacheInner {
         license_plaintext: "OSL-...".to_string(),
         last_validated_status: "REVOKED".to_string(),
+        redeemed_at: None,
+        expires_at: None,
         current_period_end: None,
         last_validated_at: now - 60,
         checksum_ok: true,
