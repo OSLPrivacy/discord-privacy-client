@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "task": "t7-01",
+  "platform": "linux",
+  "auditState": "blocked",
+  "sourceCommit": "7344d9dbb03da12fc8d89bed454085454f628aa3",
+  "recordedAt": "2026-07-31T23:26:50-07:00",
+  "requiredRun": {
+    "display": "Xvfb :77",
+    "viewport": "1440x900x24",
+    "binary": "freshly-built apps/osl-hub binary embedding apps/osl-hub-ui/dist"
+  },
+  "blocker": "This author task prohibits Cargo, so it cannot build the native binary required for an admissible Linux re-shoot. No pre-existing osl-hub binary or T7 Linux evidence bundle was present under /home/liamw.",
+  "verdicts": {
+    "12_status_tag_tone": "not-assessed",
+    "13_status_tag_radius": "not-assessed",
+    "14_scrollbars": "not-assessed",
+    "17_cosmetic_affordances": "not-assessed"
+  }
+}
