@@ -29,6 +29,110 @@ import {
   type NativeDiscordCarrierRowBinding,
 } from "./discord-carrier-row-binding";
 
+/**
+ * The adapter ABI is shared by native and web surfaces.  The concrete DTO
+ * shapes are owned by the Rust command surface; this client intentionally
+ * transports those camel-cased records without deriving fields or capability
+ * claims in the renderer.
+ */
+export type AdapterAppId = "discord" | "signal" | "telegram" | "whatsapp" | "outlook" | string;
+export type SurfaceStateDto = Readonly<Record<string, unknown>>;
+export type DestinationIdentityDto = Readonly<Record<string, unknown>>;
+export type PreparedDto = Readonly<Record<string, unknown>>;
+export type PlacementReceiptDto = Readonly<Record<string, unknown>>;
+export type SendReceiptDto = Readonly<Record<string, unknown>>;
+export type PaintTargetDto = Readonly<Record<string, unknown>>;
+export type CarrierMode = string;
+
+export interface SurfaceAdapterClient {
+  readonly app: AdapterAppId;
+  state(): Promise<SurfaceStateDto | null>;
+  destination(): Promise<DestinationIdentityDto | null>;
+  prepare(plaintext: string, viewOnce: boolean): Promise<PreparedDto | null>;
+  place(carrier: string, mode: CarrierMode): Promise<PlacementReceiptDto | null>;
+  commit(placed: PlacementReceiptDto): Promise<SendReceiptDto | null>;
+  paintTargets(): Promise<PaintTargetDto[]>;
+}
+
+const SURFACE_ADAPTER_COMMANDS = {
+  state: "surface_adapter_state",
+  destination: "surface_adapter_destination",
+  prepare: "surface_adapter_prepare",
+  place: "surface_adapter_place",
+  commit: "surface_adapter_commit",
+  paintTargets: "surface_adapter_paint_targets",
+} as const;
+
+function plainDto(value: unknown): Readonly<Record<string, unknown>> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Readonly<Record<string, unknown>>
+    : null;
+}
+
+async function invokeSurfaceAdapterDto(
+  command: string,
+  args: Record<string, unknown>,
+  sensitiveValues: readonly string[] = [],
+): Promise<Readonly<Record<string, unknown>> | null> {
+  try {
+    return plainDto(await invoke<unknown>(command, args));
+  } catch (error) {
+    recordBackendFailure(command, error, sensitiveValues);
+    return null;
+  }
+}
+
+/** Create the sole frontend adapter surface; the backend validates `app`. */
+export function createSurfaceAdapterClient(app: AdapterAppId): SurfaceAdapterClient {
+  const validApp = typeof app === "string" && app.length > 0;
+  const appArgs = (): Record<string, unknown> => ({ app });
+  return {
+    app,
+    state: () => validApp
+      ? invokeSurfaceAdapterDto(SURFACE_ADAPTER_COMMANDS.state, appArgs())
+      : Promise.resolve(null),
+    destination: () => validApp
+      ? invokeSurfaceAdapterDto(SURFACE_ADAPTER_COMMANDS.destination, appArgs())
+      : Promise.resolve(null),
+    prepare: (plaintext, viewOnce) => {
+      if (!validApp || typeof plaintext !== "string" || !plaintext || typeof viewOnce !== "boolean") {
+        return Promise.resolve(null);
+      }
+      return invokeSurfaceAdapterDto(
+        SURFACE_ADAPTER_COMMANDS.prepare,
+        { app, plaintext, viewOnce },
+        [plaintext],
+      );
+    },
+    place: (carrier, mode) => {
+      if (!validApp || typeof carrier !== "string" || !carrier || typeof mode !== "string" || !mode) {
+        return Promise.resolve(null);
+      }
+      return invokeSurfaceAdapterDto(
+        SURFACE_ADAPTER_COMMANDS.place,
+        { app, carrier, mode },
+        [carrier],
+      );
+    },
+    commit: (placed) => {
+      if (!validApp || plainDto(placed) === null) return Promise.resolve(null);
+      return invokeSurfaceAdapterDto(SURFACE_ADAPTER_COMMANDS.commit, { app, placed });
+    },
+    paintTargets: async () => {
+      if (!validApp) return [];
+      try {
+        const value = await invoke<unknown>(SURFACE_ADAPTER_COMMANDS.paintTargets, appArgs());
+        if (!Array.isArray(value)) return [];
+        const targets = value.map(plainDto);
+        return targets.some((target) => target === null) ? [] : targets as PaintTargetDto[];
+      } catch (error) {
+        recordBackendFailure(SURFACE_ADAPTER_COMMANDS.paintTargets, error);
+        return [];
+      }
+    },
+  };
+}
+
 async function invokeNativeDiscordOverlayStateValue(): Promise<unknown> {
   return invoke<unknown>("get_native_discord_overlay_state");
 }
