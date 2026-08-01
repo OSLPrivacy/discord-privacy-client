@@ -96,11 +96,10 @@ keyring = "3"
 windows = { version = "0.56", features = ["Win32_Foundation", "Win32_Security_Tpm"] }
 
 # Transport
-# boringtun and arti-client are removed from the v1 alpha workspace —
-# both pin release-candidate curve25519-dalek / x25519-dalek versions
-# that conflict with dryoc's curve25519-dalek line. Re-introduce when
-# the transport implementation lands, with newer compatible versions
-# (or in an isolated mini-workspace). See crates/transport/Cargo.toml.
+# `crates/transport` owns Tor routing. T1-70 chose a supervised Arti SOCKS5
+# subprocess instead of embedding `arti-client`: embedding requires Rust 1.91
+# and edition 2024, while this workspace remains on Rust 1.88 and edition 2021.
+# See crates/transport/README.md.
 
 [profile.release]
 codegen-units = 1

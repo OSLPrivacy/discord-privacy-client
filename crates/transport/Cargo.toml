@@ -9,13 +9,10 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
-# Mullvad WireGuard (boringtun) and Tor (arti-client) are introduced when
-# the transport implementation lands. They are kept out of the v1 alpha
-# workspace because their pinned curve25519-dalek / x25519-dalek versions
-# (release-candidates) conflict with dryoc's curve25519-dalek requirement.
-# Resolution path: pick newer boringtun + arti-client compatible with
-# dryoc's curve25519-dalek line, or move WireGuard / Tor to their own
-# isolated mini-workspace.
+# Tor support belongs in this crate. It will supervise an Arti SOCKS5
+# subprocess rather than embed `arti-client`, because embedding requires Rust
+# 1.91 and edition 2024 while the workspace is pinned to Rust 1.88 and edition
+# 2021. See README.md for the T1-70 integration boundary.
 
 [features]
 default = []
