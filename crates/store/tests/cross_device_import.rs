@@ -88,7 +88,11 @@ fn restored_generation_two_profile_is_refused_by_a_second_devices_empty_anchor()
     };
 
     assert!(
-        matches!(error, StoreError::Anchor(message) if message == "provider lost anchored generation; refusing rollback"),
+        // Match on a reference: `matches!(error, ...)` partially moves `error`
+        // into the binding, so the `{error}` in the failure message below cannot
+        // borrow it. Matching by reference keeps the message printable, which is
+        // the whole point of having one.
+        matches!(&error, StoreError::Anchor(message) if message == "provider lost anchored generation; refusing rollback"),
         "wrong second-device import result: {error}"
     );
 }
