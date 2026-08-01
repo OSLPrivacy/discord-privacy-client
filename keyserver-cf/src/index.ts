@@ -45,6 +45,7 @@ import { handleCryptoSettlement, sweepAnonymousCryptoInvoices } from "./endpoint
 import { handleCryptoStatus } from "./endpoints/crypto-status.js";
 import { handleHealthz } from "./endpoints/healthz.js";
 import { handleWindowsDownload } from "./endpoints/download.js";
+import { handleLicenseRedeem } from "./endpoints/license-redeem.js";
 import { handleLicenseValidate } from "./endpoints/license.js";
 import { handleLinkGrant } from "./endpoints/link-grant.js";
 import { handleBillingPortal } from "./endpoints/portal.js";
@@ -441,6 +442,7 @@ async function dispatch(
       return await handleStripeWebhook(request, env, fetch, ctx);
     }
     if (path === "/v1/telegram/webhook") return await handleTelegramWebhook(request, env);
+    if (path === "/v1/license/redeem") return await handleLicenseRedeem(request, env);
     if (path === "/v1/license/validate") return await handleLicenseValidate(request, env);
     if (path === "/v1/billing-portal-session") {
       return withCors(await handleBillingPortal(request, env), request);
