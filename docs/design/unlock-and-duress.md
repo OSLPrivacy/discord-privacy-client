@@ -21,36 +21,30 @@ default 10), trigger the same flow as duress.
 
 ## Cryptographic role
 
-**Password is a UX gate, not part of identity-key derivation.**
+**The password is not part of identity-key derivation, but it does
+derive the key that encrypts local data at rest.**
 
-- TPM-sealed identity keys unseal regardless of password input (and
-  same for the keychain fallback).
-- Password decides which flow runs:
-    - Correct unlock password → normal app unlock, full features.
+- The main unlock password is processed with Argon2id. Its derived
+  material feeds `derive_file_storage_key`, which produces the AES key
+  for encrypted local state files.
+- TPM-sealed identity keys still unseal independently of password input
+  (as does the keychain fallback), so this does not make the password an
+  identity-key derivation input.
+- Password entry also decides which flow runs:
+    - Correct unlock password → normal app unlock and the at-rest data
+      key is installed.
     - Correct duress password → appears to unlock normally,
       immediately triggers silent burn-and-strip in background.
     - Neither match → "incorrect password" error, retry. After the
       threshold of failed attempts, auto-trigger duress flow.
 
-This is a deliberately weaker model than password-derived key
-encryption. Documented honestly in
-[`../THREAT_MODEL.md`](../THREAT_MODEL.md):
-
-> "Password protects against casual hands-on access. An attacker who
-> has compromised the device cryptographically (e.g., malware that
-> extracted TPM-unsealed keys) bypasses the password."
-
-Pros:
-- Works seamlessly with TPM seal — no per-launch password-derived
-  KDF cost.
-- Enables duress to apparent-unlock without a per-password key
-  derivation that would visibly fail on wrong password.
-
-Cons:
-- Malware on a compromised device extracts keys without needing the
-  password.
-- Forensic disk analysis of a stripped device may recover artifacts
-  (see "Forensic-resistance limits" below).
+The data consequence is material: without the unlock password or
+recovery phrase, encrypted local data cannot be decrypted. The
+recovery phrase protects a wrapped copy of the file-storage key, so a
+recovery flow can reset the unlock password and re-key the stored data
+without losing it. This at-rest protection does not prevent an attacker
+who has already extracted an installed key from a running or compromised
+device; see [`../THREAT_MODEL.md`](../THREAT_MODEL.md).
 
 ## Password format
 
