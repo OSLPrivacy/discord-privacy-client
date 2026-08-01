@@ -1,0 +1,1 @@
+T2's frozen feature contract §4.1a and §§8.3, 8.11–8.12 already define the D29 eager-fetch persisted-and-acked semantics for view-once, burn, and expiry.
