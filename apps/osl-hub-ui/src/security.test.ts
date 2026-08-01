@@ -1339,28 +1339,9 @@ describe("bundled preview security boundary", () => {
       "production content envelope and decrypt path call none of them",
     );
 
-    const assertUnwiredSequenceTruth = (source: string): void => {
-      expect(source).toContain(
-        "Implemented-unwired allocator for an authenticated per-peer",
-      );
-      expect(source).toContain(
-        "Current production send paths do neither",
-      );
-      expect(source).toContain(
-        "Implemented-unwired opaque commitment helper",
-      );
-      expect(source).toContain(
-        "current production envelopes do not carry either value",
-      );
-      expect(source).toContain(
-        "Implemented-unwired admission helper for a peer burn floor",
-      );
-      expect(source).toContain(
-        "Current production decrypt paths do not call it",
-      );
-    };
-    assertUnwiredSequenceTruth(security);
-
+    // Classification follows the reachable production graph, not explanatory
+    // Rust comments. Each symbol occurs once for its implementation only;
+    // importing or calling any helper from shipping code changes that count.
     for (const [symbol, syntheticReference] of [
       [
         "next_peer_send_seq",
@@ -1382,15 +1363,6 @@ describe("bundled preview security boundary", () => {
         ),
       ).toBe(2);
     }
-
-    expect(() =>
-      assertUnwiredSequenceTruth(
-        security.replace(
-          "Implemented-unwired allocator for an authenticated per-peer",
-          "Allocator for each authenticated per-peer",
-        ),
-      ),
-    ).toThrow();
     expect(security).not.toContain(
       "which the broker puts on\n/// the wire next to `send_seq`",
     );

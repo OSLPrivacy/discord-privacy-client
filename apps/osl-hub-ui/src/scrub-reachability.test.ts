@@ -12,7 +12,13 @@ const ENTRYPOINT = join(SOURCE_ROOT, "main.ts");
 const KNOWN_ORPHANS = [
   "autoscrub-flow.ts",
   "scrub-attended-imap-run.ts",
+  // These two newly added presentation/host modules are intentionally not
+  // shipped yet: the current UI exports local coverage and has no attended
+  // scrub engine route. Keep them explicit so adding a shipping import removes
+  // them from this list instead of silently widening the prototype boundary.
+  "scrub-coverage-view.ts",
   "scrub-delete-engine.ts",
+  "scrub-engine-host.ts",
   "scrub-hosted-session-assisted.ts",
   "scrub-hosted-session-channel.ts",
   "scrub-hosted-session-port.ts",
