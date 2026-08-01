@@ -607,10 +607,30 @@ fn build_production_duress_engine_for_state(
     state: Arc<AppState>,
     config_dir: PathBuf,
 ) -> keystore::DuressEngine {
+    build_production_duress_engine_for_state_with_keyring_purge(
+        state,
+        config_dir,
+        Box::new(|| {
+            keystore::KeyringSealer::purge_keyring_entry()
+                .map_err(|error| keystore::DuressError::Sealer(error.to_string()))
+        }),
+    )
+}
+
+/// Assemble the state-owned production duress engine with an explicitly bound
+/// keyring target. Production binds the historical machine credential above;
+/// tests can bind an isolated namespaced credential without weakening the
+/// exercise of the keyring-purge step itself.
+fn build_production_duress_engine_for_state_with_keyring_purge(
+    state: Arc<AppState>,
+    config_dir: PathBuf,
+    purge_keyring: keystore::WipeFn,
+) -> keystore::DuressEngine {
     let password_dir = keystore::osl_base_dir().unwrap_or_else(|_| config_dir.clone());
     let paths = production_duress_paths(&config_dir, &password_dir);
     let handlers = keystore::duress::build_production_duress_handlers(
         keystore::ProductionDuressHandlers::new()
+            .with_purge_keyring(purge_keyring)
             .with_wipe_local_cache_dir_path(config_dir.join("store"))
             .with_wipe_anonymous_credentials_paths([config_dir.join("anonymous_credentials.json")])
             .with_wipe_prekeys(wipe_prekeys_handler(Arc::clone(&state)))
@@ -765,6 +785,25 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let _guard = use_temp_config_dir(dir.path());
         let state = AppState::new_with_production_duress_engine(dir.path().to_path_buf());
+        let keyring_namespace = format!("ipc-state-duress-test-{}", std::process::id());
+        // Exercise the real keyring purge step, but never delete the
+        // production identity key another test executable may be using.
+        let _ = keystore::KeyringSealer::new_namespaced(&keyring_namespace);
+        let isolated_purge_namespace = keyring_namespace.clone();
+        *state
+            .production_duress_engine
+            .lock()
+            .expect("production_duress_engine mutex poisoned") =
+            Some(build_production_duress_engine_for_state_with_keyring_purge(
+                Arc::clone(&state),
+                dir.path().to_path_buf(),
+                Box::new(move || {
+                    keystore::KeyringSealer::purge_keyring_entry_namespaced(
+                        &isolated_purge_namespace,
+                    )
+                    .map_err(|error| keystore::DuressError::Sealer(error.to_string()))
+                }),
+            ));
         let identity = keystore::generate_identity("duress-state-owner".to_owned());
         state.install_identity(identity);
         {
@@ -830,6 +869,11 @@ mod tests {
         assert_eq!(
             outcome_for(&report.steps, keystore::WipeStep::PasswordHashes),
             &keystore::StepOutcome::Wiped
+        );
+        assert_eq!(
+            outcome_for(&report.steps, keystore::WipeStep::KeyringPurge),
+            &keystore::StepOutcome::Wiped,
+            "the production engine fixture must still exercise its bound keyring purge"
         );
         assert_eq!(
             outcome_for(&report.steps, keystore::WipeStep::PrekeyFile),
