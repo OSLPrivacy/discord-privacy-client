@@ -117,6 +117,7 @@ import { FrameRenderScheduler } from "./render-scheduler";
 import { defaultScrubSignalGroups, enabledScrubFindings, parseScrubSignalGroups, scrubSignalDefinitions, scrubSignalGroupFor, type ScrubSignalGroup } from "./scrub";
 import { loadMassCleanupCapabilities, type MassCleanupCapabilityManifest } from "./mass-cleanup";
 import { projectAutoScrubFleetStatus, type AutoScrubFleetStatus } from "./autoscrub-contract";
+import { freshStartCleanupPresentation } from "./fresh-start";
 import { loadAutoScrubRunFleetStatus, requestAutoScrubGlobalStop } from "./autoscrub-unattended-run";
 import { oslMailStage, type OslMailStage } from "./desktop-service-policy";
 import {
@@ -7898,8 +7899,9 @@ async function executeBurn(event: SubmitEvent): Promise<void> {
     render();
     return;
   }
-  if (!result.localCleanupComplete) {
-    burnResult = { tone: "warning", message: `Cleanup was partial. Removed: ${result.removedTargets.join(", ") || "none"}. Still present: ${result.failedTargets.join(", ") || "unknown"}. Restart OSL and retry.`, showUninstall: false };
+  const presentation = freshStartCleanupPresentation(result);
+  if (!presentation.complete) {
+    burnResult = { tone: presentation.tone, message: presentation.message, showUninstall: false };
     render();
     return;
   }
@@ -7912,12 +7914,9 @@ async function executeBurn(event: SubmitEvent): Promise<void> {
   activeService = null;
   activeHomeAppId = null;
   await refreshIdentityScopedState();
-  const unconfirmedRemote = result.remoteUnregister.failed + result.remoteUnregister.unavailable;
   burnResult = {
-    tone: unconfirmedRemote > 0 ? "warning" : "success",
-    message: unconfirmedRemote > 0
-      ? `All local OSL data was removed. Remote unregister was not acknowledged for ${unconfirmedRemote} identity ${unconfirmedRemote === 1 ? "record" : "records"}; no remote deletion success is being claimed.`
-      : "All local OSL identities, decrypt material, caches, and preferences were removed from this computer.",
+    tone: presentation.tone,
+    message: presentation.message,
     showUninstall: requestedUninstall,
   };
   render();
