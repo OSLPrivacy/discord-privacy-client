@@ -2,6 +2,8 @@
 // offer, derived from what the receiving viewer can decode. Needs `ipc` and
 // `peer_attachment_io`, so it lives behind `core` like they do.
 #[cfg(feature = "core")]
+pub mod account_identity_authority;
+#[cfg(feature = "core")]
 pub mod attachment_formats;
 pub mod attachment_scan;
 pub mod attended_imap;
