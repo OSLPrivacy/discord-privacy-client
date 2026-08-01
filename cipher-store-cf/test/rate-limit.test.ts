@@ -15,6 +15,21 @@ function envWith(namespace: Partial<KVNamespace>): Env {
 }
 
 describe("cipher-store rate limiter failure policy", () => {
+  it("refuses the 121st anonymous blob lookup from one address in an hour", async () => {
+    const env = workerEnv({ RATE_LIMIT_HASH_KEY: secret });
+
+    for (let attempt = 0; attempt < 120; attempt++) {
+      await expect(rateLimit(env, "203.0.113.16", "fetch")).resolves.toMatchObject({
+        allowed: true,
+      });
+    }
+
+    await expect(rateLimit(env, "203.0.113.16", "fetch")).resolves.toEqual({
+      allowed: false,
+      remaining: 0,
+    });
+  }, 60_000);
+
   it("fails closed for anonymous writes when KV is unavailable", async () => {
     const env = envWith({ get: vi.fn().mockRejectedValue(new Error("down")) });
     await expect(rateLimit(env, "203.0.113.1", "upload")).resolves.toEqual({
@@ -31,10 +46,10 @@ describe("cipher-store rate limiter failure policy", () => {
     });
   });
 
-  it("keeps ciphertext reads available when KV is unavailable", async () => {
+  it("fails closed for anonymous blob lookups but keeps other reads available when KV is unavailable", async () => {
     const env = envWith({ get: vi.fn().mockRejectedValue(new Error("down")) });
     await expect(rateLimit(env, "203.0.113.1", "fetch")).resolves.toEqual({
-      allowed: true,
+      allowed: false,
       remaining: 0,
     });
     await expect(rateLimit(env, "203.0.113.1", "attachment-fetch")).resolves.toEqual({
@@ -46,11 +61,11 @@ describe("cipher-store rate limiter failure policy", () => {
   it("never writes a raw or plain-hashed IP into the KV key", async () => {
     const put = vi.fn().mockResolvedValue(undefined);
     const env = envWith({ get: vi.fn().mockResolvedValue(null), put });
-    // `fetch` is a read bucket, so it is the one that still uses KV.
-    await rateLimit(env, "203.0.113.77", "fetch");
+    // `attachment-fetch` is a KV-backed read bucket.
+    await rateLimit(env, "203.0.113.77", "attachment-fetch");
     const storedKey = String(put.mock.calls[0]?.[0]);
     expect(storedKey).not.toContain("203.0.113.77");
-    expect(storedKey).toMatch(/^rl:fetch:\d+:[0-9a-f]{32}$/);
+    expect(storedKey).toMatch(/^rl:attachment-fetch:\d+:[0-9a-f]{32}$/);
   });
 
   it("never writes a raw or plain-hashed IP into the atomic counter key", async () => {

@@ -105,7 +105,7 @@ describe("mutation rate limiting is atomic (HIGH-2)", () => {
       allowed: false,
     });
     await expect(rateLimit(broken, "203.0.113.11", "fetch")).resolves.toMatchObject({
-      allowed: true,
+      allowed: false,
     });
   });
 

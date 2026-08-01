@@ -9,28 +9,23 @@
 /// conditional D1 statement, which SQLite serialises, so the budget is a real
 /// ceiling rather than an approximation.
 ///
-/// **Read buckets stay on KV.** They bound cost and scraping, not integrity;
-/// they are the highest-volume routes; and they must fail *open* so a limiter
-/// outage cannot make already-stored ciphertext unreadable. Paying a D1 write
-/// on every fetch to tighten an availability-only control is the wrong trade.
+/// **Anonymous blob fetches use D1.** Once fetch is authorized solely by an
+/// unlinkable capability, failed lookups are the one practical enumeration
+/// surface. The generic blob fetch bucket is therefore an atomic, fail-closed
+/// ceiling. Attachment and view-once reads remain on KV: they are separately
+/// capability- or grant-gated cost controls, not the anonymous blob namespace.
 ///
 /// Either way the stored key is the same opaque value: a truncated HMAC of
 /// (bucket, client address) under a server-only key, so neither store can be
 /// dumped to enumerate likely addresses, and rows/entries are removed once
 /// their window closes.
 ///
-/// READ BUCKETS ARE APPROXIMATE, NOT A CEILING. KV permits only one write per
-/// second to the same key and rejects the rest. A single address issuing more
-/// than one read per second in the same bucket therefore makes `put()` throw,
-/// the catch below fails read buckets open by design, and those requests are
-/// admitted without being counted. So the read numbers below are a cost control
-/// that works at steady state, not a bound that holds during a burst. Only the
-/// mutation buckets, which count in D1, are a real ceiling. Do not cite a read
-/// budget as an enforced limit.
+/// KV-backed read buckets are approximate, not ceilings. The generic `fetch`
+/// bucket is deliberately excluded: it counts in D1 and is an enforced limit.
 ///
 /// Budgets (per IP, per rolling window):
 ///   uploads:  600 / hour
-///   fetches:  3600 / hour
+///   anonymous blob fetches: 120 / hour
 ///   deletes:  600 / hour
 ///   attachment upload requests/fetches/deletes: 140 / 120 / 60 per hour
 ///   multipart session creation: 24 / hour
@@ -44,9 +39,9 @@
 /// an active GC user hit it in under two minutes. The fail-closed
 /// V2 send-gate turned that into "messages grey out, never send"
 /// for the user, with no graceful degradation path. New cap allows
-/// 600 uploads/hr (10/min sustained) and 3600 fetches/hr, both
-/// generous enough for normal chat use while still bounding the
-/// damage from a single bad actor at a given IP. SKDMs are also
+/// 600 uploads/hr (10/min sustained). Blob fetches are intentionally
+/// lower: 120/hour is ample for eager receipt plus retries, while making
+/// unauthenticated miss enumeration expensive. SKDMs are also
 /// migrating to a keyserver inbox path (Phase 6.4) which should
 /// further reduce per-send upload pressure.
 
@@ -70,9 +65,11 @@ export type Bucket =
   | "link-create"
   | "link-fetch";
 
-/// Buckets that gate a write. These use the atomic D1 counter and fail closed.
+/// Buckets that require an exact, fail-closed ceiling. Most gate a write; the
+/// anonymous blob-fetch bucket is included to bound capability guessing.
 const MUTATION_BUCKETS: ReadonlySet<Bucket> = new Set<Bucket>([
   "upload",
+  "fetch",
   "delete",
   "attachment-upload",
   "attachment-session",
@@ -82,7 +79,7 @@ const MUTATION_BUCKETS: ReadonlySet<Bucket> = new Set<Bucket>([
 
 const BUDGETS: Record<Bucket, number> = {
   upload: 600,
-  fetch: 3600,
+  fetch: 120,
   delete: 600,
   // A 512 MiB upload uses up to 65 bounded multipart requests plus session
   // creation/completion. This still permits only two full-size attempts/hour.
@@ -98,7 +95,7 @@ const BUDGETS: Record<Bucket, number> = {
   "attachment-fetch": 120,
   "attachment-delete": 60,
   // View-once links. Creation is already grant-gated; this is the second
-  // line. Retrieval is deliberately far below the 3600/hr `fetch` budget:
+  // line. Retrieval uses the same 120/hr rate as anonymous blob fetch:
   // a link is meant to be opened once by one person from one browser, so
   // a legitimate IP never approaches 120/hr, while a scraper hammering
   // /v/<id>/fetch is stopped early.
@@ -155,9 +152,9 @@ export async function rateLimit(
       ? await admitAtomically(env, key, windowStart, budget)
       : await admitEventually(env, key, budget);
   } catch {
-    // Reads may remain available during a limiter outage. Anonymous writes
-    // fail closed so an outage cannot become an unbounded D1 storage or
-    // deletion-abuse window.
+    // KV-backed reads remain available during a limiter outage. Writes and
+    // anonymous blob fetches fail closed so an outage cannot become an
+    // unbounded storage, deletion-abuse, or capability-enumeration window.
     console.error("[rate-limit] limiter unavailable");
     return { allowed: !MUTATION_BUCKETS.has(bucket), remaining: 0 };
   }
@@ -184,9 +181,9 @@ async function admitAtomically(
   return { allowed: true, remaining: Math.max(0, budget - admitted.used) };
 }
 
-/// KV path, retained for read buckets only. Still eventually consistent, and
-/// deliberately so: over-admitting reads costs bandwidth, while under-admitting
-/// them would make stored ciphertext unfetchable.
+/// KV path, retained for attachment and link read buckets only. Still
+/// eventually consistent: those capability- or grant-gated reads prefer
+/// availability over a strict cost-control ceiling.
 async function admitEventually(
   env: Env,
   key: string,
