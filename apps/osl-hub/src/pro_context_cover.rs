@@ -1,9 +1,10 @@
-//! Local-only contextual cover conversation generator.
+//! Local-only encrypted cover history.
 //!
-//! This component never accepts private message text, Discord history, account
-//! metadata, or renderer-provided cover. Its entire input is an opaque OSL
-//! scope binding and an expiry. The bounded per-scope transcript contains only
-//! phrase-table indices and remains AEAD-encrypted while retained in memory.
+//! This component never accepts private message text, Discord history, or
+//! account metadata. Its bounded, per-scope transcript contains only cover
+//! text that the platform already holds and remains AEAD-encrypted in memory.
+//! It deliberately does not generate cover: every tier uses the same carrier
+//! path.
 
 use crypto::aes_gcm::{self, Key, Nonce};
 use sha2::{Digest, Sha256};
@@ -13,34 +14,12 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const FREE_COVER: &str = "🔒 OSL private message";
 const MAX_SCOPES: usize = 32;
 const MAX_TURNS: usize = 12;
-const MAX_TRANSCRIPT_BYTES: usize = MAX_TURNS;
+const MAX_COVER_BYTES: usize = 1_024;
+const MAX_TRANSCRIPT_BYTES: usize = MAX_TURNS * (MAX_COVER_BYTES + 2);
 const MAX_RETENTION_SECONDS: u64 = 24 * 60 * 60;
 const COVER_AAD_DOMAIN: &[u8] = b"osl-native-discord-local-cover-v1";
-
-// Short, neutral turns intentionally disclose nothing and make no factual
-// claim about either participant. Groups form a tiny coherent state machine:
-// opener -> acknowledgement -> continuation -> close -> opener.
-const PHRASES: [&str; 16] = [
-    "Hey, hope your day is going well.",
-    "Hi, good to hear from you.",
-    "Hey, how are things?",
-    "Hope everything is going well.",
-    "Sounds good to me.",
-    "That works for me.",
-    "Got it, thanks.",
-    "Makes sense.",
-    "I can take a look.",
-    "Let me check on that.",
-    "I’ll keep you posted.",
-    "We can pick this up soon.",
-    "Talk soon.",
-    "Have a good one.",
-    "Thanks, catch you later.",
-    "All set on my side.",
-];
 
 #[derive(Clone)]
 struct EncryptedTranscript {
@@ -66,16 +45,19 @@ impl Default for LocalCoverState {
 }
 
 impl LocalCoverState {
-    pub fn free_cover() -> &'static str {
-        FREE_COVER
-    }
-
-    pub fn next_pro_cover(&self, scope_binding: &str, ttl_seconds: u32) -> Result<String, String> {
-        if scope_binding.is_empty()
-            || scope_binding.len() > 512
-            || scope_binding.chars().any(char::is_control)
+    /// Record cover text after it has been rendered by the shared carrier.
+    /// Plaintext messages and third-party conversation history are never valid
+    /// inputs here.
+    pub fn record_cover(
+        &self,
+        scope_binding: &str,
+        cover: &str,
+        ttl_seconds: u32,
+    ) -> Result<(), String> {
+        validate_scope(scope_binding)?;
+        if cover.is_empty() || cover.len() > MAX_COVER_BYTES || cover.chars().any(char::is_control)
         {
-            return Err("The local cover scope is invalid".to_owned());
+            return Err("The local cover text is invalid".to_owned());
         }
         let now = unix_seconds()?;
         let scope = scope_hash(scope_binding);
@@ -89,17 +71,15 @@ impl LocalCoverState {
             .map(|record| self.open(&scope, record))
             .transpose()?
             .unwrap_or_default();
-        let random = crypto::random::random_bytes(8);
-        let choice = u64::from_le_bytes(random.try_into().map_err(|_| "OS random failed")?);
-        let phrase_index = choose_next(transcript.last().copied(), choice);
-        transcript.push(phrase_index);
+        transcript.push(cover.to_owned());
         if transcript.len() > MAX_TURNS {
             transcript.drain(..transcript.len() - MAX_TURNS);
         }
-        debug_assert!(transcript.len() <= MAX_TRANSCRIPT_BYTES);
+        let encoded = encode_transcript(&transcript)?;
+        debug_assert!(encoded.len() <= MAX_TRANSCRIPT_BYTES);
         let expires_at =
             now.saturating_add(u64::from(ttl_seconds.max(1)).min(MAX_RETENTION_SECONDS));
-        let (nonce, ciphertext) = aes_gcm::seal(&self.key, &cover_aad(&scope), &transcript)
+        let (nonce, ciphertext) = aes_gcm::seal(&self.key, &cover_aad(&scope), &encoded)
             .map_err(|_| "The local cover conversation could not be protected".to_owned())?;
         if !records.contains_key(&scope) && records.len() >= MAX_SCOPES {
             if let Some(oldest) = records
@@ -118,7 +98,23 @@ impl LocalCoverState {
                 expires_at,
             },
         );
-        Ok(PHRASES[usize::from(phrase_index)].to_owned())
+        Ok(())
+    }
+
+    pub fn cover_history(&self, scope_binding: &str) -> Result<Vec<String>, String> {
+        validate_scope(scope_binding)?;
+        let now = unix_seconds()?;
+        let scope = scope_hash(scope_binding);
+        let mut records = self
+            .transcripts
+            .lock()
+            .map_err(|_| "The local cover conversation is unavailable".to_owned())?;
+        records.retain(|_, record| record.expires_at > now);
+        records
+            .get(&scope)
+            .map(|record| self.open(&scope, record))
+            .transpose()?
+            .map_or_else(|| Ok(Vec::new()), Ok)
     }
 
     pub fn burn_scope(&self, scope_binding: &str) {
@@ -133,7 +129,7 @@ impl LocalCoverState {
         }
     }
 
-    fn open(&self, scope: &[u8; 32], record: &EncryptedTranscript) -> Result<Vec<u8>, String> {
+    fn open(&self, scope: &[u8; 32], record: &EncryptedTranscript) -> Result<Vec<String>, String> {
         let plaintext = aes_gcm::open(
             &self.key,
             &record.nonce,
@@ -141,14 +137,7 @@ impl LocalCoverState {
             &record.ciphertext,
         )
         .map_err(|_| "The local cover conversation failed authentication".to_owned())?;
-        if plaintext.len() > MAX_TRANSCRIPT_BYTES
-            || plaintext
-                .iter()
-                .any(|index| usize::from(*index) >= PHRASES.len())
-        {
-            return Err("The local cover conversation is invalid".to_owned());
-        }
-        Ok(plaintext)
+        decode_transcript(&plaintext)
     }
 
     #[cfg(test)]
@@ -160,15 +149,72 @@ impl LocalCoverState {
     }
 
     #[cfg(test)]
-    fn transcript_for_test(&self, scope_binding: &str) -> Vec<u8> {
+    fn encrypted_transcript_for_test(&self, scope_binding: &str) -> Vec<u8> {
         let scope = scope_hash(scope_binding);
         self.transcripts
             .lock()
             .ok()
             .and_then(|records| records.get(&scope).cloned())
-            .and_then(|record| self.open(&scope, &record).ok())
+            .map(|record| record.ciphertext)
             .unwrap_or_default()
     }
+}
+
+fn validate_scope(scope_binding: &str) -> Result<(), String> {
+    if scope_binding.is_empty()
+        || scope_binding.len() > 512
+        || scope_binding.chars().any(char::is_control)
+    {
+        return Err("The local cover scope is invalid".to_owned());
+    }
+    Ok(())
+}
+
+fn encode_transcript(transcript: &[String]) -> Result<Vec<u8>, String> {
+    if transcript.len() > MAX_TURNS {
+        return Err("The local cover conversation is invalid".to_owned());
+    }
+    let mut encoded = Vec::new();
+    for cover in transcript {
+        let bytes = cover.as_bytes();
+        if bytes.is_empty() || bytes.len() > MAX_COVER_BYTES || cover.chars().any(char::is_control)
+        {
+            return Err("The local cover conversation is invalid".to_owned());
+        }
+        let length = u16::try_from(bytes.len())
+            .map_err(|_| "The local cover conversation is invalid".to_owned())?;
+        encoded.extend_from_slice(&length.to_le_bytes());
+        encoded.extend_from_slice(bytes);
+    }
+    Ok(encoded)
+}
+
+fn decode_transcript(encoded: &[u8]) -> Result<Vec<String>, String> {
+    if encoded.len() > MAX_TRANSCRIPT_BYTES {
+        return Err("The local cover conversation is invalid".to_owned());
+    }
+    let mut transcript = Vec::new();
+    let mut cursor = 0;
+    while cursor < encoded.len() {
+        if encoded.len() - cursor < 2 || transcript.len() == MAX_TURNS {
+            return Err("The local cover conversation is invalid".to_owned());
+        }
+        let length = usize::from(u16::from_le_bytes([encoded[cursor], encoded[cursor + 1]]));
+        cursor += 2;
+        let end = cursor
+            .checked_add(length)
+            .filter(|end| *end <= encoded.len())
+            .ok_or_else(|| "The local cover conversation is invalid".to_owned())?;
+        let cover = std::str::from_utf8(&encoded[cursor..end])
+            .map_err(|_| "The local cover conversation is invalid".to_owned())?;
+        if cover.is_empty() || cover.len() > MAX_COVER_BYTES || cover.chars().any(char::is_control)
+        {
+            return Err("The local cover conversation is invalid".to_owned());
+        }
+        transcript.push(cover.to_owned());
+        cursor = end;
+    }
+    Ok(transcript)
 }
 
 fn unix_seconds() -> Result<u64, String> {
@@ -193,47 +239,27 @@ fn cover_aad(scope: &[u8; 32]) -> Vec<u8> {
     [COVER_AAD_DOMAIN, scope.as_slice()].concat()
 }
 
-fn choose_next(previous: Option<u8>, random: u64) -> u8 {
-    let group = previous.map(|value| usize::from(value) / 4);
-    let next_group = match group {
-        None | Some(3) => 0,
-        Some(0) => 1,
-        Some(1) => 2,
-        Some(2) => 3,
-        _ => 0,
-    };
-    (next_group * 4 + (random as usize % 4)) as u8
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn transitions_are_coherent_and_bounded() {
-        for random in 0..32 {
-            let opener = choose_next(None, random);
-            let acknowledgement = choose_next(Some(opener), random);
-            let continuation = choose_next(Some(acknowledgement), random);
-            let close = choose_next(Some(continuation), random);
-            assert!(opener < 4);
-            assert!((4..8).contains(&acknowledgement));
-            assert!((8..12).contains(&continuation));
-            assert!((12..16).contains(&close));
-        }
-    }
-
-    #[test]
-    fn transcript_is_encrypted_bounded_and_burnable() {
+    fn cover_history_is_encrypted_bounded_and_burnable() {
         let state = LocalCoverState::default();
         for _ in 0..30 {
-            let cover = state.next_pro_cover("scope-a", 3_600).unwrap();
-            assert!(PHRASES.contains(&cover.as_str()));
+            state
+                .record_cover("scope-a", "neutral cover text", 3_600)
+                .unwrap();
         }
         assert_eq!(state.retained_scope_count(), 1);
-        assert_eq!(state.transcript_for_test("scope-a").len(), MAX_TURNS);
+        assert_eq!(state.cover_history("scope-a").unwrap().len(), MAX_TURNS);
+        assert!(!state
+            .encrypted_transcript_for_test("scope-a")
+            .windows(b"neutral cover text".len())
+            .any(|window| window == b"neutral cover text"));
         state.burn_scope("scope-a");
         assert_eq!(state.retained_scope_count(), 0);
+        assert!(state.cover_history("scope-a").unwrap().is_empty());
     }
 
     #[test]
@@ -241,14 +267,15 @@ mod tests {
         let state = LocalCoverState::default();
         for index in 0..(MAX_SCOPES + 8) {
             state
-                .next_pro_cover(&format!("scope-{index}"), 3_600)
+                .record_cover(&format!("scope-{index}"), "neutral cover text", 3_600)
                 .unwrap();
         }
         assert_eq!(state.retained_scope_count(), MAX_SCOPES);
     }
 
     #[test]
-    fn fixed_free_cover_is_not_contextual() {
-        assert_eq!(LocalCoverState::free_cover(), "🔒 OSL private message");
+    fn malformed_history_is_rejected() {
+        assert!(decode_transcript(&[1]).is_err());
+        assert!(decode_transcript(&[2, 0, b'a']).is_err());
     }
 }
