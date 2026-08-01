@@ -62,6 +62,38 @@ describe("hosted-session command port", () => {
 });
 
 describe("hosted-session assisted delete state machine", () => {
+  it("paces at an overt fixed floor, while allowing only slower configured rests", async () => {
+    const waits: number[] = [];
+    const floor = new HostedSessionPresenceGate({ fixedRestMs: 1_000, presenceTtlMs: 30_000, maxBatch: 25, wait: async (ms) => { waits.push(ms); }, clock: () => now });
+    floor.signalHumanPresence();
+    await floor.beforeAction();
+    expect(waits).toEqual([1_500]);
+
+    const slowerWaits: number[] = [];
+    const slower = new HostedSessionPresenceGate({ fixedRestMs: 3_000, presenceTtlMs: 30_000, maxBatch: 25, wait: async (ms) => { slowerWaits.push(ms); }, clock: () => now });
+    slower.signalHumanPresence();
+    await Promise.all([slower.beforeAction(), slower.beforeAction(), slower.beforeAction()]);
+    expect(slowerWaits).toEqual([3_000, 3_000, 3_000]);
+    expect(new Set(slowerWaits).size).toBe(1);
+  });
+
+  it("parks without recent presence and after exactly one 25-action batch", async () => {
+    let time = now;
+    const staleWaits: number[] = [];
+    const stale = new HostedSessionPresenceGate({ fixedRestMs: 1_500, presenceTtlMs: 30_000, maxBatch: 25, wait: async (ms) => { staleWaits.push(ms); }, clock: () => time });
+    stale.signalHumanPresence();
+    time += 30_000;
+    await expect(stale.beforeAction()).resolves.toBe("parked");
+    expect(staleWaits).toEqual([]);
+
+    const batchWaits: number[] = [];
+    const batch = new HostedSessionPresenceGate({ fixedRestMs: 1_500, presenceTtlMs: 30_000, maxBatch: 25, wait: async (ms) => { batchWaits.push(ms); }, clock: () => now });
+    batch.signalHumanPresence();
+    for (let action = 0; action < 25; action += 1) await expect(batch.beforeAction()).resolves.toBe("ready");
+    await expect(batch.beforeAction()).resolves.toBe("parked");
+    expect(batchWaits).toHaveLength(25);
+  });
+
   it("scrolls and lists only own items at fixed overt pacing", async () => {
     const malicious = { ...own, id: "other", authoredBySelf: false } as unknown as HostedOwnItem;
     const h = harness(fakePort({ listOwnItems: vi.fn(async () => ({ ...base, items: [own, malicious] })) }));
