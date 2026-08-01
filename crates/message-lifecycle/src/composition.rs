@@ -5,8 +5,10 @@
 //! may already hold.  This module contains only durable state and pure
 //! classification rules; it grants no authority to fetch, decrypt, or delete.
 
+use serde::{Deserialize, Serialize};
+
 /// Server-authoritative availability of one per-device ciphertext blob.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum BlobState {
     Absent,
     Stored,
@@ -18,7 +20,7 @@ pub enum BlobState {
 ///
 /// `UnknownDestructive` is intentionally terminal. A newer destructive reason
 /// must not turn an older client into an availability downgrade.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum DestructReason {
     Burn,
     ViewOnceConsumed,
@@ -64,7 +66,7 @@ impl DestructReason {
 }
 
 /// Device-authoritative state of the local plaintext copy.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum LocalCopyState {
     Announced,
     Held,
@@ -77,7 +79,7 @@ pub enum LocalCopyState {
 ///
 /// `Unconfirmed` represents absence of an acknowledgement; it is neither
 /// compliance nor refusal and must remain distinguishable from every ack.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum AckOutcome {
     Unconfirmed,
     Destroyed,
@@ -86,14 +88,14 @@ pub enum AckOutcome {
 }
 
 /// Whether the tombstoned message was incoming or outgoing for this device.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum MessageDirection {
     Incoming,
     Outgoing,
 }
 
 /// A parsed lifecycle control instruction.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum LifecycleControl {
     Destruct(DestructReason),
     Ignore,
@@ -115,7 +117,7 @@ impl LifecycleControl {
 ///
 /// It intentionally has no plaintext, key, pointer, or server management
 /// capability. The opaque identifiers are supplied by the durable caller.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Tombstone {
     pub message_id: [u8; 32],
     pub peer_id: [u8; 32],
