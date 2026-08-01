@@ -1786,6 +1786,9 @@ impl KeyServerClient {
         let timestamp_ms = unix_timestamp_ms();
         let sig = sign_control_inbox_get_filtered(identity, timestamp_ms, Some(sender_id));
         let sig_q = urlencode_query_value(&STANDARD.encode(sig.as_bytes()));
+        // This URL is retained in Cloudflare zone HTTP request data for a
+        // proxied zone. Before changing its path or query identity fields, see
+        // /home/liamw/osl-plan/CLOUDFLARE-LOG-EXPOSURE.md.
         let path = format!(
             "/v1/control-inbox/{}?ts={}&sig={}&sender={}",
             urlencode_segment(&identity.user_id),
