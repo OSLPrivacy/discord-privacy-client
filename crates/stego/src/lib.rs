@@ -1,47 +1,22 @@
-//! Stego encoders for Discord-bound ciphertext.
+//! Stego encoders for pointer-only Discord carriers.
 //!
-//! v1 alpha ships **Mode 0** only — a base64 placeholder with a
-//! recognisable magic prefix. Mode 0 is **not** fluent stego: a human
-//! scrolling a Discord channel will see "DPC0::<base64...>" and
-//! immediately know an encrypted message lives there. That's
-//! acceptable for prototype mode where both endpoints are dev devices
-//! and the Discord channel is private; v1 stable replaces Mode 0 with
-//! Mode 1 (template-based fluency).
+//! Protected payloads never ride in a Discord carrier. A carrier holds only
+//! the opaque capability for a blob in the cipher store; there is no inline
+//! fallback. Mode 1 encodes that capability as cover text.
 //!
-//! ## Hard architectural requirement: per-message independence
+//! Mode 0 is retained solely as an internal envelope after the pointed-to blob
+//! has been fetched, so the existing decrypt pipeline can consume its wire.
+//! It is not a shipping transport and has no Discord capacity limit.
 //!
-//! Every stego'd message must be decodable from **itself plus the
-//! shared secret**, with no reference to any other message. Discord
-//! can reorder, edit, or delete messages on its CDN; context-dependent
-//! stego (where decoding message N depends on N-1, N-2, ...) breaks
-//! unrecoverably the moment any context message is lost. Making
-//! context-dependent stego reliable would require storing messages on
-//! our own server, converting the project from "privacy layer over
-//! Discord" into "Discord-skinned messenger with separate storage" —
-//! defeating the project thesis.
-//!
-//! Mode 0 trivially satisfies this (each message is a self-contained
-//! base64 string); the constraint is documented here as a design
-//! invariant for Modes 1, 2, and 3.
-//!
-//! ## Wire format (Mode 0)
+//! ## Internal envelope (Mode 0)
 //!
 //! ```text
 //! DPC0::<base64-standard-padding(ciphertext)>
 //! ```
 //!
-//! - Prefix `DPC0::` is the encoder identifier — `DPC` for Discord
-//!   Privacy Client, `0` for Mode 0, `::` as a delimiter that's
-//!   trivially scannable in plain text and won't be stripped or
-//!   "smart-quoted" by Discord's text rendering.
+//! - Prefix `DPC0::` identifies the internal envelope.
 //! - Body uses standard base64 alphabet (`A-Z a-z 0-9 + /`) with `=`
-//!   padding. Discord preserves these characters verbatim.
-//!
-//! Decoders that don't recognise the prefix MUST treat the message
-//! as cover plaintext and skip stego processing entirely (the
-//! prototype receiver only invokes the decoder when it has a reason
-//! to expect a stego'd message — for the v1 alpha test loop this is
-//! "every message in the configured private channel").
+//!   padding.
 
 pub mod bigram;
 pub mod line_shape;
@@ -57,7 +32,7 @@ pub use line_shape::{
     RowBudget, RowMatch, ShapedCover, MAX_SHAPED_ROWS,
 };
 pub use mode0::{
-    decode_mode0, encode_mode0, is_mode0, MODE0_MAX_RAW_LEN, MODE0_PREFIX, MODE0_PREFIX_BYTES,
+    decode_mode0, encode_mode0, is_mode0, MODE0_PREFIX, MODE0_PREFIX_BYTES,
 };
 pub use mode1::{
     decode_mode1, decode_token, encode_mode1, encode_token, is_mode1, ConversationCipher,
@@ -86,9 +61,6 @@ pub enum Error {
 
     #[error("Mode 0 base64 decode failed: {0}")]
     Mode0Base64(String),
-
-    #[error("Mode 0 message exceeded the {max}-byte raw length limit (got {got})")]
-    Mode0TooLong { got: usize, max: usize },
 
     #[error("not a Mode 1 stego message (missing DPC1:: prefix)")]
     NotMode1,
