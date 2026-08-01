@@ -82,3 +82,34 @@ jobs:
           updaterJsonPreferNsis: true
           releaseAssetNamePattern: osl-hub-[version]-[arch]-[bundle].[ext]
           args: --features desktop
+
+      # tauri-action uploads a latest.json that names the same artifact twice and points at
+      # api.github.com asset URLs, which only resolve for a token-bearing caller. The promotion
+      # gate refuses both, so without this step no build can ever be promoted and no installed
+      # client could fetch the artifact even if one were. Normalization moves the manifest to
+      # what the gate and the client both require; it never relaxes the gate.
+      - name: Normalize updater manifest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_TAG: ${{ steps.hub-version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet --disable-pip-version-check cryptography
+          mkdir -p candidate
+          gh release download "$CANDIDATE_TAG" --pattern latest.json --dir candidate --clobber
+          installer_name="$(gh release view "$CANDIDATE_TAG" --json assets \
+            --jq '[.assets[].name | select(endswith(".exe"))] | unique | .[0]')"
+          test -n "$installer_name"
+          python scripts/normalize_updater_manifest.py \
+            --manifest candidate/latest.json \
+            --tag "$CANDIDATE_TAG" \
+            --installer-name "$installer_name"
+          gh release upload "$CANDIDATE_TAG" candidate/latest.json --clobber
+          # Prove the manifest is one an installed client would accept before it can ever be
+          # offered to one: download the artifact the manifest names and verify its minisign
+          # signature under the public key compiled into the app.
+          gh release download "$CANDIDATE_TAG" --pattern "$installer_name" --dir candidate --clobber
+          python scripts/verify_update_feed_acceptance.py \
+            --manifest candidate/latest.json \
+            --installer "candidate/$installer_name"

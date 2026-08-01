@@ -49,6 +49,32 @@ jobs:
             --candidate-dir candidate \
             --attestation candidate/hub-vm-qa-attestation.json
 
+      # `signedUpdate` cannot be attested before a feed exists, and a feed cannot exist before a
+      # promotion. The attestation may waive that one case, but only while the excuse is true:
+      # this step reads the live feed and refuses the waiver the moment hub-latest publishes a
+      # manifest, so the exception expires by itself.
+      - name: Refuse a bootstrap QA waiver once the update feed exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release view hub-latest --json assets > feed-assets.json 2>/dev/null || : > feed-assets.json
+          python scripts/check_bootstrap_waiver_allowed.py \
+            --attestation candidate/hub-vm-qa-attestation.json \
+            --feed-assets feed-assets.json
+
+      # The gate above proves the manifest satisfies our promotion policy. This proves an
+      # installed client would actually install it: the artifact resolves, and its minisign
+      # signature verifies under the public key compiled into the shipped binary.
+      - name: Verify an installed client would accept this manifest
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet --disable-pip-version-check cryptography
+          installer="$(ls candidate/*.exe)"
+          python scripts/verify_update_feed_acceptance.py \
+            --manifest candidate/latest.json \
+            --installer "$installer"
+
       - name: Publish only the attested draft and move OSL Privacy update feed
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
