@@ -398,8 +398,22 @@ describe("the burn is not on fetch", () => {
       Math.floor(Date.now() / 1000) - 1,
       id,
     );
-    const res = await handleLinkFetch(fetchRequest(id, FETCH_TOKEN), state.env, id);
-    expect(res.status).toBe(404);
+    const postWindow = await handleLinkFetch(fetchRequest(id, FETCH_TOKEN), state.env, id);
+    const missingId = "f".repeat(32);
+    const missing = await handleLinkFetch(fetchRequest(missingId, FETCH_TOKEN), state.env, missingId);
+
+    // A closed reservation and a link that never existed must present the
+    // same recipient-facing response, rather than exposing an "already
+    // claimed" oracle.
+    expect({
+      status: postWindow.status,
+      headers: [...postWindow.headers].sort(),
+      body: await postWindow.text(),
+    }).toEqual({
+      status: missing.status,
+      headers: [...missing.headers].sort(),
+      body: await missing.text(),
+    });
     // Destroyed on sight rather than waiting for the cron.
     expect((await rowFor(state, id)).data).toBeNull();
     expect((await rowFor(state, id)).burned_at).not.toBeNull();
