@@ -1,0 +1,4 @@
+[profile.ci]
+# Run every test so CI reports the full failure set.
+fail-fast = false
+failure-output = "immediate-final"
