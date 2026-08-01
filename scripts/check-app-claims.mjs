@@ -108,6 +108,10 @@ const REQUIRED_SUPPORT_BANS = [
 const REQUIRED_DEVICE_TRANSFER_BANS = [
   "use osl on all your devices",
 ];
+const REQUIRED_GROUP_SENDER_KEY_BANS = [
+  "forward secrecy in groups",
+  "bounded blast radius",
+];
 const REQUIRED_CONDITIONAL_APP_EVIDENCE = [
   {
     id: "telegram_desktop_native",
@@ -3103,6 +3107,14 @@ function bannedPhraseInputFailures(bannedPhrases) {
       actual: deviceTransferBanCount,
     });
   }
+  const groupSenderKeyBanCount = REQUIRED_GROUP_SENDER_KEY_BANS.filter((phrase) => present.has(phrase)).length;
+  if (groupSenderKeyBanCount < REQUIRED_GROUP_SENDER_KEY_BANS.length) {
+    failures.push({
+      name: "group sender-key bans parsed from section D",
+      expected: REQUIRED_GROUP_SENDER_KEY_BANS.length,
+      actual: groupSenderKeyBanCount,
+    });
+  }
   return failures;
 }
 
@@ -4433,6 +4445,8 @@ async function runSelfTest() {
       passed: [
         "better than signal",
         "post-quantum authentication",
+        "forward secrecy in groups",
+        "bounded blast radius",
         "cryptographic burn",
         "destroys keys, not messages",
         "permanent ciphertext",
@@ -4484,7 +4498,8 @@ async function runSelfTest() {
       name: "forbidden_support_phrases",
       passed: REQUIRED_SUPPORT_BANS.every((phrase) => bannedPhrases.some((parsed) => parsed.normalized === phrase))
         && REQUIRED_BURN_BANS.every((phrase) => bannedPhrases.some((parsed) => parsed.normalized === phrase))
-        && REQUIRED_DEVICE_TRANSFER_BANS.every((phrase) => bannedPhrases.some((parsed) => parsed.normalized === phrase)),
+        && REQUIRED_DEVICE_TRANSFER_BANS.every((phrase) => bannedPhrases.some((parsed) => parsed.normalized === phrase))
+        && REQUIRED_GROUP_SENDER_KEY_BANS.every((phrase) => bannedPhrases.some((parsed) => parsed.normalized === phrase)),
     },
     {
       name: "Block banned Burn and support phrasings",
@@ -4503,6 +4518,11 @@ async function runSelfTest() {
         && REQUIRED_DEVICE_TRANSFER_BANS.every((phrase) => analyseFragments(
           "self-test/device-transfer-phrasing",
           [{ text: phrase, line: 1 }],
+          bannedPhrases,
+        ).length > 0)
+        && REQUIRED_GROUP_SENDER_KEY_BANS.every((phrase) => analyseFragments(
+          "self-test/group-sender-key-phrasing",
+          [{ text: `Group messages have ${phrase}.`, line: 1 }],
           bannedPhrases,
         ).length > 0)
         && analyseFragments(
