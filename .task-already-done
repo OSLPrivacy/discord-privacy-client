@@ -1,0 +1,1 @@
+task_report.py lint-plan validates raw authored headings and refuses malformed title/id metadata before dispatch
