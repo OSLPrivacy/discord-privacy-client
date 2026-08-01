@@ -39,8 +39,12 @@ use crate::signed_get::{sign_prekey_bundle_get, sign_wrapped_key_get};
 use crate::unregister::sign_unregister;
 use crate::wrapped_key::{sign_wrapped_key_post, WrappedKeyUpload};
 use crate::{Error, Result};
+
+#[path = "license_client.rs"]
+mod license_client;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
+pub use license_client::LicenseRedeemResponse;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::time::Duration;
