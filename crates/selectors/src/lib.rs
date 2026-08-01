@@ -38,7 +38,10 @@
 
 pub mod fetcher;
 pub mod manifest;
+// t8-e1 added the profile bridge, t8-e2 the hourly refresh. Different modules,
+// same declaration block -- both belong.
 pub mod profile_bridge;
+pub mod refresh;
 
 pub use fetcher::{FetchError, ManifestFetcher, ManifestSource, ManifestState, SourceLabel};
 pub use manifest::{
@@ -48,3 +51,4 @@ pub use manifest::{
 pub use profile_bridge::{
     compiled_in_profile_payload, fetched_profile_payload, ProfileBridgeError,
 };
+pub use refresh::{ManifestRefresh, HOURLY_REFRESH_SECONDS};
