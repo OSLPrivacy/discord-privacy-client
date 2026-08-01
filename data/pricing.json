@@ -1382,6 +1382,55 @@
     ],
     "$why": "Owner decision 2026-07-26. The site is pre-launch marketing for v1, not a live health screen. Putting a status label on every feature card made the product harder to understand without making it more honest. Honesty is concentrated in two unmissable places instead: the dated status page and the point of sale."
   },
+  "capability_data_bindings": {
+    "$rule": "Every public JSON or YAML asset is fail-closed: it needs an explicit binding before it can assert an OSL capability. An affirmative boolean or tri-state assertion is allowed only when its capability_registry row is Available or Beta. Numeric OSL scores are forbidden anywhere in a bound public data row.",
+    "schema_version": 1,
+    "bindings": [
+      {
+        "id": "messenger-comparison-osl-row",
+        "path": "assets/data/apps.json",
+        "format": "json",
+        "records_pointer": "/apps",
+        "osl_record": {
+          "path": "/name",
+          "equals": "OSL"
+        },
+        "capability_assertions": [
+          {
+            "path": "/video_calls",
+            "capability_id": "video-calls",
+            "affirmative_values": [true, "partial", "yes"]
+          },
+          {
+            "path": "/group_chat",
+            "capability_id": "group-protection",
+            "affirmative_values": [true, "partial", "yes"]
+          },
+          {
+            "path": "/disappearing",
+            "capability_id": "expiry",
+            "affirmative_values": [true, "partial", "yes"]
+          },
+          {
+            "path": "/file_sharing",
+            "capability_id": "file-send",
+            "affirmative_values": [true, "partial", "yes"]
+          },
+          {
+            "path": "/min_metadata",
+            "capability_id": "metadata-minimization",
+            "affirmative_values": [true, "partial", "yes"]
+          },
+          {
+            "path": "/audit",
+            "capability_id": "security-audit",
+            "affirmative_values": [true, "partial", "yes"]
+          }
+        ],
+        "numeric_score_fields": ["overall", "privacy", "features", "score", "rating"]
+      }
+    ]
+  },
   "surface_policy": {
     "matrix_files": [
       "docs/status.html"
