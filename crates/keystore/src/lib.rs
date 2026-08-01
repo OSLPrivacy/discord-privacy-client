@@ -39,6 +39,7 @@ pub mod sensitive_memory;
 pub mod signed_get;
 pub mod storage;
 pub mod unregister;
+pub mod username;
 pub mod wrapped_key;
 
 // A8: `Sealer::unseal` returns `Zeroizing<Vec<u8>>`, which makes that type part
