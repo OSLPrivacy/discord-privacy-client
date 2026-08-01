@@ -4,6 +4,8 @@
 #[cfg(feature = "core")]
 pub mod account_identity_authority;
 #[cfg(feature = "core")]
+pub mod account_recovery;
+#[cfg(feature = "core")]
 pub mod attachment_formats;
 pub mod attachment_scan;
 pub mod attended_imap;
