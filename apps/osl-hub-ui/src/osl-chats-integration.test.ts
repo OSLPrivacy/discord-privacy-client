@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+const runtimeSource = readFileSync(new URL("./osl-chat-runtime.ts", import.meta.url), "utf8");
 
 function functionSource(name: string, nextName: string): string {
   const start = source.indexOf(`function ${name}`);
@@ -24,15 +25,19 @@ describe("first-party OSL Chats integration", () => {
     expect(source).toContain("osl-chat-unread-v1");
     expect(source).toContain("persistOslChatUnread()");
     expect(source).not.toMatch(/localStorage\.setItem\([^\n]*(?:plaintext|\.body)/u);
-    expect(source).toContain("async function syncOslChatsInBackground()");
-    expect(source).toContain("function scheduleOslChatBackgroundSync");
-    // The chat sync loop must self-reschedule with a trailing setTimeout (never
-    // overlaps, never drifts) rather than a setInterval. Asserted across the whole
-    // file deliberately: the main window owns no repeating timer of any kind, so
-    // there is no cadence here for a future change to quietly attach chat work to.
+    // The delivery loop itself moved to ./osl-chat-runtime (T14-A0). Its
+    // behaviour — route independence, the verified-friend gate, the approved-scope
+    // gate, the rotating roster — is asserted behaviourally in
+    // ./osl-chat-delivery.test.ts, not as source text.
+    //
+    // What stays here is the one property that is only meaningful as a
+    // whole-file invariant: the chat cadence self-reschedules with a trailing
+    // setTimeout (never overlaps, never drifts) rather than a setInterval, and
+    // neither the main window nor the delivery runtime owns a repeating timer of
+    // any kind for a future change to quietly attach chat work to.
     expect(source).not.toContain("setInterval(");
+    expect(runtimeSource).not.toContain("setInterval(");
     expect(source).toContain("person.safetyNumberVerified && !person.pendingKeyChange");
-    expect(source).toContain("if (!context.scopeApproved) continue");
   });
 
   it("uses the established encrypted route for view-once without persisting it to history", () => {

@@ -142,6 +142,7 @@ export {
 } from "./autoscrub-unattended-run";
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
 import { OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
+import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, type OslChatDeliveryHost } from "./osl-chat-runtime";
 import { parseCircleAudience, type CircleAudience } from "./osl-collab";
 import { bindFriendRemovalControls, bindMainWindowFocusChanges, friendRemovalButtonMarkup, friendTrustAction, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat } from "./ui-behavior";
 import { BurnGuaranteeCopy, type BurnGuaranteeState } from "./two-step-burn";
@@ -459,7 +460,6 @@ let activeOslChatContext: ManualPeerContext | null = null;
 let oslChatDraft = "";
 let oslChatViewOnce = false;
 let oslChatBusy = false;
-let oslChatBackgroundBusy = false;
 let oslChatOperationEpoch = 0;
 const oslChatMessages = new Map<string, OslChatMessage[]>();
 const oslChatUnread = new Map<string, number>();
@@ -7035,43 +7035,48 @@ function commitOslChatBatch(personId: string, batch: NativeDiscordOverlayOpenedB
   }
 }
 
-async function syncOslChatsInBackground(): Promise<void> {
-  if (oslChatBackgroundBusy || route !== "home" || activeContextToken || activeOslChatPersonId || activeNativeHostId || activeEmbeddedHost || !core.readiness.identityLoaded) return;
-  const people = hubPeople.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange).slice(0, 32);
-  if (!people.length) return;
-  oslChatBackgroundBusy = true;
-  try {
-    // A sender can require capture protection. Apply it before asking any
-    // approved friend inbox to return plaintext, even for background sync.
-    if (!await setScreenshotProtection(true)) return;
-    screenshotProtectionEnabled = true;
-    for (const person of people) {
-      if (route !== "home" || activeOslChatPersonId || activeContextToken || activeNativeHostId || activeEmbeddedHost) break;
-      const context = await activateOslChatContext(person.personId);
-      if (!context) continue;
-      try {
-        if (!context.scopeApproved) continue;
-        const batch = await openOslChatText();
-        if (batch) commitOslChatBatch(person.personId, batch, true);
-        const history = await listOslChatHistory();
-        if (history) {
-          const existingViewOnce = (oslChatMessages.get(person.personId) ?? []).filter((message) => message.state === "opened");
-          oslChatMessages.set(person.personId, [...history.slice().reverse().map((row) => ({
-            messageId: row.messageId,
-            direction: row.senderOslUserId === context.peerOslUserId ? "incoming" as const : "outgoing" as const,
-            body: row.plaintext,
-            state: row.senderOslUserId === context.peerOslUserId ? "received" as const : "sent" as const,
-            timestampLabel: new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(row.decryptedAt * 1_000)),
-          })), ...existingViewOnce].slice(-200));
-        }
-      } finally {
-        await closeOslChatContext();
-      }
-    }
-  } finally {
-    oslChatBackgroundBusy = false;
-  }
+// Delivery lives in ./osl-chat-runtime (T14-A0). This object is the only thing
+// main.ts still owns of it: the binding between the runtime and this module's
+// state. Note what is NOT in the preconditions — the route. A message must
+// arrive on any screen (T14-B2); the remaining checks are session ownership of
+// the single active OSL Chat context, not "the user is looking at Home".
+const oslChatDeliveryHost: OslChatDeliveryHost = {
+  identityLoaded: () => core.readiness.identityLoaded,
+  foreignContextActive: () => Boolean(activeContextToken || activeNativeHostId || activeEmbeddedHost),
+  openConversationId: () => activeOslChatPersonId,
+  conversationBusy: () => oslChatBusy,
+  friends: () => hubPeople,
+  requestCaptureProtection: async () => {
+    const applied = await setScreenshotProtection(true);
+    if (applied) screenshotProtectionEnabled = true;
+    return applied;
+  },
+  activateContext: async (personId) => {
+    const context = await activateOslChatContext(personId);
+    return context ? { personId, peerOslUserId: context.peerOslUserId, scopeApproved: context.scopeApproved } : null;
+  },
+  closeContext: () => closeOslChatContext(),
+  drainInbox: () => openOslChatText(),
+  loadHistory: () => listOslChatHistory(),
+  commitBatch: (personId, batch, background) => {
+    commitOslChatBatch(personId, batch, background);
+    // A conversation drained while the user is reading it renders in place.
+    if (!background && batch.messages.length) renderWhenIdle();
+  },
+  commitHistory: (personId, rows, context) => {
+    const openedViewOnce = (oslChatMessages.get(personId) ?? []).filter((message) => message.state === "opened");
+    oslChatMessages.set(personId, mergeOslChatTimeline(
+      oslChatHistoryMessages(rows, context, oslChatHistoryTimestamp),
+      openedViewOnce,
+    ));
+  },
+};
+
+function oslChatHistoryTimestamp(epochSeconds: number): string {
+  return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(epochSeconds * 1_000));
 }
+
+const oslChatDelivery = createOslChatDeliveryRuntime(oslChatDeliveryHost);
 
 async function toggleOslChatPermission(): Promise<void> {
   const context = activeOslChatContext;
@@ -8609,9 +8614,7 @@ function scheduleNativeHostRealignment(): void {
   });
 }
 function scheduleOslChatBackgroundSync(delayMs = 30_000): void {
-  window.setTimeout(() => {
-    void syncOslChatsInBackground().finally(() => scheduleOslChatBackgroundSync());
-  }, delayMs);
+  oslChatDelivery.start(delayMs);
 }
 
 type OslHubUiTestStatePatch = {
@@ -8734,6 +8737,24 @@ export const __oslHubUiTest = {
   },
   persistOslChatNotifications(): void {
     persistOslChatNotifications();
+  },
+  /** Run one OSL Chat delivery tick, exactly as the cadence would. */
+  deliverOslChats(): Promise<void> {
+    return oslChatDelivery.sync();
+  },
+  /** The rendered timeline for one conversation. */
+  oslChatConversation(personId: string): OslChatMessage[] {
+    return [...(oslChatMessages.get(personId) ?? [])];
+  },
+  oslChatUnreadCount(personId: string): number {
+    return oslChatUnread.get(personId) ?? 0;
+  },
+  openOslChatConversation(personId: string): Promise<void> {
+    return openOslChat(personId);
+  },
+  /** Stand in for a live Discord-overlay / native-host protected context. */
+  setForeignProtectedContextForTest(token: string | null): void {
+    activeContextToken = token;
   },
   snapshot(): {
     route: Route;
