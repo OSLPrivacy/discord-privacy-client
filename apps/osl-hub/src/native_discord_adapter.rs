@@ -34,6 +34,10 @@ use crate::discord_carrier_geometry::{
     self, CarrierGeometryInput, CarrierPlan, FixedPaddingSize, LineMetrics, PrivacyPaddingMode,
     VisibleStructure,
 };
+#[cfg(any(target_os = "windows", test))]
+use crate::native_a11y::MsaaBridgeCallClass;
+#[cfg(test)]
+use crate::native_a11y::msaa_bridge_call_class;
 
 /// `Scan -> Preview -> Confirm -> Execute -> Verify -> Receipt` for deleting the
 /// operator's OWN messages from Discord through Discord's own UI.
@@ -3030,7 +3034,8 @@ fn composer_locate_found_stage(route: ComposerLocateRoute) -> Option<&'static st
 ///
 /// Chromium builds its accessibility tree lazily and reference counts it: the
 /// tree is switched on when an assistive-technology client asks for it -- the
-/// classic trigger is `WM_GETOBJECT` with `OBJID_CLIENT` -- and it can be
+/// documented trigger is an `EVENT_SYSTEM_ALERT` followed by `WM_GETOBJECT`
+/// for Chromium's custom object id 1 -- and it can be
 /// switched back off once no client has asked for a while. That makes two things
 /// legitimate: the first probe round after a quiet period can see an empty or
 /// partial tree, and the round that merely *triggers* enablement can fail where a
@@ -3148,7 +3153,8 @@ enum A11yEnableOutcome {
     /// The recovery exists for "there may be no tree to probe at all" -- Chromium
     /// builds its accessibility tree lazily and reference counts it, so the tree
     /// really can be switched off when a round starts. But `msaa_client_from_window`
-    /// (the `WM_GETOBJECT` / `OBJID_CLIENT` poke) is the FIRST thing the MSAA
+    /// (the corrected Chromium alert / custom-object `WM_GETOBJECT` poke) is the
+    /// FIRST thing the MSAA
     /// route does, and a route that then walked real nodes at real probe points has
     /// already proven the tree was on and populated. Both trees come from the same
     /// `BrowserAccessibilityManager`, so a settle wait cannot make Chromium publish
@@ -3270,91 +3276,6 @@ enum MsaaBridgeRefusal {
     /// is a live-vs-live comparison and not the stale-geometry trap -- it means
     /// the composer genuinely is outside its own window right now.
     OutsideRoot,
-}
-
-/// The class of an `ElementFromIAccessible` HRESULT, chosen so each class maps
-/// to a different action.
-#[cfg(any(target_os = "windows", test))]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum MsaaBridgeCallClass {
-    /// COM apartment or threading: this thread is not initialised, or is
-    /// initialised in the wrong model, or the proxy is being used from the wrong
-    /// thread. A bug in OSL's own call site, and permanent until fixed.
-    Apartment,
-    /// The provider is gone: Discord's UI Automation server disconnected, the
-    /// element no longer exists, or the RPC channel died. Permanent for THIS
-    /// element; a fresh discovery can still succeed.
-    ProviderGone,
-    /// The provider is alive and busy or slow: the call was rejected, asked to
-    /// retry, or timed out. RETRYABLE, and the only class where trying again is
-    /// the correct response.
-    Busy,
-    /// UI Automation understood the request and refused this element.
-    Refused,
-    /// The call was denied. Usually an integrity-level or UIAccess mismatch.
-    AccessDenied,
-    /// Out of memory or an equivalent resource failure.
-    Resources,
-    /// A code this table does not name. The raw value is in the bridge file.
-    Unclassified,
-}
-
-/// Classify one `ElementFromIAccessible` HRESULT.
-///
-/// The constants are written as literals rather than imported so this function
-/// compiles and is testable on a host that has no Windows headers at all -- the
-/// whole point is that one live run answers the question, and a classifier that
-/// can only be exercised on Windows is a classifier nobody checks.
-#[cfg(any(target_os = "windows", test))]
-fn msaa_bridge_call_class(hresult: i32) -> MsaaBridgeCallClass {
-    const CO_E_NOTINITIALIZED: i32 = 0x8004_01F0u32 as i32;
-    const RPC_E_CHANGED_MODE: i32 = 0x8001_0106u32 as i32;
-    const RPC_E_WRONG_THREAD: i32 = 0x8001_010Eu32 as i32;
-    const RPC_E_THREAD_NOT_INIT: i32 = 0x8001_010Fu32 as i32;
-
-    const RPC_E_DISCONNECTED: i32 = 0x8001_0108u32 as i32;
-    const RPC_E_SERVERFAULT: i32 = 0x8001_0105u32 as i32;
-    const RPC_S_SERVER_UNAVAILABLE: i32 = 0x8007_06BAu32 as i32;
-    const RPC_S_CALL_FAILED: i32 = 0x8007_06BEu32 as i32;
-    const UIA_E_ELEMENTNOTAVAILABLE: i32 = 0x8004_0201u32 as i32;
-
-    const RPC_E_CALL_REJECTED: i32 = 0x8001_0001u32 as i32;
-    const RPC_E_SERVERCALL_RETRYLATER: i32 = 0x8001_010Au32 as i32;
-    const RPC_E_TIMEOUT: i32 = 0x8001_011Fu32 as i32;
-    const UIA_E_TIMEOUT: i32 = 0x8013_1505u32 as i32;
-
-    const E_INVALIDARG: i32 = 0x8007_0057u32 as i32;
-    const E_NOINTERFACE: i32 = 0x8000_4002u32 as i32;
-    const E_POINTER: i32 = 0x8000_4003u32 as i32;
-    const E_FAIL: i32 = 0x8000_4005u32 as i32;
-    const UIA_E_ELEMENTNOTENABLED: i32 = 0x8004_0200u32 as i32;
-    const UIA_E_NOTSUPPORTED: i32 = 0x8004_0204u32 as i32;
-
-    const E_ACCESSDENIED: i32 = 0x8007_0005u32 as i32;
-    const E_OUTOFMEMORY: i32 = 0x8007_000Eu32 as i32;
-
-    match hresult {
-        CO_E_NOTINITIALIZED | RPC_E_CHANGED_MODE | RPC_E_WRONG_THREAD | RPC_E_THREAD_NOT_INIT => {
-            MsaaBridgeCallClass::Apartment
-        }
-        RPC_E_DISCONNECTED
-        | RPC_E_SERVERFAULT
-        | RPC_S_SERVER_UNAVAILABLE
-        | RPC_S_CALL_FAILED
-        | UIA_E_ELEMENTNOTAVAILABLE => MsaaBridgeCallClass::ProviderGone,
-        RPC_E_CALL_REJECTED | RPC_E_SERVERCALL_RETRYLATER | RPC_E_TIMEOUT | UIA_E_TIMEOUT => {
-            MsaaBridgeCallClass::Busy
-        }
-        E_INVALIDARG
-        | E_NOINTERFACE
-        | E_POINTER
-        | E_FAIL
-        | UIA_E_ELEMENTNOTENABLED
-        | UIA_E_NOTSUPPORTED => MsaaBridgeCallClass::Refused,
-        E_ACCESSDENIED => MsaaBridgeCallClass::AccessDenied,
-        E_OUTOFMEMORY => MsaaBridgeCallClass::Resources,
-        _ => MsaaBridgeCallClass::Unclassified,
-    }
 }
 
 /// The one fixed label naming why the bridge refused, written beside
@@ -8055,8 +7976,8 @@ mod windows {
         SafeArrayUnaccessData,
     };
     use ::windows::Win32::UI::Accessibility::{
-        AccessibleObjectFromPoint, AccessibleObjectFromWindow, CUIAutomation, IAccessible,
-        IUIAutomation, IUIAutomationElement, IUIAutomationInvokePattern, IUIAutomationTextPattern,
+        AccessibleObjectFromPoint, CUIAutomation, IAccessible, IUIAutomation,
+        IUIAutomationElement, IUIAutomationInvokePattern, IUIAutomationTextPattern,
         IUIAutomationTextPattern2, IUIAutomationTextRange, IUIAutomationTreeWalker,
         IUIAutomationValuePattern, UIA_ButtonControlTypeId, UIA_DocumentControlTypeId,
         UIA_EditControlTypeId, UIA_FontNameAttributeId, UIA_FontSizeAttributeId,
@@ -8079,7 +8000,7 @@ mod windows {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetAncestor, GetForegroundWindow, GetGUIThreadInfo, GetWindowRect,
         GetWindowThreadProcessId, IsChild, SetForegroundWindow, WindowFromPoint, GA_ROOT,
-        GUITHREADINFO, OBJID_CLIENT,
+        GUITHREADINFO,
     };
     #[cfg(feature = "discord-qa-shell")]
     use windows_sys::Win32::{
@@ -11794,36 +11715,12 @@ mod windows {
         Some(accessible)
     }
 
-    /// Ask Discord for the accessible object of its client area, which is the
-    /// documented way to switch a Chromium accessibility tree on.
-    ///
-    /// `AccessibleObjectFromWindow` with `OBJID_CLIENT` sends `WM_GETOBJECT`, the
-    /// signal Chromium enables its tree on, and hands back a real `IAccessible`
-    /// rather than a raw `LRESULT`, so the reference is properly owned and is
-    /// released when the returned value is dropped. Holding it is the point: while
-    /// OSL owns a reference, the reference-counted tree Discord just built cannot
-    /// be torn down underneath the settle ladder.
-    ///
-    /// This reads nothing. It is used only for the reference it takes, so no name,
-    /// value or geometry is ever taken from it.
+    /// Wake Chromium accessibility and retain the resulting custom-object
+    /// reference. The shared helper sends Chromium's required alert before it
+    /// issues `WM_GETOBJECT`; holding the returned reference keeps the lazily
+    /// built tree alive for the rest of this bounded operation.
     fn msaa_client_from_window(window: isize) -> Option<IAccessible> {
-        if window == 0 {
-            return None;
-        }
-        let mut object: *mut c_void = std::ptr::null_mut();
-        unsafe {
-            AccessibleObjectFromWindow(
-                HWND(window as _),
-                OBJID_CLIENT as u32,
-                &IAccessible::IID,
-                &mut object,
-            )
-        }
-        .ok()?;
-        if object.is_null() {
-            return None;
-        }
-        Some(unsafe { IAccessible::from_raw(object) })
+        crate::native_a11y::wake_electron_accessibility(window)
     }
 
     thread_local! {
@@ -12099,15 +11996,15 @@ mod windows {
         root_bounds: AccessibilityBounds,
         process_is_trusted: &dyn Fn(u32) -> bool,
     ) -> MsaaBridgeElement {
-        let element = match unsafe { automation.ElementFromIAccessible(accessible, 0) } {
+        let element = match crate::native_a11y::element_from_ia_accessible(automation, accessible) {
             Ok(element) => element,
             // The HRESULT is the one fact that separates "this thread's COM
             // apartment is wrong" from "Discord's provider is gone" from "it is
             // busy, ask again". It is an integer, never text, so classifying it
             // cannot leak anything.
-            Err(error) => {
+            Err(class) => {
                 return MsaaBridgeElement::CallFailed(MsaaBridgeRefusal::Call(
-                    msaa_bridge_call_class(error.code().0),
+                    class,
                 ));
             }
         };
