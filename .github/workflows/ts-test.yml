@@ -7,12 +7,26 @@ on:
 
 jobs:
   ts-test:
+    # t8-a5 moved this off windows-latest; t8-a6 added the 4-way shard but was
+    # written before that landed. Both are wanted: shard ON ubuntu, since the
+    # move off Windows runners is the newer and deliberate decision.
     runs-on: ubuntu-latest
+    name: TypeScript (${{ matrix.lane }})
+    strategy:
+      matrix:
+        lane: [webview, osl-hub-ui, workers, legacy-keyserver]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            webview/package-lock.json
+            apps/osl-hub-ui/package-lock.json
+            keyserver-cf/package-lock.json
+            cipher-store-cf/package-lock.json
+            keyserver/package-lock.json
       # Claim gate for in-app copy and README. Zero-dependency, so it runs before
       # any npm ci: nothing to install and nothing that can fail for unrelated
       # reasons. Ban list is parsed out of docs/design/osl-public-claim-allowlist.md
@@ -22,50 +36,65 @@ jobs:
           node scripts/check-app-claims.mjs --self-test
           node scripts/check-app-claims.mjs
       - name: Install webview deps
+        if: ${{ matrix.lane == 'webview' }}
         working-directory: webview
         run: npm ci
       - name: Typecheck webview
+        if: ${{ matrix.lane == 'webview' }}
         working-directory: webview
         run: npm run typecheck
       - name: Lint webview
+        if: ${{ matrix.lane == 'webview' }}
         working-directory: webview
         run: npm run lint
       - name: Test webview
+        if: ${{ matrix.lane == 'webview' }}
         working-directory: webview
         run: npm test
       # The app frontend is outside webview/ and has its own lockfile, tests,
       # TypeScript check, and production Vite build.
       - name: Install OSL Privacy UI dependencies
+        if: ${{ matrix.lane == 'osl-hub-ui' }}
         working-directory: apps/osl-hub-ui
         run: npm ci
       - name: Test OSL Privacy UI
+        if: ${{ matrix.lane == 'osl-hub-ui' }}
         working-directory: apps/osl-hub-ui
         run: npm test
       - name: Build OSL Privacy UI
+        if: ${{ matrix.lane == 'osl-hub-ui' }}
         working-directory: apps/osl-hub-ui
         run: npm run build
       - name: Install keyserver worker deps
+        if: ${{ matrix.lane == 'workers' }}
         working-directory: keyserver-cf
         run: npm ci
       - name: Typecheck keyserver worker
+        if: ${{ matrix.lane == 'workers' }}
         working-directory: keyserver-cf
         run: npm run typecheck
       - name: Test keyserver worker
+        if: ${{ matrix.lane == 'workers' }}
         working-directory: keyserver-cf
         run: npm test
       - name: Install cipher-store worker deps
+        if: ${{ matrix.lane == 'workers' }}
         working-directory: cipher-store-cf
         run: npm ci
       - name: Typecheck cipher-store worker
+        if: ${{ matrix.lane == 'workers' }}
         working-directory: cipher-store-cf
         run: npm run typecheck
       - name: Test cipher-store worker
+        if: ${{ matrix.lane == 'workers' }}
         working-directory: cipher-store-cf
         run: npm test
       - name: Install legacy keyserver deps
+        if: ${{ matrix.lane == 'legacy-keyserver' }}
         working-directory: keyserver
         run: npm ci
       - name: Test legacy keyserver
+        if: ${{ matrix.lane == 'legacy-keyserver' }}
         working-directory: keyserver
         run: npm test
   selector-check:
