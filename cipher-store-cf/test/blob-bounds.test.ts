@@ -20,7 +20,7 @@ function blobId(index: number): Uint8Array {
 }
 
 describe("cipher upload body bounds", () => {
-  it("fetches a live blob with its capability alone", async () => {
+  it("refuses a live blob when its fetch capability is omitted", async () => {
     const data = new Uint8Array([1, 2, 3]);
     const env = {
       DB: {
@@ -42,8 +42,9 @@ describe("cipher upload body bounds", () => {
       "0000000000000001",
     );
 
-    expect(response.status).toBe(200);
-    expect(new Uint8Array(await response.arrayBuffer())).toEqual(data);
+    // Fetch is addressed by ID in the path and capability in a header. A
+    // missing capability must be indistinguishable from an absent blob.
+    expect(response.status).toBe(404);
   });
 
   it("accepts exactly the maximum streamed byte count", async () => {
@@ -103,6 +104,7 @@ describe("cipher upload body bounds", () => {
       headers: {
         "x-osl-ttl-seconds": "3600",
         "x-osl-fetch-token": "0123456789abcdef0123456789abcdef",
+        "x-osl-manage-token": "fedcba9876543210fedcba9876543210",
       },
       body: new Uint8Array(1_001),
     });
@@ -127,6 +129,7 @@ describe("cipher upload body bounds", () => {
       headers: {
         "x-osl-ttl-seconds": ttlHeader,
         "x-osl-fetch-token": "0123456789abcdef0123456789abcdef",
+        "x-osl-manage-token": "fedcba9876543210fedcba9876543210",
       },
       body: new Uint8Array([1]),
     });
