@@ -52,9 +52,9 @@ struct RelayState {
     floor_identities: BTreeMap<String, Vec<u8>>,
 }
 
-/// One uploaded wrapped share. A share is readable ONLY by its recipient, and a
-/// single-use share is consumed by its first successful fetch -- both properties
-/// the replay-rejection and view-once assertions depend on.
+/// One uploaded wrapped share. A share is readable ONLY by its recipient.
+/// Transmission does not consume a single-use share: the production keyserver
+/// retains it until a recipient-acknowledged receipt can authorize deletion.
 struct WrappedKeyRow {
     sender_id: String,
     recipient_id: String,
@@ -68,7 +68,6 @@ struct WrappedKeyRow {
     display_duration_seconds: Option<u64>,
     expires_at: String,
     created_at: String,
-    consumed: bool,
 }
 
 struct RelayServer {
@@ -289,7 +288,6 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
                                 .and_then(Value::as_u64),
                             expires_at: field("expires_at"),
                             created_at: format!("{now}"),
-                            consumed: false,
                         },
                     );
                     json_response(200, json!({ "content_id": content_id }))
@@ -312,32 +310,24 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
                 Some(row) if row.recipient_id != requester => {
                     json_response(403, json!({ "error": "recipient mismatch" }))
                 }
-                Some(row) if row.single_use && row.consumed => {
-                    json_response(410, json!({ "error": "already consumed" }))
-                }
-                Some(row) => {
-                    if row.single_use {
-                        row.consumed = true;
-                    }
-                    json_response(
-                        200,
-                        json!({
-                            "content_id": content_id,
-                            "content_type": row.content_type,
-                            "system_message_kind": row.system_message_kind,
-                            "sender_id": row.sender_id,
-                            "recipient_id": row.recipient_id,
-                            "session_version": row.session_version,
-                            "share_index": row.share_index,
-                            "wrapped_share_blob": row.wrapped_share_blob,
-                            "blob_version": row.blob_version,
-                            "single_use": row.single_use,
-                            "display_duration_seconds": row.display_duration_seconds,
-                            "expires_at": row.expires_at,
-                            "created_at": row.created_at,
-                        }),
-                    )
-                }
+                Some(row) => json_response(
+                    200,
+                    json!({
+                        "content_id": content_id,
+                        "content_type": row.content_type,
+                        "system_message_kind": row.system_message_kind,
+                        "sender_id": row.sender_id,
+                        "recipient_id": row.recipient_id,
+                        "session_version": row.session_version,
+                        "share_index": row.share_index,
+                        "wrapped_share_blob": row.wrapped_share_blob,
+                        "blob_version": row.blob_version,
+                        "single_use": row.single_use,
+                        "display_duration_seconds": row.display_duration_seconds,
+                        "expires_at": row.expires_at,
+                        "created_at": row.created_at,
+                    }),
+                ),
             }
         }
         ("DELETE", route) if route.starts_with("/v1/wrapped-keys") => {
@@ -642,8 +632,7 @@ fn sealed_relay_post_run_reset_cleanup() {
     );
 }
 
-#[test]
-fn two_verified_identities_complete_sealed_relay_open_ack_and_replay_rejection() {
+pub fn osl_chat_message_survives_a_lost_wrapped_key_response() {
     let relay = RelayServer::start();
     let storage = TestStorage::new();
     let relay_url = relay.base_url();
@@ -657,7 +646,7 @@ fn two_verified_identities_complete_sealed_relay_open_ack_and_replay_rejection()
     relay.register_floor_identity(&alice_identity);
     relay.register_floor_identity(&bob_identity);
     let alice = core(alice_identity, &relay_url);
-    let bob = core(bob_identity, &relay_url);
+    let bob = core(bob_identity.clone(), &relay_url);
     let alice_security = HubSecurityState::default();
     let bob_security = HubSecurityState::default();
     let alice_broker = HubBrokerState::default();
@@ -740,6 +729,15 @@ fn two_verified_identities_complete_sealed_relay_open_ack_and_replay_rejection()
     assert!(prepared.view_once);
     assert!(prepared.delivered_to_osl_inbox);
     assert_eq!(relay.pending_for(&bob_id), 1);
+
+    // The keyserver completed this first GET, but the response disappeared
+    // before Bob could retain or decrypt it. The retry below has to use the
+    // actual OSL Chat receive path, not this request result.
+    TestStorage::activate(&bob_dir);
+    keystore::KeyServerClient::new(&relay_url)
+        .unwrap()
+        .fetch_wrapped_key(&bob_identity, &prepared.message_id)
+        .unwrap();
 
     // A valid encrypted notice copied under a different relay scope is not
     // consumed by this conversation. The original correctly-bound row still
