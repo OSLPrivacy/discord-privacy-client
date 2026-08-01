@@ -7,6 +7,62 @@
 
 use std::collections::BTreeMap;
 
+/// A sender-side cooldown for one Space.
+///
+/// This is intentionally local advisory state, not a relay policy.  The relay
+/// cannot inspect encrypted Space content or prove that another client obeyed
+/// the cooldown.  Upload-grant issuance and invite gating may reduce abuse at
+/// different boundaries, but this type only makes the local client wait.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClientSlowmode {
+    interval_ms: u64,
+    last_sent_at_ms: Option<u64>,
+}
+
+/// The local client's decision about its next Space send.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClientSlowmodeDecision {
+    MaySend,
+    Wait { retry_after_ms: u64 },
+}
+
+impl ClientSlowmode {
+    /// Starts a local cooldown tracker. `interval_ms == 0` disables it.
+    pub const fn new(interval_ms: u64) -> Self {
+        Self {
+            interval_ms,
+            last_sent_at_ms: None,
+        }
+    }
+
+    /// Returns this client's advisory decision at a monotonic timestamp.
+    ///
+    /// The timestamp is supplied by the caller so this small model never
+    /// claims to have a server clock or durable enforcement authority.
+    pub fn decision_at(&self, now_ms: u64) -> ClientSlowmodeDecision {
+        let Some(last_sent_at_ms) = self.last_sent_at_ms else {
+            return ClientSlowmodeDecision::MaySend;
+        };
+
+        let elapsed_ms = now_ms.saturating_sub(last_sent_at_ms);
+        let retry_after_ms = self.interval_ms.saturating_sub(elapsed_ms);
+        if retry_after_ms == 0 {
+            ClientSlowmodeDecision::MaySend
+        } else {
+            ClientSlowmodeDecision::Wait { retry_after_ms }
+        }
+    }
+
+    /// Records a send that this client actually performed.
+    ///
+    /// Callers must check [`Self::decision_at`] before sending.  Recording a
+    /// timestamp neither prevents a modified client from sending nor tells any
+    /// other client to wait.
+    pub fn record_local_send_at(&mut self, now_ms: u64) {
+        self.last_sent_at_ms = Some(now_ms);
+    }
+}
+
 /// Opaque, client-generated Space identifier.  Construction is intentionally
 /// separate from creation: the roster layer owns CSPRNG generation.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -141,6 +197,35 @@ mod tests {
         assert_eq!(
             create_space(SpaceId::from_bytes([1; 20]), member(0)),
             Err(CreateSpaceError::EmptyFounderIdentity)
+        );
+    }
+
+    #[test]
+    fn t21_t39_slowmode_is_a_local_advisory_not_relay_enforcement() {
+        let mut alice_client = ClientSlowmode::new(1_000);
+
+        assert_eq!(
+            alice_client.decision_at(10_000),
+            ClientSlowmodeDecision::MaySend
+        );
+        alice_client.record_local_send_at(10_000);
+        assert_eq!(
+            alice_client.decision_at(10_250),
+            ClientSlowmodeDecision::Wait {
+                retry_after_ms: 750
+            }
+        );
+        assert_eq!(
+            alice_client.decision_at(11_000),
+            ClientSlowmodeDecision::MaySend
+        );
+
+        // A fresh or modified client has no shared relay-side cooldown state.
+        // That limitation is why callers must label this as client-side advice.
+        let modified_client = ClientSlowmode::new(1_000);
+        assert_eq!(
+            modified_client.decision_at(10_250),
+            ClientSlowmodeDecision::MaySend
         );
     }
 }
