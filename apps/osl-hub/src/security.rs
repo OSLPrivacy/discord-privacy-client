@@ -2840,8 +2840,12 @@ pub fn peer_scope_commitment(
 
 /// Implemented-unwired admission helper for a peer burn floor.
 ///
-/// An integrated content path must call this before returning plaintext to a
-/// renderer. Current production decrypt paths do not call it.
+/// Do not wire this into the current decrypt path. A safe call site needs an
+/// authenticated `send_seq` and scope commitment from the content envelope;
+/// production content carries neither, so a receiver cannot tell which burn
+/// floor governs a plaintext. That envelope change is protocol work owned by
+/// T1/T2, not a local broker wire-up. When it exists, the receive path must
+/// call this immediately before returning plaintext to a renderer.
 ///
 /// Fails closed three ways: a burnt sequence is refused, a sequence we cannot
 /// evaluate is refused, and a ledger we cannot read is refused. The error string
