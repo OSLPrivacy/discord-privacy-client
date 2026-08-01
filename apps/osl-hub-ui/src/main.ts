@@ -3972,7 +3972,7 @@ export function oslMailStageAContent(
   mailboxGate: OslMailboxStageCGateResult = oslMailboxStageCGate(),
 ): string {
   if (stage.id !== "stageA" || stage.availability !== "available") {
-    return `<article class="inbox-surface-card unavailable" data-inbox-osl-surface="mail" data-osl-mail-stage-a="unavailable" data-osl-mail-protection="private-client" data-osl-mailbox-stage-c-gate="${mailboxGate.reason ?? "reviewed"}" data-mailbox-operations="refused" aria-disabled="true"><strong>OSL Mail</strong><small>Private client protection</small><p>${statusTag("Coming later")} OSL Mail client protection is unavailable until Stage A review accepts it.</p></article>`;
+    return `<article class="inbox-surface-card unavailable" data-inbox-osl-surface="mail" data-osl-mail-stage-a="unavailable" data-osl-mail-protection="private-client" data-osl-mailbox-stage-c-gate="${mailboxGate.reason ?? "reviewed"}" data-mailbox-operations="refused" aria-disabled="true"><strong>OSL Mail</strong><small>Private client protection</small><p>${statusTag("Coming later")} OSL Mail client protection is unavailable until its desktop bridge exists.</p></article>`;
   }
   const capabilities = [
     "Connect an existing mailbox only after authorization",
