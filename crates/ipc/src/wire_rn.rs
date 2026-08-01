@@ -82,6 +82,13 @@ pub const LEGACY_WIRE_VERSION_V3: u8 = 0x03;
 /// and master 7.11.
 pub const RN_WIRE_IN_ENABLED: bool = false;
 
+/// Canonical subdirectory for sealed OSL-RN session state.
+///
+/// Every production path must construct its store with
+/// [`RnSessionStore::for_config_dir`] so send, receive, and initiation
+/// operate on the same persisted ratchet state.
+pub const RN_SESSION_DIR: &str = "rn_sessions";
+
 /// Negotiation context for the Discord manual-peer path. A fixed
 /// constant: it is an input to the handshake `SK`, so both sides must
 /// use the identical value, and it must never be derived from anything
@@ -592,6 +599,65 @@ struct SealedBlob {
 }
 
 impl RnSessionStore {
+    /// Build the session store for an account configuration directory.
+    ///
+    /// Older builds used `rn/`; migrate it into the canonical directory
+    /// before opening so a previously initiated session remains available to
+    /// all current send and receive paths.
+    pub fn for_config_dir(config_dir: impl AsRef<Path>) -> Result<Self, RnError> {
+        let config_dir = config_dir.as_ref();
+        let canonical_dir = config_dir.join(RN_SESSION_DIR);
+        let legacy_dir = config_dir.join("rn");
+
+        if legacy_dir.exists() {
+            if !legacy_dir.is_dir() {
+                return Err(RnError::Storage(format!(
+                    "legacy RN session path is not a directory: {}",
+                    legacy_dir.display()
+                )));
+            }
+            if !canonical_dir.exists() {
+                std::fs::rename(&legacy_dir, &canonical_dir)
+                    .map_err(|e| RnError::Storage(format!("migrate legacy RN session dir: {e}")))?;
+            } else {
+                if !canonical_dir.is_dir() {
+                    return Err(RnError::Storage(format!(
+                        "canonical RN session path is not a directory: {}",
+                        canonical_dir.display()
+                    )));
+                }
+                let entries = std::fs::read_dir(&legacy_dir)
+                    .map_err(|e| RnError::Storage(format!("scan legacy RN session dir: {e}")))?
+                    .map(|entry| {
+                        entry
+                            .map_err(|e| {
+                                RnError::Storage(format!("read legacy RN session dir: {e}"))
+                            })
+                            .map(|entry| (entry.path(), canonical_dir.join(entry.file_name())))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                if let Some((_, destination)) =
+                    entries.iter().find(|(_, destination)| destination.exists())
+                {
+                    return Err(RnError::Storage(format!(
+                        "cannot migrate legacy RN session entry; canonical path already exists: {}",
+                        destination.display()
+                    )));
+                }
+                for (source, destination) in entries {
+                    std::fs::rename(source, destination).map_err(|e| {
+                        RnError::Storage(format!("migrate legacy RN session entry: {e}"))
+                    })?;
+                }
+                std::fs::remove_dir(&legacy_dir).map_err(|e| {
+                    RnError::Storage(format!("remove migrated legacy RN session dir: {e}"))
+                })?;
+            }
+        }
+
+        Ok(Self::new(canonical_dir))
+    }
+
     /// `dir` should be a subdirectory of the active account directory.
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         RnSessionStore { dir: dir.into() }
@@ -2614,6 +2680,67 @@ mod tests {
         let dir = TempDir::new().expect("tempdir");
         let store = RnSessionStore::new(dir.path().join("rn"));
         (dir, store)
+    }
+
+    #[test]
+    fn rn_session_store_for_config_dir_unifies_send_and_receive_state() {
+        let config_dir = TempDir::new().expect("config dir");
+        let send_store =
+            RnSessionStore::for_config_dir(config_dir.path()).expect("send store from config dir");
+        let receive_store = RnSessionStore::for_config_dir(config_dir.path())
+            .expect("receive store from config dir");
+        assert_eq!(
+            send_store.dir, receive_store.dir,
+            "send and receive must resolve the same RN session directory"
+        );
+        assert_eq!(send_store.dir, config_dir.path().join(RN_SESSION_DIR));
+
+        let mut rng = seeded_rng(0xA2);
+        let (_prekeys, bundle) = fresh_bundle(&mut rng);
+        let (identity, _) = x25519_keypair(&mut rng);
+        let session = Session::initiate(&identity, &bundle, SessionParams::default(), &mut rng)
+            .expect("initiate session");
+        let peer = *bundle.identity.as_bytes();
+        let sealer = MemorySealer::new();
+
+        send_store
+            .save_session_with_sealer(&peer, &session, &sealer)
+            .expect("send helper persists session");
+        assert!(
+            receive_store
+                .load_session_with_sealer(&peer, &sealer)
+                .expect("receive helper loads session")
+                .is_some(),
+            "a session written by send must be readable by receive"
+        );
+    }
+
+    #[test]
+    fn rn_session_store_for_config_dir_migrates_legacy_rn_directory() {
+        let config_dir = TempDir::new().expect("config dir");
+        let legacy_store = RnSessionStore::new(config_dir.path().join("rn"));
+        let mut rng = seeded_rng(0xA3);
+        let (_prekeys, bundle) = fresh_bundle(&mut rng);
+        let (identity, _) = x25519_keypair(&mut rng);
+        let session = Session::initiate(&identity, &bundle, SessionParams::default(), &mut rng)
+            .expect("initiate session");
+        let peer = *bundle.identity.as_bytes();
+        let sealer = MemorySealer::new();
+        legacy_store
+            .save_session_with_sealer(&peer, &session, &sealer)
+            .expect("write legacy session");
+
+        let migrated =
+            RnSessionStore::for_config_dir(config_dir.path()).expect("migrate legacy directory");
+        assert_eq!(migrated.dir, config_dir.path().join(RN_SESSION_DIR));
+        assert!(!config_dir.path().join("rn").exists());
+        assert!(
+            migrated
+                .load_session_with_sealer(&peer, &sealer)
+                .expect("load migrated session")
+                .is_some(),
+            "migration must retain legacy session state"
+        );
     }
 
     #[test]
