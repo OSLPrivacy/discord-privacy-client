@@ -519,7 +519,12 @@ describe("GET /v1/wrapped-keys/:content_id", () => {
     expect(r2.status).toBe(404);
   });
 
-  it("single_use row is consumed on first read", async () => {
+  // T6-K5 / owner decision D15: transmission no longer destroys the row.
+  // This assertion is the inverse of the one it replaces — it used to require
+  // the second read to 404, which is precisely the behaviour that lost a
+  // message whenever the first response was dropped. Lost-response survival
+  // is proved in test/integration/wrapped-key-reservation.test.ts.
+  it("single_use row is retained after a read, not consumed by transmission", async () => {
     const body = await seedWrappedKey({
       single_use: true,
       display_duration_seconds: 10,
@@ -527,7 +532,10 @@ describe("GET /v1/wrapped-keys/:content_id", () => {
     const r1 = await SELF.fetch(await signedGetUrl(body.content_id as string));
     expect(r1.status).toBe(200);
     const r2 = await SELF.fetch(await signedGetUrl(body.content_id as string));
-    expect(r2.status).toBe(404);
+    expect(r2.status).toBe(200);
+    expect(((await r2.json()) as Record<string, unknown>).wrapped_share_blob).toBe(
+      body.wrapped_share_blob,
+    );
   });
 
   it("unauthenticated callers cannot consume a single-use row", async () => {
@@ -552,6 +560,14 @@ describe("GET /v1/wrapped-keys/:content_id", () => {
     });
     const signedUrl = await signedGetUrl(body.content_id as string);
     expect((await SELF.fetch(signedUrl)).status).toBe(200);
+    // T6-K5: the read no longer removes the row, so free the content_id the
+    // way the sweep or a sender burn would before re-posting it. This is
+    // setup, not the subject — the subject is that the consuming-GET replay
+    // receipt still refuses the captured URL after the id is reinserted.
+    await testDb
+      .prepare("DELETE FROM wrapped_keys WHERE content_id = ?")
+      .bind(body.content_id)
+      .run();
     const capturedReplay = await postSignedWrappedKey(body, senderSigningKey);
     expect(capturedReplay.status).toBe(409);
     const reinsert = await postSignedWrappedKey(
@@ -586,7 +602,17 @@ describe("GET /v1/wrapped-keys/:content_id", () => {
     ).toBe(200);
   });
 
-  it("concurrent valid reads return a single-use row at most once", async () => {
+  // T6-K5 / owner decision D15. This test previously asserted that exactly
+  // one of four concurrent reads won and the other three 404'd, with the row
+  // gone afterwards. That server-enforced at-most-once delivery is the thing
+  // being traded away here, and it is stated plainly rather than quietly
+  // dropped: at-most-once is the SAME mechanism as delete-on-transmission, so
+  // it cannot coexist with lost-response survival until a reservation window
+  // plus a recipient-authenticated ACK exists (03-CONTRACTS/storage.md §3,
+  // deferred). Until then "fetched once" is a client-side property. The
+  // server's guarantee is that every fetch by the authenticated recipient
+  // returns the same bytes and destroys nothing.
+  it("concurrent valid reads all succeed and none destroys the row", async () => {
     const body = await seedWrappedKey({
       single_use: true,
       display_duration_seconds: 10,
@@ -598,30 +624,20 @@ describe("GET /v1/wrapped-keys/:content_id", () => {
       signedGetUrl(body.content_id as string),
     ]);
     const responses = await Promise.all(urls.map((url) => SELF.fetch(url)));
-    expect(responses.filter((r) => r.status === 200)).toHaveLength(1);
-    expect(responses.filter((r) => r.status === 404)).toHaveLength(3);
-    const successful = responses.find((r) => r.status === 200);
-    expect(successful).toBeDefined();
-    if (!successful) throw new Error("expected one successful read");
-    const successfulBody = (await successful.json()) as Record<string, unknown>;
-    expect(successfulBody.content_id).toBe(body.content_id);
-    expect(successfulBody.recipient_id).toBe(body.recipient_id);
-    expect(successfulBody.wrapped_share_blob).toBe(body.wrapped_share_blob);
-    const refusedBodies = await Promise.all(
-      responses
-        .filter((r) => r.status === 404)
-        .map((r) => r.json() as Promise<Record<string, unknown>>),
+    expect(responses.filter((r) => r.status === 200)).toHaveLength(4);
+    const bodies = await Promise.all(
+      responses.map((r) => r.json() as Promise<Record<string, unknown>>),
     );
-    expect(refusedBodies).toEqual([
-      { error: "unknown or burned content_id" },
-      { error: "unknown or burned content_id" },
-      { error: "unknown or burned content_id" },
-    ]);
+    for (const b of bodies) {
+      expect(b.content_id).toBe(body.content_id);
+      expect(b.recipient_id).toBe(body.recipient_id);
+      expect(b.wrapped_share_blob).toBe(body.wrapped_share_blob);
+    }
     const remaining = await testDb
       .prepare("SELECT COUNT(*) AS count FROM wrapped_keys WHERE content_id = ?")
       .bind(body.content_id)
       .first<{ count: number }>();
-    expect(remaining?.count).toBe(0);
+    expect(remaining?.count).toBe(1);
   });
 
   it("identity-key CAS blocks single-use consumption by a replaced key", async () => {

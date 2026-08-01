@@ -897,6 +897,28 @@ export async function fetchWrappedKeyAuthenticated(
   if (!row) return { status: "not_found" };
   const expired = Date.parse(row.expires_at) <= Date.now();
   if (row.single_use) {
+    // T6-K5 / owner decision D15 — "delete on ACKNOWLEDGED receipt, never on
+    // transmission." This arm used to issue the read and the DELETE in ONE
+    // db.batch(), so the only copy of a message was destroyed the instant it
+    // was handed to the socket. A dropped HTTP response therefore destroyed
+    // the message: the recipient saw nothing and had no way to recover it.
+    //
+    // The read is now non-destructive. A single-use row survives until its
+    // bounded `expires_at` (the POST route caps that at
+    // MAX_WRAPPED_KEY_LIFETIME_MS = 7 days) and is destroyed by the hourly
+    // `sweepExpiredPrivacyRows()` cron, by a sender burn, or by an identity
+    // rotation. A recipient whose response was lost simply re-signs and
+    // re-fetches, and gets the same row back.
+    //
+    // DELIBERATELY DEFERRED (not first-usable work): true single-use delivery
+    // WITH recovery — a reservation window plus a recipient-authenticated ACK
+    // that authorizes the delete (03-CONTRACTS/storage.md §3). The baseline
+    // schema has neither a `reserved_until` nor an `acked_at` column
+    // (migrations/0001_keyserver_baseline.sql), and no ACK route or Rust ACK
+    // client exists. Until those land, "fetched at most once" is a
+    // client-side property of this endpoint, not a server-enforced one. That
+    // is the correct trade: an over-fetch by the authenticated recipient of
+    // their own message is recoverable; a destroyed message is not.
     const nowSeconds = Math.floor(Date.now() / 1000);
     const cleanupStmt = db
       .prepare("DELETE FROM consuming_get_receipts WHERE expires_at < ?")
@@ -918,9 +940,16 @@ export async function fetchWrappedKeyAuthenticated(
         expectedRecipientEd25519Pub,
         nowSeconds + 10 * 60,
       );
-    const popStmt = db
+    // Reads the row instead of popping it. The predicates are unchanged from
+    // the DELETE this replaced, so the receipt-landed guard and the identity
+    // CAS still gate what may be served; only the destruction is gone.
+    const readStmt = db
       .prepare(
-        `DELETE FROM wrapped_keys
+        `SELECT content_id, content_type, system_message_kind,
+                sender_id, recipient_id, session_version, share_index,
+                wrapped_share_blob, blob_version, single_use,
+                display_duration_seconds, expires_at, created_at
+           FROM wrapped_keys
           WHERE content_id = ?3
             AND recipient_id = ?1
             AND single_use = 1
@@ -934,11 +963,7 @@ export async function fetchWrappedKeyAuthenticated(
             AND EXISTS (
               SELECT 1 FROM users
                WHERE user_id = ?1 AND ik_ed25519_pub = ?4
-            )
-        RETURNING content_id, content_type, system_message_kind,
-                  sender_id, recipient_id, session_version, share_index,
-                  wrapped_share_blob, blob_version, single_use,
-                  display_duration_seconds, expires_at, created_at`,
+            )`,
       )
       .bind(
         recipientId,
@@ -948,7 +973,7 @@ export async function fetchWrappedKeyAuthenticated(
       );
     let results: D1Result<WrappedKeyRow>[];
     try {
-      results = await db.batch([cleanupStmt, receiptStmt, popStmt]);
+      results = await db.batch([cleanupStmt, receiptStmt, readStmt]);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (/UNIQUE|PRIMARY/i.test(msg)) {
@@ -959,8 +984,8 @@ export async function fetchWrappedKeyAuthenticated(
     if ((results[1]?.meta?.changes ?? 0) !== 1) {
       return { status: "stale_identity" };
     }
-    const popped = results[2]?.results?.[0] as WrappedKeyRow | undefined;
-    if (!popped) {
+    const found = results[2]?.results?.[0] as WrappedKeyRow | undefined;
+    if (!found) {
       return (await identityKeyIsCurrent(
         db,
         recipientId,
@@ -969,10 +994,29 @@ export async function fetchWrappedKeyAuthenticated(
         ? { status: "not_found" }
         : { status: "stale_identity" };
     }
-    if (expired) return { status: "gone" };
+    if (expired) {
+      // Past its TTL: tombstone it and transmit nothing. Destroying a row we
+      // are refusing to serve is not delete-on-transmission — it is the
+      // bounded-retention half of the same rule, and the hourly sweep does
+      // exactly this for rows nobody re-reads.
+      await db
+        .prepare(
+          `DELETE FROM wrapped_keys
+            WHERE content_id = ?1
+              AND recipient_id = ?2
+              AND single_use = 1
+              AND EXISTS (
+                SELECT 1 FROM users
+                 WHERE user_id = ?2 AND ik_ed25519_pub = ?3
+              )`,
+        )
+        .bind(contentId, recipientId, expectedRecipientEd25519Pub)
+        .run();
+      return { status: "gone" };
+    }
     return {
       status: "ok",
-      row: { ...popped, single_use: true },
+      row: { ...found, single_use: true },
     };
   }
   if (!(await identityKeyIsCurrent(db, recipientId, expectedRecipientEd25519Pub))) {
