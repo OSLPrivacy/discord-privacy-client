@@ -9,13 +9,12 @@
 // visible controls.
 
 import { createServer as createHttpServer } from 'node:http';
-import { createReadStream, existsSync, globSync, readFileSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { createServer as createTcpServer } from 'node:net';
-import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { launchChrome } from './lib/cdp-harness.mjs';
 
 const SCRIPTS_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.dirname(SCRIPTS_DIR);
@@ -117,74 +116,6 @@ function getFreePort() {
   });
 }
 
-function locateChrome() {
-  const envPath = process.env.OSL_CHROME;
-  if (envPath && existsSync(envPath)) return envPath;
-  const home = os.homedir();
-  const patterns = [
-    `${home}/.cache/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell`,
-    `${home}/.cache/ms-playwright/chromium_headless_shell-*/chrome-linux/headless_shell`,
-    `${home}/.cache/ms-playwright/chromium-*/chrome-linux64/chrome`,
-    `${home}/.cache/ms-playwright/chromium-*/chrome-linux/chrome`,
-  ];
-  for (const pattern of patterns) {
-    const matches = globSync(pattern).sort();
-    if (matches.length > 0) return matches[matches.length - 1];
-  }
-  throw new Error('no Chrome/Chromium binary found; set OSL_CHROME to a local browser binary');
-}
-
-class CDPClient {
-  constructor(ws) {
-    this.ws = ws;
-    this.nextId = 1;
-    this.pending = new Map();
-    this.listeners = new Map();
-    ws.addEventListener('message', (event) => this.onMessage(event));
-  }
-
-  onMessage(event) {
-    const message = JSON.parse(event.data);
-    if (message.id !== undefined) {
-      const pending = this.pending.get(message.id);
-      if (!pending) return;
-      this.pending.delete(message.id);
-      if (message.error) pending.reject(new Error(message.error.message));
-      else pending.resolve(message.result);
-      return;
-    }
-    if (!message.method) return;
-    const listeners = this.listeners.get(message.method);
-    if (listeners) for (const listener of [...listeners]) listener(message.params, message.sessionId);
-  }
-
-  send(method, params = {}, sessionId) {
-    const id = this.nextId++;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      const payload = { id, method, params };
-      if (sessionId) payload.sessionId = sessionId;
-      this.ws.send(JSON.stringify(payload));
-    });
-  }
-
-  on(method, listener) {
-    if (!this.listeners.has(method)) this.listeners.set(method, new Set());
-    this.listeners.get(method).add(listener);
-    return () => this.listeners.get(method)?.delete(listener);
-  }
-
-  once(method, predicate = () => true) {
-    return new Promise((resolve) => {
-      const off = this.on(method, (params, sessionId) => {
-        if (!predicate(params, sessionId)) return;
-        off();
-        resolve(params);
-      });
-    });
-  }
-}
-
 // Runs inside the audited page.
 function auditPage() {
   function visible(el) {
@@ -278,82 +209,38 @@ function auditPage() {
   };
 }
 
-async function connectToChrome(chromeChild) {
-  let buffer = '';
-  const wsUrl = await new Promise((resolve, reject) => {
-    chromeChild.stderr.on('data', (chunk) => {
-      buffer += chunk.toString('utf8');
-      const match = buffer.match(/DevTools listening on (ws:\/\/\S+)/);
-      if (match) resolve(match[1]);
-    });
-    chromeChild.once('exit', (code) => reject(new Error(`Chrome exited before CDP was ready (${code})`)));
-    delay(15000).then(() => reject(new Error('timed out waiting for Chrome CDP')));
-  });
-  const cdpPort = new URL(wsUrl).port;
-  const versionInfo = await fetch(`http://127.0.0.1:${cdpPort}/json/version`).then((response) => response.json());
-  const ws = new WebSocket(versionInfo.webSocketDebuggerUrl || wsUrl);
-  await new Promise((resolve, reject) => {
-    ws.addEventListener('open', () => resolve());
-    ws.addEventListener('error', () => reject(new Error('WebSocket connection failed')));
-  });
-  return { cdp: new CDPClient(ws), ws, versionInfo };
-}
-
 async function run() {
   const pages = loadManifestPages();
   const expectedCombinations = pages.length * WIDTHS.length * ZOOMS.length;
   const port = await getFreePort();
   const server = await startStaticServer(port);
-  const chromeChild = spawn(locateChrome(), [
-    '--headless=new',
-    '--remote-debugging-port=0',
-    '--no-sandbox',
-    '--disable-gpu',
-    '--force-device-scale-factor=1',
-    'about:blank',
-  ], { stdio: ['ignore', 'ignore', 'pipe'] });
+  const chrome = await launchChrome();
 
-  let ws;
   try {
-    const connection = await connectToChrome(chromeChild);
-    const cdp = connection.cdp;
-    ws = connection.ws;
     const results = [];
     let totalVisibleControls = 0;
 
     for (const page of pages) {
-      const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
-      const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
+      const pageHandle = await chrome.openPage();
       try {
-        await cdp.send('Page.enable', {}, sessionId);
-        await cdp.send('Runtime.enable', {}, sessionId);
         for (const width of WIDTHS) {
           for (const zoom of ZOOMS) {
             const layoutWidth = zoom === 200 ? Math.round(width / 2) : width;
-            await cdp.send('Emulation.setDeviceMetricsOverride', {
+            await pageHandle.send('Emulation.setDeviceMetricsOverride', {
               width: layoutWidth,
               height: 900,
               deviceScaleFactor: 1,
               mobile: false,
-            }, sessionId);
-            const loaded = cdp.once('Page.loadEventFired', (_params, sid) => sid === sessionId);
-            await cdp.send('Page.navigate', { url: `http://127.0.0.1:${port}${page.route}` }, sessionId);
-            await loaded;
+            });
+            await pageHandle.navigate(`http://127.0.0.1:${port}${page.route}`);
             await delay(300);
-            const evaluated = await cdp.send('Runtime.evaluate', {
-              expression: `(${auditPage.toString()})()`,
-              returnByValue: true,
-            }, sessionId);
-            if (evaluated.exceptionDetails) {
-              throw new Error(evaluated.exceptionDetails.text || 'page audit threw');
-            }
-            const audit = evaluated.result.value;
+            const audit = await pageHandle.evaluate(`(${auditPage.toString()})()`);
             totalVisibleControls += audit.visibleControlCount;
             results.push({ page: page.route, width, zoom, layout_width: layoutWidth, ...audit });
           }
         }
       } finally {
-        await cdp.send('Target.closeTarget', { targetId }).catch(() => {});
+        await pageHandle.close();
       }
     }
 
@@ -390,10 +277,7 @@ async function run() {
     console.log(`\ncheck-a11y: ${results.length} combinations, ${blockingFindings} blocking findings.`);
     process.exit(blockingFindings > 0 || floorFailed ? 1 : 0);
   } finally {
-    if (ws) {
-      try { ws.close(); } catch { /* already closed */ }
-    }
-    chromeChild.kill('SIGTERM');
+    await chrome.close();
     server.close();
   }
 }
