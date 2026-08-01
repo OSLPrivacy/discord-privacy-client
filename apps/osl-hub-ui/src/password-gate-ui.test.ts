@@ -6,7 +6,7 @@ const core = readFileSync(new URL("./core.ts", import.meta.url), "utf8");
 
 describe("password gate UI", () => {
   it("routes every unlock through the typed role gate", () => {
-    expect(source).toContain("await checkUnlockScreenCredential(secret, duressSecret)");
+    expect(source).toContain("await checkUnlockScreenCredential(secret)");
     expect(source).not.toContain("unlockHubMainPassword");
     expect(core).not.toContain('invoke<unknown>("unlock_hub_main_password"');
   });

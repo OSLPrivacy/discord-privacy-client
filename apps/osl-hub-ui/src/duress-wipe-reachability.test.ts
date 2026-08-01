@@ -48,6 +48,8 @@ describe("duress wipe production reachability", () => {
     expect(duressBranch).toContain("setup = parseSetupState(null)");
     expect(duressBranch).toContain("structuredClone(unavailableCoreIntegration)");
     expect(duressBranch).toContain('onboardingRoute = "welcome"');
+    // D80: silent, for the same reason as the burn branch below.
+    expect(duressBranch).not.toMatch(/showToast/u);
     expect(duressBranch).not.toMatch(/\bgate\.outcome === "burned"\b/u);
     expect(duressBranch).not.toMatch(/\bgate\.burn\b/u);
     expect(duressBranch).not.toMatch(/\bfetch\s*\(/u);
@@ -68,7 +70,7 @@ describe("duress wipe production reachability", () => {
     );
     const unlockBranch = sourceBetween(
       unlockHandler,
-      "const gate = await checkUnlockScreenCredential(secret, duressSecret);",
+      "const gate = await checkUnlockScreenCredential(secret);",
       "core = await loadCoreIntegration();",
     );
     const burnedBranch = sourceBetween(
@@ -87,9 +89,15 @@ describe("duress wipe production reachability", () => {
     expect(burnedBranch).toContain("onboardingComplete = false;");
     expect(burnedBranch).toContain("structuredClone(unavailableCoreIntegration)");
     expect(burnedBranch).toContain('onboardingRoute = "welcome"');
-    expect(burnedBranch).toContain("showToast(gate.burn?.localCleanupComplete");
     expect(burnedBranch).toContain("render();");
     expect(burnedBranch).toContain("return;");
+    // D80: the burn branch used to end with
+    // `showToast("Verified local OSL cleanup completed")`. A toast announcing
+    // the cleanup is the loudest possible tell -- it is printed on the screen
+    // the person who took the device is holding. The burn and duress outcomes
+    // must land on the welcome screen silently, so that they are
+    // indistinguishable from a device that was simply never set up.
+    expect(burnedBranch).not.toMatch(/showToast/u);
 
     const mutation = unlockBranch.replace(
       "if (isVerifiedBurnGate(gate)) {",
@@ -101,23 +109,36 @@ describe("duress wipe production reachability", () => {
     ).toBe(-1);
   });
 
-  it("wires the burn-code path to the production duress engine", () => {
+  // D80 rewrote this test. It used to prove the burn code was reachable by
+  // asserting the SEPARATE `#identity-duress-pin` input and the separate
+  // `verify_duress_pin` verifier existed. Both are now security defects, so the
+  // same property -- "the burn code still reaches the production duress engine"
+  // -- is asserted through the single unified credential path instead.
+  it("wires the burn code to the production duress engine through the single unlock input", () => {
     const nativeMain = readRelative("../../osl-hub/src/main.rs");
     const startupGate = readRelative("../../osl-hub/src/startup_gate.rs");
     const uiCore = readRelative("./core.ts");
     const uiMain = readRelative("./main.ts");
 
-    expect(uiMain).toContain('id="identity-duress-pin"');
-    expect(uiMain).toContain("data-duress-pin");
-    expect(uiMain).toContain("unlockHubPasswordGate(secret, duressSecret || undefined)");
+    // One input, one call, one argument.
+    expect(uiMain).not.toContain("identity-duress-pin");
+    expect(uiMain).not.toContain("data-duress-pin");
+    expect(uiMain).toContain("return unlockHubPasswordGate(secret);");
     expect(uiMain).toContain("isVerifiedBurnGate(gate)");
-    expect(uiCore).toContain("duressPin?: string");
-    expect(uiCore).toContain("duressPin: hasDuressPin ? duressPin : null");
-    expect(nativeMain).toContain("duress_pin: Option<String>");
-    expect(nativeMain).toContain("startup_gate::verify_duress_pin");
+    expect(uiCore).toContain("export async function unlockHubPasswordGate(password: string)");
+    expect(uiCore).toContain('invoke<unknown>("unlock_hub_password_gate", { password })');
+    expect(uiCore).not.toMatch(/duressPin/u);
+
+    // One verifier on the native side, and it is the constant-time one that
+    // compares all four role hashes rather than testing for a burn code first.
+    expect(nativeMain).not.toMatch(/duress_pin/u);
+    expect(nativeMain).not.toMatch(/verify_duress_pin/u);
+    expect(nativeMain).toContain("startup_gate::verify_password_role(&verify_app.state::<HubCoreState>(), password)");
     expect(nativeMain).toContain(".duress_engine");
     expect(nativeMain).toContain(".execute()");
-    expect(startupGate).toContain("pub fn verify_duress_pin(");
-    expect(startupGate).toContain("GateMatch::Burn");
+    expect(startupGate).not.toMatch(/pub fn verify_duress_pin\(/u);
+    expect(startupGate).toContain("pub fn verify_password_role(");
+    expect(startupGate).toContain('"burn" => VerifiedGateRole::Burn');
+    expect(startupGate).toContain('"duress" => VerifiedGateRole::Duress');
   });
 });

@@ -121,78 +121,15 @@ fn role_after_duress_threshold(role: VerifiedGateRole, attempts_used: u32) -> Ve
     }
 }
 
-pub fn verify_duress_pin(
-    state: &HubCoreState,
-    pin: String,
-) -> Result<GatePasswordVerification, String> {
-    let dir =
-        keystore::osl_base_dir().map_err(|_| "OSL password storage is unavailable".to_owned())?;
-    let mut lock = ipc::main_password::read_lockout_pub(&dir);
-    let now = ipc::main_password::now_unix_secs_pub();
-    if let Some(until) = lock.password_locked_until {
-        if now < until {
-            return Ok(GatePasswordVerification {
-                role: VerifiedGateRole::Wrong,
-                lockout_seconds_remaining: until - now,
-                attempts_used: lock.password_failed_attempts,
-            });
-        }
-    }
-
-    let marker = ipc::main_password::read_marker_pub(&dir)?;
-    match ipc::main_password::verify_gate_password_with_marker(&marker, &pin)? {
-        ipc::main_password::GateMatch::Burn => {
-            lock.password_failed_attempts = 0;
-            lock.password_locked_until = None;
-            let _ = ipc::main_password::write_lockout_pub(&dir, &lock);
-            Ok(GatePasswordVerification {
-                role: VerifiedGateRole::Burn,
-                lockout_seconds_remaining: 0,
-                attempts_used: 0,
-            })
-        }
-        ipc::main_password::GateMatch::Duress => {
-            lock.password_failed_attempts = 0;
-            lock.password_locked_until = None;
-            let _ = ipc::main_password::write_lockout_pub(&dir, &lock);
-            ipc::main_password::execute_gate_duress(&state.osl)?;
-            Ok(GatePasswordVerification {
-                role: VerifiedGateRole::Duress,
-                lockout_seconds_remaining: 0,
-                attempts_used: 0,
-            })
-        }
-        ipc::main_password::GateMatch::Main(_)
-        | ipc::main_password::GateMatch::Stealth
-        | ipc::main_password::GateMatch::Wrong => {
-            match ipc::main_password::record_wrong_password_attempt_or_duress(
-                &state.osl, &mut lock, now,
-            )? {
-                ipc::main_password::WrongPasswordAttemptAction::Wrong {
-                    attempts_used,
-                    lockout_seconds_remaining,
-                } => {
-                    let _ = ipc::main_password::write_lockout_pub(&dir, &lock);
-                    Ok(GatePasswordVerification {
-                        role: VerifiedGateRole::Wrong,
-                        lockout_seconds_remaining,
-                        attempts_used,
-                    })
-                }
-                ipc::main_password::WrongPasswordAttemptAction::DuressTriggered {
-                    attempts_used,
-                } => {
-                    let _ = ipc::main_password::write_lockout_pub(&dir, &lock);
-                    Ok(GatePasswordVerification {
-                        role: VerifiedGateRole::Duress,
-                        lockout_seconds_remaining: 0,
-                        attempts_used,
-                    })
-                }
-            }
-        }
-    }
-}
+// D80: `verify_duress_pin` was deleted here. It existed only to serve the
+// separate "Burn code" input on the unlock screen, and it differed from
+// `verify_password_role` in exactly one way -- it treated a MAIN or STEALTH
+// match as a wrong attempt, because the field it backed was not supposed to
+// accept them. With one input that behaviour is precisely wrong, and the
+// function was doing its own lockout read, marker read and comparison, so the
+// two verifiers took measurably different amounts of work. `verify_password_role`
+// above is now the only way in: one Argon2 derivation, then a constant-time
+// comparison against all four role hashes at once.
 
 pub fn readiness_after_main(state: &HubCoreState) -> CoreReadiness {
     core_bridge::readiness(state)
@@ -394,7 +331,11 @@ mod tests {
     }
 
     #[test]
-    fn duress_pin_and_wrong_password_threshold_share_burn_path() {
+    // D80: both routes into duress now go through the SINGLE verifier the one
+    // unlock input calls. If a second verifier is ever reintroduced for a
+    // second field, this test still passes -- but the "no advertisement" tests
+    // in the UI suite will not.
+    fn duress_password_and_wrong_password_threshold_share_the_single_verifier() {
         let _serial = crate::global_keystore_test_lock();
         let _reset = KeystoreGlobalReset;
 
@@ -418,7 +359,7 @@ mod tests {
         ipc::main_password::set_file_storage_key(Some([0x41; 32]));
 
         let explicit_duress =
-            verify_duress_pin(&explicit_duress_state, "duress-pin-9381".to_owned()).unwrap();
+            verify_password_role(&explicit_duress_state, "duress-pin-9381".to_owned()).unwrap();
         assert_eq!(explicit_duress.role, VerifiedGateRole::Duress);
         assert_eq!(explicit_duress.attempts_used, 0);
         let explicit_result = HubGateUnlockResult::duress(explicit_duress);
@@ -458,7 +399,7 @@ mod tests {
         ipc::main_password::set_file_storage_key(Some([0x42; 32]));
 
         let threshold =
-            verify_duress_pin(&threshold_state, "wrong-threshold-pin-8421".to_owned()).unwrap();
+            verify_password_role(&threshold_state, "wrong-threshold-pin-8421".to_owned()).unwrap();
         assert_eq!(threshold.role, VerifiedGateRole::Duress);
         assert_eq!(
             threshold.attempts_used,

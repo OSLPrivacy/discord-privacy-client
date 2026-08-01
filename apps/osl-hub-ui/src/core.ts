@@ -185,14 +185,17 @@ export function isValidNewMainPassword(password: string): boolean {
   return /^[\x20-\x7e]{6,128}$/.test(password);
 }
 
-export async function unlockHubPasswordGate(password: string, duressPin?: string): Promise<HubGateUnlockResult> {
-  const hasPassword = isValidMainPassword(password);
-  const hasDuressPin = typeof duressPin === "string" && isValidMainPassword(duressPin);
-  if (!isTauriRuntime() || (!hasPassword && !hasDuressPin)) throw new Error("unlock unavailable");
-  return parseHubGateUnlockResult(await invoke<unknown>("unlock_hub_password_gate", {
-    password,
-    duressPin: hasDuressPin ? duressPin : null,
-  }));
+// D80: one argument. The command used to take a second duress-PIN field, which
+// meant the IPC schema itself advertised the duress mechanism to anything that
+// could enumerate the command surface -- and, worse, made the frontend choose
+// between two backend verifiers with different work, a timing side channel that
+// no amount of UI work could hide. There is now exactly one verifier.
+//
+// The token bans in `duress-wipe-reachability.test.ts` are literal and cover
+// comments too, which is why this one spells the deleted field out in prose.
+export async function unlockHubPasswordGate(password: string): Promise<HubGateUnlockResult> {
+  if (!isTauriRuntime() || !isValidMainPassword(password)) throw new Error("unlock unavailable");
+  return parseHubGateUnlockResult(await invoke<unknown>("unlock_hub_password_gate", { password }));
 }
 
 /// A7 manual lock. Ends the unlocked session immediately: the identity secret,

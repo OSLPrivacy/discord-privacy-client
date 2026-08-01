@@ -2421,7 +2421,17 @@ function secureRecoveryOnboardingContent(): string {
 
 function identityPasswordForm(title: string, action: string, mode: "setup" | "unlock"): string {
   const setup = mode === "setup";
-  if (!setup) return `<section class="unlock-card" aria-labelledby="route-heading"><div class="unlock-logo-stage" aria-hidden="true"><img class="osl-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/></div><h1 id="route-heading" tabindex="-1">Enter your password</h1><form class="password-form unlock-form" id="identity-password-form" data-password-mode="unlock" novalidate><label class="sr-only" for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="current-password" placeholder="Password" required aria-describedby="password-error" autofocus/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><label class="sr-only" for="identity-duress-pin">Burn code</label><div class="password-input-row"><input id="identity-duress-pin" type="password" minlength="6" maxlength="128" autocomplete="off" placeholder="Burn code" aria-describedby="password-error" data-duress-pin/><button class="password-eye" type="button" data-password-toggle="identity-duress-pin" aria-controls="identity-duress-pin" aria-label="Show burn code">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><button class="button primary" id="identity-password-submit" type="submit" disabled>Unlock</button></form><button class="text-back" data-onboarding="welcome">← Back</button></section>`;
+  // D80: ONE input. The value typed here is matched against the main, stealth
+  // and burn credentials by the same constant-time backend comparison, and the
+  // screen may not name, hint at, or reserve space for any of the alternates.
+  // A labelled "Burn code" row used to sit under this one; it told anyone who
+  // seized the device that a duress mechanism exists, which is the only thing
+  // a duress mechanism cannot survive. Nothing below may reintroduce that --
+  // not as visible text, not as a placeholder, not as an `sr-only` label,
+  // `aria-label`, `title`, `autocomplete` token or `data-` attribute, because
+  // the accessibility tree is a published surface this project already drives
+  // the app through. See `unlock-screen-single-credential.test.ts`.
+  if (!setup) return `<section class="unlock-card" aria-labelledby="route-heading"><div class="unlock-logo-stage" aria-hidden="true"><img class="osl-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/></div><h1 id="route-heading" tabindex="-1">Enter your password</h1><form class="password-form unlock-form" id="identity-password-form" data-password-mode="unlock" novalidate><label class="sr-only" for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="current-password" placeholder="Password" required aria-describedby="password-error" autofocus/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><button class="button primary" id="identity-password-submit" type="submit" disabled>Unlock</button></form><button class="text-back" data-onboarding="welcome">← Back</button></section>`;
   return `<h1 id="route-heading" tabindex="-1">${title}</h1><form class="setup-surface password-form" id="identity-password-form" data-password-mode="setup" novalidate><label for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="new-password" required aria-describedby="password-help password-error"/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><small id="password-help">6 minimum. 12+ suggested.</small><label for="identity-password-confirm">Confirm</label><div class="password-input-row"><input id="identity-password-confirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="identity-password-confirm" aria-controls="identity-password-confirm" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><button class="button primary" id="identity-password-submit" type="submit" disabled>${action}</button></form><button class="text-back" data-onboarding="welcome">← Back</button>`;
 }
 
@@ -2901,22 +2911,15 @@ async function runMullvadSetupAction(action: "install" | "open"): Promise<void> 
 function bindPasswordForm(): void {
   const form = document.querySelector<HTMLFormElement>("#identity-password-form");
   const password = document.querySelector<HTMLInputElement>("#identity-password");
-  const duressPin = document.querySelector<HTMLInputElement>("#identity-duress-pin");
   const confirm = document.querySelector<HTMLInputElement>("#identity-password-confirm");
   const submit = document.querySelector<HTMLButtonElement>("#identity-password-submit");
   const error = document.querySelector<HTMLElement>("#password-error");
   if (!form || !password || !submit || !error) return;
   const validate = (): void => {
-    const passwordValid = form.dataset.passwordMode === "setup"
+    const valid = form.dataset.passwordMode === "setup"
       ? isValidNewMainPassword(password.value)
       : isValidMainPassword(password.value);
-    const duressValid = form.dataset.passwordMode === "unlock" && Boolean(duressPin?.value)
-      ? isValidMainPassword(duressPin?.value ?? "")
-      : true;
-    const valid = form.dataset.passwordMode === "unlock"
-      ? passwordValid || (Boolean(duressPin?.value) && duressValid)
-      : passwordValid;
-    submit.disabled = !valid || !duressValid || Boolean(confirm && confirm.value !== password.value);
+    submit.disabled = !valid || Boolean(confirm && confirm.value !== password.value);
     // A submit button that silently stays dead reads as a broken app. Two
     // mismatched password fields already disabled it above, but this line used
     // to clear the error region on every keystroke, so nothing ever said why --
@@ -2929,7 +2932,6 @@ function bindPasswordForm(): void {
     error.textContent = confirmMismatch ? "Both passwords must match." : "";
   };
   password.addEventListener("input", validate);
-  duressPin?.addEventListener("input", validate);
   confirm?.addEventListener("input", validate);
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -2937,16 +2939,15 @@ function bindPasswordForm(): void {
     const setupMode = form.dataset.passwordMode === "setup";
     const idleLabel = submit.textContent ?? (setupMode ? "Create account" : "Unlock");
     let secret = password.value;
-    let duressSecret = !setupMode && duressPin ? duressPin.value : "";
-    const duressAttempt = duressSecret.length > 0;
+    // D80: every unlock outcome leaves the busy state at the same wall-clock
+    // moment. See `unlockTransitionFloor`.
+    const settleUnlockTransition = setupMode ? async (): Promise<void> => {} : unlockTransitionFloor();
     form.setAttribute("aria-busy", "true");
     password.disabled = true;
-    if (duressPin) duressPin.disabled = true;
     if (confirm) confirm.disabled = true;
     submit.disabled = true;
     submit.textContent = setupMode ? "Creating account…" : "Unlocking…";
     if (!setupMode) password.value = "";
-    if (duressPin) duressPin.value = "";
     try {
       if (setupMode) {
         const identity = core.readiness.identityLoaded ? null : await createHubOslIdentity(true);
@@ -2971,19 +2972,21 @@ function bindPasswordForm(): void {
         onboardingRoute = "recovery";
         await proveRecoveryCaptureProtection();
       } else {
-        const gate = await checkUnlockScreenCredential(secret, duressSecret);
+        const gate = await checkUnlockScreenCredential(secret);
         secret = "";
-        duressSecret = "";
         if (gate.outcome === "wrong") {
+          // D80: the message may not name the alternates. "Password or burn
+          // code not recognized" told a shoulder-surfer that a burn code is a
+          // thing you can type here.
           error.textContent = gate.lockoutSecondsRemaining > 0
             ? `Try again in ${gate.lockoutSecondsRemaining} seconds.`
-            : "Password or burn code not recognized.";
+            : "Password not recognized.";
+          await settleUnlockTransition();
           form.removeAttribute("aria-busy");
           password.disabled = false;
-          if (duressPin) duressPin.disabled = false;
           submit.disabled = false;
           submit.textContent = idleLabel;
-          (duressAttempt ? duressPin : password)?.focus();
+          password.focus();
           return;
         }
         if (gate.outcome === "decoy") {
@@ -2993,6 +2996,7 @@ function bindPasswordForm(): void {
           passwordRoleStatus = null;
           route = "onboarding";
           onboardingRoute = "decoy";
+          await settleUnlockTransition();
           render();
           return;
         }
@@ -3006,7 +3010,10 @@ function bindPasswordForm(): void {
           core = structuredClone(unavailableCoreIntegration);
           route = "onboarding";
           onboardingRoute = "welcome";
-          showToast("OSL signed out on this device");
+          // D80: no toast. "OSL signed out on this device" announced that
+          // something happened; landing silently on the welcome screen is
+          // indistinguishable from a device that was never set up.
+          await settleUnlockTransition();
           render();
           return;
         }
@@ -3020,14 +3027,24 @@ function bindPasswordForm(): void {
           core = structuredClone(unavailableCoreIntegration);
           route = "onboarding";
           onboardingRoute = "welcome";
-          showToast(gate.burn?.localCleanupComplete ? "Verified local OSL cleanup completed" : "OSL cleanup needs attention");
+          // D80: no toast. "Verified local OSL cleanup completed" was a
+          // confession printed on the screen the adversary is holding.
+          await settleUnlockTransition();
           render();
           return;
         }
         if (!gate.readiness?.unlocked) throw new Error("OSL did not unlock");
-        core = await loadCoreIntegration();
-        services = await loadLinkedServices().catch(() => services);
-        passwordRoleStatus = await loadHubPasswordRoleStatus().catch(() => null);
+        // D80: concurrent, not sequential. Three chained IPC round trips made a
+        // real unlock measurably slower than every alternate outcome, which is
+        // the side channel this ruling is about.
+        const [unlockedCore, unlockedServices, unlockedRoles] = await Promise.all([
+          loadCoreIntegration(),
+          loadLinkedServices().catch(() => services),
+          loadHubPasswordRoleStatus().catch(() => null),
+        ]);
+        core = unlockedCore;
+        services = unlockedServices;
+        passwordRoleStatus = unlockedRoles;
         // T15-A8: an unsaved recovery kit outranks a "finished" onboarding.
         // Deferring the kit used to be indistinguishable from never having
         // been offered it, because nothing survived the unlock.
@@ -3045,10 +3062,9 @@ function bindPasswordForm(): void {
         }
       }
       secret = "";
-      duressSecret = "";
       password.value = "";
-      if (duressPin) duressPin.value = "";
       if (confirm) confirm.value = "";
+      await settleUnlockTransition();
       render();
       if (discordQaShell && core.readiness.unlocked) void startDiscordQaShell();
       if (route === "onboarding" && onboardingRoute === "browser") void refreshBrowserImportReadiness();
@@ -3057,11 +3073,10 @@ function bindPasswordForm(): void {
       const refreshedCore = await withNativeDeadline(loadCoreIntegration(), "Check OSL account", bootPreferenceDeadlineMs).catch(() => null);
       if (!refreshedCore) {
         secret = "";
-        duressSecret = "";
         error.textContent = "OSL could not verify the account state. Try again.";
+        await settleUnlockTransition();
         form.removeAttribute("aria-busy");
         password.disabled = false;
-        if (duressPin) duressPin.disabled = false;
         if (confirm) confirm.disabled = false;
         submit.disabled = false;
         submit.textContent = idleLabel;
@@ -3104,7 +3119,6 @@ function bindPasswordForm(): void {
         return;
       }
       secret = "";
-      duressSecret = "";
       if (setupMode && readiness.bootstrapStatus === "setupRequired" && readiness.identityLoaded) {
         error.textContent = "Account created. Create its password to continue.";
       } else {
@@ -3120,8 +3134,37 @@ function bindPasswordForm(): void {
   });
 }
 
-async function checkUnlockScreenCredential(secret: string, duressSecret = ""): Promise<Awaited<ReturnType<typeof unlockHubPasswordGate>>> {
-  return unlockHubPasswordGate(secret, duressSecret || undefined);
+// D80: the unlock screen has one input, so it has one call. The value goes to
+// the single constant-time role comparison in the backend, which decides
+// between main, stealth, burn and duress. The frontend never learns which
+// credential it is holding and never branches before the call -- there is no
+// "is this the burn code?" test on this side to time, and no second command
+// whose mere presence in the IPC surface would advertise the mechanism.
+async function checkUnlockScreenCredential(secret: string): Promise<Awaited<ReturnType<typeof unlockHubPasswordGate>>> {
+  return unlockHubPasswordGate(secret);
+}
+
+/// D80 timing equalizer. Every unlock outcome -- main, stealth, burn, duress
+/// and wrong -- must leave the busy state at the same wall-clock moment, or an
+/// adversary who has watched one ordinary unlock can classify the next one by
+/// stopwatch. This returns a gate, armed at submit, that all five branches
+/// await immediately before they touch the DOM.
+///
+/// It is a floor, not a clamp: it can only hold a fast outcome back to the
+/// deadline, it cannot pull a slow one forward. That is why the successful
+/// branch above also loads its three post-unlock IPCs concurrently -- the goal
+/// is that the slowest path still fits inside the floor. The one residual is
+/// the burn outcome, whose backend cleanup is awaited before the command
+/// returns and includes network-bound remote unregistration; see the report.
+const unlockTransitionFloorMs = 1200;
+
+function unlockTransitionFloor(): () => Promise<void> {
+  const armedAt = Date.now();
+  return async (): Promise<void> => {
+    const remaining = unlockTransitionFloorMs - (Date.now() - armedAt);
+    if (remaining <= 0) return;
+    await new Promise<void>((resolve) => { setTimeout(resolve, remaining); });
+  };
 }
 
 function isVerifiedBurnGate(gate: Awaited<ReturnType<typeof unlockHubPasswordGate>>): boolean {
@@ -8955,6 +8998,18 @@ export const __oslHubUiTest = {
   renderRouteShell(destination: Route): string {
     route = destination;
     return destination === "onboarding" ? onboardingShellMarkup() : workspaceShellMarkup();
+  },
+  /** D80: the rendered onboarding screen, markup only, for the unlock-screen
+   * advertisement audit in `unlock-screen-single-credential.test.ts`. */
+  renderOnboardingRoute(destination: OnboardingRoute): string {
+    route = "onboarding";
+    onboardingRoute = destination;
+    return onboardingContent();
+  },
+  /** D80: binds the real unlock form handler against a caller-supplied DOM so
+   * the credential path can be driven end to end rather than string-matched. */
+  bindUnlockForm(): void {
+    bindPasswordForm();
   },
   renderOnboardingSendModes(sendMode: SendMode = "manual"): string {
     route = "onboarding";
