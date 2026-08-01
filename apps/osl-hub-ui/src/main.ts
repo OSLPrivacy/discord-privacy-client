@@ -18,6 +18,7 @@ import {
   type SetupState,
 } from "./state";
 import { isTauriRuntime, loadOnboardingPreferences, saveOnboardingPreferences } from "./preferences";
+import { groupOnboardingApps } from "./onboarding-app-groups";
 import { lastBackendFailure, recordBackendFailure } from "./backend-failure";
 import {
   escapeHtml,
@@ -1658,14 +1659,12 @@ function tutorialContent(): string {
 function chooseAppsOnboardingContent(): string {
   const apps = homeAppsFromServices(services)
     .filter((app) => app.visibility === "launch" && app.launchState === "available");
-  const detectedIds = new Set(apps.filter((app) => {
-    const native = nativeApps.find((candidate) => candidate.id === app.id);
-    return app.linked
-      || native?.availability === "installed"
-      || (savedAccountsReady && importedFirefoxHomeAppIds.has(app.id));
-  }).map((app) => app.id));
-  const detected = apps.filter((app) => detectedIds.has(app.id));
-  const other = apps.filter((app) => !detectedIds.has(app.id));
+  const { connected, browserHistory, other } = groupOnboardingApps({
+    apps,
+    nativeApps,
+    savedAccountsReady,
+    importedBrowserAppIds: importedFirefoxHomeAppIds,
+  });
   const choices = (items: HomeAppCatalogEntry[], label: string) => items.length
     ? `<div class="onboarding-app-grid onboarding-app-choices" role="group" aria-label="${label}">${items.map((app) => `<button type="button" class="onboarding-app ${selectedOnboardingApps.has(app.id) ? "selected" : ""}" data-onboarding-app-choice="${app.id}" aria-pressed="${selectedOnboardingApps.has(app.id)}"><span class="app-logo-plate">${homeAppLogo(app)}</span><strong>${escapeHtml(app.displayName)}</strong></button>`).join("")}</div>`
     : `<p class="saved-account-truth">None</p>`;
@@ -1673,7 +1672,7 @@ function chooseAppsOnboardingContent(): string {
   const continueLabel = nativeCatalogBusy
     ? defaultContinueLabel
     : selectedOnboardingApps.size > 0 ? defaultContinueLabel : "Skip apps";
-  return `<h1 id="route-heading" tabindex="-1">Choose apps</h1><p class="compact-lead onboarding-centered-copy">Pick available apps for Home, or skip this for now. Nothing opens during setup.</p><section class="onboarding-app-section"><h2>Detected</h2>${choices(detected, "Detected apps")}</section><section class="onboarding-app-section"><h2>Other apps</h2>${choices(other, "Other apps")}</section><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-app-choice" type="button" ${nativeCatalogBusy ? "disabled" : ""}>${continueLabel}</button></div>`;
+  return `<h1 id="route-heading" tabindex="-1">Choose apps</h1><p class="compact-lead onboarding-centered-copy">Pick available apps for Home, or skip this for now. Nothing opens during setup.</p><section class="onboarding-app-section"><h2>Connected</h2>${choices(connected, "Connected apps")}</section><section class="onboarding-app-section"><h2>Seen in your browser history</h2>${choices(browserHistory, "Apps seen in your browser history")}</section><section class="onboarding-app-section"><h2>Other apps</h2>${choices(other, "Other apps")}</section><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-app-choice" type="button" ${nativeCatalogBusy ? "disabled" : ""}>${continueLabel}</button></div>`;
 }
 
 async function enterCombinedAppChoice(): Promise<void> {
