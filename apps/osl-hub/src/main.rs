@@ -5817,10 +5817,16 @@ async fn revoke_active_hub_friend_scope(
     storage_key: String,
 ) -> Result<PersonDto, String> {
     let _session = session.transition.lock().await;
-    let _active = require_current_context_host(&app, &core, &broker_state, &context_token)?;
+    let active = require_current_context_host(&app, &core, &broker_state, &context_token)?;
     let person_id = broker_state.manual_reach_target(&context_token, &person_id)?;
-    let person =
-        security::revoke_friend_scope_entry(&core, &security_state, person_id, storage_key)?;
+    let person = security::revoke_friend_scope_entry(
+        &core,
+        &security_state,
+        &active.service_id,
+        &active.account_id,
+        person_id,
+        storage_key,
+    )?;
     let _still_active = require_current_context_host(&app, &core, &broker_state, &context_token)?;
     Ok(person)
 }

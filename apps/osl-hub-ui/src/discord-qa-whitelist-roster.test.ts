@@ -183,7 +183,11 @@ describe("whitelist roster", () => {
     expect(reachCommand).toContain("let _still_active = require_current_context_host(&app, &core, &broker_state, &context_token)?;");
     const revokeCommand = body("async fn revoke_active_hub_friend_scope(", "async fn get_active_hub_context_security(", hubMain);
     expect(revokeCommand).toContain("broker_state.manual_reach_target(&context_token, &person_id)?");
-    expect(revokeCommand).toContain("security::revoke_friend_scope_entry(&core, &security_state, person_id, storage_key)?");
+    expect(revokeCommand).toContain("security::revoke_friend_scope_entry(");
+    // A5-F4: the revoke has to be scoped to the live context's service +
+    // account, because that is what the manual grant's namespace is built from.
+    expect(revokeCommand).toContain("&active.service_id,");
+    expect(revokeCommand).toContain("&active.account_id,");
     expect(hubCommandSurface).toContain("            set_active_hub_friend_reach,");
     expect(hubCommandSurface).toContain("            revoke_active_hub_friend_scope,");
     expect(hubPermissions).toContain('commands.allow = ["set_active_hub_friend_reach"]');
