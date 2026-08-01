@@ -152,6 +152,11 @@ pub const SESSION_VERSION_V1: u32 = 1;
 /// [`ReceiverChain::decrypt_at`].
 pub const MAX_SKIPPED_PER_CHAIN: usize = 1000;
 
+/// Maximum receiver chains retained for one peer. The physical device id
+/// arrives on the wire, so this bounds both retained skipped keys and the
+/// number of receiver chains an inbound message can make us search.
+pub const MAX_RECEIVER_CHAINS_PER_PEER: usize = 32;
+
 /// TTL for cached skipped message keys.
 pub const SKIPPED_KEY_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
@@ -870,10 +875,21 @@ impl ReceiverChain {
 /// Orchestrator for a participant's sender-keys state in a group:
 /// one outgoing [`SenderChain`] (optional — set via
 /// [`Self::install_sender`]) plus a map of
-/// `peer_id → ReceiverChain` for incoming senders.
+/// `peer_id → bounded receiver-chain LRU` for incoming senders.
 pub struct SenderKeyState {
     sender: Option<SenderChain>,
     receivers: HashMap<Vec<u8>, Vec<ReceiverChain>>,
+}
+
+/// Observable result of installing a receiver chain.
+///
+/// `evicted_physical_device_id` identifies the least-recently-used chain
+/// removed to enforce [`MAX_RECEIVER_CHAINS_PER_PEER`]. Callers that persist
+/// or surface receiver-chain changes can record the eviction instead of
+/// silently losing the chain.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReceiverChainInstall {
+    pub evicted_physical_device_id: Option<PhysicalDeviceId>,
 }
 
 impl Default for SenderKeyState {
@@ -929,18 +945,29 @@ impl SenderKeyState {
         chain_id: u32,
         rotation_root: &[u8; 32],
         physical_device_id: PhysicalDeviceId,
-    ) -> Result<()> {
+    ) -> Result<ReceiverChainInstall> {
         let chain = ReceiverChain::install(chain_id, rotation_root, physical_device_id)?;
         let chains = self.receivers.entry(peer_id).or_default();
-        if let Some(existing) = chains
-            .iter_mut()
-            .find(|c| c.physical_device_id == physical_device_id)
+        if let Some(existing_idx) = chains
+            .iter()
+            .position(|c| c.physical_device_id == physical_device_id)
         {
-            *existing = chain;
-        } else {
+            // The vector is ordered least- to most-recently used. A fresh
+            // distribution for an existing device refreshes that device.
+            chains.remove(existing_idx);
             chains.push(chain);
+        } else {
+            let evicted_physical_device_id = if chains.len() == MAX_RECEIVER_CHAINS_PER_PEER {
+                Some(chains.remove(0).physical_device_id())
+            } else {
+                None
+            };
+            chains.push(chain);
+            return Ok(ReceiverChainInstall {
+                evicted_physical_device_id,
+            });
         }
-        Ok(())
+        Ok(ReceiverChainInstall::default())
     }
 
     /// Rotate an existing peer's receiver chain to a new
@@ -953,18 +980,19 @@ impl SenderKeyState {
         rotation_root: &[u8; 32],
         physical_device_id: PhysicalDeviceId,
     ) -> Result<()> {
-        let chain = self
-            .receivers
-            .get_mut(peer_id)
-            .and_then(|chains| {
-                chains
-                    .iter_mut()
-                    .find(|c| c.physical_device_id == physical_device_id)
-            })
+        let chains = self.receivers.get_mut(peer_id).ok_or_else(|| {
+            Error::Internal("sender keys: no receiver chain for peer physical_device_id".into())
+        })?;
+        let chain_idx = chains
+            .iter()
+            .position(|c| c.physical_device_id == physical_device_id)
             .ok_or_else(|| {
                 Error::Internal("sender keys: no receiver chain for peer physical_device_id".into())
             })?;
-        chain.rotate_to(chain_id, rotation_root)
+        chains[chain_idx].rotate_to(chain_id, rotation_root)?;
+        let recently_used = chains.remove(chain_idx);
+        chains.push(recently_used);
+        Ok(())
     }
 
     pub fn receiver_chain(&self, peer_id: &[u8]) -> Option<&ReceiverChain> {
@@ -1005,14 +1033,20 @@ impl SenderKeyState {
         msg: &EncryptedMessage,
         ctx: &SenderContext,
     ) -> Result<Vec<u8>> {
-        let chain = self
+        let chains = self
             .receivers
             .get_mut(peer_id)
             .ok_or_else(|| Error::Internal("sender keys: no receiver chain for peer".into()))?;
         let mut last_err = None;
-        for candidate in chain {
-            match candidate.decrypt(msg, ctx) {
-                Ok(plaintext) => return Ok(plaintext),
+        for idx in 0..chains.len() {
+            match chains[idx].decrypt(msg, ctx) {
+                Ok(plaintext) => {
+                    // A successful decrypt is a receiver-chain use, so make
+                    // it most-recently used before returning.
+                    let recently_used = chains.remove(idx);
+                    chains.push(recently_used);
+                    return Ok(plaintext);
+                }
                 Err(err) => last_err = Some(err),
             }
         }
@@ -1049,6 +1083,8 @@ pub enum SenderKeyPersistError {
     },
     #[error("sender-key state on-disk: physical_device_id binding absent")]
     MissingPhysicalDeviceId,
+    #[error("sender-key state on-disk: peer has more than {max} receiver chains")]
+    ReceiverChainLimitExceeded { max: usize },
 }
 
 /// Persistable mirror of [`SenderKeyState`]. Inner byte arrays are
@@ -1208,7 +1244,13 @@ impl TryFrom<SenderKeyStateOnDisk> for SenderKeyState {
                         source,
                     })?;
             let chain: ReceiverChain = chain_disk.try_into()?;
-            receivers.entry(peer_bytes).or_default().push(chain);
+            let chains = receivers.entry(peer_bytes).or_default();
+            if chains.len() == MAX_RECEIVER_CHAINS_PER_PEER {
+                return Err(SenderKeyPersistError::ReceiverChainLimitExceeded {
+                    max: MAX_RECEIVER_CHAINS_PER_PEER,
+                });
+            }
+            chains.push(chain);
         }
         Ok(SenderKeyState { sender, receivers })
     }
