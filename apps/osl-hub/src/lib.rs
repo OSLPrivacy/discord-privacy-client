@@ -29,6 +29,7 @@ pub mod hosted_audience;
 pub mod hosted_port;
 pub mod hosted_provider_recipe;
 pub mod hosted_session_port;
+pub mod invite_clipboard;
 pub mod models;
 pub mod mullvad_window_host;
 pub mod native_apps;

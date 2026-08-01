@@ -128,18 +128,62 @@ export function friendHandshakeDetail(
 export interface FriendInviteCardOptions {
   readonly sectionClass: string;
   readonly labelId: string;
+  /**
+   * The full `OSLFR1.` invite exactly as `export_friend_code` produced it.
+   * Required, not optional: a card that silently omits it is the defect this
+   * field exists to prevent.
+   */
+  readonly friendCode: string;
 }
 
 /**
  * The "Your friend ID" card. The note must state both directions: an invite
  * that only travels one way leaves the other person unable to add you.
+ *
+ * The card renders the whole invite, not only the shortened friend ID. The
+ * shortened form is a label -- it cannot be sent to anyone, because it is not
+ * the value `add_hub_friend` accepts. Printing only that left every desktop
+ * without a working clipboard helper with no way at all to get the invite out
+ * of the app. Selectable text needs no helper and no permission, so it is the
+ * export route that cannot fail; the copy button is the convenience on top.
  */
 export function friendInviteCardMarkup(
   compactFriendId: string,
   escapeHtml: (value: string) => string,
   options: FriendInviteCardOptions,
 ): string {
-  return `<section class="${options.sectionClass}" aria-labelledby="${options.labelId}"><div><span id="${options.labelId}">Your friend ID</span><code>${escapeHtml(compactFriendId)}</code></div><button class="button" id="copy-friend-code" type="button">Copy invite</button><p>Send your invite to someone you trust, and add theirs here. Both people must do this — no request ever arrives on its own.</p></section>`;
+  const inviteLabelId = `${options.labelId}-full-invite`;
+  return `<section class="${options.sectionClass}" aria-labelledby="${options.labelId}"><div><span id="${options.labelId}">Your friend ID</span><code>${escapeHtml(compactFriendId)}</code></div><button class="button" id="copy-friend-code" type="button">Copy invite</button><div class="friend-invite-full"><span id="${inviteLabelId}">Your full invite</span><code class="friend-invite-code" data-friend-invite tabindex="0" aria-labelledby="${inviteLabelId}">${escapeHtml(options.friendCode)}</code></div><p>Send your invite to someone you trust, and add theirs here. Both people must do this — no request ever arrives on its own. If copying does not work, select the invite above and copy it by hand.</p></section>`;
+}
+
+/**
+ * The toast for an invite export that did not happen, keeping the backend's
+ * own reason.
+ *
+ * The generic half stays first so the outcome is readable at a glance, and the
+ * specific half follows so the operator can tell a missing clipboard tool from
+ * a locked identity. `reason` has already been through
+ * `sanitizeBackendMessage`, which is where the judgement about what may be
+ * shown lives.
+ */
+export function inviteCopyFailureToast(reason: string): string {
+  const detail = reason.trim();
+  return detail ? `Could not copy the invite · ${detail}` : "Could not copy the invite";
+}
+
+/**
+ * The add-friend status line for an attempt that changed nothing.
+ *
+ * "Nothing changed" was already true and stays. What was missing is *why*: a
+ * malformed paste, an invalid signature and an identity-key change are three
+ * different problems with three different fixes, and the operator could not
+ * tell them apart.
+ */
+export function addFriendFailureStatus(reason: string): string {
+  const detail = reason.trim();
+  return detail
+    ? `The invite could not be added. Nothing changed. ${detail}`
+    : "The invite could not be added. Nothing changed.";
 }
 
 export interface FriendVerificationCopy {

@@ -175,11 +175,11 @@ describe("optional OSL Privacy adapters", () => {
   it("copies a friend invite through the argument-free native command", async () => {
     const friendCode = "OSLFR1.ABCDEFGHIJKLMNOP";
     mocks.invoke.mockResolvedValueOnce(undefined);
-    await expect(copyHubFriendInvite(friendCode)).resolves.toBe(true);
+    await expect(copyHubFriendInvite(friendCode)).resolves.toEqual({ copied: true, reason: "" });
     expect(mocks.invoke).toHaveBeenCalledWith("copy_hub_friend_invite");
 
     mocks.invoke.mockClear();
-    await expect(copyHubFriendInvite("not-an-invite")).resolves.toBe(false);
+    expect(await copyHubFriendInvite("not-an-invite")).toMatchObject({ copied: false });
     expect(mocks.invoke).not.toHaveBeenCalled();
   });
 
@@ -188,7 +188,7 @@ describe("optional OSL Privacy adapters", () => {
     vi.stubGlobal("navigator", { clipboard: { writeText } });
     mocks.isTauriRuntime.mockReturnValue(false);
     const friendCode = "OSLFR1.ABCDEFGHIJKLMNOP";
-    await expect(copyHubFriendInvite(friendCode)).resolves.toBe(true);
+    await expect(copyHubFriendInvite(friendCode)).resolves.toEqual({ copied: true, reason: "" });
     expect(writeText).toHaveBeenCalledWith(friendCode);
     expect(mocks.invoke).not.toHaveBeenCalled();
     vi.unstubAllGlobals();

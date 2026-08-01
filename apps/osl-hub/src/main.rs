@@ -5526,6 +5526,13 @@ async fn export_hub_friend_code(
 
 /// Copy only the current identity's freshly signed friend invite. This command
 /// accepts no text and exposes no clipboard-read or generic write surface.
+///
+/// Every desktop gets a real attempt. Windows uses the Win32 clipboard API
+/// directly; everywhere else the invite is handed to whichever clipboard helper
+/// the session has, and a desktop with none is told so by name rather than being
+/// told the feature belongs to another platform. The invite is also rendered as
+/// selectable text in the invite card, so a refusal here is never the only way
+/// out of the app.
 #[tauri::command]
 async fn copy_hub_friend_invite(
     core: State<'_, HubCoreState>,
@@ -5544,8 +5551,11 @@ async fn copy_hub_friend_invite(
     }
     #[cfg(not(windows))]
     {
-        let _ = friend_code;
-        Err("Copy invite is available in the Windows app".to_owned())
+        tokio::task::spawn_blocking(move || {
+            osl_privacy_hub::invite_clipboard::write_desktop_clipboard_text(&friend_code)
+        })
+        .await
+        .map_err(|_| "The clipboard operation was interrupted".to_owned())?
     }
 }
 

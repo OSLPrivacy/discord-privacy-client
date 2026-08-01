@@ -1,6 +1,7 @@
 import "@fontsource-variable/inter/wght.css";
 import "./styles.css";
 import "./local-protected-sheet.css";
+import "./friend-invite.css";
 import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -144,7 +145,7 @@ import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./
 import { OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
 import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, type OslChatDeliveryHost } from "./osl-chat-runtime";
 import { parseCircleAudience, type CircleAudience } from "./osl-collab";
-import { bindFriendRemovalControls, bindMainWindowFocusChanges, friendHandshakeDetail, friendHandshakeSummary, friendInviteCardMarkup, friendRemovalButtonMarkup, friendTrustAction, friendVerificationCopy, ownedConfirmationSubmitDisabled, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat, verificationSubmission, type FriendVerificationCopy } from "./ui-behavior";
+import { addFriendFailureStatus, bindFriendRemovalControls, bindMainWindowFocusChanges, friendHandshakeDetail, friendHandshakeSummary, friendInviteCardMarkup, friendRemovalButtonMarkup, friendTrustAction, friendVerificationCopy, inviteCopyFailureToast, ownedConfirmationSubmitDisabled, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat, verificationSubmission, type FriendVerificationCopy } from "./ui-behavior";
 import { RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT, recoveryKitReducer, recoveryKitView, visibleRecoverySecrets, type RecoveryKitAction, type RecoveryKitState, type RecoveryKitView } from "./recovery-kit";
 import { clearRecoveryKitUnsaved, markRecoveryKitUnsaved, recoveryKitUnsaved, resumeOnboardingRoute } from "./onboarding-resume";
 import { BurnGuaranteeCopy, type BurnGuaranteeState } from "./two-step-burn";
@@ -4284,7 +4285,7 @@ function peopleDestinationContent(): string {
     ? peopleListMarkup("manage")
     : `<div class="empty-state"><strong>No trusted people yet</strong><p>Add someone, compare verification another way, then approve each chat you want to protect.</p></div>`;
   const invite = friendCode && friendDisplayId
-    ? friendInviteCardMarkup(compactFriendId(friendDisplayId), escapeHtml, { sectionClass: "friend-invite people-invite", labelId: "people-friend-id-label" })
+    ? friendInviteCardMarkup(compactFriendId(friendDisplayId), escapeHtml, { sectionClass: "friend-invite people-invite", labelId: "people-friend-id-label", friendCode })
     : `<div class="empty-inline friend-code-unavailable">Your invite appears after OSL is unlocked.</div>`;
   return `<main class="content-viewport people-destination" aria-labelledby="route-heading"><header class="people-destination-header"><button class="text-button" data-route="home" type="button">Back</button><div><h1 id="route-heading" tabindex="-1">People</h1><p>Trusted people, the places you know them, and which chats OSL may protect.</p></div><button class="button primary" data-people-primary-action type="button">Add or verify a person</button></header><section class="people-summary-grid" aria-label="People trust summary"><article><strong>${verified.length.toLocaleString("en-US")}</strong><span>Trusted people</span></article><article><strong>${needsReview.length.toLocaleString("en-US")}</strong><span>Need review</span></article><article><strong>${approvedChats.toLocaleString("en-US")}</strong><span>Approved chats</span></article><article><strong>${broaderReach.toLocaleString("en-US")}</strong><span>Extended reach</span></article></section><section class="people-rule-panel" aria-label="Trust rules"><h2>How trust works</h2><ul><li>No approval means OSL refuses protected sends for that chat.</li><li>Verifying a person does not approve every chat with them.</li><li>Each approval stays separate.</li><li>Groups and audiences never inherit trust from a similar name.</li><li>A changed verification returns the person to review before OSL protects new messages.</li></ul></section><section class="people-add-section" aria-labelledby="people-add-title"${addPrimaryTarget}><div><h2 id="people-add-title">Add or verify a person</h2><p>${friendHandshakeDetail(false, false)} Private chats stay off until you compare the verification code another way and approve a chat.</p></div><form id="add-friend-form" class="friend-add-form people-add-form"><label for="friend-code-input"><span>Paste their invite</span><input id="friend-code-input" placeholder="OSL invite" autocomplete="off" autocapitalize="none" spellcheck="false"/></label><label for="friend-nickname-input"><span>Name them on this device</span><input id="friend-nickname-input" maxlength="48" placeholder="Nickname (optional)" autocomplete="off" spellcheck="false"/></label><button class="button primary">Add person</button></form><p class="form-status" id="friend-form-status" role="status"></p></section><section class="people-review-panel" aria-labelledby="people-review-title"${reviewPrimaryTarget}><header><h2 id="people-review-title">Needs review</h2></header><div class="people-review-list">${reviewRows}</div></section>${invite}<section class="people-list-panel" aria-labelledby="people-list-title"><header><h2 id="people-list-title">People you know</h2><p>Nicknames stay on this device. Open Manage on a person to edit trust for approved chats.</p></header><div class="people-list people-destination-list">${peopleRows}</div></section></main>`;
 }
@@ -4334,7 +4335,7 @@ function friendsDialogMarkup(): string {
     ? `<nav class="friends-pagination" aria-label="Friends pages"><button class="button compact" data-friends-page="${friendsDialogPage - 1}" ${friendsDialogPage === 0 ? "disabled" : ""}>Previous</button><span>${friendsDialogPage + 1} / ${pageCount}</span><button class="button compact" data-friends-page="${friendsDialogPage + 1}" ${friendsDialogPage + 1 >= pageCount ? "disabled" : ""}>Next</button></nav>`
     : "";
   const inviteCard = friendCode && friendDisplayId
-    ? friendInviteCardMarkup(compactFriendId(friendDisplayId), escapeHtml, { sectionClass: "friend-invite", labelId: "friend-id-label" })
+    ? friendInviteCardMarkup(compactFriendId(friendDisplayId), escapeHtml, { sectionClass: "friend-invite", labelId: "friend-id-label", friendCode })
     : `<div class="empty-inline friend-code-unavailable">Your invite appears after OSL is unlocked.</div>`;
   return `<dialog class="friends-dialog" id="friends-dialog" aria-labelledby="friends-dialog-title"><div class="friends-dialog-card"><header><h2 id="friends-dialog-title">Friends</h2><button class="icon-button" id="friends-dialog-close" aria-label="Close friends">×</button></header><form id="add-friend-form" class="friend-add-form"><label for="friend-code-input"><span>Paste their invite</span><input id="friend-code-input" placeholder="OSL invite" autocomplete="off" autocapitalize="none" spellcheck="false"/></label><label for="friend-nickname-input"><span>Name them on this device</span><input id="friend-nickname-input" maxlength="48" placeholder="Nickname (optional)" autocomplete="off" spellcheck="false"/></label><button class="button primary">Add friend</button></form><p class="form-status" id="friend-form-status" role="status"></p><p class="scope-approval-note">Encrypted chats stay off after adding someone. Compare the verification code another way, then approve each chat separately.</p><div class="people-list home-people-list">${peopleListMarkup("manage", friendsDialogPageSize, pageStart)}</div>${pagination}${inviteCard}</div></dialog>`;
 }
@@ -7413,10 +7414,10 @@ async function submitFriendCode(event: SubmitEvent): Promise<void> {
   }
   if (button) button.disabled = true;
   if (status) status.textContent = "Saving request locally…";
-  const added = await addOslFriend(code, nicknameInput?.value ?? "");
+  const outcome = await addOslFriend(code, nicknameInput?.value ?? "");
   if (button) button.disabled = false;
-  if (!added) {
-    if (status) status.textContent = "The invite could not be added. Nothing changed.";
+  if (!outcome.added) {
+    if (status) status.textContent = addFriendFailureStatus(outcome.reason);
     return;
   }
   if (input) input.value = "";
@@ -7447,7 +7448,8 @@ async function saveFriendNickname(event: SubmitEvent): Promise<void> {
 
 async function copyFriendInvite(): Promise<void> {
   if (!friendCode) { showToast("Friend invite is unavailable"); return; }
-  showToast(await copyHubFriendInvite(friendCode) ? "Invite copied" : "Could not copy the invite");
+  const result = await copyHubFriendInvite(friendCode);
+  showToast(result.copied ? "Invite copied" : inviteCopyFailureToast(result.reason));
 }
 
 function requestFriendVerification(personId: string): void {

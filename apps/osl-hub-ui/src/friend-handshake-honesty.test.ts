@@ -81,6 +81,7 @@ describe("no phantom inbound friend request (DEFECT 1)", () => {
     const markup = friendInviteCardMarkup("osl_abcd…wxyz", (value) => value, {
       sectionClass: "friend-invite people-invite",
       labelId: "people-friend-id-label",
+      friendCode: "OSLFR1.ABCDEFGHIJKLMNOP",
     });
     // The card still does its original job.
     expect(markup).toContain('id="copy-friend-code"');
@@ -100,6 +101,7 @@ describe("no phantom inbound friend request (DEFECT 1)", () => {
     const markup = friendInviteCardMarkup("<script>", (value) => value.replace(/</gu, "&lt;"), {
       sectionClass: "friend-invite",
       labelId: "friend-id-label",
+      friendCode: "OSLFR1.ABCDEFGHIJKLMNOP",
     });
     expect(markup).toContain("&lt;script>");
   });

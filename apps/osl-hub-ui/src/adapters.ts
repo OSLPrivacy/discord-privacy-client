@@ -4,7 +4,7 @@ import { isTauriRuntime } from "./preferences";
 // no longer thrown away with the exception: it is recorded, sanitized and
 // unchanged, so a developer can see why a command was refused instead of
 // guessing from a generic sentence. See ./backend-failure.ts.
-import { checkedBackendResponse, recordBackendFailure, recordInvalidBackendResponse } from "./backend-failure";
+import { checkedBackendResponse, recordBackendFailure, recordInvalidBackendResponse, sanitizeBackendMessage } from "./backend-failure";
 import {
   parseNativeDiscordOverlayOpenedBatch,
   type NativeDiscordOverlayOpenedBatch,
@@ -751,30 +751,77 @@ export async function loadFriendProfile(): Promise<FriendProfile | null> {
 }
 
 /**
+ * The outcome of one invite export, carrying whatever actually stopped it.
+ *
+ * The boolean this replaced discarded the backend's reason, so a missing
+ * clipboard tool, a locked identity and an unsigned key bundle all reached the
+ * operator as one generic sentence. `reason` is already sanitized by
+ * `recordBackendFailure`, so it is safe to put on screen; it is empty on
+ * success and never the only way to learn the invite, which is also rendered
+ * as selectable text.
+ */
+export interface InviteExportResult {
+  readonly copied: boolean;
+  readonly reason: string;
+}
+
+/** The outcome of one add-friend attempt, and why it did not happen. */
+export interface AddFriendOutcome {
+  readonly added: boolean;
+  readonly reason: string;
+}
+
+const INVITE_PATTERN = /^OSLFR1\.[A-Za-z0-9_-]{16,8192}$/u;
+
+/** What OSL says about text that is not shaped like an invite at all. */
+export const INVITE_NOT_RECOGNISED = "That is not an OSL invite. An invite starts with OSLFR1. and is one unbroken line — check for a truncated or partial paste.";
+/** What OSL says when the invite is fine but the local nickname is not. */
+export const INVITE_NICKNAME_REFUSED = "Use 48 visible characters or fewer for the nickname on this device.";
+/** What OSL says when there is no native backend to ask. */
+const NO_NATIVE_BACKEND = "OSL is not running its native backend, so it cannot reach your identity.";
+
+/**
  * In the native app Rust creates and copies the signed invite without
  * accepting renderer-controlled clipboard content. Browser development uses
  * the already-validated profile string as its narrow fallback.
  */
-export async function copyHubFriendInvite(friendCode: string): Promise<boolean> {
-  if (!/^OSLFR1\.[A-Za-z0-9_-]{16,8192}$/.test(friendCode)) return false;
+export async function copyHubFriendInvite(friendCode: string): Promise<InviteExportResult> {
+  if (!INVITE_PATTERN.test(friendCode)) return { copied: false, reason: INVITE_NOT_RECOGNISED };
   if (isTauriRuntime()) {
     try {
       await invoke("copy_hub_friend_invite");
-      return true;
-    } catch (error) { recordBackendFailure("copy_hub_friend_invite", error); return false; }
+      return { copied: true, reason: "" };
+    } catch (error) {
+      // The invite is passed as a content argument only so that a backend
+      // message which echoed it back is redacted rather than repeated at
+      // length in a toast. It is not a secret -- the card shows it in full.
+      return { copied: false, reason: recordBackendFailure("copy_hub_friend_invite", error, [friendCode]).message };
+    }
   }
   try {
-    if (!navigator.clipboard?.writeText) return false;
+    if (!navigator.clipboard?.writeText) {
+      return { copied: false, reason: "This browser gave OSL no clipboard to write to. Select the invite shown above instead." };
+    }
     await navigator.clipboard.writeText(friendCode);
-    return true;
-  } catch { return false; }
+    return { copied: true, reason: "" };
+  } catch (error) {
+    return { copied: false, reason: sanitizeBackendMessage(error, [friendCode]) };
+  }
 }
 
-export async function addOslFriend(code: string, nickname = ""): Promise<boolean> {
+export async function addOslFriend(code: string, nickname = ""): Promise<AddFriendOutcome> {
   const trimmed = nickname.trim();
-  if (!isTauriRuntime() || !/^OSLFR1\.[A-Za-z0-9_-]{16,8192}$/.test(code) || !validFriendNickname(trimmed)) return false;
-  try { await invoke("add_hub_friend", { friendCode: code, alias: trimmed || null }); return true; }
-  catch (error) { recordBackendFailure("add_hub_friend", error, [code, trimmed]); return false; }
+  if (!isTauriRuntime()) return { added: false, reason: NO_NATIVE_BACKEND };
+  // Separated so a rejected nickname is never reported as a bad invite: they
+  // are different mistakes and they have different fixes.
+  if (!INVITE_PATTERN.test(code)) return { added: false, reason: INVITE_NOT_RECOGNISED };
+  if (!validFriendNickname(trimmed)) return { added: false, reason: INVITE_NICKNAME_REFUSED };
+  try {
+    await invoke("add_hub_friend", { friendCode: code, alias: trimmed || null });
+    return { added: true, reason: "" };
+  } catch (error) {
+    return { added: false, reason: recordBackendFailure("add_hub_friend", error, [code, trimmed]).message };
+  }
 }
 
 export async function listHubPeople(): Promise<HubPerson[] | null> {

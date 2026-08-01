@@ -1,0 +1,53 @@
+/*
+ * The full friend invite, rendered as selectable text.
+ *
+ * This lives in its own stylesheet, not in a `style` attribute or a runtime
+ * `<style>` element: the app ships under `style-src 'self'`, so anything
+ * styled from TypeScript renders as nothing at all.
+ *
+ * `user-select: all` is the point of the whole card. One click selects the
+ * entire invite, which is what makes hand-copying a real export route on a
+ * desktop with no clipboard helper. `overflow-wrap: anywhere` keeps a long
+ * unbroken base64url string inside the card instead of widening the layout.
+ */
+.friend-invite-full {
+  grid-column: 1 / -1;
+  margin-top: 8px;
+  min-width: 0;
+}
+
+.friend-invite-full span {
+  display: block;
+  color: var(--subtle);
+  font-size: 11px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.friend-invite-code {
+  display: block;
+  margin-top: 5px;
+  padding: 7px 9px;
+  max-height: 108px;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  border: 1px solid var(--line, rgba(255, 255, 255, .12));
+  border-radius: 7px;
+  background: rgba(255, 255, 255, .04);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.45;
+  user-select: all;
+  -webkit-user-select: all;
+  cursor: text;
+}
+
+:root[data-theme="light"] .friend-invite-code {
+  background: rgba(0, 0, 0, .04);
+}
+
+.friend-invite-code:focus-visible {
+  outline: 2px solid var(--accent, #2ee66a);
+  outline-offset: 2px;
+}
