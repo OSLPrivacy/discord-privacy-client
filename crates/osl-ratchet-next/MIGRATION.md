@@ -121,10 +121,14 @@ must survive the migration:
 
 ### Rollout shape
 
-1. Ship a receiver that understands `0x10` but never sends it.
-2. Gate *sending* behind a per-peer capability flag, learned the same
-   way `whitelist::recipients_for_scope_v3` learns ML-KEM capability
-   today.
+1. Before enabling `0x10` traffic, complete the state-safety and recovery
+   prerequisites, then mint a second capability bit that only a fuse-open
+   build advertises. The existing bit is already advertised by current
+   builds and cannot safely be used as the live-traffic signal.
+2. Select `0x10` only when the peer's new live-traffic capability is
+   verified. A release that advertises that bit must open both send and
+   receive fuses together; a receive-only build would attract traffic it
+   cannot answer.
 3. Sessions established as `v=3` stay `v=3` for their lifetime. A `0x10`
    session begins with a bootstrap message and runs forward from there.
    There is no in-place upgrade of an existing conversation and none
@@ -133,33 +137,33 @@ must survive the migration:
 4. In-flight `v=3` messages sent before the switch remain decryptable
    forever, because the `v=3` decoder is untouched.
 
-### Capability advertisement is absent end-to-end
+### Capability advertisement already ships; its current bit is not a live-traffic signal
 
-`keystore::client::build_register_request` (`crates/keystore/src/client.rs:601`)
-signs the legacy `reg_msg` and does not call `reg_msg_with_capabilities`.
-`RegisterRequest` (`crates/keystore/src/client.rs:63-87`) has no
-`rn_capabilities` field. `verify_peer_capabilities`
-(`crates/keystore/src/client.rs:301`) has zero production callers. The
-result is that every client registers as a legacy peer, every peer
-resolves to `PeerCapabilities::Absent`, and
-`ipc::wire_rn::select_wire_version` returns `LegacyV3` for every peer
-permanently.
+`RegisterRequest` has an `rn_capabilities` field. Both
+`keystore::client::build_register_request` and
+`keystore::client::build_rotation_request` set it to
+`CLIENT_RN_CAPABILITY_FLOOR` (which includes `RN_CAP_WIRE_RN`) and sign
+the extended `REG_MSG`. `verify_peer_capabilities` also has a production
+caller in `ipc::commands::verified_rn_capabilities_for_live_peer`.
 
-Integrator warning: wiring the ratchet without fixing this yields a
-system that appears to negotiate and in fact sends `v=3` one hundred
-percent of the time.
+This means a verified current-build peer can already select OSL-RN. While
+`RN_WIRE_IN_ENABLED` is false, the selection path fails closed rather than
+downgrading to `v=3`: it refuses the send because the build cannot honour
+the selected wire. The old receive-only-then-advertise rollout is therefore
+no longer available.
 
-The advertisement bit must be switched on in the same change as the
-wire-in, and never before it. Advertising a capability the build cannot
-honour causes peers to pin this identity to OSL-RN and then be refused
-every send. The pin has no lowering operation at all.
+Do not remove the existing bit: lowering an advertisement is a downgrade.
+Instead, reserve a second live-traffic bit. Only a build with both OSL-RN
+fuses open may advertise that bit, and wire selection must require it. That
+keeps older peers on `v=3` and prevents a fuse-closed build from attracting
+OSL-RN sends.
 
-Once advertisement ships, a user who downgrades to a pre-ratchet build
-while keeping the same identity key becomes permanently unreachable from
-peers that pinned them. For those peers, `select_wire_version` returns
-`Err(PinnedToRn)` with no recovery path. A new identity key resets this;
-a version rollback does not. No documented recovery procedure exists
-today.
+Once OSL-RN traffic ships with the live-traffic bit, a user who downgrades
+to a pre-ratchet build while keeping the same identity key becomes
+unreachable from peers that pinned them. For those peers,
+`select_wire_version` returns `Err(PinnedToRn)`; a version rollback does
+not lower the pin. Recovery requires the explicit, both-sides-confirmed,
+out-of-band unpin ceremony. A new identity key also resets the relationship.
 
 ---
 
