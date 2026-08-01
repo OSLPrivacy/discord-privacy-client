@@ -4,5 +4,13 @@ debug = "line-tables-only"
 [build]
 jobs = 4
 
-[target.x86_64-unknown-linux-gnu]
-rustflags = ["-Clink-arg=-fuse-ld=lld"]
+# REVERTED 2026-07-31: this forced `-fuse-ld=lld`, and lld is NOT installed on
+# this machine, so it broke EVERY Rust link -- 12 of 12 link failures in a
+# 12-run workspace loop, which first looked like OOM under load. A build config
+# that assumes an uninstalled toolchain fails for everyone at once and the error
+# ("linking with `cc` failed") names cc, not lld, so it misdirects.
+#
+# Re-enable ONLY behind a check that lld exists. It is a real speed win:
+#   sudo apt install lld    # then restore the two lines below
+# [target.x86_64-unknown-linux-gnu]
+# rustflags = ["-Clink-arg=-fuse-ld=lld"]
