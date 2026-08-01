@@ -105,6 +105,9 @@ const REQUIRED_SUPPORT_BANS = [
   "available on telegram",
   "available on outlook",
 ];
+const REQUIRED_DEVICE_TRANSFER_BANS = [
+  "use osl on all your devices",
+];
 const REQUIRED_CONDITIONAL_APP_EVIDENCE = [
   {
     id: "telegram_desktop_native",
@@ -3092,6 +3095,14 @@ function bannedPhraseInputFailures(bannedPhrases) {
       actual: supportBanCount,
     });
   }
+  const deviceTransferBanCount = REQUIRED_DEVICE_TRANSFER_BANS.filter((phrase) => present.has(phrase)).length;
+  if (deviceTransferBanCount < REQUIRED_DEVICE_TRANSFER_BANS.length) {
+    failures.push({
+      name: "device transfer bans parsed from section D",
+      expected: REQUIRED_DEVICE_TRANSFER_BANS.length,
+      actual: deviceTransferBanCount,
+    });
+  }
   return failures;
 }
 
@@ -3275,6 +3286,11 @@ async function runSelfTest() {
     {
       name: "catches banned Signal support wording",
       text: "OSL supports Signal for protected messages.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches unsupported all-devices transfer wording",
+      text: "Use OSL on all your devices.",
       shouldFlag: true,
     },
     {
@@ -4467,7 +4483,8 @@ async function runSelfTest() {
     {
       name: "forbidden_support_phrases",
       passed: REQUIRED_SUPPORT_BANS.every((phrase) => bannedPhrases.some((parsed) => parsed.normalized === phrase))
-        && REQUIRED_BURN_BANS.every((phrase) => bannedPhrases.some((parsed) => parsed.normalized === phrase)),
+        && REQUIRED_BURN_BANS.every((phrase) => bannedPhrases.some((parsed) => parsed.normalized === phrase))
+        && REQUIRED_DEVICE_TRANSFER_BANS.every((phrase) => bannedPhrases.some((parsed) => parsed.normalized === phrase)),
     },
     {
       name: "Block banned Burn and support phrasings",
@@ -4480,6 +4497,11 @@ async function runSelfTest() {
         ).length > 0)
         && REQUIRED_SUPPORT_BANS.every((phrase) => analyseFragments(
           "self-test/burn-support-phrasing",
+          [{ text: phrase, line: 1 }],
+          bannedPhrases,
+        ).length > 0)
+        && REQUIRED_DEVICE_TRANSFER_BANS.every((phrase) => analyseFragments(
+          "self-test/device-transfer-phrasing",
           [{ text: phrase, line: 1 }],
           bannedPhrases,
         ).length > 0)
