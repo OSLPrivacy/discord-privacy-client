@@ -133,6 +133,17 @@ pub struct ContextLease {
     pub account_id: String,
 }
 
+/// The trusted surface that authorized a protected context.  An embedded
+/// service has a live webview generation to re-check; native and standalone
+/// services deliberately do not, so their authority is bound to the owned
+/// account and the broker lease instead.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProtectedContextOrigin {
+    EmbeddedHost,
+    NativeApp { app_id: String },
+    Standalone { service_id: String },
+}
+
 impl core::fmt::Debug for ContextLease {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ContextLease")
@@ -149,6 +160,7 @@ impl core::fmt::Debug for ContextLease {
 struct ActiveContext {
     lease: ContextLease,
     context: HubConversationContext,
+    origin: ProtectedContextOrigin,
     authority: ContextAuthority,
     manual_peer: Option<ManualPeerContext>,
 }
@@ -158,6 +170,7 @@ impl core::fmt::Debug for ActiveContext {
         f.debug_struct("ActiveContext")
             .field("lease", &self.lease)
             .field("context", &self.context)
+            .field("origin", &self.origin)
             .field("authority", &self.authority)
             .field(
                 "manual_peer",
@@ -250,6 +263,7 @@ impl HubBrokerState {
         self.activate_with_authority(
             context,
             host_generation,
+            ProtectedContextOrigin::EmbeddedHost,
             ContextAuthority::PeerMessaging,
             None,
         )
@@ -259,6 +273,7 @@ impl HubBrokerState {
         &self,
         context: HubConversationContext,
         host_generation: u64,
+        origin: ProtectedContextOrigin,
         authority: ContextAuthority,
         manual_peer: Option<ManualPeerContext>,
     ) -> Result<ContextLease, String> {
@@ -284,6 +299,7 @@ impl HubBrokerState {
         inner.active = Some(ActiveContext {
             lease: lease.clone(),
             context,
+            origin,
             authority,
             manual_peer,
         });
@@ -293,13 +309,16 @@ impl HubBrokerState {
     fn activate_local_loopback(
         &self,
         owner_osl_user_id: &str,
-        active: &ActiveServiceHost,
+        origin: ProtectedContextOrigin,
+        host_generation: u64,
+        service_id: String,
+        account_id: String,
         conversation_id: String,
     ) -> Result<ContextLease, String> {
         validate_loopback_conversation_id(&conversation_id)?;
         let context = HubConversationContext {
-            service_id: active.service_id.clone(),
-            account_id: active.account_id.clone(),
+            service_id,
+            account_id,
             conversation_kind: HubConversationKind::Dm,
             conversation_id,
             space_id: None,
@@ -308,7 +327,8 @@ impl HubBrokerState {
         };
         self.activate_with_authority(
             context,
-            active.generation,
+            host_generation,
+            origin,
             ContextAuthority::LocalLoopback,
             None,
         )
@@ -356,6 +376,7 @@ impl HubBrokerState {
         self.activate_with_authority(
             context,
             active.generation,
+            ProtectedContextOrigin::EmbeddedHost,
             ContextAuthority::ManualPeer,
             Some(manual_peer),
         )
@@ -383,7 +404,36 @@ impl HubBrokerState {
                 "OSL broker context is stale or belongs to another service host".to_owned(),
             );
         }
-        Ok(())
+        match &context.origin {
+            ProtectedContextOrigin::EmbeddedHost => Ok(()),
+            ProtectedContextOrigin::NativeApp { app_id } if app_id == &active.service_id => Ok(()),
+            _ => Err("OSL broker context belongs to another protection origin".to_owned()),
+        }
+    }
+
+    /// Re-check a local protected lease where no embedded service host exists.
+    /// The owner and exact origin are both stored by the trusted activation
+    /// command; the renderer supplies neither.
+    pub fn validate_local_protected_origin(
+        &self,
+        context_token: &str,
+        owner_osl_user_id: &str,
+    ) -> Result<ProtectedContextOrigin, String> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| "OSL broker state is unavailable".to_owned())?;
+        let active = inner
+            .active
+            .as_ref()
+            .ok_or_else(|| "OSL broker has no active trusted context".to_owned())?;
+        if active.lease.context_token != context_token
+            || active.authority != ContextAuthority::LocalLoopback
+            || active.context.self_osl_id != owner_osl_user_id
+        {
+            return Err("OSL broker context is stale or belongs to another identity".to_owned());
+        }
+        Ok(active.origin.clone())
     }
 
     pub fn clear(&self) -> Result<(), String> {
@@ -728,10 +778,37 @@ pub fn activate_owned_local_loopback_context(
     let service_kind =
         service_kind_from_id(service_id).ok_or_else(|| "unknown service".to_owned())?;
     registry.require_owned(owner_osl_user_id, service_kind, account_id)?;
-    let active = host
-        .require_current_owned(owner_osl_user_id, service_id, account_id)
-        .map_err(|error| error.to_string())?;
-    broker.activate_local_loopback(owner_osl_user_id, &active, conversation_id)
+    if let Ok(active) = host.require_current_owned(owner_osl_user_id, service_id, account_id) {
+        return broker.activate_local_loopback(
+            owner_osl_user_id,
+            ProtectedContextOrigin::EmbeddedHost,
+            active.generation,
+            active.service_id,
+            active.account_id,
+            conversation_id,
+        );
+    }
+    let origin = match service_kind {
+        ServiceKind::Discord
+        | ServiceKind::Telegram
+        | ServiceKind::WhatsApp
+        | ServiceKind::Signal => ProtectedContextOrigin::NativeApp {
+            app_id: service_id.to_owned(),
+        },
+        _ => ProtectedContextOrigin::Standalone {
+            service_id: service_id.to_owned(),
+        },
+    };
+    // Hostless contexts have no borrowed surface generation. Their opaque
+    // token remains unique because the broker generation is always included.
+    broker.activate_local_loopback(
+        owner_osl_user_id,
+        origin,
+        1,
+        service_id.to_owned(),
+        account_id.to_owned(),
+        conversation_id,
+    )
 }
 
 #[derive(Clone)]
@@ -12496,7 +12573,59 @@ mod tests {
         assert!(activate(owner, "instagram", &account.id, "too-short").is_err());
 
         host.next_generation().unwrap();
-        assert!(activate(owner, "instagram", &account.id, "local-0123456789abcdef").is_err());
+        let hostless = activate(owner, "instagram", &account.id, "local-0123456789abcdef")
+            .expect("an owned account may create a standalone local context");
+        assert_eq!(
+            broker
+                .validate_local_protected_origin(&hostless.context_token, owner)
+                .unwrap(),
+            ProtectedContextOrigin::Standalone {
+                service_id: "instagram".to_owned(),
+            }
+        );
+        assert!(broker
+            .validate_active_host(&hostless.context_token, &active)
+            .is_err());
+        let _ = std::fs::remove_file(registry_path);
+    }
+
+    #[test]
+    fn hostless_native_loopback_is_bound_to_the_owned_native_app() {
+        let _serial = crate::global_keystore_test_lock();
+        let owner = "osl_owner_aaaaaaaaaaaaaaaa";
+        let registry_path = temporary_registry();
+        let registry = ServiceRegistryState::load(registry_path.clone());
+        let account = registry
+            .create_for_owner(owner, ServiceKind::Signal, "Personal".to_owned())
+            .unwrap();
+        let broker = HubBrokerState::default();
+        let host = crate::service_host::ServiceHostState::default();
+
+        let lease = activate_owned_local_loopback_context(
+            &broker,
+            &registry,
+            &host,
+            owner,
+            "signal",
+            &account.id,
+            "local-0123456789abcdef".to_owned(),
+        )
+        .expect("a native app has no embedded host but still supports local protection");
+
+        assert_eq!(
+            broker
+                .validate_local_protected_origin(&lease.context_token, owner)
+                .unwrap(),
+            ProtectedContextOrigin::NativeApp {
+                app_id: "signal".to_owned(),
+            }
+        );
+        assert!(broker
+            .validate_local_protected_origin(&lease.context_token, "osl_owner_bbbbbbbbbbbbbbbb")
+            .is_err());
+        assert!(broker
+            .validate_local_protected_origin("not-a-real-token", owner)
+            .is_err());
         let _ = std::fs::remove_file(registry_path);
     }
 

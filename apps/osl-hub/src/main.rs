@@ -5127,10 +5127,13 @@ async fn set_local_protected_sheet_open(
 ) -> Result<bool, String> {
     let _session = session.transition.lock().await;
     let owner = active_unlocked_osl_user_id(&core)?;
-    let current = host
-        .current()
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "The service view is not active".to_owned())?;
+    let current = host.current().map_err(|error| error.to_string())?;
+    let Some(current) = current else {
+        // Native and browser-launcher services have no embedded webview to
+        // resize. The sheet is owned by the trusted hub UI, so this is a
+        // successful no-op rather than a missing-host error.
+        return Ok(true);
+    };
     let expected = host
         .require_current_owned(&owner, &current.service_id, &current.account_id)
         .map_err(|error| error.to_string())?;
@@ -5946,12 +5949,16 @@ async fn prepare_local_protected_text_with_policy(
     tauri::async_runtime::spawn_blocking(move || {
         let core = app.state::<HubCoreState>();
         let broker_state = app.state::<HubBrokerState>();
-        let host_state = app.state::<ServiceHostState>();
-        let active = host_state
-            .current()
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "OSL broker requires an active service host".to_owned())?;
-        broker_state.validate_active_host(&context_token, &active)?;
+        let owner = active_unlocked_osl_user_id(&core)?;
+        let origin = broker_state.validate_local_protected_origin(&context_token, &owner)?;
+        if origin == broker::ProtectedContextOrigin::EmbeddedHost {
+            let active = app
+                .state::<ServiceHostState>()
+                .current()
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "OSL broker requires an active service host".to_owned())?;
+            broker_state.validate_active_host(&context_token, &active)?;
+        }
         let prepared = with_indexed_context_write(&app, &broker_state, &context_token, || {
             broker::prepare_local_protected_text_with_policy(
                 &core,
@@ -5961,11 +5968,16 @@ async fn prepare_local_protected_text_with_policy(
                 view_once,
             )
         })?;
-        let still_active = host_state
-            .current()
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "OSL broker service host closed during preparation".to_owned())?;
-        broker_state.validate_active_host(&context_token, &still_active)?;
+        let still_active_origin =
+            broker_state.validate_local_protected_origin(&context_token, &owner)?;
+        if still_active_origin == broker::ProtectedContextOrigin::EmbeddedHost {
+            let still_active = app
+                .state::<ServiceHostState>()
+                .current()
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "OSL broker service host closed during preparation".to_owned())?;
+            broker_state.validate_active_host(&context_token, &still_active)?;
+        }
         Ok(prepared)
     })
     .await
