@@ -342,10 +342,11 @@ async function dispatch(
     if (bundleUserId !== null) {
       return await handlePrekeyBundleGet(request, env, bundleUserId);
     }
-    const username = matchParam(path, /^\/v1\/usernames\/([^/]+)$/);
-    if (username !== null) {
-      return await handleUsernameLookup(request, env, decodeURIComponent(username));
-    }
+    // D81: `GET /v1/usernames/:username` is GONE. The handle it carried was
+    // written into the platform's default request-path record alongside the
+    // caller's address, which is exactly the "who is interested in whom"
+    // pairing the server is not allowed to hold. Replaced by
+    // `POST /v1/usernames/lookup`, which carries the handle in the body.
     const inboxUserId = matchParam(path, /^\/v1\/control-inbox\/([^/]+)$/);
     if (inboxUserId !== null) return await handleControlInboxGet(request, env, inboxUserId);
     const floorUserId = matchParam(
@@ -401,6 +402,7 @@ async function dispatch(
     }
     if (path === "/v1/control-inbox") return await handleControlInboxPost(request, env);
     if (path === "/v1/usernames/claim") return await handleUsernameClaim(request, env);
+    if (path === "/v1/usernames/lookup") return await handleUsernameLookup(request, env);
     if (path === "/v1/wrapped-keys") return await handleWrappedKeysPost(request, env);
     if (path === "/v1/prekey-bundle/replenish") {
       return await handlePrekeyBundleReplenish(request, env);

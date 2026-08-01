@@ -14,6 +14,11 @@ declare namespace Cloudflare {
 
 declare module "cloudflare:test" {
   export const env: Cloudflare.Env;
+  /// Drives the deployed Worker through its real `fetch` entry point,
+  /// routing and all. The rest of this suite calls handlers directly, which
+  /// cannot observe route SHAPE -- and "the capability is never accepted from
+  /// the URL" is a claim about routing, not about a handler.
+  export const SELF: { fetch: typeof globalThis.fetch };
   export function reset(): Promise<void>;
   export function applyD1Migrations(
     db: D1Database,

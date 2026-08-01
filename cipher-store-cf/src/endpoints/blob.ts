@@ -6,10 +6,13 @@
 ///   - TTL header `X-OSL-TTL-Seconds`: must be one of
 ///       3600 (1h), 86400 (24h), 259200 (72h), 604800 (7d).
 ///   - Fetch-token header `X-OSL-Fetch-Token`: 32 hex chars (16 bytes).
-///     Required on upload; required on fetch/delete when the stored
-///     row has a non-NULL token (any new upload). Phase 6 capability
-///     gating -- prevents access with a bare blob ID. This opaque token
-///     is not an identity or sender-authentication credential.
+///     Required on upload, fetch and delete, with no exceptions. A stored
+///     row whose `fetch_token` is NULL (only reachable for rows written
+///     before migration 0002) is treated as absent by every route. Phase 6
+///     capability gating -- prevents access with a bare blob ID. This opaque
+///     token is not an identity or sender-authentication credential, and it
+///     is deliberately carried in a HEADER: the blob id travels in the URL
+///     path and the platform records request paths by default.
 ///   - ID path param: 16 hex chars.
 
 import type { Env } from "../env.js";
@@ -200,10 +203,23 @@ export async function handleFetch(
     // Expired but the sweep hasn't run yet. Treat as gone.
     return notFound();
   }
-  // Phase 6 gate: when the row carries a fetch_token, the caller must
-  // present a matching one. Legacy rows (NULL) remain fetchable by
-  // ID alone -- they predate Phase 6 and will TTL out within 7d.
-  if (row.fetch_token !== null) {
+  // D81 gate: a row with NO stored capability is treated as if it does not
+  // exist. It used to be fetchable by ID alone as a Phase 6 back-compat
+  // concession for pre-`0002` rows. That concession is the one place in this
+  // Worker where a value carried in the URL *path* -- and therefore recorded
+  // by the platform's default request logging -- is also the entire
+  // authorization. Every other capability in this Worker lives in a header or
+  // a request body precisely so a log line is not a bearer token.
+  //
+  // `handleUpload` has rejected a tokenless upload with 400 since `0002`, so
+  // no new NULL row is reachable and the surviving legacy rows expire within
+  // their 7d ceiling. Refusing them costs nothing and closes the branch.
+  //
+  // 404, not 401/403: the answer must be byte-identical to a missing row, or
+  // the refusal itself becomes an oracle for "a legacy blob with this id
+  // exists".
+  if (row.fetch_token === null) return notFound();
+  {
     const presented = readFetchToken(request);
     if (presented === null) {
       return error(
@@ -268,15 +284,24 @@ export async function handleDelete(
   // currently derives this token from public scope metadata, so this is
   // capability separation rather than strong conversation membership.
   //
-  // Legacy rows (fetch_token NULL, predating Phase 6) accept any
-  // delete -- same back-compat treatment as fetch -- and will TTL
-  // out within 7d.
+  // D81: a NULL-capability legacy row is treated as absent here too. It used
+  // to accept ANY delete, so knowing the path-logged id was enough to destroy
+  // a stranger's undelivered ciphertext. See the matching note in
+  // `handleFetch`.
+  //
+  // The answer is 204 with no deletion, not 404: this route already answers
+  // 204 for an id that was never stored, and diverging would turn the refusal
+  // into an existence oracle for legacy rows. Nothing is lost -- the row is
+  // unreachable by every path and expires on its own clock.
   const row = await env.DB.prepare(
     "SELECT fetch_token FROM blobs WHERE id = ? LIMIT 1"
   )
     .bind(id)
     .first<{ fetch_token: string | null }>();
-  if (row && row.fetch_token !== null) {
+  if (row && row.fetch_token === null) {
+    return new Response(null, { status: 204 });
+  }
+  if (row) {
     const presented = readFetchToken(request);
     if (presented === null) {
       return error(
@@ -285,7 +310,7 @@ export async function handleDelete(
         "X-OSL-Fetch-Token header required to delete this blob"
       );
     }
-    if (!constantTimeEqual(row.fetch_token, presented)) {
+    if (!constantTimeEqual(row.fetch_token!, presented)) {
       return error(403, "fetch_token_mismatch", "fetch token does not match");
     }
   }

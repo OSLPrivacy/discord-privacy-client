@@ -1,7 +1,7 @@
 import type { Env } from "../env.js";
 import { getUserForVerify } from "../lib/db.js";
 import { callerIp, checkRateLimit } from "../lib/rate-limit.js";
-import { badRequest, conflict, json, notFound, tooMany, unauthorized } from "../lib/http.js";
+import { badRequest, conflict, json, tooMany, unauthorized } from "../lib/http.js";
 import { isHighEntropyRequestId, isNonEmptyBase64, isProtocolId } from "../lib/validation.js";
 import { verifySignedRequest } from "../lib/signed-request.js";
 import {
@@ -11,16 +11,84 @@ import {
   validateFriendCode,
 } from "../lib/username.js";
 
-export async function handleUsernameLookup(request: Request, env: Env, username: string): Promise<Response> {
-  // Exact lookup only. Rejecting non-canonical input prevents a supposedly
-  // convenient lowercase transform from resolving a different identifier.
-  if (!validNormalizedUsername(username)) return badRequest("username must already be normalized");
+/// Every lookup answer is padded to exactly this many bytes of JSON.
+///
+/// The ceiling has to clear the largest answer this route can produce: a
+/// `friend_code` is capped at 8199 characters by `handleUsernameClaim`, a
+/// username at 30, and the surrounding JSON scaffolding is under 100. Both
+/// fields are drawn from alphabets (`base64url` + `OSLFR1.`, and
+/// `[a-z0-9_]`) with no JSON escapes, so the encoded length is exactly the
+/// character count and this bound is not an estimate.
+export const USERNAME_LOOKUP_RESPONSE_BYTES = 9216;
+
+/// D81. Build the ONE response shape this route is allowed to emit.
+///
+/// A hit and a miss must be indistinguishable to anyone who can see the
+/// response but not decrypt it, which means three things have to match, not
+/// one: the status (always 200 -- a 404 is a plaintext answer at the TLS
+/// record layer), the header set (identical, via the shared `json` helper),
+/// and the body length. The third is the one that is easy to get wrong here:
+/// `friend_code` carries an entire signed key bundle and ranges over roughly
+/// 8 KiB, so an unpadded hit leaks *which* username was resolved by size
+/// alone, not merely that one was.
+///
+/// `found` is what a caller branches on. It is inside the encrypted body, so
+/// it tells the client everything and an observer nothing.
+function paddedLookupResponse(
+  row: { username: string; friend_code: string } | null,
+): Response {
+  const body: Record<string, unknown> = {
+    found: row !== null,
+    username: row?.username ?? null,
+    friend_code: row?.friend_code ?? null,
+    pad: "",
+  };
+  const encoder = new TextEncoder();
+  const baseline = encoder.encode(JSON.stringify(body)).length;
+  const needed = USERNAME_LOOKUP_RESPONSE_BYTES - baseline;
+  if (needed < 0) {
+    // Unreachable given the claim-time bounds above. If it ever happens, a
+    // short answer is a length leak, so refuse rather than emit one.
+    return json({ error: "username record exceeds the padded response bound" }, { status: 500 });
+  }
+  // "A" needs no JSON escaping, so each character contributes exactly one
+  // byte and the total lands on the target rather than near it.
+  body.pad = "A".repeat(needed);
+  return json(body, { status: 200 });
+}
+
+/// `POST /v1/usernames/lookup` — resolve a handle to its friend code.
+///
+/// # Why the username is in the BODY and not the path
+///
+/// This route used to be `GET /v1/usernames/:username`. Cloudflare records
+/// `ClientRequestURI` for a proxied zone by default and does not record
+/// request headers or bodies, so that form wrote the plaintext handle a
+/// caller was interested in -- next to that caller's `ClientIP` -- into
+/// retained platform state that no OSL setting turns off. `[observability]
+/// enabled = false` in `wrangler.toml` suppresses this Worker's own logs; it
+/// does not touch the zone's HTTP request data.
+///
+/// The username is not a secret -- the directory is public and enumerable by
+/// design. What is sensitive is *the pairing*: "this address looked up this
+/// person, at this second". Moving the value into the body removes the
+/// pairing from the retained surface entirely, and costs nothing, because the
+/// route is not cacheable anyway (`cache-control: no-store`).
+export async function handleUsernameLookup(request: Request, env: Env): Promise<Response> {
   const rlIp = await checkRateLimit(env, callerIp(request), 120, "username-lookup-ip");
   if (!rlIp.ok) return tooMany(rlIp.retryAfter);
+  let body: Record<string, unknown>;
+  try { body = await request.json() as Record<string, unknown>; }
+  catch { return badRequest("malformed JSON body"); }
+  // Exact lookup only. Rejecting non-canonical input prevents a supposedly
+  // convenient lowercase transform from resolving a different identifier.
+  if (!validNormalizedUsername(body.username)) {
+    return badRequest("username must already be normalized");
+  }
   const row = await env.DB.prepare(
     "SELECT username, friend_code FROM username_directory WHERE username = ?",
-  ).bind(username).first<{ username: string; friend_code: string }>();
-  return row ? json(row) : notFound("username not found");
+  ).bind(body.username).first<{ username: string; friend_code: string }>();
+  return paddedLookupResponse(row);
 }
 export async function handleUsernameClaim(request: Request, env: Env): Promise<Response> {
   const rlIp = await checkRateLimit(env, callerIp(request), 10, "username-claim-ip");

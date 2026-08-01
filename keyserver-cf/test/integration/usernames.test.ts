@@ -43,6 +43,25 @@ async function friendCode(
   return `OSLFR1.${b64url(new TextEncoder().encode(signed))}`;
 }
 
+/// D81. The lookup is `POST /v1/usernames/lookup` with the handle in the
+/// BODY: the old `GET /v1/usernames/:username` wrote the handle a caller was
+/// interested in into the platform's request-path record, next to that
+/// caller's address. It also answers 200 for a miss and pads every body to a
+/// fixed length, so these assertions read `found`, never the status.
+async function lookup(username: string, ip: string): Promise<Response> {
+  return SELF.fetch("http://test/v1/usernames/lookup", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": ip },
+    body: JSON.stringify({ username }),
+  });
+}
+
+async function looksUp(username: string, ip: string): Promise<boolean> {
+  const response = await lookup(username, ip);
+  if (response.status !== 200) throw new Error(`lookup status ${response.status}`);
+  return ((await response.json()) as { found: boolean }).found;
+}
+
 async function claim(
   username: string,
   uid: string,
@@ -69,10 +88,10 @@ describe("username directory", () => {
     const invite = await friendCode(uid, pair);
     expect((await claim("alice_01", uid, pair, invite)).status).toBe(200);
     expect((await claim("alice_01", uid, pair, invite)).status).toBe(200);
-    const found = await SELF.fetch("http://test/v1/usernames/alice_01", { headers: { "cf-connecting-ip": "203.0.113.10" } });
+    const found = await lookup("alice_01", "203.0.113.10");
     expect(found.status).toBe(200);
-    expect(await found.json()).toEqual({ username: "alice_01", friend_code: invite });
-    expect((await SELF.fetch("http://test/v1/usernames/Alice_01", { headers: { "cf-connecting-ip": "203.0.113.11" } })).status).toBe(400);
+    expect(await found.json()).toMatchObject({ found: true, username: "alice_01", friend_code: invite });
+    expect((await lookup("Alice_01", "203.0.113.11")).status).toBe(400);
   });
 
   it("rejects unsigned, wrong-key, and mismatched-invite claims", async () => {
@@ -134,10 +153,10 @@ describe("username directory", () => {
     expect((await claim("unique_name", one, pairOne)).status).toBe(200);
     expect((await claim("second_name", two, pairTwo)).status).toBe(200);
     expect((await claim("unique_name", two, pairTwo)).status).toBe(409);
-    expect((await SELF.fetch("http://test/v1/usernames/second_name", { headers: { "cf-connecting-ip": "203.0.113.18" } })).status).toBe(200);
+    expect(await looksUp("second_name", "203.0.113.18")).toBe(true);
     expect((await claim("renamed_user", one, pairOne)).status).toBe(200);
-    expect((await SELF.fetch("http://test/v1/usernames/unique_name", { headers: { "cf-connecting-ip": "203.0.113.14" } })).status).toBe(404);
-    expect((await SELF.fetch("http://test/v1/usernames/renamed_user", { headers: { "cf-connecting-ip": "203.0.113.15" } })).status).toBe(200);
+    expect(await looksUp("unique_name", "203.0.113.14")).toBe(false);
+    expect(await looksUp("renamed_user", "203.0.113.15")).toBe(true);
 
     const timestamp_ms = Date.now();
     const message = canonicalUnregisterBytes({ user_id: one, timestamp_ms });
@@ -146,7 +165,7 @@ describe("username directory", () => {
       method: "DELETE", headers: { "content-type": "application/json", "cf-connecting-ip": "203.0.113.16" },
       body: JSON.stringify({ signature_b64, timestamp_ms }),
     })).status).toBe(200);
-    expect((await SELF.fetch("http://test/v1/usernames/renamed_user", { headers: { "cf-connecting-ip": "203.0.113.17" } })).status).toBe(404);
+    expect(await looksUp("renamed_user", "203.0.113.17")).toBe(false);
   });
 
   it("removes a stale signed invite when the registered identity key rotates", async () => {
@@ -179,6 +198,6 @@ describe("username directory", () => {
       }),
     });
     expect(rotated.status).toBe(200);
-    expect((await SELF.fetch("http://test/v1/usernames/rotate_me", { headers: { "cf-connecting-ip": "203.0.113.22" } })).status).toBe(404);
+    expect(await looksUp("rotate_me", "203.0.113.22")).toBe(false);
   });
 });
