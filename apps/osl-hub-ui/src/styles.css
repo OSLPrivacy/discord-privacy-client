@@ -1040,6 +1040,13 @@ code {
 
 .password-form small { color: var(--muted); line-height: 1.45; }
 
+.password-role-warning {
+  margin: 8px 0 0;
+  color: var(--text);
+  font-weight: 600;
+  line-height: 1.45;
+}
+
 .password-input-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

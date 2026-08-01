@@ -111,6 +111,7 @@ import oslVectorLogoUrl from "./assets/logo-mark.svg";
 import { importLocalMessageExport, LOCAL_MESSAGE_IMPORT_MAX_BYTES } from "./local-message-import";
 import { persistLocalScrubExport } from "./scrub-local";
 import { nextServiceGuideStep, parseServiceGuideState, previousServiceGuideStep, type ServiceGuideStep } from "./service-guide";
+import { BURN_PASSWORD_CONFIRMATION, canSetOnboardingPasswordRole } from "./onboarding-password-role";
 import { NativeDeadlineError, withNativeDeadline } from "./native-deadline";
 import { CoalescedRealignment, NativeCallGate } from "./native-realignment";
 import { FrameRenderScheduler } from "./render-scheduler";
@@ -2468,7 +2469,8 @@ function onboardingPasswordRoleContent(role: "stealth" | "burn"): string {
   if (configured) {
     return `<h1 id="route-heading" tabindex="-1">${title}</h1><div class="password-role-ready">${statusTag("Set")}<p>${detail}</p></div><div class="setup-footer onboarding-actions"><button class="button primary" data-password-role-next="${next}" type="button">Continue</button></div>`;
   }
-  return `<h1 id="route-heading" tabindex="-1">${title}</h1><p class="compact-lead onboarding-centered-copy">${detail}</p><form class="setup-surface password-form onboarding-role-form" data-onboarding-password-role="${role}" data-onboarding-password-next="${next}" novalidate><label for="setup-${role}-current">Current password</label><div class="password-input-row"><input id="setup-${role}-current" name="current" type="password" minlength="6" maxlength="128" autocomplete="current-password" required/><button class="password-eye" type="button" data-password-toggle="setup-${role}-current" aria-label="Show current password">${passwordEyeIcon()}</button></div><label for="setup-${role}-alternate">New ${stealth ? "stealth" : "burn"} password</label><div class="password-input-row"><input id="setup-${role}-alternate" name="alternate" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="setup-${role}-alternate" aria-label="Show new password">${passwordEyeIcon()}</button></div><label for="setup-${role}-confirm">Confirm</label><div class="password-input-row"><input id="setup-${role}-confirm" name="confirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="setup-${role}-confirm" aria-label="Show password confirmation">${passwordEyeIcon()}</button></div><p class="unlock-error" data-onboarding-role-error role="alert"></p><button class="button primary" type="submit" disabled>Set password</button></form><button class="text-button onboarding-role-skip" type="button" data-skip-onboarding-password-role="${next}">Not now</button>`;
+  const burnConfirmation = stealth ? "" : `<p class="password-role-warning">This password permanently erases OSL data from this device when used at sign in. There is no recovery.</p><label for="setup-burn-confirmation">Type ${BURN_PASSWORD_CONFIRMATION} to enable it</label><input id="setup-burn-confirmation" name="burnConfirmation" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" required/>`;
+  return `<h1 id="route-heading" tabindex="-1">${title}</h1><p class="compact-lead onboarding-centered-copy">${detail}</p><form class="setup-surface password-form onboarding-role-form" data-onboarding-password-role="${role}" data-onboarding-password-next="${next}" novalidate><label for="setup-${role}-current">Current password</label><div class="password-input-row"><input id="setup-${role}-current" name="current" type="password" minlength="6" maxlength="128" autocomplete="current-password" required/><button class="password-eye" type="button" data-password-toggle="setup-${role}-current" aria-label="Show current password">${passwordEyeIcon()}</button></div><label for="setup-${role}-alternate">New ${stealth ? "stealth" : "burn"} password</label><div class="password-input-row"><input id="setup-${role}-alternate" name="alternate" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="setup-${role}-alternate" aria-label="Show new password">${passwordEyeIcon()}</button></div><label for="setup-${role}-confirm">Confirm</label><div class="password-input-row"><input id="setup-${role}-confirm" name="confirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="setup-${role}-confirm" aria-label="Show password confirmation">${passwordEyeIcon()}</button></div>${burnConfirmation}<p class="unlock-error" data-onboarding-role-error role="alert"></p><button class="button primary" type="submit" disabled>Set password</button></form><button class="text-button onboarding-role-skip" type="button" data-skip-onboarding-password-role="${next}">Not now</button>`;
 }
 
 function onboardingPrivacyContent(): string {
@@ -2745,16 +2747,23 @@ function bindOnboardingPasswordRole(): void {
   const current = form.elements.namedItem("current") as HTMLInputElement;
   const alternate = form.elements.namedItem("alternate") as HTMLInputElement;
   const confirm = form.elements.namedItem("confirm") as HTMLInputElement;
+  const burnConfirmation = form.elements.namedItem("burnConfirmation") as HTMLInputElement | null;
   const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]');
   const error = form.querySelector<HTMLElement>("[data-onboarding-role-error]");
   const validate = (): void => {
     if (!submit || !error) return;
-    submit.disabled = !isValidMainPassword(current.value) || !isValidNewMainPassword(alternate.value) || alternate.value !== confirm.value || alternate.value === current.value;
+    submit.disabled = !canSetOnboardingPasswordRole(role, {
+      current: current.value,
+      alternate: alternate.value,
+      confirm: confirm.value,
+      burnConfirmation: burnConfirmation?.value ?? "",
+    });
     error.textContent = "";
   };
   current.addEventListener("input", validate);
   alternate.addEventListener("input", validate);
   confirm.addEventListener("input", validate);
+  burnConfirmation?.addEventListener("input", validate);
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!submit || submit.disabled || !error) return;
@@ -2764,6 +2773,7 @@ function bindOnboardingPasswordRole(): void {
     current.value = "";
     alternate.value = "";
     confirm.value = "";
+    if (burnConfirmation) burnConfirmation.value = "";
     try {
       passwordRoleStatus = await setHubAlternatePassword(role, currentSecret, alternateSecret);
       onboardingRoute = form.dataset.onboardingPasswordNext as OnboardingRoute;
