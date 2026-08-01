@@ -2943,6 +2943,17 @@ code {
 .people-summary-grid strong { color: var(--text); font-size: 20px; line-height: 1.1; }
 .people-summary-grid span { margin-top: 4px; color: var(--muted); font-size: 12px; }
 
+.people-reverification-notice {
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--danger);
+  background: var(--panel-2);
+}
+
+.people-reverification-notice strong,
+.people-reverification-notice p { display: block; margin: 0; }
+.people-reverification-notice p { margin-top: 5px; color: var(--muted); font-size: 13px; line-height: 1.45; }
+
 .people-rule-panel,
 .people-review-panel,
 .people-list-panel {
