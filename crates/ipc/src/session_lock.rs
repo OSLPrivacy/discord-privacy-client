@@ -102,7 +102,6 @@ pub struct SessionLockReport {
     pub channel_members_cleared: usize,
     pub friend_ids_cleared: usize,
     pub guild_list_cleared: usize,
-    pub reassembly_sessions_cleared: usize,
 }
 
 /// Measured outcome of one [`unlock_session`] call.
@@ -374,16 +373,6 @@ pub fn lock_session(state: &AppState, trigger: SessionLockTrigger) -> SessionLoc
         report.guild_list_cleared = guilds.len();
         guilds.clear();
     }
-    {
-        // Half-assembled Mode 1 plaintext lives here.
-        let mut reassembly = state
-            .mode1_reassembly
-            .lock()
-            .expect("mode1_reassembly mutex poisoned");
-        report.reassembly_sessions_cleared = reassembly.len();
-        reassembly.clear();
-    }
-
     // 7. One-time recovery token — it is a bearer credential for setting a new
     //    main password, so a locked screen must not still be holding one.
     {
@@ -429,10 +418,7 @@ pub fn lock_session(state: &AppState, trigger: SessionLockTrigger) -> SessionLoc
 ///
 /// Ordering matters: the identity has to come back before the message store,
 /// because the store is sealed by the identity's X25519 secret.
-pub fn unlock_session(
-    state: &AppState,
-    account_dir: &Path,
-) -> Result<SessionUnlockReport, String> {
+pub fn unlock_session(state: &AppState, account_dir: &Path) -> Result<SessionUnlockReport, String> {
     if crate::main_password::get_file_storage_key().is_none() {
         return Err(SESSION_LOCKED_ERROR.to_string());
     }

@@ -22,8 +22,6 @@ pub mod bigram;
 pub mod line_shape;
 mod mode0;
 mod mode1;
-mod mode1_chunking;
-mod mode1_reassembly;
 mod mode1_templates;
 mod mode1_wordlists;
 
@@ -38,14 +36,6 @@ pub use mode1::{
     decode_mode1, decode_token, encode_mode1, encode_token, is_mode1, ConversationCipher,
     DETECT_TAG_BYTES, MODE1_MAX_RAW_LEN, MODE1_PREFIX, PERMUTATION_DOMAIN, TOKEN_ID_BYTES, TOKEN_MAC_BYTES,
     TOKEN_MAC_DOMAIN, TOKEN_PAYLOAD_BITS,
-};
-pub use mode1_chunking::{
-    chunk_payload, chunk_payload_with_cipher, parse_chunk, ChunkError, ParsedChunk,
-    SerializedChunk, CHUNK_HEADER_BYTES, CHUNK_HMAC_DOMAIN, CHUNK_MAX_TOTAL, CHUNK_PAYLOAD_BYTES,
-};
-pub use mode1_reassembly::{
-    PushOutcome, ReassemblyBuffer, ReassemblyComplete, MAX_CONCURRENT_SESSIONS,
-    SESSION_TIMEOUT_SECS,
 };
 pub use mode1_templates::{
     SlotKind, BITS_PER_SENTENCE, SLOT_BITS, TEMPLATES_LEN, TEMPLATE_BITS, TOTAL_SLOTS,
