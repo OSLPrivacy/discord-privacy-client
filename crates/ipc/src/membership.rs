@@ -25,14 +25,31 @@
 //! | `server_channel:<sid>:<cid>`         | observations in that channel  |
 //! | `gc:<id>`                            | observations in that GC       |
 //!
-//! In-memory; mirrored to `membership.json`. A lost file just means
-//! re-accrual on the next gateway events (safe — never grants access,
-//! only ever narrows the known-member set).
+//! In-memory; mirrored to `membership.json`. A fresh install starts
+//! re-accruing from gateway events. If a file that seeded this session is
+//! deleted, however, the oracle becomes degraded: its cached observations may
+//! conceal a removal, so callers must surface that state rather than present a
+//! confident recipient list.
 
 use crate::scope::{Scope, ScopeKind};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Whether the accrued membership view can still be used as the basis for a
+/// recipient list. This is deliberately separate from the member set: an
+/// in-memory set can be non-empty while its durable source has disappeared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MembershipOracleHealth {
+    /// No persisted observation set has been loaded in this session yet.
+    /// Gateway observations may still be accruing.
+    Reaccruing,
+    /// The persisted observation set that seeded this session is still present.
+    Current,
+    /// A previously loaded membership file disappeared. Continuing to present
+    /// its accrued members as a complete recipient list would be misleading.
+    Degraded { path: PathBuf },
+}
 
 /// Roll-up key for "seen anywhere in this server".
 pub fn server_key(server_id: &str) -> String {
@@ -50,12 +67,24 @@ pub fn gc_key(gc_id: &str) -> String {
     format!("gc:{gc_id}")
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ScopeMembership {
     /// membership key → set of member Discord snowflakes.
     #[serde(default)]
     map: HashMap<String, HashSet<String>>,
+    /// Runtime-only provenance for the membership snapshot. It is not stored
+    /// in membership.json; loading establishes it for this session.
+    #[serde(skip)]
+    backing_file: Option<PathBuf>,
 }
+
+impl PartialEq for ScopeMembership {
+    fn eq(&self, other: &Self) -> bool {
+        self.map == other.map
+    }
+}
+
+impl Eq for ScopeMembership {}
 
 impl ScopeMembership {
     pub fn new() -> Self {
@@ -153,6 +182,17 @@ impl ScopeMembership {
         self.map.values().map(HashSet::len).sum()
     }
 
+    /// Report whether the persisted snapshot that seeded this oracle is still
+    /// available. A deleted file is not equivalent to a fresh install: the
+    /// former invalidates confidence in removals that may never be observed.
+    pub fn health(&self) -> MembershipOracleHealth {
+        match &self.backing_file {
+            None => MembershipOracleHealth::Reaccruing,
+            Some(path) if path.exists() => MembershipOracleHealth::Current,
+            Some(path) => MembershipOracleHealth::Degraded { path: path.clone() },
+        }
+    }
+
     /// Decision #2 gate: is `discord_id` a member of the *specific*
     /// scope? Used to member-gate the DM-bleed cross-grant so a
     /// DM-whitelisted peer only reads server/channel traffic in
@@ -237,10 +277,13 @@ pub fn load_scope_membership_from_path(
             reason: e,
         }
     })?;
-    serde_json::from_slice(&plain).map_err(|e| ScopeMembershipError::ParseFailed {
-        path: path.display().to_string(),
-        reason: e.to_string(),
-    })
+    let mut membership =
+        serde_json::from_slice(&plain).map_err(|e| ScopeMembershipError::ParseFailed {
+            path: path.display().to_string(),
+            reason: e.to_string(),
+        })?;
+    membership.backing_file = Some(path.to_path_buf());
+    Ok(membership)
 }
 
 /// Serialize + atomically write `m` to `path` (tempfile + rename;
@@ -379,6 +422,28 @@ mod tests {
         assert_eq!(m, back);
         assert!(has_enc_magic(&std::fs::read(&path).unwrap()));
         let _ = std::fs::remove_file(&path);
+        set_file_storage_key(None);
+    }
+
+    #[test]
+    fn deleted_loaded_membership_file_degrades_the_oracle() {
+        let _g = crate::test_process_globals::serialize();
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("membership.json");
+        set_file_storage_key(Some([0x71; 32]));
+
+        let mut membership = ScopeMembership::new();
+        membership.note_server_channel_member(SRV, CH1, A);
+        super::write_scope_membership(&path, &membership).unwrap();
+        let loaded = load_scope_membership_from_path(&path).unwrap();
+        assert_eq!(loaded.health(), MembershipOracleHealth::Current);
+
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            loaded.health(),
+            MembershipOracleHealth::Degraded { path },
+            "a deleted persisted snapshot must not leave the recipient oracle confident"
+        );
         set_file_storage_key(None);
     }
 

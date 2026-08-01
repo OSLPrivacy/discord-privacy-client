@@ -1291,6 +1291,35 @@ pub fn persist_scope_membership_now(state: &AppState) {
     }
 }
 
+/// Refuse to resolve dynamic group recipients from an in-memory snapshot whose
+/// persisted source disappeared. Re-accrual after a fresh install remains
+/// best-effort; deletion after a successful load is different because it can
+/// hide removals that were only recorded on disk.
+fn ensure_dynamic_membership_oracle_is_not_degraded(
+    state: &AppState,
+    scope: &crate::scope::Scope,
+) -> Result<(), String> {
+    if !matches!(
+        scope.kind,
+        crate::scope::ScopeKind::ServerChannel | crate::scope::ScopeKind::Gc
+    ) {
+        return Ok(());
+    }
+
+    let membership = state
+        .scope_membership
+        .lock()
+        .expect("scope_membership mutex poisoned");
+    if let crate::membership::MembershipOracleHealth::Degraded { .. } = membership.health() {
+        return Err(
+            "OSL: membership data is unavailable; recipient membership may be incomplete. \
+             Wait for Discord membership observations to re-accrue before sending to this group."
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
 // ---- DTOs ----
 
 #[derive(Debug, Serialize)]
@@ -4458,6 +4487,8 @@ pub fn cmd_osl_encrypt_message_v2_wire(
             .expect("scope_membership mutex poisoned");
         mem.note_gc_members(&scope.id, channel_members.iter().cloned());
     }
+
+    ensure_dynamic_membership_oracle_is_not_degraded(state, &scope)?;
 
     // Phase 9-A1: text sends now use v=3 (PQ-hybrid). Capability
     // check happens in recipients_for_scope_v3 — any whitelisted
