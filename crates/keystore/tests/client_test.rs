@@ -240,6 +240,7 @@ fn new_parses_host_port_and_base_path() {
 /// request, sends back a fixed response. Returns the captured request
 /// bytes via the channel.
 fn one_shot_server(response: Vec<u8>) -> (u16, mpsc::Receiver<Vec<u8>>) {
+    let response = with_connection_close(response);
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let (tx, rx) = mpsc::channel();
@@ -284,12 +285,39 @@ fn one_shot_server(response: Vec<u8>) -> (u16, mpsc::Receiver<Vec<u8>>) {
     (port, rx)
 }
 
+/// Force `Connection: close` onto a hand-built mock response.
+///
+/// Every mock server in this file answers exactly one request per accepted
+/// socket and then drops the stream. That is a legal thing for a server to do
+/// only if it *says* so: without `Connection: close` an HTTP/1.1 response with
+/// a `Content-Length` is, by definition, a keep-alive response, so
+/// `KeyServerClient`'s reqwest connection pool parks the socket and hands it to
+/// the next request on the same client. The server has already closed it, and
+/// whether the pool has noticed the FIN yet depends on when reqwest's
+/// background runtime thread last polled -- a pure race. When the pool loses,
+/// the second request of a multi-request test dies with "error sending
+/// request" and the test fails on an unrelated assertion. Announcing the close
+/// removes the pooled socket entirely, which is the shared state the race ran
+/// through.
+fn with_connection_close(response: Vec<u8>) -> Vec<u8> {
+    let status_end = response
+        .windows(2)
+        .position(|w| w == b"\r\n")
+        .expect("mock response has a status line")
+        + 2;
+    let mut out = Vec::with_capacity(response.len() + 19);
+    out.extend_from_slice(&response[..status_end]);
+    out.extend_from_slice(b"Connection: close\r\n");
+    out.extend_from_slice(&response[status_end..]);
+    out
+}
+
 fn multi_response_server(responses: Vec<Vec<u8>>) -> (u16, mpsc::Receiver<Vec<u8>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        for response in responses {
+        for response in responses.into_iter().map(with_connection_close) {
             let (mut stream, _) = listener.accept().unwrap();
             stream
                 .set_read_timeout(Some(std::time::Duration::from_secs(5)))
@@ -335,7 +363,7 @@ fn multi_response_server_from_requests(
                     break;
                 }
             }
-            let response = handler(&acc);
+            let response = with_connection_close(handler(&acc));
             let _ = tx.send(acc);
             stream.write_all(&response).unwrap();
         }
@@ -1312,7 +1340,9 @@ fn request_target(request: &[u8]) -> &str {
 
 #[test]
 fn compatible_control_inbox_uses_signed_sender_filter_after_capability_probe() {
-    let _serial = active_account_test_lock().lock().unwrap();
+    let _serial = active_account_test_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -1350,7 +1380,7 @@ fn compatible_control_inbox_uses_signed_sender_filter_after_capability_probe() {
 
     let page = client
         .get_control_inbox_compatible_from(&identity, "peer-a")
-        .unwrap();
+        .unwrap_or_else(|e| panic!("compatible drain failed: {e:?}"));
     assert_eq!(page.items.len(), 1);
     assert_eq!(page.items[0].sender_id, "peer-a");
     assert_eq!(page.delivery.live, 1);
@@ -1397,7 +1427,9 @@ fn compatible_control_inbox_refuses_wrong_sender_filter_capability_version_befor
 
 #[test]
 fn compatible_control_inbox_refuses_legacy_shape_after_capability_probe() {
-    let _serial = active_account_test_lock().lock().unwrap();
+    let _serial = active_account_test_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -1431,11 +1463,12 @@ fn compatible_control_inbox_refuses_legacy_shape_after_capability_probe() {
         Box::new(|_| legacy_control_inbox_response(&["peer-b", "peer-a"])),
     ]);
     let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
-    assert!(matches!(
-        client.get_control_inbox_compatible_from(&identity, "peer-a"),
-        Err(Error::Transport(message))
-            if message.contains("did not confirm the sender filter")
-    ));
+    let outcome = client.get_control_inbox_compatible_from(&identity, "peer-a");
+    assert!(
+        matches!(&outcome, Err(Error::Transport(message))
+            if message.contains("did not confirm the sender filter")),
+        "expected a sender-filter refusal, got {outcome:?}"
+    );
     assert_eq!(request_target(&requests.recv().unwrap()), "/v1/healthz");
     let floor_get = request_target(&requests.recv().unwrap()).to_owned();
     assert!(floor_get.starts_with(&format!(
