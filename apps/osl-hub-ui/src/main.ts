@@ -9009,7 +9009,7 @@ export const __oslHubUiTest = {
    * advertisement audit in `unlock-screen-single-credential.test.ts`. */
   renderOnboardingRoute(destination: OnboardingRoute): string {
     route = "onboarding";
-    onboardingRoute = destination;
+    onboardingRoute = onboardingRouteForBuild(destination);
     return onboardingContent();
   },
   /** D80: binds the real unlock form handler against a caller-supplied DOM so

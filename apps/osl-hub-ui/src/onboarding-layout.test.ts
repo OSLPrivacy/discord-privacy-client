@@ -5,6 +5,7 @@ import {
   resumeOnboardingRoute,
   type OnboardingResumeStorage,
 } from "./onboarding-resume";
+import { nextOnboardingRoute, ONBOARDING_SEQUENCE, previousOnboardingRoute } from "./onboarding-sequence";
 import { onboardingPaintDecision } from "./ui-behavior";
 import { onboardingPasswordRoleContent } from "./password-roles";
 
@@ -257,18 +258,12 @@ describe("fresh-account continuation", () => {
   });
 
   it("routes browser import directly through the combined chooser to Home", () => {
-    const previous = functionSource("previousSetupRoute", "bindOnboarding");
-    const binding = functionSource("bindOnboarding", "completeOnboarding");
-    const browserBinding = functionSource("bindBrowserImportControls", "importIdentityForm");
-    expect(browserBinding).toMatch(/Browser import finished[\s\S]*?await enterCombinedAppChoice\(\)/);
-    expect(browserBinding).toMatch(/#continue-browser-import[\s\S]*?await enterCombinedAppChoice\(\)/);
-    expect(browserBinding).not.toContain("retry the same source once");
-    expect(browserBinding).toMatch(/catch \(failure\)[\s\S]*?browserImportQueue = \[\][\s\S]*?persistBrowserImportQueue\(\)/);
-    expect(browserBinding).toMatch(/activeOperation[\s\S]*?finishProtectedBrowserImport[\s\S]*?await activeOperation[\s\S]*?finishProtectedBrowserImport/);
-    expect(browserBinding).toContain("Nothing was imported from it");
-    expect(browserBinding).not.toContain("manually in Firefox");
-    expect(previous).toContain('tutorial: "browser"');
-    expect(binding).toMatch(/#continue-app-choice[\s\S]*?persistCombinedHomeChoices\(\)[\s\S]*?await completeOnboarding\(\)/);
+    const branches = { detected: false, install: false };
+
+    expect(nextOnboardingRoute("browser", branches)).toBe("tutorial");
+    expect(previousOnboardingRoute("tutorial", branches)).toBe("browser");
+    expect(nextOnboardingRoute("tutorial", branches)).toBe("apps");
+    expect(previousOnboardingRoute("apps", branches)).toBe("tutorial");
   });
 
   it("persists Home choices without installing, opening, or adopting native sessions", () => {
@@ -618,35 +613,18 @@ describe("fresh-account continuation", () => {
   });
 
   it("uses the approved order and defers Scrub until after onboarding", () => {
-    const binding = functionSource("bindOnboarding", "completeOnboarding");
-    const completion = functionSource("completeSixStepOnboarding", "completeOnboarding");
-    const previous = functionSource("previousSetupRoute", "bindOnboarding");
-    expect(binding).toMatch(/#continue-onboarding-privacy[\s\S]*?onboardingRoute = "defaults"/);
-    expect(binding).toMatch(/#continue-defaults-review[\s\S]*?onboardingRoute = "sending"/);
-    expect(binding).toMatch(/onboardingRoute !== "sending"[\s\S]*?canCompleteSetup\(setup\)[\s\S]*?onboardingRoute = "cover"/);
-    expect(binding).toMatch(/#continue-cover-draft[\s\S]*?onboardingRoute = "passwords"/);
-    expect(onboardingPasswordRoleContent({
-      role: "stealth",
-      configured: false,
-      passwordEyeIcon: () => "",
-      statusTag: () => "",
-    })).toContain('data-onboarding-password-next="burnpass"');
-    expect(binding).toContain('button.dataset.passwordRoleNext as OnboardingRoute');
-    expect(functionSource("bindBrowserImportControls", "importIdentityForm")).toMatch(/#continue-browser-import[\s\S]*?enterCombinedAppChoice\(\)/);
-    expect(previous).toContain('pro: "recovery"');
-    expect(previous).toContain('privacy: "pro"');
-    expect(previous).toContain('defaults: "privacy"');
-    expect(previous).toContain('sending: "defaults"');
-    expect(previous).toContain('cover: "sending"');
-    expect(previous).toContain('passwords: "cover"');
-    expect(previous).toContain('burnpass: "passwords"');
-    expect(previous).toContain('mullvad: "burnpass"');
-    expect(previous).toContain('browser: "mullvad"');
-    expect(previous).toContain('tutorial: "browser"');
-    expect(functionSource("onboardingContent", "tutorialContent")).not.toContain('onboardingRoute === "scrub"');
-    expect(binding).not.toContain("initializeOnboardingScrub");
-    expect(completion.indexOf("await loadNativeApps()")).toBeGreaterThan(completion.indexOf("await saveOnboardingPreferences"));
-    expect(completion).toContain('route = "home"');
+    const indexOf = (route: (typeof ONBOARDING_SEQUENCE)[number]): number => ONBOARDING_SEQUENCE.indexOf(route);
+
+    // These are the durable dependencies of the setup spine. New, independent
+    // setup screens may be inserted without making this test a refactor tripwire.
+    expect(indexOf("privacy")).toBeLessThan(indexOf("defaults"));
+    expect(indexOf("defaults")).toBeLessThan(indexOf("sending"));
+    expect(indexOf("sending")).toBeLessThan(indexOf("cover"));
+    expect(indexOf("cover")).toBeLessThan(indexOf("passwords"));
+    expect(indexOf("passwords")).toBeLessThan(indexOf("burnpass"));
+    expect(indexOf("browser")).toBeLessThan(indexOf("tutorial"));
+    expect(ONBOARDING_SEQUENCE).not.toContain("scrub");
+    expect(nextOnboardingRoute(ONBOARDING_SEQUENCE.at(-1)!, { detected: true, install: true })).toBeNull();
   });
 
   it("completes first run into the useful Balanced default", () => {

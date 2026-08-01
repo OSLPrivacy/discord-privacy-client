@@ -1,5 +1,23 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { nextOnboardingRoute, previousOnboardingRoute } from "./onboarding-sequence";
+
+const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), emitTo: vi.fn(), getCurrentWindow: vi.fn() }));
+vi.mock("@fontsource-variable/inter/wght.css", () => ({}));
+vi.mock("./logos", () => ({ browserLogo: (id: string) => `<span>${id}</span>`, providerLogo: (id: string) => `<span>${id}</span>`, serviceLogo: (id: string) => `<span>${id}</span>` }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
+vi.mock("@tauri-apps/api/event", () => ({ emitTo: mocks.emitTo, listen: mocks.listen }));
+vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: mocks.getCurrentWindow }));
+
+async function loadUi() {
+  vi.resetModules();
+  vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => undefined, removeItem: () => undefined });
+  vi.stubGlobal("document", { querySelector: vi.fn(() => null), createElement: vi.fn(() => ({})), documentElement: { classList: { add: vi.fn() }, dataset: {} }, addEventListener: vi.fn(), visibilityState: "visible" });
+  vi.stubGlobal("window", { addEventListener: vi.fn(), matchMedia: vi.fn(() => ({ matches: false, addEventListener: vi.fn() })), setTimeout, confirm: vi.fn(() => false) });
+  vi.stubGlobal("requestAnimationFrame", () => 1);
+  vi.stubGlobal("cancelAnimationFrame", () => undefined);
+  return import("./main");
+}
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 
@@ -13,6 +31,10 @@ function functionSource(name: string, nextName: string): string {
 
 describe("review defaults onboarding", () => {
   const review = functionSource("reviewDefaultsOnboardingContent", "coverDraftSetupContent");
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
 
   it("shows warnings, attachment cleaning, retention, cleanup, and inherited send behavior", () => {
     expect(review).toContain("Review defaults");
@@ -38,14 +60,15 @@ describe("review defaults onboarding", () => {
     expect(review).not.toMatch(/keyserver|ratchet|receipt|browser profile|provider adapter/iu);
   });
 
-  it("is wired between protection presets and send setup", () => {
-    const content = functionSource("onboardingContent", "tutorialContent");
-    const binding = functionSource("bindOnboarding", "completeOnboarding");
-    const previous = functionSource("previousSetupRoute", "bindOnboarding");
-    expect(content).toContain('if (onboardingRoute === "defaults") return reviewDefaultsOnboardingContent();');
-    expect(binding).toMatch(/#continue-onboarding-privacy[\s\S]*?onboardingRoute = "defaults"/);
-    expect(binding).toMatch(/#continue-defaults-review[\s\S]*?onboardingRoute = "sending"/);
-    expect(previous).toContain('defaults: "privacy"');
-    expect(previous).toContain('sending: "defaults"');
+  it("is wired between protection presets and send setup", async () => {
+    const branches = { detected: false, install: false };
+    const { reviewDefaultsOnboardingContent, sendingSetupContent } = await loadUi();
+
+    expect(nextOnboardingRoute("privacy", branches)).toBe("defaults");
+    expect(previousOnboardingRoute("defaults", branches)).toBe("privacy");
+    expect(nextOnboardingRoute("defaults", branches)).toBe("sending");
+    expect(previousOnboardingRoute("sending", branches)).toBe("defaults");
+    expect(reviewDefaultsOnboardingContent()).toContain('id="continue-defaults-review"');
+    expect(sendingSetupContent()).toContain("Choose how to send");
   });
 });
