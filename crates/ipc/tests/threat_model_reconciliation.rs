@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-const THREAT_MODEL: &str = include_str!("../../../../docs/THREAT_MODEL.md");
+const THREAT_MODEL: &str = include_str!("../../../docs/THREAT_MODEL.md");
 
 fn unquote_code_cell(value: &str) -> &str {
     value
