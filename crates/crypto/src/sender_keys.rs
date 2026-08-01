@@ -405,6 +405,13 @@ impl SkippedKeyCache {
     }
 
     fn insert(&mut self, entry: SkippedKey) {
+        if self
+            .keys
+            .iter()
+            .any(|existing| existing.chain_id == entry.chain_id && existing.n == entry.n)
+        {
+            return;
+        }
         if self.keys.len() >= MAX_SKIPPED_PER_CHAIN {
             self.keys.remove(0);
         }
@@ -1364,6 +1371,35 @@ mod tests {
 
     fn device(seed: u8) -> PhysicalDeviceId {
         PhysicalDeviceId::from_bytes([seed; PHYSICAL_DEVICE_ID_BYTES]).unwrap()
+    }
+
+    fn skipped_key(chain_id: u32, n: u32) -> SkippedKey {
+        SkippedKey {
+            chain_id,
+            n,
+            hk: aead::Key::from_bytes([n as u8; 32]),
+            mk: aead::Key::from_bytes([n as u8; 32]),
+            inserted_at: UNIX_EPOCH,
+        }
+    }
+
+    #[test]
+    fn skipped_key_cache_deduplicates_replayed_slots() {
+        let mut cache = SkippedKeyCache::default();
+
+        // Twenty replays of a 51-slot gap must not consume the 1,000-slot
+        // cache or evict a still-live skipped key.
+        for _ in 0..20 {
+            for n in 0..=50 {
+                cache.insert(skipped_key(7, n));
+            }
+        }
+
+        assert_eq!(cache.len(), 51);
+        assert!(cache
+            .keys
+            .iter()
+            .all(|entry| entry.chain_id == 7 && entry.n <= 50));
     }
 
     #[test]
