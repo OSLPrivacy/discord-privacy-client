@@ -6,6 +6,7 @@ import {
   type OnboardingResumeStorage,
 } from "./onboarding-resume";
 import { onboardingPaintDecision } from "./ui-behavior";
+import { onboardingPasswordRoleContent } from "./password-roles";
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
@@ -187,8 +188,12 @@ describe("clean onboarding sign in", () => {
     expect(skip).toContain("display: block");
     expect(skip).toContain("margin-inline: auto");
     // The class has to actually be on the control the steps render.
-    expect(functionSource("onboardingPasswordRoleContent", "mullvadSetupContent"))
-      .toContain('class="text-button onboarding-role-skip"');
+    expect(onboardingPasswordRoleContent({
+      role: "stealth",
+      configured: false,
+      passwordEyeIcon: () => "",
+      statusTag: () => "",
+    })).toContain('class="text-button onboarding-role-skip"');
   });
 
   it("reflects the live maximized state on the maximize/restore control", () => {
@@ -621,8 +626,12 @@ describe("fresh-account continuation", () => {
     expect(binding).toMatch(/#continue-defaults-review[\s\S]*?onboardingRoute = "sending"/);
     expect(binding).toMatch(/onboardingRoute !== "sending"[\s\S]*?canCompleteSetup\(setup\)[\s\S]*?onboardingRoute = "cover"/);
     expect(binding).toMatch(/#continue-cover-draft[\s\S]*?onboardingRoute = "passwords"/);
-    expect(source).toContain('data-onboarding-password-next="${next}"');
-    expect(functionSource("onboardingPasswordRoleContent", "mullvadSetupContent")).toContain('stealth ? "burnpass" : "mullvad"');
+    expect(onboardingPasswordRoleContent({
+      role: "stealth",
+      configured: false,
+      passwordEyeIcon: () => "",
+      statusTag: () => "",
+    })).toContain('data-onboarding-password-next="burnpass"');
     expect(binding).toContain('button.dataset.passwordRoleNext as OnboardingRoute');
     expect(functionSource("bindBrowserImportControls", "importIdentityForm")).toMatch(/#continue-browser-import[\s\S]*?enterCombinedAppChoice\(\)/);
     expect(previous).toContain('pro: "recovery"');
@@ -744,14 +753,25 @@ describe("fresh-account continuation", () => {
   });
 
   it("collects only wired password roles and exposes only real capture resistance", () => {
-    const passwords = functionSource("onboardingPasswordRoleContent", "onboardingPrivacyContent");
+    const stealthPassword = onboardingPasswordRoleContent({
+      role: "stealth",
+      configured: false,
+      passwordEyeIcon: () => "",
+      statusTag: () => "",
+    });
+    const burnPassword = onboardingPasswordRoleContent({
+      role: "burn",
+      configured: false,
+      passwordEyeIcon: () => "",
+      statusTag: () => "",
+    });
     const privacy = functionSource("captureSetupMarkup", "coverDraftSetupContent");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
-    expect(passwords).toContain("Stealth password");
-    expect(passwords).toContain("Burn password");
-    expect(passwords).toContain('data-onboarding-password-role="${role}"');
-    expect(passwords).toContain("Current password");
-    expect(passwords).toContain("Set password");
+    expect(stealthPassword).toContain("Stealth password");
+    expect(burnPassword).toContain("Burn password");
+    expect(stealthPassword).toContain('data-onboarding-password-role="stealth"');
+    expect(stealthPassword).toContain("Current password");
+    expect(stealthPassword).toContain("Set password");
     expect(privacy).toContain("Protected messages appear only after OSL enables this protection");
     expect(privacy).toContain('id="window-capture-enabled"');
     expect(privacy).toContain('type="checkbox"');
@@ -771,7 +791,12 @@ describe("fresh-account continuation", () => {
       const listener = new RegExp(`(?:current|alternate|confirm)\\.addEventListener\\("${eventName}"[\\s\\S]{0,180}?onboardingRoute`);
       expect(binding).not.toMatch(listener);
     }
-    expect(source).toContain('data-skip-onboarding-password-role="${next}"');
+    expect(onboardingPasswordRoleContent({
+      role: "stealth",
+      configured: false,
+      passwordEyeIcon: () => "",
+      statusTag: () => "",
+    })).toContain('data-skip-onboarding-password-role="burnpass"');
     const onboardingBinding = functionSource("bindOnboarding", "completeOnboarding");
     expect(onboardingBinding).toContain('querySelectorAll<HTMLButtonElement>("button[data-password-role-next]")');
     expect(onboardingBinding).not.toContain('querySelectorAll<HTMLButtonElement>("[data-password-role-next]")');

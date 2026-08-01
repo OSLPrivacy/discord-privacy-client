@@ -18,6 +18,7 @@ import {
   type SetupState,
 } from "./state";
 import { isTauriRuntime, loadOnboardingPreferences, saveOnboardingPreferences } from "./preferences";
+import { onboardingPasswordRoleContent as passwordRoleContent } from "./password-roles";
 import { lastBackendFailure, recordBackendFailure } from "./backend-failure";
 import {
   escapeHtml,
@@ -2460,15 +2461,12 @@ function coverDraftSetupContent(): string {
 }
 
 function onboardingPasswordRoleContent(role: "stealth" | "burn"): string {
-  const stealth = role === "stealth";
-  const configured = stealth ? passwordRoleStatus?.stealthPasswordSet : passwordRoleStatus?.burnPasswordSet;
-  const title = stealth ? "Stealth password" : "Burn password";
-  const detail = stealth ? "Opens an empty workspace without loading your private data." : "Erases OSL data from this device when entered at sign in.";
-  const next = stealth ? "burnpass" : "mullvad";
-  if (configured) {
-    return `<h1 id="route-heading" tabindex="-1">${title}</h1><div class="password-role-ready">${statusTag("Set")}<p>${detail}</p></div><div class="setup-footer onboarding-actions"><button class="button primary" data-password-role-next="${next}" type="button">Continue</button></div>`;
-  }
-  return `<h1 id="route-heading" tabindex="-1">${title}</h1><p class="compact-lead onboarding-centered-copy">${detail}</p><form class="setup-surface password-form onboarding-role-form" data-onboarding-password-role="${role}" data-onboarding-password-next="${next}" novalidate><label for="setup-${role}-current">Current password</label><div class="password-input-row"><input id="setup-${role}-current" name="current" type="password" minlength="6" maxlength="128" autocomplete="current-password" required/><button class="password-eye" type="button" data-password-toggle="setup-${role}-current" aria-label="Show current password">${passwordEyeIcon()}</button></div><label for="setup-${role}-alternate">New ${stealth ? "stealth" : "burn"} password</label><div class="password-input-row"><input id="setup-${role}-alternate" name="alternate" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="setup-${role}-alternate" aria-label="Show new password">${passwordEyeIcon()}</button></div><label for="setup-${role}-confirm">Confirm</label><div class="password-input-row"><input id="setup-${role}-confirm" name="confirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="setup-${role}-confirm" aria-label="Show password confirmation">${passwordEyeIcon()}</button></div><p class="unlock-error" data-onboarding-role-error role="alert"></p><button class="button primary" type="submit" disabled>Set password</button></form><button class="text-button onboarding-role-skip" type="button" data-skip-onboarding-password-role="${next}">Not now</button>`;
+  return passwordRoleContent({
+    role,
+    configured: role === "stealth" ? passwordRoleStatus?.stealthPasswordSet : passwordRoleStatus?.burnPasswordSet,
+    passwordEyeIcon,
+    statusTag,
+  });
 }
 
 function onboardingPrivacyContent(): string {
