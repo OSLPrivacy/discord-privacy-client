@@ -25,3 +25,14 @@ test("licence-qualified candidates are ordered from smallest install", async () 
     [...shortlist.candidates.map(({ artifactBytes }) => artifactBytes)].sort((a, b) => a - b),
   );
 });
+
+test("runtime preserves the complete next-token distribution for stego adapters", async () => {
+  const shortlist = await shortlistData();
+
+  assert.deepEqual(shortlist.runtime, {
+    crate: "llama-cpp-2",
+    api: "LlamaContext::get_logits() -> &[f32]",
+    distributionAccess: "full-vocabulary-raw-logits",
+    samplerBoundary: "adapter-must-derive-probabilities-before-any-runtime-sampler-or-truncation",
+  });
+});
