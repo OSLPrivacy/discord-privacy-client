@@ -36,7 +36,14 @@ export class HostedSessionPresenceGate {
   #parked = true;
   #tail: Promise<void> = Promise.resolve();
 
-  constructor(pacing: HostedSessionPacing) { this.#pacing = pacing; }
+  constructor(pacing: HostedSessionPacing) {
+    // Slower pacing is a safe owner choice; a shorter interval is not. Keep
+    // the floor here, at the action boundary, so every hosted adapter shares it.
+    this.#pacing = {
+      ...pacing,
+      fixedRestMs: Math.max(HOSTED_SESSION_FIXED_REST_MS, pacing.fixedRestMs),
+    };
+  }
 
   signalHumanPresence(): void {
     this.#lastPresence = this.#pacing.clock();
@@ -53,7 +60,7 @@ export class HostedSessionPresenceGate {
     await prior;
     try {
       const now = this.#pacing.clock();
-      if (this.#parked || this.#lastPresence < 0 || now - this.#lastPresence > this.#pacing.presenceTtlMs || this.#actions >= this.#pacing.maxBatch) {
+      if (this.#parked || this.#lastPresence < 0 || now - this.#lastPresence >= this.#pacing.presenceTtlMs || this.#actions >= this.#pacing.maxBatch) {
         this.#parked = true;
         return "parked";
       }
