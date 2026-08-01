@@ -3593,7 +3593,7 @@ function trustedHeader(): string {
     && !(discordQaShell && activeHomeAppId === "discord")) {
     return `<div class="trusted-stack home-trusted-stack"><header class="home-header guide-header"><button class="home-brand" data-route="home" aria-label="OSL Privacy home"><img class="osl-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/><span class="home-brand-copy"><strong>OSL Privacy</strong></span></button><div class="guide-header-service">${serviceLogo(activeService.id)}<span><strong>${escapeHtml(activeService.displayName)}</strong><small>${isCoreProtectionReady(core.readiness) ? "Ready" : "Needs attention"}</small></span></div>${settingsButtonMarkup()}</header></div>`;
   }
-  const localProtection = route === "service" && (activeEmbeddedHost || activeNativeHostId === "discord")
+  const localProtection = route === "service" && activeService !== null
     ? `<button class="local-protected-toggle" id="local-protected-toggle" type="button" aria-expanded="${localProtectedSheet.open || peerProtectedSheet.open || nativeDiscordProtectionActive}">Protect</button>`
     : "";
   const mailScope = route === "service" ? mailComposerEncryptionScope(activeHomeApp()) : "";
@@ -8998,6 +8998,22 @@ export const __oslHubUiTest = {
   renderRouteShell(destination: Route): string {
     route = destination;
     return destination === "onboarding" ? onboardingShellMarkup() : workspaceShellMarkup();
+  },
+  renderServiceHeader(appId: HomeAppId): string {
+    route = "service";
+    activeHomeAppId = appId;
+    activeService = {
+      id: "discord",
+      displayName: "Discord",
+      sidebarGlyph: "DC",
+      sidebarOrder: 0,
+      category: "consumer",
+      launchState: "available",
+      supportsNativePreview: true,
+      supportsProtectedPreview: true,
+      accounts: [],
+    };
+    return trustedHeader();
   },
   /** D80: the rendered onboarding screen, markup only, for the unlock-screen
    * advertisement audit in `unlock-screen-single-credential.test.ts`. */
