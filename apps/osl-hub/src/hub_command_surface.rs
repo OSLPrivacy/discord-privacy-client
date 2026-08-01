@@ -404,6 +404,7 @@ macro_rules! hub_tauri_commands {
             create_hub_osl_identity,
             import_hub_osl_identity_phrase,
             setup_hub_main_password,
+            view_hub_recovery_phrase,
             lock_hub_session,
             get_hub_password_role_status,
             set_hub_stealth_password,
@@ -1296,6 +1297,33 @@ mod tauri_registration_surface_tests {
             permission_commands(include_str!("../permissions/hub.toml")),
             capability_permissions(include_str!("../capabilities/hub.json")),
         )
+    }
+
+    /// T15-A3/A4 — the "see my recovery phrase again" surface.
+    ///
+    /// `cmd_osl_view_recovery_phrase` has existed in `crates/ipc` all along,
+    /// but the only `invoke_handler` that ever registered it was the excluded
+    /// legacy `src-tauri` shell. In the shipping app the phrase was shown once
+    /// during onboarding and then unreachable forever. Registration alone is
+    /// not enough either: without the `permissions/hub.toml` declaration and
+    /// the `capabilities/hub.json` grant the webview's `invoke` is rejected by
+    /// the ACL before it reaches the handler, so all three are asserted, and
+    /// each one is proven load-bearing by removing it.
+    #[test]
+    fn view_hub_recovery_phrase_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "view_hub_recovery_phrase",
+        );
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["view_hub_recovery_phrase"],
+        );
     }
 
     const BROWSER_CONSENT_COMMANDS: [&str; 5] = [

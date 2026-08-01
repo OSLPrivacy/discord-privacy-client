@@ -57,12 +57,17 @@ function assertProtectedRecoveryPublication(flow: string): void {
 describe("A1 reconciliation independent audit (unit a14)", () => {
   it("accounts for every recovery-secret publication path and requires capture proof before render", () => {
     expect(matchingLines(renderer, "recoveryBundle =")).toEqual([
-      "recoveryBundle = null;",
+      // T15-A7: the recovery-kit reducer's single write-back. It cannot
+      // publish a secret of its own — it only stores whatever the reducer
+      // returned, which is either the bundle it was already holding or null.
+      // The reducer clearing the bundle is what replaced the old explicit
+      // `recoveryBundle = null;` in the Continue handler.
+      "recoveryBundle = state.secrets;",
       "recoveryBundle = {",
       "recoveryBundle = { userId: identity.userId, identityPhrase: null, passwordPhrase: passwordResult.passwordRecoveryPhrase };",
       "recoveryBundle = null;",
     ]);
-    expect(recoveryObjectAssignments(renderer)).toHaveLength(2);
+    expect(recoveryObjectAssignments(renderer)).toHaveLength(3);
 
     const createFlow = sourceBetween(
       sourceBetween(renderer, "function bindPasswordForm", "function bindImportForm"),

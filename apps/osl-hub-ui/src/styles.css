@@ -1065,6 +1065,33 @@ code {
 .secure-recovery-next-steps strong,
 .secure-recovery-next-steps small { display: block; }
 .secure-recovery-next-steps small { margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+/* T15-A7: the capture-protection claim, stated on the same surface as the
+   secrets it is about. The "not-capture-resistant" variant is deliberately
+   loud — it is the honest state on every non-Windows build. */
+.recovery-protection-notice {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-left: 2px solid var(--brand);
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.recovery-protection-notice[data-recovery-claim="not-capture-resistant"] {
+  border-left-color: var(--warn, var(--brand));
+  color: var(--text);
+}
+.recovery-show-anyway {
+  display: grid;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+}
+.recovery-show-anyway label { color: var(--muted); font-size: 11px; line-height: 1.45; }
+.recovery-show-anyway input { width: 100%; }
+.recovery-reveal-form { display: grid; gap: 7px; }
+
 .recovery-account-details summary { min-height: 38px; display: flex; align-items: center; color: var(--muted); cursor: pointer; font-size: 11px; }
 .recovery-account-details code { display: block; padding: 8px; overflow-wrap: anywhere; background: var(--bg); }
 

@@ -131,6 +131,18 @@ pub fn apply_to_hwnd(hwnd_isize: isize, protection: ScreenshotProtection) -> Res
     imp::apply(hwnd_isize, protection)
 }
 
+/// Whether this build actually enforces capture resistance.
+///
+/// `apply_to_hwnd` returning `Ok(())` is **not** evidence that anything was
+/// protected: off Windows the implementation is a no-op stub that always
+/// succeeds. Callers that put a claim about capture resistance in front of a
+/// user must gate that claim on this, not on the `Ok(())`. Off Windows the
+/// honest answer is "no capture protection exists here", and a UI that says
+/// otherwise is making a false public claim.
+pub const fn capture_protection_is_enforced() -> bool {
+    cfg!(windows)
+}
+
 /// Compatibility wrapper used by the Tauri layer. Windows only permits
 /// display affinity on a current-process top-level HWND, so this applies
 /// `protection` to the supplied OSL-owned top-level window and does not
@@ -142,4 +154,26 @@ pub fn apply_to_hwnd_and_children(
     protection: ScreenshotProtection,
 ) -> Result<()> {
     imp::apply_with_children(hwnd_isize, protection)
+}
+
+#[cfg(test)]
+mod capture_enforcement_tests {
+    use super::{apply_to_hwnd, capture_protection_is_enforced, ScreenshotProtection};
+
+    /// T15 — the false-claim defect. On a non-Windows build the request
+    /// "succeeds" against a window that does not exist, because the whole
+    /// implementation is a stub. Any UI that reads that `Ok(())` as proof of
+    /// capture resistance is lying to the user, so success and enforcement
+    /// must not be the same signal.
+    #[test]
+    fn a_successful_request_is_not_evidence_that_protection_is_enforced() {
+        assert!(apply_to_hwnd(0, ScreenshotProtection::On).is_ok());
+        assert_eq!(capture_protection_is_enforced(), cfg!(windows));
+        if !cfg!(windows) {
+            assert!(
+                !capture_protection_is_enforced(),
+                "off Windows there is no display-affinity primitive at all, so no surface may claim capture resistance"
+            );
+        }
+    }
 }
