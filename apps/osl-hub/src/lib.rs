@@ -131,6 +131,8 @@ pub mod security;
 #[cfg(feature = "core")]
 pub mod security_credentials;
 #[cfg(feature = "core")]
+pub mod spaces;
+#[cfg(feature = "core")]
 pub mod service_scope_index;
 pub mod signal_destination_binding;
 #[cfg(feature = "core")]
