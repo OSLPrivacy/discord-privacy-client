@@ -76,3 +76,21 @@ test("records the fixed free-cover beacon and its required replacement", () => {
     requiredFreeCarrier: "word-bank carrier only",
   });
 });
+
+const decisionMatch = source.match(/### Decision contract[\s\S]*?```json\s+([\s\S]*?)\s+```/u);
+
+assert.ok(decisionMatch, "the LLM-driven coding decision must have a JSON contract");
+const decisionContract = JSON.parse(decisionMatch[1]);
+
+test("LLM-driven coding remains rejected unless both revival gates are met", () => {
+  assert.equal(decisionContract.version, 1);
+  assert.deepEqual(decisionContract.llmDrivenCoding, {
+    v1Status: "evaluated-and-rejected",
+    isFallback: false,
+    revival: {
+      requiresNegotiatedPerConversationCapability: true,
+      requiresMatchingTrustedModelPackArtifactDigest: true,
+      requiresCrossCpuMeasuredDecodeFailureRate: true,
+    },
+  });
+});

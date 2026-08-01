@@ -184,3 +184,52 @@ T13-B2 replaces the fixed free-cover constant with the existing codec's
 word-bank output. It must not introduce a second word list. Until that change
 lands, the fixed beacon is an explicitly recorded defect rather than a
 stealth claim.
+
+## LLM-driven coding
+
+**Decision: evaluated and rejected for v1.** Encoder-driven LLM steganography
+(the Meteor/Discop class) would replace the deterministic cover codec's CDF
+with a model's next-token distribution. It is not a shipping carrier, a
+fallback, or a format a peer may attempt to decode in v1.
+
+The rejection is a correctness decision, not a judgement about cover quality.
+The sender and receiver must reproduce bit-identical next-token distributions.
+Published measurements report roughly 5--10% extraction failure for 128-bit
+payloads from hardware floating-point nondeterminism alone; tokenisation drift
+can reduce Discop recovery to 0%. Autoregressive desynchronisation then
+propagates into total decode failure rather than a recoverable bad cover. No
+production deployment of this class is known. This also conflicts with the
+optional, Pro-only local model: a receiver without the exact model would lose
+the message rather than safely use the deterministic decoder.
+
+It may be reconsidered only as a new, negotiated per-conversation capability.
+Both peers must advertise the same verified `TrustedModelPack::artifact_digest`
+before it can be selected, and decoding must first be demonstrated across two
+different CPU families at a measured failure rate. The digest accessor already
+exists in `crates/cover-draft/src/lib.rs`; v1 implements neither the capability
+advertisement nor LLM-driven coding.
+
+### Decision contract
+
+```json
+{
+  "version": 1,
+  "llmDrivenCoding": {
+    "v1Status": "evaluated-and-rejected",
+    "isFallback": false,
+    "revival": {
+      "requiresNegotiatedPerConversationCapability": true,
+      "requiresMatchingTrustedModelPackArtifactDigest": true,
+      "requiresCrossCpuMeasuredDecodeFailureRate": true
+    }
+  }
+}
+```
+
+## Conditions for a future consumer
+
+A consumer may be added only when it supplies a real local `LocalCoverModel`
+implementation backed by a verified `TrustedModelPack`, exposes cancellation
+and failure to the user, and preserves the explicit approval boundary. Until
+then, no production route should depend on this crate and an unavailable model
+must remain a visible, fail-closed condition.
