@@ -24,6 +24,7 @@ use osl_privacy_hub::core_bridge::{
     self, CoreFeature, CoreReadiness, HubCoreState, HubLicenseState,
 };
 use osl_privacy_hub::discord_carrier_geometry::CarrierDecision;
+use osl_privacy_hub::entitlement_refresh;
 use osl_privacy_hub::identity_binding_verifier::{
     AccountRef, BindingScope, IdentityBindingVerifier, PinnedOwner,
 };
@@ -9161,6 +9162,7 @@ fn main() {
             &security_state,
         )?;
         app.manage(core);
+        entitlement_refresh::spawn(app.handle().clone());
         #[cfg(feature = "whatsapp-qa-shell")]
         {
             let runtime_receipt = WhatsAppQaRuntimeReceiptState::beside_current_executable()?;

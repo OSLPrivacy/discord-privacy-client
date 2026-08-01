@@ -26,6 +26,8 @@ pub mod cloud_autoscrub_run;
 pub mod consent_ledger;
 pub mod control_contract;
 pub mod discord_carrier_geometry;
+#[cfg(feature = "desktop")]
+pub mod entitlement_refresh;
 pub mod execution_consent;
 pub mod external_overlay;
 pub(crate) mod firefox_migration_coordinator;

@@ -27,7 +27,7 @@ tauri = { version = "=2.11.1", features = ["unstable"], optional = true }
 tauri-plugin-updater = { version = "=2.9.0", optional = true }
 tauri-plugin-single-instance = { version = "=2.4.2", optional = true }
 tauri-plugin-dialog = { version = "=2.7.2", default-features = false, optional = true }
-tokio = { version = "=1.49.0", features = ["sync"], optional = true }
+tokio = { version = "=1.49.0", features = ["sync", "time"], optional = true }
 ipc = { path = "../../crates/ipc", optional = true }
 keystore = { path = "../../crates/keystore", optional = true }
 crypto = { path = "../../crates/crypto", optional = true }
