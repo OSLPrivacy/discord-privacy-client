@@ -5341,6 +5341,8 @@ mod tests {
             dm_scope_input(scope_id)
         )
         .unwrap());
+    }
+
     /// Read the burn identifiers the outbox actually persisted, so the ack half
     /// of this lifecycle is driven by the real queue rather than by recomputing
     /// the commitment chain a second time (which would only prove the test
