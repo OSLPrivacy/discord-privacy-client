@@ -29,8 +29,13 @@ const ACCOUNT_STATE_FILES: &[&str] = &[
     "membership.json",
     "scope_ttl.json",
     "scope_blobs.json",
+    ipc::space_roster::SPACE_ROSTER_FILE,
     "store/messages.sqlite",
 ];
+
+pub(crate) fn account_state_files() -> &'static [&'static str] {
+    ACCOUNT_STATE_FILES
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
