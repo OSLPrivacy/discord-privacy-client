@@ -5,11 +5,11 @@ compatibility_date = "2026-05-13"
 # Subpoena-resistance is a core property of this Worker. Two
 # implications baked into this config:
 #
-#   1. observability is INTENTIONALLY DISABLED. Cloudflare's
-#      observability tab logs every request URL + status; even with
-#      no app-level logging, a leaked observability slice would
-#      reveal traffic patterns. The explicit disabled blocks below are a
-#      release invariant and must not be removed for production debugging.
+#   1. Workers Logs are intentionally disabled. These blocks govern Workers
+#      Logs/trace events only; they do not disable Cloudflare zone HTTP request
+#      data, Analytics, or zone Logpush. A proxied request URL can still be
+#      retained there. See /home/liamw/osl-plan/CLOUDFLARE-LOG-EXPOSURE.md.
+#      Keep the blocks disabled, but do not treat them as a zone-log mitigation.
 #
 #   2. tail / live logging is operator-controlled via `wrangler
 #      tail`. Do not pipe `wrangler tail` to disk in production --

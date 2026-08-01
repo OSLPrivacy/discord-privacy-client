@@ -19,9 +19,9 @@ preview_urls = false
 # with TELEGRAM_VIEWER_CHAT_IDS as an additive private-account allowlist and
 # TELEGRAM_ADMIN_CHAT_ID accepted only as a migration fallback.
 
-# Several authenticated protocol routes still carry opaque identity/content
-# identifiers in their URL. Retaining request traces would undermine OSL's
-# data-minimisation boundary, so production request observability stays off.
+# Disables Workers Logs for this Worker. It does not disable Cloudflare zone
+# HTTP request data, Analytics, or zone Logpush; proxied request URLs can still
+# be retained there. See /home/liamw/osl-plan/CLOUDFLARE-LOG-EXPOSURE.md.
 [observability]
 enabled = false
 
