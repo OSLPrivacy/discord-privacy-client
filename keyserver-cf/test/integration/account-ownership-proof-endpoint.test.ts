@@ -145,6 +145,27 @@ async function bindingRows(
 }
 
 describe("POST /v1/account-ownership/proof", () => {
+  it("accepts a claimant self-signature for an arbitrary Discord snowflake without provider authentication", async () => {
+    const serviceAccountId = nextSnowflake();
+    const ownerUserId = nextOwnerId();
+    const pair = await registerTestUser(SELF, ownerUserId);
+    const challenge = await issueChallenge(serviceAccountId, ownerUserId);
+    const proof = await signProof({
+      challenge,
+      signingKey: pair.signingKey,
+    });
+
+    const res = await submit({
+      service: "discord",
+      service_account_id: serviceAccountId,
+      owner_user_id: ownerUserId,
+      proof,
+    });
+
+    expect(res.status).toBe(201);
+    expect(await bindingRows(challenge)).toHaveLength(1);
+  });
+
   it("records the binding and spends the challenge for a valid proof", async () => {
     const ctx = await prepare();
     const proof = await signProof({

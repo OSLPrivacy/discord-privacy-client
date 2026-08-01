@@ -41,13 +41,16 @@ Public-key and reusable-blob lookups remain public by design. A one-use
 wrapped key requires a fresh signature from its intended recipient; a
 prekey bundle requires a fresh signature from a registered requester.
 
-**Unresolved release gate:** registration self-signatures prove possession
-of the submitted key, but do not prove that the submitter owns the claimed
-Discord snowflake. A first registrant can still preclaim another Discord
-ID. Production onboarding therefore requires a Discord OAuth authorization
-code flow (state + PKCE) whose `identify` result is checked by the server
-before binding that snowflake. Until that is implemented, use only isolated
-test identities and do not treat the build as safe for real accounts.
+**Current identity-binding limit:** registration self-signatures prove
+possession of the submitted key, not control of any Discord account. The
+separate account-ownership challenge endpoint will mint a nonce for any
+claimed snowflake, and its proof is signed by the claimant's own OSL identity
+key. A recorded binding therefore means only “identity X claimed snowflake S,
+freshly and once”; it does not establish that X controls S. A first claimant
+can still preclaim another Discord ID. Discord OAuth is not implemented. If
+actual Discord-account control is required, it needs an OAuth authorization
+code flow (state + PKCE) whose `identify` result the server checks before
+binding the snowflake.
 
 ### Transport (client side)
 
@@ -93,8 +96,9 @@ deliberately, with the upgrade path documented here; this text does not claim
 that the v1 behavior is enabled in a shipping client.
 
 TLS terminates at Cloudflare and the Rust client trusts the standard
-public-CA chain; certificate pinning remains deferred. Discord OAuth
-ownership proof is the only known identity-binding gap described above.
+public-CA chain; certificate pinning remains deferred. Discord-account
+control is not verified; the self-signed account-binding record described
+above is not an ownership proof.
 
 ## Endpoints
 
@@ -119,10 +123,11 @@ Response: 201 Created (initial)
         | 200 OK with key-rotation event recorded (re-registration)
 ```
 
-**Discord OAuth proof of `user_id` ownership is required** before the
-server accepts either initial registration or re-registration. Full
-OAuth spec — flow, token verification, outage behaviour, bot vs user
-accounts — in [`auth-flow.md`](auth-flow.md).
+The server does **not** require Discord OAuth before initial registration or
+re-registration. It verifies only the registration signature over the
+submitted OSL identity key. The `user_id` is an OSL identity, not a verified
+Discord account; a future Discord OAuth flow is a separate, unimplemented
+requirement if the product needs to establish account control.
 
 If the `user_id` already exists with prior keys, this becomes a
 **re-registration**:

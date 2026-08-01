@@ -2,10 +2,13 @@
 /// ProofChallenge-shaped nonce for a claimed Discord snowflake.
 ///
 /// This endpoint grants no registration, lookup, binding, or account
-/// authority. It only mints a nonce when the caller supplies the full binding
+/// authority. Anyone may request a nonce for any claimed snowflake; the
+/// subsequent proof is signed by the caller's OSL identity key, not by
+/// Discord. It only mints that nonce when the caller supplies the full binding
 /// tuple and explicit consent. Missing consent or missing binding fields is a
 /// refusal. The durable row stores hashes only; clear account identifiers stay
-/// out of D1 and logs.
+/// out of D1 and logs. This is a claimant assertion, not proof that the
+/// claimant controls the Discord account.
 
 import type { Env } from "../env.js";
 import {
