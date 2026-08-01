@@ -26,6 +26,15 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # nextest runs each test in its own process for fast isolated feedback.
+      # Keep cargo test above: its shared test-process shape can expose
+      # process-global-state races that nextest structurally cannot.
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@c93ccc03e00cd0e08e494f5fd058a6c55a6a1907 # v2.82.8
+        with:
+          tool: cargo-nextest
+      - name: Run workspace tests with nextest
+        run: cargo nextest run --workspace --profile ci
       # The app is intentionally an isolated Cargo workspace, so root
       # --workspace checks do not cover it. Keep its core and Windows-only
       # restart lifecycle on the ordinary PR path as well as release CI.
