@@ -1,9 +1,12 @@
 /// POST /v1/account-ownership/proof — redeem an issued account-ownership
-/// challenge and record the durable platform-account binding.
+/// challenge and record the claimant's durable platform-account assertion.
 ///
 /// This is the consumer half of `/v1/account-ownership/challenge`. Without it
 /// the challenge nonce is decorative: it is minted, handed out, and never
-/// checked, so an account-ownership claim proves nothing.
+/// checked, so even the claimant assertion is not bound to a fresh nonce.
+/// Redeeming it proves possession of the claimant's registered OSL identity
+/// key only; it does not prove control of the claimed Discord account because
+/// this route has no Discord OAuth or provider-side verification.
 ///
 /// The route is the ONLY writer of `account_ownership_challenges
 /// .spent_at_unix_seconds` and the ONLY writer of
