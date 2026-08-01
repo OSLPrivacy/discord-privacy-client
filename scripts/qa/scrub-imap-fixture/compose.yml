@@ -1,0 +1,12 @@
+services:
+  uidplus:
+    image: dovecot/dovecot:2.3.21
+    ports:
+      - "127.0.0.1:1143:143"
+
+  nouidplus:
+    image: dovecot/dovecot:2.3.21
+    volumes:
+      - ./dovecot/nouidplus.conf:/etc/dovecot/conf.d/99-nouidplus.conf:ro
+    ports:
+      - "127.0.0.1:2143:143"
