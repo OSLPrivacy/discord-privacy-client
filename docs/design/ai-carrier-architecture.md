@@ -14,6 +14,43 @@ With the local model nothing leaves your device; if you choose cloud generation
 it only ever sees text the platform already has. Cloud generation can still
 reveal conversation membership to OSL, so this is not a zero-knowledge claim.
 
+## Credits purchase contract
+
+Under owner decision D72, v1 ships local AI first and measures it before any
+cloud offering is considered. Consequently, v1 does not offer cloud generation
+credits, a credits checkout, or crypto payment. Supported crypto chains are
+none in v1.
+
+T13 does not create a second payment route. The existing Stripe paths are for
+donations and Pro; neither is a credits product and neither may be repurposed
+as one. Credits and Pro time are separate balances and must never be conflated.
+
+If a measured, explicitly approved future cloud offering needs purchasable
+credits, **T11 owns the purchase surface and payment-provider integration**.
+T13's role is limited to the credit balance and metering contract. A T11
+checkout may be offered only after its checkout gate is green and the T13
+credit contract exists; it must grant credits rather than a Pro entitlement.
+Until then, no Buy button, Stripe session, crypto flow, or payment API is
+permitted for credits.
+
+### Contract test vectors
+
+```json
+{
+  "version": 1,
+  "v1": {
+    "cloudGenerationOffered": false,
+    "creditPurchaseOffered": false,
+    "supportedCryptoChains": []
+  },
+  "future": {
+    "checkoutOwner": "T11",
+    "requiresCheckoutGate": true,
+    "proEntitlementIsCreditBalance": false
+  }
+}
+```
+
 ## Existing code: keep `osl-cover-draft`
 
 `crates/cover-draft` remains a workspace member but has no consumer crate.
