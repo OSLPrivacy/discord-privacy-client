@@ -23,6 +23,19 @@ pub enum RnSessionHealth {
     Unrecoverable,
 }
 
+/// A receive-side symptom that can prove an RN-pinned session has diverged.
+///
+/// Callers may report these only after the peer's RN pin has been verified.
+/// An authentication failure needs a small threshold because one tampered
+/// packet is not proof of a lost session; the other two symptoms are local,
+/// unambiguous contradictions of the pinned session state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RnDesyncSymptom {
+    AuthFailed,
+    MissingSession,
+    MaxSkipPerMessageRefused,
+}
+
 /// Durable health record for one peer.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RnPeerHealth {
@@ -58,30 +71,32 @@ impl RnPeerHealth {
         self.consecutive_auth_failures = 0;
     }
 
-    /// Record an authentication failure from an RN-pinned peer.
+    /// Record a real receive-side symptom from an RN-pinned peer.
     ///
-    /// The detector's threshold is frozen at three. Once desynchronised, more
-    /// failures retain that state; they cannot make the UI look healthy again.
-    pub fn pinned_auth_failed(&mut self) {
+    /// The detector's authentication-failure threshold is frozen at three.
+    /// A missing session or a per-message skip-bound refusal are immediate
+    /// proofs that the pinned session cannot process this wire message.
+    /// Once desynchronised, later symptoms retain that state; they cannot make
+    /// the UI look healthy again.
+    pub fn observe_pinned_symptom(&mut self, symptom: RnDesyncSymptom) {
         if matches!(
             self.health,
             RnSessionHealth::Unrecoverable | RnSessionHealth::Desynced
         ) {
             return;
         }
-        self.consecutive_auth_failures = self.consecutive_auth_failures.saturating_add(1);
-        self.health = if self.consecutive_auth_failures >= 3 {
-            RnSessionHealth::Desynced
-        } else {
-            RnSessionHealth::Degraded
-        };
-    }
-
-    /// Enter the durable desynchronised state for an immediate detector
-    /// symptom such as a missing pinned session or skip-bound refusal.
-    pub fn desync_detected(&mut self) {
-        if self.health != RnSessionHealth::Unrecoverable {
-            self.health = RnSessionHealth::Desynced;
+        match symptom {
+            RnDesyncSymptom::AuthFailed => {
+                self.consecutive_auth_failures = self.consecutive_auth_failures.saturating_add(1);
+                self.health = if self.consecutive_auth_failures >= 3 {
+                    RnSessionHealth::Desynced
+                } else {
+                    RnSessionHealth::Degraded
+                };
+            }
+            RnDesyncSymptom::MissingSession | RnDesyncSymptom::MaxSkipPerMessageRefused => {
+                self.health = RnSessionHealth::Desynced;
+            }
         }
     }
 
@@ -267,7 +282,7 @@ mod tests {
         let mut record = store
             .load_with_sealer(&peer, &sealer)
             .expect("empty record");
-        record.desync_detected();
+        record.observe_pinned_symptom(RnDesyncSymptom::MissingSession);
         store
             .save_with_sealer(&peer, &record, &sealer)
             .expect("persist desync");
@@ -276,7 +291,7 @@ mod tests {
             .load_with_sealer(&peer, &sealer)
             .expect("reload desync");
         assert_eq!(reloaded.health(), RnSessionHealth::Desynced);
-        reloaded.pinned_auth_failed();
+        reloaded.observe_pinned_symptom(RnDesyncSymptom::AuthFailed);
         assert_eq!(reloaded.health(), RnSessionHealth::Desynced);
 
         reloaded.successful_decrypt();
@@ -289,18 +304,18 @@ mod tests {
         let mut record = RnPeerHealth::default();
         assert_eq!(record.health(), RnSessionHealth::Healthy);
 
-        record.pinned_auth_failed();
+        record.observe_pinned_symptom(RnDesyncSymptom::AuthFailed);
         assert_eq!(record.health(), RnSessionHealth::Degraded);
         assert_eq!(record.consecutive_auth_failures(), 1);
-        record.pinned_auth_failed();
+        record.observe_pinned_symptom(RnDesyncSymptom::AuthFailed);
         assert_eq!(record.health(), RnSessionHealth::Degraded);
-        record.pinned_auth_failed();
+        record.observe_pinned_symptom(RnDesyncSymptom::AuthFailed);
         assert_eq!(record.health(), RnSessionHealth::Desynced);
 
         record.successful_decrypt();
         assert_eq!(record.health(), RnSessionHealth::Healthy);
 
-        record.desync_detected();
+        record.observe_pinned_symptom(RnDesyncSymptom::MaxSkipPerMessageRefused);
         assert_eq!(record.health(), RnSessionHealth::Desynced);
         record.unrecoverable();
         record.successful_decrypt();
