@@ -97,6 +97,30 @@ describe("home workspace hierarchy", () => {
     expect(protectedCopy).not.toMatch(/keyservers?|ratchets?|receipts?|browser profiles?|provider adapters?/iu);
   });
 
+  it("states first-run Home in words an owner can act on, never build jargon", async () => {
+    // The shipped first-run Home read "Finish account protection -- source
+    // linked . bootstrap required", in both the "Needs attention" summary and
+    // the recommended-action card. That is bridge-wiring vocabulary; a
+    // first-time owner cannot act on it.
+    //
+    // Asserted on RENDERED text, not on the source of the template that
+    // produced it, so the check is against what the WebView actually paints.
+    const { __oslHubUiTest } = await loadUi();
+    __oslHubUiTest.reset({ route: "home", coreReady: false, storageMethod: null });
+    const copy = visibleText(__oslHubUiTest.renderWorkspaceContent("home"));
+
+    expect(copy).not.toMatch(/bootstrap/iu);
+    expect(copy).not.toMatch(/source linked/iu);
+    expect(copy).not.toMatch(/\bcore\b/iu);
+    expect(copy).not.toMatch(/keyserver|ratchet|registration state|sealer/iu);
+    // and it still names the state in a plain sentence. (This harness ties
+    // originalCoreLinked to coreReady, so the branch it can reach is the
+    // "cannot start" one; the linked-but-unbootstrapped sentence that shipped
+    // on the walkthrough box is pinned by name in core.test.ts.)
+    expect(copy).toMatch(/Finish account protection/iu);
+    expect(copy).toMatch(/Protection cannot start on this device\./u);
+  });
+
   it("implements Home as the protection status destination", () => {
     expect(home).toContain("${homeDestinationContent()}");
     expect(destination).toContain('data-home-destination="protection-status"');

@@ -3319,6 +3319,20 @@ function autoScrubRunServiceName(serviceId: ServiceId): string {
 }
 
 function fleetIndicatorMarkup(): string {
+  // The pill is a live monitor for cleanup runs, so it is chrome only while
+  // there is something to monitor. `autoScrubFleetStatus === null` means the
+  // cleanup subsystem reported nothing at all -- the state a fresh install on a
+  // build without AutoScrub sits in permanently -- and
+  // projectAutoScrubFleetStatus() renders that as "Unavailable in this
+  // build / No cleanup running". Shipping that as a permanent titlebar fixture
+  // made a feature's absence the loudest element on first launch, above the
+  // window controls, before the owner had done anything. It is not a status the
+  // owner can act on and it never changes, so there is nothing to monitor and
+  // the pill is omitted. Whether Scrub is available in this build is still
+  // stated where it belongs: Settings -> Scrub, and the Scrub tile on Home.
+  // The moment a real fleet status exists -- any run, any phase, including a
+  // refusal -- the pill returns, so no live state is ever hidden by this.
+  if (autoScrubFleetStatus === null) return "";
   const status = projectAutoScrubFleetStatus(autoScrubFleetStatus);
   const openRunNames = autoScrubFleetStatus?.runs.map((run) => autoScrubRunServiceName(run.serviceId)) ?? [];
   const openRunCount = autoScrubFleetStatus?.openRunCount ?? 0;
@@ -5060,7 +5074,7 @@ function visibleAppNotifications(): AppNotification[] {
   return (appNotifications ?? []).filter((item) => item.detail === "New encrypted message" ? notificationChatActivity : notificationSecurityActivity);
 }
 
-type IdentityStorageProtection = "hardware" | "fallback" | "unknown";
+type IdentityStorageProtection = "device" | "fallback" | "unknown";
 
 /**
  * Classify a raw sealer method label (see the METHOD_* constants in
@@ -5068,24 +5082,35 @@ type IdentityStorageProtection = "hardware" | "fallback" | "unknown";
  * "memory-ephemeral", "memory-test") into the three states the UI can
  * honestly show.
  *
- * Fail honest, not optimistic: only the two known hardware-backed labels
- * count as "hardware". Every other non-null label — a known software
- * fallback, or a future label OSL does not recognize yet — is "fallback",
- * never silently treated as secure. `null` (nothing learned this session,
- * e.g. a plain unlock of a pre-existing identity, which the backend does
- * not echo a method for) is "unknown", which the UI renders with the same
+ * Fail honest, not optimistic: only the two labels that name a persistent
+ * platform-provided store count as "device". Every other non-null label — a
+ * known software fallback, or a future label OSL does not recognize yet — is
+ * "fallback", never silently treated as secure. `null` (nothing learned this
+ * session, e.g. a plain unlock of a pre-existing identity, which the backend
+ * does not echo a method for) is "unknown", which the UI renders with the same
  * not-secure weight as "fallback" — an unverified state must never render
  * as secure.
+ *
+ * This tier is deliberately NOT called "hardware". Only "tpm-pcp" is hardware.
+ * "keyring" is whatever `keyring` 3.x resolved to for the target: Windows
+ * Credential Manager, macOS Keychain, or — on Linux, the feature this repo
+ * actually enables (`linux-native` => the `linux-keyutils` crate, see
+ * crates/keystore/Cargo.toml) — the kernel keyring, which is ordinary kernel
+ * memory with no hardware root of trust and is cleared by a reboot. One label
+ * covers all of them, so the UI cannot tell them apart and must not claim the
+ * strongest one. Until keystore emits a per-backend label, the honest claim is
+ * the one both ends of the range support: the platform is holding the key, not
+ * OSL.
  */
 function classifyIdentityStorageProtection(method: string | null): IdentityStorageProtection {
   if (method === null) return "unknown";
-  if (method === "tpm-pcp" || method === "keyring") return "hardware";
+  if (method === "tpm-pcp" || method === "keyring") return "device";
   return "fallback";
 }
 
 function identityStorageProtectionMarkup(protection: IdentityStorageProtection): string {
-  if (protection === "hardware") {
-    return `<div class="storage-protection-status secure" role="status"><strong>Hardware-protected</strong><small>Your identity key is sealed by this device's TPM or OS credential store.</small></div>`;
+  if (protection === "device") {
+    return `<div class="storage-protection-status secure" role="status"><strong>Protected by this device</strong><small>Your identity key is held by this device's TPM or operating-system credential store, not by OSL.</small></div>`;
   }
   if (protection === "fallback") {
     return `<div class="storage-protection-status insecure" role="alert"><strong>Software fallback storage</strong><small>Hardware protection is unavailable on this device. Your identity key is protected by software only and will not survive a restart.</small></div>`;

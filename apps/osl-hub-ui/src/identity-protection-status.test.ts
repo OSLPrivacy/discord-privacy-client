@@ -49,7 +49,7 @@ function region(startNeedle: string, endNeedle: string): string {
   return source.slice(start, end);
 }
 
-type IdentityStorageProtection = "hardware" | "fallback" | "unknown";
+type IdentityStorageProtection = "device" | "fallback" | "unknown";
 
 function loadClassify(): (method: string | null) => IdentityStorageProtection {
   const body = region(
@@ -104,9 +104,9 @@ describe("identity storage-protection status (unit a11)", () => {
     expect(visibleText(unfinishedHeader)).not.toMatch(/\bAccount protected\b|Device protection confirmed\b/iu);
   });
 
-  it("classifies the real hardware-backed sealer labels as hardware", () => {
-    expect(classify("tpm-pcp")).toBe("hardware");
-    expect(classify("keyring")).toBe("hardware");
+  it("classifies the two persistent platform-store sealer labels as device-held", () => {
+    expect(classify("tpm-pcp")).toBe("device");
+    expect(classify("keyring")).toBe("device");
   });
 
   it("classifies known software-fallback sealer labels as fallback", () => {
@@ -126,25 +126,36 @@ describe("identity storage-protection status (unit a11)", () => {
     expect(classify(null)).toBe("unknown");
   });
 
-  it("renders hardware-backed protection distinctly and as secure", () => {
-    const html = markup("hardware");
-    expect(html).toContain("Hardware-protected");
+  it("renders platform-held protection distinctly and as secure", () => {
+    const html = markup("device");
+    expect(html).toContain("Protected by this device");
     expect(html).toMatch(/class="storage-protection-status secure"/);
     expect(html).not.toContain("insecure");
+  });
+
+  // The label the backend hands the UI ("keyring") does not say WHICH platform
+  // store answered. On Linux this repo builds `keyring` with `linux-native`
+  // (crates/keystore/Cargo.toml), i.e. the linux-keyutils kernel keyring: no
+  // hardware root of trust and cleared by a reboot. The secure tier is shown
+  // for that label, so its copy must not promise hardware.
+  it("never claims hardware for the shared platform-store tier", () => {
+    const html = markup("device");
+    expect(html).not.toMatch(/hardware/iu);
+    expect(html).toMatch(/TPM or operating-system credential store/u);
   });
 
   it("renders software fallback distinctly and as not secure", () => {
     const html = markup("fallback");
     expect(html).toContain("Software fallback storage");
     expect(html).toMatch(/class="storage-protection-status insecure"/);
-    expect(html).not.toContain("Hardware-protected");
+    expect(html).not.toContain("Protected by this device");
   });
 
   it("renders unknown protection as not secure — never defaults to implying safety", () => {
     const html = markup("unknown");
     expect(html).toContain("Storage protection unknown");
     expect(html).toMatch(/class="storage-protection-status insecure"/);
-    expect(html).not.toContain("Hardware-protected");
+    expect(html).not.toContain("Protected by this device");
     // Same non-secure visual tier as an explicit fallback: an alert role,
     // not a plain status role.
     expect(html).toMatch(/role="alert"/);

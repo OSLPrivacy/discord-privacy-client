@@ -80,6 +80,25 @@ describe("fleet indicator", () => {
     vi.unstubAllGlobals();
   });
 
+  it("is absent from every route shell while there is no cleanup state to monitor", async () => {
+    // The pill is a live monitor. With no fleet status at all -- a fresh
+    // install, and the permanent resting state of a build without AutoScrub --
+    // it projected to "Unavailable in this build / No cleanup running" and sat
+    // in the titlebar beside the window controls from the very first frame,
+    // making a feature's absence the loudest element on screen before the owner
+    // had done anything. Nothing to monitor, so nothing to show.
+    const { __oslHubUiTest } = await loadUi();
+    for (const route of ["onboarding", "home", "settings"] as const) {
+      __oslHubUiTest.reset({ route, autoScrubFleetStatus: null });
+      const shell = __oslHubUiTest.renderRouteShell(route);
+      expect(shell, route).not.toContain("data-fleet-indicator");
+      expect(shell, route).not.toContain("Unavailable in this build");
+      expect(shell, route).not.toContain("No cleanup running");
+      // the window controls are still there -- the row itself did not go away
+      expect(shell, route).toContain('id="window-close"');
+    }
+  });
+
   it("is reachable from every route shell and names every open cleanup run", async () => {
     const { __oslHubUiTest } = await loadUi();
     const routes = [

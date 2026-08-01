@@ -11,6 +11,11 @@ const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 
 const RESUME_STORAGE_KEY = "osl-onboarding-resume-v1";
 
+/** Declarations only, so a rule quoted inside a comment never satisfies a check. */
+function declarations(css: string): string {
+  return css.replace(/\/\*[\s\S]*?\*\//gu, "");
+}
+
 function fakeResumeStorage(seed: Record<string, string>): OnboardingResumeStorage {
   const items = new Map(Object.entries(seed));
   return {
@@ -120,12 +125,69 @@ describe("clean onboarding sign in", () => {
     // (48 in the QA shell), which left a notch beside them, and osl-hub's
     // TRUSTED_VERTICAL_RESERVE has to equal this exact height or the borrowed
     // native window is placed below the chrome with a dead band above it.
-    expect(styles).toMatch(/\.desktop-top-row\s*\{[^}]*height:\s*var\(--chrome-row-height\);/s);
+    // It is a floor, not a cap: two docked headers (.home-command-bar 72px,
+    // .home-header 64px) are taller, and pinning the row to exactly this height
+    // is what left the right end of those rows 18px short. The floor is what
+    // TRUSTED_VERTICAL_RESERVE must equal, and .workspace-header -- the header
+    // on the routes that actually host a borrowed native window -- is exactly
+    // this height, so the floor still binds there.
+    expect(styles).toMatch(/\.desktop-top-row\s*\{[^}]*min-height:\s*var\(--chrome-row-height\);/s);
     expect(styles).toMatch(
-      /\.desktop-top-row\s*>\s*\.window-controls\s*\{[^}]*height:\s*var\(--chrome-row-height\);/s,
+      /\.desktop-top-row\s*>\s*\.window-controls\s*\{[^}]*min-height:\s*var\(--chrome-row-height\);/s,
     );
     expect(styles).toMatch(/:root\s*\{[^}]*--chrome-row-height:\s*54px;/s);
     expect(styles).toMatch(/\.discord-qa-shell\s*\{\s*--chrome-row-height:\s*48px;/s);
+  });
+
+  it("paints the docked top row edge to edge so the header does not end in a seam", () => {
+    // The row is a flex line of three items: the header stack, the optional
+    // cleanup pill, and the window controls. The stack and the controls each
+    // paint their own background; the pill's slot did not, so at 1440px wide
+    // the header stopped dead around x=1128 and the page background showed
+    // through to the controls, with the hairline under the row broken across
+    // the same span. Every hub destination showed it.
+    //
+    // Asserted against declarations only: a rationale written in a comment must
+    // never stand in for the rule. And it is asserted in the stylesheet, not in
+    // the markup that emits the row -- the shipped CSP is `style-src 'self'`,
+    // so a `style=` attribute carrying this would be dropped by the WebView
+    // while a source-text assertion stayed green.
+    const topRow = declarations(styles).match(/\n\.desktop-top-row \{([^}]*)\}/u)?.[1] ?? "";
+    expect(topRow, ".desktop-top-row should be a top-level rule").not.toBe("");
+    expect(topRow).toContain("background: var(--panel)");
+    // A border-bottom here would consume a pixel of the row's content box, and
+    // this row's height is what TRUSTED_VERTICAL_RESERVE must match, so the
+    // hairline is drawn without taking layout space.
+    expect(topRow).toContain("box-shadow: inset 0 -1px 0 var(--line)");
+    expect(topRow).not.toMatch(/border-bottom/u);
+    // and the row must not cap its own height, or the paint stops short of the
+    // taller headers instead of short of the right edge -- the same seam turned
+    // on its side, which is what shipped once the background was added.
+    expect(topRow).toContain("align-items: stretch");
+    expect(topRow).not.toMatch(/(?<!min-)height:/u);
+
+    // The control block takes the row's height rather than setting its own.
+    // .window-controls carries `height: 100%` for the bare-shell titlebar, and
+    // any explicit cross size opts a flex item out of `align-items: stretch`.
+    const controls = declarations(styles).match(/\n\.desktop-top-row > \.window-controls \{([^}]*)\}/u)?.[1] ?? "";
+    expect(controls, ".desktop-top-row > .window-controls should be a top-level rule").not.toBe("");
+    expect(controls).toContain("height: auto");
+    // It paints neither: the row paints both across its whole width, and when
+    // this block drew its own hairline it landed a pixel below the header's.
+    expect(controls).not.toMatch(/background:/u);
+    expect(controls).not.toMatch(/border-bottom:/u);
+  });
+
+  it("centres the stealth/burn 'Not now' escape hatch under its centred card", () => {
+    // It is a <button>, so it is inline-block and pinned itself to the left
+    // edge of the centred card above it on both password steps.
+    const skip = declarations(styles).match(/\n\.onboarding-role-skip \{([^}]*)\}/u)?.[1] ?? "";
+    expect(skip, ".onboarding-role-skip should be a top-level rule").not.toBe("");
+    expect(skip).toContain("display: block");
+    expect(skip).toContain("margin-inline: auto");
+    // The class has to actually be on the control the steps render.
+    expect(functionSource("onboardingPasswordRoleContent", "mullvadSetupContent"))
+      .toContain('class="text-button onboarding-role-skip"');
   });
 
   it("reflects the live maximized state on the maximize/restore control", () => {
