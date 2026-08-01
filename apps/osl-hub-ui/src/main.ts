@@ -20,6 +20,7 @@ import {
 import { isTauriRuntime, loadOnboardingPreferences, saveOnboardingPreferences } from "./preferences";
 import { onboardingPasswordRoleContent as passwordRoleContent } from "./password-roles";
 import { lastBackendFailure, recordBackendFailure } from "./backend-failure";
+import { unlockAttemptWarning } from "./unlock-attempts";
 import {
   escapeHtml,
   closeEmbeddedServiceHost,
@@ -2977,9 +2978,13 @@ function bindPasswordForm(): void {
           // D80: the message may not name the alternates. "Password or burn
           // code not recognized" told a shoulder-surfer that a burn code is a
           // thing you can type here.
-          error.textContent = gate.lockoutSecondsRemaining > 0
+          const failureMessage = gate.lockoutSecondsRemaining > 0
             ? `Try again in ${gate.lockoutSecondsRemaining} seconds.`
             : "Password not recognized.";
+          const attemptWarning = unlockAttemptWarning(gate.attemptsUsed);
+          error.textContent = attemptWarning === null
+            ? failureMessage
+            : `${failureMessage} ${attemptWarning}`;
           await settleUnlockTransition();
           form.removeAttribute("aria-busy");
           password.disabled = false;
