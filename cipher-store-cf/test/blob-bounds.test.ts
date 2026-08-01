@@ -70,6 +70,24 @@ describe("cipher upload body bounds", () => {
     expect(response.status).toBe(400);
   });
 
+  it("refuses a 1,001-byte body that skips Padmé padding", async () => {
+    const request = new Request("https://cipher.test/v1/blob", {
+      method: "POST",
+      headers: {
+        "x-osl-ttl-seconds": "3600",
+        "x-osl-fetch-token": "0123456789abcdef0123456789abcdef",
+      },
+      body: new Uint8Array(1_001),
+    });
+
+    const response = await handleUpload(request, writableEnv());
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "invalid_padding",
+      message: "blob length must be Padmé-padded",
+    });
+  });
+
   it.each([
     ["3600", 3600],
     ["86400", 86400],
