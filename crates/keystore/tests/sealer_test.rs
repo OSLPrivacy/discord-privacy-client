@@ -11,6 +11,15 @@ use keystore::{
 // failed. It never reproduced on the Linux dev host because there the
 // keyring resolves to a backend this probe rejects anyway, so nothing
 // contends. Serialize every test that reaches the real credential store.
+//
+// 2026-07-31: the create/probe race itself is fixed inside
+// `KeyringSealer::new_namespaced` (see `KEYRING_ENTRY_LOCK` in
+// `src/sealer.rs`), and the Linux claim above is now stale -- `linux-native`
+// keyutils is a real persistent backend, so this box does contend. This lock
+// stays because the tests below share the production entry's VALUE, which is
+// a separate concern from the atomicity of creating it:
+// `concurrent_keyring_construction_converges_on_one_key` is the test that
+// covers the race, and it uses its own namespace instead of this lock.
 static CREDENTIAL_STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 struct SealFailure;
@@ -180,4 +189,86 @@ fn windows_credential_manager_survives_fresh_entry() {
     // sat here uncaught: the test has never actually run.
     let plaintext = reader.unseal(&ciphertext).unwrap();
     assert_eq!(&plaintext[..], b"fixed public persistence probe");
+}
+
+/// Starve test for the credential-store create race that `KeyringSealer::new`
+/// used to carry (the "KNOWN RACE (deliberately not fixed here, 2026-07-31)"
+/// note in `src/sealer.rs`).
+///
+/// `get_password` -> `set_password` -> read-back is a read-modify-write on one
+/// shared credential entry. Before the fix, N threads that all found the entry
+/// absent each generated and wrote their own key, and every loser was left
+/// holding a key the store no longer contained: anything it had already sealed
+/// failed to unseal with `AEAD operation failed`, which is how
+/// `ipc::wire_rn::b42_rn_session_store_uses_select_best_sealer_for_at_rest_sessions`
+/// failed under `cargo test --workspace`.
+///
+/// The barrier is what makes this deterministic rather than a lottery: it
+/// forces every thread into the create path in the same instant, which is the
+/// interleaving `--workspace` only stumbles into occasionally. Removing the
+/// lock from `new_namespaced` must make this fail; that is the only evidence
+/// the lock is load-bearing.
+///
+/// It runs against its OWN namespace, never the production entry, so it cannot
+/// purge or rotate the key that a concurrently-running test -- or the
+/// developer's installed client -- depends on.
+#[test]
+fn concurrent_keyring_construction_converges_on_one_key() {
+    use keystore::KeyringSealer;
+    use std::sync::{Arc, Barrier};
+
+    const NAMESPACE: &str = "test.sealer.concurrent-construction";
+    const THREADS: usize = 8;
+    const ROUNDS: usize = 40;
+
+    // This asserts nothing on a host with no real credential store (no
+    // Windows Credential Manager, no keyutils, no Keychain): there the
+    // backend is the keyring crate's in-memory mock, whose every `Entry`
+    // is independent, so construction fails by design and there is no
+    // shared entry to race over. Say so on stderr rather than passing
+    // quietly, because a silent pass here would look like proof.
+    if let Err(e) = KeyringSealer::new_namespaced(NAMESPACE) {
+        eprintln!(
+            "SKIPPED concurrent_keyring_construction_converges_on_one_key: \
+             no persistent credential store on this host ({e:?})"
+        );
+        return;
+    }
+
+    for round in 0..ROUNDS {
+        KeyringSealer::purge_keyring_entry_namespaced(NAMESPACE).expect("purge namespace");
+        let barrier = Arc::new(Barrier::new(THREADS));
+        let handles: Vec<_> = (0..THREADS)
+            .map(|thread| {
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || -> std::result::Result<(), String> {
+                    barrier.wait();
+                    let writer = KeyringSealer::new_namespaced(NAMESPACE)
+                        .map_err(|e| format!("round {round} thread {thread}: create: {e:?}"))?;
+                    let sealed = writer
+                        .seal(b"fixed public concurrency probe")
+                        .map_err(|e| format!("round {round} thread {thread}: seal: {e:?}"))?;
+                    // A fresh construction is what production does: `save` and
+                    // `load` each call `select_best_sealer()` separately.
+                    let reader = KeyringSealer::new_namespaced(NAMESPACE)
+                        .map_err(|e| format!("round {round} thread {thread}: reopen: {e:?}"))?;
+                    let opened = reader
+                        .unseal(&sealed)
+                        .map_err(|e| format!("round {round} thread {thread}: unseal: {e:?}"))?;
+                    if &opened[..] != b"fixed public concurrency probe" {
+                        return Err(format!("round {round} thread {thread}: wrong plaintext"));
+                    }
+                    Ok(())
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("thread panicked").expect(
+                "every concurrent construction must converge on the one stored key: a \
+                 create/probe interleaving left a sealer holding a key the store no longer has",
+            );
+        }
+    }
+
+    KeyringSealer::purge_keyring_entry_namespaced(NAMESPACE).expect("purge namespace");
 }

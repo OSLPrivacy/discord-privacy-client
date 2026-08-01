@@ -12,7 +12,7 @@ describe("original OSL core bridge", () => {
     });
     expect(parsed.originalCoreLinked).toBe(true);
     expect(parsed.unlocked).toBe(false);
-    expect(coreReadinessLabel(parsed)).toBe("source linked · bootstrap required");
+    expect(coreReadinessLabel(parsed)).toBe("Protection is not switched on yet. Finish setting up your account.");
   });
 
   it("fails closed when readiness grows an unexpected authority field", () => {
@@ -48,7 +48,7 @@ describe("original OSL core bridge", () => {
       storageMethod: "keyring",
     });
     expect(isCoreProtectionReady(parsed)).toBe(true);
-    expect(coreReadinessLabel(parsed)).toBe("OSL core ready · locally unlocked");
+    expect(coreReadinessLabel(parsed)).toBe("Protected on this device.");
     expect(identityProtectionStatus(parsed.storageMethod).state).toBe("protected");
   });
 
@@ -209,7 +209,7 @@ describe("original OSL core bridge", () => {
       bootstrapStatus: "failed",
     });
     expect(isCoreProtectionReady(parsed)).toBe(false);
-    expect(coreReadinessLabel(parsed)).toBe("OSL cloud is unavailable");
+    expect(coreReadinessLabel(parsed)).toBe("OSL cannot be reached. Check your internet connection.");
   });
 
   it("accepts six-character passwords while recommending longer ones in the UI", () => {

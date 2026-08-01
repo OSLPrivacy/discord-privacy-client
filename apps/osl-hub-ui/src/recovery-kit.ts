@@ -139,13 +139,25 @@ function modeFor(state: RecoveryKitState): RecoveryKitMode {
 }
 
 /**
- * The refusal's exits. The whole point of A7 is that this list is never
- * `["retry-protection"]` alone: a user whose window cannot be proven protected
- * must still be able to reach their phrases or defer without losing them.
+ * The exits. The whole point of A7 is that this list is never one entry that
+ * can fail: a user whose window cannot be proven protected must still be able
+ * to reach their phrases or defer without losing them.
+ *
+ * `reveal-required` originally shipped as `["reveal-with-password"]` alone,
+ * which re-created the dead end A7 removed one screen over. That screen is
+ * reached on *every* launch after "Remind me later", and its single control
+ * depends on a backend round trip; when the round trip did not come back there
+ * was nothing else on the screen and the app could not be reached at all. The
+ * deferral exit is therefore unconditional here, and the renderer must keep it
+ * usable while a reveal is in flight — it is the escape of last resort, so it
+ * may never be gated on the thing that is failing.
  */
 function exitsFor(mode: RecoveryKitMode, enforcement: CaptureEnforcement): RecoveryKitExit[] {
   if (mode === "reveal-required") {
-    return [{ id: "reveal-with-password", label: "Show my recovery kit", requiresAcknowledgement: false }];
+    return [
+      { id: "reveal-with-password", label: "Show my recovery kit", requiresAcknowledgement: false },
+      { id: "remind-me-later", label: "Remind me later", requiresAcknowledgement: false },
+    ];
   }
   if (mode !== "refusal") return [];
   const exits: RecoveryKitExit[] = [];

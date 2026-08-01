@@ -30,6 +30,10 @@ pub mod hosted_port;
 pub mod hosted_provider_recipe;
 pub mod hosted_session_port;
 pub mod invite_clipboard;
+/// When the hidden main window may be shown. Pure, and deliberately not behind
+/// `desktop`: the reveal rule is what decides whether the app is visible at all,
+/// so it is testable in every build that can compile this crate.
+pub mod main_window_reveal;
 pub mod models;
 pub mod mullvad_window_host;
 pub mod native_apps;

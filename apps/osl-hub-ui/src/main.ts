@@ -145,7 +145,8 @@ import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./
 import { OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
 import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, type OslChatDeliveryHost } from "./osl-chat-runtime";
 import { parseCircleAudience, type CircleAudience } from "./osl-collab";
-import { addFriendFailureStatus, bindFriendRemovalControls, bindMainWindowFocusChanges, friendHandshakeDetail, friendHandshakeSummary, friendInviteCardMarkup, friendRemovalButtonMarkup, friendTrustAction, friendVerificationCopy, inviteCopyFailureToast, ownedConfirmationSubmitDisabled, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat, verificationSubmission, type FriendVerificationCopy } from "./ui-behavior";
+import { addFriendFailureStatus, bindFriendRemovalControls, bindMainWindowFocusChanges, friendHandshakeDetail, friendHandshakeSummary, friendInviteCardMarkup, friendRemovalButtonMarkup, friendTrustAction, friendVerificationCopy, inviteCopyFailureToast, onboardingPaintDecision, ownedConfirmationSubmitDisabled, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat, verificationSubmission, type FriendVerificationCopy } from "./ui-behavior";
+import { runRecoveryReveal, submitsRecoveryReveal } from "./recovery-reveal";
 import { RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT, recoveryKitReducer, recoveryKitView, visibleRecoverySecrets, type RecoveryKitAction, type RecoveryKitState, type RecoveryKitView } from "./recovery-kit";
 import { clearRecoveryKitUnsaved, markRecoveryKitUnsaved, recoveryKitUnsaved, resumeOnboardingRoute } from "./onboarding-resume";
 import { BurnGuaranteeCopy, type BurnGuaranteeState } from "./two-step-burn";
@@ -487,6 +488,12 @@ let scrubReviewPage = 0;
 let lastFocusKey = "";
 let lastOnboardingMarkup: string | null = null;
 let renderedOnboardingRoute: OnboardingRoute | null = null;
+/**
+ * Set by a flow that is answering the owner's own keystroke, so its paint is
+ * not deferred by the "someone is typing a password" guard in
+ * `renderOnboarding`. Cleared by the pass that consumes it.
+ */
+let forceOnboardingPaint = false;
 let lastWorkspaceMarkup: string | null = null;
 let lastWorkspaceViewKey = "";
 let deferredBackgroundRender = false;
@@ -1569,15 +1576,24 @@ function renderOnboarding(): void {
   const markup = onboardingShellMarkup(setupNavigation);
   lastWorkspaceMarkup = null;
   lastWorkspaceViewKey = "";
-  if (lastOnboardingMarkup === markup && root.querySelector(".onboarding-shell")) {
+  const active = document.activeElement;
+  // Consumed by this pass whatever it decides, so one forced paint can never
+  // leak into the next background refresh and start clobbering live typing.
+  const forced = forceOnboardingPaint;
+  forceOnboardingPaint = false;
+  const decision = onboardingPaintDecision({
+    markupUnchanged: lastOnboardingMarkup === markup,
+    shellMounted: root.querySelector(".onboarding-shell") !== null,
+    sameRouteAsRendered: renderedOnboardingRoute === onboardingRoute,
+    passwordEditInProgress: [...root.querySelectorAll<HTMLInputElement>('input[type="password"]')]
+      .some((input) => input === active || input.value.length > 0),
+    forced,
+  });
+  if (decision === "skip-unchanged") {
     openScrubReviewDialogAfterRender();
     return;
   }
-  const active = document.activeElement;
-  const sensitiveEditInProgress = renderedOnboardingRoute === onboardingRoute
-    && [...root.querySelectorAll<HTMLInputElement>('input[type="password"]')]
-      .some((input) => input === active || input.value.length > 0);
-  if (sensitiveEditInProgress) return;
+  if (decision === "defer-sensitive-edit") return;
   lastOnboardingMarkup = markup;
   renderedOnboardingRoute = onboardingRoute;
   root.innerHTML = markup;
@@ -2370,34 +2386,33 @@ function recoveryContent(): string {
  */
 async function revealRecoveryKit(event: SubmitEvent): Promise<void> {
   event.preventDefault();
-  if (recoveryRevealBusy) return;
   const password = document.querySelector<HTMLInputElement>("#recovery-reveal-password")?.value ?? "";
-  if (!password) return;
-  recoveryRevealBusy = true;
-  recoveryRevealError = null;
-  render();
-  try {
-    await proveRecoveryCaptureProtection();
-    const passwordPhrase = await viewHubRecoveryPhrase(password);
-    if (!passwordPhrase) {
-      recoveryRevealError = "That password did not open your recovery kit. Nothing was shown.";
-      return;
-    }
-    applyRecoveryKitAction({
-      kind: "revealed",
-      secrets: {
-        userId: core.readiness.activeOslUserId ?? "Local OSL identity",
-        // The 12-word ACCOUNT phrase is shown once at creation and is not
-        // re-derivable from the password marker. Saying so is the honest
-        // answer; pretending this screen restores it would not be.
-        identityPhrase: null,
-        passwordPhrase,
-      },
-    });
-  } finally {
-    recoveryRevealBusy = false;
-    render();
-  }
+  const outcome = await runRecoveryReveal(password, {
+    isBusy: () => recoveryRevealBusy,
+    setBusy: (busy) => { recoveryRevealBusy = busy; },
+    setError: (message) => { recoveryRevealError = message; },
+    // Forced and flushed: the password field this form owns still holds the
+    // typed password when the answer lands, and an unforced paint would be
+    // deferred by the sensitive-edit guard — which is exactly how a failed or
+    // even a *successful* reveal used to leave the screen frozen.
+    render: () => { forceOnboardingPaint = true; renderNow(); },
+    proveCaptureProtection: () => proveRecoveryCaptureProtection(),
+    readRecoveryPhrase: (typed) => viewHubRecoveryPhrase(typed),
+  });
+  if (outcome.kind !== "revealed") return;
+  applyRecoveryKitAction({
+    kind: "revealed",
+    secrets: {
+      userId: core.readiness.activeOslUserId ?? "Local OSL identity",
+      // The 12-word ACCOUNT phrase is shown once at creation and is not
+      // re-derivable from the password marker. Saying so is the honest
+      // answer; pretending this screen restores it would not be.
+      identityPhrase: null,
+      passwordPhrase: outcome.passwordPhrase,
+    },
+  });
+  forceOnboardingPaint = true;
+  renderNow();
 }
 
 function secureRecoveryOnboardingContent(): string {
@@ -2580,7 +2595,16 @@ function bindOnboarding(): void {
     onboardingRoute = onboardingRouteForBuild("pro");
     render();
   });
-  document.querySelector<HTMLFormElement>("#recovery-reveal-form")?.addEventListener("submit", (event) => void revealRecoveryKit(event));
+  const recoveryRevealForm = document.querySelector<HTMLFormElement>("#recovery-reveal-form");
+  recoveryRevealForm?.addEventListener("submit", (event) => void revealRecoveryKit(event));
+  // Implicit submission is not something this screen may depend on. It is the
+  // only screen an owner can be stranded on, and a keyboard-only owner reaching
+  // it must be able to finish without a pointer.
+  document.querySelector<HTMLInputElement>("#recovery-reveal-password")?.addEventListener("keydown", (event) => {
+    if (!submitsRecoveryReveal(event)) return;
+    event.preventDefault();
+    recoveryRevealForm?.requestSubmit();
+  });
   document.querySelectorAll<HTMLButtonElement>("[data-onboarding-app-choice]").forEach((button) => button.addEventListener("click", () => {
     const appId = button.dataset.onboardingAppChoice as HomeAppId;
     if (selectedOnboardingApps.has(appId)) selectedOnboardingApps.delete(appId);
@@ -3320,6 +3344,20 @@ function autoScrubRunServiceName(serviceId: ServiceId): string {
 }
 
 function fleetIndicatorMarkup(): string {
+  // The pill is a live monitor for cleanup runs, so it is chrome only while
+  // there is something to monitor. `autoScrubFleetStatus === null` means the
+  // cleanup subsystem reported nothing at all -- the state a fresh install on a
+  // build without AutoScrub sits in permanently -- and
+  // projectAutoScrubFleetStatus() renders that as "Unavailable in this
+  // build / No cleanup running". Shipping that as a permanent titlebar fixture
+  // made a feature's absence the loudest element on first launch, above the
+  // window controls, before the owner had done anything. It is not a status the
+  // owner can act on and it never changes, so there is nothing to monitor and
+  // the pill is omitted. Whether Scrub is available in this build is still
+  // stated where it belongs: Settings -> Scrub, and the Scrub tile on Home.
+  // The moment a real fleet status exists -- any run, any phase, including a
+  // refusal -- the pill returns, so no live state is ever hidden by this.
+  if (autoScrubFleetStatus === null) return "";
   const status = projectAutoScrubFleetStatus(autoScrubFleetStatus);
   const openRunNames = autoScrubFleetStatus?.runs.map((run) => autoScrubRunServiceName(run.serviceId)) ?? [];
   const openRunCount = autoScrubFleetStatus?.openRunCount ?? 0;
@@ -5061,7 +5099,7 @@ function visibleAppNotifications(): AppNotification[] {
   return (appNotifications ?? []).filter((item) => item.detail === "New encrypted message" ? notificationChatActivity : notificationSecurityActivity);
 }
 
-type IdentityStorageProtection = "hardware" | "fallback" | "unknown";
+type IdentityStorageProtection = "device" | "fallback" | "unknown";
 
 /**
  * Classify a raw sealer method label (see the METHOD_* constants in
@@ -5069,24 +5107,35 @@ type IdentityStorageProtection = "hardware" | "fallback" | "unknown";
  * "memory-ephemeral", "memory-test") into the three states the UI can
  * honestly show.
  *
- * Fail honest, not optimistic: only the two known hardware-backed labels
- * count as "hardware". Every other non-null label — a known software
- * fallback, or a future label OSL does not recognize yet — is "fallback",
- * never silently treated as secure. `null` (nothing learned this session,
- * e.g. a plain unlock of a pre-existing identity, which the backend does
- * not echo a method for) is "unknown", which the UI renders with the same
+ * Fail honest, not optimistic: only the two labels that name a persistent
+ * platform-provided store count as "device". Every other non-null label — a
+ * known software fallback, or a future label OSL does not recognize yet — is
+ * "fallback", never silently treated as secure. `null` (nothing learned this
+ * session, e.g. a plain unlock of a pre-existing identity, which the backend
+ * does not echo a method for) is "unknown", which the UI renders with the same
  * not-secure weight as "fallback" — an unverified state must never render
  * as secure.
+ *
+ * This tier is deliberately NOT called "hardware". Only "tpm-pcp" is hardware.
+ * "keyring" is whatever `keyring` 3.x resolved to for the target: Windows
+ * Credential Manager, macOS Keychain, or — on Linux, the feature this repo
+ * actually enables (`linux-native` => the `linux-keyutils` crate, see
+ * crates/keystore/Cargo.toml) — the kernel keyring, which is ordinary kernel
+ * memory with no hardware root of trust and is cleared by a reboot. One label
+ * covers all of them, so the UI cannot tell them apart and must not claim the
+ * strongest one. Until keystore emits a per-backend label, the honest claim is
+ * the one both ends of the range support: the platform is holding the key, not
+ * OSL.
  */
 function classifyIdentityStorageProtection(method: string | null): IdentityStorageProtection {
   if (method === null) return "unknown";
-  if (method === "tpm-pcp" || method === "keyring") return "hardware";
+  if (method === "tpm-pcp" || method === "keyring") return "device";
   return "fallback";
 }
 
 function identityStorageProtectionMarkup(protection: IdentityStorageProtection): string {
-  if (protection === "hardware") {
-    return `<div class="storage-protection-status secure" role="status"><strong>Hardware-protected</strong><small>Your identity key is sealed by this device's TPM or OS credential store.</small></div>`;
+  if (protection === "device") {
+    return `<div class="storage-protection-status secure" role="status"><strong>Protected by this device</strong><small>Your identity key is held by this device's TPM or operating-system credential store, not by OSL.</small></div>`;
   }
   if (protection === "fallback") {
     return `<div class="storage-protection-status insecure" role="alert"><strong>Software fallback storage</strong><small>Hardware protection is unavailable on this device. Your identity key is protected by software only and will not survive a restart.</small></div>`;

@@ -221,9 +221,13 @@ impl Sealer for MemorySealer {
 /// On first use [`Self::new`] fetches the existing key or generates
 /// + writes a fresh one. Subsequent constructions read the same key.
 ///
-/// On Linux WSL without DBus the keyring crate's secret-service
-/// backend errors out at this point and production selection falls
-/// through to the encrypted process-ephemeral fallback.
+/// Which backend answers is a compile-time feature choice, not a runtime
+/// one (`crates/keystore/Cargo.toml`): `windows-native` on Windows,
+/// `linux-native` (kernel keyutils -- syscalls only, no DBus, no daemon)
+/// on Linux. On a target with neither, `keyring` resolves to its in-memory
+/// mock, whose every `Entry` is independent, so the persistence self-probe
+/// in [`Self::new_namespaced`] fails and production selection falls through
+/// to the encrypted process-ephemeral fallback.
 pub struct KeyringSealer {
     key: aead::Key,
 }
@@ -231,9 +235,67 @@ pub struct KeyringSealer {
 const KEYRING_SERVICE: &str = "discord-privacy-client";
 const KEYRING_USER: &str = "identity-data-key.v1";
 
+/// The credential-store account name for `namespace`.
+///
+/// The empty namespace is the production entry and keeps the historical
+/// name byte-for-byte, so an existing install's key is still found. A
+/// non-empty namespace names a *different* entry in the same store; see
+/// [`KeyringSealer::new_namespaced`].
+fn keyring_user(namespace: &str) -> std::borrow::Cow<'static, str> {
+    if namespace.is_empty() {
+        std::borrow::Cow::Borrowed(KEYRING_USER)
+    } else {
+        std::borrow::Cow::Owned(format!("{KEYRING_USER}::{namespace}"))
+    }
+}
+
+/// Serialises the whole read-or-create-then-probe sequence against the
+/// credential store.
+///
+/// `get_password` + `set_password` + read-back is a read-modify-write on one
+/// shared resource, and the `keyring` crate offers no compare-and-set, so
+/// without this the sequence is not atomic: two threads that both observe
+/// `NoEntry` each generate a key, each write it, and the loser then holds a
+/// key that the store no longer contains. Anything it sealed can never be
+/// unsealed by a later construction -- an `AEAD operation failed` in whichever
+/// test happened to be holding the losing sealer.
+///
+/// This guards the credential-store access only, not any caller's work, and
+/// it is uncontended in production (one process, a handful of constructions).
+/// It cannot serialise anything ACROSS processes -- see the residual-risk note
+/// on [`KeyringSealer::new_namespaced`].
+static KEYRING_ENTRY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 impl KeyringSealer {
+    /// The production sealer, bound to the single machine-global entry.
     pub fn new() -> Result<Self> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
+        Self::new_namespaced("")
+    }
+
+    /// Construct against a *namespaced* credential entry.
+    ///
+    /// `""` is the production entry. Any other namespace names an
+    /// independent entry in the same credential store, which is what lets a
+    /// test exercise the real backend without purging or rotating the key a
+    /// concurrently-running test -- or the developer's own installed client
+    /// -- depends on.
+    ///
+    /// ## Concurrency
+    ///
+    /// Within this process the create path is atomic ([`KEYRING_ENTRY_LOCK`]),
+    /// so concurrent constructions converge on one key. Across processes the
+    /// store still has no compare-and-set, so two processes that both find
+    /// the entry absent at the same instant can still both write. The
+    /// read-back below narrows that to the single interleaving where the
+    /// loser's write lands after the winner has already probed; it cannot be
+    /// closed from inside this crate. Give parallel test *processes* distinct
+    /// namespaces rather than relying on that window staying shut.
+    pub fn new_namespaced(namespace: &str) -> Result<Self> {
+        let user = keyring_user(namespace);
+        let _entry_guard = KEYRING_ENTRY_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = keyring::Entry::new(KEYRING_SERVICE, &user)
             .map_err(|e| SealerError::Keyring(format!("Entry::new: {e}")))?;
         let key = match entry.get_password() {
             Ok(b64) => {
@@ -275,20 +337,20 @@ impl KeyringSealer {
         // silently returning a sealer whose state vanishes between
         // operations.
         //
-        // KNOWN RACE (deliberately not fixed here, 2026-07-31): this probe is
-        // not concurrency-safe. `KEYRING_SERVICE`/`KEYRING_USER` name ONE
-        // machine-global entry, so two threads in `KeyringSealer::new` at the
-        // same time each write their own key and then each read back the
-        // other's, and one of them reports the store as non-persistent even
-        // though it is fine. It fails safe -- the caller falls through to the
-        // encrypted in-memory sealer and never to plaintext NoOp -- which is
-        // why it is left alone rather than changed unreviewed. It is real
-        // though: it is exactly what made
-        // `windows_credential_manager_survives_fresh_entry` fail on Windows CI
-        // (see the serialization note in crates/keystore/tests/sealer_test.rs).
-        // Fixing it properly means either per-caller entry names or holding a
-        // lock across the write+probe.
-        let probe = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
+        // The 2026-07-31 KNOWN RACE note that used to sit here is resolved:
+        // the whole sequence now runs under `KEYRING_ENTRY_LOCK`, so two
+        // threads can no longer interleave a write between each other's write
+        // and probe. What the probe still has to cope with is the
+        // cross-PROCESS case, and a mismatch there does not mean the backend
+        // is broken -- it means another process created the entry first. The
+        // store demonstrably persisted SOMETHING, which is the property this
+        // probe exists to establish, so adopt the stored key rather than
+        // declaring the backend non-persistent: every construction on the
+        // machine then converges on one key instead of each holding its own.
+        // Genuine non-persistence still fails, because a store that drops
+        // state returns `NoEntry`/an error from the probe read below rather
+        // than different-but-valid bytes.
+        let probe = keyring::Entry::new(KEYRING_SERVICE, &user)
             .map_err(|e| SealerError::Keyring(format!("probe Entry: {e}")))?;
         let stored = probe
             .get_password()
@@ -298,20 +360,39 @@ impl KeyringSealer {
         let stored_bytes = STANDARD
             .decode(&stored)
             .map_err(|e| SealerError::Malformed(format!("probe b64: {e}")))?;
-        if stored_bytes != key.as_bytes() {
-            return Err(SealerError::Keyring(
-                "probe round-trip failed: keyring backend not persistent".into(),
-            ));
+        if stored_bytes == key.as_bytes() {
+            return Ok(KeyringSealer { key });
         }
-        Ok(KeyringSealer { key })
+        if stored_bytes.len() != aead::KEY_SIZE {
+            return Err(SealerError::Malformed(format!(
+                "probe key size {} != {}",
+                stored_bytes.len(),
+                aead::KEY_SIZE
+            )));
+        }
+        let mut adopted = [0u8; aead::KEY_SIZE];
+        adopted.copy_from_slice(&stored_bytes);
+        Ok(KeyringSealer {
+            key: aead::Key::from_bytes(adopted),
+        })
     }
 
     /// Test/operations helper: delete the keyring entry so the next
     /// `KeyringSealer::new` regenerates a fresh key. Used by the
     /// duress-flow strip path (B3) and by integration tests.
     pub fn purge_keyring_entry() -> Result<()> {
-        match keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).and_then(|e| e.delete_credential())
-        {
+        Self::purge_keyring_entry_namespaced("")
+    }
+
+    /// [`Self::purge_keyring_entry`] for a namespace created by
+    /// [`Self::new_namespaced`]. Takes the same lock as construction so a
+    /// purge can never land between a concurrent create and its read-back.
+    pub fn purge_keyring_entry_namespaced(namespace: &str) -> Result<()> {
+        let user = keyring_user(namespace);
+        let _entry_guard = KEYRING_ENTRY_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match keyring::Entry::new(KEYRING_SERVICE, &user).and_then(|e| e.delete_credential()) {
             Ok(_) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(e) => Err(SealerError::Keyring(format!("delete_credential: {e}"))),
         }

@@ -452,13 +452,25 @@ export function isCoreProtectionReady(readiness: CoreReadiness): boolean {
     && readiness.unlocked;
 }
 
+/**
+ * One line an owner reads on Home, under "Needs attention" and inside the
+ * recommended-action card.
+ *
+ * It is owner-facing copy, not a build diagnostic. The previous strings were
+ * written for whoever was wiring the bridge -- "source linked · bootstrap
+ * required", "OSL core ready · locally unlocked", "OSL source unavailable" --
+ * and a first-time owner cannot act on any of them. Every branch now names the
+ * state in plain words and, where the owner can do something, says what.
+ * Keep it that way: nothing here may leak an internal term (source, core,
+ * bootstrap, keyserver, registration).
+ */
 export function coreReadinessLabel(readiness: CoreReadiness): string {
-  if (isCoreProtectionReady(readiness)) return "OSL core ready · locally unlocked";
-  if (readiness.cloudRegistrationState === "pending") return "Connecting to OSL cloud";
-  if (readiness.cloudRegistrationState === "offline") return "OSL cloud is unavailable";
-  if (readiness.cloudRegistrationState === "conflict") return "Cloud identity conflict · encryption disabled";
-  if (readiness.originalCoreLinked) return "source linked · bootstrap required";
-  return "OSL source unavailable";
+  if (isCoreProtectionReady(readiness)) return "Protected on this device.";
+  if (readiness.cloudRegistrationState === "pending") return "Connecting. This usually takes a moment.";
+  if (readiness.cloudRegistrationState === "offline") return "OSL cannot be reached. Check your internet connection.";
+  if (readiness.cloudRegistrationState === "conflict") return "This account is already active elsewhere, so protection is off.";
+  if (readiness.originalCoreLinked) return "Protection is not switched on yet. Finish setting up your account.";
+  return "Protection cannot start on this device.";
 }
 
 export function parseCoreFeatures(raw: unknown): CoreFeature[] {

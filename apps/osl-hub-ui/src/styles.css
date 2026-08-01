@@ -350,8 +350,28 @@ code {
 
 .desktop-top-row {
   display: flex;
-  align-items: flex-start;
-  height: var(--chrome-row-height);
+  /* `stretch`, with the row's height as a floor rather than a cap. The row used
+     to be pinned at exactly --chrome-row-height with flex-start, but two of the
+     headers that dock into it are taller than that (.home-command-bar is 72px,
+     .home-header 64px), so on those destinations the header ran on past the
+     window-control block and the last ~140px of the row simply stopped 18px
+     short — the same seam, rotated. The floor is what osl-hub's
+     TRUSTED_VERTICAL_RESERVE has to match, and the routes that actually host a
+     borrowed native window (service, mullvad) use .workspace-header, which is
+     exactly --chrome-row-height, so this floor still binds where it matters. */
+  align-items: stretch;
+  min-height: var(--chrome-row-height);
+  /* The row is a flex line of three items: the header stack, the optional
+     cleanup pill, and the window controls. Only the first and last painted a
+     background, so the pill's slot fell through to the page background and the
+     header ended in a hard vertical seam (~x=1128 at 1440px wide) with the
+     hairline under it broken. Painting the row itself closes both.
+     The hairline is an inset shadow rather than a border-bottom on purpose:
+     a border would eat a pixel of the row's content box, and this row's height
+     is the single source of truth for osl-hub's TRUSTED_VERTICAL_RESERVE
+     (see --chrome-row-height above), so it must not change. */
+  background: var(--panel);
+  box-shadow: inset 0 -1px 0 var(--line);
 }
 
 .desktop-top-row > .trusted-stack {
@@ -361,9 +381,16 @@ code {
 
 .desktop-top-row > .window-controls {
   flex: 0 0 auto;
-  height: var(--chrome-row-height);
-  background: var(--panel);
-  border-bottom: 1px solid var(--line);
+  /* `height: auto` is load-bearing: .window-controls carries `height: 100%`
+     for the bare-shell titlebar, and an explicit cross size opts a flex item
+     out of `align-items: stretch`, which left this block 54px tall against a
+     72px header and put its hairline 18px above the header's own. */
+  height: auto;
+  min-height: var(--chrome-row-height);
+  /* No background and no border-bottom of its own: the row paints both now,
+     across its whole width. When this block drew its own it sat a pixel below
+     the header's, which put a step in the hairline right where the block
+     starts. */
 }
 
 .desktop-titlebar {
@@ -5016,6 +5043,16 @@ code {
    their own (the Pro code form, the stealth/burn password forms), so Back sits
    in the same place on every step. */
 .onboarding-nav { justify-content: center; }
+/* "Not now" on the stealth and burn password steps. It is a <button>, so it is
+   inline-block and pinned to the left edge of the centred card above it, which
+   read as a stray link hanging off the corner rather than as that card's own
+   escape hatch. Centre it on the card's axis, like every other control on the
+   step. */
+.onboarding-role-skip {
+  display: block;
+  margin-top: 12px;
+  margin-inline: auto;
+}
 .onboarding-centered-copy { margin-right: auto; margin-left: auto; text-align: center; }
 .setup-list { margin-top: 18px; border-top: 1px solid var(--line); }
 .setup-status-row {
