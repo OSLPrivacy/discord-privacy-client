@@ -1932,51 +1932,6 @@ async fn osl_take_registration_alert(app: tauri::AppHandle) -> Result<Option<Str
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
-/// List pending peer key-change (TOFU) alerts. Boot.js polls to show
-/// the blocking "peer's security key changed" banner; the settings
-/// window lists them for accept/decline.
-#[tauri::command]
-async fn osl_list_key_change_alerts(
-    app: tauri::AppHandle,
-) -> Result<Vec<ipc::state::KeyChangeAlert>, String> {
-    let app_handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app_handle.state::<AppState>();
-        ipc::commands::cmd_osl_list_key_change_alerts(state.inner())
-    })
-    .await
-    .map_err(|e| format!("OSL: join error: {e}"))?
-}
-
-/// User accepted a peer's new identity key → adopt as new baseline.
-#[tauri::command]
-async fn osl_accept_key_change(
-    app: tauri::AppHandle,
-    discord_id: String,
-    safety_number: String,
-) -> Result<(), String> {
-    let app_handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app_handle.state::<AppState>();
-        let proof = ipc::trust_ceremony_proof::TrustCeremonyProof::new(safety_number);
-        ipc::commands::cmd_osl_accept_key_change(state.inner(), discord_id, proof)
-    })
-    .await
-    .map_err(|e| format!("OSL: join error: {e}"))?
-}
-
-/// User declined a peer's new identity key → keep old baseline.
-#[tauri::command]
-async fn osl_decline_key_change(app: tauri::AppHandle, discord_id: String) -> Result<(), String> {
-    let app_handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app_handle.state::<AppState>();
-        ipc::commands::cmd_osl_decline_key_change(state.inner(), discord_id)
-    })
-    .await
-    .map_err(|e| format!("OSL: join error: {e}"))?
-}
-
 /// A(a): operator-driven single-peer v=4 session reset. Drops the
 /// peer's `ratchet_state` so the next v=4 message re-handshakes.
 /// Run on BOTH ends to recover a desynced ratchet.
@@ -3304,9 +3259,6 @@ fn main() {
             osl_take_last_persist_error,
             // REGISTER-FIX: TOFU + registration-conflict surface.
             osl_take_registration_alert,
-            osl_list_key_change_alerts,
-            osl_accept_key_change,
-            osl_decline_key_change,
             osl_reset_v4_session,
             osl_reset_v5_sender_key,
             osl_build_skdm_request,

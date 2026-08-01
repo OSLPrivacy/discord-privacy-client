@@ -4700,23 +4700,9 @@
     }
 
     /**
-     * REGISTER-FIX: surface the two security signals that must NOT
-     * be warn-swallowed:
-     *   1. registration conflict (our user_id is held by a DIFFERENT
-     *      key — squat or lost key): one-shot, read+cleared server-
-     *      slot; shown as a strong banner.
-     *   2. peer TOFU key-change: a peer's identity key differs from
-     *      the trusted first-seen baseline. Shown as a banner with
-     *      the new safety number + Accept / Dismiss actions
-     *      (Accept adopts the new key as baseline; Dismiss keeps the
-     *      old one and the alert re-raises next fetch). Decryption is
-     *      never blocked — the user decides.
-     *
-     * Fire-and-forget, fully defensive (mirrors oslCheckPersistError).
-     * `oslShownKeyChange` de-dupes so a still-changed key doesn't
-     * re-banner on every opportunistic poll within a session.
+     * REGISTER-FIX: surface a registration conflict without letting it
+     * disappear into a best-effort warning.
      */
-    var oslShownKeyChange = oslShownKeyChange || {};
     function oslCheckSecurityAlerts() {
         try {
             const invoke = getTauriInvoke();
@@ -4731,57 +4717,6 @@
                                 "⚠ OSL SECURITY: " + msg +
                                 "\n\nUntil resolved, peers may be unable to " +
                                 "message you securely. Open OSL Settings for details.",
-                        });
-                    }
-                })
-                .catch(function () {});
-
-            invoke("osl_list_key_change_alerts", {})
-                .then(function (list) {
-                    if (!Array.isArray(list)) return;
-                    for (const a of list) {
-                        if (!a || !a.discord_id) continue;
-                        const seen = oslShownKeyChange[a.discord_id];
-                        if (seen === a.new_ed25519_pub) continue;
-                        oslShownKeyChange[a.discord_id] = a.new_ed25519_pub;
-                        const who = a.osl_user_id || a.discord_id;
-                        if (typeof oslBanner !== "function") continue;
-                        oslBanner({
-                            message:
-                                "⚠ OSL SECURITY: " + who +
-                                "'s security key CHANGED. This can be a new " +
-                                "device — or someone intercepting your messages. " +
-                                "Verify this safety number with them out-of-band " +
-                                "before continuing:\n\n" + a.new_safety_number,
-                            actions: [
-                                {
-                                    label: "I verified — Accept",
-                                    onClick: function () {
-                                        const suppliedSafetyNumber =
-                                            window.prompt(
-                                                "Enter the safety number you verified"
-                                            );
-                                        if (suppliedSafetyNumber === null) {
-                                            return;
-                                        }
-                                        invoke("osl_accept_key_change", {
-                                            discordId: a.discord_id,
-                                            safetyNumber: suppliedSafetyNumber,
-                                        }).catch(function () {});
-                                    },
-                                },
-                                {
-                                    label: "Dismiss",
-                                    secondary: true,
-                                    onClick: function () {
-                                        invoke("osl_decline_key_change", {
-                                            discordId: a.discord_id,
-                                        }).catch(function () {});
-                                        // allow re-alert later if still changed
-                                        delete oslShownKeyChange[a.discord_id];
-                                    },
-                                },
-                            ],
                         });
                     }
                 })
@@ -4811,13 +4746,8 @@
             if (name !== "osl_take_last_persist_error") {
                 oslCheckPersistError();
             }
-            // REGISTER-FIX: opportunistically surface security
-            // alerts too. Exclude the security commands themselves
-            // (avoid recursion / self-clear races).
-            if (name !== "osl_take_registration_alert" &&
-                name !== "osl_list_key_change_alerts" &&
-                name !== "osl_accept_key_change" &&
-                name !== "osl_decline_key_change") {
+            // Exclude the read-and-clear command itself to avoid recursion.
+            if (name !== "osl_take_registration_alert") {
                 oslCheckSecurityAlerts();
             }
             return { ok: true, value: value };
