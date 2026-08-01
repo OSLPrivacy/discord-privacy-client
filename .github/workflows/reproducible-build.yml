@@ -2,10 +2,10 @@ name: Reproducible Build
 
 on:
   push:
-    branches:
-      - main
     tags:
       - "hub-v*"
+  schedule:
+    - cron: "17 3 * * *"
   workflow_dispatch:
     inputs:
       candidate_tag:
