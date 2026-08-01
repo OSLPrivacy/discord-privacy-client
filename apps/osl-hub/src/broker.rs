@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use ipc::scope::{ScopeInput, ScopeKind};
+use message_lifecycle::ReceiptState;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -219,6 +220,7 @@ pub struct HubBrokerState {
     inner: Mutex<BrokerInner>,
     local_protected_transition: Mutex<()>,
     native_overlay_receipt_transition: Mutex<()>,
+    inbound_privacy_receipts: Mutex<BTreeMap<([u8; 32], [u8; 32]), ReceiptState>>,
     native_overlay_received_view_once: Mutex<BTreeMap<String, i64>>,
     native_overlay_second_reveal_refusals: Mutex<BTreeMap<String, ViewOnceSecondRevealTrace>>,
 }
@@ -229,6 +231,7 @@ impl core::fmt::Debug for HubBrokerState {
             .field("inner", &"<redacted>")
             .field("local_protected_transition", &"<mutex>")
             .field("native_overlay_receipt_transition", &"<mutex>")
+            .field("inbound_privacy_receipts", &"<mutex>")
             .field(
                 "native_overlay_received_view_once_len",
                 &self.native_overlay_received_count(),
@@ -4061,6 +4064,53 @@ fn drain_peer_inbox_text(
                 },
                 &mut control_inbox,
             );
+            continue;
+        }
+        // Privacy receipts have their own signed body and are intentionally
+        // classified here, at the control-inbox drain. The legacy command
+        // decrypt dispatcher does not know the `0x0C` type and would leave an
+        // otherwise valid receipt stranded forever.
+        if crate::inbound_receipts::is_receipt_bundle(&bundle) {
+            let wire = format!("DPC0::{}", STANDARD.encode(&bundle));
+            let message_type = ipc::receipt_wire::MSG_TYPE_PRIVACY_RECEIPT;
+            let admitted = (|| {
+                verify_manual_v3_type(
+                    core,
+                    &verified,
+                    &wire,
+                    ManualWireSender::Peer,
+                    message_type,
+                )?;
+                let plaintext = decrypt_direct_manual_v3_payload(
+                    core,
+                    &verified,
+                    ManualWireSender::Peer,
+                    &wire,
+                    message_type,
+                )
+                .map_err(str::to_owned)?;
+                let signer = security::manual_peer_ed25519_public(core, &verified)?;
+                let commitment =
+                    crate::inbound_receipts::conversation_commitment(&context.conversation_id);
+                let message_id =
+                    ipc::receipt_wire::SignedPrivacyReceipt::decode_and_verify(&plaintext, &signer)
+                        .map_err(|_| "OSL privacy receipt was invalid".to_owned())?
+                        .receipt
+                        .message_id;
+                let mut receipts = broker
+                    .inbound_privacy_receipts
+                    .lock()
+                    .map_err(|_| "OSL receipt state is unavailable".to_owned())?;
+                let state = receipts
+                    .entry((commitment, message_id))
+                    .or_insert(ReceiptState::NotConfirmed);
+                crate::inbound_receipts::admit(&plaintext, &signer, commitment, state)
+                    .map_err(|_| "OSL privacy receipt was invalid".to_owned())?;
+                Ok::<(), String>(())
+            })();
+            if admitted.is_ok() {
+                let _ = client.delete_control_inbox(&identity, &item.id);
+            }
             continue;
         }
         if ipc::wire_v2::is_native_overlay_ack_bundle(&bundle) {

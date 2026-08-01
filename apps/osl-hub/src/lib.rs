@@ -99,6 +99,8 @@ pub mod discord_qa_inbound_receipt;
 pub mod identity_binding_verifier;
 #[cfg(feature = "core")]
 pub mod identity_registry;
+#[cfg(feature = "core")]
+pub mod inbound_receipts;
 pub mod isolated_worker;
 #[cfg(feature = "core")]
 pub mod mass_cleanup;

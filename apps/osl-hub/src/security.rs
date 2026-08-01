@@ -1619,6 +1619,36 @@ pub fn manual_peer_binding(
     })
 }
 
+/// Return the pinned identity-signing key for an already-authorized manual
+/// peer. Receipt signatures use this key in addition to the authenticated
+/// transport envelope, so a stale or mismatched friend record fails closed.
+pub fn manual_peer_ed25519_public(
+    core: &HubCoreState,
+    binding: &ManualPeerBinding,
+) -> Result<crypto::ed25519::PublicKey, String> {
+    require_unlocked()?;
+    validate_person_id(&binding.person_id)?;
+    let people = load_people_file(&config_dir()?)?;
+    let metadata = people
+        .people
+        .get(&binding.person_id)
+        .ok_or_else(|| "OSL friend is unknown".to_owned())?;
+    let peer = core
+        .osl
+        .peer_map
+        .lock()
+        .map_err(|_| "OSL peer state is unavailable".to_owned())?
+        .get(&binding.person_id)
+        .cloned()
+        .ok_or_else(|| "OSL friend key state is missing".to_owned())?;
+    ensure_manual_peer_available(metadata, true)?;
+    validate_manual_peer_identity(&binding.person_id, metadata, &peer)?;
+    let trusted = trusted_peer_key_bundle(&binding.person_id, metadata, &peer)?;
+    let bytes =
+        strict_peer_public_key::<ED25519_PUBLIC_BYTES>(Some(&trusted.ed25519_pub), "Ed25519")?;
+    Ok(crypto::ed25519::PublicKey::from_bytes(bytes))
+}
+
 /// Return whether this exact friend has explicitly approved the supplied
 /// manual DM scope and the scope remains enabled. Friend verification and key
 /// stability are validated even when the answer is false.
