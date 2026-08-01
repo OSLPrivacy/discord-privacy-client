@@ -14,6 +14,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+use osl_privacy_hub::service_host::EMBEDDED_HOST_BROWSER_ARGUMENTS;
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 use url::Url;
 use windows::Win32::Foundation::HWND;
@@ -24,10 +25,6 @@ use windows::Win32::UI::Accessibility::{
     CUIAutomation, IUIAutomation, IUIAutomationElement, TreeScope_Descendants,
 };
 
-const BROWSER_ARGUMENTS: &str = concat!(
-    "--force-renderer-accessibility=complete ",
-    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection"
-);
 const FIRST_SENTINEL: &str = "OSL WebView accessibility sentinel one";
 const SECOND_SENTINEL: &str = "OSL WebView accessibility sentinel two";
 
@@ -125,7 +122,7 @@ fn webview2_complete_accessibility_exposes_fixed_local_document_text() {
             WebviewUrl::External(url.clone()),
         )
         .title("OSL WebView2 accessibility spike")
-        .additional_browser_args(BROWSER_ARGUMENTS)
+        .additional_browser_args(EMBEDDED_HOST_BROWSER_ARGUMENTS)
         .build()
         .expect("WebView2 accessibility spike can be created");
         let hwnd = webview

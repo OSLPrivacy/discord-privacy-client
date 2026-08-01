@@ -15,6 +15,13 @@ use crate::hosted_port::{
 use crate::models::EmailProvider;
 
 const MAX_OPAQUE_ID_LEN: usize = 64;
+// Supplying additional WebView2 arguments replaces Wry's defaults, so retain
+// its feature-disablement alongside the a11y switch. This makes the renderer
+// expose a complete accessibility tree for the OSL-owned embedded host.
+pub const EMBEDDED_HOST_BROWSER_ARGUMENTS: &str = concat!(
+    "--force-renderer-accessibility=complete ",
+    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection"
+);
 static TOMBSTONE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 #[cfg(feature = "desktop")]
 const PROFILE_NAMESPACE: &str = "service-profiles-v2";
@@ -1440,6 +1447,7 @@ pub mod desktop {
         let builder = WebviewBuilder::new(HOST_WEBVIEW_LABEL, WebviewUrl::External(initial_url))
             .data_directory(profile)
             .devtools(false)
+            .additional_browser_args(EMBEDDED_HOST_BROWSER_ARGUMENTS)
             .on_navigation(move |url| {
                 let allowed = navigation_allowed(manifest, url);
                 if !allowed {
@@ -1661,6 +1669,18 @@ mod tests {
     use super::*;
     use std::sync::{mpsc, Arc, TryLockError};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn embedded_host_browser_arguments_keep_wry_defaults_and_enable_complete_accessibility() {
+        let arguments: Vec<_> = EMBEDDED_HOST_BROWSER_ARGUMENTS.split_whitespace().collect();
+        assert_eq!(
+            arguments,
+            vec![
+                "--force-renderer-accessibility=complete",
+                "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection",
+            ]
+        );
+    }
 
     fn discord() -> &'static ServiceManifest {
         service_manifest("discord").unwrap()
