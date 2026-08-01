@@ -1,0 +1,132 @@
+/* The first frame OSL paints.
+   =========================================================================
+
+   The window is on screen at ~32ms. Nothing was in it until ~2.5s, because the
+   very first thing that draws anything is `bootstrap()` in main.ts -- and that
+   only runs after ~8,800 lines of TypeScript, the Inter variable font and
+   ~5,600 lines of styles.css have been fetched, parsed and executed. For two
+   and a half seconds the user got the user agent's default white page and then
+   a hard cut to a near-black application: a flash of white on every single
+   launch of a privacy tool.
+
+   Nothing written in TypeScript can close that gap, because the gap IS the
+   TypeScript. And nothing written in a runtime <style> element or an inline
+   `style` attribute can close it either: the shipped CSP is
+   `style-src 'self'` (apps/osl-hub/tauri.conf.json) with no 'unsafe-inline',
+   no nonce and no hash, so the WebView drops both outright. Static markup in
+   index.html plus THIS linked stylesheet is the only construction the shipping
+   policy allows, and it paints as soon as the HTML parser reaches it.
+
+   This sheet is deliberately standalone:
+
+   - It does not use the `--bg` / `--panel` / `--text` custom properties. Those
+     are declared in styles.css, which is pulled in by the JS bundle -- i.e. by
+     the very thing this shell exists to cover. A boot shell that waits for
+     styles.css is a boot shell that does not boot. The literals below are the
+     dark-theme values of `--bg` (#0a0a0a), `--panel`/titlebar (#080808),
+     `--line` (#2a2a2a) and `--subtle` (#888) from styles.css:1..40; they are
+     duplicated on purpose and boot-shell.test.ts pins them to the originals so
+     a palette change here cannot silently drift.
+
+   - It reserves the 44px `.app-frame.with-titlebar` top row, so when
+     bootstrap() swaps the shell for the real loading screen the seal does not
+     jump.
+
+   The markup lives inside `#app`, which `root.innerHTML = ...` overwrites on
+   the first render, so the shell removes itself with no teardown code. */
+
+/* Also on the root, so the very first paint -- and any overscroll gutter around
+   the shell -- is OSL's surface rather than the user agent's white default. */
+:root {
+  background: #0a0a0a;
+  color-scheme: dark;
+}
+
+.boot-shell {
+  width: 100%;
+  height: 100vh;
+  display: grid;
+  grid-template-rows: 44px minmax(0, 1fr);
+  overflow: hidden;
+  background: #0a0a0a;
+  color: #888;
+  font-family: "Segoe UI Variable Text", "Segoe UI", ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+.boot-shell-titlebar {
+  min-height: 44px;
+  background: #080808;
+}
+
+.boot-shell-stage {
+  min-height: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 14px;
+}
+
+/* Matches .loading-seal / .loading-logo so the swap to the real loading screen
+   is not a resize. The mark is a background-image rather than an <img> because
+   Vite rewrites url() in a stylesheet to the hashed asset path it actually
+   emits; img-src is 'self', which that path satisfies. */
+.boot-shell-seal {
+  width: 104px;
+  height: 104px;
+  background-image: url("./assets/logo-mark.svg");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 76px 76px;
+}
+
+.boot-shell-label {
+  margin: 0;
+  /* 11px is the project-wide floor for OSL's own chrome (typography.test.ts),
+     which reads this sheet too. */
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.boot-shell-lines {
+  width: 180px;
+  display: grid;
+  gap: 7px;
+}
+
+.boot-shell-lines > span {
+  height: 7px;
+  display: block;
+  border-radius: 6px;
+  background: #2a2a2a;
+  transform-origin: left center;
+  animation: boot-shell-line 1.35s cubic-bezier(.2, 0, 0, 1) infinite;
+}
+
+.boot-shell-lines > span:last-child {
+  width: 68%;
+  justify-self: center;
+  animation-delay: .16s;
+}
+
+@keyframes boot-shell-line {
+  0%, 100% { opacity: .34; transform: scaleX(.52); }
+  48% { opacity: 1; transform: scaleX(1); }
+}
+
+/* Deliberately NOT `@media (prefers-color-scheme: light)`.
+   The shell paints before applyTheme() can read the stored preference, so it
+   has to guess -- and the right guess is the one styles.css itself makes.
+   `:root` in styles.css is unconditionally dark (#0a0a0a); light only applies
+   once `:root[data-theme="light"]` is set, which is applyTheme()'s first act.
+   A dark shell therefore agrees with the frame that follows it in every case,
+   and a light-theme user sees the same single dark-to-light change they already
+   see today rather than one extra flip. Following the OS instead would put a
+   light shell in front of the dark app for every first-run install, since
+   initializeThemePreference() hands a fresh profile "dark" whatever the OS says
+   (theme-preference.ts). */
+
+@media (prefers-reduced-motion: reduce) {
+  .boot-shell-lines > span { animation: none; opacity: .5; transform: none; }
+}

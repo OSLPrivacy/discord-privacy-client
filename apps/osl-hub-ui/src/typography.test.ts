@@ -4,7 +4,11 @@ import { describe, expect, it } from "vitest";
 const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 const sheetStyles = readFileSync(new URL("./local-protected-sheet.css", import.meta.url), "utf8");
 const overlayStyles = readFileSync(new URL("./overlay.css", import.meta.url), "utf8");
-const allStyles = `${styles}\n${sheetStyles}\n${overlayStyles}`;
+/* The boot shell is OSL chrome like any other, and it is the first chrome the
+   user sees, so it is held to the same floor rather than exempted for being
+   small. */
+const bootShellStyles = readFileSync(new URL("./boot-shell.css", import.meta.url), "utf8");
+const allStyles = `${styles}\n${sheetStyles}\n${overlayStyles}\n${bootShellStyles}`;
 
 /**
  * The rule blocks whose job is to paint OSL's text directly onto Discord's, in

@@ -1268,9 +1268,24 @@ code {
   border-bottom: 1px solid var(--line);
   border-left: 0;
 }
+/* A <legend> that is the first child of a <fieldset> is not laid out in normal
+   flow: the browser cuts a notch out of the fieldset's border the full width of
+   the legend box and drops the legend into it. With `width: 100%` that notch is
+   the whole border, so `border-top` above simply never painted and the section
+   label sat on the rule instead of under it.
+   `float` opts a legend out of that special rendering (HTML rendering spec:
+   only a legend whose used float is `none` is rendered as the fieldset's
+   legend), so the rule paints unbroken and the label becomes an ordinary block
+   inside it. `.browser-detected-list` must then `clear` it -- a block box
+   overlaps a float rather than being pushed past it, and without the clear the
+   first row of browsers would draw straight through the label.
+   The 12px inline padding lines the label up with the row text below it, which
+   carries the same padding on `.browser-detected-item`. */
 .browser-detected-sources > legend {
+  float: left;
   width: 100%;
   min-height: 38px;
+  padding: 0 12px;
   display: flex;
   align-items: center;
   color: var(--muted);
@@ -1279,10 +1294,18 @@ code {
   letter-spacing: .08em;
   text-transform: uppercase;
 }
+/* Two columns, not three. `.onboarding-panel` is capped at 620px, so three
+   tracks are ~200px each, and a row spends ~85px of that on padding, the
+   browser mark, the gaps and the checkbox. That left ~115px for the label --
+   less than "Google Chrome · Default" needs in any font, so every profile
+   truncated to the same "Google Chrom…" stub and the user could not tell which
+   of their profiles they were consenting to. Two tracks give the label ~225px,
+   which is what makes the choice a choice. */
 .browser-detected-list {
+  clear: both;
   border-top: 1px solid var(--line-soft);
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 .browser-detected-item {
   min-width: 0;
@@ -1300,10 +1323,34 @@ code {
   border-bottom: 0;
   background: var(--brand-wash);
 }
-.browser-detected-item input { margin-left: auto; }
-.browser-detected-item:nth-child(3n) { border-right: 0; }
+/* The text column between the browser mark and the consent checkbox. A flex
+   item's `min-width` is `auto`, which resolves to its own min-content width, so
+   this <span> refused to shrink below the longest browser-and-profile name in
+   the list. That is what broke this grid: the item overflowed its
+   `minmax(0, 1fr)` track, the `margin-left: auto` checkbox was pushed clean out
+   of the cell (and, in the last column, out of the fieldset), each row's text
+   ran under the next row's logo, and the `text-overflow: ellipsis` below never
+   engaged because there was never any overflow to clip. `min-width: 0` lets the
+   column shrink to its track, which makes the ellipsis do its job and keeps the
+   checkbox inside the row.
+   This is the screen where the user consents to OSL reading their browser, so
+   it has to be legible before it is anything else. */
+.browser-detected-item > span { min-width: 0; }
+/* The checkbox is the one thing in the row that must never shrink or be pushed
+   out: it is the consent control. */
+.browser-detected-item input { flex: 0 0 auto; margin-left: auto; }
+.browser-detected-item:nth-child(2n) { border-right: 0; }
 .browser-detected-item .company-logo { width: 27px; height: 27px; flex: 0 0 auto; }
-.browser-detected-item strong,
+/* The name wraps; only the boilerplate sentence under it ellipsises. Which
+   browser profile is being consented to is the one fact on this row that must
+   never be cut off, and profile names the user chose themselves ("Person 2
+   (work)") are exactly the ones that run long. `anywhere` keeps a single
+   unbroken profile string from pushing the row back out of its track. */
+.browser-detected-item strong {
+  display: block;
+  overflow-wrap: anywhere;
+  line-height: 1.3;
+}
 .browser-detected-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .browser-detected-item small { margin-top: 2px; color: var(--muted); font-size: 11px; }
 .browser-import-actions-primary { flex-direction: column; align-items: center; }
@@ -5392,9 +5439,10 @@ code {
 
 @media (max-width: 620px) {
   .onboarding-panel { width: min(100% - 28px, 540px); }
-  .browser-detected-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .browser-detected-item:nth-child(3n) { border-right: 1px solid var(--line-soft); }
-  .browser-detected-item:nth-child(2n) { border-right: 0; }
+  /* One column below 620px. The base layout is already two, and halving a
+     ~280px panel would take the label back under the width of a browser name. */
+  .browser-detected-list { grid-template-columns: minmax(0, 1fr); }
+  .browser-detected-item { border-right: 0; }
   .onboarding-skip-dock { right: 10px; bottom: 8px; }
   .home-header { height: 62px; min-height: 62px; padding: 0 12px; }
   .home-brand-mark { width: 42px; height: 42px; flex-basis: 42px; }

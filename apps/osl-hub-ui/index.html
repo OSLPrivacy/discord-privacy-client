@@ -4,10 +4,33 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark light" />
+    <link rel="stylesheet" href="/src/boot-shell.css" />
     <title>OSL Privacy</title>
   </head>
   <body>
-    <div id="app"></div>
+    <!--
+      #app holds a static boot shell, not an empty div. The window is visible at
+      ~32ms but main.ts cannot draw into it until ~2.5s, so an empty #app meant
+      two and a half seconds of the user agent's white default page followed by
+      a hard cut to a near-black app. See src/boot-shell.css for why this cannot
+      be done from TypeScript (it is the TypeScript that is slow) and cannot be
+      done with a runtime <style> element or an inline `style` attribute (the
+      shipped CSP is `style-src 'self'`, which drops both).
+
+      bootstrap() assigns `root.innerHTML`, which replaces everything below, so
+      the shell needs no teardown. Keep it static: no script may be required to
+      show it or to take it away.
+    -->
+    <div id="app">
+      <div class="boot-shell">
+        <div class="boot-shell-titlebar"></div>
+        <div class="boot-shell-stage">
+          <div class="boot-shell-seal" aria-hidden="true"></div>
+          <p class="boot-shell-label" role="status">Opening OSL</p>
+          <div class="boot-shell-lines" aria-hidden="true"><span></span><span></span></div>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
