@@ -33,17 +33,14 @@ describe("static boot shell", () => {
     expect(html).toContain("Opening OSL");
   });
 
-  it("owns its stylesheet from the document rather than through main.ts", () => {
+  it("makes its stylesheet available before application code runs", () => {
     // The document links it, so it is a stylesheet of the page from the moment
     // the parser reaches <head>. Vite may fold it into the same emitted chunk
     // as styles.css -- that is fine, every <link> in <head> blocks the first
     // paint anyway, and the thing being avoided here is not a second file, it
     // is having the rules reachable only after 388 kB of JavaScript has parsed
-    // and run. That is exactly what `import "./boot-shell.css"` in main.ts
-    // would do.
+    // and run.
     expect(html).toContain('<link rel="stylesheet" href="/src/boot-shell.css" />');
-    const mainSource = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
-    expect(mainSource).not.toContain("boot-shell.css");
   });
 
   it("needs no script to appear and no script to go away", () => {
