@@ -19,6 +19,7 @@ import {
 } from "./state";
 import { isTauriRuntime, loadOnboardingPreferences, saveOnboardingPreferences } from "./preferences";
 import { onboardingPasswordRoleContent as passwordRoleContent } from "./password-roles";
+import { previousOnboardingRoute } from "./onboarding-sequence";
 import { lastBackendFailure, recordBackendFailure } from "./backend-failure";
 import { unlockAttemptWarning } from "./unlock-attempts";
 import {
@@ -2522,26 +2523,7 @@ function scrubCategoryChooserMarkup(compact = false): string {
 }
 
 function previousSetupRoute(current: OnboardingRoute): OnboardingRoute {
-  const routes: Partial<Record<OnboardingRoute, OnboardingRoute>> = {
-    pro: "recovery",
-    privacy: "pro",
-    defaults: "privacy",
-    sending: "defaults",
-    cover: "sending",
-    passwords: "cover",
-    burnpass: "passwords",
-    mullvad: "burnpass",
-    browser: "mullvad",
-    tutorial: "browser",
-    detected: "tutorial",
-    install: onboardingBranch.detected ? "detected" : "tutorial",
-    apps: onboardingBranch.install
-      ? "install"
-      : onboardingBranch.detected
-        ? "detected"
-        : "tutorial",
-  };
-  return onboardingRouteForBuild(routes[current] ?? "welcome");
+  return onboardingRouteForBuild(previousOnboardingRoute(current, onboardingBranch) ?? "welcome");
 }
 
 function bindOnboarding(): void {
