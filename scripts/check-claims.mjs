@@ -363,6 +363,84 @@ function runH7SelfTest(pricing, asOf) {
   if (failures > 0) throw new Error(`check-claims self-test: ${failures} H7 fixtures failed`);
 }
 
+function validateG1MessengerSchema(pricing, asOf) {
+  const errors = [];
+  const add = (code, message) => errors.push(`G1_${code}: ${message}`);
+  const research = pricing.research_comparisons;
+  const schema = research?.$schema;
+  const comparison = research?.g1_messengers;
+  const asOfDate = isoDate(asOf);
+
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) add('SCHEMA', 'research_comparisons.$schema must be an object');
+  const sourceSchema = schema?.source;
+  if (!sourceSchema || typeof sourceSchema !== 'object' || Array.isArray(sourceSchema)) add('SCHEMA', '$schema.source must be an object');
+  const requiredFields = list(sourceSchema?.required_fields);
+  const requiredRefreshFields = list(sourceSchema?.refresh_evidence_required_fields);
+  const allowedHosts = new Set(list(sourceSchema?.allowed_hosts));
+  if (requiredFields.length === 0 || !requiredFields.every(isNonempty)) add('SCHEMA', '$schema.source.required_fields must list nonempty field names');
+  if (requiredRefreshFields.length === 0 || !requiredRefreshFields.every(isNonempty)) add('SCHEMA', '$schema.source.refresh_evidence_required_fields must list nonempty field names');
+  if (!Number.isInteger(sourceSchema?.max_age_days) || sourceSchema.max_age_days < 1) add('SCHEMA', '$schema.source.max_age_days must be a positive integer');
+  if (sourceSchema?.https_only !== true) add('SCHEMA', '$schema.source.https_only must be true');
+  if (allowedHosts.size === 0 || ![...allowedHosts].every(isNonempty)) add('SCHEMA', '$schema.source.allowed_hosts must list nonempty official hosts');
+  if (!comparison || typeof comparison !== 'object' || Array.isArray(comparison)) add('SCHEMA', 'research_comparisons.g1_messengers must be an object');
+  if (comparison?.comparison_version !== 1 || comparison?.id !== 'g1-messengers') add('IDENTITY', 'g1_messengers must have comparison_version 1 and id g1-messengers');
+  if (!isoDate(comparison?.reviewed_on)) add('REVIEW_DATE', 'g1_messengers.reviewed_on must be a real ISO date');
+  if (!Array.isArray(comparison?.sources) || !Array.isArray(comparison?.rows)) add('SCHEMA', 'g1_messengers must have sources and rows arrays');
+
+  for (const [index, source] of list(comparison?.sources).entries()) {
+    const label = isNonempty(source?.id) ? source.id : `source[${index}]`;
+    for (const field of requiredFields) {
+      if (field === 'refresh_evidence') {
+        if (!source?.refresh_evidence || typeof source.refresh_evidence !== 'object' || Array.isArray(source.refresh_evidence)) add('SOURCE_METADATA', `${label}.refresh_evidence must be an object`);
+      } else if (!isNonempty(source?.[field])) add('SOURCE_METADATA', `${label}.${field} must be nonempty`);
+    }
+    for (const field of requiredRefreshFields) if (!isNonempty(source?.refresh_evidence?.[field])) add('SOURCE_REFRESH', `${label}.refresh_evidence.${field} must be nonempty`);
+    if (source?.refresh_evidence?.checked_on !== source?.accessed_on) add('SOURCE_REFRESH', `${label}.refresh_evidence.checked_on must match accessed_on`);
+    try {
+      const url = new URL(source?.url);
+      if (sourceSchema?.https_only && url.protocol !== 'https:') add('SOURCE_DOMAIN', `${label} must use HTTPS`);
+      if (!allowedHosts.has(url.hostname)) add('SOURCE_DOMAIN', `${label} must use an allowlisted official host`);
+    } catch {
+      add('SOURCE_DOMAIN', `${label} has an invalid URL`);
+    }
+    const accessed = isoDate(source?.accessed_on);
+    if (!accessed) add('SOURCE_DATE', `${label}.accessed_on must be a real ISO date`);
+    else if (asOfDate) {
+      const ageDays = Math.floor((asOfDate - accessed) / 86_400_000);
+      if (ageDays < 0) add('SOURCE_FUTURE', `${label} was accessed after --as-of=${asOf}`);
+      else if (ageDays > sourceSchema?.max_age_days) add('SOURCE_STALE', `${label} is ${ageDays} days old at --as-of=${asOf}; maximum is ${sourceSchema.max_age_days}`);
+    }
+  }
+  return errors;
+}
+
+function runG1MessengerSelfTest(pricing, asOf) {
+  const source = {
+    id: 'signal-test-source',
+    publisher: 'Signal',
+    source_type: 'support',
+    url: 'https://support.signal.org/hc/en-us/articles/360007062172-Signal-Permissions-OS-Notification-Settings',
+    title: 'Signal test source',
+    section: 'Test section',
+    published_or_effective_on: '2026-07-01',
+    accessed_on: asOf,
+    refresh_evidence: { checked_on: asOf, method: 'manual_official_source_review', result: 'Reviewed for the messenger comparison.' },
+  };
+  const mutations = [
+    ['source older than 90 days', 'G1_SOURCE_STALE', (fixture) => { fixture.research_comparisons.g1_messengers.sources = [{ ...source, accessed_on: '2025-01-01', refresh_evidence: { ...source.refresh_evidence, checked_on: '2025-01-01' } }]; }],
+    ['source from a non-allowlisted host', 'G1_SOURCE_DOMAIN', (fixture) => { fixture.research_comparisons.g1_messengers.sources = [{ ...source, url: 'https://example.com/signal' }]; }],
+  ];
+  let failures = 0;
+  for (const [name, code, mutate] of mutations) {
+    const fixture = structuredClone(pricing);
+    mutate(fixture);
+    const caught = validateG1MessengerSchema(fixture, asOf).some((error) => error.startsWith(`${code}:`));
+    console.log(`  ${caught ? 'caught ' : 'MISSED '} ${name}`);
+    if (!caught) failures += 1;
+  }
+  if (failures > 0) throw new Error(`check-claims self-test: ${failures} G1 messenger fixtures failed`);
+}
+
 function readManifest() {
   const manifest = JSON.parse(readFileSync(MANIFEST_PATH, 'utf8'));
   if (manifest.schema_version !== 1 || manifest.manifest_id !== 'osl-public-surface') {
@@ -484,9 +562,15 @@ function run() {
   if (h7Failures.length > 0) {
     throw new Error(`H7 DeleteMe comparison failed:\n${h7Failures.join('\n')}`);
   }
+  const g1Failures = validateG1MessengerSchema(pricing, asOf);
+  console.log(`  g1-messenger-source-schema ${g1Failures.length === 0 ? 'pass' : 'FAIL'}`);
+  if (g1Failures.length > 0) {
+    throw new Error(`G1 messenger comparison schema failed:\n${g1Failures.join('\n')}`);
+  }
   if (SELF_TEST) {
     console.log(`\ncheck-claims self-test (H7 DeleteMe manifest, as of ${asOf}):`);
     runH7SelfTest(pricing, asOf);
+    runG1MessengerSelfTest(pricing, asOf);
   }
   console.log('\ncheck-claims: complete.');
 }

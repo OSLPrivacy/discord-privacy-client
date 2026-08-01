@@ -743,6 +743,49 @@
   },
   "research_comparisons": {
     "schema_version": 1,
+    "$schema": {
+      "source": {
+        "required_fields": [
+          "id",
+          "publisher",
+          "source_type",
+          "url",
+          "title",
+          "section",
+          "published_or_effective_on",
+          "accessed_on",
+          "refresh_evidence"
+        ],
+        "refresh_evidence_required_fields": [
+          "checked_on",
+          "method",
+          "result"
+        ],
+        "max_age_days": 90,
+        "https_only": true,
+        "allowed_hosts": [
+          "signal.org",
+          "support.signal.org",
+          "whatsapp.com",
+          "www.whatsapp.com",
+          "faq.whatsapp.com",
+          "telegram.org",
+          "core.telegram.org",
+          "bugs.telegram.org"
+        ]
+      },
+      "fact": {
+        "confidence_values": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "comparability_values": [
+          "not_equivalent",
+          "narrowly_comparable"
+        ]
+      }
+    },
     "h7_deleteme": {
       "comparison_version": 1,
       "id": "h7-deleteme-us-consumer",
@@ -1348,6 +1391,25 @@
           "bounded_conclusion": "DeleteMe documents material third-party and source limits despite operating a live service. OSL cannot be presented as a replacement because its comparable capabilities remain Planned."
         }
       ]
+    },
+    "g1_messengers": {
+      "comparison_version": 1,
+      "id": "g1-messengers",
+      "reviewed_on": "2026-07-31",
+      "market_scope": {
+        "audience": "consumer",
+        "products": [
+          "Signal",
+          "WhatsApp",
+          "Telegram"
+        ],
+        "excluded": [
+          "live_scan",
+          "protection_score"
+        ]
+      },
+      "sources": [],
+      "rows": []
     }
   },
   "launch_frame": {
