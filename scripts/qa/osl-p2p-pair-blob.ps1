@@ -113,22 +113,29 @@
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][ValidateSet('A', 'B')][string]$Side,
+    [ValidateSet('A', 'B')][string]$Side,
     [ValidateSet('A', 'B')][string]$PeerSide,
     [string]$RunId = 'exchange',
     [string]$Bundle = 'org.oslprivacy.hub',
     [switch]$Push,
     [switch]$Pull,
     [int]$TimeoutSec = 300,
-    [string]$JsonOut = (Join-Path $env:TEMP 'osl-p2p-pair-blob.json'),
-    [switch]$Quiet
+    [string]$JsonOut = (Join-Path ([IO.Path]::GetTempPath()) 'osl-p2p-pair-blob.json'),
+    [switch]$Quiet,
+    # Test-only filesystem implementation of the blob API.  It exists so the
+    # transport's fail-closed behavior is executable without Azure credentials.
+    [string]$TestBlobRoot = '',
+    [switch]$RunScriptSelfTests
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Off
 
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-. (Join-Path $here 'osl-p2p-win32.ps1')
+$script:PairBlobScriptPath = $PSCommandPath
+if ([string]::IsNullOrWhiteSpace($TestBlobRoot) -and -not $RunScriptSelfTests) {
+    . (Join-Path $here 'osl-p2p-win32.ps1')
+}
 
 $StorageAccount = 'osltestartifactsa7d5'
 $BlobContainer = 'vmqa'
@@ -176,6 +183,9 @@ function Finish {
 # rotation and heartbeat plumbing for no benefit here. The IMDS-allow-list guard itself IS
 # duplicated below on purpose -- it is the one cheap thing standing between "this only runs on a
 # fleet VM with the granted role" and "this runs anywhere and fails opaquely on 403".
+if (-not [string]::IsNullOrWhiteSpace($TestBlobRoot) -or $RunScriptSelfTests) {
+    Add-S 'gate/on-fleet-vm' 'ok' 'Test-only filesystem blob transport selected.'
+} else {
 try {
     $imdsName = ([string](Invoke-RestMethod -Method Get -TimeoutSec 5 `
         -Uri 'http://169.254.169.254/metadata/instance/compute/name?api-version=2021-02-01&format=text' `
@@ -189,6 +199,7 @@ if ($AllowedVms -notcontains $imdsName) {
     Finish 'blocked' 'This VM is not in the fleet allow-list, so it was not granted the vmqa container role.' 'Run this on OSL-Azure-Client-1 or -2.'
 }
 Add-S 'gate/on-fleet-vm' 'ok' ('IMDS confirms this is {0}.' -f $imdsName)
+}
 
 function Get-StorageToken {
     if (-not [string]::IsNullOrWhiteSpace($script:StorageToken) -and
@@ -219,6 +230,14 @@ function Get-HttpStatusCode {
 }
 function Invoke-Blob {
     param([ValidateSet('GET', 'HEAD', 'PUT')][string]$Method, [string]$Name, [byte[]]$Body = $null, [string]$OutFile = '')
+    if (-not [string]::IsNullOrWhiteSpace($TestBlobRoot)) {
+        $path = Join-Path $TestBlobRoot (ConvertTo-BlobPath -Name $Name)
+        switch ($Method) {
+            'HEAD' { if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw [System.IO.FileNotFoundException]::new('404 test blob absent', $path) }; return }
+            'GET' { if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw [System.IO.FileNotFoundException]::new('404 test blob absent', $path) }; if ($OutFile) { [IO.File]::WriteAllBytes($OutFile, [IO.File]::ReadAllBytes($path)) }; return }
+            'PUT' { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) | Out-Null; [IO.File]::WriteAllBytes($path, $Body); return }
+        }
+    }
     $headers = @{ Authorization = "Bearer $(Get-StorageToken)"; 'x-ms-version' = '2021-08-06' }
     $uri = $BlobContainerUri + '/' + (ConvertTo-BlobPath -Name $Name)
     $p = @{ Method = $Method; Uri = $uri; Headers = $headers; TimeoutSec = 60; ErrorAction = 'Stop'; UseBasicParsing = $true }
@@ -228,6 +247,9 @@ function Invoke-Blob {
 }
 function Test-BlobExists {
     param([string]$Name)
+    if (-not [string]::IsNullOrWhiteSpace($TestBlobRoot)) {
+        return Test-Path -LiteralPath (Join-Path $TestBlobRoot (ConvertTo-BlobPath -Name $Name)) -PathType Leaf
+    }
     try { [void](Invoke-Blob -Method HEAD -Name $Name); return $true }
     catch { if ((Get-HttpStatusCode $_) -eq 404) { return $false }; throw }
 }
@@ -260,6 +282,10 @@ function Resolve-Root {
 }
 
 function Confirm-LocalClosed {
+    if (-not [string]::IsNullOrWhiteSpace($TestBlobRoot)) {
+        Add-S 'gate/local-closed' 'ok' 'Test fixture has no live product process.'
+        return
+    }
     $map = Get-P2PBundleMap
     $running = @($map.Keys | Where-Object { $map[$_] -eq $Bundle })
     if ($running.Count -gt 0) {
@@ -271,8 +297,67 @@ function Confirm-LocalClosed {
     Add-S 'gate/local-closed' 'ok' ('No -sic marker for {0}; safe to proceed.' -f $Bundle)
 }
 
-Say ('=== OSL QA cross-VM pairing: {0} ===' -f (if ($Push) { 'push' } elseif ($Pull) { 'pull' } else { '<none>' })) 'Cyan'
+function Assert-SelfTest {
+    param([bool]$Condition, [string]$Message)
+    if (-not $Condition) { throw $Message }
+}
 
+function Invoke-PairBlobSelfTestChild {
+    param([string]$AppData, [string]$SideForTest, [string]$Mode, [string]$PeerForTest, [string]$RunForTest, [string]$BlobRoot, [string]$Receipt)
+    $childArgs = @('-NoProfile', '-File', $script:PairBlobScriptPath, '-Side', $SideForTest, "-$Mode", '-RunId', $RunForTest, '-TestBlobRoot', $BlobRoot, '-JsonOut', $Receipt, '-Quiet')
+    if ($PeerForTest) { $childArgs += @('-PeerSide', $PeerForTest) }
+    $oldAppData = $env:APPDATA
+    try { $env:APPDATA = $AppData; & (Get-Process -Id $PID).Path @childArgs | Out-Null; return $LASTEXITCODE }
+    finally { $env:APPDATA = $oldAppData }
+}
+
+function Invoke-PairBlobSelfTests {
+    $fixture = Join-Path ([IO.Path]::GetTempPath()) ('osl-p2p-pair-blob-selftest-' + [Guid]::NewGuid().ToString('N'))
+    $blobRoot = Join-Path $fixture 'blob'
+    $appA = Join-Path $fixture 'app-a'; $appB = Join-Path $fixture 'app-b'
+    $rootA = Join-Path $appA 'org.oslprivacy.hub\osl-core'; $rootB = Join-Path $appB 'org.oslprivacy.hub\osl-core'
+    try {
+        New-Item -ItemType Directory -Force -Path $rootA, $rootB | Out-Null
+        $offerA = [Text.Encoding]::UTF8.GetBytes('{"schemaVersion":1,"osl_user_id":"opaque-a","friend_code":"a"}')
+        $offerB = [Text.Encoding]::UTF8.GetBytes('{"schemaVersion":1,"osl_user_id":"opaque-b","friend_code":"b"}')
+        [IO.File]::WriteAllBytes((Join-Path $rootA 'discord-qa-offer.v1.json'), $offerA)
+        [IO.File]::WriteAllBytes((Join-Path $rootB 'discord-qa-offer.v1.json'), $offerB)
+        foreach ($call in @(
+            @($appA, 'A', 'Push', '', 'exchange'), @($appB, 'B', 'Push', '', 'exchange'),
+            @($appA, 'A', 'Pull', 'B', 'exchange'), @($appB, 'B', 'Pull', 'A', 'exchange')
+        )) {
+            $rc = Invoke-PairBlobSelfTestChild -AppData $call[0] -SideForTest $call[1] -Mode $call[2] -PeerForTest $call[3] -RunForTest $call[4] -BlobRoot $blobRoot -Receipt (Join-Path $fixture ([Guid]::NewGuid().ToString('N') + '.json'))
+            Assert-SelfTest ($rc -eq 0) ('two-way exchange child failed: {0} {1}' -f $call[1], $call[2])
+        }
+        Assert-SelfTest ([Linq.Enumerable]::SequenceEqual([IO.File]::ReadAllBytes((Join-Path $rootA 'discord-qa-peer-offer.v1.json')), $offerB)) 'A did not receive B offer byte-for-byte'
+        Assert-SelfTest ([Linq.Enumerable]::SequenceEqual([IO.File]::ReadAllBytes((Join-Path $rootB 'discord-qa-peer-offer.v1.json')), $offerA)) 'B did not receive A offer byte-for-byte'
+
+        [IO.File]::WriteAllBytes((Join-Path $rootB 'discord-qa-offer.v1.json'), $offerA)
+        $sameRc = Invoke-PairBlobSelfTestChild -AppData $appB -SideForTest B -Mode Push -RunForTest same -BlobRoot $blobRoot -Receipt (Join-Path $fixture 'same-push.json')
+        Assert-SelfTest ($sameRc -eq 0) 'same-identity fixture could not push'
+        $sameReceipt = Join-Path $fixture 'same-pull.json'
+        $sameRc = Invoke-PairBlobSelfTestChild -AppData $appA -SideForTest A -Mode Pull -PeerForTest B -RunForTest same -BlobRoot $blobRoot -Receipt $sameReceipt
+        Assert-SelfTest ($sameRc -eq 1) 'same osl_user_id was not refused'
+        Assert-SelfTest (((Get-Content -LiteralPath $sameReceipt -Raw | ConvertFrom-Json).overall.verdict) -eq 'failed') 'same osl_user_id did not write a failed receipt'
+
+        [IO.File]::WriteAllBytes((Join-Path $rootB 'discord-qa-offer.v1.json'), $offerB)
+        $tornRc = Invoke-PairBlobSelfTestChild -AppData $appB -SideForTest B -Mode Push -RunForTest torn -BlobRoot $blobRoot -Receipt (Join-Path $fixture 'torn-push.json')
+        Assert-SelfTest ($tornRc -eq 0) 'torn-upload fixture could not push'
+        [IO.File]::WriteAllBytes((Join-Path $blobRoot 'pairing/torn/B-offer.json'), [byte[]](1,2,3))
+        $tornReceipt = Join-Path $fixture 'torn-pull.json'
+        $tornRc = Invoke-PairBlobSelfTestChild -AppData $appA -SideForTest A -Mode Pull -PeerForTest B -RunForTest torn -BlobRoot $blobRoot -Receipt $tornReceipt
+        Assert-SelfTest ($tornRc -eq 1) 'truncated blob upload was accepted'
+        Assert-SelfTest (((Get-Content -LiteralPath $tornReceipt -Raw | ConvertFrom-Json).overall.verdict) -eq 'failed') 'truncated blob upload did not write a failed receipt'
+        Write-Host 'T19-T34 self-test passed: two-way bytes match; same identity and torn upload refused.' -ForegroundColor Green
+    } finally { Remove-Item -LiteralPath $fixture -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+$operation = if ($Push) { 'push' } elseif ($Pull) { 'pull' } else { '<none>' }
+Say ('=== OSL QA cross-VM pairing: {0} ===' -f $operation) 'Cyan'
+
+if ($RunScriptSelfTests) { Invoke-PairBlobSelfTests; exit 0 }
+
+if (-not $Side) { Add-S 'gate/side' 'failed' '-Side was not given.'; Finish 'blocked' 'A local identity side is required.' 'Pass -Side A or -Side B.' }
 if (-not $Push -and -not $Pull) { Add-S 'gate/mode' 'failed' 'Neither -Push nor -Pull was given.'; Finish 'blocked' 'Nothing to do.' 'Pass -Push or -Pull.' }
 if ($Push -and $Pull) { Add-S 'gate/mode' 'failed' '-Push and -Pull are mutually exclusive.'; Finish 'blocked' 'One operation per invocation.' 'Run twice.' }
 if ($Pull -and -not $PeerSide) { Add-S 'gate/mode' 'failed' '-Pull requires -PeerSide.'; Finish 'blocked' 'PeerSide is required for -Pull.' 'Pass -PeerSide A or B.' }
