@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  continueFromProOnboarding,
   nextOnboardingRoute,
   ONBOARDING_SEQUENCE,
   previousOnboardingRoute,
+  proOnboardingStepContract,
 } from "./onboarding-sequence";
 
 const ALL_BRANCHES = { detected: true, install: true };
@@ -54,5 +56,17 @@ describe("T15-C1 onboarding sequence", () => {
 
     expect(nextOnboardingRoute("tutorial", noOptionalAppSteps)).toBe("apps");
     expect(previousOnboardingRoute("apps", noOptionalAppSteps)).toBe("tutorial");
+  });
+});
+
+describe("Pro onboarding seam", () => {
+  it("continues to privacy with a usable free account when activation is skipped or fails", () => {
+    expect(proOnboardingStepContract).toMatchObject({ skippable: true, worksOffline: true });
+    expect(continueFromProOnboarding("skipped")).toEqual({ route: "privacy", access: "free" });
+    expect(continueFromProOnboarding("failed")).toEqual({ route: "privacy", access: "free" });
+  });
+
+  it("continues to privacy after a successful activation without defining redemption semantics", () => {
+    expect(continueFromProOnboarding("activated")).toEqual({ route: "privacy", access: "pro" });
   });
 });
