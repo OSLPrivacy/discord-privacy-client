@@ -73,6 +73,12 @@ jobs:
             --tag "${{ steps.hub-version.outputs.tag }}" \
             --github-output "$GITHUB_OUTPUT"
 
+      - name: Reject unvetted public claims in release notes
+        shell: bash
+        run: |
+          python scripts/check_release_notes_claims.py \
+            --tag "${{ steps.hub-version.outputs.tag }}"
+
       - name: Build signed draft installer and updater manifest
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f
         env:
