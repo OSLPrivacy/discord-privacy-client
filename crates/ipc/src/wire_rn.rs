@@ -493,8 +493,11 @@ pub fn select_wire_version(
         };
     }
 
-    let peer_supports_rn = peer_capabilities.supports_rn();
-    match (policy, peer_supports_rn) {
+    // Bit 0 establishes the sticky pin, but cannot safely select a new
+    // OSL-RN send: fuse-closed builds already advertise it. Bit 1 is only
+    // advertised by builds that can actually accept the RN wire.
+    let peer_supports_rn_live = peer_capabilities.supports_rn_live();
+    match (policy, peer_supports_rn_live) {
         (_, true) => Ok(SelectedVersion::Rn),
         (RnPolicy::Required, false) => Err(RnError::RnRequiredButUnsupported),
         (RnPolicy::Opportunistic, false) => Ok(SelectedVersion::LegacyV3),
@@ -1592,6 +1595,7 @@ mod tests {
     use super::*;
     use keystore::client::{
         PeerCapabilities, PrekeyBundleOpk, PrekeyBundleResponse, RN_CAP_WIRE_RN,
+        RN_CAP_WIRE_RN_LIVE,
     };
     use keystore::sealer::{MemorySealer, NoOpSealer};
     use osl_ratchet_next::primitives::x25519_keypair;
@@ -2387,11 +2391,11 @@ mod tests {
     }
 
     #[test]
-    fn an_unpinned_peer_with_rn_support_uses_rn() {
+    fn an_unpinned_peer_with_live_rn_support_uses_rn() {
         assert_eq!(
             select_wire_version(
                 &RnPeerPin::UNKNOWN,
-                PeerCapabilities::Verified(RN_CAP_WIRE_RN),
+                PeerCapabilities::Verified(RN_CAP_WIRE_RN | RN_CAP_WIRE_RN_LIVE),
                 RnPolicy::Opportunistic
             )
             .expect("select"),
@@ -2466,7 +2470,7 @@ mod tests {
 
         let rn: RatchetPolicyDecision = select_wire_version(
             &RnPeerPin::UNKNOWN,
-            PeerCapabilities::Verified(RN_CAP_WIRE_RN),
+            PeerCapabilities::Verified(RN_CAP_WIRE_RN | RN_CAP_WIRE_RN_LIVE),
             RnPolicy::Opportunistic,
         )
         .expect("verified RN selects RN");
@@ -2582,7 +2586,7 @@ mod tests {
     }
 
     #[test]
-    fn selection_is_exhaustive_over_pin_capabilities_and_policy() {
+    fn t19_t24_selection_requires_live_bit_but_pin_keeps_bit_zero_semantics() {
         let mut raised = RnPeerPin::UNKNOWN;
         raised.raise_to_rn();
 
@@ -2590,9 +2594,10 @@ mod tests {
             for (caps_name, caps) in [
                 ("Absent", PeerCapabilities::Absent),
                 ("Unverified", PeerCapabilities::Unverified),
+                ("Verified(bit0)", PeerCapabilities::Verified(RN_CAP_WIRE_RN)),
                 (
-                    "Verified(RN_CAP_WIRE_RN)",
-                    PeerCapabilities::Verified(RN_CAP_WIRE_RN),
+                    "Verified(bit0+bit1)",
+                    PeerCapabilities::Verified(RN_CAP_WIRE_RN | RN_CAP_WIRE_RN_LIVE),
                 ),
             ] {
                 for policy in [RnPolicy::Opportunistic, RnPolicy::Required] {
@@ -2603,24 +2608,27 @@ mod tests {
                             "pinned peer selected LegacyV3 for caps={caps_name} policy={policy:?}"
                         );
                     }
-                    match (pin.is_pinned_to_rn(), caps.supports_rn(), policy) {
-                        (true, true, _) => assert!(
+                    match (pin.is_pinned_to_rn(), caps.supports_rn(), caps.supports_rn_live(), policy) {
+                        // Pins deliberately retain their original bit-0 meaning. A peer
+                        // already pinned by an authenticated RN session may keep using RN;
+                        // stripping bit 1 must never make it silently downgrade.
+                        (true, true, _, _) => assert!(
                             matches!(&got, Ok(SelectedVersion::Rn)),
                             "expected Rn for pin={pin_name} caps={caps_name} policy={policy:?}, got {got:?}"
                         ),
-                        (true, false, _) => assert!(
+                        (true, false, _, _) => assert!(
                             matches!(&got, Err(RnError::PinnedToRn)),
                             "expected PinnedToRn for pin={pin_name} caps={caps_name} policy={policy:?}, got {got:?}"
                         ),
-                        (false, true, _) => assert!(
+                        (false, _, true, _) => assert!(
                             matches!(&got, Ok(SelectedVersion::Rn)),
                             "expected Rn for pin={pin_name} caps={caps_name} policy={policy:?}, got {got:?}"
                         ),
-                        (false, false, RnPolicy::Required) => assert!(
+                        (false, _, false, RnPolicy::Required) => assert!(
                             matches!(&got, Err(RnError::RnRequiredButUnsupported)),
                             "expected RnRequiredButUnsupported for pin={pin_name} caps={caps_name} policy={policy:?}, got {got:?}"
                         ),
-                        (false, false, RnPolicy::Opportunistic) => assert!(
+                        (false, _, false, RnPolicy::Opportunistic) => assert!(
                             matches!(&got, Ok(SelectedVersion::LegacyV3)),
                             "expected LegacyV3 for pin={pin_name} caps={caps_name} policy={policy:?}, got {got:?}"
                         ),

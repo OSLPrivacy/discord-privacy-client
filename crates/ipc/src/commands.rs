@@ -4010,7 +4010,7 @@ mod rn_send_selection_tests {
         let x25519 = STANDARD.encode(peer_identity.x25519_public.as_bytes());
         let ed25519 = STANDARD.encode(peer_identity.ed25519_public.as_bytes());
         let mlkem = STANDARD.encode(peer_identity.mlkem_public_bytes);
-        let capabilities = keystore::client::RN_CAP_WIRE_RN;
+        let capabilities = keystore::client::RN_CAP_WIRE_RN | keystore::client::RN_CAP_WIRE_RN_LIVE;
         let reg_msg = keystore::client::reg_msg_with_capabilities(
             &peer_identity.user_id,
             &x25519,
@@ -4037,7 +4037,7 @@ mod rn_send_selection_tests {
             identity_bundle_proof_sig: None,
         };
         let verified = keystore::client::verify_peer_capabilities(&response);
-        assert!(verified.supports_rn());
+        assert!(verified.supports_rn_live());
 
         let absent = select_rn_wire_path_for_send(
             &store,
@@ -4073,7 +4073,7 @@ mod rn_send_selection_tests {
         let x25519 = STANDARD.encode(peer_identity.x25519_public.as_bytes());
         let ed25519 = STANDARD.encode(peer_identity.ed25519_public.as_bytes());
         let mlkem = STANDARD.encode(peer_identity.mlkem_public_bytes);
-        let capabilities = keystore::client::RN_CAP_WIRE_RN;
+        let capabilities = keystore::client::RN_CAP_WIRE_RN | keystore::client::RN_CAP_WIRE_RN_LIVE;
         let reg_msg = keystore::client::reg_msg_with_capabilities(
             &peer_identity.user_id,
             &x25519,
@@ -4102,7 +4102,7 @@ mod rn_send_selection_tests {
 
         let verified = keystore::client::verify_peer_capabilities(&response);
         assert!(
-            verified.supports_rn(),
+            verified.supports_rn_live(),
             "fixture must prove capabilities via the signed keyserver response"
         );
 
@@ -4967,6 +4967,7 @@ mod rn_first_contact_command_tests {
     use super::*;
     use keystore::client::{
         PeerCapabilities, PrekeyBundleOpk, PrekeyBundleResponse, RN_CAP_WIRE_RN,
+        RN_CAP_WIRE_RN_LIVE,
     };
     use keystore::sealer::MemorySealer;
     use osl_ratchet_next::test_support::{fresh_bundle, seeded_rng};
@@ -5047,7 +5048,7 @@ mod rn_first_contact_command_tests {
     }
 
     #[test]
-    fn rn_first_contact_verified_capability_initiates_persists_and_pins() {
+    fn rn_first_contact_live_capability_initiates_persists_and_pins() {
         let (_dir, store) = fresh_rn_store();
         let sealer = MemorySealer::new();
         let mut rng = seeded_rng(63);
@@ -5062,7 +5063,7 @@ mod rn_first_contact_command_tests {
             &own_sk,
             &own_pk,
             &peer_bundle,
-            PeerCapabilities::Verified(RN_CAP_WIRE_RN),
+            PeerCapabilities::Verified(RN_CAP_WIRE_RN | RN_CAP_WIRE_RN_LIVE),
             peer_mlkem_b64.as_str(),
             b"hello",
         )
@@ -5119,7 +5120,7 @@ mod rn_first_contact_command_tests {
     }
 
     #[test]
-    fn first_contact_verify_peer_capabilities_feeds_pre_send_select_wire_version() {
+    fn first_contact_bit_zero_only_capability_stays_on_legacy_path() {
         let peer = keystore::generate_identity("peer-b24".to_string());
         let response = PrekeyBundleResponse {
             user_id: peer.user_id.clone(),
@@ -5144,10 +5145,8 @@ mod rn_first_contact_command_tests {
             caps,
             crate::wire_rn::RnPolicy::Opportunistic,
         )
-        .expect_err(
-            "verified RN capability must feed selection and refuse downgrade while gate is off",
-        );
-        assert!(selected.contains("wire-in is disabled"), "{selected}");
+        .expect("bit 0 alone must not select the RN wire path");
+        assert_eq!(selected, RnWirePath::LegacyV3);
 
         assert_eq!(
             select_rn_wire_path(
@@ -5176,7 +5175,7 @@ mod rn_first_contact_command_tests {
             &own_sk,
             &own_pk,
             &peer_bundle,
-            PeerCapabilities::Verified(RN_CAP_WIRE_RN),
+            PeerCapabilities::Verified(RN_CAP_WIRE_RN | RN_CAP_WIRE_RN_LIVE),
             peer_mlkem_b64.as_str(),
             b"b70 opportunistic RN",
         )
