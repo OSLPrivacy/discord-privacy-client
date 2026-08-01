@@ -73,7 +73,7 @@ keystore = { path = "../keystore" }
 # Consumed only by `wire_rn`; the v=2..v=5 paths do not reference it.
 osl-ratchet-next = { path = "../osl-ratchet-next" }
 store = { path = "../store" }
+message-lifecycle = { path = "../message-lifecycle" }
 
 [dev-dependencies]
 tempfile = "=3.13"
-message-lifecycle = { path = "../message-lifecycle" }
