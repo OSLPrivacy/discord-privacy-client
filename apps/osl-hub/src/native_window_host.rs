@@ -42,7 +42,6 @@ const TRUSTED_VERTICAL_RESERVE: i32 = 48;
 #[cfg(any(target_os = "windows", test))]
 const PROFILE_NAMESPACE: &str = "native-window-profiles-v1";
 #[cfg(any(target_os = "windows", test))]
-const NATIVE_DISCORD_ACCOUNT_PREFIX: &str = "native-discord-";
 const DISCORD_ACCESSIBILITY_ARGUMENT: &str = "--force-renderer-accessibility=complete";
 const DISCORD_UIA_PROVIDER_ARGUMENT: &str = "--enable-features=UiaProvider";
 /// Discord's own "create and show the main window without taking activation"
@@ -288,22 +287,30 @@ fn borrowed_snapshot_pid_matches(stored_pid: u32, node_pid: u32) -> bool {
 }
 
 #[cfg(any(target_os = "windows", test))]
-fn native_discord_account_id(owner_namespace: &str) -> Option<String> {
+fn native_service_account_id(id: NativeAppId, owner_namespace: &str) -> Option<String> {
     let digest = owner_namespace.strip_prefix("owner-")?;
     if digest.len() != 48 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;
     }
-    Some(format!("{NATIVE_DISCORD_ACCOUNT_PREFIX}{digest}"))
+    let service_id = match id {
+        NativeAppId::Discord => "discord",
+        NativeAppId::Telegram => "telegram",
+        NativeAppId::Signal => "signal",
+        NativeAppId::Whatsapp => "whatsapp",
+        NativeAppId::Outlook => "outlook",
+    };
+    Some(format!("native-{service_id}-{digest}"))
 }
 
 #[cfg(any(target_os = "windows", test))]
 fn native_context_matches(
     attached: bool,
-    id: NativeAppId,
+    hosted_id: NativeAppId,
+    requested_id: NativeAppId,
     stored_owner_namespace: &str,
     requested_owner_namespace: &str,
 ) -> bool {
-    attached && id == NativeAppId::Discord && stored_owner_namespace == requested_owner_namespace
+    attached && hosted_id == requested_id && stored_owner_namespace == requested_owner_namespace
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -2355,6 +2362,27 @@ impl std::fmt::Debug for NativeDiscordOverlayTarget {
 }
 
 impl NativeWindowHostState {
+    /// Run one bounded accessibility operation against the exact native app
+    /// requested by the caller. The callback receives no path, title,
+    /// credential, session value, or arbitrary HWND from IPC.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn with_current_native_accessibility_target<T>(
+        &self,
+        app_id: NativeAppId,
+        owner_osl_user_id: &str,
+        operation: impl FnOnce(
+            NativeDiscordAccessibilityTarget,
+            &dyn Fn(u32) -> bool,
+        ) -> Result<T, String>,
+    ) -> Result<T, String> {
+        windows::with_current_native_accessibility_target(
+            self,
+            app_id,
+            owner_osl_user_id,
+            operation,
+        )
+    }
+
     /// Run one bounded Discord accessibility operation while the exact native
     /// host identity and generation remain locked. The callback receives no
     /// path, title, credential, session value, or arbitrary HWND from IPC.
@@ -2367,7 +2395,11 @@ impl NativeWindowHostState {
             &dyn Fn(u32) -> bool,
         ) -> Result<T, String>,
     ) -> Result<T, String> {
-        windows::with_current_discord_accessibility_target(self, owner_osl_user_id, operation)
+        self.with_current_native_accessibility_target(
+            NativeAppId::Discord,
+            owner_osl_user_id,
+            operation,
+        )
     }
 
     /// Revalidate the exact already-claimed Discord identity after the QA
@@ -2394,21 +2426,30 @@ impl NativeWindowHostState {
     }
 
     /// Return a credential-free broker identity for the currently attached,
-    /// signed native Discord host. The account id is derived only from the
-    /// unlocked OSL owner namespace; no Discord profile or account data is read.
-    pub fn current_discord_service_host(
+    /// signed native host. The account id is derived only from the unlocked OSL
+    /// owner namespace; no native-client profile or account data is read.
+    pub fn current_native_service_host(
         &self,
+        app_id: NativeAppId,
         owner_osl_user_id: &str,
     ) -> Result<crate::service_host::ActiveServiceHost, String> {
         #[cfg(target_os = "windows")]
         {
-            windows::current_discord_service_host(self, owner_osl_user_id)
+            windows::current_native_service_host(self, app_id, owner_osl_user_id)
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = owner_osl_user_id;
-            Err("The trusted native Discord host is unavailable".to_owned())
+            let _ = (app_id, owner_osl_user_id);
+            Err("The trusted native host is unavailable".to_owned())
         }
+    }
+
+    /// Compatibility wrapper for the existing Discord-only callers.
+    pub fn current_discord_service_host(
+        &self,
+        owner_osl_user_id: &str,
+    ) -> Result<crate::service_host::ActiveServiceHost, String> {
+        self.current_native_service_host(NativeAppId::Discord, owner_osl_user_id)
     }
 
     pub fn discord_accessibility_snapshot(
@@ -8579,8 +8620,9 @@ mod windows {
         hosted_window_validation_error(hosted).is_none()
     }
 
-    pub(super) fn current_discord_service_host(
+    pub(super) fn current_native_service_host(
         state: &NativeWindowHostState,
+        app_id: NativeAppId,
         owner_osl_user_id: &str,
     ) -> Result<crate::service_host::ActiveServiceHost, String> {
         qa_discord_host_stage("context_host_entered");
@@ -8597,6 +8639,7 @@ mod windows {
         if !native_context_matches(
             hosted.attached,
             hosted.id,
+            app_id,
             &hosted.owner_namespace,
             &requested_owner,
         ) {
@@ -8607,19 +8650,27 @@ mod windows {
             return Err(error.to_owned());
         }
         qa_discord_host_stage("context_host_validated");
-        let account_id = native_discord_account_id(&requested_owner)
-            .ok_or_else(|| "The trusted native Discord account is unavailable".to_owned())?;
+        let account_id = native_service_account_id(app_id, &requested_owner)
+            .ok_or_else(|| "The trusted native account is unavailable".to_owned())?;
         qa_discord_host_stage("context_host_complete");
         Ok(crate::service_host::ActiveServiceHost {
-            service_id: "discord".to_owned(),
+            service_id: match app_id {
+                NativeAppId::Discord => "discord",
+                NativeAppId::Telegram => "telegram",
+                NativeAppId::Signal => "signal",
+                NativeAppId::Whatsapp => "whatsapp",
+                NativeAppId::Outlook => "outlook",
+            }
+            .to_owned(),
             account_id,
             generation: hosted.generation,
             owner_namespace: requested_owner,
         })
     }
 
-    pub(super) fn with_current_discord_accessibility_target<T>(
+    pub(super) fn with_current_native_accessibility_target<T>(
         state: &NativeWindowHostState,
+        app_id: NativeAppId,
         owner_osl_user_id: &str,
         operation: impl FnOnce(
             NativeDiscordAccessibilityTarget,
@@ -8652,6 +8703,7 @@ mod windows {
                     native_context_matches(
                         hosted.attached,
                         hosted.id,
+                        app_id,
                         &hosted.owner_namespace,
                         &requested_owner,
                     ) && hosted_window_is_valid(hosted)
@@ -8672,16 +8724,17 @@ mod windows {
             let target_process_trusted = match &hosted.process {
                 HostedProcess::Dedicated { job, .. } => {
                     trusted_job_process_path(job, hosted.window_process_id).is_some_and(|path| {
-                        verify_executable(&path, ExecutablePublisher::Discord)
-                            .is_ok_and(|trusted| trusted.path() == path)
+                        crate::native_apps::native_app_publisher(app_id).is_some_and(|publisher| {
+                            verify_executable(&path, publisher)
+                                .is_ok_and(|trusted| trusted.path() == path)
+                        })
                     })
                 }
                 HostedProcess::Borrowed { .. } => {
                     process_path_in_session(hosted.window_process_id, borrowed_session).is_some_and(
                         |path| {
                             path == hosted.trusted_window_executable.path()
-                                && verify_executable(&path, ExecutablePublisher::Discord)
-                                    .is_ok_and(|trusted| trusted.path() == path)
+                                && trust_existing_executable(app_id, &path).is_some()
                         },
                     )
                 }
@@ -8714,6 +8767,7 @@ mod windows {
             native_context_matches(
                 hosted.attached,
                 hosted.id,
+                app_id,
                 &hosted.owner_namespace,
                 &requested_owner,
             ) && hosted_window_is_valid(hosted)
@@ -8746,6 +8800,7 @@ mod windows {
                 native_context_matches(
                     hosted.attached,
                     hosted.id,
+                    NativeAppId::Discord,
                     &hosted.owner_namespace,
                     &requested_owner,
                 ) && hosted_window_is_valid(hosted)
@@ -10958,33 +11013,48 @@ mod tests {
     }
 
     #[test]
-    fn native_discord_context_is_owner_scoped_and_requires_attached_discord() {
+    fn native_accessibility_context_is_owner_scoped_and_matches_the_requested_app() {
         let owner = "owner-00112233445566778899aabbccddeeff0011223344556677";
         assert_eq!(
-            native_discord_account_id(owner).as_deref(),
+            native_service_account_id(NativeAppId::Discord, owner).as_deref(),
             Some("native-discord-00112233445566778899aabbccddeeff0011223344556677")
         );
-        assert!(native_discord_account_id("owner-not-hex").is_none());
+        assert_eq!(
+            native_service_account_id(NativeAppId::Signal, owner).as_deref(),
+            Some("native-signal-00112233445566778899aabbccddeeff0011223344556677")
+        );
+        assert!(native_service_account_id(NativeAppId::Signal, "owner-not-hex").is_none());
         assert!(native_context_matches(
             true,
             NativeAppId::Discord,
+            NativeAppId::Discord,
+            owner,
+            owner
+        ));
+        assert!(native_context_matches(
+            true,
+            NativeAppId::Signal,
+            NativeAppId::Signal,
             owner,
             owner
         ));
         assert!(!native_context_matches(
             false,
             NativeAppId::Discord,
+            NativeAppId::Discord,
             owner,
             owner
         ));
         assert!(!native_context_matches(
             true,
-            NativeAppId::Telegram,
+            NativeAppId::Discord,
+            NativeAppId::Signal,
             owner,
             owner
         ));
         assert!(!native_context_matches(
             true,
+            NativeAppId::Discord,
             NativeAppId::Discord,
             owner,
             "owner-ffeeddccbbaa99887766554433221100ffeeddccbbaa9988",
