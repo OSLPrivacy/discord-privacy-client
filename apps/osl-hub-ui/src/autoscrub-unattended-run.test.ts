@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -12,6 +11,12 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ emitTo: mocks.emitTo, listen: mocks.listen }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: mocks.getCurrentWindow }));
+vi.mock("@fontsource-variable/inter/wght.css", () => ({}));
+vi.mock("./logos", () => ({
+  browserLogo: (id: string) => `<span>${id}</span>`,
+  providerLogo: (id: string) => `<span>${id}</span>`,
+  serviceLogo: (id: string) => `<span>${id}</span>`,
+}));
 vi.mock("./preferences", async () => {
   const actual = await vi.importActual<typeof import("./preferences")>("./preferences");
   return { ...actual, isTauriRuntime: mocks.isTauriRuntime };
@@ -22,10 +27,6 @@ import {
   requestAutoScrubGlobalStop,
   startAutoScrubReviewedRun,
 } from "./autoscrub-unattended-run";
-
-const mainSource = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
-const runnerSource = readFileSync(new URL("./autoscrub-unattended-run.ts", import.meta.url), "utf8");
-const contractSource = readFileSync(new URL("./autoscrub-contract.ts", import.meta.url), "utf8");
 
 const fleetStatus = {
   contract: "autoscrubRunFleet.v1",
@@ -95,14 +96,14 @@ describe("AutoScrub unattended run production wiring", () => {
     expect(mocks.invoke).not.toHaveBeenCalled();
   });
 
-  it("keeps main.ts on the production AutoScrub modules rather than raw status IPC", () => {
-    expect(mainSource).toContain('from "./autoscrub-contract"');
-    expect(mainSource).toContain('from "./autoscrub-unattended-run"');
-    expect(mainSource).toContain("projectAutoScrubFleetStatus(autoScrubFleetStatus)");
-    expect(mainSource).toContain("#autoscrub-stop");
-    expect(runnerSource).toContain("get_autoscrub_run_fl");
-    expect(runnerSource).not.toContain("get_autoscrub_run_status");
-    expect(contractSource).toContain("unattendedExecutionAllowed: false");
+  it("projects active reviewed runs into a visible stop control", async () => {
+    const { __oslHubUiTest } = await loadUi();
+    __oslHubUiTest.reset({ route: "privacy", licenseAccess: "pro", autoScrubFleetStatus: fleetStatus });
+
+    const markup = __oslHubUiTest.renderSettingsSection("scrub");
+    expect(markup).toContain('id="autoscrub-stop"');
+    expect(markup).toContain("2 open runs");
+    expect(markup).toContain("Nothing happens until you review and confirm every batch.");
   });
 });
 
@@ -120,16 +121,23 @@ function installGlobals(): void {
     addEventListener: vi.fn(),
     matchMedia: vi.fn(() => ({ matches: false, addEventListener: vi.fn() })),
     setTimeout,
+    confirm: vi.fn(() => false),
   });
+  vi.stubGlobal("requestAnimationFrame", () => 1);
+  vi.stubGlobal("cancelAnimationFrame", () => undefined);
+}
+
+async function loadUi() {
+  vi.resetModules();
+  installGlobals();
+  return import("./main");
 }
 
 describe("autoscrub unattended run contract", () => {
-  it("Wire autoscrub-unattended-run.ts + autoscrub-contract.ts as production", async () => {
+  it("starts an unattended run only when the production contract is fully approved", async () => {
     installGlobals();
     const { autoscrubUnattendedContractGate, autoscrubUnattendedProductionRun } = await import("./autoscrub-unattended-run");
     const nativeInvoke = vi.fn();
-
-    expect(mainSource).toContain("autoscrubUnattendedProductionRun");
 
     expect(autoscrubUnattendedContractGate({
       production: false,
