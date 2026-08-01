@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use ipc::wire_rn::RN_WIRE_IN_ENABLED;
 
-const RATCHET_REPORT: &str = include_str!("../../../docs/reports/ratchet-lane-2026-07-26.md");
+const RATCHET_REPORT: &str = include_str!("../../../../docs/reports/ratchet-lane-2026-07-26.md");
 
 fn unquote_code_cell(value: &str) -> &str {
     value
