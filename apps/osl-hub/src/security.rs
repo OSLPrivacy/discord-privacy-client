@@ -2894,13 +2894,11 @@ pub fn admit_peer_content_seq(
 /// function never learns which conversation the *peer* meant except by
 /// recognising one of our own.
 ///
-/// Implemented contract helper for a future sequence-bearing content path.
-///
-/// A durable floor is not proof that a burn is enforced: production content
-/// currently carries no authenticated `send_seq`/scope commitment and does not
-/// call [`admit_peer_content_seq`] before plaintext release. Production callers
-/// must therefore retain the notice and emit no acknowledgement until that
-/// admission chain is wired.
+/// A durable floor is not proof that a burn is enforced for newly delivered
+/// sequence-bearing content: production content currently carries no
+/// authenticated `send_seq`/scope commitment and does not call
+/// [`admit_peer_content_seq`] before plaintext release. Existing local history
+/// is nevertheless shredded below before an acknowledgement reports success.
 pub fn apply_peer_revocation(
     core: &HubCoreState,
     security: &HubSecurityState,
@@ -2934,16 +2932,24 @@ pub fn apply_peer_revocation(
     let outcome = ipc::revocation::apply_inbound_revocation(&mut ledger, &commit_key, &notice, now)
         .map_err(|_| "OSL burn state is full".to_owned())?;
     ledger.version = 1;
-    // Durable first. Only then may an ack claim the burn is in force.
-    write_encrypted_json_with_key(&path, &ledger, &file_key)
-        .map_err(|_| "OSL burn state could not be persisted".to_owned())?;
 
-    // Forget this sender's cached attachment capabilities in the matched
-    // conversation. This helper also records the intended text burn floor, but
-    // recording is not enforcement: the production decrypt path does not yet
-    // call `admit_peer_content_seq`.
+    // The history namespace is the account-qualified scope storage key, never
+    // the relay channel. Relay channels are symmetric and can be shared by a
+    // second local account; selecting by one here would destroy its history.
+    // Shred before acknowledging the applied revocation, so retained local
+    // plaintext cannot be opened after a successful burn.
     if outcome.decision == ipc::revocation::InboundDecision::Applied {
         if let Some(storage_key) = matched.as_deref() {
+            let history = core
+                .osl
+                .message_store
+                .lock()
+                .map_err(|_| "OSL message history is unavailable".to_owned())?;
+            if let Some(store) = history.as_ref() {
+                store
+                    .delete_messages_in_channel(storage_key)
+                    .map_err(|_| "OSL message history could not be burned".to_owned())?;
+            }
             let attachments_path = config_dir()?.join(ATTACHMENT_BURN_FILE);
             if let Ok(mut attachments) =
                 load_attachment_burn_ledger_with_key(&attachments_path, &file_key)
@@ -2955,6 +2961,12 @@ pub fn apply_peer_revocation(
             }
         }
     }
+    // Do not persist an applied floor until the local history is gone. If the
+    // process fails before this write, a redelivery repeats the idempotent
+    // shred instead of acknowledging residue. Duplicate or unmatched notices
+    // still need their replay state durable before returning a receipt.
+    write_encrypted_json_with_key(&path, &ledger, &file_key)
+        .map_err(|_| "OSL burn state could not be persisted".to_owned())?;
 
     let burn_floor = ledger
         .scopes
@@ -6869,6 +6881,66 @@ key"
     fn a_burn_refusal_reads_exactly_like_any_other_open_failure() {
         assert_eq!(REVOCATION_REFUSED_ERROR, PEER_OPEN_ERROR);
         assert!(!REVOCATION_REFUSED_ERROR.to_lowercase().contains("burn"));
+    }
+
+    #[test]
+    fn peer_burn_shreds_only_the_account_qualified_history_scope() {
+        let harness = FileBackedSecurityHarness::new("peer-burn-history-scope");
+        let core = HubCoreState::default();
+        let identity = keystore::generate_native_identity();
+        *core.osl.identity.lock().unwrap() = Some(identity.clone());
+        let security = HubSecurityState::default();
+        let history_dir = harness.path().join("history");
+        let history = store::MessageStore::open(&history_dir, identity.x25519_secret.as_bytes())
+            .expect("open history store");
+        *core.osl.message_store.lock().unwrap() = Some(history);
+
+        // The two local accounts intentionally share a relay peer. Their
+        // storage keys are nevertheless distinct, account-qualified scopes.
+        let burned_scope =
+            manual_peer_scope_storage_key("osl-chat", "local-account-a", "shared-peer")
+                .expect("valid target scope");
+        let surviving_scope =
+            manual_peer_scope_storage_key("osl-chat", "local-account-b", "shared-peer")
+                .expect("valid survivor scope");
+        ipc::commands::cmd_osl_persist_inbound(
+            &core.osl,
+            burned_scope.clone(),
+            "burned-message".to_owned(),
+            "shared-peer".to_owned(),
+            "must become unreadable".to_owned(),
+        )
+        .expect("persist target history");
+        ipc::commands::cmd_osl_persist_inbound(
+            &core.osl,
+            surviving_scope.clone(),
+            "surviving-message".to_owned(),
+            "shared-peer".to_owned(),
+            "must remain readable".to_owned(),
+        )
+        .expect("persist other-account history");
+
+        let outcome = apply_legacy_peer_burn(
+            &core,
+            &security,
+            &[0x55; X25519_PUBLIC_BYTES],
+            &burned_scope,
+            1_700_000_000,
+        )
+        .expect("apply peer burn");
+        assert!(outcome.applied);
+
+        let history = core.osl.message_store.lock().unwrap();
+        let history = history.as_ref().expect("history store remains open");
+        assert!(history
+            .list_by_channel(&burned_scope, 10)
+            .expect("read burned scope")
+            .is_empty());
+        let surviving = history
+            .list_by_channel(&surviving_scope, 10)
+            .expect("read other account scope");
+        assert_eq!(surviving.len(), 1);
+        assert_eq!(surviving[0].plaintext, "must remain readable");
     }
 
     #[test]
