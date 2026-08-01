@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+adapter-profile = { path = "../adapter-profile" }
 crypto = { path = "../crypto" }
 base64 = "0.22"
 serde = { workspace = true }
