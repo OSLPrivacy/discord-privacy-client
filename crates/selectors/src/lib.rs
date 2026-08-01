@@ -38,9 +38,11 @@
 
 pub mod fetcher;
 pub mod manifest;
+pub mod refresh;
 
 pub use fetcher::{FetchError, ManifestFetcher, ManifestSource, ManifestState, SourceLabel};
 pub use manifest::{
     canonical_manifest_bytes, parse_signed_manifest, sign_manifest, verify_manifest, ManifestError,
     SelectorManifest, SignedManifest, MANIFEST_DOMAIN, MAX_MANIFEST_AGE_SECONDS,
 };
+pub use refresh::{ManifestRefresh, HOURLY_REFRESH_SECONDS};
