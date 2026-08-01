@@ -15,7 +15,11 @@
 ///   - ID path param: 16 hex chars.
 
 import type { Env } from "../env.js";
-import { MAX_LIVE_BLOB_BYTES, MAX_LIVE_BLOB_ROWS } from "../lib/blob-limits.js";
+import {
+  isPadmeLength,
+  MAX_LIVE_BLOB_BYTES,
+  MAX_LIVE_BLOB_ROWS,
+} from "../lib/blob-limits.js";
 import { error, json, notFound } from "../lib/http.js";
 import { hexToId, idToHex, newBlobId } from "../lib/id.js";
 
@@ -97,6 +101,9 @@ export async function handleUpload(request: Request, env: Env): Promise<Response
   }
   if (data.length > MAX_BLOB_BYTES) {
     return error(413, "too_large", `blob exceeds ${MAX_BLOB_BYTES} bytes`);
+  }
+  if (!isPadmeLength(data.byteLength)) {
+    return error(400, "invalid_padding", "blob length must be Padmé-padded");
   }
 
   // Generate ID + insert. On primary-key collision (vanishingly

@@ -14,3 +14,19 @@
 /// only for unusually small blobs.
 export const MAX_LIVE_BLOB_ROWS = 100_000;
 export const MAX_LIVE_BLOB_BYTES = 2 * 1024 * 1024 * 1024;
+
+/// Return whether `bytes` is a valid Padmé object length.
+///
+/// Padmé rounds a length up to a multiple whose granularity depends on the
+/// length's binary exponent. The server checks that the final ciphertext
+/// object already has that shape so an unpadded client cannot opt out.
+export function isPadmeLength(bytes: number): boolean {
+  if (!Number.isSafeInteger(bytes) || bytes <= 0) return false;
+
+  const exponent = Math.floor(Math.log2(bytes));
+  if (exponent === 0) return true;
+
+  const significantBits = Math.floor(Math.log2(exponent)) + 1;
+  const granularity = 2 ** (exponent - significantBits);
+  return bytes % granularity === 0;
+}
