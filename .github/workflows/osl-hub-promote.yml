@@ -58,7 +58,25 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          gh release view hub-latest --json assets > feed-assets.json 2>/dev/null || : > feed-assets.json
+          # The waiver expires against reality: it is refused the moment hub-latest
+          # publishes a manifest. That only works if "no feed" and "gh broke" are
+          # told apart. The old form was `|| : > feed-assets.json`, which truncated
+          # the file on ANY gh failure -- a rate limit, a token-scope change, a
+          # transient API error -- and an empty file reads as "no feed yet", so the
+          # waiver was ACCEPTED. The expiry failed OPEN, and `2>/dev/null` threw
+          # away the reason. Fail closed on anything that is not a missing release.
+          if gh release view hub-latest --json assets > feed-assets.json 2> gh-feed-err.txt; then
+            :
+          else
+            rc=$?
+            if grep -qi 'release not found' gh-feed-err.txt; then
+              : > feed-assets.json
+            else
+              echo "gh release view failed (exit ${rc}); refusing to assume the feed is absent:" >&2
+              cat gh-feed-err.txt >&2
+              exit 1
+            fi
+          fi
           python scripts/check_bootstrap_waiver_allowed.py \
             --attestation candidate/hub-vm-qa-attestation.json \
             --feed-assets feed-assets.json
